@@ -3,6 +3,7 @@ import type { RenderContext } from '../messageRenderers'
 import { createMemo, Match, Switch } from 'solid-js'
 import { cachedInnerHtml } from '~/lib/htmlFragmentCache'
 import { containsAnsi, renderAnsi, stripAnsi } from '~/lib/renderAnsi'
+import { syntaxThemeGeneration } from '~/lib/syntaxThemeStore'
 import { markdownContent } from '../markdownEditor/markdownContent.css'
 import { getCachedRenderValueForString, setCachedRenderValueForString } from '../messageRenderCache'
 import { renderMarkdownForContext, shouldPauseSyntaxHighlighting } from '../messageRenderers'
@@ -63,19 +64,32 @@ export function CollapsibleContent(props: CollapsibleContentProps): JSX.Element 
   const isAnsi = createMemo(() => props.kind === 'ansi-or-pre' && containsAnsi(props.text))
   const ansiPlainText = createMemo(() => isAnsi() ? stripAnsi(slice()) : slice())
   const pauseSyntax = () => shouldPauseSyntaxHighlighting(props.context)
+  // The highlight namespace carries the syntax theme generation, for the same
+  // reason `markdownCacheNamespace` does: `renderAnsi` bakes the resolved pair's
+  // colours into the `sk-*` classes it mints, so an entry from the previous
+  // theme is WRONG, not merely old. Reading the signal here is also what re-runs
+  // the memo below -- nothing else in it moves when the theme does, so up to 512
+  // live rows kept the abandoned theme's ANSI colours for the session.
+  const ansiHighlightNs = () => `ansi-highlight:collapsibleContent:${syntaxThemeGeneration()}`
   const ansiHtml = (text: string) => {
     if (props.context?.premeasureMode)
       return undefined
     const displayed = getCachedRenderValueForString<string>(props.context, 'ansi-displayed:collapsibleContent', text)
-    if (displayed !== undefined)
+    // Held (scroll pause or an active selection): keep whatever is on screen
+    // rather than swapping text nodes under the user. It may carry the previous
+    // theme for the length of the hold, and the next unheld pass repaints it --
+    // the same trade `markdown-displayed` makes.
+    if (pauseSyntax())
       return displayed
-    if (pauseSyntax() || !canHighlightBySize(text))
-      return undefined
-    const cached = getCachedRenderValueForString<string>(props.context, 'ansi-highlight:collapsibleContent', text)
+    const cached = getCachedRenderValueForString<string>(props.context, ansiHighlightNs(), text)
     if (cached !== undefined)
       return setCachedRenderValueForString(props.context, 'ansi-displayed:collapsibleContent', text, cached)
+    // Over the size cap: never highlighted, so whatever is displayed is plain
+    // and stays correct under any theme.
+    if (!canHighlightBySize(text))
+      return displayed
     const html = renderAnsi(text)
-    setCachedRenderValueForString(props.context, 'ansi-highlight:collapsibleContent', text, html)
+    setCachedRenderValueForString(props.context, ansiHighlightNs(), text, html)
     return setCachedRenderValueForString(props.context, 'ansi-displayed:collapsibleContent', text, html)
   }
   const renderedAnsiHtml = createMemo(() => isAnsi() ? ansiHtml(slice()) : undefined)

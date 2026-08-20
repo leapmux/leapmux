@@ -214,6 +214,21 @@ func (r *Registry) ApplyPartial(prefsJSON, key string, partial json.RawMessage) 
 	if err != nil {
 		return "", err
 	}
+	// The WHOLE document is bounded here, which is the only place that can be.
+	// A per-key cap cannot see the aggregate: the declared caps sum to roughly
+	// 170 KB and ONE key reaches it alone (MaxKeybindings x three
+	// MaxKeybindingLength fields), so a legal write could overflow the storage
+	// and, on a relaxed MySQL sql_mode, be TRUNCATED mid-JSON -- after which
+	// decodeBlob fails on the next read and every account setting resets to its
+	// default. That is silent data loss rather than a refused write.
+	//
+	// This is the single write path: every mutation re-serializes the whole
+	// document through here, and Reset only shrinks it. The limit is a chosen
+	// product bound, not a storage one -- the MySQL column is MEDIUMTEXT for
+	// exactly that reason, so no dialect imposes its own ceiling on the others.
+	if len(out) > MaxPrefsBytes {
+		return "", invalidf("the settings document is too large: %d bytes (max %d)", len(out), MaxPrefsBytes)
+	}
 	return string(out), nil
 }
 

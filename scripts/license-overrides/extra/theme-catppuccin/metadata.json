@@ -1,0 +1,6 @@
+{
+  "name": "Catppuccin (theme palette)",
+  "license": "MIT",
+  "url": "https://github.com/catppuccin/palette",
+  "description": "The Latte and Mocha hex values behind the Catppuccin theme in `frontend/src/styles/themes/catppuccin.ts` were read from this palette's `palette.json` and mapped onto LeapMux's CSS custom properties."
+}

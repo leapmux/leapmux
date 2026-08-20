@@ -1,9 +1,11 @@
 import type { BundledLanguage } from 'shiki'
 import type { HighlighterCore } from 'shiki/core'
+import type { SyntaxThemePair } from './syntaxThemes'
 import { createHighlighterCore } from 'shiki/core'
 import { createOnigurumaEngine } from 'shiki/engine/oniguruma'
 import { bundledLanguages } from 'shiki/langs'
-import { transparentBgThemes } from './shikiThemes'
+import { syntaxThemePair } from './shikiThemes'
+import { ensureThemesRegistered } from './syntaxThemes'
 
 /**
  * Outcome of a lazy grammar load, so callers can tell a PERMANENT miss apart from
@@ -52,6 +54,22 @@ export interface LazyHighlighter {
   ensureLanguage: (lang: string) => Promise<LanguageLoadResult>
   /** Whether `lang` (id or alias) is already loaded -- a synchronous check. */
   isLanguageLoaded: (lang: string) => boolean
+  /**
+   * Ensure both halves of `pair` are registered, so a following `codeToTokens`
+   * naming them can resolve. Idempotent; a pair already registered costs a set
+   * lookup.
+   */
+  ensureThemes: (pair: SyntaxThemePair) => Promise<void>
+  /**
+   * Whether both halves of `pair` are already registered -- a synchronous check,
+   * the theme counterpart of `isLanguageLoaded`.
+   *
+   * A synchronous tokenize call site cannot await a registration, so it needs to
+   * ask before it names a theme: `codeToTokens` THROWS for a name the core has
+   * not loaded, and a caller that swallows the throw degrades to plain text with
+   * nothing to say why.
+   */
+  areThemesLoaded: (pair: SyntaxThemePair) => boolean
   /** The initialized highlighter, or null before `ensureReady` resolves. */
   getHighlighter: () => HighlighterCore | null
 }
@@ -88,11 +106,18 @@ export function createLazyOnigurumaHighlighter(): LazyHighlighter {
       return Promise.resolve(highlighter)
     if (!readyPromise) {
       readyPromise = createHighlighterCore({
-        themes: transparentBgThemes,
-        // Start empty; grammars load lazily via ensureLanguage.
+        // Start empty on BOTH axes. Grammars load lazily via ensureLanguage, and
+        // themes via ensureThemes -- which pair this isolate needs arrives with
+        // the request, so registering one up front would only be a guess.
+        themes: [],
         langs: [],
         engine: createOnigurumaEngine(import('shiki/wasm')),
-      }).then((h) => {
+      }).then(async (h) => {
+        // Register whatever pair this isolate currently holds, so a caller that
+        // never calls `ensureThemes` still has a usable highlighter. Every
+        // request-driven path names its own pair and re-registers as needed;
+        // this is the floor, not the mechanism.
+        await ensureThemesRegistered(h, syntaxThemePair())
         highlighter = h
         return h
       })
@@ -139,5 +164,17 @@ export function createLazyOnigurumaHighlighter(): LazyHighlighter {
       return canonical ? loaded.has(canonical) : false
     },
     getHighlighter: () => highlighter,
+    ensureThemes: async (pair) => {
+      const hl = await ensureReady()
+      await ensureThemesRegistered(hl, pair)
+    },
+    // Asked of the CORE rather than of a local set, so it answers for every
+    // registration this instance received, whoever made it.
+    areThemesLoaded: (pair) => {
+      if (!highlighter)
+        return false
+      const names = new Set(highlighter.getLoadedThemes())
+      return names.has(pair.light) && names.has(pair.dark)
+    },
   }
 }

@@ -1243,11 +1243,12 @@ describe('pending user bubble state', () => {
   })
 
   it('widens the row behind a pulsing local bubble, which bleeds like a settled one', () => {
-    // `userMessagePending` spreads the same `userBubble`, so it carries the negative right
-    // margin that runs the bubble to the panel edge. Paint containment on the virtual row
-    // clips a descendant to the row's padding box, so the row has to widen to match -- and
-    // this branch is picked by isPendingUserMessage, which messageBubbleClass never sees.
-    // The invariant test beside messageBubbleClass therefore cannot reach it.
+    // `userMessagePending` is the same `endBubble` card, so it takes the same flush-right
+    // marker. The negative right margin that marker turns on lives in the stylesheet's
+    // `bleedRow .bubbleFlushRight` rule, and paint containment on the virtual row clips a
+    // descendant to the row's padding box -- so the row has to widen to match. This branch
+    // is picked by isPendingUserMessage, which messageBubbleClass never sees, so the
+    // (kind, source) sweep beside bubbleRunsToRightEdge cannot reach it.
     const msg = makeMsg({
       id: 'local-3',
       source: MessageSource.USER,
@@ -1315,6 +1316,82 @@ describe('pending user bubble state', () => {
       </PreferencesProvider>
     ))
     expect(screen.getByTestId('message-bubble')).not.toHaveClass(chatStyles.bubbleFlushRight)
+  })
+})
+
+describe('plan execution bubble', () => {
+  /**
+   * The shape the worker persists when the user approves a plan: a USER-source row
+   * carrying the plan text under a `planExecution` flag. See
+   * `initiatePlanExecution` in backend/internal/worker/service/agent.go.
+   */
+  function planExecutionMsg(id = 'plan-1') {
+    return makeMsg({
+      id,
+      source: MessageSource.USER,
+      content: rawContent({ content: 'Execute the following plan:\n\n---\n\nStep one.', planExecution: true }),
+    })
+  }
+
+  function renderPlanExecution(id?: string) {
+    const msg = planExecutionMsg(id)
+    const view = render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} />
+      </PreferencesProvider>
+    ))
+    return { msg, view }
+  }
+
+  it('wears its own dashed card and runs it to the right panel edge', () => {
+    // The regression: the flush-right marker was chosen by testing the bubble class
+    // against `userMessage`, so this card -- the only other one a mirrored row can
+    // hold -- stopped a whole gutter short inside a row already widened for it.
+    const { view } = renderPlanExecution()
+    const bubble = view.getByTestId('message-bubble')
+    expect(bubble).toHaveClass(chatStyles.planExecutionMessage)
+    expect(bubble).toHaveClass(chatStyles.bubbleFlushRight)
+  })
+
+  it('sits in a row widened to the panel edge, so the bleed is not clipped', () => {
+    // Paint containment on the virtual row clips a descendant to the row's padding
+    // box. The marker alone produces nothing without this.
+    const { msg } = renderPlanExecution('plan-2')
+    expect(classifyAgentMessage(msg).kind).toBe('plan_execution')
+    expect(messageRowChromeClass(classifyAgentMessage(msg).kind, msg.source)).toBe(chatStyles.bleedRow)
+  })
+
+  it('reaches the edge exactly as a typed user message does', () => {
+    // One rule governs both cards. Asserting the pair together is what would catch
+    // a change that moves one of them and leaves the other behind.
+    const { view } = renderPlanExecution('plan-3')
+    const planBubble = view.getByTestId('message-bubble')
+    const planFlushes = planBubble.classList.contains(chatStyles.bubbleFlushRight)
+    view.unmount()
+
+    const typed = makeMsg({ id: 'typed-1', source: MessageSource.USER, content: rawContent({ content: 'hello' }) })
+    const typedView = render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={typed} />
+      </PreferencesProvider>
+    ))
+    expect(planFlushes).toBe(typedView.getByTestId('message-bubble').classList.contains(chatStyles.bubbleFlushRight))
+    expect(planFlushes).toBe(true)
+  })
+
+  it('closes the card again when the plan hand-off failed to deliver', () => {
+    // Same opt-out a typed message takes: the "Failed to deliver / Retry / Delete"
+    // line is laid out against the row's CONTENT edge, so the bubble above it must
+    // square up at that edge too.
+    const msg = planExecutionMsg('plan-4')
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} error="Failed to deliver" />
+      </PreferencesProvider>
+    ))
+    const bubble = screen.getByTestId('message-bubble')
+    expect(bubble).toHaveClass(chatStyles.planExecutionMessage)
+    expect(bubble).not.toHaveClass(chatStyles.bubbleFlushRight)
   })
 })
 

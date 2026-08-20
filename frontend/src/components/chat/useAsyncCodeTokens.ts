@@ -2,6 +2,7 @@ import type { Accessor } from 'solid-js'
 import type { CachedToken } from '~/lib/tokenCache'
 import { createEffect, createSignal, on, onCleanup, untrack } from 'solid-js'
 import { tokenizeAsync } from '~/lib/shikiWorkerClient'
+import { syntaxThemeGeneration } from '~/lib/syntaxThemeStore'
 import { getCachedTokens, makeKey } from '~/lib/tokenCache'
 
 /** Reactive gate controlling whether and when tokens may be (re)computed/applied. */
@@ -83,7 +84,13 @@ export function useAsyncCodeTokens(opts: AsyncCodeTokensOptions): Accessor<Cache
   const currentKey = (): string | undefined => {
     const lang = opts.lang()
     const code = opts.code()
-    return lang && code.length > 0 && opts.eligible() ? makeKey(lang, code) : undefined
+    // The syntax theme generation is part of the key, not a separate effect:
+    // tokens carry Shiki's baked colours, so a theme change makes the APPLIED
+    // tokens stale in exactly the way a code or language change does. Folding it
+    // in reuses the whole supersede-and-redispatch path rather than adding a
+    // second one that would race it.
+    const generation = syntaxThemeGeneration()
+    return lang && code.length > 0 && opts.eligible() ? `${generation}\0${makeKey(lang, code)}` : undefined
   }
 
   // Resolve tokens for `code` WITHOUT dispatching the worker: the optional main-thread
@@ -183,7 +190,22 @@ export function useAsyncCodeTokens(opts: AsyncCodeTokensOptions): Accessor<Cache
       // future consumer whose eligibility is driven by external state). Without it in the
       // deps, such a flip would neither reset an over-cap body to plain nor start
       // highlighting a now-eligible one until an unrelated lang/code/gate change nudged it.
-      return [opts.lang(), opts.code(), gate.premeasure, gate.hold, opts.eligible()] as const
+      // The syntax generation belongs HERE, not only inside `currentKey()`.
+      // `on(deps, fn)` tracks the deps accessor alone and runs `fn` untracked,
+      // so the generation read in `currentKey()` was invisible to this effect:
+      // the theme changed, the caches cleared, the generation bumped -- and
+      // every applied code surface kept the abandoned theme's baked colours
+      // until an unrelated lang, code, gate or eligibility change happened to
+      // nudge the effect. This effect is the only thing that redispatches a
+      // code surface, so nothing else would have repainted it.
+      return [
+        opts.lang(),
+        opts.code(),
+        gate.premeasure,
+        gate.hold,
+        opts.eligible(),
+        syntaxThemeGeneration(),
+      ] as const
     },
     ([lang, code, premeasure]) => {
       const key = currentKey()

@@ -688,18 +688,26 @@ describe('validateBranchName', () => {
   // The worker refuses the same characters. A name the panel offers and the
   // worker then refuses shows the user two answers for one name.
   describe('agrees with the worker copy', () => {
-    it('rejects the shell metacharacters $ and %', () => {
-      expect(validateBranchName('feat/$HOME')).toBe('Branch name contains invalid characters')
-      expect(validateBranchName('feat/100%')).toBe('Branch name contains invalid characters')
+    // git accepts both, so this copy must too: refusing them made the panel
+    // reject a branch the repository already holds and `for-each-ref` lists.
+    it('accepts $ and %, which git accepts', () => {
+      expect(validateBranchName('feat/$HOME')).toBeNull()
+      expect(validateBranchName('feat/100%')).toBeNull()
+      expect(validateBranchName('release-100%')).toBeNull()
+      expect(validateBranchName('env-$STAGE')).toBeNull()
     })
 
-    // Go's `unicode.IsControl` reports the whole Cc category, which is BOTH
-    // U+0000-U+001F and U+007F-U+009F. A class that stopped at U+007F let a
-    // name through here that the worker then refused.
-    it('rejects the C1 control block, not the C0 block alone', () => {
-      expect(validateBranchName('feat/ab')).toBe('Branch name contains invalid characters')
-      expect(validateBranchName('feat/ab')).toBe('Branch name contains invalid characters')
-      expect(validateBranchName('feat/ab')).toBe('Branch name contains invalid characters')
+    // git refuses the ASCII controls and DEL, and NOT the C1 block
+    // U+0080-U+009F: `git check-ref-format` exits 0 for a C1 name and
+    // `git branch` creates it. This class was widened to U+009F to match the
+    // worker, which asked `unicode.IsControl` -- so it matched the worker's
+    // over-strictness rather than git. Both are now narrowed to git's rule.
+    it('rejects the C0 block and DEL, and accepts the C1 block that git accepts', () => {
+      expect(validateBranchName('feat/a\u0000b')).toBe('Branch name contains invalid characters')
+      expect(validateBranchName('feat/a\u001Fb')).toBe('Branch name contains invalid characters')
+      expect(validateBranchName('feat/a\u007Fb')).toBe('Branch name contains invalid characters')
+      expect(validateBranchName('feat/a\u0085b')).toBeNull()
+      expect(validateBranchName('feat/a\u009Fb')).toBeNull()
     })
   })
 
@@ -712,7 +720,6 @@ describe('validateBranchName', () => {
       ['foo?bar', 'question mark'],
       ['foo*bar', 'asterisk'],
       ['foo[bar', 'open bracket'],
-      ['foo]bar', 'close bracket'],
       ['foo\\bar', 'backslash'],
     ]
 
@@ -743,33 +750,50 @@ describe('validateBranchName', () => {
 
   describe('forbidden leading characters', () => {
     it('rejects leading dot', () => {
-      expect(validateBranchName('.foo')).toBe('Branch name must not start with /, ., -, or @')
+      expect(validateBranchName('.foo')).toBe('Branch name must not start with /, ., or -')
     })
 
+    // The one refusal that goes BEYOND git: git accepts `-foo`, and the worker
+    // hands the name to git as a positional argument, where its option parser
+    // would read the leading `-` as a flag.
     it('rejects leading dash', () => {
-      expect(validateBranchName('-foo')).toBe('Branch name must not start with /, ., -, or @')
+      expect(validateBranchName('-foo')).toBe('Branch name must not start with /, ., or -')
     })
 
     it('rejects leading slash', () => {
-      expect(validateBranchName('/foo')).toBe('Branch name must not start with /, ., -, or @')
+      expect(validateBranchName('/foo')).toBe('Branch name must not start with /, ., or -')
     })
 
-    it('rejects leading @', () => {
-      expect(validateBranchName('@foo')).toBe('Branch name must not start with /, ., -, or @')
+    // git refuses the single-character refname `@` and accepts a leading `@`.
+    it('rejects a bare @ and accepts a leading @', () => {
+      expect(validateBranchName('@')).toBe('Branch name must not be the single character @')
+      expect(validateBranchName('@foo')).toBeNull()
+      expect(validateBranchName('@/a')).toBeNull()
     })
   })
 
   describe('forbidden trailing patterns', () => {
     it('rejects trailing slash', () => {
-      expect(validateBranchName('foo/')).toBe('Branch name must not end with /, ., or .lock')
+      expect(validateBranchName('foo/')).toBe('Branch name must not end with / or .')
     })
 
     it('rejects trailing dot', () => {
-      expect(validateBranchName('foo.')).toBe('Branch name must not end with /, ., or .lock')
+      expect(validateBranchName('foo.')).toBe('Branch name must not end with / or .')
     })
 
-    it('rejects trailing .lock', () => {
-      expect(validateBranchName('foo.lock')).toBe('Branch name must not end with /, ., or .lock')
+    // git refuses `.lock` on EVERY slash-separated component, not on the last
+    // one alone -- `a.lock/b` is not a valid ref, and this accepted it.
+    it('rejects .lock on any path component', () => {
+      const message = 'Branch name must not have a path component that ends with .lock'
+      expect(validateBranchName('foo.lock')).toBe(message)
+      expect(validateBranchName('a.lock/b')).toBe(message)
+      expect(validateBranchName('x/a.lock/b')).toBe(message)
+    })
+
+    // `@{` is git's reflog syntax and is refused anywhere in a ref name.
+    it('rejects the reflog syntax @{', () => {
+      expect(validateBranchName('feature@{1}')).toBe('Branch name must not contain @{')
+      expect(validateBranchName('at@{')).toBe('Branch name must not contain @{')
     })
   })
 
@@ -1206,6 +1230,75 @@ describe('validateSessionId conformance', () => {
     }
     expect(got, `case "${c.why}" must be refused`).not.toBeNull()
     const marker = refusalMarkers[c.refusal]
+    expect(marker, `case "${c.why}" carries an unknown refusal token "${c.refusal}"`).toBeDefined()
+    expect(got).toContain(marker)
+  })
+})
+
+/**
+ * The browser half of `testdata/branch_name_conformance.json`. The Go suite
+ * (`TestValidateBranchNameConformance`) reads the same file.
+ *
+ * The rule is twelve branches deep and written out TWICE, once per language.
+ * Before this corpus the only thing holding the copies together was that a
+ * human edited both in one commit -- and the divergence it guards against is
+ * invisible until a user types the name: the panel offers a branch the worker
+ * then refuses, or it refuses one the repository already holds and
+ * `for-each-ref` lists, so that branch cannot be acted on from inside LeapMux
+ * at all.
+ */
+describe('validateBranchName conformance', () => {
+  interface BranchNameConformanceCase {
+    input: { text: string }
+    valid: boolean
+    refusal: string
+    why: string
+  }
+
+  // Each token maps to a substring of THIS side's message. Go names the
+  // offending character ("must not contain '~'") where this side does not, so
+  // the fixture carries the RULE and each suite carries its own wording.
+  const branchRefusalMarkers: Record<string, string> = {
+    empty: 'must not be empty',
+    too_long: 'must be at most',
+    // Both of Go's character rules read as one message here, which is exactly
+    // why the fixture pins a token instead of a string.
+    control_character: 'contains invalid characters',
+    forbidden_character: 'contains invalid characters',
+    at_alone: 'must not be the single character @',
+    leading_character: 'must not start with /, ., or -',
+    trailing_character: 'must not end with / or .',
+    lock_component: 'path component that ends with .lock',
+    reflog_syntax: 'must not contain @{',
+    double_dot: 'must not contain ..',
+    double_slash: 'must not contain //',
+    slash_dot: 'must not contain /.',
+  }
+
+  const branchConformancePath = resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    '../../../testdata/branch_name_conformance.json',
+  )
+
+  const branchFixture = JSON.parse(readFileSync(branchConformancePath, 'utf8')) as {
+    cases: BranchNameConformanceCase[]
+  }
+
+  // A fixture that silently loads zero cases would make this block pass while
+  // asserting nothing -- the one failure mode a shared fixture must not have.
+  it('loads the shared fixture', () => {
+    expect(branchFixture.cases.length).toBeGreaterThan(0)
+  })
+
+  it.each(branchFixture.cases)('$why', (c) => {
+    const got = validateBranchName(c.input.text)
+    if (c.valid) {
+      expect(c.refusal, `case "${c.why}" is valid, so its refusal must be empty`).toBe('')
+      expect(got).toBeNull()
+      return
+    }
+    expect(got, `case "${c.why}" must be refused`).not.toBeNull()
+    const marker = branchRefusalMarkers[c.refusal]
     expect(marker, `case "${c.why}" carries an unknown refusal token "${c.refusal}"`).toBeDefined()
     expect(got).toContain(marker)
   })

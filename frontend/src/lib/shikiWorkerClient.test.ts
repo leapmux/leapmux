@@ -223,12 +223,12 @@ describe('shikiworkerclient', () => {
       },
     })
     try {
-      const { tokenizeAsync, TOKEN_ARTIFACT_NS } = await importClient()
+      const { tokenizeAsync, tokenArtifactNs } = await importClient()
       // Fresh module registry: this store instance is the one the client uses.
       const store = await import('./renderArtifactStore')
       const { makeKey } = await import('./tokenCache')
       await store.putArtifact(
-        TOKEN_ARTIFACT_NS,
+        tokenArtifactNs(),
         makeKey('bash', 'echo persisted'),
         { styles: [{ color: 'red' }], lines: [[[0, 'echo persisted']]] },
       )
@@ -268,11 +268,11 @@ describe('shikiworkerclient', () => {
       },
     })
     try {
-      const { tokenizeAsync, TOKEN_ARTIFACT_NS } = await importClient()
+      const { tokenizeAsync, tokenArtifactNs } = await importClient()
       const store = await import('./renderArtifactStore')
       const { makeKey } = await import('./tokenCache')
       await store.putArtifact(
-        TOKEN_ARTIFACT_NS,
+        tokenArtifactNs(),
         makeKey('bash', 'echo fallback'),
         { styles: [], lines: [[null]] },
       )
@@ -313,7 +313,7 @@ describe('shikiworkerclient', () => {
       },
     })
     try {
-      const { tokenizeAsync, TOKEN_ARTIFACT_NS } = await importClient()
+      const { tokenizeAsync, tokenArtifactNs } = await importClient()
       const store = await import('./renderArtifactStore')
       const { makeKey } = await import('./tokenCache')
 
@@ -328,7 +328,7 @@ describe('shikiworkerclient', () => {
       // the interned form carries the declarations a later session needs to
       // re-mint the style classes (the expanded form only has class names).
       await vi.waitFor(async () => {
-        await expect(store.getArtifact(TOKEN_ARTIFACT_NS, makeKey('bash', 'echo save-me')))
+        await expect(store.getArtifact(tokenArtifactNs(), makeKey('bash', 'echo save-me')))
           .resolves
           .toEqual(wire)
       })

@@ -70,7 +70,14 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			if svc.refuseIfShuttingDown(sender) {
 				return
 			}
-			if err := validate.ValidateSessionID(r.GetAgentSessionId()); err != nil {
+			// Through the PROVIDER, because a resume handle is not one shape.
+			// Claude, Codex and the ACP providers issue an opaque token, and
+			// the default rule refuses one that argv could read as a flag. Pi
+			// issues a session FILE PATH, which the token rule refuses by
+			// design -- a Windows path holds a backslash, and a deep path runs
+			// past the token byte cap -- so Pi answers for its own shape.
+			if err := agent.ProviderFor(r.GetAgentProvider()).
+				ValidateResumeHandle(r.GetAgentSessionId(), svc.HomeDir); err != nil {
 				sendInvalidArgument(sender, err.Error())
 				return
 			}
@@ -1421,7 +1428,7 @@ func (svc *Service) replayAgentCatchUp(
 
 	// The sink refuses sends once the transport is gone, but refusing a
 	// send does not undo the query that produced it. Each stage below is
-	// therefore gated as well, because the cost this replay is worth
+	// therefore conditional as well, because the cost this replay is worth
 	// abandoning is mostly READ cost -- a message page and its content
 	// decompression, the to-do snapshot, the control-request scan -- not
 	// the marshal. Checking only between agents (which handleWatchEvents
@@ -2341,7 +2348,7 @@ func optionsChangeDelta(from, to OptionMap) OptionMap {
 //   - appliedLive: what UpdateSettings reported -- false means the provider can't apply this change
 //     live (e.g. Claude effort->auto) and the caller should relaunch.
 //
-// Shared by applySettingsLive (which gates on appliedLive and relaunches) and applyOptionChanges
+// Shared by applySettingsLive (which tests appliedLive and relaunches) and applyOptionChanges
 // (which only overlays when confirmed != nil), so the hold-lock-across-push-and-readback contract
 // lives in one place.
 func (svc *Service) pushAndReadConfirmed(agentID string, applied OptionMap) (confirmed OptionMap, appliedLive bool) {

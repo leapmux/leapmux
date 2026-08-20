@@ -25,9 +25,10 @@ const THUMB_WIDTH_PX = 8
  * The rail's box comes from a token the chat root publishes
  * (`~/components/chat/ChatView.css.ts`), because a message row's floating toolbar
  * needs the same number to sit clear of this column. The token travels as a
- * custom property rather than an import: `ChatView.css.ts` already imports
- * `~/components/chat/messageStyles.css.ts`, and the toolbar rules live there, so
- * the value has to reach two modules that cannot both import each other. The
+ * custom property rather than an import: `~/components/chat/ChatView.css.ts`
+ * already imports `~/components/chat/messageStyles.css.ts`, and the toolbar
+ * rules live there, so the value has to reach two modules that cannot both
+ * import each other. The
  * NAMES are shared, from the import-free leaf `~/components/chat/chatChromeVars.ts`.
  *
  * The column is the gutter. That one decision does three things at once:
@@ -51,29 +52,20 @@ const THUMB_WIDTH_PX = 8
 const RAIL_WIDTH = `var(${CHAT_RAIL_WIDTH_VAR})`
 
 /**
- * Opacity of the rail's own surface while it is shown.
+ * The rail paints NO surface of its own. It is a hit column, and the only marks it
+ * draws are the track line, the thumb and the dots. The column is much wider than
+ * those marks (see RAIL_WIDTH), so a fill here tints a strip of message text beside
+ * them, and the reader gets a band of altered content for a target they cannot see.
  *
- * Painted in `--background` -- the PANEL colour, not the message surface -- so
- * the strip reads as a channel cut out of the content: it lightens the column in
- * the light theme and darkens it in the dark one, from the same declaration.
- * Partial, so the content beneath still shows through and the strip does not
- * read as an opaque bar. The whole rail fades with `railIdle`, so this needs no
- * shown/hidden branch of its own.
+ * Nothing else paints this element, so it has no `border-radius` either: with no
+ * fill, no border and no `overflow` clip, a radius rounds nothing.
  */
-const RAIL_SURFACE_ALPHA = 0.7
-
 export const rail = style({
   'position': 'absolute',
   'top': 'var(--space-2)',
   'bottom': 'var(--space-2)',
   'right': 0,
   'width': RAIL_WIDTH,
-  'backgroundColor': `color-mix(in srgb, var(--background) ${RAIL_SURFACE_ALPHA * 100}%, transparent)`,
-  // Round the surface off the same way as the loading pills and the scroll-to-bottom
-  // button: the base radius token, NOT a pill. All of them float over this one viewport,
-  // so they should read as one set. (The corner this replaced was twice the TRACK's width,
-  // which is a measurement of the line inside the strip, not of the strip.)
-  'borderRadius': 'var(--radius-medium)',
   'zIndex': 10,
   // Interactive (unlike the pointer-events:none loading pills): track clicks + thumb drag.
   'cursor': 'pointer',

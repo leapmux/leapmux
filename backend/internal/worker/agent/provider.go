@@ -2,10 +2,12 @@ package agent
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/util/validate"
 )
 
 type NotificationKind string
@@ -156,6 +158,26 @@ type Provider interface {
 	// child tab is read-only. Defaults to false (noopProvider); only Codex
 	// overrides it to true.
 	SupportsChildSteering() bool
+	// ValidateResumeHandle reports why this provider cannot resume from the
+	// client-supplied handle, or nil when it can.
+	//
+	// A resume handle is NOT one shape across providers, which is why this is a
+	// provider decision rather than one rule in shared code. Claude, Codex and
+	// the ACP providers issue an opaque TOKEN -- a UUID, a ULID, a thread id --
+	// and Claude's reaches `claude --resume <id>` as its own argv element. Pi
+	// issues a session FILE PATH, and the token rule refuses one by design: a
+	// Windows path holds `\\`, and any deep path runs past the token byte cap.
+	// Applying the token rule to every provider therefore refused a legitimate
+	// Pi resume with "session ID contains invalid characters".
+	//
+	// The default is the token rule (noopProvider), so a provider that issues a
+	// token is covered by saying nothing, and only a provider whose handle is
+	// something else has to say so.
+	//
+	// `homeDir` is for a provider whose handle is a PATH and therefore may open
+	// with `~`. A token provider ignores it. The caller has it either way, and
+	// OpenAgent already hands the same value to `normalizeWorkingDir`.
+	ValidateResumeHandle(handle, homeDir string) error
 }
 
 type noopProvider struct{}
@@ -169,6 +191,14 @@ func (noopProvider) Merge(class NotificationClassification, previous, next json.
 }
 
 func (noopProvider) IsInterrupt(string) bool { return false }
+
+// ValidateResumeHandle defaults to the TOKEN rule, which is what every provider
+// but Pi issues. `validate.ValidateSessionID` states that rule and says why each
+// half of it exists -- above all the leading hyphen, which one argv element is
+// enough to turn into a flag.
+func (noopProvider) ValidateResumeHandle(handle, _ string) error {
+	return validate.ValidateSessionID(handle)
+}
 
 func (noopProvider) DefaultPermissionMode() string { return "" }
 
@@ -519,6 +549,29 @@ func (claudeProvider) PermissionModeFromRawInput(content string) (string, bool) 
 // partial failures.
 type piProvider struct {
 	noopProvider
+}
+
+// ValidateResumeHandle takes a session FILE PATH, not a token.
+//
+// Pi resumes by `sessionPath`: the worker sends the handle straight to Pi as
+// the path of a `.jsonl` session file (see `PiAgent.start`). So the token rule
+// is the wrong rule here, and it refused a legitimate handle two ways -- a
+// Windows path holds `\`, which the token class bans, and a deep path runs
+// past the 128-byte token cap.
+//
+// A path is still a value a user pastes into a field, so it is not unchecked:
+// `SanitizePath` is the rule this repo already states for one, and it answers
+// the traversal, the reserved device name and the absolute-path questions that
+// a path actually raises. The empty handle means "no resume" and is accepted,
+// exactly as the token rule accepts it.
+func (piProvider) ValidateResumeHandle(handle, homeDir string) error {
+	if handle == "" {
+		return nil
+	}
+	if _, err := validate.SanitizePath(handle, homeDir); err != nil {
+		return fmt.Errorf("session file path: %w", err)
+	}
+	return nil
 }
 
 func (piProvider) Classify(raw json.RawMessage) NotificationClassification {

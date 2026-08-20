@@ -8,6 +8,7 @@ import { PreferencesProvider } from '~/context/PreferencesContext'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { darkTerminalTheme, lightTerminalTheme } from '~/lib/terminal'
+import { applyTheme, DEFAULT_THEME_VALUE } from '~/lib/themeStore'
 import { webglPool } from '~/lib/webglTerminalPool'
 import { compositionPreview } from '~/test-support/compositionPreview'
 import { stubMatchMedia } from '~/test-support/matchMediaStub'
@@ -428,6 +429,14 @@ describe('terminalView', () => {
     const colorScheme = () => matchMedia.handlersFor('(prefers-color-scheme: dark)')[0]
 
     try {
+      // `themeStore` owns the one prefers-color-scheme subscription and
+      // re-subscribes on a UI MODE change -- the seam that lets a host install
+      // `matchMedia` after the module was imported. This module is imported
+      // statically (through PreferencesContext), so it was built before
+      // `stubMatchMedia()` ran and holds no listener until nudged.
+      applyTheme({ ...DEFAULT_THEME_VALUE, mode: 'light' })
+      applyTheme(DEFAULT_THEME_VALUE)
+
       const baseTab = { type: TabType.TERMINAL as const, workspaceId: 'ws-1', screen: new Uint8Array() }
       render(() => (
         <PreferencesProvider>
@@ -505,6 +514,11 @@ describe('terminalView', () => {
     const colorSchemeHandlers = () => matchMedia.handlersFor('(prefers-color-scheme: dark)')
 
     try {
+      // Same reason as the test above: nudge `themeStore` so its one
+      // subscription lands on the stub this test just installed.
+      applyTheme({ ...DEFAULT_THEME_VALUE, mode: 'light' })
+      applyTheme(DEFAULT_THEME_VALUE)
+
       const baseTab = { type: TabType.TERMINAL as const, workspaceId: 'ws-1', screen: new Uint8Array() }
       render(() => (
         <PreferencesProvider>
@@ -531,7 +545,9 @@ describe('terminalView', () => {
 
       // Both views mount, both register a handler, both instances exist.
       await waitFor(() => {
-        expect(colorSchemeHandlers().length).toBe(2)
+        // ONE app-lifetime subscription, not one per tile. Two mounted views
+        // used to install two listeners for a question with one answer.
+        expect(colorSchemeHandlers().length).toBe(1)
         expect(getTerminalInstance('themed-A')).toBe(instanceA)
         expect(getTerminalInstance('themed-B')).toBe(instanceB)
       })

@@ -1,7 +1,7 @@
 import { execSync } from 'node:child_process'
 import { join } from 'node:path'
 import { expect, test } from './fixtures'
-import { loginViaToken } from './helpers/ui'
+import { loginViaToken, menuOptionTexts } from './helpers/ui'
 import {
   createGitRepo,
   openNewWorkspaceDialog,
@@ -275,9 +275,8 @@ test.describe('Worktree Validation', () => {
     await page.getByText('Switch to branch').click()
 
     // Wait for branches to load — should contain alpha-branch
-    const branchSelect = dialog.locator('select').last()
-    await expect(branchSelect).toBeEnabled()
-    const repo1Options = await branchSelect.locator('option').allTextContents()
+    await expect(dialog.getByTestId('branch-select-menu-trigger')).toBeEnabled()
+    const repo1Options = await menuOptionTexts(dialog, 'branch-select-menu')
     expect(repo1Options.some(o => o.includes('alpha-branch'))).toBe(true)
     expect(repo1Options.some(o => o.includes('beta-branch'))).toBe(false)
 
@@ -290,9 +289,9 @@ test.describe('Worktree Validation', () => {
     await page.getByText('Switch to branch').click()
 
     // Branch list should update — should contain beta-branch, not alpha-branch
-    await expect(branchSelect).toBeEnabled()
+    await expect(dialog.getByTestId('branch-select-menu-trigger')).toBeEnabled()
     await expect(async () => {
-      const repo2Options = await branchSelect.locator('option').allTextContents()
+      const repo2Options = await menuOptionTexts(dialog, 'branch-select-menu')
       expect(repo2Options.some(o => o.includes('beta-branch'))).toBe(true)
       expect(repo2Options.some(o => o.includes('alpha-branch'))).toBe(false)
     }).toPass()
@@ -320,12 +319,10 @@ test.describe('Worktree Validation', () => {
     // Select "Switch to branch" to see the branch list
     await expect(page.getByText('Switch to branch')).toBeVisible()
     await page.getByText('Switch to branch').click()
-
-    const branchSelect = dialog.locator('select').last()
-    await expect(branchSelect).toBeEnabled()
+    await expect(dialog.getByTestId('branch-select-menu-trigger')).toBeEnabled()
 
     // Initially, only "main" should be listed
-    const options = await branchSelect.locator('option').allTextContents()
+    const options = await menuOptionTexts(dialog, 'branch-select-menu')
     expect(options.some(o => o.includes('new-after-open'))).toBe(false)
 
     // Create a new branch in the repo while the dialog is open
@@ -336,7 +333,7 @@ test.describe('Worktree Validation', () => {
 
     // The branch list should now include the newly created branch
     await expect(async () => {
-      const updatedOptions = await branchSelect.locator('option').allTextContents()
+      const updatedOptions = await menuOptionTexts(dialog, 'branch-select-menu')
       expect(updatedOptions.some(o => o.includes('new-after-open'))).toBe(true)
     }).toPass()
 

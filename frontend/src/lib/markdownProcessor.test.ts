@@ -3,6 +3,9 @@ import { createMarkdownProcessor, extractFenceLanguages, plainMarkdownProcessor,
 import { BLOCKED_IMAGE_CHIP_TEXT } from '~/lib/rehypeBlockRemoteImages'
 import { createLazyOnigurumaHighlighter } from '~/lib/shikiLazyHighlighter'
 import { collectShikiStyles } from '~/lib/shikiStyleClass'
+import { syntaxThemePair } from '~/lib/shikiThemes'
+import { loadSyntaxTheme, syntaxPairFor } from '~/lib/syntaxThemes'
+import { DEFAULT_THEME_ID } from '~/styles/themes'
 
 type Processor = Parameters<typeof renderWithPlainFallback>[0]
 
@@ -22,7 +25,7 @@ let sharedProcessors: Promise<[string, (md: string) => string][]> | null = null
 function processors(): Promise<[string, (md: string) => string][]> {
   sharedProcessors ??= (async () => {
     const highlighter = await createLazyOnigurumaHighlighter().ensureReady()
-    const shiki = createMarkdownProcessor(highlighter)
+    const shiki = createMarkdownProcessor(highlighter, syntaxThemePair())
     return [
       ['createMarkdownProcessor', (md: string) => String(shiki.processSync(md))],
       ['plainMarkdownProcessor', (md: string) => String(plainMarkdownProcessor.processSync(md))],
@@ -130,7 +133,7 @@ describe('createMarkdownProcessor with the lazy Oniguruma highlighter', () => {
     const hl = createLazyOnigurumaHighlighter()
     const highlighter = await hl.ensureReady()
     await hl.ensureLanguage('python')
-    const processor = createMarkdownProcessor(highlighter)
+    const processor = createMarkdownProcessor(highlighter, syntaxThemePair())
 
     const md = '```python\nprint(1)\n```\n\n```not-a-language\nstill shown\n```'
     const html = renderWithPlainFallback(processor, md)
@@ -155,7 +158,7 @@ describe('createMarkdownProcessor with the lazy Oniguruma highlighter', () => {
     const md = '> ```python\n> print(1)\n> ```'
     for (const lang of extractFenceLanguages(md))
       await hl.ensureLanguage(lang)
-    const processor = createMarkdownProcessor(highlighter)
+    const processor = createMarkdownProcessor(highlighter, syntaxThemePair())
 
     const html = renderWithPlainFallback(processor, md)
     // python was discovered by the scan, loaded, and the block is tokenized (not plain).
@@ -178,17 +181,26 @@ describe('createMarkdownProcessor with the lazy Oniguruma highlighter', () => {
     // 'unsupported' (NOT 'failed'), which is correctly, permanently non-retryable.
     expect(extractFenceLanguages(md)).toEqual(['ansi'])
     expect(await hl.ensureLanguage('ansi')).toBe('unsupported')
-    const processor = createMarkdownProcessor(highlighter)
+    const processor = createMarkdownProcessor(highlighter, syntaxThemePair())
 
     const html = renderWithPlainFallback(processor, md)
-    // The ansi green (#28a745 light) lands on the `green` token's shared style
-    // class (see shikiStyleClass) -- proof the fence is tokenized, not rendered
-    // plain, and the escape sequences are consumed into colors.
+    // The ansi green lands on the `green` token's shared style class (see
+    // shikiStyleClass) -- proof the fence is tokenized, not rendered plain, and
+    // the escape sequences are consumed into colors.
     expect(html).toContain('class="shiki')
     expect(html).toContain('>green<')
     const greenClass = html.match(/<span class="(sk-[0-9a-z-]+)">green</)?.[1]
     expect(greenClass).toBeDefined()
-    expect(collectShikiStyles()[greenClass!]).toContain('#28a745')
+    // Asserted against the ACTIVE syntax theme's own ANSI green rather than a
+    // literal: an ansi fence is coloured from the theme's `terminal.ansi*`
+    // entries, so a hardcoded value would only pin whichever theme happened to
+    // be the default. Read from the theme the catalogue actually points Default
+    // at, so this case follows a change to that pairing instead of failing on
+    // one.
+    const lightHalf = await loadSyntaxTheme(syntaxPairFor(DEFAULT_THEME_ID).light)
+    const ansiGreen = (lightHalf as unknown as { colors: Record<string, string> })
+      .colors['terminal.ansiGreen']!
+    expect(collectShikiStyles()[greenClass!]).toContain(ansiGreen)
   })
 
   it('highlights a mixed-CASE fence by lower-casing the language', async () => {
@@ -202,7 +214,7 @@ describe('createMarkdownProcessor with the lazy Oniguruma highlighter', () => {
     const md = '```Python\nprint(1)\n```'
     for (const lang of extractFenceLanguages(md))
       await hl.ensureLanguage(lang)
-    const processor = createMarkdownProcessor(highlighter)
+    const processor = createMarkdownProcessor(highlighter, syntaxThemePair())
 
     const html = renderWithPlainFallback(processor, md)
     // Tokenized (not the fallback single span): `print` is isolated in its own span.
@@ -226,7 +238,7 @@ describe('createMarkdownProcessor with the lazy Oniguruma highlighter', () => {
     } as unknown as Parameters<typeof createMarkdownProcessor>[0]
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     try {
-      const processor = createMarkdownProcessor(throwingHighlighter)
+      const processor = createMarkdownProcessor(throwingHighlighter, syntaxThemePair())
       // processSync must NOT throw -- onError swallows the codeToHast error -- so the
       // block degrades to its original markup and the document still renders.
       const html = String(processor.processSync('```json\n{"a":1}\n```'))

@@ -1,16 +1,24 @@
 import type { ITheme } from '@xterm/xterm'
 import type { BrowserPreferences, TerminalRendererPreference } from './browserStorage'
 import type { TerminalImeHandle } from './terminalIme'
-import type { ThemePreference } from '~/app'
+import type {
+  ResolvedThemeMode,
+  TerminalThemeMode,
+  TerminalThemeValue,
+  ThemeMode,
+  ThemeValue,
+} from '~/styles/themes'
 import { FitAddon } from '@xterm/addon-fit'
 import { SerializeAddon } from '@xterm/addon-serialize'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { Terminal } from '@xterm/xterm'
+import { DEFAULT_THEME_ID, MATCH_UI, paletteColorToHex, resolveThemeSelection, resolveVariant, themeById } from '~/styles/themes'
 import { loadBrowserPrefs } from './browserStorage'
 import { copyTextToClipboard } from './clipboard'
 import { DEFAULT_MONO_FONT_FAMILY } from './fontStack'
 import { createLogger } from './logger'
 import { sleep } from './sleep'
+import { DEFAULT_TERMINAL_THEME_VALUE, DEFAULT_THEME_VALUE, parseTerminalThemeValue, parseThemeValue } from './themeStore'
 
 const log = createLogger('terminal')
 // TextEncoder construction is not free, so one stateless instance serves
@@ -34,7 +42,6 @@ export const DEFAULT_TERMINAL_ROWS = 25
 export const ENTER_KEY_CR = 0x0D
 export const ERASE_CHARACTER = '\x7F'
 
-export type TerminalThemePreference = 'light' | 'dark' | 'match-ui'
 type ResolvedTerminalRenderer = 'webgl' | 'canvas'
 
 export interface TerminalFontOptions {
@@ -121,60 +128,9 @@ export function serializeXtermBuffer(instance: TerminalInstance): Uint8Array {
 
 export const DEFAULT_FONT_SIZE = 13
 
-export const darkTerminalTheme: ITheme = {
-  background: '#1a1917', // --background
-  foreground: '#e8e6e1', // --foreground
-  cursor: '#14b8a6', // --primary
-  selectionBackground: '#2d3e32', // --accent
-  // Dimidium color scheme (https://github.com/dofuuz/dimidium)
-  black: '#000000',
-  red: '#cf494c',
-  green: '#60b442',
-  yellow: '#db9c11',
-  blue: '#0575d8',
-  magenta: '#af5ed2',
-  cyan: '#1db6bb',
-  white: '#bab7b6',
-  brightBlack: '#817e7e',
-  brightRed: '#ff643b',
-  brightGreen: '#37e57b',
-  brightYellow: '#fccd1a',
-  brightBlue: '#688dfd',
-  brightMagenta: '#ed6fe9',
-  brightCyan: '#32e0fb',
-  brightWhite: '#dee3e4',
-}
-
-export const lightTerminalTheme: ITheme = {
-  background: '#fdfcfa', // --background
-  foreground: '#22201e', // --foreground
-  cursor: '#0d9488', // --primary
-  selectionBackground: '#deebe1', // --accent
-  // Dimidium Light color scheme (https://github.com/dofuuz/dimidium)
-  black: '#000000',
-  red: '#b83d41',
-  green: '#4d9833',
-  yellow: '#ba8300',
-  blue: '#0464ba',
-  magenta: '#9c50bd',
-  cyan: '#019a9f',
-  white: '#9c9998',
-  brightBlack: '#737575',
-  brightRed: '#e0532e',
-  brightGreen: '#1fbd62',
-  brightYellow: '#d0a803',
-  brightBlue: '#4a74ed',
-  brightMagenta: '#d05dce',
-  brightCyan: '#19b8d0',
-  brightWhite: '#b8bdbe',
-}
-
 /** Get the stored terminal theme preference from localStorage. */
-export function getTerminalThemePreference(prefs: BrowserPreferences = loadBrowserPrefs()): TerminalThemePreference {
-  const stored = prefs.terminalTheme
-  if (stored === 'light' || stored === 'dark' || stored === 'match-ui')
-    return stored
-  return 'match-ui'
+export function getTerminalThemePreference(prefs: BrowserPreferences = loadBrowserPrefs()): TerminalThemeValue {
+  return parseTerminalThemeValue(prefs.terminalTheme) ?? DEFAULT_TERMINAL_THEME_VALUE
 }
 
 /** Get the stored terminal renderer preference from localStorage. */
@@ -204,40 +160,109 @@ function isLinuxDesktopTauri(): boolean {
 }
 
 /**
- * Resolve the terminal theme preference to 'dark' or 'light'.
+ * Resolve the terminal's MODE to 'dark' or 'light'.
  *
- * `match-ui` mode depends on the current UI theme preference and (when
- * that preference is `'system'`) the OS-level prefers-color-scheme. Both
- * are passed in explicitly so callers in a reactive context can wire
- * them to signals — reading them inside the function would bypass
- * Solid's dependency tracking and the terminal would stop following the
+ * `match-ui` means the whole preference follows the app, so the answer is the
+ * UI's own mode. `TerminalThemeValue` holds the two halves to one decision, so
+ * this sentinel and the palette's arrive together and never on their own. A
+ * pinned mode answers for itself, and `system` reads the OS -- the same thing
+ * it means in the Theme row.
+ *
+ * `uiMode` and `prefersDark` are passed in explicitly so callers in a reactive
+ * context can wire them to signals — reading them inside the function would
+ * bypass Solid's dependency tracking and the terminal would stop following the
  * UI theme after the first resolution.
  */
 export function resolveTerminalThemeMode(
-  pref: TerminalThemePreference,
-  uiPref: ThemePreference,
+  pref: TerminalThemeMode,
+  uiMode: ThemeMode,
   prefersDark: boolean,
-): 'dark' | 'light' {
-  if (pref === 'light')
-    return 'light'
-  if (pref === 'dark')
-    return 'dark'
-  if (uiPref === 'light')
-    return 'light'
-  if (uiPref === 'dark')
-    return 'dark'
+): ResolvedThemeMode {
+  const mode = pref === MATCH_UI ? uiMode : pref
+  if (mode === 'light' || mode === 'dark')
+    return mode
   return prefersDark ? 'dark' : 'light'
 }
 
-/** Resolve the effective terminal theme based on the preference. */
+/**
+ * The xterm theme for a resolved (palette, mode) pair.
+ *
+ * MEMOIZED, and that is load-bearing rather than an optimisation. `TerminalView`
+ * guards its palette-rebuild effect with `theme === lastTheme`, which worked
+ * when this returned one of two module constants. Building a fresh object per
+ * call would make that guard never fire, and every reactive tick would rewrite
+ * `options.theme` on every xterm instance in every tile -- each write recomputes
+ * the whole colour table.
+ *
+ * The sixteen ANSI colours come from the theme's own `terminal` set; the
+ * background, foreground, cursor and selection come from that same theme's UI
+ * palette, so the terminal chrome always agrees with the palette it claims to
+ * be. A theme this build does not carry falls back to Default, the same way
+ * `themeById` answers everywhere else.
+ */
+const terminalThemeCache = new Map<string, ITheme>()
+
+export function terminalThemeFor(name: string, mode: ResolvedThemeMode, variant?: string): ITheme {
+  const theme = themeById(name)
+  const resolved = resolveVariant(theme, variant, mode)
+  // Keyed on the RESOLVED VARIANT id, which is already globally unique and
+  // already carries the polarity. Two unknown names both fall back to Default
+  // and share one entry rather than growing the cache, exactly as before.
+  const cached = terminalThemeCache.get(resolved.id)
+  if (cached)
+    return cached
+  // Normalized to hex on the way out of CSS. xterm parses a hex literal or a
+  // COMMA-separated `rgb()`; Default states these four as space-separated CSS
+  // Color 4, which xterm cannot read, so it fell through to a canvas probe and
+  // -- wherever no 2D context is available -- `parseColor` swallowed the throw
+  // and painted black on white instead of the theme, with nothing logged.
+  const built: ITheme = {
+    ...resolved.terminal,
+    background: paletteColorToHex(resolved.palette['--background']!),
+    foreground: paletteColorToHex(resolved.palette['--foreground']!),
+    cursor: paletteColorToHex(resolved.palette['--primary']!),
+    selectionBackground: paletteColorToHex(resolved.palette['--accent']!),
+  }
+  terminalThemeCache.set(resolved.id, built)
+  return built
+}
+
+/**
+ * The Default theme's terminal, which every theme's terminal is now a sibling
+ * of. Named exports because the tests read them, and because "the terminal
+ * Default paints" is worth being able to name.
+ *
+ * The sixteen ANSI colours are Dimidium's; see ~/styles/themes/default.ts.
+ *
+ * DECLARED AFTER `terminalThemeFor`, not beside the other constants at the top:
+ * these initialisers call it, and it closes over `terminalThemeCache`. A `const`
+ * is in its temporal dead zone until its own declaration runs, so evaluating
+ * these earlier threw `Cannot access 'terminalThemeCache' before initialization`
+ * at import time -- which took down every module that transitively imports this
+ * one, not just the terminal.
+ */
+export const darkTerminalTheme: ITheme = terminalThemeFor(DEFAULT_THEME_ID, 'dark')
+export const lightTerminalTheme: ITheme = terminalThemeFor(DEFAULT_THEME_ID, 'light')
+
+/**
+ * Resolve the effective terminal theme from both preferences.
+ *
+ * `ui` is the UI preference (palette id + mode), which is what the terminal's
+ * `match-ui` sentinel refers to. Both halves carry the sentinel or neither
+ * does, so `ui` supplies the whole answer or none of it.
+ */
 export function resolveTerminalTheme(
-  pref: TerminalThemePreference,
-  uiPref: ThemePreference,
+  pref: TerminalThemeValue,
+  ui: ThemeValue,
   prefersDark: boolean,
 ): ITheme {
-  return resolveTerminalThemeMode(pref, uiPref, prefersDark) === 'dark'
-    ? darkTerminalTheme
-    : lightTerminalTheme
+  const mode = resolveTerminalThemeMode(pref.mode, ui.mode, prefersDark)
+  // The variant follows whichever preference supplied the palette: a row on the
+  // sentinel wears the app's variant, a detached row wears its own. Reading the
+  // app's variant under a detached palette would name a variant of the wrong
+  // theme, which `resolveVariant` would then discard for the theme's default.
+  const { theme, chosen } = resolveThemeSelection(pref, ui)
+  return terminalThemeFor(theme.id, mode, chosen?.[mode])
 }
 
 /**
@@ -327,8 +352,9 @@ export function createTerminalInstance(opts?: TerminalFontOptions & { theme?: IT
   const prefs = loadBrowserPrefs()
   const theme = opts?.theme ?? resolveTerminalTheme(
     getTerminalThemePreference(prefs),
-    (prefs.theme as ThemePreference) || 'system',
+    parseThemeValue(prefs.theme) ?? DEFAULT_THEME_VALUE,
     typeof window !== 'undefined'
+    && typeof window.matchMedia === 'function'
     && window.matchMedia('(prefers-color-scheme: dark)').matches,
   )
   const fontFamily = opts?.fontFamily || DEFAULT_MONO_FONT_FAMILY

@@ -1,0 +1,6 @@
+{
+  "name": "Nord (theme palette)",
+  "license": "MIT",
+  "url": "https://github.com/nordtheme/nord",
+  "description": "The hex values behind the Nord theme in `frontend/src/styles/themes/nord.ts` were read from this project's `src/nord.css`. Nord publishes no light theme; LeapMux's light variant is a DERIVATION that uses Nord's own Snow Storm ramp for backgrounds and Polar Night for text, with the Frost and Aurora accents unchanged."
+}

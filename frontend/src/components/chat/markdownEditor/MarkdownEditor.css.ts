@@ -2,7 +2,7 @@ import { globalStyle, style } from '@vanilla-extract/css'
 import { codeBlockCode, codeBlockPre } from '~/styles/codeBlock'
 import { popoverBase } from '~/styles/popover.css'
 import { paginationContainer } from '../ControlRequestBanner.css'
-import { shikiDualThemeColors } from '../shikiTokenColors.css'
+import { codeSurface } from '../shikiTokenColors.css'
 
 export const container = style({
   position: 'relative',
@@ -320,7 +320,7 @@ globalStyle(`${editorWrapper} .ProseMirror pre .code-lang-label:hover`, {
 // Shiki syntax highlighting in editor code blocks (via prosemirror-highlight):
 // the inline decorations carry --shiki-light / --shiki-dark CSS variables (color
 // only -- the wrapper owns the bg).
-shikiDualThemeColors(`${editorWrapper} .ProseMirror pre .shiki`)
+codeSurface(`${editorWrapper} .ProseMirror pre`, 'block', [{ suffix: ' .shiki' }])
 
 // Task list checkboxes (ProseMirror-specific)
 globalStyle(`${editorWrapper} .ProseMirror li[data-checked]`, {

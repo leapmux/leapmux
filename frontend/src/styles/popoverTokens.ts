@@ -5,7 +5,7 @@
 // resolved pixels through a page-side probe. Playwright runs no Vite and no vanilla-extract, so a
 // spec that imports a `.css.ts` module fails with "Styles were unable to be assigned to a file"
 // -- hence a plain `.ts` file with no imports, which both sides can read. Same reason
-// `~/styles/palette.ts` exists.
+// the modules under `~/styles/themes/` are plain data.
 //
 // Without it the spec has to restate the declaration, and then a legitimate change to the inset
 // fails the spec while the app is correct and consistent -- pointing at the popovers instead of at

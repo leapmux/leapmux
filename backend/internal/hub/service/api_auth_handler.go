@@ -8,11 +8,13 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"time"
 
 	"golang.org/x/sync/singleflight"
 
 	"github.com/leapmux/leapmux/internal/hub/auth"
+	"github.com/leapmux/leapmux/internal/hub/httpsec"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/verifycode"
 )
@@ -135,10 +137,7 @@ func isLoopbackURL(rawURL string) bool {
 	if err != nil {
 		return false
 	}
-	host := u.Hostname()
-	switch host {
-	case "127.0.0.1", "localhost", "::1":
-		return true
-	}
-	return false
+	// Through httpsec.LoopbackHosts, which the CSP's `form-action` derives from
+	// too: a host this accepts and the policy blocks is a CLI login that hangs.
+	return slices.Contains(httpsec.LoopbackHosts, u.Hostname())
 }

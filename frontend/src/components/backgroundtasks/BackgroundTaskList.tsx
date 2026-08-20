@@ -78,18 +78,45 @@ const LOAD_FAILED_MESSAGE = 'Could not load background tasks from the worker'
 // holds nothing a reader can see falls through to the next one instead of
 // rendering as a blank line.
 //
-// The row key arm is why the clean is here. A row key is an IDENTITY -- the
-// worker refuses an unusable one and never rewrites it (bgtask.ValidateRowKey),
-// because a rewrite merges two provider keys into one registry row. So the key
-// arrives exactly as the provider wrote it, and at least one provider (Cursor)
-// writes toolCallIds with an embedded newline. Cleaning at the READER is what
-// lets the identity stay verbatim. `title` is already cleaned by the worker and
-// `cleanName` is idempotent, so that arm passes through unchanged.
+// The row key arm is why the clean is here. A row key is an IDENTITY, and the
+// worker never REWRITES one: an unusable key is replaced whole by a digest of
+// itself (bgtask.NormalizeRowKey), and every usable key reaches the browser
+// byte for byte, because a rewrite would merge two provider keys into one
+// registry row. Unreadable is not unusable -- at least one provider (Cursor)
+// writes toolCallIds with an embedded newline, and those arrive verbatim. So
+// cleaning at the READER is what lets the identity stay exact. `title` is
+// already cleaned by the worker and `cleanName` is idempotent, so that arm
+// passes through unchanged.
 function rowTitle(item: BackgroundTaskItem): string {
   // `description` is optional, so the arm is guarded rather than passed as
   // `?? ''` -- an absent arm does no regex work at all.
   const arm = (text: string | undefined): string => (text ? cleanName(text) : '')
-  return arm(item.title) || arm(item.description) || arm(item.rowKey)
+  // A fourth arm, because the third can clean to nothing as easily as the
+  // first two: a row key that holds control characters only survives the
+  // worker (ValidateRowKey refuses an unusable key rather than rewriting it,
+  // and a bidirectional override IS usable as an identity) and reaches this
+  // function as a non-empty string that `cleanName` empties. Every earlier arm
+  // then falls through and the row draws a blank first line with a status dot
+  // beside it. "Untitled" is what the workspace surfaces already show for a
+  // title that resolves to nothing.
+  return arm(item.title) || arm(item.description) || arm(item.rowKey) || 'Untitled'
+}
+
+// The group heading, cleaned for the reason `rowTitle` is.
+//
+// `groupKey`, the fallback, is a provider identity the worker drops rather than
+// rewrites, so it arrives exactly as the provider wrote it -- and at least one
+// provider (Cursor) writes identifiers with an embedded newline. Cleaning at
+// the READER keeps the key verbatim for the lookup that groups by it.
+//
+// `groupLabel` is model-written -- Claude sends its workflow name -- and the
+// worker now folds it with the title rule (`Upsert.Clean`), so this arm is
+// idempotent on it rather than load-bearing. It stays because the ARM cannot
+// tell which of the two it received, and because a heading is one line: a
+// bidirectional override in a workflow name would otherwise reorder the text
+// that sits above every row of that group.
+function groupHeading(label: string): string {
+  return cleanName(label)
 }
 
 // Code type only for a title the PROVIDER says is a verbatim command. Not every
@@ -108,13 +135,24 @@ function titleClass(item: BackgroundTaskItem): string {
 // twice. Neutral guard here rather than per provider, so the next one to do it
 // is covered too.
 //
-// Compared trimmed, because a provider that pads or wraps its copy produces a
-// string that is visibly the same echo but not `===` to the title.
-function secondary(item: BackgroundTaskItem): string {
-  const text = isActiveBackgroundTaskStatus(item.status)
+// `activity` and `description` arrive from the provider UNCLEANED -- the worker
+// cleans `title` alone (bgtask.Upsert.CleanTitle) -- so this arm cleans them for
+// the same reason `rowTitle` does, and a bidirectional override in an activity
+// string can no longer reorder the line.
+//
+// Both sides of the echo test are cleaned. Comparing a cleaned title against a
+// raw copy defeats the guard for every string the fold rewrites: `npm test  -x`
+// folds its double space and stops matching the title it IS. Trimming alone
+// cannot see an interior run. `cleanName` is idempotent, so cleaning the title
+// arm again costs nothing and keeps the two sides symmetric.
+//
+// The caller passes the title it already computed, so the row cleans once.
+function secondary(item: BackgroundTaskItem, title: string): string {
+  const raw = isActiveBackgroundTaskStatus(item.status)
     ? item.activity || item.description || ''
     : backgroundTaskEndLabel(item.status)
-  return text.trim() === rowTitle(item).trim() ? '' : text
+  const text = raw ? cleanName(raw) : ''
+  return text.trim() === title.trim() ? '' : text
 }
 
 // Explanatory tooltip for a final status whose bare label is ambiguous
@@ -210,8 +248,8 @@ export const BackgroundTaskList: Component<BackgroundTaskListProps> = (props) =>
   // label rather than in its place -- a clipped label keeps its route back even
   // when the row also has an explanation. A detail also shows while the label
   // fits, because it carries what the label cannot.
-  const renderSecondary = (item: BackgroundTaskItem): JSX.Element => {
-    const text = secondary(item)
+  const renderSecondary = (item: BackgroundTaskItem, title: string): JSX.Element => {
+    const text = secondary(item, title)
     if (!text)
       return null
     return (
@@ -226,18 +264,23 @@ export const BackgroundTaskList: Component<BackgroundTaskListProps> = (props) =>
   // The row's inner content and its data attributes are identical for both
   // element kinds; only the tag and the click handler differ. Building them once
   // keeps the clickable and static rows from drifting apart.
-  const rowBody = (item: BackgroundTaskItem): JSX.Element => (
-    <>
-      {kindIcon(item)}
-      <div class={styles.taskBody}>
-        <div class={styles.titleRow}>
-          <ClippedText text={rowTitle(item)} class={titleClass(item)} />
-          {renderStatusDot(item)}
+  const rowBody = (item: BackgroundTaskItem): JSX.Element => {
+    // Cleaned once per row: the title line renders it and the echo guard in
+    // `secondary` compares against it.
+    const title = rowTitle(item)
+    return (
+      <>
+        {kindIcon(item)}
+        <div class={styles.taskBody}>
+          <div class={styles.titleRow}>
+            <ClippedText text={title} class={titleClass(item)} />
+            {renderStatusDot(item)}
+          </div>
+          {renderSecondary(item, title)}
         </div>
-        {renderSecondary(item)}
-      </div>
-    </>
-  )
+      </>
+    )
+  }
 
   // `extraClass` carries taskRowStatic for the non-clickable row, which drops
   // the pointer cursor taskRow sets for the clickable one.
@@ -305,7 +348,7 @@ export const BackgroundTaskList: Component<BackgroundTaskListProps> = (props) =>
           <For each={grouped().groups}>
             {group => (
               <>
-                <ClippedText text={group.label} class={styles.groupHeader} />
+                <ClippedText text={groupHeading(group.label)} class={styles.groupHeader} />
                 <For each={group.items}>{item => renderRow(item)}</For>
               </>
             )}

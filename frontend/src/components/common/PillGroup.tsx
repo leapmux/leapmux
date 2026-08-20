@@ -23,6 +23,8 @@ function PillOption(props: {
   selected: boolean
   /** Whether this pill is the group's single tab stop. See PillGroup. */
   roving: boolean
+  /** Show the selection, refuse the click. See PillGroup. */
+  disabled: boolean
   onClick: () => void
   ref?: (el: HTMLButtonElement) => void
   children: JSXElement
@@ -32,6 +34,10 @@ function PillOption(props: {
       class={props.selected ? styles.pillOptionActive : styles.pillOption}
       role="radio"
       aria-checked={props.selected}
+      // The NATIVE attribute, which assistive tech maps to `aria-disabled` on
+      // its own. It also removes the pill from the tab order, so the roving
+      // index below cannot hand the group a tab stop it refuses to act on.
+      disabled={props.disabled}
       // Roving: Tab reaches the GROUP, arrows move within it (see PillGroup).
       // Keyed on `roving`, NOT on `selected`: a group whose stored value
       // matches no option has nothing selected, and anchoring the tab stop
@@ -39,7 +45,7 @@ function PillOption(props: {
       // radiogroup and the arrow keys, which the group handles, reached
       // nothing. `aria-checked` stays on `selected`, because the APG
       // radiogroup rule allows an unchecked radio to hold the tab stop.
-      tabIndex={props.roving ? 0 : -1}
+      tabIndex={props.roving && !props.disabled ? 0 : -1}
       ref={el => props.ref?.(el)}
       onClick={() => props.onClick()}
     >
@@ -63,6 +69,16 @@ export function PillGroup<T>(props: {
   options: { value: T, label: JSXElement }[]
   selected: (value: T) => boolean
   onSelect: (value: T) => void
+  /**
+   * Show the current selection and refuse to change it.
+   *
+   * For a group another control governs -- the theme chooser's mode pills while
+   * "Match UI theme" is on. The pills stay VISIBLE rather than being removed,
+   * because what they display is the answer the governing control produced, and
+   * a user who cannot see it cannot tell what turning the switch off would give
+   * them.
+   */
+  disabled?: boolean
 }) {
   // Keyed by option value, not by index: `<For>` reuses a row it MOVES
   // without re-invoking its ref, so an index-keyed array points at the
@@ -86,12 +102,14 @@ export function PillGroup<T>(props: {
 
   const selectAt = (i: number) => {
     const opt = props.options[i]
-    if (!opt)
+    if (!opt || props.disabled)
       return
     props.onSelect(opt.value)
     els.get(opt.value)?.focus()
   }
   const onKeyDown = (e: KeyboardEvent) => {
+    if (props.disabled)
+      return
     const values = props.options.map(o => o.value)
     // The arrow origin is the pill that CARRIES the tab stop, which is
     // where focus sits. Deriving it from the selection instead passed
@@ -110,6 +128,7 @@ export function PillGroup<T>(props: {
           <PillOption
             selected={props.selected(opt.value)}
             roving={i() === rovingIndex()}
+            disabled={props.disabled === true}
             onClick={() => props.onSelect(opt.value)}
             ref={(el) => {
               els.set(opt.value, el)

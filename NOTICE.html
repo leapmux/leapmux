@@ -35,7 +35,7 @@
   --scrollbar-thumb: rgb(from var(--muted-foreground) r g b / 0.35);
   --scrollbar-thumb-hover: rgb(from var(--muted-foreground) r g b / 0.55);
   --scrollbar-track: transparent;
-  --lm-bg-translucent: rgba(255, 255, 255, 0.5);
+  --lm-bg-translucent: rgba(255, 254, 252, 0.5);
   --lm-danger-subtle: rgb(253 235 233);
   --lm-success-subtle: rgb(236 247 220);
   --lm-warning-subtle: rgb(254 245 221);
@@ -806,10 +806,23 @@ body {
 <h3 id="other-third-party-notices">Other Third-Party Notices</h3>
 <ul>
 <li><a href="#lobehubicons-static-svg-1870-mit">@lobehub/icons-static-svg 1.87.0 (MIT)</a></li>
+<li><a href="#shikijsthemes-syntax-themes-mit">@shikijs/themes (syntax themes) (MIT)</a></li>
 <li><a href="#awesome-claude-spinners-mit">awesome-claude-spinners (MIT)</a></li>
+<li><a href="#ayu-theme-palette-mit">ayu (theme palette) (MIT)</a></li>
+<li><a href="#catppuccin-theme-palette-mit">Catppuccin (theme palette) (MIT)</a></li>
+<li><a href="#dimidium-terminal-palette-zlib">Dimidium (terminal palette) (Zlib)</a></li>
+<li><a href="#everforest-theme-palette-mit">Everforest (theme palette) (MIT)</a></li>
+<li><a href="#gruvbox-theme-palette-mit">gruvbox (theme palette) (MIT)</a></li>
 <li><a href="#inter-41-ofl-11">Inter 4.1 (OFL-1.1)</a></li>
+<li><a href="#iterm2-color-schemes-terminal-palettes-mit">iTerm2-Color-Schemes (terminal palettes) (MIT)</a></li>
+<li><a href="#nord-theme-palette-mit">Nord (theme palette) (MIT)</a></li>
+<li><a href="#one-theme-palette-mit">One (theme palette) (MIT)</a></li>
 <li><a href="#pi-mono-brand-mark-mit">pi-mono brand mark (MIT)</a></li>
+<li><a href="#primer-theme-palette-mit">Primer (theme palette) (MIT)</a></li>
+<li><a href="#ros-pine-theme-palette-mit">Rosé Pine (theme palette) (MIT)</a></li>
 <li><a href="#simple-icons-embedded-brand-marks-cc0-10">simple-icons embedded brand marks (CC0-1.0)</a></li>
+<li><a href="#solarized-theme-palette-mit">Solarized (theme palette) (MIT)</a></li>
+<li><a href="#tokyo-night-theme-palette-mit">Tokyo Night (theme palette) (MIT)</a></li>
 </ul>
 <hr>
 <h2 id="go-dependencies">Go Dependencies</h2>
@@ -102273,12 +102286,159 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 </code></pre>
+<h3 id="shikijsthemes-syntax-themes-mit">@shikijs/themes (syntax themes) (MIT)</h3>
+<p>Source: <a href="https://github.com/shikijs/shiki">https://github.com/shikijs/shiki</a></p>
+<p>The TextMate themes eight of the eleven syntax themes highlight with are loaded from this package, which vendors each upstream project's own editor theme (Ayu, Catppuccin, Everforest, GitHub/Primer, gruvbox, Nord, One, Rose Pine, Solarized, Tokyo Night). Those projects are credited individually above for their palettes. The three this package cannot supply are stated at <code>frontend/src/lib/syntaxThemes.ts</code>: Tokyo Night's light half is vendored from Tokyo Night's own repository, and Nord's light half and both Default halves are generated from their own palette and ANSI set over github-light/github-dark's scope structure.</p>
+<pre><code>MIT License
+
+Copyright (c) 2021 Pine Wu
+Copyright (c) 2023 Anthony Fu &#x3C;https://github.com/antfu>
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+</code></pre>
 <h3 id="awesome-claude-spinners-mit">awesome-claude-spinners (MIT)</h3>
 <p>Source: <a href="https://github.com/AlexPl292/awesome-claude-spinners">https://github.com/AlexPl292/awesome-claude-spinners</a></p>
 <p>The spinner verb JSON files under <code>frontend/src/spinners/</code> are copied from the upstream <code>spinners/</code> directory by the <code>generate-spinners</code> task.</p>
 <pre><code>MIT License
 
 Copyright (c) 2026 Alex Plate
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+</code></pre>
+<h3 id="ayu-theme-palette-mit">ayu (theme palette) (MIT)</h3>
+<p>Source: <a href="https://github.com/ayu-theme/ayu-colors">https://github.com/ayu-theme/ayu-colors</a></p>
+<p>The ayu Light and ayu Dark values behind the Ayu theme in <code>frontend/src/styles/themes/ayu.ts</code> were read from this package's published colour modules and mapped onto LeapMux's CSS custom properties.</p>
+<pre><code>MIT License
+
+Copyright (c) Konstantin Pschera &#x3C;me@kons.ch> (kons.ch)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+</code></pre>
+<h3 id="catppuccin-theme-palette-mit">Catppuccin (theme palette) (MIT)</h3>
+<p>Source: <a href="https://github.com/catppuccin/palette">https://github.com/catppuccin/palette</a></p>
+<p>The Latte and Mocha hex values behind the Catppuccin theme in <code>frontend/src/styles/themes/catppuccin.ts</code> were read from this palette's <code>palette.json</code> and mapped onto LeapMux's CSS custom properties.</p>
+<pre><code>MIT License
+
+Copyright (c) 2021 Catppuccin
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+</code></pre>
+<h3 id="dimidium-terminal-palette-zlib">Dimidium (terminal palette) (Zlib)</h3>
+<p>Source: <a href="https://github.com/dofuuz/dimidium">https://github.com/dofuuz/dimidium</a></p>
+<p>The sixteen ANSI colours of the Default theme's terminal, in <code>frontend/src/styles/themes/default.ts</code>, are Dimidium's. Dimidium is terminal-only and ships no UI theme; the terminal's background, foreground, cursor and selection come from LeapMux's own Default palette.</p>
+<pre><code>Copyright (c) 2024 Myungchul Keum
+
+This software is provided 'as-is', without any express or implied
+warranty. In no event will the authors be held liable for any damages
+arising from the use of this software.
+
+Permission is granted to anyone to use this software for any purpose,
+including commercial applications, and to alter it and redistribute it
+freely, subject to the following restrictions:
+
+1. The origin of this software must not be misrepresented; you must not
+   claim that you wrote the original software. If you use this software
+   in a product, an acknowledgment in the product documentation would be
+   appreciated but is not required.
+2. Altered source versions must be plainly marked as such, and must not be
+   misrepresented as being the original software.
+3. This notice may not be removed or altered from any source distribution.
+</code></pre>
+<h3 id="everforest-theme-palette-mit">Everforest (theme palette) (MIT)</h3>
+<p>Source: <a href="https://github.com/sainnhe/everforest">https://github.com/sainnhe/everforest</a></p>
+<p>The medium-contrast light and dark hex values behind the Everforest theme in <code>frontend/src/styles/themes/everforest.ts</code> were read from this project's <code>palette.md</code> and mapped onto LeapMux's CSS custom properties.</p>
+<pre><code>MIT License
+
+Copyright (c) 2019 sainnhe
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+</code></pre>
+<h3 id="gruvbox-theme-palette-mit">gruvbox (theme palette) (MIT)</h3>
+<p>Source: <a href="https://github.com/gruvbox-community/gruvbox">https://github.com/gruvbox-community/gruvbox</a></p>
+<p>The light and dark hex values behind the Gruvbox theme in <code>frontend/src/styles/themes/gruvbox.ts</code> were read from this colorscheme's <code>colors/gruvbox.vim</code> and mapped onto LeapMux's CSS custom properties.</p>
+<pre><code>MIT License
+
+Copyright (c) 2018 Pavel Pertsev
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -102397,6 +102557,84 @@ DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
 OTHER DEALINGS IN THE FONT SOFTWARE.
 </code></pre>
+<h3 id="iterm2-color-schemes-terminal-palettes-mit">iTerm2-Color-Schemes (terminal palettes) (MIT)</h3>
+<p>Source: <a href="https://github.com/mbadolato/iTerm2-Color-Schemes">https://github.com/mbadolato/iTerm2-Color-Schemes</a></p>
+<p>The sixteen ANSI colours of every adapted theme's terminal, in <code>frontend/src/styles/themes/*.ts</code>, were read from this collection's Ghostty-format schemes (<code>Ayu</code>, <code>Catppuccin Latte</code>/<code>Mocha</code>, <code>Everforest Light</code>/<code>Dark Med</code>, <code>GitHub Light</code>/<code>Dark Default</code>, <code>Gruvbox Light</code>/<code>Dark</code>, <code>Nord Light</code>/<code>Nord</code>, <code>Rose Pine</code>/<code>Dawn</code>, <code>iTerm2 Solarized Light</code>/<code>Dark</code>, <code>TokyoNight Day</code>/<code>Night</code>, <code>Atom One Dark</code>). Two departures are recorded at their sites: the One theme's LIGHT set is derived from atom/one-light-syntax instead, because this collection's <code>Atom One Light</code> collapses cyan onto green and black onto brightBlack; and Everforest light's ANSI black is Everforest's own foreground, because the scheme's grey0 left no achromatic slot readable.</p>
+<pre><code>MIT License
+
+Copyright (c) 2011 to Present Mark Badolato
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+This license covers the iTerm-Color-Schemes repository collection of themes. 
+
+The copyright/license for each individual theme belongs to the author of that theme.
+</code></pre>
+<h3 id="nord-theme-palette-mit">Nord (theme palette) (MIT)</h3>
+<p>Source: <a href="https://github.com/nordtheme/nord">https://github.com/nordtheme/nord</a></p>
+<p>The hex values behind the Nord theme in <code>frontend/src/styles/themes/nord.ts</code> were read from this project's <code>src/nord.css</code>. Nord publishes no light theme; LeapMux's light variant is a DERIVATION that uses Nord's own Snow Storm ramp for backgrounds and Polar Night for text, with the Frost and Aurora accents unchanged.</p>
+<pre><code>MIT License (MIT)
+
+Copyright (c) 2016-present Sven Greb &#x3C;development@svengreb.de> (https://www.svengreb.de)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+</code></pre>
+<h3 id="one-theme-palette-mit">One (theme palette) (MIT)</h3>
+<p>Source: <a href="https://github.com/atom/one-dark-syntax">https://github.com/atom/one-dark-syntax</a></p>
+<p>The One Light and One Dark values behind the One theme in <code>frontend/src/styles/themes/one.ts</code> were converted from the HSL definitions in <code>styles/colors.less</code> of atom/one-dark-syntax and atom/one-light-syntax, and mapped onto LeapMux's CSS custom properties.</p>
+<pre><code>Copyright (c) 2016 GitHub Inc.
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+</code></pre>
 <h3 id="pi-mono-brand-mark-mit">pi-mono brand mark (MIT)</h3>
 <p>Source: <a href="https://github.com/badlogic/pi-mono">https://github.com/badlogic/pi-mono</a></p>
 <p>The Pi provider icon (<code>icons/agents/pi.svg</code> and the
@@ -102405,6 +102643,56 @@ is the official pi-mono brand mark provided by the project's author.</p>
 <pre><code>MIT License
 
 Copyright (c) 2025 Mario Zechner
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+</code></pre>
+<h3 id="primer-theme-palette-mit">Primer (theme palette) (MIT)</h3>
+<p>Source: <a href="https://github.com/primer/primitives">https://github.com/primer/primitives</a></p>
+<p>The light and dark values behind the GitHub theme in <code>frontend/src/styles/themes/github.ts</code> were read from Primer's functional theme tokens and mapped onto LeapMux's CSS custom properties.</p>
+<pre><code>The MIT License (MIT)
+
+Copyright (c) 2018 GitHub Inc.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+</code></pre>
+<h3 id="ros-pine-theme-palette-mit">Rosé Pine (theme palette) (MIT)</h3>
+<p>Source: <a href="https://github.com/rose-pine/palette">https://github.com/rose-pine/palette</a></p>
+<p>The Dawn and Rosé Pine hex values behind the Rosé Pine theme in <code>frontend/src/styles/themes/rose-pine.ts</code> were read from this palette's <code>dist/css/rose-pine.css</code> and mapped onto LeapMux's CSS custom properties.</p>
+<pre><code>MIT License
+
+Copyright (c) mvllow
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -102457,6 +102745,55 @@ For these and/or other purposes and motivations, and without any expectation of 
     4. Affirmer understands and acknowledges that Creative Commons is not a party to this document and has no duty or obligation with respect to this CC0 or use of the Work.
 
 For more information, please see &#x3C;https://creativecommons.org/publicdomain/zero/1.0>.
+</code></pre>
+<h3 id="solarized-theme-palette-mit">Solarized (theme palette) (MIT)</h3>
+<p>Source: <a href="https://github.com/altercation/solarized">https://github.com/altercation/solarized</a></p>
+<p>The base and accent hex values behind the Solarized theme in <code>frontend/src/styles/themes/solarized.ts</code> were read from this project's colour table and mapped onto LeapMux's CSS custom properties.</p>
+<pre><code>Copyright (c) 2011 Ethan Schoonover
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+</code></pre>
+<h3 id="tokyo-night-theme-palette-mit">Tokyo Night (theme palette) (MIT)</h3>
+<p>Source: <a href="https://github.com/tokyo-night/tokyo-night-vscode-theme">https://github.com/tokyo-night/tokyo-night-vscode-theme</a></p>
+<p>The Tokyo Night Day and Tokyo Night colours behind the Tokyo Night theme in <code>frontend/src/styles/themes/tokyo-night.ts</code> were read from this extension's theme documents under <code>themes/</code> and mapped onto LeapMux's CSS custom properties.</p>
+<pre><code>The MIT License (MIT)
+
+Copyright (c) 2018-present Enkia
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 </code></pre>
 </body>
 </html>

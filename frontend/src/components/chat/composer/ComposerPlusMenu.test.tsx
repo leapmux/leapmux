@@ -1,6 +1,6 @@
 import type { AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
 import { cleanup, fireEvent, render, screen } from '@solidjs/testing-library'
-import { createSignal } from 'solid-js'
+import { batch, createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { popoverCard } from '~/styles/popover.css'
@@ -61,42 +61,51 @@ function renderMenu(opts: {
 }
 
 describe('composerPlusMenu structure freeze', () => {
-  /**
-   * A fresh tab has no groups, no branch, no agent info and no provider actions
-   * until its first status push. When that push lands while the menu is OPEN, it
-   * inserts every one of those rows ABOVE the two toggles at the bottom -- so a
-   * pointer already aimed at "Send with Enter" lands on whatever slid into its
-   * place, and one of those is a provider action that applies a setting at once.
-   *
-   * The same hazard `OptionGroupPopover` freezes one level down.
-   */
-  it('does not move a row under the pointer when a status push lands mid-open', async () => {
-    const [groups, setGroups] = createSignal<AvailableOptionGroup[]>([])
-    const [branch, setBranch] = createSignal<string | undefined>(undefined)
+  const rowIds = () => screen.getAllByRole('menuitem', { hidden: true })
+    .concat(screen.getAllByRole('menuitemcheckbox', { hidden: true }))
+    .map(el => el.getAttribute('data-testid'))
+
+  function renderLive(sources: {
+    groups: () => AvailableOptionGroup[]
+    branch?: () => string | undefined
+  }) {
     render(() => (
       <ComposerPlusMenu
-        optionGroups={groups()}
+        optionGroups={sources.groups()}
         optionValues={{}}
         onSettingChange={vi.fn()}
         onAttachFile={vi.fn()}
         canAttach
-        branchName={branch()}
+        branchName={sources.branch?.()}
         enterKeyMode={() => 'cmd-enter-sends'}
         onToggleEnterMode={vi.fn()}
         showStatusBar={() => true}
         onToggleStatusBar={vi.fn()}
       />
     ))
+  }
+
+  /**
+   * A push that lands while the menu is OPEN inserts rows ABOVE the two toggles
+   * at the bottom -- so a pointer already aimed at "Send with Enter" lands on
+   * whatever slid into its place, and one of those is a provider action that
+   * applies a setting at once.
+   *
+   * The same hazard `OptionGroupPopover` freezes one level down.
+   */
+  it('does not move a row under the pointer when a push lands mid-open', async () => {
+    const [groups, setGroups] = createSignal<AvailableOptionGroup[]>([group('model', 'Model', 1, ['sonnet'])])
+    const [branch, setBranch] = createSignal<string | undefined>(undefined)
+    renderLive({ groups, branch })
 
     await fireEvent.click(screen.getByTestId('composer-plus-trigger'))
-    const rowIds = () => screen.getAllByRole('menuitem', { hidden: true })
-      .concat(screen.getAllByRole('menuitemcheckbox', { hidden: true }))
-      .map(el => el.getAttribute('data-testid'))
     const before = rowIds()
 
-    // The first status push: a catalog AND a branch, both at once.
-    setGroups([group('model', 'Model', 1, ['sonnet'])])
-    setBranch('feature/x')
+    // A second axis AND a branch, both at once.
+    batch(() => {
+      setGroups([group('model', 'Model', 1, ['sonnet']), group('effort', 'Effort', 2, ['high'])])
+      setBranch('feature/x')
+    })
     await Promise.resolve()
 
     expect(rowIds(), 'the open menu keeps the shape the user aimed at').toEqual(before)
@@ -104,31 +113,62 @@ describe('composerPlusMenu structure freeze', () => {
 
   // ...and the freeze is released on close, so the next open is current.
   it('shows the new rows the next time it opens', async () => {
-    const [groups, setGroups] = createSignal<AvailableOptionGroup[]>([])
-    render(() => (
-      <ComposerPlusMenu
-        optionGroups={groups()}
-        optionValues={{}}
-        onSettingChange={vi.fn()}
-        onAttachFile={vi.fn()}
-        canAttach
-        enterKeyMode={() => 'cmd-enter-sends'}
-        onToggleEnterMode={vi.fn()}
-        showStatusBar={() => true}
-        onToggleStatusBar={vi.fn()}
-      />
-    ))
+    const [groups, setGroups] = createSignal<AvailableOptionGroup[]>([group('model', 'Model', 1, ['sonnet'])])
+    renderLive({ groups })
 
     await fireEvent.click(screen.getByTestId('composer-plus-trigger'))
-    setGroups([group('model', 'Model', 1, ['sonnet'])])
+    setGroups([group('model', 'Model', 1, ['sonnet']), group('effort', 'Effort', 2, ['high'])])
     await Promise.resolve()
-    expect(screen.queryByTestId('composer-group-model'), 'frozen while open').toBeNull()
+    expect(screen.queryByTestId('composer-group-effort'), 'frozen while open').toBeNull()
 
     // Close, then open again: the freeze is released on close.
     await fireEvent.click(screen.getByTestId('composer-plus-trigger'))
     await fireEvent.click(screen.getByTestId('composer-plus-trigger'))
     await Promise.resolve()
+    expect(screen.getByTestId('composer-group-effort')).toBeInTheDocument()
+  })
+
+  /**
+   * The freeze holds ROWS still; an empty middle section has none, and freezing
+   * on one stranded the menu. Every axis, the branch and the agent info arrive
+   * together on the first push, so a menu opened before it held attach and the
+   * two toggles until the user closed it and opened it again -- with nothing on
+   * screen to say so, and no other settings surface once the status bar is off.
+   */
+  it('fills in the first push while it is open', async () => {
+    const [groups, setGroups] = createSignal<AvailableOptionGroup[]>([])
+    const [branch, setBranch] = createSignal<string | undefined>(undefined)
+    renderLive({ groups, branch })
+
+    await fireEvent.click(screen.getByTestId('composer-plus-trigger'))
+    expect(screen.queryByTestId('composer-group-model'), 'no catalog yet').toBeNull()
+
+    // ONE push, the way the worker's status lands: a single metadata patch
+    // carrying the catalog and the branch together.
+    batch(() => {
+      setGroups([group('model', 'Model', 1, ['sonnet'])])
+      setBranch('feature/x')
+    })
+    await Promise.resolve()
+
     expect(screen.getByTestId('composer-group-model')).toBeInTheDocument()
+    expect(screen.getByTestId('composer-plus-branch')).toBeInTheDocument()
+  })
+
+  /** ...and the freeze engages on that same push, without a close in between. */
+  it('holds the rows still from the push that created them', async () => {
+    const [groups, setGroups] = createSignal<AvailableOptionGroup[]>([])
+    renderLive({ groups })
+
+    await fireEvent.click(screen.getByTestId('composer-plus-trigger'))
+    setGroups([group('model', 'Model', 1, ['sonnet'])])
+    await Promise.resolve()
+    const filled = rowIds()
+
+    setGroups([group('model', 'Model', 1, ['sonnet']), group('effort', 'Effort', 2, ['high'])])
+    await Promise.resolve()
+
+    expect(rowIds(), 'the second push waits for the next open').toEqual(filled)
   })
 })
 

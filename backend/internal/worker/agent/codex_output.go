@@ -131,13 +131,13 @@ func (a *CodexAgent) handleTurnStarted(params json.RawMessage) {
 				// again after going final. The reopened row keeps a closer: that
 				// collab call's own item/completed runs the states walk, which
 				// closes it.
-				_ = a.upsertCollabChildRow(bgtask.Upsert{
+				logRegistryRefusal("codex", "upsert", a.upsertCollabChildRow(bgtask.Upsert{
 					RowKey:     notif.ThreadID,
 					Kind:       bgtask.KindSubagent,
 					Title:      a.collabChildTitle(notif.ThreadID),
 					ActiveForm: "working",
 					Status:     bgtask.StatusRunning,
-				})
+				}))
 			}
 			return
 		}

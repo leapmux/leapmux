@@ -14,9 +14,15 @@ import { AuthProvider } from '~/context/AuthContext'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
 import { useCoreShortcuts } from '~/hooks/useCoreShortcuts'
 import { useReloadPreferencesOnIdentityChange } from '~/hooks/useReloadPreferencesOnIdentityChange'
-import { initStorageCleanup, KEY_BROWSER_PREFS, loadBrowserPrefs } from '~/lib/browserStorage'
+import { initStorageCleanup } from '~/lib/browserStorage'
 import { createLogger } from '~/lib/logger'
+import { shikiHighlighter } from '~/lib/renderMarkdown'
+import { resolveSyntaxPair, resolveSyntaxVariant, setSyntaxTheme } from '~/lib/syntaxThemeStore'
 import { disableTextSubstitutions } from '~/lib/textInputBehavior'
+// Importing this module is what starts the live theme: it builds its store in a
+// root of its own, which paints <html> from localStorage before any component
+// renders and owns the prefers-color-scheme and cross-tab subscriptions.
+import { applyTheme, themeStore } from '~/lib/themeStore'
 import { heightFull } from '~/styles/shared.css'
 import '~/lib/oat'
 import '@knadh/oat/oat.min.css'
@@ -26,29 +32,9 @@ import './styles/global.css'
 
 const log = createLogger('app')
 
-export type ThemePreference = 'light' | 'dark' | 'system'
-
-/** Read the saved theme preference from localStorage (instant, no flash). */
-function getStoredTheme(): ThemePreference {
-  const stored = loadBrowserPrefs().theme
-  if (stored === 'light' || stored === 'dark' || stored === 'system')
-    return stored
-  return 'system' // missing → default until account loads
-}
-
-/** Resolve the effective theme based on preference + system setting. */
-function resolveTheme(pref: ThemePreference): 'light' | 'dark' {
-  if (pref === 'light')
-    return 'light'
-  if (pref === 'dark')
-    return 'dark'
-  // system
-  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
-}
-
 /**
  * Syncs the resolved theme and font preferences from PreferencesContext
- * to the app-level theme signal and DOM.
+ * to the DOM.
  *
  * It is also the ONE component that sits inside both AuthProvider and
  * PreferencesProvider, so it hosts the account-settings reload that an
@@ -61,11 +47,64 @@ const PreferencesApplier: ParentComponent = (props) => {
 
   useReloadPreferencesOnIdentityChange()
 
-  // When the resolved theme changes (e.g. account data loaded), push to app signal.
+  // Push the resolved theme into the store that owns the live palette, so a
+  // value arriving from the account tier repaints. ~/lib/themeStore already
+  // painted the device tier straight from localStorage, before this component
+  // (or the session) exists, which is what keeps the first frame flash-free.
   createEffect(() => {
-    const setter = window.__leapmux_setTheme
-    if (setter)
-      setter(preferences.theme())
+    applyTheme(preferences.theme())
+  })
+
+  // The syntax theme, which cannot be applied in CSS: Shiki bakes the colours
+  // into each token, so a change loads the new TextMate themes, drops the caches
+  // that hold tokenized output, and re-renders. `shikiHighlighter` is the
+  // SYNCHRONOUS highlighter the store must register on before it switches --
+  // synchronous call sites cannot await a theme load.
+  //
+  // `data-code-variant` moves WITH the tokens, in this one effect. It used to be
+  // written from an effect of its own, synchronously, so the surface repainted
+  // to the new polarity while every already-rendered block still carried the old
+  // theme's tokens -- dark on dark for the length of a chunk import, which is
+  // the exact contrast failure the `--code-*` publication exists to prevent. The
+  // repaint is not delayed in the case that has to stay fast: a UI polarity flip
+  // leaves the pair unchanged, so `setSyntaxTheme` early-returns and the write
+  // lands in a microtask, before paint. A failed import now leaves surface and
+  // tokens both on the previous theme, which is consistent, and it is logged.
+  createEffect(() => {
+    const pair = resolveSyntaxPair(
+      preferences.syntaxTheme(),
+      preferences.theme(),
+      themeStore.systemMode(),
+    )
+    // Read synchronously, so `resolvedMode()` stays a tracked dependency of this
+    // effect rather than being read inside the `.then`, where it would not be.
+    const variant = resolveSyntaxVariant(
+      preferences.syntaxTheme(),
+      preferences.theme(),
+      themeStore.systemMode(),
+      themeStore.resolvedMode(),
+    )
+    // `setSyntaxTheme` now REJECTS when a theme chunk fails to load, so the
+    // rejection is reported rather than dropped. Without a handler it reaches
+    // the global sink as "Something went wrong", which says nothing about the
+    // code surface that did not repaint.
+    void setSyntaxTheme(pair, shikiHighlighter)
+      .then(() => {
+        if (typeof document !== 'undefined') {
+          document.documentElement.setAttribute('data-code-variant', variant.id)
+          // The POLARITY beside the variant, because CSS cannot select on the
+          // value of a custom property and `--code-color-scheme` is one. It
+          // decides whether a code block's field is a translucent tint (the two
+          // polarities agree, so the field may belong to whatever hosts it) or
+          // an opaque mix (they differ, and the field has to carry the baked
+          // tokens across the flip). Written HERE, in the same statement as the
+          // variant, so the two cannot describe different themes for a frame.
+          document.documentElement.setAttribute('data-code-polarity', variant.polarity)
+        }
+      })
+      .catch((err: unknown) => {
+        console.error('[app] the syntax theme failed to load; the code surface keeps the previous one:', err)
+      })
   })
 
   return (
@@ -111,61 +150,6 @@ export default function App() {
     channelManager.closeAll()
     refreshRuntimeState()
     setDesktopState('launcher')
-  }
-
-  const [themePreference, setThemePreference] = createSignal<ThemePreference>(getStoredTheme())
-  const [resolvedTheme, setResolvedTheme] = createSignal(resolveTheme(getStoredTheme()))
-
-  // Listen for system theme changes when preference is 'system'.
-  createEffect(() => {
-    const pref = themePreference()
-    setResolvedTheme(resolveTheme(pref))
-
-    if (pref === 'system') {
-      const mq = window.matchMedia('(prefers-color-scheme: dark)')
-      const handler = () => setResolvedTheme(resolveTheme('system'))
-      mq.addEventListener('change', handler)
-      onCleanup(() => mq.removeEventListener('change', handler))
-    }
-  })
-
-  // Apply Oat theme via data-theme attribute on <html>.
-  // Also update the PWA theme-color meta tag.
-  createEffect(() => {
-    const theme = resolvedTheme()
-    if (theme === 'dark') {
-      document.documentElement.setAttribute('data-theme', 'dark')
-    }
-    else {
-      document.documentElement.removeAttribute('data-theme')
-    }
-    const meta = document.querySelector('meta[name="theme-color"]')
-    if (meta) {
-      meta.setAttribute('content', theme === 'dark' ? '#1a1917' : '#ffffff')
-    }
-  })
-
-  // Follow theme changes made in other tabs.
-  //
-  // The event is only used to learn WHICH key changed; the value is read back
-  // through `loadBrowserPrefs`. Parsing `e.newValue` directly -- which this did
-  // -- reads the raw `{ v, e }` TTL envelope that `localStorageSet` writes, so
-  // `JSON.parse(e.newValue).theme` was always `undefined`, the comparison
-  // against an equally-undefined old value was never true, and cross-tab theme
-  // sync had silently done nothing: a second tab kept the old theme until it
-  // was reloaded.
-  const handleStorage = (e: StorageEvent) => {
-    if (e.key !== KEY_BROWSER_PREFS)
-      return
-    setThemePreference(getStoredTheme())
-  }
-  window.addEventListener('storage', handleStorage)
-  onCleanup(() => window.removeEventListener('storage', handleStorage))
-
-  // Expose setter for PreferencesContext/PreferencesApplier to update app theme.
-  // Does NOT write to localStorage — callers handle storage themselves.
-  window.__leapmux_setTheme = (pref: ThemePreference) => {
-    setThemePreference(pref)
   }
 
   onMount(() => {

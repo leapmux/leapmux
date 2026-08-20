@@ -710,7 +710,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		// outside the frontend handler (the device-code and PKCE callback
 		// pages), which deserve the same treatment as the app document.
 		Handler: logging.HTTPMiddleware(metrics.HTTPMiddleware(httpsec.Middleware(csp, mux))),
-		// Bounds reading request HEADERS on HTTP/1.1 connections (the
+		// Limits reading request HEADERS on HTTP/1.1 connections (the
 		// slowloris guard). It must NOT govern h2c connections, whose streams
 		// outlive any header deadline — see the h2cdeadline.Wrap call in
 		// Serve for why this needs a workaround on current Go.

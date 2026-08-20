@@ -34,8 +34,9 @@ function fakeDual<T>(protoKey: string, value: T): DualPreference<T> & {
 export function makeFakePrefs() {
   return {
     dual: {
-      theme: fakeDual('theme', 'system'),
-      terminalTheme: fakeDual('terminal_theme', 'match-ui'),
+      theme: fakeDual('theme', { name: 'default', mode: 'system' }),
+      terminalTheme: fakeDual('terminal_theme', { name: 'match-ui', mode: 'match-ui' }),
+      syntaxTheme: fakeDual('syntax_theme', { name: 'match-ui', mode: 'match-ui' }),
       diffView: fakeDual('diff_view', 'unified'),
       turnEndSound: fakeDual('turn_end_sound', 'ding-dong'),
       turnEndSoundVolume: fakeDual('turn_end_sound_volume', 100),

@@ -1,6 +1,6 @@
 import { style } from '@vanilla-extract/css'
 import { codeTypography, codeWrap } from '~/styles/codeBlock'
-import { shikiDualThemeColors } from '../shikiTokenColors.css'
+import { codeSurface } from '../shikiTokenColors.css'
 
 // Code view container (used by Read tool result with syntax highlighting)
 export const codeViewContainer = style({
@@ -37,4 +37,4 @@ export const codeViewContent = style({
 // too, and a `span[style]` rule -- higher specificity than the codeViewLineNumber class --
 // would override its `--faint-foreground` with `var(--shiki-light)`, which resolves to
 // nothing on a non-token span (so the numbers fall back to full foreground color).
-shikiDualThemeColors(`${codeViewContainer} span[data-shiki-token]`, { bg: true })
+codeSurface(codeViewContainer, 'page', [{ suffix: ' span[data-shiki-token]', bg: true }])

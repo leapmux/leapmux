@@ -2,6 +2,7 @@ import type { CachedToken } from '~/lib/tokenCache'
 import { render, waitFor } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { tokenizeAsync } from '~/lib/shikiWorkerClient'
 import { useAsyncCodeTokens } from './useAsyncCodeTokens'
 
 // Drive the worker resolution by hand so we can land a result AFTER changing inputs.
@@ -14,6 +15,13 @@ vi.mock('~/lib/tokenCache', () => ({
   getCachedTokens: () => undefined,
   // Real key format (the hook now single-sources it from tokenCache.makeKey).
   makeKey: (lang: string, code: string) => `${lang}\0${code}`,
+}))
+
+// Drive the syntax-theme generation by hand: a change to it must supersede an
+// applied body exactly as a code or language change does.
+const [generation, setGeneration] = createSignal(0)
+vi.mock('~/lib/syntaxThemeStore', () => ({
+  syntaxThemeGeneration: () => generation(),
 }))
 
 function Harness(props: { eligible: () => boolean }) {
@@ -41,7 +49,30 @@ function HoldHarness(props: { paused: () => boolean, selecting: () => boolean })
 describe('useAsyncCodeTokens', () => {
   afterEach(() => {
     resolveTokenize = undefined
+    setGeneration(0)
     vi.clearAllMocks()
+  })
+
+  // The generation is folded into `currentKey()`, but `on(deps, fn)` tracks the
+  // DEPS accessor alone and runs `fn` untracked -- so reading it only inside the
+  // body made it invisible to this effect. The theme changed, the caches
+  // cleared, the generation bumped, and every applied code surface kept the
+  // abandoned theme's baked colours until an unrelated lang, code, gate or
+  // eligibility change happened to nudge the effect. This effect is the only
+  // thing that redispatches a code surface, so nothing else repainted it.
+  it('redispatches when the syntax theme changes', async () => {
+    const [eligible] = createSignal(true)
+    render(() => <Harness eligible={eligible} />)
+
+    await waitFor(() => expect(resolveTokenize).toBeDefined())
+    const dispatches = vi.mocked(tokenizeAsync).mock.calls.length
+    expect(dispatches).toBeGreaterThan(0)
+
+    resolveTokenize = undefined
+    setGeneration(1)
+
+    await waitFor(() => expect(resolveTokenize).toBeDefined())
+    expect(vi.mocked(tokenizeAsync).mock.calls.length).toBeGreaterThan(dispatches)
   })
 
   it('drops a late worker result once the body became ineligible (currentKey recheck)', async () => {

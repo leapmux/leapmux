@@ -1,0 +1,6 @@
+{
+  "name": "One (theme palette)",
+  "license": "MIT",
+  "url": "https://github.com/atom/one-dark-syntax",
+  "description": "The One Light and One Dark values behind the One theme in `frontend/src/styles/themes/one.ts` were converted from the HSL definitions in `styles/colors.less` of atom/one-dark-syntax and atom/one-light-syntax, and mapped onto LeapMux's CSS custom properties."
+}

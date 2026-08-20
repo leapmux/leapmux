@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SettingFieldKind } from '~/generated/leapmux/v1/settings_pb'
 import { accountWireDescriptors } from '~/test-support/accountSchema'
 import { makeFakePrefs } from '~/test-support/preferencesFake'
+import { withPreferences } from '~/test-support/preferencesProvider'
 import { buildProtoRows } from './protoRegistry'
 import { CLAIMED_PROTO_KEYS, createBrowserRows } from './registry'
 import { SettingsPanel } from './SettingsPanel'
@@ -116,9 +117,9 @@ function registryFor(category: string): SettingRowModel[] {
 // monospace one, so the DECLARATION carries the name and the join keeps it.
 describe('settingsPanel string-list accessible names', () => {
   it('names the two font-stack add affordances apart', () => {
-    render(() => (
+    render(withPreferences(() => (
       <SettingsPanel rows={registryFor('appearance')} restartGroup={false} writeError={null} />
-    ))
+    )))
     expect(screen.getByRole('textbox', { name: 'Add UI font' })).toBeTruthy()
     expect(screen.getByRole('textbox', { name: 'Add monospace font' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Add UI font' })).toBeTruthy()
@@ -130,13 +131,13 @@ describe('settingsPanel string-list accessible names', () => {
 describe('settingsPanel claimed proto keys', () => {
   it('does not render hub-scope duplicates of object-shaped keys the registry already owns', () => {
     const store = fakeStore([protoDescriptor()])
-    render(() => (
+    render(withPreferences(() => (
       <SettingsPanel
         rows={[...registryFor('appearance'), ...rowsFor(store, 'appearance')]}
         restartGroup={false}
         writeError={null}
       />
-    ))
+    )))
     expect(screen.getByText('Custom UI fonts')).toBeTruthy()
     expect(screen.queryByText('Proto UI fonts enabled')).toBeNull()
     expect(screen.queryByText('Proto UI font stack')).toBeNull()
@@ -148,13 +149,13 @@ describe('settingsPanel claimed proto keys', () => {
       key: 'unclaimed_appearance',
       fields: [field({ name: '', label: 'Unclaimed appearance toggle', kind: SettingFieldKind.BOOL })],
     })])
-    render(() => (
+    render(withPreferences(() => (
       <SettingsPanel
         rows={[...registryFor('appearance'), ...rowsFor(store, 'appearance')]}
         restartGroup={false}
         writeError={null}
       />
-    ))
+    )))
     expect(screen.getByText('Unclaimed appearance toggle')).toBeTruthy()
   })
 

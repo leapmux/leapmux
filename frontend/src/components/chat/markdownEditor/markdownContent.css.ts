@@ -6,7 +6,7 @@ import {
 } from '~/lib/rehypeBlockRemoteImages'
 import { codeBlockCode, codeBlockPre, codeWrap } from '~/styles/codeBlock'
 import { iconSize } from '~/styles/tokens'
-import { shikiDualThemeColors } from '../shikiTokenColors.css'
+import { codeSurface } from '../shikiTokenColors.css'
 
 export const markdownContent = style({
   wordBreak: 'break-word',
@@ -22,9 +22,16 @@ globalStyle(`${markdownContent} pre code`, codeBlockCode)
 // horizontal scroll for a stable caret while typing.
 globalStyle(`${markdownContent} pre code`, codeWrap)
 
-// Shiki dual-theme support via CSS variables (color only -- the wrapper owns the bg)
-shikiDualThemeColors(`${markdownContent} pre.shiki`)
-shikiDualThemeColors(`${markdownContent} pre.shiki span`)
+// Shiki dual-theme support via CSS variables (color only -- the wrapper owns the bg).
+//
+// The SURFACE is every `<pre>`, not only the highlighted ones. A markdown body
+// renders plain `<pre><code>` twice on an ordinary path -- the synchronous
+// placeholder while the worker's highlighted result is in flight, and the
+// fallback when Shiki throws (see ~/lib/markdownProcessor) -- and scoping the
+// field to `pre.shiki` made those two frames a differently coloured block that
+// swapped under the reader. The token colours still land on `.shiki` alone,
+// because a plain `<pre>` carries no `--shiki-*` to read.
+codeSurface(`${markdownContent} pre`, 'block', [{ suffix: '.shiki' }, { suffix: '.shiki span' }])
 
 // Task list checkboxes
 globalStyle(`${markdownContent} li > input[type="checkbox"]`, {

@@ -1,4 +1,4 @@
-import type { Accessor, JSX } from 'solid-js'
+import type { Accessor, JSX, JSXElement } from 'solid-js'
 import type { ContextMenuPress } from './contextMenuGesture'
 import type { PopoverAnchor, PopoverPositionOptions } from '~/lib/popoverPosition'
 import { createEffect, createSignal, createUniqueId, on, onCleanup, Show } from 'solid-js'
@@ -14,6 +14,30 @@ import { attachContextMenuGesture, pressAnchorRect } from './contextMenuGesture'
  * item", which are otherwise the same click on one of its own descendants.
  */
 const TRIGGER_ATTR = 'data-dropdown-trigger'
+
+/**
+ * Every focusable command inside a menu popover.
+ *
+ * The three menu item roles this component renders, plus a plain `<button>` for
+ * the plain `DropdownMenuItem`. A disabled item is EXCLUDED: this menu disables
+ * with the native attribute, so a disabled item is not focusable and arrowing
+ * onto it would strand the focus.
+ */
+const MENU_ITEM_SELECTOR = [
+  '[role="menuitem"]:not(:disabled)',
+  '[role="menuitemradio"]:not(:disabled)',
+  '[role="menuitemcheckbox"]:not(:disabled)',
+  'button:not(:disabled):not([role])',
+].join(',')
+
+/**
+ * How long a type-ahead buffer survives without a keystroke.
+ *
+ * The native `<select>` uses roughly this, and the shape matters more than the
+ * exact number: typing `g`,`i`,`t` quickly means "git", and typing `g` twice
+ * slowly means "the next thing starting with g".
+ */
+const TYPE_AHEAD_RESET_MS = 700
 
 export interface DropdownTriggerProps {
   /** Whether the dropdown is currently open. */
@@ -177,6 +201,19 @@ export interface DropdownMenuCheckableItemProps {
   /** Hover text, typically the reason the item is disabled. */
   'title'?: string
   'data-testid'?: string
+  /**
+   * Rendered inside the button, between the checked indicator and the label.
+   *
+   * For an option whose identity is not fully carried by its name -- a theme's
+   * colour swatch. It goes through this component rather than around it because
+   * the button, its role and its `aria-checked` all belong to the item; a caller
+   * that wrapped its own markup in a `role="menuitemradio"` would announce the
+   * option with no on/off state, which is what owning the button prevents.
+   *
+   * Decorative by contract: the label carries the accessible name, so a swatch
+   * passed here sets `aria-hidden`.
+   */
+  'leading'?: JSXElement
   /** Invoked on activation. Not called while `disabled`. */
   'onSelect': () => void
 }
@@ -219,6 +256,12 @@ export function DropdownMenuCheckableItem(props: DropdownMenuCheckableItemProps)
     >
       <span class={menuItemContent}>
         <input type={props.kind} checked={props.checked} disabled aria-hidden="true" style={{ 'pointer-events': 'none' }} />
+        {/* `aria-hidden` HERE, not at each caller. `leading` is decorative by
+            contract, and a contract each caller restates is one a caller can
+            forget -- the same reason this component owns the button rather than
+            letting a caller supply one. `display: contents` keeps the wrapper
+            out of the flex layout, so the swatch sits exactly where it did. */}
+        <span aria-hidden="true" style={{ display: 'contents' }}>{props.leading}</span>
         {/* The raw style, not `ClippedText`, although `label` is a string. A
             caller already wraps this whole button in a `Tooltip` that carries
             the option's DESCRIPTION. A second tooltip inside it would dismiss
@@ -326,6 +369,119 @@ export function DropdownMenu(props: DropdownMenuProps) {
     reposition()
   }
 
+  // --- keyboard navigation -------------------------------------------------
+  //
+  // A native `<select>` supplied all of this for free, and retiring it took the
+  // lot: arrow keys, Home/End, and type-ahead. A keyboard user was left Tabbing
+  // through every option, which on a twelve-shell machine is twelve presses to
+  // reach the last one. It lives HERE rather than in `LoadingMenu` because
+  // every menu popover has items, not just the ones that wrap a list.
+  //
+  // OAT's own `ot-dropdown` roving-focus code cannot serve: it bails when there
+  // is no `[popovertarget]` (this component deliberately renders none), and it
+  // queries `[role="menuitem"]` while these items carry `menuitemradio`.
+
+  const menuItems = (): HTMLElement[] =>
+    popoverEl ? [...popoverEl.querySelectorAll<HTMLElement>(MENU_ITEM_SELECTOR)] : []
+
+  /**
+   * Move focus to `index`, wrapping at both ends.
+   *
+   * Wrapping is what the native control does, and it is what makes End reachable
+   * from the top with one press.
+   */
+  const focusItemAt = (index: number) => {
+    const items = menuItems()
+    if (items.length === 0)
+      return
+    const wrapped = ((index % items.length) + items.length) % items.length
+    items[wrapped]?.focus()
+  }
+
+  /** The item focus sits on now, or -1 when focus is elsewhere in the popover. */
+  const focusedItemIndex = (): number => {
+    const active = document.activeElement as HTMLElement | null
+    return active ? menuItems().indexOf(active) : -1
+  }
+
+  let typeAheadBuffer = ''
+  let typeAheadTimer: ReturnType<typeof setTimeout> | undefined
+
+  /**
+   * Focus the first item whose label starts with the buffered keystrokes.
+   *
+   * Searches from the item AFTER the focused one and wraps, so typing the same
+   * letter repeatedly cycles through the items that share it -- which is what a
+   * `<select>` does, and the reason the buffer is not simply reset per key.
+   */
+  const typeAhead = (key: string) => {
+    clearTimeout(typeAheadTimer)
+    typeAheadBuffer += key.toLowerCase()
+    typeAheadTimer = setTimeout(() => (typeAheadBuffer = ''), TYPE_AHEAD_RESET_MS)
+
+    const items = menuItems()
+    if (items.length === 0)
+      return
+    // A repeat of one letter cycles; a longer buffer re-searches from the
+    // current item so the match the user is extending stays in the running.
+    const repeated = typeAheadBuffer.length > 1
+      && [...typeAheadBuffer].every(c => c === typeAheadBuffer[0])
+    const from = focusedItemIndex()
+    const start = typeAheadBuffer.length === 1 || repeated ? from + 1 : from
+    const needle = repeated ? typeAheadBuffer[0]! : typeAheadBuffer
+    for (let i = 0; i < items.length; i++) {
+      const item = items[(((start + i) % items.length) + items.length) % items.length]!
+      if ((item.textContent ?? '').trim().toLowerCase().startsWith(needle)) {
+        item.focus()
+        return
+      }
+    }
+  }
+
+  const handleMenuKeyDown = (e: KeyboardEvent) => {
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      popoverEl?.hidePopover()
+      return
+    }
+    // A panel of content is not a set of commands, so it takes no roving focus
+    // -- its own controls Tab in the ordinary way. `as="div"` alone does NOT
+    // opt out, because that is also how a FILTERED menu renders.
+    if (props.as === 'card')
+      return
+
+    switch (e.key) {
+      case 'ArrowDown':
+        e.preventDefault()
+        focusItemAt(focusedItemIndex() + 1)
+        return
+      case 'ArrowUp':
+        e.preventDefault()
+        focusItemAt(focusedItemIndex() - 1)
+        return
+      case 'Home':
+        e.preventDefault()
+        focusItemAt(0)
+        return
+      case 'End':
+        e.preventDefault()
+        focusItemAt(menuItems().length - 1)
+        return
+    }
+
+    // Type-ahead. A single printable character with no modifier -- Ctrl/Meta
+    // combinations are shortcuts, and a filter box (which reads its own keys)
+    // is where the character belongs when one has focus.
+    if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey && e.key !== ' ') {
+      const active = document.activeElement as HTMLElement | null
+      const typingIntoAField = active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement
+      if (typingIntoAField)
+        return
+      e.preventDefault()
+      typeAhead(e.key)
+    }
+  }
+
   const handleToggle = (_e: Event) => {
     // Read the post-transition state from the popover element rather than
     // ToggleEvent.newState. Spec-wise both are equivalent (the toggle event
@@ -354,8 +510,31 @@ export function DropdownMenu(props: DropdownMenuProps) {
       }
 
       getAnchorElement()?.setAttribute('aria-expanded', 'true')
+
+      // Put focus INSIDE the popover, so the keys below reach it.
+      //
+      // `popover="auto"` moves focus nowhere, so without this the trigger keeps
+      // it and every arrow key and every typed character goes to the document
+      // -- the type-ahead a `<select>` gave for free would need the user to
+      // Tab in first, which is the thing it exists to avoid.
+      //
+      // The POPOVER, not the first item: focusing an item would announce it as
+      // selected and, in a radio menu, read as a change the user did not make.
+      // A caller that wants a specific element focused (LoadingMenu's filter
+      // box) does it in its own `onToggle`, which runs after this.
+      //
+      // Deferred one frame, because the popover is not yet visible when
+      // `toggle` fires and `focus()` on a hidden element does nothing.
+      requestAnimationFrame(() => {
+        if (popoverEl?.matches(':popover-open') && !popoverEl.contains(document.activeElement))
+          popoverEl.focus({ preventScroll: true })
+      })
     }
     else {
+      // Drop a half-typed type-ahead buffer, so reopening the menu does not
+      // resume a search the user abandoned.
+      clearTimeout(typeAheadTimer)
+      typeAheadBuffer = ''
       window.removeEventListener('scroll', repositionOnExternalScroll, true)
       resizeObserver?.disconnect()
       resizeObserver = undefined
@@ -551,12 +730,13 @@ export function DropdownMenu(props: DropdownMenuProps) {
         class={props.as === 'card' ? (props.class ? `${popoverCard} ${props.class}` : popoverCard) : props.class}
         data-testid={props['data-testid']}
         aria-label={props['aria-label']}
-        onKeyDown={(e: KeyboardEvent) => {
-          if (e.key === 'Escape') {
-            e.preventDefault()
-            popoverEl?.hidePopover()
-          }
-        }}
+        // `tabIndex` so the popover itself can hold focus. That is what makes
+        // arrow keys and type-ahead work WITHOUT the user first Tabbing into
+        // the list: `popover="auto"` moves focus nowhere on its own, so on open
+        // the focus stays on the trigger and every key went to the document.
+        // A menu takes it; a card is a panel whose own controls Tab normally.
+        tabIndex={props.as === 'card' ? undefined : -1}
+        onKeyDown={handleMenuKeyDown}
         onClick={(e: MouseEvent) => {
           e.stopPropagation()
           // A `div` popover is a panel of content, not a set of commands, so no

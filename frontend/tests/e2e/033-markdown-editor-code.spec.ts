@@ -1,5 +1,8 @@
+import { CODE_BLOCK_TINT_PERCENT } from '../../src/styles/codePalette'
+import { colorAlpha } from '../../src/test-support/color'
 import { expect, test } from './fixtures'
 import { enterAndExitPlanMode } from './helpers/plan-mode'
+import { resolvedColor, userBubbles } from './helpers/ui'
 
 const MONOSPACE_FONT_RE = /HackNerdFont|Menlo|Monaco|Courier New|monospace/
 
@@ -41,6 +44,177 @@ test.describe('Markdown Editor', () => {
     )
     // Should contain at least one of the expected monospace fonts
     expect(fontFamily).toMatch(MONOSPACE_FONT_RE)
+  })
+})
+
+test.describe('Code block field', () => {
+  /**
+   * A fenced code block has to READ as a block on every surface the app puts a
+   * message body on -- the panel behind the composer, an assistant band, and a
+   * user message's accent bubble. One opaque colour cannot relate to all three,
+   * so the field is a TRANSLUCENT step that composites onto whichever one hosts
+   * it, and these cases assert the cascade delivers exactly that.
+   *
+   * The division of labour with `src/styles/codePalette.test.ts` is deliberate:
+   * that suite measures the step against all thirty variants on all three hosts,
+   * which no browser test can sweep. What only a browser settles is that the
+   * rules actually resolve -- the field is translucent rather than flat, it is
+   * the same declaration wherever a block lands, and it turns opaque for the one
+   * case a tint cannot answer.
+   */
+  async function blockBackground(block: import('@playwright/test').Locator): Promise<string> {
+    return block.evaluate(el => getComputedStyle(el).backgroundColor)
+  }
+
+  test('paints the composer code block a field that composites on its host, in both polarities', async ({ page, authenticatedWorkspace }) => {
+    void authenticatedWorkspace
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await expect(editor).toBeVisible()
+    await editor.click()
+
+    // The ``` input rule fires on the third backtick.
+    await page.keyboard.type('```')
+    const block = editor.locator('pre')
+    await expect(block).toBeVisible()
+
+    // The default theme mode is `system`, so emulating the OS preference flips
+    // the app without opening a dialog over the editor under test.
+    const fields = new Map<string, string>()
+    for (const colorScheme of ['light', 'dark'] as const) {
+      await page.emulateMedia({ colorScheme })
+      await expect(page.locator('html')).toHaveAttribute('data-theme', colorScheme)
+      await expect
+        .poll(() => blockBackground(block).then(colorAlpha), { message: `${colorScheme}: the field must composite on its host, not cover it` })
+        .toBeCloseTo(CODE_BLOCK_TINT_PERCENT / 100, 4)
+      fields.set(colorScheme, await blockBackground(block))
+
+      // ...and the field is ALL that marks it. A fenced block carries no
+      // outline, deliberately, so re-adding one is a visual decision rather than
+      // something that slips back in with a shared `<pre>` rule.
+      const border = await block.evaluate(el => getComputedStyle(el).borderTopWidth)
+      expect(border, `${colorScheme}: a fenced block is unbordered`).toBe('0px')
+    }
+    // Each polarity steps from its OWN ink, rather than one of them keeping the
+    // other's -- the failure a fallback rule that outranks the variant rules
+    // produces.
+    expect(fields.get('light')).not.toBe(fields.get('dark'))
+  })
+
+  test('paints a sent code block the same field as the one in the composer', async ({ page, authenticatedWorkspace }) => {
+    void authenticatedWorkspace
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await expect(editor).toBeVisible()
+    await editor.click()
+    await page.keyboard.type('```')
+    await page.keyboard.type('const answer = 42')
+
+    const composed = await blockBackground(editor.locator('pre'))
+
+    await page.keyboard.press('Meta+Enter')
+    await expect(editor).toHaveText('')
+
+    // The transcript renders through a different stylesheet than the editor
+    // (`markdownContent` vs the ProseMirror rules), and the two used to scope
+    // the field differently: the transcript claimed only `pre.shiki`, so the
+    // plain placeholder the synchronous render emits first was a differently
+    // coloured block that swapped under the reader.
+    const bubble = userBubbles(page).first()
+    const sent = bubble.locator('pre')
+    await expect(sent).toBeVisible()
+    await expect
+      .poll(() => blockBackground(sent), { message: 'a sent code block wears the same field as the composer\'s' })
+      .toBe(composed)
+
+    // ...and that is not a trivial match: the bubble it lands in paints a
+    // DIFFERENT surface than the panel behind the composer. One declaration on
+    // two hosts is the whole point of a field that composites.
+    const bubbleSurface = await bubble.evaluate(el => getComputedStyle(el).backgroundColor)
+    const panelSurface = await resolvedColor(page, 'var(--background)')
+    expect(bubbleSurface, 'a user bubble is a different surface from the panel').not.toBe(panelSurface)
+
+    // ...including a `<pre>` Shiki never reached. Both plain frames are
+    // transient, so the field is measured on a bare `<pre>` placed in the same
+    // markdown body rather than by racing the render: a selector narrowed back
+    // to `pre.shiki` leaves this one on the app's own tint instead.
+    const unhighlighted = await sent.evaluate((el) => {
+      const bare = document.createElement('pre')
+      el.parentElement!.append(bare)
+      const painted = getComputedStyle(bare).backgroundColor
+      bare.remove()
+      return painted
+    })
+    expect(unhighlighted, 'an un-highlighted <pre> wears the same field').toBe(composed)
+  })
+
+  test('shows the block through, rather than tinting it twice, for a child that fills the background', async ({ page, authenticatedWorkspace }) => {
+    void authenticatedWorkspace
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await expect(editor).toBeVisible()
+    await editor.click()
+    await page.keyboard.type('```')
+    const block = editor.locator('pre')
+    await expect(block).toBeVisible()
+
+    // A code surface repoints the app's own token names at the syntax theme's,
+    // so a rule written inside one is themed by default. `--background` is the
+    // trap: a block's field is a translucent tint, so a child that filled "the
+    // background" with the field again would composite it twice and paint itself
+    // a step darker than the block it sits in. Inside a block it must resolve to
+    // `transparent` -- the block already painted it.
+    const remapped = await block.evaluate((el) => {
+      const probe = document.createElement('span')
+      probe.style.backgroundColor = 'var(--background)'
+      probe.style.borderTopColor = 'var(--border)'
+      el.append(probe)
+      const style = getComputedStyle(probe)
+      const read = { background: style.backgroundColor, border: style.borderTopColor }
+      probe.remove()
+      return read
+    })
+    expect(remapped.background, 'a child filling the background shows the block through').toBe('rgba(0, 0, 0, 0)')
+
+    // ...and a border inside the block steps from that field, not from the code
+    // page: the copy button carries one, and against a field that takes its
+    // host's colour the code page's own border measured 1.0005:1 on one palette.
+    expect(colorAlpha(remapped.border), 'chrome inside a block outlines against the field').toBeLessThan(1)
+  })
+
+  test('gives inline code and a <kbd> the same step as a fenced block', async ({ page, authenticatedWorkspace }) => {
+    void authenticatedWorkspace
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await expect(editor).toBeVisible()
+    await editor.click()
+
+    // Inline code first, then a fenced block below it, so both are measured on
+    // the same host in the same frame.
+    await page.keyboard.type('`inline`')
+    await page.keyboard.press('Enter')
+    await page.keyboard.type('```')
+
+    const inline = editor.locator('code').first()
+    await expect(inline).toBeVisible()
+    const block = editor.locator('pre')
+    await expect(block).toBeVisible()
+
+    // One rule paints every code element, at the strength a block's field is
+    // built from, so the two cannot drift when either is tuned.
+    expect(colorAlpha(await inline.evaluate(el => getComputedStyle(el).backgroundColor)))
+      .toBeCloseTo(colorAlpha(await blockBackground(block)), 3)
+
+    // The rule names three more tags that mean the same thing in HTML. None
+    // renders today -- the markdown chain drops raw HTML and no component writes
+    // one -- so a probe is what proves they are covered rather than left square
+    // and unpainted for whoever adds the first one.
+    const kbd = await page.evaluate(() => {
+      const el = document.createElement('kbd')
+      document.body.append(el)
+      const style = getComputedStyle(el)
+      const read = { background: style.backgroundColor, radius: style.borderTopLeftRadius }
+      el.remove()
+      return read
+    })
+    expect(colorAlpha(kbd.background), 'a <kbd> wears the same step').toBeCloseTo(CODE_BLOCK_TINT_PERCENT / 100, 4)
+    expect(kbd.radius, 'a <kbd> is rounded rather than square').not.toBe('0px')
   })
 })
 

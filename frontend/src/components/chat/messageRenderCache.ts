@@ -10,6 +10,18 @@ export interface MessageRenderCache {
 export interface MessageRenderCacheStore {
   forRow: (rowVersionKey: string) => MessageRenderCache
   prune: (liveRowVersionKeys: Iterable<string>) => void
+  /**
+   * Drop every cached value, keeping no row.
+   *
+   * For a change that invalidates output across EVERY row at once -- a syntax
+   * theme change, whose baked token colours every cached body carries. `prune`
+   * cannot do it: it drops whole rows that left the list, and these rows are
+   * still live. The callers fold the theme generation into their KEY, so
+   * without this the old generation's entries were merely orphaned inside each
+   * live row's map, which nothing bounds by key count -- trying a dozen themes
+   * kept a dozen copies of every visible row's HTML for the life of the tab.
+   */
+  clear: () => void
   size: () => number
 }
 
@@ -48,6 +60,9 @@ export function createMessageRenderCacheStore(maxRows = DEFAULT_MAX_RENDER_CACHE
           return value
         },
       }
+    },
+    clear() {
+      rowCaches.clear()
     },
     prune(liveRowVersionKeys) {
       const live = new Set(liveRowVersionKeys)

@@ -1,6 +1,5 @@
 import type { Component } from 'solid-js'
-import { For } from 'solid-js'
-import { LoadingSelect } from '~/components/common/LoadingSelect'
+import { LoadingMenu } from '~/components/common/LoadingMenu'
 import { tildify } from '~/lib/paths'
 
 export interface WorktreeOption {
@@ -18,22 +17,17 @@ interface WorktreeSelectProps {
 }
 
 export const WorktreeSelect: Component<WorktreeSelectProps> = props => (
-  <LoadingSelect
+  <LoadingMenu
+    ariaLabel="Worktree"
     value={props.value}
     onChange={props.onChange}
-    loading={props.loading}
-    isEmpty={props.worktrees.length === 0}
-    loadingLabel="Loading worktrees..."
+    loadingLabel={props.loading ? 'Loading worktrees...' : undefined}
     emptyLabel="No worktrees found"
-  >
-    <option value="">Select a worktree...</option>
-    <For each={props.worktrees}>
-      {wt => (
-        <option value={wt.path}>
-          {wt.branch ? `${wt.branch} — ` : ''}
-          {tildify(wt.path, props.homeDir)}
-        </option>
-      )}
-    </For>
-  </LoadingSelect>
+    placeholder="Select a worktree..."
+    options={props.worktrees.map(wt => ({
+      value: wt.path,
+      label: `${wt.branch ? `${wt.branch} — ` : ''}${tildify(wt.path, props.homeDir)}`,
+    }))}
+    data-testid="worktree-select-menu"
+  />
 )

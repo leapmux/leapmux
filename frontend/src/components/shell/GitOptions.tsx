@@ -284,12 +284,13 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
 
   // Lazy fetcher for switch-branch / create-branch / create-worktree
   // modes. The guarded helper batches the loading flag with the list
-  // update on success, so the <BranchSelect>'s children swap (from
-  // "Loading…" to branch <option>s) AND the loading prop flip happen in
-  // one render — without that atomicity the browser resets
-  // selectedIndex to 0 and SolidJS doesn't re-apply the value because
-  // the signal didn't change, only the children did. Skipped entirely
-  // when the parent supplies `preloadedBranches`.
+  // update on success, so <BranchSelect> never renders a list and a
+  // loading state that disagree. The `<select>` this replaced needed that
+  // atomicity to keep the browser from resetting `selectedIndex`; a menu
+  // derives its checked item from `value` on every render, so what the
+  // batching buys now is that the menu's own loading gate and its options
+  // flip together. Skipped entirely when the parent supplies
+  // `preloadedBranches`.
   const branchFetcher = createGuardedFetch<{ wid: string, path: string }, Awaited<ReturnType<typeof workerRpc.listGitBranches>>>({
     fetch: ({ wid, path }) => workerRpc.listGitBranches(wid, { workerId: wid, path }),
     applySuccess: (resp) => {
@@ -446,7 +447,6 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
   const renderBranchSelect = (selectProps: {
     value: string
     onChange: (v: string) => void
-    showPrompt?: boolean
     showCurrent?: boolean
   }) => (
     <BranchSelect
@@ -456,7 +456,6 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
       remote={branchIndex().remote}
       loading={branchesLoading()}
       currentBranch={props.gitInfo.info().currentBranch}
-      showPrompt={selectProps.showPrompt}
       showCurrent={selectProps.showCurrent}
     />
   )
@@ -533,7 +532,6 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
             {renderBranchSelect({
               value: selectedCheckoutBranch(),
               onChange: setSelectedCheckoutBranch,
-              showPrompt: true,
               // Label the current branch with `(current)` so the user
               // can see which one is the no-op pick — paired with the
               // checkoutBranchNoopNotice + disabled Apply below.

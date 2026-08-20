@@ -19,6 +19,7 @@ import { Spinner } from '~/components/common/Spinner'
 import { usePreferences } from '~/context/PreferencesContext'
 import { AgentStatus, MessageSource } from '~/generated/leapmux/v1/agent_pb'
 import { formatChatQuote } from '~/lib/quoteUtils'
+import { onSyntaxThemeChange } from '~/lib/syntaxThemeStore'
 import { motion } from '~/styles/tokens'
 import { AgentStartupBanner } from './AgentStartupBanner'
 import { createClassifiedEntryCache, heightKeyForEntry } from './chatEntryCache'
@@ -333,6 +334,13 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     protectedIds: () => mountedRowIds,
   })
   const renderCacheStore = createMessageRenderCacheStore()
+  // A syntax theme change invalidates every cached body at once: they all carry
+  // Shiki's baked token colours. The two module-level caches already register
+  // here; this one held its entries per ROW, and the rows stay live, so nothing
+  // dropped the previous generation's copies. `onSyntaxThemeChange` keeps no
+  // unsubscribe, but this store is created once per mounted ChatView and the
+  // clear is idempotent on a store nothing reads any more.
+  onSyntaxThemeChange(() => renderCacheStore.clear())
   const [textSelectionActive, setTextSelectionActive] = createSignal(false)
 
   // The AGENT-stable half of a MessageBubbleHost: the todo + span-parse lookups,

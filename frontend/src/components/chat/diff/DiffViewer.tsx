@@ -37,6 +37,25 @@ import { buildSplitLines, buildUnifiedLines, renderTokenizedLine } from './diffT
 /** Number of context lines to reveal per expand click. */
 const GAP_EXPAND_STEP = 10
 
+/**
+ * The class list for one gap separator row, for both kinds of separator.
+ *
+ * The two differ only in what makes them first or last -- an expandable gap is
+ * flush with the container edge only while nothing above or below it is
+ * revealed -- so the caller answers that and the row's own composition lives
+ * here once.
+ */
+function gapSeparatorClass(opts: { splitView?: boolean, isFirst: boolean, isLast: boolean }): string {
+  let cls = diffGapSeparator
+  if (opts.splitView)
+    cls += ` ${diffGapSeparatorSplit}`
+  if (opts.isFirst)
+    cls += ` ${diffGapSeparatorFirst}`
+  if (opts.isLast)
+    cls += ` ${diffGapSeparatorLast}`
+  return cls
+}
+
 /** Render a single context line from a gap with optional syntax highlighting. */
 function GapContextLine(props: { lineNum: number, text: string, tokens?: CachedToken[] | null, splitView?: boolean }): JSX.Element {
   const content = () => renderTokenizedLine(props.text, props.tokens ?? null)
@@ -140,16 +159,11 @@ function DiffGapSeparator(props: {
       return tokens[props.revealedTop + (gapIdx - bottomStart)] ?? null
     return null
   }
-  const separatorClass = () => {
-    let cls = diffGapSeparator
-    if (props.splitView)
-      cls += ` ${diffGapSeparatorSplit}`
-    if (props.isFirst && props.revealedTop === 0)
-      cls += ` ${diffGapSeparatorFirst}`
-    if (props.isLast && props.revealedBottom === 0)
-      cls += ` ${diffGapSeparatorLast}`
-    return cls
-  }
+  const separatorClass = () => gapSeparatorClass({
+    splitView: props.splitView,
+    isFirst: props.isFirst === true && props.revealedTop === 0,
+    isLast: props.isLast === true && props.revealedBottom === 0,
+  })
   const hiddenLabel = () => `${pluralize(hiddenCount(), 'line')} hidden`
 
   return (
@@ -209,16 +223,11 @@ function DiffGapSummarySeparator(props: {
   isFirst?: boolean
   isLast?: boolean
 }): JSX.Element {
-  const separatorClass = () => {
-    let cls = diffGapSeparator
-    if (props.splitView)
-      cls += ` ${diffGapSeparatorSplit}`
-    if (props.isFirst)
-      cls += ` ${diffGapSeparatorFirst}`
-    if (props.isLast)
-      cls += ` ${diffGapSeparatorLast}`
-    return cls
-  }
+  const separatorClass = () => gapSeparatorClass({
+    splitView: props.splitView,
+    isFirst: props.isFirst === true,
+    isLast: props.isLast === true,
+  })
   const hiddenLabel = () => `${pluralize(props.gap.lineCount, 'line')} hidden`
 
   return (

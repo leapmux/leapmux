@@ -1,0 +1,6 @@
+{
+  "name": "Dimidium (terminal palette)",
+  "license": "Zlib",
+  "url": "https://github.com/dofuuz/dimidium",
+  "description": "The sixteen ANSI colours of the Default theme's terminal, in `frontend/src/styles/themes/default.ts`, are Dimidium's. Dimidium is terminal-only and ships no UI theme; the terminal's background, foreground, cursor and selection come from LeapMux's own Default palette."
+}

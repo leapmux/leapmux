@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
 import { getRecordedToasts } from './helpers/toast'
-import { branchGroupRow, clickBranchMenuItem, loginViaToken, openBranchMenu, openWorkspace } from './helpers/ui'
+import { branchGroupRow, clickBranchMenuItem, loginViaToken, openBranchMenu, openWorkspace, pickMenuOption } from './helpers/ui'
 import {
   branchExists,
   createGitRepo,
@@ -250,7 +250,7 @@ test.describe('Branch context menu', () => {
 
     const dialog = page.getByRole('dialog')
     await expect(dialog.getByText('Switch this working directory to:')).toBeVisible()
-    await dialog.getByRole('combobox').first().selectOption('main')
+    await pickMenuOption(dialog, 'branch-select-menu', 'main')
 
     await confirmDeleteBranch(page)
     await expect(page.getByRole('heading', { name: 'Delete branch' })).not.toBeVisible()

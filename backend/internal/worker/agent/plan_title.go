@@ -5,7 +5,6 @@ import (
 	"regexp"
 	"strings"
 	"unicode"
-	"unicode/utf8"
 
 	"github.com/leapmux/leapmux/util/validate"
 	"github.com/microcosm-cc/bluemonday"
@@ -32,7 +31,7 @@ var (
 // planLineScanLimit caps the first line of a plan before extractPlanTitle
 // reads it.
 //
-// A plan file is written by a model, so no length upstream bounds one line of
+// A plan file is written by a model, so no length upstream limits one line of
 // it, and everything downstream costs time proportional to that length. The
 // cap has to be well ABOVE validate.NameByteLimit and not equal to it,
 // because the passes below REMOVE from the line -- the markdown syntax, the
@@ -41,22 +40,6 @@ var (
 // carries, and it is small enough that the seven regexes and the HTML
 // sanitizer stay cheap.
 const planLineScanLimit = 4096
-
-// truncateToBytes cuts s to at most limit UTF-8 bytes, moving the cut back to
-// the start of a rune so the result never holds a partial rune. It repeats
-// validate's unexported helper of the same name, because exporting that one
-// would offer every caller a byte cut that ignores the character rule -- the
-// exact order this file exists to get right.
-func truncateToBytes(s string, limit int) string {
-	if len(s) <= limit {
-		return s
-	}
-	cut := limit
-	for cut > 0 && !utf8.RuneStart(s[cut]) {
-		cut--
-	}
-	return s[:cut]
-}
 
 // extractPlanTitle extracts a human-readable title from markdown plan content.
 // It returns the first meaningful line, stripped of markdown formatting. An
@@ -82,9 +65,16 @@ func extractPlanTitle(content string) string {
 		}
 	}
 
-	// Find first non-empty line.
+	// Find the first non-empty line.
+	//
+	// `strings.Lines` and NOT `strings.Split`. Split materializes one string
+	// header per line of the WHOLE document before this loop reads its first
+	// one, and the cap below applies to the line rather than to the file: a
+	// model writes the plan, so nothing upstream limits its size either. The
+	// iterator stops at the line it finds, so the cost follows the offset of
+	// the first non-empty line and not the length of the document.
 	var line string
-	for _, l := range strings.Split(content, "\n") {
+	for l := range strings.Lines(content) {
 		l = strings.TrimSpace(l)
 		if l != "" {
 			line = l
@@ -95,7 +85,7 @@ func extractPlanTitle(content string) string {
 		return ""
 	}
 
-	// Bound the line before the markdown passes run on it. Everything below --
+	// Limit the line before the markdown passes run on it. Everything below --
 	// seven regexes, the HTML sanitizer, the entity decode, and the character
 	// rule -- costs time proportional to this length, and the plan file is
 	// written by a model, so nothing upstream caps one line of it.
@@ -105,7 +95,7 @@ func extractPlanTitle(content string) string {
 	// removes bytes AFTER the clean, so a clean that stopped at the title
 	// limit would hand the strip a result that is already at the limit, and
 	// the title would come back as many bytes shorter as the prefix was long.
-	line = truncateToBytes(line, planLineScanLimit)
+	line = validate.TruncateToBytes(line, planLineScanLimit)
 
 	// Strip heading markers.
 	line = reHeading.ReplaceAllString(line, "")
@@ -188,6 +178,15 @@ func SanitizePlanFilenameTitle(title string) string {
 	stem := strings.Trim(b.String(), "-")
 	if stem == "" {
 		return "untitled-plan"
+	}
+	// A plan titled "CON", "Aux" or "COM1" reduces to a DOS device name, and
+	// `writePlanFile` joins this stem with ".md" and opens it directly. Windows
+	// resolves a device name in ANY directory and with ANY extension, so the
+	// plan would go to the console device instead of a file -- and the retry
+	// suffix would not help, because `con.2.md` still reduces to CON. The suffix
+	// cannot itself be reserved, since every device name is one word.
+	if validate.IsReservedDeviceName(stem) {
+		return stem + "-plan"
 	}
 	return stem
 }

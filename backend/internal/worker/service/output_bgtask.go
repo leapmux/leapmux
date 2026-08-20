@@ -288,6 +288,10 @@ func (h *OutputHandler) withBgTaskRow(
 // closing it (used for running-progress updates). A no-op when the row is
 // absent or the patch is a no-op.
 func (h *OutputHandler) applyBackgroundTaskStatus(rootAgentID, rowKey string, status bgtask.Status, activeForm string) (registryChange, error) {
+	// The SECOND entry point for a provider-chosen label, and it never builds an
+	// Upsert -- so `Upsert.Clean` cannot reach it and the cap has to be applied
+	// here as well. Same rule, same limit.
+	activeForm = validate.StripUnreadable(activeForm, bgtask.LabelByteLimit)
 	return h.withBgTaskRow(rootAgentID, rowKey, func(ctx context.Context, cache *bgTaskCache, existing bgtask.Item, displayed bool, admit func() (int, error)) (registryChange, error) {
 		// A final status is monotonic and absorbing: a late or replayed
 		// non-final status update (a duplicate task_progress, a replayed
@@ -609,12 +613,10 @@ func (h *OutputHandler) WriteSubagentEndDividers(childAgentIDs []string, status 
 // and the registry row key, so the two roles collapse to one string.
 func (s *agentOutputSink) EnsureChildAgent(spawnSpanID, providerChildKey, title string) (string, error) {
 	ctx := s.h.bgTaskCtx()
-	// Refused, not rewritten -- see bgtask.ValidateRowKey. The key identifies
-	// the registry row this child links to, so a rewrite here would link the
-	// child to a DIFFERENT provider's row.
-	if err := bgtask.ValidateRowKey(providerChildKey); err != nil {
-		return "", fmt.Errorf("child registry key: %w", err)
-	}
+	// Derived, never cut -- see bgtask.NormalizeRowKey. The key identifies the
+	// registry row this child links to, so a rule that maps two provider keys
+	// onto one string would link the child to a DIFFERENT provider's row.
+	providerChildKey = s.normalizeRowKey(providerChildKey, "child registry key")
 	// The MODEL supplies this title -- Claude's Task description, Codex's
 	// collab prompt line, an ACP spawn label, Pi's subagent title -- so it
 	// arrives with no length limit and no character rule. Clean it HERE
@@ -1124,14 +1126,34 @@ func (s *agentOutputSink) CleanupChildAgent(childAgentID string) {
 // releases cache.Mu), so both the broadcast and the divider write run outside
 // the lock -- a slow gRPC consumer or a DB write cannot serialize every other
 // registry op for this root.
-func (s *agentOutputSink) applyAndBroadcast(rowKey string, apply func(rootAgentID, key string) (registryChange, error)) error {
-	// The key is checked and passed through unchanged, never rewritten: a
-	// rewrite is not injective, and two provider keys that map onto one string
-	// become one registry row (see bgtask.ValidateRowKey). Refusing here fails
-	// the one mutation and leaves every other row addressable.
-	if err := bgtask.ValidateRowKey(rowKey); err != nil {
-		return err
+// normalizeRowKey returns the row key to address the registry by, and says so
+// once when the provider's own key could not be used.
+//
+// The log line is the only trace a derived key leaves. The key it stores is a
+// stable digest, so the sidebar row appears and stays addressable, but its
+// LABEL falls back to that digest when the provider sent no title -- and
+// nothing else on the path would tell an operator why a row is named after a
+// hash. `what` names the call site, because a rename normalizes two keys and
+// the reason can differ between them.
+func (s *agentOutputSink) normalizeRowKey(rowKey, what string) string {
+	normalized := bgtask.NormalizeRowKey(rowKey)
+	if normalized != rowKey {
+		slog.Warn("derived a registry row key from an unusable provider key",
+			"what", what,
+			"agent_id", s.rootAgentID,
+			"provider", s.agentProvider.String(),
+			"row_key", normalized,
+			"reason", bgtask.ValidateRowKey(rowKey))
 	}
+	return normalized
+}
+
+func (s *agentOutputSink) applyAndBroadcast(rowKey string, apply func(rootAgentID, key string) (registryChange, error)) error {
+	// THE CHOKEPOINT for every registry mutation, which is why the key is
+	// normalized here rather than at each caller: a key that normalizes on one
+	// path and not another opens the row under one string and closes it under
+	// another, leaving the first Running for the life of the process.
+	rowKey = s.normalizeRowKey(rowKey, "registry row key")
 	change, err := apply(s.rootAgentID, rowKey)
 	if err != nil {
 		return err
@@ -1159,9 +1181,12 @@ func (s *agentOutputSink) applyAndBroadcast(rowKey string, apply func(rootAgentI
 }
 
 func (s *agentOutputSink) UpsertBackgroundTask(task bgtask.Upsert) error {
-	// No key normalization here: applyAndBroadcast below checks the key, and
-	// the value it checks is the one the closure carries, so the two cannot
-	// address different rows.
+	// The closure takes its key from applyAndBroadcast rather than from the
+	// Upsert it closes over. applyAndBroadcast NORMALIZES, so the two are not
+	// always the same string, and `task` carries the row key a second time --
+	// the upsert would have written the raw provider key into the row while
+	// every status change, close and rename addressed the normalized one, and
+	// the task would sit Running for the life of the process.
 	//
 	// The parent agent id is the agent that owns THIS sink. Providers that
 	// spawn subagents don't need to thread it through every call site -- the
@@ -1170,7 +1195,8 @@ func (s *agentOutputSink) UpsertBackgroundTask(task bgtask.Upsert) error {
 	if task.ParentAgentID == "" {
 		task.ParentAgentID = s.agentID
 	}
-	return s.applyAndBroadcast(task.RowKey, func(root, _ string) (registryChange, error) {
+	return s.applyAndBroadcast(task.RowKey, func(root, key string) (registryChange, error) {
+		task.RowKey = key
 		return s.h.applyBackgroundTaskUpsert(root, task)
 	})
 }
@@ -1276,24 +1302,21 @@ func (s *agentOutputSink) ReviveBackgroundTask(rowKey string) error {
 // Order matters: seed the cache, then mutate it. On a cold cache (after a
 // worker restart, or the first registry touch for a root), renameRowKeyLocked
 // sees an empty Rows slice and returns false, so the DB rename must NOT be
-// gated on the in-memory rename succeeding -- seed first, then re-key.
-// Both keys are checked and neither is rewritten, the same way every other
-// registry primitive treats a key. The spawn row was opened under the
-// toolCallId the provider sent, so the raw toolCallId it passes as RenameFrom
-// matches by construction -- a rewrite on one path and not the other is
-// exactly how a rename stops finding its own row.
+// conditional on the in-memory rename succeeding -- seed first, then re-key.
+// Both keys go through the SAME normalization every other registry primitive
+// uses, and that is what makes the rename find its own row. The spawn row was
+// opened under the key `applyAndBroadcast` stored, so an unusable toolCallId
+// that opened the row under a derived key must derive the same one here --
+// normalizing on one path and not the other is exactly how a rename stops
+// finding its own row.
 // The DB write runs BEFORE the cache mutation commits: on a DB error the cache
 // stays keyed at oldKey (matching the DB), not the half-renamed newKey.
 func (s *agentOutputSink) RenameBackgroundTask(oldKey, newKey string) error {
 	if oldKey == "" || newKey == "" {
 		return nil
 	}
-	if err := bgtask.ValidateRowKey(oldKey); err != nil {
-		return fmt.Errorf("rename from: %w", err)
-	}
-	if err := bgtask.ValidateRowKey(newKey); err != nil {
-		return fmt.Errorf("rename to: %w", err)
-	}
+	oldKey = s.normalizeRowKey(oldKey, "rename from")
+	newKey = s.normalizeRowKey(newKey, "rename to")
 	ctx := s.h.bgTaskCtx()
 	var pendingBroadcast []bgtask.Item
 	cache := s.h.bgTaskCache(s.rootAgentID)
@@ -1378,14 +1401,14 @@ func (h *OutputHandler) applyBackgroundTaskUpsertLocked(cache *bgTaskCache, root
 	// EnsureChildAgent's link upsert. The MODEL supplies these titles, so they
 	// arrive with no length limit and no character rule. This column carries
 	// the SAME name rule as every other title column in the worker -- one rule
-	// for every title, and no per-column exception. bgtask.Upsert.CleanTitle
-	// holds the rule and what it costs a row whose title IS a shell command.
+	// for every title, and no per-column exception. bgtask.Upsert.Clean holds
+	// the rule and what it costs a row whose title IS a shell command.
 	//
 	// The clean runs BEFORE the no-op guard below, and it has to. A provider
 	// that replays a raw title would otherwise differ from the stored cleaned
 	// one on every replay, and each replay would rewrite the row and broadcast
 	// again for the life of the agent.
-	task = task.CleanTitle()
+	task = task.Clean()
 	ctx := h.bgTaskCtx()
 	if err := cache.ensureSeededLocked(ctx, rootAgentID); err != nil {
 		return registryChange{}, err

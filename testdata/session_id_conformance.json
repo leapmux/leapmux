@@ -77,53 +77,436 @@
     "code point each case means and it stays readable in a diff."
   ],
   "cases": [
-    {"input": {"text": ""}, "valid": true, "refusal": "", "why": "the empty value is accepted and means 'no resume'"},
-    {"input": {"text": "01JAV8Q3ZP9K2M4N6R8T0W2Y4B"}, "valid": true, "refusal": "", "why": "an ordinary ULID token passes unchanged"},
-    {"input": {"text": "3f9a1c2e-77b4-4d81-9e0f-5a6b7c8d9e0f"}, "valid": true, "refusal": "", "why": "a UUID with hyphens passes: the rule refuses no visible punctuation it does not name"},
-    {"input": {"text": "sess_abc.def~123/xyz+QQ=="}, "valid": true, "refusal": "", "why": "the punctuation a base64url or an opaque provider id uses is not in the refused set"},
-    {"input": {"text": "a b"}, "valid": true, "refusal": "", "why": "an INTERIOR space is accepted: only the edges are refused, and the rule never rewrites a run"},
-    {"input": {"text": "a  b"}, "valid": true, "refusal": "", "why": "a run of interior spaces is accepted UNCHANGED. The name rule folds it; a token must not, because the fold would resume a different session"},
-    {"input": {"text": "a\"b"}, "valid": false, "refusal": "forbidden_character", "why": "a double quote is refused. The name rule now KEEPS it, and this case is what stops that relaxation reaching the token rule"},
-    {"input": {"text": "a\\b"}, "valid": false, "refusal": "forbidden_character", "why": "a backslash is refused, for the reason the double quote is"},
-    {"input": {"text": "a$b"}, "valid": false, "refusal": "forbidden_character", "why": "a dollar is refused: the token becomes an argv element, and the narrow class is cheaper than trusting every quoting layer"},
-    {"input": {"text": "a%b"}, "valid": false, "refusal": "forbidden_character", "why": "a percent is refused, for the reason the dollar is"},
-    {"input": {"text": "a\u0000b"}, "valid": false, "refusal": "forbidden_character", "why": "a C0 control character (NUL) is refused"},
-    {"input": {"text": "a\u001fb"}, "valid": false, "refusal": "forbidden_character", "why": "the top of the C0 block is refused: the range is inclusive at both ends"},
-    {"input": {"text": "a\u007fb"}, "valid": false, "refusal": "forbidden_character", "why": "DEL is refused. Go's unicode.IsControl reports it, so the browser class must reach past U+007E"},
-    {"input": {"text": "a\u009fb"}, "valid": false, "refusal": "forbidden_character", "why": "the C1 block is control too: Go's unicode.IsControl covers U+0080-U+009F, so the browser regex has to cover it as well"},
-    {"input": {"text": "a\u00adb"}, "valid": false, "refusal": "forbidden_character", "why": "a SOFT HYPHEN is refused. It travels invisibly through a copy and a paste, and a token that carries one resumes nothing"},
-    {"input": {"text": "a\u061cb"}, "valid": false, "refusal": "forbidden_character", "why": "an ARABIC LETTER MARK is refused, for the reason the soft hyphen is"},
-    {"input": {"text": "a\u180eb"}, "valid": false, "refusal": "forbidden_character", "why": "a MONGOLIAN VOWEL SEPARATOR is refused. It was White_Space until Unicode 6.3 and JavaScript's \\s until ES2016, so it is exactly the character a category test would answer two ways"},
-    {"input": {"text": "a\u200bb"}, "valid": false, "refusal": "forbidden_character", "why": "a ZERO WIDTH SPACE is refused"},
-    {"input": {"text": "a\u200eb"}, "valid": false, "refusal": "forbidden_character", "why": "a LEFT-TO-RIGHT MARK is refused: the low end of the U+200E-U+200F range"},
-    {"input": {"text": "a\u200fb"}, "valid": false, "refusal": "forbidden_character", "why": "a RIGHT-TO-LEFT MARK is refused: the high end of the same range"},
-    {"input": {"text": "a\u202ab"}, "valid": false, "refusal": "forbidden_character", "why": "a LEFT-TO-RIGHT EMBEDDING is refused: the low end of the U+202A-U+202E range"},
-    {"input": {"text": "a\u202eb"}, "valid": false, "refusal": "forbidden_character", "why": "a RIGHT-TO-LEFT OVERRIDE is refused: the high end of the same range"},
-    {"input": {"text": "a\u2060b"}, "valid": false, "refusal": "forbidden_character", "why": "a WORD JOINER is refused"},
-    {"input": {"text": "a\u2066b"}, "valid": false, "refusal": "forbidden_character", "why": "a LEFT-TO-RIGHT ISOLATE is refused: the low end of the U+2066-U+2069 range"},
-    {"input": {"text": "a\u2069b"}, "valid": false, "refusal": "forbidden_character", "why": "a POP DIRECTIONAL ISOLATE is refused: the high end of the same range"},
-    {"input": {"text": "a\u200cb"}, "valid": true, "refusal": "", "why": "U+200C ZERO WIDTH NON-JOINER is ACCEPTED. The name rule keeps it because it shapes a word in Indic, Persian and Arabic orthography, and the token class matches the name rule's list exactly -- adding it here would be a one-sided widening"},
-    {"input": {"text": "a\u200db"}, "valid": true, "refusal": "", "why": "U+200D ZERO WIDTH JOINER is ACCEPTED, for the reason U+200C is"},
-    {"input": {"text": "a\ufe0fb"}, "valid": true, "refusal": "", "why": "a variation selector is ACCEPTED: the name rule keeps U+FE00-U+FE0F, and this list follows it"},
-    {"input": {"text": "\ufeffabc"}, "valid": false, "refusal": "forbidden_character", "why": "a LEADING byte order mark reports the CHARACTER rule, not the whitespace rule. This case pins the ORDER: JavaScript's trim() removes U+FEFF and Go's TrimSpace keeps it, so a trim-first rule reported two different messages for this one input"},
-    {"input": {"text": "abc\ufeff"}, "valid": false, "refusal": "forbidden_character", "why": "a TRAILING byte order mark reports the same rule, for the same reason"},
-    {"input": {"text": "\u0085abc"}, "valid": false, "refusal": "forbidden_character", "why": "a LEADING next line (U+0085) reports the CHARACTER rule. This is the mirror of the byte order mark case: Go's TrimSpace claims U+0085 and JavaScript's trim() does not, so a trim-first rule swapped the two messages here"},
-    {"input": {"text": "abc\u0085"}, "valid": false, "refusal": "forbidden_character", "why": "a TRAILING next line reports the same rule, for the same reason"},
-    {"input": {"text": " abc"}, "valid": false, "refusal": "whitespace_at_edge", "why": "a leading plain space is refused, and it reaches the whitespace rule because a space is not in the character class"},
-    {"input": {"text": "abc "}, "valid": false, "refusal": "whitespace_at_edge", "why": "a trailing plain space is refused"},
-    {"input": {"text": "\u00a0abc"}, "valid": false, "refusal": "whitespace_at_edge", "why": "a leading NO-BREAK SPACE is refused. This is where Go's unicode.IsSpace and JavaScript's \\s have to agree, and they do"},
-    {"input": {"text": "\u3000abc"}, "valid": false, "refusal": "whitespace_at_edge", "why": "a leading IDEOGRAPHIC SPACE is refused: the one a Japanese IME emits"},
-    {"input": {"text": "  "}, "valid": false, "refusal": "whitespace_at_edge", "why": "a value of nothing but whitespace is refused rather than treated as the empty 'no resume' value"},
-    {"input": {"text": "a", "repeat": 128}, "valid": true, "refusal": "", "why": "exactly 128 bytes: the limit is inclusive, so nothing is refused"},
-    {"input": {"text": "a", "repeat": 129}, "valid": false, "refusal": "too_long", "why": "129 bytes: one byte over"},
-    {"input": {"text": "\u4e00", "repeat": 43}, "valid": false, "refusal": "too_long", "why": "43 CJK characters is 129 bytes: under a 128-CHARACTER cap and over the 128-BYTE one. A String.length count accepted this and the worker then refused it"},
-    {"input": {"text": "\u4e00", "repeat": 42}, "valid": true, "refusal": "", "why": "42 CJK characters is 126 bytes, which fits. Paired with the case above, the two pin that the unit is BYTES on both sides"},
-    {"input": {"text": "a", "repeat": 200, "tail": "\u0000"}, "valid": false, "refusal": "too_long", "why": "the byte limit is tested BEFORE the character rule, so an over-long value reports its length rather than the first bad character it happens to hold"},
-    {"input": {"text": "-abc-123"}, "valid": false, "refusal": "leading_hyphen", "why": "a LEADING hyphen is refused: argv cannot tell the token from a flag, and `claude --resume` takes an optional value, so a hyphen-prefixed token parses as a flag of its own rather than as the value"},
-    {"input": {"text": "--dangerously-skip-permissions"}, "valid": false, "refusal": "leading_hyphen", "why": "the flag the rule exists to stop. One argv element is the whole attack: the token needs no space and no shell to reach the agent's own parser"},
-    {"input": {"text": "-"}, "valid": false, "refusal": "leading_hyphen", "why": "a lone hyphen is refused: many parsers read it as the stdin operand"},
-    {"input": {"text": "abc-123-"}, "valid": true, "refusal": "", "why": "a TRAILING hyphen is accepted. Only the FIRST character is refused, so an ordinary identifier that ends in a hyphen still passes"},
-    {"input": {"text": "-abc", "tail": " "}, "valid": false, "refusal": "whitespace_at_edge", "why": "a leading hyphen AND trailing whitespace reports the WHITESPACE rule. This case pins the ORDER: the hyphen test runs LAST on both sides, so one input gets one message"},
-    {"input": {"text": "-abc\u0000"}, "valid": false, "refusal": "forbidden_character", "why": "a leading hyphen AND a control character reports the CHARACTER rule: every earlier test wins, and the hyphen test is the last one"}
+    {
+      "input": {
+        "text": ""
+      },
+      "valid": true,
+      "refusal": "",
+      "why": "the empty value is accepted and means 'no resume'"
+    },
+    {
+      "input": {
+        "text": "01JAV8Q3ZP9K2M4N6R8T0W2Y4B"
+      },
+      "valid": true,
+      "refusal": "",
+      "why": "an ordinary ULID token passes unchanged"
+    },
+    {
+      "input": {
+        "text": "3f9a1c2e-77b4-4d81-9e0f-5a6b7c8d9e0f"
+      },
+      "valid": true,
+      "refusal": "",
+      "why": "a UUID with hyphens passes: the rule refuses no visible punctuation it does not name"
+    },
+    {
+      "input": {
+        "text": "sess_abc.def~123/xyz+QQ=="
+      },
+      "valid": true,
+      "refusal": "",
+      "why": "the punctuation a base64url or an opaque provider id uses is not in the refused set"
+    },
+    {
+      "input": {
+        "text": "a b"
+      },
+      "valid": true,
+      "refusal": "",
+      "why": "the plain U+0020 stays legal INSIDE a token; only the other whitespace goes"
+    },
+    {
+      "input": {
+        "text": "a  b"
+      },
+      "valid": true,
+      "refusal": "",
+      "why": "the plain U+0020 stays legal INSIDE a token; only the other whitespace goes"
+    },
+    {
+      "input": {
+        "text": "a\"b"
+      },
+      "valid": false,
+      "refusal": "forbidden_character",
+      "why": "a double quote is refused. The name rule now KEEPS it, and this case is what stops that relaxation reaching the token rule"
+    },
+    {
+      "input": {
+        "text": "a\\b"
+      },
+      "valid": false,
+      "refusal": "forbidden_character",
+      "why": "a backslash is refused, for the reason the double quote is"
+    },
+    {
+      "input": {
+        "text": "a$b"
+      },
+      "valid": false,
+      "refusal": "forbidden_character",
+      "why": "a dollar is refused: the token becomes an argv element, and the narrow class is cheaper than trusting every quoting layer"
+    },
+    {
+      "input": {
+        "text": "a%b"
+      },
+      "valid": false,
+      "refusal": "forbidden_character",
+      "why": "a percent is refused, for the reason the dollar is"
+    },
+    {
+      "input": {
+        "text": "a\u0000b"
+      },
+      "valid": false,
+      "refusal": "forbidden_character",
+      "why": "a C0 control character (NUL) is refused"
+    },
+    {
+      "input": {
+        "text": "a\u001fb"
+      },
+      "valid": false,
+      "refusal": "forbidden_character",
+      "why": "the top of the C0 block is refused: the range is inclusive at both ends"
+    },
+    {
+      "input": {
+        "text": "ab"
+      },
+      "valid": false,
+      "refusal": "forbidden_character",
+      "why": "DEL is refused. Go's unicode.IsControl reports it, so the browser class must reach past U+007E"
+    },
+    {
+      "input": {
+        "text": "ab"
+      },
+      "valid": false,
+      "refusal": "forbidden_character",
+      "why": "the C1 block is control too: Go's unicode.IsControl covers U+0080-U+009F, so the browser regex has to cover it as well"
+    },
+    {
+      "input": {
+        "text": "a­b"
+      },
+      "valid": false,
+      "refusal": "forbidden_character",
+      "why": "a SOFT HYPHEN is refused. It travels invisibly through a copy and a paste, and a token that carries one resumes nothing"
+    },
+    {
+      "input": {
+        "text": "a؜b"
+      },
+      "valid": false,
+      "refusal": "forbidden_character",
+      "why": "an ARABIC LETTER MARK is refused, for the reason the soft hyphen is"
+    },
+    {
+      "input": {
+        "text": "a᠎b"
+      },
+      "valid": false,
+      "refusal": "forbidden_character",
+      "why": "a MONGOLIAN VOWEL SEPARATOR is refused. It was White_Space until Unicode 6.3 and JavaScript's \\s until ES2016, so it is exactly the character a category test would answer two ways"
+    },
+    {
+      "input": {
+        "text": "a​b"
+      },
+      "valid": false,
+      "refusal": "forbidden_character",
+      "why": "a ZERO WIDTH SPACE is refused"
+    },
+    {
+      "input": {
+        "text": "a‎b"
+      },
+      "valid": false,
+      "refusal": "forbidden_character",
+      "why": "a LEFT-TO-RIGHT MARK is refused: the low end of the U+200E-U+200F range"
+    },
+    {
+      "input": {
+        "text": "a‏b"
+      },
+      "valid": false,
+      "refusal": "forbidden_character",
+      "why": "a RIGHT-TO-LEFT MARK is refused: the high end of the same range"
+    },
+    {
+      "input": {
+        "text": "a‪b"
+      },
+      "valid": false,
+      "refusal": "forbidden_character",
+      "why": "a LEFT-TO-RIGHT EMBEDDING is refused: the low end of the U+202A-U+202E range"
+    },
+    {
+      "input": {
+        "text": "a‮b"
+      },
+      "valid": false,
+      "refusal": "forbidden_character",
+      "why": "a RIGHT-TO-LEFT OVERRIDE is refused: the high end of the same range"
+    },
+    {
+      "input": {
+        "text": "a⁠b"
+      },
+      "valid": false,
+      "refusal": "forbidden_character",
+      "why": "a WORD JOINER is refused"
+    },
+    {
+      "input": {
+        "text": "a⁦b"
+      },
+      "valid": false,
+      "refusal": "forbidden_character",
+      "why": "a LEFT-TO-RIGHT ISOLATE is refused: the low end of the U+2066-U+2069 range"
+    },
+    {
+      "input": {
+        "text": "a⁩b"
+      },
+      "valid": false,
+      "refusal": "forbidden_character",
+      "why": "a POP DIRECTIONAL ISOLATE is refused: the high end of the same range"
+    },
+    {
+      "input": {
+        "text": "a‌b"
+      },
+      "valid": true,
+      "refusal": "",
+      "why": "U+200C ZERO WIDTH NON-JOINER is ACCEPTED. The name rule keeps it because it shapes a word in Indic, Persian and Arabic orthography, and the token class matches the name rule's list exactly -- adding it here would be a one-sided widening"
+    },
+    {
+      "input": {
+        "text": "a‍b"
+      },
+      "valid": true,
+      "refusal": "",
+      "why": "U+200D ZERO WIDTH JOINER is ACCEPTED, for the reason U+200C is"
+    },
+    {
+      "input": {
+        "text": "a️b"
+      },
+      "valid": true,
+      "refusal": "",
+      "why": "a variation selector is ACCEPTED: the name rule keeps U+FE00-U+FE0F, and this list follows it"
+    },
+    {
+      "input": {
+        "text": "﻿abc"
+      },
+      "valid": false,
+      "refusal": "forbidden_character",
+      "why": "a LEADING byte order mark reports the CHARACTER rule, not the whitespace rule. This case pins the ORDER: JavaScript's trim() removes U+FEFF and Go's TrimSpace keeps it, so a trim-first rule reported two different messages for this one input"
+    },
+    {
+      "input": {
+        "text": "abc﻿"
+      },
+      "valid": false,
+      "refusal": "forbidden_character",
+      "why": "a TRAILING byte order mark reports the same rule, for the same reason"
+    },
+    {
+      "input": {
+        "text": "abc"
+      },
+      "valid": false,
+      "refusal": "forbidden_character",
+      "why": "a LEADING next line (U+0085) reports the CHARACTER rule. This is the mirror of the byte order mark case: Go's TrimSpace claims U+0085 and JavaScript's trim() does not, so a trim-first rule swapped the two messages here"
+    },
+    {
+      "input": {
+        "text": "abc"
+      },
+      "valid": false,
+      "refusal": "forbidden_character",
+      "why": "a TRAILING next line reports the same rule, for the same reason"
+    },
+    {
+      "input": {
+        "text": " abc"
+      },
+      "valid": false,
+      "refusal": "whitespace_at_edge",
+      "why": "a leading plain space is refused, and it reaches the whitespace rule because a space is not in the character class"
+    },
+    {
+      "input": {
+        "text": "abc "
+      },
+      "valid": false,
+      "refusal": "whitespace_at_edge",
+      "why": "a trailing plain space is refused"
+    },
+    {
+      "input": {
+        "text": " abc"
+      },
+      "valid": false,
+      "refusal": "whitespace_at_edge",
+      "why": "a leading NO-BREAK SPACE is refused. This is where Go's unicode.IsSpace and JavaScript's \\s have to agree, and they do"
+    },
+    {
+      "input": {
+        "text": "　abc"
+      },
+      "valid": false,
+      "refusal": "whitespace_at_edge",
+      "why": "a leading IDEOGRAPHIC SPACE is refused: the one a Japanese IME emits"
+    },
+    {
+      "input": {
+        "text": "  "
+      },
+      "valid": false,
+      "refusal": "whitespace_at_edge",
+      "why": "a value of nothing but whitespace is refused rather than treated as the empty 'no resume' value"
+    },
+    {
+      "input": {
+        "text": "a",
+        "repeat": 128
+      },
+      "valid": true,
+      "refusal": "",
+      "why": "exactly 128 bytes: the limit is inclusive, so nothing is refused"
+    },
+    {
+      "input": {
+        "text": "a",
+        "repeat": 129
+      },
+      "valid": false,
+      "refusal": "too_long",
+      "why": "129 bytes: one byte over"
+    },
+    {
+      "input": {
+        "text": "一",
+        "repeat": 43
+      },
+      "valid": false,
+      "refusal": "too_long",
+      "why": "43 CJK characters is 129 bytes: under a 128-CHARACTER cap and over the 128-BYTE one. A String.length count accepted this and the worker then refused it"
+    },
+    {
+      "input": {
+        "text": "一",
+        "repeat": 42
+      },
+      "valid": true,
+      "refusal": "",
+      "why": "42 CJK characters is 126 bytes, which fits. Paired with the case above, the two pin that the unit is BYTES on both sides"
+    },
+    {
+      "input": {
+        "text": "a",
+        "repeat": 200,
+        "tail": "\u0000"
+      },
+      "valid": false,
+      "refusal": "too_long",
+      "why": "the byte limit is tested BEFORE the character rule, so an over-long value reports its length rather than the first bad character it happens to hold"
+    },
+    {
+      "input": {
+        "text": "-abc-123"
+      },
+      "valid": false,
+      "refusal": "leading_hyphen",
+      "why": "a LEADING hyphen is refused: argv cannot tell the token from a flag, and `claude --resume` takes an optional value, so a hyphen-prefixed token parses as a flag of its own rather than as the value"
+    },
+    {
+      "input": {
+        "text": "--dangerously-skip-permissions"
+      },
+      "valid": false,
+      "refusal": "leading_hyphen",
+      "why": "the flag the rule exists to stop. One argv element is the whole attack: the token needs no space and no shell to reach the agent's own parser"
+    },
+    {
+      "input": {
+        "text": "-"
+      },
+      "valid": false,
+      "refusal": "leading_hyphen",
+      "why": "a lone hyphen is refused: many parsers read it as the stdin operand"
+    },
+    {
+      "input": {
+        "text": "abc-123-"
+      },
+      "valid": true,
+      "refusal": "",
+      "why": "a TRAILING hyphen is accepted. Only the FIRST character is refused, so an ordinary identifier that ends in a hyphen still passes"
+    },
+    {
+      "input": {
+        "text": "-abc",
+        "tail": " "
+      },
+      "valid": false,
+      "refusal": "whitespace_at_edge",
+      "why": "a leading hyphen AND trailing whitespace reports the WHITESPACE rule. This case pins the ORDER: the hyphen test runs LAST on both sides, so one input gets one message"
+    },
+    {
+      "input": {
+        "text": "-abc\u0000"
+      },
+      "valid": false,
+      "refusal": "forbidden_character",
+      "why": "a leading hyphen AND a control character reports the CHARACTER rule: every earlier test wins, and the hyphen test is the last one"
+    },
+    {
+      "input": {
+        "text": "abc def"
+      },
+      "valid": false,
+      "refusal": "forbidden_character",
+      "why": "an interior LINE SEPARATOR is refused: it means what \\n means, and \\n is already refused as a control character"
+    },
+    {
+      "input": {
+        "text": "abc def"
+      },
+      "valid": false,
+      "refusal": "forbidden_character",
+      "why": "an interior PARAGRAPH SEPARATOR is refused, for the reason U+2028 is"
+    },
+    {
+      "input": {
+        "text": "abc def"
+      },
+      "valid": false,
+      "refusal": "forbidden_character",
+      "why": "an interior NO-BREAK SPACE is refused: it renders as a space but carries different bytes, so two tokens a reader cannot tell apart would name different sessions"
+    },
+    {
+      "input": {
+        "text": "abc　def"
+      },
+      "valid": false,
+      "refusal": "forbidden_character",
+      "why": "an interior IDEOGRAPHIC SPACE is refused, for the reason U+00A0 is"
+    },
+    {
+      "input": {
+        "text": "abc def"
+      },
+      "valid": false,
+      "refusal": "forbidden_character",
+      "why": "an interior THIN SPACE is refused: the whole pinned whitespace class but the plain U+0020 goes"
+    }
   ]
 }

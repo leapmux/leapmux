@@ -1,4 +1,6 @@
 import type { MarkdownRenderResult } from './markdownWorkerClient'
+import themeGithubDark from '@shikijs/themes/github-dark'
+import themeGithubLight from '@shikijs/themes/github-light'
 import { createHighlighterCoreSync } from 'shiki/core'
 import { createJavaScriptRegexEngine } from 'shiki/engine/javascript'
 // Eager grammars for the synchronous (no-Worker) fallback highlighter below. The
@@ -28,9 +30,11 @@ import { createSignal } from 'solid-js'
 import { capMapInsertionOrder, lruGet, lruSet } from '~/lib/mapLru'
 import { createMarkdownProcessor, plainMarkdownProcessor, renderWithPlainFallback } from './markdownProcessor'
 import { renderMarkdownInWorker } from './markdownWorkerClient'
-import { getArtifact, isArtifactStoreAvailable, putArtifact, RENDER_ARTIFACT_CACHE_VERSION } from './renderArtifactStore'
+import { createPersistedArtifact } from './persistedArtifact'
 import { ensureShikiStyleRules } from './shikiStyleClass'
-import { DUAL_THEME_TOKEN_OPTIONS, transparentBgThemes } from './shikiThemes'
+import { createPairKeyedCache, syntaxThemePair, themeStillCurrent } from './shikiThemes'
+import { withTransparentBg } from './syntaxThemes'
+import { onSyntaxThemeChange } from './syntaxThemeStore'
 
 /** The bundled Shiki language grammars the synchronous fallback highlighter pre-loads. */
 const shikiLangs = [
@@ -61,8 +65,13 @@ const shikiLangs = [
 // ReadResultView, the markdown editor, tool renderers) that highlight short,
 // bounded snippets where a worker round-trip would be overkill. Markdown bodies no
 // longer use it on the hot path -- see renderMarkdown below.
+// The initial pair is the Default theme's, which is GitHub's, imported
+// STATICALLY: a synchronous highlighter cannot await a chunk, so the one pair
+// the app starts on has to sit in the main bundle. Every other pair arrives
+// lazily -- `setSyntaxTheme` registers it here before pointing the shared
+// options at it, so a synchronous call site never names an unregistered theme.
 export const shikiHighlighter = createHighlighterCoreSync({
-  themes: transparentBgThemes,
+  themes: [withTransparentBg(themeGithubLight), withTransparentBg(themeGithubDark)],
   langs: shikiLangs,
   engine: createJavaScriptRegexEngine(),
 })
@@ -70,7 +79,19 @@ export const shikiHighlighter = createHighlighterCoreSync({
 // The full highlighted-markdown processor on the MAIN thread. Used only as the
 // fallback when no Worker is available (unit tests / SSR) -- in the browser the
 // worker renders instead, off the UI thread (see renderMarkdown).
-const syncProcessor = createMarkdownProcessor(shikiHighlighter)
+//
+// Built LAZILY and keyed on the pair, for the same reason the worker's copy is:
+// `createMarkdownProcessor` bakes the pair in, so a module-scope `const` froze
+// this path on the pair that was current at IMPORT time -- always the static
+// Default pair, since nothing can have chosen a theme before this module
+// evaluates. Every fallback render then highlighted in GitHub's colours whatever
+// the user picked, and cached that under the chosen theme's key.
+const syncProcessorFor = createPairKeyedCache<ReturnType<typeof createMarkdownProcessor>>()
+
+function getSyncProcessor(): ReturnType<typeof createMarkdownProcessor> {
+  const pair = syntaxThemePair()
+  return syncProcessorFor(pair, () => createMarkdownProcessor(shikiHighlighter, pair))
+}
 
 // LRU cache for rendered markdown HTML: avoids re-rendering identical content on
 // re-mount (the virtualized chat list mounts a row ~4-5x as it scrolls in and out).
@@ -129,13 +150,8 @@ function canUseWorker(): boolean {
 }
 
 // --- persisted highlighted-markdown artifacts (IndexedDB) -------------------
-// Reload warm-start: a clean worker render is persisted and served on the next
-// session without re-highlighting. The namespace folds in the cache version +
-// the Shiki theme names because persisted HTML outlives the BUNDLE that
-// produced it — any change to the rendered markup's contract (pipeline,
-// sanitizer, themes, or a build-hashed class leaking into the HTML) must
-// orphan old entries rather than serve them (see RENDER_ARTIFACT_CACHE_VERSION).
-export const MARKDOWN_ARTIFACT_NS = `md@${RENDER_ARTIFACT_CACHE_VERSION}|${DUAL_THEME_TOKEN_OPTIONS.themes.light},${DUAL_THEME_TOKEN_OPTIONS.themes.dark}`
+// Reload warm-start: a clean worker render is served on the next session
+// without re-highlighting.
 
 // Per-entry bounds: one pathological body must not dominate the store.
 const PERSIST_MAX_TEXT_LENGTH = 256 * 1024
@@ -165,28 +181,41 @@ function isPersistedMarkdownArtifact(value: unknown): value is PersistedMarkdown
     RE_SHIKI_STYLE_CLASS.test(className) && typeof decl === 'string')
 }
 
-/**
- * Look up a persisted highlighted render. Returns undefined SYNCHRONOUSLY when
- * the store can't serve here (no indexedDB, oversized text) so the caller
- * dispatches the worker in the same frame — the async hop exists only where a
- * store actually does.
- */
-function getPersistedMarkdownRender(text: string): Promise<MarkdownRenderResult | undefined> | undefined {
-  if (!isArtifactStoreAvailable() || text.length > PERSIST_MAX_TEXT_LENGTH)
-    return undefined
-  return getArtifact<PersistedMarkdownArtifact>(MARKDOWN_ARTIFACT_NS, text)
-    .then((value) => {
-      if (!isPersistedMarkdownArtifact(value))
-        return undefined
-      return { html: value.h, retryable: false, styles: value.s }
-    })
-}
+const markdownArtifact = createPersistedArtifact<PersistedMarkdownArtifact, MarkdownRenderResult>({
+  prefix: 'md',
+  maxSourceLength: PERSIST_MAX_TEXT_LENGTH,
+  isValid: isPersistedMarkdownArtifact,
+  decode: value => ({ html: value.h, retryable: false, styles: value.s }),
+})
 
-function persistMarkdownRender(text: string, html: string, styles: Record<string, string>): void {
-  if (!isArtifactStoreAvailable() || text.length > PERSIST_MAX_TEXT_LENGTH || html.length > PERSIST_MAX_HTML_LENGTH)
-    return
-  void putArtifact(MARKDOWN_ARTIFACT_NS, text, { h: html, s: styles } satisfies PersistedMarkdownArtifact)
-}
+export const markdownArtifactNs = markdownArtifact.ns
+
+// A rendered markdown body carries Shiki's baked token colours, so it is stale
+// the moment the syntax theme changes. The IndexedDB copies are orphaned instead
+// of dropped -- `markdownArtifactNs()` folds the theme in, so entries written
+// under the old pair are simply never looked up again, and the store's TTL sweep
+// collects them.
+onSyntaxThemeChange(() => {
+  markdownCache.clear()
+  placeholderCache.clear()
+  // `inFlight` and `retryCount` go with them, exactly as `_resetMarkdownCache`
+  // does. A body still rendering under the OLD pair is skipped by the
+  // `inFlight.has(text)` dedup guard, so the re-render after a theme change
+  // returned the plain placeholder and never re-dispatched -- and when the old
+  // reply landed it wrote the abandoned theme's HTML into the cache this line
+  // just cleared and bumped the version, so the row repainted in the theme the
+  // user had just left while its neighbours moved on.
+  inFlight.clear()
+  retryCount.clear()
+  // Then TELL the consumers, the way every other mutation of these caches does.
+  // A chat row happens to re-render anyway, because its own cache namespace
+  // folds in `syntaxThemeGeneration()`. A consumer that reads only
+  // `markdownVersion()` -- `MarkdownFileView`, whose memo depends on the file
+  // text and nothing else -- was never told, so an open markdown file kept the
+  // abandoned theme's baked token colours against a code surface repainted for
+  // the new one, until some unrelated body's completion bumped the version.
+  scheduleVersionBump()
+})
 
 /** Visible for testing: drop all cached entries and in-flight tracking. */
 export function _resetMarkdownCache(): void {
@@ -261,7 +290,7 @@ export function renderMarkdownCachedOrPlain(text: string): string {
 
 /** Full synchronous highlighted render (main-thread Shiki). The no-Worker fallback. */
 function renderHighlightedSync(text: string): string {
-  return renderWithPlainFallback(syncProcessor, text)
+  return renderWithPlainFallback(getSyncProcessor(), text)
 }
 
 /**
@@ -314,7 +343,26 @@ export function renderMarkdown(text: string, skipCache = false, isLowPriority?: 
   let completedSynchronously = false
   if (!inFlight.has(text)) {
     inFlight.add(text)
+    // The theme this dispatch belongs to, captured once. The reply may land
+    // after the user changed it, and a body highlighted under the abandoned
+    // theme must neither be cached nor persisted -- the invalidator already
+    // cleared the cache, so writing into it would restore exactly what the
+    // clear removed and no later read would re-dispatch, because a cache hit
+    // never does.
+    const dispatchPair = syntaxThemePair()
+    const dispatchNs = markdownArtifactNs()
     const complete = (result: MarkdownRenderResult | null): void => {
+      if (!themeStillCurrent(dispatchPair)) {
+        // The theme moved. Drop this result and let the invalidator's own
+        // version bump drive the re-render under the current pair.
+        //
+        // WITHOUT TOUCHING `inFlight`. The invalidator already cleared it, and
+        // a re-render under the new pair has since re-added this text, so
+        // deleting here would drop a dispatch that is still outstanding and let
+        // the next version bump dispatch the same body a third time.
+        retryCount.delete(text)
+        return
+      }
       inFlight.delete(text)
       // A transient degrade (a grammar chunk load or the highlighter init failed): the
       // render is (partly) plain but a retry may recover it, so DON'T cache it. Bump the
@@ -351,12 +399,15 @@ export function renderMarkdown(text: string, skipCache = false, isLowPriority?: 
     }
     const dispatchToWorker = (): void => {
       try {
-        renderMarkdownInWorker(text, isLowPriority)
+        renderMarkdownInWorker(text, dispatchPair, isLowPriority)
           .then((result) => {
             // Persist only a CLEAN highlighted render for the reload warm-start:
             // a retryable degrade or a crash (null) is not a durable result.
-            if (result && !result.retryable)
-              persistMarkdownRender(text, result.html, result.styles)
+            // The HTML length is guarded HERE rather than inside the shared
+            // helper: it bounds the VALUE, and only this consumer has one whose
+            // size is worth bounding apart from its key.
+            if (result && !result.retryable && result.html.length <= PERSIST_MAX_HTML_LENGTH)
+              markdownArtifact.write(dispatchNs, text, { h: result.html, s: result.styles })
             complete(result)
           })
           .catch(() => complete(null))
@@ -369,7 +420,7 @@ export function renderMarkdown(text: string, skipCache = false, isLowPriority?: 
     // Reload warm-start: serve the persisted highlighted render when one exists,
     // else dispatch. Without a store this is a SYNCHRONOUS undefined, so the
     // dispatch keeps its same-frame timing.
-    const persisted = getPersistedMarkdownRender(text)
+    const persisted = markdownArtifact.read(text)
     if (persisted === undefined) {
       dispatchToWorker()
     }

@@ -8,6 +8,7 @@ import { showInfoToast, showWarnToast } from '~/components/common/Toast'
 import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { makeInspectResp, makeWorktreeRemovalResp } from '~/test-support/gitBranchFixtures'
+import { menuOptionValues, pickMenuValue } from '~/test-support/menu'
 import { DeleteBranchDialog } from './DeleteBranchDialog'
 
 vi.mock('~/api/workerRpc', () => ({
@@ -322,7 +323,7 @@ describe('deleteBranchDialog', () => {
     )
     renderDialog()
     await waitFor(() => expect(screen.getByText(/Switch this working directory to:/)).toBeInTheDocument())
-    fireEvent.change(screen.getAllByRole('combobox')[0] as HTMLSelectElement, { target: { value: 'main' } })
+    pickMenuValue('branch-select-menu', 'main')
 
     expect(screen.queryByText(/This worktree is locked/)).not.toBeInTheDocument()
     expect((screen.getByRole('button', { name: 'Delete branch' }) as HTMLButtonElement).disabled).toBe(false)
@@ -354,8 +355,7 @@ describe('deleteBranchDialog', () => {
     vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(makeInspectResp())
     renderDialog()
     await waitFor(() => expect(screen.getByText(/Switch this working directory to:/)).toBeInTheDocument())
-    const select = screen.getAllByRole('combobox')[0] as HTMLSelectElement
-    fireEvent.change(select, { target: { value: 'main' } })
+    pickMenuValue('branch-select-menu', 'main')
 
     await clickDelete()
 
@@ -390,8 +390,7 @@ describe('deleteBranchDialog', () => {
     const del = screen.getByRole('button', { name: 'Delete branch' }) as HTMLButtonElement
     expect(del.disabled).toBe(true)
 
-    const select = screen.getAllByRole('combobox')[0] as HTMLSelectElement
-    fireEvent.change(select, { target: { value: 'main' } })
+    pickMenuValue('branch-select-menu', 'main')
     await waitFor(() => expect(del.disabled).toBe(false))
   })
 
@@ -401,8 +400,7 @@ describe('deleteBranchDialog', () => {
     const closeWorktreeTabs = makeCloseWorktreeTabs()
     renderDialog({ onBranchChanged, closeWorktreeTabs })
     await waitFor(() => expect(screen.getByText(/Switch this working directory to:/)).toBeInTheDocument())
-    const select = screen.getAllByRole('combobox')[0] as HTMLSelectElement
-    fireEvent.change(select, { target: { value: 'main' } })
+    pickMenuValue('branch-select-menu', 'main')
 
     await clickDelete()
     await waitFor(() => expect(onBranchChanged).toHaveBeenCalledTimes(1))
@@ -433,8 +431,7 @@ describe('deleteBranchDialog', () => {
     })
     renderDialog({ onBranchChanged, onClose })
     await waitFor(() => expect(screen.getByText(/Switch this working directory to:/)).toBeInTheDocument())
-    const select = screen.getAllByRole('combobox')[0] as HTMLSelectElement
-    fireEvent.change(select, { target: { value: 'main' } })
+    pickMenuValue('branch-select-menu', 'main')
 
     await clickDelete()
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1))
@@ -448,8 +445,7 @@ describe('deleteBranchDialog', () => {
     vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(makeInspectResp())
     const props = renderDialog({ onBranchChanged: undefined })
     await waitFor(() => expect(screen.getByText(/Switch this working directory to:/)).toBeInTheDocument())
-    const select = screen.getAllByRole('combobox')[0] as HTMLSelectElement
-    fireEvent.change(select, { target: { value: 'main' } })
+    pickMenuValue('branch-select-menu', 'main')
 
     await clickDelete()
     await waitFor(() => expect(props.onClose).toHaveBeenCalledTimes(1))
@@ -476,8 +472,7 @@ describe('deleteBranchDialog', () => {
     const onBranchChanged = vi.fn()
     renderDialog({ onBranchChanged })
     await waitFor(() => expect(screen.getByText(/Switch this working directory to:/)).toBeInTheDocument())
-    const select = screen.getAllByRole('combobox')[0] as HTMLSelectElement
-    fireEvent.change(select, { target: { value: 'origin/foo' } })
+    pickMenuValue('branch-select-menu', 'origin/foo')
 
     await clickDelete()
     await waitFor(() => expect(onBranchChanged).toHaveBeenCalledTimes(1))
@@ -499,8 +494,7 @@ describe('deleteBranchDialog', () => {
     const onBranchChanged = vi.fn()
     renderDialog({ onBranchChanged })
     await waitFor(() => expect(screen.getByText(/Switch this working directory to:/)).toBeInTheDocument())
-    const select = screen.getAllByRole('combobox')[0] as HTMLSelectElement
-    fireEvent.change(select, { target: { value: 'feature/auth' } })
+    pickMenuValue('branch-select-menu', 'feature/auth')
 
     await clickDelete()
     await waitFor(() => expect(onBranchChanged).toHaveBeenCalledTimes(1))
@@ -564,10 +558,9 @@ describe('deleteBranchDialog', () => {
     await waitFor(() => expect(workerRpc.inspectBranchDeletion).toHaveBeenCalledTimes(2))
     // The newly-introduced remote ref is now in the picker.
     await waitFor(() => {
-      const select = screen.getAllByRole('combobox')[0] as HTMLSelectElement
-      const optionValues = Array.from(select.options).map(o => o.value)
+      const optionValues = menuOptionValues('branch-select-menu')
       // doomed is filtered (it's the current branch); the rest survive in input order.
-      expect(optionValues).toEqual(['', 'main', 'feature', 'origin/doomed'])
+      expect(optionValues).toEqual(['main', 'feature', 'origin/doomed'])
     })
   })
 
@@ -603,8 +596,7 @@ describe('deleteBranchDialog', () => {
     renderDialog()
     await waitFor(() => expect(screen.getByText(/Switch this working directory to:/)).toBeInTheDocument())
 
-    const select = screen.getAllByRole('combobox')[0] as HTMLSelectElement
-    fireEvent.change(select, { target: { value: 'main' } })
+    pickMenuValue('branch-select-menu', 'main')
 
     await clickDelete()
 
@@ -622,12 +614,10 @@ describe('deleteBranchDialog', () => {
     )
     renderDialog()
     await waitFor(() => expect(screen.getByText(/Switch this working directory to:/)).toBeInTheDocument())
-
-    const select = screen.getAllByRole('combobox')[0] as HTMLSelectElement
-    const optionValues = Array.from(select.options).map(o => o.value)
-    // Exact set: showPrompt prepends an empty "" option, the
+    const optionValues = menuOptionValues('branch-select-menu')
+    // Exact set: the
     // doomed/current branch is filtered out, the rest preserve order.
-    expect(optionValues).toEqual(['', 'main', 'feature'])
+    expect(optionValues).toEqual(['main', 'feature'])
   })
 
   it('only-branch case disables Delete and shows the explanatory copy', async () => {
@@ -833,8 +823,7 @@ describe('deleteBranchDialog', () => {
     vi.mocked(workerRpc.deleteBranch).mockReturnValue(new Promise<DeleteBranchResponse>(() => {}))
     const props = renderDialog()
     await waitFor(() => expect(screen.getByText(/Switch this working directory to:/)).toBeInTheDocument())
-    const select = screen.getAllByRole('combobox')[0] as HTMLSelectElement
-    fireEvent.change(select, { target: { value: 'main' } })
+    pickMenuValue('branch-select-menu', 'main')
 
     await clickDelete()
     await waitFor(() => expect(workerRpc.deleteBranch).toHaveBeenCalledTimes(1))
@@ -911,11 +900,10 @@ describe('deleteBranchDialog', () => {
     )
     renderDialog()
     await waitFor(() => expect(screen.getByText(/Switch this working directory to:/)).toBeInTheDocument())
-    const select = screen.getAllByRole('combobox')[0] as HTMLSelectElement
-    const optionValues = Array.from(select.options).map(o => o.value)
-    // Exact set: showPrompt prepends the empty option, the doomed/current
+    const optionValues = menuOptionValues('branch-select-menu')
+    // Exact set: the doomed/current
     // local branch is dropped, the remote branch survives.
-    expect(optionValues).toEqual(['', 'main', 'origin/release'])
+    expect(optionValues).toEqual(['main', 'origin/release'])
   })
 
   it('non-worktree variant says tabs will keep running, not stopped', async () => {
@@ -945,8 +933,7 @@ describe('deleteBranchDialog', () => {
 
     const props = renderDialog({ onBranchChanged })
     await waitFor(() => expect(screen.getByText(/Switch this working directory to:/)).toBeInTheDocument())
-    const select = screen.getAllByRole('combobox')[0] as HTMLSelectElement
-    fireEvent.change(select, { target: { value: 'main' } })
+    pickMenuValue('branch-select-menu', 'main')
 
     await clickDelete()
 
@@ -969,8 +956,7 @@ describe('deleteBranchDialog', () => {
     const onBranchChanged = vi.fn()
     const props = renderDialog({ onBranchChanged })
     await waitFor(() => expect(screen.getByText(/Switch this working directory to:/)).toBeInTheDocument())
-    const select = screen.getAllByRole('combobox')[0] as HTMLSelectElement
-    fireEvent.change(select, { target: { value: 'main' } })
+    pickMenuValue('branch-select-menu', 'main')
 
     await clickDelete()
 
@@ -999,8 +985,7 @@ describe('deleteBranchDialog', () => {
 
     const props = renderDialog({ onBranchChanged })
     await waitFor(() => expect(screen.getByText(/Switch this working directory to:/)).toBeInTheDocument())
-    const select = screen.getAllByRole('combobox')[0] as HTMLSelectElement
-    fireEvent.change(select, { target: { value: 'main' } })
+    pickMenuValue('branch-select-menu', 'main')
 
     await clickDelete()
 

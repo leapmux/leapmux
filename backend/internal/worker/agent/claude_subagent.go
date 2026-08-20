@@ -364,8 +364,8 @@ func (a *ClaudeCodeAgent) handleClaudeTaskStarted(ev *claudeTaskEnvelope) {
 	// (reordered) task_started. The upsert above opened a Running row; close it
 	// now so it cannot leak. forgetTaskIndex mirrors the normal result path.
 	if hasPending {
-		_ = a.sink.UpdateBackgroundTaskStatus(ev.TaskID, pendingEnd, "")
-		_ = a.sink.CloseBackgroundTask(ev.TaskID, pendingEnd)
+		logRegistryRefusal("claude", "status", a.sink.UpdateBackgroundTaskStatus(ev.TaskID, pendingEnd, ""))
+		logRegistryRefusal("claude", "close", a.sink.CloseBackgroundTask(ev.TaskID, pendingEnd))
 		a.tasks.forgetTaskIndex(ev.TaskID)
 	}
 }
@@ -528,12 +528,12 @@ func (a *ClaudeCodeAgent) handleClaudeTaskNotification(ev *claudeTaskEnvelope) {
 	// wrong: KindUnspecified would file a re-created row (one this upsert
 	// resurrects after an eviction) in the SUBAGENT cap pool whatever it is.
 	if ev.OutputFile != "" {
-		_ = a.sink.UpsertBackgroundTask(bgtask.Upsert{
+		logRegistryRefusal("claude", "upsert", a.sink.UpsertBackgroundTask(bgtask.Upsert{
 			RowKey:      ev.TaskID,
 			Kind:        a.tasks.kindForTask(ev.TaskID),
 			Description: ev.OutputFile,
 			Status:      status,
-		})
+		}))
 	}
 	if err := a.sink.CloseBackgroundTask(ev.TaskID, status); err != nil {
 		slog.Warn("claude task_notification close failed", "task_id", ev.TaskID, "error", err)
@@ -652,8 +652,8 @@ func (a *ClaudeCodeAgent) routeSubagentMessage(content []byte, msgType string, e
 			if env.IsError {
 				status = bgtask.StatusFailed
 			}
-			_ = a.sink.UpdateBackgroundTaskStatus(taskID, status, "")
-			_ = a.sink.CloseBackgroundTask(taskID, status)
+			logRegistryRefusal("claude", "status", a.sink.UpdateBackgroundTaskStatus(taskID, status, ""))
+			logRegistryRefusal("claude", "close", a.sink.CloseBackgroundTask(taskID, status))
 			// Drop the index entry on the fallback path too (a task that ends
 			// via the result without a task_notification would otherwise leak).
 			a.tasks.forgetTaskIndex(taskID)

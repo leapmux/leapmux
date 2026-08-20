@@ -1,7 +1,7 @@
 import { expect, test } from './fixtures'
 import { MODEL_NONDETERMINISM_RETRIES } from './helpers/modelRetries'
 import { enterAndExitPlanMode, enterPlanPrompt, EXIT_PLAN_PROMPT } from './helpers/plan-mode'
-import { expectSettingsChip, sendMessage, settingsBar, waitForAgentIdle, waitForControlBanner } from './helpers/ui'
+import { expectSettingsChip, measureBubbleEdges, sendMessage, settingsBar, userBubbles, waitForAgentIdle, waitForControlBanner } from './helpers/ui'
 
 test.describe('Plan Mode', () => {
   // Both tests here depend on the model actually CALLING ExitPlanMode when
@@ -101,6 +101,23 @@ test.describe('Plan Mode', () => {
 
     // Verify context_cleared notification appears in the chat.
     await expect(page.locator('text=Context cleared')).toBeVisible()
+
+    // The worker persists the plan hand-off with a USER source, so it wears the
+    // same end-of-line card a typed message wears and takes the same rule to the
+    // right panel edge. Only a real browser resolves that rule: the bleed is CSS
+    // var arithmetic that cancels the list gutter, and it works around paint
+    // containment on the virtual row. The sibling assertion for a typed message
+    // lives in 040-chat-message-rendering.spec.ts.
+    const planCard = userBubbles(page).filter({ hasText: 'Execute plan' }).first()
+    await expect(planCard).toBeVisible()
+    const edges = await measureBubbleEdges(planCard)
+    expect(Math.abs(edges.rightGap)).toBeLessThanOrEqual(1)
+    // Still a card on the left: inset by at least the gutter, not stretched across.
+    expect(edges.leftGap).toBeGreaterThan(20)
+    // A rounded corner flush against the edge would read as a mistake.
+    expect(edges.radius).toBe('0px')
+    // Top edge on the row's, like every other bubble -- the row places it.
+    expect(Math.abs(edges.topGapInRow)).toBeLessThanOrEqual(1)
 
     // Verify Plan File is shown in the popover (plan_execution fires on clear context).
     const infoTrigger = page.locator('[data-testid="agent-info-trigger"]')

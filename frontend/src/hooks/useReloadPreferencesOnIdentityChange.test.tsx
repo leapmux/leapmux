@@ -67,8 +67,8 @@ function settingValue(key: string, effectiveJson: string, customized = false) {
 }
 
 /** One `listUserSettings` reply carrying a single account theme. */
-function themeReply(theme: string) {
-  return { descriptors: [], values: [settingValue('theme', `"${theme}"`)] }
+function themeReply(mode: string) {
+  return { descriptors: [], values: [settingValue('theme', JSON.stringify({ name: 'default', mode }))] }
 }
 
 /** A promise plus its resolvers, for pinning completion order. */
@@ -148,11 +148,11 @@ describe('useReloadPreferencesOnIdentityChange', () => {
 
     await waitFor(() => expect(app.prefs().accountLoadError()).not.toBeNull())
     expect(listUserSettings).toHaveBeenCalledTimes(1)
-    expect(app.prefs().theme()).toBe('system')
+    expect(app.prefs().theme().mode).toBe('system')
 
     await app.auth().login('u1', 'pw')
 
-    await waitFor(() => expect(app.prefs().theme()).toBe('dark'))
+    await waitFor(() => expect(app.prefs().theme().mode).toBe('dark'))
     expect(listUserSettings).toHaveBeenCalledTimes(2)
     expect(app.prefs().accountLoadError()).toBeNull()
   })
@@ -163,13 +163,13 @@ describe('useReloadPreferencesOnIdentityChange', () => {
     const app = await renderBootstrapped()
 
     await app.auth().login('u1', 'pw')
-    await waitFor(() => expect(app.prefs().theme()).toBe('dark'))
+    await waitFor(() => expect(app.prefs().theme().mode).toBe('dark'))
 
     listUserSettings.mockResolvedValue(themeReply('light'))
     login.mockResolvedValue({ user: user('u2') })
     await app.auth().login('u2', 'pw')
 
-    await waitFor(() => expect(app.prefs().theme()).toBe('light'))
+    await waitFor(() => expect(app.prefs().theme().mode).toBe('light'))
     expect(listUserSettings).toHaveBeenCalledTimes(3)
   })
 
@@ -202,7 +202,7 @@ describe('useReloadPreferencesOnIdentityChange', () => {
     listUserSettings.mockResolvedValue(themeReply('dark'))
     const app = await renderBootstrapped()
 
-    await waitFor(() => expect(app.prefs().theme()).toBe('dark'))
+    await waitFor(() => expect(app.prefs().theme().mode).toBe('dark'))
     expect(app.auth().user()?.id).toBe('u1')
     await flushMicrotasks()
     expect(listUserSettings).toHaveBeenCalledTimes(1)
@@ -247,11 +247,11 @@ describe('useReloadPreferencesOnIdentityChange', () => {
     const app = await renderBootstrapped()
 
     await app.auth().login('u1', 'pw')
-    await waitFor(() => expect(app.prefs().theme()).toBe('dark'))
+    await waitFor(() => expect(app.prefs().theme().mode).toBe('dark'))
 
-    stale.resolve({ descriptors: [], values: [settingValue('theme', '"light"')] })
+    stale.resolve(themeReply('light'))
     await flushMicrotasks()
-    expect(app.prefs().theme()).toBe('dark')
+    expect(app.prefs().theme().mode).toBe('dark')
   })
 
   // The same rule for the FAILURE half: the anonymous load rejects with
@@ -265,12 +265,12 @@ describe('useReloadPreferencesOnIdentityChange', () => {
     const app = await renderBootstrapped()
 
     await app.auth().login('u1', 'pw')
-    await waitFor(() => expect(app.prefs().theme()).toBe('dark'))
+    await waitFor(() => expect(app.prefs().theme().mode).toBe('dark'))
 
     stale.reject(unauthenticated())
     await flushMicrotasks()
     expect(app.prefs().accountLoadError()).toBeNull()
-    expect(app.prefs().theme()).toBe('dark')
+    expect(app.prefs().theme().mode).toBe('dark')
   })
 
   // The per-key WRITE sequence is the other guard this path relies on: the
@@ -280,20 +280,22 @@ describe('useReloadPreferencesOnIdentityChange', () => {
     const pending = deferred<{ descriptors: never[], values: unknown[] }>()
     listUserSettings.mockRejectedValueOnce(unauthenticated())
     listUserSettings.mockReturnValueOnce(pending.promise)
-    updateUserSetting.mockResolvedValue({ value: settingValue('theme', '"light"', true) })
+    updateUserSetting.mockResolvedValue({
+      value: settingValue('theme', JSON.stringify({ name: 'default', mode: 'light' }), true),
+    })
     const app = await renderBootstrapped()
 
     await app.auth().login('u1', 'pw')
     await waitFor(() => expect(listUserSettings).toHaveBeenCalledTimes(2))
 
     // The user picks a theme while the identity reload is still in flight.
-    await app.prefs().dual.theme.setAccount('light')
-    expect(app.prefs().theme()).toBe('light')
+    await app.prefs().dual.theme.setAccount({ name: 'default', mode: 'light' })
+    expect(app.prefs().theme().mode).toBe('light')
 
     // The reload answers with the value the account held BEFORE that write.
-    pending.resolve({ descriptors: [], values: [settingValue('theme', '"dark"')] })
+    pending.resolve(themeReply('dark'))
     await flushMicrotasks()
-    expect(app.prefs().theme()).toBe('light')
+    expect(app.prefs().theme().mode).toBe('light')
     expect(app.prefs().accountCustomized().theme).toBe(true)
   })
 })

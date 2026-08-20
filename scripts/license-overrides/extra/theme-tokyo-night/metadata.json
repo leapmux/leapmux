@@ -1,0 +1,6 @@
+{
+  "name": "Tokyo Night (theme palette)",
+  "license": "MIT",
+  "url": "https://github.com/tokyo-night/tokyo-night-vscode-theme",
+  "description": "The Tokyo Night Day and Tokyo Night colours behind the Tokyo Night theme in `frontend/src/styles/themes/tokyo-night.ts` were read from this extension's theme documents under `themes/` and mapped onto LeapMux's CSS custom properties."
+}

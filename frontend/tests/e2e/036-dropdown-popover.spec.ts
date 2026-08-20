@@ -121,7 +121,7 @@ test.describe('DropdownMenu Popover – Focus and Positioning', () => {
 
     // Wait for the ContextUsageGrid trigger to appear
     const infoTrigger = page.locator('[data-testid="agent-info-trigger"]')
-    const contextGrid = infoTrigger.locator('svg[viewBox="0 0 11 11"]')
+    const contextGrid = infoTrigger.getByTestId('context-usage-grid')
     await expect(contextGrid).toBeVisible()
 
     // Open the popover by clicking the trigger
@@ -212,7 +212,7 @@ test.describe('DropdownMenu Popover – Focus and Positioning', () => {
     await waitForAgentIdle(page)
 
     const infoTrigger = page.locator('[data-testid="agent-info-trigger"]')
-    const contextGrid = infoTrigger.locator('svg[viewBox="0 0 11 11"]')
+    const contextGrid = infoTrigger.getByTestId('context-usage-grid')
     await expect(contextGrid).toBeVisible()
 
     // Open the popover

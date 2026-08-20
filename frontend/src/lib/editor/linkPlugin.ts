@@ -67,6 +67,98 @@ export function linkRangeAt(state: EditorState, pos: number): LinkRange | null {
   return { from, to, href: String(mark.attrs.href ?? ''), attrs: mark.attrs }
 }
 
+/**
+ * Whether a press on `range` is a request to CLOSE the popover rather than open
+ * one, captured at pointerdown.
+ *
+ * A `popover="auto"` light-dismisses on pointerdown, so by the time the click is
+ * handled the popover already closed and its open state can no longer tell a
+ * toggle-closed from a fresh open. Only the state at pointerdown can.
+ *
+ * Pure, and exported, because it is half of the decision this plugin exists to
+ * make -- the same reason `linkShortcutTarget` sits outside its plugin.
+ */
+export function pressClosesPopover(
+  range: LinkRange | null,
+  current: LinkRange | null,
+  popoverOpen: boolean,
+): boolean {
+  return !!range && popoverOpen && current?.from === range.from && current?.to === range.to
+}
+
+/**
+ * What a completed press on `range` should do to the popover.
+ *
+ * `selectionEmpty` is what keeps a SELECTION gesture from opening the editor.
+ * ProseMirror's own `handleClick` never fired after a drag of more than 4 px or
+ * a shift-click -- `MouseDown` sets `allowDefault` in both cases and `up()`
+ * then skips `handleSingleClick`. Reading the raw `click` event buys the
+ * reliability this plugin moved here for, and gives up that suppression, so the
+ * rule has to be stated: dragging to select part of a link's text, or
+ * shift-clicking to extend a selection onto one, popped the URL editor over the
+ * text the user was selecting.
+ *
+ * The selection answers both gestures at once, and it answers them AFTER
+ * ProseMirror has applied the gesture, so it needs no coordinate bookkeeping and
+ * no `shiftKey` test: a plain click leaves a caret, and every gesture that
+ * selects leaves a range.
+ */
+export function clickAction(
+  range: LinkRange | null,
+  pressClosed: boolean,
+  selectionEmpty: boolean,
+): 'open' | 'close' {
+  if (!range || pressClosed)
+    return 'close'
+  return selectionEmpty ? 'open' : 'close'
+}
+
+/**
+ * The intent of the press that is in flight, held between its pointerdown and
+ * its click.
+ *
+ * A separate object because it is the part with a state machine in it, and
+ * `createLinkClickPlugin` returns a `$prose` that no test can drive.
+ *
+ * The answer is captured on POINTERDOWN because the browser's light-dismiss
+ * pass for `popover="auto"` runs there: by click time `getLinkPopoverOpen()`
+ * already reads false for a press that dismissed the popover, so the click
+ * cannot tell "the user pressed the link to shut the editor" from "the user
+ * pressed the link to open it". The pointerdown can.
+ *
+ * That early capture is what makes the disarm rules load-bearing. A press must
+ * hand its answer to ONE click and no other:
+ *
+ *  - `take` disarms as it reads, so a second click with no press between them
+ *    cannot inherit the first one's intent.
+ *  - `disarm` is for a press that ends with no click at all -- the browser
+ *    takes the pointer for a scroll or a system gesture and sends
+ *    `pointercancel`.
+ *
+ * A click that no press armed falls back to `live()`, and that is the correct
+ * answer rather than a safe guess: no pointerdown ran, so no light-dismiss
+ * pass ran either, so the popover state the click reads is still truthful.
+ */
+export function createArmedPress() {
+  let armed: boolean | undefined
+  return {
+    /** Record what the press that just started should do to the popover. */
+    arm(closesPopover: boolean) {
+      armed = closesPopover
+    },
+    /** Drop the armed answer, for a press that will produce no click. */
+    disarm() {
+      armed = undefined
+    },
+    /** The armed answer, or `live()` when no press armed this click. Disarms. */
+    take(live: () => boolean): boolean {
+      const closesPopover = armed ?? live()
+      armed = undefined
+      return closesPopover
+    },
+  }
+}
+
 /** What the link popover needs from a click on a link. */
 export interface LinkClickHandlers {
   /** The clicked run, or null when the click was not on a link. */
@@ -153,13 +245,24 @@ export function createLinkShortcutPlugin(handlers: LinkClickHandlers) {
  * as usual, so clicking a link still behaves like clicking text.
  */
 export function createLinkClickPlugin(handlers: LinkClickHandlers) {
-  // Whether the popover was open for the run under the pointer, captured on
-  // POINTERDOWN. A `popover="auto"` light-dismisses on pointerdown, so by the
-  // time `handleClick` runs the popover has already closed and the open state
-  // can no longer tell a toggle-closed from a fresh open. The code-language
-  // label captures the same flag at the same moment, for the same reason.
-  let wasOpenForRange = false
+  // Whether the press that is in flight closes the popover rather than opening
+  // one -- see `createArmedPress` for why the answer is captured early and what
+  // disarms it.
+  const press = createArmedPress()
 
+  // BOTH halves are raw DOM handlers, and that is load-bearing. ProseMirror
+  // dispatches `handleDOMEvents` for every event it receives, but it decides for
+  // itself whether a click also becomes a `handleClick` call -- and after
+  // `applyLinkHref` rewrites the document and refocuses the editor, the NEXT
+  // click intermittently never reached `handleClick` at all. The popover then
+  // stayed shut with nothing logged and nothing thrown, because the only code
+  // that could reopen it never ran: saving a URL and clicking the link again
+  // failed to reopen the editor roughly one time in three.
+  //
+  // `posAtCoords` is what both handlers resolve through now, so they also agree
+  // on which run was pressed. `handleClick` was given a position ProseMirror had
+  // already mapped through its own selection handling, which is a second way for
+  // the two to disagree about the same gesture.
   return $prose(() => new Plugin({
     key: new PluginKey('link-click'),
     props: {
@@ -167,29 +270,38 @@ export function createLinkClickPlugin(handlers: LinkClickHandlers) {
         pointerdown(view, event) {
           const at = view.posAtCoords({ left: event.clientX, top: event.clientY })
           const range = at ? linkRangeAt(view.state, at.pos) : null
-          const current = handlers.getLinkRange()
-          wasOpenForRange = !!range
-            && handlers.getLinkPopoverOpen()
-            && current?.from === range.from
-            && current?.to === range.to
+          press.arm(pressClosesPopover(range, handlers.getLinkRange(), handlers.getLinkPopoverOpen()))
           return false
         },
-      },
-      handleClick(view, pos) {
-        const range = linkRangeAt(view.state, pos)
-        if (!range || wasOpenForRange) {
-          handlers.setLinkPopoverOpen(false)
-          handlers.setLinkRange(null)
+        // The one signal that a press ended with no click behind it. Disarming
+        // here keeps a scroll that started on a link from handing its intent to
+        // whatever click arrives next.
+        pointercancel() {
+          press.disarm()
           return false
-        }
-        handlers.setLinkRange(range)
-        // Next frame, so `showPopover()` runs after this click has finished
-        // propagating. Opening a `popover="auto"` from inside the click that is
-        // still travelling means the browser's own light-dismiss pass sees a
-        // pointerdown that landed outside the (now open) popover and closes it
-        // again in the same gesture.
-        requestAnimationFrame(() => handlers.setLinkPopoverOpen(true))
-        return false
+        },
+        click(view, event) {
+          const at = view.posAtCoords({ left: event.clientX, top: event.clientY })
+          const range = at ? linkRangeAt(view.state, at.pos) : null
+          // Read and disarm in one step, BEFORE the branch: the press is spent
+          // whichever way the click goes, and doing it once means neither exit
+          // can forget.
+          const closesPopover = press.take(() =>
+            pressClosesPopover(range, handlers.getLinkRange(), handlers.getLinkPopoverOpen()))
+          if (clickAction(range, closesPopover, view.state.selection.empty) === 'close') {
+            handlers.setLinkPopoverOpen(false)
+            handlers.setLinkRange(null)
+            return false
+          }
+          handlers.setLinkRange(range)
+          // Next frame, so `showPopover()` runs after this click has finished
+          // propagating. Opening a `popover="auto"` from inside the click that is
+          // still travelling means the browser's own light-dismiss pass sees a
+          // pointerdown that landed outside the (now open) popover and closes it
+          // again in the same gesture.
+          requestAnimationFrame(() => handlers.setLinkPopoverOpen(true))
+          return false
+        },
       },
     },
   }))

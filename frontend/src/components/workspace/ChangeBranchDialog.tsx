@@ -4,6 +4,7 @@ import { createSignal, Match, Show, Switch } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { openAgentRequestOptions } from '~/components/chat/providers/registry'
 import { labelRow } from '~/components/common/Dialog.css'
+import { PillGroup } from '~/components/common/PillGroup'
 import { AgentProviderSelector } from '~/components/shell/AgentProviderSelector'
 import { BlockedReasonNotice } from '~/components/shell/BlockedReasonNotice'
 import { isChangeBranchSubmitDisabled } from '~/components/shell/dialogValidation'
@@ -295,13 +296,17 @@ export const ChangeBranchDialog: Component<ChangeBranchDialogProps> = (props) =>
             <Show when={gitMode.gitMode() === GitMode.CreateWorktree}>
               <div>
                 <div class={labelRow}>Open as</div>
-                <select
-                  value={worktreeTabType()}
-                  onChange={e => setWorktreeTabType(Number(e.currentTarget.value) as WorktreeTabType)}
-                >
-                  <option value={TabType.AGENT}>Agent</option>
-                  <option value={TabType.TERMINAL}>Terminal</option>
-                </select>
+                {/* Two options, so pills rather than a menu -- the same
+                    threshold EnumControl uses. */}
+                <PillGroup
+                  label="Open as"
+                  options={[
+                    { value: TabType.AGENT, label: 'Agent' },
+                    { value: TabType.TERMINAL, label: 'Terminal' },
+                  ]}
+                  selected={v => v === worktreeTabType()}
+                  onSelect={v => setWorktreeTabType(v as WorktreeTabType)}
+                />
               </div>
               <Switch>
                 <Match when={worktreeTabType() === TabType.AGENT}>

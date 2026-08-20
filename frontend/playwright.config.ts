@@ -90,9 +90,12 @@ export default defineConfig({
   //     SQLite read that errored reported "idle, nothing to do", so the pass
   //     most in need of a retry never got one.
   //
-  // A failing test attaches the dev instance's output for its own window (see
-  // fixtures.ts) -- the hub and worker run out of process, and without it a
-  // worker-side failure arrives as a timeout on an unrelated locator.
+  // A failing test attaches its server's output for its own window -- the hub
+  // and worker run out of process, and without it a worker-side failure arrives
+  // as a timeout on an unrelated locator. Both fixture files do it, over one
+  // ring buffer (helpers/serverOutput.ts): the dev instance in fixtures.ts, and
+  // the separate hub+worker in process-control-fixtures.ts, which labels the
+  // two processes apart and spans the restarts its own specs drive.
   //
   // fullyParallel stays OFF. Turning it on schedules per test instead of per
   // file, which stops one heavy file from pinning a worker while the others

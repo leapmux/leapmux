@@ -1,0 +1,6 @@
+{
+  "name": "iTerm2-Color-Schemes (terminal palettes)",
+  "license": "MIT",
+  "url": "https://github.com/mbadolato/iTerm2-Color-Schemes",
+  "description": "The sixteen ANSI colours of every adapted theme's terminal, in `frontend/src/styles/themes/*.ts`, were read from this collection's Ghostty-format schemes (`Ayu`, `Catppuccin Latte`/`Mocha`, `Everforest Light`/`Dark Med`, `GitHub Light`/`Dark Default`, `Gruvbox Light`/`Dark`, `Nord Light`/`Nord`, `Rose Pine`/`Dawn`, `iTerm2 Solarized Light`/`Dark`, `TokyoNight Day`/`Night`, `Atom One Dark`). Two departures are recorded at their sites: the One theme's LIGHT set is derived from atom/one-light-syntax instead, because this collection's `Atom One Light` collapses cyan onto green and black onto brightBlack; and Everforest light's ANSI black is Everforest's own foreground, because the scheme's grey0 left no achromatic slot readable."
+}

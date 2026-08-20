@@ -1,6 +1,7 @@
 import { bundledLanguages } from 'shiki/langs'
 import { describe, expect, it } from 'vitest'
 import { createLazyOnigurumaHighlighter, resolveBundledLang } from './shikiLazyHighlighter'
+import { syntaxThemePair } from './shikiThemes'
 
 describe('resolveBundledLang', () => {
   it('resolves canonical bundled ids', () => {
@@ -51,7 +52,8 @@ describe('createLazyOnigurumaHighlighter', () => {
     expect(highlighter).not.toBeNull()
     const { tokens } = highlighter!.codeToTokens('puts 1', {
       lang: 'ruby',
-      themes: { light: 'github-light', dark: 'github-dark' },
+      // The pair this isolate holds -- Default's, unless a test set another.
+      themes: { light: syntaxThemePair().light, dark: syntaxThemePair().dark },
       defaultColor: false,
     })
     // With defaultColor:false, htmlStyle is an object of CSS-variable entries.

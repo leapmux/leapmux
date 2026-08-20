@@ -134,17 +134,23 @@ func checkWindowsReserved(s string) error {
 		if strings.ContainsAny(comp, `<>"|?*:`) {
 			return ErrReservedChar
 		}
-		if isReservedDeviceName(comp) {
+		if IsReservedDeviceName(comp) {
 			return ErrReservedName
 		}
 	}
 	return nil
 }
 
-// Matches DOS reserved device names (CON/PRN/AUX/NUL/COM0-9/LPT0-9)
-// case-insensitively, stripping the extension and any trailing dots/spaces —
-// so NUL, nul.txt, CON., and "aux .log" all match.
-func isReservedDeviceName(comp string) bool {
+// IsReservedDeviceName reports whether comp names a DOS reserved device
+// (CON/PRN/AUX/NUL/COM0-9/LPT0-9), case-insensitively, after stripping the
+// extension and any trailing dots or spaces — so NUL, nul.txt, CON., and
+// "aux .log" all match.
+//
+// Exported because a path is not the only thing Windows resolves this way. Any
+// code that MINTS a file name has to ask, and Windows resolves the name in every
+// directory and with any extension, so `con.md` opens the console device rather
+// than a file. `agent.SanitizePlanFilenameTitle` is the other caller.
+func IsReservedDeviceName(comp string) bool {
 	stem := comp
 	if dot := strings.IndexByte(stem, '.'); dot >= 0 {
 		stem = stem[:dot]

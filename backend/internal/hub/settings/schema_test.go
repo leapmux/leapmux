@@ -19,7 +19,10 @@ import (
 // CUSTOM_EDITORS table); a FieldCustom CustomID outside it would render
 // nothing in the preferences dialog.
 var knownCustomEditors = map[string]bool{
-	"keybindings": true,
+	"keybindings":   true,
+	"terminalTheme": true,
+	"syntaxTheme":   true,
+	"theme":         true,
 }
 
 // allDescriptors gathers BOTH descriptor sets the settings surface
@@ -59,6 +62,14 @@ func jsonFields(t *testing.T, typ reflect.Type) []string {
 		out = append(out, name)
 	}
 	return out
+}
+
+// isWholeValueCustom reports whether `fields` is the one-field declaration a
+// key uses when the client owns the editor for the entire value: a single
+// FieldCustom with no name, so it addresses the key rather than a property of
+// it. `theme`, `terminal_theme` and `keybindings` are the three.
+func isWholeValueCustom(fields []settings.Field) bool {
+	return len(fields) == 1 && fields[0].Kind == settings.FieldCustom && fields[0].Name == ""
 }
 
 // kindMatches reports whether a Field's UI kind can edit a Go value of
@@ -159,6 +170,17 @@ func TestSchemaMatchesValueTypes(t *testing.T) {
 			// The schema/value-shape agreement.
 			switch typ.Kind() {
 			case reflect.Struct:
+				// A struct whose ONE field is an unnamed FieldCustom is a
+				// whole-value custom editor -- the same shape a slice-shaped key
+				// takes below, and checked the same way. The per-field rule under
+				// it exists so a struct edited field-by-field cannot misdeclare
+				// or omit a field; a key whose client owns the entire editor
+				// declares no per-field schema to get wrong.
+				if isWholeValueCustom(ui.Fields) {
+					assert.True(t, kindMatches(settings.FieldCustom, typ),
+						"kind %s cannot edit a %s", ui.Fields[0].Kind, typ)
+					break
+				}
 				want := jsonFields(t, typ)
 				got := make([]string, 0, len(ui.Fields))
 				for _, f := range ui.Fields {

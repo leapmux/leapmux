@@ -18,7 +18,7 @@ import (
 	"github.com/leapmux/leapmux/util/validate"
 )
 
-// pendingResizeWaitCap bounds how long runTerminalStartup blocks waiting
+// pendingResizeWaitCap limits how long runTerminalStartup blocks waiting
 // for the frontend's first ResizeTerminal before spawning the shell. A
 // typical wait returns in a few tens of ms; the cap is a safety valve
 // for a wedged or unusually slow frontend.
@@ -957,12 +957,27 @@ func (svc *Service) broadcastTerminalSignal(terminalID string, sig terminal.Sign
 		// notificationBodyByteLimit caps it, because the process that wrote
 		// the OSC chose the length and the notification panel has no limit of
 		// its own.
+		title := validate.CleanName(sig.Title)
+		body := validate.StripUnreadable(sig.Body, notificationBodyByteLimit)
+		// A notification that carries no text says only what the BELL says, and
+		// the bell has the coalesce window this path does not -- a `cat` of a
+		// hostile file can emit maxNotificationsPerChunk of these per read.
+		//
+		// Both fields are tested AFTER the clean, rather than testing whether the
+		// clean emptied them: `dispatchOSC9` already emits an empty title for a
+		// bare `ESC ] 9 ; ST`, with no cleaning involved, so a "did the clean
+		// empty it?" guard would refuse the invisible-character form and admit
+		// the empty one. This drops the tab badge for such a signal too, which is
+		// the cost: an empty notification is not something the reader can act on.
+		if title == "" && body == "" {
+			return
+		}
 		svc.Watchers.BroadcastTerminalEvent(terminalID, &leapmuxv1.TerminalEvent{
 			TerminalId: terminalID,
 			Event: &leapmuxv1.TerminalEvent_Notification{
 				Notification: &leapmuxv1.TerminalNotification{
-					Title: validate.CleanName(sig.Title),
-					Body:  validate.StripUnreadable(sig.Body, notificationBodyByteLimit),
+					Title: title,
+					Body:  body,
 				},
 			},
 		})

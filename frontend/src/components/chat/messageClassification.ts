@@ -268,7 +268,8 @@ export function messageBubbleClass(kind: MessageCategory['kind'], source: Messag
  * Row class for the decoration a row paints across the FULL panel width, or ''
  * for a row that stays inside the list gutter. Three rows bleed: a message or a
  * thought paints a band behind itself, a turn-end divider runs its rule to both
- * edges, and a user message's bubble runs its right side to the right edge.
+ * edges, and a mirrored row's end-of-line card runs its right side to the right
+ * edge.
  *
  * Belongs on the ROW element, so that the measured row and the visible row carry
  * identical chrome and cannot wrap their text at different widths. Reach it
@@ -278,23 +279,49 @@ export function messageRowChromeClass(kind: MessageCategory['kind'], source: Mes
   const band = messageBandKind(kind)
   if (band)
     return band === 'thought' ? `${chatStyles.bandRow} ${chatStyles.bandRowThought}` : chatStyles.bandRow
-  // A turn-end rule reaches both edges; a user bubble's right side reaches the
-  // right one. Neither row paints anything itself, so both just widen.
-  if (kind === 'result_divider' || isMirroredMessageRow(kind, source))
-    return chatStyles.bleedRow
-  return ''
+  return rowIsWidened(kind, source) ? chatStyles.bleedRow : ''
+}
+
+/**
+ * True when the row is WIDENED to the panel edge.
+ *
+ * A turn-end rule reaches both edges; an end-of-line card's right side reaches
+ * the right one. Neither row paints anything itself, so both just widen.
+ *
+ * Stated as a boolean, and read by both `messageRowChromeClass` (which turns it
+ * into a class) and `bubbleRunsToRightEdge` (which needs the fact). The
+ * predicate used to recover it by splitting the class list and testing for one
+ * token, which held only while `bleedRow` stayed a SINGLE class name --
+ * vanilla-extract's `style([a, b])` returns several, and this module already
+ * builds five of its classes that way. The first composition would have turned
+ * the predicate false for every row, retreating every user message and plan card
+ * from the panel edge with nothing failing.
+ */
+export function rowIsWidened(kind: MessageCategory['kind'], source: MessageSource): boolean {
+  return !messageBandKind(kind) && (kind === 'result_divider' || isMirroredMessageRow(kind, source))
 }
 
 /**
  * True when the row's bubble runs its RIGHT side off the panel edge.
  *
- * Derived from `messageBubbleClass`, not from a condition written again here, so
- * the two cannot disagree about which bubbles bleed. That derivation also proves
- * the pairing the layout depends on: `sourceStyle` returns `userMessage` only for
- * a USER source on a non-meta kind, which is exactly `isMirroredMessageRow`, so a
- * bubble that reaches the edge always sits in a row that `messageRowChromeClass`
- * widened. (The stylesheet enforces it a second time: the bleed is declared only
- * inside `bleedRow` -- see `bubbleFlushRight`.)
+ * Asks the two questions the stylesheet's own rule asks. The declarations that
+ * move the bubble live only in the `bubbleFlushRight` rule, which is scoped to a
+ * `bleedRow` ancestor (~/components/chat/messageStyles.css.ts), so a bubble
+ * reaches the edge exactly when the row LAYS IT OUT at the end of the line and
+ * the row is WIDENED to that edge. Reading both facts from the ROW is what keeps
+ * the marker and the rule in step, and it makes the invariant the layout rests on
+ * -- a bleeding bubble always sits in a widened row -- true by construction.
+ *
+ * The identity test this replaced asked instead whether the bubble class was
+ * `userMessage`. It answered for one card only: a plan execution renders its own
+ * accent card, so it kept a whole gutter of space inside a row that
+ * `messageRowChromeClass` had already widened for it.
+ *
+ * Two row families drop out on their own, with no condition of their own here. A
+ * band kind gets `bandRow` rather than `bleedRow`, and its content stretches
+ * instead of hugging its text, so it is not a card that can meet an edge. A
+ * turn-end divider IS widened, but its row does not mirror -- its rule reaches
+ * both edges by a descendant's own margins.
  *
  * A delivery error is the one case that opts out. It stacks "Failed to deliver /
  * Retry / Delete" under the bubble, laid out against the row's CONTENT edge, so a
@@ -309,7 +336,9 @@ export function bubbleRunsToRightEdge(
   source: MessageSource,
   hasDeliveryError: boolean,
 ): boolean {
-  return !hasDeliveryError && messageBubbleClass(kind, source) === chatStyles.userMessage
+  return !hasDeliveryError
+    && isMirroredMessageRow(kind, source)
+    && rowIsWidened(kind, source)
 }
 
 /** Everything a mounted chat row's own element carries, for one `(kind, source)`. */

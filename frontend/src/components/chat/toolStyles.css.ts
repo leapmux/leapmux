@@ -2,7 +2,7 @@ import { globalStyle, style } from '@vanilla-extract/css'
 import { todoList } from '~/components/todo/TodoList.css'
 import { codeTypography, codeWrap } from '~/styles/codeBlock'
 import { clippedText } from '~/styles/shared.css'
-import { shikiDualThemeColors } from './shikiTokenColors.css'
+import { codeSurface } from './shikiTokenColors.css'
 import { LINE_THICKNESS, TOOL_BODY_INDENT } from './widgets/SpanLines.geometry'
 
 // Tool use/result messages - document-style, no bubble
@@ -99,8 +99,10 @@ globalStyle(`${toolResultContentAnsi} pre.shiki code`, {
 
 // Shiki dual-theme support for ANSI-rendered spans, and for JSON tool results that
 // render as token <span>s (data-shiki-token) in this same wrapper.
-shikiDualThemeColors(`${toolResultContentAnsi} pre.shiki span`, { bg: true })
-shikiDualThemeColors(`${toolResultContentAnsi} span[data-shiki-token]`, { bg: true })
+codeSurface(toolResultContentAnsi, 'page', [
+  { suffix: ' pre.shiki span', bg: true },
+  { suffix: ' span[data-shiki-token]', bg: true },
+])
 
 // Collapsed tool results: max 3rem height with fade-out gradient
 export const toolResultCollapsed = style({
@@ -167,8 +169,10 @@ globalStyle(`${toolInputSummary} pre.shiki code`, {
   fontFamily: 'inherit',
 })
 
-shikiDualThemeColors(`${toolInputSummary} pre.shiki span`, { bg: true })
-shikiDualThemeColors(`${toolInputSummary} span[data-shiki-token]`, { bg: true })
+codeSurface(toolInputSummary, 'page', [
+  { suffix: ' pre.shiki span', bg: true },
+  { suffix: ' span[data-shiki-token]', bg: true },
+])
 
 // Tool input detail text (natural language: descriptions, URLs, queries)
 export const toolInputText = style([clippedText, {

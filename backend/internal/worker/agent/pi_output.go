@@ -458,6 +458,15 @@ func (a *PiAgent) toolCallTitle(toolCallID string) string {
 	return a.toolCallDescriptions[toolCallID]
 }
 
+// logUpsertRefusal records a background-task row the registry REFUSED.
+//
+// A thin name over the shared `logRegistryRefusal`, kept because these seven
+// call sites read better without the two constant arguments repeated at each
+// one. The RULE is the shared helper's; this only names the provider once.
+func logUpsertRefusal(err error) {
+	logRegistryRefusal("pi", "upsert", err)
+}
+
 // piExtractDescription pulls a human label out of a tool_execution_start input.
 // The pi-subagents extension carries the spawn prompt as `description` (and a
 // `prompt`); fall back to the tool name.
@@ -473,11 +482,19 @@ func piExtractDescription(input json.RawMessage, toolName string) string {
 		// Both branches take the same cap. The description arrives as a
 		// label the model wrote, so it is no more bounded than the prompt is,
 		// and a caller that reads one branch must not have to know which.
-		if in.Description != "" {
-			return bgtask.CleanTitleRunes(bgtask.FirstLine(in.Description), 80)
+		//
+		// CLEAN FIRST, THEN TEST. A field that holds only characters a reader
+		// cannot see -- a run of zero-width spaces, a lone bidirectional mark --
+		// is non-empty as bytes and empty as text, so testing the RAW field
+		// entered the branch and then returned "": the row lost the prompt
+		// fallback AND the tool-name fallback, and a Pi subagent appeared in the
+		// sidebar with no label at all. `acpBridge.terminal/create` orders these
+		// the same way.
+		if desc := bgtask.CleanTitleRunes(bgtask.FirstLine(in.Description), 80); desc != "" {
+			return desc
 		}
-		if in.Prompt != "" {
-			return bgtask.CleanTitleRunes(bgtask.FirstLine(in.Prompt), 80)
+		if prompt := bgtask.CleanTitleRunes(bgtask.FirstLine(in.Prompt), 80); prompt != "" {
+			return prompt
 		}
 	}
 	return toolName
@@ -579,13 +596,13 @@ func piApplySubagentEnd(sink OutputSink, result json.RawMessage, toolCallID, tit
 					if err := sink.PersistChildPrompt(childID, prompt); err != nil {
 						slog.Warn("pi background re-key persist prompt failed", "tool_call_id", toolCallID, "error", err)
 					}
-					_ = sink.UpsertBackgroundTask(bgtask.Upsert{
+					logUpsertRefusal(sink.UpsertBackgroundTask(bgtask.Upsert{
 						RowKey:       agentID,
 						Kind:         bgtask.KindSubagent,
 						ChildAgentID: childID,
 						Title:        title,
 						Status:       bgtask.StatusRunning,
-					})
+					}))
 				}
 				if err := sink.CloseBackgroundTask(toolCallID, bgtask.StatusCompleted); err != nil {
 					slog.Warn("pi background re-key close failed", "tool_call_id", toolCallID, "error", err)
@@ -606,9 +623,9 @@ func piApplySubagentEnd(sink OutputSink, result json.RawMessage, toolCallID, tit
 			// A final-status upsert already stamps ended_at and the monotonic-final
 			// guard makes the row absorbing; no separate CloseBackgroundTask needed
 			// (it would early-return on the now-finished row).
-			_ = sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: rowKey, Kind: bgtask.KindSubagent, Title: title, Status: status})
+			logUpsertRefusal(sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: rowKey, Kind: bgtask.KindSubagent, Title: title, Status: status}))
 		} else {
-			_ = sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: rowKey, Kind: bgtask.KindSubagent, Title: title, ActiveForm: d.Activity, Status: bgtask.StatusRunning})
+			logUpsertRefusal(sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: rowKey, Kind: bgtask.KindSubagent, Title: title, ActiveForm: d.Activity, Status: bgtask.StatusRunning}))
 		}
 		return
 	}
@@ -629,9 +646,9 @@ func piApplySubagentEnd(sink OutputSink, result json.RawMessage, toolCallID, tit
 			if rowTitle == "" {
 				rowTitle = "background agent " + m[1]
 			}
-			_ = sink.UpsertBackgroundTask(bgtask.Upsert{
+			logUpsertRefusal(sink.UpsertBackgroundTask(bgtask.Upsert{
 				RowKey: toolCallID, Kind: bgtask.KindSubagent, Title: rowTitle, Status: bgtask.StatusRunning,
-			})
+			}))
 		}
 	}
 }
@@ -660,9 +677,9 @@ func piApplySubagentNotification(sink OutputSink, raw []byte) {
 			return
 		}
 		if status, ok := piFinalStatus(d.Status); ok {
-			_ = sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: rowKey, Kind: bgtask.KindSubagent, Status: status})
+			logUpsertRefusal(sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: rowKey, Kind: bgtask.KindSubagent, Status: status}))
 		} else {
-			_ = sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: rowKey, Kind: bgtask.KindSubagent, ActiveForm: d.Activity, Status: bgtask.StatusRunning})
+			logUpsertRefusal(sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: rowKey, Kind: bgtask.KindSubagent, ActiveForm: d.Activity, Status: bgtask.StatusRunning}))
 		}
 	}
 	applyOne(msg.Details)
@@ -679,7 +696,7 @@ func piApplySubagentNotification(sink OutputSink, raw []byte) {
 				continue
 			}
 			if status, ok := piFinalStatus(o.Status); ok {
-				_ = sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: o.AgentID, Kind: bgtask.KindSubagent, Status: status})
+				logUpsertRefusal(sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: o.AgentID, Kind: bgtask.KindSubagent, Status: status}))
 			}
 		}
 	}

@@ -18,12 +18,13 @@ const NameByteLimit = 128
 
 // cleanScanLimit is where CleanNameChars stops appending.
 //
-// One byte past the name limit is enough for both callers. CleanName cuts to
-// NameByteLimit anyway, so a byte past it can never reach the result.
-// SanitizeName only has to SEE that the result is longer than the limit to
-// refuse it, and a result that stopped here is at least one byte longer.
+// One byte past the name limit is enough for its caller: SanitizeName only has
+// to SEE that the result is longer than the limit to refuse it, and a result
+// that stopped here is at least one byte longer. CleanNameTo derives the same
+// stop from ITS byte limit rather than reading this constant, because the stop
+// caps the result and a fixed one would cap every label at the name limit.
 //
-// The stop bounds the OUTPUT, not the input. It caps the allocation at 129
+// The stop limits the OUTPUT, not the input. It caps the allocation at 129
 // bytes for a title that no name rule can use, such as a whole log line that
 // a provider reported as a "title". It does not cap the SCAN: an input that
 // holds only whitespace, control characters, and invisible characters never
@@ -170,8 +171,10 @@ func IsUnreadable(r rune) bool {
 // whitespace to one space, and trims both ends. It never fails.
 //
 // scanLimit stops the append once the result reaches that many bytes, so the
-// result holds at most scanLimit+3 bytes. A scanLimit of zero or less scans
-// the whole input, and the caller must then bound the INPUT itself.
+// result holds at most scanLimit+4 bytes: the check runs at the TOP of an
+// iteration, and one iteration can still flush a pending space (1 byte) and
+// then write a 4-byte rune. A scanLimit of zero or less scans the whole input,
+// and the caller must then bound the INPUT itself.
 //
 // Call CleanName instead unless you need the character step WITHOUT the
 // NameByteLimit cut. extractPlanTitle is the one caller that does: it strips
@@ -274,10 +277,22 @@ func CleanNameChars(name string, scanLimit int) string {
 //
 // It differs from CleanNameChars in the two ways that a NON-name value needs.
 // It does not fold a whitespace run, because a key must keep the bytes that
-// tell two keys apart, and a message must keep its line breaks. It does not
-// trim, for the same reason. What stays is the part that every value shares:
-// a reader cannot see the removed characters, so they can only hide text or
-// reverse what the reader sees.
+// tell two keys apart. It does not trim, for the same reason. What stays is the
+// part that every value shares: a reader cannot see the removed characters, so
+// they can only hide text or reverse what the reader sees.
+//
+// WHITESPACE SURVIVES, INCLUDING A LINE BREAK. The whitespace test runs BEFORE
+// the control test, the same order and for the same reason CleanNameChars uses
+// it: \t, \n, \v, \f, \r and U+0085 are Cc AND whitespace at once, so a
+// control test that ran first deleted them with nothing in their place and
+// glued the words on either side together -- "Running tests\nfor the parser"
+// became "Running testsfor the parser". A reader SEES a line break, so it is
+// not what this helper exists to remove. Every caller is a label or a body
+// whose whitespace is the provider's: the background-task row fields and the
+// OSC notification body.
+//
+// It still removes every NON-whitespace control character, so an ESC, a bell
+// and a bidirectional override cannot reach a tab strip or a notification.
 //
 // It never grows s, for the reason CleanNameChars does not: the loop decodes
 // by hand, so it strips an invalid byte instead of writing a 3-byte U+FFFD in
@@ -297,7 +312,10 @@ func StripUnreadable(s string, byteLimit int) string {
 		if r == utf8.RuneError && size == 1 {
 			continue
 		}
-		if IsUnreadable(r) {
+		// Whitespace first. See the doc comment: six of these characters are
+		// Cc as well, and a control test that claimed them first joined two
+		// words into one.
+		if !IsNameWhitespace(r) && IsUnreadable(r) {
 			continue
 		}
 		if byteLimit > 0 && b.Len()+utf8.RuneLen(r) > byteLimit {
@@ -364,13 +382,31 @@ func SanitizeName(name string) (string, error) {
 // in `frontend/src/lib/validate.ts`; testdata/title_cleaning_conformance.json
 // pins the two against each other.
 func CleanName(name string) string {
-	return strings.TrimSpace(truncateToBytes(CleanNameChars(name, cleanScanLimit), NameByteLimit))
+	return CleanNameTo(name, NameByteLimit)
 }
 
-// truncateToBytes cuts s to at most limit UTF-8 bytes. It moves the cut back
+// CleanNameTo is CleanName with a caller-supplied byte limit. Every word of
+// CleanName's contract holds, with byteLimit in place of NameByteLimit.
+//
+// It exists for a one-line label that is NOT a tab title and so does not want
+// that limit: a background task's group heading is model-written prose of the
+// same KIND as a title -- one line, read as a heading, with no structure of its
+// own to keep -- but it is capped at LabelByteLimit beside its sibling label
+// fields. Deriving both from one function keeps the rule in one place; passing
+// the limit is what lets the two callers differ where they must.
+//
+// THE SCAN LIMIT TRAVELS WITH THE BYTE LIMIT, for the reason cleanScanLimit
+// states: one byte past the limit is all the cut needs to see. A fixed scan
+// limit would silently cap every result at NameByteLimit whatever byteLimit
+// said, so a 512-byte label came back 129 bytes long.
+func CleanNameTo(name string, byteLimit int) string {
+	return strings.TrimSpace(TruncateToBytes(CleanNameChars(name, byteLimit+1), byteLimit))
+}
+
+// TruncateToBytes cuts s to at most limit UTF-8 bytes. It moves the cut back
 // to the start of a rune, so the result never holds a partial rune. A limit of
 // zero or less keeps nothing.
-func truncateToBytes(s string, limit int) string {
+func TruncateToBytes(s string, limit int) string {
 	if limit <= 0 {
 		return ""
 	}

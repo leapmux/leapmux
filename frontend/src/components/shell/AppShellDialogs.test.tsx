@@ -11,6 +11,7 @@ import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createDialogState, createToggleDialog, createUpdatableDialogState } from '~/hooks/createDialogState'
 import { makeInspectResp, makeWorktreeRemovalResp } from '~/test-support/gitBranchFixtures'
+import { pickMenuValue } from '~/test-support/menu'
 import { AppShellDialogs } from './AppShellDialogs'
 
 // Replace the module wholesale, like the sibling DeleteBranchDialog suite.
@@ -155,8 +156,7 @@ function renderDialogs(
 
 async function chooseSwitchToAndConfirm(branch: string) {
   await waitFor(() => expect(screen.getByText(/Switch this working directory to:/)).toBeInTheDocument())
-  const select = screen.getAllByRole('combobox')[0] as HTMLSelectElement
-  fireEvent.change(select, { target: { value: branch } })
+  pickMenuValue('branch-select-menu', branch)
   // ConfirmButton arms on the first click and fires on the second.
   fireEvent.click(screen.getByRole('button', { name: 'Delete branch' }))
   await waitFor(() => expect(screen.getByRole('button', { name: 'Confirm?' })).toBeInTheDocument())

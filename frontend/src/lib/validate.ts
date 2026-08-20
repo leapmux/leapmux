@@ -113,6 +113,14 @@ const NAME_WHITESPACE_G = new RegExp(`[${NAME_WHITESPACE_CLASS}]+`, 'g')
  */
 const EDGE_WHITESPACE = new RegExp(`^[${NAME_WHITESPACE_CLASS}]|[${NAME_WHITESPACE_CLASS}]$`)
 
+// Every whitespace character the pinned class holds EXCEPT the plain U+0020.
+// Built by subtracting the space from the shared class, so a character added to
+// `NAME_WHITESPACE_CLASS` is covered here the same day, and the Go copy reads
+// its own pinned table the same way (`r != ' ' && IsNameWhitespace(r)`).
+const INTERIOR_NON_PLAIN_WHITESPACE = new RegExp(
+  `[${NAME_WHITESPACE_CLASS.replace('\\u0020', '')}]`,
+)
+
 /**
  * The maximum size of a name or a title, in UTF-8 BYTES. Mirrors
  * `validate.NameByteLimit`.
@@ -260,16 +268,22 @@ export function sanitizeDisplayName(displayName: string, fallback: string): { va
 }
 
 /**
- * A character forbidden in a git branch name: the space, `~ ^ : ? * [ ] \ $
- * %`, and the control blocks.
+ * A character forbidden in a git branch name: the space, `~ ^ : ? * [ ] \`, and
+ * the control blocks.
  *
- * The control blocks run to U+009F, not to U+007F, because the worker copy
- * (`gitutil.ValidateBranchName`) asks `unicode.IsControl`, and the Unicode Cc
- * category is BOTH U+0000-U+001F and U+007F-U+009F. A class that stopped at
- * U+007F let a name through that the worker then refused.
+ * This is what GIT refuses, and nothing more. `$`, `%` and `]` are absent
+ * because git accepts them: refusing them made the panel reject an existing
+ * branch that the repository already holds and that `for-each-ref` lists, so
+ * the user saw a name they could not act on. git forbids `[` and not `]`.
+ *
+ * The class stops at U+007F. git refuses the ASCII controls and DEL; the C1
+ * block U+0080-U+009F is not a git rule. The worker copy asked
+ * `unicode.IsControl`, which reports the whole Unicode Cc category, and this
+ * class was widened to match that over-strictness rather than to match git --
+ * both are now narrowed to git's own rule.
  */
 // eslint-disable-next-line no-control-regex
-const BRANCH_FORBIDDEN_CHARS = /[\x00-\x1F\x7F-\x9F ~^:?*[\]\\$%]/
+const BRANCH_FORBIDDEN_CHARS = /[\x00-\x1F\x7F ~^:?*[\\]/
 
 /**
  * The maximum size of a git branch name, in UTF-8 BYTES. Mirrors
@@ -298,11 +312,27 @@ export function validateBranchName(name: string): string | null {
   if (BRANCH_FORBIDDEN_CHARS.test(name)) {
     return 'Branch name contains invalid characters'
   }
-  if (name.startsWith('/') || name.startsWith('.') || name.startsWith('-') || name.startsWith('@')) {
-    return 'Branch name must not start with /, ., -, or @'
+  // `@` alone is the one refname git refuses; a LEADING `@` is legal.
+  if (name === '@') {
+    return 'Branch name must not be the single character @'
   }
-  if (name.endsWith('/') || name.endsWith('.') || name.endsWith('.lock')) {
-    return 'Branch name must not end with /, ., or .lock'
+  // The leading `-` is the one refusal that goes BEYOND git, and it is
+  // deliberate: the worker hands the name to git as a positional argument, and
+  // git's option parser would read a leading `-` as a flag.
+  if (name.startsWith('/') || name.startsWith('.') || name.startsWith('-')) {
+    return 'Branch name must not start with /, ., or -'
+  }
+  if (name.endsWith('/') || name.endsWith('.')) {
+    return 'Branch name must not end with / or .'
+  }
+  // git refuses `.lock` on EVERY slash-separated component, not on the last one
+  // alone: `a.lock/b` is not a valid ref.
+  if (name.split('/').some(comp => comp.endsWith('.lock'))) {
+    return 'Branch name must not have a path component that ends with .lock'
+  }
+  // `@{` is git's reflog syntax and is refused anywhere in a ref name.
+  if (name.includes('@{')) {
+    return 'Branch name must not contain @{'
   }
   if (name.includes('..')) {
     return 'Branch name must not contain ..'
@@ -419,6 +449,16 @@ export function validateSessionId(value: string): string | null {
     return 'Session ID contains invalid characters'
   if (EDGE_WHITESPACE.test(value))
     return 'Session ID must not start or end with whitespace'
+  // Whitespace that is NOT the plain space, anywhere inside the token. AFTER
+  // the edge test, so a leading or trailing one reports the edge rule that
+  // tells the user what to fix. The Go copy runs the two in the same order.
+  //
+  // `\n` and `\t` are already refused as control characters, but U+2028 means
+  // the same thing and is not one, and U+00A0 and U+3000 render as a space
+  // while carrying different bytes -- two tokens a reader cannot tell apart,
+  // naming different sessions. The plain U+0020 stays legal inside a token.
+  if (INTERIOR_NON_PLAIN_WHITESPACE.test(value))
+    return 'Session ID contains invalid characters'
   if (value.startsWith('-'))
     return 'Session ID must not start with a hyphen'
   return null

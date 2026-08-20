@@ -505,7 +505,10 @@ export async function pushBranchViaAPI(
 /** Wait for a worker to be available (retry with backoff). */
 export async function waitForWorker(page: Page) {
   const dialog = page.getByRole('dialog')
-  const workerSelect = dialog.locator('select').first()
+  // The worker picker is a menu. Its TRIGGER shows only the selected worker,
+  // where the `<select>` this replaced held every option's text at once -- so
+  // this reads the trigger, which is the worker the dialog would actually use.
+  const workerSelect = dialog.getByTestId('worker-select-menu-trigger')
   const refreshBtn = dialog.getByLabel('Refresh workers')
   for (let attempt = 0; attempt < 6; attempt++) {
     try {

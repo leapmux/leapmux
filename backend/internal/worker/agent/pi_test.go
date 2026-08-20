@@ -862,9 +862,9 @@ func TestPiLaunchDefaults(t *testing.T) {
 	// goes stale when the id moves: the picker would show "GPT-5.5" for a
 	// glm-5.3 agent. Compared case-insensitively, because the label
 	// capitalizes what the id spells in lower case.
-	t.Run("the display name names the default model", func(t *testing.T) {
+	t.Run("the display name identifies the default model", func(t *testing.T) {
 		assert.True(t, strings.EqualFold(piDefaultModels[0].DisplayName, PiDefaultModel),
-			"display name %q must name model %q", piDefaultModels[0].DisplayName, PiDefaultModel)
+			"display name %q must identify model %q", piDefaultModels[0].DisplayName, PiDefaultModel)
 	})
 
 	// A cold agent -- no catalog yet, no provider chosen -- is the state every

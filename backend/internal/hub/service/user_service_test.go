@@ -268,7 +268,7 @@ func TestUserService_ListUserSettings_Default(t *testing.T) {
 		assert.False(t, byKey[d.GetKey()].GetCustomized(), "a fresh user has no stored value for %q", d.GetKey())
 	}
 	// The effective value of an absent key is the decoded default.
-	assert.JSONEq(t, `"system"`, byKey["theme"].GetEffectiveJson())
+	assert.JSONEq(t, `{"name":"default","mode":"system"}`, byKey["theme"].GetEffectiveJson())
 	assert.JSONEq(t, `{"enabled":false}`, byKey["ui_fonts"].GetEffectiveJson())
 }
 
@@ -279,7 +279,7 @@ func TestUserService_UpdateUserSetting_PerKeyMerge(t *testing.T) {
 
 	_, err := env.client.UpdateUserSetting(context.Background(), authedReq(&leapmuxv1.UpdateUserSettingRequest{
 		Key:         "theme",
-		PartialJson: `"dark"`,
+		PartialJson: `{"name":"nord","mode":"dark"}`,
 	}, env.token))
 	require.NoError(t, err)
 
@@ -298,7 +298,7 @@ func TestUserService_UpdateUserSetting_PerKeyMerge(t *testing.T) {
 		byKey[v.GetKey()] = v
 	}
 	assert.True(t, byKey["theme"].GetCustomized())
-	assert.JSONEq(t, `"dark"`, byKey["theme"].GetEffectiveJson())
+	assert.JSONEq(t, `{"name":"nord","mode":"dark"}`, byKey["theme"].GetEffectiveJson())
 	assert.True(t, byKey["ui_fonts"].GetCustomized())
 	assert.JSONEq(t, `{"enabled":true,"fonts":["Inter","Roboto"]}`, byKey["ui_fonts"].GetEffectiveJson())
 }
@@ -410,7 +410,7 @@ func TestUserService_UpdateUserSetting_EmptyKeyAndMalformedBlob(t *testing.T) {
 	}))
 	_, err = env.client.UpdateUserSetting(context.Background(), authedReq(&leapmuxv1.UpdateUserSettingRequest{
 		Key:         "theme",
-		PartialJson: `"dark"`,
+		PartialJson: `{"name":"nord","mode":"dark"}`,
 	}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
@@ -693,7 +693,7 @@ func TestRequestEmailChange_ConfigOn_PendingEmail(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Set email_verified=1 so the user is not gated by verification interceptor.
+	// Set email_verified=1 so the verification interceptor does not refuse the user.
 	err = st.Users().UpdateEmail(context.Background(), store.UpdateUserEmailParams{
 		Email:         "old@example.com",
 		EmailVerified: true,

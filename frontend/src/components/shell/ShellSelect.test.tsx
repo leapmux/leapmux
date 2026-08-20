@@ -1,7 +1,10 @@
 /// <reference types="vitest/globals" />
-import { fireEvent, render, screen } from '@solidjs/testing-library'
+import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
+import { menuOptions, menuTrigger, menuTriggerText, pickMenuValue } from '~/test-support/menu'
 import { ShellSelect } from './ShellSelect'
+
+const MENU = 'shell-select-menu'
 
 function renderShellSelect(overrides: Partial<Parameters<typeof ShellSelect>[0]> = {}) {
   const onChange = vi.fn()
@@ -14,52 +17,49 @@ function renderShellSelect(overrides: Partial<Parameters<typeof ShellSelect>[0]>
     ...overrides,
   }
   render(() => <ShellSelect {...props} />)
-  const select = screen.getByRole('combobox') as HTMLSelectElement
-  return { select, onChange }
+  return { onChange }
 }
 
 describe('shellSelect', () => {
-  it('shows the loading sentinel option while loading', () => {
-    const { select } = renderShellSelect({ loading: true })
-    expect(select.disabled).toBe(true)
-    expect(select.value).toBe('')
-    expect(Array.from(select.options).map(o => o.textContent)).toContain('Loading shells...')
+  it('shows the loading sentinel while loading', () => {
+    // The sentinel moved from an `<option>` to the trigger's own label: a menu
+    // has no list to hold it while the list is what has not arrived.
+    renderShellSelect({ loading: true })
+    expect(menuTrigger(MENU)).toBeDisabled()
+    expect(menuTriggerText(MENU)).toContain('Loading shells...')
   })
 
-  it('shows the empty sentinel option when not loading and no shells', () => {
-    const { select } = renderShellSelect({ loading: false, shells: [] })
-    expect(select.disabled).toBe(true)
-    expect(Array.from(select.options).map(o => o.textContent)).toContain('No shells available')
+  it('shows the empty sentinel when not loading and no shells', () => {
+    renderShellSelect({ loading: false, shells: [] })
+    expect(menuTrigger(MENU)).toBeDisabled()
+    expect(menuTriggerText(MENU)).toContain('No shells available')
   })
 
   it('renders one option per shell with the default suffix on the matching one', () => {
-    const { select } = renderShellSelect({
+    renderShellSelect({
       shells: ['/bin/zsh', '/bin/bash'],
       defaultShell: '/bin/zsh',
       value: '/bin/zsh',
     })
-    expect(select.disabled).toBe(false)
-    const labels = Array.from(select.options).map(o => o.textContent)
-    expect(labels).toEqual(['/bin/zsh (default)', '/bin/bash'])
+    expect(menuOptions(MENU)).toEqual(['/bin/zsh (default)', '/bin/bash'])
   })
 
   it('does not suffix any option when defaultShell is empty', () => {
-    const { select } = renderShellSelect({
-      shells: ['/bin/zsh', '/bin/bash'],
-      defaultShell: '',
-      value: '/bin/zsh',
-    })
-    const labels = Array.from(select.options).map(o => o.textContent)
-    expect(labels).toEqual(['/bin/zsh', '/bin/bash'])
+    renderShellSelect({ shells: ['/bin/zsh', '/bin/bash'], defaultShell: '' })
+    expect(menuOptions(MENU)).toEqual(['/bin/zsh', '/bin/bash'])
   })
 
   it('fires onChange with the picked value', () => {
-    const { select, onChange } = renderShellSelect({
-      shells: ['/bin/zsh', '/bin/bash'],
-      defaultShell: '/bin/zsh',
-      value: '/bin/zsh',
-    })
-    fireEvent.change(select, { target: { value: '/bin/bash' } })
+    const { onChange } = renderShellSelect({ shells: ['/bin/zsh', '/bin/bash'], value: '/bin/zsh' })
+    pickMenuValue(MENU, '/bin/bash')
     expect(onChange).toHaveBeenCalledWith('/bin/bash')
+  })
+
+  it('checks the option that matches the value, and only it', () => {
+    // What replaced `select.value`. A menu carries its selection in
+    // `aria-checked`, derived from the prop on every render -- which is why
+    // there is no DOM state left to fall out of step with the caller.
+    renderShellSelect({ shells: ['/bin/zsh', '/bin/bash'], value: '/bin/bash' })
+    expect(menuTriggerText(MENU)).toContain('/bin/bash')
   })
 })

@@ -1,5 +1,8 @@
+import type { AnsiPalette } from '~/styles/themes'
 import { globalStyle, style, styleVariants } from '@vanilla-extract/css'
-import { darkTerminalTheme, lightTerminalTheme } from '~/lib/terminal'
+import { DARK_VARIANTS, LIGHT_VARIANTS, resolveVariant } from '~/styles/themes'
+import { defaultTheme } from '~/styles/themes/default'
+import { darkVariantSelector, lightVariantSelector } from '~/styles/variantSelectors'
 import {
   BRIDGE_BOTTOM,
   BRIDGE_DIAMETER,
@@ -200,35 +203,54 @@ globalStyle(`${spanLinePassthrough}:last-child::before`, {
 
 /**
  * Span line color palette (cycled by color index).
- * Uses the same Dimidium color scheme as the xterm.js terminal themes
- * defined in terminal.ts, with separate palettes for light and dark modes.
+ *
+ * Borrows each theme's ANSI set, which is a categorical palette someone already
+ * balanced -- eight hues chosen to stay apart from each other. It follows the UI
+ * theme rather than the terminal one: these rails are drawn in the chat, so they
+ * belong to the app's palette even when the user points their terminal at a
+ * different theme.
  */
-function pickSpanColors(theme: { blue?: string, green?: string, brightRed?: string, magenta?: string, brightMagenta?: string, cyan?: string, yellow?: string, red?: string }): string[] {
+function pickSpanColors(ansi: AnsiPalette): string[] {
   return [
-    theme.blue!,
-    theme.green!,
-    theme.brightRed!, // orange-ish
-    theme.magenta!,
-    theme.brightMagenta!,
-    theme.cyan!,
-    theme.yellow!,
-    theme.red!,
+    ansi.blue,
+    ansi.green,
+    ansi.brightRed, // orange-ish
+    ansi.magenta,
+    ansi.brightMagenta,
+    ansi.cyan,
+    ansi.yellow,
+    ansi.red,
   ]
 }
 
-const DARK_PALETTE = pickSpanColors(darkTerminalTheme)
-const LIGHT_PALETTE = pickSpanColors(lightTerminalTheme)
-export const PALETTE_SIZE = DARK_PALETTE.length
+export const PALETTE_SIZE = 8
 
 // Generate palette CSS custom properties for theme switching.
-// Each color index gets a --span-palette-N variable that changes with data-theme.
+//
+// One rule per VARIANT, through the shared selectors in
+// ~/styles/variantSelectors.ts, which is where the specificity argument lives.
+// Keep the light loop before the dark one for the reason stated there. Emitting
+// only `:root` / `[data-theme="dark"]` here would leave every non-default
+// theme's span rails painted in Default's ANSI hues.
 const paletteIndices = Array.from({ length: PALETTE_SIZE }, (_, i) => i)
-globalStyle(':root', {
-  vars: Object.fromEntries(paletteIndices.map(i => [`--span-palette-${i}`, LIGHT_PALETTE[i]])),
-})
-globalStyle('[data-theme="dark"]', {
-  vars: Object.fromEntries(paletteIndices.map(i => [`--span-palette-${i}`, DARK_PALETTE[i]])),
-})
+function spanVars(ansi: AnsiPalette): Record<string, string> {
+  const colors = pickSpanColors(ansi)
+  return Object.fromEntries(paletteIndices.map(i => [`--span-palette-${i}`, colors[i]!]))
+}
+
+globalStyle(':root', { vars: spanVars(resolveVariant(defaultTheme, undefined, 'light').terminal) })
+for (const variant of LIGHT_VARIANTS) {
+  globalStyle(
+    lightVariantSelector(variant),
+    { vars: spanVars(variant.terminal) },
+  )
+}
+for (const variant of DARK_VARIANTS) {
+  globalStyle(
+    darkVariantSelector(variant),
+    { vars: spanVars(variant.terminal) },
+  )
+}
 
 export const spanLineColors = styleVariants(
   Object.fromEntries(paletteIndices.map(i => [`color${i}`, { vars: { '--span-line-color': `var(--span-palette-${i})` } }])),

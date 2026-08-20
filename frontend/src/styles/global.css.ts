@@ -13,10 +13,15 @@
 //   --transition, --transition-fast
 //   --z-{dropdown,modal}
 
+import type { ThemeVariant } from '~/styles/themes'
 import { globalFontFace, globalLayer, globalStyle } from '@vanilla-extract/css'
 import { DEFAULT_MONO_FONT_FAMILY } from '~/lib/fontStack'
-import { darkPalette, lightPalette } from '~/styles/palette'
+import { blendedCodeTint, blendedTint, CODE_BLOCK_TINT_PERCENT, CODE_CARD_TINT_PERCENT, opaqueCodeTint } from '~/styles/codePalette'
+import { DIFF_TINT } from '~/styles/diffTint'
+import { ALL_VARIANTS, DARK_VARIANTS, LIGHT_VARIANTS, resolveVariant } from '~/styles/themes'
+import { defaultTheme } from '~/styles/themes/default'
 import { breakpoints } from '~/styles/tokens'
+import { darkVariantSelector, lightVariantSelector } from '~/styles/variantSelectors'
 
 globalFontFace('Hack NF', {
   src: 'url("/fonts/HackNerdFont-3.003-Regular.woff2") format("woff2")',
@@ -141,32 +146,276 @@ globalStyle('input, textarea, select', {
   },
 })
 
-// LeapMux color scheme overrides (light theme)
-globalStyle(':root', {
+// The pre-hydration fallback. `~/lib/themeStore` writes `data-ui-theme` and
+// `data-theme` onto <html> from an effect, so the very first paint has neither
+// attribute; without this rule it would have no LeapMux palette at all and fall
+// back to Oat's own colours.
+//
+// `html` (0,0,1), NOT `:root` (0,1,0). The variant loops below select on a bare
+// `[data-ui-light="X"]`, which is ALSO (0,1,0), so a `:root` fallback tied them
+// and only declaration order decided the winner -- the arrangement that let the
+// code palette's twin of this rule outrank every variant and paint Default-light
+// under all thirty. Lowering it makes the contest a specificity one, which no
+// reordering of this module and no rule added in another `.css.ts` can revive.
+// It still beats Oat's own `:root`, which sits inside `@layer theme`: an
+// unlayered declaration wins over a layered one whatever the specificity.
+globalStyle('html', {
+  // Narrowed from Oat's `light dark`, and for the same reason the palette is
+  // stated here: until the effect writes `data-theme`, the app IS light, and
+  // `light-dark()` must not answer for a palette that is not showing.
+  colorScheme: 'light',
   vars: {
-    ...lightPalette,
+    ...resolveVariant(defaultTheme, undefined, 'light').palette,
 
     // Typography — wire user-configurable fonts into Oat's variables. Not in
-    // palette.ts: NOTICE.html has no preference store to read from, so it
-    // declares its own literals instead of these indirections.
+    // the theme modules: NOTICE.html has no preference store to read from, so
+    // it declares its own literals instead of these indirections.
     '--font-sans': `var(--ui-font-family, system-ui, sans-serif)`,
     '--font-mono': `var(--mono-font-family, ${DEFAULT_MONO_FONT_FAMILY})`,
   },
 })
 
-// LeapMux color scheme overrides (dark theme)
-globalStyle('[data-theme="dark"]', {
-  vars: darkPalette,
+// One rule per VARIANT: every light variant first, then every dark one.
+//
+// `data-theme` says which POLARITY is showing and nothing else, so which
+// variant of that polarity is painted has to arrive separately. That is what
+// `data-ui-light` / `data-ui-dark` on <html> carry -- the resolved variant for
+// each half -- and it is why a theme can offer four flavours without adding a
+// fourth `data-theme` value that every subtree selector would have to learn.
+//
+// The DESCENDANT half of each selector is what lets a subtree carry a different
+// variant than the page. `TerminalView` renders `data-theme={terminalThemeMode()}`
+// on its container so a dark terminal inside a light UI gets dark chrome, and
+// before this that worked in one direction only: light used to be "the attribute
+// is absent", so there was no `[data-theme="light"]` rule and a LIGHT terminal
+// inside a dark UI still painted dark chrome. Both directions work now.
+//
+// The specificity is deliberate, not incidental. Every selector below except the
+// bare `[data-ui-light="X"]` is (0,2,0), so:
+//   - on one element, the dark rule wins over the light rule because it is
+//     declared second, which is what <html> with both attributes needs;
+//   - an element carrying the OPPOSITE `data-theme` matches only its own rule,
+//     so a nested override wins on its own subtree regardless of order.
+//
+// KEEP THESE LOOPS AFTER THE `:root` BLOCK ABOVE. The bare `[data-ui-light="X"]`
+// is (0,1,0), the same specificity as `:root`, so a non-default light palette
+// beats the fallback by DECLARATION ORDER alone. Moving the fallback below them
+// would leave every light variant painting the default palette, and only the
+// dark variants would appear to work.
+//
+// KEEP THE LIGHT LOOP BEFORE THE DARK ONE, for the same reason: on <html>, which
+// carries both attributes, the dark rule wins over the light one only because it
+// is declared second.
+//
+// Do not scope these to `html` — that would raise the specificity of the
+// self-match above the descendant match and silently kill subtree theming.
+//
+// `color-scheme` rides along with the palette, in the same rule, because it
+// answers the same question and must never fall out of step with it. Oat sets
+// `color-scheme: light dark` at :root, which leaves `light-dark()` resolving
+// against the OS PREFERENCE -- and the app's polarity is its own choice, not
+// the OS's. Three Oat components derive a colour that way from our tokens
+// (skeleton, badge, alert), so on a dark app under a light OS the skeleton's
+// shimmer took the light branch, `color-mix(in srgb, var(--muted) 15%, white)`:
+// a near-white band at a median 9.2x the row's luminance, sweeping across it.
+// It also tells the browser what to paint scrollbars and form controls as.
+for (const variant of LIGHT_VARIANTS) {
+  globalStyle(
+    lightVariantSelector(variant),
+    { colorScheme: 'light', vars: variant.palette },
+  )
+}
+for (const variant of DARK_VARIANTS) {
+  globalStyle(
+    darkVariantSelector(variant),
+    { colorScheme: 'dark', vars: variant.palette },
+  )
+}
+
+// The CODE palette: the variant every highlighted surface wears.
+//
+// A code surface is the one place the app paints someone else's theme. The
+// syntax preference can pin a palette AND a polarity of its own -- "code stays
+// dark inside a light app" is a supported combination, not an accident -- and
+// Shiki bakes its colours into each token span at tokenize time. Without a
+// matching surface underneath, a dark theme's tokens land on the light page:
+// measured across all 221 such combinations, the median token contrast falls
+// from 7.13:1 to 1.97:1, and to 1.53:1 on a diff row.
+//
+// So `<html>` carries `data-code-variant` beside the four UI attributes, and
+// these rules publish that variant's palette under a `--code-` prefix.
+// `codeSurfaceTheme` (see ~/components/chat/shikiTokenColors.css.ts) points the
+// app's own token names at these on the surface's subtree, so every existing
+// `var(--danger)` inside a diff becomes the SYNTAX theme's red with no change
+// at the call site.
+//
+// A PREFIXED SUBSET, not the whole palette. Naming the tokens states exactly
+// what a code surface may re-theme; spreading all thirty would let a control
+// that happens to sit inside one silently repaint itself.
+//
+// Two more are DERIVED from these rather than taken from the variant -- see the
+// rule below the loop for `--code-block-background` and `--code-card`.
+function codeVars(variant: ThemeVariant): Record<string, string> {
+  return {
+    '--code-background': variant.palette['--background']!,
+    '--code-foreground': variant.palette['--foreground']!,
+    '--code-border': variant.palette['--border']!,
+    '--code-muted-foreground': variant.palette['--muted-foreground']!,
+    '--code-faint-foreground': variant.palette['--faint-foreground']!,
+    '--code-accent': variant.palette['--accent']!,
+    '--code-danger': variant.palette['--danger']!,
+    '--code-success': variant.palette['--success']!,
+    // Keyed off the CODE variant's polarity, not the app's, so a dark syntax
+    // theme inside a light app tints at the strength its own surface needs.
+    '--code-diff-tint': DIFF_TINT[variant.polarity].row,
+    '--code-diff-tint-word': DIFF_TINT[variant.polarity].word,
+    '--code-color-scheme': variant.polarity,
+  }
+}
+
+// The pre-hydration fallback for the CODE palette, the counterpart of the
+// `:root` rule above.
+//
+// `data-code-variant` is written by an effect in `~/app.tsx`, so the first paint
+// does not carry it -- and every `--code-*` token is published ONLY by the loop
+// below. Until that effect runs, `codeSurfaceTheme`'s background and its whole
+// `vars` remap are invalid at computed-value time: a diff row loses its tint (the
+// surrounding `color-mix()` fails as a whole), the hunk separator loses its
+// border, and a code block has no field of its own. Stating Default's light code
+// palette here makes the first paint agree with the `:root` UI palette beside it,
+// exactly as that rule's own comment argues.
+//
+// The pre-hydration fallback for the CODE palette.
+//
+// It exists because `data-code-variant` cannot be written at first paint: it is
+// written only after `setSyntaxTheme` resolves, so the SURFACE never repaints
+// ahead of the tokens that land on it (see `~/app.tsx`). Declared as `:root`
+// after the loop, this fallback outranked every variant rule by declaration
+// order alone -- `:root` is a pseudo-class at (0,1,0), the same specificity as
+// `[data-code-variant="X"]`, and both match <html> -- so the code palette
+// stayed Default-light under all thirty variants.
+//
+// BOTH POLARITIES, and the dark one is not decoration. `data-code-variant` is
+// written only after `setSyntaxTheme` resolves, and for any of the 29 non-default
+// variants that awaits a real `@shikijs/themes/*` chunk import -- while
+// `~/lib/themeStore` writes `data-theme` synchronously at module import, so the
+// app is ALREADY dark at first paint. A light-only fallback therefore painted
+// every diff, Read view, tool body and fenced block in a dark app as a near-white
+// slab for the whole round trip, then flipped.
+//
+// Default's own variant is the right answer for that window rather than a
+// guess: the synchronous highlighter boots registered on Default's pair (see
+// `~/lib/renderMarkdown`), so Default's colours ARE what the first tokens carry
+// until the chosen pair loads. The two halves stay in step because both read
+// the same catalogue entry.
+// Both halves carry `:not([data-code-variant])`, which is what keeps them out of
+// the variant rules' way. Specificity cannot do that job here: the dark half
+// needs `[data-theme="dark"]` to pick its polarity, and `html[data-theme="dark"]`
+// is (0,1,1) -- HIGHER than `[data-code-variant="X"]` at (0,1,0), so it would
+// outrank every variant and reinstate the defect in the dark. A rule that stops
+// MATCHING the moment the attribute lands needs no precedence argument at all,
+// and it holds for whatever selector each half needs.
+globalStyle('html:not([data-code-variant])', {
+  vars: codeVars(resolveVariant(defaultTheme, undefined, 'light')),
 })
 
-// Override Oat's code/pre background (var(--faint)) with a semi-transparent
-// foreground tint so it blends naturally on any surface.
-globalStyle('code, pre', {
-  backgroundColor: 'rgb(from var(--foreground) r g b / 0.075)',
+globalStyle('html:not([data-code-variant])[data-theme="dark"]', {
+  vars: codeVars(resolveVariant(defaultTheme, undefined, 'dark')),
 })
 
-// Prevent double background when code/pre are nested.
-globalStyle('pre code, pre pre, code pre, code code', {
+for (const variant of ALL_VARIANTS) {
+  globalStyle(`[data-code-variant="${variant.id}"]`, {
+    vars: codeVars(variant),
+  })
+}
+
+// The two fields a code surface paints, DERIVED from the palette above.
+//
+// One declaration answers for all thirty variants and for the fallback, because
+// a custom property is substituted with the value the referencing element
+// computes: `var(--code-foreground)` here resolves against whichever rule above
+// won on <html>. Restating the pair in `codeVars` would copy the same expression
+// thirty-one times.
+//
+//   --code-block-background  what a FENCED code block paints.
+//   --code-card              a chip ON a code surface -- the copy button, the
+//                            language label's hover.
+//
+// Every other code surface keeps `--code-background`. A diff and the Read view
+// draw their rows inside an outline of their own, and tool output is text in the
+// message flow with no padding to fill. Each surface states which it takes; see
+// `CodeSurfaceKind` in ~/components/chat/shikiTokenColors.css.ts.
+//
+// TRANSLUCENT BY DEFAULT, so a block belongs to whatever hosts it -- the panel,
+// an assistant band, or a user message's accent bubble. See `blendedCodeTint`.
+globalStyle('html', {
+  vars: {
+    '--code-block-background': blendedCodeTint(CODE_BLOCK_TINT_PERCENT),
+    '--code-card': blendedCodeTint(CODE_CARD_TINT_PERCENT),
+  },
+})
+
+// ...and OPAQUE for the one case a tint cannot answer: a syntax theme pinned to
+// the opposite polarity of the app.
+//
+// The two attributes this keys on are both written by the same effect in
+// `~/app.tsx`, in that order, so the polarity can never describe a variant that
+// is not showing. Absent -- before that effect first runs -- the tint applies,
+// which is right for the overwhelmingly common case that the two agree.
+//
+// `html[a][b]` is (0,2,1) and the rule above is (0,0,1), so this wins on
+// SPECIFICITY. Nothing here depends on which is declared first.
+globalStyle(
+  'html[data-theme="light"][data-code-polarity="dark"], html[data-theme="dark"][data-code-polarity="light"]',
+  {
+    vars: {
+      '--code-block-background': opaqueCodeTint(CODE_BLOCK_TINT_PERCENT),
+      '--code-card': opaqueCodeTint(CODE_CARD_TINT_PERCENT),
+    },
+  },
+)
+
+// EVERY code element wears the same step, and this is the one rule that paints
+// them: inline `code` in a paragraph, a bare `<pre>` outside a code surface, and
+// the three tags that mean the same thing in HTML and could arrive from a future
+// renderer. It also overrides Oat's own `code, pre` fill (`var(--faint)`).
+//
+// The strength is the constant a code BLOCK's field is built from, so inline
+// code and a fenced block are the same idea at the same weight, and neither can
+// drift when the other is tuned -- including when it is retuned, which is why
+// the 0.075 literal that used to sit here is gone. What differs is only what
+// each one is a step FROM: see `blendedTint`, which reads `--foreground` and so
+// answers with the SYNTAX theme's ink inside a code surface and the app's
+// outside one.
+//
+// Only `code` and `pre` render today: the markdown chain has no sanitizer stage
+// and `remarkRehype` drops raw HTML, so `kbd`, `samp` and `tt` cannot arrive
+// from an agent, and no component writes them yet. They are named so the first
+// one that appears is not the odd element out.
+//
+// NO BORDER, unlike a block. `codeBlockPre` outlines a block because a block has
+// nothing but its colour to say where it begins; a run of inline code is bounded
+// by the words around it, and a rule on it would disturb the line box it sits in.
+const CODE_ELEMENTS = 'code, pre, kbd, samp, tt'
+
+globalStyle(CODE_ELEMENTS, {
+  backgroundColor: blendedTint(CODE_BLOCK_TINT_PERCENT),
+})
+
+// Oat rounds `code` and `pre` itself, at two different radii -- the inline
+// corner and the block one. It says nothing about the other three, so they would
+// wear a square field; this gives them the inline corner they belong with. NOT
+// written into the rule above: that one is unlayered and Oat's is in its `base`
+// layer, so naming `pre` here would override Oat's block radius with the inline
+// one for every `<pre>` in the app.
+globalStyle('kbd, samp, tt', {
+  borderRadius: 'var(--radius-small)',
+})
+
+// Prevent a double step where they nest -- `pre > code` is every fenced block.
+// `:is()` takes the specificity of its most specific argument, so this stays
+// (0,0,2), exactly what the four hand-written pairs it replaced measured.
+globalStyle(`:is(${CODE_ELEMENTS}) :is(${CODE_ELEMENTS})`, {
   backgroundColor: 'transparent',
 })
 

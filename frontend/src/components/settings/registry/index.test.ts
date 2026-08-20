@@ -652,23 +652,29 @@ describe('account schema parity with the Go declarations', () => {
 describe('createBrowserRows enum option names', () => {
   const prefs = () => makeFakePrefs() as unknown as PreferencesState
 
-  /** The wire, with `theme` carrying the given enum values instead. */
-  function themeValues(...values: string[]): ProtoSettingDescriptor[] {
-    return wire.map(d => (d.key === 'theme'
+  // `diff_view` is the representative dual ENUM row. `theme` and
+  // `terminal_theme` both used to play that part and cannot any more: each is
+  // one object key edited by a custom editor, so neither declares enum values
+  // for the join to read.
+  const ENUM_KEY = 'diff_view'
+  const ENUM_ROW = 'appearance.diffView'
+
+  /** The wire, with the enum row carrying the given values instead. */
+  function enumValues(...values: string[]): ProtoSettingDescriptor[] {
+    return wire.map(d => (d.key === ENUM_KEY
       ? { ...d, fields: [{ ...d.fields[0], enumValues: values.map(v => ({ value: v, label: '', help: '' })) }] }
       : d)) as ProtoSettingDescriptor[]
   }
 
-  function themeOptions(descriptors: ProtoSettingDescriptor[]) {
-    const control = descriptorsOf(prefs(), descriptors).find(d => d.id === 'appearance.theme')?.control
+  function enumOptions(descriptors: ProtoSettingDescriptor[]) {
+    const control = descriptorsOf(prefs(), descriptors).find(d => d.id === ENUM_ROW)?.control
     return control?.kind === 'enum' ? control.options : undefined
   }
 
   it('names each declared value and keeps the wire order', () => {
-    expect(themeOptions(wire)).toEqual([
-      { value: 'dark', label: 'Dark' },
-      { value: 'light', label: 'Light' },
-      { value: 'system', label: 'System' },
+    expect(enumOptions(wire)).toEqual([
+      { value: 'unified', label: 'Unified' },
+      { value: 'split', label: 'Side by side' },
     ])
   })
 
@@ -676,25 +682,42 @@ describe('createBrowserRows enum option names', () => {
   // alternative -- a client-side option list -- refuses a value the hub
   // stores, and a user who set it elsewhere cannot see it here.
   it('offers a value the registry has no name for, under its slug', () => {
-    expect(themeOptions(themeValues('dark', 'high-contrast'))).toEqual([
-      { value: 'dark', label: 'Dark' },
-      { value: 'high-contrast', label: 'high-contrast' },
+    expect(enumOptions(enumValues('unified', 'inline'))).toEqual([
+      { value: 'unified', label: 'Unified' },
+      { value: 'inline', label: 'inline' },
     ])
   })
 
   // The reverse: a value the hub drops takes its stale name out with it,
   // rather than leaving an option whose write the hub refuses.
   it('drops an option the hub stopped declaring', () => {
-    expect(themeOptions(themeValues('dark', 'light'))?.map(o => o.value)).toEqual(['dark', 'light'])
+    expect(enumOptions(enumValues('unified'))?.map(o => o.value)).toEqual(['unified'])
   })
 
   // The hub declares no enum label today, so this is what happens when it
   // starts: the wire wins, with no edit to the declarations.
   it('prefers the hub label over the declared one', () => {
-    const labelled = wire.map(d => (d.key === 'theme'
-      ? { ...d, fields: [{ ...d.fields[0], enumValues: [{ value: 'dark', label: 'Midnight', help: '' }] }] }
+    const labelled = wire.map(d => (d.key === ENUM_KEY
+      ? { ...d, fields: [{ ...d.fields[0], enumValues: [{ value: 'unified', label: 'One column', help: '' }] }] }
       : d)) as ProtoSettingDescriptor[]
-    expect(themeOptions(labelled)).toEqual([{ value: 'dark', label: 'Midnight' }])
+    expect(enumOptions(labelled)).toEqual([{ value: 'unified', label: 'One column' }])
+  })
+
+  // No theme row is an enum row: each renders the whole-value custom editor the
+  // hub declares for it. A regression to an enum control here would mean a
+  // palette list had moved back into the wire, where it cannot live.
+  //
+  // All THREE, not two. The syntax row arrived last and was the one left
+  // unasserted, so a wire or registry mismatch that turned it back into an enum
+  // -- or dropped its custom editor -- would have shipped green.
+  it('renders every theme row as its custom editor, not as an enum', () => {
+    const rows = descriptorsOf(prefs(), wire)
+    expect(rows.find(d => d.id === 'appearance.theme')?.control)
+      .toEqual({ kind: 'custom', id: 'theme' })
+    expect(rows.find(d => d.id === 'appearance.terminalTheme')?.control)
+      .toEqual({ kind: 'custom', id: 'terminalTheme' })
+    expect(rows.find(d => d.id === 'appearance.syntaxTheme')?.control)
+      .toEqual({ kind: 'custom', id: 'syntaxTheme' })
   })
 })
 

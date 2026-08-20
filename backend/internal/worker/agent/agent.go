@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"io"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -423,6 +424,28 @@ type OutputSink interface {
 	// indicator for good. This method is the one deliberate exception, and the
 	// burden of proof sits with its caller.
 	ReviveBackgroundTask(rowKey string) error
+}
+
+// logRegistryRefusal records a background-task write the registry REFUSED.
+//
+// `bgtask.ValidateRowKey` turned an unusable provider key from a silent rewrite
+// into an error, so every one of these writes gained a failure mode it did not
+// have before -- and every provider takes its key straight from the agent's own
+// JSON with no length bound of its own. A bare `_ =` therefore meant a refused
+// row simply never appeared in the sidebar, or a finished subagent never left
+// the Running state, with nothing anywhere to say why: the failure mode the
+// refusal was chosen to AVOID, moved from the data to the diagnosis.
+//
+// It lives here, beside the sink interface, rather than once per provider. The
+// error belongs to the SINK's rule and not to any provider's wire format, and a
+// helper each provider writes for itself is one the next provider forgets --
+// which is what happened: Pi grew one and the other three did not.
+//
+// The write stays best-effort. A refused row must not fail the event around it.
+func logRegistryRefusal(provider, op string, err error) {
+	if err != nil {
+		slog.Warn("background task write refused", "provider", provider, "op", op, "error", err)
+	}
 }
 
 // Agent is the interface that all coding agent providers must implement.

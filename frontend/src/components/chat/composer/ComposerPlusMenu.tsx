@@ -104,6 +104,22 @@ function sortedGroups(groups: AvailableOptionGroup[] | undefined): AvailableOpti
 }
 
 /**
+ * Everything that decides WHICH ROWS EXIST between the attach item and the two
+ * view toggles. See the `structure` memo, which holds one of these still.
+ */
+interface MenuStructure {
+  groupIds: string[]
+  actions: ProviderSettingsAction[]
+  branchName?: string
+  agentInfo?: () => JSX.Element
+}
+
+/** Whether `s` draws anything BETWEEN the attach item and the view toggles. */
+function hasMenuRows(s: MenuStructure): boolean {
+  return s.groupIds.length > 0 || !!s.branchName || !!s.agentInfo || s.actions.length > 0
+}
+
+/**
  * The composer's `[+]` menu: attach file, settings (one submenu per option
  * group + provider actions), send-mode toggle, and status-bar toggle. This is
  * the single comprehensive settings surface — the status-bar chips are
@@ -125,38 +141,39 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
   /**
    * Everything that decides WHICH ROWS EXIST, held still while the menu is open.
    *
-   * The menu is drawn from live props, and the first status push after a fresh
-   * tab supplies groups, a branch, agent info and provider actions all at once
-   * -- each of which inserts rows ABOVE the two toggles at the bottom. A pointer
-   * already aimed at "Send with Enter" then lands on whatever slid into its
-   * place, and one of those is a provider action that applies a setting the
-   * moment it is clicked.
+   * The menu is drawn from live props, and a status push supplies groups, a
+   * branch, agent info and provider actions -- each of which inserts rows ABOVE
+   * the two toggles at the bottom. A pointer already aimed at "Send with Enter"
+   * then lands on whatever slid into its place, and one of those is a provider
+   * action that applies a setting the moment it is clicked.
    *
    * Reading `open()` FIRST and returning `prev` without touching any live source
    * is what freezes it: that run subscribes to `open` alone, so no push can
-   * re-run this memo until the menu closes.
+   * re-run this memo until the menu closes. `hasMenuRows(prev)` reads the HELD
+   * snapshot, a plain object, so the condition below adds no subscription.
    *
    * ONE snapshot rather than a memo per field, because the fields are not
    * independent -- `hasMiddleSection` fences the region they share, so a mix of
    * fresh and stale values could draw a rule around nothing.
    *
-   * Frozen even when EMPTY, unlike the option list in `./OptionGroupPopover`.
-   * There, freezing an empty list would leave the menu blank with nothing else
-   * in it; here the attach item and both toggles are always drawn, so an empty
-   * middle section is a complete menu -- and a menu opened before its first push
-   * is exactly the case that reported this. The trade is one open of staleness.
+   * `hasMenuRows(prev)`, not `prev !== undefined`: an EMPTY middle section is
+   * nothing to hold still, and a freeze on one STRANDS the menu. Every settings
+   * axis, the branch and the agent info arrive together on the first push, so a
+   * menu opened before that push holds the attach item and the two toggles
+   * alone, and it never refills: the user must close it and open it again, with
+   * nothing on screen to say so, and this menu is the only settings surface once
+   * the status bar is off. The option list in `./OptionGroupPopover` already
+   * applies the same rule one level down.
+   *
+   * The trade: while the middle section is empty, its rows can still appear
+   * under the pointer. That is the one case the freeze cannot cover without the
+   * stranding, and the first push ends it.
    *
    * Only the STRUCTURE is frozen. Labels, checked state, the disabled reason and
    * the spinner keep reading live, because staleness THERE would be its own bug.
    */
-  interface MenuStructure {
-    groupIds: string[]
-    actions: ProviderSettingsAction[]
-    branchName?: string
-    agentInfo?: () => JSX.Element
-  }
   const structure = createMemo<MenuStructure>((prev) => {
-    if (open() && prev !== undefined)
+    if (open() && prev !== undefined && hasMenuRows(prev))
       return prev
     return {
       groupIds: liveGroupIds(),
@@ -176,10 +193,10 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
   // tab before its first status push has no groups, no branch, no agent info and
   // no provider actions, and two unconditional rules then landed side by side.
   //
-  // Derived from the HELD values, so the rules and the rows they fence cannot
-  // disagree about what is drawn.
-  const hasMiddleSection = () =>
-    groupIds().length > 0 || !!branchName() || !!agentInfo() || actions().length > 0
+  // Derived from the HELD snapshot through the same predicate the freeze reads,
+  // so the rules, the rows they fence, and the decision to hold them still
+  // cannot disagree about what is drawn.
+  const hasMiddleSection = () => hasMenuRows(structure())
 
   const attachDisabledReason = () => {
     if (props.disabledReason)

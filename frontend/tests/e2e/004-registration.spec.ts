@@ -18,7 +18,7 @@ test.describe('Worker Registration', () => {
 
     // The initial fetch on mount should find the worker (already online).
     // Verify the worker name appears in the dropdown (dev mode uses "Local")
-    await expect(page.locator('select').first()).toContainText('Local')
+    await expect(page.getByTestId('worker-select-menu-trigger')).toContainText('Local')
   })
 
   test('should refresh worker list when clicking refresh button', async ({ page }) => {
@@ -29,13 +29,13 @@ test.describe('Worker Registration', () => {
     await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
 
     // Wait for initial load to find the worker
-    await expect(page.locator('select').first()).toContainText('Local')
+    await expect(page.getByTestId('worker-select-menu-trigger')).toContainText('Local')
 
     // Click the refresh button
     await page.getByLabel('Refresh workers').click()
 
     // Worker should still be shown after refresh
-    await expect(page.locator('select').first()).toContainText('Local')
+    await expect(page.getByTestId('worker-select-menu-trigger')).toContainText('Local')
   })
 
   test('should not spin refresh button when selecting a directory', async ({ page }) => {
@@ -46,7 +46,7 @@ test.describe('Worker Registration', () => {
     await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
 
     // Wait for initial load to find the worker and directory tree
-    await expect(page.locator('select').first()).toContainText('Local')
+    await expect(page.getByTestId('worker-select-menu-trigger')).toContainText('Local')
     await expect(page.getByTestId('tree-root-node')).toBeVisible()
 
     // Locate the "Refresh directory tree" button's icon
@@ -71,7 +71,7 @@ test.describe('Worker Registration', () => {
     await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
 
     // Wait for initial load
-    await expect(page.locator('select').first()).toContainText('Local')
+    await expect(page.getByTestId('worker-select-menu-trigger')).toContainText('Local')
 
     // Close the dialog
     await page.getByRole('button', { name: 'Cancel' }).click()
@@ -82,6 +82,6 @@ test.describe('Worker Registration', () => {
     await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
 
     // The re-mount fetch should find the worker
-    await expect(page.locator('select').first()).toContainText('Local')
+    await expect(page.getByTestId('worker-select-menu-trigger')).toContainText('Local')
   })
 })

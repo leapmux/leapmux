@@ -6,18 +6,8 @@
     "fields": [
       {
         "name": "",
-        "kind": "enum",
-        "enumValues": [
-          {
-            "value": "dark"
-          },
-          {
-            "value": "light"
-          },
-          {
-            "value": "system"
-          }
-        ]
+        "kind": "custom",
+        "customId": "theme"
       }
     ]
   },
@@ -28,18 +18,20 @@
     "fields": [
       {
         "name": "",
-        "kind": "enum",
-        "enumValues": [
-          {
-            "value": "match-ui"
-          },
-          {
-            "value": "dark"
-          },
-          {
-            "value": "light"
-          }
-        ]
+        "kind": "custom",
+        "customId": "terminalTheme"
+      }
+    ]
+  },
+  {
+    "key": "syntax_theme",
+    "category": "appearance",
+    "title": "Syntax theme",
+    "fields": [
+      {
+        "name": "",
+        "kind": "custom",
+        "customId": "syntaxTheme"
       }
     ]
   },

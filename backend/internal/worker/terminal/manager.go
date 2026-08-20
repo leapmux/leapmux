@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+
+	"github.com/leapmux/leapmux/util/validate"
 )
 
 // ErrTerminalNotFound is returned when a terminal operation targets an ID
@@ -320,14 +322,31 @@ func (m *Manager) WaitForReadDrained(terminalID string) bool {
 }
 
 // UpdateTitle updates the title of a terminal in the in-memory metadata.
+//
+// THE CLEAN LIVES HERE, not at each caller, so no path can put a control
+// character or a bidirectional override into a tab label. The rename RPC
+// cleaned its own title and the post-spawn absorb did not, and the two writers
+// are not the whole story: the manager's title is what ListTerminals reports
+// while a terminal is live, so any future writer inherits the same duty.
+// validate.CleanName is idempotent, so a caller that cleans first -- the rename
+// RPC must, because it answers differently when the title cleans to nothing --
+// passes its value through unchanged.
+//
+// A title that cleans to nothing LEAVES THE STORED ONE ALONE, the same answer
+// the rename RPC gives: writing "" would leave the tab with no name at all.
+// Reports whether the metadata now holds the cleaned title.
 func (m *Manager) UpdateTitle(terminalID, title string) bool {
+	clean := validate.CleanName(title)
+	if clean == "" {
+		return false
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	meta, ok := m.meta[terminalID]
 	if !ok {
 		return false
 	}
-	meta.Title = title
+	meta.Title = clean
 	m.meta[terminalID] = meta
 	return true
 }

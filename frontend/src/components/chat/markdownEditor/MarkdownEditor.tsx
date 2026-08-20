@@ -10,12 +10,13 @@ import { createEffect, createSignal, getOwner, on, onCleanup, onMount, runWithOw
 import { isTauriApp, readClipboardImage } from '~/api/platformBridge'
 import { usePreferences } from '~/context/PreferencesContext'
 import { loadDraft } from '~/lib/editor/draftPersistence'
+import { syntaxThemeGeneration } from '~/lib/syntaxThemeStore'
 import { CodeLanguagePopover } from './CodeLanguagePopover'
 import { createComposerLayout } from './composerLayout'
 import { clearDraft, restoreCursor, saveDraftFromEditor } from './draftManagement'
 import { applyCodeBlockLanguage, applyLinkHref, removeLinkRange } from './editorCommands'
 import { setupEditorRefHandlers } from './editorRefHandlers'
-import { buildEditor, computeDocStats } from './editorSetup'
+import { buildEditor, computeDocStats, refreshEditorHighlight } from './editorSetup'
 import { LinkPopover } from './LinkPopover'
 import * as styles from './MarkdownEditor.css'
 import { decidePasteHandling } from './pasteDecision'
@@ -195,6 +196,27 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
   let onSendRef: MarkdownEditorProps['onSend'] = () => undefined
   let allowEmptySendRef = false
   let onContentChangeRef: MarkdownEditorProps['onContentChange']
+
+  // Repaint the composer's code blocks when the syntax theme changes.
+  //
+  // Shiki bakes each token's colour in at tokenize time, so an already-decorated
+  // block keeps the abandoned theme until something recomputes it -- and
+  // prosemirror-highlight recomputes only on a document change. Without this the
+  // composer visibly disagreed with the chat beside it, which the user had just
+  // repainted, for the rest of the session.
+  createEffect(on(syntaxThemeGeneration, () => {
+    if (!editorInstance)
+      return
+    try {
+      editorInstance.action((ctx: Ctx) => {
+        refreshEditorHighlight(ctx.get(editorViewCtx))
+      })
+    }
+    catch {
+      // The editor is mid-teardown, or the view is gone. A repaint is not worth
+      // failing a theme change over: the next mount highlights from scratch.
+    }
+  }, { defer: true }))
 
   const focusEditor = () => {
     if (!editorInstance)
