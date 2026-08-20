@@ -158,7 +158,7 @@ export const tabEditInput = style({
   'border': '1px solid var(--ring)',
   'borderRadius': 'var(--radius-small)',
   'outline': 'none',
-  ':focus': {
+  ':focus-visible': {
     boxShadow: '0 0 0 2px var(--ring)',
   },
 })

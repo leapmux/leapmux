@@ -578,3 +578,31 @@ globalStyle(
     boxShadow: 'inset 0 0 0 2px var(--background)',
   },
 )
+
+// A popover that holds focus as a KEYBOARD RELAY draws no ring of its own.
+//
+// `DropdownMenu` gives its menu popover `tabindex="-1"` and focuses it on open,
+// because `popover="auto"` moves focus nowhere: without that the trigger keeps
+// focus and every arrow key and typed character goes to the document instead of
+// the list. The popover is therefore a focus HOST, never a stop the user
+// navigated to -- `tabindex="-1"` keeps it out of the Tab order entirely.
+//
+// Whether a ring appears on it was left to each engine's `:focus-visible`
+// heuristic, and the engines disagree. Chromium suppresses it after a click;
+// the WKWebView the macOS desktop app runs on paints it, and not on every open,
+// so the same click produced a ring around the whole menu on one platform and
+// nothing on the other. A heuristic is the wrong thing to depend on here in
+// either direction: this element is not a control, so the answer is the same
+// for a mouse and for a keyboard.
+//
+// Feedback for the keyboard user is not lost. The first Arrow key moves focus
+// to a menu ITEM, which rings normally -- that is the element the user is
+// actually navigating, and a 2px outline around the panel only repeated the
+// border the panel already draws.
+//
+// `[tabindex="-1"]` is what limits this to the relay case. A `card` popover
+// takes no tabindex, because its own controls Tab in the ordinary way, and
+// each of those keeps its ring.
+globalStyle('[popover][tabindex="-1"]:focus, [popover][tabindex="-1"]:focus-visible', {
+  outline: 'none',
+})

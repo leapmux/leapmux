@@ -1,3 +1,4 @@
+import type { Page } from '@playwright/test'
 import { CODE_BLOCK_TINT_PERCENT } from '../../src/styles/codePalette'
 import { colorAlpha } from '../../src/test-support/color'
 import { expect, test } from './fixtures'
@@ -328,6 +329,73 @@ test.describe('Theme picker', () => {
     await pickTheme(syntaxRow, 'nord')
     await expect(page.locator('html')).toHaveAttribute('data-code-variant', /^nord-/)
     await expect.poll(() => resolvedColor(page, 'var(--code-background)')).not.toBe(gruvbox)
+  })
+
+  /**
+   * Open the UI theme menu inside a freshly opened Preferences dialog.
+   *
+   * Returns the panel and the popover. The popover is matched by aria-label as
+   * well as testid: Appearance renders three `ThemeChooser`s -- UI, terminal
+   * and syntax -- and they share the testid.
+   */
+  async function openThemeMenu(page: Page, token: string) {
+    await loginViaToken(page, token)
+    await page.goto('/')
+    await openPreferencesDialog(page, 'appearance')
+    const panel = page.locator('#preferences-panel')
+    const trigger = panel.getByRole('button', { name: 'Theme', exact: true })
+    const menu = panel.locator('[data-testid="theme-chooser-name-menu"][aria-label="Theme"]')
+    return { panel, trigger, menu }
+  }
+
+  // A menu panel is a focus HOST, not a control, so it rings in NEITHER
+  // modality -- and the item the user navigates to rings instead.
+  //
+  // `DropdownMenu` gives its popover `tabindex="-1"` and focuses it on open,
+  // because `popover="auto"` moves focus nowhere and the arrow keys would
+  // otherwise go to the document. Whether that non-control drew a ring was left
+  // to each engine's `:focus-visible` heuristic, and they disagreed: Chromium
+  // painted nothing after a click, while the WKWebView the macOS desktop app
+  // runs on drew a ring around the whole panel, and not on every open.
+  // `global.css.ts` answers it outright for the relay case.
+  //
+  // A static scan cannot pin this, because no stylesheet asks for the ring.
+  test('rings no menu panel when the user opens it with the mouse', async ({ page, leapmuxServer }) => {
+    const { trigger, menu } = await openThemeMenu(page, leapmuxServer.adminToken)
+    await trigger.click()
+    await expect(menu).toBeVisible()
+
+    // The popover, not some descendant: it is the element that took focus.
+    await expect.poll(() => menu.evaluate(el => el === document.activeElement)).toBe(true)
+    // `outline-style`, not the width: a width alone would pass on a 0px outline
+    // that a later rule could widen without this case noticing.
+    await expect.poll(() => menu.evaluate(el => getComputedStyle(el).outlineStyle)).toBe('none')
+  })
+
+  test('rings the ITEM, not the panel, when the user opens it with the keyboard', async ({ page, leapmuxServer }) => {
+    // THE HALF WITH TEETH ON THIS ENGINE. Chromium suppresses the ring after a
+    // click by itself, so the mouse case above passes here even with the rule
+    // deleted -- WebKit is what needed it, and this suite runs Chromium. A
+    // keypress is where Chromium DOES paint the panel, so this case fails
+    // without the rule on the very engine CI runs.
+    const { trigger, menu } = await openThemeMenu(page, leapmuxServer.adminToken)
+    await trigger.focus()
+    await page.keyboard.press('Enter')
+    await expect(menu).toBeVisible()
+    await expect.poll(() => menu.evaluate(el => el === document.activeElement)).toBe(true)
+    await expect.poll(() => menu.evaluate(el => getComputedStyle(el).outlineStyle)).toBe('none')
+
+    // The keyboard user is not left without a cue. The first Arrow moves focus
+    // onto an ITEM, which rings the way every other control does -- without
+    // this, the rule above could be "delete the focus indicator" rather than
+    // "move it to the element the user is actually navigating".
+    await page.keyboard.press('ArrowDown')
+    const item = await page.evaluate(() => {
+      const el = document.activeElement as HTMLElement | null
+      return el ? { role: el.getAttribute('role'), outline: getComputedStyle(el).outlineStyle } : null
+    })
+    expect(item?.role, 'ArrowDown did not land on a menu item').toMatch(/^menuitem/)
+    expect(item?.outline, 'the focused menu item draws no ring').not.toBe('none')
   })
 
   test('turns the code block opaque when the syntax theme opposes the app', async ({ page, leapmuxServer }) => {

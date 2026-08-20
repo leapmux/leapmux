@@ -183,7 +183,7 @@ export const linkPopoverInput = style({
   // size and reintroduce the overflow.
   'flex': '1 1 14rem',
   'minWidth': 0,
-  ':focus': {
+  ':focus-visible': {
     borderColor: 'var(--ring)',
   },
   '::placeholder': {

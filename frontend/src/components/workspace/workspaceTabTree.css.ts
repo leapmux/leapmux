@@ -62,7 +62,7 @@ export const tabRenameInput = style({
   'padding': '0 var(--space-1)',
   'outline': 'none',
   'minWidth': 0,
-  ':focus': {
+  ':focus-visible': {
     boxShadow: '0 0 0 2px var(--ring)',
   },
 })

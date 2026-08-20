@@ -17,7 +17,7 @@ export const trigger = style({
   gap: 'var(--space-3)',
   textAlign: 'left',
   selectors: {
-    '&:focus': {
+    '&:focus-visible': {
       outline: 'none',
       borderColor: 'var(--ring)',
       boxShadow: '0 0 0 2px rgb(from var(--ring) r g b / 0.2)',

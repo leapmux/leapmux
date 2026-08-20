@@ -69,7 +69,7 @@ export const editInput = style({
   'borderRadius': 'var(--radius-small)',
   'outline': 'none',
   'boxSizing': 'border-box',
-  ':focus': {
+  ':focus-visible': {
     boxShadow: '0 0 0 2px var(--ring)',
   },
 })

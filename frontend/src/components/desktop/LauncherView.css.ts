@@ -129,7 +129,7 @@ export const input = style({
   'fontSize': '0.9rem',
   'outline': 'none',
   'transition': 'border-color 0.15s',
-  ':focus': {
+  ':focus-visible': {
     borderColor: 'var(--ring)',
     boxShadow: '0 0 0 2px rgba(13, 148, 136, 0.2)',
   },
