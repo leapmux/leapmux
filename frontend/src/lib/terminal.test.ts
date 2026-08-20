@@ -1,8 +1,9 @@
 import type { Terminal } from '@xterm/xterm'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { resolveVariant, themeById } from '~/styles/themes'
 import { stubMatchMedia } from '~/test-support/matchMediaStub'
 import { KEY_BROWSER_PREFS, localStorageClearForTests, localStorageSet } from './browserStorage'
-import { applyTerminalData, attachWebgl, createTerminalInstance, detachWebgl, getTerminalRendererPreference, loadTerminalFonts, refreshTerminalFont, resolveTerminalRendererPreference, resolveTerminalThemeMode, serializeXtermBuffer } from './terminal'
+import { applyTerminalData, attachWebgl, createTerminalInstance, detachWebgl, getTerminalRendererPreference, getTerminalThemePreference, loadTerminalFonts, refreshTerminalFont, resolveTerminalRendererPreference, resolveTerminalTheme, resolveTerminalThemeMode, serializeXtermBuffer, terminalThemeFor } from './terminal'
 
 // xterm.js requires a DOM element for open(), but we can still test
 // the suppressInput mechanism without rendering.
@@ -259,6 +260,128 @@ describe('resolveTerminalThemeMode', () => {
   it('falls back to OS prefers-color-scheme when both prefs defer to system', () => {
     expect(resolveTerminalThemeMode('match-ui', 'system', true)).toBe('dark')
     expect(resolveTerminalThemeMode('match-ui', 'system', false)).toBe('light')
+  })
+
+  it('reads the OS directly when pinned to system, even while the UI is not', () => {
+    // `system` and `match-ui` differ exactly here: the app pinned to light, the
+    // terminal asked to follow the OS rather than the app.
+    expect(resolveTerminalThemeMode('system', 'light', true)).toBe('dark')
+    expect(resolveTerminalThemeMode('system', 'dark', false)).toBe('light')
+  })
+})
+
+describe('resolveTerminalTheme', () => {
+  it('takes the whole answer from the app under the sentinel', () => {
+    // The two halves move together, so `match-ui` supplies the palette AND the
+    // mode. This is the shipped default, and it is what makes the launcher's
+    // single picker move the terminal with the app.
+    expect(resolveTerminalTheme(
+      { name: 'match-ui', mode: 'match-ui' },
+      { name: 'catppuccin', mode: 'dark' },
+      false,
+    )).toEqual(terminalThemeFor('catppuccin', 'dark'))
+
+    // Including the app's own `system`, answered by the OS.
+    expect(resolveTerminalTheme(
+      { name: 'match-ui', mode: 'match-ui' },
+      { name: 'gruvbox', mode: 'system' },
+      true,
+    )).toEqual(terminalThemeFor('gruvbox', 'dark'))
+  })
+
+  it('takes none of it from the app once a palette is pinned', () => {
+    // A detached terminal answers for both halves, whatever the app is doing.
+    expect(resolveTerminalTheme(
+      { name: 'nord', mode: 'light' },
+      { name: 'catppuccin', mode: 'dark' },
+      true,
+    )).toEqual(terminalThemeFor('nord', 'light'))
+
+    // And its `system` reads the OS, not the app -- the same thing the word
+    // means in the Theme row.
+    expect(resolveTerminalTheme(
+      { name: 'nord', mode: 'system' },
+      { name: 'catppuccin', mode: 'light' },
+      true,
+    )).toEqual(terminalThemeFor('nord', 'dark'))
+  })
+
+  it('takes its chrome from the palette it paints, not from the app', () => {
+    // The terminal's own background, or a Nord terminal on a Catppuccin app
+    // would sit in a rectangle of the wrong colour.
+    const theme = resolveTerminalTheme(
+      { name: 'nord', mode: 'dark' },
+      { name: 'catppuccin', mode: 'light' },
+      false,
+    )
+    const nordDark = resolveVariant(themeById('nord'), undefined, 'dark')
+    expect(theme.background).toBe(nordDark.palette['--background'])
+    expect(theme.foreground).toBe(nordDark.palette['--foreground'])
+  })
+
+  it('falls back to Default for a palette this build does not carry', () => {
+    expect(resolveTerminalTheme(
+      { name: 'from-the-future', mode: 'dark' },
+      { name: 'default', mode: 'light' },
+      false,
+    )).toEqual(terminalThemeFor('default', 'dark'))
+  })
+})
+
+describe('terminalThemeFor', () => {
+  it('returns a STABLE reference for the same pair', () => {
+    // Load-bearing, not an optimisation: TerminalView guards its palette
+    // rebuild with `theme === lastTheme`, and a fresh object per call would
+    // make that guard never fire and rewrite every xterm colour table on every
+    // reactive tick.
+    expect(terminalThemeFor('nord', 'dark')).toBe(terminalThemeFor('nord', 'dark'))
+    expect(terminalThemeFor('nord', 'dark')).not.toBe(terminalThemeFor('nord', 'light'))
+  })
+
+  it('shares one entry between every name that falls back to Default', () => {
+    expect(terminalThemeFor('nope', 'dark')).toBe(terminalThemeFor('default', 'dark'))
+  })
+
+  it('carries all sixteen ANSI slots plus the four chrome colours', () => {
+    const theme = terminalThemeFor('catppuccin', 'dark')
+    for (const slot of ['black', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white', 'brightBlack', 'brightRed', 'brightGreen', 'brightYellow', 'brightBlue', 'brightMagenta', 'brightCyan', 'brightWhite', 'background', 'foreground', 'cursor', 'selectionBackground'] as const) {
+      expect(theme[slot], slot).toBeTruthy()
+    }
+  })
+})
+
+describe('getTerminalThemePreference', () => {
+  it('defaults to following the UI in both halves', () => {
+    expect(getTerminalThemePreference()).toEqual({ name: 'match-ui', mode: 'match-ui' })
+  })
+
+  it('reads a stored pair', () => {
+    localStorageSet(KEY_BROWSER_PREFS, { terminalTheme: { name: 'ayu', mode: 'dark' } })
+    expect(getTerminalThemePreference()).toEqual({ name: 'ayu', mode: 'dark' })
+  })
+
+  it('degrades the pre-split scalar shape to match-ui', () => {
+    localStorageSet(KEY_BROWSER_PREFS, { terminalTheme: 'dark' })
+    expect(getTerminalThemePreference()).toEqual({ name: 'match-ui', mode: 'match-ui' })
+  })
+
+  it('repairs a document that carries the sentinel in one half only', () => {
+    // Not a state any control produces: the palette and the mode move together.
+    // A hand-edited or older document still has to resolve to something, and
+    // the NAME decides which way. A pinned palette keeps itself and takes
+    // `system`; a sentinel name takes the whole app.
+    localStorageSet(KEY_BROWSER_PREFS, { terminalTheme: { name: 'ayu', mode: 'match-ui' } })
+    expect(getTerminalThemePreference()).toEqual({ name: 'ayu', mode: 'system' })
+
+    localStorageSet(KEY_BROWSER_PREFS, { terminalTheme: { name: 'match-ui', mode: 'dark' } })
+    expect(getTerminalThemePreference()).toEqual({ name: 'match-ui', mode: 'match-ui' })
+  })
+
+  it('degrades a palette this build does not carry to following the app', () => {
+    // "Follow the app" leaves the terminal agreeing with what the user can see.
+    // Pinning it to Default would be a palette they never chose.
+    localStorageSet(KEY_BROWSER_PREFS, { terminalTheme: { name: 'from-the-future', mode: 'dark' } })
+    expect(getTerminalThemePreference()).toEqual({ name: 'match-ui', mode: 'match-ui' })
   })
 })
 

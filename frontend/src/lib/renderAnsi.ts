@@ -1,6 +1,6 @@
 import { shikiHighlighter } from './renderMarkdown'
 import { shikiStyleClassTransformer } from './shikiStyleClass'
-import { DUAL_THEME_TOKEN_OPTIONS } from './shikiThemes'
+import { dualThemeTokenOptions } from './shikiThemes'
 
 const ESC = '\x1B'
 const BEL = '\x07'
@@ -114,7 +114,7 @@ export function renderAnsi(text: string): string {
   try {
     return shikiHighlighter.codeToHtml(sanitized, {
       lang: 'ansi',
-      ...DUAL_THEME_TOKEN_OPTIONS,
+      ...dualThemeTokenOptions(),
       // Same-style neighbors collapse and each token span carries a shared
       // style class instead of an inline declaration (see shikiStyleClass).
       // This runs on the main thread, so the transformer injects the CSS

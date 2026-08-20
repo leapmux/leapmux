@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import {
   _resetShikiStyleClassesForTest,
+  collectNewShikiStyles,
   collectShikiStyles,
   ensureShikiStyleRules,
   recordShikiStyle,
@@ -35,6 +36,58 @@ function injectedRules(): Array<{ selector: string, light: string, dark: string 
     }
   })
 }
+
+describe('collectNewShikiStyles', () => {
+  it('hands each declaration over exactly once', () => {
+    recordShikiStyle('--shiki-light:#111')
+    const first = collectNewShikiStyles()
+    expect(Object.values(first)).toEqual(['--shiki-light:#111'])
+
+    // The record still holds it -- the DELTA is what empties.
+    expect(Object.values(collectShikiStyles())).toEqual(['--shiki-light:#111'])
+    expect(collectNewShikiStyles()).toEqual({})
+  })
+
+  it('reports only what was recorded since the last take', () => {
+    recordShikiStyle('--shiki-light:#111')
+    collectNewShikiStyles()
+
+    recordShikiStyle('--shiki-light:#222')
+    recordShikiStyle('--shiki-light:#333')
+    expect(Object.values(collectNewShikiStyles()).sort())
+      .toEqual(['--shiki-light:#222', '--shiki-light:#333'])
+    expect(Object.keys(collectShikiStyles())).toHaveLength(3)
+  })
+
+  // The saturating case, which is the one that made the full snapshot wasteful:
+  // a theme's declarations repeat across every later code block, so after the
+  // first few responses the delta is empty and the wire carries nothing.
+  it('is empty once a declaration repeats', () => {
+    recordShikiStyle('--shiki-light:#111')
+    collectNewShikiStyles()
+    for (let i = 0; i < 5; i++)
+      recordShikiStyle('--shiki-light:#111')
+    expect(collectNewShikiStyles()).toEqual({})
+  })
+
+  // An unstyled token mints no class, so it cannot enter the delta either.
+  it('ignores an empty declaration', () => {
+    expect(recordShikiStyle('')).toBeUndefined()
+    expect(collectNewShikiStyles()).toEqual({})
+  })
+
+  // The receiver skips a class it already injected, so a re-recorded
+  // declaration costs nothing but must still be DELIVERED: a worker replaced on
+  // its own starts with an empty record and re-ships what it re-records.
+  it('reports a declaration again after the record is reset', () => {
+    recordShikiStyle('--shiki-light:#111')
+    collectNewShikiStyles()
+    _resetShikiStyleClassesForTest()
+
+    recordShikiStyle('--shiki-light:#111')
+    expect(Object.values(collectNewShikiStyles())).toEqual(['--shiki-light:#111'])
+  })
+})
 
 describe('shikistyledecl', () => {
   it('passes a string style through unchanged', () => {

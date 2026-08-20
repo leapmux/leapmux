@@ -15,7 +15,8 @@
 package bgtask
 
 import (
-	"errors"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
@@ -47,6 +48,24 @@ const MaxTasks = 64
 // how large one is.
 const RowKeyByteLimit = 256
 
+// LabelByteLimit caps every provider-chosen LABEL field on a registry row.
+//
+// The argument RowKeyByteLimit makes applies verbatim to `ActiveForm`,
+// `Description` and `GroupLabel`: the PROVIDER chooses the length and nothing
+// else on the path does. They are model-written text, they are held in memory
+// for the life of the agent, and every registry snapshot broadcast carries them
+// again. MaxTasks caps how MANY rows exist and says nothing about how large one
+// is, and the sqlite column has no limit of its own.
+//
+// 512 rather than NameByteLimit's 128: `Description` carries a file path, which
+// a 128-byte cut would mangle. It matches notificationBodyByteLimit, which
+// bounds provider-chosen prose for the same reason.
+//
+// `GroupKey` and `RowKey` are NOT capped here. They are identities the registry
+// joins on, and a cut is non-injective -- which is the whole reason
+// ValidateRowKey refuses an unusable key rather than rewriting it.
+const LabelByteLimit = 512
+
 // ValidateRowKey reports why a provider-supplied registry row key is unusable,
 // or nil when the key is usable. The empty key is accepted and means "this
 // call carries no registry linkage" -- EnsureChildAgent and
@@ -70,8 +89,10 @@ const RowKeyByteLimit = 256
 //   - Over RowKeyByteLimit bytes. The PROVIDER chooses the length and nothing
 //     else on the path limits it: the key is a primary-key column, it stays in
 //     memory for the life of the agent, and every registry snapshot broadcast
-//     carries it again. Refusing keeps that bound AND injectivity, which a cap
-//     cannot do -- no total function onto a bounded set is injective.
+//     carries it again. Refusing keeps that bound AND injectivity, which a CUT
+//     cannot do -- no total function onto a bounded set is injective, and a cut
+//     is the worst of them, because provider keys share a prefix by
+//     construction. NormalizeRowKey is what turns this refusal back into a row.
 //   - Invalid UTF-8. BackgroundTaskItem.id is a proto `string`, and a marshal
 //     of an invalid one fails the WHOLE registry broadcast, not this row alone.
 //
@@ -84,11 +105,84 @@ const RowKeyByteLimit = 256
 // cleans it there. A log line needs no help, because slog quotes a value that
 // holds a control character.
 func ValidateRowKey(s string) error {
+	return validateIdentity("registry row key", s)
+}
+
+// derivedRowKeyPrefix marks a row key this package derived because the
+// provider's own key was unusable. It is not a namespace a provider can reach:
+// a provider that sent this exact prefix followed by 64 hex characters would
+// have to be sending the sha256 of some other string it never sent.
+const derivedRowKeyPrefix = "leapmux-derived-key:"
+
+// NormalizeRowKey returns the row key to store for the provider-supplied key s:
+// s itself when ValidateRowKey accepts it, and a key derived from it when it
+// does not.
+//
+// TOTAL, and that is the point. ValidateRowKey states exactly what makes a key
+// unusable, and every caller answered a refusal by failing the write -- so a
+// provider that ships one over-long key loses the whole row, and the background
+// task never appears in the sidebar at all. The user sees a subagent that is
+// running with nothing on screen to say so, which is a worse answer than an
+// unreadable label.
+//
+// A DERIVED KEY IS STILL AN IDENTITY, which is what lets it replace the
+// refusal. The row key is the second half of the (owner_agent_id, row_key)
+// primary key, and every later upsert, status change, close and rename
+// addresses the row by it, so the rule that produces it must be a function of
+// the provider's key alone and must not map two keys onto one:
+//
+//   - A function of s alone. The same provider key normalizes to the same
+//     derived key on every call, in every process, so the upsert that opens the
+//     row and the close that finishes it land on the same row across a worker
+//     restart.
+//   - Injective in practice. A CUT is not: providers build keys by prefixing a
+//     fixed namespace to a payload, so two keys that pass RowKeyByteLimit share
+//     their first 256 bytes far more readily than at random. Two keys collide
+//     here only through a sha256 collision.
+//   - Bounded and valid UTF-8 by construction, so the derived key satisfies
+//     ValidateRowKey itself. Normalizing an already-derived key returns it
+//     unchanged, so a value that passes through twice is stable.
+//
+// It answers the invalid-UTF-8 refusal as well as the over-long one, which is
+// the case wireString cannot help with: `Id` is the one proto string on a
+// registry row that is an identity rather than prose, so it cannot be repaired
+// on the projection without moving the row.
+//
+// The caller decides whether to say anything. `key != s` is the whole test, and
+// ValidateRowKey supplies the reason for the log line.
+func NormalizeRowKey(s string) string {
+	if ValidateRowKey(s) == nil {
+		return s
+	}
+	sum := sha256.Sum256([]byte(s))
+	return derivedRowKeyPrefix + hex.EncodeToString(sum[:])
+}
+
+// ValidateGroupKey reports why a provider-supplied GROUP key is unusable, or
+// nil when it is usable. The empty key is accepted and means "this row is not
+// grouped".
+//
+// The same class as a row key, because the two are the same KIND of value: an
+// identity the registry joins on, chosen by the provider, with nothing else on
+// the path bounding it. `LabelByteLimit`'s own doc names them together and says
+// why neither may be cut; the refusal was then built for one of the two.
+//
+// What a caller DOES with the refusal differs, and that difference is the whole
+// point. A refused row key fails the write, because a row with no identity
+// cannot exist. A refused group key clears the grouping in `Upsert.Clean` and
+// the row stands ungrouped.
+func ValidateGroupKey(s string) error {
+	return validateIdentity("registry group key", s)
+}
+
+// validateIdentity is the rule both keys share, so the cap-versus-refuse
+// decision is made once for the class rather than per field.
+func validateIdentity(what, s string) error {
 	if len(s) > RowKeyByteLimit {
-		return fmt.Errorf("registry row key must be at most %d bytes (got %d)", RowKeyByteLimit, len(s))
+		return fmt.Errorf("%s must be at most %d bytes (got %d)", what, RowKeyByteLimit, len(s))
 	}
 	if !utf8.ValidString(s) {
-		return errors.New("registry row key must be valid UTF-8")
+		return fmt.Errorf("%s must be valid UTF-8", what)
 	}
 	return nil
 }
@@ -104,10 +198,10 @@ func FirstLine(s string) string {
 	return strings.TrimSpace(s)
 }
 
-// TruncateRunes truncates s to at most max runes. A byte slice at max can land
+// truncateRunes truncates s to at most max runes. A byte slice at max can land
 // mid-rune and emit invalid UTF-8, which fails the proto broadcast marshal;
 // counting runes avoids that. max <= 0 returns s unchanged.
-func TruncateRunes(s string, max int) string {
+func truncateRunes(s string, max int) string {
 	if max <= 0 {
 		return s
 	}
@@ -118,8 +212,12 @@ func TruncateRunes(s string, max int) string {
 }
 
 // CleanTitleRunes cleans s with the shared title rule and then cuts it to at
-// most max runes. Call it instead of TruncateRunes wherever the cut result
-// becomes a title.
+// most max runes.
+//
+// It is the only cut this package exports. A cut WITHOUT the clean is the
+// shortcut the next provider reaches for, and it re-introduces the untrimmed
+// title this rule exists to remove -- so `truncateRunes` stays unexported and
+// this function is the door.
 //
 // The order is CLEAN FIRST, CUT SECOND, for the reason validate.CleanName
 // gives: a cut that runs first spends its budget on characters the clean is
@@ -136,7 +234,7 @@ func TruncateRunes(s string, max int) string {
 // value that is at most NameByteLimit bytes stays at most NameByteLimit
 // bytes.
 func CleanTitleRunes(s string, max int) string {
-	return strings.TrimSpace(TruncateRunes(validate.CleanName(s), max))
+	return strings.TrimSpace(truncateRunes(validate.CleanName(s), max))
 }
 
 // Kind discriminates subagent rows (an openable transcript tab) from shell
@@ -221,7 +319,8 @@ type Item struct {
 // caller left blank (empty string, or KindUnspecified) filled from existing.
 // GroupKey and GroupLabel are preserved together as a pair: a blank incoming
 // GroupKey keeps BOTH the existing key and label (a partial upsert cannot clear
-// a group). Status is NOT preserved: callers set it deliberately, and
+// a group), and a blank incoming LABEL under the SAME key keeps the existing
+// label. Status is NOT preserved: callers set it deliberately, and
 // StatusPending is a valid value, not a sentinel for "keep". Centralizes the
 // "blank means keep" rule so adding a descriptive field cannot silently regress
 // a partial upsert.
@@ -237,6 +336,19 @@ func (i Item) PreservingBlanksFrom(existing Item) Item {
 	}
 	if i.GroupKey == "" {
 		i.GroupKey = existing.GroupKey
+		i.GroupLabel = existing.GroupLabel
+	} else if i.GroupLabel == "" && i.GroupKey == existing.GroupKey {
+		// The label is a descriptive field like every other one above, so a
+		// partial upsert that omits it must not erase it. The key alone did not
+		// cover this: a provider that sends the group key on every update but
+		// the workflow name only on the first one blanked the heading from the
+		// second update onward, and `Upsert.Clean` reaches the same state by
+		// cleaning a label of nothing but invisible characters to "".
+		//
+		// GUARDED BY THE KEY, because the label names THAT group. Restoring it
+		// under a different key would put the previous group's heading over a
+		// row that just moved to a new group, and a wrong heading is worse than
+		// a missing one -- the reader cannot tell it is wrong.
 		i.GroupLabel = existing.GroupLabel
 	}
 	if i.Title == "" {
@@ -304,11 +416,47 @@ type Upsert struct {
 // validate.CleanName is idempotent, so a caller that cleaned the title already
 // (EnsureChildAgent does, for the `agents` row it writes first) passes it
 // through byte-identical.
-func (u Upsert) CleanTitle() Upsert {
+//
+// The three sibling LABEL fields are all capped at LabelByteLimit here, and TWO
+// of them keep their whitespace with StripUnreadable: `Description` carries a
+// file path and `ActiveForm` carries prose whose line structure is the
+// provider's. StripUnreadable answers that -- it asks the whitespace question
+// before the control question, so a line break survives instead of gluing the
+// words on either side of it together.
+//
+// `GroupLabel` is the third, and it takes the TITLE rule instead, because it is
+// the same kind of value: one line, read as a group heading, with no structure
+// of its own to keep. Sharing its siblings' rule cost it the blank test that
+// every descriptive field depends on -- a heading of nothing but invisible
+// characters stripped to a run of SPACES, which is not "" and so slipped past
+// PreservingBlanksFrom, and the group then drew a heading with nothing in it
+// over a stored name that was still good. The reader cleaned it to nothing
+// again on the way to the screen, so the two ends already disagreed about what
+// the value was.
+//
+// `GroupKey` is never CUT, for the reason ValidateRowKey never cuts a row key:
+// it is an identity, and a cut is non-injective, so two distinct groups would
+// collapse into one heading. An unusable one is DROPPED instead, together with
+// the label that names it -- the row then stands ungrouped, which is a state
+// the registry already has (`GroupKey == ""` means "no grouping", and
+// PreservingBlanksFrom reads it that way).
+//
+// Dropping the GROUPING rather than the ROW is the difference from RowKey. A
+// row with no usable identity cannot exist; a row whose GROUP identity is
+// unusable is still a perfectly good row, and refusing it would lose a task the
+// user is waiting on over the heading it would have sat under.
+func (u Upsert) Clean() Upsert {
 	u.Title = validate.CleanName(u.Title)
 	if u.Title == "" {
 		u.TitleIsCommand = false
 	}
+	if ValidateGroupKey(u.GroupKey) != nil {
+		u.GroupKey = ""
+		u.GroupLabel = ""
+	}
+	u.ActiveForm = validate.StripUnreadable(u.ActiveForm, LabelByteLimit)
+	u.Description = validate.StripUnreadable(u.Description, LabelByteLimit)
+	u.GroupLabel = validate.CleanNameTo(u.GroupLabel, LabelByteLimit)
 	return u
 }
 
@@ -337,19 +485,69 @@ func (u Upsert) ToItem() Item {
 	}
 }
 
+// wireString returns s with every invalid UTF-8 byte removed.
+//
+// A proto `string` must be valid UTF-8, and `proto.Marshal` fails the WHOLE
+// message for ONE bad byte -- so a single provider field would drop EVERY
+// background task from the broadcast, from the cold-start RPC response, and
+// from every later snapshot. `broadcastBackgroundTasks` puts the entire
+// registry in one message, and sqlite stores the bad bytes verbatim, so the
+// worker's own seed reads them back and re-poisons the cache on every boot: the
+// sidebar for that agent stays empty until the row is evicted, and eviction
+// only ever takes finished rows.
+//
+// An IDENTITY is kept valid at the boundary instead, because a rewrite here
+// would move it: `NormalizeRowKey` derives a usable `id`, and `Upsert.Clean`
+// clears an unusable group key. A label cannot be refused without losing the
+// row, so it is repaired HERE, on the projection: the cached and stored value
+// stays exactly what the provider sent, and the repair is derived from it on
+// every read.
+//
+// It drops the byte rather than writing U+FFFD, the same answer
+// `validate.CleanNameChars` gives an invalid byte, so the two rules agree.
+func wireString(s string) string {
+	return strings.ToValidUTF8(s, "")
+}
+
 // ToProto converts an in-memory Item to the wire-format proto message.
 func (i Item) ToProto() *leapmuxv1.BackgroundTaskItem {
+	// THE GROUPING IS DROPPED, NEVER REPAIRED. `GroupKey` used to go through
+	// wireString, and that was the one place this file rewrote a join identity:
+	// the client groups rows into one heading by the wire key, so dropping a
+	// byte from it merged two groups on screen while the worker's own cache kept
+	// them apart -- a disagreement with no error anywhere to find it by.
+	//
+	// Shipping it unrepaired is not the alternative, because ONE invalid byte in
+	// any proto string fails the marshal of the whole registry message, which is
+	// the failure the rest of this function exists to prevent. So an unusable
+	// key costs the GROUPING and nothing else: the row ships ungrouped rather
+	// than mis-grouped, which is the answer `Upsert.Clean` already gives at the
+	// write boundary. Stating it here too makes it unreachable rather than
+	// merely unreached -- `Clean` guards every write path today, and an Item
+	// that never met it would otherwise empty the sidebar.
+	//
+	// The LABEL goes with the key, for the reason `Upsert.Clean` pairs them:
+	// a heading that names no group has nothing left to name.
+	groupKey, groupLabel := i.GroupKey, i.GroupLabel
+	if ValidateGroupKey(groupKey) != nil {
+		groupKey, groupLabel = "", ""
+	}
 	return &leapmuxv1.BackgroundTaskItem{
+		// NO IDENTITY IS REPAIRED HERE, and each one is kept valid by a rule of
+		// its own: `Id` by `NormalizeRowKey` at the sink boundary,
+		// `ChildAgentId` and `ParentAgentId` by `id.Generate`, and `GroupKey` by
+		// the guard above. `GroupLabel` keeps the wireString repair because it
+		// is prose: nothing joins on it.
 		Id:             i.RowKey,
 		Kind:           kindToProto(i.Kind),
 		ChildAgentId:   i.ChildAgentID,
 		ParentAgentId:  i.ParentAgentID,
-		GroupKey:       i.GroupKey,
-		GroupLabel:     i.GroupLabel,
-		Title:          i.Title,
+		GroupKey:       groupKey,
+		GroupLabel:     wireString(groupLabel),
+		Title:          wireString(i.Title),
 		TitleIsCommand: i.TitleIsCommand,
-		Description:    i.Description,
-		ActiveForm:     i.ActiveForm,
+		Description:    wireString(i.Description),
+		ActiveForm:     wireString(i.ActiveForm),
 		Status:         statusToProto(i.Status),
 		CreatedAt:      formatTime(i.CreatedAt),
 		UpdatedAt:      formatTime(i.UpdatedAt),

@@ -9,7 +9,8 @@ vi.mock('~/lib/markdownWorkerClient', () => ({
 }))
 
 const { renderMarkdownInWorker } = await import('~/lib/markdownWorkerClient')
-const { _getPlaceholderCacheSize, _resetMarkdownCache, MARKDOWN_ARTIFACT_NS, renderMarkdown, renderMarkdownCachedOrPlain } = await import('~/lib/renderMarkdown')
+const { _getPlaceholderCacheSize, _resetMarkdownCache, markdownArtifactNs, renderMarkdown, renderMarkdownCachedOrPlain } = await import('~/lib/renderMarkdown')
+const { syntaxThemePair } = await import('~/lib/shikiThemes')
 const artifactStore = await import('~/lib/renderArtifactStore')
 
 const mockWorker = renderMarkdownInWorker as unknown as ReturnType<typeof vi.fn>
@@ -44,7 +45,16 @@ describe('rendermarkdown off-thread highlight path', () => {
     expect(html).toContain('language-js')
     expect(html).toContain('const x = 1')
     expect(html).not.toContain('class="shiki')
-    expect(mockWorker).toHaveBeenCalledWith('```js\nconst x = 1\n```', undefined)
+    // The pair is an ARGUMENT, captured at dispatch beside the artifact
+    // namespace the reply is filed under. Reading it inside the priority gate's
+    // deferred thunk sent whatever theme was live when the gate released the
+    // job, so a queued render was answered under one theme and persisted under
+    // another's namespace.
+    expect(mockWorker).toHaveBeenCalledWith(
+      '```js\nconst x = 1\n```',
+      syntaxThemePair(),
+      undefined,
+    )
   })
 
   it('caches the worker result so a later (reactive) re-render returns the highlighted HTML', async () => {
@@ -243,7 +253,7 @@ describe('rendermarkdown persisted artifacts (indexeddb warm-start)', () => {
     const text = '```js\nconst persisted = 1\n```'
     // The persisted shape is {h: html, s: styles}: the shared token-style class
     // dictionary must travel with the HTML (see shikiStyleClass).
-    await artifactStore.putArtifact(MARKDOWN_ARTIFACT_NS, text, { h: '<pre class="shiki">PERSISTED</pre>', s: {} })
+    await artifactStore.putArtifact(markdownArtifactNs(), text, { h: '<pre class="shiki">PERSISTED</pre>', s: {} })
 
     const first = renderMarkdown(text)
     expect(first).not.toContain('shiki') // plain placeholder while the store resolves
@@ -256,7 +266,7 @@ describe('rendermarkdown persisted artifacts (indexeddb warm-start)', () => {
 
   it('ignores malformed persisted renders and falls back to the worker', async () => {
     const text = '```js\nconst fallback = 1\n```'
-    await artifactStore.putArtifact(MARKDOWN_ARTIFACT_NS, text, {
+    await artifactStore.putArtifact(markdownArtifactNs(), text, {
       h: '<pre class="shiki">CORRUPT</pre>',
       s: { 'not a generated class': 42 },
     })
@@ -281,7 +291,7 @@ describe('rendermarkdown persisted artifacts (indexeddb warm-start)', () => {
     renderMarkdown(text)
 
     await vi.waitFor(async () => {
-      await expect(artifactStore.getArtifact(MARKDOWN_ARTIFACT_NS, text))
+      await expect(artifactStore.getArtifact(markdownArtifactNs(), text))
         .resolves
         .toEqual({ h: '<pre class="shiki">CLEAN</pre>', s: { 'sk-a-3': '--shiki-light:#111' } })
     })
@@ -303,7 +313,7 @@ describe('rendermarkdown persisted artifacts (indexeddb warm-start)', () => {
       expect(mockWorker.mock.calls.length).toBeGreaterThanOrEqual(4)
     })
     // Exhaustion caches the degraded HTML in MEMORY only — nothing durable.
-    await expect(artifactStore.getArtifact(MARKDOWN_ARTIFACT_NS, text)).resolves.toBeUndefined()
+    await expect(artifactStore.getArtifact(markdownArtifactNs(), text)).resolves.toBeUndefined()
     dispose?.()
   })
 })

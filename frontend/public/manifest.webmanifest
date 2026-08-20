@@ -4,8 +4,8 @@
   "description": "Multi-agent workspace manager",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#FDFCFA",
-  "theme_color": "#F7F5F2",
+  "background_color": "#fffefc",
+  "theme_color": "#fffefc",
   "icons": [
     {
       "src": "/icons/leapmux-icon-192.png",

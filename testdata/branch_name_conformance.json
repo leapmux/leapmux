@@ -1,0 +1,309 @@
+{
+  "_readme": "Shared conformance corpus for the git branch-name rule. Read by backend/internal/worker/gitutil/branch_name_test.go and by frontend/src/lib/validate.test.ts, so the two hand-written copies of a twelve-branch rule cannot drift. They must refuse the SAME names: the panel offering a branch the worker then refuses, or the reverse, gives the user two answers for one name, and it is invisible until somebody types it. `refusal` is a TOKEN rather than a message, because the two languages word their messages differently -- Go names the offending character, the browser does not -- so each suite maps the token to its own wording. The ORDER of the rules is pinned too, because a name can break two of them and the reported one must match.",
+  "cases": [
+    {
+      "input": {
+        "text": "main"
+      },
+      "valid": true,
+      "refusal": "",
+      "why": "an ordinary branch name"
+    },
+    {
+      "input": {
+        "text": "feat/add-parser"
+      },
+      "valid": true,
+      "refusal": "",
+      "why": "a slash-separated component is how git namespaces a branch"
+    },
+    {
+      "input": {
+        "text": "release-100%"
+      },
+      "valid": true,
+      "refusal": "",
+      "why": "`%` is legal in a ref, and refusing it hid a branch the repository already held"
+    },
+    {
+      "input": {
+        "text": "env-$STAGE"
+      },
+      "valid": true,
+      "refusal": "",
+      "why": "`$` is legal in a ref, for the reason `%` is"
+    },
+    {
+      "input": {
+        "text": "say-\"hi\""
+      },
+      "valid": true,
+      "refusal": "",
+      "why": "a double quote is legal: no sink reads a branch name as syntax"
+    },
+    {
+      "input": {
+        "text": "a]b"
+      },
+      "valid": true,
+      "refusal": "",
+      "why": "git forbids `[` and NOT `]`; refusing `]` refused a name git creates"
+    },
+    {
+      "input": {
+        "text": "@foo"
+      },
+      "valid": true,
+      "refusal": "",
+      "why": "a LEADING `@` is legal; only the bare `@` is a refname git refuses"
+    },
+    {
+      "input": {
+        "text": "cafe-fix"
+      },
+      "valid": true,
+      "refusal": "",
+      "why": "an ordinary ASCII name beside the non-ASCII ones"
+    },
+    {
+      "input": {
+        "text": "修正-parser"
+      },
+      "valid": true,
+      "refusal": "",
+      "why": "CJK is legal, and the limit counts BYTES rather than characters"
+    },
+    {
+      "input": {
+        "text": "ab"
+      },
+      "valid": true,
+      "refusal": "",
+      "why": "U+0085: the C1 block is NOT a git rule, and unicode.IsControl claimed it, refusing names git lists"
+    },
+    {
+      "input": {
+        "text": "ab"
+      },
+      "valid": true,
+      "refusal": "",
+      "why": "U+009F: the top of the C1 block, for the reason U+0085 is accepted"
+    },
+    {
+      "input": {
+        "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      },
+      "valid": true,
+      "refusal": "",
+      "why": "exactly at the byte limit"
+    },
+    {
+      "input": {
+        "text": ""
+      },
+      "valid": false,
+      "refusal": "empty",
+      "why": "the empty name"
+    },
+    {
+      "input": {
+        "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      },
+      "valid": false,
+      "refusal": "too_long",
+      "why": "one byte past the limit"
+    },
+    {
+      "input": {
+        "text": "一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一"
+      },
+      "valid": false,
+      "refusal": "too_long",
+      "why": "86 CJK characters are 258 BYTES: a String.length count accepted this and the worker then refused it"
+    },
+    {
+      "input": {
+        "text": "a\u0000b"
+      },
+      "valid": false,
+      "refusal": "control_character",
+      "why": "NUL"
+    },
+    {
+      "input": {
+        "text": "a\u001fb"
+      },
+      "valid": false,
+      "refusal": "control_character",
+      "why": "U+001F, the top of the C0 block"
+    },
+    {
+      "input": {
+        "text": "ab"
+      },
+      "valid": false,
+      "refusal": "control_character",
+      "why": "DEL"
+    },
+    {
+      "input": {
+        "text": "a b"
+      },
+      "valid": false,
+      "refusal": "forbidden_character",
+      "why": "the space, which git refuses"
+    },
+    {
+      "input": {
+        "text": "a~b"
+      },
+      "valid": false,
+      "refusal": "forbidden_character",
+      "why": "`~` is git's ancestry syntax"
+    },
+    {
+      "input": {
+        "text": "a^b"
+      },
+      "valid": false,
+      "refusal": "forbidden_character",
+      "why": "`^` is git's parent syntax"
+    },
+    {
+      "input": {
+        "text": "a:b"
+      },
+      "valid": false,
+      "refusal": "forbidden_character",
+      "why": "`:` separates a ref from a path"
+    },
+    {
+      "input": {
+        "text": "a?b"
+      },
+      "valid": false,
+      "refusal": "forbidden_character",
+      "why": "`?` is a refspec wildcard"
+    },
+    {
+      "input": {
+        "text": "a*b"
+      },
+      "valid": false,
+      "refusal": "forbidden_character",
+      "why": "`*` is a refspec wildcard"
+    },
+    {
+      "input": {
+        "text": "a[b"
+      },
+      "valid": false,
+      "refusal": "forbidden_character",
+      "why": "`[` is a refspec character class"
+    },
+    {
+      "input": {
+        "text": "a\\b"
+      },
+      "valid": false,
+      "refusal": "forbidden_character",
+      "why": "a backslash"
+    },
+    {
+      "input": {
+        "text": "@"
+      },
+      "valid": false,
+      "refusal": "at_alone",
+      "why": "the bare `@` is the one refname git refuses outright"
+    },
+    {
+      "input": {
+        "text": "/feat"
+      },
+      "valid": false,
+      "refusal": "leading_character",
+      "why": "a leading slash"
+    },
+    {
+      "input": {
+        "text": ".hidden"
+      },
+      "valid": false,
+      "refusal": "leading_character",
+      "why": "a leading dot"
+    },
+    {
+      "input": {
+        "text": "-force"
+      },
+      "valid": false,
+      "refusal": "leading_character",
+      "why": "a leading hyphen is the one refusal BEYOND git: the name reaches git as a positional argument, and git's option parser reads it as a flag"
+    },
+    {
+      "input": {
+        "text": "feat/"
+      },
+      "valid": false,
+      "refusal": "trailing_character",
+      "why": "a trailing slash"
+    },
+    {
+      "input": {
+        "text": "feat."
+      },
+      "valid": false,
+      "refusal": "trailing_character",
+      "why": "a trailing dot"
+    },
+    {
+      "input": {
+        "text": "feat.lock"
+      },
+      "valid": false,
+      "refusal": "lock_component",
+      "why": "git reserves the .lock suffix for its own ref lock files"
+    },
+    {
+      "input": {
+        "text": "a.lock/b"
+      },
+      "valid": false,
+      "refusal": "lock_component",
+      "why": "git refuses .lock on EVERY component, not the last one alone -- a.lock/b is not a valid ref"
+    },
+    {
+      "input": {
+        "text": "feat@{1}"
+      },
+      "valid": false,
+      "refusal": "reflog_syntax",
+      "why": "`@{` opens git's reflog syntax"
+    },
+    {
+      "input": {
+        "text": "a..b"
+      },
+      "valid": false,
+      "refusal": "double_dot",
+      "why": "`..` is git's range syntax"
+    },
+    {
+      "input": {
+        "text": "feat//x"
+      },
+      "valid": false,
+      "refusal": "double_slash",
+      "why": "an empty path component"
+    },
+    {
+      "input": {
+        "text": "feat/.hidden"
+      },
+      "valid": false,
+      "refusal": "slash_dot",
+      "why": "a component that begins with a dot"
+    }
+  ]
+}

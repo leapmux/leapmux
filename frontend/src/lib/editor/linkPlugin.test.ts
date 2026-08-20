@@ -1,7 +1,7 @@
 import { Schema } from '@milkdown/prose/model'
 import { EditorState, TextSelection } from '@milkdown/prose/state'
-import { describe, expect, it } from 'vitest'
-import { linkRangeAt, linkShortcutTarget } from './linkPlugin'
+import { describe, expect, it, vi } from 'vitest'
+import { clickAction, createArmedPress, linkRangeAt, linkShortcutTarget, pressClosesPopover } from './linkPlugin'
 
 /**
  * A real schema, mirroring Milkdown's commonmark declarations for the two marks
@@ -149,6 +149,88 @@ describe('linkRangeAt', () => {
   })
 })
 
+// The click plugin's decision, which had NO coverage and shipped a bug that only
+// a browser could show: the reopen ran from ProseMirror's `handleClick`, which
+// ProseMirror does not dispatch for every click. After a save rewrote the
+// document and refocused the editor, the next click on the link reached the raw
+// `pointerdown` handler and then nothing -- so the popover stayed shut about one
+// time in three, with no error anywhere. Both halves are raw DOM handlers now,
+// and the decision between them is these two pure functions.
+describe('pressClosesPopover', () => {
+  const run = { from: 1, to: 5, href: 'https://a.test', attrs: {} }
+
+  it('closes when the press lands on the run the popover is already open for', () => {
+    expect(pressClosesPopover(run, run, true)).toBe(true)
+  })
+
+  it('opens when the popover is shut, however the press lands', () => {
+    // The state at POINTERDOWN is the only one that can tell these apart: a
+    // `popover="auto"` light-dismisses before the click is dispatched, so by then
+    // every press looks like it landed with the popover closed.
+    expect(pressClosesPopover(run, run, false)).toBe(false)
+  })
+
+  it('opens when the press lands on a DIFFERENT run', () => {
+    // Clicking straight from one link to another swaps the popover to the second
+    // rather than toggling the first shut.
+    expect(pressClosesPopover({ ...run, from: 7, to: 11 }, run, true)).toBe(false)
+  })
+
+  it('opens when nothing was open for any run yet', () => {
+    expect(pressClosesPopover(run, null, true)).toBe(false)
+  })
+
+  it('does not close on a press outside every link', () => {
+    expect(pressClosesPopover(null, run, true)).toBe(false)
+  })
+})
+
+describe('clickAction', () => {
+  const run = { from: 1, to: 5, href: 'https://a.test', attrs: {} }
+
+  it('opens a press that landed on a link with the popover shut', () => {
+    expect(clickAction(run, false, true)).toBe('open')
+  })
+
+  it('closes a press the pointerdown marked as a toggle-off', () => {
+    expect(clickAction(run, true, true)).toBe('close')
+  })
+
+  it('closes a press that landed outside every link', () => {
+    expect(clickAction(null, false, true)).toBe('close')
+  })
+
+  it('closes rather than opening when both say so', () => {
+    expect(clickAction(null, true, true)).toBe('close')
+  })
+
+  it('reopens after a save, which is the sequence that used to fail', () => {
+    // Save leaves the popover shut and the stored range untouched, so the next
+    // press on the SAME run must read as a fresh open -- not as a toggle-off
+    // against a range that is still lying around.
+    const afterSave = pressClosesPopover(run, run, false)
+    expect(afterSave).toBe(false)
+    expect(clickAction(run, afterSave, true)).toBe('open')
+  })
+
+  // A SELECTION gesture is not a request to edit the link.
+  //
+  // ProseMirror's own `handleClick` never fired for either of these -- it sets
+  // `allowDefault` on a shift-click and on a drag past 4 px, and skips the
+  // single-click path when it is set. Reading the raw `click` event gave up that
+  // suppression, so the rule is stated here: drag-selecting part of a link's
+  // text, or shift-clicking to extend a selection onto one, popped the URL
+  // editor over the text the user was selecting.
+  it('closes when the gesture left a selection rather than a caret', () => {
+    expect(clickAction(run, false, false)).toBe('close')
+  })
+
+  it('closes a selecting gesture whatever the pointerdown decided', () => {
+    expect(clickAction(run, true, false)).toBe('close')
+    expect(clickAction(null, false, false)).toBe('close')
+  })
+})
+
 describe('linkShortcutTarget', () => {
   // Mod-K over a SELECTION means "link this text", so the popover opens empty.
   it('offers an empty href for a selection, so the user types a new URL', () => {
@@ -203,5 +285,52 @@ describe('linkShortcutTarget', () => {
   it('does nothing for a selection that crosses a block boundary', () => {
     const state = twoParagraphState('first', 'second')
     expect(linkShortcutTarget(withSelection(state, 2, 9))).toBeNull()
+  })
+})
+
+describe('createArmedPress', () => {
+  // The ordinary press: pointerdown captures the answer, and the click that
+  // completes it reads exactly that -- never the live popover state, which the
+  // browser's light-dismiss pass has already changed by then.
+  it('gives the click the answer its own pointerdown captured', () => {
+    const press = createArmedPress()
+    const live = vi.fn(() => false)
+
+    press.arm(true)
+
+    expect(press.take(live)).toBe(true)
+    expect(live).not.toHaveBeenCalled()
+  })
+
+  // The press is spent by the click that consumes it. A second click with no
+  // pointerdown between them -- a synthetic `click()`, an assistive technology
+  // activating the link -- inherited the first press's intent and shut the
+  // popover on a click that asked to open it.
+  it('spends the press on one click, so the next one asks again', () => {
+    const press = createArmedPress()
+
+    press.arm(true)
+    press.take(() => false)
+
+    expect(press.take(() => false)).toBe(false)
+  })
+
+  // A press the browser takes over for a scroll ends in pointercancel and
+  // produces no click at all, so nothing else disarms it.
+  it('drops the answer of a press that ends with no click', () => {
+    const press = createArmedPress()
+
+    press.arm(true)
+    press.disarm()
+
+    expect(press.take(() => false)).toBe(false)
+  })
+
+  // The fallback is the CORRECT answer for an unarmed click, not a safe guess:
+  // no pointerdown ran, so no light-dismiss pass ran, so the popover state the
+  // click reads is still truthful. It must be able to say "close" too.
+  it('reads the live state for a click no press armed', () => {
+    expect(createArmedPress().take(() => true)).toBe(true)
+    expect(createArmedPress().take(() => false)).toBe(false)
   })
 })

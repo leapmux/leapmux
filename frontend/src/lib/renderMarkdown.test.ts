@@ -1,9 +1,13 @@
 import { IDBFactory } from 'fake-indexeddb'
+import { createEffect, createRoot } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { DEFAULT_THEME_ID } from '~/styles/themes'
 import { _resetArtifactStoreForTest, getArtifact, putArtifact } from './renderArtifactStore'
-import { _getMarkdownCacheSize, _resetMarkdownCache, MARKDOWN_ARTIFACT_NS, renderMarkdown } from './renderMarkdown'
+import { _getMarkdownCacheSize, _resetMarkdownCache, markdownArtifactNs, renderMarkdown, shikiHighlighter } from './renderMarkdown'
 import { _resetShikiStyleClassesForTest } from './shikiStyleClass'
 import { readInjectedShikiRules } from './shikiStyleClass.testkit'
+import { syntaxPairFor } from './syntaxThemes'
+import { setSyntaxTheme } from './syntaxThemeStore'
 
 const originalWorkerDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'Worker')
 
@@ -91,7 +95,7 @@ describe('rendermarkdown shared token-style classes', () => {
     vi.stubGlobal('indexedDB', new IDBFactory())
     installCapturingWorker()
     const text = 'persisted warm start body'
-    await putArtifact(MARKDOWN_ARTIFACT_NS, text, {
+    await putArtifact(markdownArtifactNs(), text, {
       h: '<p data-persisted="">persisted warm start body</p>',
       s: { 'sk-00000000-1s': '--shiki-light:#123;--shiki-dark:#456' },
     })
@@ -113,7 +117,7 @@ describe('rendermarkdown shared token-style classes', () => {
     installCapturingWorker()
     const text = 'legacy artifact body'
     // The pre-{h,s} artifact shape: a bare HTML string.
-    await putArtifact(MARKDOWN_ARTIFACT_NS, text, '<p>legacy</p>')
+    await putArtifact(markdownArtifactNs(), text, '<p>legacy</p>')
 
     renderMarkdown(text)
 
@@ -134,7 +138,7 @@ describe('rendermarkdown shared token-style classes', () => {
     vi.stubGlobal('indexedDB', new IDBFactory())
     installCapturingWorker()
     const text = 'oversized artifact body'
-    await putArtifact(MARKDOWN_ARTIFACT_NS, text, {
+    await putArtifact(markdownArtifactNs(), text, {
       h: `<p>${'x'.repeat(512 * 1024)}</p>`,
       s: {},
     })
@@ -178,11 +182,51 @@ describe('rendermarkdown shared token-style classes', () => {
     expect(injectedRules()).toContain('.sk-00000001-13{--shiki-light:#aaa}')
     // Persisted for the next session's warm start, dictionary included.
     await vi.waitFor(async () => {
-      await expect(getArtifact(MARKDOWN_ARTIFACT_NS, text)).resolves.toEqual({
+      await expect(getArtifact(markdownArtifactNs(), text)).resolves.toEqual({
         h: '<pre class="shiki"><code><span class="sk-00000001-13">x</span></code></pre>',
         s: { 'sk-00000001-13': '--shiki-light:#aaa' },
       })
     })
+  })
+})
+
+describe('rendermarkdown syntax theme invalidation', () => {
+  beforeEach(() => {
+    _resetMarkdownCache()
+  })
+
+  it('bumps the version so a consumer that reads only markdownVersion re-renders', async () => {
+    // Every other mutation of these caches pairs the clear with a version bump.
+    // The syntax-theme invalidator did not, and a chat row survived only because
+    // its own cache namespace folds in `syntaxThemeGeneration()`. `MarkdownFileView`
+    // reads neither -- its memo depends on the file text and on `markdownVersion()`
+    // alone -- so an open markdown file kept the abandoned theme's baked token
+    // colours against a code surface already repainted for the new one.
+    const text = '# heading'
+    let runs = 0
+    const dispose = createRoot((disposeRoot) => {
+      createEffect(() => {
+        renderMarkdown(text)
+        runs += 1
+      })
+      return disposeRoot
+    })
+    await Promise.resolve()
+    const before = runs
+    expect(before).toBeGreaterThan(0)
+
+    // Point the store at the OTHER pair, which runs the invalidators.
+    const other = syntaxPairFor('nord')
+    await setSyntaxTheme(other, shikiHighlighter)
+    // The bump is coalesced through a microtask.
+    await new Promise(resolve => queueMicrotask(() => resolve(null)))
+    await Promise.resolve()
+
+    expect(runs).toBeGreaterThan(before)
+
+    // Put the module state back for the rest of the file.
+    await setSyntaxTheme(syntaxPairFor(DEFAULT_THEME_ID), shikiHighlighter)
+    dispose()
   })
 })
 
@@ -235,5 +279,36 @@ describe('rendermarkdown cache and gfm', () => {
     expect(_getMarkdownCacheSize()).toBe(0)
     renderMarkdown('cached test', true)
     expect(_getMarkdownCacheSize()).toBe(0)
+  })
+})
+
+/**
+ * The synchronous highlighter must boot already holding the pair the app
+ * starts on.
+ *
+ * It cannot await a chunk, so that one pair is imported statically. Nothing in
+ * the type system ties that import to `SYNTAX_THEMES.default`, and the two DID
+ * drift apart once: pointing Default at another pair while the static import
+ * stayed behind leaves every synchronous call site -- `renderAnsi`, the
+ * editor, the tool renderers, the Read view -- naming a theme Shiki has not
+ * loaded, which throws on the first highlight of the session.
+ */
+describe('shikiHighlighter startup themes', () => {
+  it('registers the pair the theme catalogue names for Default', () => {
+    const pair = syntaxPairFor(DEFAULT_THEME_ID)
+    const loaded = shikiHighlighter.getLoadedThemes()
+    expect(loaded).toContain(pair.light)
+    expect(loaded).toContain(pair.dark)
+  })
+
+  it('highlights synchronously under that pair without registering anything', () => {
+    // The assertion that would actually have caught the drift: naming an
+    // unregistered theme throws rather than degrading.
+    const pair = syntaxPairFor(DEFAULT_THEME_ID)
+    expect(() => shikiHighlighter.codeToHtml('const a = 1', {
+      lang: 'typescript',
+      themes: { light: pair.light, dark: pair.dark },
+      defaultColor: false,
+    })).not.toThrow()
   })
 })

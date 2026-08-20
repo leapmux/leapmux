@@ -374,6 +374,11 @@ func (s *testSink) EnsureChildAgent(spawnSpanID, providerChildKey, title string)
 	child.setChildAgentID(cid)
 	s.children[spawnSpanID] = child
 	if providerChildKey != "" {
+		// Normalized here for the reason the other three registry methods do it:
+		// production derives a usable key for an unusable one, so the fake must
+		// key its row the same way or a provider test reads a row under a
+		// string the registry never stores.
+		providerChildKey = bgtask.NormalizeRowKey(providerChildKey)
 		s.bgTasksMu.Lock()
 		if s.bgTasks == nil {
 			s.bgTasks = make(map[string]bgtask.Item)
@@ -507,7 +512,7 @@ func (s *testSink) UpsertBackgroundTask(task bgtask.Upsert) error {
 	if s.bgTasks == nil {
 		s.bgTasks = make(map[string]bgtask.Item)
 	}
-	// task.CleanTitle().ToItem().PreservingBlanksFrom(existing), the SAME chain
+	// task.Clean().ToItem().PreservingBlanksFrom(existing), the SAME chain
 	// the production applier uses. No link may be hand-written here: the clean
 	// so a provider test sees the title the registry really stores, the
 	// projection so a new field on Upsert reaches this fake too, and the merge
@@ -516,8 +521,15 @@ func (s *testSink) UpsertBackgroundTask(task bgtask.Upsert) error {
 	// description) blanked the Title against this fake while production
 	// preserved it, so a test that asserted the real contract failed against
 	// correct code.
+	// The FIRST link of the chain, and the one the production sink applies
+	// before the closure runs (see agentOutputSink.applyAndBroadcast): an
+	// unusable provider key becomes a derived one rather than dropping the row.
+	// A fake that kept the raw key would report a row under a string production
+	// never stores, and a provider test asserting it would pass against code
+	// that behaves differently.
+	task.RowKey = bgtask.NormalizeRowKey(task.RowKey)
 	existing := s.bgTasks[task.RowKey]
-	item := task.CleanTitle().ToItem().PreservingBlanksFrom(existing)
+	item := task.Clean().ToItem().PreservingBlanksFrom(existing)
 	// A final status is absorbing, as in the registry: a replayed non-final
 	// upsert must not resurrect a row that already ended. Without this the fake
 	// was MORE permissive than production, so a test pinning the guard failed
@@ -534,6 +546,7 @@ func (s *testSink) UpsertBackgroundTask(task bgtask.Upsert) error {
 }
 
 func (s *testSink) UpdateBackgroundTaskStatus(rowKey string, status bgtask.Status, activeForm string) error {
+	rowKey = bgtask.NormalizeRowKey(rowKey)
 	s.bgTasksMu.Lock()
 	defer s.bgTasksMu.Unlock()
 	if item, ok := s.bgTasks[rowKey]; ok {
@@ -553,6 +566,7 @@ func (s *testSink) UpdateBackgroundTaskStatus(rowKey string, status bgtask.Statu
 }
 
 func (s *testSink) CloseBackgroundTask(rowKey string, status bgtask.Status) error {
+	rowKey = bgtask.NormalizeRowKey(rowKey)
 	s.bgTasksMu.Lock()
 	defer s.bgTasksMu.Unlock()
 	if item, ok := s.bgTasks[rowKey]; ok {
@@ -651,6 +665,9 @@ func (s *testSink) RevivedTasks() []string {
 }
 
 func (s *testSink) RenameBackgroundTask(oldKey, newKey string) error {
+	// BOTH keys, as production does: normalizing one and not the other is how a
+	// rename stops finding its own row.
+	oldKey, newKey = bgtask.NormalizeRowKey(oldKey), bgtask.NormalizeRowKey(newKey)
 	s.bgTasksMu.Lock()
 	defer s.bgTasksMu.Unlock()
 	if item, ok := s.bgTasks[oldKey]; ok {

@@ -22,6 +22,7 @@ import { cachedInnerHtml } from '~/lib/htmlFragmentCache'
 import { isObject } from '~/lib/jsonPick'
 import { createLogger } from '~/lib/logger'
 import { getCachedMarkdownHtml, renderMarkdown, renderMarkdownCachedOrPlain, renderMarkdownPlain } from '~/lib/renderMarkdown'
+import { syntaxThemeGeneration } from '~/lib/syntaxThemeStore'
 import { inlineFlex } from '~/styles/shared.css'
 import { markdownContent } from './markdownEditor/markdownContent.css'
 import { cachedRenderValueForString, getCachedRenderValueForString, setCachedRenderValueForString } from './messageRenderCache'
@@ -33,6 +34,19 @@ import {
   toolInputText,
   toolUseIcon,
 } from './toolStyles.css'
+
+/**
+ * The per-row markdown cache namespace, which carries the syntax theme
+ * generation.
+ *
+ * A row's cached HTML holds Shiki's baked token colours, so it is wrong after a
+ * theme change rather than merely old. The module-level cache is cleared
+ * outright; this one is per-row and short-lived, so orphaning it by namespace is
+ * cheaper than reaching into every row to evict.
+ */
+export function markdownCacheNamespace(): string {
+  return `markdown-html:${syntaxThemeGeneration()}`
+}
 
 const logger = createLogger('messageRenderers')
 
@@ -173,11 +187,11 @@ function cachedHighlightedMarkdown(
   text: string,
   context: RenderContext | undefined,
 ): string | undefined {
-  const rowCached = getCachedRenderValueForString<string>(context, 'markdown-html', text)
+  const rowCached = getCachedRenderValueForString<string>(context, markdownCacheNamespace(), text)
   if (rowCached !== undefined)
     return rowCached
   const sharedCached = getCachedMarkdownHtml(text)
-  return sharedCached === undefined ? undefined : setCachedRenderValueForString(context, 'markdown-html', text, sharedCached)
+  return sharedCached === undefined ? undefined : setCachedRenderValueForString(context, markdownCacheNamespace(), text, sharedCached)
 }
 
 function rememberDisplayedMarkdown(
@@ -211,10 +225,10 @@ export function renderMarkdownForContext(text: string, context: RenderContext | 
     return rememberDisplayedMarkdown(
       context,
       text,
-      cached === undefined ? html : setCachedRenderValueForString(context, 'markdown-html', text, cached),
+      cached === undefined ? html : setCachedRenderValueForString(context, markdownCacheNamespace(), text, cached),
     )
   }
-  const rowCached = getCachedRenderValueForString<string>(context, 'markdown-html', text)
+  const rowCached = getCachedRenderValueForString<string>(context, markdownCacheNamespace(), text)
   if (rowCached !== undefined)
     return rememberDisplayedMarkdown(context, text, rowCached)
   const html = renderMarkdown(text, false, context?.rowOffscreen)
@@ -222,7 +236,7 @@ export function renderMarkdownForContext(text: string, context: RenderContext | 
   return rememberDisplayedMarkdown(
     context,
     text,
-    cached === undefined ? html : setCachedRenderValueForString(context, 'markdown-html', text, cached),
+    cached === undefined ? html : setCachedRenderValueForString(context, markdownCacheNamespace(), text, cached),
   )
 }
 

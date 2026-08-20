@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"unicode"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/envutil"
@@ -574,10 +573,21 @@ const BranchNameByteLimit = 256
 // character count would let an 86-character CJK name past the panel and into
 // a refusal here.
 //
-// `$` and `%` are here although git itself accepts them. A branch name
-// reaches a shell command line and a file path under `.git/refs/`, so the
-// rule keeps the set narrow. `\` is refused for the same reason and is what
-// git refuses on its own.
+// The set holds what GIT itself refuses, plus exactly ONE deliberate extra: a
+// leading `-`, because the name reaches git as a positional argument and git's
+// option parser would read it as a flag. Every other divergence is a defect --
+// refusing more than git makes an EXISTING branch that `for-each-ref` lists
+// impossible to act on, and refusing less pushes the error down into git, where
+// the user gets a raw message instead of a validation one. A branch name never
+// reaches a shell: `NewGitCmd` builds an `exec.CommandContext(ctx, "git", args...)`
+// argv with no interpreter between, so there is no syntax for a character to
+// escape into. Refusing more than git does makes an EXISTING branch unusable --
+// `listGitBranches` reads every ref straight from `for-each-ref`, so a repository
+// that already holds `release-100%` or `env-$STAGE` offers it in the picker and
+// then refuses every checkout, push and delete of it, with no way to act on that
+// branch from inside LeapMux at all. This is the rule `util/validate/name.go`
+// states for titles, applied here: a guard belongs at the emitter, and a
+// character ban only removes the user's text.
 func ValidateBranchName(name string) error {
 	if name == "" {
 		return branchNameErrorf("must not be empty")
@@ -586,19 +596,43 @@ func ValidateBranchName(name string) error {
 		return branchNameErrorf("must be at most %d bytes", BranchNameByteLimit)
 	}
 	for _, r := range name {
-		if unicode.IsControl(r) {
+		// git refuses the ASCII controls and DEL. The C1 block U+0080-U+009F is
+		// NOT a git rule -- `unicode.IsControl` reports the whole Cc category,
+		// which made this refuse names git creates and `for-each-ref` lists.
+		if r < 0x20 || r == 0x7f {
 			return branchNameErrorf("must not contain control characters")
 		}
 		switch r {
-		case ' ', '~', '^', ':', '?', '*', '[', ']', '\\', '$', '%':
+		// `]` is absent on purpose: git forbids `[` and not `]`.
+		case ' ', '~', '^', ':', '?', '*', '[', '\\':
 			return branchNameErrorf("must not contain '%c'", r)
 		}
 	}
-	if name[0] == '/' || name[0] == '.' || name[0] == '-' || name[0] == '@' {
+	// `@` alone is the one refname git refuses; a LEADING `@` is legal.
+	if name == "@" {
+		return branchNameErrorf("must not be the single character '@'")
+	}
+	// The leading `-` is the one refusal that goes BEYOND git, and it is
+	// deliberate: `DeleteBranch` and `checkoutBranchInDir` hand the name to git
+	// as a positional argument, and git's own option parser reads a leading `-`
+	// as a flag. `service/git.go` documents the same hazard for a fetched
+	// `refs/heads/--help`.
+	if name[0] == '/' || name[0] == '.' || name[0] == '-' {
 		return branchNameErrorf("must not start with '%c'", name[0])
 	}
-	if strings.HasSuffix(name, "/") || strings.HasSuffix(name, ".") || strings.HasSuffix(name, ".lock") {
-		return branchNameErrorf("must not end with /, ., or .lock")
+	if strings.HasSuffix(name, "/") || strings.HasSuffix(name, ".") {
+		return branchNameErrorf("must not end with / or .")
+	}
+	// git refuses `.lock` on EVERY slash-separated component, not on the last
+	// one alone: `a.lock/b` is not a valid ref.
+	for _, comp := range strings.Split(name, "/") {
+		if strings.HasSuffix(comp, ".lock") {
+			return branchNameErrorf("must not have a path component that ends with .lock")
+		}
+	}
+	// `@{` is git's reflog syntax and is refused anywhere in a ref name.
+	if strings.Contains(name, "@{") {
+		return branchNameErrorf("must not contain '@{'")
 	}
 	if strings.Contains(name, "..") {
 		return branchNameErrorf("must not contain '..'")

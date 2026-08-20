@@ -823,6 +823,22 @@ func TestUpdateTitle(t *testing.T) {
 	// Unknown terminal returns false.
 	assert.False(t, m.UpdateTitle("nonexistent", "nope"))
 
+	// THE CLEAN LIVES HERE, so no writer can put a control character or a
+	// bidirectional override in a tab label. The rename RPC cleaned its own
+	// title and the post-spawn absorb did not, and the manager's title is what
+	// ListTerminals reports while a terminal is live.
+	assert.True(t, m.UpdateTitle(termID, "safe\u202ereversed\x00"))
+	entries = m.ListByIDs([]string{termID})
+	require.Len(t, entries, 1)
+	assert.Equal(t, "safereversed", entries[0].Meta.Title)
+
+	// A title that cleans to nothing leaves the stored one alone, the same
+	// answer the rename RPC gives: writing "" leaves the tab with no name.
+	assert.False(t, m.UpdateTitle(termID, "  \u200b\ufeff  "))
+	entries = m.ListByIDs([]string{termID})
+	require.Len(t, entries, 1)
+	assert.Equal(t, "safereversed", entries[0].Meta.Title, "an empty clean must not blank the tab")
+
 	m.StopAll()
 }
 

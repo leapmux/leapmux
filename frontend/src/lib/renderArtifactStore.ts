@@ -48,7 +48,10 @@ import { fnv1a32Hex } from './stringDigest'
  *   interpreted: refactors, in-memory cache policy, CSS that targets
  *   structural selectors (pre.shiki span, [data-shiki-token]).
  * - Shiki theme changes — the consumer namespaces fold the theme names in
- *   separately (see MARKDOWN_ARTIFACT_NS / TOKEN_ARTIFACT_NS).
+ *   separately (see `markdownArtifactNs()` / `tokenArtifactNs()`). Those are
+ *   FUNCTIONS, not constants: the syntax theme is a run-time preference, so the
+ *   namespace a caller writes under is the one live at its dispatch, and entries
+ *   written under an abandoned theme are simply never looked up again.
  * - Output that merely gets BETTER but stays valid (e.g. tighter token
  *   merging): old artifacts still render correctly, just less optimally.
  *   Bumping anyway is a judgment call to re-render the population uniformly.

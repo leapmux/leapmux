@@ -1,0 +1,6 @@
+{
+  "name": "@shikijs/themes (syntax themes)",
+  "license": "MIT",
+  "url": "https://github.com/shikijs/shiki",
+  "description": "The TextMate themes that nine of the eleven syntax themes highlight with are loaded from this package, which vendors each upstream project's own editor theme (Ayu, Catppuccin, Everforest, GitHub/Primer, gruvbox, Nord, One, Rose Pine, Solarized, Tokyo Night). Those projects are credited individually above for their palettes. Default has no editor theme of its own -- Dimidium is a terminal scheme -- so it highlights with github-light/github-dark from this package as LeapMux always has. The two halves this package cannot supply are stated at `frontend/src/lib/syntaxThemes.ts`: Tokyo Night's light half is vendored from Tokyo Night's own repository, and Nord's light half is generated from Nord's own palette and ANSI set over github-light/github-dark's scope structure."
+}

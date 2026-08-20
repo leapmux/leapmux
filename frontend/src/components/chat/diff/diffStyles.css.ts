@@ -1,6 +1,6 @@
 import { globalStyle, style } from '@vanilla-extract/css'
 import { codeTypography, codeWrap } from '~/styles/codeBlock'
-import { shikiDualThemeColors } from '../shikiTokenColors.css'
+import { codeSurface } from '../shikiTokenColors.css'
 
 // Diff container
 export const diffContainer = style({
@@ -12,23 +12,29 @@ export const diffContainer = style({
   marginTop: 'var(--space-1)',
 })
 
+// The tint strengths come from the CODE surface, per polarity -- see
+// ~/styles/diffTint.ts for why one number cannot serve both. `--danger` and
+// `--success` are the syntax theme's here, not the app's: `codeSurfaceTheme`
+// repoints them on this subtree.
 export const diffRemoved = style({
-  backgroundColor: 'color-mix(in srgb, var(--danger) 18%, transparent)',
+  backgroundColor: 'color-mix(in srgb, var(--danger) var(--code-diff-tint), transparent)',
 })
 
 export const diffAdded = style({
-  backgroundColor: 'color-mix(in srgb, var(--success) 18%, transparent)',
+  backgroundColor: 'color-mix(in srgb, var(--success) var(--code-diff-tint), transparent)',
 })
 
-// Inline character-level highlight within a removed line
+// Inline character-level highlight within a removed line. It composites ON the
+// row above rather than on the surface, so its strength is what it adds, not
+// its total.
 export const diffRemovedInline = style({
-  backgroundColor: 'color-mix(in srgb, var(--danger) 22%, transparent)',
+  backgroundColor: 'color-mix(in srgb, var(--danger) var(--code-diff-tint-word), transparent)',
   borderRadius: '2px',
 })
 
 // Inline character-level highlight within an added line
 export const diffAddedInline = style({
-  backgroundColor: 'color-mix(in srgb, var(--success) 22%, transparent)',
+  backgroundColor: 'color-mix(in srgb, var(--success) var(--code-diff-tint-word), transparent)',
   borderRadius: '2px',
 })
 
@@ -79,7 +85,7 @@ export const diffContent = style({
 // Only color is set here (no `bg`); backgroundColor is intentionally omitted so that
 // word-diff inline classes (diffRemovedInline, diffAddedInline) are not
 // overridden by a higher-specificity global rule.
-shikiDualThemeColors(`${diffContainer} span[data-shiki-token]`)
+codeSurface(diffContainer, 'page', [{ suffix: ' span[data-shiki-token]' }])
 
 // Split diff container (two columns side by side)
 export const diffSplitContainer = style({
@@ -93,7 +99,7 @@ export const diffSplitContainer = style({
   marginTop: 'var(--space-1)',
 })
 
-shikiDualThemeColors(`${diffSplitContainer} span[data-shiki-token]`)
+codeSurface(diffSplitContainer, 'page', [{ suffix: ' span[data-shiki-token]' }])
 
 // Gap separator row between hunks (shows hidden line count + expand buttons)
 export const diffGapSeparator = style({
@@ -105,7 +111,11 @@ export const diffGapSeparator = style({
   fontFamily: 'var(--font-sans)',
   fontSize: 'var(--text-8)',
   color: 'var(--muted-foreground)',
-  backgroundColor: 'color-mix(in srgb, var(--info) 6%, transparent)',
+  // The syntax theme's own background, not a wash over it: `codeSurfaceTheme`
+  // repoints `--background` at the field this surface paints. So the row stays
+  // flush with the code it interrupts, and the dashed rules above and below are
+  // what mark the break.
+  backgroundColor: 'var(--background)',
   userSelect: 'none',
   borderTop: '1px dashed var(--border)',
   borderBottom: '1px dashed var(--border)',

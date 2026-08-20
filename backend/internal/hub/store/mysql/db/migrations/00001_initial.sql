@@ -58,7 +58,7 @@ CREATE TABLE users (
     pending_email_attempts   INT NOT NULL DEFAULT 0,
     password_set             BOOLEAN NOT NULL DEFAULT TRUE,
     is_admin                 BOOLEAN NOT NULL DEFAULT FALSE,
-    prefs          TEXT NOT NULL,
+    prefs          MEDIUMTEXT NOT NULL,
     created_at     DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     updated_at     DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     -- High-water mark bumped whenever this user's auth basis is

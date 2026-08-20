@@ -1,5 +1,6 @@
 import { lruGet, lruSet } from './mapLru'
 import { recordShikiStyle, shikiStyleDecl } from './shikiStyleClass'
+import { onSyntaxThemeChange } from './syntaxThemeStore'
 
 /**
  * Renderable token: only the fields ReadResultView / TokenizedCode / the diff
@@ -208,6 +209,14 @@ export function setCachedTokens(lang: string, code: string, tokens: CachedToken[
   // stays identical to the markdown / fragment / word-diff caches'.
   lruSet(cache, makeKey(lang, code), tokens, CACHE_MAX_SIZE)
 }
+
+// Cached tokens carry Shiki's baked colours, and the key is `(lang, code)` with
+// no theme in it -- so a syntax theme change makes every entry wrong rather than
+// merely stale. The persisted copies need no clearing: `tokenArtifactNs()` folds
+// the theme in, so they are orphaned by namespace.
+onSyntaxThemeChange(() => {
+  cache.clear()
+})
 
 /** Visible for testing: the capacity bound, and a hook to clear the shared cache. */
 export const _TOKEN_CACHE_MAX_SIZE = CACHE_MAX_SIZE

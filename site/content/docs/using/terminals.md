@@ -151,13 +151,20 @@ The terminal automatically fits its tile. When you resize the tile or window, Le
 
 ### Appearance
 
-The terminal follows your appearance preferences. The default monospace font is `"Hack NF", Hack, "SF Mono", Consolas, monospace` at size 13, and follows your monospace-font preference. The terminal theme has three pill options under the **"Terminal Theme"** heading in Appearance settings:
+The terminal follows your appearance preferences. The default monospace font is `"Hack NF", Hack, "SF Mono", Consolas, monospace` at size 13, and follows your monospace-font preference.
 
-| Option | Value | Behaviour |
+The **Terminal theme** row in Appearance settings has two halves, and a third control appears for a palette that offers more than one look per side:
+
+| Half | Options | Behaviour |
 | --- | --- | --- |
-| **"Match UI"** | `match-ui` (default) | Follows the UI theme and your OS light/dark preference |
-| **"Dark"** | `dark` | Always dark (the "Dimidium" scheme) |
-| **"Light"** | `light` | Always light (the "Dimidium Light" scheme) |
+| Palette | **Match UI** (default), **Default (Dimidium)**, or any of the ten adapted themes | Which colors the terminal paints |
+| Mode | **System**, **Light**, **Dark** | Which variant of that palette |
+
+**Match UI** follows whatever theme the app is wearing — palette, variant and light/dark together — and keeps following it after you switch. It governs the rest of the row, which greys out and reports what the app resolved to. Any other palette detaches the row: the controls become live, starting from the app's own mode, and **System** then reads your OS directly, which differs from the app when the app itself is pinned.
+
+Four palettes offer more than one look — Catppuccin's flavours, Ayu's Mirage, Rosé Pine's Moon and Gruvbox's contrast levels — and a variant menu appears beside the palette when one is chosen. It lists both sides at once, under a **Light** and a **Dark** heading, and a pick applies to the side that flavour belongs to.
+
+Each palette supplies the sixteen ANSI colors; the background, foreground, cursor and selection come from that same palette, so a terminal set to a different theme than the app is still coherent in itself. Default's ANSI set is the [Dimidium](https://github.com/dofuuz/dimidium) scheme, which is why its entry reads **Default (Dimidium)** — the colors the terminal has always painted.
 
 See [Settings & Preferences](/docs/using/settings/) for fonts, themes, and other appearance options.
 

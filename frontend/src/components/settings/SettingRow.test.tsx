@@ -2,6 +2,7 @@ import type { SettingBinding, SettingDescriptor } from './types'
 import { cleanup, fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { menuTriggerText, pickMenuOption } from '~/test-support/menu'
 import { formatEffectiveValue, SettingRow } from './SettingRow'
 
 function descriptor(overrides: Partial<SettingDescriptor> = {}): SettingDescriptor {
@@ -43,7 +44,7 @@ describe('settingRow control kinds', () => {
     await vi.waitFor(() => expect(set).toHaveBeenCalledWith('light'))
   })
 
-  it('renders a native select for wide enums', () => {
+  it('renders a menu for wide enums', () => {
     render(() => (
       <SettingRow
         descriptor={descriptor({ control: { kind: 'enum', options: [
@@ -56,7 +57,7 @@ describe('settingRow control kinds', () => {
         binding={binding({ value: () => 'a' })}
       />
     ))
-    expect(screen.getByRole('combobox')).toBeTruthy()
+    expect(screen.getByTestId('enum-control-menu')).toBeTruthy()
   })
 
   it('renders a switch for toggles and commits flips', async () => {
@@ -542,7 +543,7 @@ describe('settingRow write sequencing', () => {
 
   // The pill branch re-derives every pill from `props.value`, so only the
   // wide-enum `<select>` needs the repair.
-  it('puts the stored option back when a select write is refused', async () => {
+  it('keeps showing the stored option when a menu write is refused', async () => {
     const set = vi.fn(async () => {
       throw new Error('unknown TLS mode')
     })
@@ -558,11 +559,13 @@ describe('settingRow write sequencing', () => {
         binding={binding({ value: () => 'starttls', set })}
       />
     ))
-    const select = screen.getByRole('combobox', { name: 'Test row' }) as HTMLSelectElement
-    fireEvent.change(select, { target: { value: 'legacy' } })
+    pickMenuOption('enum-control-menu', 'Legacy')
 
     await waitFor(() => expect(screen.getByText('unknown TLS mode')).toBeTruthy())
-    expect(select.value).toBe('starttls')
+    // The row still shows the stored value. A menu derives its selection from
+    // the binding, so a refused write never moved it -- there is no DOM state
+    // to put back, which is what this row used to have to do by hand.
+    expect(menuTriggerText('enum-control-menu')).toContain('STARTTLS')
   })
 
   // The set path and the reset path share ONE counter, because they write

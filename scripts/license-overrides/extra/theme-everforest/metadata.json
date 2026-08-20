@@ -1,0 +1,6 @@
+{
+  "name": "Everforest (theme palette)",
+  "license": "MIT",
+  "url": "https://github.com/sainnhe/everforest",
+  "description": "The medium-contrast light and dark hex values behind the Everforest theme in `frontend/src/styles/themes/everforest.ts` were read from this project's `palette.md` and mapped onto LeapMux's CSS custom properties."
+}

@@ -4,7 +4,7 @@ import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as workerRpc from '~/api/workerRpc'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
-import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { menuOptions, menuTriggerText, pickMenuValue } from '~/test-support/menu'
 import { ChangeBranchDialog } from './ChangeBranchDialog'
 
 vi.mock('~/api/clients', () => ({
@@ -146,13 +146,15 @@ describe('changeBranchDialog', () => {
     // the GitPathInfo accessor (the form-gate predicate consumes it).
     vi.mocked(workerRpc.inspectBranchChange).mockReturnValue(new Promise<never>(() => {})) // probe held pending
     renderDialog({ branchName: 'main' })
-    // No await needed: the seed gates showGitOptions synchronously.
+    // No await needed: the seed controls showGitOptions synchronously.
     expect(screen.getByText('Switch to branch')).toBeInTheDocument()
     expect(screen.getByText('Create new branch')).toBeInTheDocument()
     // BranchSelect shows the loading placeholder until the inspect
     // resolves (no separate ListGitBranches fetcher exists for the
-    // preloaded-branches path).
-    expect(screen.getByText('Loading branches...')).toBeInTheDocument()
+    // preloaded-branches path). Asserted on the TRIGGER, because the menu also
+    // states it in place of the option list while loading -- the gate that
+    // stops a stale list staying mounted and clickable through a refetch.
+    expect(menuTriggerText('branch-select-menu')).toContain('Loading branches...')
   })
 
   it('uses the seed-derived currentBranch in the base picker before the RPC lands', async () => {
@@ -183,7 +185,7 @@ describe('changeBranchDialog', () => {
     } as Awaited<ReturnType<typeof workerRpc.inspectBranchChange>>)
     fireEvent.click(screen.getByText('Create new branch'))
     await waitFor(() => {
-      expect(screen.getByRole('option', { name: 'main (current)' })).toBeInTheDocument()
+      expect(menuOptions('branch-select-menu')).toContain('main (current)')
     })
   })
 
@@ -194,7 +196,7 @@ describe('changeBranchDialog', () => {
     // showCurrent so the currently-checked-out branch is suffixed.
     fireEvent.click(screen.getByText('Create new branch'))
     await waitFor(() => {
-      expect(screen.getByRole('option', { name: 'feature (current)' })).toBeInTheDocument()
+      expect(menuOptions('branch-select-menu')).toContain('feature (current)')
     })
   })
 
@@ -208,8 +210,7 @@ describe('changeBranchDialog', () => {
   it('switch-branch: calls checkoutBranch with picked branch and closes', async () => {
     const props = renderDialog()
     await awaitFormReady()
-    const select = screen.getAllByRole('combobox')[0] as HTMLSelectElement
-    fireEvent.change(select, { target: { value: 'main' } })
+    pickMenuValue('branch-select-menu', 'main')
 
     const apply = screen.getByRole('button', { name: 'Apply' })
     fireEvent.click(apply)
@@ -228,8 +229,7 @@ describe('changeBranchDialog', () => {
   it('switch-branch: fires onBranchChanged with the chosen branch name', async () => {
     const props = renderDialog()
     await awaitFormReady()
-    const select = screen.getAllByRole('combobox')[0] as HTMLSelectElement
-    fireEvent.change(select, { target: { value: 'main' } })
+    pickMenuValue('branch-select-menu', 'main')
     fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
 
     await waitFor(() => expect(props.onBranchChanged).toHaveBeenCalledTimes(1))
@@ -242,8 +242,7 @@ describe('changeBranchDialog', () => {
     // The sidebar shows the local name, so onBranchChanged must too.
     const props = renderDialog()
     await awaitFormReady()
-    const select = screen.getAllByRole('combobox')[0] as HTMLSelectElement
-    fireEvent.change(select, { target: { value: 'origin/remote-only' } })
+    pickMenuValue('branch-select-menu', 'origin/remote-only')
     fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
 
     await waitFor(() => expect(props.onBranchChanged).toHaveBeenCalledTimes(1))
@@ -271,8 +270,7 @@ describe('changeBranchDialog', () => {
     })
     const props = renderDialog()
     await awaitFormReady()
-    const select = screen.getAllByRole('combobox')[0] as HTMLSelectElement
-    fireEvent.change(select, { target: { value: 'feature/auth' } })
+    pickMenuValue('branch-select-menu', 'feature/auth')
     fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
 
     await waitFor(() => expect(props.onBranchChanged).toHaveBeenCalledTimes(1))
@@ -371,8 +369,7 @@ describe('changeBranchDialog', () => {
     await awaitFormReady()
 
     expect(screen.queryByTestId('new-tab-blocked-reason')).toBeNull()
-    const select = screen.getAllByRole('combobox')[0] as HTMLSelectElement
-    fireEvent.change(select, { target: { value: 'main' } })
+    pickMenuValue('branch-select-menu', 'main')
     const apply = screen.getByRole('button', { name: 'Apply' }) as HTMLButtonElement
     expect(apply.disabled, 'switch-branch arms despite the reason').toBe(false)
 
@@ -393,8 +390,7 @@ describe('changeBranchDialog', () => {
     fireEvent.click(screen.getByText('Create new worktree'))
 
     // Switch the "Open as" dropdown to terminal.
-    const openAs = screen.getAllByRole('combobox').find(c => (c as HTMLSelectElement).value === String(TabType.AGENT)) as HTMLSelectElement
-    fireEvent.change(openAs, { target: { value: String(TabType.TERMINAL) } })
+    fireEvent.click(screen.getByRole('radio', { name: 'Terminal' }))
     await waitFor(() => expect(workerRpc.listAvailableShells).toHaveBeenCalled())
     // Wait for the createResource-backed shells list to resolve so the
     // default shell propagates into canSubmit() and unblocks Apply.
@@ -432,8 +428,7 @@ describe('changeBranchDialog', () => {
     // effect — making the dialog appear to do nothing on submit.
     renderDialog()
     await awaitFormReady()
-    const select = screen.getAllByRole('combobox')[0] as HTMLSelectElement
-    fireEvent.change(select, { target: { value: 'feature' } })
+    pickMenuValue('branch-select-menu', 'feature')
     const apply = screen.getByRole('button', { name: 'Apply' }) as HTMLButtonElement
     await waitFor(() => expect(apply.disabled).toBe(true))
     expect(screen.getByText(/already on this branch/i)).toBeInTheDocument()
@@ -458,8 +453,7 @@ describe('changeBranchDialog', () => {
     })
     renderDialog()
     await awaitFormReady()
-    const select = screen.getAllByRole('combobox')[0] as HTMLSelectElement
-    fireEvent.change(select, { target: { value: 'origin/feature' } })
+    pickMenuValue('branch-select-menu', 'origin/feature')
     const apply = screen.getByRole('button', { name: 'Apply' }) as HTMLButtonElement
     await waitFor(() => expect(apply.disabled).toBe(true))
     expect(screen.getByText(/already on local branch "feature"/i)).toBeInTheDocument()
@@ -470,8 +464,7 @@ describe('changeBranchDialog', () => {
     // switch destination — Apply must remain enabled.
     renderDialog()
     await awaitFormReady()
-    const select = screen.getAllByRole('combobox')[0] as HTMLSelectElement
-    fireEvent.change(select, { target: { value: 'main' } })
+    pickMenuValue('branch-select-menu', 'main')
     const apply = screen.getByRole('button', { name: 'Apply' }) as HTMLButtonElement
     await waitFor(() => expect(apply.disabled).toBe(false))
     expect(screen.queryByText(/already on/i)).toBeNull()
@@ -483,8 +476,7 @@ describe('changeBranchDialog', () => {
     fireEvent.click(screen.getByText('Create new worktree'))
     expect(workerRpc.listAvailableShells).not.toHaveBeenCalled()
 
-    const openAs = screen.getAllByRole('combobox').find(c => (c as HTMLSelectElement).value === String(TabType.AGENT)) as HTMLSelectElement
-    fireEvent.change(openAs, { target: { value: String(TabType.TERMINAL) } })
+    fireEvent.click(screen.getByRole('radio', { name: 'Terminal' }))
     await waitFor(() => expect(workerRpc.listAvailableShells).toHaveBeenCalledTimes(1))
   })
 
@@ -497,15 +489,14 @@ describe('changeBranchDialog', () => {
     await awaitFormReady()
     fireEvent.click(screen.getByText('Create new worktree'))
 
-    const openAs = screen.getAllByRole('combobox').find(c => (c as HTMLSelectElement).value === String(TabType.AGENT)) as HTMLSelectElement
-    fireEvent.change(openAs, { target: { value: String(TabType.TERMINAL) } })
+    fireEvent.click(screen.getByRole('radio', { name: 'Terminal' }))
     await waitFor(() => expect(workerRpc.listAvailableShells).toHaveBeenCalledTimes(1))
 
     // Toggle away (Agent → switch-branch path) and back to terminal.
-    fireEvent.change(openAs, { target: { value: String(TabType.AGENT) } })
+    fireEvent.click(screen.getByRole('radio', { name: 'Agent' }))
     fireEvent.click(screen.getByText('Switch to branch'))
     fireEvent.click(screen.getByText('Create new worktree'))
-    fireEvent.change(openAs, { target: { value: String(TabType.TERMINAL) } })
+    fireEvent.click(screen.getByRole('radio', { name: 'Terminal' }))
 
     // Give any spurious refetch a chance to land before asserting.
     await Promise.resolve()
@@ -536,8 +527,7 @@ describe('changeBranchDialog', () => {
     renderDialog()
     await awaitFormReady()
     fireEvent.click(screen.getByText('Create new worktree'))
-    const openAs = screen.getAllByRole('combobox').find(c => (c as HTMLSelectElement).value === String(TabType.AGENT)) as HTMLSelectElement
-    fireEvent.change(openAs, { target: { value: String(TabType.TERMINAL) } })
+    fireEvent.click(screen.getByRole('radio', { name: 'Terminal' }))
     await waitFor(() => expect(workerRpc.listAvailableShells).toHaveBeenCalled())
     const apply = screen.getByRole('button', { name: 'Apply' }) as HTMLButtonElement
     expect(apply.disabled).toBe(true)
@@ -547,8 +537,7 @@ describe('changeBranchDialog', () => {
     vi.mocked(workerRpc.checkoutBranch).mockRejectedValue(new Error('git boom'))
     renderDialog()
     await awaitFormReady()
-    const select = screen.getAllByRole('combobox')[0] as HTMLSelectElement
-    fireEvent.change(select, { target: { value: 'main' } })
+    pickMenuValue('branch-select-menu', 'main')
     fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
     await waitFor(() => expect(screen.getByText('git boom')).toBeInTheDocument())
   })

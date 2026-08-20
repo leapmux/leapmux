@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"path"
 	"slices"
 	"strings"
 	"sync"
@@ -96,7 +97,15 @@ var (
 //     re-point every relative asset URL at another origin.
 //   - frame-ancestors 'none': nothing may frame LeapMux. This replaces
 //     X-Frame-Options, which therefore needs no header of its own.
-//   - form-action 'self': a form the app never wrote cannot post elsewhere.
+//   - form-action: a form the app never wrote cannot post elsewhere. The
+//     loopback sources are not a relaxation -- they are the CLI login, which is
+//     the only form in the app whose submission leaves this origin. `/auth/cli/start`
+//     renders a consent form, and the POST answers with a redirect to the local
+//     callback the CLI is listening on. A browser matches `form-action` against
+//     EVERY hop of a submission's redirect chain, so `'self'` alone blocks that
+//     hop on Chromium and WebKit and the CLI waits until it times out. The port
+//     is chosen by the CLI at run time, hence the wildcard; the host set is
+//     exactly what `isLoopbackURL` already refuses to redirect outside.
 var cspDirectives = []string{
 	"default-src 'self'",
 	"connect-src " + strings.Join(append([]string{"'self'"}, captchaConnectSources...), " "),
@@ -108,7 +117,61 @@ var cspDirectives = []string{
 	"frame-src " + strings.Join(captchaFrameSources, " "),
 	"base-uri 'self'",
 	"frame-ancestors 'none'",
-	"form-action 'self'",
+	"form-action " + strings.Join(append([]string{"'self'"}, loopbackFormTargets...), " "),
+}
+
+// loopbackFormTargets are the redirect targets of the CLI consent form.
+//
+// DERIVED from httpsec.LoopbackHosts, which `isLoopbackURL` (hub/service) reads
+// as well, so the policy cannot state a different set from the one the redirect
+// accepts. The scheme is http because a loopback listener has no certificate,
+// and the port is a wildcard because the CLI binds an ephemeral one.
+//
+// AN IPv6 LITERAL CANNOT BE STATED AT ALL, so `::1` is filtered out rather than
+// bracketed. CSP's `host-source` grammar has no production for one: Chromium
+// reports `contains an invalid source: 'http://[::1]:*'` and IGNORES that
+// entry, so writing it bought nothing and left a console error on every page
+// load -- which is how it was found, by the violation collector in
+// tests/e2e/181-security-headers.spec.ts.
+//
+// Nothing is lost today. The CLI binds `127.0.0.1:0` and builds its
+// redirect_uri from that literal (internal/cli/control/cmd/auth.go), so no
+// consent-form POST is ever aimed at `[::1]`. `LoopbackHosts` keeps `::1`
+// because `isLoopbackURL` must still ACCEPT a hand-built one -- the two answer
+// different questions, and this is the one place where what CSP can express is
+// narrower than what the redirect allows.
+var loopbackFormTargets = func() []string {
+	targets := make([]string, 0, len(httpsec.LoopbackHosts))
+	for _, host := range httpsec.LoopbackHosts {
+		if strings.Contains(host, ":") {
+			continue
+		}
+		targets = append(targets, "http://"+host+":*")
+	}
+	return targets
+}()
+
+// withDirective returns directives with `name`'s entry replaced by `sources`,
+// appending it when the list does not already state that directive.
+//
+// It never mutates the input: `append` on a slice with spare capacity would
+// write into the caller's backing array, and `cspDirectives` is package state
+// that the shipped policy also reads.
+func withDirective(directives []string, name, sources string) []string {
+	out := make([]string, 0, len(directives)+1)
+	replaced := false
+	for _, d := range directives {
+		if strings.HasPrefix(d, name+" ") {
+			out = append(out, name+" "+sources)
+			replaced = true
+			continue
+		}
+		out = append(out, d)
+	}
+	if !replaced {
+		out = append(out, name+" "+sources)
+	}
+	return out
 }
 
 // devCSP is the policy for the Vite dev server, and it is REPORT-ONLY.
@@ -118,17 +181,25 @@ var cspDirectives = []string{
 // the console, which is where a developer wants to learn that a new dependency
 // reaches for something the shipped policy refuses -- before it ships, not
 // after.
-var devCSP = strings.Join([]string{
-	"default-src 'self'",
-	"script-src 'self' 'unsafe-inline' 'unsafe-eval'",
-	"style-src 'self' 'unsafe-inline'",
-	"img-src 'self' data: blob:",
-	"connect-src 'self' ws: wss:",
-	"object-src 'none'",
-	"base-uri 'self'",
-	"frame-ancestors 'none'",
-	"form-action 'self'",
-}, "; ")
+//
+// DERIVED FROM cspDirectives, with the two overrides the dev server needs and
+// nothing else. It used to be a second hand-written list, and it drifted four
+// directives behind the shipped one: a developer who added a font, a worker, an
+// iframe or a plugin embed saw no report for it, so the report-only policy went
+// quiet about exactly the additions it exists to catch. Deriving it means a new
+// directive is covered in dev the day it ships.
+var devCSP = func() string {
+	directives := withDirective(cspDirectives, "script-src", "'self' 'unsafe-inline' 'unsafe-eval'")
+	// ADDS ws: and wss: for the HMR socket; it does not replace the shipped
+	// sources. Overriding the whole directive dropped the captcha vendors, so a
+	// developer testing sign-up saw a violation report for a request the
+	// shipped policy allows -- a false report, which is worse than none,
+	// because it teaches the reader to ignore the channel.
+	devConnect := append([]string{"'self'"}, captchaConnectSources...)
+	devConnect = append(devConnect, "ws:", "wss:")
+	directives = withDirective(directives, "connect-src", strings.Join(devConnect, " "))
+	return strings.Join(directives, "; ")
+}()
 
 // DevPolicy returns the report-only policy for the dev proxy.
 func DevPolicy() httpsec.Policy {
@@ -147,7 +218,8 @@ func UnknownAssetsPolicy() httpsec.Policy {
 }
 
 // Policy returns the enforced Content-Security-Policy for the EMBEDDED
-// frontend, with one 'sha256-...' source for each inline script in index.html.
+// frontend, with one 'sha256-...' source for each inline script in EVERY HTML
+// document it serves.
 //
 // THE HASH IS DERIVED, NEVER WRITTEN DOWN. The one inline script the build
 // emits is an 18 KB asset manifest carrying the hashed chunk file names, so
@@ -166,7 +238,7 @@ var embeddedPolicy = sync.OnceValue(func() httpsec.Policy {
 	if err != nil {
 		return failedPolicy(fmt.Errorf("open the embedded frontend: %w", err))
 	}
-	hashes, err := inlineScriptHashes(publicFS, "index.html")
+	hashes, err := allInlineScriptHashes(publicFS)
 	if err != nil {
 		return failedPolicy(err)
 	}
@@ -204,7 +276,64 @@ func failedPolicy(err error) httpsec.Policy {
 	return httpsec.Policy{}
 }
 
+// allInlineScriptHashes returns a sorted CSP source expression for every inline
+// script in every HTML document under fsys.
+//
+// ONE POLICY COVERS EVERY DOCUMENT, so the set it authorizes has to be the
+// union over all of them. `script-src` is sent on each HTML response from the
+// same Policy value, and hashing index.html alone made that policy correct for
+// one document by accident: the others carry no inline script TODAY. The day
+// one does, the browser refuses it and the page breaks at runtime with a
+// console error, which is the exact failure the derived hash exists to prevent.
+//
+// It WALKS rather than reading a list of names, so a document added to the
+// frontend build is covered without an edit here. A list is a second place to
+// remember, and the cost of forgetting lands on the user.
+func allInlineScriptHashes(fsys fs.FS) ([]string, error) {
+	seen := make(map[string]struct{})
+	docs := 0
+	err := fs.WalkDir(fsys, ".", func(name string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !isHTMLDocument(name) {
+			return nil
+		}
+		docs++
+		return addInlineScriptHashes(fsys, name, seen)
+	})
+	if err != nil {
+		return nil, err
+	}
+	// No HTML at all means the embed is broken, and a policy derived from
+	// nothing would authorize nothing. Say so rather than serve it.
+	if docs == 0 {
+		return nil, fmt.Errorf("no HTML document found in the embedded frontend")
+	}
+	return sortedHashes(seen), nil
+}
+
+// isHTMLDocument reports whether name identifies a document the browser parses
+// as HTML, and therefore one whose inline scripts the policy must authorize.
+//
+// `path.Ext`, not `filepath.Ext`: an fs.FS path is always slash-separated,
+// whatever the host operating system uses.
+func isHTMLDocument(name string) bool {
+	ext := strings.ToLower(path.Ext(name))
+	return ext == ".html" || ext == ".htm"
+}
+
 // inlineScriptHashes returns a sorted CSP source expression for each inline
+// script in the named HTML file.
+func inlineScriptHashes(fsys fs.FS, name string) ([]string, error) {
+	seen := make(map[string]struct{})
+	if err := addInlineScriptHashes(fsys, name, seen); err != nil {
+		return nil, err
+	}
+	return sortedHashes(seen), nil
+}
+
+// addInlineScriptHashes adds one CSP source expression to seen for each inline
 // script in the named HTML file.
 //
 // It parses with x/net/html rather than matching a pattern, because a <script>
@@ -215,19 +344,18 @@ func failedPolicy(err error) httpsec.Policy {
 //
 // A script that carries a `src` attribute is skipped. Its body is dead text
 // that the browser never runs, so a hash of it would authorize nothing.
-func inlineScriptHashes(fsys fs.FS, name string) ([]string, error) {
+func addInlineScriptHashes(fsys fs.FS, name string, seen map[string]struct{}) error {
 	f, err := fsys.Open(name)
 	if err != nil {
-		return nil, fmt.Errorf("open %s: %w", name, err)
+		return fmt.Errorf("open %s: %w", name, err)
 	}
 	defer func() { _ = f.Close() }()
 
 	doc, err := html.Parse(f)
 	if err != nil {
-		return nil, fmt.Errorf("parse %s: %w", name, err)
+		return fmt.Errorf("parse %s: %w", name, err)
 	}
 
-	seen := make(map[string]struct{})
 	var walk func(*html.Node)
 	walk = func(n *html.Node) {
 		if n.Type == html.ElementNode && n.Data == "script" && !hasAttr(n, "src") {
@@ -241,15 +369,19 @@ func inlineScriptHashes(fsys fs.FS, name string) ([]string, error) {
 		}
 	}
 	walk(doc)
+	return nil
+}
 
-	// Sorted, so the header is byte-identical across processes and a test can
-	// compare it. Go randomizes map iteration order deliberately.
+// sortedHashes orders the collected sources, so the header is byte-identical
+// across processes and a test can compare it. Go randomizes map iteration order
+// deliberately.
+func sortedHashes(seen map[string]struct{}) []string {
 	hashes := make([]string, 0, len(seen))
 	for h := range seen {
 		hashes = append(hashes, h)
 	}
 	slices.Sort(hashes)
-	return hashes, nil
+	return hashes
 }
 
 func hasAttr(n *html.Node, name string) bool {

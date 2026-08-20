@@ -175,14 +175,14 @@ func (h *OAuthHandler) handleCallback(w http.ResponseWriter, r *http.Request, pr
 	// Exchange code for tokens, under a deadline of our own.
 	//
 	// This is a mux route, so it never passes through the RPC interceptor chain
-	// that bounds every Connect handler -- and the leg it makes is an outbound
+	// that limits every Connect handler -- and the leg it makes is an outbound
 	// call to a third party. golang.org/x/oauth2 runs it on http.DefaultClient
 	// unless the context carries an oauth2.HTTPClient, and http.DefaultClient
 	// has NO timeout, so without this deadline an identity provider that accepts
 	// the connection and never answers parks this handler until the hub shuts
 	// down (the http.Server's shutdown-scoped BaseContext cancels it then, but a
 	// hung IdP during NORMAL operation would otherwise park it for the process's
-	// life). This per-leg deadline bounds exactly that: a slow or wedged IdP
+	// life). This per-leg deadline limits exactly that: a slow or wedged IdP
 	// while the hub is healthy.
 	exchangeCtx, cancelExchange := context.WithTimeout(ctx, settings.KeyTimeouts.Of(h.set.Snapshot(r.Context())).APITimeout())
 	defer cancelExchange()

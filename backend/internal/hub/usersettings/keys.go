@@ -14,6 +14,7 @@ package usersettings
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/leapmux/leapmux/internal/hub/settings"
@@ -26,6 +27,40 @@ import (
 // overriding the toggle and the list independently gives incoherent
 // states — so both tiers (account blob and browser override) treat the
 // whole object as the override unit.
+// ThemeValue is the whole appearance choice: which palette, and which variant
+// of it. One value rather than two keys because they are one choice, presented
+// by one control under one scope chip and one Reset.
+//
+// Name is validated as a SLUG and nothing more, deliberately. The palettes are
+// TypeScript modules under frontend/src/styles/themes/, which the hub cannot
+// see; a Go copy of their ids would be a second authority that drifts the first
+// time someone adds a palette file. The client's own themeById() answers for a
+// name its build does not carry, so an unknown name costs a fallback to the
+// default palette -- not a refused write that would stop a NEWER client from
+// storing a theme this hub has never heard of.
+type ThemeValue struct {
+	Name    string        `json:"name"`
+	Mode    string        `json:"mode"`
+	Variant *ThemeVariant `json:"variant,omitempty"`
+}
+
+// ThemeVariant pins which look of a palette each polarity wears: Catppuccin
+// publishes four flavours, of which one is light and three are dark, so a
+// palette name and a light/dark mode together no longer name one look.
+//
+// BOTH HALVES ARE STORED although the client shows one picker at a time. A
+// preference set to follow the system has to answer for both, because the OS
+// flips at dusk and the client must already know which dark variant to paint.
+//
+// An empty half means "that theme's default variant", which is the palette it
+// shipped before variants existed. The names are slugs the CLIENT owns, for the
+// same reason the palette name is -- the variants are TypeScript modules the hub
+// cannot see -- so the hub checks only their shape.
+type ThemeVariant struct {
+	Light string `json:"light,omitempty"`
+	Dark  string `json:"dark,omitempty"`
+}
+
 type FontFamilyValue struct {
 	Enabled bool     `json:"enabled"`
 	Fonts   []string `json:"fonts,omitempty"`
@@ -45,10 +80,10 @@ type KeybindingOverride struct {
 // characters per field. MaxFonts caps each font stack.
 //
 // Every list an account can grow needs a cap here, because the storage
-// supplies none: users.prefs is TEXT in MySQL (65,535 bytes) and
-// effectively unlimited in SQLite and Postgres, so an uncapped list
-// accepts a different maximum per dialect and the only other ceiling is
-// the 4 MiB request limit the hub sets for the whole call. The browser
+// supplies none: users.prefs is MEDIUMTEXT in MySQL and effectively
+// unlimited in SQLite and Postgres, so the DIALECT no longer sets a
+// ceiling and the only other one is MaxPrefsBytes for the whole
+// document, plus the 4 MiB request limit for the whole call. The browser
 // tier mirrors each cap (see MAX_STRING_LIST_ITEMS and
 // MAX_KEYBINDING_OVERRIDES in the frontend controls); the hub is the
 // authority, and the browser must never be the stricter of the two.
@@ -83,8 +118,185 @@ func validateEnum(allowed []settings.EnumValue) func(string) error {
 				return nil
 			}
 		}
-		return fmt.Errorf("must be one of %s (got %q)", strings.Join(names, ", "), v)
+		return fmt.Errorf("must be one of %s (got %q)", strings.Join(names, ", "), echoLimit(v))
 	}
+}
+
+// maxEchoedValue caps what a validation error may quote back.
+//
+// It is generous next to every legal value here -- the longest is a theme
+// variant id -- and small next to what a client can send.
+const maxEchoedValue = 64
+
+// echoLimit cuts v to what an error message may carry.
+//
+// EVERY validator that formats a rejected value with %q reads this, because the
+// cap has to hold for the whole class rather than for the fields somebody
+// remembered. `Registry.ApplyPartial` runs the per-key validator BEFORE it
+// measures the document against MaxPrefsBytes, so nothing upstream bounds the
+// value: a 4 MiB string reached %q, which expands an unprintable byte roughly
+// fourfold, and built a ~16 MiB error in the RPC response AND in the log line.
+// validateTheme and validateTerminalTheme capped their `Name` half for exactly
+// this reason and then handed the uncapped `Mode` half to validateEnum first.
+//
+// The marker is the ellipsis, so a reader can tell a cut value from a short
+// one and does not chase a difference that is not in the stored data.
+func echoLimit(v string) string {
+	if len(v) <= maxEchoedValue {
+		return v
+	}
+	return validate.TruncateToBytes(v, maxEchoedValue) + "..."
+}
+
+// DefaultThemeName is the palette every fallback resolves to. It must equal
+// DEFAULT_THEME_ID in frontend/src/styles/themes/index.ts, which
+// TestThemeDefaultMatchesTheClientCatalogue pins.
+const DefaultThemeName = "default"
+
+// MaxThemeNameLength caps the stored palette name. The product bound on the
+// whole document is MaxPrefsBytes, which registry.ApplyPartial enforces, so
+// every string an account can set needs a cap of its OWN -- one oversized field
+// would otherwise refuse every later write to any other key in the blob.
+//
+// The bound is the product's and no longer the storage's: this branch moved
+// MySQL's `prefs` column to MEDIUMTEXT precisely so no dialect exports a
+// ceiling the product never chose.
+const MaxThemeNameLength = 64
+
+// themeNamePattern is the slug shape a palette id takes: lowercase, digits, and
+// single interior hyphens. It matches the id rule the client's theme catalogue
+// test enforces, so a name this accepts is a name a client could carry.
+var themeNamePattern = regexp.MustCompile(`^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$`)
+
+// validateTheme checks the mode against its advertised enum and the palette
+// name against a slug shape.
+//
+// The asymmetry is deliberate, and it is the point of the ThemeValue comment:
+// the mode is a closed set this package owns, so it gets the same exact-match
+// rule every other enum key gets. The palette catalogue lives in the client, so
+// the hub checks only that the name is SHAPED like an id. An empty name is
+// accepted and means "the default palette", which is what an older client that
+// writes only a mode produces.
+func validateTheme(v ThemeValue) error {
+	if err := validateEnum(themeModeEnumValues)(v.Mode); err != nil {
+		return fmt.Errorf("mode: %w", err)
+	}
+	if err := validateThemeVariant(v.Variant); err != nil {
+		return err
+	}
+	// The sentinel is REFUSED in this slot. `match-ui` means "follow the UI
+	// theme", so it can mean nothing for the UI theme itself -- but it happens to
+	// match themeNamePattern, so the shape check alone accepted it. The client
+	// then rejects it and substitutes the default, leaving the user's appearance
+	// dialog showing the default palette beside a "Customized" badge with no way
+	// out but Reset: a stored value with no meaning, which is exactly what this
+	// package exists to keep out.
+	if v.Name == MatchUI {
+		return fmt.Errorf("invalid theme name %q: the sentinel means \"follow the UI theme\" and cannot name the UI theme itself", MatchUI)
+	}
+	return validateThemeName(v.Name)
+}
+
+// validateThemeVariant checks the SHAPE of each half, and nothing more. The
+// variant catalogue lives in the client for the reason the ThemeValue comment
+// gives, so a name this accepts is a name a client could carry; one it does not
+// carry resolves to that theme's default rather than failing.
+func validateThemeVariant(v *ThemeVariant) error {
+	if v == nil {
+		return nil
+	}
+	for _, half := range []struct {
+		field string
+		name  string
+	}{{"light", v.Light}, {"dark", v.Dark}} {
+		if err := validateThemeName(half.name); err != nil {
+			return fmt.Errorf("variant.%s: %w", half.field, err)
+		}
+	}
+	return nil
+}
+
+// validateThemeName checks the SHAPE of a palette name, shared by both theme
+// keys. An empty name is accepted and means "the default palette", which is what
+// an older client that writes only a mode produces.
+func validateThemeName(name string) error {
+	if name == "" {
+		return nil
+	}
+	if len(name) > MaxThemeNameLength {
+		return fmt.Errorf("theme name too long: %d bytes (max %d)", len(name), MaxThemeNameLength)
+	}
+	if !themeNamePattern.MatchString(name) {
+		return fmt.Errorf("invalid theme name %q: must be lowercase letters, digits and single hyphens", name)
+	}
+	return nil
+}
+
+// MaxPrefsBytes caps the WHOLE serialized settings document.
+//
+// Every per-key cap bounds one field and none of them can see the aggregate:
+// the declared caps sum to roughly 170 KB, and one key reaches that alone. The
+// check lives at Registry.ApplyPartial, the single write path.
+const MaxPrefsBytes = 256 << 10
+
+// MatchUI ties the terminal theme, and the syntax theme, to the UI theme. It is
+// stored as a VALUE rather than as an absence, because "follow the app" has to
+// survive the app's theme changing -- recording a copy of whatever the UI held
+// at the time would freeze the terminal to that palette the moment the user
+// switched.
+//
+// It must equal MATCH_UI in frontend/src/styles/themes/types.ts, which
+// TestTerminalThemeSentinelMatchesTheClient pins.
+const MatchUI = "match-ui"
+
+// validateTerminalTheme accepts everything validateTheme does, plus the MatchUI
+// sentinel -- in BOTH halves together, or in neither. Shared with `syntax_theme`,
+// which has the same shape and the same sentinel meaning; a second copy would be
+// a second place for the rule to drift.
+//
+// Together, because "follow the app" is ONE decision and the client states it as
+// one switch. A mixed document is not a third setting a user can describe: it is
+// a document no client produces, so the hub refuses it here rather than storing
+// a state whose meaning the two sides would have to agree on separately.
+//
+// It refuses rather than rewrites, for the reason validateFontFamily gives: a
+// silent normalization hands the client back something it did not ask for.
+func validateTerminalTheme(v ThemeValue) error {
+	// Through the same derived-from-the-catalogue validator the UI mode uses, so
+	// the accepted set is stated once -- in terminalThemeModeEnumValues -- rather
+	// than as a special case for the sentinel here.
+	if err := validateEnum(terminalThemeModeEnumValues)(v.Mode); err != nil {
+		return fmt.Errorf("mode: %w", err)
+	}
+	if err := validateThemeVariant(v.Variant); err != nil {
+		return err
+	}
+	// The name is capped BEFORE it reaches a %q. The sentinel check below formats
+	// it into an error, and %q expands an unprintable byte roughly fourfold, so a
+	// 4 MiB name arriving with a mismatched mode would build a ~16 MiB error
+	// string in the response and in the log line -- the failure validateFontFamily
+	// states at its own guard. The sentinel is shorter than the cap, so testing
+	// the length first refuses nothing that the sentinel branch would accept.
+	if v.Name != MatchUI {
+		if err := validateThemeName(v.Name); err != nil {
+			return err
+		}
+	}
+	if (v.Name == MatchUI) != (v.Mode == MatchUI) {
+		return fmt.Errorf(
+			"name and mode must both be %q or neither (got name %q, mode %q)",
+			MatchUI, v.Name, v.Mode)
+	}
+	// A row that follows the app carries no variant of its own. The client's
+	// parse returns the bare sentinel and discards any variant beside it, so
+	// accepting one stores a document no client can produce and none can read
+	// back -- and a user who later pins the row off the sentinel would surface a
+	// variant they never chose, or lose it silently, depending on which side
+	// answered first.
+	if v.Name == MatchUI && v.Variant != nil {
+		return fmt.Errorf("variant: a theme that follows the UI (%q) carries no variant of its own", MatchUI)
+	}
+	return nil
 }
 
 // validateFontFamily REFUSES a stack longer than MaxFonts, and any family
@@ -168,16 +380,15 @@ func validateKeybindings(v []KeybindingOverride) error {
 // single source for both halves of its key: the advertised set in UIMeta
 // and the write-path validator derived from it, so the two cannot drift.
 var (
-	themeEnumValues = []settings.EnumValue{
-		{Value: "dark"},
-		{Value: "light"},
+	themeModeEnumValues = []settings.EnumValue{
 		{Value: "system"},
-	}
-	terminalThemeEnumValues = []settings.EnumValue{
-		{Value: "match-ui"},
-		{Value: "dark"},
 		{Value: "light"},
+		{Value: "dark"},
 	}
+	// The terminal's mode accepts everything the UI's does, plus the sentinel
+	// that ties it to the UI's RESOLVED mode.
+	terminalThemeModeEnumValues = append(
+		[]settings.EnumValue{{Value: MatchUI}}, themeModeEnumValues...)
 	diffViewEnumValues = []settings.EnumValue{
 		{Value: "unified"},
 		{Value: "split"},
@@ -188,32 +399,75 @@ var (
 	}
 )
 
+// dropStaleVariant clears a variant the MERGE carried over from a palette the
+// document no longer names.
+//
+// A variant id names one look of ONE palette, so it stops meaning anything the
+// moment the name beside it changes. The client already states this -- the
+// chooser commits `variant: undefined` with every palette pick and with the
+// return to the sentinel -- but `JSON.stringify` OMITS an undefined field, so
+// the partial document says nothing about the variant and `ApplyPartial` keeps
+// the stored one.
+//
+// This REWRITES where the validators refuse, and the two rules agree rather
+// than conflict: refusing is right for a value a client SENT, and this residue
+// is a value no client sent. Without it the sentinel becomes unreachable --
+// once a user picks a variant, every later attempt to put that row back on
+// "Match UI" merges the old variant back in and the validator refuses the write
+// for the life of the account.
+//
+// `specified` distinguishes "the client cleared it" from "the client did not
+// mention it", so a bare mode change keeps the variant it never spoke about.
+func dropStaleVariant(prev, next ThemeValue, specified map[string]bool) ThemeValue {
+	if specified["variant"] || next.Name == prev.Name {
+		return next
+	}
+	next.Variant = nil
+	return next
+}
+
 // The declared account-scope keys. Names are the JSON property names
 // inside the users.prefs blob.
 var (
-	KeyTheme = settings.NewKey[string]("theme").
-			WithDefault("system").
-			WithValidate(validateEnum(themeEnumValues)).
+	KeyTheme = settings.NewKey[ThemeValue]("theme").
+			WithDefault(ThemeValue{Name: DefaultThemeName, Mode: "system"}).
+			WithNormalize(dropStaleVariant).
+			WithValidate(validateTheme).
 			WithUI(settings.UIMeta{
 			Category: "appearance",
 			Title:    "Theme",
-			Summary:  "overall light and dark palette",
+			Summary:  "color palette, variant and light/dark mode",
 			Fields: []settings.Field{{
-				Name: "", Kind: settings.FieldEnum,
-				EnumValues: themeEnumValues,
+				Name: "", Kind: settings.FieldCustom,
+				CustomID: "theme",
 			}},
 		})
 
-	KeyTerminalTheme = settings.NewKey[string]("terminal_theme").
-				WithDefault("match-ui").
-				WithValidate(validateEnum(terminalThemeEnumValues)).
+	KeyTerminalTheme = settings.NewKey[ThemeValue]("terminal_theme").
+				WithDefault(ThemeValue{Name: MatchUI, Mode: MatchUI}).
+				WithNormalize(dropStaleVariant).
+				WithValidate(validateTerminalTheme).
 				WithUI(settings.UIMeta{
 			Category: "appearance",
 			Title:    "Terminal theme",
-			Summary:  "color scheme for terminal tabs",
+			Summary:  "color palette, variant and light/dark mode for terminal tabs",
 			Fields: []settings.Field{{
-				Name: "", Kind: settings.FieldEnum,
-				EnumValues: terminalThemeEnumValues,
+				Name: "", Kind: settings.FieldCustom,
+				CustomID: "terminalTheme",
+			}},
+		})
+
+	KeySyntaxTheme = settings.NewKey[ThemeValue]("syntax_theme").
+			WithDefault(ThemeValue{Name: MatchUI, Mode: MatchUI}).
+			WithNormalize(dropStaleVariant).
+			WithValidate(validateTerminalTheme).
+			WithUI(settings.UIMeta{
+			Category: "appearance",
+			Title:    "Syntax theme",
+			Summary:  "color palette, variant and light/dark mode for highlighted code",
+			Fields: []settings.Field{{
+				Name: "", Kind: settings.FieldCustom,
+				CustomID: "syntaxTheme",
 			}},
 		})
 
@@ -315,6 +569,7 @@ func descriptors() []settings.Descriptor {
 	return []settings.Descriptor{
 		KeyTheme,
 		KeyTerminalTheme,
+		KeySyntaxTheme,
 		KeyUIFonts,
 		KeyMonoFonts,
 		KeyDiffView,

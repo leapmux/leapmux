@@ -2,7 +2,7 @@ import type { ITheme } from '@xterm/xterm'
 import type { Component } from 'solid-js'
 import type { TerminalInstance } from '~/lib/terminal'
 import type { TerminalTab } from '~/stores/tab.types'
-import { createEffect, createMemo, createSignal, For, Match, onCleanup, onMount, Show, Switch } from 'solid-js'
+import { createEffect, createMemo, For, Match, onCleanup, onMount, Show, Switch } from 'solid-js'
 import { StartupErrorBody, StartupSpinner } from '~/components/common/StartupPanel'
 import { usePreferences } from '~/context/PreferencesContext'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
@@ -12,6 +12,7 @@ import { createRafResizeObserver } from '~/lib/resizeObserver'
 import { isMac } from '~/lib/shortcuts/platform'
 import { applyTerminalData, bufferHasVisibleContent, createTerminalInstance, DEFAULT_FONT_SIZE, refreshTerminalFont, resolveTerminalTheme, resolveTerminalThemeMode, serializeXtermBuffer } from '~/lib/terminal'
 import { attachTerminalIme } from '~/lib/terminalIme'
+import { themeStore } from '~/lib/themeStore'
 import { webglPool } from '~/lib/webglTerminalPool'
 import * as styles from './TerminalView.css'
 import '@xterm/xterm/css/xterm.css'
@@ -509,39 +510,38 @@ export const TerminalView: Component<TerminalViewProps> = (props) => {
     }
   })
 
-  // Track OS-level prefers-color-scheme reactively so terminal theme can
-  // follow the system when both UI theme is `system` and terminal theme
-  // is `match-ui`. Without this, flipping macOS dark mode would not
-  // propagate to live xterm instances.
-  const [prefersDark, setPrefersDark] = createSignal(
-    typeof window !== 'undefined'
-    && window.matchMedia('(prefers-color-scheme: dark)').matches,
-  )
-  onMount(() => {
-    const mq = window.matchMedia('(prefers-color-scheme: dark)')
-    const handler = (e: MediaQueryListEvent) => setPrefersDark(e.matches)
-    mq.addEventListener('change', handler)
-    onCleanup(() => mq.removeEventListener('change', handler))
-  })
-
+  // The OS-level prefers-color-scheme comes from `themeStore`, which owns ONE
+  // subscription for the app's whole life. This kept a private signal and its
+  // own `matchMedia` listener PER TILE, so ten open terminals meant ten
+  // subscriptions answering a question that has one answer -- and the private
+  // copy lacked the `typeof window.matchMedia !== 'function'` guard that
+  // `themeStore` documents, which jsdom needs. `app.tsx` already resolves the
+  // structurally identical syntax-theme question from `systemMode()`.
   // React to terminal/UI theme preference and OS-theme changes — all
   // three feed into the resolved theme when the user picks `match-ui`.
   //
   // Guard on a real theme change, mirroring the font effect above:
-  // `resolveTerminalTheme` returns one of two module-level ITheme constants,
-  // so a reference compare cheaply skips redundant re-applies when a
+  // `resolveTerminalTheme` returns a cached ITheme per resolved variant (see
+  // `terminalThemeFor`'s own cache), so a reference compare cheaply skips
+  // redundant re-applies when a
   // theme-adjacent signal fires without changing the resolved theme (e.g.
   // prefers-color-scheme flips while the terminal theme is pinned to
   // light/dark). Because `instances` is the module-level map shared by every
   // mounted TerminalView, an unguarded re-fire costs tiles x instances xterm
   // palette rebuilds — each `options.theme` write recomputes the color table.
+  // ONE accessor for the resolved theme: the effect below pushes it into the
+  // LIVE instances, and the row below hands it to a container being mounted.
+  // Two copies of the same three arguments could drift into painting one thing
+  // and seeding another.
+  const terminalTheme = createMemo(() => resolveTerminalTheme(
+    preferences.terminalTheme(),
+    preferences.theme(),
+    themeStore.systemMode() === 'dark',
+  ))
+
   let lastTheme: ITheme | undefined
   createEffect(() => {
-    const theme = resolveTerminalTheme(
-      preferences.terminalTheme(),
-      preferences.theme(),
-      prefersDark(),
-    )
+    const theme = terminalTheme()
     if (theme === lastTheme)
       return
     lastTheme = theme
@@ -606,15 +606,16 @@ export const TerminalView: Component<TerminalViewProps> = (props) => {
     })
   })
 
-  const terminalTheme = () => resolveTerminalTheme(
-    preferences.terminalTheme(),
-    preferences.theme(),
-    prefersDark(),
-  )
+  // The container's own `data-theme`, so its chrome follows the TERMINAL's mode
+  // rather than the app's. Only the mode: the container sits inside the app's
+  // `data-ui-light` / `data-ui-dark` on <html> -- the attributes the palette
+  // rules actually key on -- so a terminal on a different palette still takes
+  // its surrounding scrollbars and borders from the app's, which is correct:
+  // the chrome belongs to the app, the cells belong to the terminal.
   const terminalThemeMode = () => resolveTerminalThemeMode(
-    preferences.terminalTheme(),
-    preferences.theme(),
-    prefersDark(),
+    preferences.terminalTheme().mode,
+    preferences.theme().mode,
+    themeStore.systemMode() === 'dark',
   )
 
   // The row list is keyed on TERMINAL IDS, not on the `TerminalTab` objects.

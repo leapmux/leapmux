@@ -2,7 +2,7 @@ import type { Decoration as DecorationType } from '@milkdown/prose/view'
 import type { LanguageLoadResult, LazyHighlighter } from '~/lib/shikiLazyHighlighter'
 import { Decoration } from '@milkdown/prose/view'
 import { resolveBundledLang } from '~/lib/shikiLazyHighlighter'
-import { DUAL_THEME_TOKEN_OPTIONS } from '~/lib/shikiThemes'
+import { dualThemeTokenOptions, syntaxThemePair } from '~/lib/shikiThemes'
 
 /** A prosemirror-highlight parser: decorations now, or a promise to re-run later. */
 interface ParserOptions {
@@ -12,7 +12,7 @@ interface ParserOptions {
   size: number
 }
 
-// codeToTokens with defaultColor:false (DUAL_THEME_TOKEN_OPTIONS) emits per-token
+// codeToTokens with defaultColor:false (dualThemeTokenOptions) emits per-token
 // `--shiki-light`/`--shiki-dark` CSS variables (via htmlStyle) plus a rootStyle carrying
 // the `*-bg` variables, which the editor CSS (MarkdownEditor.css.ts `.ProseMirror pre
 // .shiki`) maps to the theme. Same contract as the stock @milkdown/plugin-highlight/shiki
@@ -58,6 +58,18 @@ export function createLazyShikiParser(
   // blocks would exhaust the whole retry budget on ONE transient hiccup, latching them
   // all to plain. Counting once per actual load attempt keeps the budget meaningful.
   const pendingLoads = new Map<string, Promise<LanguageLoadResult>>()
+  // One theme registration in flight at a time. Every block in a pass wants the
+  // same pair, so they share the load rather than each firing their own.
+  let pendingThemeLoad: Promise<void> | null = null
+  // Per-pair count of failed registration attempts, and the budget the grammar
+  // branch already has. `ensureThemes` REJECTS when a lazy theme chunk fails to
+  // import -- `loadSyntaxTheme` deletes the rejected entry precisely so a later
+  // call retries -- and a rejected promise returned to `prosemirror-highlight`
+  // is logged and dropped WITHOUT a refresh, leaving the block uncached. So
+  // every later keystroke re-ran the parser, saw the pair still unregistered,
+  // and fired another failing chunk import with another console error: one per
+  // code block, per edit, for the rest of the session.
+  const themeFailures = new Map<string, number>()
   return ({ content, language, pos, size }) => {
     const lang = language ? resolveBundledLang(language) : undefined
     // Unknown/absent language: plain.
@@ -92,8 +104,48 @@ export function createLazyShikiParser(
       return load.then(() => {})
     }
 
+    // The pair this block must paint with, captured once so the registration
+    // check and the tokenize below cannot disagree.
+    const pair = syntaxThemePair()
+    if (!lazyHl.areThemesLoaded(pair)) {
+      // The budget, checked AFTER `areThemesLoaded` for the reason the grammar
+      // branch checks its own after `isLanguageLoaded`: the highlighter is
+      // shared across editor mounts, so a pair this parser gave up on may since
+      // have been registered by another. The budget suppresses further
+      // ATTEMPTS, never a pair that is now actually available.
+      const pairKey = `${pair.light},${pair.dark}`
+      if ((themeFailures.get(pairKey) ?? 0) >= MAX_LANG_LOAD_RETRIES)
+        return []
+      // Same contract as the grammar branch above: return the load, and
+      // resolving re-runs this parser. The editor's highlighter is a session-long
+      // singleton that registers only the pair live at its FIRST use, and nothing
+      // else re-registers it -- `setSyntaxTheme` targets the separate synchronous
+      // main-thread instance. Without this, the first syntax-theme change of a
+      // session made every `codeToTokens` here name a theme this instance never
+      // loaded; Shiki threw, the catch below swallowed it, and every fenced block
+      // in the composer rendered as plain text until a full page reload.
+      let load = pendingThemeLoad
+      if (!load) {
+        // NORMALIZED to a resolution, like `ensureLanguage`'s `'failed'`. A
+        // rejection here reaches `prosemirror-highlight`, which logs it and
+        // does NOT refresh -- so the block stays uncached and the next
+        // keystroke tries again forever. Resolving instead lets the parser
+        // re-run, find the budget spent, and return `[]`, which the plugin
+        // caches: the block renders plain and the loop ends.
+        load = lazyHl.ensureThemes(pair)
+          .catch(() => {
+            themeFailures.set(pairKey, (themeFailures.get(pairKey) ?? 0) + 1)
+          })
+          .finally(() => {
+            pendingThemeLoad = null
+          })
+        pendingThemeLoad = load
+      }
+      return load
+    }
+
     try {
-      const { tokens, rootStyle } = highlighter.codeToTokens(content, { lang, ...DUAL_THEME_TOKEN_OPTIONS })
+      const { tokens, rootStyle } = highlighter.codeToTokens(content, { lang, ...dualThemeTokenOptions(pair) })
       const decorations: DecorationType[] = []
       if (rootStyle)
         decorations.push(Decoration.node(pos, pos + size, { style: rootStyle }))

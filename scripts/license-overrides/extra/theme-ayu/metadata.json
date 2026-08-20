@@ -1,0 +1,6 @@
+{
+  "name": "ayu (theme palette)",
+  "license": "MIT",
+  "url": "https://github.com/ayu-theme/ayu-colors",
+  "description": "The ayu Light and ayu Dark values behind the Ayu theme in `frontend/src/styles/themes/ayu.ts` were read from this package's published colour modules and mapped onto LeapMux's CSS custom properties."
+}

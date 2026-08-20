@@ -933,3 +933,30 @@ func TestHandlePiOutput_SubagentNotificationMessageClosesRegistryEntry(t *testin
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, last.Source)
 	assert.Contains(t, string(last.Content), "subagent-notification")
 }
+
+// A description that holds nothing a reader can SEE must fall through, not
+// swallow both fallbacks.
+//
+// The emptiness test used to run on the RAW field, so a run of zero-width
+// spaces entered the description branch, cleaned to "", and returned it -- the
+// prompt fallback and the tool-name fallback were both skipped, and the Pi
+// subagent's row reached the sidebar with no label at all.
+func TestPiExtractDescriptionFallsThroughAnInvisibleDescription(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"zero-width description falls through to the prompt", "{\"description\":\"\u200b\u200b\",\"prompt\":\"run the suite\"}", "run the suite"},
+		{"whitespace description falls through to the prompt", `{"description":"   ","prompt":"run the suite"}`, "run the suite"},
+		{"both invisible falls through to the tool name", "{\"description\":\"\u200b\",\"prompt\":\"\u200b\"}", "pi_spawn"},
+		{"a visible description still wins", `{"description":"build","prompt":"run the suite"}`, "build"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, piExtractDescription([]byte(tc.input), "pi_spawn"))
+		})
+	}
+}

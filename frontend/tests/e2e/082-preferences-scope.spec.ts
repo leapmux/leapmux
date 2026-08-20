@@ -1,23 +1,14 @@
-import { KEY_BROWSER_PREFS } from '../../src/lib/browserStorage'
+import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
-import { getBrowserPref, loginViaToken, openPreferencesDialog } from './helpers/ui'
+import { getBrowserPrefValue, loginViaToken, openPreferencesDialog, pickTheme } from './helpers/ui'
 
 /**
- * Read a browser-prefs field as JSON. `getBrowserPref` stringifies scalars;
- * the font override is an object, so read the raw wrapped blob and serialize
- * the field for substring assertions.
+ * Read a browser-prefs field as a JSON string, for the substring assertions
+ * below. The read itself is `getBrowserPrefValue`, which every object-shaped
+ * preference now shares -- this spec used to carry its own copy of it.
  */
-async function getBrowserPrefJson(page: import('@playwright/test').Page, field: string): Promise<string> {
-  return page.evaluate(([key, f]) => {
-    const raw = localStorage.getItem(key)
-    if (!raw)
-      return 'null'
-    const wrapper = JSON.parse(raw)
-    const prefs = wrapper?.v
-    if (prefs == null || typeof prefs !== 'object' || prefs[f] === undefined)
-      return 'null'
-    return JSON.stringify(prefs[f])
-  }, [KEY_BROWSER_PREFS, field] as const)
+async function getBrowserPrefJson(page: Page, field: string): Promise<string> {
+  return JSON.stringify(await getBrowserPrefValue(page, field) ?? null)
 }
 
 /**
@@ -50,13 +41,19 @@ test.describe('Preferences scope overrides', () => {
     await page.getByRole('menuitemradio', { name: 'Override on this device' }).click()
     await expect(chip).toHaveText(/This device/)
 
-    await dialog.getByRole('radiogroup', { name: 'Theme', exact: true }).getByRole('radio', { name: 'Dark' }).click()
-    await expect.poll(() => getBrowserPref(page, 'theme')).toBe('dark')
+    const themeRow = dialog.locator('[data-setting-id="appearance.theme"]')
+    await themeRow.getByRole('radiogroup', { name: 'Theme mode' }).getByRole('radio', { name: 'Dark' }).click()
+    await expect.poll(() => getBrowserPrefValue(page, 'theme')).toEqual({ name: 'default', mode: 'dark' })
+
+    // The palette is the other half of the same key, so it lands on the same
+    // tier and in the same document.
+    await pickTheme(themeRow, 'nord')
+    await expect.poll(() => getBrowserPrefValue(page, 'theme')).toEqual({ name: 'nord', mode: 'dark' })
 
     await chip.click()
     await page.getByRole('menuitemradio', { name: 'Use account default' }).click()
     await expect(chip).toHaveText(/Account default/)
-    await expect.poll(() => getBrowserPref(page, 'theme')).toBeNull()
+    await expect.poll(() => getBrowserPrefValue(page, 'theme')).toBeNull()
   })
 
   test('overrides the monospace font stack on this device and the UI follows', async ({ page, leapmuxServer }) => {

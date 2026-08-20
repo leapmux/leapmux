@@ -1,6 +1,6 @@
 import type { MessageCategory } from '~/components/chat/messageClassification'
 import { describe, expect, it } from 'vitest'
-import { bubbleRunsToRightEdge, classifyMessage, isMirroredMessageRow, messageBubbleClass, messageRowChrome, messageRowChromeClass, messageRowClass } from '~/components/chat/messageClassification'
+import { bubbleRunsToRightEdge, classifyMessage, isMirroredMessageRow, messageBubbleClass, messageRowChrome, messageRowChromeClass, messageRowClass, rowIsWidened } from '~/components/chat/messageClassification'
 import * as chatStyles from '~/components/chat/messageStyles.css'
 import { input } from '~/components/chat/providers/testUtils'
 import { AgentProvider, MessageSource } from '~/generated/leapmux/v1/agent_pb'
@@ -726,15 +726,90 @@ describe('messageRowChrome', () => {
   })
 })
 
+describe('rowIsWidened', () => {
+  // The fact `bubbleRunsToRightEdge` used to recover by splitting a generated
+  // class list and testing for one token. Stated as a boolean, both the class
+  // builder and the predicate read the same answer, so a composed `bleedRow`
+  // cannot silently flip the marker for every row.
+  it('agrees with the class the row actually carries', () => {
+    const cases: Array<[MessageCategory['kind'], MessageSource]> = [
+      ['user_text', MessageSource.USER],
+      ['user_content', MessageSource.USER],
+      ['plan_execution', MessageSource.AGENT],
+      ['result_divider', MessageSource.AGENT],
+      ['assistant_text', MessageSource.AGENT],
+      ['assistant_thinking', MessageSource.AGENT],
+      ['notification', MessageSource.AGENT],
+    ]
+    for (const [kind, source] of cases) {
+      const carriesBleed = messageRowChromeClass(kind, source)
+        .split(' ')
+        .includes(chatStyles.bleedRow)
+      expect(rowIsWidened(kind, source)).toBe(carriesBleed)
+    }
+  })
+
+  it('is false for a band row, which paints instead of widening', () => {
+    expect(rowIsWidened('assistant_thinking', MessageSource.AGENT)).toBe(false)
+  })
+})
+
 describe('bubbleRunsToRightEdge', () => {
-  it('is true for exactly the rows whose bubble is a user bubble', () => {
-    // Derived from messageBubbleClass rather than from a condition written again,
-    // so the two can never disagree about which bubbles reach the edge.
+  /**
+   * Every cell of the (kind, source) grid whose bubble reaches the panel edge.
+   * Written out rather than derived from the same helpers the implementation
+   * calls, so the sweep below asserts a DECISION instead of restating the code.
+   *
+   * `plan_execution` belongs here beside a typed message: the worker persists the
+   * plan hand-off with a USER source, and it renders the same end-of-line accent
+   * card. `unknown` from a USER source falls to `sourceStyle`, which gives it that
+   * card too.
+   */
+  const FLUSH_RIGHT_CELLS: ReadonlyArray<[MessageCategory['kind'], MessageSource]> = [
+    ['user_text', MessageSource.USER],
+    ['user_content', MessageSource.USER],
+    ['plan_execution', MessageSource.USER],
+    ['unknown', MessageSource.USER],
+  ]
+
+  it('is true for exactly the cells an end-of-line card occupies', () => {
+    const expected = new Set(FLUSH_RIGHT_CELLS.map(([kind, source]) => `${kind}/${source}`))
     for (const kind of ALL_MESSAGE_KINDS) {
-      for (const source of ALL_MESSAGE_SOURCES) {
-        const isUserBubble = messageBubbleClass(kind, source) === chatStyles.userMessage
-        expect(bubbleRunsToRightEdge(kind, source, false)).toBe(isUserBubble)
-      }
+      for (const source of ALL_MESSAGE_SOURCES)
+        expect(bubbleRunsToRightEdge(kind, source, false)).toBe(expected.has(`${kind}/${source}`))
+    }
+  })
+
+  it('runs a plan execution to the same edge as a typed message', () => {
+    // The regression this pair guards: the predicate once asked whether the bubble
+    // class was `userMessage`, which is one card of the three. A plan execution
+    // renders its own accent card, so it kept a whole gutter of space inside a row
+    // that messageRowChromeClass had already widened for it.
+    expect(bubbleRunsToRightEdge('plan_execution', MessageSource.USER, false))
+      .toBe(bubbleRunsToRightEdge('user_text', MessageSource.USER, false))
+    expect(bubbleRunsToRightEdge('plan_execution', MessageSource.USER, false)).toBe(true)
+  })
+
+  it('leaves a bubble inside the gutter when its row does not mirror', () => {
+    // A plan execution the worker did NOT attribute to the user keeps the same
+    // bubble class, and messageRowChromeClass leaves that row unwidened. The
+    // marker must follow the row, or the stylesheet is the only thing standing
+    // between the bubble and a bleed that paint containment clips away.
+    for (const source of [MessageSource.AGENT, MessageSource.LEAPMUX, MessageSource.UNSPECIFIED]) {
+      expect(messageBubbleClass('plan_execution', source)).toBe(chatStyles.planExecutionMessage)
+      expect(messageRowChromeClass('plan_execution', source)).toBe('')
+      expect(bubbleRunsToRightEdge('plan_execution', source, false)).toBe(false)
+    }
+  })
+
+  it('never reaches the edge from a band row, whatever the source', () => {
+    // A band kind is mirrored by a USER source, but its chrome is bandRow and its
+    // content stretches -- there is no card to meet an edge. The second condition
+    // in the predicate is what excludes it; without it the sweep beside
+    // messageRowChromeClass would fail on a bleed with no bleedRow behind it.
+    for (const kind of ['assistant_text', 'assistant_thinking'] as const) {
+      expect(isMirroredMessageRow(kind, MessageSource.USER)).toBe(true)
+      expect(bubbleRunsToRightEdge(kind, MessageSource.USER, false)).toBe(false)
     }
   })
 

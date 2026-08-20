@@ -16,7 +16,7 @@ export type SettingScope = 'browser' | 'account' | 'dual' | 'hub'
  * component table stays exhaustive at compile time. One list serves both,
  * so a new editor cannot be recognised on the wire without a component.
  */
-export const CUSTOM_EDITOR_IDS = ['keybindings', 'account', 'keyPins'] as const
+export const CUSTOM_EDITOR_IDS = ['keybindings', 'account', 'keyPins', 'theme', 'terminalTheme', 'syntaxTheme'] as const
 
 export type CustomEditorId = typeof CUSTOM_EDITOR_IDS[number]
 

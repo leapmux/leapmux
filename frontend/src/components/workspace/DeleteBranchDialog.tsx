@@ -441,7 +441,6 @@ export const DeleteBranchDialog: Component<DeleteBranchDialogProps> = (props) =>
                     onChange={setSwitchTo}
                     local={branchPartition().local}
                     remote={branchPartition().remote}
-                    showPrompt
                   />
                 </div>
               </Show>

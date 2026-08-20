@@ -77,7 +77,7 @@ function cleanupCalls(): Map<string, string[]> {
   return out
 }
 
-describe('useworkspaceoperations deleteworkspace', () => {
+describe('useWorkspaceOperations deleteWorkspace', () => {
   beforeEach(() => {
     mockDeleteWorkspace.mockReset()
     mockCleanupWorkspace.mockReset()
@@ -236,7 +236,7 @@ function groupsFor(workspaces: Workspace[], sections: Section[], items: SectionI
   })
 }
 
-describe('useworkspaceoperations buildsectiongroups', () => {
+describe('useWorkspaceOperations buildSectionGroups', () => {
   const inProgress = section('s-progress', SectionType.WORKSPACES_IN_PROGRESS)
   const archived = section('s-archived', SectionType.WORKSPACES_ARCHIVED)
 
@@ -308,7 +308,7 @@ describe('useworkspaceoperations buildsectiongroups', () => {
  * next refresh overwrote it. The gap widened when the rule started to FOLD: a
  * plain double space is a far more common typo than a control character was.
  */
-describe('useworkspaceoperations commitrename', () => {
+describe('useWorkspaceOperations commitRename', () => {
   beforeEach(() => {
     mockRenameWorkspace.mockReset()
     mockRenameWorkspace.mockResolvedValue({})

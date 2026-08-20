@@ -5,7 +5,7 @@ import { WorktreeAction } from '../../src/generated/leapmux/v1/common_pb'
 import { TabType } from '../../src/generated/leapmux/v1/workspace_pb'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { loginViaToken, openWorkspace } from './helpers/ui'
+import { loginViaToken, menuOptionTexts, openWorkspace, pickMenuOption } from './helpers/ui'
 import {
   branchExists,
   closeAgentViaAPI,
@@ -175,9 +175,8 @@ test.describe('Worktree Git Modes', () => {
     await page.getByText('Switch to branch').click()
 
     // Branch dropdown should load with local branches
-    const branchSelect = dialog.locator('select').last()
-    await expect(branchSelect).toBeEnabled()
-    await branchSelect.selectOption('feature-switch')
+    await expect(dialog.getByTestId('branch-select-menu-trigger')).toBeEnabled()
+    await pickMenuOption(dialog, 'branch-select-menu', 'feature-switch')
 
     // Submit
     await dialog.getByRole('button', { name: 'Create', exact: true }).click()
@@ -360,14 +359,12 @@ test.describe('Worktree Git Modes', () => {
     await page.getByText('Use existing worktree').click()
 
     // Worktree dropdown should load
-    const wtSelect = dialog.locator('select').last()
-    await expect(wtSelect).toBeEnabled()
+    await expect(dialog.getByTestId('worktree-select-menu-trigger')).toBeEnabled()
 
-    // Select the worktree entry (format: "branch — path")
-    const options = await wtSelect.locator('option').allTextContents()
-    const wtOption = options.find(o => o.includes('ui-wt-branch'))
-    expect(wtOption).toBeTruthy()
-    await wtSelect.selectOption({ label: wtOption! })
+    // Select the worktree entry (label format: "branch — path")
+    await dialog.getByTestId('worktree-select-menu-trigger').click()
+    const wtMenu = dialog.getByTestId('worktree-select-menu')
+    await wtMenu.getByRole('menuitemradio', { name: /ui-wt-branch/ }).first().click()
 
     // Submit
     await dialog.getByRole('button', { name: 'Create', exact: true }).click()
@@ -525,16 +522,17 @@ test.describe('Worktree Git Modes', () => {
 
     // The base branch selector should default to "main" (current)
     // and include "feature-ui-base"
-    const baseBranchSelect = dialog.locator('select').last()
-    await expect(baseBranchSelect).toBeEnabled()
-    const options = await baseBranchSelect.locator('option').allTextContents()
+    await expect(dialog.getByTestId('branch-select-menu-trigger')).toBeEnabled()
+    const options = await menuOptionTexts(dialog, 'branch-select-menu')
     expect(options.some(o => o.includes('feature-ui-base'))).toBe(true)
 
     // Select feature-ui-base as base branch, and confirm it stuck before
     // submitting: a Create that races the selection silently branches from the
     // default base, which surfaces only as a missing file much later.
-    await baseBranchSelect.selectOption('feature-ui-base')
-    await expect(baseBranchSelect).toHaveValue('feature-ui-base')
+    await pickMenuOption(dialog, 'branch-select-menu', 'feature-ui-base')
+    // The trigger reports the selection now; a menu has no `value`.
+    await expect(dialog.getByTestId('branch-select-menu-trigger'))
+      .toHaveAttribute('data-value', 'feature-ui-base')
 
     // Set a branch name and submit
     const branchInput = dialog.locator('input[type="text"][placeholder="feature-branch"]')

@@ -3,7 +3,7 @@ import { createSignal } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { getCachedMarkdownHtml, renderMarkdown, renderMarkdownCachedOrPlain, renderMarkdownPlain } from '~/lib/renderMarkdown'
 import { createMessageRenderCacheStore, getCachedRenderValueForString, setCachedRenderValueForString } from './messageRenderCache'
-import { MarkdownText } from './messageRenderers'
+import { markdownCacheNamespace, MarkdownText } from './messageRenderers'
 
 vi.mock('~/lib/renderMarkdown', () => ({
   getCachedMarkdownHtml: vi.fn(() => undefined),
@@ -41,7 +41,7 @@ describe('markdown text premeasure mode', () => {
 
   it('keeps row-cached highlighted markdown while text is selected', () => {
     const cache = createMessageRenderCacheStore().forRow('row:selection')
-    setCachedRenderValueForString({ renderCache: cache }, 'markdown-html', '**x**', '<p>row-highlighted</p>')
+    setCachedRenderValueForString({ renderCache: cache }, markdownCacheNamespace(), '**x**', '<p>row-highlighted</p>')
 
     const { container } = render(() => <MarkdownText text="**x**" context={{ renderCache: cache, textSelectionActive: () => true }} />)
 
@@ -118,7 +118,7 @@ describe('markdown text premeasure mode', () => {
     const { container } = render(() => <MarkdownText text="**x**" context={{ renderCache: cache, syntaxHighlightingPaused: () => true }} />)
 
     expect(container.innerHTML).toContain('<p>shared-highlighted</p>')
-    expect(getCachedRenderValueForString({ renderCache: cache }, 'markdown-html', '**x**')).toBe('<p>shared-highlighted</p>')
+    expect(getCachedRenderValueForString({ renderCache: cache }, markdownCacheNamespace(), '**x**')).toBe('<p>shared-highlighted</p>')
     expect(renderMarkdownCachedOrPlain).not.toHaveBeenCalled()
     expect(renderMarkdownPlain).not.toHaveBeenCalled()
     expect(renderMarkdown).not.toHaveBeenCalled()
@@ -126,7 +126,7 @@ describe('markdown text premeasure mode', () => {
 
   it('keeps row-cached highlighted markdown while visible scrolling is busy', () => {
     const cache = createMessageRenderCacheStore().forRow('row:1')
-    setCachedRenderValueForString({ renderCache: cache }, 'markdown-html', '**x**', '<p>row-highlighted</p>')
+    setCachedRenderValueForString({ renderCache: cache }, markdownCacheNamespace(), '**x**', '<p>row-highlighted</p>')
 
     const { container } = render(() => <MarkdownText text="**x**" context={{ renderCache: cache, syntaxHighlightingPaused: () => true }} />)
 
@@ -150,7 +150,7 @@ describe('markdown text premeasure mode', () => {
     render(() => <MarkdownText text="**x**" context={{ renderCache: cache }} />)
 
     expect(renderMarkdown).toHaveBeenCalledWith('**x**', false, undefined)
-    expect(getCachedRenderValueForString({ renderCache: cache }, 'markdown-html', '**x**')).toBeUndefined()
+    expect(getCachedRenderValueForString({ renderCache: cache }, markdownCacheNamespace(), '**x**')).toBeUndefined()
   })
 
   it('row-caches completed highlighted markdown during active rendering', () => {
@@ -160,6 +160,6 @@ describe('markdown text premeasure mode', () => {
     const { container } = render(() => <MarkdownText text="**x**" context={{ renderCache: cache }} />)
 
     expect(container.innerHTML).toContain('<p>shared-highlighted</p>')
-    expect(getCachedRenderValueForString({ renderCache: cache }, 'markdown-html', '**x**')).toBe('<p>shared-highlighted</p>')
+    expect(getCachedRenderValueForString({ renderCache: cache }, markdownCacheNamespace(), '**x**')).toBe('<p>shared-highlighted</p>')
   })
 })

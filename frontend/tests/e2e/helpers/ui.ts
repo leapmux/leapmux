@@ -233,6 +233,52 @@ export async function measureAgainstChatList(locator: Locator): Promise<{ width:
   }, CHAT_SCROLL_CONTAINER)
 }
 
+/** Where an end-of-line card's sides sit, and the corner it turns at the edge. */
+export interface BubbleEdges {
+  /** Distance from the card's right side to the list's padding-box right edge. */
+  rightGap: number
+  /** Distance from the list's padding-box left edge to the card's left side. */
+  leftGap: number
+  /** Distance from the card's top edge down from its ROW's top edge. */
+  topGapInRow: number
+  /** The card's computed `border-top-right-radius`, as CSS reports it. */
+  radius: string
+}
+
+/**
+ * Measure an end-of-line card against both panel edges and against its own row.
+ *
+ * One rule runs a user message and a plan execution to the right edge, so both
+ * specs measure through this function and cannot drift apart on how they read
+ * the box. `clientLeft` is the list's left border and `clientWidth` stops before
+ * a native scrollbar, so the right edge tracks the same padding box that
+ * {@link measureAgainstChatList} reads, whichever scrollbar the list is wearing.
+ *
+ * `topGapInRow` is the vertical half: the ROW places its bubble on both axes, so
+ * a card's top edge must sit on its row's. It is what a bubble-level `alignSelf`
+ * would move, and jsdom computes no flex layout, so only a real browser can hold
+ * that line.
+ */
+export async function measureBubbleEdges(locator: Locator): Promise<BubbleEdges> {
+  return locator.evaluate((el, selector) => {
+    const list = el.closest(selector)
+    if (!list)
+      throw new Error('measureBubbleEdges: element is not inside the chat scroll container')
+    const row = el.parentElement
+    if (!row)
+      throw new Error('measureBubbleEdges: element has no row to measure against')
+    const listRect = list.getBoundingClientRect()
+    const self = el.getBoundingClientRect()
+    const padLeft = listRect.left + list.clientLeft
+    return {
+      rightGap: padLeft + list.clientWidth - self.right,
+      leftGap: self.left - padLeft,
+      topGapInRow: self.top - row.getBoundingClientRect().top,
+      radius: globalThis.getComputedStyle(el).borderTopRightRadius,
+    }
+  }, CHAT_SCROLL_CONTAINER)
+}
+
 /**
  * Restrict `locator` to the elements the user can see.
  *
@@ -717,6 +763,18 @@ const BROWSER_PREFS_TTL_MS = browserPrefsTtlMs()
 
 /** Read a single field from the consolidated browser preferences in localStorage. */
 export async function getBrowserPref(page: Page, field: string): Promise<string | null> {
+  const value = await getBrowserPrefValue(page, field)
+  return value === null ? null : String(value)
+}
+
+/**
+ * One field of the consolidated browser preferences, as stored.
+ *
+ * Beside `getBrowserPref`, which stringifies. Not every preference is a scalar:
+ * `theme` is a `{ name, mode }` document, and `String()` renders it
+ * "[object Object]", which compares equal to every other object-shaped value.
+ */
+export async function getBrowserPrefValue(page: Page, field: string): Promise<unknown> {
   return page.evaluate(([key, f]) => {
     const raw = localStorage.getItem(key)
     if (!raw)
@@ -725,7 +783,7 @@ export async function getBrowserPref(page: Page, field: string): Promise<string 
     const prefs = wrapper?.v
     if (prefs == null || typeof prefs !== 'object')
       return null
-    return prefs[f] !== undefined ? String(prefs[f]) : null
+    return prefs[f] !== undefined ? prefs[f] : null
   }, [KEY_BROWSER_PREFS, field] as const)
 }
 
@@ -1379,4 +1437,79 @@ export async function boxOf(locator: Locator): Promise<{ x: number, y: number, w
   if (!box)
     throw new Error(`No bounding box for ${locator}`)
   return box
+}
+
+/**
+ * Pick an option from a `DropdownMenu`.
+ *
+ * The app renders no native `<select>` any more (see the dropdown rule in
+ * CLAUDE.md), so `selectOption` has nothing to drive. A menu keeps its items
+ * mounted, so the click has to be scoped to the row that owns them.
+ */
+// The testids used here are WRITTEN by `~/components/common/LoadingMenu`, and
+// the Vitest counterpart in `src/test-support/menu.ts` encodes the same two
+// templates. The two cannot share query code -- one drives the DOM, the other a
+// Playwright Locator -- so a rename has to be applied in all three files.
+export async function pickMenuOption(scope: Locator, base: string, value: string): Promise<void> {
+  await openMenu(scope, base)
+  await scope.getByTestId(base).getByTestId(`loading-menu-option-${value}`).first().click()
+}
+
+/**
+ * Open a `LoadingMenu` if it is not already open.
+ *
+ * IDEMPOTENT on purpose. A caller that reads the options and then picks one
+ * would otherwise toggle the menu shut between the two, and the click would
+ * land on an item hidden from the accessibility tree.
+ */
+export async function openMenu(scope: Locator, base: string): Promise<void> {
+  const trigger = scope.getByTestId(`${base}-trigger`)
+  if (await trigger.getAttribute('aria-expanded') !== 'true')
+    await trigger.click()
+}
+
+/**
+ * The colour `value` resolves to, as the browser computes it.
+ *
+ * `getPropertyValue('--code-block-background')` answers with the SPECIFIED
+ * token, which for a derived field is the `color-mix()` expression itself and
+ * never changes with the theme. Assigning the value to a probe element and
+ * reading `background-color` back gives the resolved `rgb(...)`, in the same
+ * normalized form `getComputedStyle` reports for a real element -- so a token
+ * and an element can be compared to each other.
+ */
+export async function resolvedColor(page: Page, value: string): Promise<string> {
+  return page.evaluate((css) => {
+    const probe = document.createElement('div')
+    probe.style.backgroundColor = css
+    document.body.append(probe)
+    const painted = getComputedStyle(probe).backgroundColor
+    probe.remove()
+    return painted
+  }, value)
+}
+
+/** The theme chooser's palette menu, whose options are keyed by theme id. */
+export async function pickTheme(scope: Locator, themeId: string): Promise<void> {
+  await scope.getByTestId('theme-chooser-name').click()
+  await scope.getByTestId(`theme-option-${themeId}`).click()
+}
+
+/** The theme chooser's variant menu, keyed by variant id. */
+export async function pickThemeVariant(scope: Locator, variantId: string): Promise<void> {
+  await scope.getByTestId('theme-chooser-variant').click()
+  await scope.getByTestId(`variant-option-${variantId}`).click()
+}
+
+/**
+ * The option labels a `LoadingMenu` offers, opening it first.
+ *
+ * A closed popover is hidden from the accessibility tree, so a role query
+ * against it matches nothing — indistinguishable from "the list is empty" and,
+ * under `expect`, from a hang. The `<select>` this replaced needed no open:
+ * every `<option>` was readable from the collapsed control.
+ */
+export async function menuOptionTexts(scope: Locator, base: string): Promise<string[]> {
+  await openMenu(scope, base)
+  return scope.getByTestId(base).getByRole('menuitemradio').allTextContents()
 }

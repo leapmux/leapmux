@@ -67,9 +67,18 @@ test.describe('security headers', () => {
   test('boots the app, a terminal and a chat with no CSP violation', async ({ page, authenticatedWorkspace }) => {
     const violations = collectCspViolations(page)
 
-    // The workspace fixture already signed in and rendered the shell, which
-    // means the inline manifest ran, the module chunk loaded and the channel
-    // WebSocket connected. A blocked script would leave none of this on screen.
+    // RELOAD, so the listener is armed for the boot it claims to cover. The
+    // workspace fixture signs in and renders the shell BEFORE the test body
+    // runs, so every violation from that first boot -- a font, an image, a
+    // stylesheet or a worker the policy refuses -- was emitted before this
+    // listener existed. Only a blocked SCRIPT was caught, by the visibility
+    // assertion below, and script-src is the one directive the derived hashes
+    // already cover; the subresource directives had no coverage at all.
+    await page.reload()
+
+    // The boot runs again under the listener: the inline manifest executes, the
+    // module chunk loads, the channel WebSocket connects, and the fonts and
+    // images the shell needs are fetched.
     await expect(page.locator('[data-testid="tab-bar"]').first()).toBeVisible()
 
     // The terminal is the directive-sensitive surface: xterm's DOM renderer
@@ -102,7 +111,17 @@ test.describe('security headers', () => {
     })
 
     expect(executed, 'an inline script the policy does not hash must not run').toBe(false)
-    expect(violations.length, 'the violation detector must see the refusal it exists to catch')
-      .toBeGreaterThan(0)
+    // `page.on('console')` fills this array over CDP, on a different message
+    // stream from the `evaluate` response above, so a bare value `expect` reads
+    // it at one instant. `expect.poll` retries under the GLOBAL expect timeout,
+    // with no per-call override -- the E2E rule in CLAUDE.md forbids one.
+    //
+    // The mirror assertion above is deliberately NOT polled: `expect.poll`
+    // retries until an assertion PASSES, so polling "still empty" would succeed
+    // on its first evaluation and catch nothing extra.
+    await expect.poll(
+      () => violations.length,
+      { message: 'the violation detector must see the refusal it exists to catch' },
+    ).toBeGreaterThan(0)
   })
 })

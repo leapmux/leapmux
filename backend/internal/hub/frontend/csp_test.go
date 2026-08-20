@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	genfrontend "github.com/leapmux/leapmux/internal/hub/generated/frontend"
+	"github.com/leapmux/leapmux/internal/hub/httpsec"
 )
 
 // sha256Source returns the CSP source expression a browser computes for body.
@@ -120,6 +121,90 @@ func sortedCopy(in []string) []string {
 	out := slices.Clone(in)
 	slices.Sort(out)
 	return out
+}
+
+// ONE POLICY covers every HTML document the hub serves, so the sources it
+// authorizes must be the union over all of them.
+//
+// Hashing index.html alone made the policy correct for one document by
+// accident: the others carry no inline script today. The day one does, the
+// browser refuses it and that page breaks at runtime with a console error --
+// the exact failure a derived hash exists to prevent, and the one a checked-in
+// hash was rejected for.
+func TestAllInlineScriptHashes(t *testing.T) {
+	t.Parallel()
+
+	doc := func(body string) []byte {
+		return []byte("<html><head><script>" + body + "</script></head><body></body></html>")
+	}
+
+	t.Run("unions every document, not just index.html", func(t *testing.T) {
+		got, err := allInlineScriptHashes(fstest.MapFS{
+			"index.html":            {Data: doc("a")},
+			"NOTICE.html":           {Data: doc("b")},
+			"legal/attribution.htm": {Data: doc("c")},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, slices.Sorted(slices.Values([]string{
+			sha256Source("a"), sha256Source("b"), sha256Source("c"),
+		})), got, "a document outside index.html must contribute its own source")
+	})
+
+	t.Run("reports one source for the same script in two documents", func(t *testing.T) {
+		got, err := allInlineScriptHashes(fstest.MapFS{
+			"index.html":  {Data: doc("same")},
+			"NOTICE.html": {Data: doc("same")},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, []string{sha256Source("same")}, got)
+	})
+
+	t.Run("ignores what the browser does not parse as HTML", func(t *testing.T) {
+		got, err := allInlineScriptHashes(fstest.MapFS{
+			"index.html":       {Data: doc("a")},
+			"assets/app.js":    {Data: []byte("<script>b</script>")},
+			"README.md":        {Data: []byte("<script>c</script>")},
+			"manifest.webmani": {Data: []byte("<script>d</script>")},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, []string{sha256Source("a")}, got)
+	})
+
+	// A broken embed must not serve a policy derived from nothing: it would
+	// authorize no script at all, which is a blank page for every user.
+	t.Run("fails when the tree holds no HTML document", func(t *testing.T) {
+		_, err := allInlineScriptHashes(fstest.MapFS{"assets/app.js": {Data: []byte("x")}})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no HTML document")
+	})
+
+	// The real embedded tree, so the walk is proved against the documents the
+	// hub actually ships rather than a fixture alone.
+	t.Run("covers every document in the embedded frontend", func(t *testing.T) {
+		publicFS := mustPublicFS(t)
+		got, err := allInlineScriptHashes(publicFS)
+		require.NoError(t, err)
+
+		var docs []string
+		require.NoError(t, fs.WalkDir(publicFS, ".", func(name string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if !d.IsDir() && isHTMLDocument(name) {
+				docs = append(docs, name)
+			}
+			return nil
+		}))
+		require.NotEmpty(t, docs, "the embedded frontend must ship at least one HTML document")
+
+		for _, name := range docs {
+			perDoc, err := inlineScriptHashes(publicFS, name)
+			require.NoErrorf(t, err, "%s must parse", name)
+			for _, h := range perDoc {
+				assert.Containsf(t, got, h, "%s carries an inline script the policy does not authorize", name)
+			}
+		}
+	})
 }
 
 // Policy reads the EMBEDDED index.html -- the same bytes the handler beside it
@@ -284,4 +369,62 @@ func mustPublicFS(t *testing.T) fs.FS {
 	publicFS, err := fs.Sub(genfrontend.PublicFS, "public")
 	require.NoError(t, err)
 	return publicFS
+}
+
+// The CLI consent form is the one form in the app whose submission leaves this
+// origin, and `form-action` is matched against every hop of a submission's
+// redirect chain. With `'self'` alone, Chromium and WebKit refuse the 302 to the
+// loopback callback and `leapmux control auth login` waits until it times out.
+func TestFormActionAllowsTheCliLoopbackCallback(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name   string
+		policy string
+	}{
+		{"enforced", strings.Join(cspDirectives, "; ")},
+		{"dev report-only", devCSP},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var formAction string
+			for _, directive := range strings.Split(tc.policy, "; ") {
+				if strings.HasPrefix(directive, "form-action ") {
+					formAction = directive
+				}
+			}
+			require.NotEmpty(t, formAction, "the policy must state form-action")
+
+			assert.Contains(t, formAction, "'self'",
+				"the app's own forms must keep posting to this origin")
+			// DERIVED from the same list `isLoopbackURL` reads, rather than a
+			// third literal that claims to match it. A literal here asserted
+			// only that the policy had not changed, never that it agreed with
+			// the redirect -- the two could widen apart and this test would
+			// keep passing on whichever one it had memorized.
+			//
+			// An IPv6 literal is the one host the two cannot share: CSP's
+			// `host-source` grammar has no production for one, so a browser
+			// reports `http://[::1]:*` as an invalid source and ignores the
+			// entry. It is skipped HERE for the same reason the policy skips
+			// it, and the case below pins that it stays out.
+			for _, host := range httpsec.LoopbackHosts {
+				if strings.Contains(host, ":") {
+					continue
+				}
+				source := "http://" + host + ":*"
+				assert.Containsf(t, formAction, source,
+					"the CLI binds an ephemeral loopback port, so %q must be allowed", source)
+			}
+			// An entry the browser IGNORES is worse than none: it buys no
+			// permission and logs a console error on every page load, which is
+			// how this was found (tests/e2e/181-security-headers.spec.ts).
+			assert.NotContains(t, formAction, "[",
+				"CSP cannot express an IPv6 host, so no bracketed source may be stated")
+			// Not a blanket relaxation: nothing off the loopback may receive a form.
+			assert.NotContains(t, formAction, "*.",
+				"form-action must not admit a wildcard host")
+		})
+	}
 }

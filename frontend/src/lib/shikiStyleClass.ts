@@ -50,6 +50,25 @@ export function shikiStyleClassName(decl: string): string {
 
 /** className -> declaration, everything recorded in THIS thread. */
 const declByClassName = new Map<string, string>()
+/**
+ * The subset of `declByClassName` not yet handed to another thread.
+ *
+ * A SECOND MAP rather than a cursor into the first, so taking the delta costs
+ * the number of NEW entries rather than the number of all of them. It holds the
+ * same string references, so an entry costs the map's own overhead and not the
+ * declaration again.
+ *
+ * IT IS FILLED IN EVERY THREAD, including one that never ships -- the browser
+ * main thread injects its own rules as it records them, and never calls
+ * `collectNewShikiStyles`, so this grows there instead of staying near-empty.
+ * That is a deliberate trade for two reasons. Skipping the fill where a
+ * document exists would make the delta untestable, because the unit tests run
+ * under jsdom and would then see an empty one. And the cost is a constant
+ * factor on an unboundedness this module already accepts and documents:
+ * `declByClassName` is never pruned either, and both maps grow with the number
+ * of DISTINCT declarations, which saturates per theme.
+ */
+const unshippedByClassName = new Map<string, string>()
 /** Class names whose CSS rule has been injected into this thread's document. */
 const injectedClassNames = new Set<string>()
 let styleEl: HTMLStyleElement | null = null
@@ -118,6 +137,7 @@ export function recordShikiStyle(decl: string): string | undefined {
   const existing = declByClassName.get(className)
   if (existing === undefined) {
     declByClassName.set(className, decl)
+    unshippedByClassName.set(className, decl)
     injectRule(className, decl)
   }
   else if (import.meta.env.DEV && existing !== decl) {
@@ -145,12 +165,40 @@ export function ensureShikiStyleRules(styles: Record<string, string>): void {
 }
 
 /**
- * Snapshot of every declaration recorded in this thread, keyed by class name.
- * The markdown worker ships this alongside rendered HTML so the main thread
- * can inject the rules its class names refer to.
+ * Snapshot of EVERY declaration recorded in this thread, keyed by class name.
+ *
+ * The whole record, for a caller that needs the complete picture -- the tests
+ * assert against it. The WIRE uses `collectNewShikiStyles`, which ships the
+ * same declarations once each.
  */
 export function collectShikiStyles(): Record<string, string> {
   return Object.fromEntries(declByClassName)
+}
+
+/**
+ * The declarations recorded here since the last call, keyed by class name.
+ * Empties the pending set, so each declaration is handed over exactly once.
+ *
+ * The markdown worker ships this alongside rendered HTML, and the main thread
+ * injects the rules its class names refer to. It used to ship the FULL record
+ * on every response: `declByClassName` is never pruned, so a session that
+ * samples several of the thirty theme variants accumulates each one's distinct
+ * declarations and then clones the whole accumulation across `postMessage` for
+ * every message rendered afterwards -- work that grows with how long the tab
+ * has been open and how many themes the user tried, for a dictionary whose new
+ * entries are almost always none.
+ *
+ * A DELTA IS EXACT HERE because one worker serves one client, and neither side
+ * forgets while the other remembers. The receiver accumulates for the life of
+ * the document (`injectedClassNames`, also never pruned), and the only thing
+ * that resets it is a page load -- which destroys this worker and its pending
+ * set with it. A worker that is replaced on its own starts with an empty
+ * record and re-ships what it re-records, which the receiver then skips.
+ */
+export function collectNewShikiStyles(): Record<string, string> {
+  const styles = Object.fromEntries(unshippedByClassName)
+  unshippedByClassName.clear()
+  return styles
 }
 
 /**
@@ -192,6 +240,7 @@ export function shikiStyleClassTransformer(): ShikiTransformer {
 /** Visible for testing: forget every recorded declaration and injected rule. */
 export function _resetShikiStyleClassesForTest(): void {
   declByClassName.clear()
+  unshippedByClassName.clear()
   injectedClassNames.clear()
   styleEl?.remove()
   styleEl = null

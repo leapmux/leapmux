@@ -1,0 +1,6 @@
+{
+  "name": "Rosé Pine (theme palette)",
+  "license": "MIT",
+  "url": "https://github.com/rose-pine/palette",
+  "description": "The Dawn and Rosé Pine hex values behind the Rosé Pine theme in `frontend/src/styles/themes/rose-pine.ts` were read from this palette's `dist/css/rose-pine.css` and mapped onto LeapMux's CSS custom properties."
+}

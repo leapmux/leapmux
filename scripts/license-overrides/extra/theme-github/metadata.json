@@ -1,0 +1,6 @@
+{
+  "name": "Primer (theme palette)",
+  "license": "MIT",
+  "url": "https://github.com/primer/primitives",
+  "description": "The light and dark values behind the GitHub theme in `frontend/src/styles/themes/github.ts` were read from Primer's functional theme tokens and mapped onto LeapMux's CSS custom properties."
+}

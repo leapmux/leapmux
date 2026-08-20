@@ -906,9 +906,30 @@ async function buildHtml(markdown) {
   // These used to be 34 hand-copied literals under a comment claiming they were
   // "extracted from global.css.ts" -- 33 still matched and one had already
   // drifted, which is what a second copy of a palette does over time.
-  // palette.ts is plain data with no imports precisely so this script can read
-  // it under bun, where there is no Vite to compile a .css.ts module.
-  const { lightPalette, darkPalette } = await import(join(FRONTEND, 'src/styles/palette.ts'))
+  // The modules under src/styles/themes/ are plain data with no imports outside
+  // that directory precisely so this script can read them under bun, where
+  // there is no Vite to compile a .css.ts module.
+  //
+  // The DEFAULT theme only. This page has no preference store, so it cannot
+  // know which of the app's themes a reader chose; it follows the OS through a
+  // media query, the way it did when the app had one palette.
+  const { defaultTheme } = await import(join(FRONTEND, 'src/styles/themes/default.ts'))
+  // The default theme's default variant per polarity. This page has no
+  // preference store, so it can show one light and one dark look and no more.
+  const variantFor = (polarity) => {
+    const id = defaultTheme.defaults[polarity]
+    const variant = defaultTheme.variants.find(v => v.id === id)
+    // Named, because the failure lands HERE and the fault is in the theme
+    // module. An unguarded `.find(...).palette` failed the whole build with
+    // `Cannot read properties of undefined (reading 'palette')` pointing at a
+    // line in a notice generator, which says nothing about which theme file
+    // carries a `defaults` id that no variant of its own answers.
+    if (!variant)
+      throw new Error(`theme "${defaultTheme.id}" names no ${polarity} variant "${id}"`)
+    return variant.palette
+  }
+  const lightPalette = variantFor('light')
+  const darkPalette = variantFor('dark')
   const declarations = (palette, indent) =>
     Object.entries(palette).map(([name, value]) => `${indent}${name}: ${value};`).join('\n')
 

@@ -143,3 +143,63 @@ describe('pillGroup with nothing selected', () => {
     expect(onSelect).toHaveBeenLastCalledWith('send')
   })
 })
+
+/**
+ * A group another control governs: the theme chooser's mode pills while the
+ * palette is "Match UI".
+ *
+ * It must keep SHOWING its selection -- that is what tells the user which mode
+ * the governing control produced -- while refusing every way of changing it.
+ */
+describe('pillGroup disabled', () => {
+  const options = [
+    { value: 'system', label: 'System' },
+    { value: 'light', label: 'Light' },
+    { value: 'dark', label: 'Dark' },
+  ]
+
+  function renderDisabled(current: string, onSelect = vi.fn()) {
+    render(() => (
+      <PillGroup
+        label="Terminal theme mode"
+        options={options}
+        disabled
+        selected={v => v === current}
+        onSelect={onSelect}
+      />
+    ))
+    return onSelect
+  }
+
+  it('still reports which option is selected', () => {
+    renderDisabled('dark')
+    expect(screen.getByRole('radio', { name: 'Dark' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('radio', { name: 'System' })).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it('takes the whole group out of the tab order', () => {
+    // The roving index normally parks a tab stop on the selected pill. Leaving
+    // it there would put Tab on a control that refuses every key.
+    renderDisabled('dark')
+    const radios = screen.getAllByRole('radio')
+    expect(radios.every(r => r.getAttribute('tabindex') === '-1')).toBe(true)
+    for (const radio of radios)
+      expect(radio).toBeDisabled()
+  })
+
+  it('refuses a click', () => {
+    const onSelect = renderDisabled('dark')
+    fireEvent.click(screen.getByRole('radio', { name: 'Light' }))
+    expect(onSelect).not.toHaveBeenCalled()
+  })
+
+  it('refuses the arrow keys, which the GROUP handles rather than the pills', () => {
+    // The native `disabled` attribute stops the click, but the keydown listener
+    // sits on the radiogroup wrapper and would still fire.
+    const onSelect = renderDisabled('dark')
+    const group = screen.getByRole('radiogroup', { name: 'Terminal theme mode' })
+    for (const key of ['ArrowRight', 'ArrowLeft', 'Home', 'End'])
+      fireEvent.keyDown(group, { key })
+    expect(onSelect).not.toHaveBeenCalled()
+  })
+})

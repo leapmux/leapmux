@@ -1,5 +1,6 @@
 import { renderMarkdownInWorker } from './markdownWorkerClient'
 import { sweepArtifacts } from './renderArtifactStore'
+import { syntaxThemePair } from './shikiThemes'
 import { tokenizeAsync } from './shikiWorkerClient'
 
 // ---------------------------------------------------------------------------
@@ -38,7 +39,7 @@ export function _resetWarmupForTest(): void {
 function warmUpNow(): void {
   // Results are discarded (markdown) or cached harmlessly (tokens); both calls
   // resolve null gracefully if a worker can't spawn.
-  void renderMarkdownInWorker(WARMUP_MARKDOWN)
+  void renderMarkdownInWorker(WARMUP_MARKDOWN, syntaxThemePair())
   void tokenizeAsync(WARMUP_CODE_LANG, WARMUP_CODE)
   void sweepArtifacts()
 }

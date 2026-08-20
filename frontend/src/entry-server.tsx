@@ -1,5 +1,7 @@
 import { createHandler, StartServer } from '@solidjs/start/server'
 import { frontendBuildInfo } from '~/lib/buildEnv'
+import { paletteColorToHex, resolveVariant } from '~/styles/themes'
+import { defaultTheme } from '~/styles/themes/default'
 
 export default createHandler(() => (
   <StartServer
@@ -18,7 +20,13 @@ export default createHandler(() => (
           <link rel="icon" href="/icons/leapmux-icon.ico" sizes="48x48" />
           <link rel="icon" href="/icons/leapmux-icon.svg" type="image/svg+xml" />
           <link rel="manifest" href="/manifest.webmanifest" />
-          <meta name="theme-color" content="#F7F5F2" />
+          {/*
+            The pre-hydration chrome colour, taken from the palette rather than
+            restated. ~/lib/themeStore rewrites it from the RESOLVED theme once
+            it runs; until then :root carries the default light palette, so this
+            tag has to agree with it. Three literals used to disagree here.
+          */}
+          <meta name="theme-color" content={paletteColorToHex(resolveVariant(defaultTheme, undefined, 'light').palette['--background']!)} />
           <link rel="apple-touch-icon" href="/icons/leapmux-icon-square-apple-touch.png" />
           <meta name="apple-mobile-web-app-capable" content="yes" />
           <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />

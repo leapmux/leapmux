@@ -1,5 +1,8 @@
+import type { EditorView } from '@milkdown/prose/view'
 import type { HighlighterCore } from 'shiki/core'
 import type { LanguageLoadResult, LazyHighlighter } from '~/lib/shikiLazyHighlighter'
+import { Plugin, PluginKey } from '@milkdown/prose/state'
+import { createHighlightPlugin } from 'prosemirror-highlight'
 import { describe, expect, it, vi } from 'vitest'
 import { createLazyOnigurumaHighlighter } from '~/lib/shikiLazyHighlighter'
 import { createLazyShikiParser } from './lazyShikiParser'
@@ -22,6 +25,8 @@ function createFlakyHighlighter(failures: number): LazyHighlighter {
     ensureReady: () => real.ensureReady(),
     getHighlighter: () => real.getHighlighter(),
     isLanguageLoaded: lang => real.isLanguageLoaded(lang),
+    ensureThemes: async () => {},
+    areThemesLoaded: () => true,
     ensureLanguage: (lang) => {
       const existing = inFlight.get(lang)
       if (existing)
@@ -54,6 +59,8 @@ function createThrowingTokenizeHighlighter(): LazyHighlighter {
     ensureReady: () => Promise.resolve(core),
     getHighlighter: () => core,
     isLanguageLoaded: () => true,
+    ensureThemes: async () => {},
+    areThemesLoaded: () => true,
     ensureLanguage: () => Promise.resolve('loaded' as const),
   }
 }
@@ -167,6 +174,8 @@ describe('createLazyShikiParser', () => {
       getHighlighter: () => real.getHighlighter(),
       // This mount sees the grammar as absent until another mount loads it (below).
       isLanguageLoaded: () => loaded,
+      ensureThemes: async () => {},
+      areThemesLoaded: () => true,
       // This mount's own loads always fail transiently -- it never loads the grammar itself.
       ensureLanguage: () => Promise.resolve('failed' as const),
     }
@@ -272,5 +281,134 @@ describe('createLazyShikiParser', () => {
     // The inline decorations together cover all three lines' content (multi-line walk).
     const inlineDecos = decos.filter(d => attrsOf(d).class === 'shiki')
     expect(inlineDecos.length).toBeGreaterThanOrEqual(3)
+  })
+})
+
+describe('refreshEditorHighlight', () => {
+  // The plugin must be REPLACED, not merely refreshed. prosemirror-highlight
+  // keys its DecorationCache on the node and reads through it, so the supported
+  // refresh meta recomputes nothing for a block whose node did not change --
+  // which is every block when only the theme moved.
+  it('swaps the highlight plugin for a fresh instance', async () => {
+    const { refreshEditorHighlight } = await import('~/components/chat/markdownEditor/editorSetup')
+
+    const highlight = createHighlightPlugin({ parser: () => [] })
+    const other = new Plugin({ key: new PluginKey('unrelated') })
+    let reconfigured: readonly Plugin[] | undefined
+    const view = {
+      composing: false,
+      state: {
+        plugins: [other, highlight],
+        reconfigure: ({ plugins }: { plugins: readonly Plugin[] }) => {
+          reconfigured = plugins
+          return { plugins }
+        },
+      },
+      updateState: () => {},
+    } as unknown as EditorView
+
+    refreshEditorHighlight(view)
+
+    expect(reconfigured).toBeDefined()
+    expect(reconfigured![0]).toBe(other)
+    expect(reconfigured![1]).not.toBe(highlight)
+  })
+
+  // An IME composition is the one case a rebuild must not interrupt, so the
+  // guard DEFERS the repaint over the composition and re-runs it at
+  // `compositionend`.
+  it('defers the repaint while an IME composition is in flight, then runs it', async () => {
+    const { refreshEditorHighlight } = await import('~/components/chat/markdownEditor/editorSetup')
+
+    let reconfigured = 0
+    const dom = document.createElement('div')
+    const view = {
+      composing: true,
+      dom,
+      state: {
+        plugins: [createHighlightPlugin({ parser: () => [] })],
+        reconfigure: () => {
+          reconfigured += 1
+          return {}
+        },
+      },
+      updateState: () => {},
+    } as unknown as EditorView
+
+    refreshEditorHighlight(view)
+    expect(reconfigured).toBe(0)
+
+    // The composition ends, and the repaint the guard deferred runs.
+    //
+    // Dropping it was wrong: `prosemirror-highlight` keys its DecorationCache on
+    // the NODE, so the composition-ending transaction recomputes only the block
+    // the composition touched. Every OTHER code block in the composer kept the
+    // abandoned theme's baked colours for the rest of the session.
+    ;(view as unknown as { composing: boolean }).composing = false
+    dom.dispatchEvent(new Event('compositionend'))
+    expect(reconfigured).toBe(1)
+
+    // ONCE. A second `compositionend` with no new theme change must not repaint
+    // again -- the listener is registered `{ once: true }`.
+    dom.dispatchEvent(new Event('compositionend'))
+    expect(reconfigured).toBe(1)
+  })
+})
+
+describe('lazyShikiParser theme registration failure', () => {
+  // The branch every fake in this file stubbed past: `ensureThemes: async () => {}`
+  // and `areThemesLoaded: () => true` meant no test ever reached it.
+  //
+  // `ensureThemes` REJECTS when a lazy theme chunk fails to import, which is an
+  // ordinary event -- a 404 after a deploy, an offline tab. A rejected promise
+  // handed to `prosemirror-highlight` is logged and dropped WITHOUT a refresh,
+  // so the block stays uncached and every later keystroke fires another failing
+  // import with another console error. The grammar branch beside it has a
+  // budget for exactly this; the theme branch had none.
+  function failingHighlighter(attempts: { n: number }) {
+    return {
+      getHighlighter: () => ({
+        codeToTokens: () => ({ tokens: [[]], rootStyle: '' }),
+      }),
+      isLanguageLoaded: () => true,
+      ensureLanguage: async () => 'loaded' as const,
+      areThemesLoaded: () => false,
+      ensureThemes: async () => {
+        attempts.n += 1
+        throw new Error('chunk 404')
+      },
+      ensureReady: async () => ({}),
+    } as unknown as Parameters<typeof createLazyShikiParser>[0]
+  }
+
+  it('gives up after a bounded number of attempts instead of retrying forever', async () => {
+    const attempts = { n: 0 }
+    const parse = createLazyShikiParser(failingHighlighter(attempts))
+    const opts = { content: 'const x = 1', language: 'ts', pos: 0, size: 13 }
+
+    // Each pass returns the load; awaiting it is what a re-run does.
+    for (let i = 0; i < 10; i++) {
+      const result = parse(opts)
+      if (Array.isArray(result))
+        break
+      await result
+    }
+
+    // Bounded. Without the budget this climbed with every keystroke.
+    expect(attempts.n).toBeLessThanOrEqual(3)
+    // And it settles on a PLAIN render, which the plugin caches -- that is what
+    // ends the resolve-and-re-run loop.
+    expect(parse(opts)).toEqual([])
+  })
+
+  it('does not reject, so the plugin refreshes instead of logging and dropping', async () => {
+    const attempts = { n: 0 }
+    const parse = createLazyShikiParser(failingHighlighter(attempts))
+    const result = parse({ content: 'const x = 1', language: 'ts', pos: 0, size: 13 })
+
+    expect(Array.isArray(result)).toBe(false)
+    // A rejection here is the defect: prosemirror-highlight logs it and does
+    // NOT call refresh(), so the block never recovers and never caches.
+    await expect(result as Promise<void>).resolves.toBeUndefined()
   })
 })

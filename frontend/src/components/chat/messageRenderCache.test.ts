@@ -91,4 +91,26 @@ describe('messageRenderCache', () => {
     expect(cachedRenderValueForStrings({ renderCache: cache }, 'diff', ['path', first, 'new'], () => 'first-diff')).toBe('first-diff')
     expect(cachedRenderValueForStrings({ renderCache: cache }, 'diff', ['path', second, 'new'], () => 'second-diff')).toBe('second-diff')
   })
+
+  it('clear drops every row, which prune cannot', () => {
+    // The two differ by WHICH invalidation they answer. `prune` drops rows that
+    // left the list; a syntax theme change invalidates the output of every row
+    // that is still ON the list, because each cached body carries Shiki's baked
+    // token colours. The callers fold the theme generation into their key, so
+    // without `clear` the old generation's entries were merely orphaned inside
+    // each live row's map -- which nothing bounds by key count.
+    const store = createMessageRenderCacheStore()
+    store.forRow('row-1').set('markdown-html:1', '<p>one</p>')
+    store.forRow('row-2').set('markdown-html:1', '<p>two</p>')
+    expect(store.size()).toBe(2)
+
+    // `prune` keeps both, because both rows are live.
+    store.prune(['row-1', 'row-2'])
+    expect(store.size()).toBe(2)
+    expect(store.forRow('row-1').get('markdown-html:1')).toBe('<p>one</p>')
+
+    store.clear()
+    expect(store.size()).toBe(0)
+    expect(store.forRow('row-1').get('markdown-html:1')).toBeUndefined()
+  })
 })

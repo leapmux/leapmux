@@ -1,0 +1,6 @@
+{
+  "name": "Solarized (theme palette)",
+  "license": "MIT",
+  "url": "https://github.com/altercation/solarized",
+  "description": "The base and accent hex values behind the Solarized theme in `frontend/src/styles/themes/solarized.ts` were read from this project's colour table and mapped onto LeapMux's CSS custom properties."
+}

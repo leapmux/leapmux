@@ -2,6 +2,7 @@ import type { Root } from 'hast'
 import type { Root as MdastRoot } from 'mdast'
 import type { HighlighterCore } from 'shiki/core'
 import type { Processor } from 'unified'
+import type { SyntaxThemePair } from './syntaxThemes'
 import rehypeShikiFromHighlighter from '@shikijs/rehype/core'
 import rehypeStringify from 'rehype-stringify'
 import remarkRehype from 'remark-rehype'
@@ -9,7 +10,7 @@ import { visit } from 'unist-util-visit'
 import { createMarkdownParser } from './markdownParse'
 import { rehypeBlockRemoteImages } from './rehypeBlockRemoteImages'
 import { shikiStyleClassTransformer } from './shikiStyleClass'
-import { DUAL_THEME_TOKEN_OPTIONS } from './shikiThemes'
+import { dualThemeTokenOptions } from './shikiThemes'
 
 /**
  * The remark+rehype+Shiki markdown pipeline configuration, shared by BOTH the
@@ -118,13 +119,23 @@ function withHardeningTail<P extends Processor<any, any, Root, any, any>>(pipeli
  * hardening + remote-image blocking) around a Shiki highlighter instance. Takes the
  * highlighter so the main thread can pass its synchronous instance and the worker its
  * own — the rest of the chain (and thus the output) is identical.
+ *
+ * `pair` IS BAKED IN, so a processor belongs to exactly one syntax theme and a
+ * caller that keeps one must rebuild it when the theme changes.
+ * `rehypeShikiFromHighlighter` destructures its options ONCE when the plugin
+ * attaches and reuses that frozen object for every `highlight()` call, so
+ * spreading the live module pair here pinned every processor to whichever theme
+ * happened to be current when it was built — the exact capture that
+ * `dualThemeTokenOptions` is a function to prevent. Taking the pair as an
+ * argument makes the dependency visible at the call site instead of hiding it
+ * in module state.
  */
-export function createMarkdownProcessor(highlighter: HighlighterCore) {
+export function createMarkdownProcessor(highlighter: HighlighterCore, pair: SyntaxThemePair) {
   const base = createMarkdownParser()
     .use(remarkLowercaseCodeLang)
     .use(remarkRehype)
     .use(rehypeShikiFromHighlighter, highlighter as Parameters<typeof rehypeShikiFromHighlighter>[0], {
-      ...DUAL_THEME_TOKEN_OPTIONS,
+      ...dualThemeTokenOptions(pair),
       // Fewer token spans: adjacent same-style tokens collapse into one (an
       // upstream merge that is OFF by default), and each remaining span carries
       // a shared style class instead of a ~50-byte inline declaration (see

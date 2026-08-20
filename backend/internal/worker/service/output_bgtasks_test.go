@@ -77,6 +77,16 @@ func rowKeySet(rows []db.AgentBackgroundTask) map[string]struct{} {
 	return keys
 }
 
+// findRow returns the row stored under key, failing the test when no row holds
+// it. Named lookup rather than an index, because a derived key is not the
+// string the test wrote and the row order is newest-first.
+func findRow(t *testing.T, rows []db.AgentBackgroundTask, key string) db.AgentBackgroundTask {
+	t.Helper()
+	i := slices.IndexFunc(rows, func(r db.AgentBackgroundTask) bool { return r.RowKey == key })
+	require.GreaterOrEqualf(t, i, 0, "no row is stored under %q", key)
+	return rows[i]
+}
+
 func TestBgTask_UpsertCreatesRowAndBroadcasts(t *testing.T) {
 	t.Parallel()
 
@@ -929,11 +939,12 @@ func TestUpsertBackgroundTaskRefusesToMergeTwoKeys(t *testing.T) {
 	}
 }
 
-// An unusable key fails its own mutation and leaves every other row
-// addressable. Refusing is what keeps the bound AND the injectivity: a cap
-// would keep the bound by merging two keys, and no total function onto a
-// bounded set is injective.
-func TestUpsertBackgroundTaskRefusesAnUnusableRowKey(t *testing.T) {
+// An unusable provider key becomes a DERIVED key rather than a dropped row.
+//
+// Refusing kept the byte bound and the injectivity, and it cost the row: the
+// whole background task never reached the sidebar, so a subagent ran with
+// nothing on screen to say so. A digest keeps both properties and the row.
+func TestUpsertBackgroundTaskDerivesAKeyForAnUnusableOne(t *testing.T) {
 	t.Parallel()
 
 	sink, _, listRows := setupBgTaskTest(t)
@@ -944,29 +955,66 @@ func TestUpsertBackgroundTaskRefusesAnUnusableRowKey(t *testing.T) {
 		Status: bgtask.StatusRunning,
 	}))
 
-	for _, tc := range []struct{ name, key, marker string }{
-		{"past the byte limit", strings.Repeat("a", bgtask.RowKeyByteLimit+1), "must be at most"},
-		{"invalid UTF-8", "call-\xffabc", "must be valid UTF-8"},
+	for _, tc := range []struct{ name, key string }{
+		{"past the byte limit", strings.Repeat("a", bgtask.RowKeyByteLimit+1)},
+		{"invalid UTF-8", "call-\xffabc"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := sink.UpsertBackgroundTask(bgtask.Upsert{
+			require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
 				RowKey: tc.key,
 				Kind:   bgtask.KindShell,
-				Title:  "refused",
+				Title:  "derived " + tc.name,
 				Status: bgtask.StatusRunning,
-			})
-			require.Error(t, err)
-			assert.Contains(t, err.Error(), tc.marker)
+			}))
 
-			assert.Error(t, sink.UpdateBackgroundTaskStatus(tc.key, bgtask.StatusRunning, "working"))
-			assert.Error(t, sink.CloseBackgroundTask(tc.key, bgtask.StatusCompleted))
+			stored := bgtask.NormalizeRowKey(tc.key)
+			require.NotEqual(t, tc.key, stored, "the test case must be one the rule refuses")
+			assert.NoError(t, bgtask.ValidateRowKey(stored),
+				"the derived key must itself be storable, or the next write refuses it again")
+
+			// The lifecycle addresses the row by the RAW provider key on every
+			// call, so each one must derive the same string. Deriving on the
+			// upsert alone leaves the row Running for the life of the process.
+			require.NoError(t, sink.UpdateBackgroundTaskStatus(tc.key, bgtask.StatusRunning, "working"))
+			require.NoError(t, sink.CloseBackgroundTask(tc.key, bgtask.StatusCompleted))
+
+			row := findRow(t, listRows(), stored)
+			assert.Equal(t, "completed", row.Status, "the close must find the row the upsert opened")
+			assert.Equal(t, "working", row.ActiveForm)
+			assert.Equal(t, "derived "+tc.name, row.Title)
 		})
 	}
 
 	rows := listRows()
-	require.Len(t, rows, 1, "a refused key must not add a row, and must not disturb the one already there")
-	assert.Equal(t, "good-key", rows[0].RowKey)
-	assert.Equal(t, "kept", rows[0].Title)
+	assert.Len(t, rows, 3, "each unusable key owns a row of its own, beside the one already there")
+	good := findRow(t, rows, "good-key")
+	assert.Equal(t, "kept", good.Title, "a derived key must not disturb the row already there")
+}
+
+// The property that justified the refusal, kept by the rule that replaced it.
+// Two over-long keys that share their first RowKeyByteLimit bytes are exactly
+// what a cut merges -- and providers build keys by prefixing a fixed namespace,
+// so a shared prefix is the ordinary case rather than a contrived one.
+func TestUpsertBackgroundTaskDerivedKeysStayDistinct(t *testing.T) {
+	t.Parallel()
+
+	sink, _, listRows := setupBgTaskTest(t)
+	prefix := strings.Repeat("p", bgtask.RowKeyByteLimit)
+	for i, key := range []string{prefix + "-one", prefix + "-two"} {
+		require.NoErrorf(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+			RowKey: key,
+			Kind:   bgtask.KindShell,
+			Title:  fmt.Sprintf("task %d", i),
+			Status: bgtask.StatusRunning,
+		}), "key %d must be storable", i)
+	}
+
+	rows := listRows()
+	require.Len(t, rows, 2, "a cut would map both keys onto one row and lose a task")
+	assert.NotEqual(t, rows[0].RowKey, rows[1].RowKey)
+	titles := []string{rows[0].Title, rows[1].Title}
+	assert.Contains(t, titles, "task 0")
+	assert.Contains(t, titles, "task 1")
 }
 
 // Each KIND gets its own cap pool. A run that opens shell after shell must not

@@ -138,6 +138,19 @@ describe('backgroundTaskList', () => {
       expect(labelOf(container)).toBe('call-abc')
     })
 
+    // The LAST arm can clean to nothing as readily as the first two. The worker
+    // refuses an unusable row key rather than rewriting it, and a key of
+    // nothing but bidirectional overrides is usable as an identity, so it
+    // reaches the reader as a non-empty string that `cleanName` empties. Every
+    // arm then falls through and the row drew a blank first line with a status
+    // dot beside it.
+    it('names the row Untitled when every arm cleans to nothing', () => {
+      const { container } = renderList({
+        tasks: [row({ rowKey: '\u202E\u202E', title: '', description: '\u200B' })],
+      })
+      expect(labelOf(container)).toBe('Untitled')
+    })
+
     // The worker already cleaned the title, and the rule is idempotent, so the
     // reader's clean must be a no-op on it.
     it('passes a worker-cleaned title through unchanged', () => {
@@ -145,6 +158,52 @@ describe('backgroundTaskList', () => {
         tasks: [row({ rowKey: 'k', title: 'npm test --grep "$FOO"' })],
       })
       expect(labelOf(container)).toBe('npm test --grep "$FOO"')
+    })
+
+    // The echo guard compares the second line against the first, so BOTH sides
+    // have to be cleaned. The title arm is cleaned and the description arm was
+    // not, so the comparison stopped matching for every string the fold
+    // rewrites -- and the row printed the same command twice, once folded and
+    // once raw. Claude's local_bash sends the command as both title and
+    // description, and a command carrying a double space is ordinary, so this
+    // is the exact case the guard exists for.
+    it('suppresses a description that differs from the title only by a whitespace run', () => {
+      const { container } = renderList({
+        tasks: [row({
+          rowKey: 'k',
+          title: 'npm test  --grep "$FOO"',
+          description: 'npm test  --grep "$FOO"',
+        })],
+      })
+      expect(labelOf(container)).toBe('npm test --grep "$FOO"')
+      expect(secondaries(container)).toHaveLength(0)
+    })
+
+    // A newline is the other shape the fold rewrites, and it reaches the row
+    // from a provider that wraps its copy.
+    it('suppresses a description that differs from the title only by a newline', () => {
+      const { container } = renderList({
+        tasks: [row({ rowKey: 'k', title: 'build\nand test', description: 'build\nand test' })],
+      })
+      expect(secondaries(container)).toHaveLength(0)
+    })
+
+    // The guard must not swallow a genuinely different second line.
+    it('still shows a description that differs from the title', () => {
+      const { container } = renderList({
+        tasks: [row({ rowKey: 'k', title: 'Run the suite', description: 'npm test' })],
+      })
+      expect(secondaries(container).map(el => el.textContent)).toEqual(['npm test'])
+    })
+
+    // The second line is cleaned as well as compared: `activity` and
+    // `description` arrive from the provider UNCLEANED (the worker cleans
+    // `title` alone), so a bidirectional override in one would reorder the line.
+    it('cleans the second line it does show', () => {
+      const { container } = renderList({
+        tasks: [row({ rowKey: 'k', title: 'Run the suite', activity: 'step\u202Eone' })],
+      })
+      expect(secondaries(container).map(el => el.textContent)).toEqual(['stepone'])
     })
   })
 

@@ -30,16 +30,16 @@ func TestDecodeEmptyBlobReturnsDefaults(t *testing.T) {
 		assert.Equal(t, d.Default(), values[d.Name()], "key %q", d.Name())
 	}
 	// Spot-check a few defaults.
-	assert.Equal(t, "system", values["theme"])
+	assert.Equal(t, ThemeValue{Name: "default", Mode: "system"}, values["theme"])
 	assert.Equal(t, int64(100), values["turn_end_sound_volume"])
 	assert.Equal(t, FontFamilyValue{}, values["ui_fonts"])
 }
 
 func TestDecodeBadFieldDegradesOnlyThatField(t *testing.T) {
-	blob := `{"theme":"dark","turn_end_sound_volume":900,"diff_view":"unified"}`
+	blob := `{"diff_view":"split","turn_end_sound_volume":900,"turn_end_sound":"none"}`
 	values := decoded(blob)
-	assert.Equal(t, "dark", values["theme"], "the healthy key decodes")
-	assert.Equal(t, "unified", values["diff_view"], "the healthy key decodes")
+	assert.Equal(t, "split", values["diff_view"], "the healthy key decodes")
+	assert.Equal(t, "none", values["turn_end_sound"], "the healthy key decodes")
 	assert.Equal(t, int64(100), values["turn_end_sound_volume"],
 		"the out-of-range key degrades to its default, not the whole document")
 }
@@ -47,32 +47,32 @@ func TestDecodeBadFieldDegradesOnlyThatField(t *testing.T) {
 func TestDecodeInvalidStoredValueDegradesToDefault(t *testing.T) {
 	// turn_end_sound carries no validator beyond the enum UI hint, so use
 	// a key with a real validator: ui_fonts rejects unsanitizable names.
-	blob := `{"theme":"dark","ui_fonts":{"enabled":true,"fonts":["  "]}}`
+	blob := `{"diff_view":"split","ui_fonts":{"enabled":true,"fonts":["  "]}}`
 	values := decoded(blob)
-	assert.Equal(t, "dark", values["theme"], "the sibling key is untouched")
+	assert.Equal(t, "split", values["diff_view"], "the sibling key is untouched")
 	assert.Equal(t, FontFamilyValue{}, values["ui_fonts"], "the invalid key degrades to its default")
 }
 
 func TestDecodeUndecodableSubDocumentDegradesToDefault(t *testing.T) {
-	blob := `{"theme":"dark","debug_logging":{}}`
+	blob := `{"diff_view":"split","debug_logging":{}}`
 	values := decoded(blob)
-	assert.Equal(t, "dark", values["theme"])
+	assert.Equal(t, "split", values["diff_view"])
 	assert.Equal(t, false, values["debug_logging"], "a wrong-typed sub-document degrades, not the whole blob")
 }
 
 func TestDecodeNonObjectBlobUsesDefaults(t *testing.T) {
 	values := decoded(`[1,2,3]`)
-	assert.Equal(t, "system", values["theme"])
+	assert.Equal(t, ThemeValue{Name: "default", Mode: "system"}, values["theme"])
 }
 
 func TestApplyPartialMergesOneKeyAndLeavesSiblingsByteIdentical(t *testing.T) {
-	blob := `{"theme":"dark","turn_end_sound_volume":42,"orphan_future_key":{"keep":"me"}}`
+	blob := `{"terminal_theme":"dark","turn_end_sound_volume":42,"orphan_future_key":{"keep":"me"}}`
 	merged, err := Default.ApplyPartial(blob, "turn_end_sound_volume", json.RawMessage(`7`))
 	require.NoError(t, err)
 
 	doc := map[string]json.RawMessage{}
 	require.NoError(t, json.Unmarshal([]byte(merged), &doc))
-	assert.JSONEq(t, `"dark"`, string(doc["theme"]), "the untouched key keeps its value")
+	assert.JSONEq(t, `"dark"`, string(doc["terminal_theme"]), "the untouched key keeps its value")
 	assert.JSONEq(t, `{"keep":"me"}`, string(doc["orphan_future_key"]),
 		"an unknown-to-this-binary key survives verbatim (forward compatibility)")
 	assert.JSONEq(t, `7`, string(doc["turn_end_sound_volume"]))
@@ -89,7 +89,7 @@ func TestApplyPartialWithinKeyOmitsUntouchedFields(t *testing.T) {
 }
 
 func TestApplyPartialRefusesInvalidValues(t *testing.T) {
-	blob := `{"theme":"dark"}`
+	blob := `{"terminal_theme":"dark"}`
 	_, err := Default.ApplyPartial(blob, "ui_fonts", json.RawMessage(`{"enabled":true,"fonts":["  "]}`))
 	require.Error(t, err)
 
@@ -170,13 +170,49 @@ func TestApplyPartialKeybindingFieldLimits(t *testing.T) {
 	require.ErrorContains(t, err, "key too long")
 }
 
-func TestApplyPartialThemeRejectsNonSlug(t *testing.T) {
-	_, err := Default.ApplyPartial(`{}`, "theme", json.RawMessage(`"Dark Theme"`))
-	require.Error(t, err)
+func TestApplyPartialThemeRejectsANonSlugName(t *testing.T) {
+	_, err := Default.ApplyPartial(`{}`, "theme", json.RawMessage(`{"name":"Dark Theme","mode":"dark"}`))
+	require.ErrorContains(t, err, "invalid theme name")
+
+	_, err = Default.ApplyPartial(`{}`, "theme", json.RawMessage(`{"name":"rose_pine","mode":"dark"}`))
+	require.ErrorContains(t, err, "invalid theme name")
+}
+
+func TestApplyPartialThemeRejectsAnUnlistedMode(t *testing.T) {
+	// The mode IS a closed set this package owns, unlike the palette name.
+	_, err := Default.ApplyPartial(`{}`, "theme", json.RawMessage(`{"name":"default","mode":"sepia"}`))
+	require.ErrorContains(t, err, "mode:")
+}
+
+func TestApplyPartialThemeAcceptsANameThisBinaryDoesNotKnow(t *testing.T) {
+	// The palette catalogue lives in the client, so a NEWER client must be
+	// able to store a theme this hub has never heard of. Refusing here would
+	// make the hub the authority on a list it cannot see.
+	out, err := Default.ApplyPartial(`{}`, "theme", json.RawMessage(`{"name":"some-future-theme","mode":"dark"}`))
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"theme":{"name":"some-future-theme","mode":"dark"}}`, out)
+}
+
+func TestApplyPartialThemeKeepsTheSiblingFieldItDoesNotName(t *testing.T) {
+	// The two halves are one key but still merge per field, so switching the
+	// mode from the tri-switch must not reset the palette to the default.
+	blob := `{"theme":{"name":"catppuccin","mode":"light"}}`
+	out, err := Default.ApplyPartial(blob, "theme", json.RawMessage(`{"mode":"dark"}`))
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"theme":{"name":"catppuccin","mode":"dark"}}`, out)
+}
+
+func TestThemeDefaultMatchesTheClientCatalogue(t *testing.T) {
+	// DefaultThemeName must equal DEFAULT_THEME_ID in
+	// frontend/src/styles/themes/index.ts. The client falls back to that id for
+	// a name it cannot resolve, so a disagreement here would let the hub store
+	// a default the client silently replaces with a different palette.
+	assert.Equal(t, "default", DefaultThemeName)
+	assert.Equal(t, ThemeValue{Name: DefaultThemeName, Mode: "system"}, KeyTheme.Default())
 }
 
 func TestResetRemovesOnlyTheNamedKey(t *testing.T) {
-	blob := `{"theme":"dark","diff_view":"split"}`
+	blob := `{"theme":{"name":"nord","mode":"dark"},"diff_view":"split"}`
 	reset, err := Default.Reset(blob, "theme")
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"diff_view":"split"}`, reset)
@@ -186,12 +222,12 @@ func TestResetRemovesOnlyTheNamedKey(t *testing.T) {
 }
 
 func TestStatesResolvesValueRawAndCustomizedForEveryKey(t *testing.T) {
-	states := Default.States(`{"theme":"dark"}`)
+	states := Default.States(`{"theme":{"name":"nord","mode":"dark"}}`)
 	require.Len(t, states, len(Default.Descriptors()), "every registered key is present")
 
 	stored := states["theme"]
-	assert.Equal(t, "dark", stored.Value)
-	assert.JSONEq(t, `"dark"`, string(stored.Raw))
+	assert.Equal(t, ThemeValue{Name: "nord", Mode: "dark"}, stored.Value)
+	assert.JSONEq(t, `{"name":"nord","mode":"dark"}`, string(stored.Raw))
 	assert.True(t, stored.Customized)
 
 	absent := states["diff_view"]
@@ -201,8 +237,8 @@ func TestStatesResolvesValueRawAndCustomizedForEveryKey(t *testing.T) {
 }
 
 func TestStatesDegradesOneBadKeyAndKeepsTheRest(t *testing.T) {
-	states := Default.States(`{"theme":"dark","ui_fonts":{"enabled":true,"fonts":["  "]}}`)
-	assert.Equal(t, "dark", states["theme"].Value, "the sibling key is untouched")
+	states := Default.States(`{"diff_view":"split","ui_fonts":{"enabled":true,"fonts":["  "]}}`)
+	assert.Equal(t, "split", states["diff_view"].Value, "the sibling key is untouched")
 	assert.Equal(t, FontFamilyValue{}, states["ui_fonts"].Value, "the invalid key degrades to its default")
 	assert.True(t, states["ui_fonts"].Customized, "it is still a stored value, just not a usable one")
 }
@@ -210,17 +246,17 @@ func TestStatesDegradesOneBadKeyAndKeepsTheRest(t *testing.T) {
 func TestStatesOnAMalformedBlobReadsAsAllDefaults(t *testing.T) {
 	states := Default.States(`not-json`)
 	require.Len(t, states, len(Default.Descriptors()))
-	assert.Equal(t, "system", states["theme"].Value)
+	assert.Equal(t, ThemeValue{Name: "default", Mode: "system"}, states["theme"].Value)
 	assert.False(t, states["theme"].Customized)
 }
 
 func TestStateReportsTheStoredSubDocument(t *testing.T) {
-	state, ok := Default.State(`{"theme":"dark"}`, "theme")
+	state, ok := Default.State(`{"theme":{"name":"nord","mode":"dark"}}`, "theme")
 	require.True(t, ok)
 	require.True(t, state.Customized)
-	assert.JSONEq(t, `"dark"`, string(state.Raw))
+	assert.JSONEq(t, `{"name":"nord","mode":"dark"}`, string(state.Raw))
 
-	state, ok = Default.State(`{"theme":"dark"}`, "diff_view")
+	state, ok = Default.State(`{"theme":{"name":"nord","mode":"dark"}}`, "diff_view")
 	require.True(t, ok)
 	assert.False(t, state.Customized)
 	assert.Nil(t, state.Raw)
@@ -229,14 +265,14 @@ func TestStateReportsTheStoredSubDocument(t *testing.T) {
 	require.True(t, ok)
 	assert.False(t, state.Customized, "a malformed blob reads as no stored value")
 
-	_, ok = Default.State(`{"theme":"dark"}`, "no_such_key")
+	_, ok = Default.State(`{"theme":{"name":"nord","mode":"dark"}}`, "no_such_key")
 	assert.False(t, ok, "an unregistered key has no state")
 }
 
 // The blob error is typed so the RPC surface can answer FailedPrecondition
 // without matching on the message text.
 func TestMalformedBlobErrorIsTyped(t *testing.T) {
-	_, err := Default.ApplyPartial(`not-json`, "theme", []byte(`"dark"`))
+	_, err := Default.ApplyPartial(`not-json`, "theme", []byte(`{"mode":"dark"}`))
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrMalformedBlob)
 
@@ -250,7 +286,7 @@ func TestMalformedBlobErrorIsTyped(t *testing.T) {
 // first and the listing through the second, so a key must resolve to the
 // same value either way.
 func TestStateResolvesOneKeyLikeStates(t *testing.T) {
-	blob := `{"theme":"dark","turn_end_sound_volume":42,"diff_view":"not-a-view"}`
+	blob := `{"theme":{"name":"nord","mode":"dark"},"turn_end_sound_volume":42,"diff_view":"not-a-view"}`
 	all := Default.States(blob)
 
 	for _, d := range Default.Descriptors() {
@@ -278,7 +314,7 @@ func TestStateResolvesOneKeyLikeStates(t *testing.T) {
 // reads as an internal fault rather than a missing argument.
 func TestApplyPartialRefusesAPartialThatChangesNothing(t *testing.T) {
 	for _, partial := range []string{"", "   ", "{}", "null"} {
-		out, err := Default.ApplyPartial(`{"theme":"dark"}`, "theme", json.RawMessage(partial))
+		out, err := Default.ApplyPartial(`{"theme":{"mode":"dark"}}`, "theme", json.RawMessage(partial))
 		require.Errorf(t, err, "partial %q must be refused", partial)
 		var invalid *settings.InvalidError
 		assert.ErrorAsf(t, err, &invalid, "partial %q must be an InvalidError, the same class the instance scope uses", partial)
@@ -287,9 +323,13 @@ func TestApplyPartialRefusesAPartialThatChangesNothing(t *testing.T) {
 	}
 
 	// A partial that really specifies a value still works.
-	out, err := Default.ApplyPartial(`{"theme":"dark"}`, "theme", json.RawMessage(`"light"`))
+	out, err := Default.ApplyPartial(`{"theme":{"mode":"dark"}}`, "theme", json.RawMessage(`{"mode":"light"}`))
 	require.NoError(t, err)
-	assert.JSONEq(t, `{"theme":"light"}`, out)
+	// `name` comes back as the key's default, not as "": the merge base is the
+	// DECODED stored value, which starts from Default() and has the stored
+	// sub-document unmarshalled over it. A field the stored document omits
+	// therefore keeps the default rather than the zero value.
+	assert.JSONEq(t, `{"theme":{"name":"default","mode":"light"}}`, out)
 }
 
 // TestApplyPartialMergesOntoTheDegradedBaseWhenTheStoredValueIsInvalid
@@ -327,4 +367,107 @@ func TestRegistryRefusesASecretBearingKey(t *testing.T) {
 	assert.PanicsWithValue(t,
 		`usersettings: key "test.secret" declares secret fields, which the account scope cannot store encrypted`,
 		func() { registerDescriptor(r, secretKey) })
+}
+
+// Returning a row to "Match UI" must not be refused by the variant it used to
+// carry.
+//
+// `ApplyPartial` merges onto the STORED value and leaves an omitted field
+// untouched. The chooser clears the variant by sending `variant: undefined`,
+// which JSON.stringify OMITS -- so the partial says nothing about the variant
+// and the merge keeps the stored one. A validator that refuses a following row
+// carrying a variant then fires on merge residue that no client ever sent, and
+// the row can never go back to the sentinel for the life of the account.
+func TestFollowingRowDropsTheVariantTheMergeCarriedOver(t *testing.T) {
+	for _, key := range []string{"terminal_theme", "syntax_theme"} {
+		t.Run(key, func(t *testing.T) {
+			blob := `{"` + key + `":{"name":"catppuccin","mode":"dark","variant":{"dark":"catppuccin-macchiato"}}}`
+
+			merged, err := Default.ApplyPartial(blob, key, json.RawMessage(`{"name":"match-ui","mode":"match-ui"}`))
+			require.NoError(t, err, "returning to the sentinel must not be refused")
+
+			doc := map[string]json.RawMessage{}
+			require.NoError(t, json.Unmarshal([]byte(merged), &doc))
+			assert.JSONEq(t, `{"name":"match-ui","mode":"match-ui"}`, string(doc[key]),
+				"a row that follows the app carries no variant of its own")
+		})
+	}
+}
+
+// A variant names one look of ONE palette, so it stops meaning anything the
+// moment the name beside it changes. The chooser states this by clearing the
+// variant with every palette pick, and the merge would otherwise keep it --
+// storing a Catppuccin variant under a Nord theme.
+func TestChangingThePaletteDropsTheVariantOfThePreviousOne(t *testing.T) {
+	blob := `{"theme":{"name":"catppuccin","mode":"dark","variant":{"dark":"catppuccin-macchiato"}}}`
+
+	merged, err := Default.ApplyPartial(blob, "theme", json.RawMessage(`{"name":"nord"}`))
+	require.NoError(t, err)
+
+	doc := map[string]json.RawMessage{}
+	require.NoError(t, json.Unmarshal([]byte(merged), &doc))
+	assert.JSONEq(t, `{"name":"nord","mode":"dark"}`, string(doc["theme"]),
+		"the previous palette's variant does not survive a palette change")
+}
+
+// The clear must not over-reach: a partial that leaves the NAME alone keeps the
+// variant, which is what a bare mode change sends.
+func TestAnUntouchedNameKeepsItsVariant(t *testing.T) {
+	blob := `{"theme":{"name":"catppuccin","mode":"dark","variant":{"dark":"catppuccin-macchiato"}}}`
+
+	merged, err := Default.ApplyPartial(blob, "theme", json.RawMessage(`{"mode":"light"}`))
+	require.NoError(t, err)
+
+	doc := map[string]json.RawMessage{}
+	require.NoError(t, json.Unmarshal([]byte(merged), &doc))
+	assert.JSONEq(t, `{"name":"catppuccin","mode":"light","variant":{"dark":"catppuccin-macchiato"}}`,
+		string(doc["theme"]), "a mode change keeps the variant it did not mention")
+}
+
+// The write that used to be a data-loss risk is now simply ACCEPTED.
+//
+// MaxKeybindings entries x three MaxKeybindingLength fields is about 160 KB --
+// every entry individually legal, and 2.4x the 65,535 bytes MySQL's TEXT column
+// held. On a relaxed sql_mode MySQL truncated that mid-JSON, after which the
+// next read failed and every account setting reset to its default. The column
+// is MEDIUMTEXT now, so the storage no longer imposes a ceiling the product
+// never chose.
+func TestApplyPartialAcceptsTheLargestLegalKeybindingList(t *testing.T) {
+	long := strings.Repeat("k", MaxKeybindingLength)
+	entries := make([]map[string]string, 0, MaxKeybindings)
+	for range MaxKeybindings {
+		entries = append(entries, map[string]string{"key": long, "command": long, "when": long})
+	}
+	payload, err := json.Marshal(entries)
+	require.NoError(t, err)
+	require.Greater(t, len(payload), 65535, "the fixture must exceed what MySQL's TEXT column held")
+
+	merged, err := Default.ApplyPartial(`{}`, "keybindings", json.RawMessage(payload))
+	require.NoError(t, err, "every entry is within its declared cap, so the write is legal")
+	assert.LessOrEqual(t, len(merged), MaxPrefsBytes)
+}
+
+// The document cap still bounds what no per-key cap can see.
+//
+// An unknown key is the one uncapped contributor: decodeBlob preserves a key
+// this binary does not know verbatim, for forward compatibility, so a blob
+// written by a later build carries residue no validator here bounds. Refusing
+// the write is the right answer -- the alternative is a document the storage
+// truncates, which loses every setting rather than one write.
+func TestApplyPartialRefusesAnOversizedDocument(t *testing.T) {
+	residue, err := json.Marshal(strings.Repeat("x", MaxPrefsBytes))
+	require.NoError(t, err)
+	blob := `{"orphan_future_key":` + string(residue) + `}`
+
+	_, err = Default.ApplyPartial(blob, "theme", json.RawMessage(`{"name":"nord","mode":"dark"}`))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "too large")
+}
+
+// The cap must not refuse an ordinary document. A realistic account sits far
+// under it, so no normal write is affected.
+func TestApplyPartialAcceptsAnOrdinaryDocument(t *testing.T) {
+	merged, err := Default.ApplyPartial(`{}`, "theme", json.RawMessage(`{"name":"nord","mode":"dark"}`))
+	require.NoError(t, err)
+	assert.Less(t, len(merged), MaxPrefsBytes)
 }

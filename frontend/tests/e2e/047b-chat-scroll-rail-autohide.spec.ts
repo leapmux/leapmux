@@ -192,19 +192,26 @@ test.describe('chat scroll rail auto-hide', () => {
     expect(Math.abs((thumbBox!.x + thumbBox!.width / 2) - (railBox!.x + railBox!.width / 2)))
       .toBeLessThanOrEqual(1)
 
-    // The rail paints the PANEL colour at partial alpha, so the strip reads as a
-    // channel cut out of the content -- lighter in the light theme, darker in the
-    // dark one -- rather than an opaque bar.
-    const surface = await page.locator(RAIL).evaluate(el => globalThis.getComputedStyle(el).backgroundColor)
-    // A color-mix result serializes as `color(srgb r g b / a)`; a plain colour as
-    // `rgba(r, g, b, a)` or an opaque `rgb(r, g, b)`. Only the first two carry an
-    // alpha, and an opaque value means the translucency was dropped -- which is
+    // The rail paints NO surface. The column is far wider than the marks it draws,
+    // so ANY paint on it tints a strip of the message text beside them -- which is
     // the regression this guards.
-    const alpha = surface.match(/\/\s*([\d.]+)\s*\)$/)?.[1]
-      ?? surface.match(/^rgba\((?:\s*[\d.]+\s*,){3}\s*([\d.]+)\s*\)$/)?.[1]
-    expect(alpha, `rail background was ${surface}`).toBeDefined()
-    expect(Number.parseFloat(alpha!)).toBeGreaterThan(0)
-    expect(Number.parseFloat(alpha!)).toBeLessThan(1)
+    //
+    // All four properties, not the fill alone: a gradient lands in `background-image`
+    // and leaves `background-color` transparent, and a border or a shadow tints the
+    // same strip from the same element. A guard on one property would pass while the
+    // strip came back through another.
+    const paint = await page.locator(RAIL).evaluate((el) => {
+      const s = globalThis.getComputedStyle(el)
+      return { color: s.backgroundColor, image: s.backgroundImage, border: s.borderStyle, shadow: s.boxShadow }
+    })
+    // An unset background computes to fully transparent, and every colour a rule
+    // could set differs from it.
+    expect(paint, `rail paint was ${JSON.stringify(paint)}`).toEqual({
+      color: 'rgba(0, 0, 0, 0)',
+      image: 'none',
+      border: 'none',
+      shadow: 'none',
+    })
 
     // The hover target is worth having: the whole gutter, not the thin strip the
     // thumb draws. This is what made the rail hard to hover before.

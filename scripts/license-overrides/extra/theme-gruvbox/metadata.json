@@ -1,0 +1,6 @@
+{
+  "name": "gruvbox (theme palette)",
+  "license": "MIT",
+  "url": "https://github.com/gruvbox-community/gruvbox",
+  "description": "The light and dark hex values behind the Gruvbox theme in `frontend/src/styles/themes/gruvbox.ts` were read from this colorscheme's `colors/gruvbox.vim` and mapped onto LeapMux's CSS custom properties."
+}

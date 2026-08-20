@@ -40,12 +40,34 @@ export const codeWrap: StyleRule = {
   wordBreak: 'break-all',
 }
 
-/** Styles for `<pre>`: reset padding, set position, and configure overflow. */
+/**
+ * Styles for `<pre>`: reset padding, set position, configure overflow, and round
+ * the block's corners.
+ *
+ * NO BORDER, deliberately. A fenced block is marked by its field alone --
+ * `--code-block-background`, a translucent step over whatever hosts it (see
+ * ~/styles/codePalette). That is a quiet block: on the tightest palette in the
+ * catalogue, inside a user message's accent bubble, the step measures 1.07:1.
+ * An outline was tried and removed as too loud for what a run of code in a
+ * message should be. The radius stays, because it is what shapes the field.
+ *
+ * The radius is Oat's own for a `<pre>` -- `--radius-medium`, three times the
+ * `--radius-small` it gives INLINE `code`. This restated it as `small` and so
+ * rounded a block at the inline corner. Oat's rule is in its `base` layer, and
+ * `codeBlockPre` is applied through an unlayered class, so the value here always
+ * wins and had to be the right one. `codeBlock.test.ts` reads Oat's stylesheet
+ * and pins the two together.
+ *
+ * The diff container and the Read view still outline themselves. They are not
+ * fenced blocks -- they draw their own rows and need an edge to draw them
+ * against.
+ */
 export function codeBlockPre(overflowX: 'hidden' | 'visible'): StyleRule {
   return {
     position: 'relative',
     overflowX,
     padding: 0,
+    borderRadius: 'var(--radius-medium)',
   }
 }
 

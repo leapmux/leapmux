@@ -102,6 +102,29 @@ Pass `ariaLabel` when the control has no visible text, so the tooltip doubles as
 
 `title` remains correct in exactly one case: a **disabled** control. A disabled element receives no pointer events, so `<Tooltip>` never fires on it — `title` is the only text the user can get. That is why `BranchContextMenu`, the `[+]` menu's attach item, and the option-group items all put their disabled reason in `title`. Reaching for `title` on an ENABLED control is the mistake this rule exists to stop.
 
+### Dropdowns and one-of-N choices
+
+Never render a native `<select>`. Use:
+
+- `<PillGroup>` (`~/components/common/PillGroup`) for a short fixed set — up to
+  four options that fit on one row. It supplies `role="radiogroup"`, roving
+  tabindex and the arrow-key contract.
+- `<DropdownMenu>` + `<DropdownMenuCheckableItem kind="radio">`
+  (`~/components/common/DropdownMenu`) for anything longer, dynamic or
+  unbounded. Follow `AgentProviderSelector` and `PreferencesNav`, which already
+  do this.
+
+Why: a native `<select>` opens the OS picker, which ignores the app's theme and
+typography — the same reason a bare `title` is banned for tooltips. It renders
+text and nothing else, so a colour swatch, an icon or a second line is
+impossible; `ThemeChooser` needs exactly that. And its selected index is browser
+state, so every caller ends up repairing the DOM by hand after a refused write
+or an option-list swap — two such repairs were deleted when the last selects
+went. A menu derives from props and cannot drift.
+
+For an unbounded list, give the menu a filter box: render it `as="div"` so a
+click inside does not dismiss it, and close from the item's own handler.
+
 ### Browser storage
 
 Never call `localStorage` or `sessionStorage` directly. Route every read, write, and delete through `~/lib/browserStorage` (`localStorageGet`/`localStorageSet`/`localStorageRemove` for localStorage; `sessionStorageGet`/`sessionStorageSet`/`sessionStorageHas`/`sessionStorageRemove` for sessionStorage).

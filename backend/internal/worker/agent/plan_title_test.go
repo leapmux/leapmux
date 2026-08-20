@@ -566,3 +566,52 @@ func TestPlanFilenameStemFitsNameMax(t *testing.T) {
 		})
 	}
 }
+
+// A plan stem must never resolve to a DOS device.
+//
+// `writePlanFile` joins this stem with ".md" and opens it directly, and Windows
+// resolves a device name in any directory and with any extension -- so `con.md`
+// reaches the console device rather than a file and the plan is lost. The retry
+// suffix does not help either: `con.2.md` still reduces to CON.
+func TestSanitizePlanFilenameTitleAvoidsWindowsDeviceNames(t *testing.T) {
+	t.Parallel()
+
+	for _, title := range []string{"CON", "Aux", "prn", "NUL", "COM1", "lpt9"} {
+		t.Run(title, func(t *testing.T) {
+			t.Parallel()
+			stem := SanitizePlanFilenameTitle(title)
+			assert.Falsef(t, validate.IsReservedDeviceName(stem),
+				"%q produced the reserved stem %q", title, stem)
+			// Still recognisable: the title is kept and only disambiguated.
+			assert.Containsf(t, stem, strings.ToLower(title), "%q lost its text", title)
+		})
+	}
+}
+
+// An ordinary title keeps its stem exactly. The device guard must not rewrite a
+// name that was never a device.
+func TestSanitizePlanFilenameTitleLeavesAnOrdinaryTitleAlone(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "control-flow", SanitizePlanFilenameTitle("Control Flow"))
+	// "console" merely STARTS with a device name; only the whole stem counts.
+	assert.Equal(t, "console", SanitizePlanFilenameTitle("Console"))
+}
+
+// The plan-title path and the name rule cut bytes with ONE helper, so a guard
+// added to one cannot go missing from the other. The copy that used to live in
+// this file arrived WITHOUT the `limit <= 0` guard the original had, which is
+// the evidence against "kept byte-identical by hand".
+func TestPlanTitleUsesTheSharedByteCut(t *testing.T) {
+	t.Parallel()
+
+	assert.NotPanics(t, func() {
+		assert.Empty(t, validate.TruncateToBytes("hello", -1))
+		assert.Empty(t, validate.TruncateToBytes("hello", 0))
+	})
+	// 'h' is one byte and 'e' is two, so a limit of 1 or 2 both stop after 'h'
+	// rather than splitting the second rune.
+	assert.Equal(t, "h", validate.TruncateToBytes("héllo", 1))
+	assert.Equal(t, "h", validate.TruncateToBytes("héllo", 2))
+	assert.Equal(t, "hé", validate.TruncateToBytes("héllo", 3))
+}

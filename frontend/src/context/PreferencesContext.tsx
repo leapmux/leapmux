@@ -1,19 +1,19 @@
 import type { Accessor, ParentComponent } from 'solid-js'
-import type { ThemePreference } from '~/app'
 import type { SettingDescriptor, SettingValue } from '~/generated/leapmux/v1/settings_pb'
-import type { BrowserPreferences, EnterKeyMode, TerminalRendererPreference } from '~/lib/browserStorage'
+import type { BrowserPreferences, BrowserPrefValue, EnterKeyMode, TerminalRendererPreference } from '~/lib/browserStorage'
 import type { UserKeybindingOverride } from '~/lib/shortcuts/types'
-import type { TerminalThemePreference } from '~/lib/terminal'
+import type { TerminalThemeValue, ThemeValue } from '~/styles/themes'
 import { createEffect, createSignal, onMount, useContext } from 'solid-js'
 import { userClient } from '~/api/clients'
 import {
-  KEY_BROWSER_PREFS,
+  batchBrowserPrefWrites,
   KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN,
   KEY_PREFERRED_EDITOR,
   loadBrowserPrefs,
   localStorageGet,
   localStorageRemove,
   localStorageSet,
+  updateBrowserPref,
 } from '~/lib/browserStorage'
 import { createStableContext } from '~/lib/createStableContext'
 import { formatErrorMessage } from '~/lib/errors'
@@ -23,6 +23,7 @@ import { createKeyedSeq } from '~/lib/keyedSeq'
 import { createLogger, setDebugEnabled } from '~/lib/logger'
 import { parseSettingJson } from '~/lib/settingJson'
 import { getTerminalRendererPreference } from '~/lib/terminal'
+import { applyTheme, DEFAULT_TERMINAL_THEME_VALUE, DEFAULT_THEME_VALUE, parseTerminalThemeValue, parseThemeValue } from '~/lib/themeStore'
 import { NAME_BYTE_LIMIT, sanitizeName } from '~/lib/validate'
 
 const log = createLogger('PreferencesContext')
@@ -59,9 +60,10 @@ export interface FontTier {
 
 export interface PreferencesState {
   /** Resolved theme preference (localStorage override → account default → hardcoded default). */
-  theme: () => ThemePreference
+  theme: () => ThemeValue
   /** Resolved terminal theme preference. */
-  terminalTheme: () => TerminalThemePreference
+  terminalTheme: () => TerminalThemeValue
+  syntaxTheme: () => TerminalThemeValue
   /** Resolved UI font tier (browser override → account). */
   uiFonts: () => FontTier
   /** Resolved mono font tier (browser override → account). */
@@ -133,8 +135,9 @@ export interface PreferencesState {
    * nothing about its tiers.
    */
   dual: {
-    theme: DualPreference<ThemePreference>
-    terminalTheme: DualPreference<TerminalThemePreference>
+    theme: DualPreference<ThemeValue>
+    terminalTheme: DualPreference<TerminalThemeValue>
+    syntaxTheme: DualPreference<TerminalThemeValue>
     uiFonts: DualPreference<FontTier>
     monoFonts: DualPreference<FontTier>
     diffView: DualPreference<DiffViewPreference>
@@ -265,61 +268,6 @@ function isStorableFontName(name: string): boolean {
     return false
   const { value, error } = sanitizeName(name)
   return error === null && value === name
-}
-
-/** One value the consolidated browser-preferences document can hold. */
-type BrowserPrefValue = NonNullable<BrowserPreferences[keyof BrowserPreferences]>
-
-/**
- * The document every browser-preference write shares while a batch is
- * open, or null while each write owns its own read and write.
- */
-let batchedPrefs: BrowserPreferences | null = null
-
-/** Update a single field in the consolidated browser preferences. */
-function updateBrowserPref(key: keyof BrowserPreferences, value: BrowserPrefValue | undefined): void {
-  const prefs = batchedPrefs ?? loadBrowserPrefs()
-  if (value === undefined) {
-    delete prefs[key]
-  }
-  else {
-    (prefs as Record<string, unknown>)[key] = value
-  }
-  // The batch owns the write while one is open. Storing here as well would
-  // defeat it and publish a half-applied document to the other tabs.
-  if (batchedPrefs === null)
-    localStorageSet(KEY_BROWSER_PREFS, prefs)
-}
-
-/**
- * Run `body` with every browser-preference write applied to ONE document,
- * stored once at the end.
- *
- * "Reset all browser overrides" clears seventeen fields, and each one is
- * otherwise a full read, parse, serialize and write of the whole
- * document. One write is also one `storage` event for the other tabs
- * rather than seventeen.
- *
- * Both guards are required. The `finally` closes the batch even when a
- * write inside `body` throws; without it every later write in the page
- * would accumulate into a document that nothing stores. The re-entrancy
- * check holds the same invariant from the other side: a nested call must
- * not adopt a second document and store it over the outer one.
- */
-function batchBrowserPrefWrites(body: () => void): void {
-  if (batchedPrefs !== null) {
-    body()
-    return
-  }
-  batchedPrefs = loadBrowserPrefs()
-  try {
-    body()
-  }
-  finally {
-    const written = batchedPrefs
-    batchedPrefs = null
-    localStorageSet(KEY_BROWSER_PREFS, written)
-  }
 }
 
 /**
@@ -741,20 +689,37 @@ export const PreferencesProvider: ParentComponent = (props) => {
    * and nothing else. An account-only key is declared beneath it.
    */
   const dualSettings = {
-    theme: createDualSetting<ThemePreference>({
+    // The palette AND its light/dark mode, as one value: they are one
+    // appearance choice, so they share one scope chip and one Reset. Splitting
+    // them into two keys would let a device override the palette while the
+    // account still decides the mode, which no control in the app can express.
+    theme: createDualSetting<ThemeValue>({
       protoKey: 'theme',
       browserPrefKey: 'theme',
-      fallback: 'system',
-      parse: oneOf('dark', 'light', 'system'),
-      // app.tsx owns the live theme, so tell it at once rather than wait
-      // for the next render pass.
-      onBrowserWrite: resolved => window.__leapmux_setTheme?.(resolved),
+      fallback: DEFAULT_THEME_VALUE,
+      parse: parseThemeValue,
+      // ~/lib/themeStore owns the live palette, so tell it at once rather than
+      // wait for the next render pass.
+      onBrowserWrite: applyTheme,
     }),
-    terminalTheme: createDualSetting<TerminalThemePreference>({
+    // The terminal's palette AND mode, which move together: `match-ui` fills
+    // both halves or neither. One key for the same reason `theme` is one key:
+    // it is one appearance choice with one scope chip, and the control states
+    // it as one entry in one palette list. See ~/styles/themes/types.ts.
+    terminalTheme: createDualSetting<TerminalThemeValue>({
       protoKey: 'terminal_theme',
       browserPrefKey: 'terminalTheme',
-      fallback: 'match-ui',
-      parse: oneOf('match-ui', 'dark', 'light'),
+      fallback: DEFAULT_TERMINAL_THEME_VALUE,
+      parse: parseTerminalThemeValue,
+    }),
+    // Highlighted code, the third appearance surface. Same shape and same
+    // sentinel as the terminal: it is a different surface with different
+    // habits, and following the app is only the default.
+    syntaxTheme: createDualSetting<TerminalThemeValue>({
+      protoKey: 'syntax_theme',
+      browserPrefKey: 'syntaxTheme',
+      fallback: DEFAULT_TERMINAL_THEME_VALUE,
+      parse: parseTerminalThemeValue,
     }),
     // The font overrides are whole-object tiers: null means "use the
     // account value" and deletes the key; any object is a full override.
@@ -905,6 +870,7 @@ export const PreferencesProvider: ParentComponent = (props) => {
       // new key adds one entry there rather than one line per tier here.
       theme: dualSettings.theme.resolved,
       terminalTheme: dualSettings.terminalTheme.resolved,
+      syntaxTheme: dualSettings.syntaxTheme.resolved,
       uiFonts,
       monoFonts,
       diffView: dualSettings.diffView.resolved,
@@ -956,9 +922,23 @@ export const PreferencesProvider: ParentComponent = (props) => {
 }
 
 export function usePreferences(): PreferencesState {
-  const ctx = useContext(PreferencesContext)
+  const ctx = usePreferencesOptional()
   if (!ctx) {
     throw new Error('usePreferences must be used within PreferencesProvider')
   }
   return ctx
+}
+
+/**
+ * The preferences state, or `undefined` outside a `PreferencesProvider`.
+ *
+ * For a control that must render on BOTH sides of the provider boundary. The
+ * desktop launcher (app.tsx) renders before any provider exists and has no hub
+ * connection, so it has no account tier at all; `useThemeChooser` uses this to
+ * fall back to the device tier there and to the ordinary tiered write
+ * everywhere else. Prefer `usePreferences`: a component that only ever renders
+ * inside the provider should fail loudly rather than silently take a fallback.
+ */
+export function usePreferencesOptional(): PreferencesState | undefined {
+  return useContext(PreferencesContext)
 }

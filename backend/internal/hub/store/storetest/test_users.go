@@ -452,13 +452,13 @@ func (s *Suite) testUsers(t *testing.T) {
 
 		err := st.Users().UpdatePrefs(ctx, store.UpdateUserPrefsParams{
 			ID:    user.ID,
-			Prefs: `{"theme":"dark"}`,
+			Prefs: `{"theme":{"name":"nord","mode":"dark"}}`,
 		})
 		require.NoError(t, err)
 
 		prefs, err := st.Users().GetPrefs(ctx, user.ID)
 		require.NoError(t, err)
-		assert.Equal(t, `{"theme":"dark"}`, prefs)
+		assert.Equal(t, `{"theme":{"name":"nord","mode":"dark"}}`, prefs)
 	})
 
 	t.Run("pending email lifecycle", func(t *testing.T) {

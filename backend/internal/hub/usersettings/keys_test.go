@@ -86,15 +86,190 @@ func TestScalarEnumKeysRefuseAnUnlistedValue(t *testing.T) {
 	require.NotZero(t, checked, "no scalar enum key was checked; the walk proved nothing")
 }
 
-// TestThemeStoresOnlyTheSanitizedSpelling pins the specific regression:
-// SanitizeSlug lowercases BEFORE it validates, so a validator that keeps
-// only its error accepted "Dark" and stored it verbatim.
-func TestThemeStoresOnlyTheSanitizedSpelling(t *testing.T) {
+// TestThemeModeStoresOnlyTheSanitizedSpelling pins the specific regression:
+// SanitizeSlug lowercases BEFORE it validates, so a validator that keeps only
+// its error accepted "Dark" and stored it verbatim. The mode half of `theme`
+// carries that rule now -- it is the half whose value set the hub owns.
+func TestThemeModeStoresOnlyTheSanitizedSpelling(t *testing.T) {
 	for _, raw := range []string{"Dark", " dark", "dark "} {
-		assert.Errorf(t, KeyTheme.Validate(raw),
-			"theme %q is not the stored spelling of any advertised value; it must be refused", raw)
+		assert.Errorf(t, KeyTheme.Validate(ThemeValue{Name: "default", Mode: raw}),
+			"theme mode %q is not the stored spelling of any advertised value; it must be refused", raw)
 	}
-	require.NoError(t, KeyTheme.Validate("dark"))
+	require.NoError(t, KeyTheme.Validate(ThemeValue{Name: "default", Mode: "dark"}))
+}
+
+// TestThemeNameIsCheckedAsASlugNotAsACatalogue pins the split of authority the
+// ThemeValue doc states: the hub owns the MODE's value set and only the SHAPE
+// of the palette name, because the palettes are client modules it cannot see.
+func TestThemeNameIsCheckedAsASlugNotAsACatalogue(t *testing.T) {
+	for _, name := range []string{"default", "rose-pine", "tokyo-night", "a", "x9", "some-future-theme"} {
+		assert.NoErrorf(t, KeyTheme.Validate(ThemeValue{Name: name, Mode: "system"}),
+			"%q is slug-shaped and must be accepted even if this binary has never heard of it", name)
+	}
+	for _, name := range []string{"Rose-Pine", "rose_pine", "-nord", "nord-", "nord--x", "9lives", " nord", "nord "} {
+		assert.Errorf(t, KeyTheme.Validate(ThemeValue{Name: name, Mode: "system"}),
+			"%q is not slug-shaped and must be refused", name)
+	}
+}
+
+// An empty name is the shape an older client produces when it writes only a
+// mode, and it means "the default palette" rather than "no palette".
+func TestThemeAcceptsAnEmptyName(t *testing.T) {
+	require.NoError(t, KeyTheme.Validate(ThemeValue{Name: "", Mode: "light"}))
+}
+
+// The terminal theme accepts the MatchUI sentinel in BOTH halves together, or
+// in neither. "Follow the app" is one decision, which the client states as one
+// entry in one palette list.
+func TestTerminalThemeAcceptsTheSentinelInBothHalvesOrNeither(t *testing.T) {
+	for _, v := range []ThemeValue{
+		{Name: MatchUI, Mode: MatchUI},
+		{Name: "catppuccin", Mode: "light"},
+		{Name: "nord", Mode: "system"},
+		// An empty name means "the default palette", not the sentinel, so it
+		// pairs with an ordinary mode.
+		{Name: "", Mode: "dark"},
+	} {
+		assert.NoErrorf(t, KeyTerminalTheme.Validate(v), "%+v must be accepted", v)
+	}
+}
+
+// A mixed document is not a third setting a user can describe. Refusing it here
+// keeps the hub and the client from having to agree separately on what "follow
+// the app's palette but not its light/dark" would mean.
+func TestTerminalThemeRefusesTheSentinelInOneHalfOnly(t *testing.T) {
+	for _, v := range []ThemeValue{
+		{Name: "nord", Mode: MatchUI},
+		{Name: MatchUI, Mode: "dark"},
+		{Name: "", Mode: MatchUI},
+	} {
+		require.ErrorContainsf(t, KeyTerminalTheme.Validate(v), "both", "%+v must be refused", v)
+	}
+}
+
+// The syntax theme shares the validator, so it shares the rule. A second copy
+// would be a second place for the two to drift apart.
+func TestSyntaxThemeHoldsTheSameSentinelRule(t *testing.T) {
+	require.NoError(t, KeySyntaxTheme.Validate(ThemeValue{Name: MatchUI, Mode: MatchUI}))
+	require.NoError(t, KeySyntaxTheme.Validate(ThemeValue{Name: "gruvbox", Mode: "dark"}))
+	require.ErrorContains(t, KeySyntaxTheme.Validate(ThemeValue{Name: "gruvbox", Mode: MatchUI}), "both")
+}
+
+func TestTerminalThemeStillRefusesAnUnlistedModeAndANonSlugName(t *testing.T) {
+	// The sentinel widens the accepted set; it does not disable the checks.
+	require.ErrorContains(t, KeyTerminalTheme.Validate(ThemeValue{Name: MatchUI, Mode: "sepia"}), "mode:")
+	require.ErrorContains(t, KeyTerminalTheme.Validate(ThemeValue{Name: "Rose Pine", Mode: "dark"}), "invalid theme name")
+}
+
+// An ABSENT mode is what a client that writes only a name produces: encoding/json
+// leaves the field at "", which is in no enum. The mode check runs before the
+// pairing check, so this reports the field that is actually wrong rather than
+// claiming the two halves disagree.
+func TestThemeKeysRefuseAnEmptyMode(t *testing.T) {
+	for _, key := range []*settings.Key[ThemeValue]{KeyTheme, KeyTerminalTheme, KeySyntaxTheme} {
+		require.ErrorContainsf(t, key.Validate(ThemeValue{Name: "nord", Mode: ""}), "mode:", "key %s", key.Name())
+	}
+}
+
+// The UI theme does NOT accept the sentinel: there is nothing for the app's own
+// theme to match, and accepting it would store a value with no meaning.
+//
+// BOTH HALVES. The mode half was covered; the NAME half was not, and it slipped
+// through because "match-ui" happens to satisfy themeNamePattern. The client
+// then rejects it and substitutes the default, so the user's appearance dialog
+// showed the default palette beside a "Customized" badge with no way out but
+// Reset -- a stored value with no meaning, which is what this package exists to
+// keep out.
+func TestUiThemeRefusesTheMatchUiSentinel(t *testing.T) {
+	require.Error(t, KeyTheme.Validate(ThemeValue{Name: "default", Mode: MatchUI}))
+	require.Error(t, KeyTheme.Validate(ThemeValue{Name: MatchUI, Mode: "dark"}))
+	require.Error(t, KeyTheme.Validate(ThemeValue{Name: MatchUI, Mode: MatchUI}))
+}
+
+// A row that follows the app carries no variant of its own. The client's parse
+// returns the bare sentinel and discards any variant beside it, so accepting one
+// stores a document no client can produce and none can read back.
+func TestFollowingRowRefusesAVariantOfItsOwn(t *testing.T) {
+	for _, key := range []*settings.Key[ThemeValue]{KeyTerminalTheme, KeySyntaxTheme} {
+		err := key.Validate(ThemeValue{
+			Name:    MatchUI,
+			Mode:    MatchUI,
+			Variant: &ThemeVariant{Dark: "catppuccin-mocha"},
+		})
+		require.ErrorContainsf(t, err, "variant", "key %s", key.Name())
+
+		// A DETACHED row still carries one -- the refusal is about the sentinel,
+		// not about variants.
+		require.NoErrorf(t, key.Validate(ThemeValue{
+			Name:    "catppuccin",
+			Mode:    "dark",
+			Variant: &ThemeVariant{Dark: "catppuccin-mocha"},
+		}), "key %s", key.Name())
+	}
+}
+
+// The name is capped BEFORE it reaches a %q. The sentinel-mismatch branch
+// formats it into an error, and %q expands an unprintable byte roughly
+// fourfold, so an oversized name arriving with a mismatched mode would build a
+// multi-megabyte error string in the response and in the log line.
+func TestThemeNameIsCappedBeforeItReachesAnErrorString(t *testing.T) {
+	huge := strings.Repeat("a", MaxThemeNameLength*4)
+	for _, key := range []*settings.Key[ThemeValue]{KeyTerminalTheme, KeySyntaxTheme} {
+		err := key.Validate(ThemeValue{Name: huge, Mode: MatchUI})
+		require.Errorf(t, err, "key %s", key.Name())
+		assert.Containsf(t, err.Error(), "too long", "key %s", key.Name())
+		assert.Lessf(t, len(err.Error()), 1024,
+			"key %s: the error must not embed the oversized name", key.Name())
+	}
+}
+
+// TestEnumErrorCapsTheRejectedValue covers the OTHER half of the pair.
+//
+// TestThemeNameIsCappedBeforeItReachesAnErrorString pins `Name`, and both theme
+// validators run `validateEnum` on `Mode` FIRST -- before any cap -- so the very
+// hazard the `Name` guard was written for was open on the half beside it.
+// Registry.ApplyPartial validates BEFORE it measures the document against
+// MaxPrefsBytes, so nothing upstream bounds the value: `%q` expands an
+// unprintable byte roughly fourfold, and a 4 MiB mode built a ~16 MiB error
+// string in the RPC response AND in the log line.
+func TestEnumErrorCapsTheRejectedValue(t *testing.T) {
+	huge := strings.Repeat("\x00", 1024*1024)
+	for _, key := range []*settings.Key[ThemeValue]{KeyTheme, KeyTerminalTheme, KeySyntaxTheme} {
+		err := key.Validate(ThemeValue{Name: "default", Mode: huge})
+		require.Errorf(t, err, "key %s", key.Name())
+		assert.Containsf(t, err.Error(), "must be one of", "key %s", key.Name())
+		assert.Lessf(t, len(err.Error()), 1024,
+			"key %s: the error must not embed the oversized mode", key.Name())
+	}
+
+	// A value inside the cap is echoed WHOLE, so the reader can still see what
+	// was rejected -- the cap exists to bound the message, not to hide it.
+	err := KeyTheme.Validate(ThemeValue{Name: "default", Mode: "lite"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `"lite"`)
+
+	// The cut is marked, so a reader does not chase a difference that is not in
+	// the stored data.
+	cut := KeyTheme.Validate(ThemeValue{Name: "default", Mode: strings.Repeat("z", maxEchoedValue*2)})
+	require.Error(t, cut)
+	assert.Contains(t, cut.Error(), "...")
+}
+
+// TestTerminalThemeSentinelMatchesTheClient pins MatchUI against MATCH_UI in
+// frontend/src/styles/themes/types.ts. A disagreement would leave the client
+// writing a sentinel this hub refuses, or storing one it never resolves.
+func TestTerminalThemeSentinelMatchesTheClient(t *testing.T) {
+	assert.Equal(t, "match-ui", MatchUI)
+	assert.Equal(t, ThemeValue{Name: MatchUI, Mode: MatchUI}, KeyTerminalTheme.Default())
+}
+
+func TestThemeNameIsCapped(t *testing.T) {
+	// MaxPrefsBytes bounds the WHOLE document, so an uncapped field would
+	// refuse every later write to every other key.
+	require.NoError(t, KeyTheme.Validate(ThemeValue{Name: strings.Repeat("a", MaxThemeNameLength), Mode: "system"}))
+	require.ErrorContains(t,
+		KeyTheme.Validate(ThemeValue{Name: strings.Repeat("a", MaxThemeNameLength+1), Mode: "system"}),
+		"too long")
 }
 
 // The refusal reports the CLEANED FORM rather than a list of causes.
@@ -131,7 +306,7 @@ func TestFontFamilyRefusesEveryFoldedWhitespace(t *testing.T) {
 
 // The per-name BYTE cap runs before either %q verb.
 //
-// The list cap bounds how MANY names an account holds and says nothing about
+// The list cap limits how MANY names an account holds and says nothing about
 // how large one is, so one 4 MiB name -- the hub's whole request limit --
 // reached `fmt.Errorf("invalid font name %q", name)` and became a multi-megabyte
 // error string in an uncapped Connect response and in a log line. %q expands

@@ -8,7 +8,7 @@ import * as workerRpc from '~/api/workerRpc'
 import { showWarnToast } from '~/components/common/Toast'
 import { SectionType } from '~/generated/leapmux/v1/section_pb'
 import { appendPosition, mid } from '~/lib/lexorank'
-import { sanitizeName } from '~/lib/validate'
+import { cleanName } from '~/lib/validate'
 import { isWorkspaceSection } from './sectionUtils'
 
 export interface SectionGroup {
@@ -163,12 +163,20 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
 
   const commitRename = async () => {
     const id = renamingWorkspaceId()
-    // Send the CLEANED title, not the raw one: the hub applies this rule to
-    // whatever arrives, so the raw text left the sidebar showing one name
+    // Send the CLEANED and CUT title, not the raw one: the hub applies this rule
+    // to whatever arrives, so the raw text left the sidebar showing one name
     // while the hub stored another until the next refresh overwrote it. An
     // empty result means nothing survived the clean, which is the same answer
     // an empty input gets.
-    const title = sanitizeName(renameValue()).value
+    //
+    // `cleanName`, not `sanitizeName`. The two differ on LENGTH: `sanitizeName`
+    // REPORTS an over-limit title in its `error` and still returns the full
+    // over-limit value, so reading `.value` alone forwarded a title the hub then
+    // refused -- the user got a generic "Failed to rename workspace" for a
+    // condition the client had already computed. `cleanName` cuts to the same
+    // limit the hub enforces and never refuses, which is what the sibling
+    // `renameTab` uses for exactly this reason.
+    const title = cleanName(renameValue())
     if (!id || !title) {
       cancelRename()
       return

@@ -30,9 +30,47 @@ export type TerminalRendererPreference = 'auto' | 'webgl' | 'canvas'
  * Dual-tier keys override the matching account setting from
  * UserService; browser-only keys have no account half.
  */
+/**
+ * The stored shape of one appearance preference, as it sits in localStorage.
+ *
+ * Every field is optional and every field is a bare `string`, because this is
+ * UNTRUSTED: it is whatever a previous build, or a hand-edited storage entry,
+ * left behind. `parseThemeValue` / `parseTerminalThemeValue` in `~/lib/themeStore`
+ * validate it into the `ThemeValue` / `TerminalThemeValue` the app actually
+ * uses, so this type deliberately is NOT those -- naming it separately is what
+ * keeps a validated value and a stored one from being confused.
+ *
+ * Stated once because all three appearance surfaces store the same document; it
+ * was written out inline three times, so a fourth field had three places to be
+ * added and two of them could be forgotten.
+ */
+export interface StoredThemeDocument {
+  name?: string
+  mode?: string
+  variant?: { light?: string, dark?: string }
+}
+
 export interface BrowserPreferences {
-  theme?: string
-  terminalTheme?: string
+  /**
+   * Whole-object browser override of the account `theme` tier
+   * ({name, mode}). Absent means "use the account value". The palette name and
+   * its light/dark mode override together because they are one appearance
+   * choice, presented by one control under one scope chip. `variant` pins which
+   * look of that palette each polarity wears; see ~/styles/themes/types.ts.
+   */
+  theme?: StoredThemeDocument
+  /**
+   * Whole-object browser override of the account `terminal_theme` tier
+   * ({name, mode}). The `match-ui` sentinel fills both halves or neither; see
+   * ~/styles/themes/types.ts.
+   */
+  terminalTheme?: StoredThemeDocument
+  /**
+   * Whole-object browser override of the account `syntax_theme` tier
+   * ({name, mode}). Same shape and same `match-ui` sentinel as
+   * {@link terminalTheme}.
+   */
+  syntaxTheme?: StoredThemeDocument
   diffView?: string
   turnEndSound?: string
   turnEndSoundVolume?: number
@@ -155,7 +193,7 @@ export const DYNAMIC_KEY_TTLS: ReadonlyArray<{ prefix: string, ttlMs: number }> 
   { prefix: PREFIX_FILES_SORT_ORDER, ttlMs: 7 * DAY_MS },
   // Measured chat-row heights (see chatRowHeightPersistence). A warm-start
   // cache: stale entries are harmless (each row's key digest must match its
-  // live heightKey to hydrate), so the TTL only bounds storage growth.
+  // live heightKey to hydrate), so the TTL only limits storage growth.
   { prefix: PREFIX_CHAT_ROW_HEIGHTS, ttlMs: 7 * DAY_MS },
   // The workspace each user was last on, keyed by user id (see
   // activeWorkspaceKey). Templated rather than a singleton so two accounts
@@ -170,7 +208,7 @@ export const DYNAMIC_KEY_TTLS: ReadonlyArray<{ prefix: string, ttlMs: number }> 
  * Templated sessionStorage keys (matched by `startsWith` against the
  * prefix). sessionStorage normally clears on tab close, but PWAs and
  * "restore tabs on restart" can keep it alive across sessions —
- * capping retention bounds the key set without depending on tab-close
+ * capping retention limits the key set without depending on tab-close
  * cleanup.
  *
  * Per-workspace UI state (active tab, tile active tabs, focused tile,
@@ -203,7 +241,7 @@ export const SESSION_DYNAMIC_KEY_TTLS: ReadonlyArray<{ prefix: string, ttlMs: nu
  *   NOT here: that one has to survive a tab close, so it lives in
  *   localStorage under `PREFIX_ACTIVE_WORKSPACE`.
  * - `KEY_CLIENT_ID`: per-session CRDT client identity. Long-lived so a
- *   refresh keeps the same id; the TTL bounds retention if the tab
+ *   refresh keeps the same id; the TTL limits retention if the tab
  *   survives for weeks without being closed.
  * - `KEY_CLI_PATH_CHECKED`: one-shot gate for the macOS "install
  *   leapmux on PATH" prompt. At most once per session; the TTL is a
@@ -358,6 +396,71 @@ export function localStorageClearForTests(): void {
 /** Load the consolidated browser preferences from localStorage. */
 export function loadBrowserPrefs(): BrowserPreferences {
   return localStorageGet<BrowserPreferences>(KEY_BROWSER_PREFS) ?? {}
+}
+
+/** Any value a browser preference field can hold. */
+export type BrowserPrefValue = NonNullable<BrowserPreferences[keyof BrowserPreferences]>
+
+/**
+ * The document every browser-preference write shares while a batch is open, or
+ * null while each write owns its own read and write.
+ */
+let batchedPrefs: BrowserPreferences | null = null
+
+/**
+ * Update a single field in the consolidated browser preferences.
+ *
+ * `undefined` DELETES the field, which is what "use the account default" means
+ * on disk -- storing a null instead would read back as a device override that
+ * pins the value to nothing.
+ *
+ * This lives beside the key and the interface rather than in
+ * PreferencesContext, because one writer that no provider owns is what lets the
+ * desktop launcher -- which renders outside every provider -- write the same
+ * device tier the Preferences dialog writes, in the same shape.
+ */
+export function updateBrowserPref(key: keyof BrowserPreferences, value: BrowserPrefValue | undefined): void {
+  const prefs = batchedPrefs ?? loadBrowserPrefs()
+  if (value === undefined) {
+    delete prefs[key]
+  }
+  else {
+    (prefs as Record<string, unknown>)[key] = value
+  }
+  // The batch owns the write while one is open. Storing here as well would
+  // defeat it and publish a half-applied document to the other tabs.
+  if (batchedPrefs === null)
+    localStorageSet(KEY_BROWSER_PREFS, prefs)
+}
+
+/**
+ * Run `body` with every browser-preference write applied to ONE document,
+ * stored once at the end.
+ *
+ * "Reset all browser overrides" clears seventeen fields, and each one is
+ * otherwise a full read, parse, serialize and write of the whole document. One
+ * write is also one `storage` event for the other tabs rather than seventeen.
+ *
+ * Both guards are required. The `finally` closes the batch even when a write
+ * inside `body` throws; without it every later write in the page would
+ * accumulate into a document that nothing stores. The re-entrancy check holds
+ * the same invariant from the other side: a nested call must not adopt a second
+ * document and store it over the outer one.
+ */
+export function batchBrowserPrefWrites(body: () => void): void {
+  if (batchedPrefs !== null) {
+    body()
+    return
+  }
+  batchedPrefs = loadBrowserPrefs()
+  try {
+    body()
+  }
+  finally {
+    const written = batchedPrefs
+    batchedPrefs = null
+    localStorageSet(KEY_BROWSER_PREFS, written)
+  }
 }
 
 // ---------------------------------------------------------------------------

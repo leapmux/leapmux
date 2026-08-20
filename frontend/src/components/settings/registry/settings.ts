@@ -2,6 +2,7 @@ import type { CategoryId, SentinelShape, SettingBinding, SettingControl, Setting
 import type { PreferencesState } from '~/context/PreferencesContext'
 import { createLogger } from '~/lib/logger'
 import { isDesktopApp, isSoloMode } from '~/lib/systemInfo'
+import { themeLabel, THEMES } from '~/styles/themes'
 import { browserToggle, dualFontHalf, dualScalar } from './bindings'
 import { requestTerminalOsNotifications } from './terminalNotifications'
 
@@ -137,10 +138,14 @@ export const browserSettings: BrowserSettingDecl[] = [
     id: 'appearance.theme',
     protoKey: 'theme',
     label: 'Theme',
-    help: 'Overall light and dark palette.',
-    keywords: ['dark', 'light', 'palette'],
+    help: 'Color palette, and whether it follows the system or is pinned to light or dark.',
+    // The palette NAMES are searchable too, so a user who knows what they want
+    // can type it. The list comes from the catalogue rather than being restated,
+    // so a palette added there is findable here with no second edit.
+    keywords: ['dark', 'light', 'palette', 'color scheme', 'appearance', ...THEMES.map(t => t.label)],
     scope: 'dual',
-    optionLabels: { dark: 'Dark', light: 'Light', system: 'System' },
+    // No `optionLabels`: the wire field is a custom editor, not an enum, and
+    // the palette list is the client's own (see ~/styles/themes).
     sentinel: 'nullable',
     bind: prefs => dualScalar(prefs.dual.theme),
   },
@@ -148,11 +153,27 @@ export const browserSettings: BrowserSettingDecl[] = [
     id: 'appearance.terminalTheme',
     protoKey: 'terminal_theme',
     label: 'Terminal theme',
-    help: 'Color scheme for terminal tabs.',
+    help: 'Colors for terminal tabs. Follows the app until you give it a palette of its own.',
+    // `themeLabel(t, 'terminal')`, not the plain label: the surface labels
+    // exist so Dimidium stays findable under a theme called Default, and the
+    // row's own menu shows exactly that word. Indexing the plain label meant a
+    // user who typed what the menu showed got no hit on this row.
+    keywords: ['terminal', 'ansi', 'palette', 'match ui', ...THEMES.map(t => themeLabel(t, 'terminal'))],
     scope: 'dual',
-    optionLabels: { 'match-ui': 'Match UI', 'dark': 'Dark', 'light': 'Light' },
+    // No `optionLabels`: a custom editor, like `theme` above.
     sentinel: 'nullable',
     bind: prefs => dualScalar(prefs.dual.terminalTheme),
+  },
+  {
+    id: 'appearance.syntaxTheme',
+    protoKey: 'syntax_theme',
+    label: 'Syntax theme',
+    help: 'Colors for highlighted code. Follows the app until you give it a palette of its own. Changing it re-highlights, so code repaints as you scroll.',
+    // `themeLabel(t, 'syntax')`, for the reason the terminal row above gives.
+    keywords: ['syntax', 'highlight', 'code', 'palette', 'match ui', ...THEMES.map(t => themeLabel(t, 'syntax'))],
+    scope: 'dual',
+    sentinel: 'nullable',
+    bind: prefs => dualScalar(prefs.dual.syntaxTheme),
   },
   {
     id: 'appearance.diffView',

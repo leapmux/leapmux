@@ -136,9 +136,9 @@ export function createWorkerDialogContext(options: WorkerDialogContextOptions = 
   // Fetch only the selected worker's system info eagerly — that's what
   // DirectorySelector / GitOptions need for `homeDir` on the first paint.
   // Info for the rest of the online fleet is prefetched lazily by
-  // `prefetchOnlineWorkerInfos` (wired to the WorkerSelector's first
-  // focus/pointerdown) so a 10-worker fleet doesn't pay 10 E2EE handshakes
-  // at dialog open just to populate dropdown labels the user may never see.
+  // `prefetchOnlineWorkerInfos` (wired to the WorkerSelector menu's `onOpen`)
+  // so a 10-worker fleet doesn't pay 10 E2EE handshakes at dialog open just to
+  // populate menu labels the user may never see.
   //
   // Gate on `disposed` so a dialog closed during the E2EE handshake
   // doesn't keep the round-trip alive past dispose. fetchWorkerInfo is
@@ -155,7 +155,7 @@ export function createWorkerDialogContext(options: WorkerDialogContextOptions = 
   // out for this id" set lives at module scope in `workerInfo.store`,
   // so a second or third dialog opened during the same session reuses
   // the prior dialog's work instead of re-fanning the whole online
-  // fleet on every WorkerSelector focus. Per-worker freshness is still
+  // fleet every time the WorkerSelector menu opens. Per-worker freshness is still
   // enforced inside `fetchWorkerInfo` (FRESH_TTL_MS), so a stale entry
   // can refresh independently of this gate.
   const prefetchOnlineWorkerInfos = () => {

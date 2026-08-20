@@ -31,4 +31,26 @@ describe('workspaceCenterFallback', () => {
 
     expect(container.innerHTML).toBe('')
   })
+
+  // A user with no workspace yet is looking at their first screen of the app,
+  // so the theme is offered here as well as in Preferences. Not restricted to solo
+  // mode: this component is mode-agnostic by design.
+  it('offers the theme picker beside the create-workspace affordance', () => {
+    render(() => (
+      <WorkspaceCenterFallback noWorkspace bootstrapTimedOut={false} onNewWorkspace={() => {}} />
+    ))
+
+    expect(screen.getByTestId('theme-chooser')).toBeInTheDocument()
+    expect(screen.getByRole('radiogroup', { name: 'Theme mode' })).toBeInTheDocument()
+  })
+
+  it('keeps the theme picker out of the bootstrap-failure state', () => {
+    // That arm reports an error and offers a reload. Offering a palette there
+    // would read as a remedy for a failure it has nothing to do with.
+    render(() => (
+      <WorkspaceCenterFallback noWorkspace={false} bootstrapTimedOut onNewWorkspace={() => {}} />
+    ))
+
+    expect(screen.queryByTestId('theme-chooser')).toBeNull()
+  })
 })

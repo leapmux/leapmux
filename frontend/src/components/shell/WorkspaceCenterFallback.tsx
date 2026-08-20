@@ -3,7 +3,10 @@ import Plus from 'lucide-solid/icons/plus'
 import { Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { StartupErrorBody } from '~/components/common/StartupPanel'
+import { ThemeChooser } from '~/components/common/ThemeChooser'
+import { useThemeChooser } from '~/components/common/useThemeChooser'
 import { getShortcutHintsText } from '~/lib/shortcuts/display'
+import { themeStore } from '~/lib/themeStore'
 import * as styles from './AppShell.css'
 
 interface WorkspaceCenterFallbackProps {
@@ -30,6 +33,7 @@ interface WorkspaceCenterFallbackProps {
  * render the identical states instead of a blank panel.
  */
 export const WorkspaceCenterFallback: Component<WorkspaceCenterFallbackProps> = (props) => {
+  const themeBinding = useThemeChooser()
   return (
     <Show
       when={props.noWorkspace}
@@ -61,6 +65,13 @@ export const WorkspaceCenterFallback: Component<WorkspaceCenterFallbackProps> = 
             </Show>
           </span>
         </button>
+        {/*
+          A user with no workspace yet is looking at their first screen of the
+          app, so the theme is offered here as well as in Preferences. Not
+          restricted to solo mode: this fallback is mode-agnostic by design, and a
+          hub or web user's first impression is the same screen.
+        */}
+        <ThemeChooser value={themeBinding.value()} onChange={themeBinding.onChange} align="center" systemMode={themeStore.systemMode()} />
       </div>
     </Show>
   )

@@ -168,7 +168,6 @@ declare global {
   interface Window {
     __TAURI_INTERNALS__?: unknown
     __leapmux_disconnectDesktop?: () => void
-    __leapmux_setTheme?: (theme: 'light' | 'dark' | 'system') => void
   }
 }
 

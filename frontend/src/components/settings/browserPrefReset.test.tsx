@@ -46,11 +46,11 @@ describe('browserPrefReset', () => {
   it('returns every browser override to its sentinel default through the real context', () => {
     const ctx = captureContext()
     // One override per sentinel shape, plus a singleton-key override.
-    ctx.get().dual.theme.setBrowser('dark') // nullable
+    ctx.get().dual.theme.setBrowser({ name: 'nord', mode: 'dark' }) // nullable
     ctx.get().setExpandAgentThoughts(false) // default-on opt-out
     ctx.get().setShowHiddenMessages(true) // default-off opt-in
     ctx.get().setPreferredEditorId('zed') // nullable, own key
-    expect(loadBrowserPrefs().theme).toBe('dark')
+    expect(loadBrowserPrefs().theme).toEqual({ name: 'nord', mode: 'dark' })
 
     for (const action of buildBrowserReset(ctx.get()))
       action.reset()
@@ -63,7 +63,7 @@ describe('browserPrefReset', () => {
     expect(localStorageGet<string>(KEY_PREFERRED_EDITOR)).toBeUndefined()
 
     // The signals fall back to their defaults.
-    expect(ctx.get().theme()).toBe('system')
+    expect(ctx.get().theme()).toEqual({ name: 'default', mode: 'system' })
     expect(ctx.get().expandAgentThoughts()).toBe(true)
     expect(ctx.get().showHiddenMessages()).toBe(false)
     expect(ctx.get().preferredEditorId()).toBeUndefined()

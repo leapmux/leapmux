@@ -417,10 +417,15 @@ func TestBroadcastTerminalSignal_CleansTheOSCNotification(t *testing.T) {
 }
 
 // The two rules answer a NEWLINE differently, and each answer is deliberate.
-// The tab title folds it to a space, so a two-line paste does not run its two
-// lines together in a one-line label. The notification body strips it with the
-// other control characters, so "unreadable" has one definition rather than
-// two.
+// The tab title FOLDS it to a space, because a tab label is one line and the
+// two words must not run together. The notification body KEEPS it, because a
+// body is prose the process wrote and both macOS and the freedesktop spec
+// render a body newline as a line break -- deleting it glued "failed" and
+// "3 errors" into one word.
+//
+// Neither DELETES it. A reader sees the space a line break makes, so it is not
+// what "unreadable" describes; StripUnreadable asks the whitespace question
+// before the control question for exactly this reason.
 func TestBroadcastTerminalSignal_HandlesANewlineInEachField(t *testing.T) {
 	t.Parallel()
 
@@ -443,6 +448,89 @@ func TestBroadcastTerminalSignal_HandlesANewlineInEachField(t *testing.T) {
 
 	notes := terminalNotificationsBroadcast(w, terminalID)
 	require.Len(t, notes, 1)
-	assert.Equal(t, "onetwo", notes[0].GetBody(),
-		"the body STRIPS a newline with the other control characters")
+	assert.Equal(t, "one\ntwo", notes[0].GetBody(),
+		"the body KEEPS a newline, which the OS renders as a line break")
+}
+
+// The word glue this rule exists to stop, in the shape a build script writes.
+func TestBroadcastTerminalSignalKeepsTheLineBreakInABody(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	const terminalID = "term-osc-multiline-body"
+	w := registerTerminalNotifyWatch(t, svc, terminalID)
+
+	// `printf '\e]777;notify;Build;failed\n3 errors\e\\'`
+	svc.broadcastTerminalSignal(terminalID, terminal.Signal{
+		Kind:  terminal.SignalNotification,
+		Title: "Build",
+		Body:  "failed\n3 errors",
+	})
+
+	notes := terminalNotificationsBroadcast(w, terminalID)
+	require.Len(t, notes, 1)
+	assert.Equal(t, "failed\n3 errors", notes[0].GetBody(),
+		"deleting the newline read as one word: `failed3 errors`")
+
+	// A NON-whitespace control still goes, so an escape sequence and a
+	// bidirectional override cannot reach the notification.
+	svc.broadcastTerminalSignal(terminalID, terminal.Signal{
+		Kind:  terminal.SignalNotification,
+		Title: "Build",
+		Body:  "safe\x1b[31m\u202ereversed",
+	})
+	notes = terminalNotificationsBroadcast(w, terminalID)
+	require.Len(t, notes, 2)
+	assert.Equal(t, "safe[31mreversed", notes[1].GetBody(),
+		"the ESC and the right-to-left override are removed")
+}
+
+// A notification that carries no text at all is dropped, not broadcast.
+//
+// The OSC 9 parser emits an empty title for a bare `ESC ] 9 ; ST` with no
+// cleaning involved, so the guard tests both fields AFTER the clean rather than
+// testing whether the clean emptied them -- a "did the clean empty it?" test
+// would refuse the invisible-character form and admit the empty one.
+func TestBroadcastTerminalSignalDropsATextFreeNotification(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		signal terminal.Signal
+	}{
+		{"both fields absent", terminal.Signal{Kind: terminal.SignalNotification}},
+		{"both clean to nothing", terminal.Signal{
+			Kind:  terminal.SignalNotification,
+			Title: "\u200b\u202e",
+			Body:  "\x00\u200b",
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, _, _ := setupTestService(t)
+			const terminalID = "term-osc-empty"
+			w := registerTerminalNotifyWatch(t, svc, terminalID)
+
+			svc.broadcastTerminalSignal(terminalID, tc.signal)
+
+			assert.Empty(t, terminalNotificationsBroadcast(w, terminalID),
+				"a notification with no text says only what the bell says")
+		})
+	}
+}
+
+// A notification with a BODY and no title still reaches the browser: the
+// browser supplies "Terminal" for the missing title, and the body is the part
+// the reader acts on.
+func TestBroadcastTerminalSignalKeepsABodyWithoutATitle(t *testing.T) {
+	svc, _, _ := setupTestService(t)
+	const terminalID = "term-osc-body-only"
+	w := registerTerminalNotifyWatch(t, svc, terminalID)
+
+	svc.broadcastTerminalSignal(terminalID, terminal.Signal{
+		Kind: terminal.SignalNotification,
+		Body: "3 tests failed",
+	})
+
+	got := terminalNotificationsBroadcast(w, terminalID)
+	require.Len(t, got, 1)
+	assert.Empty(t, got[0].GetTitle())
+	assert.Equal(t, "3 tests failed", got[0].GetBody())
 }

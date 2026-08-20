@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
 import { KEY_BROWSER_PREFS, KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN, loadBrowserPrefs, localStorageClearForTests, localStorageGet, localStorageSet } from '~/lib/browserStorage'
 import { buildFontFamily } from '~/lib/fontStack'
+import { applyTheme, themeStore } from '~/lib/themeStore'
 import { goldenAccountSchema } from '~/test-support/accountSchema'
 
 // Mock the user settings API: ListUserSettings returns no values (every
@@ -59,8 +60,9 @@ beforeEach(() => {
   listUserSettings.mockResolvedValue({ descriptors: [], values: [] })
   updateUserSetting.mockResolvedValue({})
   resetUserSetting.mockResolvedValue({})
-  // Clear the global theme setter that PreferencesContext.setBrowserTheme calls.
-  ;(window as unknown as { __leapmux_setTheme?: (v: string) => void }).__leapmux_setTheme = undefined
+  // Return the live theme store to its default, so one case's device write
+  // cannot decide what the next case starts from.
+  applyTheme({ name: 'default', mode: 'system' })
 })
 
 afterEach(() => {
@@ -68,34 +70,39 @@ afterEach(() => {
 })
 
 describe('preferencesContext — browser-level theme override', () => {
+  const DARK_NORD = { name: 'nord', mode: 'dark' } as const
+  const DEFAULTS = { name: 'default', mode: 'system' } as const
+
   it('starts with no browser-level override when localStorage is empty', () => {
     const ctx = captureContext()
     expect(ctx.get().dual.theme.browser()).toBeNull()
     // Theme should resolve to the hardcoded account default.
-    expect(ctx.get().theme()).toBe('system')
+    expect(ctx.get().theme()).toEqual(DEFAULTS)
   })
 
-  it('persists a browser-level dark theme to localStorage', () => {
+  it('persists a browser-level theme to localStorage', () => {
     const ctx = captureContext()
-    ctx.get().dual.theme.setBrowser('dark')
+    ctx.get().dual.theme.setBrowser({ ...DARK_NORD })
 
-    expect(ctx.get().dual.theme.browser()).toBe('dark')
-    expect(ctx.get().theme()).toBe('dark')
-    expect(loadBrowserPrefs().theme).toBe('dark')
+    expect(ctx.get().dual.theme.browser()).toEqual(DARK_NORD)
+    expect(ctx.get().theme()).toEqual(DARK_NORD)
+    expect(loadBrowserPrefs().theme).toEqual(DARK_NORD)
   })
 
-  it('persists a browser-level light theme to localStorage', () => {
+  it('persists the palette and the mode together, as one document', () => {
+    // The two halves are one override unit. Storing them apart would let a
+    // device pin the palette while the account still decided the mode, which
+    // no control in the app can express.
     const ctx = captureContext()
-    ctx.get().dual.theme.setBrowser('light')
+    ctx.get().dual.theme.setBrowser({ name: 'catppuccin', mode: 'light' })
 
-    expect(ctx.get().dual.theme.browser()).toBe('light')
-    expect(loadBrowserPrefs().theme).toBe('light')
+    expect(loadBrowserPrefs().theme).toEqual({ name: 'catppuccin', mode: 'light' })
   })
 
   it('clearing the browser theme removes the key from the consolidated prefs blob', () => {
     const ctx = captureContext()
-    ctx.get().dual.theme.setBrowser('dark')
-    expect(loadBrowserPrefs().theme).toBe('dark')
+    ctx.get().dual.theme.setBrowser({ ...DARK_NORD })
+    expect(loadBrowserPrefs().theme).toEqual(DARK_NORD)
 
     ctx.get().dual.theme.setBrowser(null)
     expect(ctx.get().dual.theme.browser()).toBeNull()
@@ -105,32 +112,98 @@ describe('preferencesContext — browser-level theme override', () => {
 
   it('falls back to account default once the browser override is cleared', () => {
     const ctx = captureContext()
-    ctx.get().dual.theme.setBrowser('dark')
-    expect(ctx.get().theme()).toBe('dark')
+    ctx.get().dual.theme.setBrowser({ ...DARK_NORD })
+    expect(ctx.get().theme()).toEqual(DARK_NORD)
 
     ctx.get().dual.theme.setBrowser(null)
-    expect(ctx.get().theme()).toBe('system')
+    expect(ctx.get().theme()).toEqual(DEFAULTS)
   })
 
   it('hydrates the browser theme from localStorage on provider mount (simulated reload)', () => {
     // Pre-seed localStorage with a stored preference and mount fresh.
-    localStorageSet(KEY_BROWSER_PREFS, { theme: 'dark' })
+    localStorageSet(KEY_BROWSER_PREFS, { theme: { ...DARK_NORD } })
     const ctx = captureContext()
-    expect(ctx.get().dual.theme.browser()).toBe('dark')
-    expect(ctx.get().theme()).toBe('dark')
+    expect(ctx.get().dual.theme.browser()).toEqual(DARK_NORD)
+    expect(ctx.get().theme()).toEqual(DARK_NORD)
   })
 
-  it('notifies the global theme setter when set', () => {
-    const setter = vi.fn()
-    ;(window as unknown as { __leapmux_setTheme: (v: string) => void }).__leapmux_setTheme = setter
-
+  it('degrades a stored theme per FIELD, keeping the half that is still valid', () => {
+    // A palette written by a NEWER build is the ordinary way this happens. The
+    // mode beside it is untouched and must survive, or downgrading costs the
+    // user their dark mode as well as their palette.
+    localStorageSet(KEY_BROWSER_PREFS, { theme: { name: 'not-a-theme-in-this-build', mode: 'dark' } })
     const ctx = captureContext()
-    ctx.get().dual.theme.setBrowser('dark')
-    expect(setter).toHaveBeenCalledWith('dark')
+    expect(ctx.get().theme()).toEqual({ name: 'default', mode: 'dark' })
+  })
+
+  it('treats a non-document stored theme as no override at all', () => {
+    // The shape `theme` held before it carried a palette name. It must read as
+    // "nothing stored here", so the account tier can still win -- not as an
+    // override that pins the theme to a default nobody chose.
+    localStorageSet(KEY_BROWSER_PREFS, { theme: 'dark' as unknown as { name: string } })
+    const ctx = captureContext()
+    expect(ctx.get().dual.theme.browser()).toBeNull()
+    expect(ctx.get().theme()).toEqual(DEFAULTS)
+  })
+
+  it('paints the resolved theme as soon as a device write lands', () => {
+    // ~/lib/themeStore owns the live palette, and a device-tier write must
+    // reach it at once rather than waiting for the next render pass.
+    const ctx = captureContext()
+    ctx.get().dual.theme.setBrowser({ ...DARK_NORD })
+    expect(themeStore.theme()).toEqual(DARK_NORD)
+    expect(themeStore.resolvedMode()).toBe('dark')
 
     ctx.get().dual.theme.setBrowser(null)
-    // null should fall back to account default ("system" by default).
-    expect(setter).toHaveBeenLastCalledWith('system')
+    // Clearing falls back to the account default, which is "system".
+    expect(themeStore.theme()).toEqual(DEFAULTS)
+  })
+})
+
+// The terminal theme is a SECOND appearance choice. It defaults to following
+// the UI, which is what makes the first-impression pickers move the terminal
+// too without writing to this key at all.
+describe('preferencesContext — terminal theme override', () => {
+  const MATCH_BOTH = { name: 'match-ui', mode: 'match-ui' } as const
+
+  it('defaults to following the UI in both halves', () => {
+    const ctx = captureContext()
+    expect(ctx.get().terminalTheme()).toEqual(MATCH_BOTH)
+  })
+
+  it('stores a palette and a mode that differ from the UI', () => {
+    const ctx = captureContext()
+    ctx.get().dual.theme.setBrowser({ name: 'catppuccin', mode: 'light' })
+    ctx.get().dual.terminalTheme.setBrowser({ name: 'nord', mode: 'dark' })
+
+    expect(ctx.get().theme()).toEqual({ name: 'catppuccin', mode: 'light' })
+    expect(ctx.get().terminalTheme()).toEqual({ name: 'nord', mode: 'dark' })
+    expect(loadBrowserPrefs().terminalTheme).toEqual({ name: 'nord', mode: 'dark' })
+  })
+
+  it('reads a stored mixed document back as one decision', () => {
+    // The two halves are ONE choice -- one entry in one palette list -- so a
+    // document carrying the sentinel in one half only is repaired on the way
+    // in. The name decides, because it is the half a user picks deliberately.
+    localStorageSet(KEY_BROWSER_PREFS, { terminalTheme: { name: 'gruvbox', mode: 'match-ui' } })
+    expect(captureContext().get().terminalTheme()).toEqual({ name: 'gruvbox', mode: 'system' })
+
+    localStorageSet(KEY_BROWSER_PREFS, { terminalTheme: { name: 'match-ui', mode: 'dark' } })
+    expect(captureContext().get().terminalTheme()).toEqual(MATCH_BOTH)
+  })
+
+  it('degrades an unresolvable palette to match-ui, not to one nobody chose', () => {
+    localStorageSet(KEY_BROWSER_PREFS, { terminalTheme: { name: 'from-the-future', mode: 'sepia' } })
+    const ctx = captureContext()
+    expect(ctx.get().terminalTheme()).toEqual(MATCH_BOTH)
+  })
+
+  it('treats the pre-split scalar shape as no override at all', () => {
+    // `terminal_theme` used to be the bare string 'match-ui' | 'dark' | 'light'.
+    localStorageSet(KEY_BROWSER_PREFS, { terminalTheme: 'dark' as unknown as { name: string } })
+    const ctx = captureContext()
+    expect(ctx.get().dual.terminalTheme.browser()).toBeNull()
+    expect(ctx.get().terminalTheme()).toEqual(MATCH_BOTH)
   })
 })
 
@@ -178,24 +251,24 @@ describe('preferencesContext — browser-level diff view override', () => {
 describe('preferencesContext — multiple prefs in one blob', () => {
   it('writes multiple browser overrides to a single consolidated key', () => {
     const ctx = captureContext()
-    ctx.get().dual.theme.setBrowser('dark')
+    ctx.get().dual.turnEndSound.setBrowser('none')
     ctx.get().dual.diffView.setBrowser('split')
     ctx.get().dual.turnEndSound.setBrowser('none')
 
     const prefs = loadBrowserPrefs()
-    expect(prefs.theme).toBe('dark')
+    expect(prefs.turnEndSound).toBe('none')
     expect(prefs.diffView).toBe('split')
     expect(prefs.turnEndSound).toBe('none')
   })
 
   it('clearing one pref does not clear the others', () => {
     const ctx = captureContext()
-    ctx.get().dual.theme.setBrowser('dark')
+    ctx.get().dual.turnEndSound.setBrowser('none')
     ctx.get().dual.diffView.setBrowser('split')
 
     ctx.get().dual.diffView.setBrowser(null)
     const prefs = loadBrowserPrefs()
-    expect(prefs.theme).toBe('dark')
+    expect(prefs.turnEndSound).toBe('none')
     expect('diffView' in prefs).toBe(false)
   })
 })
@@ -237,14 +310,14 @@ describe('preferencesContext — revealAfterDownload (default-on)', () => {
 
   it('does not interact with other persisted prefs in the same blob', () => {
     const ctx = captureContext()
-    ctx.get().dual.theme.setBrowser('dark')
+    ctx.get().dual.turnEndSound.setBrowser('none')
     ctx.get().setRevealAfterDownload(false)
-    expect(loadBrowserPrefs().theme).toBe('dark')
+    expect(loadBrowserPrefs().turnEndSound).toBe('none')
     expect(loadBrowserPrefs().revealAfterDownload).toBe(false)
 
-    // Opting back in must not clobber the theme.
+    // Opting back in must not clobber the turn-end sound.
     ctx.get().setRevealAfterDownload(true)
-    expect(loadBrowserPrefs().theme).toBe('dark')
+    expect(loadBrowserPrefs().turnEndSound).toBe('none')
     expect('revealAfterDownload' in loadBrowserPrefs()).toBe(false)
   })
 
@@ -284,7 +357,7 @@ describe('preferencesContext — reload from API', () => {
     // without throwing and signal values should remain at defaults.
     const ctx = captureContext()
     await waitFor(() => {
-      expect(ctx.get().theme()).toBe('system')
+      expect(ctx.get().turnEndSound()).toBe('ding-dong')
     })
   })
 
@@ -292,8 +365,8 @@ describe('preferencesContext — reload from API', () => {
     listUserSettings.mockResolvedValue({
       descriptors: [],
       values: [
-        settingValue('theme', '"dark"'),
-        settingValue('terminal_theme', '"light"'),
+        settingValue('theme', '{"name":"nord","mode":"dark"}'),
+        settingValue('turn_end_sound', '"none"'),
         settingValue('ui_fonts', '{"enabled":true,"fonts":["Inter"]}'),
         settingValue('mono_fonts', '{"enabled":false,"fonts":[]}'),
         settingValue('diff_view', '"split"'),
@@ -305,9 +378,9 @@ describe('preferencesContext — reload from API', () => {
     })
     const ctx = captureContext()
     await waitFor(() => {
-      expect(ctx.get().dual.theme.account()).toBe('dark')
+      expect(ctx.get().dual.theme.account()).toEqual({ name: 'nord', mode: 'dark' })
     })
-    expect(ctx.get().dual.terminalTheme.account()).toBe('light')
+    expect(ctx.get().dual.turnEndSound.account()).toBe('none')
     expect(ctx.get().dual.uiFonts.account()).toEqual({ enabled: true, fonts: ['Inter'] })
     expect(ctx.get().dual.monoFonts.account()).toEqual({ enabled: false, fonts: [] })
     expect(ctx.get().dual.diffView.account()).toBe('split')
@@ -316,17 +389,17 @@ describe('preferencesContext — reload from API', () => {
     expect(ctx.get().dual.debugLogging.account()).toBe(true)
     expect(ctx.get().customKeybindings()).toEqual([{ key: '$mod+k', command: 'chat.sendMessage' }])
     expect(ctx.get().accountCustomized().keybindings).toBe(true)
-    expect(ctx.get().accountCustomized().theme).toBe(false)
+    expect(ctx.get().accountCustomized().turn_end_sound).toBe(false)
   })
 
   it('keeps defaults for values whose effectiveJson is empty or malformed', async () => {
     listUserSettings.mockResolvedValue({
       descriptors: [],
-      values: [settingValue('theme', ''), settingValue('debug_logging', 'not-json{')],
+      values: [settingValue('turn_end_sound', ''), settingValue('debug_logging', 'not-json{')],
     })
     const ctx = captureContext()
     await waitFor(() => {
-      expect(ctx.get().dual.theme.account()).toBe('system')
+      expect(ctx.get().dual.turnEndSound.account()).toBe('ding-dong')
     })
     expect(ctx.get().dual.debugLogging.account()).toBe(false)
   })
@@ -334,13 +407,13 @@ describe('preferencesContext — reload from API', () => {
 
 describe('preferencesContext — per-key account writes', () => {
   it('writes the partial as JSON and applies the server effective value on success', async () => {
-    updateUserSetting.mockResolvedValue({ value: settingValue('theme', '"dark"', true) })
+    updateUserSetting.mockResolvedValue({ value: settingValue('turn_end_sound', '"none"', true) })
     const ctx = captureContext()
 
-    await expect(ctx.get().updateUserSetting('theme', 'dark')).resolves.toBeUndefined()
-    expect(updateUserSetting).toHaveBeenCalledWith({ key: 'theme', partialJson: '"dark"' })
-    await waitFor(() => expect(ctx.get().dual.theme.account()).toBe('dark'))
-    await waitFor(() => expect(ctx.get().accountCustomized().theme).toBe(true))
+    await expect(ctx.get().updateUserSetting('turn_end_sound', 'none')).resolves.toBeUndefined()
+    expect(updateUserSetting).toHaveBeenCalledWith({ key: 'turn_end_sound', partialJson: '"none"' })
+    await waitFor(() => expect(ctx.get().dual.turnEndSound.account()).toBe('none'))
+    await waitFor(() => expect(ctx.get().accountCustomized().turn_end_sound).toBe(true))
   })
 
   // The setter REJECTS rather than resolving false: SettingRow catches a
@@ -350,11 +423,11 @@ describe('preferencesContext — per-key account writes', () => {
     updateUserSetting.mockRejectedValue(new Error('network down'))
     const ctx = captureContext()
 
-    const pending = ctx.get().dual.theme.setAccount('dark')
+    const pending = ctx.get().dual.turnEndSound.setAccount('none')
     // The optimistic value shows immediately, then the rejection reverts it.
-    expect(ctx.get().dual.theme.account()).toBe('dark')
+    expect(ctx.get().dual.turnEndSound.account()).toBe('none')
     await expect(pending).rejects.toThrow(/network down|Failed to save/)
-    expect(ctx.get().dual.theme.account()).toBe('system')
+    expect(ctx.get().dual.turnEndSound.account()).toBe('ding-dong')
   })
 
   it('stringifies object partials and whole arrays verbatim', async () => {
@@ -387,24 +460,24 @@ describe('preferencesContext — per-key account writes', () => {
   it('resetUserSetting applies the returned default and rejects without changing the value', async () => {
     listUserSettings.mockResolvedValue({
       descriptors: [],
-      values: [settingValue('theme', '"dark"', true)],
+      values: [settingValue('turn_end_sound', '"none"', true)],
     })
-    resetUserSetting.mockResolvedValue({ value: settingValue('theme', '"system"', false) })
+    resetUserSetting.mockResolvedValue({ value: settingValue('turn_end_sound', '"ding-dong"', false) })
     const ctx = captureContext()
-    await waitFor(() => expect(ctx.get().dual.theme.account()).toBe('dark'))
+    await waitFor(() => expect(ctx.get().dual.turnEndSound.account()).toBe('none'))
 
-    await expect(ctx.get().resetUserSetting('theme')).resolves.toBeUndefined()
-    await waitFor(() => expect(ctx.get().dual.theme.account()).toBe('system'))
+    await expect(ctx.get().resetUserSetting('turn_end_sound')).resolves.toBeUndefined()
+    await waitFor(() => expect(ctx.get().dual.turnEndSound.account()).toBe('ding-dong'))
 
     listUserSettings.mockResolvedValue({
       descriptors: [],
-      values: [settingValue('theme', '"dark"', true)],
+      values: [settingValue('turn_end_sound', '"none"', true)],
     })
     resetUserSetting.mockRejectedValue(new Error('reset refused'))
     const failing = captureContext()
-    await waitFor(() => expect(failing.get().dual.theme.account()).toBe('dark'))
-    await expect(failing.get().resetUserSetting('theme')).rejects.toThrow(/reset refused|Failed to reset/)
-    expect(failing.get().dual.theme.account()).toBe('dark')
+    await waitFor(() => expect(failing.get().dual.turnEndSound.account()).toBe('none'))
+    await expect(failing.get().resetUserSetting('turn_end_sound')).rejects.toThrow(/reset refused|Failed to reset/)
+    expect(failing.get().dual.turnEndSound.account()).toBe('none')
   })
 })
 
@@ -466,17 +539,17 @@ describe('preferencesContext — font tiers', () => {
 // editable by hand, survives a downgrade, and outlives the value set it was
 // written against.
 describe('preferencesContext — a stored browser value passes the same parse', () => {
-  it('refuses a browser theme outside the allowed set and keeps the account value', async () => {
-    localStorageSet(KEY_BROWSER_PREFS, { theme: 'chartreuse' })
+  it('refuses a browser value outside the allowed set and keeps the account value', async () => {
+    localStorageSet(KEY_BROWSER_PREFS, { turnEndSound: 'chartreuse' })
     listUserSettings.mockResolvedValue({
       descriptors: [],
-      values: [settingValue('theme', '"dark"')],
+      values: [settingValue('turn_end_sound', '"none"')],
     })
     const ctx = captureContext()
-    await waitFor(() => expect(ctx.get().dual.theme.account()).toBe('dark'))
+    await waitFor(() => expect(ctx.get().dual.turnEndSound.account()).toBe('none'))
 
-    expect(ctx.get().dual.theme.browser()).toBeNull()
-    expect(ctx.get().theme()).toBe('dark')
+    expect(ctx.get().dual.turnEndSound.browser()).toBeNull()
+    expect(ctx.get().turnEndSound()).toBe('none')
   })
 
   it('refuses a browser font tier whose enabled flag is not a boolean', async () => {
@@ -541,12 +614,12 @@ describe('preferencesContext — an undeclared account key', () => {
   it('leaves every declared key at its value', async () => {
     listUserSettings.mockResolvedValue({
       descriptors: [],
-      values: [settingValue('theme', '"dark"'), settingValue('a_key_from_a_newer_hub', '"x"', true)],
+      values: [settingValue('turn_end_sound', '"none"'), settingValue('a_key_from_a_newer_hub', '"x"', true)],
     })
     const ctx = captureContext()
-    await waitFor(() => expect(ctx.get().dual.theme.account()).toBe('dark'))
+    await waitFor(() => expect(ctx.get().dual.turnEndSound.account()).toBe('none'))
 
-    expect(ctx.get().theme()).toBe('dark')
+    expect(ctx.get().turnEndSound()).toBe('none')
   })
 })
 
@@ -605,18 +678,18 @@ describe('preferencesContext — superseded account write replies', () => {
     // Both writes are issued in one burst, so the second takes its
     // sequence while the first is still in flight and the first reply is
     // stale before it arrives.
-    const a = ctx.get().updateUserSetting('theme', 'dark')
-    const b = ctx.get().updateUserSetting('theme', 'light')
+    const a = ctx.get().updateUserSetting('turn_end_sound', 'none')
+    const b = ctx.get().updateUserSetting('turn_end_sound', 'ding-dong')
 
-    first.resolve({ value: settingValue('theme', '"dark"', true) })
+    first.resolve({ value: settingValue('turn_end_sound', '"none"', true) })
     await a
     // The stale reply must not put its value on screen even for the time
     // the newer write is still in flight.
-    expect(ctx.get().dual.theme.account()).toBe('system')
+    expect(ctx.get().dual.turnEndSound.account()).toBe('ding-dong')
 
-    second.resolve({ value: settingValue('theme', '"light"', true) })
+    second.resolve({ value: settingValue('turn_end_sound', '"ding-dong"', true) })
     await b
-    expect(ctx.get().dual.theme.account()).toBe('light')
+    expect(ctx.get().dual.turnEndSound.account()).toBe('ding-dong')
   })
 
   // A superseded FAILURE must not roll back either: the value it would
@@ -629,34 +702,35 @@ describe('preferencesContext — superseded account write replies', () => {
       .mockReturnValueOnce(second.promise)
     const ctx = captureContext()
 
-    const stale = ctx.get().dual.theme.setAccount('dark')
-    const later = ctx.get().dual.theme.setAccount('light')
-    expect(ctx.get().dual.theme.account()).toBe('light')
+    const stale = ctx.get().dual.turnEndSound.setAccount('none')
+    const later = ctx.get().dual.turnEndSound.setAccount('ding-dong')
+    expect(ctx.get().dual.turnEndSound.account()).toBe('ding-dong')
 
     first.reject(new Error('network down'))
     await expect(stale).rejects.toThrow()
-    // The value the rollback would restore is 'system', captured before
-    // the FIRST write and already replaced by a write the user made since.
-    expect(ctx.get().dual.theme.account()).toBe('light')
+    // The value the rollback would restore is the built-in default, captured
+    // before the FIRST write and already replaced by a write the user made
+    // since.
+    expect(ctx.get().dual.turnEndSound.account()).toBe('ding-dong')
 
-    second.resolve({ value: settingValue('theme', '"light"', true) })
+    second.resolve({ value: settingValue('turn_end_sound', '"ding-dong"', true) })
     await later
   })
 
   // A write to a DIFFERENT key is independent and must still apply.
   it('keeps per-key sequences independent', async () => {
     updateUserSetting.mockImplementation(async ({ key }: { key: string }) => ({
-      value: key === 'theme'
-        ? settingValue('theme', '"dark"', true)
+      value: key === 'turn_end_sound'
+        ? settingValue('turn_end_sound', '"none"', true)
         : settingValue('diff_view', '"split"', true),
     }))
     const ctx = captureContext()
 
     await Promise.all([
-      ctx.get().updateUserSetting('theme', 'dark'),
+      ctx.get().updateUserSetting('turn_end_sound', 'none'),
       ctx.get().updateUserSetting('diff_view', 'split'),
     ])
-    expect(ctx.get().dual.theme.account()).toBe('dark')
+    expect(ctx.get().dual.turnEndSound.account()).toBe('none')
     expect(ctx.get().dual.diffView.account()).toBe('split')
   })
 })
@@ -674,8 +748,12 @@ describe('preferencesContext — parses exactly what the hub declares', () => {
 
   /** How to read one enum key's account signal, and its built-in default. */
   const enumReaders: Record<string, { read: (p: Prefs) => unknown, fallback: string }> = {
-    theme: { read: p => p.dual.theme.account(), fallback: 'system' },
-    terminal_theme: { read: p => p.dual.terminalTheme.account(), fallback: 'match-ui' },
+    // `theme` is absent here on purpose: it is no longer an enum key. It is an
+    // object key with a custom editor, and its parse is covered by the
+    // browser-level theme override block above.
+    // `terminal_theme` is absent for the same reason `theme` is: it is an
+    // object key with a custom editor, not an enum. Its parse is covered by
+    // the terminal-theme describe block below.
     diff_view: { read: p => p.dual.diffView.account(), fallback: 'unified' },
     turn_end_sound: { read: p => p.dual.turnEndSound.account(), fallback: 'ding-dong' },
   }
@@ -799,10 +877,10 @@ describe('preferencesContext — font tier parse', () => {
   ])('refuses a font name carrying %s', async (_label, effectiveJson) => {
     listUserSettings.mockResolvedValue({
       descriptors: [],
-      values: [settingValue('theme', '"dark"'), settingValue('ui_fonts', effectiveJson, true)],
+      values: [settingValue('turn_end_sound', '"none"'), settingValue('ui_fonts', effectiveJson, true)],
     })
     const ctx = captureContext()
-    await waitFor(() => expect(ctx.get().dual.theme.account()).toBe('dark'))
+    await waitFor(() => expect(ctx.get().dual.turnEndSound.account()).toBe('none'))
 
     expect(ctx.get().uiFonts()).toEqual({ enabled: false, fonts: [] })
     // A refused document leaves the flag alone: a "Customized" badge over
@@ -915,12 +993,12 @@ describe('preferencesContext — batchBrowserPrefWrites', () => {
   it('applies every write in the body to one document', () => {
     const ctx = captureContext()
     ctx.get().batchBrowserPrefWrites(() => {
-      ctx.get().dual.theme.setBrowser('dark')
+      ctx.get().dual.turnEndSound.setBrowser('none')
       ctx.get().dual.diffView.setBrowser('split')
       ctx.get().setShowHiddenMessages(true)
     })
     const prefs = loadBrowserPrefs()
-    expect(prefs.theme).toBe('dark')
+    expect(prefs.turnEndSound).toBe('none')
     expect(prefs.diffView).toBe('split')
     expect(prefs.showHiddenMessages).toBe(true)
   })
@@ -928,10 +1006,10 @@ describe('preferencesContext — batchBrowserPrefWrites', () => {
   it('stores nothing until the body returns', () => {
     const ctx = captureContext()
     ctx.get().batchBrowserPrefWrites(() => {
-      ctx.get().dual.theme.setBrowser('dark')
+      ctx.get().dual.turnEndSound.setBrowser('none')
       expect('theme' in loadBrowserPrefs()).toBe(false)
     })
-    expect(loadBrowserPrefs().theme).toBe('dark')
+    expect(loadBrowserPrefs().turnEndSound).toBe('none')
   })
 
   // The `finally` is what closes the batch. Without it every later write
@@ -939,10 +1017,10 @@ describe('preferencesContext — batchBrowserPrefWrites', () => {
   it('closes the batch when the body throws, keeping what it wrote', () => {
     const ctx = captureContext()
     expect(() => ctx.get().batchBrowserPrefWrites(() => {
-      ctx.get().dual.theme.setBrowser('dark')
+      ctx.get().dual.turnEndSound.setBrowser('none')
       throw new Error('mid-batch failure')
     })).toThrow('mid-batch failure')
-    expect(loadBrowserPrefs().theme).toBe('dark')
+    expect(loadBrowserPrefs().turnEndSound).toBe('none')
 
     ctx.get().dual.diffView.setBrowser('split')
     expect(loadBrowserPrefs().diffView).toBe('split')
@@ -953,14 +1031,14 @@ describe('preferencesContext — batchBrowserPrefWrites', () => {
   it('lets a nested batch run inside the outer one without storing', () => {
     const ctx = captureContext()
     ctx.get().batchBrowserPrefWrites(() => {
-      ctx.get().dual.theme.setBrowser('dark')
+      ctx.get().dual.turnEndSound.setBrowser('none')
       ctx.get().batchBrowserPrefWrites(() => {
         ctx.get().dual.diffView.setBrowser('split')
       })
       expect('diffView' in loadBrowserPrefs()).toBe(false)
     })
     const prefs = loadBrowserPrefs()
-    expect(prefs.theme).toBe('dark')
+    expect(prefs.turnEndSound).toBe('none')
     expect(prefs.diffView).toBe('split')
   })
 })
@@ -1008,18 +1086,18 @@ describe('preferencesContext — per-key request ordering', () => {
       sent.push(partialJson)
       if (sent.length === 1)
         return first.promise
-      return Promise.resolve({ value: settingValue('theme', '"light"', true) })
+      return Promise.resolve({ value: settingValue('turn_end_sound', '"ding-dong"', true) })
     })
     const ctx = captureContext()
 
-    const a = ctx.get().updateUserSetting('theme', 'dark').catch(() => {})
-    const b = ctx.get().updateUserSetting('theme', 'light')
+    const a = ctx.get().updateUserSetting('turn_end_sound', 'none').catch(() => {})
+    const b = ctx.get().updateUserSetting('turn_end_sound', 'ding-dong')
     first.reject(new Error('network down'))
     await a
     await b
 
-    expect(sent).toEqual(['"dark"', '"light"'])
-    expect(ctx.get().dual.theme.account()).toBe('light')
+    expect(sent).toEqual(['"none"', '"ding-dong"'])
+    expect(ctx.get().dual.turnEndSound.account()).toBe('ding-dong')
   })
 
   // Writes to DIFFERENT keys are independent: one key's in-flight request
@@ -1029,17 +1107,17 @@ describe('preferencesContext — per-key request ordering', () => {
     const sent: string[] = []
     updateUserSetting.mockImplementation(({ key }: { key: string }) => {
       sent.push(key)
-      if (key === 'theme')
+      if (key === 'turn_end_sound')
         return held.promise
       return Promise.resolve({ value: settingValue('diff_view', '"split"', true) })
     })
     const ctx = captureContext()
 
-    const a = ctx.get().updateUserSetting('theme', 'dark')
+    const a = ctx.get().updateUserSetting('turn_end_sound', 'none')
     await ctx.get().updateUserSetting('diff_view', 'split')
-    expect(sent).toEqual(['theme', 'diff_view'])
+    expect(sent).toEqual(['turn_end_sound', 'diff_view'])
 
-    held.resolve({ value: settingValue('theme', '"dark"', true) })
+    held.resolve({ value: settingValue('turn_end_sound', '"none"', true) })
     await a
   })
 })
@@ -1053,15 +1131,15 @@ describe('preferencesContext — superseded reloads', () => {
     listUserSettings.mockReturnValueOnce(stale.promise)
     listUserSettings.mockResolvedValue({
       descriptors: [],
-      values: [settingValue('theme', '"dark"')],
+      values: [settingValue('turn_end_sound', '"none"')],
     })
     const ctx = captureContext()
     await ctx.get().reload()
-    expect(ctx.get().dual.theme.account()).toBe('dark')
+    expect(ctx.get().dual.turnEndSound.account()).toBe('none')
 
-    stale.resolve({ descriptors: [], values: [settingValue('theme', '"light"')] })
+    stale.resolve({ descriptors: [], values: [settingValue('turn_end_sound', '"none"')] })
     await flushMicrotasks()
-    expect(ctx.get().dual.theme.account()).toBe('dark')
+    expect(ctx.get().dual.turnEndSound.account()).toBe('none')
   })
 
   it('does not record a stale load failure over a newer success', async () => {

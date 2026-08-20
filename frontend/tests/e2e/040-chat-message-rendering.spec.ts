@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
-import { ARITHMETIC_PROMPT, assistantBubbles, bandRows, CHAT_SCROLL_CONTAINER, chatScrollContainer, firstAssistantBubble, measureAgainstChatList, messageContents, sendMessage, userBubbles, waitForAgentIdle } from './helpers/ui'
+import { ARITHMETIC_PROMPT, assistantBubbles, bandRows, CHAT_SCROLL_CONTAINER, chatScrollContainer, firstAssistantBubble, measureAgainstChatList, measureBubbleEdges, messageContents, sendMessage, userBubbles, waitForAgentIdle } from './helpers/ui'
 
 /**
  * Send one prompt and wait for the turn to settle. Every test below opens the
@@ -136,6 +136,9 @@ test.describe('Chat Message Rendering', () => {
    * A user bubble bleeds on ONE side only, which is the interesting case: the
    * right edge meets the panel, while the left keeps the bubble's rounded,
    * content-hugging shape well inside the gutter.
+   *
+   * The plan-execution card takes the same rule, and 050-plan-mode.spec.ts
+   * measures it through the same helper.
    */
   test('a user bubble meets the right panel edge and keeps its left side inset', async ({ page, authenticatedWorkspace }) => {
     await sendMessage(page, 'hi')
@@ -143,20 +146,7 @@ test.describe('Chat Message Rendering', () => {
     const bubble = userBubbles(page).first()
     await expect(bubble).toBeVisible()
 
-    const box = await bubble.evaluate((el, selector) => {
-      const list = el.closest(selector)!
-      const listRect = list.getBoundingClientRect()
-      const self = el.getBoundingClientRect()
-      // The PADDING box on both sides. `clientLeft` is the left border, and `clientWidth`
-      // stops before a native scrollbar -- so the right edge tracks the same box the sibling
-      // tests measure through measureAgainstChatList, whichever scrollbar the list is wearing.
-      const padLeft = listRect.left + list.clientLeft
-      return {
-        rightGap: padLeft + list.clientWidth - self.right,
-        leftGap: self.left - padLeft,
-        radius: globalThis.getComputedStyle(el).borderTopRightRadius,
-      }
-    }, CHAT_SCROLL_CONTAINER)
+    const box = await measureBubbleEdges(bubble)
 
     // Flush right: the bubble's right edge sits on the list's padding-box edge.
     expect(Math.abs(box.rightGap)).toBeLessThanOrEqual(1)
@@ -165,6 +155,10 @@ test.describe('Chat Message Rendering', () => {
     expect(box.leftGap).toBeGreaterThan(20)
     // A rounded corner flush against the edge would read as a mistake.
     expect(box.radius).toBe('0px')
+    // Top edge on the row's. The row places the bubble on BOTH axes; a bubble-level
+    // `alignSelf` is what would move this, and it would take the bubble's first line
+    // off the line the toolbar beside it sits on.
+    expect(Math.abs(box.topGapInRow)).toBeLessThanOrEqual(1)
   })
 
   /**
@@ -190,11 +184,29 @@ test.describe('Chat Message Rendering', () => {
     await expect(menu.locator('[data-testid="message-menu-copy-json"]')).toBeVisible()
     await expect(menu.locator('[data-testid="message-menu-info"]')).toBeVisible()
 
-    // At the cursor. A message row is tall, so anchoring to the row would put the
+    // At the cursor. A message row is tall, so anchoring to the ROW would put the
     // menu far from the pointer.
-    const menuBox = (await menu.boundingBox())!
-    expect(Math.abs(menuBox.x - x)).toBeLessThan(4)
-    expect(Math.abs(menuBox.y - y)).toBeLessThan(4)
+    //
+    // WHICH EDGE hangs off the cursor depends on the room below it. `pressAnchorRect`
+    // hands calcPopoverPosition a zero-height rect at the press point, so a menu that
+    // fits opens with its TOP there, and one that would overflow the viewport bottom
+    // flips and puts its BOTTOM there instead. Both are anchored to the cursor, which
+    // is what this measures; the app publishes `data-flipped` to say which happened,
+    // so read the placement rather than assume the downward one. A settled turn puts
+    // this bubble low enough that the menu does flip, and how low depends on the live
+    // reply's length -- so asserting the downward edge alone failed on a placement the
+    // app got right.
+    //
+    // One round trip for the box and the marker together: the menu re-anchors when its
+    // measured size settles, so two reads could straddle that and mix a stale edge with
+    // a fresh flip state.
+    const placement = await menu.evaluate((el) => {
+      const rect = el.getBoundingClientRect()
+      return { left: rect.left, top: rect.top, bottom: rect.bottom, flipped: el.hasAttribute('data-flipped') }
+    })
+    const anchoredEdge = placement.flipped ? placement.bottom : placement.top
+    expect(Math.abs(placement.left - x)).toBeLessThan(4)
+    expect(Math.abs(anchoredEdge - y)).toBeLessThan(4)
 
     await page.keyboard.press('Escape')
     await expect(menu).toBeHidden()

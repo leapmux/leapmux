@@ -102,6 +102,26 @@ func ValidateSessionID(sessionID string) error {
 	if last, _ := utf8.DecodeLastRuneInString(sessionID); IsNameWhitespace(last) {
 		return fmt.Errorf("session ID must not start or end with whitespace")
 	}
+	// Whitespace that is NOT the plain space, anywhere inside the token.
+	//
+	// AFTER the edge test on purpose. A leading or trailing one is reported as
+	// the edge rule, which tells the user what to fix; only an INTERIOR one
+	// falls through to here.
+	//
+	// The rule already refuses `\n` and `\t` as control characters -- but
+	// U+2028 LINE SEPARATOR means the same thing and is not Cc, and U+00A0 and
+	// U+3000 render as a space while carrying different bytes. Two tokens a
+	// reader cannot tell apart, naming different sessions, is the confusion the
+	// invisible class exists to stop, and a token is opaque so there is nothing
+	// to weigh against refusing them.
+	//
+	// The plain U+0020 stays legal inside a token. Nothing about a UUID, a ULID
+	// or a thread id needs any of the rest.
+	for _, r := range sessionID {
+		if r != ' ' && IsNameWhitespace(r) {
+			return fmt.Errorf("session ID contains invalid characters")
+		}
+	}
 	// A token that STARTS with a hyphen is refused, because argv cannot tell it
 	// from a flag. `claude --resume <id>` passes the token as its own argv
 	// element, and `--resume` takes an OPTIONAL value, so a parser of that

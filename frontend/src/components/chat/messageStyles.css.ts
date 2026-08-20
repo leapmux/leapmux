@@ -2,7 +2,7 @@ import { globalStyle, keyframes, style } from '@vanilla-extract/css'
 import { codeTypography, codeWrap } from '~/styles/codeBlock'
 import { CHAT_PAD_LEFT_VAR, CHAT_PAD_RIGHT_VAR, CHAT_RAIL_WIDTH_VAR } from './chatChromeVars'
 import { BAND_BORDER_PX } from './chatRowGeometry'
-import { shikiDualThemeColors } from './shikiTokenColors.css'
+import { codeSurface } from './shikiTokenColors.css'
 import { toolHeaderActions, toolHeaderTimestamp } from './toolStyles.css'
 import { ROW_BLEED_LEFT_VAR } from './widgets/SpanLines.geometry'
 
@@ -82,30 +82,38 @@ export const messageBubble = style({
 })
 
 /**
- * A user message's bubble: an accent card at the end of the line, rounded and
- * outlined on every side, and only as wide as the message needs up to the shared
- * 85% cap.
+ * The card a row lays out at the END of the line: an accent surface, rounded on
+ * every side, and only as wide as its text needs up to the shared 85% cap.
  *
- * It carries NO bleed of its own. Running its right side off the panel edge is
- * `bubbleFlushRight` below, which only takes effect inside a widened row.
+ * Three bubbles are this card -- a user message, its pending variant, and a plan
+ * execution -- and each states only the outline that tells it apart. The card
+ * omits the outline itself rather than declaring one that a later `borderStyle`
+ * overrides, because vanilla-extract rejects a shorthand and its longhand in one
+ * style object.
+ *
+ * The card carries NO bleed of its own. Running its right side off the panel
+ * edge is `bubbleFlushRight` below, which only takes effect inside a widened
+ * row. `bubbleRunsToRightEdge` (~/components/chat/messageClassification.ts)
+ * decides which rows carry that marker from the ROW's own layout, so a fourth
+ * card added here reaches the edge with no list to join.
  */
-const userBubble = {
+const endBubble = {
   backgroundColor: 'var(--accent)',
-  border: '1px solid var(--border)',
   color: 'var(--foreground)',
-  alignSelf: 'flex-end',
 } as const
 
-export const userMessage = style([messageBubble, userBubble])
+export const userMessage = style([messageBubble, endBubble, {
+  border: '1px solid var(--border)',
+}])
 
 const pendingPulse = keyframes({
   '0%, 100%': { opacity: 0.5 },
   '50%': { opacity: 0.85 },
 })
 
-/** The same bubble, pulsing while an optimistic local waits for its agent. */
-export const userMessagePending = style([messageBubble, {
-  ...userBubble,
+/** The same card, pulsing while an optimistic local waits for its agent. */
+export const userMessagePending = style([messageBubble, endBubble, {
+  'border': '1px solid var(--border)',
   'animation': `${pendingPulse} 1.5s ease-in-out infinite`,
   '@media': {
     '(prefers-reduced-motion: reduce)': {
@@ -126,7 +134,6 @@ export const agentFallbackMessage = style([messageBubble, {
   backgroundColor: 'var(--card)',
   border: '1px solid var(--border)',
   color: 'var(--foreground)',
-  alignSelf: 'flex-start',
 }])
 
 /**
@@ -153,8 +160,9 @@ export const bandRow = style({
 /**
  * A row that paints nothing itself and only widens, so that a DESCENDANT can
  * reach a panel edge. Used by a turn-end divider (its rule runs to both edges,
- * see the globalStyle beside `resultDivider`) and by a user message row (its
- * bubble's right side runs to the right edge, see `bubbleFlushRight`).
+ * see the globalStyle beside `resultDivider`) and by a MIRRORED row -- a user
+ * message or a plan execution -- whose end-of-line card runs its right side to
+ * the right edge (see `bubbleFlushRight`).
  */
 export const bleedRow = style(rowBleed)
 
@@ -216,11 +224,15 @@ export const bandMessage = style({
   color: 'var(--foreground)',
 })
 
-export const planExecutionMessage = style([messageBubble, {
-  backgroundColor: 'var(--accent)',
+/**
+ * The plan hand-off's card. The same end-of-line card a user message wears, with
+ * a dashed outline instead of a solid one -- the chat's established mark for a
+ * de-emphasized surface. The worker persists the row with a USER source, so the
+ * row mirrors it and widens for it exactly like a typed message, and the card
+ * runs its right side to the same panel edge.
+ */
+export const planExecutionMessage = style([messageBubble, endBubble, {
   border: '1px dashed var(--border)',
-  color: 'var(--foreground)',
-  alignSelf: 'flex-end',
 }])
 
 export const thinkingHeader = style({
@@ -254,7 +266,6 @@ export const systemMessage = style([messageBubble, {
   backgroundColor: 'transparent',
   border: '1px dashed var(--border)',
   color: 'var(--muted-foreground)',
-  alignSelf: 'center',
   fontSize: 'var(--text-7)',
 }])
 
@@ -321,7 +332,9 @@ export const hiddenMessageJson = style({
   margin: 0,
   padding: 'var(--space-2) var(--space-3)',
   color: 'var(--muted-foreground)',
-  backgroundColor: 'var(--card)',
+  // No background here: `codeSurface` below paints this element, and a
+  // `globalStyle` on the same class is emitted after this rule, so a
+  // `backgroundColor` stated here is overridden and only misleads a reader.
   border: '1px dashed var(--border)',
   borderRadius: 'var(--radius-small)',
   maxHeight: '300px',
@@ -331,7 +344,7 @@ export const hiddenMessageJson = style({
 // JSON renders as token <span>s (data-shiki-token) directly inside this wrapper,
 // which already owns the mono font + pre-wrap + padding/border/scroll. The spans
 // pick up dual-theme colors via CSS vars.
-shikiDualThemeColors(`${hiddenMessageJson} span[data-shiki-token]`, { bg: true })
+codeSurface(hiddenMessageJson, 'page', [{ suffix: ' span[data-shiki-token]', bg: true }])
 
 // Control response message (compact)
 export const controlResponseMessage = style({
@@ -350,7 +363,22 @@ export const controlResponseLabel = style({
   whiteSpace: 'pre-line',
 })
 
-// Base styles for message row layout
+/**
+ * Base styles for message row layout.
+ *
+ * THE ROW places its bubble on both axes, and a bubble must not restate either.
+ * `justifyContent` on the variants below decides the horizontal position -- start,
+ * end or centre -- and `alignItems: 'flex-start'` puts every child's top edge on
+ * the row's, so a bubble's first line and the toolbar beside it share one line.
+ *
+ * A bubble that declared `alignSelf` to match its row read as if it did the
+ * horizontal placement, and did not: `alignSelf` is the CROSS axis, which on a
+ * flex ROW is vertical. Each such value was also dead, because a bubble carries
+ * `messageBubble`'s 24px of vertical padding plus a line of text and is therefore
+ * always taller than the 24px toolbar, so the bubble alone sets the row's height
+ * and has no free space to move in. A bubble that must fill the row's height says
+ * `alignSelf: 'stretch'` and means it -- see `bandMessage` and `metaMessage`.
+ */
 const messageRowBase = {
   display: 'flex',
   alignItems: 'flex-start',
@@ -362,7 +390,7 @@ const messageRowBase = {
 // Flex row wrapping a message bubble + right-aligned ToolHeaderActions outside the bubble
 export const messageRow = style(messageRowBase)
 
-// Right-aligned variant for user message bubbles
+/** Right-aligned variant: the row that mirrors a user message or a plan execution. */
 export const messageRowEnd = style({
   ...messageRowBase,
   justifyContent: 'flex-end',

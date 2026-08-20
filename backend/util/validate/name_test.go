@@ -156,7 +156,7 @@ func TestSanitizeName(t *testing.T) {
 // TestSanitizeNameScanLimit pins the one hazard that CleanNameChars' early
 // stop introduces. The loop stops APPENDING once the builder holds
 // cleanScanLimit bytes, so a title that a provider reported as a whole log
-// line costs a bounded allocation. The stop bounds the OUTPUT and not the
+// line costs a bounded allocation. The stop limits the OUTPUT and not the
 // scan: an input of nothing but stripped characters never grows the builder,
 // so the loop still reads every byte of it.
 //
@@ -253,6 +253,61 @@ func TestSanitizeDisplayName(t *testing.T) {
 		assert.Error(t, err)
 		_, err = SanitizeDisplayName("", strings.Repeat("a", NameByteLimit+1))
 		assert.Error(t, err, "an over-long fallback is refused, not cut")
+	})
+}
+
+// CleanNameTo is CleanName with the byte limit passed in, and the SCAN stop
+// travels with it. A fixed stop capped every result at NameByteLimit whatever
+// the caller asked for, so a 512-byte group heading came back 129 bytes long
+// and the cap it was given never applied.
+func TestCleanNameTo(t *testing.T) {
+	t.Parallel()
+
+	t.Run("honours a limit above the name limit", func(t *testing.T) {
+		for _, limit := range []int{NameByteLimit + 1, 300, 512, 4096} {
+			got := CleanNameTo(strings.Repeat("x", limit*2), limit)
+			assert.Lenf(t, got, limit, "a limit of %d must cut to %d bytes", limit, limit)
+		}
+	})
+
+	t.Run("honours a limit below the name limit", func(t *testing.T) {
+		assert.Equal(t, "abcde", CleanNameTo("abcdefghij", 5))
+		assert.Empty(t, CleanNameTo("abc", 0))
+		assert.Empty(t, CleanNameTo("abc", -1))
+	})
+
+	t.Run("agrees with CleanName at the name limit", func(t *testing.T) {
+		for _, name := range []string{
+			"", "   ", "Ship the parser", "  Fix   the\tparser  ",
+			"a\u202eb", "a\u200b\u00adb", "line one\nline two",
+			strings.Repeat("y", NameByteLimit*3),
+			strings.Repeat("中", 100),
+		} {
+			assert.Equalf(t, CleanName(name), CleanNameTo(name, NameByteLimit), "%q", name)
+		}
+	})
+
+	t.Run("applies the same character rule at every limit", func(t *testing.T) {
+		// The clean runs BEFORE the cut, so invisible characters cannot spend
+		// the budget -- the same order CleanName documents.
+		assert.Equal(t, "Plan", CleanNameTo(strings.Repeat("\u200b", 200)+"Plan", 512))
+		assert.Equal(t, "a b", CleanNameTo("a \t\n b", 512))
+		assert.Equal(t, "safereversed", CleanNameTo("safe\u202ereversed\x00", 512))
+	})
+
+	t.Run("is idempotent", func(t *testing.T) {
+		for _, name := range []string{"  Build  the   parser  ", "a\u202eb", strings.Repeat("z", 600)} {
+			once := CleanNameTo(name, 512)
+			assert.Equalf(t, once, CleanNameTo(once, 512), "%q", name)
+		}
+	})
+
+	// The cut moves back to a rune start, so a multi-byte rune is never halved.
+	t.Run("never cuts a rune in half", func(t *testing.T) {
+		got := CleanNameTo(strings.Repeat("中", 200), 500)
+		assert.True(t, utf8.ValidString(got))
+		assert.LessOrEqual(t, len(got), 500)
+		assert.Equal(t, 166, utf8.RuneCountInString(got), "500/3 whole runes")
 	})
 }
 
@@ -497,7 +552,7 @@ func TestTruncateToBytes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := truncateToBytes(tt.s, tt.limit)
+			got := TruncateToBytes(tt.s, tt.limit)
 			assert.Equal(t, tt.want, got)
 			assert.True(t, utf8.ValidString(got), "the result must stay valid UTF-8")
 		})
@@ -633,7 +688,6 @@ func TestStripUnreadable(t *testing.T) {
 			{"a\x1fb", "ab"},   // top of C0
 			{"a\x7fb", "ab"},   // DEL
 			{"a\u009fb", "ab"}, // C1
-			{"a\nb", "ab"},     // a whitespace control is control too
 			{"a\u200bb", "ab"}, // zero width space
 			{"a\u00adb", "ab"}, // soft hyphen
 			{"a\u202eb", "ab"}, // right-to-left override
@@ -664,6 +718,29 @@ func TestStripUnreadable(t *testing.T) {
 	t.Run("neither folds a whitespace run nor trims the ends", func(t *testing.T) {
 		assert.Equal(t, "  a   b  ", StripUnreadable("  a   b  ", 0))
 		assert.Equal(t, "\u00a0a\u3000b", StripUnreadable("\u00a0a\u3000b", 0))
+	})
+
+	// A reader SEES a line break, so it is not what this helper removes. The
+	// six characters below are Cc AND whitespace at once, so a control test
+	// that ran first deleted them with nothing in their place: an ActiveForm
+	// of "Running tests\nfor the parser" reached the sidebar as
+	// "Running testsfor the parser", and a notification body glued its two
+	// lines into one word.
+	t.Run("keeps a whitespace control, which a reader can see", func(t *testing.T) {
+		for _, s := range []string{
+			"a\tb", "a\nb", "a\vb", "a\fb", "a\rb", "a\u0085b",
+			"Running tests\nfor the parser",
+		} {
+			assert.Equalf(t, s, StripUnreadable(s, 0), "input %q must survive whole", s)
+		}
+	})
+
+	// The NON-whitespace controls still go, which is what keeps an escape
+	// sequence and a bidirectional override out of a tab strip.
+	t.Run("still removes a control that carries no visible width", func(t *testing.T) {
+		assert.Equal(t, "ab", StripUnreadable("a\x1bb", 0))
+		assert.Equal(t, "ab", StripUnreadable("a\x07b", 0))
+		assert.Equal(t, "ab", StripUnreadable("a\u202eb", 0))
 	})
 
 	t.Run("drops an invalid byte instead of growing it", func(t *testing.T) {
@@ -722,7 +799,7 @@ func TestCleanNameCharsScanLimit(t *testing.T) {
 		assert.Len(t, CleanNameChars(huge, -1), 100_000)
 	})
 
-	// The stop bounds the OUTPUT, so it never cuts a result that already fits.
+	// The stop limits the OUTPUT, so it never cuts a result that already fits.
 	t.Run("a limit above the result changes nothing", func(t *testing.T) {
 		assert.Equal(t, "Ship the parser", CleanNameChars("  Ship \t the   parser  ", 1000))
 		assert.Equal(t, "Ship the parser", CleanNameChars("  Ship \t the   parser  ", 0))
@@ -744,11 +821,17 @@ func TestCleanNameCharsScanLimit(t *testing.T) {
 //
 // The two sets OVERLAP on purpose, on exactly the whitespace controls
 // (U+0009-U+000D and U+0085), which are Cc and White_Space at the same time.
-// The ORDER of the tests is what resolves the overlap, and the two callers
-// resolve it differently on purpose: CleanNameChars asks the fold FIRST, so a
-// newline becomes one space and "Fix parser\nAdd tests" does not read as
-// "Fix parserAdd tests"; StripUnreadable does not fold at all, so it removes
-// the newline with the other control characters.
+// BOTH callers ask the whitespace question FIRST, and that order is what
+// resolves the overlap. Neither may delete one of these characters outright,
+// because a reader SEES the space it makes: CleanNameChars folds it to one
+// space, so "Fix parser\nAdd tests" does not read as "Fix parserAdd tests";
+// StripUnreadable keeps it verbatim, so an ActiveForm of
+// "Running tests\nfor the parser" does not reach the sidebar as
+// "Running testsfor the parser".
+//
+// They differ only in what they do with it, and that difference follows from
+// what each value is: a NAME is one line, so the run collapses; a LABEL or a
+// BODY keeps the provider's own formatting.
 func TestIsNameWhitespaceAndIsUnreadable(t *testing.T) {
 	// A whitespace control is in BOTH sets. This is the overlap the order
 	// exists for, and each caller's answer for it is pinned below.
@@ -757,8 +840,8 @@ func TestIsNameWhitespaceAndIsUnreadable(t *testing.T) {
 		assert.Truef(t, IsUnreadable(r), "U+%04X is Cc, so it is unreadable too", r)
 		assert.Equalf(t, "a b", CleanName("a"+string(r)+"b"),
 			"CleanNameChars asks the fold first, so U+%04X becomes one space", r)
-		assert.Equalf(t, "ab", StripUnreadable("a"+string(r)+"b", 0),
-			"StripUnreadable does not fold, so U+%04X goes with the other controls", r)
+		assert.Equalf(t, "a"+string(r)+"b", StripUnreadable("a"+string(r)+"b", 0),
+			"StripUnreadable asks the fold first too, so U+%04X survives whole", r)
 	}
 
 	// A whitespace character that is NOT a control character folds and is

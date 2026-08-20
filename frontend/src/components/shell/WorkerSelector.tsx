@@ -1,7 +1,8 @@
 import type { Accessor, Component } from 'solid-js'
 import type { Worker } from '~/generated/leapmux/v1/worker_pb'
-import { For, Show } from 'solid-js'
+import { createMemo } from 'solid-js'
 import { labelRow } from '~/components/common/Dialog.css'
+import { LoadingMenu } from '~/components/common/LoadingMenu'
 import { RefreshButton } from '~/components/common/RefreshButton'
 import { workerInfoStore } from '~/stores/workerInfo.store'
 
@@ -27,35 +28,47 @@ interface WorkerSelectorProps {
 }
 
 export const WorkerSelector: Component<WorkerSelectorProps> = (props) => {
+  // Warm the per-worker metadata when the menu OPENS.
+  //
+  // The `<select>` this replaced prefetched on `focus` and `pointerDown`;
+  // `onOpen` is the menu's equivalent, and it is deliberately not keyed on the
+  // worker list arriving. The prefetch fans out one E2EE handshake per online
+  // worker, so firing it whenever the list changes would turn a lazy warm-up
+  // into a storm on every refresh.
+  //
+  // The TRIGGER's own label does not depend on this: `createWorkerDialogContext`
+  // fetches the selected worker's info from its own effect, so only the other
+  // rows wait for the fan-out.
+  // MEMOIZED, for the reason `BranchSelect` states. `workerInfo` reads the
+  // whole-map signal, so ONE worker's metadata arriving notifies every reader --
+  // and `onOpen` fans out a prefetch per online worker, so replies land
+  // continuously while the menu is open. A plain `.map` hands `<For>` a fresh
+  // array of fresh objects each time, and `<For>` reconciles by reference, so
+  // every row was torn down and rebuilt on each reply: the row under the pointer
+  // moved, and a focused row lost focus with the node it sat on.
+  const options = createMemo(() => props.state.workers().map((b) => {
+    const info = workerInfoStore.workerInfo(b.id)
+    if (!info)
+      return { value: b.id, label: b.id }
+    const details = [info.version, info.os, info.arch].filter(Boolean).join(', ')
+    return { value: b.id, label: details ? `${info.name} (${details})` : info.name }
+  }))
+
   return (
     <div>
       <div class={labelRow}>
         Worker
         <RefreshButton onClick={props.state.refreshWorkers} disabled={props.state.workersRefreshing()} title="Refresh workers" />
       </div>
-      <select
+      <LoadingMenu
+        ariaLabel="Worker"
         value={props.state.workerId()}
-        onChange={e => props.state.setWorkerId(e.currentTarget.value)}
-        onFocus={() => props.state.prefetchOnlineWorkerInfos()}
-        onPointerDown={() => props.state.prefetchOnlineWorkerInfos()}
-      >
-        <Show when={props.state.workers().length === 0}>
-          <option value="">No workers online</option>
-        </Show>
-        <For each={props.state.workers()}>
-          {(b) => {
-            const info = () => workerInfoStore.workerInfo(b.id)
-            const label = () => {
-              const i = info()
-              if (!i)
-                return b.id
-              const details = [i.version, i.os, i.arch].filter(Boolean).join(', ')
-              return details ? `${i.name} (${details})` : i.name
-            }
-            return <option value={b.id}>{label()}</option>
-          }}
-        </For>
-      </select>
+        onChange={id => props.state.setWorkerId(id)}
+        emptyLabel="No workers online"
+        options={options()}
+        onOpen={() => props.state.prefetchOnlineWorkerInfos()}
+        data-testid="worker-select-menu"
+      />
     </div>
   )
 }
