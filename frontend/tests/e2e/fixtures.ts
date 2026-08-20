@@ -1,5 +1,6 @@
 /* eslint-disable no-console */
 import type { ChildProcess } from 'node:child_process'
+import type { ServerOutput } from './helpers/serverOutput'
 import { execFile, spawn } from 'node:child_process'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -22,6 +23,7 @@ import {
 import { closeAllUserEventsSubscriptions } from './helpers/crdt'
 import { stopProcess } from './helpers/process'
 import { findFreePort, getGlobalState, waitForServer } from './helpers/server'
+import { createServerOutput, reportStartupFailure } from './helpers/serverOutput'
 import { getRecordedToasts, installToastRecorder } from './helpers/toast'
 import { loginViaToken, openWorkspace } from './helpers/ui'
 
@@ -32,33 +34,9 @@ export interface ServerInfo {
   newuserToken: string
   serverProc: ChildProcess
   dataDir: string
-  /** Captured stdout+stderr from the dev instance. See {@link captureOutput}. */
+  /** Captured stdout+stderr from the dev instance. See {@link createServerOutput}. */
   output: ServerOutput
 }
-
-/**
- * A window onto the dev instance's output.
- *
- * Sliced per test, not just tailed: `leapmuxServer` is worker-scoped, so one
- * instance serves every test the Playwright worker runs and a plain tail is
- * whatever the LAST test happened to print. Marking at the start of a test and
- * slicing from there is the difference between a readable cause and someone
- * else's chatter.
- */
-interface ServerOutput {
-  /** Index of the next line to be emitted. */
-  mark: () => number
-  /** Everything emitted since `from`, as far back as the buffer still reaches. */
-  since: (from: number) => string
-}
-
-/**
- * How many lines of dev-instance output to keep for a failing test.
- *
- * Enough to cover an agent's whole startup (spawn, initialize handshake,
- * settings refresh, first turn) without holding a whole run's chatter.
- */
-const SERVER_LOG_LINES = 4000
 
 const execFileAsync = promisify(execFile)
 
@@ -87,45 +65,6 @@ async function bootstrapFirstAdmin(hubDataDir: string): Promise<void> {
   ], {
     env: { ...process.env, LEAPMUX_LOG_LEVEL: 'error' },
   })
-}
-
-/**
- * Keep a bounded tail of the dev instance's output instead of discarding it.
- *
- * This used to be `proc.stdout?.resume()` on both streams -- drained purely to
- * stop backpressure, which meant every worker-side failure (a `git worktree
- * add` that lost an index.lock race, an agent that failed to spawn) reached the
- * report as nothing but a Playwright timeout on some unrelated assertion. The
- * ring buffer costs a few hundred KB and turns those into readable causes; the
- * attachment below only fires for tests that actually failed.
- */
-function captureOutput(proc: ChildProcess): ServerOutput {
-  const lines: string[] = []
-  // How many lines the ring has evicted, so `mark` stays a stable absolute
-  // index even as old output falls off the front.
-  let evicted = 0
-  let partial = ''
-  const consume = (chunk: { toString: () => string }) => {
-    partial += chunk.toString()
-    const parts = partial.split('\n')
-    partial = parts.pop() ?? ''
-    for (const line of parts) {
-      lines.push(line)
-      if (lines.length > SERVER_LOG_LINES) {
-        lines.shift()
-        evicted++
-      }
-    }
-  }
-  proc.stdout?.on('data', consume)
-  proc.stderr?.on('data', consume)
-  return {
-    mark: () => evicted + lines.length,
-    since: (from: number) => {
-      const slice = lines.slice(Math.max(0, from - evicted))
-      return (partial ? [...slice, partial] : slice).join('\n')
-    },
-  }
 }
 
 interface WorkspaceFixture {
@@ -170,18 +109,31 @@ export const test = base.extend<
 
     // Consume server output (also prevents backpressure), keeping a tail for
     // failing tests to attach.
-    const output = captureOutput(proc)
+    const output = createServerOutput()
+    output.capture(proc)
 
-    await waitForServer(hubUrl)
-    console.log(`[e2e] Dev instance ready on port ${port}`)
+    // Everything up to `use` runs OUTSIDE any test, so a failure here has no
+    // test to attach the tail to -- it is printed instead. Otherwise a dev
+    // instance that died on startup reports as a bare "Timed out waiting".
+    let adminToken: string
+    let workerId: string
+    let newuserToken: string
+    try {
+      await waitForServer(hubUrl)
+      console.log(`[e2e] Dev instance ready on port ${port}`)
 
-    // The admin was bootstrapped offline above; log in over HTTP for the
-    // session cookie the rest of the fixtures auth with.
-    const adminToken = await loginViaAPI(hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD)
-    const workerId = await getWorkerId(hubUrl, adminToken)
+      // The admin was bootstrapped offline above; log in over HTTP for the
+      // session cookie the rest of the fixtures auth with.
+      adminToken = await loginViaAPI(hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD)
+      workerId = await getWorkerId(hubUrl, adminToken)
 
-    // Create newuser for sharing tests
-    const newuserToken = await signUpViaAPI(hubUrl, 'newuser', 'password123', 'New User', 'new@test.com')
+      // Create newuser for sharing tests
+      newuserToken = await signUpViaAPI(hubUrl, 'newuser', 'password123', 'New User', 'new@test.com')
+    }
+    catch (err) {
+      await stopProcess(proc)
+      reportStartupFailure(output, `dev instance on port ${port}`, err)
+    }
 
     await use({ hubUrl, adminToken, workerId, newuserToken, serverProc: proc, dataDir, output })
 

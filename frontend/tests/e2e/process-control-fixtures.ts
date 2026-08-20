@@ -1,6 +1,7 @@
 /* eslint-disable no-console */
 import type { Buffer } from 'node:buffer'
 import type { ChildProcess } from 'node:child_process'
+import type { ServerOutput } from './helpers/serverOutput'
 import { spawn } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -24,6 +25,7 @@ import {
   waitForNewOnlineWorkerViaAPI,
 } from './helpers/api'
 import { findFreePort, getGlobalState, waitForServer } from './helpers/server'
+import { createServerOutput, reportStartupFailure } from './helpers/serverOutput'
 import { getRecordedToasts, installToastRecorder } from './helpers/toast'
 import { loginViaToken, openWorkspace } from './helpers/ui'
 
@@ -62,6 +64,11 @@ export interface SeparateServerInfo {
   dataDir: string
   binaryPath: string
   hubPort: number
+  /**
+   * Captured stdout+stderr from BOTH processes, labelled per process and
+   * spanning every restart. See {@link createServerOutput}.
+   */
+  output: ServerOutput
 }
 
 interface WorkspaceFixture {
@@ -170,6 +177,10 @@ export async function restartWorker(serverInfo: SeparateServerInfo) {
   // Track immediately so a crash before state update still gets cleaned
   // up by the fixture teardown / global-teardown sweep.
   trackSpawnedPid(serverInfo.dataDir, workerProc.pid!)
+  // The REPLACEMENT worker feeds the same buffer, so a test that restarts one
+  // gets both halves of its own window rather than losing everything the new
+  // process says.
+  serverInfo.output.capture(workerProc, 'worker')
 
   try {
     // Wait for the worker to connect to the hub
@@ -181,8 +192,6 @@ export async function restartWorker(serverInfo: SeparateServerInfo) {
           clearTimeout(timeout)
           workerProc.stderr?.off('data', onData)
           workerProc.stdout?.off('data', onData)
-          workerProc.stderr?.on('data', (c: Buffer) => process.stderr.write(`[WORKER-ERR] ${c}`))
-          workerProc.stdout?.on('data', (c: Buffer) => process.stderr.write(`[WORKER-OUT] ${c}`))
           resolve()
         }
       }
@@ -247,9 +256,9 @@ export async function restartHub(serverInfo: SeparateServerInfo) {
   // Track immediately so a crash before state update still gets cleaned
   // up by the fixture teardown / global-teardown sweep.
   trackSpawnedPid(serverInfo.dataDir, hubProc.pid!)
-
-  hubProc.stdout?.resume()
-  hubProc.stderr?.resume()
+  // Capture rather than `resume()`: both drain the stream, and only one of them
+  // keeps what a hub that fails its health check below just said.
+  serverInfo.output.capture(hubProc, 'hub')
 
   try {
     // Wait for the hub to become ready
@@ -309,6 +318,11 @@ export const processTest = base.extend<
 
     console.log(`[e2e] Starting separate hub on port ${hubPort}...`)
 
+    // ONE buffer for the hub AND the worker, labelled per process: their lines
+    // interleave in real time, and a reader chasing a worker-side failure needs
+    // the hub's answer to the same request beside it.
+    const output = createServerOutput()
+
     // Start hub in its own process group so stray signals from the test
     // runner's process group don't kill it prematurely.
     const hubProc = spawn(globalState.binaryPath, [
@@ -324,10 +338,9 @@ export const processTest = base.extend<
     })
     hubProc.unref()
     trackSpawnedPid(dataDir, hubProc.pid!)
-    hubProc.stdout?.on('data', (c: Buffer) => process.stderr.write(`[HUB-OUT] ${c}`))
-    hubProc.stderr?.on('data', (c: Buffer) => process.stderr.write(`[HUB-ERR] ${c}`))
+    output.capture(hubProc, 'hub')
 
-    await waitForServer(hubUrl)
+    await waitForServer(hubUrl).catch(err => reportStartupFailure(output, `hub on port ${hubPort}`, err))
     console.log(`[e2e] Hub ready on port ${hubPort}`)
 
     // Create the admin. A hub with no users at all accepts one sign-up and
@@ -369,10 +382,13 @@ export const processTest = base.extend<
     })
     workerProc.unref()
     trackSpawnedPid(dataDir, workerProc.pid!)
-    workerProc.stderr?.on('data', (c: Buffer) => process.stderr.write(`[WORKER-ERR] ${c}`))
-    workerProc.stdout?.on('data', (c: Buffer) => process.stderr.write(`[WORKER-OUT] ${c}`))
+    output.capture(workerProc, 'worker')
 
+    // Both waits run OUTSIDE any test, so a failure has no test to attach the
+    // tail to -- it is printed instead. Without it a worker that refused its
+    // registration key reports as a bare "Timed out waiting for worker".
     const workerId = await waitForNewOnlineWorkerViaAPI(hubUrl, adminToken, beforeIds)
+      .catch(err => reportStartupFailure(output, 'worker registration', err))
     console.log(`[e2e] Worker connected: ${workerId}`)
 
     // Create newuser
@@ -402,6 +418,7 @@ export const processTest = base.extend<
       dataDir,
       binaryPath: globalState.binaryPath,
       hubPort,
+      output,
     }
 
     // Set mutable state for stop/restart helpers
@@ -448,8 +465,9 @@ export const processTest = base.extend<
   },
 
   // Toast recorder: auto-use so it runs for every test
-  toastRecorder: [async ({ page }, use, testInfo) => {
+  toastRecorder: [async ({ page, separateHubWorker }, use, testInfo) => {
     await installToastRecorder(page)
+    const serverMark = separateHubWorker.output.mark()
     await use()
 
     const toasts = await getRecordedToasts(page).catch(() => [])
@@ -461,6 +479,21 @@ export const processTest = base.extend<
         body: toastLog,
         contentType: 'text/plain',
       })
+    }
+
+    // A failing test gets the hub's and the worker's recent output, exactly as
+    // the dev-instance fixture does (see fixtures.ts). Both run out of process,
+    // so their errors are otherwise invisible and a worker-side failure
+    // surfaces only as a timeout on an unrelated locator.
+    //
+    // Attached as a FILE, not a body: the list reporter truncates an inline
+    // attachment to its first line, which is the startup banner and nothing
+    // else. A path lands the whole tail under test-results/ where it can
+    // actually be read.
+    if (testInfo.status !== testInfo.expectedStatus) {
+      const logPath = testInfo.outputPath('server-log.txt')
+      writeFileSync(logPath, separateHubWorker.output.since(serverMark))
+      await testInfo.attach('server-log', { path: logPath, contentType: 'text/plain' })
     }
   }, { auto: true }],
 
