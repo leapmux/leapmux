@@ -90,6 +90,36 @@ globalStyle(`.${standard}.${closing}[open]`, {
   transform: 'scale(0.95)',
 })
 
+// Settle the OPEN dialog on `transform: none`, not on Oat's `scale(1)`.
+//
+// A transform of any kind -- `scale(1)` included, which computes to the
+// identity matrix and paints nothing -- makes the element a CONTAINING BLOCK
+// for its `position: fixed` descendants. Every menu inside a dialog is one:
+// `DropdownMenu` positions its popover with viewport coordinates from
+// `calcPopoverPosition`, so a containing block that is not the viewport
+// silently changes what those coordinates mean.
+//
+// It stays hidden while the menu is open, because an open popover is in the TOP
+// LAYER, and the top layer resolves against the viewport whatever the ancestors
+// say. The moment the popover leaves the top layer on dismiss, the same
+// unchanged `left` re-resolves against the dialog and the menu jumps right by
+// the dialog's own left offset -- 464px at a 1440px width. Chromium hides the
+// jump because `overlay ... allow-discrete` keeps the popover in the top layer
+// for the whole close transition; the macOS desktop app's WKWebView paints a
+// frame or two outside it, and that frame is the visible jump.
+//
+// The animation is unaffected. `none` interpolates as the identity matrix, so
+// Oat's transition still runs `scale(0.95)` -> `none` on open and the
+// `.closing` rule above still runs `none` -> `scale(0.95)` on close --
+// confirmed in both Chromium and WebKit.
+//
+// `:not(.closing)` keeps this out of the exit: that rule needs its scale, and
+// the two selectors carry equal specificity, so an overlap would be decided by
+// source order rather than by intent.
+globalStyle(`.${standard}[open]:not(.${closing})`, {
+  transform: 'none',
+})
+
 const animationOff = {
   '@media': {
     '(prefers-reduced-motion: reduce)': {

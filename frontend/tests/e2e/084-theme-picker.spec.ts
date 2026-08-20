@@ -348,6 +348,51 @@ test.describe('Theme picker', () => {
     return { panel, trigger, menu }
   }
 
+  test('leaves an open dialog off the containing-block chain of its menus', async ({ page, leapmuxServer }) => {
+    // A menu popover inside a dialog is `position: fixed` and is placed with
+    // VIEWPORT coordinates by `calcPopoverPosition`. Any transform on an
+    // ancestor -- `scale(1)` included, which paints nothing -- makes that
+    // ancestor the containing block for it, so those coordinates come to mean
+    // something else.
+    //
+    // The damage is invisible until dismiss. An open popover sits in the top
+    // layer, which resolves against the viewport whatever its ancestors say; on
+    // the way out it leaves the top layer and the same unchanged `left`
+    // re-resolves against the dialog, jumping the menu right by the dialog's own
+    // left offset. Chromium keeps it in the top layer for the whole close
+    // transition and hides the jump, so this asserts the CAUSE rather than the
+    // symptom -- the symptom is only reachable on WebKit.
+    const { trigger, menu } = await openThemeMenu(page, leapmuxServer.adminToken)
+    await trigger.click()
+    await expect(menu).toBeVisible()
+
+    const { creators, bodyLeft } = await menu.evaluate((el) => {
+      const found: string[] = []
+      for (let n = el.parentElement; n; n = n.parentElement) {
+        // `body` is the ONE tolerated creator, and it is tolerated because its
+        // box coincides with the viewport rather than because it is harmless in
+        // principle. Its transform is the iOS viewport lock in
+        // `global.css.ts` -- it cancels the residual `visualViewport.offsetTop`
+        // WebKit leaves after a keyboard dismiss -- so it cannot simply be
+        // dropped. `bodyLeft` below is what keeps the tolerance honest.
+        if (n.tagName === 'BODY')
+          continue
+        const s = getComputedStyle(n)
+        // `filter` and `perspective` establish one for fixed descendants too,
+        // so a future backdrop treatment on the dialog cannot slip past.
+        if (s.transform !== 'none' || s.filter !== 'none' || s.perspective !== 'none')
+          found.push(`${n.tagName.toLowerCase()} transform=${s.transform} filter=${s.filter}`)
+      }
+      return { creators: found, bodyLeft: document.body.getBoundingClientRect().left }
+    })
+    expect(creators, `a fixed menu inside these would not be placed in viewport coordinates:\n  ${creators.join('\n  ')}`)
+      .toEqual([])
+    // The axis this bug moves on. A body whose box started anywhere but the
+    // viewport's left edge would shift every dismissing menu by that much, and
+    // the exclusion above would be hiding it.
+    expect(bodyLeft, 'body is a containing block whose box is NOT at the viewport origin').toBe(0)
+  })
+
   // A menu panel is a focus HOST, not a control, so it rings in NEITHER
   // modality -- and the item the user navigates to rings instead.
   //
