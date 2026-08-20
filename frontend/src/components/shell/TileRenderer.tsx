@@ -7,7 +7,7 @@ import type { TileActions, TilePopAction } from './TileActionsMenu'
 import type { useAgentOperations } from './useAgentOperations'
 import type { useTerminalOperations } from './useTerminalOperations'
 import type { FileAttachment } from '~/components/chat/attachments'
-import type { ChatMessageLookups, ChatRailProps } from '~/components/chat/ChatView'
+import type { AgentLifecycleProps, ChatMessageLookups, ChatRailProps } from '~/components/chat/ChatView'
 import type { BranchRef } from '~/components/workspace/WorkspaceTabTree'
 import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { ToggleDialogState } from '~/hooks/createDialogState'
@@ -48,7 +48,7 @@ import { parentDirectory, relativizePath } from '~/lib/paths'
 import { pluralize } from '~/lib/plural'
 import { formatFileMention, formatFileQuote } from '~/lib/quoteUtils'
 import { chipTasksFor, rootWorkState, subagentWorkState } from '~/stores/chatBackgroundTasks'
-import { appendText, insertIntoMruAgentEditor, queueInsertForAgent } from '~/stores/editorRef.store'
+import { insertIntoAgentEditor, insertIntoMruAgentEditor } from '~/stores/editorRef.store'
 import { buildTilePredicateMap, CLOSE_MODE_NONE } from '~/stores/layout.store'
 import { agentTabToInfo, isSteerableAgentTab, rootAgentIdFor } from '~/stores/tab.helpers'
 import { emitMergeTabsIntoTile, emitReassignTabsToTile } from '~/stores/tabOps'
@@ -195,7 +195,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
   const isSubagentReadOnly = (agentId: string): boolean => {
     const t = view.getAgentTab(agentId)
     // Absent tab -> not read-only: nothing is mounted to refuse, and the write
-    // path (appendText, the composer gate) answers for itself. isSteerableAgentTab
+    // path (insertIntoAgentEditor, the composer gate) answers for itself. isSteerableAgentTab
     // already returns true for a root, so this needs no parentAgentId test of its
     // own -- a second copy of that rule is how the two answers drift apart.
     return t !== undefined && !isSteerableAgentTab(t)
@@ -820,6 +820,27 @@ export function createTileRenderer(opts: TileRendererOpts) {
             // Memoized because bgRootFor walks the parent chain on every call.
             const rootTasks = createMemo(() => bgTasksFor(agentId))
 
+            // A named const with GETTERS, not an inline object literal in the
+            // JSX. Solid compiles a literal passed as a prop into ONE getter for
+            // the whole object, so any reader that touches one field inside a
+            // tracking scope subscribes to EVERY field -- `thinkingTokens` and
+            // `agentWorking` included, and those change many times per turn. A
+            // bare identifier compiles to a STATIC prop instead, so each getter
+            // below is its own reactive read. `renderContext` in MessageBubble is
+            // the same pattern for the same reason.
+            const agentLifecycle: AgentLifecycleProps = {
+              get agentWorking() { return agentThinking(agentId) },
+              get thinkingTokens() { return agentSessionStore.getInfo(agentId).thinkingTokens },
+              get agentStatus() { return agent()?.agentStatus },
+              get startupError() { return agent()?.startupError },
+              get startupMessage() { return agent()?.startupMessage },
+              get providerLabel() { return agentProviderLabel(agent()?.agentProvider) },
+              get backgroundTasks() { return chipTasks() },
+              get registryRows() { return rootTasks() },
+              onOpenSubagent: onOpenBackgroundTask,
+              get todos() { return todosFor(agentId) },
+            }
+
             const railProps = createMemo<ChatRailProps>(() => ({
               ...chatStore.getRailData(agentId),
               previewFor: railPreviewFor,
@@ -838,25 +859,25 @@ export function createTileRenderer(opts: TileRendererOpts) {
             // A writable tab keeps the same-tab insert. Routing every quote
             // through the MRU resolution would collapse the branch and is wrong:
             // mruOrder is workspace-wide, so with split tiles its head can be an
-            // agent in a different tile than the one being read.
+            // agent in a different tile than the tile the user reads.
             const quoteIntoComposer = (text: string) => {
               if (isSubagentReadOnly(agentId)) {
                 insertIntoMruAgentEditor(mruEditorDeps, text)
                 return
               }
-              if (appendText(agentId, text)) {
-                focusEditorRef()?.()
+              // One router decides the three cases, so this call site cannot
+              // read "the editor refused it" as "no editor is mounted" and queue
+              // into a composer nothing will ever flush.
+              if (insertIntoAgentEditor(agentId, text) === 'inserted')
                 return
-              }
-              // No ref registered for this agent. The composer is mounted for the
-              // FOCUSED tab alone, so this quote came from another tile: queue it
-              // and bring that tab forward, the way an unmounted editor is already
-              // handled for a mention. Focusing here instead would focus a
-              // DIFFERENT agent's composer -- the one that received no text.
+              // The composer is mounted for the FOCUSED tab alone, so a quote
+              // taken in another tile is already parked. Bring that tab forward,
+              // the way an unmounted editor is already handled for a mention.
+              // Activating BEFORE the insert would mount the destination editor
+              // first, and it would register to an empty queue.
               const tab = view.getAgentTab(agentId)
               if (tab)
                 mruEditorDeps.activate(tab)
-              queueInsertForAgent(agentId, text)
             }
             onCleanup(() => {
               agentScrollStates.delete(agentId)
@@ -918,18 +939,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
                     lookups={lookups}
                     onQuote={isActiveWorkspaceArchived() ? undefined : quoteIntoComposer}
                     onReply={isActiveWorkspaceArchived() ? undefined : quoteIntoComposer}
-                    agentLifecycle={{
-                      agentWorking: agentThinking(agentId),
-                      thinkingTokens: agentSessionStore.getInfo(agentId).thinkingTokens,
-                      agentStatus: agent()?.agentStatus,
-                      startupError: agent()?.startupError,
-                      startupMessage: agent()?.startupMessage,
-                      providerLabel: agentProviderLabel(agent()?.agentProvider),
-                      backgroundTasks: chipTasks(),
-                      registryRows: rootTasks(),
-                      onOpenSubagent: onOpenBackgroundTask,
-                      todos: todosFor(agentId),
-                    }}
+                    agentLifecycle={agentLifecycle}
                   />
                 </Show>
               </div>

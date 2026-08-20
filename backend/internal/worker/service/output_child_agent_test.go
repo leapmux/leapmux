@@ -816,7 +816,7 @@ func TestMarkBackgroundTasksExited_ClosesASubagentPastTheDisplayCap(t *testing.T
 	displayed, err := svc.Output.LoadBackgroundTasks(context.Background(), "root-1")
 	require.NoError(t, err)
 	for _, item := range displayed {
-		require.NotEqual(t, "task-1", item.RowKey, "the row must have left the display list")
+		require.NotEqual(t, "task-1", item.RowKey, "the row leaves the display list")
 	}
 
 	svc.Output.MarkAgentBackgroundTasksExited("root-1", false)
@@ -1008,9 +1008,9 @@ func TestReviveBackgroundTask_ReturnsAFinishedRowToRunning(t *testing.T) {
 	assert.Equal(t, bgtask.StatusRunning, row.Status)
 	assert.True(t, row.EndedAt.IsZero(), "a running row carries no end time")
 	assert.Empty(t, row.ActiveForm,
-		"active_form described the finished run; the new one has reported nothing yet")
+		"active_form described the finished run; the new one reported nothing yet")
 	assert.Empty(t, row.Description,
-		"description held the finished run's output file; the new run has not named one")
+		"description held the finished run's output file; the new run identified none")
 
 	// The durable row too, not only the cache. The revive writes both, and a
 	// cache that says running over a DB row that still says completed would
@@ -1150,7 +1150,7 @@ func TestLookupBackgroundTask_ResolvesARowThatLeftTheDisplayCache(t *testing.T) 
 	require.NoError(t, err)
 	require.Len(t, displayed, bgtask.MaxTasks)
 	for _, item := range displayed {
-		require.NotEqual(t, "task-1", item.RowKey, "the row must have left the display list")
+		require.NotEqual(t, "task-1", item.RowKey, "the row leaves the display list")
 	}
 
 	gotChild, status, ok, err := sink.LookupBackgroundTask("task-1")
@@ -1216,11 +1216,16 @@ func TestReviveBackgroundTask_RowWithNoTranscript(t *testing.T) {
 	assert.Equal(t, bgtask.StatusRunning, registrySnapshotRow(t, svc, "root-1", "shell-1").Status)
 }
 
-// The cache and the durable row are two sources, and the query is the one that
-// decides. When the DB says the row is already active the UPDATE matches nothing,
-// and reporting a revive anyway would release a transcript-close claim for a
-// transcript that never reopened -- letting a SECOND divider be written for the
-// FIRST completion.
+// The cache and the durable row are two sources, and the row is the one that
+// decides. When the row is already ACTIVE the UPDATE matches nothing, and the
+// applier re-reads rather than guessing -- so the cache adopts the row, and the
+// transcript-close claim goes back, because a row that is active and carries a
+// child IS a reopened transcript that owes a closing divider.
+//
+// The claim, not the UPDATE, is what makes this the right way round. Holding it
+// leaves the restarted run with no divider at all and a thinking indicator that
+// never resolves, which this file calls the worse error where it fails the claim
+// open on a DB error.
 func TestReviveBackgroundTask_TrustsTheDatabaseOverAStaleCache(t *testing.T) {
 	t.Parallel()
 
@@ -1242,6 +1247,53 @@ func TestReviveBackgroundTask_TrustsTheDatabaseOverAStaleCache(t *testing.T) {
 
 	require.NoError(t, sink.ReviveBackgroundTask("task-1"))
 
-	assert.False(t, svc.Output.claimSubagentTranscriptClose(ctx, childID),
-		"the claim is still held: no revive was reported, so none was released")
+	assert.True(t, svc.Output.claimSubagentTranscriptClose(ctx, childID),
+		"the row is active and linked, so the reopened transcript gets its claim back")
+}
+
+// PersistChildUserMessage is the write a revive makes, and its three properties
+// are what the delivered message depends on. Nothing tested the REAL sink: the
+// provider test asserts against a fake that was written to return the right
+// mark, so removing the mark from the sink -- or routing the call through the
+// emptiness-guarded opening-prompt path -- would break the scroll rail with a
+// green suite.
+func TestPersistChildUserMessage_AppendsWithTheScrollRailMark(t *testing.T) {
+	t.Parallel()
+
+	svc, sink := setupRootSink(t, "root-1")
+	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	require.NoError(t, err)
+	require.NoError(t, sink.PersistChildPrompt(childID, "Find every caller."))
+
+	require.NoError(t, sink.PersistChildUserMessage(childID, "Also check the tests."))
+
+	msgs := transcriptMessages(t, svc, childID)
+	require.Len(t, msgs, 2, "the delivered message APPENDS; it does not replace the opening prompt")
+	assert.Equal(t, "Also check the tests.", msgs[1]["content"])
+	assert.Equal(t, float64(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER), msgs[1]["__source"])
+
+	rows, err := svc.Queries.ListAllMessagesByAgentID(context.Background(),
+		db.ListAllMessagesByAgentIDParams{AgentID: childID})
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE, rows[1].MarkType,
+		"a mid-transcript user message is exactly what the scroll rail exists to find")
+	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_UNSPECIFIED, rows[0].MarkType,
+		"and the opening prompt carries none, so the rail does not point at it")
+}
+
+// The two no-ops the doc promises. A blank text and an empty child id both write
+// nothing, so a send the CLI refused, or one for a subagent with no transcript,
+// cannot leave an empty bubble in the transcript.
+func TestPersistChildUserMessage_IsANoOpForBlankInput(t *testing.T) {
+	t.Parallel()
+
+	svc, sink := setupRootSink(t, "root-1")
+	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	require.NoError(t, err)
+
+	require.NoError(t, sink.PersistChildUserMessage(childID, "   \n\t "))
+	require.NoError(t, sink.PersistChildUserMessage("", "a real message"))
+
+	assert.Empty(t, transcriptMessages(t, svc, childID), "neither call writes a message")
 }

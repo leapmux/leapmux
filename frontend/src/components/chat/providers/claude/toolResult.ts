@@ -58,14 +58,15 @@ function structuredResultBody(
 }
 
 /**
- * Per-tool collapsibility check. `resultText` is the (possibly null) cached
- * tool_result text for the current message; pass it in so `claudeToolResultMeta`
- * only walks the content array once.
+ * Per-tool collapsibility check. `resultText` and `structuredBody` are the
+ * cached tool_result text and structured body for the current message; pass
+ * them in so `claudeToolResultMeta` only walks the content array once.
  */
 function isCollapsible(
   toolName: string,
   toolUseResult: Record<string, unknown> | undefined,
   resultText: string | null,
+  structuredBody: string | null,
 ): boolean {
   if (toolName === CLAUDE_TOOL.GREP || toolName === CLAUDE_TOOL.GLOB) {
     const filenames = Array.isArray(toolUseResult?.filenames) ? toolUseResult.filenames as string[] : []
@@ -87,9 +88,8 @@ function isCollapsible(
   // Judge the text the CARD shows, which for a launch is the prompt rather than
   // the harness instructions in resultText. Reading resultText there put the
   // expand button on a body the card no longer renders.
-  const structuredCollapsible = structuredResultBody(toolName, toolUseResult, resultText)
-  if (structuredCollapsible !== null)
-    return hasMoreLinesThan(structuredCollapsible, COLLAPSED_RESULT_ROWS)
+  if (structuredBody !== null)
+    return hasMoreLinesThan(structuredBody, COLLAPSED_RESULT_ROWS)
 
   if (toolName === CLAUDE_TOOL.WEB_FETCH && typeof toolUseResult?.code === 'number')
     return true
@@ -119,6 +119,7 @@ function hasCopyable(
   toolUseResult: Record<string, unknown> | undefined,
   hasEditDiff: boolean,
   resultText: string | null,
+  structuredBody: string | null,
 ): boolean {
   if (toolName === CLAUDE_TOOL.EDIT)
     return hasEditDiff
@@ -132,9 +133,8 @@ function hasCopyable(
   // answers from resultText, which extractToolResultText reports as null for an
   // empty block content -- so a card showing a structured listing, or a launch
   // showing its prompt, offered no Copy button at all.
-  const structured = structuredResultBody(toolName, toolUseResult, resultText)
-  if (structured !== null)
-    return structured !== ''
+  if (structuredBody !== null)
+    return structuredBody !== ''
   return resultText !== null
 }
 
@@ -143,6 +143,7 @@ function computeCopyableContent(
   toolName: string,
   toolUseResult: Record<string, unknown> | undefined,
   resultText: string | null,
+  structuredBody: string | null,
 ): string | null {
   if (toolName === CLAUDE_TOOL.EDIT) {
     const src = claudeFileEditFromToolUseResult(toolUseResult)
@@ -169,9 +170,8 @@ function computeCopyableContent(
   // No `|| resultText` fallback. For a launch with no prompt the body is empty
   // and resultText is the CLI's instructions to the model -- text the card
   // deliberately never shows, so Copy must not hand it over either.
-  const structuredCopy = structuredResultBody(toolName, toolUseResult, resultText)
-  if (structuredCopy !== null)
-    return structuredCopy || null
+  if (structuredBody !== null)
+    return structuredBody || null
 
   return resultText
 }
@@ -204,11 +204,16 @@ export function claudeToolResultMeta(
   // Walk message.content once; downstream collapsibility/copy paths reuse it.
   const resultText = extractToolResultText(obj)
   const hasEditDiff = fileEditHasDiff(claudeFileEditFromToolUseResult(toolUseResult))
+  // The structured body ONCE, beside resultText and for the same reason. Each of
+  // the three readers below used to build it again, so an Agent report was
+  // re-flattened twice per meta -- and a subagent that returned a screenshot had
+  // its base64 payload re-embedded into a data URL each time.
+  const structuredBody = structuredResultBody(toolName, toolUseResult, resultText)
 
   return {
-    collapsible: isCollapsible(toolName, toolUseResult, resultText),
+    collapsible: isCollapsible(toolName, toolUseResult, resultText, structuredBody),
     hasDiff: hasEditDiff,
-    hasCopyable: hasCopyable(toolName, toolUseResult, hasEditDiff, resultText),
-    copyableContent: () => computeCopyableContent(toolName, toolUseResult, resultText),
+    hasCopyable: hasCopyable(toolName, toolUseResult, hasEditDiff, resultText, structuredBody),
+    copyableContent: () => computeCopyableContent(toolName, toolUseResult, resultText, structuredBody),
   }
 }

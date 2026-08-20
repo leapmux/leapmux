@@ -127,19 +127,11 @@ func (a *CodexAgent) handleTurnStarted(params json.RawMessage) {
 			// running registry row so the child tab reflects activity.
 			a.setChildTurnID(notif.ThreadID, notif.Turn.ID)
 			if a.knownCollabChild(notif.ThreadID) {
-				// A child that runs again after its row went final. The upsert
-				// below absorbs a non-final status against a final row --
-				// deliberately, because a replayed running update cannot prove a
-				// restart -- so without this the sidebar row and the tab chip read
-				// "finished" for the whole second run while the transcript fills.
-				//
-				// knownCollabChild is the proof. removeCollabChildIndex drops the
-				// entry at the close, so a thread that is known HERE was
-				// re-registered by a later collab call, which a replay never does.
-				// The reopened row keeps a closer: that collab call's own
-				// item/completed runs the states walk, which closes it.
-				a.reviveFinishedCollabChild(notif.ThreadID)
-				_ = a.sink.UpsertBackgroundTask(bgtask.Upsert{
+				// upsertCollabChildRow reopens the row first when this child runs
+				// again after going final. The reopened row keeps a closer: that
+				// collab call's own item/completed runs the states walk, which
+				// closes it.
+				_ = a.upsertCollabChildRow(bgtask.Upsert{
 					RowKey:     notif.ThreadID,
 					Kind:       bgtask.KindSubagent,
 					Title:      a.collabChildTitle(notif.ThreadID),

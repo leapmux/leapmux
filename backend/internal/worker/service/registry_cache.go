@@ -59,6 +59,11 @@ type registryRetention[T any] struct {
 	// load reads a persisted row back by key, so an operation on a row the cache
 	// no longer holds still finds it. found=false for a row that does not exist.
 	load func(ctx context.Context, ownerID, key string) (row T, found bool, err error)
+	// reseq gives a re-admitted row a new seq, so the display list and the
+	// cold-start seed keep ONE ordering key. Without it a re-admitted row sat at
+	// the end of the list in memory while its stored seq still placed it outside
+	// the next seed's window.
+	reseq func(ctx context.Context, ownerID, key string, seq int64) error
 }
 
 // registryOps supplies the type-specific behaviour a registryCache needs. It is
@@ -193,42 +198,106 @@ func (c *registryCache[T]) indexOf(key string) int {
 	return slices.IndexFunc(c.Rows, func(r T) bool { return c.ops.keyOf(r) == key })
 }
 
-// rowIndexLocked returns the cache index of the row at key, re-admitting a
-// RETAINED row from the store when the display cache no longer holds it.
-// Returns -1 when no row exists anywhere. Caller must hold c.Mu.
+// findRowLocked resolves the row at key WITHOUT changing the display list. It
+// reports the row, its display index, and whether a row exists at all:
 //
-// Every mutation goes through here, and that is what keeps retention honest.
-// The cap made the cache a partial view of the table, so a mutation that read
-// indexOf alone had a second reason to see -1 -- the row is retained, just not
-// displayed -- and it could not tell that apart from "no such row". Each applier
-// then dropped its write: a close left the row Running with its transcript
-// unended, a status update went nowhere, a revive never reopened the row, and a
-// replayed running upsert took the retained row for a new one and resurrected
-// it. One lookup for all of them, so no applier can forget the case.
+//   - found=false, idx=-1: no row exists anywhere.
+//   - found=true, idx>=0: the display cache holds it, and idx addresses it.
+//   - found=true, idx=-1: the row is RETAINED in the store but left the display
+//     list. A caller that means to WRITE calls admitRowLocked to put it back.
 //
-// A re-admitted row goes to the END of the display list, and the pool evicts to
-// stay at its cap first. Both follow from what the list is for: a row that a
-// mutation just touched is the most recent activity in the registry, so it is
-// the last thing that should leave the list again.
-func (c *registryCache[T]) rowIndexLocked(ctx context.Context, ownerID, key string) (int, error) {
+// Caller must hold c.Mu.
+//
+// Every mutation resolves through here, and that is what keeps retention
+// honest. The cap made the cache a partial view of the table, so a mutation
+// that read indexOf alone had a second reason to see -1 -- the row is retained,
+// just not displayed -- and it could not tell that apart from "no such row".
+// Each applier then dropped its write: a close left the row Running with its
+// transcript unended, a status update went nowhere, a revive never reopened the
+// row, and a replayed running upsert took the retained row for a new one and
+// resurrected it. One lookup for all of them, so no applier can forget the case.
+//
+// The read and the re-admission are SEPARATE because a mutation decides between
+// them. Most appliers guard first and write second, and a guard that stops the
+// write must leave the display list alone: admitting there evicts a displayed
+// row -- and deletes an unlinked one from the table -- to make space for a write
+// that never happens, and the applier then reports changed=false, so no
+// broadcast tells the client its list moved.
+func (c *registryCache[T]) findRowLocked(ctx context.Context, ownerID, key string) (T, int, bool, error) {
 	if idx := c.indexOf(key); idx >= 0 {
-		return idx, nil
+		return c.Rows[idx], idx, true, nil
 	}
+	var zero T
 	if c.ops.retention == nil {
-		return -1, nil
+		return zero, -1, false, nil
 	}
 	row, found, err := c.ops.retention.load(ctx, ownerID, key)
 	if err != nil {
-		return -1, fmt.Errorf("load retained %s row %s/%s: %w", c.ops.label, ownerID, key, err)
+		return zero, -1, false, fmt.Errorf("load retained %s row %s/%s: %w", c.ops.label, ownerID, key, err)
 	}
 	if !found {
-		return -1, nil
+		return zero, -1, false, nil
 	}
+	return row, -1, true, nil
+}
+
+// admitRowLocked returns a retained row to the display list and reports its new
+// index. Call it only at the point where a mutation commits to a write, because
+// it evicts to keep the pool at its cap. Caller must hold c.Mu.
+//
+// The row goes to the END of the display list, and the pool evicts to stay at
+// its cap first. Both follow from what the list is for: a row that a mutation
+// just touched is the most recent activity in the registry, so it is the last
+// thing that should leave the list again.
+//
+// The stored seq moves with it (ops.retention.reseq), because the position in
+// this slice and the seq are ONE ordering key, not two. ensureSeededLocked
+// states the rule -- ascending seq is what the snapshot, the eviction by slice
+// order, and the sidebar all assume -- and a re-admission that reordered only
+// the slice broke it in both directions: eviction stopped picking the oldest
+// row, and the next cold seed (newest rows by seq) dropped the re-admitted row
+// again, so a subagent a revive had just reopened vanished from the sidebar on
+// the next worker restart.
+func (c *registryCache[T]) admitRowLocked(ctx context.Context, ownerID string, row T) (int, error) {
 	if _, _, err := c.makeRoomLocked(ctx, ownerID, c.bucket(row)); err != nil {
 		return -1, err
 	}
+	if c.ops.retention != nil && c.ops.retention.reseq != nil {
+		if err := c.ops.retention.reseq(ctx, ownerID, c.ops.keyOf(row), c.nextSeq); err != nil {
+			return -1, fmt.Errorf("resequence %s row %s: %w", c.ops.label, c.ops.keyOf(row), err)
+		}
+		c.nextSeq++
+	}
 	c.Rows = append(c.Rows, row)
 	return len(c.Rows) - 1, nil
+}
+
+// deleteRowLocked removes the row at key from the display list, and from the
+// store unless ops.retention keeps it. Reports whether a displayed row left the
+// list. Caller must hold c.Mu.
+//
+// This is the ONE delete a Go caller reaches, so "a retained row survives a
+// delete" cannot be forgotten at a new call site: eviction and an explicit
+// delete now ask ops.retention.keep through the same code. The seed-time
+// reclaim is the one delete that cannot route here -- it is a set-based
+// statement over rows the cache never loaded -- so it mirrors the rule in its
+// own WHERE clause instead.
+func (c *registryCache[T]) deleteRowLocked(ctx context.Context, ownerID, key string) (bool, error) {
+	row, idx, found, err := c.findRowLocked(ctx, ownerID, key)
+	if err != nil {
+		return false, err
+	}
+	if !found {
+		return false, nil
+	}
+	if err := c.dropStoredRowLocked(ctx, ownerID, row); err != nil {
+		return false, fmt.Errorf("delete %s: %w", c.ops.label, err)
+	}
+	if idx < 0 {
+		return false, nil
+	}
+	c.Rows = slices.Delete(c.Rows, idx, idx+1)
+	return true, nil
 }
 
 // makeRoomLocked frees one slot in a full cap pool so an insert keeps the
@@ -295,15 +364,22 @@ func (c *registryCache[T]) evictFirstMatchLocked(ctx context.Context, ownerID st
 // reachable through rowIndexLocked. Caller must hold c.Mu.
 func (c *registryCache[T]) evictAtLocked(ctx context.Context, ownerID string, evictIdx int) (T, bool, error) {
 	evicted := c.Rows[evictIdx]
-	if c.ops.retention == nil || !c.ops.retention.keep(evicted) {
-		key := c.ops.keyOf(evicted)
-		if err := c.ops.deleteByKey(ctx, ownerID, key); err != nil {
-			var zero T
-			return zero, false, fmt.Errorf("evict %s: %w", c.ops.label, err)
-		}
+	if err := c.dropStoredRowLocked(ctx, ownerID, evicted); err != nil {
+		var zero T
+		return zero, false, fmt.Errorf("evict %s: %w", c.ops.label, err)
 	}
 	c.Rows = slices.Delete(c.Rows, evictIdx, evictIdx+1)
 	return evicted, true, nil
+}
+
+// dropStoredRowLocked deletes the persisted row unless ops.retention keeps it,
+// and is the ONE place that asks the question. A registry without retention
+// deletes every row. Caller must hold c.Mu.
+func (c *registryCache[T]) dropStoredRowLocked(ctx context.Context, ownerID string, row T) error {
+	if c.ops.retention != nil && c.ops.retention.keep(row) {
+		return nil
+	}
+	return c.ops.deleteByKey(ctx, ownerID, c.ops.keyOf(row))
 }
 
 // dropRowLocked removes the cached row at key WITHOUT touching the DB, for a

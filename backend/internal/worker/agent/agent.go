@@ -319,8 +319,8 @@ type OutputSink interface {
 	// the same rule every other writer of a title column applies, and the one
 	// place that documents its steps. A provider passes what it has, and does
 	// not cap or strip it first. Pass "" when the provider has no title: the
-	// sink keeps the registry row's current title and gives the agent row its
-	// own name.
+	// sink keeps the registry row's current title and gives the agent row a
+	// pooled fallback name.
 	EnsureChildAgent(spawnSpanID, providerChildKey, title string) (childAgentID string, err error)
 
 	// ChildSink returns an OutputSink bound to the child agent's transcript.
@@ -351,7 +351,7 @@ type OutputSink interface {
 	// message, in the same {"content": text} envelope PersistChildPrompt uses.
 	// For a message the parent delivered to a subagent mid-transcript, where
 	// PersistChildPrompt cannot help: that one opens the transcript and is a
-	// no-op once the subagent has spoken.
+	// no-op once the subagent spoke.
 	//
 	// Carries MARK_TYPE_USER_MESSAGE, which the opening prompt does not: this
 	// message lands in the MIDDLE of a transcript, and a mid-transcript user

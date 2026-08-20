@@ -4,6 +4,7 @@ import type { ClaudeAgentResult } from '../extractors/agent'
 import Bot from 'lucide-solid/icons/bot'
 import Check from 'lucide-solid/icons/check'
 import { createMemo, For, Show } from 'solid-js'
+import { clipFirstLine } from '~/lib/clipFirstLine'
 import { getToolResultExpanded } from '../../../messageRenderers'
 import { CollapsibleContent } from '../../../results/CollapsibleContent'
 import { ToolStatusHeader } from '../../../results/ToolStatusHeader'
@@ -37,8 +38,7 @@ const DESCRIPTION_LIMIT = 80
  * launched one.
  */
 function clipDescription(description: string): string {
-  const line = description.trim().split('\n', 1)[0]
-  return line.length > DESCRIPTION_LIMIT ? `${line.slice(0, DESCRIPTION_LIMIT)}\u2026` : line
+  return clipFirstLine(description, DESCRIPTION_LIMIT)
 }
 
 /**

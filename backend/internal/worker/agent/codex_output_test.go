@@ -1782,3 +1782,56 @@ func TestCodexSubAgentActivity_InterruptedStaysRunning(t *testing.T) {
 	assert.Equal(t, bgtask.StatusRunning, rows[0].Status)
 	assert.Equal(t, "", rows[0].ActiveForm, "started cleared the paused activity line")
 }
+
+// subAgentActivity is the THIRD writer that reports a collab child active again,
+// and it had no coverage for the reopen at all. The upsert absorbs a non-final
+// status against a final row, so without the reopen an `interacted` lands its
+// "received input" activity on a row that still reads "completed" -- the sidebar
+// then shows a finished subagent that just took a message.
+func TestHandleCodexOutput_ASubAgentActivityReopensAFinishedChild(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	started := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{}}}}`
+	completed := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{"child-1":{"status":"completed","message":"done"}}}}}`
+	resumed := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn2","item":{"type":"collabAgentToolCall","id":"call-2","tool":"resumeAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"more work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{}}}}`
+	interacted := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn2","item":{"type":"subAgentActivity","agentThreadId":"child-1","kind":"interacted"}}}`
+
+	handleCodexOutput(agent, parseLine([]byte(started)))
+	handleCodexOutput(agent, parseLine([]byte(completed)))
+	_, status, ok, _ := sink.LookupBackgroundTask("child-1")
+	require.True(t, ok)
+	require.True(t, status.IsFinished(), "the first run closed the row")
+
+	handleCodexOutput(agent, parseLine([]byte(resumed)))
+	handleCodexOutput(agent, parseLine([]byte(interacted)))
+
+	assert.Equal(t, []string{"child-1"}, sink.RevivedTasks(), "the activity reopens the re-registered child")
+	_, status, ok, _ = sink.LookupBackgroundTask("child-1")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusRunning, status)
+}
+
+// The negative half: an activity for a child nothing re-registered must NOT
+// reopen the row. The close dropped the child index, so the proof is absent.
+func TestHandleCodexOutput_ASubAgentActivityAloneDoesNotReopenARow(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	started := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{}}}}`
+	completed := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{"child-1":{"status":"completed","message":"done"}}}}}`
+	interacted := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn2","item":{"type":"subAgentActivity","agentThreadId":"child-1","kind":"interacted"}}}`
+
+	handleCodexOutput(agent, parseLine([]byte(started)))
+	handleCodexOutput(agent, parseLine([]byte(completed)))
+	handleCodexOutput(agent, parseLine([]byte(interacted)))
+
+	assert.Empty(t, sink.RevivedTasks(), "an activity with no re-registration is not proof of a restart")
+	_, status, ok, _ := sink.LookupBackgroundTask("child-1")
+	require.True(t, ok)
+	assert.True(t, status.IsFinished(), "the row keeps its final status")
+}

@@ -594,7 +594,7 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 		// Only the root's. A subagent runs past this boundary and clears its own
 		// arms at its own turn end, so wiping every arm here would drop a live
 		// subagent's before its task_started arrived.
-		a.clearClaudeRevives("")
+		a.tasks.clearClaudeRevives("")
 	}
 }
 

@@ -207,6 +207,14 @@ export function subagentWorkState(childAgentId: string, rootTasks: BackgroundTas
  * own row by construction: that row belongs to its parent. Without the scoping
  * a subagent tab read its PARENT's count, siblings and itself included.
  */
+export function chipTasksFor(
+  agentId: string,
+  rootTasks: BackgroundTaskItem[],
+  isChild: boolean,
+): BackgroundTaskItem[] {
+  return isChild ? rootTasks.filter(t => t.parentAgentId === agentId) : rootTasks
+}
+
 /**
  * Whether this row owns a subagent transcript that a click can open. A shell row
  * owns none, and a subagent whose provider never linked one owns none either.
@@ -219,14 +227,6 @@ export function subagentWorkState(childAgentId: string, rootTasks: BackgroundTas
  */
 export function opensSubagentTranscript(item: BackgroundTaskItem): boolean {
   return item.kind === 'subagent' && !!item.childAgentId
-}
-
-export function chipTasksFor(
-  agentId: string,
-  rootTasks: BackgroundTaskItem[],
-  isChild: boolean,
-): BackgroundTaskItem[] {
-  return isChild ? rootTasks.filter(t => t.parentAgentId === agentId) : rootTasks
 }
 
 /**

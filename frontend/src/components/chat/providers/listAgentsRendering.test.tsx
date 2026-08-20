@@ -127,4 +127,19 @@ describe('claudeToolResultMeta for ListAgents', () => {
     )
     expect(meta?.collapsible).toBe(false)
   })
+
+  // The renderer treats a whitespace-only listing as absent and hands the row to
+  // the catch-all. The toolbar has to agree: reading the untrimmed value made it
+  // offer a Copy button on a card whose body came from somewhere else, and yield
+  // spaces.
+  it('offers no Copy for a whitespace-only listing', () => {
+    const meta = claudeToolResultMeta(
+      { kind: 'tool_result' },
+      listAgentsToolResult('', { listing: '   \n\t  ' }),
+      'ListAgents',
+      undefined,
+    )
+    expect(meta?.hasCopyable).toBe(false)
+    expect(meta?.copyableContent()).toBeNull()
+  })
 })

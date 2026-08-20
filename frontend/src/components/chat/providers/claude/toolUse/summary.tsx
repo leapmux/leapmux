@@ -1,6 +1,7 @@
 import type { JSX } from 'solid-js'
 import type { RenderContext } from '../../../messageRenderers'
 import type { GrepInput, SendMessageInput } from '~/types/toolMessages'
+import { clipFirstLine } from '~/lib/clipFirstLine'
 import { relativizePath } from '~/lib/paths'
 import { CLAUDE_TOOL } from '~/types/toolMessages'
 import { toolInputSummary } from '../../../toolStyles.css'
@@ -27,15 +28,20 @@ export function deriveToolSummary(toolName: string, input: Record<string, unknow
     // Bash's collapsed command, so a long steering message is clipped here
     // rather than allowed to inflate the row.
     case CLAUDE_TOOL.SEND_MESSAGE: {
-      const { message } = input as SendMessageInput
-      if (typeof message !== 'string')
+      const { message, summary } = input as SendMessageInput
+      // `summary` first. The tool's own schema describes it as "a 5-10 word
+      // summary shown as a one-line preview in the UI", and the model writes it
+      // for exactly this surface -- so preferring the raw first line of the
+      // message threw away the label written for the slot. It is also the only
+      // one-line form the STRUCTURED kinds have: for an object-valued `message`
+      // the first-line clip yields nothing, and the card showed the recipient
+      // with no preview at all.
+      const preview = clipFirstLine(
+        summary ?? (typeof message === 'string' ? message : ''),
+        SEND_MESSAGE_PREVIEW_LIMIT,
+      )
+      if (!preview)
         return undefined
-      const line = message.trim().split('\n', 1)[0]
-      if (!line)
-        return undefined
-      const preview = line.length > SEND_MESSAGE_PREVIEW_LIMIT
-        ? `${line.slice(0, SEND_MESSAGE_PREVIEW_LIMIT)}\u2026`
-        : line
       return <div class={toolInputSummary}>{preview}</div>
     }
     default:

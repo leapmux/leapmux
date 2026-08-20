@@ -21,14 +21,14 @@ ORDER BY seq DESC LIMIT ?;
 -- DeleteFinishedAgentBackgroundTasksBelowSeq reclaims the rows a pool's seed
 -- window left behind.
 --
--- The cap bounds the DISPLAY list, not the table: a row that carries a child
+-- The cap limits the DISPLAY list, not the table: a row that carries a child
 -- transcript survives eviction, so a pool holds more rows than its window
 -- admits. Eviction only ever touches a row the CACHE holds, so without this pass
 -- an unlinked surplus row is never loaded and never deleted -- invisible in the
 -- sidebar and growing without limit in the DB.
 --
 -- Two filters keep this pass off the rows that are still worth something. Only
--- FINISHED rows are reclaimed: an active row still names a live child. And only
+-- FINISHED rows are reclaimed: an active row still identifies a live child. And only
 -- UNLINKED rows: the row of a subagent is the one index from that child agent id
 -- back to (owner, row_key), the child agents row outlives the registry delete,
 -- and deleting the row leaves that subagent permanently unmessageable and
@@ -121,9 +121,9 @@ WHERE owner_agent_id = ? AND row_key = ? AND status IN ('pending','running');
 --
 -- active_form and description are cleared with the status. Both describe the run
 -- that ENDED -- the last activity text, and the output file its task_notification
--- named -- and the restarted run has reported neither yet. The row's activity
+-- identified -- and the restarted run reported neither yet. The row's activity
 -- slot shows whichever is present, so leaving them pins the previous run's
--- output path under a subagent that is running again.
+-- output path under a subagent that runs again.
 --
 -- The status-IN filter makes the call idempotent -- an absent or still-active
 -- row matches nothing -- and :execrows lets the caller tell a real revive from
@@ -140,6 +140,21 @@ WHERE owner_agent_id = ? AND row_key = ?
 
 -- name: DeleteAgentBackgroundTaskByRowKey :execresult
 DELETE FROM agent_background_tasks WHERE owner_agent_id = ? AND row_key = ?;
+
+-- ResequenceAgentBackgroundTask gives a row a new seq, for one the display cache
+-- re-admitted after the cap evicted it.
+--
+-- The seq is the display list's one ordering key: the cache holds its rows in
+-- ascending seq, and the cold-start seed reads the newest rows by seq. A
+-- re-admission that changed the in-memory order alone left the two disagreeing
+-- -- so a subagent a revive had just reopened sat at the end of the sidebar for
+-- the life of the process, then fell outside the seed window and vanished on the
+-- next worker restart, while 64 older finished rows stayed on screen.
+--
+-- UNIQUE (owner_agent_id, seq) makes the caller's monotonic nextSeq the only
+-- safe value, which is the same value an INSERT would bind.
+-- name: ResequenceAgentBackgroundTask :exec
+UPDATE agent_background_tasks SET seq = ? WHERE owner_agent_id = ? AND row_key = ?;
 
 -- RenameAgentBackgroundTask re-keys a row (owner_agent_id, old_row_key) to
 -- new_row_key. The row_key is the provider linkage key; a provider that learns
@@ -158,7 +173,7 @@ UPDATE agent_background_tasks SET row_key = ? WHERE owner_agent_id = ? AND row_k
 SELECT COUNT(*) FROM agent_background_tasks WHERE owner_agent_id = ? AND row_key = ?;
 
 -- GetAgentBackgroundTaskByRowKey reads one row by its PRIMARY KEY, so a lookup
--- that misses the capped display cache still resolves. The cap bounds what the
+-- that misses the capped display cache still resolves. The cap limits what the
 -- sidebar shows; a row that carries a child transcript outlives it, and this
 -- point lookup is how the linkage stays reachable after the row leaves the
 -- cache.

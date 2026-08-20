@@ -13,7 +13,7 @@ import { isObject, pickString, stringArray } from '~/lib/jsonPick'
  *     `outputFile`.
  *   - `async_launched` — a backgrounded run. Carries `description` (the task
  *     title the model wrote), `outputFile`, and the `prompt` it was given, but
- *     no report: it has not produced one yet.
+ *     no report: it produced none yet.
  *   - `remote_launched` — a cloud run. Like the async one, but identified by
  *     `taskId` + `sessionUrl` instead of `agentId`.
  */

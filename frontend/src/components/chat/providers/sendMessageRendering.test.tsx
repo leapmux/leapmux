@@ -8,6 +8,9 @@ import './testMocks'
 
 const { renderMessageContent } = await import('../messageRenderers')
 
+/** Half of an astral character, left behind by a cut between the pair. */
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/
+
 function subagentRow(over: Partial<BackgroundTaskItem> = {}): BackgroundTaskItem {
   return {
     rowKey: 'a1b2c3d4e5f60718',
@@ -48,6 +51,40 @@ describe('claude SendMessage tool_use rendering', () => {
     expect(text).toContain('a1b2c3d4e5f60718')
     expect(text).toContain('keep going')
     expect(text.indexOf('a1b2c3d4e5f60718')).toBeLessThan(text.indexOf('keep going'))
+  })
+
+  // `summary` is the label the MODEL wrote for this exact slot -- the tool's own
+  // schema calls it "a 5-10 word summary shown as a one-line preview in the UI".
+  // Deriving the preview from the raw message threw that away.
+  it('prefers the model-written summary over the message body', () => {
+    const text = renderToolUse({
+      to: 'a1b2c3d4e5f60718',
+      message: 'A very long steering message with several clauses in it.',
+      summary: 'Retry with the parser fix',
+    }).textContent ?? ''
+    expect(text).toContain('Retry with the parser fix')
+    expect(text).not.toContain('several clauses')
+  })
+
+  // The STRUCTURED kinds carry an object `message`, which has no first line to
+  // clip -- so the card showed the recipient with no preview at all, although
+  // `summary` is exactly the one-line form those kinds do have.
+  it('still previews a structured message from its summary', () => {
+    const text = renderToolUse({
+      to: 'a1b2c3d4e5f60718',
+      message: { type: 'plan_approval_response', approved: true },
+      summary: 'Approved the plan',
+    }).textContent ?? ''
+    expect(text).toContain('Approved the plan')
+  })
+
+  // An astral character straddling the limit used to be cut in half, leaving a
+  // lone surrogate that renders as a replacement glyph.
+  it('clips a message without splitting an astral character', () => {
+    const long = `${'x'.repeat(119)}😀${'y'.repeat(100)}`
+    const text = renderToolUse({ to: 'a1b2c3d4e5f60718', message: long }).textContent ?? ''
+    expect(LONE_SURROGATE.test(text)).toBe(false)
+    expect(text).toContain('😀')
   })
 
   // The summary line has no height cap, so a long steering message would

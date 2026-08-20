@@ -42,7 +42,7 @@ interface RefEntry {
  * landing between a high and low surrogate extends by one unit to keep the
  * astral character whole, so the result is always well-formed UTF-16.
  */
-function cutAtCodeUnit(s: string, at: number): string {
+export function cutAtCodeUnit(s: string, at: number): string {
   const i = Math.min(Math.max(at, 0), s.length)
   if (i === 0 || i >= s.length)
     return s.slice(0, i)

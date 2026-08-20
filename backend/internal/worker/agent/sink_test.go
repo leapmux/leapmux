@@ -597,7 +597,13 @@ func (s *testSink) ReviveBackgroundTask(rowKey string) error {
 		return nil
 	}
 	item.Status = bgtask.StatusRunning
+	// ActiveForm AND Description, the pair the real ReviveAgentBackgroundTask
+	// clears. Both describe the run that ENDED -- the last activity text, and the
+	// output file its task_notification identified -- so a fake that cleared only
+	// one would pass a test that asserts the finished run's output path survives
+	// a restart, which the registry makes certain it does not.
 	item.ActiveForm = ""
+	item.Description = ""
 	item.EndedAt = time.Time{}
 	s.bgTasks[rowKey] = item
 	s.revivedTasks = append(s.revivedTasks, rowKey)
@@ -606,10 +612,10 @@ func (s *testSink) ReviveBackgroundTask(rowKey string) error {
 
 // UnlinkBackgroundTask clears a row's child linkage, leaving the row and the
 // child transcript in place. This is the one state a provider can still meet in
-// which a finished subagent's row names no transcript: EnsureChildAgent created
-// the child agent row and the registry upsert that links it then failed. Cap
-// eviction does NOT produce it -- a linked row survives the display cap in the
-// store (see registryOps.retainInStore) -- so a test must not use eviction to
+// which a finished subagent's row identifies no transcript: EnsureChildAgent
+// created the child agent row and the registry upsert that links it then failed.
+// Cap eviction does NOT produce it -- a linked row survives the display cap in
+// the store (see registryOps.retention) -- so a test must not use eviction to
 // reach it.
 func (s *testSink) UnlinkBackgroundTask(rowKey string) {
 	s.bgTasksMu.Lock()

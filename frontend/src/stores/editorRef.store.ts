@@ -24,14 +24,26 @@ export interface EditorRef {
 
 const registry = new Map<string, EditorRef>()
 /** Pending inserts to flush when an editor ref is registered. */
-const pendingInserts = new Map<string, Array<{ text: string, mode: 'block' | 'inline' }>>()
+const pendingInserts = new Map<string, PendingInsert[]>()
+
+interface PendingInsert {
+  text: string
+  mode: 'block' | 'inline'
+  /**
+   * Called when the flush DROPS this entry, because the editor turned out to
+   * refuse input. Queueing happens before the destination can answer, so the
+   * drop is the only moment the caller learns its target was wrong -- and
+   * without a hook the user's text vanished with no message and no fallback.
+   */
+  onDropped?: () => void
+}
 
 /**
  * A ref whose writes are dropped while the editor refuses input, but whose reads
  * and focus still work.
  *
  * The registry STORES this, so every route to a composer is guarded by
- * construction: `getEditorRef`, `appendText`, the MRU insert, and the deferred
+ * construction: `getEditorRef`, `insertIntoAgentEditor`, and the deferred
  * flush all read the same guarded handle. Guarding only the accessor left the
  * module's own writers on the raw ref, and the flush retry -- which writes for
  * up to half a second after registration -- never re-checked at all.
@@ -74,8 +86,17 @@ export function registerEditorRef(agentId: string, ref: EditorRef): void {
     // yet), so it is checked HERE, once the editor says what it is. Dropping the
     // queue is the whole point: a queued quote must not land in a composer that
     // turned out to be read-only.
-    if (!editor.writable())
+    //
+    // Each entry is TOLD it was dropped, so the caller can put the text
+    // somewhere the user can still send it. The queue is deleted first, so a
+    // handler that queues again for this same agent cannot append to a list this
+    // loop is walking -- and it will not, because the registry already holds the
+    // editor by now, so a re-entrant insert gets 'refused' rather than 'queued'.
+    if (!editor.writable()) {
+      for (const entry of pending)
+        entry.onDropped?.()
       return
+    }
     const tryFlush = (attempt: number) => {
       // Re-read on EVERY attempt, and off the registry rather than the captured
       // ref. This loop writes for up to half a second after the check above, and
@@ -117,33 +138,70 @@ export function getEditorRef(agentId: string): EditorRef | undefined {
 }
 
 /**
- * Append text to an editor's existing content as a new paragraph. Reports
- * whether it landed, so a caller can skip following up with `focus()` on a
- * composer that refused the text and would only sit there inert.
+ * What `insertIntoAgentEditor` did with the text.
+ *
+ * - `inserted`: the editor took it, and the editor is focused.
+ * - `queued`: no editor is mounted, so the text waits for one to register.
+ * - `refused`: an editor IS mounted and does not accept input. The text is
+ *   dropped, because nothing will ever flush a queue for an editor that already
+ *   registered.
  */
-export function appendText(agentId: string, text: string): boolean {
+export type InsertOutcome = 'inserted' | 'queued' | 'refused'
+
+/**
+ * Put text into one agent's composer, and report which of the three cases the
+ * caller got.
+ *
+ * This is the ONE router. Every caller used to spell the three cases out again,
+ * and the two spellings already disagreed: the boolean the quote handler read
+ * reported absent and refusing alike, so it took every failure for "not
+ * mounted" and queued -- into an editor that already registered, where nothing
+ * would ever flush it. Reporting the case removes the guess.
+ *
+ * The caller activates the tab AFTER this returns, never before. A tab
+ * activation mounts the destination editor synchronously, and an editor that
+ * registers before the text is parked finds an empty queue and leaves the quote
+ * to be replayed into some later re-registration.
+ */
+export function insertIntoAgentEditor(
+  agentId: string,
+  text: string,
+  mode: 'block' | 'inline' = 'block',
+  onDropped?: () => void,
+): InsertOutcome {
   const ref = registry.get(agentId)
-  if (ref === undefined || !ref.writable())
-    return false
+  if (ref === undefined) {
+    queueInsertForAgent(agentId, text, mode, onDropped)
+    return 'queued'
+  }
+  if (!ref.writable())
+    return 'refused'
   const current = ref.get()
-  const combined = current ? `${current}\n\n${text}` : text
-  ref.set(combined)
-  return true
+  const sep = computeSeparator(current, mode)
+  ref.set(current ? `${current}${sep}${text}` : text)
+  ref.focus()
+  return 'inserted'
 }
 
 /**
  * Park text for an editor that is not mounted yet, to be flushed when it
  * registers.
  *
- * Queueing is only correct while the editor is ABSENT. A mounted one has already
+ * Queueing is only correct while the editor is ABSENT. A mounted one already
  * registered, so nothing would ever flush a queue for it and the text would sit
- * until some later re-registration wrote it in late. The flush re-checks
- * writability, so a queue for an editor that turns out to be read-only is
- * dropped rather than delivered.
+ * until some later re-registration wrote it in late. `insertIntoAgentEditor`
+ * makes that distinction for every caller; reach for this directly only when the
+ * editor is known to be absent. The flush re-checks writability, so a queue for
+ * an editor that turns out to be read-only is dropped rather than delivered.
  */
-export function queueInsertForAgent(agentId: string, text: string, mode: 'block' | 'inline' = 'block'): void {
+export function queueInsertForAgent(
+  agentId: string,
+  text: string,
+  mode: 'block' | 'inline' = 'block',
+  onDropped?: () => void,
+): void {
   const existing = pendingInserts.get(agentId) ?? []
-  existing.push({ text, mode })
+  existing.push({ text, mode, onDropped })
   pendingInserts.set(agentId, existing)
 }
 
@@ -151,15 +209,28 @@ export function queueInsertForAgent(agentId: string, text: string, mode: 'block'
  * Find the MRU agent tab and insert text into its editor.
  * Activates the agent tab and focuses the editor.
  */
+export interface MruAgentEditorDeps {
+  /**
+   * EVERY tab in the workspace on screen, most-recently-used first — not
+   * pre-filtered to agents. The narrowing below is the only one.
+   */
+  mruTabs: () => Tab[]
+  activate: (tab: Tab) => void
+  /**
+   * Tell the user the text did not go where the click implied. A thunk supplied
+   * by the shell, so this module keeps no UI import: it reports, and the shell
+   * decides whether that is a toast.
+   *
+   * Two moments need it, and both are invisible otherwise. A queued insert whose
+   * destination turns out to be read-only is RE-ROUTED here, up to half a second
+   * after the click and with the tab moving under the user. And a destination
+   * that is mounted and refuses input drops the text outright.
+   */
+  notify?: (message: string) => void
+}
+
 export function insertIntoMruAgentEditor(
-  deps: {
-    /**
-     * EVERY tab in the workspace on screen, most-recently-used first — not
-     * pre-filtered to agents. The narrowing below is the only one.
-     */
-    mruTabs: () => Tab[]
-    activate: (tab: Tab) => void
-  },
+  deps: MruAgentEditorDeps,
   text: string,
   mode: 'block' | 'inline' = 'block',
 ): void {
@@ -174,27 +245,29 @@ export function insertIntoMruAgentEditor(
     return
   const agentId = target.id
 
-  // Three cases, and the middle one is why they are spelled out rather than
-  // folded into one `isWritable` test: queueing is only right when the editor is
-  // ABSENT. A mounted editor that refuses input has already registered, so
-  // nothing will flush a queue for it -- the text would sit there until some
-  // later re-registration wrote it in late.
-  const ref = registry.get(agentId)
-  if (ref === undefined) {
-    // Editor is not mounted yet — queue text for when it registers. The flush
-    // re-checks writability then, once the editor can answer.
-    queueInsertForAgent(agentId, text, mode)
-  }
-  else if (ref.writable()) {
-    const current = ref.get()
-    const sep = computeSeparator(current, mode)
-    ref.set(current ? `${current}${sep}${text}` : text)
-    ref.focus()
-  }
-  // Mounted and read-only: drop it. The tab passed mruSteerableAgentTab, so this
-  // is the two sources disagreeing (tab state vs the live editor) and the editor
-  // is the one that knows. Activating below still brings the tab forward.
+  // `onDropped` re-runs this whole resolution. The destination was chosen from
+  // TAB state, which is optimistic: a subagent tab opened from the sidebar has
+  // no parentAgentId until listAgents hydrates it, so it looks steerable and
+  // wins the MRU until its composer mounts and says otherwise. Re-resolving is
+  // completing the original request, not inventing a new one -- and the same
+  // answer this function already gives when the target is read-only up front.
+  //
+  // The recursion is bounded: registerEditorRef puts the editor in the registry
+  // BEFORE it walks the queue, so a re-entrant call for the same agent finds a
+  // registered editor and returns 'refused' rather than queueing again.
+  const outcome = insertIntoAgentEditor(agentId, text, mode, () => {
+    insertIntoMruAgentEditor(deps, text, mode)
+    deps.notify?.('That subagent\'s composer is read-only. The text went to the nearest agent that accepts messages.')
+  })
+  // Mounted and refusing: the two sources disagree (tab state said steerable,
+  // the live editor says otherwise) and the editor is the one that knows. The
+  // text is dropped rather than queued, because nothing would ever flush a queue
+  // for an editor that already registered -- so the user has to be told.
+  if (outcome === 'refused')
+    deps.notify?.('That agent\'s composer does not accept input. The text was not inserted.')
 
-  // Activate the agent tab (workspace + per-tile).
+  // Activate the agent tab (workspace + per-tile). AFTER the insert, never
+  // before: activation mounts the destination editor, and an editor that
+  // registers ahead of the queue finds it empty.
   deps.activate(target)
 }

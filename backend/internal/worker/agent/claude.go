@@ -19,7 +19,6 @@ import (
 	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
-	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/leapmux/leapmux/util/validate"
 )
 
@@ -137,55 +136,13 @@ type ClaudeCodeAgent struct {
 	// catalog.
 	availableModels []*ModelInfo
 
-	// Subagent (Task/Workflow) index. Maps a Claude task_id <-> the spawning
-	// tool_use id (parent_tool_use_id on forwarded envelopes). Used to route
-	// forwarded subagent output into the right child transcript and to drive
-	// the background-task registry. Guarded by a.mu. NOT cleared at turn end
-	// (background tasks outlive turns); entries dropped on the final
-	// task_notification.
-	taskToolUse map[string]string // task_id -> tool_use_id
-	toolUseTask map[string]string // tool_use_id -> task_id
-	// childTask indexes the same link from the CHILD transcript side, so a
-	// forwarded envelope resolves its registry row when the tool_use index
-	// cannot. A revive re-registers the task under the SendMessage tool_use id,
-	// and the first completion already dropped the spawn span, so a run-2 result
-	// forwarded under the ORIGINAL spawn resolves no task and leaves the row the
-	// revive reopened Running for the agent's life. Guarded by a.mu, and NOT
-	// dropped at a completion: the entry describes the transcript, which outlives
-	// every run of it.
-	childTask map[string]string // child_agent_id -> task_id
-	// finishedTasks holds every task id this process gave a final status. A wake
-	// block names the backgrounded shell whose completion restarted a subagent,
-	// and confirming that id here is what separates a real wake from a resumed
-	// session's hydration burst, which replays prompts naming tasks of a PREVIOUS
-	// process. Guarded by a.mu; never cleared, and bounded by the tasks one
-	// process ran.
-	finishedTasks map[string]struct{} // task_id this process finalized
-	// taskKind remembers what task_started said a task IS, because only
-	// task_started carries task_type. A later task_notification has to upsert
-	// the row again (to record a shell's output_file) and would otherwise have
-	// to guess the kind -- guessing "shell" there rewrote every Task subagent's
-	// row into a shell one, since notifications fire for subagents too.
-	// Guarded by a.mu; dropped with the rest of the index on the closing
-	// notification.
-	taskKind map[string]bgtask.Kind // task_id -> kind
-	// pendingTaskEnd holds a final status for a Task subagent whose result
-	// message arrived BEFORE its task_started (a forward of the child's final
-	// result can race past a reordered task_started). Keyed by spawn tool_use id
-	// so the late task_started can close the row it just opened. Guarded by a.mu.
-	pendingTaskEnd map[string]bgtask.Status // spawn tool_use_id -> final status
-	// pendingRevive holds the task ids the in-flight SendMessage calls addressed.
-	// A task_started for a task already in a final status is a REVIVE only when
-	// the id is armed here; see claudeArmRevivesFromBlocks for why the tool call
-	// is the evidence and the event alone is not. Guarded by a.mu.
-	//
-	// The VALUE is the transcript that armed it: "" for the root, the spawn span
-	// id for a subagent. Each transcript's own turn end drops only its own arms,
-	// because a subagent outlives the root turn it was spawned in -- clearing on
-	// the root's result alone dropped a live subagent's arm before its
-	// task_started could fire it, and left that arm standing for the agent's life
-	// while the root sat idle.
-	pendingRevive map[string]string // task_id -> the spawn span that armed it ("" == root)
+	// tasks indexes everything this agent knows about a Claude task. It carries
+	// its own mutex, so the eight maps no longer contend on processBase.mu --
+	// the process-lifecycle lock every provider embeds, which guards `stopped`,
+	// the model, and the effort. A value, not a pointer: ClaudeCodeAgent is
+	// built at many sites that do not go through StartClaudeCode, and a nil
+	// receiver would be reachable from every one of them.
+	tasks claudeTaskIndex
 }
 
 // claudeResumeArgs returns the `--resume` argv pair for a stored session ID,
@@ -324,9 +281,6 @@ func StartClaudeCode(ctx context.Context, opts Options, sink OutputSink) (*Claud
 		thirdPartyFromSettings: thirdPartyFromSettings,
 		pendingControl:         make(map[string]chan<- claudeCodeControlResult),
 		alwaysThinking:         AlwaysThinkingOn,
-		taskToolUse:            make(map[string]string),
-		toolUseTask:            make(map[string]string),
-		taskKind:               make(map[string]bgtask.Kind),
 	}
 
 	TraceStartupPhase(opts.AgentID, "before_exec_start")

@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { registerProvider } from '~/components/chat/providers/registry'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
-import { appendText, computeSeparator, getEditorRef, insertIntoMruAgentEditor, registerEditorRef, unregisterEditorRef } from './editorRef.store'
+import { computeSeparator, getEditorRef, insertIntoAgentEditor, insertIntoMruAgentEditor, registerEditorRef, unregisterEditorRef } from './editorRef.store'
 
 /** An EditorRef with the parts a test does not care about filled in. */
 function makeRef(over: Partial<EditorRef> = {}): EditorRef {
@@ -196,11 +196,11 @@ describe('insertIntoMruAgentEditor', () => {
  * module (type-to-focus uses the ref directly) and the ones not written yet.
  */
 describe('a read-only editor refuses writes', () => {
-  it('appendText writes nothing and reports that it did not', () => {
+  it('insertIntoAgentEditor writes nothing and reports refused', () => {
     const set = vi.fn()
     registerEditorRef('ro', readOnlyRef({ get: () => 'draft', set }))
     try {
-      expect(appendText('ro', 'quoted')).toBe(false)
+      expect(insertIntoAgentEditor('ro', 'quoted')).toBe('refused')
       expect(set).not.toHaveBeenCalled()
     }
     finally {
@@ -208,11 +208,11 @@ describe('a read-only editor refuses writes', () => {
     }
   })
 
-  it('appendText reports success for a writable editor', () => {
+  it('insertIntoAgentEditor reports inserted for a writable editor', () => {
     const set = vi.fn()
     registerEditorRef('rw', writableRef({ get: () => 'draft', set }))
     try {
-      expect(appendText('rw', 'quoted')).toBe(true)
+      expect(insertIntoAgentEditor('rw', 'quoted')).toBe('inserted')
       expect(set).toHaveBeenCalledWith('draft\n\nquoted')
     }
     finally {
@@ -220,8 +220,22 @@ describe('a read-only editor refuses writes', () => {
     }
   })
 
-  it('appendText reports failure when no editor is registered', () => {
-    expect(appendText('missing', 'quoted')).toBe(false)
+  // `queued` and `refused` are separate answers on purpose. Merging them into
+  // one boolean is what let the quote handler read a refusing editor as an
+  // absent one and park text nothing would ever flush.
+  it('insertIntoAgentEditor reports queued when no editor is registered', () => {
+    vi.useFakeTimers()
+    const set = vi.fn()
+    try {
+      expect(insertIntoAgentEditor('missing', 'quoted')).toBe('queued')
+      registerEditorRef('missing', writableRef({ set }))
+      vi.advanceTimersByTime(100)
+      expect(set).toHaveBeenCalledWith('quoted')
+    }
+    finally {
+      unregisterEditorRef('missing')
+      vi.useRealTimers()
+    }
   })
 
   it('getEditorRef hands out a handle whose set and insert are inert', () => {
@@ -281,6 +295,66 @@ describe('a read-only editor refuses writes', () => {
     }
   })
 
+  // Dropping is right; dropping SILENTLY is not. The destination is chosen from
+  // optimistic tab state -- a subagent tab opened from the sidebar has no
+  // parentAgentId until listAgents hydrates it, so it looks steerable and wins
+  // the MRU until its composer mounts and says otherwise. The text goes to the
+  // nearest agent that accepts messages, which is the same answer this function
+  // gives when the target is read-only up front.
+  it('re-routes a dropped queue to the nearest writable agent', async () => {
+    const setRoot = vi.fn()
+    const notify = vi.fn()
+    const optimisticChild = { type: TabType.AGENT, id: 'c1', workspaceId: 'ws' } as Tab
+    const hydratedChild = {
+      type: TabType.AGENT,
+      id: 'c1',
+      workspaceId: 'ws',
+      parentAgentId: 'root-1',
+      acceptsMessages: false,
+    } as Tab
+    const root = { type: TabType.AGENT, id: 'root-1', workspaceId: 'ws' } as Tab
+    let hydrated = false
+    const deps = {
+      mruTabs: () => (hydrated ? [hydratedChild, root] : [optimisticChild, root]),
+      activate: vi.fn(),
+      notify,
+    }
+    registerEditorRef('root-1', writableRef({ set: setRoot }))
+    try {
+      insertIntoMruAgentEditor(deps, 'quoted')
+      // listAgents lands and the child's composer mounts read-only.
+      hydrated = true
+      registerEditorRef('c1', readOnlyRef())
+      await new Promise(resolve => setTimeout(resolve, 120))
+
+      expect(setRoot).toHaveBeenCalledWith('quoted')
+      expect(notify).toHaveBeenCalledOnce()
+    }
+    finally {
+      unregisterEditorRef('c1')
+      unregisterEditorRef('root-1')
+    }
+  })
+
+  // The other silent drop on this path: the MRU target is MOUNTED and refuses
+  // input, so the text is not queued either -- nothing would ever flush a queue
+  // for an editor that already registered. The user has to be told, or the
+  // quote disappears with the tab moving forward as if it had landed.
+  it('reports a refused insert instead of dropping it silently', () => {
+    const notify = vi.fn()
+    const activate = vi.fn()
+    const target = { type: TabType.AGENT, id: 'ro-target', workspaceId: 'ws' } as Tab
+    registerEditorRef('ro-target', readOnlyRef())
+    try {
+      insertIntoMruAgentEditor({ mruTabs: () => [target], activate, notify }, 'quoted')
+      expect(notify).toHaveBeenCalledOnce()
+      expect(activate).toHaveBeenCalledWith(target)
+    }
+    finally {
+      unregisterEditorRef('ro-target')
+    }
+  })
+
   it('still flushes a queued insert when the editor registers writable', async () => {
     const set = vi.fn()
     const activate = vi.fn()
@@ -300,8 +374,8 @@ describe('a read-only editor refuses writes', () => {
 })
 
 /**
- * Queueing is only correct when the editor is ABSENT. A mounted editor has
- * already registered, so nothing will ever flush a queue for it -- text parked
+ * Queueing is only correct when the editor is ABSENT. A mounted editor already
+ * registered, so nothing will ever flush a queue for it -- text parked
  * there would land late on some later re-registration.
  */
 describe('insertIntoMruAgentEditor with a mounted read-only editor', () => {
@@ -342,9 +416,9 @@ describe('writable is re-read on every write', () => {
     let writable = false
     registerEditorRef('flip', makeRef({ get: () => '', set, writable: () => writable }))
     try {
-      expect(appendText('flip', 'first')).toBe(false)
+      expect(insertIntoAgentEditor('flip', 'first')).toBe('refused')
       writable = true
-      expect(appendText('flip', 'second')).toBe(true)
+      expect(insertIntoAgentEditor('flip', 'second')).toBe('inserted')
       expect(set).toHaveBeenCalledTimes(1)
       expect(set).toHaveBeenCalledWith('second')
     }
@@ -356,7 +430,7 @@ describe('writable is re-read on every write', () => {
   // The flush retries for ~500 ms after registration, and the worker's
   // authoritative acceptsMessages can arrive inside that window. Checking
   // writability once, at registration, let the later attempts write into a
-  // composer that had already turned read-only -- where the draft layer persists
+  // composer that already turned read-only -- where the draft layer persists
   // the text under that subagent's key and it survives a reload.
   it('stops a queued flush when the editor turns read-only mid-retry', async () => {
     const set = vi.fn()

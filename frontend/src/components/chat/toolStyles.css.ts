@@ -253,15 +253,6 @@ export const webSearchLinkList = style({
   gap: '2px',
 })
 
-export const webSearchLink = style({
-  display: 'flex',
-  alignItems: 'baseline',
-  gap: 'var(--space-2)',
-  fontSize: 'var(--text-8)',
-  lineHeight: 1.5,
-  overflow: 'hidden',
-})
-
 export const webSearchLinkDomain = style({
   color: 'var(--muted-foreground)',
   fontSize: 'var(--text-9)',
@@ -328,6 +319,14 @@ export const toolMetaList = style({
   marginBottom: 'var(--space-1)',
 })
 
+/**
+ * One "label: value" line. Shared by the Agent result card's meta list and by
+ * the WebSearch link rows, which are the same primitive: a baseline-aligned flex
+ * row that clips. The role difference between the two lives entirely on the
+ * CHILDREN -- WebSearch puts the muted non-shrinking part on the right (the
+ * domain), the Agent card on the left (the label) -- so the row itself carries
+ * no property either renderer owns.
+ */
 export const toolMetaRow = style({
   display: 'flex',
   alignItems: 'baseline',

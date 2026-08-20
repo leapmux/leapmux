@@ -29,7 +29,7 @@ func setupBgTaskTest(t *testing.T) (agent.OutputSink, string, func() []db.AgentB
 
 // setupBgTaskTestWithService is setupBgTaskTest for a test that also reads the
 // DISPLAY list, which only the service can answer. The two lists are no longer
-// the same: the cap bounds what LoadBackgroundTasks returns, and a row that
+// the same: the cap limits what LoadBackgroundTasks returns, and a row that
 // carries a child transcript stays in the table after it leaves that list, so
 // listRows (the table) and displayedRowKeys (the list) disagree by design.
 func setupBgTaskTestWithService(t *testing.T) (*Service, agent.OutputSink, string, func() []db.AgentBackgroundTask) {
@@ -399,7 +399,7 @@ func TestBgTask_CapAllActiveEvictsTheOldestWhateverItCarries(t *testing.T) {
 
 	svc, sink, ownerID, listRows := setupBgTaskTestWithService(t)
 	// task-1: linked and oldest. task-2: unlinked, and under the old rule it
-	// would have been evicted in task-1's place.
+	// the old rule evicted it in task-1's place.
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
 		RowKey: "task-1", Kind: bgtask.KindSubagent, Title: "linked", ChildAgentID: "child-1", Status: bgtask.StatusRunning,
 	}))
@@ -565,7 +565,7 @@ func TestBgTask_RenameOntoOccupiedKeyDropsTheDuplicate(t *testing.T) {
 }
 
 // The losing duplicate leaves the display list, but its PERSISTED row goes only
-// when it carries no child. A row that names a transcript is that child's one
+// when it carries no child. A row that identifies a transcript is that child's one
 // index back to (owner, row_key), and the rename is no more entitled to destroy
 // it than eviction is. No provider reaches this today -- OpenCode and Kilo are
 // the only renamers, and both drop child sessions over ACP -- so the invariant
@@ -589,7 +589,7 @@ func TestBgTask_RenameOntoOccupiedKeyRetainsALinkedDuplicate(t *testing.T) {
 	assert.NotContains(t, displayedRowKeys(t, svc, ownerID), "spawn-key",
 		"the duplicate leaves the display list either way")
 	assert.Contains(t, rowKeySet(listRows()), "spawn-key",
-		"its row is retained, because it names a transcript")
+		"its row is retained, because it identifies a transcript")
 	row, err := svc.Queries.GetAgentBackgroundTaskByChildAgentID(ctx, "child-1")
 	require.NoError(t, err, "the child keeps its index")
 	assert.Equal(t, "spawn-key", row.RowKey)
@@ -1281,7 +1281,7 @@ func storedRow(t *testing.T, svc *Service, ownerID, rowKey string) db.AgentBackg
 	return row
 }
 
-// A final status is absorbing wherever the row lives. A resumed session
+// A final status absorbs a non-final one wherever the row lives. A resumed session
 // re-announces every task it once ran with a Running upsert, and the guard that
 // drops it sits on the cached branch -- so a retained row took the replay as an
 // INSERT, and the subagent's finished row came back Running with nothing left to
@@ -1297,7 +1297,7 @@ func TestBgTask_ReplayedRunningUpsertCannotResurrectARetainedRow(t *testing.T) {
 	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
 	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks)
 	require.NotContains(t, displayedRowKeys(t, svc, ownerID), "task-1",
-		"the row must have left the display list")
+		"the row leaves the display list")
 	endedAt := storedRow(t, svc, ownerID, "task-1").EndedAt
 
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
@@ -1321,7 +1321,7 @@ func TestBgTask_StatusUpdateReachesARetainedRow(t *testing.T) {
 	require.NoError(t, err)
 	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks)
 	require.NotContains(t, displayedRowKeys(t, svc, ownerID), "task-1",
-		"the row must have left the display list")
+		"the row leaves the display list")
 
 	require.NoError(t, sink.UpdateBackgroundTaskStatus("task-1", bgtask.StatusRunning, "running Bash"))
 
@@ -1340,7 +1340,7 @@ func TestBgTask_CloseReachesARetainedRowAndEndsItsTranscript(t *testing.T) {
 	require.NoError(t, err)
 	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks)
 	require.NotContains(t, displayedRowKeys(t, svc, ownerID), "task-1",
-		"the row must have left the display list")
+		"the row leaves the display list")
 
 	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
 
@@ -1367,12 +1367,12 @@ func TestBgTask_ReviveReachesARetainedRow(t *testing.T) {
 	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
 	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks)
 	require.NotContains(t, displayedRowKeys(t, svc, ownerID), "task-1",
-		"the row must have left the display list")
+		"the row leaves the display list")
 
 	require.NoError(t, sink.ReviveBackgroundTask("task-1"))
 
 	row := storedRow(t, svc, ownerID, "task-1")
-	assert.Equal(t, "running", row.Status, "the subagent is running again")
+	assert.Equal(t, "running", row.Status, "the subagent runs again")
 	assert.False(t, row.EndedAt.Valid, "the revive clears ended_at")
 }
 
@@ -1401,7 +1401,7 @@ func TestBgTask_ReAdmittingARetainedRowHoldsTheDisplayCap(t *testing.T) {
 // A registry with no retention (agent_todos) must not gain a store fallback:
 // its cap IS a storage bound, and a key it does not hold identifies nothing.
 // The bgtask registry proves the other half, so this pins the nil branch of
-// rowIndexLocked that every todo mutation takes.
+// findRowLocked that every todo mutation takes.
 func TestTodos_AnAbsentRowStaysAMissWithNoRetention(t *testing.T) {
 	t.Parallel()
 
@@ -1412,7 +1412,204 @@ func TestTodos_AnAbsentRowStaysAMissWithNoRetention(t *testing.T) {
 	defer cache.Mu.Unlock()
 	require.Nil(t, cache.ops.retention, "agent_todos retains nothing past its cap")
 
-	idx, err := cache.rowIndexLocked(ctx, "agent-1", "todo-nope")
+	_, idx, found, err := cache.findRowLocked(ctx, "agent-1", "todo-nope")
 	require.NoError(t, err)
-	assert.Equal(t, -1, idx, "no store fallback runs for a registry without retention")
+	assert.False(t, found, "no store fallback runs for a registry without retention")
+	assert.Equal(t, -1, idx, "an absent row has no display index")
+}
+
+// A mutation that turns out to be a NO-OP must leave the display list exactly
+// as it found it. Re-admitting a retained row first, and only then discovering
+// the write changes nothing, evicted a displayed row to make space for a write
+// that never happened -- and reported changed=false, so no broadcast told the
+// client its list had moved. A resumed session replays one of these per past
+// subagent, so the whole sidebar rotated behind the client's back.
+func TestBgTask_ANoOpMutationOnARetainedRowLeavesTheDisplayListAlone(t *testing.T) {
+	t.Parallel()
+
+	svc, sink, ownerID, _ := setupBgTaskTestWithService(t)
+	_, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	require.NoError(t, err)
+	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
+	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks)
+	before := displayedRowKeys(t, svc, ownerID)
+	require.NotContains(t, before, "task-1", "the row leaves the display list")
+
+	// Absorbed by the final-status guard: the row is completed, so a running
+	// update writes nothing.
+	require.NoError(t, sink.UpdateBackgroundTaskStatus("task-1", bgtask.StatusRunning, "running Bash"))
+	// Absorbed by the already-final guard.
+	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
+
+	assert.Equal(t, before, displayedRowKeys(t, svc, ownerID),
+		"a write that never happens evicts nothing and re-admits nothing")
+}
+
+// The eviction a no-op mutation used to trigger did not merely hide a row: an
+// UNLINKED row that retention does not keep was DELETED from the table, so a
+// duplicate progress event on one retained row destroyed an unrelated shell row.
+func TestBgTask_ANoOpMutationOnARetainedRowDeletesNothing(t *testing.T) {
+	t.Parallel()
+
+	svc, sink, ownerID, listRows := setupBgTaskTestWithService(t)
+	// task-1 is the OLDEST finished row, so the fill evicts it first and it ends
+	// up retained-but-not-displayed. unlinked-1 is the NEXT finished row and
+	// carries no child, so retention does not keep it -- it is what an eviction
+	// on the re-admit path would delete from the table.
+	_, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	require.NoError(t, err)
+	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "unlinked-1", Kind: bgtask.KindSubagent, Title: "no transcript",
+		Status: bgtask.StatusCompleted,
+	}))
+	// One row over the cap, so exactly one eviction runs and it takes task-1.
+	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks-1)
+	require.NotContains(t, displayedRowKeys(t, svc, ownerID), "task-1")
+	require.Contains(t, displayedRowKeys(t, svc, ownerID), "unlinked-1",
+		"the victim is still displayed, so eviction can reach it")
+	before := len(listRows())
+
+	require.NoError(t, sink.UpdateBackgroundTaskStatus("task-1", bgtask.StatusRunning, "running Bash"))
+
+	assert.Len(t, listRows(), before, "no persisted row is deleted for a no-op")
+	assert.Equal(t, "completed", storedRow(t, svc, ownerID, "unlinked-1").Status,
+		"the unlinked row an eviction would have destroyed is still there")
+	assert.Equal(t, "completed", storedRow(t, svc, ownerID, "task-1").Status,
+		"the absorbing guard still holds")
+}
+
+// A revive whose UPDATE matches nothing re-reads the row rather than guessing.
+// The zero count answers "already active" AND "no such row", and the branch that
+// assumed the first left a cache row with no table row behind it -- a subagent
+// chip spinning for good. It also adopts every field, not the two a hand-written
+// repair remembered: active_form and description describe the run that ENDED.
+func TestBgTask_AReviveThatMatchesNothingAdoptsTheStoredRow(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, sink, ownerID, _ := setupBgTaskTestWithService(t)
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "task-1", Kind: bgtask.KindSubagent, Title: "SCAN",
+		Status: bgtask.StatusCompleted, Description: "/tmp/out.md", ActiveForm: "writing the report",
+	}))
+	// The cache says finished; the ROW is active. Only the DB moves, so the
+	// revive's UPDATE (which filters on a final status) matches nothing.
+	_, err := svc.Queries.ReviveAgentBackgroundTask(ctx, db.ReviveAgentBackgroundTaskParams{
+		UpdatedAt:    sqltime.NewSQLiteTime(nowMillis()),
+		OwnerAgentID: ownerID,
+		RowKey:       "task-1",
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, sink.ReviveBackgroundTask("task-1"))
+
+	items, err := svc.Output.LoadBackgroundTasks(ctx, ownerID)
+	require.NoError(t, err)
+	idx := slices.IndexFunc(items, func(i bgtask.Item) bool { return i.RowKey == "task-1" })
+	require.GreaterOrEqual(t, idx, 0)
+	assert.Equal(t, bgtask.StatusRunning, items[idx].Status, "the cache adopts the row's status")
+	assert.Empty(t, items[idx].Description, "and the row's cleared description, not the finished run's")
+	assert.Empty(t, items[idx].ActiveForm, "and the row's cleared activity text")
+}
+
+// The same branch for a row that is GONE. Reporting the drop and the snapshot in
+// one composite literal built the payload before the drop ran, so the broadcast
+// still carried the dead row and no later mutation corrected it.
+func TestBgTask_AReviveOfADeletedRowBroadcastsWithoutIt(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, sink, ownerID, _ := setupBgTaskTestWithService(t)
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "task-1", Kind: bgtask.KindSubagent, Title: "SCAN", Status: bgtask.StatusCompleted,
+	}))
+	require.Contains(t, displayedRowKeys(t, svc, ownerID), "task-1")
+	// Delete the row under the cache, the way a cascade or a racing delete does.
+	_, err := svc.Queries.DeleteAgentBackgroundTaskByRowKey(ctx, db.DeleteAgentBackgroundTaskByRowKeyParams{
+		OwnerAgentID: ownerID, RowKey: "task-1",
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, sink.ReviveBackgroundTask("task-1"))
+
+	assert.NotContains(t, displayedRowKeys(t, svc, ownerID), "task-1",
+		"a row the table no longer holds leaves the display list too")
+}
+
+// A retained row that is not DISPLAYED has no cached copy to disagree with the
+// store, so the zero-count repair has nothing to adopt -- and admitting it would
+// evict a displayed row, and delete an unlinked one, for a write that never
+// happens.
+func TestBgTask_AReviveThatMatchesNothingSparesTheDisplayListForARetainedRow(t *testing.T) {
+	t.Parallel()
+
+	svc, sink, ownerID, listRows := setupBgTaskTestWithService(t)
+	_, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	require.NoError(t, err)
+	// The row is ACTIVE in the table, so the revive's UPDATE matches nothing.
+	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks)
+	before := displayedRowKeys(t, svc, ownerID)
+	require.NotContains(t, before, "task-1", "the row leaves the display list")
+	beforeRows := len(listRows())
+
+	require.NoError(t, sink.ReviveBackgroundTask("task-1"))
+
+	assert.Equal(t, before, displayedRowKeys(t, svc, ownerID), "the display list is untouched")
+	assert.Len(t, listRows(), beforeRows, "and no persisted row is deleted")
+}
+
+// EnsureChildAgent asks "does a row for this key already carry a transcript",
+// and a row that carries one outlives the display cap. Reading the display list
+// alone answered "no" for every linked row past it, so the call fell through to
+// the spawn-span lookup, missed there too, and CREATED a second transcript --
+// then re-pointed the durable row at the orphan, leaving the first run's whole
+// transcript unreachable. Codex reaches this on every re-registration, because a
+// collab call that re-opens a closed thread supplies a NEW spawn span.
+func TestBgTask_EnsureChildAgentFindsTheTranscriptOfARetainedRow(t *testing.T) {
+	t.Parallel()
+
+	svc, sink, ownerID, _ := setupBgTaskTestWithService(t)
+	firstChild, err := sink.EnsureChildAgent("span-1", "thread-1", "collab child")
+	require.NoError(t, err)
+	require.NoError(t, sink.CloseBackgroundTask("thread-1", bgtask.StatusCompleted))
+	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks)
+	require.NotContains(t, displayedRowKeys(t, svc, ownerID), "thread-1",
+		"the row leaves the display list")
+
+	// The re-registration: a DIFFERENT spawn span for the same provider key.
+	againChild, err := sink.EnsureChildAgent("span-2", "thread-1", "collab child")
+	require.NoError(t, err)
+
+	assert.Equal(t, firstChild, againChild, "the row's transcript is the one that answers")
+	assert.Equal(t, firstChild, storedRow(t, svc, ownerID, "thread-1").ChildAgentID,
+		"and the durable row still points at it")
+}
+
+// A re-admitted row takes a fresh seq, because the display list's slice order
+// and the stored seq are ONE ordering key. Moving only the slice left the two
+// disagreeing: a subagent a revive had just reopened sat at the end of the
+// sidebar for the life of the process, then fell outside the next cold seed's
+// window (the newest rows by seq) and vanished on the worker restart -- while
+// 64 older finished rows stayed on screen.
+func TestBgTask_AReAdmittedRowSurvivesTheNextColdSeed(t *testing.T) {
+	t.Parallel()
+
+	svc, sink, ownerID, _ := setupBgTaskTestWithService(t)
+	_, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	require.NoError(t, err)
+	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
+	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks)
+	require.NotContains(t, displayedRowKeys(t, svc, ownerID), "task-1",
+		"the row leaves the display list")
+
+	require.NoError(t, sink.ReviveBackgroundTask("task-1"))
+	require.Contains(t, displayedRowKeys(t, svc, ownerID), "task-1",
+		"the revive re-admits the row to this process's list")
+
+	// Drop the cache, the way a worker restart does, and seed again from the DB.
+	svc.Output.bgtasks.Delete(ownerID)
+
+	assert.Contains(t, displayedRowKeys(t, svc, ownerID), "task-1",
+		"the re-admitted row is inside the seed window the next process reads")
 }

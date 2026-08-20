@@ -341,33 +341,32 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // re-bundled per row, so buildMessageHost below only assembles the genuinely
   // per-message bindings on top -- making the agent-scoped vs message-scoped split
   // explicit instead of a flat 8-field literal where the distinction is invisible.
-  // Solid compiles `agentLifecycle` -- an object literal at the call site -- to
-  // ONE getter, so reading any field of it inside a tracking scope subscribes to
-  // EVERY field, `thinkingTokens` included, and that streams many deltas per
-  // turn. These two memos absorb that: each re-runs per delta but returns the
-  // same identity (`registryRows` is itself a memo upstream, `onOpenSubagent` a
-  // stable const), so the default === equality stops the propagation here rather
-  // than letting it reach `hostLookups` and rebuild every row's host.
-  const registryRows = createMemo(() => props.agentLifecycle?.registryRows)
-  const openSubagent = createMemo(() => props.agentLifecycle?.onOpenSubagent)
+  // The ROOT registry, indexed by row key so a tool card can turn an agent id
+  // into a link. Indexed once per registry change rather than scanned per card:
+  // a transcript can hold many SendMessage rows, each resolving on every render,
+  // and the registry arrives authoritative-and-replaced-wholesale so there is
+  // exactly one moment to rebuild.
+  const bgRowIndex = createMemo(() => new Map(
+    (props.agentLifecycle?.registryRows ?? []).map(t => [t.rowKey, t] as const),
+  ))
+  // Declared OUTSIDE hostLookups, and by reference. The index has to live in its
+  // own memo: the registry is replaced wholesale on every task_progress tick of
+  // any shell or subagent under this root, so building it inside hostLookups
+  // gave that memo a new identity per tick -- and hostLookups is spread into
+  // every row's host, so one background shell's progress line rebuilt the host
+  // of every message on screen, in every agent tab of the tile. Reading
+  // bgRowIndex() here instead subscribes the CARD that calls this, and nothing
+  // else.
+  const resolveBackgroundTaskRow = (rowKey: string): BackgroundTaskItem | undefined =>
+    bgRowIndex().get(rowKey)
 
-  const hostLookups = createMemo(() => {
-    // The ROOT registry, indexed by row key so a tool card can turn an agent id
-    // into a link. Indexed once per registry change rather than scanned per
-    // card: a transcript can hold many SendMessage rows, each resolving on every
-    // render, and the registry arrives authoritative-and-replaced-wholesale so
-    // there is exactly one moment to rebuild.
-    const byRowKey = new Map(
-      (registryRows() ?? []).map(t => [t.rowKey, t] as const),
-    )
-    return {
-      getTodoById: props.lookups?.getTodoById,
-      getToolUseParsedBySpanId: props.lookups?.getToolUseParsedBySpanId,
-      getToolResultParsedBySpanId: props.lookups?.getToolResultParsedBySpanId,
-      resolveBackgroundTaskRow: (rowKey: string) => byRowKey.get(rowKey),
-      onOpenSubagent: openSubagent(),
-    }
-  })
+  const hostLookups = createMemo(() => ({
+    getTodoById: props.lookups?.getTodoById,
+    getToolUseParsedBySpanId: props.lookups?.getToolUseParsedBySpanId,
+    getToolResultParsedBySpanId: props.lookups?.getToolResultParsedBySpanId,
+    resolveBackgroundTaskRow,
+    onOpenSubagent: props.agentLifecycle?.onOpenSubagent,
+  }))
 
   // The scroll container (also handed to scroll.attachListRef below). Read
   // non-reactively by isRowNearViewport at worker-dispatch time.

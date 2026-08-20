@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"maps"
 	"strings"
+	"sync"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
@@ -168,39 +169,16 @@ func (a *ClaudeCodeAgent) handleClaudeTaskStarted(ev *claudeTaskEnvelope) {
 	// identifies the tool call that runs NOW, not the original spawn.
 	known := lookupClaudeKnownTask(a.sink, ev.TaskID)
 
-	// Record the index (task_id <-> tool_use_id). Guarded by a.mu; never
-	// cleared at turn end (background tasks outlive turns).
-	a.mu.Lock()
-	if a.taskToolUse == nil {
-		a.taskToolUse = make(map[string]string)
-	}
-	if a.toolUseTask == nil {
-		a.toolUseTask = make(map[string]string)
-	}
-	if ev.ToolUseID != "" {
-		a.taskToolUse[ev.TaskID] = ev.ToolUseID
-		a.toolUseTask[ev.ToolUseID] = ev.TaskID
-	}
-	if a.taskKind == nil {
-		a.taskKind = make(map[string]bgtask.Kind)
-	}
+	// The per-process proof that this event RE-REGISTERS a task rather than
+	// starting one. Read once at the top, because four decisions below turn on it
+	// and none may disagree with another.
+	restart := a.restartEvidenceFor(ev)
+
 	startedKind := bgtask.KindSubagent
 	if ev.TaskType == claudeTaskTypeBash {
 		startedKind = bgtask.KindShell
 	}
-	a.taskKind[ev.TaskID] = startedKind
-	// A final result that arrived before this (reordered) task_started left
-	// a pending close keyed by the spawn span. Take it now and close the row
-	// this upsert is about to open, so the row cannot leak Running.
-	var pendingEnd bgtask.Status
-	var hasPending bool
-	if ev.ToolUseID != "" && a.pendingTaskEnd != nil {
-		if s, ok := a.pendingTaskEnd[ev.ToolUseID]; ok {
-			pendingEnd, hasPending = s, true
-			delete(a.pendingTaskEnd, ev.ToolUseID)
-		}
-	}
-	a.mu.Unlock()
+	pendingEnd, hasPending := a.tasks.startTask(ev.TaskID, ev.ToolUseID, startedKind)
 
 	kind := startedKind
 	groupKey, groupLabel := a.workflowGroup(ev)
@@ -228,8 +206,21 @@ func (a *ClaudeCodeAgent) handleClaudeTaskStarted(ev *claudeTaskEnvelope) {
 	// child agents row -- which EnsureChildAgent never rewrites -- kept the real
 	// title. A blank title here is the correct value for a row that already has
 	// one.
+	//
+	// Positive restart evidence suppresses the fallback, and an UNREADABLE
+	// registry is not evidence. Keying on the read failure had the asymmetry
+	// backwards: a read fails most often on the first registry touch of a
+	// process, where a first start is the overwhelmingly common event, and the
+	// row then took a blank title that nothing rewrites -- and EnsureChildAgent,
+	// given the same blank, took the tab name from the pool instead of from the
+	// prompt.
+	//
+	// The WAKE half of the evidence matters here even though `known.exists`
+	// usually answers for it: a wake against a registry this process cannot read
+	// leaves exists false, and the fallback then renamed the row to the wake
+	// block itself -- a literal <task-notification> in the sidebar.
 	title := ev.Description
-	if title == "" && !known.exists && !known.unreadable {
+	if title == "" && !known.exists && !restart.restarted() {
 		title = bgtask.FirstLine(ev.Prompt)
 	}
 
@@ -262,25 +253,31 @@ func (a *ClaudeCodeAgent) handleClaudeTaskStarted(ev *claudeTaskEnvelope) {
 	// word that the call is a workflow.
 	//
 	// Not for a re-registration. Its tool_use_id is the tool call that RESTARTED
-	// the task -- the parent's SendMessage -- and that call is still running in
+	// the task -- the parent's SendMessage -- and that call still runs in
 	// the parent transcript. Closing its span here would free the rail mid-flight,
 	// so its own tool_result would draw a connector_end with no vertical line
 	// above it to meet.
 	//
-	// The recorded span TYPE decides it, not "does the registry hold this task".
-	// The registry is durable and the span tracker is not, so a row that outlived
-	// a worker restart, or one a reordered task_notification opened first, would
-	// suppress the close for a genuine spawn and strand its rail open for the rest
-	// of the transcript. processAssistantBlocks records a type for every tool_use,
-	// CloseSpan preserves it (only the turn-end Reset clears it), and a revive's
-	// task_started lands inside the sending turn -- so this reads SendMessage
-	// exactly when the event re-registers a task and the spawn's own name
-	// otherwise.
+	// The in-flight SendMessage CALLS decide it, not "does the registry hold this
+	// task". The registry is durable and the call index is not, so a row that
+	// outlived a worker restart, or one a reordered task_notification opened
+	// first, would suppress the close for a genuine spawn and strand its rail
+	// open for the rest of the transcript. claudeArmRevivesFromBlocks records
+	// every SendMessage tool_use id as the block is parsed, and each transcript
+	// drops its own at its own turn end -- so this reads "restart call" exactly
+	// when the event re-registers a task, and nothing otherwise.
+	//
+	// The span tracker cannot answer this. A subagent's own SendMessage records
+	// its span type on that CHILD's tracker (routeSubagentMessage), while this
+	// runs on the ROOT sink, which answers "" for an id it never saw -- and ""
+	// is indistinguishable from a spawn here. So a sibling-to-sibling send, the
+	// case the revive exists to support, read as a spawn at both guards.
+	//
 	// An unreadable registry suppresses the close too: it cannot prove this is a
 	// spawn, and freeing a rail that is still in use is the worse of the two
 	// errors -- a rail given back too late costs one column, one given back too
 	// early leaves a tool_result drawing a connector end with nothing above it.
-	if !known.unreadable && a.sink.GetSpanType(ev.ToolUseID) != ToolNameClaudeSendMessage &&
+	if !known.unreadable && !restart.restarted() &&
 		startedKind != bgtask.KindShell && ev.ToolUseID != "" {
 		// CloseSpan, although the subagent keeps running: the call frees the
 		// column and nothing downstream distinguishes "ended" from "given back".
@@ -313,15 +310,19 @@ func (a *ClaudeCodeAgent) handleClaudeTaskStarted(ev *claudeTaskEnvelope) {
 		// carries the child outlives the display cap. What reaches it is a row
 		// that holds no linkage at all: an EnsureChildAgent that a DB failure
 		// defeated at spawn time, or a registry this process could not read. The
-		// recorded span type is the only positive evidence available in either
-		// state, and refusing an unproven id costs a transcript the subagent
-		// never had -- creating one under the wrong key costs the transcript it
-		// does have.
-		if childID == "" && ev.ToolUseID != "" && a.sink.GetSpanType(ev.ToolUseID) != ToolNameClaudeSendMessage {
+		// in-flight SendMessage calls are the only positive evidence available in
+		// either state, and refusing an unproven id costs a transcript the
+		// subagent never had -- creating one under the wrong key costs the
+		// transcript it does have.
+		//
+		// The restart evidence and not a span-type read: the span tracker answers for one
+		// transcript, and a subagent's own SendMessage lands on that child's
+		// tracker rather than the root's. See the guard above.
+		if childID == "" && ev.ToolUseID != "" && !restart.restarted() {
 			childID, err = a.sink.EnsureChildAgent(ev.ToolUseID, ev.TaskID, title)
 		}
 		if childID != "" {
-			a.rememberTaskChild(ev.TaskID, childID)
+			a.tasks.rememberTaskChild(ev.TaskID, childID)
 		}
 		switch {
 		case err != nil:
@@ -336,7 +337,7 @@ func (a *ClaudeCodeAgent) handleClaudeTaskStarted(ev *claudeTaskEnvelope) {
 				"task_id", ev.TaskID, "tool_use_id", ev.ToolUseID,
 				"row_exists", known.exists, "registry_unreadable", known.unreadable)
 		default:
-			handled, err := a.reviveClaudeSubagent(ev, childID, known)
+			handled, err := a.reviveClaudeSubagent(ev, childID, known, restart)
 			switch {
 			case err != nil:
 				// It WAS a revive; only the registry write failed. The delivered
@@ -365,7 +366,7 @@ func (a *ClaudeCodeAgent) handleClaudeTaskStarted(ev *claudeTaskEnvelope) {
 	if hasPending {
 		_ = a.sink.UpdateBackgroundTaskStatus(ev.TaskID, pendingEnd, "")
 		_ = a.sink.CloseBackgroundTask(ev.TaskID, pendingEnd)
-		a.forgetTaskIndex(ev.TaskID)
+		a.tasks.forgetTaskIndex(ev.TaskID)
 	}
 }
 
@@ -432,7 +433,7 @@ func lookupClaudeKnownTask(sink OutputSink, taskID string) claudeKnownTask {
 // the event any less a revive: falling back there would hand the delivered
 // message to PersistChildPrompt, which says nothing once the transcript has
 // messages, and the arm is spent by then.
-func (a *ClaudeCodeAgent) reviveClaudeSubagent(ev *claudeTaskEnvelope, childID string, known claudeKnownTask) (handled bool, err error) {
+func (a *ClaudeCodeAgent) reviveClaudeSubagent(ev *claudeTaskEnvelope, childID string, known claudeKnownTask, restart claudeRestartEvidence) (handled bool, err error) {
 	if childID == "" || !known.exists || !known.status.IsFinished() {
 		return false, nil
 	}
@@ -442,8 +443,14 @@ func (a *ClaudeCodeAgent) reviveClaudeSubagent(ev *claudeTaskEnvelope, childID s
 	// <task-notification> block addressed to the model, which is harness
 	// plumbing rather than anything the user asked for, so it reopens the row and
 	// writes nothing.
-	delivered := a.takeClaudeRevive(ev.TaskID)
-	if !delivered && !a.claudeWakeRestartedTask(ev) {
+	//
+	// The evidence arrives as a parameter, because the caller reads it before it
+	// derives the row title from the same event. Two reads of one fact would let
+	// the title and the revive disagree about what this event is. This is also
+	// the ONE decision that reads a single form rather than restarted(): only a
+	// SendMessage delivers text, so a wake reopens the row and writes nothing.
+	delivered := a.tasks.takeClaudeRevive(ev.TaskID)
+	if !delivered && !restart.wake {
 		return false, nil
 	}
 	// The message BEFORE the registry write, because the two are independent and
@@ -463,7 +470,7 @@ func (a *ClaudeCodeAgent) reviveClaudeSubagent(ev *claudeTaskEnvelope, childID s
 		// is the later of the two boundaries -- the retry window is never cut
 		// short. A wake consumed nothing, so it has nothing to give back.
 		if delivered {
-			a.armClaudeRevive(ev.TaskID, "")
+			a.tasks.armClaudeRevive(ev.TaskID, "")
 		}
 		return true, err
 	}
@@ -503,9 +510,11 @@ func (a *ClaudeCodeAgent) handleClaudeTaskNotification(ev *claudeTaskEnvelope) {
 	if !known {
 		return
 	}
-	// Remember it BEFORE the writes: a wake for this task's owner can follow
-	// immediately, and it proves itself by naming an id this process finalized.
-	a.rememberFinishedTask(ev.TaskID)
+	// Remember it BEFORE the writes: a wake for this shell's owner can follow
+	// immediately, and it proves itself with an id this process finalized. The
+	// call filters to shells; forgetTaskIndex below drops the kind, so the read
+	// has to happen here.
+	a.tasks.rememberFinishedShellTask(ev.TaskID)
 	summary := strings.TrimSpace(ev.Summary)
 	if err := a.sink.UpdateBackgroundTaskStatus(ev.TaskID, status, summary); err != nil {
 		slog.Warn("claude task_notification status update failed", "task_id", ev.TaskID, "error", err)
@@ -521,7 +530,7 @@ func (a *ClaudeCodeAgent) handleClaudeTaskNotification(ev *claudeTaskEnvelope) {
 	if ev.OutputFile != "" {
 		_ = a.sink.UpsertBackgroundTask(bgtask.Upsert{
 			RowKey:      ev.TaskID,
-			Kind:        a.kindForTask(ev.TaskID),
+			Kind:        a.tasks.kindForTask(ev.TaskID),
 			Description: ev.OutputFile,
 			Status:      status,
 		})
@@ -530,7 +539,7 @@ func (a *ClaudeCodeAgent) handleClaudeTaskNotification(ev *claudeTaskEnvelope) {
 		slog.Warn("claude task_notification close failed", "task_id", ev.TaskID, "error", err)
 	}
 	// Drop the index entry.
-	a.forgetTaskIndex(ev.TaskID)
+	a.tasks.forgetTaskIndex(ev.TaskID)
 }
 
 // workflowGroup derives the (group_key, group_label) for a workflow task from
@@ -596,17 +605,19 @@ func (a *ClaudeCodeAgent) routeSubagentMessage(content []byte, msgType string, e
 	}
 
 	spawnSpanID := env.ParentToolUseID
-	taskID := a.taskIDForToolUse(spawnSpanID)
+	taskID := a.tasks.taskIDForToolUse(spawnSpanID)
 
 	childID, err := a.sink.EnsureChildAgent(spawnSpanID, taskID, "")
 	if err != nil {
 		slog.Warn("claude route subagent: ensure child failed", "spawn_span", spawnSpanID, "error", err)
 		return
 	}
-	if taskID == "" {
-		taskID = a.taskIDForChild(childID)
-	}
-	a.rememberTaskChild(taskID, childID)
+	// Only an index-derived id is recorded here. Resolving the task FROM the
+	// child and then writing the pair back would be a no-op write, and it would
+	// leave two copies of the child-keyed fallback -- the result branch below
+	// holds the one that earns its place, where a revived run's result is the
+	// only reader that needs it.
+	a.tasks.rememberTaskChild(taskID, childID)
 
 	// Resolve the span metadata and reserve the tool_use's color with the SAME
 	// helper the parent transcript uses, but against the CHILD sink's tracker
@@ -634,7 +645,7 @@ func (a *ClaudeCodeAgent) routeSubagentMessage(content []byte, msgType string, e
 			// call. The child transcript is the same across both runs, so it still
 			// identifies the row. Without this the reopened row stays Running for
 			// good whenever no task_notification follows.
-			taskID = a.taskIDForChild(childID)
+			taskID = a.tasks.taskIDForChild(childID)
 		}
 		if taskID != "" {
 			status := bgtask.StatusCompleted
@@ -645,7 +656,7 @@ func (a *ClaudeCodeAgent) routeSubagentMessage(content []byte, msgType string, e
 			_ = a.sink.CloseBackgroundTask(taskID, status)
 			// Drop the index entry on the fallback path too (a task that ends
 			// via the result without a task_notification would otherwise leak).
-			a.forgetTaskIndex(taskID)
+			a.tasks.forgetTaskIndex(taskID)
 		} else {
 			// task_started has not arrived yet (a reorder): remember the final
 			// status keyed by the spawn span so the late task_started can close
@@ -655,12 +666,12 @@ func (a *ClaudeCodeAgent) routeSubagentMessage(content []byte, msgType string, e
 			if env.IsError {
 				status = bgtask.StatusFailed
 			}
-			a.recordPendingTaskEnd(spawnSpanID, status)
+			a.tasks.recordPendingTaskEnd(spawnSpanID, status)
 		}
 		// This subagent's turn ended, so drop the arms IT set. Its own result is
 		// the boundary for them; the root's is not, because this transcript
 		// outlives the root turn that spawned it.
-		a.clearClaudeRevives(spawnSpanID)
+		a.tasks.clearClaudeRevives(spawnSpanID)
 		return
 	}
 
@@ -707,128 +718,277 @@ func (a *ClaudeCodeAgent) routeSubagentMessage(content []byte, msgType string, e
 	}
 }
 
+// claudeTaskIndex is everything this agent knows about a Claude task, in one
+// value with one mutex.
+//
+// Eight maps index the same concept, and they were eight fields on the agent
+// under processBase.mu -- the process-lifecycle lock, shared with `stopped`, the
+// model, and the effort. Grouping them states the shared lifetime rule in one
+// place (forgetTaskIndex drops the run-scoped entries; childTask and
+// finishedTasks describe things that outlive a run) rather than in five field
+// comments that a reader has to collect.
+//
+// A zero value is usable: every write lazily builds its map, so the many sites
+// that build a ClaudeCodeAgent without StartClaudeCode need no constructor.
+type claudeTaskIndex struct {
+	mu sync.Mutex
+	// Subagent (Task/Workflow) index. Maps a Claude task_id <-> the spawning
+	// tool_use id (parent_tool_use_id on forwarded envelopes). Used to route
+	// forwarded subagent output into the right child transcript and to drive
+	// the background-task registry. Guarded by i.mu. NOT cleared at turn end
+	// (background tasks outlive turns); entries dropped on the final
+	// task_notification.
+	taskToolUse map[string]string // task_id -> tool_use_id
+	toolUseTask map[string]string // tool_use_id -> task_id
+	// childTask indexes the same link from the CHILD transcript side, so a
+	// forwarded envelope resolves its registry row when the tool_use index
+	// cannot. A revive re-registers the task under the SendMessage tool_use id,
+	// and the first completion already dropped the spawn span, so a run-2 result
+	// forwarded under the ORIGINAL spawn resolves no task and leaves the row the
+	// revive reopened Running for the agent's life. Guarded by i.mu, and NOT
+	// dropped at a completion: the entry describes the transcript, which outlives
+	// every run of it.
+	childTask map[string]string // child_agent_id -> task_id
+	// finishedTasks holds the id of every backgrounded SHELL this process gave a
+	// final status. A wake block identifies the shell whose completion restarted
+	// a subagent, and confirming that id here is what separates a real wake from
+	// a resumed session's hydration burst, which replays prompts that identify
+	// tasks of a PREVIOUS process.
+	//
+	// Shells only. Recording every finished task let a SUBAGENT's own id satisfy
+	// the proof, and a hydration burst replays that subagent's own wake prompt --
+	// so the one impostor the discriminator exists to exclude walked through it.
+	// Guarded by i.mu; never cleared, and limited to the shells one process ran.
+	finishedTasks map[string]struct{} // shell task_id this process finalized
+	// taskKind remembers what task_started said a task IS, because only
+	// task_started carries task_type. A later task_notification has to upsert
+	// the row again (to record a shell's output_file) and would otherwise have
+	// to guess the kind -- guessing "shell" there rewrote every Task subagent's
+	// row into a shell one, since notifications fire for subagents too.
+	// Guarded by i.mu; dropped with the rest of the index on the closing
+	// notification.
+	taskKind map[string]bgtask.Kind // task_id -> kind
+	// pendingTaskEnd holds a final status for a Task subagent whose result
+	// message arrived BEFORE its task_started (a forward of the child's final
+	// result can race past a reordered task_started). Keyed by spawn tool_use id
+	// so the late task_started can close the row it just opened. Guarded by i.mu.
+	pendingTaskEnd map[string]bgtask.Status // spawn tool_use_id -> final status
+	// pendingRevive holds the task ids the in-flight SendMessage calls addressed.
+	// A task_started for a task already in a final status is a REVIVE only when
+	// the id is armed here; see claudeArmRevivesFromBlocks for why the tool call
+	// is the evidence and the event alone is not. Guarded by i.mu.
+	//
+	// The VALUE is the SET of transcripts that armed it: "" for the root, the
+	// spawn span id for a subagent. Each transcript's own turn end drops only its
+	// own arms, because a subagent outlives the root turn it was spawned in --
+	// clearing on the root's result alone dropped a live subagent's arm before
+	// its task_started could fire it, and left that arm standing for the agent's
+	// life while the root sat idle.
+	//
+	// A set and not one scope, because two transcripts can address one recipient
+	// inside a single root turn. With one scope the second sender overwrote the
+	// first, and whichever turn ended first dropped an arm the other still
+	// needed.
+	pendingRevive map[string]map[string]struct{} // task_id -> the spawn spans that armed it ("" == root)
+	// sendMessageCalls holds the tool_use id of every in-flight SendMessage call,
+	// with the transcript that made it. handleClaudeTaskStarted asks it whether
+	// an event's tool_use_id is a restart call rather than the spawn span that
+	// created the task, and two decisions turn on the answer: the span close, and
+	// whether the id may reach EnsureChildAgent.
+	//
+	// The SPAN tracker cannot answer it. A subagent's own SendMessage records its
+	// span type on that child's tracker, while handleClaudeTaskStarted reads the
+	// ROOT sink -- which answers "" for an id it never saw, and "" is what a
+	// spawn also answers there. Recording the call where the block is parsed
+	// covers both transcripts with one index. Guarded by i.mu, and cleared with
+	// pendingRevive at the turn end of the transcript that set it.
+	sendMessageCalls map[string]string // tool_use_id -> the spawn span that made it ("" == root)
+}
+
 // taskIDForToolUse resolves the registry row_key (Claude task_id) for a
 // spawning tool_use id, recorded at task_started. Returns "" when unknown
+
+// startTask records what a task_started says a task IS, and takes any pending
+// close that a reordered final result left for it.
+//
+// One critical section for all three maps, because they describe one event: the
+// task_id <-> tool_use_id pair, the kind, and the reordered close. Neither pair
+// is cleared at a turn end -- a background task outlives the turn that spawned
+// it -- and forgetTaskIndex drops all three on the closing notification.
+//
+// The pending close is keyed by the spawn span: a final result can arrive
+// BEFORE the task_started it belongs to, and taking it here lets the caller
+// close the row this event is about to open, so the row cannot leak Running.
+func (i *claudeTaskIndex) startTask(taskID, toolUseID string, kind bgtask.Kind) (bgtask.Status, bool) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if toolUseID != "" {
+		if i.taskToolUse == nil {
+			i.taskToolUse = make(map[string]string)
+		}
+		if i.toolUseTask == nil {
+			i.toolUseTask = make(map[string]string)
+		}
+		i.taskToolUse[taskID] = toolUseID
+		i.toolUseTask[toolUseID] = taskID
+	}
+	if i.taskKind == nil {
+		i.taskKind = make(map[string]bgtask.Kind)
+	}
+	i.taskKind[taskID] = kind
+	if toolUseID == "" {
+		return bgtask.StatusPending, false
+	}
+	status, ok := i.pendingTaskEnd[toolUseID]
+	if ok {
+		delete(i.pendingTaskEnd, toolUseID)
+	}
+	return status, ok
+}
+
 // (a reorder or a pre-task_started forwarded envelope).
-func (a *ClaudeCodeAgent) taskIDForToolUse(toolUseID string) string {
+func (i *claudeTaskIndex) taskIDForToolUse(toolUseID string) string {
 	if toolUseID == "" {
 		return ""
 	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.toolUseTask[toolUseID]
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.toolUseTask[toolUseID]
 }
 
 // The wake block the CLI hands a subagent when one of that subagent's own
 // backgrounded shells finishes. It arrives as a task_started prompt.
 const (
-	claudeWakeOpenTag  = "<task-notification>"
-	claudeWakeCloseTag = "</task-notification>"
+	claudeWakeOpenTag        = "<task-notification>"
+	claudeWakeCloseTag       = "</task-notification>"
+	claudeWakeTaskIDOpenTag  = "<task-id>"
+	claudeWakeTaskIDCloseTag = "</task-id>"
 )
 
-// claudeWakeTaskID reports the task id a <task-notification> wake block names.
+// claudeWakeTaskID reports the task id a <task-notification> wake block
+// identifies.
 //
-// Two conditions, and neither is decoration. The block must OPEN the first line
-// or CLOSE the last one, so a spawn prompt that merely discusses the tag is not
-// mistaken for one. And the caller must confirm the id against the tasks THIS
-// process finished: a resumed session's hydration burst replays prompts from a
-// previous process, so the shell it names is one this process never saw. The
-// pair is the same class of proof the SendMessage arm supplies -- positive,
-// per-process evidence that the restart really happened -- rather than a guess
-// from the event alone.
+// The block must carry BOTH the open tag and the close tag, and the id must sit
+// inside a <task-id> element. Neither condition is where the safety lives: the
+// caller confirms the id against the tasks THIS process finished, and
+// reviveClaudeSubagent acts only on a row the registry already holds in a
+// finished status. That pair is the same class of proof the SendMessage arm
+// supplies -- positive, per-process evidence that the restart really happened --
+// and a resumed session's hydration burst cannot forge it, because it replays
+// prompts from a PREVIOUS process whose shell ids this one never saw.
+//
+// The parse is therefore deliberately shape-tolerant. It matches the tags
+// anywhere in the prompt and takes the first <task-id> element wherever it
+// sits, rather than requiring the tags at the first and last line and the id
+// alone on its own. This text is model-facing prose that no LeapMux code
+// controls, and the two failures are not symmetric: a false NEGATIVE silently
+// restores the whole bug this change exists to fix -- the row reads "finished"
+// for a run that is still going, and the run ends with no closing divider --
+// while a false POSITIVE cannot get past the two proofs above.
 func claudeWakeTaskID(prompt string) (string, bool) {
-	lines := strings.Split(strings.TrimSpace(prompt), "\n")
-	if len(lines) < 2 {
+	if !strings.Contains(prompt, claudeWakeOpenTag) || !strings.Contains(prompt, claudeWakeCloseTag) {
 		return "", false
 	}
-	if strings.TrimSpace(lines[0]) != claudeWakeOpenTag &&
-		strings.TrimSpace(lines[len(lines)-1]) != claudeWakeCloseTag {
+	_, rest, ok := strings.Cut(prompt, claudeWakeTaskIDOpenTag)
+	if !ok {
 		return "", false
 	}
-	for _, line := range lines {
-		rest, ok := strings.CutPrefix(strings.TrimSpace(line), "<task-id>")
-		if !ok {
-			continue
-		}
-		if id, ok := strings.CutSuffix(rest, "</task-id>"); ok && id != "" {
-			return id, true
-		}
+	id, _, ok := strings.Cut(rest, claudeWakeTaskIDCloseTag)
+	if !ok {
+		return "", false
 	}
-	return "", false
+	id = strings.TrimSpace(id)
+	return id, id != ""
 }
 
-// rememberFinishedTask records a task this process gave a final status, so a
-// later wake block that names it is provably about THIS session.
-func (a *ClaudeCodeAgent) rememberFinishedTask(taskID string) {
+// rememberFinishedShellTask records a backgrounded SHELL this process gave a
+// final status, so a later wake block that identifies it is provably about THIS
+// session.
+//
+// Shells only, because that is what a wake is about: the CLI wakes a subagent
+// when one of that subagent's own backgrounded shells completes. Recording
+// every finished task let a SUBAGENT's own id satisfy the proof, and a resumed
+// session replays that subagent's wake prompt verbatim -- so the hydration
+// burst, the one impostor the whole discriminator exists to exclude, walked
+// straight through it and reopened a row with nothing to close it.
+//
+// The kind read shares this lock rather than calling kindForTask, which takes
+// the same one. A task whose task_started this process never saw has no kind and
+// is not recorded, which is the conservative answer: an unknown task is not a
+// shell this process ran.
+func (i *claudeTaskIndex) rememberFinishedShellTask(taskID string) {
 	if taskID == "" {
 		return
 	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.finishedTasks == nil {
-		a.finishedTasks = make(map[string]struct{})
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.taskKind[taskID] != bgtask.KindShell {
+		return
 	}
-	a.finishedTasks[taskID] = struct{}{}
+	if i.finishedTasks == nil {
+		i.finishedTasks = make(map[string]struct{})
+	}
+	i.finishedTasks[taskID] = struct{}{}
 }
 
 // claudeWakeRestartedTask reports whether this task_started is the CLI waking a
 // finished subagent because one of its own backgrounded shells completed.
-func (a *ClaudeCodeAgent) claudeWakeRestartedTask(ev *claudeTaskEnvelope) bool {
+func (i *claudeTaskIndex) claudeWakeRestartedTask(ev *claudeTaskEnvelope) bool {
 	shellTaskID, ok := claudeWakeTaskID(ev.Prompt)
 	if !ok {
 		return false
 	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	_, seen := a.finishedTasks[shellTaskID]
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	_, seen := i.finishedTasks[shellTaskID]
 	return seen
 }
 
 // rememberTaskChild records the child transcript -> task_id link, so a
 // forwarded envelope can identify its registry row from the child alone.
-func (a *ClaudeCodeAgent) rememberTaskChild(taskID, childID string) {
+func (i *claudeTaskIndex) rememberTaskChild(taskID, childID string) {
 	if taskID == "" || childID == "" {
 		return
 	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.childTask == nil {
-		a.childTask = make(map[string]string)
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.childTask == nil {
+		i.childTask = make(map[string]string)
 	}
-	a.childTask[childID] = taskID
+	i.childTask[childID] = taskID
 }
 
 // taskIDForChild resolves the registry row_key for a child transcript id.
 // Returns "" when no task_started linked one.
-func (a *ClaudeCodeAgent) taskIDForChild(childID string) string {
+func (i *claudeTaskIndex) taskIDForChild(childID string) string {
 	if childID == "" {
 		return ""
 	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.childTask[childID]
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.childTask[childID]
 }
 
 // forgetTaskIndex drops the task_id <-> tool_use_id pair from both directions
 // of the index. Called when a task reaches a final state via either a
 // task_notification or the result-message fallback, so a task that ends
 // without a notification does not leak its index entries for the agent's life.
-func (a *ClaudeCodeAgent) forgetTaskIndex(taskID string) {
+func (i *claudeTaskIndex) forgetTaskIndex(taskID string) {
 	if taskID == "" {
 		return
 	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if tuid, ok := a.taskToolUse[taskID]; ok {
-		delete(a.taskToolUse, taskID)
-		delete(a.toolUseTask, tuid)
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if tuid, ok := i.taskToolUse[taskID]; ok {
+		delete(i.taskToolUse, taskID)
+		delete(i.toolUseTask, tuid)
 	}
 	// childTask deliberately SURVIVES. It describes the transcript, not the run,
 	// and a transcript is permanent: a revived run's forwarded envelopes still
 	// have to name this row, and the spawn span the tool_use index carried is
-	// gone by then. Bounded by the number of subagents this agent spawned, which
+	// gone by then. Limited to the number of subagents this agent spawned, which
 	// is the same bound as the child sinks the sink already holds.
-	delete(a.taskKind, taskID)
+	delete(i.taskKind, taskID)
 }
 
 // kindForTask returns what task_started said this task is, or KindUnspecified
@@ -836,10 +996,10 @@ func (a *ClaudeCodeAgent) forgetTaskIndex(taskID string) {
 // resume) or one already forgotten. The registry's blank-means-keep rule then
 // preserves whatever kind the row already carries, which is the right answer
 // for an existing row and the only honest one for a task nothing described.
-func (a *ClaudeCodeAgent) kindForTask(taskID string) bgtask.Kind {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.taskKind[taskID]
+func (i *claudeTaskIndex) kindForTask(taskID string) bgtask.Kind {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.taskKind[taskID]
 }
 
 // claudeSendMessageInput is the part of a SendMessage tool_use input this code
@@ -877,42 +1037,128 @@ func (a *ClaudeCodeAgent) claudeArmRevivesFromBlocks(env *messageEnvelope, armed
 		if block.Type != "tool_use" || block.Name != ToolNameClaudeSendMessage {
 			continue
 		}
+		// The CALL is recorded whatever its input says, and before the input is
+		// read. Two guards in handleClaudeTaskStarted ask "is this tool_use id a
+		// restart call rather than a spawn span", and that answer does not depend
+		// on the recipient resolving -- an input this code cannot parse is still
+		// not a spawn.
+		a.tasks.rememberSendMessageCall(block.ID, armedBy)
 		var input claudeSendMessageInput
 		if err := json.Unmarshal(block.Input, &input); err != nil {
 			slog.Warn("claude SendMessage input unmarshal failed", "agent_id", a.agentID, "error", err)
 			continue
 		}
-		a.armClaudeRevive(input.To, armedBy)
+		a.tasks.armClaudeRevive(input.To, armedBy)
+	}
+}
+
+// rememberSendMessageCall records one in-flight SendMessage tool_use id with the
+// transcript that made it, until that transcript's turn end.
+func (i *claudeTaskIndex) rememberSendMessageCall(toolUseID, armedBy string) {
+	if toolUseID == "" {
+		return
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.sendMessageCalls == nil {
+		i.sendMessageCalls = make(map[string]string)
+	}
+	i.sendMessageCalls[toolUseID] = armedBy
+}
+
+// claudeRestartCall reports whether toolUseID is an in-flight SendMessage call,
+// which is what separates a task_started that RE-REGISTERS a task from the spawn
+// that created one.
+//
+// It is not consumed. Both guards in handleClaudeTaskStarted read it, and a
+// second task_started for the same call inside the turn must get the same
+// answer; the turn end of the transcript that made the call drops it.
+func (i *claudeTaskIndex) claudeRestartCall(toolUseID string) bool {
+	if toolUseID == "" {
+		return false
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	_, ok := i.sendMessageCalls[toolUseID]
+	return ok
+}
+
+// claudeRestartEvidence is the positive, per-process proof that a task_started
+// RE-REGISTERS a task rather than starting one. Each restart form the CLI has
+// contributes one field, and every decision that asks "is this a
+// re-registration" reads restarted() -- so a new form costs one field here and
+// no decision site is left behind. The two forms drifted apart before this
+// type existed: three decisions read the SendMessage half alone, and a wake
+// against an unreadable registry took the prompt-derived title branch and
+// renamed the row to the wake block.
+//
+// Positive evidence, never the absence of an impostor. "task_started against a
+// finished row" describes a resumed session's hydration burst, a duplicate
+// task_started, and a reordered one just as well as it describes a restart, and
+// honoring any of them reopens a row that nothing will close.
+type claudeRestartEvidence struct {
+	// sendMessage: the event's tool_use_id is an in-flight SendMessage call, so
+	// it is that call and not the spawn span that created the task.
+	sendMessage bool
+	// wake: the prompt is a wake block that identifies a backgrounded shell this
+	// process finished, which is the CLI restarting that shell's owner. Only this
+	// form is read on its own, by reviveClaudeSubagent -- a wake delivers no text,
+	// and a SendMessage does.
+	wake bool
+}
+
+// restarted reports whether ANY form proved a re-registration.
+func (e claudeRestartEvidence) restarted() bool { return e.sendMessage || e.wake }
+
+func (a *ClaudeCodeAgent) restartEvidenceFor(ev *claudeTaskEnvelope) claudeRestartEvidence {
+	return claudeRestartEvidence{
+		sendMessage: a.tasks.claudeRestartCall(ev.ToolUseID),
+		wake:        a.tasks.claudeWakeRestartedTask(ev),
 	}
 }
 
 // armClaudeRevive records one recipient id as revivable until the turn end of
 // the transcript that sent the message. armedBy is "" for the root and the
 // spawn span id for a subagent.
-func (a *ClaudeCodeAgent) armClaudeRevive(to, armedBy string) {
+//
+// A recipient carries the SET of transcripts that addressed it, not the last
+// one. Two senders can address one subagent inside a single root turn -- the
+// root and a live sibling -- and a single-valued arm let the second overwrite
+// the first's scope. The sibling's own result then ended its turn, dropped the
+// arm under ITS scope, and the root's send found nothing to fire: the row stayed
+// finished for the whole restarted run and the delivered text never reached the
+// transcript, which is the failure the arm exists to prevent.
+func (i *claudeTaskIndex) armClaudeRevive(to, armedBy string) {
 	if to == "" {
 		return
 	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.pendingRevive == nil {
-		a.pendingRevive = make(map[string]string)
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.pendingRevive == nil {
+		i.pendingRevive = make(map[string]map[string]struct{})
 	}
-	a.pendingRevive[to] = armedBy
+	if i.pendingRevive[to] == nil {
+		i.pendingRevive[to] = make(map[string]struct{})
+	}
+	i.pendingRevive[to][armedBy] = struct{}{}
 }
 
 // takeClaudeRevive reports whether an in-flight SendMessage addressed taskID,
-// and consumes the arm so one send cannot revive the same row twice.
-func (a *ClaudeCodeAgent) takeClaudeRevive(taskID string) bool {
+// and consumes every arm on it so one restart cannot revive the same row twice.
+//
+// The whole set goes, not one scope: the arms are proof that a restart is
+// expected, and the CLI restarts the recipient ONCE however many senders queued
+// a message for it.
+func (i *claudeTaskIndex) takeClaudeRevive(taskID string) bool {
 	if taskID == "" {
 		return false
 	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if _, ok := a.pendingRevive[taskID]; !ok {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if _, ok := i.pendingRevive[taskID]; !ok {
 		return false
 	}
-	delete(a.pendingRevive, taskID)
+	delete(i.pendingRevive, taskID)
 	return true
 }
 
@@ -926,10 +1172,25 @@ func (a *ClaudeCodeAgent) takeClaudeRevive(taskID string) bool {
 // live subagent's arm before its task_started could fire it, which left the
 // recipient's row finished and its transcript looking dead -- the exact bug the
 // revive exists to fix.
-func (a *ClaudeCodeAgent) clearClaudeRevives(armedBy string) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	maps.DeleteFunc(a.pendingRevive, func(_, scope string) bool { return scope == armedBy })
+func (i *claudeTaskIndex) clearClaudeRevives(armedBy string) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	// One scope leaves each recipient's set, and the recipient goes only when its
+	// last sender does. A recipient two transcripts addressed stays armed until
+	// both of their turns end, so the earlier one cannot cancel the later one's
+	// restart.
+	for to, scopes := range i.pendingRevive {
+		delete(scopes, armedBy)
+		if len(scopes) == 0 {
+			delete(i.pendingRevive, to)
+		}
+	}
+	// The calls go with the arms. Both describe the same in-flight SendMessage
+	// tool calls and carry the same scope, so one boundary ends both -- and a
+	// call left standing would keep answering "restart" for an id whose turn
+	// ended, which suppresses the span close for a later genuine spawn. The
+	// tool_use id is unique per call, so this side needs no set.
+	maps.DeleteFunc(i.sendMessageCalls, func(_, scope string) bool { return scope == armedBy })
 }
 
 // recordPendingTaskEnd remembers a final status for a Task subagent whose
@@ -937,14 +1198,14 @@ func (a *ClaudeCodeAgent) clearClaudeRevives(armedBy string) {
 // task_started takes the entry and closes the row it opens, so the row cannot
 // leak Running. Keyed by the spawn tool_use id (the parent_tool_use_id every
 // forwarded envelope shares).
-func (a *ClaudeCodeAgent) recordPendingTaskEnd(spawnToolUseID string, status bgtask.Status) {
+func (i *claudeTaskIndex) recordPendingTaskEnd(spawnToolUseID string, status bgtask.Status) {
 	if spawnToolUseID == "" {
 		return
 	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.pendingTaskEnd == nil {
-		a.pendingTaskEnd = make(map[string]bgtask.Status)
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.pendingTaskEnd == nil {
+		i.pendingTaskEnd = make(map[string]bgtask.Status)
 	}
-	a.pendingTaskEnd[spawnToolUseID] = status
+	i.pendingTaskEnd[spawnToolUseID] = status
 }

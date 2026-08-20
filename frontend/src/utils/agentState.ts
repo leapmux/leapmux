@@ -217,17 +217,20 @@ export function shouldShowThinkingIndicator(
   if (override !== null && override !== undefined)
     return override
   // A finished registry row outranks the MESSAGE HISTORY, but not live evidence
-  // of a turn in flight. A steerable subagent -- Codex re-registers a collab
-  // child on any later tool call -- can be sent a new message after its row went
-  // final, and Codex's row never reopens. Placing this ahead of `streamingText`
-  // and the provider's own turn check meant that turn ran with no thinking
-  // indicator and, because the same predicate controls Interrupt, no way to cancel
-  // it.
+  // of a turn in flight, which is why this sits BELOW `streamingText` and the
+  // provider's own turn check rather than above them.
   //
-  // Claude's row DOES reopen: the worker revives it when the parent messages a
-  // finished subagent, so `work` is 'active' again by the time that run starts
-  // and the check above already returned true. This branch is the answer for a
-  // subagent that is genuinely over.
+  // The worker reopens the row for both providers now -- Claude when a parent
+  // messages a finished subagent, Codex when a later collab call re-registers a
+  // child that runs again -- so `work` returns to 'active' and the check at the
+  // top of this function answers first. But not INSTANTLY: the revive is a
+  // worker-side write that reaches the client asynchronously, so a restarted run
+  // can be streaming while `work` still reads 'finished'. The live checks above
+  // cover that window; putting this branch ahead of them left that run with no
+  // thinking indicator and, because the same predicate controls Interrupt, no
+  // way to cancel it.
+  //
+  // So this branch is the answer for a subagent that is genuinely over.
   if (work === 'finished')
     return false
   return isAgentWorking(msgs)
