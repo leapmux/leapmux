@@ -119,7 +119,7 @@ describe('stringListControl', () => {
     expect(screen.getByText(`Too many entries (max ${MAX_STRING_LIST_ITEMS})`)).toBeTruthy()
   })
 
-  it('escape during rename does not commit', () => {
+  it('escape during rename does not commit, and does not reach the dialog', () => {
     const onChange = vi.fn()
     render(() => (
       <StringListControl value={['Inter']} addLabel="Add font" ariaLabel="Fonts" onChange={onChange} />
@@ -127,9 +127,13 @@ describe('stringListControl', () => {
     fireEvent.dblClick(screen.getByText('Inter'))
     const editor = screen.getByLabelText('Rename Fonts') as HTMLInputElement
     fireEvent.input(editor, { target: { value: 'Hack' } })
-    fireEvent.keyDown(editor, { key: 'Escape' })
+    const escape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+    editor.dispatchEvent(escape)
     expect(onChange).not.toHaveBeenCalled()
     expect(screen.getByText('Inter')).toBeTruthy()
+    // An Escape left unconsumed becomes a close request, and the request
+    // closes the Preferences dialog around the edit the user meant to cancel.
+    expect(escape.defaultPrevented).toBe(true)
   })
 })
 

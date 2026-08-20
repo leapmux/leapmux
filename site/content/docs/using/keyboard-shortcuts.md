@@ -26,7 +26,7 @@ Key strings use the `tinykeys` vocabulary. The most important token is `$mod`:
 
 So a single binding such as `$mod+n` is shown as `⌘N` on a Mac and `Ctrl+N` everywhere else. The tables below give both forms.
 
-Other modifiers are `Shift`, `Alt` (also written `Option`), `Control`/`Ctrl`, and `Meta`. Named keys used in the defaults include `Escape`, `F5`, `F12`, the arrow keys, `PageUp`/`PageDown`, the bracket and backslash keys, and the digits `0`–`9`.
+Other modifiers are `Shift`, `Alt` (also written `Option`), `Control`/`Ctrl`, and `Meta`. Named keys used in the defaults include `F5`, `F12`, the arrow keys, `PageUp`/`PageDown`, the bracket and backslash keys, and the digits `0`–`9`.
 
 ### Chords
 
@@ -136,11 +136,11 @@ Under the hood these send terminal control sequences (Ctrl-A, Ctrl-E, Esc-b, Esc
 
 ### Dialogs
 
-| Command | macOS | Windows / Linux | Active when |
-|---|---|---|---|
-| Close Dialog | `Esc` | `Esc` | a dialog is open |
-
 `Esc` closes the most recently opened dialog — unless that dialog is busy (for example, mid-operation), in which case it resists closing until the operation finishes.
+
+`Esc` is not a keybinding, and no command performs this action. The browser delivers the key to the innermost open layer, so one press dismisses one layer: with a drop-down menu open inside a dialog, the first `Esc` closes the menu and the second closes the dialog. A control that answers `Esc` itself comes first in the same way — the Preferences search box clears the query, and an inline rename cancels the edit.
+
+`Esc` is **reserved**: an override that binds it is ignored, and the log records the entry that was dropped. Every keybinding fires from a single listener that runs ahead of the layers, so a binding for `Esc` would close a dialog underneath an open menu — which is the behaviour the reservation exists to prevent.
 
 ### New Workspace
 
@@ -234,6 +234,7 @@ For each overridden command, LeapMux merges the overrides with the defaults usin
 - A command may have **multiple overrides** — it gets bound to every non-empty key listed.
 - An override with `"key": ""` (empty) **unbinds** the command. If every override for a command has an empty key, the command is fully unbound.
 - An override for a command **not** in the defaults is appended as a brand-new binding (with no inherited `when`-clause).
+- An override whose key is `Escape` is **dropped**, and the command keeps whatever the defaults give it. `Esc` is reserved for the innermost open layer — see [Dialogs](#dialogs). A chord that merely contains it, such as `Shift+Escape`, binds normally.
 
 Changes take effect immediately: when the overrides change, LeapMux re-merges and re-binds the workspace shortcuts without a reload.
 
@@ -257,7 +258,6 @@ Each override targets a command by its id. Each id corresponds to one of the act
 | `app.toggleLeftSidebar` / `app.toggleRightSidebar` | Toggle Left / Right Sidebar |
 | `app.openPreferences` | Open Preferences |
 | `app.openInExternalEditor` | Open in External Editor |
-| `dialog.close` | Close Dialog |
 | `chat.sendMessage` | Send Message |
 | `terminal.lineStart` / `terminal.lineEnd` | Go to Line Start / End |
 | `terminal.wordLeft` / `terminal.wordRight` | Go to Previous / Next Word |

@@ -8,6 +8,26 @@ import { evaluateWhen, getContext, whenReferencesKey } from './context'
 const log = createLogger('shortcuts')
 
 /**
+ * Keys that no binding may claim, whatever a user writes by hand in
+ * `custom_keybindings_json`.
+ *
+ * `activateBindings` dispatches from a capture-phase listener on `window`,
+ * which is the first handler on the whole propagation path. A binding for
+ * Escape therefore preempts every layer that dismisses itself on Escape -- an
+ * open `DropdownMenu`, the Preferences search box, an inline rename -- so one
+ * press dismisses two layers at once. The browser already aims a close request
+ * at the innermost open layer, and `Dialog` acts on the request it receives.
+ *
+ * A chord that merely CONTAINS Escape (`Shift+Escape`) is not reserved: the
+ * browser makes no close request for it, so it displaces no layer.
+ *
+ * The settings editor cannot produce one of these either -- `captureKeydown`
+ * in `KeybindingsControl` reads Escape as "stop capturing". This guard covers
+ * the hand-edited JSON, which reaches the merge without passing that editor.
+ */
+const RESERVED_KEYS: ReadonlySet<string> = new Set(['Escape'])
+
+/**
  * Merge default keybindings with user overrides.
  *
  * Multiple overrides for the same command are supported — each non-empty-key
@@ -20,6 +40,10 @@ const log = createLogger('shortcuts')
  * - If all overrides have empty keys, the command is fully unbound
  *
  * Overrides for commands not in defaults are appended as new bindings.
+ *
+ * An override for a reserved key is dropped, and the command keeps whatever
+ * the defaults give it. Dropping the one entry beats unbinding the command:
+ * a single bad line in the JSON costs the user that line, not the shortcut.
  */
 export function mergeKeybindings(
   defaults: readonly Keybinding[],
@@ -27,6 +51,10 @@ export function mergeKeybindings(
 ): Keybinding[] {
   const overrideMap = new Map<string, UserKeybindingOverride[]>()
   for (const o of overrides) {
+    if (RESERVED_KEYS.has(o.key)) {
+      log.warn('Ignoring an override that binds a reserved key', { key: o.key, command: o.command })
+      continue
+    }
     let list = overrideMap.get(o.command)
     if (!list) {
       list = []

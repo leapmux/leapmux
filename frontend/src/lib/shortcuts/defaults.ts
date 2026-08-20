@@ -67,8 +67,14 @@ export const WORKSPACE_KEYBINDINGS: readonly Keybinding[] = [
   // Preferences
   { key: '$mod+Comma', command: 'app.openPreferences' },
 
-  // Dialog close
-  { key: 'Escape', command: 'dialog.close', when: 'dialogOpen' },
+  // Escape is reserved and no binding may claim it -- see `RESERVED_KEYS` in
+  // ~/lib/shortcuts/keybindings.ts, which drops a user override for it too.
+  // Every binding here dispatches from a capture-phase listener on `window`,
+  // which is the first handler on the path, so an Escape binding preempts each
+  // inner layer that closes on Escape by itself: an open `DropdownMenu`, the
+  // Preferences search box, an inline rename. One press then dismissed two
+  // layers at once. The platform routes a close request to the innermost open
+  // layer instead, and `Dialog` acts on the request it receives.
 
   // Terminal cursor navigation (macOS)
   { key: '$mod+ArrowLeft', command: 'terminal.lineStart', when: 'terminalFocused && platform == "mac"' },

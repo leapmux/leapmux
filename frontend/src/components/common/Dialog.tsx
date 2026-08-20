@@ -65,12 +65,28 @@ export const Dialog: Component<DialogProps> = (props) => {
     }, motion.fast)
   }
 
+  // The platform's close request -- Escape, and the Android back gesture --
+  // arrives as `cancel`, and it arrives ONLY when this dialog is the innermost
+  // open layer. The browser sends a close request to the topmost element of
+  // the top layer, so an open popover (a `DropdownMenu` inside this dialog)
+  // takes it first, and a handler that already consumed the key (see
+  // `PreferencesSearch`, which clears the query instead) cancels the request
+  // before the browser makes it.
+  //
+  // That layering is why nothing here binds Escape itself. An app-level Escape
+  // handler runs on the propagation path, which knows the DOM tree but not the
+  // top layer, so it closes this dialog while a menu above it is still open.
+  //
+  // Prevent the native close and take our own path instead. The native one
+  // skips the exit animation, and it closes the element behind this
+  // component's back: a `busy` dialog would go invisible while the parent
+  // `<Show>` still held it mounted. `beginClose` refuses both.
+  const handleCancel = (e: Event) => {
+    e.preventDefault()
+    beginClose()
+  }
+
   const handleKeyDown = (e: KeyboardEvent) => {
-    if (e.key === 'Escape') {
-      e.preventDefault()
-      beginClose()
-      return
-    }
     if (
       e.key === 'Enter'
       && !e.defaultPrevented
@@ -97,12 +113,14 @@ export const Dialog: Component<DialogProps> = (props) => {
     // focus ring / auto-scrolling to reveal a form field below the fold.
     bodyRef.focus()
     dialogRef.addEventListener('keydown', handleKeyDown)
+    dialogRef.addEventListener('cancel', handleCancel)
   })
   onCleanup(() => {
     unmounting = true
     if (closeTimer)
       clearTimeout(closeTimer)
     dialogRef.removeEventListener('keydown', handleKeyDown)
+    dialogRef.removeEventListener('cancel', handleCancel)
     if (dialogRef.open) {
       dialogRef.close()
     }

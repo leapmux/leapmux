@@ -1,3 +1,4 @@
+import { motion } from '../../src/styles/tokens'
 import { expect, test } from './fixtures'
 import { loginViaToken, openPreferencesDialog } from './helpers/ui'
 
@@ -78,5 +79,32 @@ test.describe('Preferences navigation', () => {
     await dialog.getByText('Notifications \u203A Turn-end volume').click()
     await expect(dialog.getByTestId('preferences-nav-notifications')).toBeVisible()
     await expect(dialog.getByText('Turn-end volume')).toBeVisible()
+  })
+
+  // Escape dismisses ONE layer, innermost first. The search box is the inner
+  // one while it holds a query, and `PreferencesSearch` says so in code -- it
+  // consumes the key and lets only an EMPTY query through to the dialog. A
+  // global Escape binding used to run first and close the dialog either way,
+  // so the search box never got the press it claimed.
+  test('clears the search on Escape, and closes the dialog only once the query is empty', async ({ page, leapmuxServer }) => {
+    await loginViaToken(page, leapmuxServer.adminToken)
+    await page.goto('/')
+    await openPreferencesDialog(page, 'appearance')
+    const dialog = page.getByRole('dialog', { name: 'Preferences' })
+
+    const search = dialog.getByTestId('preferences-search')
+    await search.fill('volume')
+    await expect(dialog.getByTestId('preferences-search-results')).toBeVisible()
+
+    await search.press('Escape')
+    await expect(search).toHaveValue('')
+    // Outlast `Dialog`'s exit animation before reading the dialog: it defers
+    // the unmount, so a check here also passes on a dialog that IS closing.
+    await page.waitForTimeout(motion.fast * 3)
+    await expect(dialog, 'Escape closed the dialog instead of clearing the search').toBeVisible()
+
+    // An empty query holds nothing back, so the same key now reaches the dialog.
+    await search.press('Escape')
+    await expect(dialog).toBeHidden()
   })
 })

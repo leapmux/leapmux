@@ -2,6 +2,7 @@
 import { render, waitFor } from '@solidjs/testing-library'
 import { createSignal, Show } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
+import { motion } from '~/styles/tokens'
 import { Dialog, DialogColumns } from './Dialog'
 import * as styles from './Dialog.css'
 
@@ -70,7 +71,7 @@ describe('dialog', () => {
     expect(onClose).not.toHaveBeenCalled()
   })
 
-  it('closes on Escape when not busy', async () => {
+  it('closes on the close request Escape makes, when not busy', async () => {
     const onClose = vi.fn()
     const { container } = render(() => (
       <Dialog title="Test" onClose={onClose}>
@@ -79,10 +80,35 @@ describe('dialog', () => {
     ))
 
     const dialog = container.querySelector('dialog')!
-    dialog.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    const cancel = new Event('cancel', { bubbles: false, cancelable: true })
+    dialog.dispatchEvent(cancel)
+    // The native close skips the exit animation and ignores `busy`, so the
+    // component takes the request over instead of letting it run.
+    expect(cancel.defaultPrevented).toBe(true)
     // User-initiated close paths run an exit animation before calling
     // `onClose` (see `Dialog.tsx`'s `beginClose`); poll until it fires.
     await waitFor(() => expect(onClose).toHaveBeenCalled())
+  })
+
+  it('acts on no Escape of its own, so an inner layer can consume it', async () => {
+    const onClose = vi.fn()
+    const { container } = render(() => (
+      <Dialog title="Test" onClose={onClose}>
+        <p>Content</p>
+      </Dialog>
+    ))
+
+    const dialog = container.querySelector('dialog')!
+    const escape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+    dialog.dispatchEvent(escape)
+
+    // The browser turns an unconsumed Escape into a close request aimed at the
+    // TOPMOST layer, which is the open menu and not this dialog. A keydown
+    // handler here would close the dialog under that menu, so there is none.
+    expect(escape.defaultPrevented).toBe(false)
+    await new Promise(resolve => setTimeout(resolve, motion.fast * 3))
+    expect(onClose).not.toHaveBeenCalled()
+    expect(dialog.hasAttribute('open')).toBe(true)
   })
 
   it('closes on backdrop click when not busy', async () => {
@@ -248,7 +274,7 @@ describe('dialog', () => {
     expect(onSubmit).not.toHaveBeenCalled()
   })
 
-  it('does not close on Escape when busy', () => {
+  it('does not close on a close request when busy', () => {
     const onClose = vi.fn()
     const { container } = render(() => (
       <Dialog title="Test" busy onClose={onClose}>
@@ -257,7 +283,11 @@ describe('dialog', () => {
     ))
 
     const dialog = container.querySelector('dialog')!
-    dialog.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    const cancel = new Event('cancel', { bubbles: false, cancelable: true })
+    dialog.dispatchEvent(cancel)
+    // Prevented even while busy: an unprevented request closes the element
+    // itself, which would leave a mounted dialog the user cannot see.
+    expect(cancel.defaultPrevented).toBe(true)
     expect(dialog.hasAttribute('open')).toBe(true)
     expect(onClose).not.toHaveBeenCalled()
   })
