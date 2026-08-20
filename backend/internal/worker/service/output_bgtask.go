@@ -95,10 +95,14 @@ func (h *OutputHandler) bgTaskOps() registryOps[bgtask.Item] {
 		// id back to (owner, row_key) -- the reverse lookup behind
 		// send-to-subagent and interrupt -- and the child agents row outlives the
 		// registry delete, so deleting the row leaves a subagent nobody can reach
-		// while its transcript is still readable. LookupBackgroundTask reads a
-		// retained row back through GetAgentBackgroundTaskByRowKey.
-		retainInStore: func(r bgtask.Item) bool { return r.ChildAgentID != "" },
-		cap:           bgtask.MaxTasks,
+		// while its transcript is still readable.
+		retention: &registryRetention[bgtask.Item]{
+			keep: func(r bgtask.Item) bool { return r.ChildAgentID != "" },
+			load: func(ctx context.Context, ownerID, key string) (bgtask.Item, bool, error) {
+				return h.loadStoredBgTask(ctx, ownerID, key)
+			},
+		},
+		cap: bgtask.MaxTasks,
 		// One cap pool per KIND. A run that opens hundreds of shells would
 		// otherwise evict every finished subagent, and the subagent rows are the
 		// ones carrying a transcript worth reopening.
@@ -106,6 +110,29 @@ func (h *OutputHandler) bgTaskOps() registryOps[bgtask.Item] {
 		buckets:  bgtask.KindWires(),
 		label:    "background tasks",
 	}
+}
+
+// loadStoredBgTask reads one persisted registry row by its PRIMARY KEY and
+// projects it into the in-memory shape. found=false for a row that does not
+// exist, so a caller tells "absent" from "unreadable" without inspecting the
+// error.
+//
+// This is the single reader for a row the display cache does not hold. Both
+// callers need it for the same reason -- the cap bounds the list, not the table
+// -- and one of them (registryOps.retention.load) is how every mutation reaches
+// a retained row.
+func (h *OutputHandler) loadStoredBgTask(ctx context.Context, ownerID, rowKey string) (bgtask.Item, bool, error) {
+	row, err := h.queries.GetAgentBackgroundTaskByRowKey(ctx, db.GetAgentBackgroundTaskByRowKeyParams{
+		OwnerAgentID: ownerID,
+		RowKey:       rowKey,
+	})
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return bgtask.Item{}, false, nil
+	case err != nil:
+		return bgtask.Item{}, false, fmt.Errorf("read background task %s/%s: %w", ownerID, rowKey, err)
+	}
+	return bgItemFromRow(row), true, nil
 }
 
 // bgTaskCache returns the per-root-agent cache, creating an empty (unseeded)
@@ -216,7 +243,10 @@ func (h *OutputHandler) applyBackgroundTaskStatus(rootAgentID, rowKey string, st
 	if err := cache.ensureSeededLocked(ctx, rootAgentID); err != nil {
 		return registryChange{}, err
 	}
-	idx := cache.indexOf(rowKey)
+	idx, err := cache.rowIndexLocked(ctx, rootAgentID, rowKey)
+	if err != nil {
+		return registryChange{}, err
+	}
 	if idx < 0 {
 		return registryChange{rows: cache.snapshot()}, nil
 	}
@@ -300,7 +330,10 @@ func (h *OutputHandler) applyBackgroundTaskClose(rootAgentID, rowKey string, sta
 	if err := cache.ensureSeededLocked(ctx, rootAgentID); err != nil {
 		return registryChange{}, err
 	}
-	idx := cache.indexOf(rowKey)
+	idx, err := cache.rowIndexLocked(ctx, rootAgentID, rowKey)
+	if err != nil {
+		return registryChange{}, err
+	}
 	if idx < 0 {
 		return registryChange{rows: cache.snapshot()}, nil
 	}
@@ -351,7 +384,10 @@ func (h *OutputHandler) applyBackgroundTaskRevive(rootAgentID, rowKey string) (r
 	if err := cache.ensureSeededLocked(ctx, rootAgentID); err != nil {
 		return registryChange{}, err
 	}
-	idx := cache.indexOf(rowKey)
+	idx, err := cache.rowIndexLocked(ctx, rootAgentID, rowKey)
+	if err != nil {
+		return registryChange{}, err
+	}
 	if idx < 0 {
 		return registryChange{rows: cache.snapshot()}, nil
 	}
@@ -1049,20 +1085,21 @@ func (s *agentOutputSink) LookupBackgroundTask(rowKey string) (string, bgtask.St
 	// subagents, EVERY revive of an older one would read "no such row", open a
 	// second transcript, and leave the real one unreachable. Fall through to the
 	// PRIMARY KEY, which is one indexed point lookup.
-	row, err := s.h.queries.GetAgentBackgroundTaskByRowKey(s.h.bgTaskCtx(), db.GetAgentBackgroundTaskByRowKeyParams{
-		OwnerAgentID: s.rootAgentID,
-		RowKey:       rowKey,
-	})
+	//
+	// This READS the retained row without re-admitting it to the display list,
+	// unlike the appliers: a lookup answers a question, and a question is not the
+	// activity that earns a place in the sidebar.
+	row, found, err := s.h.loadStoredBgTask(s.h.bgTaskCtx(), s.rootAgentID, rowKey)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return "", noStatus, false, nil
-		}
 		// A DB failure stays the THIRD answer, distinct from a miss, for the same
 		// reason the seed failure above does: a caller that reads "no such row"
 		// from a database it could not read treats a live subagent as brand new.
-		return "", noStatus, false, fmt.Errorf("read background task %s/%s: %w", s.rootAgentID, rowKey, err)
+		return "", noStatus, false, err
 	}
-	return row.ChildAgentID, bgtask.StatusFromWire(row.Status), true, nil
+	if !found {
+		return "", noStatus, false, nil
+	}
+	return row.ChildAgentID, row.Status, true, nil
 }
 
 // ReviveBackgroundTask returns a finished row to Running and lets the reopened
@@ -1218,7 +1255,16 @@ func (h *OutputHandler) applyBackgroundTaskUpsertLocked(cache *bgTaskCache, root
 	if err := cache.ensureSeededLocked(ctx, rootAgentID); err != nil {
 		return registryChange{}, err
 	}
-	idx := cache.indexOf(task.RowKey)
+	// rowIndexLocked, not indexOf: a RETAINED row that left the display list is
+	// an existing row, and taking it for a new one would skip the merge below --
+	// so a resumed session's replayed Running upsert would resurrect a finished
+	// subagent, and its title and created_at would be rewritten from the replay.
+	// The re-admit also makes room for itself, which is why the cap branch below
+	// only ever runs for a genuinely new row.
+	idx, err := cache.rowIndexLocked(ctx, rootAgentID, task.RowKey)
+	if err != nil {
+		return registryChange{}, err
+	}
 	// Set on the active -> final transition below, so an upsert that carries the
 	// final status writes the closing divider the same way a close does.
 	var endedChildID string
@@ -1258,35 +1304,28 @@ func (h *OutputHandler) applyBackgroundTaskUpsertLocked(cache *bgTaskCache, root
 		if existing.WithUpdatedAt(merged.UpdatedAt) == merged {
 			return registryChange{rows: cache.snapshot()}, nil
 		}
-	} else if bucket := bgtask.KindWire(merged.Kind); cache.atCapForBucket(bucket) {
-		// Scoped to the incoming row's kind, so making room for a shell never
-		// deletes a subagent (and the reverse).
-		_, evicted, err := cache.evictOldestFinishedInBucketLocked(ctx, rootAgentID, bucket)
+	} else {
+		// Room for the new row, scoped to its own KIND so making space for a
+		// shell never drops a subagent (and the reverse). Dropping the new row
+		// instead is not an option: it would orphan an already-created child
+		// agent row (EnsureChildAgent inserts the child before this upsert links
+		// it), leaving an unopenable transcript.
+		//
+		// A pool with no finished row gives up its oldest ACTIVE one. That needs
+		// no special case for the linkage, because retention keeps a linked row
+		// in the table -- the cap bounds what the sidebar shows, not what the
+		// registry indexes. An unlinked active row (a running shell) does lose
+		// its persisted row, which is the honest cost of a pool that is full of
+		// running work, and is what the warning records.
+		bucket := bgtask.KindWire(merged.Kind)
+		evictedRow, dropped, err := cache.makeRoomLocked(ctx, rootAgentID, bucket)
 		if err != nil {
 			return registryChange{}, err
 		}
-		if !evicted {
-			// At the cap with every row in the pool still active. Dropping the
-			// NEW row is not an option: it would orphan an already-created child
-			// agent row (EnsureChildAgent inserts the child before this upsert
-			// links it), leaving an unopenable transcript. So the oldest active
-			// row leaves the display list instead, whatever it carries.
-			//
-			// Its linkage is safe without a special case here, because
-			// retainInStore keeps a linked row in the table -- the cap is a bound
-			// on what the sidebar shows, not on what the registry indexes. An
-			// UNLINKED active row (a running shell) does lose its persisted row,
-			// which is the honest cost of a pool that is full of running work,
-			// and is what the warning records.
-			evictedRow, dropped, err := cache.evictOldestInBucketLocked(ctx, rootAgentID, bucket)
-			if err != nil {
-				return registryChange{}, err
-			}
-			if dropped {
-				slog.Warn("background task registry at cap with no finished row; dropping the oldest active row from the display list",
-					"owner", rootAgentID, "row_key", task.RowKey, "kind", bucket, "cap", bgtask.MaxTasks,
-					"evicted_row_key", evictedRow.RowKey, "retained_in_store", evictedRow.ChildAgentID != "")
-			}
+		if dropped && !evictedRow.Status.IsFinished() {
+			slog.Warn("background task registry at cap with no finished row; dropping the oldest active row from the display list",
+				"owner", rootAgentID, "row_key", task.RowKey, "kind", bucket, "cap", bgtask.MaxTasks,
+				"evicted_row_key", evictedRow.RowKey, "retained_in_store", evictedRow.ChildAgentID != "")
 		}
 	}
 	if idx < 0 {

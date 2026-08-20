@@ -36,6 +36,31 @@ type seedEntry[T any] struct {
 	seq  int64
 }
 
+// registryRetention lets a registry keep a row in the store after the display
+// cap evicts it from the cache. The cap is then a bound on what the sidebar
+// SHOWS, not on what the registry indexes.
+//
+// The background-task registry needs this: a row that carries a child
+// transcript is the only index from that child agent id back to
+// (owner, row_key), and the child `agents` row outlives the registry delete --
+// so deleting the row leaves a live subagent permanently unmessageable and
+// uninterruptible. Retention costs one small row per transcript, and the row
+// cascades away with the root agent exactly when the transcript does.
+//
+// The two halves are ONE field because neither works alone. Keeping a row that
+// nothing can read back makes it unreachable, which is the bug retention exists
+// to fix; and loading a row that eviction deleted finds nothing. Setting both
+// or neither is therefore the only correct choice, and a single pointer is what
+// makes it the only available one.
+type registryRetention[T any] struct {
+	// keep reports whether a row must SURVIVE eviction in the store. Eviction
+	// then drops it from the capped display cache only.
+	keep func(T) bool
+	// load reads a persisted row back by key, so an operation on a row the cache
+	// no longer holds still finds it. found=false for a row that does not exist.
+	load func(ctx context.Context, ownerID, key string) (row T, found bool, err error)
+}
+
 // registryOps supplies the type-specific behaviour a registryCache needs. It is
 // built once per OutputHandler (the closures capture h.queries) and shared by
 // every cache instance of that registry type. Both the background-task registry
@@ -56,18 +81,9 @@ type registryOps[T any] struct {
 	isFinished func(T) bool
 	// deleteByKey deletes the persisted row for `key` under `ownerID`.
 	deleteByKey func(ctx context.Context, ownerID string, key string) error
-	// retainInStore reports whether a row must SURVIVE eviction in the store.
-	// Eviction then drops it from the capped display cache only. Optional: nil
-	// means every evicted row is deleted.
-	//
-	// The cap is a DISPLAY bound, not a storage bound. A background-task row
-	// that carries a child transcript is also the only index from that child id
-	// back to (owner, row_key), and the child `agents` row outlives the registry
-	// delete -- so deleting the row makes a live subagent permanently
-	// unmessageable and uninterruptible. Retention costs one small row per
-	// transcript, and the row cascades away with the root agent exactly when the
-	// transcript does.
-	retainInStore func(T) bool
+	// retention makes some rows outlive the display cap in the store. Optional:
+	// nil means the cap is a storage bound too, and every evicted row is deleted.
+	retention *registryRetention[T]
 	// cap is the maximum number of rows the registry holds IN ONE POOL. With
 	// bucketOf nil there is a single pool, so this is the whole registry.
 	cap int32
@@ -105,7 +121,7 @@ func (c *registryCache[T]) inBucket(row T, bucket string) bool {
 // only ever touches a row the cache HOLDS, so without this pass a surplus row
 // below the window is neither loaded nor deleted -- invisible in the sidebar and
 // growing without limit in the DB. A registry that retains rows past the cap
-// (see ops.retainInStore) must spare those same rows here, in the reclaim query
+// (see ops.retention) must spare those same rows here, in the reclaim query
 // itself, because that surplus is the point: a retained row is an index the
 // display list no longer shows. A reclaim failure is logged, not
 // returned: the cache is correctly seeded either way, and refusing to seed over
@@ -168,8 +184,70 @@ func (c *registryCache[T]) snapshot() []T {
 }
 
 // indexOf returns the row index whose key matches, or -1. Caller must hold c.Mu.
+//
+// This answers "is the row DISPLAYED", which is not the same question as "does
+// the row exist" for a registry with retention. A mutation must ask
+// rowIndexLocked instead; indexOf is for a caller that genuinely means the
+// display list.
 func (c *registryCache[T]) indexOf(key string) int {
 	return slices.IndexFunc(c.Rows, func(r T) bool { return c.ops.keyOf(r) == key })
+}
+
+// rowIndexLocked returns the cache index of the row at key, re-admitting a
+// RETAINED row from the store when the display cache no longer holds it.
+// Returns -1 when no row exists anywhere. Caller must hold c.Mu.
+//
+// Every mutation goes through here, and that is what keeps retention honest.
+// The cap made the cache a partial view of the table, so a mutation that read
+// indexOf alone had a second reason to see -1 -- the row is retained, just not
+// displayed -- and it could not tell that apart from "no such row". Each applier
+// then dropped its write: a close left the row Running with its transcript
+// unended, a status update went nowhere, a revive never reopened the row, and a
+// replayed running upsert took the retained row for a new one and resurrected
+// it. One lookup for all of them, so no applier can forget the case.
+//
+// A re-admitted row goes to the END of the display list, and the pool evicts to
+// stay at its cap first. Both follow from what the list is for: a row that a
+// mutation just touched is the most recent activity in the registry, so it is
+// the last thing that should leave the list again.
+func (c *registryCache[T]) rowIndexLocked(ctx context.Context, ownerID, key string) (int, error) {
+	if idx := c.indexOf(key); idx >= 0 {
+		return idx, nil
+	}
+	if c.ops.retention == nil {
+		return -1, nil
+	}
+	row, found, err := c.ops.retention.load(ctx, ownerID, key)
+	if err != nil {
+		return -1, fmt.Errorf("load retained %s row %s/%s: %w", c.ops.label, ownerID, key, err)
+	}
+	if !found {
+		return -1, nil
+	}
+	if _, _, err := c.makeRoomLocked(ctx, ownerID, c.bucket(row)); err != nil {
+		return -1, err
+	}
+	c.Rows = append(c.Rows, row)
+	return len(c.Rows) - 1, nil
+}
+
+// makeRoomLocked frees one slot in a full cap pool so an insert keeps the
+// display list at its bound, and does nothing when the pool has room. It owns
+// the whole eviction preference: the oldest FINISHED row first, and the oldest
+// row of any status when the pool holds none. RETURNS the evicted row (ok=false
+// when nothing was evicted), so a caller can report which case it got by testing
+// isFinished on it rather than by re-deriving the preference. Caller must hold
+// c.Mu.
+func (c *registryCache[T]) makeRoomLocked(ctx context.Context, ownerID, bucket string) (T, bool, error) {
+	if !c.atCapForBucket(bucket) {
+		var zero T
+		return zero, false, nil
+	}
+	evicted, ok, err := c.evictOldestFinishedInBucketLocked(ctx, ownerID, bucket)
+	if err != nil || ok {
+		return evicted, ok, err
+	}
+	return c.evictOldestInBucketLocked(ctx, ownerID, bucket)
 }
 
 // evictOldestFinishedInBucketLocked removes the first finished row (by slice
@@ -193,8 +271,8 @@ func (c *registryCache[T]) evictOldestFinishedInBucketLocked(ctx context.Context
 // evictOldestInBucketLocked removes the first row (by slice order) of ONE cap
 // pool whatever its status, for an insert into a pool that holds no finished row
 // at all. The cap is a bound on the DISPLAY list, so the oldest entry leaves it
-// even while it runs; ops.retainInStore decides whether the persisted row goes
-// with it. Same bucket and return contract as
+// even while it runs; ops.retention decides whether the persisted row goes with
+// it. Same bucket and return contract as
 // evictOldestFinishedInBucketLocked. Caller must hold c.Mu.
 func (c *registryCache[T]) evictOldestInBucketLocked(ctx context.Context, ownerID, bucket string) (T, bool, error) {
 	return c.evictFirstMatchLocked(ctx, ownerID, func(r T) bool { return c.inBucket(r, bucket) })
@@ -213,11 +291,11 @@ func (c *registryCache[T]) evictFirstMatchLocked(ctx context.Context, ownerID st
 
 // evictAtLocked removes the row at evictIdx from the capped display cache,
 // returning the row it removed. The persisted row goes with it UNLESS
-// ops.retainInStore keeps it: eviction is a display bound, and a retained row
-// stays addressable by a point lookup on its key. Caller must hold c.Mu.
+// ops.retention keeps it: eviction is a display bound, and a retained row stays
+// reachable through rowIndexLocked. Caller must hold c.Mu.
 func (c *registryCache[T]) evictAtLocked(ctx context.Context, ownerID string, evictIdx int) (T, bool, error) {
 	evicted := c.Rows[evictIdx]
-	if c.ops.retainInStore == nil || !c.ops.retainInStore(evicted) {
+	if c.ops.retention == nil || !c.ops.retention.keep(evicted) {
 		key := c.ops.keyOf(evicted)
 		if err := c.ops.deleteByKey(ctx, ownerID, key); err != nil {
 			var zero T

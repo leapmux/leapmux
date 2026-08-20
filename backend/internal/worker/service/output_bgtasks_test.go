@@ -564,6 +564,37 @@ func TestBgTask_RenameOntoOccupiedKeyDropsTheDuplicate(t *testing.T) {
 	assert.Equal(t, "completed", rows[0].Status, "the surviving row keeps its final status")
 }
 
+// The losing duplicate leaves the display list, but its PERSISTED row goes only
+// when it carries no child. A row that names a transcript is that child's one
+// index back to (owner, row_key), and the rename is no more entitled to destroy
+// it than eviction is. No provider reaches this today -- OpenCode and Kilo are
+// the only renamers, and both drop child sessions over ACP -- so the invariant
+// is pinned here rather than left to the callers that happen to exist.
+func TestBgTask_RenameOntoOccupiedKeyRetainsALinkedDuplicate(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, sink, ownerID, listRows := setupBgTaskTestWithService(t)
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "sess-stable", Kind: bgtask.KindSubagent, Title: "spawn", Status: bgtask.StatusRunning,
+	}))
+	require.NoError(t, sink.CloseBackgroundTask("sess-stable", bgtask.StatusCompleted))
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "spawn-key", Kind: bgtask.KindSubagent, Title: "spawn",
+		ChildAgentID: "child-1", Status: bgtask.StatusRunning,
+	}))
+
+	require.NoError(t, sink.RenameBackgroundTask("spawn-key", "sess-stable"))
+
+	assert.NotContains(t, displayedRowKeys(t, svc, ownerID), "spawn-key",
+		"the duplicate leaves the display list either way")
+	assert.Contains(t, rowKeySet(listRows()), "spawn-key",
+		"its row is retained, because it names a transcript")
+	row, err := svc.Queries.GetAgentBackgroundTaskByChildAgentID(ctx, "child-1")
+	require.NoError(t, err, "the child keeps its index")
+	assert.Equal(t, "spawn-key", row.RowKey)
+}
+
 // TestBgTask_RenameOnColdCacheRekeysDBRow verifies the rename seeds the cache
 // BEFORE re-keying it: a rename arriving as the first registry touch for a root
 // (after a worker restart emptied the in-memory cache) must still re-key the
@@ -1230,4 +1261,158 @@ func TestBgTask_SeedKeepsTheNewestRowsPastTheCap(t *testing.T) {
 		RowKey: "agent-after-reseed", Kind: bgtask.KindSubagent,
 		Title: "post-restart", Status: bgtask.StatusRunning,
 	}))
+}
+
+// --- Writes against a row that outlived the display cap ---
+//
+// The cap made the cache a PARTIAL view of the table, so every applier that
+// reads `indexOf` and treats a miss as "no such row" now has a second answer to
+// give: the row is retained, it is just not displayed. These three lock that
+// down, one per applier.
+
+// storedRow reads one persisted row by key, failing the test when it is absent.
+// The DISPLAY list cannot answer for a retained row, which is the point of every
+// test that uses this.
+func storedRow(t *testing.T, svc *Service, ownerID, rowKey string) db.AgentBackgroundTask {
+	t.Helper()
+	row, err := svc.Queries.GetAgentBackgroundTaskByRowKey(context.Background(),
+		db.GetAgentBackgroundTaskByRowKeyParams{OwnerAgentID: ownerID, RowKey: rowKey})
+	require.NoError(t, err, "no persisted row %q", rowKey)
+	return row
+}
+
+// A final status is absorbing wherever the row lives. A resumed session
+// re-announces every task it once ran with a Running upsert, and the guard that
+// drops it sits on the cached branch -- so a retained row took the replay as an
+// INSERT, and the subagent's finished row came back Running with nothing left to
+// close it.
+func TestBgTask_ReplayedRunningUpsertCannotResurrectARetainedRow(t *testing.T) {
+	t.Parallel()
+
+	svc, sink, ownerID, _ := setupBgTaskTestWithService(t)
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "task-1", Kind: bgtask.KindSubagent, Title: "SCAN",
+		ChildAgentID: "child-1", Status: bgtask.StatusRunning,
+	}))
+	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
+	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks)
+	require.NotContains(t, displayedRowKeys(t, svc, ownerID), "task-1",
+		"the row must have left the display list")
+	endedAt := storedRow(t, svc, ownerID, "task-1").EndedAt
+
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "task-1", Kind: bgtask.KindSubagent, Title: "SCAN",
+		ChildAgentID: "child-1", Status: bgtask.StatusRunning,
+	}))
+
+	row := storedRow(t, svc, ownerID, "task-1")
+	assert.Equal(t, "completed", row.Status, "the replay must not resurrect the row")
+	assert.Equal(t, endedAt, row.EndedAt, "ended_at survives the replay")
+}
+
+// A progress update for a retained row has to land on it. Dropping it left the
+// row Running in the table for the life of the process, and a reseed then put a
+// stale Running subagent back in the sidebar.
+func TestBgTask_StatusUpdateReachesARetainedRow(t *testing.T) {
+	t.Parallel()
+
+	svc, sink, ownerID, _ := setupBgTaskTestWithService(t)
+	_, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	require.NoError(t, err)
+	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks)
+	require.NotContains(t, displayedRowKeys(t, svc, ownerID), "task-1",
+		"the row must have left the display list")
+
+	require.NoError(t, sink.UpdateBackgroundTaskStatus("task-1", bgtask.StatusRunning, "running Bash"))
+
+	assert.Equal(t, "running Bash", storedRow(t, svc, ownerID, "task-1").ActiveForm)
+}
+
+// The close is the half that ends the subagent, and it owes the child
+// transcript its divider. A dropped close left the row Running AND the
+// transcript with no ending -- until the next boot swept it, which is not the
+// same run and not the same status.
+func TestBgTask_CloseReachesARetainedRowAndEndsItsTranscript(t *testing.T) {
+	t.Parallel()
+
+	svc, sink, ownerID, _ := setupBgTaskTestWithService(t)
+	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	require.NoError(t, err)
+	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks)
+	require.NotContains(t, displayedRowKeys(t, svc, ownerID), "task-1",
+		"the row must have left the display list")
+
+	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
+
+	row := storedRow(t, svc, ownerID, "task-1")
+	assert.Equal(t, "completed", row.Status)
+	assert.True(t, row.EndedAt.Valid, "the close stamps ended_at")
+
+	msgs := transcriptMessages(t, svc, childID)
+	require.Len(t, msgs, 1, "the child transcript gets its closing divider")
+	assert.Equal(t, agent.NotificationTypeSubagentEnded, msgs[0]["type"])
+	assert.Equal(t, "completed", msgs[0]["status"])
+}
+
+// The revive is the applier the whole change exists for: a Claude SendMessage
+// restarts a subagent whose row left the display list long ago. Dropping it left
+// the row finished while the subagent ran again, so the sidebar and the tab chip
+// read "completed" for the whole second run.
+func TestBgTask_ReviveReachesARetainedRow(t *testing.T) {
+	t.Parallel()
+
+	svc, sink, ownerID, _ := setupBgTaskTestWithService(t)
+	_, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	require.NoError(t, err)
+	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
+	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks)
+	require.NotContains(t, displayedRowKeys(t, svc, ownerID), "task-1",
+		"the row must have left the display list")
+
+	require.NoError(t, sink.ReviveBackgroundTask("task-1"))
+
+	row := storedRow(t, svc, ownerID, "task-1")
+	assert.Equal(t, "running", row.Status, "the subagent is running again")
+	assert.False(t, row.EndedAt.Valid, "the revive clears ended_at")
+}
+
+// Re-admission is what makes a mutation reach a retained row, and it must not
+// buy that by growing the list. The row comes back at the END, because a row a
+// mutation just touched is the newest activity the registry has.
+func TestBgTask_ReAdmittingARetainedRowHoldsTheDisplayCap(t *testing.T) {
+	t.Parallel()
+
+	svc, sink, ownerID, _ := setupBgTaskTestWithService(t)
+	_, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	require.NoError(t, err)
+	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks)
+	require.NotContains(t, displayedRowKeys(t, svc, ownerID), "task-1")
+
+	require.NoError(t, sink.UpdateBackgroundTaskStatus("task-1", bgtask.StatusRunning, "running Bash"))
+
+	displayed := displayedRowKeys(t, svc, ownerID)
+	assert.Len(t, displayed, bgtask.MaxTasks, "the cap holds across a re-admission")
+	require.NotEmpty(t, displayed)
+	assert.Equal(t, "task-1", displayed[len(displayed)-1],
+		"the touched row is the newest entry in the list")
+	assert.NotContains(t, displayed, "filler-0", "the oldest entry left to make room")
+}
+
+// A registry with no retention (agent_todos) must not gain a store fallback:
+// its cap IS a storage bound, and a key it does not hold identifies nothing.
+// The bgtask registry proves the other half, so this pins the nil branch of
+// rowIndexLocked that every todo mutation takes.
+func TestTodos_AnAbsentRowStaysAMissWithNoRetention(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	cache := svc.Output.todoCache("agent-1")
+	cache.Mu.Lock()
+	defer cache.Mu.Unlock()
+	require.Nil(t, cache.ops.retention, "agent_todos retains nothing past its cap")
+
+	idx, err := cache.rowIndexLocked(ctx, "agent-1", "todo-nope")
+	require.NoError(t, err)
+	assert.Equal(t, -1, idx, "no store fallback runs for a registry without retention")
 }
