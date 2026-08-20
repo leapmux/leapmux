@@ -64,11 +64,9 @@ See [Configuration](/docs/operating/configuration/) for what each instance setti
 
 Two choices on one line: a **color palette**, and whether it follows the system or is pinned.
 
-The palette drop-down lists **Default** — LeapMux's own warm palette — and ten adapted from permissively licensed community themes: **Ayu**, **Catppuccin**, **Everforest**, **GitHub**, **Gruvbox**, **Nord**, **One**, **Rosé Pine**, **Solarized**, and **Tokyo Night**. Every palette has a light and a dark variant. Attributions are in `NOTICE`.
+The palette drop-down lists LeapMux's own palette and ten adapted from permissively licensed community themes, which `NOTICE` credits. Some of them offer more than one look, and a second drop-down appears beside the palette when they do.
 
 The tri-switch picks **System** (follows your OS `prefers-color-scheme` and switches live), **Light**, or **Dark**.
-
-Four of the palettes offer more than one look, and a second drop-down appears beside the palette when they do. **Catppuccin** has Latte plus three dark flavours (Frappé, Macchiato, Mocha); **Ayu** adds Mirage; **Rosé Pine** adds Moon; **Gruvbox** offers Hard / Medium / Soft on both sides. The menu lists both sides at once, under a **Light** and a **Dark** heading, so a flavour on the side you are not currently showing is one click away — you do not have to pin the mode to reach it. A pick applies to the side that flavour belongs to. Where the two sides share a name — Gruvbox's contrast levels — picking one sets both. Every palette starts on the look it has always shipped, so this changes nothing until you use it.
 
 The palette and the mode are one setting, so one scope chip and one reset cover both. A dual-tier setting; the built-in default is **Default** at **System**.
 
@@ -78,9 +76,7 @@ The same control appears outside the dialog, so a new user can set the look befo
 
 The same two choices, for terminal tabs, plus one more palette: **Match UI**. Choosing it hands the whole row to the app, so the mode pills grey out and report the mode the app is on. Choosing any other palette detaches the row and hands the pills back, starting from the app's own mode — so the terminal looks the same until you change it.
 
-Default's entry reads **Default (Dimidium)** here, because its sixteen ANSI colors are [Dimidium](https://github.com/dofuuz/dimidium)'s and always have been. That is what **Match UI** gives you while the app is on Default.
-
-The palettes are the same eleven. Each supplies the sixteen ANSI colors; the terminal's background, foreground, cursor and selection come from that palette, so a terminal on a different theme than the app is coherent in itself. Default's ANSI set is [Dimidium](https://github.com/dofuuz/dimidium), which is where the terminal's colors have always come from.
+The palettes are the same ones the app offers. Each supplies its own sixteen ANSI colors, and the terminal's background, foreground, cursor and selection come from that same palette, so a terminal on a theme other than the app's is still coherent in itself. Where a palette's ANSI set belongs to another project, the entry names that project beside the palette, so the scheme you are already looking at stays findable under its own name.
 
 A dual-tier setting; the built-in default is **Match UI**. That default is why the theme picker on the launcher, the empty state and the setup page moves the terminal too — there is only one choice to make until you come here and detach it. See [Terminals](/docs/using/terminals/).
 
@@ -88,9 +84,7 @@ A dual-tier setting; the built-in default is **Match UI**. That default is why t
 
 Colors for highlighted code, in chat, the editor, diffs and file views. The same control and the same **Match UI** default as the terminal theme, and independent of both other settings.
 
-Nine themes highlight with their own project's editor theme. Two do not: **Tokyo Night**'s light half is vendored from Tokyo Night's own repository, because Shiki bundles only the dark half, and **Nord**'s light half is generated, because Nord publishes no light theme at all. The generated one keeps a well-covered theme's scope structure and recolors it from Nord's own palette and ANSI set.
-
-Default's entry reads **Default (GitHub)**, because Dimidium ships no editor theme, so Default highlights with GitHub's — the pair LeapMux used for every line of code before this catalogue existed. That is what **Match UI** gives you while the app is on Default.
+Each palette highlights with its own project's editor theme, credited in `NOTICE`. Where a palette has no editor theme of its own, its entry names the one it borrows, the same way the terminal list does.
 
 Unlike the palette and the mode, this one is not free to change: highlighting bakes each color into the code as it is tokenized, so switching re-highlights and code repaints as you scroll back through it.
 

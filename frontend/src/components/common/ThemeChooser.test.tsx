@@ -110,9 +110,10 @@ describe('the appearance picker (ThemeChooser)', () => {
 
   it('renders no variant menu for a theme with one look per polarity', () => {
     // Every theme has at least one light and one dark variant, so a menu keyed
-    // on the total would appear on all eleven and offer Nord a pick between its
-    // only light palette and its only dark one -- which the mode pills make.
-    renderChooser({ name: 'nord', mode: 'dark' })
+    // on the total would appear on all eleven and offer Solarized a pick
+    // between its only light palette and its only dark one -- which the mode
+    // pills already make.
+    renderChooser({ name: 'solarized', mode: 'dark' })
     expect(variantTrigger()).toBeNull()
   })
 

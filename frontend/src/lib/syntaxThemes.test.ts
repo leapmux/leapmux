@@ -1,8 +1,20 @@
 import { describe, expect, it } from 'vitest'
 import { ensureThemesRegistered, isSyntaxThemeName, LOADABLE_SYNTAX_THEMES, loadSyntaxTheme, syntaxPairFor } from '~/lib/syntaxThemes'
+import nordLightBrighter from '~/lib/syntaxThemes/nord-light-brighter.json'
 import nordLight from '~/lib/syntaxThemes/nord-light.json'
 import tokyoNightDay from '~/lib/syntaxThemes/tokyo-night-day.json'
 import { ALL_VARIANTS, DEFAULT_THEME_ID, themeById, THEMES } from '~/styles/themes'
+
+/**
+ * The sixteen ANSI slots, spelled as a TextMate document's `terminal.ansi*`
+ * keys.
+ *
+ * Capitalized here and lower-cased at the point of use, because the same slot
+ * is `terminal.ansiBrightBlack` in the theme document and `brightBlack` in the
+ * catalogue's `AnsiPalette`. One list, so a slot cannot be checked on one side
+ * and missed on the other.
+ */
+const ANSI_SLOTS = ['Black', 'Red', 'Green', 'Yellow', 'Blue', 'Magenta', 'Cyan', 'White', 'BrightBlack', 'BrightRed', 'BrightGreen', 'BrightYellow', 'BrightBlue', 'BrightMagenta', 'BrightCyan', 'BrightWhite'] as const
 
 // The syntax catalogue lives apart from `~/styles/themes/` -- those modules are
 // plain data with no imports so the notice script can read them, and a TextMate
@@ -169,16 +181,17 @@ describe('ensureThemesRegistered', () => {
   })
 })
 
-// The theme no upstream project supplies. Its value is scope coverage, and the
-// first attempt at generating one had almost none -- `print(1)` came back as one
-// span because a hand-written selector list does not cover what a real grammar
-// emits.
-describe('the syntax themes this repo supplies', () => {
-  const GENERATED = [
+// The three documents this repo vendors, because Shiki bundles no light half
+// for Nord or for Tokyo Night. What these cases guard is that a COPY keeps the
+// properties the app relies on: the declared polarity, scope coverage, and an
+// ANSI set that upstream does not ship for the Nord pair.
+describe('the syntax themes this repo vendors', () => {
+  const VENDORED = [
     ['nord-light', nordLight, 'light'],
+    ['nord-light-brighter', nordLightBrighter, 'light'],
   ] as const
 
-  it.each(GENERATED)('%s declares its variant, so Shiki resolves the right half', (_name, theme, variant) => {
+  it.each(VENDORED)('%s declares its variant, so Shiki resolves the right half', (_name, theme, variant) => {
     // Shiki reads `type` to resolve the default colour of a dual-theme render.
     expect((theme as { type: string }).type).toBe(variant)
   })
@@ -203,10 +216,10 @@ describe('the syntax themes this repo supplies', () => {
     })
   }
 
-  it.each(GENERATED)('%s carries a real scope list, not a handful of roles', (_name, theme) => {
+  it.each(VENDORED)('%s carries a real scope list, not a handful of roles', (_name, theme) => {
     const rules = (theme as { tokenColors: { scope?: unknown }[] }).tokenColors
-    // The donor structure is 45 rules. Well under that means the recolouring
-    // dropped rules, and granularity went with them.
+    // Upstream ships 80 rules and 82. Well under that means the copy lost
+    // rules, and granularity went with them.
     expect(rules.length).toBeGreaterThanOrEqual(40)
     const scopes = rules.flatMap(r => Array.isArray(r.scope) ? r.scope : r.scope ? [String(r.scope)] : [])
     // The scopes a real grammar emits for the constructs a reader most needs
@@ -224,13 +237,47 @@ describe('the syntax themes this repo supplies', () => {
     }
   })
 
-  it.each(GENERATED)('%s declares all sixteen ANSI colours', (_name, theme) => {
-    // An `ansi` code fence is coloured from these. Without them Shiki falls back
-    // to its own defaults and a fence in chat stops matching the terminal.
+  it.each(VENDORED)('%s declares all sixteen ANSI colours', (_name, theme) => {
+    // An `ansi` code fence is coloured from these. Upstream ships none, so they
+    // are ADDED to the copy -- without them Shiki falls back to its own
+    // defaults and a fence in chat stops matching the terminal.
     const colors = (theme as { colors: Record<string, string> }).colors
-    const slots = ['Black', 'Red', 'Green', 'Yellow', 'Blue', 'Magenta', 'Cyan', 'White', 'BrightBlack', 'BrightRed', 'BrightGreen', 'BrightYellow', 'BrightBlue', 'BrightMagenta', 'BrightCyan', 'BrightWhite']
-    for (const slot of slots)
+    for (const slot of ANSI_SLOTS)
       expect(colors[`terminal.ansi${slot}`], `terminal.ansi${slot}`).toMatch(/^#[0-9a-f]{6}$/i)
+  })
+
+  it.each(VENDORED)('%s takes those ANSI colours from the variant that names it', (name, theme) => {
+    // The reason they are added at all. An `ansi` fence in chat and the
+    // terminal beside it answer the same question, so a copy that carried a
+    // sibling's ANSI set -- or kept one after a variant retuned its own --
+    // would paint two different greens for one SGR code. Read from the
+    // catalogue, so the two cannot drift apart silently.
+    const variant = ALL_VARIANTS.find(v => v.syntax === name)!
+    expect(variant, `no variant names ${name}`).toBeDefined()
+    const colors = (theme as { colors: Record<string, string> }).colors
+    for (const slot of ANSI_SLOTS) {
+      const key = `${slot.charAt(0).toLowerCase()}${slot.slice(1)}` as keyof typeof variant.terminal
+      expect(colors[`terminal.ansi${slot}`]!.toLowerCase(), `terminal.ansi${slot}`)
+        .toBe(variant.terminal[key].toLowerCase())
+    }
+  })
+
+  it('leaves no unparseable colour in either vendored Nord flavour', () => {
+    // `nord-light` is copied from a document that writes `#3B42527` on
+    // `meta.separator` and on `punctuation.section.embedded` -- seven hex
+    // digits. Shiki loads it without complaint and emits `color:#3B42527`,
+    // which the browser drops, so those scopes inherit their parent's colour
+    // instead of nord1 and nothing reports it. Asserted over every rule of
+    // both files rather than those two, so a re-vendor that reintroduces the
+    // typo on another scope, or in the other flavour, fails here too.
+    for (const [name, theme] of VENDORED) {
+      const rules = (theme as { tokenColors: { settings?: { foreground?: string } }[] }).tokenColors
+      for (const rule of rules) {
+        const fg = rule.settings?.foreground
+        if (fg !== undefined)
+          expect(fg, `${name}: ${fg} is not a colour`).toMatch(/^#[0-9a-f]{6}([0-9a-f]{2})?$/i)
+      }
+    }
   })
 
   it('corrects Tokyo Night Day, whose upstream file mislabels itself as dark', () => {
@@ -239,5 +286,16 @@ describe('the syntax themes this repo supplies', () => {
     // page. Nothing else would report it.
     expect((tokyoNightDay as { type: string }).type).toBe('light')
     expect((tokyoNightDay as { tokenColors: unknown[] }).tokenColors.length).toBeGreaterThan(100)
+  })
+
+  it('gives each Nord light variant its own flavour, not one document twice', () => {
+    // The pair exists because upstream publishes two. Pointing both variants at
+    // one document would leave the brighter palette highlighting in the darker
+    // flavour's colours, which no case above would see.
+    expect(syntaxPairFor('nord').light).toBe('nord-light')
+    const brighter = ALL_VARIANTS.find(v => v.id === 'nord-light-brighter')!
+    expect(brighter.syntax).toBe('nord-light-brighter')
+    const rules = (theme: unknown) => (theme as { tokenColors: unknown[] }).tokenColors.length
+    expect(rules(nordLight)).not.toBe(rules(nordLightBrighter))
   })
 })

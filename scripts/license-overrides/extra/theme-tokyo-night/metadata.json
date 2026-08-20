@@ -1,6 +1,6 @@
 {
-  "name": "Tokyo Night (theme palette)",
+  "name": "Tokyo Night (theme palette and light syntax theme)",
   "license": "MIT",
   "url": "https://github.com/tokyo-night/tokyo-night-vscode-theme",
-  "description": "The Tokyo Night Day and Tokyo Night colours behind the Tokyo Night theme in `frontend/src/styles/themes/tokyo-night.ts` were read from this extension's theme documents under `themes/` and mapped onto LeapMux's CSS custom properties."
+  "description": "The Tokyo Night Day and Tokyo Night colours behind the Tokyo Night theme in `frontend/src/styles/themes/tokyo-night.ts` were read from this extension's theme documents under `themes/` and mapped onto LeapMux's CSS custom properties. LeapMux also redistributes one of those documents. `frontend/src/lib/syntaxThemes/tokyo-night-day.json` is a copy of `themes/tokyo-night-light-color-theme.json`, which LeapMux carries because Shiki bundles only the dark half of this theme. All 116 of its `tokenColors` entries are upstream's, unchanged. Three fields differ: the theme name, the `type` field (corrected from `dark` to `light`), and the workbench `colors` map (reduced to the two keys Shiki reads)."
 }

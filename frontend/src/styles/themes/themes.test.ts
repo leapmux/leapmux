@@ -509,6 +509,7 @@ describe('theme terminal palettes', () => {
 
     expect(collapsed).toEqual({
       'nord-light': ['red', 'green', 'yellow', 'blue', 'magenta'],
+      'nord-light-brighter': ['red', 'green', 'yellow', 'blue', 'magenta'],
       'nord-dark': ['red', 'green', 'yellow', 'blue', 'magenta'],
       'one-light': CHROMATIC,
       'one-dark': [...CHROMATIC, 'white'],

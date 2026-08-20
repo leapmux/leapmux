@@ -720,13 +720,14 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [Inter 4.1 (OFL-1.1)](#inter-41-ofl-11)
 - [iTerm2-Color-Schemes (terminal palettes) (MIT)](#iterm2-color-schemes-terminal-palettes-mit)
 - [Nord (theme palette) (MIT)](#nord-theme-palette-mit)
+- [Nord Light for VS Code (light syntax themes) (MIT)](#nord-light-for-vs-code-light-syntax-themes-mit)
 - [One (theme palette) (MIT)](#one-theme-palette-mit)
 - [pi-mono brand mark (MIT)](#pi-mono-brand-mark-mit)
 - [Primer (theme palette) (MIT)](#primer-theme-palette-mit)
 - [Rosé Pine (theme palette) (MIT)](#ros-pine-theme-palette-mit)
 - [simple-icons embedded brand marks (CC0-1.0)](#simple-icons-embedded-brand-marks-cc0-10)
 - [Solarized (theme palette) (MIT)](#solarized-theme-palette-mit)
-- [Tokyo Night (theme palette) (MIT)](#tokyo-night-theme-palette-mit)
+- [Tokyo Night (theme palette and light syntax theme) (MIT)](#tokyo-night-theme-palette-and-light-syntax-theme-mit)
 
 ---
 
@@ -104284,7 +104285,7 @@ SOFTWARE.
 
 Source: <https://github.com/shikijs/shiki>
 
-The TextMate themes eight of the eleven syntax themes highlight with are loaded from this package, which vendors each upstream project's own editor theme (Ayu, Catppuccin, Everforest, GitHub/Primer, gruvbox, Nord, One, Rose Pine, Solarized, Tokyo Night). Those projects are credited individually above for their palettes. The three this package cannot supply are stated at `frontend/src/lib/syntaxThemes.ts`: Tokyo Night's light half is vendored from Tokyo Night's own repository, and Nord's light half and both Default halves are generated from their own palette and ANSI set over github-light/github-dark's scope structure.
+The TextMate themes that nine of the eleven syntax themes highlight with come entirely from this package, which vendors each upstream project's own editor theme (Ayu, Catppuccin, Everforest, GitHub/Primer, gruvbox, Nord, One, Rose Pine, Solarized, Tokyo Night). Each of those projects has its own entry in this section for the palette that LeapMux took from it. Default has no editor theme of its own -- Dimidium is a terminal scheme -- so it highlights with github-light/github-dark from this package as LeapMux always has. The other two themes take their dark half from this package and their light halves from this repository, as `frontend/src/lib/syntaxThemes.ts` states: Tokyo Night's light half is a copy of Tokyo Night's own light theme document, and Nord's two light flavours are copies of the Nord Light theme for VS Code. Both projects have their own entry in this section.
 
 ```
 MIT License
@@ -104629,12 +104630,40 @@ The copyright/license for each individual theme belongs to the author of that th
 
 Source: <https://github.com/nordtheme/nord>
 
-The hex values behind the Nord theme in `frontend/src/styles/themes/nord.ts` were read from this project's `src/nord.css`. Nord publishes no light theme; LeapMux's light variant is a DERIVATION that uses Nord's own Snow Storm ramp for backgrounds and Polar Night for text, with the Frost and Aurora accents unchanged.
+The hex values behind the Nord theme in `frontend/src/styles/themes/nord.ts` were read from this project's `src/nord.css`. Nord publishes no light theme; LeapMux's two light variants are a DERIVATION that uses Nord's own Snow Storm ramp for backgrounds and Polar Night for text, with the Frost and Aurora accents unchanged. The brighter of the two paints the page white and moves that Snow Storm ramp out onto the surfaces above it.
 
 ```
 MIT License (MIT)
 
 Copyright (c) 2016-present Sven Greb <development@svengreb.de> (https://www.svengreb.de)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+### Nord Light for VS Code (light syntax themes) (MIT)
+
+Source: <https://github.com/huytd/vscode-nord-light>
+
+`frontend/src/lib/syntaxThemes/nord-light.json` and `frontend/src/lib/syntaxThemes/nord-light-brighter.json` are copies of this extension's two theme documents, `themes/Nord Light-color-theme.json` and `themes/Nord Light Brighter-color-theme.json`. LeapMux carries them because Shiki bundles no light Nord theme and Nord itself publishes none. Their 80 and 82 `tokenColors` entries are upstream's, with one correction: upstream writes the seven-digit `#3B42527` on two rules of the first document, where every other rule of that shade spells nord1 `#3B4252`. Each copy also has its workbench `colors` map reduced to the two keys Shiki reads, and gains the sixteen `terminal.ansi*` colours that an `ansi` code fence needs, from the Nord Light terminal scheme that `frontend/src/styles/themes/nord.ts` already carries.
+
+```
+Copyright Huy Tran
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -104843,11 +104872,11 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### Tokyo Night (theme palette) (MIT)
+### Tokyo Night (theme palette and light syntax theme) (MIT)
 
 Source: <https://github.com/tokyo-night/tokyo-night-vscode-theme>
 
-The Tokyo Night Day and Tokyo Night colours behind the Tokyo Night theme in `frontend/src/styles/themes/tokyo-night.ts` were read from this extension's theme documents under `themes/` and mapped onto LeapMux's CSS custom properties.
+The Tokyo Night Day and Tokyo Night colours behind the Tokyo Night theme in `frontend/src/styles/themes/tokyo-night.ts` were read from this extension's theme documents under `themes/` and mapped onto LeapMux's CSS custom properties. LeapMux also redistributes one of those documents. `frontend/src/lib/syntaxThemes/tokyo-night-day.json` is a copy of `themes/tokyo-night-light-color-theme.json`, which LeapMux carries because Shiki bundles only the dark half of this theme. All 116 of its `tokenColors` entries are upstream's, unchanged. Three fields differ: the theme name, the `type` field (corrected from `dark` to `light`), and the workbench `colors` map (reduced to the two keys Shiki reads).
 
 ```
 The MIT License (MIT)

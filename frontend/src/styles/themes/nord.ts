@@ -1,12 +1,20 @@
 // Nord -- adapted from Nord (MIT).
 // https://github.com/nordtheme/nord
 //
-// Variants: Polar Night (dark). THE LIGHT VARIANT IS OURS.
+// Variants: Polar Night (dark). BOTH LIGHT PALETTES ARE OURS.
 //
-// Nord ships no light theme. The light variant here is built from Nord's
+// Nord ships no light theme. The light variants here are built from Nord's
 // own ramps rather than invented: Snow Storm (nord4-6) supplies the
 // backgrounds, Polar Night (nord0-3) the text, and Frost/Aurora the accents.
-// It is a derivation, not an upstream palette -- NOTICE says so.
+// They are a derivation, not an upstream palette -- NOTICE says so.
+//
+// The two light variants differ in the page background only, the way gruvbox's
+// contrast axis does. Snow Storm paints nord6; Snow Storm Brighter paints white
+// and moves the whole surface ramp one step out, so nord6 becomes the card
+// rather than the page. Their syntax themes are the two flavours that
+// huytd/vscode-nord-light publishes -- see ~/lib/syntaxThemes -- which is what
+// gives the brighter variant a light half of its own rather than a second
+// palette over one document.
 //
 // Nord assigns each Aurora colour a role: nord11 errors, nord13 warnings,
 // nord14 success. nord12 is annotations and decorators, NOT warnings -- it
@@ -50,6 +58,46 @@ const light = {
   '--scrollbar-thumb-hover': 'rgb(from var(--muted-foreground) r g b / 0.55)',
   '--scrollbar-track': 'transparent',
   '--lm-bg-translucent': 'rgba(236, 239, 244, 0.5)',
+  '--lm-danger-subtle': '#f8ccd0',
+  '--lm-success-subtle': '#e0f8cc',
+  '--lm-warning-subtle': '#f8e9cc',
+  '--lm-icon-monochrome': '#3e4757',
+}
+
+// Snow Storm on white. The page leaves the Snow Storm ramp entirely and the
+// surfaces move out one step to fill the gap: nord6 becomes --card, nord5 the
+// far end of the ramp, and --border/--input darken to keep clearing it. The
+// text, the accents and the subtle fills are `light` above unchanged -- the
+// contrast against white is higher than against nord6, so every floor that
+// variant clears this one clears by more.
+const lightBrighter = {
+  '--background': '#ffffff',
+  '--foreground': '#2e3440',
+  '--card': '#eceff4',
+  '--card-foreground': '#2e3440',
+  '--primary': '#5e81ac',
+  '--primary-foreground': '#000000',
+  '--secondary': '#e5e9f0',
+  '--secondary-foreground': '#2e3440',
+  '--muted': '#e9edf3',
+  '--muted-foreground': '#4c566a',
+  '--faint': '#f2f4f8',
+  '--faint-foreground': '#798191',
+  '--accent': '#d6e2f0',
+  '--accent-foreground': '#2e3440',
+  '--danger': '#bf616a',
+  '--danger-foreground': '#000000',
+  '--success': '#96b17f',
+  '--success-foreground': '#000000',
+  '--warning': '#c5a565',
+  '--warning-foreground': '#000000',
+  '--border': '#d3dae6',
+  '--input': '#d3d7de',
+  '--ring': '#5e81ac',
+  '--scrollbar-thumb': 'rgb(from var(--muted-foreground) r g b / 0.35)',
+  '--scrollbar-thumb-hover': 'rgb(from var(--muted-foreground) r g b / 0.55)',
+  '--scrollbar-track': 'transparent',
+  '--lm-bg-translucent': 'rgba(255, 255, 255, 0.5)',
   '--lm-danger-subtle': '#f8ccd0',
   '--lm-success-subtle': '#e0f8cc',
   '--lm-warning-subtle': '#f8e9cc',
@@ -149,6 +197,14 @@ export const nordTheme: ThemeDefinition = {
       syntax: 'nord-light',
     },
     {
+      id: 'nord-light-brighter',
+      label: 'Snow Storm Brighter',
+      polarity: 'light',
+      palette: lightBrighter,
+      terminal: lightAnsi,
+      syntax: 'nord-light-brighter',
+    },
+    {
       id: 'nord-dark',
       label: 'Polar Night',
       polarity: 'dark',
@@ -158,6 +214,7 @@ export const nordTheme: ThemeDefinition = {
     },
   ],
   defaults: { light: 'nord-light', dark: 'nord-dark' },
+  variantLabel: 'Variant',
   credit: {
     project: 'Nord',
     url: 'https://github.com/nordtheme/nord',

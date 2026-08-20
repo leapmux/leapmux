@@ -170,7 +170,7 @@ export interface ThemeVariant {
    *
    * Decoupled from `id` on purpose: `rose-pine-main` highlights with the theme
    * Shiki calls `rose-pine`, and `nord-light` highlights with a document this
-   * repo generates. A plain string, so these modules stay import-free.
+   * repo vendors. A plain string, so these modules stay import-free.
    */
   syntax: string
 }

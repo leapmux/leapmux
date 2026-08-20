@@ -1,0 +1,6 @@
+{
+  "name": "Nord Light for VS Code (light syntax themes)",
+  "license": "MIT",
+  "url": "https://github.com/huytd/vscode-nord-light",
+  "description": "`frontend/src/lib/syntaxThemes/nord-light.json` and `frontend/src/lib/syntaxThemes/nord-light-brighter.json` are copies of this extension's two theme documents, `themes/Nord Light-color-theme.json` and `themes/Nord Light Brighter-color-theme.json`. LeapMux carries them because Shiki bundles no light Nord theme and Nord itself publishes none. Their 80 and 82 `tokenColors` entries are upstream's, with one correction: upstream writes the seven-digit `#3B42527` on two rules of the first document, where every other rule of that shade spells nord1 `#3B4252`. Each copy also has its workbench `colors` map reduced to the two keys Shiki reads, and gains the sixteen `terminal.ansi*` colours that an `ansi` code fence needs, from the Nord Light terminal scheme that `frontend/src/styles/themes/nord.ts` already carries."
+}
