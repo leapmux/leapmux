@@ -4,7 +4,11 @@ import (
 	"encoding/json"
 	"strings"
 	"sync"
+	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
@@ -600,27 +604,40 @@ func (s *testSink) ReviveBackgroundTask(rowKey string) error {
 	return nil
 }
 
-// RevivedTasks returns the row keys ReviveBackgroundTask actually reopened.
-// ForgetBackgroundTask drops a row the way cap-eviction and a cold seed window
-// do: the registry entry goes, and the child agent row survives it.
-func (s *testSink) ForgetBackgroundTask(rowKey string) {
+// UnlinkBackgroundTask clears a row's child linkage, leaving the row and the
+// child transcript in place. This is the one state a provider can still meet in
+// which a finished subagent's row names no transcript: EnsureChildAgent created
+// the child agent row and the registry upsert that links it then failed. Cap
+// eviction does NOT produce it -- a linked row survives the display cap in the
+// store (see registryOps.retainInStore) -- so a test must not use eviction to
+// reach it.
+func (s *testSink) UnlinkBackgroundTask(rowKey string) {
 	s.bgTasksMu.Lock()
 	defer s.bgTasksMu.Unlock()
-	delete(s.bgTasks, rowKey)
+	item, ok := s.bgTasks[rowKey]
+	if !ok {
+		return
+	}
+	item.ChildAgentID = ""
+	s.bgTasks[rowKey] = item
 }
 
 // ChildAgentIDs lists every child transcript this sink handed out, so a test can
-// assert that a resolution did NOT open a second one.
+// assert that a resolution did NOT open a second one. It returns the child agent
+// IDS, not the spawn spans that key the map: an assertion reads
+// "child-of-<span>", which no spawn span can ever equal, so returning the keys
+// made every NotContains on it pass whatever the code did.
 func (s *testSink) ChildAgentIDs() []string {
 	s.childSinkMu.Lock()
 	defer s.childSinkMu.Unlock()
 	ids := make([]string, 0, len(s.children))
-	for id := range s.children {
-		ids = append(ids, id)
+	for _, c := range s.children {
+		ids = append(ids, c.childAgentID())
 	}
 	return ids
 }
 
+// RevivedTasks returns the row keys ReviveBackgroundTask actually reopened.
 func (s *testSink) RevivedTasks() []string {
 	s.bgTasksMu.Lock()
 	defer s.bgTasksMu.Unlock()
@@ -894,3 +911,19 @@ func (noopSink) LookupBackgroundTask(string) (string, bgtask.Status, bool, error
 func (noopSink) ReviveBackgroundTask(string) error            { return nil }
 func (noopSink) PersistChildUserMessage(string, string) error { return nil }
 func (noopSink) CleanupChildAgent(string)                     {}
+
+// The one test in this helpers file, and it belongs here: every caller of
+// ChildAgentIDs asserts NotContains against a child id, so a version that
+// returned the map's spawn-span keys satisfied all of them and proved nothing.
+// Pinning the return shape beside the fake keeps that from coming back.
+func TestTestSink_ChildAgentIDsReturnsChildIDsNotSpawnSpans(t *testing.T) {
+	t.Parallel()
+
+	s := &testSink{}
+	childID, err := s.EnsureChildAgent("tu-spawn", "task-1", "explore")
+	require.NoError(t, err)
+	require.Equal(t, "child-of-tu-spawn", childID)
+
+	assert.Equal(t, []string{childID}, s.ChildAgentIDs())
+	assert.NotContains(t, s.ChildAgentIDs(), "tu-spawn", "the spawn span is the key, not the id")
+}

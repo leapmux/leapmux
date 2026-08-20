@@ -56,6 +56,18 @@ type registryOps[T any] struct {
 	isFinished func(T) bool
 	// deleteByKey deletes the persisted row for `key` under `ownerID`.
 	deleteByKey func(ctx context.Context, ownerID string, key string) error
+	// retainInStore reports whether a row must SURVIVE eviction in the store.
+	// Eviction then drops it from the capped display cache only. Optional: nil
+	// means every evicted row is deleted.
+	//
+	// The cap is a DISPLAY bound, not a storage bound. A background-task row
+	// that carries a child transcript is also the only index from that child id
+	// back to (owner, row_key), and the child `agents` row outlives the registry
+	// delete -- so deleting the row makes a live subagent permanently
+	// unmessageable and uninterruptible. Retention costs one small row per
+	// transcript, and the row cascades away with the root agent exactly when the
+	// transcript does.
+	retainInStore func(T) bool
 	// cap is the maximum number of rows the registry holds IN ONE POOL. With
 	// bucketOf nil there is a single pool, so this is the whole registry.
 	cap int32
@@ -89,13 +101,15 @@ func (c *registryCache[T]) inBucket(row T, bucket string) bool {
 // independently. One global window has the wrong shape: an owner whose newest
 // `cap` rows all belong to one pool seeds every other pool EMPTY.
 //
-// Each pool then reclaims the finished rows its window left behind. The cap is
-// soft (an upsert exceeds it rather than orphan a steerable child), and eviction
-// only ever deletes a row the cache HOLDS -- so without the reclaim the surplus
-// is neither loaded nor deleted, invisible in the sidebar and growing without
-// limit in the DB. A reclaim failure is logged, not returned: the cache is
-// correctly seeded either way, and refusing to seed over it would cost the
-// registry its rows.
+// Each pool then reclaims the finished rows its window left behind. Eviction
+// only ever touches a row the cache HOLDS, so without this pass a surplus row
+// below the window is neither loaded nor deleted -- invisible in the sidebar and
+// growing without limit in the DB. A registry that retains rows past the cap
+// (see ops.retainInStore) must spare those same rows here, in the reclaim query
+// itself, because that surplus is the point: a retained row is an index the
+// display list no longer shows. A reclaim failure is logged, not
+// returned: the cache is correctly seeded either way, and refusing to seed over
+// it would cost the registry its rows.
 func (c *registryCache[T]) ensureSeededLocked(ctx context.Context, ownerID string) error {
 	if c.seeded {
 		return nil
@@ -159,21 +173,37 @@ func (c *registryCache[T]) indexOf(key string) int {
 }
 
 // evictOldestFinishedInBucketLocked removes the first finished row (by slice
-// order) of ONE cap pool from the cache and DB, so making room for a shell row
-// never deletes a subagent's. Pass "" for a single-pool registry (bucketOf nil),
-// where every row shares one pool. RETURNS the evicted row, so a caller that
-// logs it reads the row this method actually deleted rather than re-running an
-// equivalent scan of its own -- two expressions of one predicate that agree only
-// while nobody edits either. Returns ok=false (no error) when the pool holds no
-// finished row. Caller must hold c.Mu.
+// order) of ONE cap pool, so making room for a shell row never drops a
+// subagent's. Pass "" for a single-pool registry (bucketOf nil), where every row
+// shares one pool. RETURNS the evicted row, so a caller that logs it reads the
+// row this method actually removed rather than re-running an equivalent scan of
+// its own -- two expressions of one predicate that agree only while nobody edits
+// either. Returns ok=false (no error) when the pool holds no finished row.
+// Caller must hold c.Mu.
 //
 // There is deliberately NO unscoped wrapper: with a bucketed registry, bucket ""
 // matches nothing, so a wrapper that hardcoded it would evict nothing and report
 // "no finished row" without an error or a log. Naming the pool is the caller's.
 func (c *registryCache[T]) evictOldestFinishedInBucketLocked(ctx context.Context, ownerID, bucket string) (T, bool, error) {
-	evictIdx := slices.IndexFunc(c.Rows, func(r T) bool {
+	return c.evictFirstMatchLocked(ctx, ownerID, func(r T) bool {
 		return c.inBucket(r, bucket) && c.ops.isFinished(r)
 	})
+}
+
+// evictOldestInBucketLocked removes the first row (by slice order) of ONE cap
+// pool whatever its status, for an insert into a pool that holds no finished row
+// at all. The cap is a bound on the DISPLAY list, so the oldest entry leaves it
+// even while it runs; ops.retainInStore decides whether the persisted row goes
+// with it. Same bucket and return contract as
+// evictOldestFinishedInBucketLocked. Caller must hold c.Mu.
+func (c *registryCache[T]) evictOldestInBucketLocked(ctx context.Context, ownerID, bucket string) (T, bool, error) {
+	return c.evictFirstMatchLocked(ctx, ownerID, func(r T) bool { return c.inBucket(r, bucket) })
+}
+
+// evictFirstMatchLocked evicts the first row the predicate accepts, or reports
+// ok=false when none matches. Caller must hold c.Mu.
+func (c *registryCache[T]) evictFirstMatchLocked(ctx context.Context, ownerID string, match func(T) bool) (T, bool, error) {
+	evictIdx := slices.IndexFunc(c.Rows, match)
 	if evictIdx < 0 {
 		var zero T
 		return zero, false, nil
@@ -181,14 +211,18 @@ func (c *registryCache[T]) evictOldestFinishedInBucketLocked(ctx context.Context
 	return c.evictAtLocked(ctx, ownerID, evictIdx)
 }
 
-// evictAtLocked deletes the row at evictIdx from the cache and DB, returning the
-// row it removed. Caller must hold c.Mu.
+// evictAtLocked removes the row at evictIdx from the capped display cache,
+// returning the row it removed. The persisted row goes with it UNLESS
+// ops.retainInStore keeps it: eviction is a display bound, and a retained row
+// stays addressable by a point lookup on its key. Caller must hold c.Mu.
 func (c *registryCache[T]) evictAtLocked(ctx context.Context, ownerID string, evictIdx int) (T, bool, error) {
 	evicted := c.Rows[evictIdx]
-	key := c.ops.keyOf(evicted)
-	if err := c.ops.deleteByKey(ctx, ownerID, key); err != nil {
-		var zero T
-		return zero, false, fmt.Errorf("evict %s: %w", c.ops.label, err)
+	if c.ops.retainInStore == nil || !c.ops.retainInStore(evicted) {
+		key := c.ops.keyOf(evicted)
+		if err := c.ops.deleteByKey(ctx, ownerID, key); err != nil {
+			var zero T
+			return zero, false, fmt.Errorf("evict %s: %w", c.ops.label, err)
+		}
 	}
 	c.Rows = slices.Delete(c.Rows, evictIdx, evictIdx+1)
 	return evicted, true, nil

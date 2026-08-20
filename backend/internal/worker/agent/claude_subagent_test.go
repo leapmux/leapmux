@@ -1281,31 +1281,35 @@ func TestClaude_AnUnreadableRegistryDoesNotFreeTheSendMessageSpan(t *testing.T) 
 
 	assert.NotContains(t, sink.ClosedSpans(), "tu-send",
 		"a registry it could not read cannot prove this is a spawn")
+	assert.NotContains(t, sink.ChildAgentIDs(), "child-of-tu-send",
+		"nor can it prove the id is a spawn span worth opening a transcript from")
 }
 
-// A revive whose registry row was cap-evicted has no linkage, and the event's
-// tool_use id is the SendMessage call. Handing that to EnsureChildAgent created
-// a SECOND child agent keyed by a non-spawn span and re-pointed the durable row
-// at the orphan, leaving the subagent's real transcript unreachable.
-func TestClaude_ReviveWithNoRegistryRowOpensNoSecondTranscript(t *testing.T) {
+// A row that names no transcript is the one state left in which a revive cannot
+// resolve its child, and only a failed registry write produces it: cap eviction
+// does not, because a linked row survives the display cap in the store. The
+// event's tool_use id is the SendMessage call, so handing it to EnsureChildAgent
+// would create a child keyed by a non-spawn span -- which the subagent's own
+// forwarded envelopes, all stamped with the real spawn span, then duplicate.
+func TestClaude_ReviveWithAnUnlinkedRowOpensNoSecondTranscript(t *testing.T) {
 	t.Parallel()
 
 	sink := &testSink{}
 	a := newTestAgent(sink)
 	child := spawnAndFinishSubagent(t, a, sink)
 	before := len(child.Messages())
-	// The row is gone, as cap-eviction or a cold seed window leaves it.
-	sink.ForgetBackgroundTask("task-1")
+	// The child transcript exists; only the row's linkage to it is missing.
+	sink.UnlinkBackgroundTask("task-1")
 
 	sendMessageTo(a, "tu-send", "task-1")
 	reviveTaskStarted(a, "tu-send", "Also check the tests.")
 
 	assert.NotContains(t, sink.ChildAgentIDs(), "child-of-tu-send",
 		"a SendMessage id must never open a transcript")
-	assert.Len(t, child.Messages(), before, "nothing is written before a transcript resolves")
+	assert.Len(t, child.Messages(), before, "nothing is written to a transcript the row does not name")
 
-	// The subagent's own output resolves its real transcript, and the held
-	// message lands above the reply it asked for.
+	// Refusing the SendMessage id costs no transcript: the subagent's own output
+	// still resolves the real one through the spawn span.
 	a.HandleOutput([]byte(`{
 		"type": "assistant",
 		"parent_tool_use_id": "tu-spawn",
@@ -1313,39 +1317,27 @@ func TestClaude_ReviveWithNoRegistryRowOpensNoSecondTranscript(t *testing.T) {
 	}`))
 
 	msgs := child.Messages()
-	require.Len(t, msgs, before+2, "the held message and the reply both land here")
-	assert.JSONEq(t, `{"content":"Also check the tests."}`, string(msgs[before].Content))
-	assert.Contains(t, string(msgs[before+1].Content), "Checked them.")
+	require.Len(t, msgs, before+1, "the reply lands in the subagent's own transcript")
+	assert.Contains(t, string(msgs[before].Content), "Checked them.")
 }
 
-// One send, one delivery: a held message is written once and not replayed into
-// every later envelope.
-func TestClaude_AHeldChildMessageIsWrittenOnce(t *testing.T) {
+// The revive arm is spent only by a revive that resolved a transcript. A
+// task_started that resolved none leaves it standing, so the retry a later
+// task_started deserves is still armed -- the same rule a failed registry write
+// follows.
+func TestClaude_ATaskStartedThatResolvesNoChildKeepsTheArm(t *testing.T) {
 	t.Parallel()
 
 	sink := &testSink{}
 	a := newTestAgent(sink)
-	child := spawnAndFinishSubagent(t, a, sink)
-	before := len(child.Messages())
-	sink.ForgetBackgroundTask("task-1")
+	spawnAndFinishSubagent(t, a, sink)
+	sink.UnlinkBackgroundTask("task-1")
 
 	sendMessageTo(a, "tu-send", "task-1")
 	reviveTaskStarted(a, "tu-send", "Also check the tests.")
-	for range 2 {
-		a.HandleOutput([]byte(`{
-			"type": "assistant",
-			"parent_tool_use_id": "tu-spawn",
-			"message": {"content": [{"type": "text", "text": "Working."}]}
-		}`))
-	}
 
-	held := 0
-	for _, m := range child.Messages()[before:] {
-		if string(m.Content) == `{"content":"Also check the tests."}` {
-			held++
-		}
-	}
-	assert.Equal(t, 1, held, "the held message is consumed by the first envelope that resolves a child")
+	assert.Empty(t, sink.RevivedTasks(), "no transcript resolved, so no revive happened")
+	assert.True(t, a.takeClaudeRevive("task-1"), "the arm is still standing for a retry")
 }
 
 // The CLI may stamp a revived run's forwarded result with the ORIGINAL spawn

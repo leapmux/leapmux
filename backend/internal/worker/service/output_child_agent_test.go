@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -800,6 +801,32 @@ func TestMarkBackgroundTasksExited_WritesTheSubagentEndDivider(t *testing.T) {
 	assert.Equal(t, "interrupted", msgs[0]["status"])
 }
 
+// The sweep ends every active row in the TABLE, and its divider list has to
+// match. A row past the display cap is not in the cache, so a cache-derived list
+// left that subagent's transcript with no closing divider -- permanently, since
+// the sweep cannot repeat itself (the rows are no longer active).
+func TestMarkBackgroundTasksExited_ClosesASubagentPastTheDisplayCap(t *testing.T) {
+	t.Parallel()
+
+	svc, sink := setupRootSink(t, "root-1")
+	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	require.NoError(t, err)
+	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks)
+
+	displayed, err := svc.Output.LoadBackgroundTasks(context.Background(), "root-1")
+	require.NoError(t, err)
+	for _, item := range displayed {
+		require.NotEqual(t, "task-1", item.RowKey, "the row must have left the display list")
+	}
+
+	svc.Output.MarkAgentBackgroundTasksExited("root-1", false)
+
+	msgs := transcriptMessages(t, svc, childID)
+	require.Len(t, msgs, 1, "the retained row's transcript is closed too")
+	assert.Equal(t, agent.NotificationTypeSubagentEnded, msgs[0]["type"])
+	assert.Equal(t, "interrupted", msgs[0]["status"])
+}
+
 func TestMarkBackgroundTasksExited_LabelsAnExplicitStopAsStopped(t *testing.T) {
 	t.Parallel()
 
@@ -1091,6 +1118,67 @@ func TestLookupBackgroundTask_ResolvesTheChildAndStatus(t *testing.T) {
 	_, status, ok, _ = sink.LookupBackgroundTask("task-1")
 	require.True(t, ok)
 	assert.Equal(t, bgtask.StatusCompleted, status)
+}
+
+// fillSubagentDisplayCap pushes `extra` fresh subagent rows through the root's
+// registry, so every row that was there before leaves the capped display list.
+// Each row carries a child transcript, which is the case the cap must not
+// destroy.
+func fillSubagentDisplayCap(t *testing.T, sink agent.OutputSink, extra int) {
+	t.Helper()
+	for i := range extra {
+		_, err := sink.EnsureChildAgent(fmt.Sprintf("filler-span-%d", i), fmt.Sprintf("filler-%d", i), "filler")
+		require.NoError(t, err)
+	}
+}
+
+// The display cap is not a storage bound. Past MaxTasks subagents, a revive of
+// an older one still has to find its transcript: a miss here made Claude open a
+// SECOND transcript keyed by the SendMessage id and leave the real one
+// unreachable.
+func TestLookupBackgroundTask_ResolvesARowThatLeftTheDisplayCache(t *testing.T) {
+	t.Parallel()
+
+	svc, sink := setupRootSink(t, "root-1")
+	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	require.NoError(t, err)
+	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
+
+	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks)
+
+	displayed, err := svc.Output.LoadBackgroundTasks(context.Background(), "root-1")
+	require.NoError(t, err)
+	require.Len(t, displayed, bgtask.MaxTasks)
+	for _, item := range displayed {
+		require.NotEqual(t, "task-1", item.RowKey, "the row must have left the display list")
+	}
+
+	gotChild, status, ok, err := sink.LookupBackgroundTask("task-1")
+	require.NoError(t, err)
+	require.True(t, ok, "the retained row resolves through the point lookup")
+	assert.Equal(t, childID, gotChild)
+	assert.Equal(t, bgtask.StatusCompleted, status)
+}
+
+// resolveChildRegistryRow's query is the reverse route, and it is what
+// send-to-subagent and interrupt use. Losing the row past the cap answered
+// ErrNoRows, which the caller reports as "subagent registry not yet loaded;
+// retry" -- forever, for a subagent whose transcript is right there.
+func TestGetAgentBackgroundTaskByChildAgentID_ResolvesPastTheDisplayCap(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, sink := setupRootSink(t, "root-1")
+	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	require.NoError(t, err)
+	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
+
+	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks)
+
+	row, err := svc.Queries.GetAgentBackgroundTaskByChildAgentID(ctx, childID)
+	require.NoError(t, err, "the child stays messageable and interruptible")
+	assert.Equal(t, "root-1", row.OwnerAgentID)
+	assert.Equal(t, "task-1", row.RowKey)
 }
 
 // A row key that identifies nothing misses, which is what every recipient outside

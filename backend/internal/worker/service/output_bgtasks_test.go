@@ -23,6 +23,17 @@ import (
 // Mirrors setupTodoTest.
 func setupBgTaskTest(t *testing.T) (agent.OutputSink, string, func() []db.AgentBackgroundTask) {
 	t.Helper()
+	_, sink, ownerID, listRows := setupBgTaskTestWithService(t)
+	return sink, ownerID, listRows
+}
+
+// setupBgTaskTestWithService is setupBgTaskTest for a test that also reads the
+// DISPLAY list, which only the service can answer. The two lists are no longer
+// the same: the cap bounds what LoadBackgroundTasks returns, and a row that
+// carries a child transcript stays in the table after it leaves that list, so
+// listRows (the table) and displayedRowKeys (the list) disagree by design.
+func setupBgTaskTestWithService(t *testing.T) (*Service, agent.OutputSink, string, func() []db.AgentBackgroundTask) {
+	t.Helper()
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -40,7 +51,30 @@ func setupBgTaskTest(t *testing.T) (agent.OutputSink, string, func() []db.AgentB
 		require.NoError(t, err)
 		return rows
 	}
-	return sink, "agent-1", listRows
+	return svc, sink, "agent-1", listRows
+}
+
+// displayedRowKeys returns the row keys of the capped display list -- what the
+// sidebar shows and what a client receives -- in cache order.
+func displayedRowKeys(t *testing.T, svc *Service, ownerID string) []string {
+	t.Helper()
+	items, err := svc.Output.LoadBackgroundTasks(context.Background(), ownerID)
+	require.NoError(t, err)
+	keys := make([]string, len(items))
+	for i, item := range items {
+		keys[i] = item.RowKey
+	}
+	return keys
+}
+
+// rowKeySet collapses persisted rows to a set of their keys for a Contains /
+// NotContains assertion.
+func rowKeySet(rows []db.AgentBackgroundTask) map[string]struct{} {
+	keys := make(map[string]struct{}, len(rows))
+	for _, r := range rows {
+		keys[r.RowKey] = struct{}{}
+	}
+	return keys
 }
 
 func TestBgTask_UpsertCreatesRowAndBroadcasts(t *testing.T) {
@@ -315,23 +349,15 @@ func TestBgTask_CapNoFinishedRowEvictsOldestActive(t *testing.T) {
 	assert.Contains(t, keys, "task-new", "new row linked")
 }
 
-// TestBgTask_CapAllActiveLinkedPreservesChildLinkage verifies the cap-eviction
-// path never deletes a row that carries a child_agent_id: doing so would make
-// that child permanently unsteerable (the registry row is the only index from
-// child id -> owner+rowKey, and the agents row survives the delete). When every
-// active row is linked, the cap is exceeded instead of orphaning a child.
-func TestBgTask_CapAllActiveLinkedPreservesChildLinkage(t *testing.T) {
+// TestBgTask_CapAllActiveLinkedHoldsTheDisplayCap verifies that a pool full of
+// linked ACTIVE rows still respects the cap on the display list. The cap used to
+// be exceeded here to keep a linked row's index alive; that trade is gone,
+// because the row now survives eviction in the table on its own.
+func TestBgTask_CapAllActiveLinkedHoldsTheDisplayCap(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t)
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID:            "agent-linked",
-		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-	}))
-	sink := svc.Output.NewSink("agent-linked", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	svc, sink, ownerID, listRows := setupBgTaskTestWithService(t)
 	// Seed MaxTasks running rows, each linked to a distinct child transcript.
 	for i := 1; i <= bgtask.MaxTasks; i++ {
 		require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
@@ -343,8 +369,6 @@ func TestBgTask_CapAllActiveLinkedPreservesChildLinkage(t *testing.T) {
 		}))
 	}
 
-	// Insert one more at the cap with no finished row: every active row is
-	// linked, so the cap is exceeded rather than orphaning a steerable child.
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
 		RowKey:       "task-new",
 		Kind:         bgtask.KindSubagent,
@@ -353,54 +377,127 @@ func TestBgTask_CapAllActiveLinkedPreservesChildLinkage(t *testing.T) {
 		Status:       bgtask.StatusRunning,
 	}))
 
-	rows, err := svc.Queries.ListAgentBackgroundTasksNewestFirst(ctx, db.ListAgentBackgroundTasksNewestFirstParams{
-		OwnerAgentID: "agent-linked", Limit: 1000,
-	})
-	require.NoError(t, err)
-	assert.Len(t, rows, bgtask.MaxTasks+1, "cap exceeded rather than orphaning a linked child")
+	displayed := displayedRowKeys(t, svc, ownerID)
+	assert.Len(t, displayed, bgtask.MaxTasks, "the display list holds its cap")
+	assert.NotContains(t, displayed, "task-1", "the oldest row left the display list")
+	assert.Contains(t, displayed, "task-new")
 
-	// Every child linkage survives -- none were evicted.
+	// The table keeps every row, so no child lost its index.
+	assert.Len(t, listRows(), bgtask.MaxTasks+1, "the evicted row is retained in the table")
 	for i := 1; i <= bgtask.MaxTasks; i++ {
 		_, err := svc.Queries.GetAgentBackgroundTaskByChildAgentID(ctx, fmt.Sprintf("child-%d", i))
-		assert.NoError(t, err, "child-%d linkage preserved (not evicted)", i)
+		assert.NoError(t, err, "child-%d linkage preserved", i)
 	}
 }
 
-// TestBgTask_CapAllActiveEvictsOldestUnlinked verifies that when the cap is hit
-// with no finished row and SOME active rows are unlinked, eviction takes the
-// oldest UNLINKED row (not the oldest linked one), preserving child steerability.
-func TestBgTask_CapAllActiveEvictsOldestUnlinked(t *testing.T) {
+// TestBgTask_CapAllActiveEvictsTheOldestWhateverItCarries verifies the rule that
+// replaced "prefer an unlinked row": at the cap with no finished row, the OLDEST
+// active row leaves the display list, and its linkage alone decides whether the
+// persisted row goes with it.
+func TestBgTask_CapAllActiveEvictsTheOldestWhateverItCarries(t *testing.T) {
 	t.Parallel()
 
-	sink, _, listRows := setupBgTaskTest(t)
-	// task-1: unlinked (evict candidate). task-2: linked (must survive).
+	svc, sink, ownerID, listRows := setupBgTaskTestWithService(t)
+	// task-1: linked and oldest. task-2: unlinked, and under the old rule it
+	// would have been evicted in task-1's place.
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
-		RowKey: "task-1", Kind: bgtask.KindSubagent, Title: "unlinked", Status: bgtask.StatusRunning,
+		RowKey: "task-1", Kind: bgtask.KindSubagent, Title: "linked", ChildAgentID: "child-1", Status: bgtask.StatusRunning,
 	}))
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
-		RowKey: "task-2", Kind: bgtask.KindSubagent, Title: "linked", ChildAgentID: "child-2", Status: bgtask.StatusRunning,
+		RowKey: "task-2", Kind: bgtask.KindSubagent, Title: "unlinked", Status: bgtask.StatusRunning,
 	}))
-	// Fill the rest of the cap with linked rows.
 	for i := 3; i <= bgtask.MaxTasks; i++ {
 		require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
 			RowKey: fmt.Sprintf("task-%d", i), Kind: bgtask.KindSubagent, Title: fmt.Sprintf("t%d", i),
 			ChildAgentID: fmt.Sprintf("child-%d", i), Status: bgtask.StatusRunning,
 		}))
 	}
-	require.Len(t, listRows(), bgtask.MaxTasks)
+	require.Len(t, displayedRowKeys(t, svc, ownerID), bgtask.MaxTasks)
 
-	// One more: the oldest UNLINKED row (task-1) is evicted; task-2 (linked) survives.
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
 		RowKey: "task-new", Kind: bgtask.KindSubagent, Title: "fresh", Status: bgtask.StatusRunning,
 	}))
-	rows := listRows()
-	require.Len(t, rows, bgtask.MaxTasks, "cap maintained by evicting the unlinked row")
-	keys := make(map[string]struct{}, len(rows))
-	for _, r := range rows {
-		keys[r.RowKey] = struct{}{}
+
+	displayed := displayedRowKeys(t, svc, ownerID)
+	require.Len(t, displayed, bgtask.MaxTasks, "the display list holds its cap")
+	assert.NotContains(t, displayed, "task-1", "the OLDEST active row leaves the list, linked or not")
+	assert.Contains(t, displayed, "task-2", "an unlinked younger row is not preferred as the victim")
+
+	// task-1 left the list but keeps its row, because it carries a transcript.
+	assert.Contains(t, rowKeySet(listRows()), "task-1", "a linked row is retained in the table")
+	childID, status, ok, err := sink.LookupBackgroundTask("task-1")
+	require.NoError(t, err)
+	require.True(t, ok, "the retained row still resolves by key")
+	assert.Equal(t, "child-1", childID)
+	assert.Equal(t, bgtask.StatusRunning, status)
+}
+
+// A row that carries NO transcript indexes nothing, so eviction must still
+// reclaim it: retention is for the linkage, not a licence to grow the table.
+func TestBgTask_CapDeletesAnEvictedUnlinkedRow(t *testing.T) {
+	t.Parallel()
+
+	svc, sink, ownerID, listRows := setupBgTaskTestWithService(t)
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "shell-1", Kind: bgtask.KindShell, Title: "npm test", Status: bgtask.StatusCompleted,
+	}))
+	for i := 2; i <= bgtask.MaxTasks; i++ {
+		require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+			RowKey: fmt.Sprintf("shell-%d", i), Kind: bgtask.KindShell,
+			Title: fmt.Sprintf("cmd %d", i), Status: bgtask.StatusRunning,
+		}))
 	}
-	assert.NotContains(t, keys, "task-1", "oldest UNLINKED row evicted")
-	assert.Contains(t, keys, "task-2", "linked row preserved")
+	require.Len(t, listRows(), bgtask.MaxTasks)
+
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "shell-new", Kind: bgtask.KindShell, Title: "fresh", Status: bgtask.StatusRunning,
+	}))
+
+	assert.NotContains(t, displayedRowKeys(t, svc, ownerID), "shell-1")
+	assert.NotContains(t, rowKeySet(listRows()), "shell-1", "an unlinked row is deleted, not retained")
+	assert.Len(t, listRows(), bgtask.MaxTasks, "the table holds the cap when nothing is retained")
+
+	_, _, ok, err := sink.LookupBackgroundTask("shell-1")
+	require.NoError(t, err)
+	assert.False(t, ok, "a deleted row resolves nowhere")
+}
+
+// The linkage is what eviction must not destroy: past the cap a finished
+// subagent still has to resolve its transcript, both by row key (a Claude
+// SendMessage revive) and by child agent id (send-to-subagent and interrupt).
+func TestBgTask_CapRetainsAnEvictedLinkedRow(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, sink, ownerID, listRows := setupBgTaskTestWithService(t)
+	for i := 1; i <= bgtask.MaxTasks; i++ {
+		require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+			RowKey: fmt.Sprintf("task-%d", i), Kind: bgtask.KindSubagent, Title: fmt.Sprintf("t%d", i),
+			ChildAgentID: fmt.Sprintf("child-%d", i), Status: bgtask.StatusCompleted,
+		}))
+	}
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "task-new", Kind: bgtask.KindSubagent, Title: "fresh",
+		ChildAgentID: "child-new", Status: bgtask.StatusRunning,
+	}))
+
+	require.NotContains(t, displayedRowKeys(t, svc, ownerID), "task-1",
+		"the oldest finished row left the display list")
+
+	// Route 1: row key -> child. This is what a revive reads.
+	childID, status, ok, err := sink.LookupBackgroundTask("task-1")
+	require.NoError(t, err)
+	require.True(t, ok, "the evicted row still resolves by key")
+	assert.Equal(t, "child-1", childID)
+	assert.Equal(t, bgtask.StatusCompleted, status, "the retained row keeps its final status")
+
+	// Route 2: child -> (owner, row key). This is what send and interrupt read.
+	row, err := svc.Queries.GetAgentBackgroundTaskByChildAgentID(ctx, "child-1")
+	require.NoError(t, err, "the reverse lookup behind send/interrupt still resolves")
+	assert.Equal(t, ownerID, row.OwnerAgentID)
+	assert.Equal(t, "task-1", row.RowKey)
+
+	assert.Len(t, listRows(), bgtask.MaxTasks+1, "the table keeps the retained row")
 }
 
 func TestBgTask_RenameRekeysRowAndPreservesStatus(t *testing.T) {
@@ -1034,9 +1131,57 @@ func TestBgTask_SeedReclaimsFinishedSurplus(t *testing.T) {
 	assert.Len(t, after, bgtask.MaxTasks, "the seed reclaimed the finished surplus")
 }
 
-// The cap is a SOFT bound: applyBackgroundTaskUpsertLocked exceeds it rather
-// than orphan a steerable child, so an owner can hold more rows than
-// MaxTasksTotal. The seed must then keep the NEWEST rows.
+// The reclaim pass and the cap agree on what a linked row is worth. A finished
+// subagent row below the seed window is the only index from its child agent id
+// back to (owner, row_key), so the pass must step over it -- otherwise a restart
+// deletes at boot exactly what eviction was changed to keep.
+func TestBgTask_SeedReclaimSparesLinkedRows(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, ownerID, listRows := setupBgTaskTestWithService(t)
+	// Straight to the DB, so nothing is evicted before the seed runs. Below the
+	// window: one finished row that carries a child, one that does not.
+	const overflow = 4
+	now := nowMillis()
+	for i := 1; i <= bgtask.MaxTasks+overflow; i++ {
+		childID := ""
+		if i%2 == 0 {
+			childID = fmt.Sprintf("child-%03d", i)
+		}
+		require.NoError(t, svc.Queries.UpsertAgentBackgroundTask(ctx, db.UpsertAgentBackgroundTaskParams{
+			OwnerAgentID: ownerID,
+			RowKey:       fmt.Sprintf("task-%03d", i),
+			Seq:          int64(i),
+			Kind:         "subagent",
+			ChildAgentID: childID,
+			Title:        "t",
+			Status:       "completed",
+			CreatedAt:    sqltime.NewSQLiteTime(now),
+			UpdatedAt:    sqltime.NewSQLiteTime(now),
+		}))
+	}
+	require.Len(t, listRows(), bgtask.MaxTasks+overflow)
+
+	_, err := svc.Output.LoadBackgroundTasks(ctx, ownerID)
+	require.NoError(t, err)
+
+	keys := rowKeySet(listRows())
+	// task-001 .. task-004 sit below the window: the even ones are linked.
+	assert.Contains(t, keys, "task-002", "a linked row below the window is spared")
+	assert.Contains(t, keys, "task-004", "a linked row below the window is spared")
+	assert.NotContains(t, keys, "task-001", "an unlinked row below the window is reclaimed")
+	assert.NotContains(t, keys, "task-003", "an unlinked row below the window is reclaimed")
+	assert.Len(t, keys, bgtask.MaxTasks+overflow/2)
+
+	// The spared rows still answer the reverse lookup that send and interrupt use.
+	row, err := svc.Queries.GetAgentBackgroundTaskByChildAgentID(ctx, "child-002")
+	require.NoError(t, err)
+	assert.Equal(t, "task-002", row.RowKey)
+}
+
+// The TABLE outgrows the cap, because a row that carries a child transcript
+// survives eviction there. The seed must then keep the NEWEST rows.
 //
 // An oldest-first LIMIT keeps the finished rows and drops the live subagents,
 // so a restart shows a registry of stale completed rows with the running work
@@ -1047,18 +1192,11 @@ func TestBgTask_SeedKeepsTheNewestRowsPastTheCap(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t)
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID:            "agent-1",
-		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-	}))
-	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	svc, sink, ownerID, listRows := setupBgTaskTestWithService(t)
 
-	// Fill the subagent pool with ACTIVE rows that each carry a child, which is
-	// the state that makes the cap soft: eviction refuses to orphan them. Go past
-	// the pool's cap so the seed's LIMIT genuinely has to choose.
+	// Fill the subagent pool with rows that each carry a child, which is the
+	// state that outgrows the cap: eviction hides them, it does not delete them.
+	// Go past the pool's cap so the seed's LIMIT genuinely has to choose.
 	const overflow = 8
 	newest := fmt.Sprintf("agent-%03d", bgtask.MaxTasks+overflow)
 	for i := 1; i <= bgtask.MaxTasks+overflow; i++ {
@@ -1066,10 +1204,10 @@ func TestBgTask_SeedKeepsTheNewestRowsPastTheCap(t *testing.T) {
 		_, err := sink.EnsureChildAgent(fmt.Sprintf("span-%03d", i), rowKey, "SCAN")
 		require.NoError(t, err)
 	}
-	total, err := svc.Output.LoadBackgroundTasks(ctx, "agent-1")
-	require.NoError(t, err)
-	require.Greater(t, len(total), bgtask.MaxTasks,
-		"the soft cap must actually be exceeded, or this test proves nothing")
+	require.Len(t, listRows(), bgtask.MaxTasks+overflow,
+		"the table must actually outgrow the cap, or this test proves nothing")
+	require.Len(t, displayedRowKeys(t, svc, ownerID), bgtask.MaxTasks,
+		"the display list holds the cap all the same")
 
 	// Drop the warm cache so the next read seeds from the DB.
 	svc.Output.CleanupAgent("agent-1")

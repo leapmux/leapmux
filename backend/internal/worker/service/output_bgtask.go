@@ -90,7 +90,15 @@ func (h *OutputHandler) bgTaskOps() registryOps[bgtask.Item] {
 			})
 			return err
 		},
-		cap: bgtask.MaxTasks,
+		// A row that carries a child transcript leaves the DISPLAY list at the
+		// cap but stays in the table. It is the only index from that child agent
+		// id back to (owner, row_key) -- the reverse lookup behind
+		// send-to-subagent and interrupt -- and the child agents row outlives the
+		// registry delete, so deleting the row leaves a subagent nobody can reach
+		// while its transcript is still readable. LookupBackgroundTask reads a
+		// retained row back through GetAgentBackgroundTaskByRowKey.
+		retainInStore: func(r bgtask.Item) bool { return r.ChildAgentID != "" },
+		cap:           bgtask.MaxTasks,
 		// One cap pool per KIND. A run that opens hundreds of shells would
 		// otherwise evict every finished subagent, and the subagent rows are the
 		// ones carrying a transcript worth reopening.
@@ -133,10 +141,16 @@ func (h *OutputHandler) broadcastBackgroundTasks(rootAgentID string, rows []bgta
 	})
 }
 
-// LoadBackgroundTasks returns the root's registry, seeding the in-memory cache
-// from agent_background_tasks on first access. Cold-start RPCs route through
-// here so a warm cache returns without a DB read. For a CHILD agent this
+// LoadBackgroundTasks returns the root's DISPLAY list, seeding the in-memory
+// cache from agent_background_tasks on first access. Cold-start RPCs route
+// through here so a warm cache returns without a DB read. For a CHILD agent this
 // returns empty (children own no registry).
+//
+// The list is capped at bgtask.MaxTasks per kind and is NOT exhaustive: a row
+// that carries a child transcript stays in the table after it leaves this list
+// (see registryOps.retainInStore), so it is invisible in the sidebar and still
+// resolvable by key. A caller that needs the linkage must query the table --
+// LookupBackgroundTask and GetAgentBackgroundTaskByChildAgentID both do.
 func (h *OutputHandler) LoadBackgroundTasks(ctx context.Context, rootAgentID string) ([]bgtask.Item, error) {
 	cache := h.bgTaskCache(rootAgentID)
 	cache.Mu.Lock()
@@ -405,32 +419,34 @@ func (h *OutputHandler) MarkAgentBackgroundTasksExited(rootAgentID string, stopp
 		status = bgtask.StatusStopped
 	}
 	now := nowMillis()
-	if _, err := h.queries.MarkAgentBackgroundTasksEnded(ctx, db.MarkAgentBackgroundTasksEndedParams{
+	// The children this sweep just ended come from the WRITE, not from a scan of
+	// the cache. The cache holds the capped display list, so a row past the cap
+	// or below the seed window is ended in the DB and absent here -- and a
+	// cache-derived list would leave that subagent's transcript with no closing
+	// divider, permanently. Without a divider a subagent whose owner process died
+	// keeps a transcript that simply stops.
+	endedChildIDs, err := h.queries.MarkAgentBackgroundTasksEnded(ctx, db.MarkAgentBackgroundTasksEndedParams{
 		Status:       bgtask.StatusWire(status),
 		EndedAt:      sqltime.SQLiteNullTimeOf(now),
 		UpdatedAt:    sqltime.NewSQLiteTime(now),
 		OwnerAgentID: rootAgentID,
-	}); err != nil {
+	})
+	if err != nil {
 		cache.Mu.Unlock()
 		slog.Warn("mark background tasks ended failed", "agent_id", rootAgentID, "error", err)
 		return
 	}
+	// The cache catches up to the write it just made, so the broadcast below
+	// reports the display list the DB now holds. `changed` is the CACHE's answer
+	// on purpose: a row the display list never held moved nothing the client can
+	// see.
 	changed := false
-	// The children this sweep just ended. Collected here, under the lock, on the
-	// same "was still active" test that decides the write -- so each transcript
-	// gets its closing divider exactly once, for the same reason a registry
-	// mutation does. Without this a subagent whose owner process died would keep
-	// a transcript that simply stops.
-	var endedChildIDs []string
 	for i := range cache.Rows {
 		if !cache.Rows[i].Status.IsFinished() {
 			cache.Rows[i].Status = status
 			cache.Rows[i].EndedAt = now
 			cache.Rows[i].UpdatedAt = now
 			changed = true
-			if cache.Rows[i].ChildAgentID != "" {
-				endedChildIDs = append(endedChildIDs, cache.Rows[i].ChildAgentID)
-			}
 		}
 	}
 	// Snapshot under the lock; broadcast AFTER release so a slow/stalled gRPC
@@ -1006,20 +1022,47 @@ func (s *agentOutputSink) LookupBackgroundTask(rowKey string) (string, bgtask.St
 	}
 	cache := s.h.bgTaskCache(s.rootAgentID)
 	cache.Mu.Lock()
-	defer cache.Mu.Unlock()
 	// The seed failure is RETURNED, not folded into ok=false. It runs on the
 	// first registry touch of a process, which is exactly the state a worker
 	// restart leaves behind -- so the one call most likely to hit it is a revive
 	// for a subagent that finished in the previous process, and answering "no
 	// such row" there closes a live span and leaves the row finished.
 	if err := cache.ensureSeededLocked(s.h.bgTaskCtx(), s.rootAgentID); err != nil {
+		cache.Mu.Unlock()
 		return "", noStatus, false, fmt.Errorf("seed background tasks for %s: %w", s.rootAgentID, err)
 	}
-	idx := cache.indexOf(rowKey)
-	if idx < 0 {
-		return "", noStatus, false, nil
+	if idx := cache.indexOf(rowKey); idx >= 0 {
+		childID, status := cache.Rows[idx].ChildAgentID, cache.Rows[idx].Status
+		cache.Mu.Unlock()
+		return childID, status, true, nil
 	}
-	return cache.Rows[idx].ChildAgentID, cache.Rows[idx].Status, true, nil
+	// The lock is released BEFORE the DB read, the way ensureChildAgentLocked
+	// releases it around its own: this miss path runs on every FIRST task_started
+	// too (no row exists yet), so holding the mutex across the round trip would
+	// serialize a burst of spawns behind one another. Nothing is mutated here,
+	// and the write order elsewhere is DB-then-cache, so an insert that lands in
+	// the gap is visible to this read rather than lost by it.
+	cache.Mu.Unlock()
+	// The cache holds only what the sidebar shows -- the newest MaxTasks rows of
+	// each kind -- and a row that carries a child transcript outlives that cap in
+	// the table. So a cache miss is not an answer yet: past MaxTasks finished
+	// subagents, EVERY revive of an older one would read "no such row", open a
+	// second transcript, and leave the real one unreachable. Fall through to the
+	// PRIMARY KEY, which is one indexed point lookup.
+	row, err := s.h.queries.GetAgentBackgroundTaskByRowKey(s.h.bgTaskCtx(), db.GetAgentBackgroundTaskByRowKeyParams{
+		OwnerAgentID: s.rootAgentID,
+		RowKey:       rowKey,
+	})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", noStatus, false, nil
+		}
+		// A DB failure stays the THIRD answer, distinct from a miss, for the same
+		// reason the seed failure above does: a caller that reads "no such row"
+		// from a database it could not read treats a live subagent as brand new.
+		return "", noStatus, false, fmt.Errorf("read background task %s/%s: %w", s.rootAgentID, rowKey, err)
+	}
+	return row.ChildAgentID, bgtask.StatusFromWire(row.Status), true, nil
 }
 
 // ReviveBackgroundTask returns a finished row to Running and lets the reopened
@@ -1082,7 +1125,7 @@ func (s *agentOutputSink) RenameBackgroundTask(oldKey, newKey string) error {
 	// re-created row Running for the life of the process, which pinned the
 	// parent's thinking indicator. The row already at newKey is the complete one --
 	// it carries the lifecycle that reached the rename -- so the DUPLICATE at
-	// oldKey loses and is deleted.
+	// oldKey loses and leaves the display list.
 	occupied, err := s.h.queries.CountAgentBackgroundTasksByRowKey(ctx, db.CountAgentBackgroundTasksByRowKeyParams{
 		OwnerAgentID: s.rootAgentID,
 		RowKey:       newKey,
@@ -1096,12 +1139,32 @@ func (s *agentOutputSink) RenameBackgroundTask(oldKey, newKey string) error {
 			cache.Mu.Unlock()
 			return nil
 		}
-		if _, err := s.h.queries.DeleteAgentBackgroundTaskByRowKey(ctx, db.DeleteAgentBackgroundTaskByRowKeyParams{
+		// Whether the loser's PERSISTED row goes with it is the question
+		// eviction asks, and the answer is the same: a row that carries a child
+		// transcript is the only index from that child agent id back to
+		// (owner, row_key), so it is retained and only hidden. No caller reaches
+		// this with a linked row today -- the ACP providers that rename
+		// (OpenCode, Kilo) drop child sessions over ACP and never report a
+		// ChildAgentKey -- but the invariant belongs to every row, not to the
+		// ones a caller happens to produce.
+		loser, err := s.h.queries.GetAgentBackgroundTaskByRowKey(ctx, db.GetAgentBackgroundTaskByRowKeyParams{
 			OwnerAgentID: s.rootAgentID,
 			RowKey:       oldKey,
-		}); err != nil {
+		})
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			// Already gone; the cache drop below is all that is left to do.
+		case err != nil:
 			cache.Mu.Unlock()
 			return err
+		case loser.ChildAgentID == "":
+			if _, err := s.h.queries.DeleteAgentBackgroundTaskByRowKey(ctx, db.DeleteAgentBackgroundTaskByRowKeyParams{
+				OwnerAgentID: s.rootAgentID,
+				RowKey:       oldKey,
+			}); err != nil {
+				cache.Mu.Unlock()
+				return err
+			}
 		}
 		if cache.dropRowLocked(oldKey) {
 			pendingBroadcast = cache.snapshot()
@@ -1203,33 +1266,26 @@ func (h *OutputHandler) applyBackgroundTaskUpsertLocked(cache *bgTaskCache, root
 			return registryChange{}, err
 		}
 		if !evicted {
-			// At the cap with no finished row to evict. Dropping the new row
-			// would orphan an already-created child agent row (EnsureChildAgent
-			// inserts the child before this upsert links it), leaving an
-			// unopenable transcript. Evict an older row instead. Prefer the
-			// oldest row that carries NO child linkage: evicting a linked row
-			// would make that child permanently unsteerable (the registry row
-			// is the only index from child id -> owner+rowKey, and the child
-			// agents row survives the registry delete). When every active row
-			// is linked to a child transcript, exceed the cap rather than
-			// orphan a steerable child -- the cap is a soft bound to protect
-			// the child-linkage invariant.
-			slog.Warn("background task registry at cap with no finished row; evicting oldest unlinked active row",
-				"owner", rootAgentID, "row_key", task.RowKey, "kind", bucket, "cap", bgtask.MaxTasks)
-			evictIdx := -1
-			for i, r := range cache.Rows {
-				if bgtask.KindWire(r.Kind) == bucket && r.ChildAgentID == "" {
-					evictIdx = i
-					break
-				}
+			// At the cap with every row in the pool still active. Dropping the
+			// NEW row is not an option: it would orphan an already-created child
+			// agent row (EnsureChildAgent inserts the child before this upsert
+			// links it), leaving an unopenable transcript. So the oldest active
+			// row leaves the display list instead, whatever it carries.
+			//
+			// Its linkage is safe without a special case here, because
+			// retainInStore keeps a linked row in the table -- the cap is a bound
+			// on what the sidebar shows, not on what the registry indexes. An
+			// UNLINKED active row (a running shell) does lose its persisted row,
+			// which is the honest cost of a pool that is full of running work,
+			// and is what the warning records.
+			evictedRow, dropped, err := cache.evictOldestInBucketLocked(ctx, rootAgentID, bucket)
+			if err != nil {
+				return registryChange{}, err
 			}
-			if evictIdx >= 0 {
-				if _, _, err := cache.evictAtLocked(ctx, rootAgentID, evictIdx); err != nil {
-					return registryChange{}, err
-				}
-			} else {
-				slog.Warn("background task registry at cap with all active rows linked to children; exceeding cap to avoid orphaning a steerable child",
-					"owner", rootAgentID, "row_key", task.RowKey, "kind", bucket, "cap", bgtask.MaxTasks)
+			if dropped {
+				slog.Warn("background task registry at cap with no finished row; dropping the oldest active row from the display list",
+					"owner", rootAgentID, "row_key", task.RowKey, "kind", bucket, "cap", bgtask.MaxTasks,
+					"evicted_row_key", evictedRow.RowKey, "retained_in_store", evictedRow.ChildAgentID != "")
 			}
 		}
 	}

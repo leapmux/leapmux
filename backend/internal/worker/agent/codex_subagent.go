@@ -121,7 +121,10 @@ func (a *CodexAgent) collabAgentsStatesToRegistry(collab *codexCollabAgentToolCa
 
 // reviveFinishedCollabChild returns a collab child's row to Running when the
 // registry still holds it in a final status. A no-op for an absent row and for
-// one that is already active, so the common case costs one cache read.
+// one that is already active, so the common case costs one cache read. A row
+// past the display cap costs one indexed point lookup instead, and still
+// revives -- which is the point: a session's older collab children must reopen
+// the same way its newest one does.
 func (a *CodexAgent) reviveFinishedCollabChild(threadID string) {
 	_, status, ok, err := a.sink.LookupBackgroundTask(threadID)
 	if err != nil {

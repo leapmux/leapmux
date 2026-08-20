@@ -145,25 +145,15 @@ type ClaudeCodeAgent struct {
 	// task_notification.
 	taskToolUse map[string]string // task_id -> tool_use_id
 	toolUseTask map[string]string // tool_use_id -> task_id
-	// taskChild/childTask index the same link from the CHILD transcript side, so
-	// a forwarded envelope resolves its registry row when the tool_use index
+	// childTask indexes the same link from the CHILD transcript side, so a
+	// forwarded envelope resolves its registry row when the tool_use index
 	// cannot. A revive re-registers the task under the SendMessage tool_use id,
 	// and the first completion already dropped the spawn span, so a run-2 result
 	// forwarded under the ORIGINAL spawn resolves no task and leaves the row the
 	// revive reopened Running for the agent's life. Guarded by a.mu, and NOT
-	// dropped at a completion: the pair describes the transcript, which outlives
+	// dropped at a completion: the entry describes the transcript, which outlives
 	// every run of it.
-	taskChild map[string]string // task_id -> child_agent_id
 	childTask map[string]string // child_agent_id -> task_id
-	// pendingChildMessage holds a delivered message whose child transcript could
-	// not be resolved when it arrived, keyed by task id. A revive whose registry
-	// row was cap-evicted carries no linkage, and the event's tool_use id is the
-	// SendMessage call rather than a spawn span -- opening a transcript from it
-	// would key an agents row by a non-spawn id and re-point the row at that
-	// orphan. The text waits here until a forwarded envelope resolves the real
-	// transcript. Guarded by a.mu; dropped with the rest of the index in
-	// forgetTaskIndex.
-	pendingChildMessage map[string]string // task_id -> the delivered text
 	// finishedTasks holds every task id this process gave a final status. A wake
 	// block names the backgrounded shell whose completion restarted a subagent,
 	// and confirming that id here is what separates a real wake from a resumed

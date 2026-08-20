@@ -302,11 +302,21 @@ func (a *ClaudeCodeAgent) handleClaudeTaskStarted(ev *claudeTaskEnvelope) {
 		// makes the two resolutions one, so they cannot disagree.
 		childID, err := known.childID, error(nil)
 		//
-		// Never from a SendMessage id. EnsureChildAgent takes a SPAWN SPAN, and on
-		// a re-registration whose row was cap-evicted the row-key path misses and
-		// the spawn-span lookup misses too -- so it would CREATE a second child
-		// keyed by a non-spawn id and re-point the durable row at that orphan,
-		// leaving the subagent's real transcript unreachable.
+		// Never from a SendMessage id. EnsureChildAgent takes a SPAWN SPAN, and a
+		// re-registration's tool_use_id is the call that RESTARTED the task -- so
+		// handing it over walks past the row-key fast path, fails
+		// GetChildAgentBySpawnSpan, and CREATES a child keyed by a non-spawn id,
+		// which a later forwarded envelope under the real spawn span then
+		// duplicates.
+		//
+		// A linked row never reaches this test, because the registry row that
+		// carries the child outlives the display cap. What reaches it is a row
+		// that holds no linkage at all: an EnsureChildAgent that a DB failure
+		// defeated at spawn time, or a registry this process could not read. The
+		// recorded span type is the only positive evidence available in either
+		// state, and refusing an unproven id costs a transcript the subagent
+		// never had -- creating one under the wrong key costs the transcript it
+		// does have.
 		if childID == "" && ev.ToolUseID != "" && a.sink.GetSpanType(ev.ToolUseID) != ToolNameClaudeSendMessage {
 			childID, err = a.sink.EnsureChildAgent(ev.ToolUseID, ev.TaskID, title)
 		}
@@ -317,14 +327,14 @@ func (a *ClaudeCodeAgent) handleClaudeTaskStarted(ev *claudeTaskEnvelope) {
 		case err != nil:
 			slog.Warn("claude task_started ensure child failed", "task_id", ev.TaskID, "error", err)
 		case childID == "":
-			// No transcript to write into yet. When the parent addressed this task,
-			// hold the delivered text: the subagent's first forwarded envelope
-			// resolves its real transcript through the spawn span, and the flush
-			// there puts the message above the reply it asked for. Dropping it
-			// instead would lose the one thing the user cannot reconstruct.
-			if a.takeClaudeRevive(ev.TaskID) && !a.claudeWakeRestartedTask(ev) {
-				a.parkClaudeChildMessage(ev.TaskID, ev.Prompt)
-			}
+			// No transcript, and none this event can open. The revive arm is left
+			// STANDING rather than consumed: the row is still finished, so a later
+			// task_started for this task in the same turn is still a revive and
+			// deserves the retry -- the same reason a failed registry write puts
+			// its arm back.
+			slog.Warn("claude task_started resolved no child transcript",
+				"task_id", ev.TaskID, "tool_use_id", ev.ToolUseID,
+				"row_exists", known.exists, "registry_unreadable", known.unreadable)
 		default:
 			handled, err := a.reviveClaudeSubagent(ev, childID, known)
 			switch {
@@ -597,14 +607,6 @@ func (a *ClaudeCodeAgent) routeSubagentMessage(content []byte, msgType string, e
 		taskID = a.taskIDForChild(childID)
 	}
 	a.rememberTaskChild(taskID, childID)
-	// A delivered message that had no transcript when it arrived. This is the
-	// first point where the subagent's real one is known, and it runs BEFORE the
-	// envelope persists so the message sits above the reply it asked for.
-	if text := a.takeClaudeChildMessage(taskID); text != "" {
-		if err := a.sink.PersistChildUserMessage(childID, text); err != nil {
-			slog.Warn("claude flush held child message failed", "child", childID, "error", err)
-		}
-	}
 
 	// Resolve the span metadata and reserve the tool_use's color with the SAME
 	// helper the parent transcript uses, but against the CHILD sink's tracker
@@ -782,37 +784,7 @@ func (a *ClaudeCodeAgent) claudeWakeRestartedTask(ev *claudeTaskEnvelope) bool {
 	return seen
 }
 
-// parkClaudeChildMessage holds a delivered message until a transcript resolves.
-// A no-op for a blank text, so a revive that carried none parks nothing.
-func (a *ClaudeCodeAgent) parkClaudeChildMessage(taskID, text string) {
-	if taskID == "" || strings.TrimSpace(text) == "" {
-		return
-	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.pendingChildMessage == nil {
-		a.pendingChildMessage = make(map[string]string)
-	}
-	a.pendingChildMessage[taskID] = text
-}
-
-// takeClaudeChildMessage removes and returns a held message, so one delivery is
-// written once. Returns "" when nothing is held for this task.
-func (a *ClaudeCodeAgent) takeClaudeChildMessage(taskID string) string {
-	if taskID == "" {
-		return ""
-	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	text, ok := a.pendingChildMessage[taskID]
-	if !ok {
-		return ""
-	}
-	delete(a.pendingChildMessage, taskID)
-	return text
-}
-
-// rememberTaskChild records the task_id <-> child transcript pair, so a
+// rememberTaskChild records the child transcript -> task_id link, so a
 // forwarded envelope can identify its registry row from the child alone.
 func (a *ClaudeCodeAgent) rememberTaskChild(taskID, childID string) {
 	if taskID == "" || childID == "" {
@@ -820,13 +792,9 @@ func (a *ClaudeCodeAgent) rememberTaskChild(taskID, childID string) {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.taskChild == nil {
-		a.taskChild = make(map[string]string)
-	}
 	if a.childTask == nil {
 		a.childTask = make(map[string]string)
 	}
-	a.taskChild[taskID] = childID
 	a.childTask[childID] = taskID
 }
 
@@ -855,15 +823,11 @@ func (a *ClaudeCodeAgent) forgetTaskIndex(taskID string) {
 		delete(a.taskToolUse, taskID)
 		delete(a.toolUseTask, tuid)
 	}
-	// taskChild/childTask deliberately SURVIVE. They describe the transcript, not
-	// the run, and a transcript is permanent: a revived run's forwarded envelopes
-	// still have to name this row, and the spawn span the tool_use index carried
-	// is gone by then. Bounded by the number of subagents this agent spawned,
-	// which is the same bound as the child sinks the sink already holds.
-	//
-	// A held message does NOT survive: by a completion it either flushed on the
-	// run's first forwarded envelope or has no transcript to reach.
-	delete(a.pendingChildMessage, taskID)
+	// childTask deliberately SURVIVES. It describes the transcript, not the run,
+	// and a transcript is permanent: a revived run's forwarded envelopes still
+	// have to name this row, and the spawn span the tool_use index carried is
+	// gone by then. Bounded by the number of subagents this agent spawned, which
+	// is the same bound as the child sinks the sink already holds.
 	delete(a.taskKind, taskID)
 }
 

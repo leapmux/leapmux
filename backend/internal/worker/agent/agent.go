@@ -403,10 +403,12 @@ type OutputSink interface {
 	//
 	// This is how a provider turns an id the MODEL supplied into one of its own
 	// subagents. The registry is the right index for it: it is keyed by row key,
-	// it carries the child linkage, and it survives both a provider's own
-	// bookkeeping being dropped at task end and a worker restart. A key that
-	// identifies nothing (a display name, another session, a foreign address)
-	// simply misses.
+	// it carries the child linkage, and it survives a provider's own bookkeeping
+	// being dropped at task end, a worker restart, AND the display cap -- a row
+	// that carries a child transcript outlives the capped list the sidebar
+	// shows, so the thousandth subagent of a session resolves exactly like the
+	// first. A key that identifies nothing (a display name, another session, a
+	// foreign address) simply misses.
 	LookupBackgroundTask(rowKey string) (childAgentID string, status bgtask.Status, ok bool, err error)
 
 	// ReviveBackgroundTask returns a FINISHED row to Running, clears its
