@@ -1,5 +1,5 @@
+import { ignorableErrorReason, isResizeObserverLoopError } from './ignorableErrorEvents'
 import { monotonicNow } from './monotonicNow'
-import { isResizeObserverLoopError } from './suppressResizeObserverLoopError'
 
 /**
  * Surface faults that never reach an `ErrorBoundary`.
@@ -103,9 +103,16 @@ export function installGlobalErrorSink(opts: GlobalErrorSinkOpts): () => void {
   const onFault = (event: Event) => {
     const cause = causeOf(event)
     // In dev the capture-phase suppressor stops these before they get here; in
-    // prod it is not installed at all, and a self-healing browser delivery
-    // warning is not something to put in front of the user.
-    if (isResizeObserverLoopError(cause) || isResizeObserverLoopError((event as ErrorEvent).message))
+    // prod it is not installed at all. Neither class is something to put in
+    // front of the user: a self-healing browser delivery warning is not a
+    // fault, and a muted error has already had every field the toast could
+    // report stripped out of it, so it can only say "Something went wrong"
+    // about an app that is working (iOS Safari does exactly that when the share
+    // sheet resizes and snapshots the page). Diagnosis loses nothing -- this
+    // sink is passive, so the browser still reports the unsanitized error to
+    // the console. The first check covers a REJECTION whose reason is the RO
+    // message, which has no `message` field for the second one to read.
+    if (isResizeObserverLoopError(cause) || ignorableErrorReason(event) !== undefined)
       return
     if (shouldReport(cause instanceof Error ? cause.message : String(cause)))
       opts.report(FALLBACK_MESSAGE, cause)
