@@ -380,6 +380,52 @@ test.describe('soft-keyboard viewport contract (phone)', () => {
     await page.setViewportSize(size)
   })
 
+  // Reaching for the transcript is the user asking to read it, and the
+  // keyboard is covering half of it. WebKit does not blur an editing host for
+  // a tap on a plain region, so the app has to say so itself.
+  //
+  // DISPATCHED pointer events, not a real tap, and both halves of that matter.
+  // Chromium blurs an editing host natively on a tap outside it, so a real tap
+  // would pass whether or not the handler exists; synthetic events run no
+  // default action, which leaves the handler as the only thing that can
+  // release the composer. They also skip hit-testing, which an empty
+  // conversation makes unreliable -- the transcript is then shorter than the
+  // composer that overlays its centre. Hit-testing is the browser's job; what
+  // is ours is what the handler makes of the gesture.
+  test('a tap on the transcript releases the composer only while the keyboard takes screen space', async ({ page, authenticatedWorkspace }) => {
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const transcript = page.locator('[data-chat-scroll-container="true"]')
+    const size = page.viewportSize()!
+
+    /** A tap: down and up at one point. `dx` drags instead, past the slop. */
+    const tapTranscript = async (dx = 0) => {
+      await transcript.dispatchEvent('pointerdown', { clientX: 100, clientY: 100 })
+      await transcript.dispatchEvent('pointerup', { clientX: 100 + dx, clientY: 100 })
+    }
+
+    await editor.click()
+    await expect(editor).toBeFocused()
+
+    // No keyboard in the way: nothing to reclaim, so the caret stays.
+    await tapTranscript()
+    await expect(editor).toBeFocused()
+
+    // With the viewport shortened -- Chromium's model of a keyboard under
+    // `interactive-widget=resizes-content` -- the same tap gives the screen back.
+    await page.setViewportSize({ width: size.width, height: size.height - 300 })
+    await expect(editor).toBeFocused()
+
+    // A DRAG past the slop is a scroll, not a tap: the caret survives it, or
+    // every flick over the transcript would close the keyboard mid-scroll.
+    await tapTranscript(40)
+    await expect(editor).toBeFocused()
+
+    await tapTranscript()
+    await expect(editor).not.toBeFocused()
+
+    await page.setViewportSize(size)
+  })
+
   test('the body takes its size from --vvh and its place from --vv-shift', async ({ page, authenticatedWorkspace }) => {
     const measured = await page.evaluate(() => {
       const read = () => {

@@ -18,7 +18,9 @@ import { SelectionQuotePopover } from '~/components/common/SelectionQuotePopover
 import { Spinner } from '~/components/common/Spinner'
 import { usePreferences } from '~/context/PreferencesContext'
 import { AgentStatus, MessageSource } from '~/generated/leapmux/v1/agent_pb'
+import { monotonicNow } from '~/lib/monotonicNow'
 import { formatChatQuote } from '~/lib/quoteUtils'
+import { dismissSoftKeyboard } from '~/lib/softKeyboard'
 import { onSyntaxThemeChange } from '~/lib/syntaxThemeStore'
 import { motion } from '~/styles/tokens'
 import { AgentStartupBanner } from './AgentStartupBanner'
@@ -912,6 +914,47 @@ export const ChatView: Component<ChatViewProps> = (props) => {
       handler(...args)
     }
 
+  /**
+   * A TAP on the transcript puts the on-screen keyboard away.
+   *
+   * The keyboard covers half the screen, and reaching for the transcript is
+   * the user saying they want to read it. WebKit does not blur an editing host
+   * for a tap on a plain region, and nothing in this app's path can be blamed
+   * for that -- the list's gesture listeners are passive and call no
+   * `preventDefault`. So the app states the behaviour itself.
+   *
+   * MEASURED FROM POINTER EVENTS, not from a `click` handler, which took two
+   * taps to fire. Solid delegates `click` to the document, so the container
+   * carries no listener of its own, and WebKit's "is this element clickable"
+   * heuristic then treats the first tap as a hover and withholds the click
+   * until the second. Pointer events have no such rule and fire on the first
+   * tap -- which is why the scroll rail was already lighting up on it.
+   *
+   * A tap is short and still. The movement bound keeps a scroll or a flick
+   * that happens to end over a message from counting, and the duration bound
+   * keeps a long press out: that gesture belongs to text selection and the
+   * quote popover, and the composer it would quote INTO must stay in view.
+   */
+  const TAP_SLOP_PX = 10
+  let tapStart: { x: number, y: number, at: number } | null = null
+
+  const noteTapStart = (event: PointerEvent) => {
+    tapStart = { x: event.clientX, y: event.clientY, at: monotonicNow() }
+  }
+
+  const releaseKeyboardOnTap = (event: PointerEvent) => {
+    const start = tapStart
+    tapStart = null
+    if (!start)
+      return
+    const movedFar = Math.hypot(event.clientX - start.x, event.clientY - start.y) > TAP_SLOP_PX
+    if (movedFar || monotonicNow() - start.at >= motion.longPress)
+      return
+    // A no-op unless a keyboard is actually covering the screen, so a desktop
+    // click keeps the caret where it was.
+    dismissSoftKeyboard()
+  }
+
   const scrollHandlers = {
     // The one asymmetric handler. A `scroll` event alone is NOT user intent -- the
     // stick-to-bottom writes scrollTop on every streaming commit. The highlight pause
@@ -938,12 +981,21 @@ export const ChatView: Component<ChatViewProps> = (props) => {
       }
       scroll.handlers.onKeyDown(event)
     },
-    onPointerDown: noteScrollInput(scroll.handlers.onPointerDown),
+    onPointerDown: noteScrollInput((event: PointerEvent) => {
+      noteTapStart(event)
+      scroll.handlers.onPointerDown(event)
+    }),
     onPointerMove: (event: PointerEvent) => {
       scroll.handlers.onPointerMove(event)
     },
-    onPointerUp: noteScrollInput(scroll.handlers.onPointerUp),
-    onPointerCancel: noteScrollInput(scroll.handlers.onPointerCancel),
+    onPointerUp: noteScrollInput((event: PointerEvent) => {
+      releaseKeyboardOnTap(event)
+      scroll.handlers.onPointerUp(event)
+    }),
+    onPointerCancel: noteScrollInput((event: PointerEvent) => {
+      tapStart = null
+      scroll.handlers.onPointerCancel(event)
+    }),
   }
 
   // Wheel and touch listeners attach PASSIVE, imperatively: nothing in their
