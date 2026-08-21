@@ -3,40 +3,28 @@ package hub
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"net"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-)
 
-// captureDefaultLogs installs captureLogs' logger as the process default for
-// one test, so code that logs through the package-level slog functions is
-// observable. slog.SetDefault is process-global, so the restore must not be
-// skipped.
-func captureDefaultLogs(t *testing.T) func() string {
-	t.Helper()
-	logger, read := captureLogs()
-	prev := slog.Default()
-	slog.SetDefault(logger)
-	t.Cleanup(func() { slog.SetDefault(prev) })
-	return read
-}
+	"github.com/leapmux/leapmux/internal/util/testutil"
+)
 
 // A Hub that stops because something failed must SAY so, at the moment it
 // stops. Reporting the cause only through the aggregate error Serve returns is
 // what left a user's bug report showing a Hub that stopped for no stated
 // reason.
 func TestLogShutdownCauseNamesAFatalCause(t *testing.T) {
-	readLogs := captureDefaultLogs(t)
+	logs := testutil.CaptureDefaultLogger(t)
 	ctx, cancel := context.WithCancelCause(context.Background())
 	fatal := errors.New("revocation watcher lease lost: holder h1")
 	cancel(fatal)
 
 	logShutdownCause(ctx)
 
-	out := readLogs()
+	out := logs.String()
 	assert.Contains(t, out, "hub shutting down after a fatal error")
 	assert.Contains(t, out, "revocation watcher lease lost", "the cause must be readable without the returned error")
 	assert.Contains(t, out, "level=ERROR", "a fatal stop must not be logged at INFO alongside ordinary shutdowns")
@@ -46,13 +34,13 @@ func TestLogShutdownCauseNamesAFatalCause(t *testing.T) {
 // dressed up as a failure: a Ctrl-C that logged at ERROR would train operators
 // to ignore the level that matters.
 func TestLogShutdownCauseStaysQuietForARequestedStop(t *testing.T) {
-	readLogs := captureDefaultLogs(t)
+	logs := testutil.CaptureDefaultLogger(t)
 	ctx, cancel := context.WithCancelCause(context.Background())
 	cancel(nil) // what a Ctrl-C reaching Serve's parent context looks like
 
 	logShutdownCause(ctx)
 
-	out := readLogs()
+	out := logs.String()
 	assert.Contains(t, out, "hub shutting down...")
 	assert.NotContains(t, out, "fatal")
 	assert.NotContains(t, out, "level=ERROR")

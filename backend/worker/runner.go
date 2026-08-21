@@ -18,6 +18,7 @@ import (
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 	"github.com/leapmux/leapmux/internal/worker/hub"
 	"github.com/leapmux/leapmux/internal/worker/wakelock"
+	"github.com/leapmux/leapmux/util/clockjump"
 )
 
 // RunConfig holds configuration for running the worker as a library.
@@ -61,6 +62,13 @@ type RunConfig struct {
 // Run starts the worker and blocks until ctx is cancelled.
 // If AuthToken is set, registration is skipped and the worker connects directly.
 func Run(ctx context.Context, cfg RunConfig) error {
+	// Name the periods in which this process did not run. A standalone Worker
+	// suspends with its laptop exactly as the desktop app does, and wakes into
+	// closed streams and a Hub that already dropped its registration; without
+	// this each of those reads as its own failure. Process-wide and idempotent,
+	// so a solo process that also runs a Hub reports each pause once.
+	clockjump.StartLoop(ctx)
+
 	// Open the Worker-local database for persistent state.
 	dbPath := filepath.Join(cfg.DataDir, "worker.db")
 	sqlDB, err := workerdb.Open(dbPath, sqlitedb.Config{

@@ -1,10 +1,8 @@
 package revocationwatcher_test
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -25,23 +23,9 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
-
-// captureDefaultLogs routes the process default logger into a buffer for one
-// test and returns a reader for everything written so far. The watcher logs
-// through the package-level slog functions, so the default is the only seam.
-// slog.SetDefault is process-global, so the restore must not be skipped; the
-// level is Debug so nothing under test is filtered by the handler rather than
-// by the code.
-func captureDefaultLogs(t *testing.T) func() string {
-	t.Helper()
-	var buf bytes.Buffer
-	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
-	t.Cleanup(func() { slog.SetDefault(prev) })
-	return buf.String
-}
 
 func newBearerAuthHub(
 	t *testing.T,
@@ -886,7 +870,7 @@ func TestWatcher_ReacquiresLeaseLapsedDuringSuspend(t *testing.T) {
 // one pass -- the acquisition that anchors the holder ID, and the two clock
 // readings whose disagreement IS the suspend.
 func TestWatcher_LogsTheLeaseLifecycleAndTheSuspendSignature(t *testing.T) {
-	readLogs := captureDefaultLogs(t)
+	logs := testutil.CaptureDefaultLogger(t)
 	env := setupUnseeded(t)
 	injected := injectedRevocationStore{
 		Store: env.st,
@@ -900,7 +884,7 @@ func TestWatcher_LogsTheLeaseLifecycleAndTheSuspendSignature(t *testing.T) {
 	)
 	require.NoError(t, w.SeedCursor(context.Background()))
 
-	require.Contains(t, readLogs(), "acquired the Hub runtime lease",
+	require.Contains(t, logs.String(), "acquired the Hub runtime lease",
 		"the holder ID must be anchored before it can appear in a fatal error")
 
 	time.Sleep(4 * suspendedLeaseDuration)
@@ -909,7 +893,7 @@ func TestWatcher_LogsTheLeaseLifecycleAndTheSuspendSignature(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, w.RunOnce(context.Background()))
 
-	out := readLogs()
+	out := logs.String()
 	assert.Contains(t, out, "reacquired a lease that lapsed")
 	assert.Contains(t, out, "monotonic_remaining=",
 		"both clock readings must be logged; their disagreement is what names a suspend")
@@ -917,7 +901,7 @@ func TestWatcher_LogsTheLeaseLifecycleAndTheSuspendSignature(t *testing.T) {
 	assert.Contains(t, out, "cursor=", "the cursor says which revocations were still owed")
 
 	require.NoError(t, w.Close(context.Background()))
-	assert.Contains(t, readLogs(), "released the Hub runtime lease",
+	assert.Contains(t, logs.String(), "released the Hub runtime lease",
 		"a missing release is what fences the next launch until the lease TTL")
 }
 

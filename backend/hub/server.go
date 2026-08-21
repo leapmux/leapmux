@@ -44,6 +44,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/memlimit"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/locallisten"
+	"github.com/leapmux/leapmux/util/clockjump"
 	"github.com/leapmux/leapmux/util/errwrap"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
@@ -912,6 +913,13 @@ func (s *Server) Serve(ctx context.Context) error {
 
 	// Start periodic cleanup of soft-deleted records.
 	cleanup.StartLoop(serveCtx, s.store)
+
+	// Name the periods in which this process did not run, so a suspended laptop
+	// explains the expired leases, ended streams, and refused credentials that
+	// follow it instead of each one being read as its own failure. Process-wide
+	// and idempotent, so a solo process starting a Hub and a Worker reports each
+	// pause once.
+	clockjump.StartLoop(serveCtx)
 
 	// Start the revocation watcher: publishes and consumes the durable
 	// revocation stream so admin-CLI mutations land in the hub's

@@ -795,6 +795,11 @@ func (w *Watcher) ensureLeaseLocked(ctx context.Context) error {
 // monotonic one instead. The recovery this drives is covered end to end by
 // TestWatcher_ReacquiresLeaseLapsedDuringSuspend, which produces the equivalent
 // split from the database side.
+//
+// util/clockjump reports the same pauses process-wide, and this check does NOT
+// defer to it: that detector samples on an interval, so its report arrives after
+// a write this lease must already have refused. It explains the pause; this
+// gates the write.
 // Caller holds w.lease.mu.
 func (w *Watcher) leaseRemainingLocked() time.Duration {
 	monotonic, wall := w.leaseClockReadingsLocked()

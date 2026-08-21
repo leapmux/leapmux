@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"os"
+
+	"github.com/leapmux/leapmux/util/clockjump"
 )
 
 // Cross-language contract with desktop/rust/src/main.rs:
@@ -28,6 +31,16 @@ func run() (exitCode int) {
 	slog.SetDefault(slog.New(handler))
 	app := NewApp(os.Getenv(envBinaryHash))
 	installSignalShutdown(app)
+
+	// Name the periods in which this process did not run. The sidecar is the one
+	// component that outlives every mode switch, so starting the detector here
+	// covers a REMOTE-mode session too -- a solo session gets it from the Hub and
+	// Worker it starts, but a sidecar talking to a remote Hub starts neither, and
+	// its relays and tunnels break across a sleep just the same. The call is
+	// process-wide and idempotent, so the overlap costs nothing.
+	detectorCtx, stopDetector := context.WithCancel(context.Background())
+	defer stopDetector()
+	clockjump.StartLoop(detectorCtx)
 	defer func() {
 		// Shutdown errors are post-commit cleanup warnings (relay/tunnel/solo
 		// teardown, runtime-lease release), surfaced as non-fatal via
