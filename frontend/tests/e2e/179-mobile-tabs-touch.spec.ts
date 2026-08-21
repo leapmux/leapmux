@@ -33,6 +33,25 @@ function serverOf(leapmuxServer: { hubUrl: string, adminToken: string, workerId:
   }
 }
 
+/**
+ * Wait until the input events already dispatched have been RENDERED.
+ *
+ * CDP acknowledges the dispatch of a pointer event, not its processing on the
+ * main thread, so a lift issued straight after the last move can race the
+ * dragOver that decides where the drop lands. Two frames is the guarantee: the
+ * first callback runs after the pending work is consumed, the second after
+ * that work has painted.
+ *
+ * This is what a drag settles on instead of a sleep. A wall-clock wait elapses
+ * on schedule no matter how far behind the main thread is, which makes it
+ * exactly wrong under load — the condition it is supposed to cover.
+ */
+async function settleFrames(page: Page) {
+  await page.evaluate(() => new Promise<void>(resolve =>
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+  ))
+}
+
 /** Position of the row/tab whose text contains `needle`, throwing if absent. */
 async function textIndex(rows: Locator, needle: string): Promise<number> {
   const texts = await rows.allTextContents()
@@ -108,13 +127,9 @@ async function touchDragGripOnto(
         grip.y + 20 + ((fingerTarget.y - grip.y - 20) * step) / steps,
       )
     }
-    // Settle before lifting: CDP acknowledges the DISPATCH of a touchMove,
-    // not its processing on the main thread, so a lift that races the final
-    // dragOver resolves the drop prematurely. Two rAFs guarantee the queued
-    // moves were consumed by a rendered frame; the pause after covers the
-    // dragOver-to-store flush.
-    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))))
-    await page.waitForTimeout(100)
+    // Settle before lifting, or a lift that races the final dragOver resolves
+    // the drop prematurely.
+    await settleFrames(page)
   }
   finally {
     await finger.end()
@@ -423,15 +438,32 @@ test.describe('tablet touch (desktop layout)', () => {
     // pressed the tab's NEIGHBOR), and the `tabDragging` class is the
     // activation oracle — a press that never claims the pointer fails
     // HERE, not as a mysteriously unchanged order later.
+    //
+    // The gesture is the same shape `touchDragGripOnto` uses, and for the same
+    // reason: every window below ends on a STATE, never on a timer. A mouse
+    // press activates on the first move past `ACTIVATION_DISTANCE_PX` (the
+    // 250ms hold timer is the other route, and this never waits for it), so a
+    // short move followed by the class assertion is what "the sensor claimed
+    // the press" looks like. The 100ms sleeps this replaced only guessed at
+    // that: a wall-clock window elapses on schedule while a loaded main thread
+    // has processed nothing, which is how this test failed under load.
     const alphaBox = (await alphaTab.boundingBox())!
     const betaBox = (await betaTab.boundingBox())!
     await page.mouse.move(alphaBox.x + alphaBox.width / 2, alphaBox.y + alphaBox.height / 2)
     await page.mouse.down()
-    await page.waitForTimeout(100)
-    await page.mouse.move(betaBox.x + betaBox.width / 2, betaBox.y + betaBox.height / 2, { steps: 12 })
+
+    // Past the 10px activation distance, offset on BOTH axes so it does not
+    // depend on which side of Alpha the Beta tab sits.
+    await page.mouse.move(alphaBox.x + alphaBox.width / 2 + 8, alphaBox.y + alphaBox.height / 2 + 20)
     await expect(alphaTab).toHaveClass(/tabDragging/)
-    await page.waitForTimeout(100)
+
+    await page.mouse.move(betaBox.x + betaBox.width / 2, betaBox.y + betaBox.height / 2, { steps: 12 })
+    await settleFrames(page)
     await page.mouse.up()
+
+    // The lift ended the drag: a press whose pointerup the pipeline lost would
+    // leave the row lifted and the reorder would never be attempted.
+    await expect(alphaTab).not.toHaveClass(/tabDragging/)
     // Dropping Alpha ONTO Beta inserts it at Beta's slot — landing AFTER
     // Beta, whatever else the strip holds. Polled: the reorder lands when
     // the store confirms it, which can be after mouse.up returns.
