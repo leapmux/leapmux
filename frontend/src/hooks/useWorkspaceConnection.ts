@@ -10,7 +10,7 @@ import type { TabSelectionStore } from '~/stores/tabSelection.store'
 
 import type { TabView } from '~/stores/tabView'
 import { batch, createEffect, createMemo, createSignal, onCleanup, untrack } from 'solid-js'
-import { showWarnToast } from '~/components/common/Toast'
+import { showWarnToastUnlessDisconnected } from '~/components/common/Toast'
 import { addTerminalInstanceReadyListener, getTerminalInstance } from '~/components/terminal/TerminalView'
 import { AgentStatus } from '~/generated/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
@@ -440,7 +440,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         const resumeSeq = untrack(() => chatStore.getResumeAfterSeq(agentId))
         resumeTails.set(agentId, resumeSeq)
         void chatStore.loadInitialMessages(workerId, agentId).catch((err) => {
-          showWarnToast('Failed to load chat history', err)
+          showWarnToastUnlessDisconnected('Failed to load chat history', err)
         })
         void chatStore.loadMessageMarks(workerId, agentId, abortSignalFor(workerId))
       }
@@ -492,7 +492,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     if (!agent || !agent.workerId)
       return
     chatStore.loadInitialMessages(agent.workerId, tabId).catch((err) => {
-      showWarnToast('Failed to load chat history', err)
+      showWarnToastUnlessDisconnected('Failed to load chat history', err)
     })
     void chatStore.loadMessageMarks(agent.workerId, tabId, abortSignalFor(agent.workerId))
   })

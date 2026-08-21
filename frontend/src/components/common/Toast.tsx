@@ -1,3 +1,4 @@
+import { isDisconnectError } from '~/api/workerErrors'
 import { formatErrorMessage } from '~/lib/errors'
 import { createLogger } from '~/lib/logger'
 
@@ -9,6 +10,43 @@ type ToastType = 'danger' | 'success'
 export function showWarnToast(message: string, err?: unknown) {
   log.warn(message, err)
   renderToast(formatErrorMessage(err, message), 'danger')
+}
+
+/**
+ * Show a warning toast whose copy the CALLER owns, and log `err` as the cause.
+ *
+ * `showWarnToast` renders `err.message` and keeps its own `message` only as a
+ * fallback for a thrown non-Error. That is right when the error carries a
+ * sentence the user can act on, and wrong for a transport failure, whose message
+ * names our own plumbing: "channel not open", "channel disconnected", "cannot
+ * send channel message: WebSocket not open". The user read the jargon and the
+ * app's real sentence never reached the screen.
+ *
+ * Use this where the caller knows what to say and the error is a diagnostic.
+ */
+export function showWarnToastWithLoggedCause(message: string, err: unknown) {
+  log.warn(message, err)
+  renderToast(message, 'danger')
+}
+
+/**
+ * Show a warning toast, unless a dropped connection is what failed the
+ * operation.
+ *
+ * For a BACKGROUND operation the app retries on its own. See `isDisconnectError`
+ * for which failures qualify and why a user-requested operation must not use
+ * this.
+ *
+ * It lives here, beside its siblings, rather than in a module of its own: a
+ * reader choosing a toast helper then sees every option in one place, and the
+ * import it costs is one predicate with no cycle back to the components layer.
+ */
+export function showWarnToastUnlessDisconnected(message: string, err: unknown) {
+  if (isDisconnectError(err)) {
+    log.debug('suppressed a background failure that the dropped connection explains', { message, err })
+    return
+  }
+  showWarnToast(message, err)
 }
 
 /**

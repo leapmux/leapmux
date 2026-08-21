@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { fatalCloseMessage } from './fatalCloseMessage'
+import { fatalCloseError, fatalCloseMessage } from './fatalCloseMessage'
 import {
   CLOSE_REASON_CONTROL_FLOOD,
   CLOSE_REASON_FORBIDDEN,
@@ -66,5 +66,27 @@ describe('fatalCloseMessage', () => {
     expect(message).toContain('administrator')
     expect(message).not.toContain('Reload the page to reconnect')
     expect(message).not.toContain('Close another tab')
+  })
+})
+
+// The marker, not just the copy. Every redial loop and every toast asks
+// `fatal` to tell "the hub refused this account another connection" from "the
+// network blipped", and those call for opposite responses: park and explain, or
+// retry quietly. A refusal that arrived with the flag unset would restart the
+// unbounded redial the flag exists to stop, with nothing on screen to say why.
+describe('fatalCloseError', () => {
+  it('marks the error fatal and carries the reason\'s own copy', () => {
+    const err = fatalCloseError({ code: 1008, reason: CLOSE_REASON_TOO_MANY_CONNECTIONS })
+
+    expect(err.fatal).toBe(true)
+    expect(err.source).toBe('transport')
+    expect(err.message).toBe(fatalCloseMessage({ code: 1008, reason: CLOSE_REASON_TOO_MANY_CONNECTIONS }))
+  })
+
+  // A refused connection is still a connection the app does not have, so a
+  // background load that failed under it must not toast on top of the sticky
+  // message the shell already shows.
+  it('reads as a dropped link', () => {
+    expect(fatalCloseError({ code: 1008, reason: CLOSE_REASON_FORBIDDEN }).disconnected).toBe(true)
   })
 })

@@ -4,7 +4,7 @@ import type { WatchEventsResponse, WatchRejection } from '~/generated/leapmux/v1
 import type { TabView } from '~/stores/tabView'
 import { createEffect, onCleanup } from 'solid-js'
 import { channelManager, watchEventsViaChannel } from '~/api/workerRpc'
-import { showWarnToast } from '~/components/common/Toast'
+import { showWarnToastWithLoggedCause } from '~/components/common/Toast'
 import { WatchMode } from '~/generated/leapmux/v1/workspace_pb'
 import { ChannelError } from '~/lib/channel'
 import { emitDevEvent } from '~/lib/devInstrument'
@@ -15,6 +15,28 @@ import { shouldRetryRejection, watchPlanKey } from './watchPlan'
 const log = createLogger('watchEventsStreams')
 
 const REJECTION_RETRY_MAX = 8
+
+/**
+ * How many consecutive redials must fail before the app announces the outage.
+ *
+ * A mobile client loses its socket every time the user leaves for another app or
+ * another browser tab, and it almost always redials successfully within a second
+ * or two of coming back. Announcing the first failure turned that invisible,
+ * self-healing blip into an error toast on every return. Two quiet retries cover
+ * it -- with the 1s and 2s opening delays of `reconnectBackoff`, roughly three
+ * seconds -- and a genuine outage is still announced promptly.
+ */
+const SILENT_RECONNECT_ATTEMPTS = 2
+
+/**
+ * What the user reads when the link to a worker drops.
+ *
+ * The app's own sentence, not the error's: a drained channel reports "channel
+ * disconnected" and a vanished one reports "channel not open", which name our
+ * plumbing and tell the user nothing. The error goes to the log instead --
+ * see showWarnToastWithLoggedCause.
+ */
+const OUTAGE_MESSAGE = 'Connection to worker lost, reconnecting…'
 
 interface WorkerStream {
   handle: WatchEventsHandle | null
@@ -55,6 +77,8 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
   abortSignalFor: (workerId: string) => AbortSignal | undefined
 } {
   const streams = new Map<string, WorkerStream>()
+  /** True once the current outage was announced; cleared when a stream reopens. */
+  let outageAnnounced = false
   const reconnectBackoff = createExponentialBackoff<string>({
     initialMs: 1000,
     maxMs: 30000,
@@ -145,21 +169,53 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
     return err instanceof ChannelError && err.fatal
   }
 
-  function reportTransportLoss(workerId: string, err: unknown): void {
-    // Suppress only the TOAST for a fatal refusal: the relay latches this
-    // state, so "reconnecting..." would be a lie, and the shell already shows a
-    // sticky toast naming the real cause (the hub refused US another
-    // connection, which says nothing about the worker).
-    if (!isFatalTransportError(err))
-      showWarnToast('Connection to worker lost, reconnecting\u2026', err)
-    // Offline is reported either way, because it is not a health verdict about
-    // the worker -- nothing renders it as one. Its only reader is the cleanup
-    // effect in useWorkspaceConnection, which patches this worker's READY
-    // terminals to DISCONNECTED, drops its ACTIVE agents back to INACTIVE, and
-    // clears their streaming text. Skipping that for a fatal close left a
-    // half-streamed assistant message rendered as in-flight forever, with
-    // nothing left that would ever reconnect and finish it.
+  /**
+   * Record that the link to `workerId` is down.
+   *
+   * Reported for a fatal close too, because it is not a health verdict about the
+   * worker -- nothing renders it as one. Its only reader is the cleanup effect
+   * in useWorkspaceConnection, which patches this worker's READY terminals to
+   * DISCONNECTED, drops its ACTIVE agents back to INACTIVE, and clears their
+   * streaming text. Skipping that for a fatal close left a half-streamed
+   * assistant message rendered as in-flight forever, with nothing left that
+   * would ever reconnect and finish it.
+   *
+   * Telling the USER is a separate decision, and `announceOutage` owns it.
+   */
+  function markWorkerOffline(workerId: string): void {
     opts.onWorkerOnline(workerId, false)
+  }
+
+  /**
+   * Tell the user the link is down -- at most once per outage, and only after
+   * the redial has genuinely failed.
+   *
+   * Called from `scheduleReconnect` rather than from the two failure sites, so
+   * that it sees EVERY failed redial and not only the transport-shaped ones. A
+   * stopped worker fails its redials at the hub leg with a connect error, and an
+   * announcement wired to the transport arm alone said nothing about that at
+   * all.
+   *
+   * `err` is the failure that closed the stream, when there was one; a clean
+   * `onEnd` passes none. It reaches the log only.
+   */
+  function announceOutage(workerId: string, err: unknown): void {
+    // `attemptCount` is how many redials this worker has been scheduled since it
+    // last succeeded: 0 on the loss itself, 1 once the first redial failed. So
+    // the first announcement can only come from the failure that follows
+    // SILENT_RECONNECT_ATTEMPTS quiet ones.
+    if (reconnectBackoff.attemptCount(workerId) < SILENT_RECONNECT_ATTEMPTS) {
+      log.debug('link lost; the app redials quietly before it announces', { workerId, err })
+      return
+    }
+    // One latch for the hook, not one per worker: "the connection dropped" is a
+    // single fact from where the user sits, and one hub blip drops every worker
+    // at once. Announcing per worker turned that blip into a row of identical
+    // toasts.
+    if (outageAnnounced)
+      return
+    outageAnnounced = true
+    showWarnToastWithLoggedCause(OUTAGE_MESSAGE, err)
   }
 
   /** Commit inflight plan as acked interest; fire onPromoted for new FULL agents. */
@@ -271,7 +327,7 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
         if (s.closed)
           return
         if (isTransportError(err))
-          reportTransportLoss(workerId, err)
+          markWorkerOffline(workerId)
         else
           log.warn('[watchEvents] stream error, retrying:', err)
         // Do not reset backoff on application errors — let it climb.
@@ -279,12 +335,15 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
         scheduleReconnect(workerId, err)
       })
 
+      // The link is back, so the announcement it produced is spent and the next
+      // outage must be free to announce itself.
+      outageAnnounced = false
       opts.onWorkerOnline(workerId, true)
     }
     catch (err) {
       log.debug('failed to open watch stream; will retry', { workerId, err })
       if (isTransportError(err))
-        reportTransportLoss(workerId, err)
+        markWorkerOffline(workerId)
       s.inflightPlan = null
       s.inflightKey = ''
       scheduleReconnect(workerId, err)
@@ -336,6 +395,9 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
    * drains once through openStream, which is where a relay that recovered (a
    * fresh login clears ChannelRelay's latch) picks back up — one rejected
    * promise if it has not, rather than a wakeup every 30s.
+   *
+   * Every failed redial passes through here, which is why the user-facing
+   * announcement hangs off it rather than off the individual failure sites.
    */
   function scheduleReconnect(workerId: string, err?: unknown): void {
     const s = streams.get(workerId)
@@ -346,16 +408,34 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
     // would wake 30s later only for openChannelUncached to throw the same
     // latched refusal. Asking the latch covers every caller, including the ones
     // that have no error in hand.
+    //
+    // Returning here also suppresses the announcement, which is the point: the
+    // relay has latched, so "reconnecting..." would be a lie, and the shell
+    // already shows a sticky toast naming the real cause (the hub refused US
+    // another connection, which says nothing about the worker).
     if (isFatalTransportError(err) || channelManager.fatalCloseInfo())
       return
-    if (!s.pendingPlan) {
-      const current = opts.plans().get(workerId)
-      if (current)
-        s.pendingPlan = current
-    }
+    announceOutage(workerId, err)
     reconnectBackoff.schedule(workerId, () => {
       if (s.closed)
         return
+      // Park the interest HERE, not when the timer was armed. Two reasons, and
+      // the first is a defect this closes.
+      //
+      // A plan parked at arm-time defeats the backoff outright: openStream's
+      // finally re-drains whenever a plan is pending, and it cannot tell a plan
+      // that arrived DURING the open from one the failure path parked for this
+      // timer. A failed open then re-drains itself on the next microtask, fails
+      // again, and parks again -- redialing as fast as the hub can refuse, with
+      // every scheduled delay skipped.
+      //
+      // Second, fire-time is simply fresher: the latest coalesced interest, the
+      // way handleUpdateAck's retry already reads it. A worker that left the
+      // plan map in the meantime has been through cancelWorker, so drainWorker
+      // finds no stream and returns.
+      const latest = opts.plans().get(workerId)
+      if (latest)
+        s.pendingPlan = latest
       s.abort.abort()
       s.abort = new AbortController()
       void drainWorker(workerId)

@@ -324,7 +324,7 @@ export class ChannelRpcMux {
     if (pending) {
       this.unregisterRequest(ch, correlationId)
       if (resp.isError) {
-        const err = new ChannelError('rpc', resp.errorMessage || `RPC error code ${resp.errorCode}`, resp.errorCode)
+        const err = new ChannelError('rpc', resp.errorMessage || `RPC error code ${resp.errorCode}`, { code: resp.errorCode })
         this.deps.notifyError(ch.workerId, err)
         pending.reject(err)
       }
@@ -346,7 +346,7 @@ export class ChannelRpcMux {
       return
     }
     this.unregisterRequest(ch, correlationId)
-    const err = new ChannelError('rpc', resp.errorMessage || `RPC error code ${resp.errorCode}`, resp.errorCode)
+    const err = new ChannelError('rpc', resp.errorMessage || `RPC error code ${resp.errorCode}`, { code: resp.errorCode })
     this.deps.notifyError(ch.workerId, err)
     this.deps.safeCall(() => listener.onError(err), 'stream onError listener')
   }
@@ -369,7 +369,7 @@ export class ChannelRpcMux {
       // Unregister BEFORE invoking the terminal callback, and isolate every
       // listener call with safeCall, mirroring drainChannel.
       if (streamMsg.isError) {
-        const err = new ChannelError('stream', streamMsg.errorMessage || `stream error code ${streamMsg.errorCode}`, streamMsg.errorCode)
+        const err = new ChannelError('stream', streamMsg.errorMessage || `stream error code ${streamMsg.errorCode}`, { code: streamMsg.errorCode })
         this.deps.notifyError(ch.workerId, err)
         this.unregisterRequest(ch, correlationId)
         this.deps.safeCall(() => listener.onError(err), 'stream onError listener')

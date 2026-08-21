@@ -3,6 +3,7 @@ import type { TerminalStatusChange } from '~/generated/leapmux/v1/terminal_pb'
 import type { AgentTab, Tab, TerminalTab } from '~/stores/tab.types'
 import { createRoot, mapArray } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
+import * as workerRpc from '~/api/workerRpc'
 import { providerFor } from '~/components/chat/providers/registry'
 import { AgentProvider, AgentStatus, ContentCompression, MessageSource, WatchReplayMode } from '~/generated/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
@@ -10,8 +11,9 @@ import { TabType, WatchMode } from '~/generated/leapmux/v1/workspace_pb'
 import { applyAgentLifecycle, applyNotificationMetadata, applyPendingAxisSuppression, buildAgentStatusTabUpdate, clearCompletedSpanStream, drainPendingOutboundOnStart, handleAgentInactive, handleAgentMessage, handleAgentSessionInfo, handleAgentStatusChange, handleControlRequest, handleResultDivider, handleStreamChunk, handleStreamEnd, handleTurnEnd, resolveSettingsTabFields, shouldClearThinkingTokensForMessage, wireSessionInfoToUpdates } from '~/hooks/agentEvents'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { applyTerminalStatusChange, handleTerminalBell, handleTerminalNotification, handleTerminalProgress, handleTerminalTitleChanged } from '~/hooks/terminalEvents'
-import { collectWorkerOfflineTargets, enqueuePendingTerminalData, MAX_PENDING_TERMINAL_FRAMES, reconcileLaggingTails } from '~/hooks/useWorkspaceConnection'
+import { collectWorkerOfflineTargets, enqueuePendingTerminalData, MAX_PENDING_TERMINAL_FRAMES, reconcileLaggingTails, useWorkspaceConnection } from '~/hooks/useWorkspaceConnection'
 import { agentWatchEntry, watchPlanKey } from '~/hooks/watchPlan'
+import { ChannelError, channelNotOpenError } from '~/lib/channelError'
 import { extractCompactionContextTokens, extractResultMetadata, parseMessageContent } from '~/lib/messageParser'
 import { compactionContextUsage, createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore, MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.store'
@@ -26,19 +28,39 @@ vi.mock('~/api/workerRpc', async (importOriginal) => {
   return {
     ...actual,
     watchEventsViaChannel: vi.fn(),
+    // The chat-history load the hook fires for the active agent tab. Stubbed so
+    // a test can choose HOW it fails; the real one would reach for a channel
+    // this file never stands up.
+    listAgentMessages: vi.fn(),
     // Only getOrOpenChannel is reached from this module, and it must not
     // attempt a real handshake.
     channelManager: {
       getOrOpenChannel: vi.fn().mockResolvedValue('ch-1'),
       hasOpenChannelForWorker: vi.fn().mockReturnValue(true),
+      // Asked by useWatchEventsStreams before it arms a redial, so a caller with
+      // no error in hand still parks on a latched relay. Null is "dialable".
+      fatalCloseInfo: vi.fn(() => null),
     },
   }
 })
 
-vi.mock('~/components/common/Toast', () => ({
-  showWarnToast: vi.fn(),
-  showInfoToast: vi.fn(),
-}))
+/** Everything the app told the USER about, whichever helper carried it. */
+const mockShowWarnToast = vi.fn()
+
+vi.mock('~/components/common/Toast', async () => {
+  // showWarnToastUnlessDisconnected keeps its REAL rule and reports through the
+  // same spy: these tests ask whether the USER was told, and a stub that always
+  // forwarded would pass whether the rule held or not.
+  const { isDisconnectError } = await import('~/api/workerErrors')
+  return {
+    showWarnToast: (...args: unknown[]) => mockShowWarnToast(...args),
+    showInfoToast: vi.fn(),
+    showWarnToastUnlessDisconnected: (message: string, err: unknown) => {
+      if (!isDisconnectError(err))
+        mockShowWarnToast(message, err)
+    },
+  }
+})
 
 /**
  * Types a simulated catch-up phase as the runtime union so the guard
@@ -2486,5 +2508,91 @@ describe('collectWorkerOfflineTargets', () => {
     const { terminals, agents } = collectWorkerOfflineTargets([tab({ workerId: 'w1' })], 'w-unknown')
     expect(agents).toEqual([])
     expect(terminals.size).toBe(0)
+  })
+})
+
+/**
+ * What the user is told when a chat-history load fails.
+ *
+ * A dropped connection fails every background load at once, so each one that
+ * announced its own failure turned a single outage into a row of toasts -- and
+ * the copy the user read was `err.message`, which names our own plumbing
+ * ("channel not open"). The reconnect loop in useWatchEventsStreams announces
+ * the outage once, in plain language, and re-promotes the agent when the link
+ * returns, which re-runs this load. A failure the WORKER reported is the
+ * opposite case: nothing is retrying it, so it must still reach the user.
+ *
+ * Drives the real hook, not a helper, because the defect was at the call site:
+ * every part of the decision can be right and the site can still call the wrong
+ * toast.
+ */
+describe('useWorkspaceConnection chat history load', () => {
+  /**
+   * Mount the hook over one active agent tab whose history has never loaded,
+   * which is the condition its lazy-load effect fires on.
+   */
+  function mountWithActiveAgent(listAgentMessagesRejectsWith: unknown) {
+    vi.mocked(workerRpc.listAgentMessages).mockRejectedValue(listAgentMessagesRejectsWith)
+    const tabs = makeTabStores()
+    tabs.addAgent('a1', { workerId: 'w1' })
+    let dispose!: () => void
+    createRoot((d) => {
+      dispose = d
+      useWorkspaceConnection({
+        chatStore: createChatStore(),
+        view: tabs.view,
+        metadata: tabs.metadata,
+        selection: tabs.selection,
+        controlStore: createControlStore(),
+        agentSessionStore: createAgentSessionStore(),
+        settingsLoading: createLoadingSignal(),
+        getActiveWorkspaceId: () => WS,
+      })
+    })
+    return dispose
+  }
+
+  /** Let the load's promise chain settle. */
+  async function settle() {
+    for (let i = 0; i < 20; i++)
+      await Promise.resolve()
+  }
+
+  it('stays silent when a dropped link is what failed the load', async () => {
+    mockShowWarnToast.mockClear()
+    const dispose = mountWithActiveAgent(channelNotOpenError())
+    try {
+      await settle()
+      expect(workerRpc.listAgentMessages, 'the load has to have been attempted').toHaveBeenCalled()
+      expect(mockShowWarnToast).not.toHaveBeenCalled()
+    }
+    finally {
+      dispose()
+    }
+  })
+
+  it('stays silent when the drained channel is what failed the load', async () => {
+    mockShowWarnToast.mockClear()
+    const dispose = mountWithActiveAgent(new ChannelError('transport', 'channel disconnected'))
+    try {
+      await settle()
+      expect(mockShowWarnToast).not.toHaveBeenCalled()
+    }
+    finally {
+      dispose()
+    }
+  })
+
+  it('still announces a failure the worker itself reported', async () => {
+    mockShowWarnToast.mockClear()
+    const refusal = new ChannelError('rpc', 'agent not found', { code: 5 })
+    const dispose = mountWithActiveAgent(refusal)
+    try {
+      await settle()
+      expect(mockShowWarnToast).toHaveBeenCalledWith('Failed to load chat history', refusal)
+    }
+    finally {
+      dispose()
+    }
   })
 })

@@ -40,7 +40,7 @@ import { create, fromBinary, toBinary, toJsonString } from '@bufbuild/protobuf'
 import {
   HubControlFrameSchema,
 } from '~/generated/leapmux/v1/channel_pb'
-import { abortError, ChannelError } from './channelError'
+import { abortError, ChannelError, channelNotOpenError } from './channelError'
 import { ChannelInbound } from './channelInbound'
 import { ChannelOpen } from './channelOpen'
 import { ChannelPool } from './channelPool'
@@ -598,7 +598,7 @@ export class ChannelManager {
   call(channelId: string, method: string, payload: Uint8Array, timeoutMs?: number, signal?: AbortSignal): Promise<InnerRpcResponse> {
     const ch = this.pool.get(channelId)
     if (!ch || ch.state === 'closed') {
-      return Promise.reject(new ChannelError('client', 'channel not open'))
+      return Promise.reject(channelNotOpenError())
     }
     if (signal?.aborted) {
       return Promise.reject(abortError(signal, method))
@@ -609,7 +609,7 @@ export class ChannelManager {
     if (this.session.needsRekeyGate(ch)) {
       return this.session.ensureRekeyed(ch).then(() => {
         if (ch.state === 'closed' || !this.pool.has(channelId)) {
-          return Promise.reject(new ChannelError('client', 'channel not open'))
+          return Promise.reject(channelNotOpenError())
         }
         if (signal?.aborted) {
           return Promise.reject(abortError(signal, method))
@@ -639,7 +639,7 @@ export class ChannelManager {
     // Streams require a verified session; call() still allows 'opening' so the
     // open-time Ping can complete before the channel is published as ready.
     if (!ch || ch.state !== 'verified') {
-      throw new ChannelError('client', 'channel not open')
+      throw channelNotOpenError()
     }
 
     const handle = this.rpc.beginStream(ch, method, payload)
@@ -651,7 +651,7 @@ export class ChannelManager {
       void this.session.ensureRekeyed(ch).then(() => {
         if (ch.state === 'closed' || !this.pool.has(channelId)) {
           queueMicrotask(() => {
-            handle.deliverDeferredError(new ChannelError('client', 'channel not open'), 'stream send failed with no onError listener')
+            handle.deliverDeferredError(channelNotOpenError(), 'stream send failed with no onError listener')
           })
           return
         }
@@ -682,7 +682,7 @@ export class ChannelManager {
       if (!live || live.state === 'closed') {
         if (cancel)
           return
-        throw new ChannelError('client', 'channel not open')
+        throw channelNotOpenError()
       }
       const doSend = (): ChannelError | null => this.rpc.sendOnStream(live, handle.requestId, payload, cancel)
       if (this.session.needsRekeyGate(live)) {
@@ -698,7 +698,7 @@ export class ChannelManager {
             if (!cancel) {
               queueMicrotask(() => {
                 handle.deliverDeferredError(
-                  new ChannelError('client', 'channel not open'),
+                  channelNotOpenError(),
                   'stream update dropped after rekey with no onError listener',
                 )
               })
