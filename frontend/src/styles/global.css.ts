@@ -153,14 +153,22 @@ globalStyle('body', {
 // The corollary is worth stating, because it is natural to assume the
 // opposite: `touch-action` restricts ONLY the element that declares it,
 // and a scroll container nested inside that element keeps both of its
-// axes. Measured in Chromium against a page built for the question.
-// `none` on html+body leaves the list inside it panning. `pan-y` on a
-// wrapper leaves a code block inside it scrolling sideways. `pan-x` on a
-// wrapper leaves the list inside it scrolling down. The same value moved
-// ONTO each scroller blocks that scroller and nothing else, which is
-// what shows the run can see the property at all. WebKit is unmeasured:
-// Playwright drives real touch through a Chromium-only protocol, so the
-// same run cannot be made there.
+// axes. Measured in Chromium and in WebKit, against a page built for the
+// question. `pan-y` on a wrapper leaves a sideways-scrolling block
+// inside it panning, `none` on a wrapper does the same, and so does the
+// shape this app has -- a sideways block inside a vertical scroller
+// inside the wrapper. Chromium also covers `none` on html+body, which
+// leaves the list inside it panning, and `pan-x` on a wrapper, which
+// leaves the list inside it scrolling down.
+//
+// The control is what makes those runs mean anything: the same value
+// moved ONTO a scroller blocks that scroller and nothing else. A run
+// whose control does not block is blind, not clean.
+//
+// The WebKit half was run by hand, and nothing guards it. Playwright
+// reaches real touch through a Chromium-only protocol: its WebKit
+// backend dispatches a tap with no move phase, and its Firefox backend
+// does nothing at all.
 //
 // That is the rule for the whole app: a region declares `touch-action`
 // only to constrain a gesture it owns, never to re-enable one. Three do.
