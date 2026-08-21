@@ -140,6 +140,14 @@ test.describe('Chat Message Rendering', () => {
    *
    * The plan-execution card takes the same rule, and 050-plan-mode.spec.ts
    * measures it through the same helper.
+   *
+   * This test flakes in COMBINED runs and passes alone, with
+   * `measureBubbleEdges: element is not inside the chat scroll container`:
+   * https://github.com/leapmux/leapmux/issues/402. The cause is not the
+   * premeasure-copy trap -- `userBubbles` is already `:visible`-scoped, which
+   * a `visibility: hidden` copy cannot pass. Do not wrap the measurement in a
+   * retry until the cause is known, because two of the three candidates are
+   * real defects that a retry would hide.
    */
   test('a user bubble meets the right panel edge and keeps its left side inset', async ({ page, authenticatedWorkspace }) => {
     await sendMessage(page, 'hi')
