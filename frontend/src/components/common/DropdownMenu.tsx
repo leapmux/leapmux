@@ -40,27 +40,27 @@ const MENU_ITEM_SELECTOR = [
 const TYPE_AHEAD_RESET_MS = 700
 
 /**
- * `showPopover({ source })`, degrading to a bare `showPopover()`.
+ * Show a menu that a LONG PRESS opened, in a way the release cannot undo.
  *
- * `source` names the element that opened the popover, which the HTML
- * light-dismiss pass then treats as part of the popover's own ancestor chain --
- * the property a long press depends on, since its menu opens under a finger
- * that is still pressing the row. The option reached the spec after
- * `showPopover` itself, so a browser without it must not lose the menu
- * entirely: an unknown dictionary member is ignored, and older engines that
- * reject the argument outright fall through to the plain call.
+ * The menu appears under a finger that is still pressing the row, and the HTML
+ * light-dismiss pass hides every `popover="auto"` whose chain excludes the
+ * release. Which engine hides what, and when, is not something to code around:
+ * Chromium hides before dispatching the release, WebKit after, and WebKit
+ * hit-tests the release live, so whether the menu survived came down to where
+ * the finger happened to be sitting. Two rounds of repairing that produced a
+ * blink and, on iOS, a menu that still vanished about half the time.
  *
- * Not in TypeScript's DOM lib yet, hence the cast.
+ * So this opens the menu as `manual`, which the light-dismiss pass does not
+ * touch at all, and `armPressDismiss` takes over the one job that costs --
+ * closing on a press outside. `Escape` needs nothing: `handleMenuKeyDown`
+ * already calls `hidePopover` itself. The attribute goes back to `auto` when
+ * the menu closes (see `handleToggle`), so every other way of opening this menu
+ * keeps the platform's own behaviour; changing it while a popover is SHOWING
+ * would hide it, which is why the swap happens here, before the show.
  */
-function showPopoverFrom(popover: HTMLElement | undefined, source: HTMLElement): void {
-  if (!popover)
-    return
-  try {
-    (popover.showPopover as (options?: { source?: HTMLElement }) => void)({ source })
-  }
-  catch {
-    popover.showPopover()
-  }
+function showPressMenu(popover: HTMLElement): void {
+  popover.setAttribute('popover', 'manual')
+  popover.showPopover()
 }
 
 export interface DropdownTriggerProps {
@@ -506,6 +506,35 @@ export function DropdownMenu(props: DropdownMenuProps) {
     }
   }
 
+  /**
+   * The outside-press dismissal a `manual` popover has to supply itself.
+   *
+   * Armed only for a menu that a long press opened (see `showPressMenu`), and
+   * disarmed the moment it closes, so nothing here is standing while the app is
+   * idle. On `pointerdown`, which is where the native pass acts too, and in the
+   * CAPTURE phase so a row that swallows its own presses cannot hide one.
+   *
+   * The finger that OPENED the menu never reaches this: its `pointerdown`
+   * happened before the menu existed, and its release is a `pointerup`.
+   */
+  let disarmPressDismiss: (() => void) | undefined
+
+  const armPressDismiss = () => {
+    disarmPressDismiss?.()
+    const onOutsidePress = (e: Event) => {
+      if (!popoverEl?.matches(':popover-open'))
+        return
+      if (e.composedPath().includes(popoverEl))
+        return
+      popoverEl.hidePopover()
+    }
+    document.addEventListener('pointerdown', onOutsidePress, true)
+    disarmPressDismiss = () => {
+      document.removeEventListener('pointerdown', onOutsidePress, true)
+      disarmPressDismiss = undefined
+    }
+  }
+
   const handleToggle = (_e: Event) => {
     // Read the post-transition state from the popover element rather than
     // ToggleEvent.newState. Spec-wise both are equivalent (the toggle event
@@ -568,6 +597,12 @@ export function DropdownMenu(props: DropdownMenuProps) {
       // opened by a press has no element anchor to clear `aria-expanded` on -- the
       // trigger's own copy is reactive on `isOpen()` and falls with it.
       setPressAnchor(undefined)
+      // Hand the popover back to the platform. A long press opened it as
+      // `manual` and dismissed it by hand (see `showPressMenu`); every other way
+      // of opening this menu wants the native light dismiss, and the attribute
+      // can only be swapped while it is closed -- which it now is.
+      disarmPressDismiss?.()
+      popoverEl?.setAttribute('popover', 'auto')
     }
 
     props.onToggle?.(opening)
@@ -640,19 +675,11 @@ export function DropdownMenu(props: DropdownMenuProps) {
           // shares this menu: re-point it at the new press.
           reposition()
         }
-        else {
-          // NAMING THE ROW AS THE SOURCE is what lets a long press keep its menu.
-          // The menu now opens under the still-pressed finger, and the HTML
-          // light-dismiss pass hides every `popover="auto"` whose ancestor chain
-          // excludes the pointerdown target -- so the release that ends the hold
-          // took the menu with it, and re-showing it afterwards blinked. `source`
-          // records the row as this popover's invoker, which puts it IN that
-          // chain: presses on the row are then presses on the menu's own
-          // territory, and the release leaves it alone.
-          //
-          // A browser that predates the option ignores the unknown member and
-          // gets the old behaviour, which the gesture's re-assert still repairs.
-          showPopoverFrom(popoverEl, el)
+        else if (popoverEl) {
+          // Opened as `manual` and dismissed by hand, because this menu appears
+          // under a finger that is still down -- see `showPressMenu`.
+          showPressMenu(popoverEl)
+          armPressDismiss()
           // Position synchronously, before the browser paints this frame, so the
           // popover never appears at the UA-default position and then jumps. The
           // content is already in the DOM (rendered before this effect), so it
@@ -675,6 +702,9 @@ export function DropdownMenu(props: DropdownMenuProps) {
     popoverEl?.removeEventListener('toggle', handleToggle)
     window.removeEventListener('scroll', repositionOnExternalScroll, true)
     resizeObserver?.disconnect()
+    // A menu unmounted while open never fires its closing `toggle`, so the
+    // document listener that dismisses a press-opened one is dropped here too.
+    disarmPressDismiss?.()
   })
 
   const handleTriggerPointerDown = () => {

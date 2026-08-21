@@ -125,6 +125,13 @@ test.describe('Workspace Context Menu', () => {
       await expect(renameItem).toBeVisible()
       // The press must not also fire the row's own click.
       expect(await workspaceItem.getAttribute('data-active')).toBe(before)
+
+      // A press-opened menu is `popover="manual"`, so the platform's own light
+      // dismiss never touches it -- which is exactly why the release cannot take
+      // it either. Closing on a press outside is the job that comes with that,
+      // and this is the assertion that it was actually done.
+      await page.locator('body').dispatchEvent('pointerdown')
+      await expect(renameItem).toBeHidden()
     })
   })
 
