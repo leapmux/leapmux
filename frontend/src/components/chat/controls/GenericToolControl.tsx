@@ -5,6 +5,7 @@ import type { ControlRequest } from '~/stores/control.store'
 import { Show } from 'solid-js'
 import { ButtonGroup } from '~/components/common/ButtonGroup'
 import { Tooltip } from '~/components/common/Tooltip'
+import { keepFocusOnPress } from '~/lib/focusRetention'
 import { buildAllowResponse, getToolInput, getToolName } from '~/utils/controlResponse'
 import * as styles from '../ControlRequestBanner.css'
 import { CollapsibleText } from './CollapsibleText'
@@ -63,6 +64,7 @@ export const GenericToolActions: Component<ActionsProps> = (props) => {
         <>
           <button
             class="outline"
+            onMouseDown={keepFocusOnPress}
             onClick={handleDeny}
             data-testid="control-deny-btn"
           >

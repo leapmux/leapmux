@@ -3,6 +3,7 @@ import type { ActionsProps } from './types'
 import type { ControlRequest } from '~/stores/control.store'
 
 import { Show } from 'solid-js'
+import { keepFocusOnPress } from '~/lib/focusRetention'
 import { pluralize } from '~/lib/plural'
 import { buildAllowResponse, getToolInput } from '~/utils/controlResponse'
 import * as styles from '../ControlRequestBanner.css'
@@ -93,6 +94,7 @@ export const ExitPlanModeActions: Component<ActionsProps> = (props) => {
           </Show>
           <button
             class="outline"
+            onMouseDown={keepFocusOnPress}
             onClick={handleReject}
             data-testid="plan-reject-btn"
           >

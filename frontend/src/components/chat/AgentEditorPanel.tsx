@@ -18,6 +18,7 @@ import { usePreferences } from '~/context/PreferencesContext'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { EDITOR_MIN_HEIGHT } from '~/lib/editor/editorMinHeight'
+import { keepFocusOnPress } from '~/lib/focusRetention'
 import { formatResetTimestamp, getResetsAt } from '~/lib/rateLimitUtils'
 import { dismissSoftKeyboard } from '~/lib/softKeyboard'
 import { registerEditorRef, unregisterEditorRef } from '~/stores/editorRef.store'
@@ -502,13 +503,17 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                       <Show when={ctrl.showInterrupt()}>
                         <button
                           class="outline"
+                          onMouseDown={keepFocusOnPress}
                           onClick={() => {
                             interruptLoading.start()
                             props.onInterrupt?.()
-                            // The tap leaves the composer focused on iOS, so
-                            // the keyboard would sit over the output the user
-                            // just stopped the agent to read. The send path
-                            // does the same from `releaseAfterSend`.
+                            // The press leaves the composer focused, so the
+                            // keyboard would sit over the output the user just
+                            // stopped the agent to read. `keepFocusOnPress`
+                            // above is what makes the composer still the
+                            // active element here on Chrome and on Firefox,
+                            // which focus a pressed button; the send path
+                            // reads the same state through `decideSendFocus`.
                             dismissSoftKeyboard()
                           }}
                           disabled={interruptLoading.loading()}
@@ -523,6 +528,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                       <button
                         type="button"
                         disabled={(!hasContent() && attachments().length === 0) || disabled() || sending()}
+                        onMouseDown={keepFocusOnPress}
                         onClick={() => {
                           startSending()
                           triggerSend?.()

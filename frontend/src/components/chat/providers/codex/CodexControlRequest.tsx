@@ -6,6 +6,7 @@ import { For, Match, Show, Switch } from 'solid-js'
 import { ButtonGroup } from '~/components/common/ButtonGroup'
 import { Tooltip } from '~/components/common/Tooltip'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import { keepFocusOnPress } from '~/lib/focusRetention'
 import { buildAllowResponse, buildDenyResponse, getToolInput, getToolName } from '~/utils/controlResponse'
 import * as styles from '../../ControlRequestBanner.css'
 import { AskUserQuestionActions, AskUserQuestionContent } from '../../controls/AskUserQuestionControl'
@@ -186,6 +187,7 @@ const CodexPlanModePromptActions: Component<ActionsProps> = (props) => {
           </Show>
           <button
             class="outline"
+            onMouseDown={keepFocusOnPress}
             onClick={() => {
               if (props.hasEditorContent) {
                 props.onTriggerSend()
