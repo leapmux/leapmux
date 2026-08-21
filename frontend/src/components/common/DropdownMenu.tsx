@@ -6,7 +6,7 @@ import { Dynamic } from 'solid-js/web'
 import { calcPopoverPosition } from '~/lib/popoverPosition'
 import { popoverCard } from '~/styles/popover.css'
 import { clippedText, menuItemContent, menuItemShortcut } from '~/styles/shared.css'
-import { attachContextMenuGesture, pressAnchorRect } from './contextMenuGesture'
+import { attachContextMenuGesture, holdIsOverMenu, pressAnchorRect } from './contextMenuGesture'
 
 /**
  * Marks a dropdown's trigger element. An enclosing popover's dismiss handler
@@ -40,27 +40,38 @@ const MENU_ITEM_SELECTOR = [
 const TYPE_AHEAD_RESET_MS = 700
 
 /**
- * Show a menu that a LONG PRESS opened, in a way the release cannot undo.
+ * Show the menu, as `manual` when a long press is still holding a finger over
+ * it and as the plain `auto` popover otherwise.
  *
- * The menu appears under a finger that is still pressing the row, and the HTML
- * light-dismiss pass hides every `popover="auto"` whose chain excludes the
- * release. Which engine hides what, and when, is not something to code around:
- * Chromium hides before dispatching the release, WebKit after, and WebKit
- * hit-tests the release live, so whether the menu survived came down to where
- * the finger happened to be sitting. Two rounds of repairing that produced a
- * blink and, on iOS, a menu that still vanished about half the time.
+ * A menu that opens under a pressing finger cannot be an `auto` popover: the
+ * release still to come is what the HTML light-dismiss pass acts on, and it
+ * hides every `auto` popover whose chain excludes that release. Which engine
+ * hides what, and when, is not something to code around -- Chromium hides
+ * before dispatching the release, WebKit after, and WebKit hit-tests the
+ * release live, so whether the menu survived came down to where the finger
+ * happened to be sitting. `manual` is not light-dismissed at all, and
+ * `armPressDismiss` takes over the one job that costs, closing on a press
+ * outside. `Escape` needs nothing: `handleMenuKeyDown` calls `hidePopover`
+ * itself.
  *
- * So this opens the menu as `manual`, which the light-dismiss pass does not
- * touch at all, and `armPressDismiss` takes over the one job that costs --
- * closing on a press outside. `Escape` needs nothing: `handleMenuKeyDown`
- * already calls `hidePopover` itself. The attribute goes back to `auto` when
- * the menu closes (see `handleToggle`), so every other way of opening this menu
- * keeps the platform's own behaviour; changing it while a popover is SHOWING
- * would hide it, which is why the swap happens here, before the show.
+ * Asked at SHOW TIME, of the gesture rather than of the caller, because both
+ * ways this component opens need it: the gesture it attaches itself, and a
+ * controlled `open` driven by a singleton host -- which is how the chat list's
+ * shared message menu opens, and why fixing only the first path left the menu
+ * a phone user actually presses still vanishing on release.
+ *
+ * @returns whether the menu opened in manual mode, so the caller can arm the
+ * dismissal that goes with it.
  */
-function showPressMenu(popover: HTMLElement): void {
-  popover.setAttribute('popover', 'manual')
+function showMenuPopover(popover: HTMLElement): boolean {
+  const manual = holdIsOverMenu()
+  // The attribute can only be swapped while the popover is hidden -- changing
+  // it on a showing one hides it -- so it brackets the show here and the close
+  // in `handleToggle`. Every other way of opening this menu keeps `auto`.
+  if (manual)
+    popover.setAttribute('popover', 'manual')
   popover.showPopover()
+  return manual
 }
 
 export interface DropdownTriggerProps {
@@ -636,7 +647,12 @@ export function DropdownMenu(props: DropdownMenuProps) {
       // dialog-driven auto-dismiss can leave stale.
       const nativeOpen = popoverEl.matches(':popover-open')
       if (shouldOpen && !nativeOpen) {
-        popoverEl.showPopover()
+        // The same choice the gesture path makes, because a singleton host
+        // opens THROUGH here: the chat list's shared message menu is driven by
+        // this `open` accessor, and its opens come from a long press whose
+        // finger is still down. See `showMenuPopover`.
+        if (showMenuPopover(popoverEl))
+          armPressDismiss()
         // Position synchronously, before the browser paints this frame, so the
         // popover never appears at the UA-default position and then jumps. The
         // content is already in the DOM (rendered before this effect), so it
@@ -676,10 +692,10 @@ export function DropdownMenu(props: DropdownMenuProps) {
           reposition()
         }
         else if (popoverEl) {
-          // Opened as `manual` and dismissed by hand, because this menu appears
-          // under a finger that is still down -- see `showPressMenu`.
-          showPressMenu(popoverEl)
-          armPressDismiss()
+          // Manual, and dismissed by hand, whenever this menu appears under a
+          // finger that is still down -- see `showMenuPopover`.
+          if (showMenuPopover(popoverEl))
+            armPressDismiss()
           // Position synchronously, before the browser paints this frame, so the
           // popover never appears at the UA-default position and then jumps. The
           // content is already in the DOM (rendered before this effect), so it

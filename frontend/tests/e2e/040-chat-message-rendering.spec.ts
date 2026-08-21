@@ -1,5 +1,6 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
+import { COARSE_POINTER_METRICS, touchDown } from './helpers/touch'
 import { ARITHMETIC_PROMPT, assistantBubbles, bandRows, CHAT_SCROLL_CONTAINER, chatScrollContainer, firstAssistantBubble, measureAgainstChatList, measureBubbleEdges, messageContents, sendMessage, userBubbles, waitForAgentIdle } from './helpers/ui'
 
 /**
@@ -225,6 +226,46 @@ test.describe('Chat Message Rendering', () => {
       return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
     })
     await page.mouse.click(selectionBox.x, selectionBox.y, { button: 'right' })
+    await expect(menu).toBeHidden()
+  })
+})
+
+/**
+ * The long press, on the surface a phone user actually presses.
+ *
+ * The chat list's menu is a SINGLETON host driven by `DropdownMenu`'s
+ * controlled `open`, not by the `contextMenuFor` gesture the other rows use --
+ * so it takes a different path through the component, and a fix applied to only
+ * one of them left this menu still vanishing on release. That is what this
+ * covers: the press-opened menu here has to behave like every other one.
+ */
+test.describe('message long press (phone)', () => {
+  test.use(COARSE_POINTER_METRICS)
+
+  test('a long press opens the menu on the hold and the release leaves it up', async ({ page, authenticatedWorkspace }) => {
+    await sendAndSettle(page)
+
+    const bubble = firstAssistantBubble(page)
+    await expect(bubble).toBeVisible()
+    const box = (await bubble.boundingBox())!
+    const x = box.x + box.width / 2
+    const y = box.y + Math.min(20, box.height / 2)
+
+    const holding = await touchDown(page, x, y)
+    const menu = page.locator('[data-testid="message-context-menu"]:popover-open')
+
+    // ON the hold: the finger is still down, and the menu is already up.
+    await expect(menu).toBeVisible()
+
+    // ...and the release leaves it there. A `popover="auto"` shown under a
+    // finger is what the HTML light-dismiss pass takes away, which is why this
+    // menu opens as `manual` instead.
+    await holding.end()
+    await expect(menu).toBeVisible()
+
+    // The dismissal that comes with `manual`, and which the platform is no
+    // longer doing for it.
+    await page.locator('body').dispatchEvent('pointerdown')
     await expect(menu).toBeHidden()
   })
 })

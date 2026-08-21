@@ -89,6 +89,22 @@ export function touchReleaseOpensMenu(): boolean {
 }
 
 /**
+ * Whether a long press is holding a finger over the menu it just opened.
+ *
+ * A menu opened in this window has to open as `popover="manual"`: the release
+ * still to come is what the HTML light-dismiss pass acts on, and it hides every
+ * `auto` popover whose chain excludes it. `DropdownMenu` asks this at show time
+ * rather than taking the answer as a prop, because the two ways it opens -- the
+ * gesture it attaches itself, and a controlled `open` that a singleton host
+ * drives (the chat list's shared message menu) -- both need it and neither one
+ * knows about the finger.
+ */
+export function holdIsOverMenu(): boolean {
+  return typeof document !== 'undefined'
+    && document.documentElement.hasAttribute(HOLD_OVER_MENU_ATTR)
+}
+
+/**
  * Presses this module must leave alone: the inline rename inputs inside these
  * rows (a long press there must keep the native selection handles and paste
  * callout), and any popover -- on the `contextMenuFor` surfaces the menu itself
