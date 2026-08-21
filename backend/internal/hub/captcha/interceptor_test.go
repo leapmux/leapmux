@@ -162,6 +162,41 @@ func TestInterceptorPassesThroughWhenDisabled(t *testing.T) {
 	assert.True(t, *soloCalled)
 }
 
+// TestInterceptorRuntimeDisablesAltchaOnInsecureOrigin pins the
+// Origin-driven stand-down through the interceptor: a payload-less Login
+// from an insecure HTTP Origin passes for ALTCHA, while the same request
+// without Origin (or with a secure Origin) still requires a token. The
+// honeypot keeps running either way.
+func TestInterceptorRuntimeDisablesAltchaOnInsecureOrigin(t *testing.T) {
+	e := newTestManager(t, false)
+	freshVerifiedPayload(t, e) // provision + cheap settings; settings stay enabled
+	client, called := newLoginClient(t, NewInterceptor(e.m))
+
+	insecureReq := connect.NewRequest(&leapmuxv1.LoginRequest{})
+	insecureReq.Header().Set("Origin", "http://192.168.1.5:8080")
+	_, err := client.Login(context.Background(), insecureReq)
+	require.NoError(t, err)
+	assert.True(t, *called)
+	assert.True(t, CaptchaEnabledKey.Of(e.set.Snapshot(context.Background())),
+		"interceptor must not persist captcha.enabled=false")
+
+	*called = false
+	secureReq := connect.NewRequest(&leapmuxv1.LoginRequest{})
+	secureReq.Header().Set("Origin", "https://example.com")
+	_, err = client.Login(context.Background(), secureReq)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+	assert.False(t, *called)
+
+	*called = false
+	honeypotReq := connect.NewRequest(&leapmuxv1.LoginRequest{Honeypot: "http://spam.example"})
+	honeypotReq.Header().Set("Origin", "http://192.168.1.5:8080")
+	_, err = client.Login(context.Background(), honeypotReq)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+	assert.False(t, *called)
+}
+
 // TestInterceptorHoneypotRunsWhileCaptchaDisabled pins the always-on
 // honeypot: it must keep catching naive bots after `captcha disable`,
 // with the same uniform denial as a captcha failure.

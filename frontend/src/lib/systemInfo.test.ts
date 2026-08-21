@@ -92,6 +92,45 @@ describe('loadSystemInfo', () => {
     expect(isSystemInfoLoaded()).toBe(true)
   })
 
+  // ALTCHA needs SubtleCrypto (secure context only). On plain HTTP away
+  // from localhost the hub runtime-gates too; the frontend stands down
+  // from isSecureContext so a stale snapshot cannot deadlock the form.
+  // External providers keep working on HTTP.
+  it('stands down ALTCHA on a non-secure context without touching external providers', async () => {
+    const desc = Object.getOwnPropertyDescriptor(window, 'isSecureContext')
+    Object.defineProperty(window, 'isSecureContext', { configurable: true, get: () => false })
+    try {
+      mockGetSystemInfo.mockResolvedValue(systemInfoResponse({
+        captchaEnabled: true,
+        captchaProvider: CaptchaProvider.ALTCHA,
+      }))
+      await loadSystemInfo(true)
+      expect(isCaptchaEnabled()).toBe(false)
+
+      mockGetSystemInfo.mockResolvedValue(systemInfoResponse({
+        captchaEnabled: true,
+        captchaProvider: CaptchaProvider.TURNSTILE,
+        captchaSiteKey: '1x00AA',
+      }))
+      await loadSystemInfo(true)
+      expect(isCaptchaEnabled()).toBe(true)
+
+      mockGetSystemInfo.mockResolvedValue(systemInfoResponse({
+        captchaEnabled: true,
+        captchaProvider: CaptchaProvider.RECAPTCHA_V3,
+        captchaSiteKey: '6LeTest',
+      }))
+      await loadSystemInfo(true)
+      expect(isCaptchaEnabled()).toBe(true)
+    }
+    finally {
+      if (desc)
+        Object.defineProperty(window, 'isSecureContext', desc)
+      else
+        delete (window as { isSecureContext?: boolean }).isSecureContext
+    }
+  })
+
   // A force reload rewrites the captcha signals, which is what the
   // denial-driven refresh after an admin toggles captcha at runtime
   // depends on: a `<Show>` gate reading isCaptchaEnabled() re-evaluates
