@@ -8,6 +8,7 @@ interface RenderOpts {
   leftSidebarOpen?: boolean
   rightSidebarOpen?: boolean
   sheetOpen?: boolean
+  tabBarHidden?: boolean
 }
 
 function renderMobile(opts: RenderOpts = {}, onCloseSheet: () => void = () => {}) {
@@ -16,6 +17,7 @@ function renderMobile(opts: RenderOpts = {}, onCloseSheet: () => void = () => {}
       leftSidebarOpen={opts.leftSidebarOpen ?? false}
       rightSidebarOpen={opts.rightSidebarOpen ?? false}
       sheetOpen={opts.sheetOpen ?? false}
+      tabBarHidden={opts.tabBarHidden ?? false}
       onCloseSheet={onCloseSheet}
       leftSidebarElement={<div data-testid="sidebar-left">left</div>}
       rightSidebarElement={<div data-testid="sidebar-right">right</div>}
@@ -24,6 +26,14 @@ function renderMobile(opts: RenderOpts = {}, onCloseSheet: () => void = () => {}
       editorPanel={<div data-testid="editor-panel">editor</div>}
     />
   ))
+}
+
+/** The wrapper the bar element sits in, which is what carries the hide class. */
+function tabBarWrapper(): HTMLElement {
+  const wrapper = screen.getByTestId('tab-bar').parentElement
+  if (!wrapper)
+    throw new Error('the tab bar element has no wrapper')
+  return wrapper
 }
 
 /** Find the closest ancestor that carries the mobileSidebar class (the panel wrapper). */
@@ -73,6 +83,20 @@ describe('mobileLayout', () => {
 
     renderMobile({ sheetOpen: true })
     expect(screen.getByTestId('tab-sheet-overlay')).toHaveClass(styles.sheetOverlayOpen)
+  })
+
+  // With the soft keyboard up the bar carries nothing reachable, and the body
+  // is pinned to the visible region, so a bar left in place re-seats itself at
+  // the top of the screen on every focus and blur.
+  it('drops the tab bar from the layout when tabBarHidden is set', () => {
+    const shown = renderMobile({})
+    expect(tabBarWrapper()).not.toHaveClass(styles.mobileTabBarHidden)
+    shown.unmount()
+
+    renderMobile({ tabBarHidden: true })
+    expect(tabBarWrapper()).toHaveClass(styles.mobileTabBarHidden)
+    // Still rendered, so the bar keeps its state and returns intact on blur.
+    expect(screen.getByTestId('tab-bar')).toBeInTheDocument()
   })
 
   it('a tap on the sheet scrim asks the overlay owner to close the sheet', () => {

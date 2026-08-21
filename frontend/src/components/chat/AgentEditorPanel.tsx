@@ -19,6 +19,7 @@ import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { EDITOR_MIN_HEIGHT } from '~/lib/editor/editorMinHeight'
 import { formatResetTimestamp, getResetsAt } from '~/lib/rateLimitUtils'
+import { dismissSoftKeyboard } from '~/lib/softKeyboard'
 import { registerEditorRef, unregisterEditorRef } from '~/stores/editorRef.store'
 import { registerPanelSend, unregisterPanelSend } from '~/stores/focusedChatSend.store'
 import { optionValuesFromGroups } from '~/stores/tab.helpers'
@@ -504,6 +505,11 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                           onClick={() => {
                             interruptLoading.start()
                             props.onInterrupt?.()
+                            // The tap leaves the composer focused on iOS, so
+                            // the keyboard would sit over the output the user
+                            // just stopped the agent to read. The send path
+                            // does the same from `releaseAfterSend`.
+                            dismissSoftKeyboard()
                           }}
                           disabled={interruptLoading.loading()}
                           data-testid="interrupt-button"

@@ -282,6 +282,119 @@ test.describe('mobile drawers (phone)', () => {
   })
 })
 
+/**
+ * The two halves of the soft-keyboard layout contract, each of which is one
+ * string that a careless edit drops silently.
+ *
+ * The displacement they correct cannot be driven from here: Playwright raises
+ * no soft keyboard, and the visual-viewport offset this compensates is WebKit
+ * behaviour on a real iOS device. What IS testable is that the wiring holds --
+ * the meta key Chromium reads, and that the body consumes the property the
+ * hook publishes under the name it publishes it under.
+ */
+test.describe('soft-keyboard viewport contract (phone)', () => {
+  test.use(COARSE_POINTER_METRICS)
+
+  test('the viewport meta asks Chromium to resize the layout viewport for the keyboard', async ({ page, authenticatedWorkspace }) => {
+    // Without this key Chromium defaults to `resizes-visual`: the layout
+    // viewport keeps its full height, `100dvh` reports it, and the composer
+    // sits behind the keyboard.
+    await expect(page.locator('meta[name="viewport"]')).toHaveAttribute(
+      'content',
+      /interactive-widget=resizes-content/,
+    )
+  })
+
+  // The bar has nothing reachable while the keyboard is up, and the body is
+  // pinned to the visible region then, so a bar left in place re-seats itself
+  // at the top of the screen on every focus and blur.
+  test('the tab bar leaves the layout only while the keyboard takes screen space', async ({ page, authenticatedWorkspace }) => {
+    const bar = page.getByTestId('tab-bar')
+    await expect(bar).toBeVisible()
+
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await editor.click()
+    await expect(editor).toBeFocused()
+
+    // FOCUS ALONE MUST NOT HIDE IT. `MarkdownEditor` focuses the composer
+    // whenever it is enabled, so a chat that merely opens holds focus with no
+    // keyboard anywhere -- keying on focus alone hid the bar on open.
+    await expect(bar).toBeVisible()
+
+    // The keyboard, as Chromium models it under
+    // `interactive-widget=resizes-content`: the viewport loses its height.
+    const size = page.viewportSize()!
+    await page.setViewportSize({ width: size.width, height: size.height - 300 })
+    await expect(bar).toBeHidden()
+
+    // ...and it returns, intact, when that height comes back.
+    await page.setViewportSize(size)
+    await expect(bar).toBeVisible()
+    await expect(page.getByTestId('tab-chip')).toBeVisible()
+  })
+
+  // A completed send gives the screen back, but ONLY when a keyboard is taking
+  // it. `handleSend` used to call `focusEditor()` on every path, which brought
+  // the keyboard straight back after a tap on Send -- the tap does not move
+  // focus on iOS, so the editor kept it.
+  //
+  // Both halves in one spec because they are one rule. A coarse pointer does
+  // not imply an on-screen keyboard: this viewport reports one throughout, and
+  // the first half is the phone-with-a-hardware-keyboard case, where dropping
+  // the caret would reclaim nothing.
+  test('a send releases focus only while the keyboard takes screen space', async ({ page, authenticatedWorkspace }) => {
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const size = page.viewportSize()!
+
+    await editor.click()
+    await page.keyboard.type('hardware')
+    await page.getByTestId('send-button').tap()
+    // The editor emptying is the app's acknowledgement that the send committed,
+    // so each assertion below is about the SUCCESS path, not a refused send.
+    await expect(editor).toHaveText('')
+    await expect(editor).toBeFocused()
+
+    // Now a keyboard really is in the way, as Chromium models it under
+    // `interactive-widget=resizes-content`: the viewport loses its height.
+    await page.keyboard.type('soft')
+    await page.setViewportSize({ width: size.width, height: size.height - 300 })
+    await page.getByTestId('send-button').tap()
+    await expect(editor).toHaveText('')
+    await expect(editor).not.toBeFocused()
+
+    await page.setViewportSize(size)
+  })
+
+  test('the body takes its size from --vvh and its place from --vv-shift', async ({ page, authenticatedWorkspace }) => {
+    const measured = await page.evaluate(() => {
+      const read = () => {
+        const style = getComputedStyle(document.body)
+        return { height: style.height, transform: style.transform }
+      }
+      const idle = read()
+      // What the hook publishes together while the keyboard is up.
+      document.documentElement.style.setProperty('--vvh', '321px')
+      document.documentElement.style.setProperty('--vv-shift', '17px')
+      const keyboardUp = read()
+      document.documentElement.style.removeProperty('--vvh')
+      document.documentElement.style.removeProperty('--vv-shift')
+      return { idle, keyboardUp, viewport: window.innerHeight }
+    })
+
+    // Identity, NOT `none`: the fallback keeps a transform on the body at all
+    // times, which is what makes it the containing block SelectionQuotePopover
+    // counter-translates against.
+    expect(measured.idle.transform).toBe('matrix(1, 0, 0, 1, 0, 0)')
+    // No `--vvh` → the `100dvh` fallback, which on this desktop-engine phone
+    // emulation is the full viewport.
+    expect(measured.idle.height).toBe(`${measured.viewport}px`)
+
+    // Both published names reach the layout, the shift with its sign intact.
+    expect(measured.keyboardUp.height).toBe('321px')
+    expect(measured.keyboardUp.transform).toBe('matrix(1, 0, 0, 1, 0, 17)')
+  })
+})
+
 test.describe('tablet touch (desktop layout)', () => {
   // iPad-like metrics: wide enough for the DESKTOP tiling layout (>=768px)
   // but mobile metrics throughout, so Blink reports a coarse primary pointer

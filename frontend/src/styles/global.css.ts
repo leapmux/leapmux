@@ -59,42 +59,84 @@ globalStyle('html, body, #app', {
 
 // iOS Safari viewport lock.
 //
-//  1. `position: fixed` + `height: 100dvh` ties the body to the dynamic
-//     visible viewport. `dvh` tracks iOS 16.4+ keyboard-up shrinkage on
-//     its own, so we don't drive body height from JS.
+//  1. `position: fixed` + `height: var(--vvh, 100dvh)` ties the body to
+//     the region the browser actually shows. `dvh` alone is NOT enough
+//     on iOS: WebKit does not resize the layout viewport for the
+//     on-screen keyboard — it moves part of the viewport out of sight
+//     instead — so `dvh` still reports the full height with the keyboard
+//     up, and the app runs on under it. `visualViewport.height`, which
+//     `~/hooks/useVisualViewportInset` publishes as `--vvh` while the
+//     keyboard is up, is the only value that accounts for the keyboard
+//     there. `dvh` remains the fallback: it is correct for the browser
+//     chrome, on a desktop, and on Chromium, where
+//     `interactive-widget=resizes-content` (see `~/entry-server.tsx`)
+//     makes the layout viewport itself shrink.
 //  2. `padding-top: env(safe-area-inset-top)` keeps content out from
 //     under the system status bar in standalone PWA mode. No bottom
 //     padding — the composer sits flush with the screen bottom and the
 //     home indicator overlays it translucently (KakaoTalk-style).
-//  3. `transform: translateY(calc(-1 * var(--vv-offset, 0px)))` cancels
-//     the residual `visualViewport.offsetTop` that iOS 26 WebKit leaves
-//     non-zero after keyboard dismiss (FB19889436). `window.scrollTo(0,0)`
-//     can't fix this — body is `overflow: hidden`, there's nothing to
-//     scroll. The hook only sets `--vv-offset` while the keyboard is
-//     *down*; during keyboard-up iOS' own visual-viewport translate
-//     brings the composer into view and a counter-translate would
-//     double-shift.
+//  3. `transform: translateY(var(--vv-shift, 0px))` puts that
+//     correctly-sized box in the right PLACE. `position: fixed` pins the
+//     body to the layout viewport, so any displacement of the visual
+//     viewport within it moves the app off the visible region — iOS
+//     scrolls down to reveal the focused composer while the keyboard is
+//     up, and iOS 26 leaves a residual offset after it dismisses
+//     (FB19889436). Those run in opposite directions, so the hook
+//     publishes `--vv-shift` already signed. `window.scrollTo(0, 0)`
+//     can't fix either — body is `overflow: hidden`, there's nothing to
+//     scroll.
+//
+// 1 AND 3 ARE ONE FIX FOR THE KEYBOARD-UP CASE. Applying the shift while
+// the body is still `100dvh` runs away: the body is taller than the
+// visible region, so moving it down pushes the composer below the
+// keyboard, iOS scrolls further to reveal it, and the composer ends up
+// permanently out of view, flashing in on each keystroke. Sizing without
+// shifting leaves the app the right size in the wrong place, which is a
+// gap under the composer. Together the body covers the visible region
+// exactly, so iOS has nothing left to scroll into view.
+//
+// THE STRIP LEFT UNDER THE COMPOSER IN iOS SAFARI IS NOT OURS TO FILL.
+// With the keyboard up, Safari keeps a band of its own chrome — the
+// collapsed toolbar above the URL pill — between the page and the
+// keyboard's accessory bar, and paints it in the page's background
+// colour, so it reads as a gap in the app. Measured on iPhone at 3x with
+// the keyboard up: `visualViewport` reports height 262 at offsetTop 452,
+// which sums to `documentElement.clientHeight` (714) exactly, and a
+// marker drawn on the body's bottom edge lands on a marker drawn at that
+// 714 in layout coordinates. The body therefore already covers every row
+// of page pixels that exists; the visual viewport IS the visible part of
+// the page, and nothing can render past it. The standalone PWA has no
+// such band because it has no Safari toolbar. Do not chase it with a
+// taller `--vvh`: no value the platform reports describes that strip,
+// and enlarging the body only pushes the composer under the keyboard.
+//
+// Also measured there, because it defeats the usual recipe: in iOS
+// Safari `window.innerHeight` EQUALS `visualViewport.height` with the
+// keyboard up (262 = 262), so the common
+// `innerHeight - visualViewport.height` keyboard-height formula yields 0
+// and cannot drive this layout. `documentElement.clientHeight` is the
+// one that stays at the unshrunk 714.
 //
 // Note: the body's `transform` makes body the containing block for
 // descendant `position: fixed` elements. Native HTML `popover` API
 // consumers (DropdownMenu, Tooltip, GridSizePopover, the toast container)
 // escape via the top layer. The one non-top-layered fixed consumer is
 // `SelectionQuotePopover`, which counter-translates by
-// `var(--vv-offset, 0px)` to stay viewport-relative.
+// `calc(-1 * var(--vv-shift, 0px))` to stay viewport-relative.
 globalStyle('body', {
   position: 'fixed',
   top: 0,
   left: 0,
   width: '100%',
-  height: '100dvh',
+  height: 'var(--vvh, 100dvh)',
   paddingTop: 'env(safe-area-inset-top)',
   // NO padding-bottom: keep KakaoTalk-style intrusion (composer flush
   // with screen bottom, home-indicator translucently overlaying it).
   boxSizing: 'border-box',
-  // iOS-26 mitigation: cancel any residual visualViewport.offsetTop the
-  // OS leaves non-zero after keyboard dismiss. Default 0 on every other
+  // iOS mitigation: cancel whichever way WebKit displaced the app from
+  // the visible region (see note 3 above). Default 0 on every other
   // platform; the hook only sets it when it's actually non-zero.
-  transform: 'translateY(calc(-1 * var(--vv-offset, 0px)))',
+  transform: 'translateY(var(--vv-shift, 0px))',
   willChange: 'transform',
 })
 

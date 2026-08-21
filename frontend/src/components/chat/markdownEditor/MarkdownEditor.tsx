@@ -10,6 +10,7 @@ import { createEffect, createSignal, getOwner, on, onCleanup, onMount, runWithOw
 import { isTauriApp, readClipboardImage } from '~/api/platformBridge'
 import { usePreferences } from '~/context/PreferencesContext'
 import { loadDraft } from '~/lib/editor/draftPersistence'
+import { dismissSoftKeyboard, isSoftKeyboardVisible } from '~/lib/softKeyboard'
 import { syntaxThemeGeneration } from '~/lib/syntaxThemeStore'
 import { CodeLanguagePopover } from './CodeLanguagePopover'
 import { createComposerLayout } from './composerLayout'
@@ -232,6 +233,28 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     }
   }
 
+  /**
+   * What a COMPLETED send does with focus.
+   *
+   * The caret stays wherever the keyboard costs nothing: a desktop, and a
+   * phone or tablet driven by a hardware keyboard. Only a keyboard that is
+   * actually covering the screen is dismissed, because the user has just
+   * finished a thought and half the screen is the transcript they want back.
+   * Re-focusing here is what used to bring that keyboard straight back after a
+   * tap on Send -- the tap itself does not move focus on iOS, so the editor
+   * still holds it and releasing it is what puts the keyboard away.
+   *
+   * The failure paths below keep the caret on every device, because the user
+   * still has something to fix and would only have to tap back in.
+   */
+  const releaseAfterSend = () => {
+    if (isSoftKeyboardVisible()) {
+      dismissSoftKeyboard()
+      return
+    }
+    focusEditor()
+  }
+
   const handleSend = () => {
     if (props.disabled || !editorInstance)
       return
@@ -268,7 +291,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     if (key) {
       clearDraft(key)
     }
-    focusEditor()
+    releaseAfterSend()
   }
 
   // Enter key mode reference for ProseMirror plugin (closures capture signal)

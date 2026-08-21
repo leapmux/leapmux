@@ -16,7 +16,18 @@ export default createHandler(() => (
       >
         <head>
           <meta charset="utf-8" />
-          <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+          {/*
+            `interactive-widget=resizes-content` is what makes the software
+            keyboard shrink the LAYOUT viewport on Chromium (Android, and a
+            touch-first Windows device), so `100dvh` reports the region above
+            the keyboard and the composer stays visible with no JS. Without
+            it Chromium defaults to `resizes-visual`, which leaves the layout
+            viewport at full height and hides the composer behind the
+            keyboard. WebKit does not implement the key yet and ignores it;
+            iOS shrinks `dvh` on its own, and `~/hooks/useVisualViewportInset`
+            corrects the displacement WebKit adds on top.
+          */}
+          <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
           <link rel="icon" href="/icons/leapmux-icon.ico" sizes="48x48" />
           <link rel="icon" href="/icons/leapmux-icon.svg" type="image/svg+xml" />
           <link rel="manifest" href="/manifest.webmanifest" />

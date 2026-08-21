@@ -204,9 +204,10 @@ export const AppShell: Component = () => {
   // this catches.
   setExpectedUserId(() => auth.user()?.id)
 
-  // Publish `--vvh` (visible viewport height in px) for mobile layout.
-  // No-op on desktop beyond a one-time write of window.innerHeight.
-  useVisualViewportInset()
+  // Publish `--vvh` / `--vv-shift` (the visible region's size and place) for
+  // the mobile layout, and report whether the soft keyboard is up. No-op on a
+  // fine-pointer device, which has no keyboard to take screen space.
+  const softKeyboardUp = useVisualViewportInset()
 
   // Mobile layout state. The overlay state is the ONE owner of "which
   // overlay is up" (drawers, tab sheet); exclusion between them is structural
@@ -1119,6 +1120,10 @@ export const AppShell: Component = () => {
       leftSidebarElement={createLeftSidebarElement(sidebarOpts())}
       rightSidebarElement={createRightSidebarElement(sidebarOpts())}
       tabBarElement={tileRenderer.tabBarElement()}
+      // Only while an overlay is not depending on the bar: a drawer and the
+      // tab sheet both close through its toggles, and the sheet carries text
+      // fields of its own, so the keyboard being up is not sufficient there.
+      tabBarHidden={softKeyboardUp() && mobileOverlay() === 'none'}
       tileContent={
         // The same gate the desktop center paints on, for the same reason:
         // `state.root` falls back to a locally-minted placeholder leaf while

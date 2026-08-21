@@ -9,14 +9,15 @@ export const popover = style({
   'backgroundColor': 'var(--card)',
   'boxShadow': '0 2px 8px rgba(0, 0, 0, 0.15)',
   'opacity': 0.9,
-  // Counter-translate body's `--vv-offset` mitigation (see
-  // `~/styles/global.css.ts`). Body uses `transform: translateY(-vv-offset)` to
-  // cancel the iOS-26 stuck visualViewport offset, which incidentally
+  // Counter-translate body's `--vv-shift` mitigation (see
+  // `~/styles/global.css.ts`). Body uses `transform: translateY(vv-shift)` to
+  // put the app over the region iOS shows, which incidentally
   // makes body the containing block for descendants like this popover.
   // Without the counter-translate, the JS-computed (viewport-relative)
-  // top/left coords would render off by `vv-offset` while iOS still
-  // has a residual offset. Identity (0) outside that brief window.
-  'transform': 'translateY(var(--vv-offset, 0px))',
+  // top/left coords would render off by `vv-shift` while iOS displaces
+  // the app. Identity (0) outside those windows, and correct in both of
+  // them because it negates whatever sign the body took.
+  'transform': 'translateY(calc(-1 * var(--vv-shift, 0px)))',
   'transition': 'opacity var(--transition)',
   ':hover': {
     opacity: 1,

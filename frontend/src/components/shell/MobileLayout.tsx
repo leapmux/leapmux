@@ -38,6 +38,12 @@ interface MobileLayoutProps {
   leftSidebarElement: JSX.Element
   rightSidebarElement: JSX.Element
   tabBarElement: JSX.Element
+  /**
+   * Whether to drop the bar from the layout entirely. Owned by the caller,
+   * which is the one place that knows both that the soft keyboard is up and
+   * that no overlay depends on the bar's toggles.
+   */
+  tabBarHidden: boolean
   tileContent: JSX.Element
   editorPanel: JSX.Element | false
 }
@@ -54,7 +60,10 @@ interface MobileLayoutProps {
 export const MobileLayout: Component<MobileLayoutProps> = (props) => {
   return (
     <div class={styles.mobileShell}>
-      <div class={styles.mobileTabBar}>
+      <div
+        class={styles.mobileTabBar}
+        classList={{ [styles.mobileTabBarHidden]: props.tabBarHidden }}
+      >
         {props.tabBarElement}
       </div>
 
