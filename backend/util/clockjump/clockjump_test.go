@@ -153,17 +153,34 @@ func TestRunReportsAPauseObservedByTheLoop(t *testing.T) {
 
 // A process has ONE clock, so a solo process that runs a Hub and a Worker must
 // not report every pause twice.
+//
+// Each caller gets its OWN context, which is what makes this more than a
+// restatement of the guard: `running.on` would read true even if all three calls
+// had started a loop. Cancelling the later callers' contexts must not stop
+// anything, because their calls were no-ops -- and then cancelling the FIRST
+// caller's context must stop the one loop that does exist.
 func TestStartLoopRunsOneDetectorPerProcess(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	first, cancelFirst := context.WithCancel(context.Background())
+	t.Cleanup(func() { cancelFirst(); waitForLoopToStop() })
+	second, cancelSecond := context.WithCancel(context.Background())
+	third, cancelThird := context.WithCancel(context.Background())
 
-	StartLoop(ctx)
-	t.Cleanup(waitForLoopToStop)
+	StartLoop(first)
 	require.True(t, loopIsRunning(), "the first call must start a loop")
+	StartLoop(second) // a second component asking for the same guarantee
+	StartLoop(third)
 
-	StartLoop(ctx) // a second component asking for the same guarantee
-	StartLoop(ctx)
-	assert.True(t, loopIsRunning(), "later calls must be no-ops, not extra loops")
+	cancelSecond()
+	cancelThird()
+	// Long enough that a loop owned by either context would have exited.
+	time.Sleep(20 * time.Millisecond)
+	assert.True(t, loopIsRunning(),
+		"the later calls started no loop of their own, so their contexts control nothing")
+
+	cancelFirst()
+	waitForLoopToStop()
+	assert.False(t, loopIsRunning(),
+		"the first caller's context governs the only loop, so ending it ends the detector")
 }
 
 // The desktop sidecar tears its components down and builds them again when it

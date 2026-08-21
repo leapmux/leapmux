@@ -331,6 +331,144 @@ func TestPublishErrorOnLapsedLeaseRecoversAndReportsStoreError(t *testing.T) {
 	// covers the same recovery from the database side.
 }
 
+// recoverEvents drives the recovery paths a lapsed lease reaches. Every field is
+// what one of those paths needs the store to do, so one fake covers them instead
+// of four near-identical ones.
+type recoverEvents struct {
+	store.RevocationEventStore
+	reacquireErr    error
+	reacquireDelay  time.Duration
+	beforeReacquire func()
+	maxSeqErr       error
+	maxSeq          int64
+
+	reacquireCalls int
+	released       []string
+}
+
+func (*recoverEvents) PublishPending(context.Context, int32) (int64, error) { return 0, nil }
+
+func (s *recoverEvents) ReacquireHubRuntimeLease(context.Context, store.ReacquireHubRuntimeLeaseParams) error {
+	s.reacquireCalls++
+	if s.beforeReacquire != nil {
+		s.beforeReacquire()
+	}
+	time.Sleep(s.reacquireDelay)
+	return s.reacquireErr
+}
+
+func (s *recoverEvents) MaxPublishedSeq(context.Context) (int64, error) {
+	return s.maxSeq, s.maxSeqErr
+}
+
+func (s *recoverEvents) ReleaseHubRuntimeLease(_ context.Context, holderID string) (int64, error) {
+	s.released = append(s.released, holderID)
+	return 1, nil
+}
+
+func lapsedWatcher(rev store.RevocationEventStore, leaseDuration time.Duration) *Watcher {
+	w := &Watcher{
+		store:         fakeRevStore{rev: rev},
+		leaseDuration: leaseDuration,
+		holderID:      "holder",
+		errors:        make(chan error, 1),
+	}
+	w.lease.seeded = true
+	w.lease.leaseExpiresAt = time.Now().Add(-time.Second)
+	return w
+}
+
+// A store that cannot answer the reacquisition must NOT fence the Hub. The
+// lease merely lapsed, so the right response is to try again on the next tick --
+// killing the process over a SQLITE_BUSY would reintroduce the outage this
+// recovery path exists to remove.
+func TestRecoverRetriesAfterATransientStoreFailure(t *testing.T) {
+	rev := &recoverEvents{reacquireErr: errors.New("database is locked")}
+	w := lapsedWatcher(rev, time.Hour)
+
+	_ = w.lease.mu.Lock(context.Background())
+	defer w.lease.mu.Unlock()
+
+	err := w.renewLeaseIfStaleLocked(context.Background())
+	require.Error(t, err)
+	assert.False(t, errorsIsLeaseFatal(err), "a store blip during recovery must not be lease-fatal")
+	assert.NotErrorIs(t, err, ErrLeaseLost,
+		"the lapse cause must not be wrapped in, or callers stop the watcher for a store blip")
+	assert.Empty(t, w.errors, "a retryable failure must not fence the server")
+
+	// The lease is still lapsed, so the next attempt must try again rather than
+	// latch. A recovery that gave up once would leave the Hub running without a
+	// lease for the rest of the process.
+	_ = w.renewLeaseIfStaleLocked(context.Background())
+	assert.Equal(t, 2, rev.reacquireCalls, "recovery must retry while the lease is still lapsed")
+}
+
+// A reacquisition that outlasts the whole lease duration hands back a lease that
+// may already have expired at the database. Trusting it would let the Hub write
+// on a lease it does not hold, so this is one of the two genuinely fatal
+// outcomes.
+func TestRecoverRejectsALeaseThatOutlivedItsOwnBudget(t *testing.T) {
+	const leaseDuration = 20 * time.Millisecond
+	rev := &recoverEvents{reacquireDelay: 3 * leaseDuration}
+	w := lapsedWatcher(rev, leaseDuration)
+
+	_ = w.lease.mu.Lock(context.Background())
+	defer w.lease.mu.Unlock()
+
+	err := w.renewLeaseIfStaleLocked(context.Background())
+	require.ErrorIs(t, err, ErrLeaseLost)
+	assert.ErrorContains(t, err, "exceeded local lease budget")
+	assert.Len(t, w.errors, 1, "a lease that cannot be trusted must fence the server")
+}
+
+// Close can set `closed` while a reacquisition is already in flight. The row
+// that lands afterwards would outlive the Watcher and fence the next launch
+// until its TTL, so recovery must remove what it just took.
+func TestRecoverReleasesALeaseTakenWhileCloseWasRacing(t *testing.T) {
+	rev := &recoverEvents{}
+	w := lapsedWatcher(rev, time.Hour)
+	// Close sets `closed` before it releases; model that landing mid-flight.
+	rev.beforeReacquire = func() { w.closed.Store(true) }
+
+	_ = w.lease.mu.Lock(context.Background())
+	defer w.lease.mu.Unlock()
+
+	err := w.renewLeaseIfStaleLocked(context.Background())
+	require.ErrorIs(t, err, ErrClosed)
+	assert.Equal(t, []string{"holder"}, rev.released,
+		"a lease taken during a concurrent Close must be released, not orphaned for its TTL")
+	assert.Empty(t, w.errors, "losing a race with Close is not a fatal lease loss")
+}
+
+// Recovery keeps the cursor, so the cursor must be proven replayable before any
+// event is applied. When that proof cannot be READ, the watcher must hold the
+// unverified flag and re-prove later -- not assume the cursor is fine and start
+// applying events from it.
+func TestRecoverHoldsTheCursorUnverifiedUntilItCanBeProven(t *testing.T) {
+	rev := &recoverEvents{maxSeqErr: errors.New("store unavailable")}
+	w := lapsedWatcher(rev, time.Hour)
+
+	_ = w.lease.mu.Lock(context.Background())
+	defer w.lease.mu.Unlock()
+
+	err := w.renewLeaseIfStaleLocked(context.Background())
+	require.Error(t, err)
+	assert.False(t, errorsIsLeaseFatal(err), "an unreadable cursor proof is not a lost lease")
+	assert.True(t, w.lease.cursorUnverified, "the cursor must stay unverified until it is proven")
+	assert.Empty(t, w.errors)
+
+	// Consumption stays blocked while the flag is set, so no event is applied
+	// from a cursor that was never proven.
+	require.Error(t, w.ensureLeaseLocked(context.Background()))
+
+	// Once the store answers, the proof completes and the gate opens. maxSeq at
+	// the cursor means nothing was published past it, so there is nothing to
+	// replay and no gap to find.
+	rev.maxSeqErr = nil
+	require.NoError(t, w.ensureLeaseLocked(context.Background()))
+	assert.False(t, w.lease.cursorUnverified, "a completed proof must clear the flag")
+}
+
 func TestApplyEventSkipsUnknownKind(t *testing.T) {
 	w := &Watcher{}
 	// An unknown kind is logged and skipped, never fatal -- the caller advances
