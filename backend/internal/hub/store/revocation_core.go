@@ -35,10 +35,13 @@ type RevocationCoreOps[C any] struct {
 	PublishRows        func(context.Context, C, int32, int64) (int64, error)
 	SetSequence        func(context.Context, C, int64) error
 	DeleteExpiredLease func(context.Context, C) error
-	CompactPublished   func(context.Context, C, time.Time) (int64, error)
-	InsertLease        func(context.Context, C, RevocationLease) error
-	RenewLease         func(context.Context, C, RevocationLease) (int64, error)
-	ReleaseLease       func(context.Context, C, string) (int64, error)
+	// DeleteOwnExpiredLease removes an expired lease row that belongs to the
+	// given holder, and leaves any other holder's row in place.
+	DeleteOwnExpiredLease func(context.Context, C, string) error
+	CompactPublished      func(context.Context, C, time.Time) (int64, error)
+	InsertLease           func(context.Context, C, RevocationLease) error
+	RenewLease            func(context.Context, C, RevocationLease) (int64, error)
+	ReleaseLease          func(context.Context, C, string) (int64, error)
 }
 
 // RevocationCore coordinates gapless event publication and the singleton Hub
@@ -143,6 +146,52 @@ func (c RevocationCore[C]) AcquireHubRuntimeLease(
 		return err
 	})
 	return fence, err
+}
+
+// ReacquireHubRuntimeLease re-takes a lapsed lease for its previous holder
+// without moving the cursor.
+//
+// It differs from AcquireHubRuntimeLease in the two ways that make it safe to
+// call from a Hub that is already serving. It preserves the caller's cursor
+// rather than fencing to the head of the stream, so every revocation published
+// during the stall is still replayed -- a startup fence is only correct because
+// a fresh process holds no cached credential to evict. And it removes ONLY the
+// caller's own expired row, so any other holder's row -- live or expired --
+// makes the INSERT conflict and reports ErrHubAlreadyRunning. That second Hub
+// may have consumed and compacted past this cursor, which no reacquisition can
+// undo, so the caller must fence itself instead.
+//
+// The cursor cannot move backwards: the caller's in-memory cursor only
+// advances, and every renewal wrote it, so the value inserted here is at least
+// the value the removed row held.
+func (c RevocationCore[C]) ReacquireHubRuntimeLease(
+	ctx context.Context,
+	p ReacquireHubRuntimeLeaseParams,
+) error {
+	if p.HolderID == "" {
+		return fmt.Errorf("hub runtime lease holder ID is required")
+	}
+	if p.CursorSeq < 0 {
+		return fmt.Errorf("hub runtime lease cursor must not be negative")
+	}
+	leaseMillis, err := HubRuntimeLeaseMillis(p.LeaseDuration)
+	if err != nil {
+		return err
+	}
+	return c.ops.InTransaction(ctx, func(conn C) error {
+		if err := c.ops.DeleteOwnExpiredLease(ctx, conn, p.HolderID); err != nil {
+			return err
+		}
+		err := c.ops.InsertLease(ctx, conn, RevocationLease{
+			HolderID:    p.HolderID,
+			CursorSeq:   p.CursorSeq,
+			LeaseMillis: leaseMillis,
+		})
+		if errors.Is(err, ErrConflict) {
+			return ErrHubAlreadyRunning
+		}
+		return err
+	})
 }
 
 func (c RevocationCore[C]) RenewHubRuntimeLease(

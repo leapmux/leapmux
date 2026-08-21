@@ -261,17 +261,52 @@ func TestPublishRenewsLeaseBetweenPages(t *testing.T) {
 
 type errPublishEvents struct {
 	store.RevocationEventStore
+	// reacquireErr is what the recovery attempt an expired lease triggers gets
+	// back: nil for a lapse this process may repair, ErrHubAlreadyRunning for a
+	// rival holder it must fence on.
+	reacquireErr   error
+	reacquireCalls int
 }
 
 func (*errPublishEvents) PublishPending(context.Context, int32) (int64, error) {
 	return 0, errors.New("store unavailable")
 }
 
-// When the lease has expired, a publish store error is lease-fatal: publish
-// now returns the error (rather than only logging it) so runOnce aborts instead
-// of consuming on a lost lease, and handleStoreErrorLocked signals it on the
-// errors channel so the server fences.
-func TestPublishErrorOnExpiredLeaseIsFatalAndSignaled(t *testing.T) {
+func (s *errPublishEvents) ReacquireHubRuntimeLease(context.Context, store.ReacquireHubRuntimeLeaseParams) error {
+	s.reacquireCalls++
+	return s.reacquireErr
+}
+
+// MaxPublishedSeq answers the cursor verification that follows a successful
+// reacquisition: nothing was published past seq 0, so the cursor is trivially
+// replayable and the test stays focused on the store-error classification.
+func (*errPublishEvents) MaxPublishedSeq(context.Context) (int64, error) { return 0, nil }
+
+// A publish store error on a LAPSED lease is fatal only when the lease cannot be
+// taken back. A rival holder means that Hub may have consumed and compacted past
+// this cursor, so the watcher signals the server to fence.
+func TestPublishErrorOnLeaseLostToRivalIsFatalAndSignaled(t *testing.T) {
+	rev := &errPublishEvents{reacquireErr: store.ErrHubAlreadyRunning}
+	w := &Watcher{
+		store:         fakeRevStore{rev: rev},
+		leaseDuration: time.Hour,
+		holderID:      "holder",
+		errors:        make(chan error, 1),
+	}
+	_ = w.lease.mu.Lock(context.Background())
+	w.lease.leaseExpiresAt = time.Now().Add(-time.Second) // already lapsed
+	err := w.publishPendingLocked(context.Background(), 100, 1000)
+	w.lease.mu.Unlock()
+
+	require.Error(t, err)
+	assert.True(t, errorsIsLeaseFatal(err), "a lease held by a rival must be lease-fatal")
+	assert.Len(t, w.errors, 1, "the fatal must be signaled to the server so it fences")
+}
+
+// The same lapse with no rival must NOT fence: recovery takes the lease back and
+// the publish failure is reported as the ordinary transient store error it is.
+// This is the suspend path -- a laptop that slept past its lease keeps serving.
+func TestPublishErrorOnLapsedLeaseRecoversAndReportsStoreError(t *testing.T) {
 	rev := &errPublishEvents{}
 	w := &Watcher{
 		store:         fakeRevStore{rev: rev},
@@ -280,13 +315,20 @@ func TestPublishErrorOnExpiredLeaseIsFatalAndSignaled(t *testing.T) {
 		errors:        make(chan error, 1),
 	}
 	_ = w.lease.mu.Lock(context.Background())
-	w.lease.leaseExpiresAt = time.Now().Add(-time.Second) // already expired
+	w.lease.leaseExpiresAt = time.Now().Add(-time.Second) // already lapsed
 	err := w.publishPendingLocked(context.Background(), 100, 1000)
+	remaining := w.leaseRemainingLocked()
 	w.lease.mu.Unlock()
 
 	require.Error(t, err)
-	assert.True(t, errorsIsLeaseFatal(err), "a publish store error on an expired lease must be lease-fatal")
-	assert.Len(t, w.errors, 1, "the fatal must be signaled to the server so it fences")
+	assert.False(t, errorsIsLeaseFatal(err), "a recovered lapse must not be lease-fatal")
+	assert.Empty(t, w.errors, "a recovered lapse must not fence the server")
+	assert.Equal(t, 1, rev.reacquireCalls, "the lapsed lease must be reacquired")
+	assert.Greater(t, remaining, time.Duration(0), "recovery must leave a live lease behind")
+	// A lapse that only the WALL clock can see -- the state a suspend actually
+	// leaves -- has no test of its own: that time.Time cannot be built in Go (see
+	// leaseRemainingLocked). TestWatcher_ReacquiresLeaseLapsedDuringSuspend
+	// covers the same recovery from the database side.
 }
 
 func TestApplyEventSkipsUnknownKind(t *testing.T) {

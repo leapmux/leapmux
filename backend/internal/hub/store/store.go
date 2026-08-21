@@ -482,6 +482,15 @@ type RenewHubRuntimeLeaseParams struct {
 	LeaseDuration time.Duration
 }
 
+type ReacquireHubRuntimeLeaseParams struct {
+	HolderID string
+	// CursorSeq is the position the holder had already reached. Reacquisition
+	// keeps it, where acquisition fences to the current head of the stream.
+	CursorSeq int64
+	// LeaseDuration is applied relative to the database's current time.
+	LeaseDuration time.Duration
+}
+
 type CompactRevocationEventsParams struct {
 	Cutoff time.Time
 }
@@ -498,6 +507,14 @@ type RevocationEventStore interface {
 	// RenewHubRuntimeLease atomically advances the cursor and renews the live
 	// singleton lease. It returns false after expiry, takeover, or removal.
 	RenewHubRuntimeLease(ctx context.Context, p RenewHubRuntimeLeaseParams) (bool, error)
+	// ReacquireHubRuntimeLease re-takes the singleton lease for a holder whose
+	// own lease lapsed while its process could not renew -- a suspended laptop,
+	// a paused VM, a long stall. It keeps CursorSeq instead of fencing to the
+	// head of the stream, so no revocation published during the stall is
+	// skipped, and it returns ErrHubAlreadyRunning while ANY other holder's row
+	// is present, live or expired: that holder may have consumed and compacted
+	// past this cursor.
+	ReacquireHubRuntimeLease(ctx context.Context, p ReacquireHubRuntimeLeaseParams) error
 	ReleaseHubRuntimeLease(ctx context.Context, holderID string) (int64, error)
 	ListPublishedAfter(ctx context.Context, afterSeq int64, limit int32) ([]PublishedRevocationEvent, error)
 	MaxPublishedSeq(ctx context.Context) (int64, error)

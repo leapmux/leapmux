@@ -1,8 +1,10 @@
 package revocationwatcher_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -25,6 +27,21 @@ import (
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
+
+// captureDefaultLogs routes the process default logger into a buffer for one
+// test and returns a reader for everything written so far. The watcher logs
+// through the package-level slog functions, so the default is the only seam.
+// slog.SetDefault is process-global, so the restore must not be skipped; the
+// level is Debug so nothing under test is filtered by the handler rather than
+// by the code.
+func captureDefaultLogs(t *testing.T) func() string {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return buf.String
+}
 
 func newBearerAuthHub(
 	t *testing.T,
@@ -750,10 +767,13 @@ func (leaseLostRevocationEvents) RenewHubRuntimeLease(context.Context, store.Ren
 // happens to be.
 const leaseLossTestDuration = 500 * time.Millisecond
 
-// Losing the lease (a renewal that advances no row) must self-fence the Hub.
-// The lease-renewal heartbeat runs independently of event processing, so the
-// self-fence fires even when the processing interval is far longer than the
-// lease.
+// A renewal that advances no row must self-fence the Hub when the lease cannot
+// be taken back. Here the durable row is still live and still held by this
+// watcher, so the recovery attempt the refused renewal triggers finds a row it
+// may not remove and reports ErrHubAlreadyRunning -- the same answer a genuine
+// rival produces. The lease-renewal heartbeat runs independently of event
+// processing, so the self-fence fires even when the processing interval is far
+// longer than the lease.
 func TestWatcher_LeaseLossIsFatal(t *testing.T) {
 	env := setupUnseeded(t)
 	injected := injectedRevocationStore{
@@ -778,6 +798,231 @@ func TestWatcher_LeaseLossIsFatal(t *testing.T) {
 		require.ErrorIs(t, err, revocationwatcher.ErrLeaseLost)
 	case <-time.After(10 * leaseLossTestDuration):
 		t.Fatal("watcher did not self-fence after losing its lease")
+	}
+}
+
+// suspendedLeaseRevocationEvents shortens ONLY the durable lease the seed
+// acquires, so the row in the database lapses while the watcher's in-memory
+// deadline stays far in the future.
+//
+// That split is what a laptop suspend does for real. Go's monotonic clock is
+// mach_absolute_time on darwin (CLOCK_MONOTONIC on Linux), and neither advances
+// while the machine is asleep, so every local deadline and every time.Ticker
+// freezes with the process. The database compares lease_expires_at against its
+// own wall clock, which does not freeze. The machine wakes holding a local
+// deadline that says the lease is live and a durable row that expired hours ago.
+//
+// Faking the clock instead is not possible here: the watcher's deadlines come
+// from time.Now and its heartbeat from time.Ticker, and the durable side is
+// SQLite's strftime('now'), which no Go-level seam can move.
+type suspendedLeaseRevocationEvents struct {
+	store.RevocationEventStore
+	durableLease time.Duration
+}
+
+func (s suspendedLeaseRevocationEvents) AcquireHubRuntimeLease(
+	ctx context.Context,
+	p store.AcquireHubRuntimeLeaseParams,
+) (int64, error) {
+	p.LeaseDuration = s.durableLease
+	return s.RevocationEventStore.AcquireHubRuntimeLease(ctx, p)
+}
+
+// suspendedLeaseDuration is the durable lease the suspend cases outlive. It is
+// the same order as storetest's expiringLeaseDuration: long enough to survive
+// the acquiring write, short enough to lapse inside the test.
+const suspendedLeaseDuration = 25 * time.Millisecond
+
+// A lease that lapsed while the process was suspended must be reacquired, not
+// treated as a takeover. Nothing else holds the lease, so fencing the Hub here
+// kills a desktop app that only went to sleep.
+func TestWatcher_ReacquiresLeaseLapsedDuringSuspend(t *testing.T) {
+	env := setupUnseeded(t)
+	injected := injectedRevocationStore{
+		Store: env.st,
+		events: suspendedLeaseRevocationEvents{
+			RevocationEventStore: env.st.RevocationEvents(),
+			durableLease:         suspendedLeaseDuration,
+		},
+	}
+	w := revocationwatcher.New(injected, auth.NewCredentialLifecycleEffects(env.cache, env.closer, nil),
+		revocationwatcher.WithInterval(time.Hour),
+	)
+	require.NoError(t, w.SeedCursor(context.Background()))
+	t.Cleanup(func() { _ = w.Close(context.Background()) })
+
+	// The suspend. The durable row lapses; the local deadline (a full
+	// DefaultLeaseDuration out) does not, so the watcher wakes believing it
+	// still holds the lease.
+	time.Sleep(4 * suspendedLeaseDuration)
+
+	tokenID := env.seedAPIToken(t)
+	_, err := env.st.APITokens().Revoke(context.Background(), tokenID)
+	require.NoError(t, err)
+
+	require.NoError(t, w.RunOnce(context.Background()),
+		"a lapsed lease that no rival holds must be reacquired, not fenced")
+	select {
+	case err := <-w.Errors():
+		t.Fatalf("a suspend must not fence the Hub, got: %v", err)
+	default:
+	}
+	assert.Equal(t, []string{tokenID}, env.closer.bearerSnapshot(),
+		"the revocation published after the wake must still be applied")
+
+	// The reacquired lease must be durable, not a local fiction: a rival can
+	// only be refused if the row is live and held by this watcher again.
+	_, err = env.st.RevocationEvents().AcquireHubRuntimeLease(
+		context.Background(),
+		store.AcquireHubRuntimeLeaseParams{HolderID: "rival", PublishLimit: 10, LeaseDuration: time.Hour},
+	)
+	require.ErrorIs(t, err, store.ErrHubAlreadyRunning,
+		"recovery must re-take the durable lease, not just extend the local deadline")
+}
+
+// A recovery that leaves no breadcrumb is why the original bug report was a
+// dead end: the only log line was the Hub stopping, and the holder ID it named
+// appeared nowhere else. Pin the fields that make the next report diagnosable in
+// one pass -- the acquisition that anchors the holder ID, and the two clock
+// readings whose disagreement IS the suspend.
+func TestWatcher_LogsTheLeaseLifecycleAndTheSuspendSignature(t *testing.T) {
+	readLogs := captureDefaultLogs(t)
+	env := setupUnseeded(t)
+	injected := injectedRevocationStore{
+		Store: env.st,
+		events: suspendedLeaseRevocationEvents{
+			RevocationEventStore: env.st.RevocationEvents(),
+			durableLease:         suspendedLeaseDuration,
+		},
+	}
+	w := revocationwatcher.New(injected, auth.NewCredentialLifecycleEffects(env.cache, env.closer, nil),
+		revocationwatcher.WithInterval(time.Hour),
+	)
+	require.NoError(t, w.SeedCursor(context.Background()))
+
+	require.Contains(t, readLogs(), "acquired the Hub runtime lease",
+		"the holder ID must be anchored before it can appear in a fatal error")
+
+	time.Sleep(4 * suspendedLeaseDuration)
+	tokenID := env.seedAPIToken(t)
+	_, err := env.st.APITokens().Revoke(context.Background(), tokenID)
+	require.NoError(t, err)
+	require.NoError(t, w.RunOnce(context.Background()))
+
+	out := readLogs()
+	assert.Contains(t, out, "reacquired a lease that lapsed")
+	assert.Contains(t, out, "monotonic_remaining=",
+		"both clock readings must be logged; their disagreement is what names a suspend")
+	assert.Contains(t, out, "wall_remaining=")
+	assert.Contains(t, out, "cursor=", "the cursor says which revocations were still owed")
+
+	require.NoError(t, w.Close(context.Background()))
+	assert.Contains(t, readLogs(), "released the Hub runtime lease",
+		"a missing release is what fences the next launch until the lease TTL")
+}
+
+// A second Hub that took the lease during the lapse must still fence this one.
+// That Hub owns the stream and may have consumed past this cursor, so recovery
+// is refused and the Hub stops -- the distinction that keeps the suspend repair
+// from also papering over a genuine takeover.
+func TestWatcher_LeaseTakenDuringSuspendIsFatal(t *testing.T) {
+	env := setupUnseeded(t)
+	injected := injectedRevocationStore{
+		Store: env.st,
+		events: suspendedLeaseRevocationEvents{
+			RevocationEventStore: env.st.RevocationEvents(),
+			durableLease:         suspendedLeaseDuration,
+		},
+	}
+	w := revocationwatcher.New(injected, auth.NewCredentialLifecycleEffects(env.cache, env.closer, nil),
+		revocationwatcher.WithInterval(time.Hour),
+	)
+	require.NoError(t, w.SeedCursor(context.Background()))
+	t.Cleanup(func() { _ = w.Close(context.Background()) })
+
+	time.Sleep(4 * suspendedLeaseDuration)
+
+	// A rival Hub starts while this one is suspended and takes the lapsed lease.
+	_, err := env.st.RevocationEvents().AcquireHubRuntimeLease(
+		context.Background(),
+		store.AcquireHubRuntimeLeaseParams{HolderID: "rival", PublishLimit: 10, LeaseDuration: time.Hour},
+	)
+	require.NoError(t, err)
+
+	tokenID := env.seedAPIToken(t)
+	_, err = env.st.APITokens().Revoke(context.Background(), tokenID)
+	require.NoError(t, err)
+
+	err = w.RunOnce(context.Background())
+	require.ErrorIs(t, err, revocationwatcher.ErrLeaseLost,
+		"a lease another Hub holds must not be reacquired")
+	select {
+	case fatal := <-w.Errors():
+		require.ErrorIs(t, fatal, revocationwatcher.ErrLeaseLost)
+	default:
+		t.Fatal("a takeover must be signaled so the server fences")
+	}
+}
+
+// Recovery keeps the cursor, so it must also prove the cursor is still
+// replayable. When the events between the cursor and the surviving stream were
+// compacted away, this Hub would silently never apply those revocations --
+// worse than fencing. Fence.
+func TestWatcher_CompactedGapAfterLapseIsFatal(t *testing.T) {
+	// The local lease outlives the durable one by design, so the wake finds the
+	// row gone while the local deadline is merely PAST ITS HALF-LIFE. That is
+	// what makes the drained sweep below renew at all -- the renewal the database
+	// refuses is this test's route into recovery, since the events it needs
+	// compacted away are exactly the events that would otherwise drive one.
+	//
+	// A slow machine that overruns the sleep past the whole local lease reaches
+	// the same recovery through checkLeaseLocked instead, so the assertions hold
+	// either way.
+	const localLease = time.Second
+	env := setupUnseeded(t)
+	injected := injectedRevocationStore{
+		Store: env.st,
+		events: suspendedLeaseRevocationEvents{
+			RevocationEventStore: env.st.RevocationEvents(),
+			durableLease:         suspendedLeaseDuration,
+		},
+	}
+	w := revocationwatcher.New(injected, auth.NewCredentialLifecycleEffects(env.cache, env.closer, nil),
+		revocationwatcher.WithInterval(time.Hour),
+		revocationwatcher.WithLeaseDuration(localLease),
+	)
+	require.NoError(t, w.SeedCursor(context.Background()))
+	t.Cleanup(func() { _ = w.Close(context.Background()) })
+
+	time.Sleep(localLease * 3 / 5)
+
+	// While this watcher is suspended, revocations are published and then
+	// compacted away -- what a rival Hub that consumed them and released its
+	// lease leaves behind. The lease row is gone, so nothing blocks the
+	// reacquisition; only the missing seq 1 reveals the loss.
+	for range 2 {
+		tokenID := env.seedAPIToken(t)
+		_, revokeErr := env.st.APITokens().Revoke(context.Background(), tokenID)
+		require.NoError(t, revokeErr)
+	}
+	_, err := env.st.RevocationEvents().PublishPending(context.Background(), 10)
+	require.NoError(t, err)
+	deleted, err := env.st.Cleanup().CompactPublishedRevocationEvents(
+		context.Background(),
+		store.CompactRevocationEventsParams{Cutoff: time.Now().UTC().Add(time.Hour)},
+	)
+	require.NoError(t, err)
+	require.Equal(t, int64(2), deleted, "the expired lease must stop bounding compaction")
+
+	err = w.RunOnce(context.Background())
+	require.ErrorIs(t, err, revocationwatcher.ErrLeaseLost,
+		"a cursor that can no longer replay must fence rather than skip revocations")
+	assert.Empty(t, env.closer.bearerSnapshot(), "no event may be applied from an unverified cursor")
+	select {
+	case fatal := <-w.Errors():
+		require.ErrorIs(t, fatal, revocationwatcher.ErrLeaseLost)
+	default:
+		t.Fatal("a compacted gap must be signaled so the server fences")
 	}
 }
 

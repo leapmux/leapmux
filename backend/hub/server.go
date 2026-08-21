@@ -922,7 +922,7 @@ func (s *Server) Serve(ctx context.Context) error {
 	shutdownDone := make(chan serverTeardownErrors, 1)
 	go func() {
 		<-serveCtx.Done()
-		slog.Info("hub shutting down...")
+		logShutdownCause(serveCtx)
 
 		// 1. Reject all new RPCs and stop background tasks.
 		close(s.shutdownCh)
@@ -1067,6 +1067,25 @@ func (s *Server) Serve(ctx context.Context) error {
 	teardownErrs.foldPendingWatcherError(s.revocationWatcher.Errors())
 	teardownErrs.storeClose = s.store.Close()
 	return teardownErrs.finalize()
+}
+
+// logShutdownCause names why the Hub is stopping, at the moment it decides to.
+//
+// Every cancelServe call site passes a cause, and without this the log could not
+// tell them apart: a user bug report showed "hub shutting down..." reading
+// identically for an ordinary Ctrl-C and for a fatal revocation-watcher failure,
+// with the real reason surfacing only much later, folded into the aggregate
+// error Serve returns. An operator reading forward saw a Hub stop for no stated
+// reason.
+//
+// A plain cancellation is an exit somebody asked for and carries nothing worth a
+// field, so it keeps the bare line it always had.
+func logShutdownCause(serveCtx context.Context) {
+	if cause := context.Cause(serveCtx); cause != nil && !errors.Is(cause, context.Canceled) {
+		slog.Error("hub shutting down after a fatal error", "cause", cause)
+		return
+	}
+	slog.Info("hub shutting down...")
 }
 
 // foldPendingWatcherError folds a still-buffered fatal watcher error into

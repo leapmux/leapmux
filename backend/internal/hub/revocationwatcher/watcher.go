@@ -60,10 +60,18 @@ const (
 // its store round-trips (releasing it per runStoreUnlocked so the heartbeat can
 // renew), which is why the sweep helpers operate on w.lease.
 type leaseState struct {
-	mu             ctxutil.Mutex
-	lastSeq        int64
+	mu      ctxutil.Mutex
+	lastSeq int64
+	// leaseExpiresAt is the granted deadline, and it must always come from
+	// time.Now (directly or via Add) so it carries BOTH a monotonic and a wall
+	// clock reading. leaseRemainingLocked reads both, because the two can
+	// disagree by an unbounded amount and only one of them matches the database.
 	leaseExpiresAt time.Time
 	seeded         bool
+	// cursorUnverified is set when recovery reacquired the lease but has not yet
+	// proven that lastSeq is still replayable. No event may be applied while it
+	// is set; ensureLeaseLocked clears it (see verifyCursorLocked).
+	cursorUnverified bool
 }
 
 // Watcher is constructed once at hub bootstrap and started via StartLoop.
@@ -207,6 +215,13 @@ func (w *Watcher) SeedCursor(ctx context.Context) error {
 	w.lease.lastSeq = maxSeq
 	w.lease.leaseExpiresAt = leaseExpiresAt
 	w.lease.seeded = true
+	// The holder ID is the only identifier every later lease message carries,
+	// including the fatal ones. Without this line it appears for the first time
+	// in the error that stops the Hub, anchored to nothing -- the operator cannot
+	// tell when the lease was taken, at what cursor, or whether it is even this
+	// process's own.
+	slog.Info("revocation watcher: acquired the Hub runtime lease",
+		"holder", w.holderID, "cursor", maxSeq, "lease_duration", leaseDuration)
 	return nil
 }
 
@@ -302,19 +317,20 @@ func (w *Watcher) renewalLoop(loopCtx context.Context) {
 			// the sweep lets go, and loopCtx cancellation is observed on the next
 			// select rather than by abandoning a renewal it is entitled to make.
 			_ = w.lease.mu.Lock(context.Background())
-			renewCtx, cancel := context.WithDeadline(loopCtx, w.lease.leaseExpiresAt)
-			err := w.renewLeaseIfStaleLocked(renewCtx)
-			cancel()
+			// loopCtx, not a lease-bounded context: renewLocked bounds its own
+			// round-trip by the lease, and the recovery it falls back to runs
+			// precisely when that deadline has passed.
+			err := w.renewLeaseIfStaleLocked(loopCtx)
 			w.lease.mu.Unlock()
-			// Only a lease-fatal error (genuine loss/takeover/local-budget
-			// expiry) stops the watcher; renewLocked has already signaled it on
-			// w.errors so the server fences. A transient store error
-			// (SQLITE_BUSY, a network blip) leaves the still-valid lease intact
-			// -- log and retry on the next tick instead of silently killing the
-			// watcher (which would leave the Hub serving with revocations no
-			// longer applied). This mirrors processingLoop's tolerance; if the
-			// store stays down until the lease actually expires, renewLocked's
-			// budget guard turns the next error lease-fatal.
+			// Only a lease-fatal error (a rival holder, or a local-budget expiry)
+			// stops the watcher; renewLocked and recoverLeaseLocked have already
+			// signaled it on w.errors so the server fences. A transient store
+			// error (SQLITE_BUSY, a network blip) leaves the still-valid lease
+			// intact -- log and retry on the next tick instead of silently killing
+			// the watcher (which would leave the Hub serving with revocations no
+			// longer applied). A lease that merely LAPSED is likewise not fatal:
+			// recoverLeaseLocked re-takes it, which is what carries a suspended
+			// laptop across its sleep.
 			if errorsIsLeaseFatal(err) {
 				w.cancelLoop()
 				return
@@ -364,8 +380,7 @@ func (w *Watcher) runOnce(ctx context.Context) (bool, error) {
 	if !w.lease.seeded {
 		return false, ErrNotSeeded
 	}
-	if err := w.checkLeaseLocked(); err != nil {
-		w.signalFatalLocked(err)
+	if err := w.ensureLeaseLocked(ctx); err != nil {
 		return false, err
 	}
 	// Each store round-trip runs with w.lease.mu released (see runStoreUnlocked),
@@ -448,7 +463,7 @@ func (w *Watcher) publishPendingLocked(parentCtx context.Context, pageSize, maxE
 		})
 		if err != nil {
 			slog.Warn("revocation watcher: publish pending failed", "error", err)
-			return w.handleStoreErrorLocked(err)
+			return w.handleStoreErrorLocked(parentCtx, err)
 		}
 		if n == 0 {
 			return nil
@@ -457,10 +472,10 @@ func (w *Watcher) publishPendingLocked(parentCtx context.Context, pageSize, maxE
 		if n < int64(limit) {
 			return nil
 		}
-		renewCtx, renewCancel := context.WithDeadline(parentCtx, w.lease.leaseExpiresAt)
-		err = w.renewLeaseIfStaleLocked(renewCtx)
-		renewCancel()
-		if err != nil {
+		// parentCtx, not a lease-bounded context: renewLocked applies the lease
+		// deadline to its own round-trip, and its recovery path needs a context
+		// that outlives the deadline it repairs.
+		if err := w.renewLeaseIfStaleLocked(parentCtx); err != nil {
 			// Log before returning: runOnce treats a non-fatal return here as
 			// transient and discards it (falling through to consume), so without
 			// this the only store error on the publish path that leaves no
@@ -490,12 +505,10 @@ func (w *Watcher) consumePageLocked(parentCtx context.Context, limit int32) (int
 	})
 	if err != nil {
 		slog.Warn("revocation watcher: list published failed", "error", err)
-		return 0, false, w.handleStoreErrorLocked(err)
+		return 0, false, w.handleStoreErrorLocked(parentCtx, err)
 	}
 	if len(events) == 0 {
-		renewCtx, renewCancel := context.WithDeadline(parentCtx, w.lease.leaseExpiresAt)
-		defer renewCancel()
-		return 0, true, w.renewLeaseIfStaleLocked(renewCtx)
+		return 0, true, w.renewLeaseIfStaleLocked(parentCtx)
 	}
 	for _, event := range events {
 		if err := parentCtx.Err(); err != nil {
@@ -504,8 +517,7 @@ func (w *Watcher) consumePageLocked(parentCtx context.Context, limit int32) (int
 		if w.closed.Load() || !w.lease.seeded {
 			return 0, false, ErrClosed
 		}
-		if err := w.checkLeaseLocked(); err != nil {
-			w.signalFatalLocked(err)
+		if err := w.ensureLeaseLocked(parentCtx); err != nil {
 			return 0, false, err
 		}
 		// Apply the event's teardown WITHOUT w.lease.mu so renewalLoop can keep the
@@ -531,11 +543,11 @@ func (w *Watcher) consumePageLocked(parentCtx context.Context, limit int32) (int
 			return 0, false, ErrClosed
 		}
 	}
-	// Re-derive the deadline: renewalLoop may have extended leaseExpiresAt while
-	// w.lease.mu was released above, so the pre-teardown ctx could be stale.
-	renewCtx, renewCancel := context.WithDeadline(parentCtx, w.lease.leaseExpiresAt)
-	defer renewCancel()
-	if err := w.renewLocked(renewCtx); err != nil {
+	// parentCtx, not a lease-bounded context. renewLocked reads leaseExpiresAt
+	// itself when it bounds its round-trip, so it always uses the deadline
+	// renewalLoop left there rather than one snapshotted before the teardown
+	// above -- and its recovery path still runs when that deadline has passed.
+	if err := w.renewLocked(parentCtx); err != nil {
 		return 0, false, err
 	}
 	// A short page (fewer than limit) means no more events exist at this seq
@@ -552,18 +564,31 @@ func (w *Watcher) consumePageLocked(parentCtx context.Context, limit int32) (int
 // runs every interval, so renewing unconditionally would write a lease row on
 // every tick -- ~leaseDuration/interval redundant writes that contend the
 // single SQLite writer. Renewing at the half-life keeps ample liveness margin --
-// a missed renewal still self-fences the Hub, because once the lease actually
-// expires the checkLeaseLocked / local-budget guards in renewLocked and runOnce
-// fire ErrLeaseLost -- while cutting idle renewal writes to ~2 per lease
-// duration. During active consumption the caller renews every page instead, to
-// persist cursor progress.
+// a missed renewal is still caught, because once the lease actually expires the
+// checkLeaseLocked guards in renewLocked and ensureLeaseLocked route to
+// recovery -- while cutting idle renewal writes to ~2 per lease duration.
+// During active consumption the caller renews every page instead, to persist
+// cursor progress.
+//
+// Staleness comes from leaseRemainingLocked, so the half-life is measured by
+// whichever clock says less is left. A suspend that freezes the monotonic clock
+// therefore still reports the lease stale on the first tick after the wake.
 func (w *Watcher) renewLeaseIfStaleLocked(ctx context.Context) error {
-	if time.Until(w.lease.leaseExpiresAt) > w.leaseDuration/2 {
+	if w.leaseRemainingLocked() > w.leaseDuration/2 {
 		return nil
 	}
 	return w.renewLocked(ctx)
 }
 
+// renewLocked renews the durable lease, or recovers it when it has already
+// lapsed.
+//
+// ctx must NOT be bounded by the lease deadline. Recovery runs precisely when
+// that deadline has passed, so a context derived from it would be dead on
+// arrival and no recovery could ever complete. renewLocked applies the lease
+// deadline to the renewal round-trip itself, which is the call that bound
+// belongs to: a fenced-out Hub must stop writing at its deadline, while a
+// merely-slow store is kept alive by renewalLoop meanwhile.
 func (w *Watcher) renewLocked(ctx context.Context) error {
 	if w.closed.Load() {
 		// Close has begun teardown and is about to release (or has released) the
@@ -573,26 +598,31 @@ func (w *Watcher) renewLocked(ctx context.Context) error {
 		// unwind without ever re-acquiring the lease.
 		return ErrClosed
 	}
-	now := time.Now()
-	if !now.Before(w.lease.leaseExpiresAt) {
-		err := fmt.Errorf("%w: holder %s expired at %s", ErrLeaseLost, w.holderID, w.lease.leaseExpiresAt)
-		w.signalFatalLocked(err)
-		return err
+	if err := w.checkLeaseLocked(); err != nil {
+		// The lease already lapsed, so the renewal statement -- which requires a
+		// live row -- cannot match. Recovery re-takes the lease and writes this
+		// same cursor, which is exactly what the renewal would have done.
+		return w.recoverLeaseLocked(ctx, err)
 	}
 	leaseDuration := w.leaseDuration
 	leaseStartedAt := time.Now()
-	advanced, err := w.store.RevocationEvents().RenewHubRuntimeLease(ctx, store.RenewHubRuntimeLeaseParams{
+	renewCtx, cancelRenew := context.WithDeadline(ctx, w.lease.leaseExpiresAt)
+	advanced, err := w.store.RevocationEvents().RenewHubRuntimeLease(renewCtx, store.RenewHubRuntimeLeaseParams{
 		HolderID:      w.holderID,
 		CursorSeq:     w.lease.lastSeq,
 		LeaseDuration: leaseDuration,
 	})
+	cancelRenew()
 	if err != nil {
-		return w.handleStoreErrorLocked(err)
+		return w.handleStoreErrorLocked(ctx, err)
 	}
 	if !advanced {
-		err := fmt.Errorf("%w: holder %s was removed, replaced, or expired", ErrLeaseLost, w.holderID)
-		w.signalFatalLocked(err)
-		return err
+		// The durable row is gone or no longer live even though the local
+		// deadline says otherwise -- the divergence a suspend produces, and the
+		// one the wall-clock guard in leaseRemainingLocked cannot catch when the
+		// database's clock is simply ahead of ours. Recovery decides whether this
+		// is a lapse to repair or a takeover to fence on.
+		return w.recoverLeaseLocked(ctx, fmt.Errorf("holder %s was removed, replaced, or expired", w.holderID))
 	}
 	leaseExpiresAt, exceeded := leaseBudgetExpiry(leaseStartedAt, leaseDuration)
 	if exceeded {
@@ -604,9 +634,193 @@ func (w *Watcher) renewLocked(ctx context.Context) error {
 	return nil
 }
 
+// recoverLeaseLocked re-takes a lease that lapsed while this process could not
+// renew it, and returns nil once the lease is held again and its cursor is
+// proven replayable.
+//
+// A lapse is NOT a takeover. A suspended laptop, a paused VM, or a stall long
+// enough to miss every heartbeat all end with the durable row expired and
+// nobody else holding it; the Hub that wakes up is still the only Hub. Fencing
+// it there stopped the process for a condition that repairs itself, which is
+// what killed the desktop app's local Hub after every sleep. Only a rival
+// holder's row is fatal, because that Hub may have consumed and compacted past
+// this cursor -- damage no reacquisition can undo.
+//
+// cause is the lapse this recovery answers. It is reported, not returned: a
+// successful recovery must not hand back an ErrLeaseLost that callers treat as
+// process-fatal.
+func (w *Watcher) recoverLeaseLocked(ctx context.Context, cause error) error {
+	if w.closed.Load() {
+		return ErrClosed
+	}
+	leaseDuration := w.leaseDuration
+	// Read both clocks BEFORE the reacquisition overwrites the deadline: these
+	// two numbers are what let a reader tell a suspend from a takeover, and they
+	// are gone once the new deadline lands.
+	monotonicLeft, wallLeft := w.leaseClockReadingsLocked()
+	leaseStartedAt := time.Now()
+	// Bounded by one lease duration, and NOT by the lapsed deadline: a lease
+	// that cannot be re-taken within its own duration would be expired on
+	// arrival anyway. ctx still cancels it, so Close (which cancels the loop and
+	// the operation context before waiting) is not delayed by a slow store.
+	reacquireCtx, cancelReacquire := context.WithTimeout(ctx, leaseDuration)
+	err := w.store.RevocationEvents().ReacquireHubRuntimeLease(reacquireCtx, store.ReacquireHubRuntimeLeaseParams{
+		HolderID:      w.holderID,
+		CursorSeq:     w.lease.lastSeq,
+		LeaseDuration: leaseDuration,
+	})
+	cancelReacquire()
+	if errors.Is(err, store.ErrHubAlreadyRunning) {
+		fatal := fmt.Errorf("%w: holder %s cannot reacquire the lease, another Hub holds it: %w", ErrLeaseLost, w.holderID, cause)
+		// Logged here as well as signaled: the server folds this into an aggregate
+		// error that surfaces only after the whole teardown, so without this line
+		// the log shows the Hub stopping with no cause at the moment it decided to.
+		slog.Error("revocation watcher: another Hub holds the runtime lease; this Hub must stop",
+			"holder", w.holderID, "cursor", w.lease.lastSeq,
+			"monotonic_remaining", monotonicLeft, "wall_remaining", wallLeft, "cause", cause)
+		w.signalFatalLocked(fatal)
+		return fatal
+	}
+	if err != nil {
+		// Transient: the store refused this attempt, but the local deadline still
+		// says lapsed, so the next sweep or heartbeat tries again. Deliberately
+		// does NOT wrap cause -- an ErrLeaseLost in the returned chain would make
+		// errorsIsLeaseFatal stop the watcher for a store blip.
+		slog.Warn("revocation watcher: could not reacquire a lapsed lease, will retry",
+			"error", err, "cause", cause, "holder", w.holderID)
+		return fmt.Errorf("reacquire Hub runtime lease: %w", err)
+	}
+	if w.closed.Load() {
+		// Close raced this reacquisition and has already run (or is running) its
+		// release, so the row just written would outlive the Watcher. Remove it,
+		// exactly as SeedCursor does for the same race.
+		releaseErr := w.releaseHubRuntimeLease(ctx)
+		return errors.Join(ErrClosed, errwrap.Wrap(releaseErr, "release Hub runtime lease after concurrent close"))
+	}
+	leaseExpiresAt, exceeded := leaseBudgetExpiry(leaseStartedAt, leaseDuration)
+	if exceeded {
+		fatal := fmt.Errorf("%w: holder %s reacquisition exceeded local lease budget", ErrLeaseLost, w.holderID)
+		w.signalFatalLocked(fatal)
+		return fatal
+	}
+	w.lease.leaseExpiresAt = leaseExpiresAt
+	// The reacquisition kept the cursor, so nothing published during the lapse is
+	// skipped -- but only a rival that ran DURING the lapse could have compacted
+	// past it, and the reacquisition cannot see one that already released. Prove
+	// the cursor before any event is applied.
+	w.lease.cursorUnverified = true
+	// Both clock readings, not just the minimum: monotonic_remaining still
+	// positive beside a deeply negative wall_remaining is the signature of a
+	// suspended process, and their difference is roughly how long it was frozen.
+	slog.Warn("revocation watcher: reacquired a lease that lapsed while this process could not renew",
+		"holder", w.holderID, "cursor", w.lease.lastSeq,
+		"monotonic_remaining", monotonicLeft, "wall_remaining", wallLeft, "cause", cause)
+	return w.verifyCursorLocked(ctx)
+}
+
+// verifyCursorLocked proves that every revocation this watcher has not yet
+// applied is still in the stream, and clears cursorUnverified when it is.
+//
+// Sequence numbers are gapless (publishPending assigns them contiguously), and
+// compaction deletes from the oldest, so the first surviving event above the
+// cursor is cursor+1 unless something deleted the events in between. A hole
+// there means a second Hub consumed and compacted this stream while the lease
+// was lapsed, so this process would silently never apply those revocations --
+// the one outcome worse than fencing. Fence.
+//
+// This runs after the lease is held again, and a live lease's cursor bounds
+// compaction to rows at or below it, so no rival can open a hole between the
+// two reads. Caller holds w.lease.mu.
+func (w *Watcher) verifyCursorLocked(ctx context.Context) error {
+	cursor := w.lease.lastSeq
+	maxSeq, err := w.store.RevocationEvents().MaxPublishedSeq(ctx)
+	if err != nil {
+		return fmt.Errorf("read the revocation sequence to verify cursor %d: %w", cursor, err)
+	}
+	if maxSeq <= cursor {
+		// Nothing was published past the cursor, so there is nothing to replay.
+		w.lease.cursorUnverified = false
+		return nil
+	}
+	events, err := w.store.RevocationEvents().ListPublishedAfter(ctx, cursor, 1)
+	if err != nil {
+		return fmt.Errorf("read the revocation stream to verify cursor %d: %w", cursor, err)
+	}
+	if len(events) == 0 || events[0].Seq != cursor+1 {
+		fatal := fmt.Errorf(
+			"%w: holder %s cannot replay from seq %d; another Hub consumed and compacted this stream",
+			ErrLeaseLost, w.holderID, cursor)
+		w.signalFatalLocked(fatal)
+		return fatal
+	}
+	w.lease.cursorUnverified = false
+	return nil
+}
+
+// ensureLeaseLocked returns nil while this watcher may safely apply events: it
+// holds a live lease, and the cursor it holds is still replayable. It is the
+// single gate every consume path passes, so neither check can be forgotten at a
+// call site. Caller holds w.lease.mu.
+func (w *Watcher) ensureLeaseLocked(ctx context.Context) error {
+	if err := w.checkLeaseLocked(); err != nil {
+		return w.recoverLeaseLocked(ctx, err)
+	}
+	if w.lease.cursorUnverified {
+		return w.verifyCursorLocked(ctx)
+	}
+	return nil
+}
+
+// leaseRemainingLocked is how much of the lease is left by the SOONER of the two
+// clocks that judge it.
+//
+// The wall-clock reading is what makes a suspend visible. Go's monotonic clock
+// STOPS while the machine is asleep (darwin's mach_absolute_time, Linux's
+// CLOCK_MONOTONIC), and so does every timer built on it, while the database
+// compares lease_expires_at against its own wall clock, which does not stop. A
+// laptop that sleeps for an hour therefore wakes holding a monotonic deadline
+// that says the lease is live and a row that expired 59 minutes ago. Reading
+// only the monotonic side let the watcher keep consuming on a lease it no longer
+// held, until a renewal was refused and fenced the whole Hub.
+//
+// A time.Time from time.Now carries both readings, so both come from the one
+// leaseExpiresAt field and cannot drift apart: Sub uses the monotonic reading
+// when both operands have one, and Round(0) strips it so the second subtraction
+// uses the wall reading. A wall clock that an NTP correction pushes forward only
+// makes this report a lapse the database was about to report anyway.
+//
+// The divergence itself cannot be reproduced in a unit test. Only time.Now
+// produces a monotonic reading, Add moves both readings together, and every
+// operation that could separate them (AddDate, Round, Truncate, UTC) strips the
+// monotonic one instead. The recovery this drives is covered end to end by
+// TestWatcher_ReacquiresLeaseLapsedDuringSuspend, which produces the equivalent
+// split from the database side.
+// Caller holds w.lease.mu.
+func (w *Watcher) leaseRemainingLocked() time.Duration {
+	monotonic, wall := w.leaseClockReadingsLocked()
+	return min(monotonic, wall)
+}
+
+// leaseClockReadingsLocked reports the lease remainder as each clock sees it.
+//
+// The PAIR is the suspend signature, and it is the reason both readings are
+// logged rather than only the minimum: a monotonic remainder that is still
+// comfortably positive beside a wall remainder deep in the negative means the
+// process did not run for the difference between them. No other condition
+// produces that shape, so one log line separates "this laptop slept" from "a
+// second Hub took the lease" without the reader having to infer it.
+// Caller holds w.lease.mu.
+func (w *Watcher) leaseClockReadingsLocked() (monotonic, wall time.Duration) {
+	now := time.Now()
+	return w.lease.leaseExpiresAt.Sub(now), w.lease.leaseExpiresAt.Round(0).Sub(now.Round(0))
+}
+
 func (w *Watcher) checkLeaseLocked() error {
-	if !time.Now().Before(w.lease.leaseExpiresAt) {
-		return fmt.Errorf("%w: holder %s expired at %s", ErrLeaseLost, w.holderID, w.lease.leaseExpiresAt)
+	if remaining := w.leaseRemainingLocked(); remaining <= 0 {
+		// Round(0) drops the monotonic suffix, so the printed deadline is the
+		// wall time the database also judged this lease by.
+		return fmt.Errorf("%w: holder %s expired at %s, %s ago",
+			ErrLeaseLost, w.holderID, w.lease.leaseExpiresAt.Round(0), -remaining)
 	}
 	return nil
 }
@@ -623,9 +837,12 @@ func leaseBudgetExpiry(startedAt time.Time, dur time.Duration) (expiresAt time.T
 	return expiresAt, !time.Now().Before(expiresAt)
 }
 
-func (w *Watcher) handleStoreErrorLocked(err error) error {
-	if leaseErr := w.checkLeaseLocked(); leaseErr != nil {
-		w.signalFatalLocked(leaseErr)
+// handleStoreErrorLocked reports the real cause of a failed store round-trip. A
+// call that failed while the lease had lapsed usually failed BECAUSE of the
+// lapse (its context carried the lease deadline), so repair the lease first and
+// report the store error only if the lease is sound. Caller holds w.lease.mu.
+func (w *Watcher) handleStoreErrorLocked(ctx context.Context, err error) error {
+	if leaseErr := w.ensureLeaseLocked(ctx); leaseErr != nil {
 		return leaseErr
 	}
 	return err
@@ -739,6 +956,12 @@ func (w *Watcher) releaseSeededLease(ctx context.Context) error {
 		return fmt.Errorf("release Hub runtime lease: %w", err)
 	}
 	w.lease.seeded = false
+	// Pairs with the acquisition log, so a lease that was NEVER released is
+	// visible as a missing line. That is the difference between a Hub that shut
+	// down cleanly and one whose row is orphaned until the TTL expires -- which
+	// is what fences the next launch.
+	slog.Info("revocation watcher: released the Hub runtime lease",
+		"holder", w.holderID, "cursor", w.lease.lastSeq)
 	return nil
 }
 
