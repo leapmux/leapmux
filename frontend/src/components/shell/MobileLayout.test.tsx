@@ -1,14 +1,19 @@
+import type { MobileOverlay } from './MobileLayout'
+import type { SwipeDirection } from '~/lib/horizontalSwipe'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { createRoot } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
+import { SWIPE_MIN_PX } from '~/lib/horizontalSwipe'
+import { pointerEvent } from '~/test-support/pointer'
 import * as styles from './AppShell.css'
-import { createMobileOverlayState, MobileLayout } from './MobileLayout'
+import { createMobileOverlayState, MobileLayout, nextOverlayForSwipe } from './MobileLayout'
 
 interface RenderOpts {
   leftSidebarOpen?: boolean
   rightSidebarOpen?: boolean
   sheetOpen?: boolean
   tabBarHidden?: boolean
+  onSwipe?: (direction: SwipeDirection) => void
 }
 
 function renderMobile(opts: RenderOpts = {}, onCloseSheet: () => void = () => {}) {
@@ -19,6 +24,7 @@ function renderMobile(opts: RenderOpts = {}, onCloseSheet: () => void = () => {}
       sheetOpen={opts.sheetOpen ?? false}
       tabBarHidden={opts.tabBarHidden ?? false}
       onCloseSheet={onCloseSheet}
+      onSwipe={opts.onSwipe ?? (() => {})}
       leftSidebarElement={<div data-testid="sidebar-left">left</div>}
       rightSidebarElement={<div data-testid="sidebar-right">right</div>}
       tabBarElement={<div data-testid="tab-bar">tab-bar</div>}
@@ -26,6 +32,15 @@ function renderMobile(opts: RenderOpts = {}, onCloseSheet: () => void = () => {}
       editorPanel={<div data-testid="editor-panel">editor</div>}
     />
   ))
+}
+
+/** Drag a finger across `target` by `dx`, in four samples, and lift. */
+function swipeAcross(target: HTMLElement, dx: number) {
+  const y = 300
+  target.dispatchEvent(pointerEvent('pointerdown', { x: 200, y, pointerType: 'touch' }))
+  for (let step = 1; step <= 4; step++)
+    target.dispatchEvent(pointerEvent('pointermove', { x: 200 + (dx * step) / 4, y, pointerType: 'touch' }))
+  target.dispatchEvent(pointerEvent('pointerup', { x: 200 + dx, y, pointerType: 'touch' }))
 }
 
 /** The wrapper the bar element sits in, which is what carries the hide class. */
@@ -36,24 +51,17 @@ function tabBarWrapper(): HTMLElement {
   return wrapper
 }
 
-/** Find the closest ancestor that carries the mobileSidebar class (the panel wrapper). */
-function findSidebarPanel(testId: string): HTMLElement {
-  const inner = screen.getByTestId(testId)
-  let el: HTMLElement | null = inner
-  while (el && !el.classList.contains(styles.mobileSidebar)) {
-    el = el.parentElement
-  }
-  if (!el)
-    throw new Error(`No mobileSidebar wrapper found around ${testId}`)
-  return el
+/** The drawer panel wrapper, which is what carries the open class. */
+function findSidebarPanel(side: 'left' | 'right'): HTMLElement {
+  return screen.getByTestId(`mobile-drawer-${side}`)
 }
 
 describe('mobileLayout', () => {
   it('renders both sidebars closed by default', () => {
     renderMobile({})
 
-    const leftPanel = findSidebarPanel('sidebar-left')
-    const rightPanel = findSidebarPanel('sidebar-right')
+    const leftPanel = findSidebarPanel('left')
+    const rightPanel = findSidebarPanel('right')
     expect(leftPanel.classList.contains(styles.mobileSidebarOpen)).toBe(false)
     expect(rightPanel.classList.contains(styles.mobileSidebarOpen)).toBe(false)
   })
@@ -61,8 +69,8 @@ describe('mobileLayout', () => {
   it('applies the open class to the left sidebar when leftSidebarOpen is true', () => {
     renderMobile({ leftSidebarOpen: true })
 
-    const leftPanel = findSidebarPanel('sidebar-left')
-    const rightPanel = findSidebarPanel('sidebar-right')
+    const leftPanel = findSidebarPanel('left')
+    const rightPanel = findSidebarPanel('right')
     expect(leftPanel.classList.contains(styles.mobileSidebarOpen)).toBe(true)
     expect(rightPanel.classList.contains(styles.mobileSidebarOpen)).toBe(false)
   })
@@ -70,8 +78,8 @@ describe('mobileLayout', () => {
   it('applies the open class to the right sidebar when rightSidebarOpen is true', () => {
     renderMobile({ rightSidebarOpen: true })
 
-    const leftPanel = findSidebarPanel('sidebar-left')
-    const rightPanel = findSidebarPanel('sidebar-right')
+    const leftPanel = findSidebarPanel('left')
+    const rightPanel = findSidebarPanel('right')
     expect(leftPanel.classList.contains(styles.mobileSidebarOpen)).toBe(false)
     expect(rightPanel.classList.contains(styles.mobileSidebarOpen)).toBe(true)
   })
@@ -106,6 +114,68 @@ describe('mobileLayout', () => {
     fireEvent.click(screen.getByTestId('tab-sheet-overlay'))
 
     expect(onCloseSheet).toHaveBeenCalledOnce()
+  })
+
+  // The gesture itself is covered in ~/lib/horizontalSwipe.test.ts. What is
+  // this layout's own is WHERE it is armed: the content region, so one gesture
+  // reaches both the tiles and the full-bleed drawers over them.
+  it('reports a swipe across the tile content', () => {
+    const onSwipe = vi.fn()
+    renderMobile({ onSwipe })
+
+    swipeAcross(screen.getByTestId('tile-content'), SWIPE_MIN_PX + 40)
+    expect(onSwipe).toHaveBeenCalledExactlyOnceWith('right')
+  })
+
+  it('reports a swipe across an open drawer', () => {
+    const onSwipe = vi.fn()
+    renderMobile({ leftSidebarOpen: true, onSwipe })
+
+    swipeAcross(screen.getByTestId('sidebar-left'), -SWIPE_MIN_PX - 40)
+    expect(onSwipe).toHaveBeenCalledExactlyOnceWith('left')
+  })
+
+  // The bar carries the drawer toggles, the tab chip and the tab strip. A
+  // finger there is working the bar, not reaching past it for a drawer.
+  it('ignores a swipe across the tab bar', () => {
+    const onSwipe = vi.fn()
+    renderMobile({ onSwipe })
+
+    swipeAcross(screen.getByTestId('tab-bar'), SWIPE_MIN_PX + 40)
+    expect(onSwipe).not.toHaveBeenCalled()
+  })
+
+  // The gesture holds a NON-PASSIVE touch listener, which the desktop layout
+  // must not inherit. A layout that leaked one would keep blocking this
+  // region's touches on the main thread after the viewport widened.
+  it('drops the gesture when the layout unmounts', () => {
+    const onSwipe = vi.fn()
+    const rendered = renderMobile({ onSwipe })
+    const tiles = screen.getByTestId('tile-content')
+
+    rendered.unmount()
+    swipeAcross(tiles, SWIPE_MIN_PX + 40)
+    expect(onSwipe).not.toHaveBeenCalled()
+  })
+})
+
+describe('nextOverlayForSwipe', () => {
+  it.each<[MobileOverlay, SwipeDirection, MobileOverlay]>([
+    // A clear screen: the swipe pulls in the drawer it moves away from.
+    ['none', 'right', 'left'],
+    ['none', 'left', 'right'],
+    // An open drawer: the swipe that pushes it back out closes it...
+    ['left', 'left', 'none'],
+    ['right', 'right', 'none'],
+    // ...and the swipe that would open it again changes nothing. This is also
+    // what stops one flick from closing one drawer and opening its opposite.
+    ['left', 'right', 'left'],
+    ['right', 'left', 'right'],
+    // The sheet covers the swipe region and closes through its own chip.
+    ['sheet', 'left', 'sheet'],
+    ['sheet', 'right', 'sheet'],
+  ])('%s + a swipe %s leaves %s up', (current, direction, expected) => {
+    expect(nextOverlayForSwipe(current, direction)).toBe(expected)
   })
 })
 
@@ -156,6 +226,28 @@ describe('createMobileOverlayState', () => {
       s.toggleDrawer('right')
       s.closeSheet()
       expect(s.overlay()).toBe('right')
+      dispose()
+    })
+  })
+
+  it('applySwipe drives the drawers through the same one owner', () => {
+    createRoot((dispose) => {
+      const s = createMobileOverlayState()
+      s.applySwipe('right')
+      expect(s.overlay()).toBe('left')
+      s.applySwipe('left')
+      expect(s.overlay()).toBe('none')
+
+      s.applySwipe('left')
+      expect(s.overlay()).toBe('right')
+      // A swipe with nothing to do leaves the state alone rather than clearing it.
+      s.applySwipe('left')
+      expect(s.overlay()).toBe('right')
+
+      // A swipe under the sheet never disturbs it.
+      s.toggleSheet()
+      s.applySwipe('right')
+      expect(s.overlay()).toBe('sheet')
       dispose()
     })
   })

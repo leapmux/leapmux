@@ -219,6 +219,7 @@ export const AppShell: Component = () => {
     toggleDrawer: toggleMobileDrawer,
     closeSheet: closeMobileSheet,
     closeAll: closeMobileOverlay,
+    applySwipe: applyMobileSwipe,
   } = mobileOverlayState
 
   // Shared turn-end signal: bumped when an agent turn ends.
@@ -1117,6 +1118,7 @@ export const AppShell: Component = () => {
       rightSidebarOpen={mobileOverlay() === 'right'}
       sheetOpen={mobileOverlay() === 'sheet'}
       onCloseSheet={closeMobileSheet}
+      onSwipe={applyMobileSwipe}
       leftSidebarElement={createLeftSidebarElement(sidebarOpts())}
       rightSidebarElement={createRightSidebarElement(sidebarOpts())}
       tabBarElement={tileRenderer.tabBarElement()}

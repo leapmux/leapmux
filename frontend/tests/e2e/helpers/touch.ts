@@ -56,22 +56,37 @@ export async function touchDown(page: Page, x: number, y: number): Promise<Touch
   }
 }
 
+/** A viewport position in CSS pixels. */
+export interface TouchPoint {
+  x: number
+  y: number
+}
+
 /**
- * A complete finger swipe along a vertical line, in `steps` moves. Use this to drive the page's
- * own touch scrolling; use {@link touchDown} when the test must assert something mid-gesture.
+ * A complete finger swipe along a straight line, in `steps` moves. Use this to drive the page's
+ * own touch scrolling and the app's swipe gestures; use {@link touchDown} when the test must
+ * assert something mid-gesture.
+ *
+ * The intermediate moves are the point, on either axis. A recognizer decides its axis from the
+ * first travel past its threshold, and the browser decides whether to pan from the same samples,
+ * so a single jump from `from` to `to` exercises neither.
  */
 export async function touchSwipe(
   page: Page,
-  opts: { x: number, fromY: number, toY: number, steps?: number },
+  opts: { from: TouchPoint, to: TouchPoint, steps?: number },
 ): Promise<void> {
   const steps = opts.steps ?? 5
-  const finger = await touchDown(page, opts.x, opts.fromY)
+  const finger = await touchDown(page, opts.from.x, opts.from.y)
   // `finally`, so a failed move still lifts the finger and detaches the session. Without it a
   // mid-swipe protocol error would leave Blink believing a finger is still down, and every later
   // touch in the same test would arrive as a second contact point.
   try {
-    for (let step = 1; step <= steps; step++)
-      await finger.moveTo(opts.x, opts.fromY + ((opts.toY - opts.fromY) * step) / steps)
+    for (let step = 1; step <= steps; step++) {
+      await finger.moveTo(
+        opts.from.x + ((opts.to.x - opts.from.x) * step) / steps,
+        opts.from.y + ((opts.to.y - opts.from.y) * step) / steps,
+      )
+    }
   }
   finally {
     await finger.end()
