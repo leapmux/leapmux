@@ -122,3 +122,23 @@ globalStyle('[data-ctx-menu="selectable"]', {
     },
   },
 })
+
+/**
+ * While a fired hold's finger is still down, an open menu takes no pointers.
+ *
+ * The menu opens under that finger, and a held touch carries a hover state, so
+ * whichever item it landed on painted itself accented (see
+ * `[role^="menuitem"]:is(:hover, :focus)` in ~/styles/global.css.ts) -- an item
+ * looking chosen while the user was still deciding. Refusing hit-testing takes
+ * the hover with it, and takes any activation with it too, so the lift cannot
+ * pick an item either.
+ *
+ * The attribute lives on the document because the menu is in the top layer,
+ * nowhere near the pressed row in the DOM;
+ * `~/components/common/contextMenuGesture.ts` sets it when the hold fires and
+ * clears it on the release. Scoped to OPEN popovers so it can never leave
+ * anything else inert.
+ */
+globalStyle('[data-ctx-hold-over-menu] [popover]:popover-open', {
+  pointerEvents: 'none',
+})

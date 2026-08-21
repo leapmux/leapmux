@@ -39,6 +39,30 @@ const MENU_ITEM_SELECTOR = [
  */
 const TYPE_AHEAD_RESET_MS = 700
 
+/**
+ * `showPopover({ source })`, degrading to a bare `showPopover()`.
+ *
+ * `source` names the element that opened the popover, which the HTML
+ * light-dismiss pass then treats as part of the popover's own ancestor chain --
+ * the property a long press depends on, since its menu opens under a finger
+ * that is still pressing the row. The option reached the spec after
+ * `showPopover` itself, so a browser without it must not lose the menu
+ * entirely: an unknown dictionary member is ignored, and older engines that
+ * reject the argument outright fall through to the plain call.
+ *
+ * Not in TypeScript's DOM lib yet, hence the cast.
+ */
+function showPopoverFrom(popover: HTMLElement | undefined, source: HTMLElement): void {
+  if (!popover)
+    return
+  try {
+    (popover.showPopover as (options?: { source?: HTMLElement }) => void)({ source })
+  }
+  catch {
+    popover.showPopover()
+  }
+}
+
 export interface DropdownTriggerProps {
   /** Whether the dropdown is currently open. */
   'aria-expanded': boolean
@@ -597,15 +621,18 @@ export function DropdownMenu(props: DropdownMenuProps) {
     }))
   }
 
-  // Right-click / long-press on the owning row. The gesture defers its callback
-  // past the pointer event that completed it, so by the time this runs the
-  // browser's light-dismiss pass is over and showPopover() sticks -- see
-  // `scheduleOpen` in ~/components/common/contextMenuGesture.ts.
+  // Right-click / long-press on the owning row. See `scheduleOpen` in
+  // ~/components/common/contextMenuGesture.ts for the two calls a touch hold
+  // makes and why.
   createEffect(() => {
     const el = props.contextMenuFor?.()
     if (!el)
       return
     const detach = attachContextMenuGesture(el, {
+      // Read from the DOM, not from the `isOpen()` signal mirror, which a
+      // dialog-driven auto-dismiss can leave stale -- and a light dismiss is
+      // exactly the kind of close that never runs through this component.
+      isOpen: () => Boolean(popoverEl?.matches(':popover-open')),
       onOpen: (press) => {
         setPressAnchor(press)
         if (popoverEl?.matches(':popover-open')) {
@@ -614,7 +641,18 @@ export function DropdownMenu(props: DropdownMenuProps) {
           reposition()
         }
         else {
-          popoverEl?.showPopover()
+          // NAMING THE ROW AS THE SOURCE is what lets a long press keep its menu.
+          // The menu now opens under the still-pressed finger, and the HTML
+          // light-dismiss pass hides every `popover="auto"` whose ancestor chain
+          // excludes the pointerdown target -- so the release that ends the hold
+          // took the menu with it, and re-showing it afterwards blinked. `source`
+          // records the row as this popover's invoker, which puts it IN that
+          // chain: presses on the row are then presses on the menu's own
+          // territory, and the release leaves it alone.
+          //
+          // A browser that predates the option ignores the unknown member and
+          // gets the old behaviour, which the gesture's re-assert still repairs.
+          showPopoverFrom(popoverEl, el)
           // Position synchronously, before the browser paints this frame, so the
           // popover never appears at the UA-default position and then jumps. The
           // content is already in the DOM (rendered before this effect), so it

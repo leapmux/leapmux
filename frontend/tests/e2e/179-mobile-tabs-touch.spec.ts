@@ -211,10 +211,18 @@ test.describe('mobile tab sheet (phone)', () => {
     // the finger with no movement, and the menu opened over a stuck overlay.
     const box = (await alphaRow.boundingBox())!
     const hold = await touchDown(page, box.x + box.width / 2, box.y + box.height / 2)
-    await page.waitForTimeout(650)
-    await hold.end()
 
-    await expect(page.locator('[data-testid="tab-sheet-row-menu"]:popover-open')).toBeVisible()
+    // WHILE the finger is still down: the hold is the confirmation, so the menu
+    // belongs to it and not to the lift that follows.
+    const menu = page.locator('[data-testid="tab-sheet-row-menu"]:popover-open')
+    await expect(menu).toBeVisible()
+
+    // ...and the lift leaves it up. A `popover="auto"` shown under a finger is
+    // the case the HTML light-dismiss pass acts on, so this is the assertion
+    // that the release does not take the menu with it.
+    await hold.end()
+    await expect(menu).toBeVisible()
+
     // The hold did not also reorder anything.
     expect(await rows.allTextContents()).toEqual(before)
   })

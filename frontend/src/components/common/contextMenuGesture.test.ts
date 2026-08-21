@@ -22,9 +22,10 @@ describe('pressAnchorRect', () => {
       .toEqual({ top: 108, bottom: 108, left: 150 })
   })
 
-  it('carries no offset for touch, because the finger has already lifted', () => {
-    // A long press opens its menu on RELEASE, so there is nothing left to occlude
-    // and no clearance to add. One rule serves both inputs.
+  it('carries no finger-clearance offset for touch', () => {
+    // The menu grows down and to the right of the press point, so the fingertip
+    // covers a corner of it for the moment before the lift and nothing after.
+    // One rule serves both inputs.
     expect(pressAnchorRect({ clientX: 40, clientY: 0 }))
       .toEqual({ top: 0, bottom: 0, left: 40 })
   })
@@ -34,6 +35,8 @@ describe('attachContextMenuGesture', () => {
   let row: HTMLElement
   let detach: () => void
   let onOpen: ReturnType<typeof vi.fn<(press: ContextMenuPress) => void>>
+  /** Whether the stand-in menu is showing. See the `isOpen` double below. */
+  let menuOpen: boolean
   /** The rect the row reports; a test moves it to make a scroll "move the row". */
   let rowRect: { top: number, left: number }
 
@@ -53,8 +56,16 @@ describe('attachContextMenuGesture', () => {
       toJSON: () => ({}),
     })
     document.body.appendChild(row)
-    onOpen = vi.fn()
-    detach = attachContextMenuGesture(row, { onOpen })
+    // A stand-in for the menu itself. Without one the gesture cannot tell a
+    // release that light-dismissed its menu from one that left it alone, and
+    // re-asserts on every lift -- so the double models the real consumer, where
+    // `isOpen` reads `:popover-open`. jsdom runs no light-dismiss pass, so a
+    // menu opened here stays open, which is the "platform left it alone" case.
+    menuOpen = false
+    onOpen = vi.fn(() => {
+      menuOpen = true
+    })
+    detach = attachContextMenuGesture(row, { onOpen, isOpen: () => menuOpen })
   })
 
   afterEach(() => {
@@ -62,6 +73,18 @@ describe('attachContextMenuGesture', () => {
     row.remove()
     vi.useRealTimers()
   })
+
+  /**
+   * Run the hold out and let its menu open.
+   *
+   * Two advances, because the open is one task behind the hold: the hold timer
+   * fires at `HOLD_MS` and schedules the open, and a fake-timer advance does not
+   * run a timer scheduled during the advance it is already inside.
+   */
+  function completeHold() {
+    vi.advanceTimersByTime(HOLD_MS)
+    vi.runOnlyPendingTimers()
+  }
 
   /** Drive a full touch press-and-hold that completes, then release. */
   function holdAndRelease(x = 90, y = 110) {
@@ -78,16 +101,39 @@ describe('attachContextMenuGesture', () => {
     expect(onOpen).toHaveBeenCalledWith(expect.objectContaining({ clientX: 90 }))
   })
 
-  it('marks the row while the hold is in flight and clears it on release', () => {
+  it('marks the row while the hold is in flight and clears it when the menu arrives', () => {
     row.dispatchEvent(pointer('pointerdown', { x: 90, y: 110 }))
     expect(row.hasAttribute('data-press-hold')).toBe(true)
 
+    // The menu is the answer the tint was promising, so the tint stops here --
+    // holding it at full under an open menu until the finger lifted said
+    // nothing, twice.
     vi.advanceTimersByTime(HOLD_MS)
-    // Still down: the tint stays at full until the finger lifts.
+    expect(row.hasAttribute('data-press-hold')).toBe(false)
+  })
+
+  it('clears the tint on a release that never reached the hold', () => {
+    row.dispatchEvent(pointer('pointerdown', { x: 90, y: 110 }))
+    vi.advanceTimersByTime(HOLD_MS - 1)
     expect(row.hasAttribute('data-press-hold')).toBe(true)
 
     row.dispatchEvent(pointer('pointerup', { x: 90, y: 110 }))
     expect(row.hasAttribute('data-press-hold')).toBe(false)
+  })
+
+  // The menu opens under the finger that is still pressing, and a held touch
+  // carries a hover with it -- so an item sat there looking chosen. The
+  // document-level marker is what the CSS takes hit-testing away on.
+  it('makes an open menu inert until the finger lifts', () => {
+    const held = () => document.documentElement.hasAttribute('data-ctx-hold-over-menu')
+    row.dispatchEvent(pointer('pointerdown', { x: 90, y: 110 }))
+    expect(held()).toBe(false)
+
+    vi.advanceTimersByTime(HOLD_MS)
+    expect(held()).toBe(true)
+
+    row.dispatchEvent(pointer('pointerup', { x: 90, y: 110 }))
+    expect(held()).toBe(false)
   })
 
   it('arms the indicator as an attribute that survives a class-list rewrite', () => {
@@ -102,18 +148,56 @@ describe('attachContextMenuGesture', () => {
     expect(row.getAttribute('data-ctx-menu')).toBe('owned')
   })
 
-  // The light-dismiss contract: a popover shown while the finger is still down is
-  // hidden by the very release that ends the gesture.
-  it('never calls onOpen synchronously inside a pointer handler', () => {
+  // The hold IS the confirmation, so the menu belongs to it and not to the lift.
+  it('opens while the finger is still down, from the hold and not a pointer handler', () => {
     row.dispatchEvent(pointer('pointerdown', { x: 90, y: 110 }))
-    vi.advanceTimersByTime(HOLD_MS)
+    // Nothing from the press itself: the open arrives on the hold's own timer.
     expect(onOpen).not.toHaveBeenCalled()
 
+    completeHold()
+    expect(onOpen).toHaveBeenCalledTimes(1)
+
+    // The lift adds nothing where the platform left that menu alone.
     row.dispatchEvent(pointer('pointerup', { x: 90, y: 110 }))
-    expect(onOpen).not.toHaveBeenCalled()
-
     vi.runAllTimers()
     expect(onOpen).toHaveBeenCalledTimes(1)
+  })
+
+  // The blink this replaced: the release light-dismisses a menu shown under the
+  // finger, and repairing that a task later let the hidden frame reach the
+  // glass. Chromium runs the hide BEFORE dispatching the release, so the repair
+  // has to land inside that same event -- before any timer runs.
+  it('restores a menu the release dismissed, without waiting for a task', () => {
+    row.dispatchEvent(pointer('pointerdown', { x: 90, y: 110 }))
+    completeHold()
+    expect(onOpen).toHaveBeenCalledTimes(1)
+
+    // What the platform's light-dismiss pass does, just before the release
+    // reaches this module's listener.
+    menuOpen = false
+    row.dispatchEvent(pointer('pointerup', { x: 90, y: 110 }))
+
+    expect(onOpen).toHaveBeenCalledTimes(2)
+    expect(onOpen).toHaveBeenLastCalledWith(expect.objectContaining({ clientX: 90 }))
+
+    // ...and the net behind it finds the menu back up and adds nothing.
+    vi.runAllTimers()
+    expect(onOpen).toHaveBeenCalledTimes(2)
+  })
+
+  // The other half: an engine that dismisses AFTER dispatching the release. The
+  // synchronous repair sees the menu still open and stands down; the deferred
+  // one is what puts it back.
+  it('restores a menu dismissed after the release, from the net behind it', () => {
+    row.dispatchEvent(pointer('pointerdown', { x: 90, y: 110 }))
+    completeHold()
+    row.dispatchEvent(pointer('pointerup', { x: 90, y: 110 }))
+    expect(onOpen).toHaveBeenCalledTimes(1)
+
+    menuOpen = false
+    vi.runAllTimers()
+
+    expect(onOpen).toHaveBeenCalledTimes(2)
   })
 
   it('opens once for a whole gesture', () => {
@@ -197,13 +281,21 @@ describe('attachContextMenuGesture', () => {
     expect(row.hasAttribute('data-press-hold')).toBe(false)
   })
 
-  it('cancels on pointercancel even after the hold fired', () => {
+  // The hold's menu is already up by the time a pan can claim the touch, so a
+  // cancel can no longer un-open it -- what it still does is stop the gesture
+  // from asserting that menu again. Before the menu moved to the hold, this
+  // dropped the open outright.
+  it('opens once on the hold and not again when a pointercancel follows', () => {
     row.dispatchEvent(pointer('pointerdown', { x: 90, y: 110 }))
     vi.advanceTimersByTime(HOLD_MS)
+    vi.runAllTimers()
+    expect(onOpen).toHaveBeenCalledTimes(1)
+
     row.dispatchEvent(pointer('pointercancel'))
+    row.dispatchEvent(pointer('pointerup', { x: 90, y: 110 }))
     vi.runAllTimers()
 
-    expect(onOpen).not.toHaveBeenCalled()
+    expect(onOpen).toHaveBeenCalledTimes(1)
   })
 
   it('cancels when a scroll moves the row', () => {
@@ -232,18 +324,21 @@ describe('attachContextMenuGesture', () => {
     expect(onOpen).toHaveBeenCalledTimes(1)
   })
 
-  it('drops a hold that already fired when a scroll moves the row', () => {
+  it('does not re-assert a held-open menu when a scroll moves the row', () => {
     // On engines that pan without `pointercancel`, the scroll fallback is the
-    // only cancel. A fired hold must fall with the unfired one, or the menu
-    // pops on lift while the user is scrolling past.
+    // only cancel. It can no longer drop the menu -- the hold opened that
+    // already -- so what it drops is the release's re-assert.
     row.dispatchEvent(pointer('pointerdown', { x: 90, y: 110 }))
     vi.advanceTimersByTime(HOLD_MS)
+    vi.runAllTimers()
+    expect(onOpen).toHaveBeenCalledTimes(1)
+
     rowRect.top += 40
     document.dispatchEvent(new Event('scroll'))
     row.dispatchEvent(pointer('pointerup', { x: 90, y: 110 }))
     vi.runAllTimers()
 
-    expect(onOpen).not.toHaveBeenCalled()
+    expect(onOpen).toHaveBeenCalledTimes(1)
   })
 
   it('ignores a scroll once no hold is in flight', () => {
@@ -619,8 +714,10 @@ describe('attachContextMenuGesture', () => {
   describe('options', () => {
     it('honours a caller-supplied hold duration', () => {
       detach()
-      const onCustom = vi.fn()
-      detach = attachContextMenuGesture(row, { onOpen: onCustom, holdMs: 1000 })
+      const onCustom = vi.fn(() => {
+        menuOpen = true
+      })
+      detach = attachContextMenuGesture(row, { onOpen: onCustom, holdMs: 1000, isOpen: () => menuOpen })
 
       row.dispatchEvent(pointer('pointerdown', { x: 90, y: 110 }))
       vi.advanceTimersByTime(HOLD_MS)
@@ -638,8 +735,10 @@ describe('attachContextMenuGesture', () => {
 
     it('honours a caller-supplied slop', () => {
       detach()
-      const onCustom = vi.fn()
-      detach = attachContextMenuGesture(row, { onOpen: onCustom, slopPx: 40 })
+      const onCustom = vi.fn(() => {
+        menuOpen = true
+      })
+      detach = attachContextMenuGesture(row, { onOpen: onCustom, slopPx: 40, isOpen: () => menuOpen })
 
       row.dispatchEvent(pointer('pointerdown', { x: 90, y: 110 }))
       // Past the default slop, inside this gesture's own.
@@ -679,13 +778,27 @@ describe('attachContextMenuGesture', () => {
     })
 
     it('cancels a scheduled open', () => {
-      row.dispatchEvent(pointer('pointerdown', { x: 90, y: 110 }))
-      vi.advanceTimersByTime(HOLD_MS)
-      row.dispatchEvent(pointer('pointerup', { x: 90, y: 110 }))
+      // The keyboard / Windows path, which reports no buttons and schedules its
+      // open rather than opening from a hold that has already run.
+      row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
       detach()
       vi.runAllTimers()
 
       expect(onOpen).not.toHaveBeenCalled()
+      detach = () => {}
+    })
+
+    it('cancels the release net behind a held-open menu', () => {
+      row.dispatchEvent(pointer('pointerdown', { x: 90, y: 110 }))
+      completeHold()
+      row.dispatchEvent(pointer('pointerup', { x: 90, y: 110 }))
+      detach()
+
+      // A menu dismissed after the detach is nobody's business any more.
+      menuOpen = false
+      vi.runAllTimers()
+
+      expect(onOpen).toHaveBeenCalledTimes(1)
       detach = () => {}
     })
   })

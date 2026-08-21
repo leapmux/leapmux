@@ -104,24 +104,25 @@ test.describe('Workspace Context Menu', () => {
       await expect(page.getByRole('menuitem', { name: 'Rename' })).toBeHidden()
       await expect(workspaceItem).not.toHaveAttribute('data-press-hold')
 
-      // ── A press that stays put opens the menu ───────────────────────────────
+      // ── A press that stays put opens the menu, while it is still down ───────
       const holding = await touchDown(page, x, y)
       // The indicator is armed while the finger is still down, which is the only
       // thing telling the user a menu is coming.
       await expect(workspaceItem).toHaveAttribute('data-press-hold', '')
 
-      // Hold until the accent tint reaches full. That is the hold completing --
-      // the CSS ramp and the JS timer are the same `motion.longPress` -- so this
-      // waits on the real threshold instead of sleeping a guessed interval, and
-      // proves the indicator the user watches actually runs.
-      await expect.poll(async () => Number.parseFloat(
-        await workspaceItem.evaluate(el => getComputedStyle(el, '::before').opacity),
-      )).toBeGreaterThan(0.99)
-
-      await holding.end()
-
-      await expect(page.getByRole('menuitem', { name: 'Rename' })).toBeVisible()
+      // The menu is the oracle for the hold completing: it opens ON the hold,
+      // with the finger still on the glass. (This used to wait for the accent
+      // tint to reach full instead, which is no longer a state that lasts --
+      // the tint yields the moment the menu it was promising arrives.)
+      const renameItem = page.getByRole('menuitem', { name: 'Rename' })
+      await expect(renameItem).toBeVisible()
       await expect(workspaceItem).not.toHaveAttribute('data-press-hold')
+
+      // The lift leaves the menu up. A `popover="auto"` shown under a finger is
+      // what the HTML light-dismiss pass acts on, so this pins the repair that
+      // keeps it -- and keeps it without a blink, since the menu never closes.
+      await holding.end()
+      await expect(renameItem).toBeVisible()
       // The press must not also fire the row's own click.
       expect(await workspaceItem.getAttribute('data-active')).toBe(before)
     })
