@@ -148,10 +148,19 @@ globalStyle('body', {
 // A nested scroll region still pans: the browser resolves a touch's
 // allowed behaviour against the ancestors up to the element that handles
 // the gesture, which for a touch inside the chat list is that list, not
-// the page. So the message list needs no opt-in, and it sets none —
-// `pan-y` there would freeze the sideways scroll of every code block and
-// table inside it, because a `touch-action` on an ANCESTOR restricts a
-// descendant scroller.
+// the page. So the message list needs no opt-in, and it sets none.
+//
+// The corollary is worth stating, because it is natural to assume the
+// opposite: `touch-action` restricts ONLY the element that declares it,
+// and a scroll container nested inside that element keeps both of its
+// axes. Measured in Chromium against a page built for the question.
+// `none` on html+body leaves the list inside it panning. `pan-y` on a
+// wrapper leaves a code block inside it scrolling sideways. `pan-x` on a
+// wrapper leaves the list inside it scrolling down. The same value moved
+// ONTO each scroller blocks that scroller and nothing else, which is
+// what shows the run can see the property at all. WebKit is unmeasured:
+// Playwright drives real touch through a Chromium-only protocol, so the
+// same run cannot be made there.
 //
 // That is the rule for the whole app: a region declares `touch-action`
 // only to constrain a gesture it owns, never to re-enable one. Three do.

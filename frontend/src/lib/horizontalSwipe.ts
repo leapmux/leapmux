@@ -37,20 +37,21 @@ import { INPUT_OR_EDITABLE_SELECTOR } from '~/lib/textInputBehavior'
  * outright — the finger travels and no drawer arrives. On a machine loaded
  * enough to stretch the app roughly ten times, the E2E specs in
  * `tests/e2e/183-mobile-swipe-drawers.spec.ts` lose the swipe this way while
- * every assertion around them still passes. There is no way to win that race
- * from here: `touch-action: pan-y` on the region moves the decision to the
- * compositor but does NOT keep the pointer alive (measured), and preventing
- * every move until the axis is known would delay the start of every vertical
- * scroll by one move.
+ * every assertion around them still passes. Preventing every move until the
+ * axis is known would win the race, and it would delay the start of every
+ * vertical scroll by one move to do it.
  *
- * `touch-action: pan-y` on the region is the other way to stop Blink taking the
- * finger, and it costs no main-thread work. It is NOT used here.
- * ~/styles/global.css.ts states the rule this app follows -- a region declares
- * `touch-action` only to constrain a gesture it owns -- and warns that a value
- * on an ancestor narrows every descendant scroller under it. Chromium 2026 does
- * not reproduce that narrowing: with `pan-y` on the region a sideways scroller
- * inside it still panned. Do not take the measurement as permission. It covers
- * one engine, and the per-gesture decision above is correct on all of them.
+ * `touch-action: pan-y` on the region reads like the way out, because the
+ * compositor applies it with no main-thread work at all and so cannot lose that
+ * race. It is not: with `pan-y` on the region Blink still cancelled the pointer,
+ * and every swipe still reported nothing (measured). The two are not additive
+ * either, so this module carries the listener alone.
+ *
+ * It would cost a code block nothing, though. `touch-action` restricts only the
+ * element that declares it, never a scroll container nested inside that element
+ * — see ~/styles/global.css.ts, which carries the measurement. So the reason to
+ * decline a press over a sideways scroller is not the CSS. It is that the
+ * gesture must not `preventDefault` a finger the block is using.
  *
  * ## Who owns the finger
  *
