@@ -10,7 +10,7 @@ import { AgentChatMessageSchema, AgentProvider, AgentStatus, ContentCompression,
 import { KEY_BROWSER_PREFS, localStorageSet } from '~/lib/browserStorage'
 import { flushAnimationFrame, installControllableResizeObserver, triggerResizeObserverFor, triggerResizeObservers } from '~/test-support/resizeObserverStub'
 import { railIdle } from './ChatScrollRail.css'
-import { ChatView, RAIL_MOMENTUM_GRACE_MS, RAIL_VISIBLE_IDLE_MS, rowChromeHeightKey, SKELETON_SHOW_DELAY_MS, SYNTAX_HIGHLIGHT_SCROLL_IDLE_MS } from './ChatView'
+import { ChatView, RAIL_COAST_MAX_MS, RAIL_VISIBLE_IDLE_MS, rowChromeHeightKey, SKELETON_SHOW_DELAY_MS, SYNTAX_HIGHLIGHT_SCROLL_IDLE_MS } from './ChatView'
 import { bandTailMerged, messageListRailActive, railedRowContent, rowSkeletonClosing } from './ChatView.css'
 import { computeOverscanPx, PRE_MEASURE_WIDTH_PX } from './chatViewportGeometry'
 import { bandMessage, bandRow, bandRowThought, bleedRow } from './messageStyles.css'
@@ -34,7 +34,18 @@ type HiddenPremeasureOnMeasure = (id: string, height: number, heightKey: string 
 // `mockState.mockDeps` is set, in which case it returns the stub. Every suite
 // flips the flag in its own beforeEach. This keeps ONE solid-js module instance
 // (no vi.resetModules), so the real-module suites still render correctly.
-const mockState = vi.hoisted(() => ({ mockDeps: false }))
+const mockState = vi.hoisted(() => ({
+  mockDeps: false,
+  /**
+   * The options ChatView handed the scroll hook, so a test can fire the
+   * callbacks the STUB never would. The rail's coast relight arrives that way:
+   * only the real hook can tell the reader's momentum from our own writes
+   * echoing back, so ChatView's half of that contract is "when the hook says
+   * momentum, relight" -- which is what invoking `onMomentumScroll` pins here.
+   * The classification itself belongs to the hook's own tests.
+   */
+  scrollOpts: undefined as undefined | { onMomentumScroll?: () => void },
+}))
 
 const virtualizerState = vi.hoisted(() => ({
   range: { start: 0, end: 1 } as ChatVirtualizerRange,
@@ -160,6 +171,7 @@ vi.mock('./useChatScroll', async () => {
   return {
     ...actual,
     useChatScroll: (...args: Parameters<typeof actual.useChatScroll>) => {
+      mockState.scrollOpts = args[0]
       if (!mockState.mockDeps)
         return actual.useChatScroll(...args)
       return {
@@ -3101,30 +3113,77 @@ describe('chat view virtualized with stubbed deps', () => {
 
     it('keeps the rail lit through a flick coast, where only scroll events fire', () => {
       // After a touch flick no touch or pointer event fires while the content glides, so
-      // without the momentum grace the rail would fade mid-fling. The grace is the tighter
-      // of the two bounds, so a qualifying coast scroll always lands while the window is
-      // still open -- what this pins is that such a scroll EXTENDS it.
-      expect(RAIL_MOMENTUM_GRACE_MS).toBeLessThan(RAIL_VISIBLE_IDLE_MS)
+      // without the coast relight the rail would fade mid-fling -- which is exactly what
+      // it did while the bound was shorter than a real glide.
+      vi.useFakeTimers({ toFake: ['performance', 'setTimeout', 'clearTimeout'] })
+      const { container } = renderWithRail()
+
+      // The flick. touchMOVE is what lights the rail: the press alone moves nothing.
+      fireEvent.touchStart(scroller(container))
+      fireEvent.touchMove(scroller(container))
+      fireEvent.touchEnd(scroller(container))
+      expect(rail(container).className).not.toContain(railIdle)
+
+      // The coast: the hook reports its momentum scrolls with the finger long
+      // gone, each one pushing the window out past where the touch would have
+      // closed it. Fired through the hook's callback because the stub here
+      // never runs the real classification (see mockState.scrollOpts).
+      const COAST_TICK_MS = RAIL_VISIBLE_IDLE_MS - 100
+      const COAST_TICKS = 3
+      // The whole coast stays inside the cap; outrunning it is the next test.
+      expect(COAST_TICK_MS * COAST_TICKS).toBeLessThan(RAIL_COAST_MAX_MS)
+      for (let tick = 0; tick < COAST_TICKS; tick++) {
+        vi.advanceTimersByTime(COAST_TICK_MS)
+        mockState.scrollOpts?.onMomentumScroll?.()
+        expect(rail(container).className).not.toContain(railIdle)
+      }
+
+      // ...and it fades RAIL_VISIBLE_IDLE_MS after the LAST coast scroll.
+      vi.advanceTimersByTime(RAIL_VISIBLE_IDLE_MS - 1)
+      expect(rail(container).className).not.toContain(railIdle)
+      vi.advanceTimersByTime(1)
+      expect(rail(container).className).toContain(railIdle)
+    })
+
+    // The cap on that relight. Echo detection can miss when the browser delivers a
+    // programmatic write's echo after the guard's marker expires, and an uncapped
+    // relight would then hold the rail lit commit after commit through a streaming
+    // turn. The bound is measured from the last INPUT and never re-based by a scroll.
+    it('stops relighting the rail once a coast outruns its bound', () => {
       vi.useFakeTimers({ toFake: ['performance', 'setTimeout', 'clearTimeout'] })
       const { container } = renderWithRail()
 
       fireEvent.touchStart(scroller(container))
+      fireEvent.touchMove(scroller(container))
       fireEvent.touchEnd(scroller(container))
 
-      // The coast: one scroll at the far edge of the grace.
-      vi.advanceTimersByTime(RAIL_MOMENTUM_GRACE_MS - 1)
-      fireEvent.scroll(scroller(container))
+      vi.advanceTimersByTime(RAIL_COAST_MAX_MS + 1)
+      mockState.scrollOpts?.onMomentumScroll?.()
 
-      // Past where the un-extended window would have closed (the touchend was
-      // RAIL_VISIBLE_IDLE_MS + 1 ms ago). Still lit, so the coast scroll pushed it out.
-      vi.advanceTimersByTime(RAIL_VISIBLE_IDLE_MS - RAIL_MOMENTUM_GRACE_MS + 2)
-      expect(rail(container).className).not.toContain(railIdle)
-
-      // ...and it closes RAIL_VISIBLE_IDLE_MS after the coast scroll, not after the touch.
-      vi.advanceTimersByTime(RAIL_MOMENTUM_GRACE_MS - 3)
-      expect(rail(container).className).not.toContain(railIdle)
-      vi.advanceTimersByTime(1)
+      // The window closed on its own idle timer, and that scroll did not reopen it.
       expect(rail(container).className).toContain(railIdle)
+    })
+
+    // A finger landing on the transcript scrolls nothing. Lighting the rail for it put
+    // a scrollbar on screen every time the reader touched the list -- to dismiss the
+    // keyboard, say -- and that tap is the gesture this pins as inert.
+    it('does not light the rail for a press that never moves', () => {
+      vi.useFakeTimers({ toFake: ['performance', 'setTimeout', 'clearTimeout'] })
+      const { container } = renderWithRail()
+
+      fireEvent.touchStart(scroller(container))
+      expect(rail(container).className).toContain(railIdle)
+      fireEvent.touchEnd(scroller(container))
+      expect(rail(container).className).toContain(railIdle)
+
+      fireEvent.pointerDown(scroller(container))
+      expect(rail(container).className).toContain(railIdle)
+      fireEvent.pointerUp(scroller(container))
+      expect(rail(container).className).toContain(railIdle)
+
+      // The first MOVE is what lights it.
+      fireEvent.pointerMove(scroller(container))
+      expect(rail(container).className).not.toContain(railIdle)
     })
 
     it('does not arm the rail window on scroll when no rail is present', () => {

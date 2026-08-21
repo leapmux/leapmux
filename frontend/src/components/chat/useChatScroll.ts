@@ -331,6 +331,19 @@ export interface UseChatScrollOptions extends PaginationCallbacks {
    * and clobbering an existing save (e.g. from a tab switch-away) would lose one.
    */
   onSaveViewportScroll?: (state: ChatScrollState) => void
+  /**
+   * Called for each scroll event this hook classifies as the user's own
+   * MOMENTUM -- the coast after a flick, and never one of our programmatic
+   * writes echoing back, a discrete page jump, or a drag still under the
+   * finger.
+   *
+   * It exists because that classification is the honest answer to "is the
+   * content still moving because the reader moved it", and only this hook can
+   * give it: the echo marker it reads is per-event state, consumed as the
+   * event is handled. The scroll rail keeps itself lit on it, so a fling holds
+   * the rail for however long it coasts.
+   */
+  onMomentumScroll?: () => void
 }
 
 export interface UseChatScrollResult {
@@ -1239,6 +1252,10 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     )
     // Defer the re-pin as fling drift only for a momentum scroll.
     userScrolling = isMomentumScroll
+    // The reader's own motion, still going. The rail relights on it, so a
+    // coast holds the rail for its whole length instead of for a fixed window.
+    if (isMomentumScroll)
+      opts.onMomentumScroll?.()
     // Only a user-directed scroll cancels an in-flight out-of-window seek: ambient layout
     // shifts/window swaps can emit real scroll events while the fetch is pending, but they
     // are not the reader taking control and must not strand the seek before it can land.
