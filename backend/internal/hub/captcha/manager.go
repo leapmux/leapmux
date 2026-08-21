@@ -106,13 +106,15 @@ func NewManager(st store.Store, set *settings.Manager, soloMode bool, opts ...Op
 // write the store on a fresh install just to report defaults. It cannot
 // fail: the snapshot serves the last good state (or defaults) and
 // Effective degrades invalid settings to the built-in defaults, so the
-// caller has no error path to handle.
+// caller has no error path to handle. When the request context carries a
+// non-secure client page URL and ALTCHA is selected, Enabled is false at
+// runtime only (the captcha.enabled settings row is not written).
 func (m *Manager) Describe(ctx context.Context) Config {
 	if m.solo {
 		return DisabledConfig()
 	}
 	cfg, _ := Effective(m.set.Snapshot(ctx))
-	return cfg
+	return applySecureContextGate(cfg, clientPageURLFromCtx(ctx))
 }
 
 // ErrProviderNotAltcha is returned by AltchaChallengeJSON when another
@@ -320,11 +322,13 @@ func (m *Manager) countUnattributedDenial() {
 // resolve returns the selected provider's effective config plus its
 // decrypted secret, provisioning the default altcha row when altcha is
 // selected but has no stored secret (a fresh install, or a row deleted
-// outside the admin CLI).
+// outside the admin CLI). The secure-context gate runs after Effective so
+// ALTCHA on insecure HTTP stands down without a settings write.
 func (m *Manager) resolve(ctx context.Context) (*resolvedConfig, error) {
 	snap := m.set.Snapshot(ctx)
 	cfg, fallback := Effective(snap)
 	m.noteFallback(fallback)
+	cfg = applySecureContextGate(cfg, clientPageURLFromCtx(ctx))
 	if cfg.Provider != ProviderAltcha {
 		return m.resolveSecret(snap, cfg)
 	}
@@ -342,6 +346,7 @@ func (m *Manager) resolve(ctx context.Context) (*resolvedConfig, error) {
 	snap = m.set.Snapshot(ctx)
 	cfg, fallback = Effective(snap)
 	m.noteFallback(fallback)
+	cfg = applySecureContextGate(cfg, clientPageURLFromCtx(ctx))
 	return m.resolveSecret(snap, cfg)
 }
 

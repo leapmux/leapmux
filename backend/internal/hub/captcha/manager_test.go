@@ -335,6 +335,53 @@ func TestManagerDisabledAndSolo(t *testing.T) {
 	require.NoError(t, solo.m.Verify(context.Background(), "login", ""))
 }
 
+// TestManagerSecureContextGateRuntimeDisablesAltcha pins the HTTP
+// stand-down: when the browser page Origin is not a secure context and
+// ALTCHA is selected, Describe / Verify / challenge issuance treat
+// captcha as disabled without writing captcha.enabled. Turnstile on the
+// same Origin stays enforced; missing Origin fails closed (stored on).
+func TestManagerSecureContextGateRuntimeDisablesAltcha(t *testing.T) {
+	e := newTestManager(t, false)
+	applyTestAltchaSettings(t, e, cheapAltchaSettings)
+	ctx := context.Background()
+
+	assert.True(t, CaptchaEnabledKey.Of(e.set.Snapshot(ctx)),
+		"precondition: settings row stays enabled through the whole test")
+
+	insecure := withClientPageURL(ctx, "http://192.168.1.5:8080")
+	cfg := e.m.Describe(insecure)
+	assert.False(t, cfg.Enabled)
+	assert.Equal(t, ProviderAltcha, cfg.Provider)
+	assert.True(t, CaptchaEnabledKey.Of(e.set.Snapshot(ctx)),
+		"runtime gate must not write captcha.enabled")
+
+	require.NoError(t, e.m.Verify(insecure, "login", ""),
+		"empty payload must pass when ALTCHA is runtime-gated")
+	challengeJSON, err := e.m.AltchaChallengeJSON(insecure)
+	require.NoError(t, err)
+	assert.Empty(t, challengeJSON)
+
+	secureHTTPS := withClientPageURL(ctx, "https://example.com")
+	assert.True(t, e.m.Describe(secureHTTPS).Enabled)
+	secureLocal := withClientPageURL(ctx, "http://localhost:8080")
+	assert.True(t, e.m.Describe(secureLocal).Enabled)
+
+	// Missing Origin: leave stored enablement alone (fail closed).
+	assert.True(t, e.m.Describe(ctx).Enabled)
+	require.Error(t, e.m.Verify(ctx, "login", ""))
+
+	// External providers are never gated by the page scheme.
+	stub := newSiteverifyStub(t)
+	stub.body = `{"success":true,"action":"login"}`
+	ext := newTestManager(t, false, WithTurnstileEndpoint(stub.server.URL))
+	activateExternal(t, ext, ProviderTurnstile, `{"site_key":"1x00000000000000000000AA"}`, "secret-key")
+	insecureExt := withClientPageURL(ctx, "http://192.168.1.5:8080")
+	assert.True(t, ext.m.Describe(insecureExt).Enabled)
+	require.NoError(t, ext.m.Verify(insecureExt, "login", "token"))
+	require.Error(t, ext.m.Verify(insecureExt, "login", ""),
+		"Turnstile on plain HTTP still requires a token")
+}
+
 // TestEnsureProvisionedRefreshesDescribeCache pins the provisioning
 // semantics: provisioning flips the altcha row's customized flag on the
 // next read (the admin CLI's `captcha show` depends on it).

@@ -158,8 +158,23 @@ export function isSystemInfoLoaded(): boolean {
 // a `<Show>` that reads it re-evaluates when the system info (re)loads —
 // including the denial-driven refresh after an admin toggles captcha at
 // runtime.
+//
+// ALTCHA needs a browser secure context (SubtleCrypto). When the page is
+// plain HTTP on a non-localhost host, stand down locally even if the
+// snapshot still says enabled — matching the hub's Origin-based runtime
+// gate and avoiding a deadlocked form until the next system-info refresh.
+// Turnstile and reCAPTCHA v3 work on HTTP, so they are not gated here.
+// Require an explicit false: jsdom leaves isSecureContext undefined, and
+// treating that as insecure would stand down every unit-test ALTCHA form.
 export function isCaptchaEnabled(): boolean {
-  return current().captchaEnabled
+  if (!current().captchaEnabled)
+    return false
+  if (current().captchaProvider === GenCaptchaProvider.ALTCHA
+    && typeof window !== 'undefined'
+    && window.isSecureContext === false) {
+    return false
+  }
+  return true
 }
 
 // getCaptchaProvider returns the active captcha provider (the generated
