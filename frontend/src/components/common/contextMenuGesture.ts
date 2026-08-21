@@ -41,6 +41,17 @@ export const PRESS_SLOP_PX = 8
 const SCROLL_MOVE_PX = 1
 
 /**
+ * How long the menu stays inert after the release while no click arrives.
+ *
+ * Long enough for the click a touch release synthesizes, which lands within a
+ * frame or two of `pointerup` on a viewport that declares its width (the 300ms
+ * wait is for pages that do not). Short enough that a release producing NO
+ * click -- a cancelled touch, an engine that suppresses it after a long press
+ * -- leaves the menu usable almost at once.
+ */
+export const CLICK_AFTER_RELEASE_GRACE_MS = 400
+
+/**
  * Marks an armed row. An ATTRIBUTE, never a class: the rows that mount this
  * gesture assign their own `class` reactively, and that assignment replaces the
  * whole class list -- a class added here once at attach would be silently
@@ -137,22 +148,10 @@ export interface ContextMenuGestureOptions {
   /**
    * Open the menu at `press`, or re-point an already-open one at it.
    *
-   * A touch hold calls this once when the hold completes, and once more only if
-   * `isOpen` reports that the release took the menu away -- so it opens a menu
-   * once per gesture on an engine that dismisses nothing. Supply no `isOpen`
-   * and the second call arrives unconditionally, which is why it must also be
-   * safe to receive for a menu that is already up. See `reassertHeldMenu`.
+   * Called once per gesture, always from a task of its own -- never
+   * synchronously inside the pointer event that decided it. See `scheduleOpen`.
    */
   onOpen: (press: ContextMenuPress) => void
-  /**
-   * Whether that menu is open right now.
-   *
-   * The release re-asserts a held-open menu ONLY when the platform has taken it
-   * away, which is what keeps `onOpen` to one call per gesture wherever nothing
-   * dismissed it. Absent, every release re-asserts -- the safe direction, since
-   * a menu that is already open is only re-anchored.
-   */
-  isOpen?: () => boolean
   /**
    * Keep the element's text selectable. Only the iOS callout is suppressed, and
    * then only on a coarse pointer; a right-click inside an existing selection
@@ -207,6 +206,8 @@ export function attachContextMenuGesture(
    * and hand the menu back to a finger that is still pressing.
    */
   let markedHoldOverMenu = false
+  /** The backstop that ends the inert window when no click follows the release. */
+  let holdOverMenuTimer: ReturnType<typeof setTimeout> | undefined
   /** The next `click` belongs to the gesture, not to the row. */
   let swallowClick = false
   /** Removes the release listeners armed by `openAfterRelease`. A no-op when none are. */
@@ -219,7 +220,43 @@ export function attachContextMenuGesture(
     if (!markedHoldOverMenu)
       return
     markedHoldOverMenu = false
+    clearTimeout(holdOverMenuTimer)
+    holdOverMenuTimer = undefined
+    document.removeEventListener('click', onClickAfterRelease, true)
     document.documentElement.removeAttribute(HOLD_OVER_MENU_ATTR)
+  }
+
+  /**
+   * The click that trails the release, seen from the document so the menu
+   * cannot be the one to handle it.
+   *
+   * This listener does not stop anything -- it exists to hold the inert window
+   * open until the click's target has already been decided. Hit-testing happens
+   * when the browser builds the event, so by the time this runs the click
+   * belongs to the ROW under the transparent menu, where `onClickCapture`
+   * swallows it. Clearing the window any earlier is what let the release
+   * activate whichever item the finger came down on, which closed the menu and
+   * ran that item's action.
+   */
+  function onClickAfterRelease() {
+    releaseHoldOverMenu()
+  }
+
+  /**
+   * Hand the menu back once the release is fully over.
+   *
+   * NOT synchronously on `pointerup`: the click that follows it has not been
+   * built yet, and restoring hit-testing before it is what put the item under
+   * the finger back in its path. The timer is the backstop for a release that
+   * produces no click at all -- a cancelled touch, or an engine that suppresses
+   * the click after a long press.
+   */
+  function scheduleHoldOverMenuRelease() {
+    if (!markedHoldOverMenu)
+      return
+    document.addEventListener('click', onClickAfterRelease, true)
+    clearTimeout(holdOverMenuTimer)
+    holdOverMenuTimer = setTimeout(releaseHoldOverMenu, CLICK_AFTER_RELEASE_GRACE_MS)
   }
 
   /**
@@ -271,11 +308,10 @@ export function attachContextMenuGesture(
     clearTimeout(holdTimer)
     holdTimer = undefined
     el.removeAttribute(PRESS_HOLD_ATTR)
-    // The finger is off the glass, so the menu takes its pointers again. Safe
-    // to do synchronously: a touch stream stays captured to the element that
-    // received `pointerdown`, so neither this release nor the click behind it
-    // can land on the menu however far it has grown under the finger.
-    releaseHoldOverMenu()
+    // The menu takes its pointers back only once the trailing click has been
+    // built and aimed -- WebKit hit-tests that click live, so a menu made
+    // solid again here would catch it. See `scheduleHoldOverMenuRelease`.
+    scheduleHoldOverMenuRelease()
     disarmScrollCancel()
   }
 
@@ -343,33 +379,6 @@ export function attachContextMenuGesture(
       const press = firedAt
       fired = false
       opts.onOpen(press)
-    }, 0)
-  }
-
-  /**
-   * Put back the menu that the release just light-dismissed.
-   *
-   * The hold already opened this menu (see `scheduleOpen`), and the release is
-   * what the light-dismiss pass acts on. Chromium runs that hide BEFORE handing
-   * the `pointerup` to its listeners, so the synchronous call here lands inside
-   * the same event and no frame is ever painted without the menu. Deferring it
-   * by a task instead let the hidden state reach the glass, which read as a
-   * blink at every lift.
-   *
-   * The deferred call behind it is the net for an engine that dismisses AFTER
-   * dispatching the release, where the synchronous one would be undone. Both
-   * ask `isOpen` first, so an engine that dismissed nothing calls `onOpen` no
-   * second time and a gesture that changed nothing re-anchors nothing.
-   */
-  const reassertHeldMenu = () => {
-    if (opts.isOpen?.() !== true)
-      opts.onOpen(firedAt)
-    clearTimeout(openTimer)
-    openTimer = setTimeout(() => {
-      openTimer = undefined
-      releaseOpensMenu = false
-      if (opts.isOpen?.() !== true)
-        opts.onOpen(firedAt)
     }, 0)
   }
 
@@ -490,22 +499,27 @@ export function attachContextMenuGesture(
   const onPointerUp = (e: PointerEvent) => {
     if (pointerId === null || e.pointerId !== pointerId)
       return
-    if (fired || heldOpen) {
+    if (heldOpen) {
+      // The menu is already up -- the hold opened it, and nothing about this
+      // release takes it away (see `showMenuPopover` in ./DropdownMenu.tsx).
+      //
       // The release keeps propagating: the drag sensor detaches on it, and the
       // chat scroller drops the pointer from its input set. The one consumer
       // that must NOT react -- `Tooltip`, which would present over the menu --
-      // checks `touchReleaseOpensMenu` instead.
+      // checks `touchReleaseOpensMenu` instead, and needs the flag to outlive
+      // this event by the task a tooltip would race it in.
+      heldOpen = false
       releaseOpensMenu = true
-      if (heldOpen) {
-        heldOpen = false
-        reassertHeldMenu()
-      }
-      else {
-        // `fired` with no menu behind it: the platform's own `contextmenu`
-        // claimed this hold before the timer could open one, so the release is
-        // still the first chance to open it.
-        scheduleOpen()
-      }
+      setTimeout(() => {
+        releaseOpensMenu = false
+      }, 0)
+    }
+    else if (fired) {
+      // `fired` with no menu behind it: the platform's own `contextmenu`
+      // claimed this hold before the timer could open one, so the release is
+      // still the first chance to open it.
+      releaseOpensMenu = true
+      scheduleOpen()
     }
     endGesture()
   }

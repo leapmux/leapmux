@@ -680,10 +680,6 @@ export function DropdownMenu(props: DropdownMenuProps) {
     if (!el)
       return
     const detach = attachContextMenuGesture(el, {
-      // Read from the DOM, not from the `isOpen()` signal mirror, which a
-      // dialog-driven auto-dismiss can leave stale -- and a light dismiss is
-      // exactly the kind of close that never runs through this component.
-      isOpen: () => Boolean(popoverEl?.matches(':popover-open')),
       onOpen: (press) => {
         setPressAnchor(press)
         if (popoverEl?.matches(':popover-open')) {

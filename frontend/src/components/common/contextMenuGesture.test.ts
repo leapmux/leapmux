@@ -5,9 +5,14 @@ import { motion } from '~/styles/tokens'
 import { inputOrEditableHosts, popoverHost } from '~/test-support/embeddedUi'
 import { pointerEvent } from '~/test-support/pointer'
 import { selectTextWithRect } from '~/test-support/selection'
-import { attachContextMenuGesture, PRESS_SLOP_PX, pressAnchorRect, touchReleaseOpensMenu } from './contextMenuGesture'
+import { attachContextMenuGesture, CLICK_AFTER_RELEASE_GRACE_MS, PRESS_SLOP_PX, pressAnchorRect, touchReleaseOpensMenu } from './contextMenuGesture'
 
 const HOLD_MS = motion.longPress
+
+/** Whether an open menu is currently refusing pointers to the holding finger. */
+function heldOverMenu(): boolean {
+  return document.documentElement.hasAttribute('data-ctx-hold-over-menu')
+}
 
 /** The gesture's own events are touch presses; the shared factory defaults to a mouse. */
 function pointer(type: string, opts: PointerOpts = {}): PointerEvent {
@@ -35,8 +40,6 @@ describe('attachContextMenuGesture', () => {
   let row: HTMLElement
   let detach: () => void
   let onOpen: ReturnType<typeof vi.fn<(press: ContextMenuPress) => void>>
-  /** Whether the stand-in menu is showing. See the `isOpen` double below. */
-  let menuOpen: boolean
   /** The rect the row reports; a test moves it to make a scroll "move the row". */
   let rowRect: { top: number, left: number }
 
@@ -56,16 +59,8 @@ describe('attachContextMenuGesture', () => {
       toJSON: () => ({}),
     })
     document.body.appendChild(row)
-    // A stand-in for the menu itself. Without one the gesture cannot tell a
-    // release that light-dismissed its menu from one that left it alone, and
-    // re-asserts on every lift -- so the double models the real consumer, where
-    // `isOpen` reads `:popover-open`. jsdom runs no light-dismiss pass, so a
-    // menu opened here stays open, which is the "platform left it alone" case.
-    menuOpen = false
-    onOpen = vi.fn(() => {
-      menuOpen = true
-    })
-    detach = attachContextMenuGesture(row, { onOpen, isOpen: () => menuOpen })
+    onOpen = vi.fn()
+    detach = attachContextMenuGesture(row, { onOpen })
   })
 
   afterEach(() => {
@@ -124,16 +119,37 @@ describe('attachContextMenuGesture', () => {
   // The menu opens under the finger that is still pressing, and a held touch
   // carries a hover with it -- so an item sat there looking chosen. The
   // document-level marker is what the CSS takes hit-testing away on.
-  it('makes an open menu inert until the finger lifts', () => {
-    const held = () => document.documentElement.hasAttribute('data-ctx-hold-over-menu')
+  it('keeps an open menu inert until the click behind the release has landed', () => {
     row.dispatchEvent(pointer('pointerdown', { x: 90, y: 110 }))
-    expect(held()).toBe(false)
+    expect(heldOverMenu()).toBe(false)
 
     vi.advanceTimersByTime(HOLD_MS)
-    expect(held()).toBe(true)
+    expect(heldOverMenu()).toBe(true)
 
+    // The LIFT does not hand the menu back. The click it synthesizes has not
+    // been built yet, and a menu made solid again here catches it: the release
+    // then activated whichever item the finger came down on, which ran that
+    // item's action and closed the menu -- read from the outside as "the menu
+    // is dismissed when I let go".
     row.dispatchEvent(pointer('pointerup', { x: 90, y: 110 }))
-    expect(held()).toBe(false)
+    expect(heldOverMenu()).toBe(true)
+
+    // Seeing the click is enough: its target was decided when the browser built
+    // it, so by now it belongs to the row under the transparent menu.
+    row.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+    expect(heldOverMenu()).toBe(false)
+  })
+
+  it('ends the inert window on its own when no click follows the release', () => {
+    row.dispatchEvent(pointer('pointerdown', { x: 90, y: 110 }))
+    vi.advanceTimersByTime(HOLD_MS)
+    row.dispatchEvent(pointer('pointerup', { x: 90, y: 110 }))
+    expect(heldOverMenu()).toBe(true)
+
+    // A cancelled touch, or an engine that suppresses the click after a long
+    // press, would otherwise leave the menu unable to take a tap at all.
+    vi.advanceTimersByTime(CLICK_AFTER_RELEASE_GRACE_MS)
+    expect(heldOverMenu()).toBe(false)
   })
 
   it('arms the indicator as an attribute that survives a class-list rewrite', () => {
@@ -161,43 +177,6 @@ describe('attachContextMenuGesture', () => {
     row.dispatchEvent(pointer('pointerup', { x: 90, y: 110 }))
     vi.runAllTimers()
     expect(onOpen).toHaveBeenCalledTimes(1)
-  })
-
-  // The blink this replaced: the release light-dismisses a menu shown under the
-  // finger, and repairing that a task later let the hidden frame reach the
-  // glass. Chromium runs the hide BEFORE dispatching the release, so the repair
-  // has to land inside that same event -- before any timer runs.
-  it('restores a menu the release dismissed, without waiting for a task', () => {
-    row.dispatchEvent(pointer('pointerdown', { x: 90, y: 110 }))
-    completeHold()
-    expect(onOpen).toHaveBeenCalledTimes(1)
-
-    // What the platform's light-dismiss pass does, just before the release
-    // reaches this module's listener.
-    menuOpen = false
-    row.dispatchEvent(pointer('pointerup', { x: 90, y: 110 }))
-
-    expect(onOpen).toHaveBeenCalledTimes(2)
-    expect(onOpen).toHaveBeenLastCalledWith(expect.objectContaining({ clientX: 90 }))
-
-    // ...and the net behind it finds the menu back up and adds nothing.
-    vi.runAllTimers()
-    expect(onOpen).toHaveBeenCalledTimes(2)
-  })
-
-  // The other half: an engine that dismisses AFTER dispatching the release. The
-  // synchronous repair sees the menu still open and stands down; the deferred
-  // one is what puts it back.
-  it('restores a menu dismissed after the release, from the net behind it', () => {
-    row.dispatchEvent(pointer('pointerdown', { x: 90, y: 110 }))
-    completeHold()
-    row.dispatchEvent(pointer('pointerup', { x: 90, y: 110 }))
-    expect(onOpen).toHaveBeenCalledTimes(1)
-
-    menuOpen = false
-    vi.runAllTimers()
-
-    expect(onOpen).toHaveBeenCalledTimes(2)
   })
 
   it('opens once for a whole gesture', () => {
@@ -714,10 +693,8 @@ describe('attachContextMenuGesture', () => {
   describe('options', () => {
     it('honours a caller-supplied hold duration', () => {
       detach()
-      const onCustom = vi.fn(() => {
-        menuOpen = true
-      })
-      detach = attachContextMenuGesture(row, { onOpen: onCustom, holdMs: 1000, isOpen: () => menuOpen })
+      const onCustom = vi.fn()
+      detach = attachContextMenuGesture(row, { onOpen: onCustom, holdMs: 1000 })
 
       row.dispatchEvent(pointer('pointerdown', { x: 90, y: 110 }))
       vi.advanceTimersByTime(HOLD_MS)
@@ -735,10 +712,8 @@ describe('attachContextMenuGesture', () => {
 
     it('honours a caller-supplied slop', () => {
       detach()
-      const onCustom = vi.fn(() => {
-        menuOpen = true
-      })
-      detach = attachContextMenuGesture(row, { onOpen: onCustom, slopPx: 40, isOpen: () => menuOpen })
+      const onCustom = vi.fn()
+      detach = attachContextMenuGesture(row, { onOpen: onCustom, slopPx: 40 })
 
       row.dispatchEvent(pointer('pointerdown', { x: 90, y: 110 }))
       // Past the default slop, inside this gesture's own.
@@ -788,18 +763,17 @@ describe('attachContextMenuGesture', () => {
       detach = () => {}
     })
 
-    it('cancels the release net behind a held-open menu', () => {
+    it('ends the inert window when the row detaches mid-hold', () => {
       row.dispatchEvent(pointer('pointerdown', { x: 90, y: 110 }))
-      completeHold()
-      row.dispatchEvent(pointer('pointerup', { x: 90, y: 110 }))
+      vi.advanceTimersByTime(HOLD_MS)
+      expect(heldOverMenu()).toBe(true)
+
       detach()
-
-      // A menu dismissed after the detach is nobody's business any more.
-      menuOpen = false
-      vi.runAllTimers()
-
-      expect(onOpen).toHaveBeenCalledTimes(1)
       detach = () => {}
+
+      // A row unmounted under a finger -- the chat list churns them on every
+      // fling -- must not leave every open menu refusing pointers.
+      expect(heldOverMenu()).toBe(false)
     })
   })
 })
