@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { flush } from '~/test-support/async'
+import { pointerEvent } from '~/test-support/pointer'
 import { SelectionQuotePopover } from './SelectionQuotePopover'
 
 // `~/lib/clipboard` announces a failed write itself. Mocked here so the copy
@@ -11,8 +12,23 @@ vi.mock('~/components/common/Toast', () => ({ showWarnToastWithLoggedCause }))
 
 const originalGetSelection = window.getSelection
 
+/**
+ * Stand in for the platform's Selection.
+ *
+ * A default range comes with it, carrying the same text. `selectionInside` (see
+ * ~/lib/textSelection.ts) reads the RANGE's text rather than the selection's,
+ * because only the range's is independent of `user-select` -- so a mock that
+ * answers `toString` alone reads as live to the component and as empty to the
+ * predicate. A case that needs geometry overrides `getRangeAt` itself.
+ */
 function mockSelection(selection: Partial<Selection> | null): void {
-  vi.spyOn(window, 'getSelection').mockReturnValue(selection as Selection | null)
+  const text = selection ? String(selection.toString?.() ?? '') : ''
+  const withRange = selection && {
+    rangeCount: 1,
+    getRangeAt: () => ({ toString: () => text }) as unknown as Range,
+    ...selection,
+  }
+  vi.spyOn(window, 'getSelection').mockReturnValue(withRange as Selection | null)
 }
 
 describe('selection quote popover', () => {
@@ -56,6 +72,107 @@ describe('selection quote popover', () => {
     expect(onSelectionActiveChange).toHaveBeenNthCalledWith(2, false)
   })
 
+  // The wrapper is where the multi-tap gesture lives, because it IS the prose:
+  // the chat transcript and both file views mount it around the text a reader is
+  // allowed to select. See ~/lib/tapSelect.ts.
+  describe('the finger gesture it hosts', () => {
+    const TEXT = 'the quick brown fox'
+
+    /** jsdom has no layout, so the two things layout would answer are supplied. */
+    function withLayout(node: Text, rect = { left: 10, right: 90, top: 40, bottom: 60 }) {
+      document.caretPositionFromPoint = ((x: number) => ({
+        offsetNode: node,
+        offset: Math.max(0, Math.min(Math.round(x), node.data.length)),
+        getClientRect: () => null,
+      })) as unknown as typeof document.caretPositionFromPoint
+      Object.defineProperty(Range.prototype, 'getClientRects', {
+        configurable: true,
+        value: () => [{ ...rect, width: rect.right - rect.left, height: rect.bottom - rect.top }],
+      })
+      vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => {
+        cb(0)
+        return 1
+      })
+      vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {})
+    }
+
+    function doubleTap(el: Element, x: number) {
+      for (let tap = 0; tap < 2; tap++) {
+        el.dispatchEvent(pointerEvent('pointerdown', { pointerType: 'touch', x, y: 50 }))
+        el.dispatchEvent(pointerEvent('pointerup', { pointerType: 'touch', x, y: 50 }))
+      }
+    }
+
+    afterEach(() => {
+      Reflect.deleteProperty(document, 'caretPositionFromPoint')
+      Reflect.deleteProperty(Range.prototype, 'getClientRects')
+      window.getSelection()?.removeAllRanges()
+    })
+
+    it('selects a word and offers to copy or quote it', () => {
+      render(() => (
+        <SelectionQuotePopover onQuote={vi.fn()}>
+          <p data-testid="selectable">{TEXT}</p>
+        </SelectionQuotePopover>
+      ))
+      const paragraph = screen.getByTestId('selectable')
+      withLayout(paragraph.firstChild as Text)
+
+      doubleTap(paragraph, TEXT.indexOf('brown') + 2)
+
+      expect(window.getSelection()?.toString()).toBe('brown')
+      expect(screen.getByTestId('quote-selection-popover')).toBeInTheDocument()
+    })
+
+    it('quotes what the gesture selected', () => {
+      const onQuote = vi.fn()
+      render(() => (
+        <SelectionQuotePopover onQuote={onQuote}>
+          <p data-testid="selectable">{TEXT}</p>
+        </SelectionQuotePopover>
+      ))
+      const paragraph = screen.getByTestId('selectable')
+      withLayout(paragraph.firstChild as Text)
+
+      doubleTap(paragraph, TEXT.indexOf('brown') + 2)
+      fireEvent.click(screen.getByTestId('quote-selection-button'))
+
+      // No line range: a chat quote carries markdown, and only the file views
+      // report the `startLine`/`endLine` the other two arguments hold.
+      expect(onQuote).toHaveBeenCalledWith('brown', undefined, undefined)
+    })
+
+    // The popover is a CHILD of the element the gesture attaches to, so a third
+    // tap that lands on it would otherwise select its own button label.
+    it('keeps the gesture off its own buttons', () => {
+      render(() => (
+        <SelectionQuotePopover onQuote={vi.fn()}>
+          <p data-testid="selectable">{TEXT}</p>
+        </SelectionQuotePopover>
+      ))
+      const paragraph = screen.getByTestId('selectable')
+      withLayout(paragraph.firstChild as Text)
+      doubleTap(paragraph, TEXT.indexOf('brown') + 2)
+
+      expect(screen.getByTestId('quote-selection-popover')).toHaveAttribute('data-no-tap-select')
+    })
+
+    it('drops the gesture when it unmounts', () => {
+      const rendered = render(() => (
+        <SelectionQuotePopover onQuote={vi.fn()}>
+          <p data-testid="selectable">{TEXT}</p>
+        </SelectionQuotePopover>
+      ))
+      const paragraph = screen.getByTestId('selectable')
+      withLayout(paragraph.firstChild as Text)
+      rendered.unmount()
+
+      doubleTap(paragraph, TEXT.indexOf('brown') + 2)
+
+      expect(window.getSelection()?.toString()).toBe('')
+    })
+  })
+
   it('forwards a class to the selection wrapper', () => {
     const { container } = render(() => (
       <SelectionQuotePopover
@@ -97,6 +214,7 @@ describe('selection quote popover', () => {
       focusNode: textNode,
       toString: () => 'selected text',
       getRangeAt: () => ({
+        toString: () => 'selected text',
         getClientRects: () => [{ left: 0, right: 10, top: 10, bottom: 20 }],
       }) as unknown as Range,
     })

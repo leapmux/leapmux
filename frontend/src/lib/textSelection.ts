@@ -177,7 +177,11 @@ function resolveRun(caret: TextCaret, root: Element): { run: InlineRun, index: n
   const piece = run.pieces.find(p => p.node === caret.node)
   if (!piece)
     return null
-  return { run, index: piece.start + Math.max(0, Math.min(caret.offset, piece.length)) }
+  // Not clamped here. An engine can report an offset past the end of the node
+  // it names, and {@link wordBounds} and `paragraphBounds` each clamp against
+  // the run's own length -- which is the length that matters, and the only one
+  // either of them can be wrong about.
+  return { run, index: piece.start + caret.offset }
 }
 
 /**
@@ -218,7 +222,11 @@ export function wordBounds(text: string, index: number): TextBounds | null {
  * in the selection. Trimming it would copy a line that no longer lines up.
  */
 function paragraphBounds(run: InlineRun, index: number): TextBounds | null {
-  const at = Math.max(0, Math.min(index, run.text.length))
+  // `index` is used only to compare against the break positions, so an
+  // out-of-range one needs no clamp: past the end it lands after every break
+  // and takes the last paragraph, and below zero it lands before every break
+  // and takes the first. Nothing here indexes `run.text` with it.
+  const at = index
   let start = 0
   let end = run.text.length
   for (const position of run.breaks) {
@@ -303,6 +311,17 @@ export function paragraphRangeAt(caret: TextCaret, root: Element): Range | null 
  * Blank counts as nothing. A range over white space alone is what a stray drag
  * leaves behind: there is no text to copy, no handle worth adjusting, and no
  * reason for any caller to change what it does.
+ *
+ * The text comes from the RANGES and never from `Selection.toString()`, which is
+ * layout-aware and therefore answers differently depending on a CSS property
+ * that this app changes at run time. Measured in Chromium, over the same
+ * unchanged range: with `user-select: none` on the wrapper the selection
+ * serializes as the empty string while `Range.toString()` still reads the word,
+ * and the selection is not collapsed either way. ~/lib/tapSelect.ts puts that
+ * suppression back the moment a finger lands away from the highlight, so a
+ * predicate built on `Selection.toString()` reported "nothing is selected" to
+ * every gesture that asked after it -- which is how a swipe over a live
+ * selection opened a drawer.
  */
 export function selectionInside(container: Node): Selection | null {
   const selection = window.getSelection()
@@ -312,7 +331,11 @@ export function selectionInside(container: Node): Selection | null {
   const focusNode = selection.focusNode
   if (!anchorNode || !focusNode || !container.contains(anchorNode) || !container.contains(focusNode))
     return null
-  return selection.toString().trim() ? selection : null
+  for (let i = 0; i < selection.rangeCount; i++) {
+    if (selection.getRangeAt(i).toString().trim())
+      return selection
+  }
+  return null
 }
 
 /**

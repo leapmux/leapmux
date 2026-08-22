@@ -73,6 +73,10 @@ afterEach(() => {
   harness?.detach()
   harness?.root.remove()
   harness = null
+  // The selection is DOCUMENT state and outlives the fixture. A case that leaves
+  // one behind would make the next one's press look like a reach for it.
+  window.getSelection()?.removeAllRanges()
+  document.body.innerHTML = ''
 })
 
 describe('attachHorizontalSwipe', () => {
@@ -196,6 +200,60 @@ describe('attachHorizontalSwipe', () => {
       const h = mount({ row: owner })
       swipeTo(inner, 200 + SWIPE_MIN_PX + 40)
       expect(h.swipes).toEqual([])
+    })
+
+    /**
+     * A live selection owns every finger on the region until it is gone.
+     *
+     * Widening one means dragging the platform's own handles, and that drag is
+     * HORIZONTAL along the line -- the same shape this recognizer reads as a
+     * swipe. See ~/lib/tapSelect.ts, which is how a finger makes a selection.
+     */
+    describe('while the region holds a live selection', () => {
+      function selectInside(el: HTMLElement) {
+        el.textContent = 'a message body'
+        const range = document.createRange()
+        range.selectNodeContents(el)
+        const selection = window.getSelection()!
+        selection.removeAllRanges()
+        selection.addRange(range)
+      }
+
+      it('declines the press', () => {
+        const owner = document.createElement('div')
+        const h = mount({ row: owner })
+        selectInside(owner)
+        swipeTo(owner, 200 + SWIPE_MIN_PX + 40)
+        expect(h.swipes).toEqual([])
+      })
+
+      it('swipes again once the selection is gone', () => {
+        const owner = document.createElement('div')
+        const h = mount({ row: owner })
+        selectInside(owner)
+        swipeTo(owner, 200 + SWIPE_MIN_PX + 40)
+        expect(h.swipes).toEqual([])
+
+        window.getSelection()?.removeAllRanges()
+        swipeTo(owner, 200 + SWIPE_MIN_PX + 40)
+        expect(h.swipes).toEqual(['right'])
+      })
+
+      // A selection somewhere else on the page is not this region's business.
+      it('takes the press when the selection is outside the region', () => {
+        const outside = document.createElement('p')
+        outside.textContent = 'elsewhere entirely'
+        document.body.append(outside)
+        const h = mount()
+        const range = document.createRange()
+        range.selectNodeContents(outside)
+        const selection = window.getSelection()!
+        selection.removeAllRanges()
+        selection.addRange(range)
+
+        swipeTo(h.row, 200 + SWIPE_MIN_PX + 40)
+        expect(h.swipes).toEqual(['right'])
+      })
     })
 
     it('takes a press on a plain row that declares nothing', () => {
@@ -418,6 +476,43 @@ describe('attachHorizontalSwipe', () => {
       h.row.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
 
       expect(clicked).not.toHaveBeenCalled()
+    })
+  })
+
+  /**
+   * The region is the whole mobile centre pane, so anything it takes it takes
+   * from the transcript inside it. Capture would retarget every event after the
+   * press AT this region, and the rows below would stop seeing `pointerup`
+   * entirely -- which is what left a tapped message opening its context menu
+   * half a second later. See `trackPress` for the measurement.
+   */
+  describe('what it must not take from the region below it', () => {
+    it('never captures the pointer', () => {
+      const h = mount()
+      const capture = vi.fn()
+      h.root.setPointerCapture = capture
+      swipeTo(h.row, 200 + SWIPE_MIN_PX + 40)
+      expect(h.swipes).toEqual(['right'])
+      expect(capture).not.toHaveBeenCalled()
+    })
+
+    // The other half of the same decision: without capture the events have to
+    // reach the recognizer some other way, and the document is that way.
+    it('reads travel dispatched outside the region', () => {
+      const h = mount()
+      h.row.dispatchEvent(pointerEvent('pointerdown', { x: 200, y: 300, pointerType: 'touch' }))
+      document.body.dispatchEvent(pointerEvent('pointermove', { x: 200 + SWIPE_MIN_PX + 40, y: 300, pointerType: 'touch' }))
+      expect(h.swipes).toEqual(['right'])
+    })
+
+    it('reads a release dispatched outside the region', () => {
+      const h = mount()
+      h.row.dispatchEvent(pointerEvent('pointerdown', { x: 200, y: 300, pointerType: 'touch' }))
+      document.body.dispatchEvent(pointerEvent('pointerup', { x: 200, y: 300, pointerType: 'touch' }))
+      // The release ended the gesture, so the travel that follows belongs to no
+      // gesture and reports nothing.
+      document.body.dispatchEvent(pointerEvent('pointermove', { x: 200 + SWIPE_MIN_PX + 40, y: 300, pointerType: 'touch' }))
+      expect(h.swipes).toEqual([])
     })
   })
 

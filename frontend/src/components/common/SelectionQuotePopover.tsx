@@ -5,6 +5,8 @@ import { createSignal, onCleanup, onMount, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { copyTextToClipboard } from '~/lib/clipboard'
 import { extractLineRange, extractSelectionMarkdown } from '~/lib/quoteUtils'
+import { attachTapSelect } from '~/lib/tapSelect'
+import { selectionInside } from '~/lib/textSelection'
 import * as styles from './SelectionQuotePopover.css'
 
 interface SelectionQuotePopoverProps {
@@ -48,12 +50,6 @@ export function SelectionQuotePopover(props: SelectionQuotePopoverProps): JSX.El
     props.onSelectionActiveChange?.(active)
   }
 
-  const selectionInsideContainer = (selection: Selection, container: HTMLElement): boolean => {
-    const anchorNode = selection.anchorNode
-    const focusNode = selection.focusNode
-    return !!anchorNode && !!focusNode && container.contains(anchorNode) && container.contains(focusNode)
-  }
-
   /**
    * `wrapperRef` -- the element this component itself renders -- IS the container.
    *
@@ -70,12 +66,8 @@ export function SelectionQuotePopover(props: SelectionQuotePopoverProps): JSX.El
    * selectable prose.
    */
   const updateSelectionActive = (): Selection | null => {
-    const selection = window.getSelection()
-    if (!selection || selection.isCollapsed || !selection.toString().trim() || !wrapperRef || !selectionInsideContainer(selection, wrapperRef)) {
-      setSelectionActive(false)
-      return null
-    }
-    setSelectionActive(true)
+    const selection = wrapperRef ? selectionInside(wrapperRef) : null
+    setSelectionActive(Boolean(selection))
     return selection
   }
 
@@ -89,8 +81,16 @@ export function SelectionQuotePopover(props: SelectionQuotePopoverProps): JSX.El
     hidePopover()
   }
 
-  const handleMouseUp = () => {
-    // Small delay to let the browser finalize the selection
+  /**
+   * Show the Copy/Quote buttons at the end of whatever is selected now.
+   *
+   * Two inputs reach this. A mouse arrives through `mouseup`, where the frame's
+   * delay is what lets the browser finalize a drag-selection first. A finger
+   * arrives through {@link attachTapSelect}, where the selection is already
+   * final — it keeps the frame anyway, because the selection was set in the same
+   * task and the rects this reads come from a layout that has not run yet.
+   */
+  const scheduleShowForSelection = () => {
     cancelScheduledFrames()
     selectionFrame = requestAnimationFrame(() => {
       selectionFrame = undefined
@@ -182,12 +182,18 @@ export function SelectionQuotePopover(props: SelectionQuotePopoverProps): JSX.El
   onMount(() => {
     const el = wrapperRef
     el.addEventListener('mousedown', handleMouseDown)
-    el.addEventListener('mouseup', handleMouseUp)
+    el.addEventListener('mouseup', scheduleShowForSelection)
     document.addEventListener('selectionchange', handleSelectionChange)
+    // The gesture belongs here rather than at each prose surface, because this
+    // wrapper IS the prose: the chat transcript and both file views mount it
+    // around the text they let a reader select, and it already answers "is the
+    // selection inside this subtree" for the rest of the component.
+    const detachTapSelect = attachTapSelect(el, { onSelect: scheduleShowForSelection })
     onCleanup(() => {
       el.removeEventListener('mousedown', handleMouseDown)
-      el.removeEventListener('mouseup', handleMouseUp)
+      el.removeEventListener('mouseup', scheduleShowForSelection)
       document.removeEventListener('selectionchange', handleSelectionChange)
+      detachTapSelect()
       cancelScheduledFrames()
       setSelectionActive(false)
     })
@@ -202,6 +208,10 @@ export function SelectionQuotePopover(props: SelectionQuotePopoverProps): JSX.El
           class={styles.popover}
           style={{ top: `${position().top}px`, left: `${position().left}px` }}
           data-testid="quote-selection-popover"
+          // This popover is a CHILD of the element the tap gesture attaches to,
+          // so without the marker a third tap that landed on it would select its
+          // own label instead of widening the selection it offers to copy.
+          data-no-tap-select
         >
           <button
             class={styles.quoteButton}

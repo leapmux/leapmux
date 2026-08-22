@@ -1,4 +1,5 @@
 import { INPUT_OR_EDITABLE_SELECTOR } from '~/lib/textInputBehavior'
+import { selectionInside } from '~/lib/textSelection'
 
 /**
  * A horizontal finger swipe over a region — the input that opens and closes the
@@ -58,7 +59,8 @@ import { INPUT_OR_EDITABLE_SELECTOR } from '~/lib/textInputBehavior'
  * The region is full of other gestures, so the recognizer decides twice and
  * declines at each point rather than compete:
  *
- * 1. At the press, against the element it landed on (`pressBelongsToAnotherOwner`).
+ * 1. At the press, against the element it landed on (`pressBelongsToAnotherOwner`)
+ *    and against any live text selection on the region (`selectionInside`).
  * 2. At the axis lock, against the direction the finger actually took
  *    (`scrollerConsumesSwipe`).
  *
@@ -217,14 +219,38 @@ export function attachHorizontalSwipe(root: HTMLElement, opts: HorizontalSwipeOp
   /** The next `click` belongs to the swipe, not to whatever sits under the finger. */
   let swallowClick = false
 
+  /**
+   * Follow the press on the DOCUMENT, and do NOT capture the pointer.
+   *
+   * `setPointerCapture` is the usual way to keep a finger that wanders off the
+   * region, and it is the wrong tool for a region this large. Capture retargets
+   * every later event for that pointer AT the capturing element, so the whole
+   * subtree under it stops receiving them -- and this region is the entire
+   * mobile centre pane, with the transcript and every gesture in it inside.
+   * Measured in Chromium: with the capture in place the message rows never saw
+   * `pointerup`, so the long-press timer that a tap should have cancelled ran on
+   * and opened the message menu half a second after the finger had lifted (see
+   * ~/components/common/contextMenuGesture.ts), and ~/lib/tapSelect.ts never
+   * counted a tap at all.
+   *
+   * Document listeners deliver the same events without taking them from anyone,
+   * which is all the capture was for. They are armed per press, so an idle
+   * transcript pays for none of them.
+   */
+  function trackPress() {
+    document.addEventListener('pointermove', onPointerMove, true)
+    document.addEventListener('pointerup', onPointerUp, true)
+    document.addEventListener('pointercancel', onPointerCancel, true)
+  }
+
   function endGesture() {
-    if (pointerId !== null && root.hasPointerCapture?.(pointerId))
-      root.releasePointerCapture(pointerId)
     pointerId = null
     pressTarget = null
     lockedDirection = null
     reported = false
-    root.removeEventListener('pointermove', onPointerMove)
+    document.removeEventListener('pointermove', onPointerMove, true)
+    document.removeEventListener('pointerup', onPointerUp, true)
+    document.removeEventListener('pointercancel', onPointerCancel, true)
   }
 
   const onPointerDown = (e: PointerEvent) => {
@@ -242,18 +268,21 @@ export function attachHorizontalSwipe(root: HTMLElement, opts: HorizontalSwipeOp
     const target = e.target instanceof Element ? e.target : null
     if (!target || pressBelongsToAnotherOwner(target, root))
       return
+    if (selectionInside(root)) {
+      // A live selection owns every finger on this region until it is gone.
+      // Widening a selection means dragging the platform's own handles, and that
+      // drag is HORIZONTAL along the line -- the same shape this recognizer
+      // reads as a swipe. Competing for it would open a drawer instead of
+      // moving the range, and the drawer would cover the text. See
+      // ~/lib/tapSelect.ts, which is how a finger makes a selection here.
+      return
+    }
 
     pointerId = e.pointerId
     startX = e.clientX
     startY = e.clientY
     pressTarget = target
-    try {
-      root.setPointerCapture(e.pointerId)
-    }
-    catch {
-      // jsdom and a detached root have no capture.
-    }
-    root.addEventListener('pointermove', onPointerMove, { passive: true })
+    trackPress()
   }
 
   function onPointerMove(e: PointerEvent) {
@@ -292,13 +321,13 @@ export function attachHorizontalSwipe(root: HTMLElement, opts: HorizontalSwipeOp
     opts.onSwipe(lockedDirection)
   }
 
-  const onPointerUp = (e: PointerEvent) => {
+  function onPointerUp(e: PointerEvent) {
     if (pointerId === null || e.pointerId !== pointerId)
       return
     endGesture()
   }
 
-  const onPointerCancel = (e: PointerEvent) => {
+  function onPointerCancel(e: PointerEvent) {
     if (pointerId === null || e.pointerId !== pointerId)
       return
     // The browser claimed the touch after all — a system gesture, or a scroll
@@ -343,8 +372,6 @@ export function attachHorizontalSwipe(root: HTMLElement, opts: HorizontalSwipeOp
   }
 
   root.addEventListener('pointerdown', onPointerDown)
-  root.addEventListener('pointerup', onPointerUp)
-  root.addEventListener('pointercancel', onPointerCancel)
   // Non-passive, and registered here rather than when a gesture starts. See the
   // module doc: this is the whole mechanism, and a late registration does not
   // work.
@@ -353,9 +380,6 @@ export function attachHorizontalSwipe(root: HTMLElement, opts: HorizontalSwipeOp
 
   return () => {
     root.removeEventListener('pointerdown', onPointerDown)
-    root.removeEventListener('pointermove', onPointerMove)
-    root.removeEventListener('pointerup', onPointerUp)
-    root.removeEventListener('pointercancel', onPointerCancel)
     root.removeEventListener('touchmove', onTouchMove)
     root.removeEventListener('click', onClickCapture, { capture: true })
     swallowClick = false

@@ -63,6 +63,47 @@ export interface TouchPoint {
 }
 
 /**
+ * Tap a viewport position `taps` times in a row, on one CDP session.
+ *
+ * The session is opened once and reused, because a multi-tap gesture measures the gap between
+ * its taps against a real clock (see `MULTI_TAP_MS` in ~/src/lib/tapSelect.ts) and a session
+ * per tap would spend that budget on protocol round trips rather than on the gesture.
+ */
+export async function touchTap(page: Page, point: TouchPoint, opts: { taps?: number } = {}): Promise<void> {
+  const taps = opts.taps ?? 1
+  const cdp = await page.context().newCDPSession(page)
+  // `finally`, for the reason {@link touchSwipe} states: a protocol error mid-sequence would
+  // otherwise leave Blink believing a finger is still down.
+  try {
+    for (let tap = 0; tap < taps; tap++) {
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: point.x, y: point.y }] })
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+    }
+  }
+  finally {
+    await cdp.detach()
+  }
+}
+
+/**
+ * Hold a still finger at a viewport position for `holdMs`, then lift it.
+ *
+ * The finger does not move, so this is a LONG PRESS and not a drag: it is what drives the
+ * context-menu hold (see `motion.longPress` in ~/src/styles/tokens.ts for the threshold it has
+ * to pass). Use {@link touchDown} directly when the test must assert something while the finger
+ * is still down.
+ */
+export async function touchHold(page: Page, point: TouchPoint, holdMs: number): Promise<void> {
+  const finger = await touchDown(page, point.x, point.y)
+  try {
+    await page.waitForTimeout(holdMs)
+  }
+  finally {
+    await finger.end()
+  }
+}
+
+/**
  * A complete finger swipe along a straight line, in `steps` moves. Use this to drive the page's
  * own touch scrolling and the app's swipe gestures; use {@link touchDown} when the test must
  * assert something mid-gesture.
