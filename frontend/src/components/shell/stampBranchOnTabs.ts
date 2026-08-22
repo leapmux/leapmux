@@ -20,6 +20,10 @@ export function stampBranchOnRepo(
   const prev = repoGitStore.get(key)
   if (prev?.branch === newBranch)
     return false
-  repoGitStore.upsert(key, { branch: newBranch })
+  repoGitStore.upsert(key, {
+    workerId: repo.workerId,
+    toplevel: repo.gitToplevel,
+    branch: newBranch,
+  })
   return true
 }

@@ -274,6 +274,40 @@ func TestGetGitFileStatus_ReturnsAheadBehind(t *testing.T) {
 	assert.Equal(t, int32(0), resp.GetStatus().GetBehind())
 }
 
+// TestGetGitFileStatus_ReturnsBehind pins the behind counter when the
+// local branch is behind its upstream after a fetch.
+func TestGetGitFileStatus_ReturnsBehind(t *testing.T) {
+	t.Parallel()
+
+	_, d, w := setupTestService(t)
+	bareDir := filepath.Join(t.TempDir(), "behind-remote.git")
+	require.NoError(t, os.MkdirAll(bareDir, 0o755))
+	run(t, bareDir, "git", "init", "--bare")
+
+	repoDir := initRepo(t)
+	run(t, repoDir, "git", "remote", "add", "origin", bareDir)
+	run(t, repoDir, "git", "push", "-u", "origin", "HEAD")
+
+	pusher := filepath.Join(t.TempDir(), "pusher")
+	run(t, repoDir, "git", "clone", "-b", "main", bareDir, pusher)
+	run(t, pusher, "git", "config", "user.email", "test@test.com")
+	run(t, pusher, "git", "config", "user.name", "Test")
+	run(t, pusher, "git", "commit", "--allow-empty", "-m", "remote ahead")
+	run(t, pusher, "git", "push", "origin", "main")
+	run(t, repoDir, "git", "fetch", "origin")
+
+	dispatch(d, "GetGitFileStatus", &leapmuxv1.GetGitFileStatusRequest{
+		Path: repoDir,
+	}, w)
+	require.Len(t, w.responses, 1)
+	var resp leapmuxv1.GetGitFileStatusResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+
+	assert.Equal(t, int32(0), resp.GetStatus().GetAhead())
+	assert.Equal(t, int32(1), resp.GetStatus().GetBehind(),
+		"GetGitFileStatus must report commits behind upstream after fetch")
+}
+
 // TestGetGitFileStatus_DetachedHEAD covers the branchOrShortSHA
 // fallback the GetGitFileStatus refactor enabled. On a detached HEAD,
 // `--abbrev-ref HEAD` returns the literal "HEAD"; branchOrShortSHA

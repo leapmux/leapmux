@@ -50,7 +50,7 @@ describe('handleBranchChanged', () => {
     )
     await flush()
 
-    expect(refresh).toHaveBeenCalledWith('w1', '/repo')
+    expect(refresh).toHaveBeenCalledWith('w1', '/repo', { repoKey: repoKey('w1', '/repo') })
     expect(mockGetGitFileStatus).not.toHaveBeenCalled()
   })
 

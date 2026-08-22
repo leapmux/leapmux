@@ -47,7 +47,7 @@ import { shouldShowBackgroundTasksSection } from '~/stores/chatBackgroundTasks'
 import { createControlStore } from '~/stores/control.store'
 import { createFloatingWindowStore } from '~/stores/floatingWindow.store'
 import { createLayoutStore, useLayoutFocusSweep } from '~/stores/layout.store'
-import { repoKeyFromTab } from '~/stores/repoGit'
+import { gitStatusProbePath, repoKeyFromTab } from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 import { createSectionStore } from '~/stores/section.store'
 import { agentTabToInfo, isTabReadyForGitStatus, mruSteerableAgentTab, rootAgentIdFor, tabKey } from '~/stores/tab.helpers'
@@ -547,8 +547,10 @@ export const AppShell: Component = () => {
     if (!activeTabReady())
       return
     const ctx = getCurrentTabContext()
-    if (ctx.workerId && ctx.workingDir)
-      void repoGitStore.refresh(ctx.workerId, ctx.workingDir)
+    const path = gitStatusProbePath(ctx)
+    const key = repoKeyFromTab(activeTab() ?? {})
+    if (ctx.workerId && path)
+      void repoGitStore.refresh(ctx.workerId, path, { repoKey: key })
   }
 
   // Refresh git file status when a turn ends.
@@ -1103,7 +1105,7 @@ export const AppShell: Component = () => {
   createEffect(on(
     () => {
       const ctx = getCurrentTabContext()
-      return `${ctx.workerId}\0${ctx.workingDir}\0${activeTabReady() ? '1' : '0'}`
+      return `${ctx.workerId}\0${ctx.gitToplevel}\0${ctx.workingDir}\0${activeTabReady() ? '1' : '0'}`
     },
     () => refreshGitStatusForActiveTab(),
   ))

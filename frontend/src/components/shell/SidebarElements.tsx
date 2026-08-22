@@ -143,6 +143,7 @@ export function buildCommonSidebarProps(opts: SidebarElementsOpts, display?: Sid
     onSectionStateChange: display?.onStateChange,
     get workerId() { return opts.getCurrentTabContext().workerId },
     get workingDir() { return opts.getCurrentTabContext().workingDir },
+    get gitToplevel() { return opts.getCurrentTabContext().gitToplevel },
     get homeDir() { return opts.getCurrentTabContext().homeDir },
     // Archived workspaces expose no mention/terminal affordance, and whether a
     // workspace is archived can change while the sidebar is mounted -- so the

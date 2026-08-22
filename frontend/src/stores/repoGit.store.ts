@@ -1,9 +1,10 @@
-import type { GitFilterTab, RepoGitState, RepoKey } from './repoGit'
+import type { GitFilterTab, RepoGitRefreshOpts, RepoGitState, RepoKey } from './repoGit'
 import type { GitFileStatusEntry } from '~/generated/leapmux/v1/common_pb'
 import { createMemo, createSignal } from 'solid-js'
 import { createStore, produce, reconcile } from 'solid-js/store'
 import * as workerRpc from '~/api/workerRpc'
 import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'
+import { createLogger } from '~/lib/logger'
 import { detectFlavor, relativeUnder, toPosixSeparators } from '~/lib/paths'
 import {
   fileEntryToDiffStats,
@@ -12,7 +13,9 @@ import {
   untrackedDirBasePath,
 } from './repoGit'
 
-export type { DiffStats, GitFilterTab } from './repoGit'
+const log = createLogger('repoGit.store')
+
+export type { DiffStats, GitFilterTab, RepoGitRefreshOpts } from './repoGit'
 export {
   aggregateDiffStats,
   diffStatsFromRepo,
@@ -78,9 +81,10 @@ export function createRepoGitStore() {
     setRepos({})
   }
 
-  const refresh = async (workerId: string, path: string) => {
+  const refresh = async (workerId: string, path: string, opts?: RepoGitRefreshOpts) => {
     if (!workerId || !path)
       return
+    const repoKeyHint = opts?.repoKey
     gen += 1
     const mine = gen
     setLoading(true)
@@ -90,11 +94,18 @@ export function createRepoGitStore() {
         return
       const mapped = patchFromGetGitFileStatus(workerId, resp)
       if (!mapped) {
-        if (mine === gen)
-          setLoading(false)
+        if (repoKeyHint)
+          clear(repoKeyHint)
         return
       }
       upsert(mapped.key, mapped.patch)
+    }
+    catch (err) {
+      if (mine !== gen)
+        return
+      if (repoKeyHint)
+        clear(repoKeyHint)
+      log.warn('failed to refresh git file status', err)
     }
     finally {
       if (mine === gen)

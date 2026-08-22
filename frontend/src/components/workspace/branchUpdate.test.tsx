@@ -64,6 +64,16 @@ describe('branchUpdate (change branch → sidebar reflects new label)', () => {
     expect(branchLabel(store, tabs[2])).toBe('A')
   })
 
+  it('seeds repo identity when stamping before hydration', () => {
+    const store = createRepoGitStore()
+    expect(stampBranchOnRepo(store, { workerId: 'w1', gitToplevel: '/repo' }, 'feature')).toBe(true)
+    const state = store.get(repoKey('w1', '/repo'))
+    expect(state?.workerId).toBe('w1')
+    expect(state?.toplevel).toBe('/repo')
+    expect(state?.branch).toBe('feature')
+    expect(repoGitView(makeAgentTab('a1'), store).isGitRepo).toBe(true)
+  })
+
   it('reports false and writes nothing when the store already holds the branch', () => {
     const store = createRepoGitStore()
     seedBranch(store, 'w1', '/repo', 'A')

@@ -17,6 +17,7 @@ import type { ChannelStatus } from '~/stores/workerChannelStatus.store'
 
 import { createEffect, createMemo, createSignal, onCleanup } from 'solid-js'
 import { registerSidebarFileTreeOps } from '~/lib/fileTreeOps'
+import { gitStatusProbePath, repoKey } from '~/stores/repoGit'
 import { buildSectionDef } from './buildSectionDef'
 import { useWorkspaceOperations } from './useWorkspaceOperations'
 
@@ -54,13 +55,14 @@ export interface SidebarCommonProps {
   // Content
   workerId: string
   workingDir: string
+  gitToplevel: string
   homeDir: string
   fileTreePath: string
   onFileSelect: (path: string) => void
   onFileOpen?: (path: string, openSource?: GitFilterTab) => void
   onFileMention?: (path: string) => void
   onOpenTerminal?: (dirPath: string) => void
-  gitStatusStore?: ReturnType<typeof createRepoGitStore>
+  gitStatusStore: ReturnType<typeof createRepoGitStore>
   activeFilePath?: string
   hasActiveFileTab?: boolean
   showTodos: boolean
@@ -126,8 +128,12 @@ export function useSidebarCore(props: SidebarCommonProps, side: Sidebar) {
 
     const unregister = registerSidebarFileTreeOps({
       refresh: () => {
-        if (props.workerId && props.workingDir)
-          props.gitStatusStore?.refresh(props.workerId, props.workingDir)
+        const path = gitStatusProbePath({ gitToplevel: props.gitToplevel, workingDir: props.workingDir })
+        const key = props.gitToplevel && props.workerId
+          ? repoKey(props.workerId, props.gitToplevel)
+          : undefined
+        if (props.workerId && path)
+          void props.gitStatusStore.refresh(props.workerId, path, { repoKey: key })
         handle.refresh()
       },
       toggleHiddenFiles: () => handle.toggleShowHiddenFiles(),
@@ -184,6 +190,7 @@ export function useSidebarCore(props: SidebarCommonProps, side: Sidebar) {
     get onDeleteBranch() { return props.onDeleteBranch },
     get workerId() { return props.workerId },
     get workingDir() { return props.workingDir },
+    get gitToplevel() { return props.gitToplevel },
     get homeDir() { return props.homeDir },
     get fileTreePath() { return props.fileTreePath },
     onFileSelect: props.onFileSelect,

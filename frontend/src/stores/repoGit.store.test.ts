@@ -149,14 +149,42 @@ describe('createRepoGitStore', () => {
 
         mockGetGitFileStatus.mockRejectedValueOnce(new Error('worker unreachable'))
 
-        await expect(store.refresh('worker1', '/other')).rejects.toThrow('worker unreachable')
+        await store.refresh('worker1', '/other', { repoKey: otherKey })
 
         expect(store.focusedKey()).toBe(activeKey)
         expect(store.get(activeKey)?.branch).toBe('main')
         expect(store.get(activeKey)?.diffAdded).toBe(5)
-        expect(store.get(otherKey)?.branch).toBe('dev')
-        expect(store.get(otherKey)?.diffAdded).toBe(2)
+        expect(store.get(otherKey)).toBeUndefined()
 
+        dispose()
+      })
+    })
+
+    it('does not reject when the RPC fails', async () => {
+      await createRoot(async (dispose) => {
+        const store = createRepoGitStore()
+        mockGetGitFileStatus.mockRejectedValueOnce(new Error('worker unreachable'))
+        await expect(store.refresh('worker1', '/repo')).resolves.toBeUndefined()
+        dispose()
+      })
+    })
+
+    it('clears the hinted repo on a non-repo response', async () => {
+      await createRoot(async (dispose) => {
+        const store = createRepoGitStore()
+        const key = repoKey('worker1', '/repo')
+        store.upsert(key, { workerId: 'worker1', toplevel: '/repo', branch: 'main' })
+
+        mockGetGitFileStatus.mockResolvedValueOnce({
+          repoRoot: '',
+          status: undefined,
+          files: [],
+          errorHint: 'not a git repository',
+        })
+
+        await store.refresh('worker1', '/plain-dir', { repoKey: key })
+
+        expect(store.get(key)).toBeUndefined()
         dispose()
       })
     })

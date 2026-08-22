@@ -15,7 +15,6 @@ import type { TabItemOps } from '~/stores/tab.types'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
 import type { ChannelStatus } from '~/stores/workerChannelStatus.store'
-
 import Plus from 'lucide-solid/icons/plus'
 import { Show } from 'solid-js'
 import { BackgroundTaskList } from '~/components/backgroundtasks/BackgroundTaskList'
@@ -31,6 +30,7 @@ import { shortcutHint } from '~/lib/shortcuts/display'
 import { isWorkerKnownOnline } from '~/lib/workerLiveness'
 import { countActiveBackgroundTasks } from '~/stores/chatBackgroundTasks'
 import { todoProgress } from '~/stores/chatTodos'
+import { gitStatusProbePath, repoKey } from '~/stores/repoGit'
 import * as csStyles from './CollapsibleSidebar.css'
 import { getSectionIcon, isWorkspaceSection, sectionTypeTestId } from './sectionUtils'
 
@@ -60,13 +60,14 @@ export interface SectionDefContext {
   // Files section
   workerId: string
   workingDir: string
+  gitToplevel: string
   homeDir: string
   fileTreePath: string
   onFileSelect: (path: string) => void
   onFileOpen?: (path: string, openSource?: GitFilterTab) => void
   onFileMention?: (path: string) => void
   onOpenTerminal?: (dirPath: string) => void
-  gitStatusStore?: ReturnType<typeof createRepoGitStore>
+  gitStatusStore: ReturnType<typeof createRepoGitStore>
   activeFilePath?: string
   hasActiveFileTab?: boolean
   turnEndTrigger?: number
@@ -167,7 +168,7 @@ export function buildSectionDef(
           isWorkerKnownOnline={workerId => isWorkerKnownOnline(ctx.workers, workerId)}
           onChangeBranch={ctx.onChangeBranch}
           onDeleteBranch={ctx.onDeleteBranch}
-          repoGitStore={ctx.gitStatusStore!}
+          repoGitStore={ctx.gitStatusStore}
         />
       ),
     }
@@ -193,8 +194,12 @@ export function buildSectionDef(
           // Not on the handle: a refresh also re-reads git status, which the
           // section does not own.
           onRefresh={() => {
-            if (ctx.workerId && ctx.workingDir)
-              ctx.gitStatusStore?.refresh(ctx.workerId, ctx.workingDir)
+            const path = gitStatusProbePath({ gitToplevel: ctx.gitToplevel, workingDir: ctx.workingDir })
+            const key = ctx.gitToplevel && ctx.workerId
+              ? repoKey(ctx.workerId, ctx.gitToplevel)
+              : undefined
+            if (ctx.workerId && path)
+              void ctx.gitStatusStore.refresh(ctx.workerId, path, { repoKey: key })
             ctx.filesSectionHandle()?.refresh()
           }}
           hasActiveFileTab={ctx.hasActiveFileTab ?? false}
@@ -215,7 +220,7 @@ export function buildSectionDef(
             onFileOpen={ctx.onFileOpen}
             onMention={ctx.onFileMention}
             onOpenTerminal={ctx.onOpenTerminal}
-            gitStatusStore={ctx.gitStatusStore!}
+            gitStatusStore={ctx.gitStatusStore}
             activeFilePath={ctx.activeFilePath}
             hasActiveFileTab={ctx.hasActiveFileTab ?? false}
             turnEndTrigger={ctx.turnEndTrigger}

@@ -60,6 +60,20 @@ export type GitFilterTab = 'all' | 'changed' | 'staged' | 'unstaged'
 
 export type RepoGitStore = ReturnType<typeof createRepoGitStore>
 
+/** Options for {@link RepoGitStore.refresh}. */
+export interface RepoGitRefreshOpts {
+  /**
+   * Repo identity to clear when the probe fails or reports a non-repo path.
+   * Omitted when the tab has not resolved `gitToplevel` yet.
+   */
+  repoKey?: RepoKey
+}
+
+/** Path to pass to GetGitFileStatus: prefer repo toplevel over agent cwd. */
+export function gitStatusProbePath(ctx: { gitToplevel?: string, workingDir?: string }): string {
+  return ctx.gitToplevel || ctx.workingDir || ''
+}
+
 export function repoKey(workerId: string, gitToplevel: string): RepoKey {
   return `${workerId}\0${gitToplevel}`
 }

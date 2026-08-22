@@ -1,6 +1,16 @@
 import { describe, expect, it } from 'vitest'
-import { repoGitView, repoKey } from '~/stores/repoGit'
+import { gitStatusProbePath, repoGitView, repoKey } from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
+
+describe('gitStatusProbePath', () => {
+  it('prefers gitToplevel over workingDir', () => {
+    expect(gitStatusProbePath({ gitToplevel: '/repo', workingDir: '/repo/pkg' })).toBe('/repo')
+  })
+
+  it('falls back to workingDir when toplevel is unset', () => {
+    expect(gitStatusProbePath({ workingDir: '/repo/pkg' })).toBe('/repo/pkg')
+  })
+})
 
 describe('repoGitView', () => {
   it('joins a tab repo identity to keyed store state', () => {

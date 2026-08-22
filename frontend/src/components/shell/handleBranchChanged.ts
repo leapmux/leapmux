@@ -3,7 +3,7 @@ import type { createRepoGitStore } from '~/stores/repoGit.store'
 import type { RepoRef } from '~/stores/tab.helpers'
 import * as workerRpc from '~/api/workerRpc'
 import { createLogger } from '~/lib/logger'
-import { patchFromGetGitFileStatus } from '~/stores/repoGit'
+import { patchFromGetGitFileStatus, repoKey } from '~/stores/repoGit'
 import { isSameRepo } from '~/stores/tab.helpers'
 import { stampBranchOnRepo } from './stampBranchOnTabs'
 
@@ -32,7 +32,9 @@ export function handleBranchChanged(
 
   const active = isSameRepo(deps.getCurrentTabContext(), repo)
   if (active) {
-    void deps.repoGitStore.refresh(repo.workerId, repo.gitToplevel)
+    void deps.repoGitStore.refresh(repo.workerId, repo.gitToplevel, {
+      repoKey: repoKey(repo.workerId, repo.gitToplevel),
+    })
       .catch((err) => {
         log.warn('failed to refresh git status after branch change', err)
       })
