@@ -152,35 +152,11 @@ message GetGitFileStatusRequest {
 
 message GetGitFileStatusResponse {
   string repo_root = 1;
-  string origin_url = 2;
-  string current_branch = 3;
-  repeated GitFileStatusEntry files = 4;  // Paths are relative to repo root
-  // Mirrors GetGitInfoResponse.error_hint: non-empty when the worker
-  // could not classify the path as a git repo for a non-"not a repo"
-  // reason (dubious-ownership, EACCES, transient I/O). The sidebar
-  // renders an inline warning rather than the previous "Internal
-  // error" toast that left the user with no actionable diagnostic.
+  repeated GitFileStatusEntry files = 4;
   string error_hint = 7;
-  // True if the QUERIED path (request.path) is a linked worktree. This
-  // describes the path the caller asked about, NOT `repo_root` — when
-  // the queried dir is inside a worktree, `repo_root` is the main repo
-  // root (so the sidebar groups worktree tabs with their parent repo).
-  // Consumers must NOT mass-stamp this onto every tab in `repo_root`:
-  // tabs in the main tree and tabs in a sibling worktree can both have
-  // gitToplevel == repo_root but only one of them is a worktree. The
-  // field is useful as a UX hint for dialogs opened against the queried
-  // dir; authoritative per-tab worktree state should come from inspect
-  // RPCs against the tab's own path.
-  bool is_worktree = 5;
-  // Working-tree root of the QUERIED path: the worktree directory when
-  // `is_worktree` is true, else equal to `repo_root`. The frontend uses
-  // this for tab-stamping containment so a Change/Delete branch run on
-  // a worktree row updates ONLY that worktree's tabs — not every tab
-  // in `repo_root`. `current_branch` reports the queried path's branch
-  // (which differs from the main tree's HEAD when in a worktree), so
-  // stamping by `repo_root` would smear the worktree's branch across
-  // unrelated main-tree tabs.
-  string toplevel = 6;
+  GitRepoStatus status = 8;
+  reserved 2, 3, 5, 6;
+  reserved "origin_url", "current_branch", "is_worktree", "toplevel";
 }
 
 // GitFileRef specifies which version of a file to read.

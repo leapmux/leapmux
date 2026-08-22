@@ -21,7 +21,7 @@ import (
 // unique repos would otherwise fork one git subprocess per repo in parallel.
 const batchGetGitStatusMaxConcurrent = 8
 
-// BatchGetGitStatus returns one AgentGitStatus per input directory,
+// BatchGetGitStatus returns one GitRepoStatus per input directory,
 // deduplicating identical paths so a request listing many tabs rooted at
 // the same repo only runs a single `git status` shell-out. Unique paths
 // are fanned out concurrently (capped at batchGetGitStatusMaxConcurrent);
@@ -29,8 +29,8 @@ const batchGetGitStatusMaxConcurrent = 8
 // Empty-string entries yield nil. The supplied context is threaded into
 // every shell-out so a caller cancelling mid-fan kills in-flight git
 // processes.
-func BatchGetGitStatus(ctx context.Context, dirs []string) []*leapmuxv1.AgentGitStatus {
-	results := make([]*leapmuxv1.AgentGitStatus, len(dirs))
+func BatchGetGitStatus(ctx context.Context, dirs []string) []*leapmuxv1.GitRepoStatus {
+	results := make([]*leapmuxv1.GitRepoStatus, len(dirs))
 	unique := make(map[string][]int, len(dirs))
 	for i, d := range dirs {
 		if d == "" {
@@ -177,8 +177,8 @@ var gitEnvPins = []string{"GIT_TERMINAL_PROMPT=0", "LC_ALL=C", GitOptionalLocksO
 // cancels mid-call (e.g. CloseAgent landing during the async startup
 // "Checking Git status…" phase) terminates the in-flight `git status`
 // subprocess instead of waiting for it to finish.
-func GetGitStatus(ctx context.Context, dir string) *leapmuxv1.AgentGitStatus {
-	status := &leapmuxv1.AgentGitStatus{}
+func GetGitStatus(ctx context.Context, dir string) *leapmuxv1.GitRepoStatus {
+	status := &leapmuxv1.GitRepoStatus{}
 
 	// Try porcelain v2 first (git 2.13.2+).
 	output, err := Output(ctx, dir, "status", "--porcelain=v2", "--branch")
@@ -206,7 +206,7 @@ func GetGitStatus(ctx context.Context, dir string) *leapmuxv1.AgentGitStatus {
 // an already-claimed field would be a silent data race. The
 // goroutine-local + serial-merge pattern keeps this code race-clean
 // regardless of how the goroutine bodies evolve.
-func fanoutGitStatusProbes(ctx context.Context, dir string, status *leapmuxv1.AgentGitStatus) {
+func fanoutGitStatusProbes(ctx context.Context, dir string, status *leapmuxv1.GitRepoStatus) {
 	var (
 		wg          sync.WaitGroup
 		branch      string
@@ -255,7 +255,7 @@ func fanoutGitStatusProbes(ctx context.Context, dir string, status *leapmuxv1.Ag
 }
 
 // parseStatusV2 parses the output of `git status --porcelain=v2 --branch`.
-func parseStatusV2(output string, status *leapmuxv1.AgentGitStatus) {
+func parseStatusV2(output string, status *leapmuxv1.GitRepoStatus) {
 	for _, line := range strings.Split(output, "\n") {
 		if line == "" {
 			continue
@@ -301,7 +301,7 @@ func parseStatusV2(output string, status *leapmuxv1.AgentGitStatus) {
 }
 
 // parseXY parses the X (staging) and Y (worktree) status codes.
-func parseXY(x, y byte, status *leapmuxv1.AgentGitStatus) {
+func parseXY(x, y byte, status *leapmuxv1.GitRepoStatus) {
 	for _, c := range []byte{x, y} {
 		switch c {
 		case 'M':
@@ -319,14 +319,14 @@ func parseXY(x, y byte, status *leapmuxv1.AgentGitStatus) {
 }
 
 // getGitStatusV1 is the fallback for git versions that don't support --porcelain=v2.
-func getGitStatusV1(ctx context.Context, dir string) *leapmuxv1.AgentGitStatus {
+func getGitStatusV1(ctx context.Context, dir string) *leapmuxv1.GitRepoStatus {
 	output, err := Output(ctx, dir, "status", "--porcelain", "--branch")
 	if err != nil {
 		slog.Debug("git status --porcelain failed", "dir", dir, "error", err)
 		return nil
 	}
 
-	status := &leapmuxv1.AgentGitStatus{}
+	status := &leapmuxv1.GitRepoStatus{}
 	for _, line := range strings.Split(output, "\n") {
 		if line == "" {
 			continue

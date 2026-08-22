@@ -515,10 +515,10 @@ func TestWatchEvents_DualPromote_GitBatchOverlapsTerminalCatchUp(t *testing.T) {
 
 	gitStarted := make(chan struct{})
 	release := make(chan struct{})
-	svc.batchGitStatusFn = func(_ context.Context, dirs []string) []*leapmuxv1.AgentGitStatus {
+	svc.batchGitStatusFn = func(_ context.Context, dirs []string) []*leapmuxv1.GitRepoStatus {
 		close(gitStarted)
 		<-release
-		return make([]*leapmuxv1.AgentGitStatus, len(dirs))
+		return make([]*leapmuxv1.GitRepoStatus, len(dirs))
 	}
 
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
@@ -582,11 +582,11 @@ func TestWatchEvents_DualPromote_CancelsGitBatchWhenTransportDies(t *testing.T) 
 
 	gitStarted := make(chan struct{})
 	gitCancelled := make(chan struct{})
-	svc.batchGitStatusFn = func(gitCtx context.Context, dirs []string) []*leapmuxv1.AgentGitStatus {
+	svc.batchGitStatusFn = func(gitCtx context.Context, dirs []string) []*leapmuxv1.GitRepoStatus {
 		close(gitStarted)
 		<-gitCtx.Done()
 		close(gitCancelled)
-		return make([]*leapmuxv1.AgentGitStatus, len(dirs))
+		return make([]*leapmuxv1.GitRepoStatus, len(dirs))
 	}
 
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{

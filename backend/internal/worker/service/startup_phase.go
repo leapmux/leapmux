@@ -115,7 +115,7 @@ func (svc *Service) finishStartupAfterClose(reg *startupCore, h *startupEntry, t
 // `gitStatus` is forwarded only to the STARTUP_FAILED broadcast; the
 // STARTING broadcasts always carry nil (no git status is available at
 // label-emission time).
-func (svc *Service) agentStartupCallbacks(dbAgent *db.Agent, gitStatus *leapmuxv1.AgentGitStatus, h *startupEntry) startupCallbacks {
+func (svc *Service) agentStartupCallbacks(dbAgent *db.Agent, gitStatus *leapmuxv1.GitRepoStatus, h *startupEntry) startupCallbacks {
 	return startupCallbacks{
 		setMessage:        func(label string) { svc.AgentStartup.setMessage(dbAgent.ID, label) },
 		broadcastStarting: func(label string) { svc.broadcastAgentStarting(dbAgent, label, nil) },

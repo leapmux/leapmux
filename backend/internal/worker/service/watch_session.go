@@ -207,7 +207,7 @@ func (s *watchSession) apply(r *leapmuxv1.WatchEventsRequest) {
 	// pure waste and is cancelled below.
 	gitCtx, cancelGit := context.WithCancel(bgCtx())
 	defer cancelGit()
-	var replayGitStatuses []*leapmuxv1.AgentGitStatus
+	var replayGitStatuses []*leapmuxv1.GitRepoStatus
 	var gitDone chan struct{}
 	if len(promotedAgentRows) > 0 {
 		dirs := make([]string, len(promotedAgentRows))
@@ -220,7 +220,7 @@ func (s *watchSession) apply(r *leapmuxv1.WatchEventsRequest) {
 			replayGitStatuses = s.svc.batchGitStatusFn(gitCtx, dirs)
 		}()
 	} else {
-		replayGitStatuses = make([]*leapmuxv1.AgentGitStatus, len(promotedAgentRows))
+		replayGitStatuses = make([]*leapmuxv1.GitRepoStatus, len(promotedAgentRows))
 	}
 
 	// Terminal catch-up FIRST on the wire. This session registered for live

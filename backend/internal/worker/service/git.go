@@ -267,12 +267,14 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 		// freshly-created worktree's agent stamps the worktree's branch
 		// onto every main-tree tab in the same repo.
 		sendProtoResponse(sender, &leapmuxv1.GetGitFileStatusResponse{
-			RepoRoot:      pathutil.NormalizeNative(info.RepoRoot),
-			Files:         files,
-			CurrentBranch: branchOrShortSHA(info),
-			OriginUrl:     originURL,
-			IsWorktree:    info.IsWorktree,
-			Toplevel:      pathutil.NormalizeNative(info.TopLevel),
+			RepoRoot: pathutil.NormalizeNative(info.RepoRoot),
+			Files:    files,
+			Status: &leapmuxv1.GitRepoStatus{
+				Branch:     branchOrShortSHA(info),
+				OriginUrl:  originURL,
+				Toplevel:   pathutil.NormalizeNative(info.TopLevel),
+				IsWorktree: info.IsWorktree,
+			},
 		})
 	})
 

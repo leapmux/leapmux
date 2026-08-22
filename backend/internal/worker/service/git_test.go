@@ -217,10 +217,10 @@ func TestGetGitFileStatus_WorktreeReturnsToplevel(t *testing.T) {
 	// toplevel is the worktree dir — different from repo_root.
 	expectedToplevel, err := filepath.EvalSymlinks(wtDir)
 	require.NoError(t, err)
-	assert.True(t, pathutil.SamePath(expectedToplevel, resp.GetToplevel()),
+	assert.True(t, pathutil.SamePath(expectedToplevel, resp.GetStatus().GetToplevel()),
 		"toplevel must be the worktree dir for an in-worktree query")
-	assert.True(t, resp.GetIsWorktree())
-	assert.Equal(t, "wt-feature", resp.GetCurrentBranch(),
+	assert.True(t, resp.GetStatus().GetIsWorktree())
+	assert.Equal(t, "wt-feature", resp.GetStatus().GetBranch(),
 		"current_branch reflects the WORKTREE's HEAD, not main")
 }
 
@@ -242,8 +242,8 @@ func TestGetGitFileStatus_MainTreeToplevelEqualsRepoRoot(t *testing.T) {
 	var resp leapmuxv1.GetGitFileStatusResponse
 	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
 
-	assert.False(t, resp.GetIsWorktree())
-	assert.Equal(t, resp.GetRepoRoot(), resp.GetToplevel(),
+	assert.False(t, resp.GetStatus().GetIsWorktree())
+	assert.Equal(t, resp.GetRepoRoot(), resp.GetStatus().GetToplevel(),
 		"main-tree query must report toplevel == repo_root")
 }
 
@@ -6139,7 +6139,7 @@ func TestGetGitFileStatus_AnnotatesStatsInAWorktree(t *testing.T) {
 
 	// The two roots really do differ here; without that this test would be
 	// the subdirectory test again.
-	require.NotEqual(t, resp.GetRepoRoot(), resp.GetToplevel(),
+	require.NotEqual(t, resp.GetRepoRoot(), resp.GetStatus().GetToplevel(),
 		"a worktree query must report a toplevel distinct from repo_root")
 
 	var entry *leapmuxv1.GitFileStatusEntry

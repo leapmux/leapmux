@@ -1422,7 +1422,7 @@ func (svc *Service) replayAgentCatchUp(
 	sink *replaySink,
 	agentEntry *leapmuxv1.WatchAgentEntry,
 	dbAgent db.Agent,
-	gitStatus *leapmuxv1.AgentGitStatus,
+	gitStatus *leapmuxv1.GitRepoStatus,
 ) {
 	agentID := agentEntry.GetAgentId()
 
@@ -1647,7 +1647,7 @@ func (svc *Service) deriveAgentStatus(a *db.Agent, isRunning bool) (status leapm
 
 // agentToProto converts a DB Agent to a proto AgentInfo. Status,
 // startup_error, and startup_message are derived via deriveAgentStatus.
-func (svc *Service) agentToProto(a *db.Agent, isRunning bool, gs *leapmuxv1.AgentGitStatus) *leapmuxv1.AgentInfo {
+func (svc *Service) agentToProto(a *db.Agent, isRunning bool, gs *leapmuxv1.GitRepoStatus) *leapmuxv1.AgentInfo {
 	status, startupError, startupMessage := svc.deriveAgentStatus(a, isRunning)
 	info := &leapmuxv1.AgentInfo{
 		Id:             a.ID,
@@ -1975,7 +1975,7 @@ func resolveConfirmedStartupSettings(startedOpts, initialOpts agent.Options, con
 // baseAgentStatusChange omits OptionGroups: a STARTING/FAILED/INACTIVE broadcast
 // must not overwrite the frontend's last-known catalog (empty = don't update).
 // The ACTIVE and settings-refresh paths attach the catalog explicitly.
-func baseAgentStatusChange(dbAgent *db.Agent, status leapmuxv1.AgentStatus, gitStatus *leapmuxv1.AgentGitStatus) *leapmuxv1.AgentStatusChange {
+func baseAgentStatusChange(dbAgent *db.Agent, status leapmuxv1.AgentStatus, gitStatus *leapmuxv1.GitRepoStatus) *leapmuxv1.AgentStatusChange {
 	return &leapmuxv1.AgentStatusChange{
 		AgentId:        dbAgent.ID,
 		Status:         status,
@@ -1989,7 +1989,7 @@ func baseAgentStatusChange(dbAgent *db.Agent, status leapmuxv1.AgentStatus, gitS
 // buildAgentStartingStatus builds a STARTING AgentStatusChange carrying
 // the current phase label. gitStatus is populated once phase 1 has
 // finished computing it; earlier phases pass nil.
-func buildAgentStartingStatus(dbAgent *db.Agent, message string, gitStatus *leapmuxv1.AgentGitStatus) *leapmuxv1.AgentStatusChange {
+func buildAgentStartingStatus(dbAgent *db.Agent, message string, gitStatus *leapmuxv1.GitRepoStatus) *leapmuxv1.AgentStatusChange {
 	sc := baseAgentStatusChange(dbAgent, leapmuxv1.AgentStatus_AGENT_STATUS_STARTING, gitStatus)
 	sc.StartupMessage = message
 	return sc
@@ -1998,7 +1998,7 @@ func buildAgentStartingStatus(dbAgent *db.Agent, message string, gitStatus *leap
 // buildAgentFailedStatus builds a STARTUP_FAILED AgentStatusChange. The
 // gitStatus is attached when phase 1 completed before the failure so the
 // frontend can show branch info alongside the error.
-func buildAgentFailedStatus(dbAgent *db.Agent, errMsg string, gitStatus *leapmuxv1.AgentGitStatus) *leapmuxv1.AgentStatusChange {
+func buildAgentFailedStatus(dbAgent *db.Agent, errMsg string, gitStatus *leapmuxv1.GitRepoStatus) *leapmuxv1.AgentStatusChange {
 	sc := baseAgentStatusChange(dbAgent, leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED, gitStatus)
 	sc.StartupError = errMsg
 	return sc
@@ -2009,7 +2009,7 @@ func buildAgentFailedStatus(dbAgent *db.Agent, errMsg string, gitStatus *leapmux
 // deliberately only attached on ACTIVE so a STARTING or FAILED broadcast
 // does not overwrite the frontend's last-known catalog with an empty
 // slice.
-func (svc *Service) buildAgentActiveStatus(dbAgent *db.Agent, gitStatus *leapmuxv1.AgentGitStatus) *leapmuxv1.AgentStatusChange {
+func (svc *Service) buildAgentActiveStatus(dbAgent *db.Agent, gitStatus *leapmuxv1.GitRepoStatus) *leapmuxv1.AgentStatusChange {
 	sc := baseAgentStatusChange(dbAgent, leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE, gitStatus)
 	sc.OptionGroups = svc.optionGroupsForAgent(dbAgent)
 	return sc
@@ -2020,7 +2020,7 @@ func (svc *Service) buildAgentActiveStatus(dbAgent *db.Agent, gitStatus *leapmux
 // and has no persisted startup_error, where deriveAgentStatus would
 // otherwise return STARTUP_FAILED) and by broadcastAgentInactive to
 // revert a transient STARTING after an auto-start failure.
-func buildAgentInactiveStatus(dbAgent *db.Agent, gitStatus *leapmuxv1.AgentGitStatus) *leapmuxv1.AgentStatusChange {
+func buildAgentInactiveStatus(dbAgent *db.Agent, gitStatus *leapmuxv1.GitRepoStatus) *leapmuxv1.AgentStatusChange {
 	return baseAgentStatusChange(dbAgent, leapmuxv1.AgentStatus_AGENT_STATUS_INACTIVE, gitStatus)
 }
 
@@ -2045,17 +2045,17 @@ func (svc *Service) broadcastStatusChange(agentID string, sc *leapmuxv1.AgentSta
 // broadcastAgentStarting fans out a STARTING AgentStatusChange to all
 // subscribers. Used by the OpenAgent startup goroutine for each phase
 // label transition.
-func (svc *Service) broadcastAgentStarting(dbAgent *db.Agent, message string, gitStatus *leapmuxv1.AgentGitStatus) {
+func (svc *Service) broadcastAgentStarting(dbAgent *db.Agent, message string, gitStatus *leapmuxv1.GitRepoStatus) {
 	svc.broadcastStatusChange(dbAgent.ID, buildAgentStartingStatus(dbAgent, message, gitStatus))
 }
 
 // broadcastAgentFailed fans out a STARTUP_FAILED AgentStatusChange.
-func (svc *Service) broadcastAgentFailed(dbAgent *db.Agent, errMsg string, gitStatus *leapmuxv1.AgentGitStatus) {
+func (svc *Service) broadcastAgentFailed(dbAgent *db.Agent, errMsg string, gitStatus *leapmuxv1.GitRepoStatus) {
 	svc.broadcastStatusChange(dbAgent.ID, buildAgentFailedStatus(dbAgent, errMsg, gitStatus))
 }
 
 // broadcastAgentActive fans out an ACTIVE AgentStatusChange.
-func (svc *Service) broadcastAgentActive(dbAgent *db.Agent, gitStatus *leapmuxv1.AgentGitStatus) {
+func (svc *Service) broadcastAgentActive(dbAgent *db.Agent, gitStatus *leapmuxv1.GitRepoStatus) {
 	svc.broadcastStatusChange(dbAgent.ID, svc.buildAgentActiveStatus(dbAgent, gitStatus))
 }
 
@@ -2080,7 +2080,7 @@ func (svc *Service) runAgentPhase0(ctx context.Context, dbAgent *db.Agent, plan 
 // error, broadcasts STARTUP_FAILED, and marks the registry failed. The
 // shared `failStartup` enforces the ordering (DB before broadcast
 // before registry) so observers see a durable final state.
-func (svc *Service) failAgentStartup(dbAgent *db.Agent, gm gitModeResult, cause error, gitStatus *leapmuxv1.AgentGitStatus, h *startupEntry) {
+func (svc *Service) failAgentStartup(dbAgent *db.Agent, gm gitModeResult, cause error, gitStatus *leapmuxv1.GitRepoStatus, h *startupEntry) {
 	svc.failStartup(gm, cause, svc.agentStartupCallbacks(dbAgent, gitStatus, h))
 }
 
