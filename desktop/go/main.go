@@ -32,7 +32,7 @@ func run() (exitCode int) {
 	app := NewApp(os.Getenv(envBinaryHash))
 	installSignalShutdown(app)
 
-	// Name the periods in which this process did not run. The sidecar is the one
+	// Report the periods in which this process did not run. The sidecar is the one
 	// component that outlives every mode switch, so starting the detector here
 	// covers a REMOTE-mode session too -- a solo session gets it from the Hub and
 	// Worker it starts, but a sidecar talking to a remote Hub starts neither, and

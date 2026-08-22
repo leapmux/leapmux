@@ -99,7 +99,7 @@ func TestSampleReportsAWallClockStepBackwards(t *testing.T) {
 		"a backwards step is a negative skew, so the report can tell it from a pause")
 }
 
-func TestReportNamesThePauseAndItsConsequence(t *testing.T) {
+func TestReportStatesThePauseAndItsConsequence(t *testing.T) {
 	logs := testutil.CaptureDefaultLogger(t)
 
 	report(jump{wall: 47*time.Minute + 10*time.Second, monotonic: 10 * time.Second})
@@ -175,12 +175,34 @@ func TestStartLoopRunsOneDetectorPerProcess(t *testing.T) {
 	// Long enough that a loop owned by either context would have exited.
 	time.Sleep(20 * time.Millisecond)
 	assert.True(t, loopIsRunning(),
-		"the later calls started no loop of their own, so their contexts control nothing")
+		"the later calls share the one loop, so ending them while the first still holds must not stop it")
 
 	cancelFirst()
 	waitForLoopToStop()
 	assert.False(t, loopIsRunning(),
-		"the first caller's context governs the only loop, so ending it ends the detector")
+		"ending the last remaining caller must stop the detector")
+}
+
+// A solo process cancels the Worker before the Hub. If the first StartLoop
+// caller owned the loop for life, that order would kill pause reporting while
+// the Hub was still serving.
+func TestStartLoopKeepsRunningWhileAnyCallerIsLive(t *testing.T) {
+	first, cancelFirst := context.WithCancel(context.Background())
+	second, cancelSecond := context.WithCancel(context.Background())
+	t.Cleanup(func() { cancelFirst(); cancelSecond(); waitForLoopToStop() })
+
+	StartLoop(first)
+	StartLoop(second)
+	require.True(t, loopIsRunning())
+
+	cancelFirst()
+	time.Sleep(20 * time.Millisecond)
+	assert.True(t, loopIsRunning(),
+		"the second caller still holds the loop, so ending the first must not stop it")
+
+	cancelSecond()
+	waitForLoopToStop()
+	assert.False(t, loopIsRunning())
 }
 
 // The desktop sidecar tears its components down and builds them again when it
@@ -199,6 +221,19 @@ func TestStartLoopStartsAgainAfterItsContextEnds(t *testing.T) {
 	StartLoop(restarted)
 	t.Cleanup(waitForLoopToStop)
 	assert.True(t, loopIsRunning(), "a torn-down process must get a detector back")
+}
+
+// StartLoop registers the hold with context.AfterFunc. An already-cancelled
+// caller must drop that hold immediately; otherwise a cancelled Worker context
+// at startup would keep the detector running with no live owner.
+func TestStartLoopDropsAHoldWhenTheCallerContextIsAlreadyDone(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	StartLoop(ctx)
+	t.Cleanup(waitForLoopToStop)
+	waitForLoopToStop()
+	assert.False(t, loopIsRunning(),
+		"an already-ended caller must not keep the detector alive")
 }
 
 func loopIsRunning() bool {

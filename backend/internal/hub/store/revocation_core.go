@@ -35,13 +35,10 @@ type RevocationCoreOps[C any] struct {
 	PublishRows        func(context.Context, C, int32, int64) (int64, error)
 	SetSequence        func(context.Context, C, int64) error
 	DeleteExpiredLease func(context.Context, C) error
-	// DeleteOwnExpiredLease removes an expired lease row that belongs to the
-	// given holder, and leaves any other holder's row in place.
-	DeleteOwnExpiredLease func(context.Context, C, string) error
-	CompactPublished      func(context.Context, C, time.Time) (int64, error)
-	InsertLease           func(context.Context, C, RevocationLease) error
-	RenewLease            func(context.Context, C, RevocationLease) (int64, error)
-	ReleaseLease          func(context.Context, C, string) (int64, error)
+	CompactPublished   func(context.Context, C, time.Time) (int64, error)
+	InsertLease        func(context.Context, C, RevocationLease) error
+	RenewLease         func(context.Context, C, RevocationLease) (int64, error)
+	ReleaseLease       func(context.Context, C, string) (int64, error)
 }
 
 // RevocationCore coordinates gapless event publication and the singleton Hub
@@ -135,20 +132,16 @@ func (c RevocationCore[C]) AcquireHubRuntimeLease(
 		if err := c.ops.DeleteExpiredLease(ctx, conn); err != nil {
 			return err
 		}
-		err = c.ops.InsertLease(ctx, conn, RevocationLease{
+		return c.insertExclusiveLease(ctx, conn, RevocationLease{
 			HolderID:    p.HolderID,
 			CursorSeq:   fence,
 			LeaseMillis: leaseMillis,
 		})
-		if errors.Is(err, ErrConflict) {
-			return ErrHubAlreadyRunning
-		}
-		return err
 	})
 	return fence, err
 }
 
-// ReacquireHubRuntimeLease re-takes a lapsed lease for its previous holder
+// ReacquireHubRuntimeLease re-takes the singleton lease for its previous holder
 // without moving the cursor.
 //
 // It differs from AcquireHubRuntimeLease in the two ways that make it safe to
@@ -156,10 +149,16 @@ func (c RevocationCore[C]) AcquireHubRuntimeLease(
 // rather than fencing to the head of the stream, so every revocation published
 // during the stall is still replayed -- a startup fence is only correct because
 // a fresh process holds no cached credential to evict. And it removes ONLY the
-// caller's own expired row, so any other holder's row -- live or expired --
-// makes the INSERT conflict and reports ErrHubAlreadyRunning. That second Hub
-// may have consumed and compacted past this cursor, which no reacquisition can
-// undo, so the caller must fence itself instead.
+// caller's own row (live or expired), so any other holder's row makes the
+// INSERT conflict and reports ErrHubAlreadyRunning. That second Hub may have
+// consumed and compacted past this cursor, which no reacquisition can undo, so
+// the caller must fence itself instead.
+//
+// The caller's own still-live row is not a rival. Local clocks can report a
+// lapse a few milliseconds before the database does (the grant round-trip, or
+// an NTP step), and treating that uniqueness conflict as another Hub fences
+// the only Hub. Releasing the caller's row first turns that case into a
+// force-renewal.
 //
 // The cursor cannot move backwards: the caller's in-memory cursor only
 // advances, and every renewal wrote it, so the value inserted here is at least
@@ -179,19 +178,23 @@ func (c RevocationCore[C]) ReacquireHubRuntimeLease(
 		return err
 	}
 	return c.ops.InTransaction(ctx, func(conn C) error {
-		if err := c.ops.DeleteOwnExpiredLease(ctx, conn, p.HolderID); err != nil {
+		if _, err := c.ops.ReleaseLease(ctx, conn, p.HolderID); err != nil {
 			return err
 		}
-		err := c.ops.InsertLease(ctx, conn, RevocationLease{
+		return c.insertExclusiveLease(ctx, conn, RevocationLease{
 			HolderID:    p.HolderID,
 			CursorSeq:   p.CursorSeq,
 			LeaseMillis: leaseMillis,
 		})
-		if errors.Is(err, ErrConflict) {
-			return ErrHubAlreadyRunning
-		}
-		return err
 	})
+}
+
+func (c RevocationCore[C]) insertExclusiveLease(ctx context.Context, conn C, lease RevocationLease) error {
+	err := c.ops.InsertLease(ctx, conn, lease)
+	if errors.Is(err, ErrConflict) {
+		return ErrHubAlreadyRunning
+	}
+	return err
 }
 
 func (c RevocationCore[C]) RenewHubRuntimeLease(

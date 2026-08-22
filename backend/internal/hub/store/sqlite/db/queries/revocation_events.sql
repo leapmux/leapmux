@@ -68,18 +68,6 @@ DELETE FROM hub_runtime_lease WHERE singleton_id = 1 AND holder_id = sqlc.arg(ho
 -- name: DeleteExpiredHubRuntimeLease :execresult
 DELETE FROM hub_runtime_lease WHERE singleton_id = 1 AND lease_expires_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
 
--- name: DeleteOwnExpiredHubRuntimeLease :exec
--- Clears the way for one holder to reacquire a lease that lapsed while its
--- process could not renew (a suspended laptop, a paused VM, a long stall).
--- Unlike DeleteExpiredHubRuntimeLease it matches the holder, so another
--- holder's row -- live or expired -- survives and makes the following INSERT
--- conflict. That conflict is the signal that a second Hub owned this stream and
--- may have consumed past the reacquiring holder's cursor.
-DELETE FROM hub_runtime_lease
-WHERE singleton_id = 1
-  AND holder_id = sqlc.arg(holder_id)
-  AND lease_expires_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
-
 -- name: DeleteCompactablePublishedRevocationEvents :execresult
 -- Raw compare: published_at is written canonical on its only write path (the
 -- publish UPDATE sets strftime('%Y-%m-%dT%H:%M:%fZ','now')), and the Go side

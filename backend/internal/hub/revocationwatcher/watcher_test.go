@@ -735,6 +735,10 @@ func (leaseLostRevocationEvents) RenewHubRuntimeLease(context.Context, store.Ren
 	return false, nil
 }
 
+func (leaseLostRevocationEvents) ReacquireHubRuntimeLease(context.Context, store.ReacquireHubRuntimeLeaseParams) error {
+	return store.ErrHubAlreadyRunning
+}
+
 // leaseLossTestDuration is the lease this test grants itself.
 //
 // It must clear a store round trip by an order of magnitude, NOT merely be
@@ -752,12 +756,10 @@ func (leaseLostRevocationEvents) RenewHubRuntimeLease(context.Context, store.Ren
 const leaseLossTestDuration = 500 * time.Millisecond
 
 // A renewal that advances no row must self-fence the Hub when the lease cannot
-// be taken back. Here the durable row is still live and still held by this
-// watcher, so the recovery attempt the refused renewal triggers finds a row it
-// may not remove and reports ErrHubAlreadyRunning -- the same answer a genuine
-// rival produces. The lease-renewal heartbeat runs independently of event
-// processing, so the self-fence fires even when the processing interval is far
-// longer than the lease.
+// be taken back. ReacquireHubRuntimeLease reports ErrHubAlreadyRunning -- a
+// rival holder, not this watcher's own still-live row. The lease-renewal
+// heartbeat runs independently of event processing, so the self-fence fires even
+// when the processing interval is far longer than the lease.
 func TestWatcher_LeaseLossIsFatal(t *testing.T) {
 	env := setupUnseeded(t)
 	injected := injectedRevocationStore{

@@ -16,7 +16,7 @@ import (
 // stops. Reporting the cause only through the aggregate error Serve returns is
 // what left a user's bug report showing a Hub that stopped for no stated
 // reason.
-func TestLogShutdownCauseNamesAFatalCause(t *testing.T) {
+func TestLogShutdownCauseReportsAFatalCause(t *testing.T) {
 	logs := testutil.CaptureDefaultLogger(t)
 	ctx, cancel := context.WithCancelCause(context.Background())
 	fatal := errors.New("revocation watcher lease lost: holder h1")

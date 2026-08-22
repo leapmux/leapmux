@@ -914,7 +914,7 @@ func (s *Server) Serve(ctx context.Context) error {
 	// Start periodic cleanup of soft-deleted records.
 	cleanup.StartLoop(serveCtx, s.store)
 
-	// Name the periods in which this process did not run, so a suspended laptop
+	// Report the periods in which this process did not run, so a suspended laptop
 	// explains the expired leases, ended streams, and refused credentials that
 	// follow it instead of each one being read as its own failure. Process-wide
 	// and idempotent, so a solo process starting a Hub and a Worker reports each
@@ -1077,7 +1077,7 @@ func (s *Server) Serve(ctx context.Context) error {
 	return teardownErrs.finalize()
 }
 
-// logShutdownCause names why the Hub is stopping, at the moment it decides to.
+// logShutdownCause reports why the Hub is stopping, at the moment it decides to.
 //
 // Every cancelServe call site passes a cause, and without this the log could not
 // tell them apart: a user bug report showed "hub shutting down..." reading

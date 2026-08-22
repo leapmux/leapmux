@@ -56,7 +56,7 @@ func runWorker(args []string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Name the periods in which this process did not run, so a suspended machine
+	// Report the periods in which this process did not run, so a suspended machine
 	// explains the ended streams and refused credentials that follow it. This
 	// entry point needs its own call: worker.Run has one, but only solo goes
 	// through worker.Run -- `leapmux worker` builds its client here instead.

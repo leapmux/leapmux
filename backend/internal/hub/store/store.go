@@ -508,12 +508,14 @@ type RevocationEventStore interface {
 	// singleton lease. It returns false after expiry, takeover, or removal.
 	RenewHubRuntimeLease(ctx context.Context, p RenewHubRuntimeLeaseParams) (bool, error)
 	// ReacquireHubRuntimeLease re-takes the singleton lease for a holder whose
-	// own lease lapsed while its process could not renew -- a suspended laptop,
-	// a paused VM, a long stall. It keeps CursorSeq instead of fencing to the
-	// head of the stream, so no revocation published during the stall is
-	// skipped, and it returns ErrHubAlreadyRunning while ANY other holder's row
-	// is present, live or expired: that holder may have consumed and compacted
-	// past this cursor.
+	// process could not renew -- a suspended laptop, a paused VM, a long stall,
+	// or a local clock that reported a lapse while the database row was still
+	// live. It keeps CursorSeq instead of fencing to the head of the stream, so
+	// no revocation published during the stall is skipped. It returns
+	// ErrHubAlreadyRunning while ANY other holder's row is present, live or
+	// expired: that holder may have consumed and compacted past this cursor.
+	// The caller's own row is released first, so a still-live own row becomes a
+	// force-renewal rather than a false rival.
 	ReacquireHubRuntimeLease(ctx context.Context, p ReacquireHubRuntimeLeaseParams) error
 	ReleaseHubRuntimeLease(ctx context.Context, holderID string) (int64, error)
 	ListPublishedAfter(ctx context.Context, afterSeq int64, limit int32) ([]PublishedRevocationEvent, error)

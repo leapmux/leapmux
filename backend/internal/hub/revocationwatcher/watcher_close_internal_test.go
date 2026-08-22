@@ -45,11 +45,10 @@ func (s *releaseRecordingEvents) snapshot() (released []string, deadline time.Ti
 // still fire while Close reports that its owned loop did not drain.
 func TestCloseReleasesLeaseEvenWhenDrainTimesOut(t *testing.T) {
 	rev := &releaseRecordingEvents{}
-	w := &Watcher{
+	w := attachLease(&Watcher{
 		store:    fakeRevStore{rev: rev},
-		holderID: "holder",
 		loopDone: make(chan struct{}), // open: the processing/renewal goroutines never exit
-	}
+	}, "holder", time.Hour)
 	w.lease.seeded = true
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -77,11 +76,10 @@ func TestCloseReleasesLeaseEvenWhenDrainTimesOut(t *testing.T) {
 // even when the loop drain times out -- there is no lease row to release.
 func TestCloseUnseededSkipsReleaseEvenOnDrainTimeout(t *testing.T) {
 	rev := &releaseRecordingEvents{}
-	w := &Watcher{
+	w := attachLease(&Watcher{
 		store:    fakeRevStore{rev: rev},
-		holderID: "holder",
 		loopDone: make(chan struct{}), // open
-	}
+	}, "holder", time.Hour)
 	// w.lease.seeded stays false.
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -94,7 +92,7 @@ func TestCloseUnseededSkipsReleaseEvenOnDrainTimeout(t *testing.T) {
 
 func TestCloseBoundsLeaseLockAcquisitionByCallerDeadline(t *testing.T) {
 	rev := &releaseRecordingEvents{}
-	w := &Watcher{store: fakeRevStore{rev: rev}, holderID: "holder"}
+	w := attachLease(&Watcher{store: fakeRevStore{rev: rev}}, "holder", time.Hour)
 	w.lease.seeded = true
 	_ = w.lease.mu.Lock(context.Background())
 
@@ -120,15 +118,14 @@ func TestCloseBoundsLeaseLockAcquisitionByCallerDeadline(t *testing.T) {
 // contexts. releaseSeededLease therefore acquires ONLY the lease-state lock
 // (which applyEventUnlocked releases during each event) and must not wait on
 // runMu; a prior version waited on runMu, timed out, and orphaned the lease
-// for its 30s TTL. renewLocked is gated on `closed` so the stuck sweep cannot
+// for its 30s TTL. renew checks `closed` so the stuck sweep cannot
 // re-acquire the lease after the release.
 func TestCloseReleasesLeaseEvenWhenSweepHoldsRunMu(t *testing.T) {
 	rev := &releaseRecordingEvents{}
-	w := &Watcher{
+	w := attachLease(&Watcher{
 		store:    fakeRevStore{rev: rev},
-		holderID: "holder",
 		loopDone: make(chan struct{}), // open: the loop goroutines never exit -> drain times out
-	}
+	}, "holder", time.Hour)
 	w.lease.seeded = true
 	// Simulate a sweep stuck in an uncancellable applyEvent: runOnce holds runMu
 	// across applyEventUnlocked and will not release it within any budget.

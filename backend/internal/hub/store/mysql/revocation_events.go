@@ -88,9 +88,6 @@ func newRevocationEventStore(conn *mysqlConn) *revocationEventStore {
 				_, err := conn.q.DeleteExpiredHubRuntimeLease(ctx)
 				return mapErr(err)
 			},
-			DeleteOwnExpiredLease: func(ctx context.Context, conn *mysqlConn, holderID string) error {
-				return mapErr(conn.q.DeleteOwnExpiredHubRuntimeLease(ctx, holderID))
-			},
 			CompactPublished: func(ctx context.Context, conn *mysqlConn, cutoff time.Time) (int64, error) {
 				return rowsAffected(conn.q.DeleteCompactablePublishedRevocationEvents(ctx, sqltime.MySQLNullTimeOf(cutoff)))
 			},

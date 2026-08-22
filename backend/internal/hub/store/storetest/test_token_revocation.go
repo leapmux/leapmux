@@ -760,12 +760,15 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		// A LIVE lease is nobody's to take back, not even its own holder's:
-		// reacquisition exists for a lapse, and a live row means the renewal path
-		// still applies.
+		// A rival must not take a live row. The holder itself may: local clocks
+		// can report a lapse while this row is still live, and that must become
+		// a force-renewal rather than a false "another Hub" fence.
 		require.ErrorIs(t, st.RevocationEvents().ReacquireHubRuntimeLease(ctx, store.ReacquireHubRuntimeLeaseParams{
 			HolderID: "second", CursorSeq: 0, LeaseDuration: time.Hour,
 		}), store.ErrHubAlreadyRunning)
+		require.NoError(t, st.RevocationEvents().ReacquireHubRuntimeLease(ctx, store.ReacquireHubRuntimeLeaseParams{
+			HolderID: "first", CursorSeq: 0, LeaseDuration: expiringLeaseDuration,
+		}))
 
 		for range 3 {
 			tokenID := seedAPIToken(t, st, user.ID)

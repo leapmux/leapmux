@@ -9,7 +9,7 @@
 //
 // Each component discovers that separately and reports it as its own symptom --
 // a lease that "was removed, replaced, or expired", a stream that ended, an
-// authentication that failed. None of them can name the cause, because the cause
+// authentication that failed. None of them can identify the cause, because the cause
 // is a process-wide fact that no single component can observe. This package
 // observes it once and states it plainly, so every symptom in the same window
 // has an explanation instead of a guess.
@@ -20,7 +20,7 @@
 // It only reports. Correctness after a pause belongs to the component that owns
 // the state: the revocation watcher, for one, compares BOTH clock readings on
 // its own lease rather than waiting for this detector's next sample, because a
-// sampled report arrives too late to gate a write.
+// sampled report arrives too late to control a write.
 package clockjump
 
 import (
@@ -32,7 +32,7 @@ import (
 
 const (
 	// defaultInterval is how often the detector compares the two clocks. It also
-	// bounds how late a report is: a pause is reported on the first tick after
+	// limits how late a report is: a pause is reported on the first tick after
 	// the process resumes, because the ticker was frozen for the pause too.
 	defaultInterval = 10 * time.Second
 	// defaultThreshold is the smallest skew worth a log line. The monotonic clock
@@ -171,33 +171,48 @@ func report(observed jump) {
 // detector; a solo process runs a Hub and a Worker that would otherwise each
 // start one and report every pause twice.
 var running struct {
-	mu sync.Mutex
-	on bool
+	mu     sync.Mutex
+	refs   int
+	on     bool
+	cancel context.CancelFunc
 }
 
-// StartLoop starts the process-wide detector and stops it when ctx ends.
+// StartLoop starts the process-wide detector and stops it when every caller's
+// context has ended.
 //
-// Call it from every component that wants the guarantee. While a loop is
-// running, later calls are no-ops that neither extend nor shorten its life, so
-// the FIRST caller's context governs -- acceptable because every caller's
-// context ends at process shutdown. Once that context ends the guard clears, so
-// a process that tears its components down and builds them again (the desktop
-// sidecar switching between solo and remote mode) gets a detector back.
+// Call it from every component that wants the guarantee. Each call adds a hold;
+// the loop runs until the last hold is released. A solo process runs a Hub and
+// a Worker with different lifetimes -- the Worker is cancelled first on
+// shutdown -- and a first-caller-wins loop would die with whichever context
+// happened to arrive first. Once no caller remains the loop exits, so a process
+// that tears its components down and builds them again (the desktop sidecar
+// switching between solo and remote mode) gets a detector back.
 func StartLoop(ctx context.Context) {
 	running.mu.Lock()
-	defer running.mu.Unlock()
-	if running.on {
-		return
-	}
-	running.on = true
-
-	d := newDetector(newSystemClock(), defaultInterval, defaultThreshold)
-	go func() {
-		defer func() {
-			running.mu.Lock()
-			running.on = false
-			running.mu.Unlock()
+	if !running.on {
+		loopCtx, cancel := context.WithCancel(context.Background())
+		running.cancel = cancel
+		running.on = true
+		d := newDetector(newSystemClock(), defaultInterval, defaultThreshold)
+		go func() {
+			defer func() {
+				running.mu.Lock()
+				running.on = false
+				running.cancel = nil
+				running.mu.Unlock()
+			}()
+			d.run(loopCtx)
 		}()
-		d.run(ctx)
-	}()
+	}
+	running.refs++
+	running.mu.Unlock()
+
+	context.AfterFunc(ctx, func() {
+		running.mu.Lock()
+		defer running.mu.Unlock()
+		running.refs--
+		if running.refs == 0 && running.cancel != nil {
+			running.cancel()
+		}
+	})
 }
