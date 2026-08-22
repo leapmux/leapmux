@@ -8,7 +8,8 @@ import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
 import type { WorkerInfo } from '~/lib/workerInfoCache'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import type { TodoItem } from '~/stores/chatTodos'
-import type { createGitFileStatusStore, GitFilterTab } from '~/stores/gitFileStatus.store'
+import type { GitFilterTab } from '~/stores/repoGit.store'
+import type { createRepoGitStore } from '~/stores/repoGit.store'
 import type { createSectionStore } from '~/stores/section.store'
 import type { TabItemOps } from '~/stores/tab.types'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
@@ -46,7 +47,7 @@ export interface SidebarElementsOpts {
   onFileSelect: (path: string) => void
   onFileOpen: (path: string, openSource?: GitFilterTab) => void
   isActiveWorkspaceArchived: boolean
-  gitStatusStore: ReturnType<typeof createGitFileStatusStore>
+  gitStatusStore: ReturnType<typeof createRepoGitStore>
   activeFilePath?: string
   hasActiveFileTab: boolean
   showTodos: boolean

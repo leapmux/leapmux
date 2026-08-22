@@ -46,7 +46,8 @@ import { createChatStore } from '~/stores/chat.store'
 import { shouldShowBackgroundTasksSection } from '~/stores/chatBackgroundTasks'
 import { createControlStore } from '~/stores/control.store'
 import { createFloatingWindowStore } from '~/stores/floatingWindow.store'
-import { createGitFileStatusStore } from '~/stores/gitFileStatus.store'
+import { repoKeyFromTab } from '~/stores/repoGit'
+import { createRepoGitStore } from '~/stores/repoGit.store'
 import { createLayoutStore, useLayoutFocusSweep } from '~/stores/layout.store'
 import { createSectionStore } from '~/stores/section.store'
 import { agentTabToInfo, isTabReadyForGitStatus, mruSteerableAgentTab, rootAgentIdFor, tabKey } from '~/stores/tab.helpers'
@@ -70,7 +71,6 @@ import { resolveActiveWorkspace } from './resolveActiveWorkspace'
 import { createTabSelectionRestorer } from './restoreTabSelection'
 import { SectionDragProvider } from './SectionDragContext'
 import { createLeftSidebarElement, createRightSidebarElement } from './SidebarElements'
-import { syncGitStatusToTabs, tabStampTarget } from './syncGitStatusToTabs'
 import { TabDragProvider } from './TabDragContext'
 import { activeWorkspaceKey } from './tabPersistenceKeys'
 import { focusTile as focusTileShared } from './tileLifecycle'
@@ -152,7 +152,7 @@ export const AppShell: Component = () => {
     projection,
   })
   useFocusInvariant({ layoutStore, floatingWindowStore })
-  const gitFileStatusStore = createGitFileStatusStore()
+  const repoGitStore = createRepoGitStore()
   const [fileTreePath, setFileTreePath] = createSignal('')
   // The watchdog gave up waiting for the bootstrap. Distinct from "not ready":
   // it only says the wait is over, never that the workspace arrived.
@@ -316,6 +316,7 @@ export const AppShell: Component = () => {
     controlStore,
     agentSessionStore,
     settingsLoading,
+    repoGitStore,
     getActiveWorkspaceId: () => workspace.activeWorkspaceId(),
     onTurnEnd: handleTurnEnd,
   })
@@ -503,10 +504,9 @@ export const AppShell: Component = () => {
   const activeTabType = createMemo(() => activeTab()?.type ?? null)
 
   // Whether the active tab's working tree is settled enough to query git
-  // status. Used to gate every gitFileStatusStore.refresh — both the
-  // workspace-list tab fields (via the createEffect below that mirrors
-  // store → tab) and the Files section's per-row badges read from the
-  // same store, so a single gate protects both. See isTabReadyForGitStatus
+  // status. Used to gate every repoGitStore.refresh — both the workspace-list
+  // tab fields and the Files section's per-row badges read from the same
+  // store, so a single gate protects both. See isTabReadyForGitStatus
   // for the rationale on why we defer during a STARTING tab's phase-0
   // window.
   const activeTabReady = createMemo(() => {
@@ -548,9 +548,9 @@ export const AppShell: Component = () => {
       return
     const ctx = getCurrentTabContext()
     if (ctx.workerId && ctx.workingDir)
-      gitFileStatusStore.refresh(ctx.workerId, ctx.workingDir)
+      void repoGitStore.refresh(ctx.workerId, ctx.workingDir)
     else if (opts?.clearWhenUnresolved)
-      gitFileStatusStore.clear()
+      repoGitStore.clearAll()
   }
 
   // Refresh git file status when a turn ends.
@@ -563,7 +563,9 @@ export const AppShell: Component = () => {
     },
   ))
 
-  syncGitStatusToTabs({ gitFileStatusStore, view: tabView, metadata: tabMetadata })
+  createEffect(() => {
+    repoGitStore.setFocusedKey(repoKeyFromTab(activeTab() ?? {}))
+  })
 
   // Get working directory and home directory from the MRU agent tab
   const getMruAgentContext = (): Pick<TabContext, 'workingDir' | 'homeDir'> => {
@@ -945,7 +947,7 @@ export const AppShell: Component = () => {
       controlStore,
       layoutStore,
       agentSessionStore,
-      gitFileStatusStore,
+      repoGitStore,
     },
     ops: { agentOps, termOps },
     workspace: {
@@ -1055,7 +1057,7 @@ export const AppShell: Component = () => {
     get activeBackgroundTasksFailed() { return activeBackgroundTasksFailed() },
     onOpenBackgroundTask: item => onOpenBackgroundTask(item),
     termOps,
-    gitStatusStore: gitFileStatusStore,
+    gitStatusStore: repoGitStore,
     get turnEndTrigger() { return turnEndTrigger() },
     get activeTabReady() { return activeTabReady() },
     get activeFilePath() {
@@ -1264,11 +1266,7 @@ export const AppShell: Component = () => {
       <AppShellDialogs
         dialogs={dialogs}
         onBranchChanged={(repo, newBranch) => handleBranchChanged(
-          {
-            target: tabStampTarget(tabView, tabMetadata),
-            gitFileStatusStore,
-            getCurrentTabContext,
-          },
+          { repoGitStore, getCurrentTabContext },
           repo,
           newBranch,
         )}

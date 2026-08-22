@@ -109,9 +109,8 @@ interface AppShellDialogsProps {
   /**
    * Called after a successful Change branch / non-worktree Delete
    * branch with the branch the working directory is now on. The
-   * parent stamps every tab in `(workerId, gitToplevel)` with the new
-   * label and, if that repo is the active tab's repo, refreshes the
-   * gitFileStatusStore so diff stats track the new HEAD.
+   * parent updates the repo-keyed git store with the new branch label and
+   * refreshes diff stats for the affected repo.
    */
   onBranchChanged?: (repo: RepoRef, newBranch: string) => void
   activeWorkspace: () => { id: string } | null
