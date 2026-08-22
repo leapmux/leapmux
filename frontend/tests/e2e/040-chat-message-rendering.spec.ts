@@ -1,7 +1,7 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
 import { COARSE_POINTER_METRICS, touchDown } from './helpers/touch'
-import { ARITHMETIC_PROMPT, assistantBubbles, bandRows, CHAT_SCROLL_CONTAINER, chatScrollContainer, firstAssistantBubble, measureAgainstChatList, measureBubbleEdges, messageContents, sendMessage, userBubbles, waitForAgentIdle } from './helpers/ui'
+import { ARITHMETIC_PROMPT, assistantBubbles, bandRows, chatScrollContainer, firstAssistantBubble, measureAgainstChatList, measureBubbleEdges, messageContents, readAttached, sendMessage, userBubbles, waitForAgentIdle } from './helpers/ui'
 
 /**
  * Send one prompt and wait for the turn to settle. Every test below opens the
@@ -66,14 +66,19 @@ test.describe('Chat Message Rendering', () => {
     // row knows, so a bleed sized to the bare gutter stops short on a railed row and
     // reaches the edge on a bare one -- the very case ROW_BLEED_LEFT_VAR exists for.
     // Checking one band would pass on a transcript whose only band has no rails.
-    const bands = await bandRows(page).evaluateAll((els, selector) => els.map((el) => {
-      const list = el.closest(selector)!
-      return {
-        rails: el.querySelector('[data-span-columns]')?.getAttribute('data-span-columns') ?? '0',
-        width: el.getBoundingClientRect().width,
-        listWidth: list.clientWidth,
-      }
-    }), CHAT_SCROLL_CONTAINER)
+    const bands = await readAttached(bandRows(page), 'the band rows', (matches, selector) => {
+      const attached = matches.filter(candidate => candidate.isConnected)
+      if (attached.length === 0)
+        return null
+      return attached.map((el) => {
+        const list = el.closest(selector)!
+        return {
+          rails: el.querySelector('[data-span-columns]')?.getAttribute('data-span-columns') ?? '0',
+          width: el.getBoundingClientRect().width,
+          listWidth: list.clientWidth,
+        }
+      })
+    })
 
     expect(bands.length).toBeGreaterThan(0)
     for (const band of bands) {
@@ -92,8 +97,11 @@ test.describe('Chat Message Rendering', () => {
     // `data-seq` marks every virtual row; the tail has no seq but does carry `data-band`.
     // Scoped to the scroll container, which excludes the hidden premeasure copies (they
     // mount outside it) and the rail's dots (which reuse data-seq).
-    const seams = await chatScrollContainer(page).locator('[data-seq], [data-band]').evaluateAll(els =>
-      els
+    const seams = await readAttached(
+      chatScrollContainer(page).locator('[data-seq], [data-band]'),
+      'the band seams',
+      matches => matches
+        .filter(candidate => candidate.isConnected)
         .map((el) => {
           const r = el.getBoundingClientRect()
           return {
@@ -141,13 +149,13 @@ test.describe('Chat Message Rendering', () => {
    * The plan-execution card takes the same rule, and 050-plan-mode.spec.ts
    * measures it through the same helper.
    *
-   * This test flakes in COMBINED runs and passes alone, with
-   * `measureBubbleEdges: element is not inside the chat scroll container`:
-   * https://github.com/leapmux/leapmux/issues/402. The cause is not the
-   * premeasure-copy trap -- `userBubbles` is already `:visible`-scoped, which
-   * a `visibility: hidden` copy cannot pass. Do not wrap the measurement in a
-   * retry until the cause is known, because two of the three candidates are
-   * real defects that a retry would hide.
+   * This measures a bubble the send has only just created, which is the window
+   * the row is REPLACED in: the optimistic local reconciles to its server echo
+   * about 350ms later, under a new id and a new seq, so ChatView tears the row
+   * down and builds a fresh one. `measureBubbleEdges` skips a match that has
+   * left the document for that reason, rather than measuring the empty rect one
+   * reports -- see readAttached in helpers/ui.ts and
+   * https://github.com/leapmux/leapmux/issues/402.
    */
   test('a user bubble meets the right panel edge and keeps its left side inset', async ({ page, authenticatedWorkspace }) => {
     await sendMessage(page, 'hi')
@@ -156,18 +164,91 @@ test.describe('Chat Message Rendering', () => {
     await expect(bubble).toBeVisible()
 
     const box = await measureBubbleEdges(bubble)
+    // Every assertion below reports the WHOLE box, because one number out of
+    // five names the symptom and not the shape that produced it -- a bubble
+    // measured against the wrong list reads very differently from one the rule
+    // simply failed to bleed.
+    const measured = `measured ${JSON.stringify(box)}`
 
     // Flush right: the bubble's right edge sits on the list's padding-box edge.
-    expect(Math.abs(box.rightGap)).toBeLessThanOrEqual(1)
+    expect(Math.abs(box.rightGap), measured).toBeLessThanOrEqual(1)
     // Still a bubble on the left: inset by at least the gutter, and short of the
     // full width -- 'hi' must not stretch the bubble across the panel.
-    expect(box.leftGap).toBeGreaterThan(20)
+    expect(box.leftGap, measured).toBeGreaterThan(20)
     // A rounded corner flush against the edge would read as a mistake.
-    expect(box.radius).toBe('0px')
+    expect(box.radius, measured).toBe('0px')
     // Top edge on the row's. The row places the bubble on BOTH axes; a bubble-level
     // `alignSelf` is what would move this, and it would take the bubble's first line
     // off the line the toolbar beside it sits on.
+    expect(Math.abs(box.topGapInRow), measured).toBeLessThanOrEqual(1)
+  })
+
+  /**
+   * The contract the test above depends on: a chat measurement reads a row that
+   * is being replaced under it, or it reports why it could not -- it never
+   * measures a node that left the document.
+   *
+   * It lives beside the measurement it protects, and it drives a STAND-IN list
+   * rather than the real one. Agitating ChatView's own rows would detach nodes
+   * Solid still holds as insertion anchors, so the appended assistant row could
+   * fail to insert -- the probe would then be testing the agitation, and a page
+   * error would land on whichever assertion followed. A hand-built list exercises
+   * the helper's whole path (find the container, read both edges, read the row)
+   * with nothing else able to move.
+   */
+  test('a chat measurement survives a row that remounts under it', async ({ page, authenticatedWorkspace }) => {
+    void authenticatedWorkspace
+
+    await page.evaluate(() => {
+      const list = document.createElement('div')
+      list.setAttribute('data-chat-scroll-container', 'true')
+      list.style.cssText = 'position:fixed;top:0;left:0;width:600px;height:200px;box-sizing:border-box;border:2px solid;padding:0;overflow:auto'
+      const row = document.createElement('div')
+      row.style.cssText = 'position:relative;height:100px'
+      const probe = document.createElement('div')
+      probe.setAttribute('data-testid', 'remount-probe')
+      probe.style.cssText = 'position:absolute;right:0;top:0;width:100px;height:50px;border-top-right-radius:4px'
+      row.append(probe)
+      list.append(row)
+      document.body.append(list)
+
+      // Replace the probe with an equivalent copy as fast as the event loop
+      // allows. The old node is detached FOR GOOD, which is what a remount does
+      // and what a handle resolved a round trip earlier is left holding.
+      let live = true
+      const swap = () => {
+        if (!live)
+          return
+        const current = document.querySelector('[data-testid="remount-probe"]')
+        current?.replaceWith(current.cloneNode(true))
+        setTimeout(swap, 0)
+      }
+      ;(globalThis as unknown as { __stopRemountProbe: () => void }).__stopRemountProbe = () => {
+        live = false
+        list.remove()
+      }
+      swap()
+    })
+
+    const box = await measureBubbleEdges(page.locator('[data-testid="remount-probe"]:visible'))
+
+    // Read off a node that had left the document, every one of these would be a
+    // zero from an empty rect -- and `radius` an empty string, since a detached
+    // element resolves no computed style at all.
+    expect(Math.abs(box.rightGap)).toBeLessThanOrEqual(1)
     expect(Math.abs(box.topGapInRow)).toBeLessThanOrEqual(1)
+    expect(box.leftGap).toBeGreaterThan(400)
+    expect(box.radius).toBe('4px')
+
+    // An element that is outside every chat list is a STANDING condition, not a
+    // remount, so it must report itself on the first look instead of spending the
+    // retry budget and expiring as a bare timeout. The bound is ~1000x a single
+    // page-side read and a third of that budget, so only a real retry loop trips it.
+    const startedAt = Date.now()
+    await expect(measureBubbleEdges(page.locator('body'))).rejects.toThrow(/not inside the chat scroll container/)
+    expect(Date.now() - startedAt).toBeLessThan(5000)
+
+    await page.evaluate(() => (globalThis as unknown as { __stopRemountProbe: () => void }).__stopRemountProbe())
   })
 
   /**
@@ -222,15 +303,25 @@ test.describe('Chat Message Rendering', () => {
 
     // With text selected under the cursor, the browser's own menu wins so Copy
     // still works. The app suppresses neither the selection nor the native menu.
-    await bubble.evaluate((el) => {
+    //
+    // Select and measure in the SAME page-side turn, off a node that is still in
+    // the document. Split over two, a row that remounts in between leaves the
+    // range anchored to a node that has left it, and the rects it reports are
+    // empty.
+    const selectionBox = await readAttached(bubble, 'the bubble text selection', (matches) => {
+      const el = matches.find(candidate => candidate.isConnected)
+      if (!el)
+        return null
       const range = document.createRange()
       range.selectNodeContents(el)
       const selection = window.getSelection()!
       selection.removeAllRanges()
       selection.addRange(range)
-    })
-    const selectionBox = await bubble.evaluate(() => {
-      const rect = window.getSelection()!.getRangeAt(0).getClientRects()[0]
+      // Read back through the SELECTION rather than the range that was just
+      // built, so this also proves the browser took it.
+      const rect = selection.getRangeAt(0).getClientRects()[0]
+      if (!rect)
+        throw new Error('the bubble text selection: the selected text paints no rect')
       return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
     })
     await page.mouse.click(selectionBox.x, selectionBox.y, { button: 'right' })

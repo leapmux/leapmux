@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures'
-import { firstAssistantBubble, sendMessage } from './helpers/ui'
+import { firstAssistantBubble, readAttached, sendMessage } from './helpers/ui'
 
 /**
  * Smoke test for chat scroll + pagination integration. The store-level
@@ -41,12 +41,20 @@ test.describe('Chat Pagination & Scroll', () => {
     // LATER row instead — a non-zero translateY computes to a matrix(...), which
     // actually proves the virtualizer laid rows out rather than trivially
     // accepting the first row's 'none'.
+    //
+    // Skip a detached match: a row is re-created whenever its entry is replaced,
+    // and a detached one reports no transform at all rather than the wrong one.
+    // See readAttached.
+    const rowTransform = (row: typeof seqElements) =>
+      readAttached(row, 'the row transform', (matches) => {
+        const el = matches.find(candidate => candidate.isConnected)
+        return el ? getComputedStyle(el).transform : null
+      })
     if (count > 1) {
-      const lastTransform = await seqElements.last().evaluate(el => getComputedStyle(el).transform)
-      expect(lastTransform).toMatch(/^matrix/)
+      expect(await rowTransform(seqElements.last())).toMatch(/^matrix/)
     }
     else {
-      const transform = await seqElements.first().evaluate(el => getComputedStyle(el).transform)
+      const transform = await rowTransform(seqElements.first())
       expect(transform === 'none' || transform.startsWith('matrix')).toBe(true)
     }
 
