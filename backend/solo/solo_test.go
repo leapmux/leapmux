@@ -1226,12 +1226,17 @@ func TestSoloStart_AWorkerBringUpFailureIsStillTheWorkers(t *testing.T) {
 // away, NOT when the Worker has finished its local teardown. Waiting on the
 // latter held the Hub up for a database close it has no stake in, and reported a
 // slow one as a worker that failed to drain.
+//
+// No wall-clock budget: shutdown returning while teardown is still held proves
+// it did not wait for the Worker's full exit, and the absent backstop warn
+// proves WaitBounded took the done path rather than timer.C. A Less(elapsed,
+// timeout) assertion duplicated that second claim and flaked on Windows CI
+// when CaptureStderr and logging.Setup shared the same stopwatch.
 func TestInstanceShutdown_StopsTheHubOnTheDrainNotTheWorkersFullExit(t *testing.T) {
 	orig := workerDrainTimeout
-	// Generous against scheduler jitter; still far below a mistaken wait for the
-	// full backstop. 20ms was too tight once CaptureStderr and logging.Setup
-	// sat inside the same wall-clock budget on Windows CI.
-	workerDrainTimeout = 100 * time.Millisecond
+	// Short only so a regression that waits out the backstop stays cheap; the
+	// assertions below do not measure against it.
+	workerDrainTimeout = 20 * time.Millisecond
 	t.Cleanup(func() { workerDrainTimeout = orig })
 
 	hubDone := make(chan struct{})
@@ -1260,21 +1265,17 @@ func TestInstanceShutdown_StopsTheHubOnTheDrainNotTheWorkersFullExit(t *testing.
 		<-releaseTeardown
 	}()
 
-	var elapsed time.Duration
 	// logging.Setup inside the capture, or the handler still points at the real
 	// stderr and the NotContains below holds no matter what shutdown logs.
-	// Time only shutdown: CaptureStderr's pipe setup and logging.Setup are not
-	// part of the drain-vs-backstop claim and blew a 20ms budget on Windows CI.
 	logs := testutil.CaptureStderr(t, func() {
 		logging.Setup()
-		start := time.Now()
 		inst.shutdown()
-		elapsed = time.Since(start)
 	})
 
-	assert.True(t, hubCancelled.Load())
-	assert.Less(t, elapsed, workerDrainTimeout,
-		"the hub must stop on the drain signal, not wait out the backstop for a teardown it has no stake in")
+	assert.True(t, hubCancelled.Load(),
+		"the hub must stop once the worker has drained")
 	assert.NotContains(t, logs, "did not finish before the hub shutdown deadline",
-		"a worker that drained promptly must not be reported as failing to")
+		"a worker that drained promptly must not be reported as failing to; "+
+			"WaitBounded only logs that line on timer.C, so its absence is the "+
+			"proof the hub stopped on the drain signal rather than the backstop")
 }
