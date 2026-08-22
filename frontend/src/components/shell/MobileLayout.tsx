@@ -71,10 +71,11 @@ export function createMobileOverlayState() {
 }
 
 interface MobileLayoutProps {
-  leftSidebarOpen: boolean
-  rightSidebarOpen: boolean
-  /** Whether the tab sheet is open (the scrim renders from this). */
-  sheetOpen: boolean
+  /**
+   * Which overlay is up. The layout derives drawer and scrim classes from
+   * this one value, so both drawers open is unrepresentable.
+   */
+  overlay: MobileOverlay
   onCloseSheet: () => void
   leftSidebarElement: JSX.Element
   rightSidebarElement: JSX.Element
@@ -137,7 +138,7 @@ export const MobileLayout: Component<MobileLayoutProps> = (props) => {
             the side. `toBeInViewport` against these two is the oracle. */}
         <div
           class={styles.mobileSidebar}
-          classList={{ [styles.mobileSidebarOpen]: props.leftSidebarOpen }}
+          classList={{ [styles.mobileSidebarOpen]: props.overlay === 'left' }}
           data-testid="mobile-drawer-left"
         >
           {props.leftSidebarElement}
@@ -145,7 +146,7 @@ export const MobileLayout: Component<MobileLayoutProps> = (props) => {
 
         <div
           class={`${styles.mobileSidebar} ${styles.mobileSidebarRight}`}
-          classList={{ [styles.mobileSidebarOpen]: props.rightSidebarOpen }}
+          classList={{ [styles.mobileSidebarOpen]: props.overlay === 'right' }}
           data-testid="mobile-drawer-right"
         >
           {props.rightSidebarElement}
@@ -153,7 +154,7 @@ export const MobileLayout: Component<MobileLayoutProps> = (props) => {
 
         <div
           class={styles.sheetOverlay}
-          classList={{ [styles.sheetOverlayOpen]: props.sheetOpen }}
+          classList={{ [styles.sheetOverlayOpen]: props.overlay === 'sheet' }}
           onClick={() => props.onCloseSheet()}
           aria-hidden="true"
           data-testid="tab-sheet-overlay"

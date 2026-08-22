@@ -1,5 +1,6 @@
 import type { PopoverAnchorRect } from '~/lib/popoverPosition'
 import { INPUT_OR_EDITABLE_SELECTOR } from '~/lib/textInputBehavior'
+import { pointIsInsideSelection, selectionInside } from '~/lib/textSelection'
 import { motion } from '~/styles/tokens'
 import './contextMenuGesture.css'
 
@@ -153,6 +154,12 @@ export interface ContextMenuGestureOptions {
    */
   onOpen: (press: ContextMenuPress) => void
   /**
+   * Hide a menu this hold already opened. A pan after the hold fires
+   * `pointercancel` and never delivers a release for light-dismiss to act on,
+   * so the menu would otherwise stay at the original viewport point.
+   */
+  onCancel?: () => void
+  /**
    * Keep the element's text selectable. Only the iOS callout is suppressed, and
    * then only on a coarse pointer; a right-click inside an existing selection
    * yields to the native menu so its Copy still works. The chat message rows set
@@ -210,6 +217,15 @@ export function attachContextMenuGesture(
   let holdOverMenuTimer: ReturnType<typeof setTimeout> | undefined
   /** The next `click` belongs to the gesture, not to the row. */
   let swallowClick = false
+  /**
+   * This press landed on a row that already holds a live selection, so the
+   * gesture stood aside for it.
+   *
+   * Read by `onContextMenu`, which the platform raises at its OWN long-press
+   * threshold on Android: without the flag that event would take the branch for
+   * a mouse right-click and open the menu anyway, undoing the decline.
+   */
+  let pressYieldsToSelection = false
   /** Removes the release listeners armed by `openAfterRelease`. A no-op when none are. */
   let disarmRelease: () => void = () => {}
 
@@ -224,6 +240,7 @@ export function attachContextMenuGesture(
     holdOverMenuTimer = undefined
     document.removeEventListener('click', onClickAfterRelease, true)
     document.documentElement.removeAttribute(HOLD_OVER_MENU_ATTR)
+    document.querySelectorAll('[data-ctx-hold-inert]').forEach(node => node.removeAttribute('data-ctx-hold-inert'))
   }
 
   /**
@@ -279,10 +296,13 @@ export function attachContextMenuGesture(
       return
     // The row moved under the finger, fired or not. The user is scrolling past
     // it; no `click` will follow to be swallowed. Mirrors `onPointerCancel`.
+    const wasHeldOpen = heldOpen
     fired = false
     heldOpen = false
     swallowClick = false
     endGesture()
+    if (wasHeldOpen)
+      opts.onCancel?.()
   }
 
   const armScrollCancel = () => {
@@ -304,6 +324,8 @@ export function attachContextMenuGesture(
   function endGesture() {
     if (pointerId === null && holdTimer === undefined)
       return
+    if (pointerId !== null && el.hasPointerCapture?.(pointerId))
+      el.releasePointerCapture(pointerId)
     pointerId = null
     clearTimeout(holdTimer)
     holdTimer = undefined
@@ -433,8 +455,9 @@ export function attachContextMenuGesture(
 
   const onPointerDown = (e: PointerEvent) => {
     // Any new press ends the previous gesture's claim on the click that follows
-    // it. That click has had its chance.
+    // it. That click has had its chance, and so has the last decline.
     swallowClick = false
+    pressYieldsToSelection = false
 
     // A mouse never starts a hold. It has `contextmenu`, and a mouse hold must not
     // steal click-drag, text selection, or the row's own press states.
@@ -442,6 +465,17 @@ export function attachContextMenuGesture(
       return
     if (pressBelongsToEmbeddedUi(e))
       return
+    if (selectionInside(el)) {
+      // The row holds a live selection, and dragging the platform's own handles
+      // is the only way to adjust it. Those handles sit AT the edges of the
+      // highlight and below its last line, so the press that reaches for one
+      // lands on the row -- and a hold here would put the menu over the text the
+      // user is still choosing. The finger belongs to the selection until the
+      // selection is gone. See ~/lib/tapSelect.ts, which is how a finger makes
+      // one in the first place.
+      pressYieldsToSelection = true
+      return
+    }
     // A fresh tracked press supersedes a hold that already fired and is waiting
     // for its release: that release no longer matches `pointerId`.
     fired = false
@@ -454,6 +488,12 @@ export function attachContextMenuGesture(
     startTop = rect.top
     startLeft = rect.left
     el.setAttribute(PRESS_HOLD_ATTR, '')
+    try {
+      el.setPointerCapture(e.pointerId)
+    }
+    catch {
+      // jsdom and a detached row have no capture.
+    }
     armScrollCancel()
     holdTimer = setTimeout(() => {
       holdTimer = undefined
@@ -488,8 +528,9 @@ export function attachContextMenuGesture(
       return
     // The browser took the touch for a pan. Drop the hold even if it fired -- the
     // user is scrolling, and no `click` will follow to be swallowed. A menu the
-    // hold already opened stays up: a cancel brings no release for light
-    // dismiss to act on, so there is nothing to re-assert against.
+    // hold already opened has nothing to re-assert against, so cancel it.
+    if (heldOpen)
+      opts.onCancel?.()
     fired = false
     heldOpen = false
     swallowClick = false
@@ -537,7 +578,14 @@ export function attachContextMenuGesture(
   const onContextMenu = (e: MouseEvent) => {
     if (pressBelongsToEmbeddedUi(e))
       return
-    if (opts.selectableText && clickIsInsideSelection(e)) {
+    if (pressYieldsToSelection) {
+      // Android raises this at its own long-press threshold, on the press that
+      // `onPointerDown` already stood aside for. Leaving it alone is the whole
+      // point: the platform's menu is the one that can act on the selection the
+      // finger is adjusting, and this row's menu cannot.
+      return
+    }
+    if (opts.selectableText && pointIsInsideSelection(e.clientX, e.clientY)) {
       // Leave the native menu alone so its Copy still works over selected text.
       return
     }
@@ -594,6 +642,7 @@ export function attachContextMenuGesture(
     fired = false
     heldOpen = false
     swallowClick = false
+    pressYieldsToSelection = false
     releaseOpensMenu = false
     disarmRelease()
     disarmScrollCancel()
@@ -601,37 +650,4 @@ export function attachContextMenuGesture(
     el.removeAttribute(GESTURE_ATTR)
     releaseHoldOverMenu()
   }
-}
-
-/**
- * Whether a right-click landed on live selected text.
- *
- * The test is the click POINT against the selection's rects, not the click target
- * against the selected nodes. `Selection.containsNode` answers the wrong question
- * here: a row that holds the selection is not itself contained by it, so a
- * right-click over a highlighted word inside that row would read as "outside" and
- * lose the native Copy. Rects also give the correct answer for the reverse case --
- * a click on the row's padding, next to the highlight, opens the app menu.
- */
-function clickIsInsideSelection(e: MouseEvent): boolean {
-  const selection = window.getSelection()
-  if (!selection || selection.isCollapsed || selection.rangeCount === 0)
-    return false
-  for (let i = 0; i < selection.rangeCount; i++) {
-    // jsdom does no layout and does not implement `Range.getClientRects` at all, so
-    // this stays optional. There, and anywhere else without geometry, the predicate
-    // reports "not on the selection" and the app menu opens -- the same answer a
-    // real browser gives for an empty rect list.
-    const rects = selection.getRangeAt(i).getClientRects?.()
-    if (!rects)
-      continue
-    for (let r = 0; r < rects.length; r++) {
-      const rect = rects[r]
-      if (e.clientX >= rect.left && e.clientX <= rect.right
-        && e.clientY >= rect.top && e.clientY <= rect.bottom) {
-        return true
-      }
-    }
-  }
-  return false
 }

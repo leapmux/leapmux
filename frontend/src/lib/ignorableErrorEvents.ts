@@ -93,6 +93,8 @@ export function isMutedErrorEvent(event: Event): boolean {
 export function ignorableErrorReason(event: Event): IgnorableErrorReason | undefined {
   if (isResizeObserverLoopError((event as Partial<ErrorEvent>).message))
     return 'resize-observer-loop'
+  if ('reason' in event && isResizeObserverLoopError((event as PromiseRejectionEvent).reason))
+    return 'resize-observer-loop'
   if (isMutedErrorEvent(event))
     return 'muted'
   return undefined

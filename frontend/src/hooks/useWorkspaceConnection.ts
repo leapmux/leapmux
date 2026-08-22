@@ -36,6 +36,10 @@ import {
 import { useWatchEventsStreams } from './useWatchEventsStreams'
 import { buildWatchPlans } from './watchPlan'
 
+function warnChatHistoryLoadFailed(err: unknown): void {
+  showWarnToastUnlessDisconnected('Failed to load chat history', err)
+}
+
 /**
  * Which tabs a worker going offline affects.
  *
@@ -439,9 +443,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         chatStore.setCatchingUp(agentId, true)
         const resumeSeq = untrack(() => chatStore.getResumeAfterSeq(agentId))
         resumeTails.set(agentId, resumeSeq)
-        void chatStore.loadInitialMessages(workerId, agentId).catch((err) => {
-          showWarnToastUnlessDisconnected('Failed to load chat history', err)
-        })
+        void chatStore.loadInitialMessages(workerId, agentId).catch(warnChatHistoryLoadFailed)
         void chatStore.loadMessageMarks(workerId, agentId, abortSignalFor(workerId))
       }
     },
@@ -491,9 +493,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     const agent = view.getAgentTab(tabId)
     if (!agent || !agent.workerId)
       return
-    chatStore.loadInitialMessages(agent.workerId, tabId).catch((err) => {
-      showWarnToastUnlessDisconnected('Failed to load chat history', err)
-    })
+    chatStore.loadInitialMessages(agent.workerId, tabId).catch(warnChatHistoryLoadFailed)
     void chatStore.loadMessageMarks(agent.workerId, tabId, abortSignalFor(agent.workerId))
   })
 
@@ -507,7 +507,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     getLastSeq: id => chatStore.getLastSeq(id),
     isFetchingNewer: id => chatStore.isFetchingNewer(id),
     catchUpToTail: (workerId, agentId, afterSeq) => {
-      void chatStore.catchUpToTail(workerId, agentId, afterSeq, abortSignalFor(workerId))
+      void chatStore.catchUpToTail(workerId, agentId, afterSeq, abortSignalFor(workerId)).catch(warnChatHistoryLoadFailed)
     },
     resumeDeferredTailFill: (workerId, agentId) => {
       void chatStore.resumeDeferredTailFill(workerId, agentId, abortSignalFor(workerId))

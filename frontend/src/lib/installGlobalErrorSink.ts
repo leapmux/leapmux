@@ -1,4 +1,4 @@
-import { ignorableErrorReason, isResizeObserverLoopError } from './ignorableErrorEvents'
+import { ignorableErrorReason } from './ignorableErrorEvents'
 import { monotonicNow } from './monotonicNow'
 
 /**
@@ -110,9 +110,9 @@ export function installGlobalErrorSink(opts: GlobalErrorSinkOpts): () => void {
     // about an app that is working (iOS Safari does exactly that when the share
     // sheet resizes and snapshots the page). Diagnosis loses nothing -- this
     // sink is passive, so the browser still reports the unsanitized error to
-    // the console. The first check covers a REJECTION whose reason is the RO
-    // message, which has no `message` field for the second one to read.
-    if (isResizeObserverLoopError(cause) || ignorableErrorReason(event) !== undefined)
+    // the console. `ignorableErrorReason` covers both the error-event message
+    // and a rejection whose `reason` is the same ResizeObserver string.
+    if (ignorableErrorReason(event) !== undefined)
       return
     if (shouldReport(cause instanceof Error ? cause.message : String(cause)))
       opts.report(FALLBACK_MESSAGE, cause)

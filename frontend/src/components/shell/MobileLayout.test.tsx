@@ -9,9 +9,7 @@ import * as styles from './AppShell.css'
 import { createMobileOverlayState, MobileLayout, nextOverlayForSwipe } from './MobileLayout'
 
 interface RenderOpts {
-  leftSidebarOpen?: boolean
-  rightSidebarOpen?: boolean
-  sheetOpen?: boolean
+  overlay?: MobileOverlay
   tabBarHidden?: boolean
   onSwipe?: (direction: SwipeDirection) => void
 }
@@ -19,9 +17,7 @@ interface RenderOpts {
 function renderMobile(opts: RenderOpts = {}, onCloseSheet: () => void = () => {}) {
   return render(() => (
     <MobileLayout
-      leftSidebarOpen={opts.leftSidebarOpen ?? false}
-      rightSidebarOpen={opts.rightSidebarOpen ?? false}
-      sheetOpen={opts.sheetOpen ?? false}
+      overlay={opts.overlay ?? 'none'}
       tabBarHidden={opts.tabBarHidden ?? false}
       onCloseSheet={onCloseSheet}
       onSwipe={opts.onSwipe ?? (() => {})}
@@ -66,22 +62,24 @@ describe('mobileLayout', () => {
     expect(rightPanel.classList.contains(styles.mobileSidebarOpen)).toBe(false)
   })
 
-  it('applies the open class to the left sidebar when leftSidebarOpen is true', () => {
-    renderMobile({ leftSidebarOpen: true })
+  it('applies the open class to the left sidebar when overlay is left', () => {
+    renderMobile({ overlay: 'left' })
 
     const leftPanel = findSidebarPanel('left')
     const rightPanel = findSidebarPanel('right')
     expect(leftPanel.classList.contains(styles.mobileSidebarOpen)).toBe(true)
     expect(rightPanel.classList.contains(styles.mobileSidebarOpen)).toBe(false)
+    expect(screen.getByTestId('tab-sheet-overlay')).not.toHaveClass(styles.sheetOverlayOpen)
   })
 
-  it('applies the open class to the right sidebar when rightSidebarOpen is true', () => {
-    renderMobile({ rightSidebarOpen: true })
+  it('applies the open class to the right sidebar when overlay is right', () => {
+    renderMobile({ overlay: 'right' })
 
     const leftPanel = findSidebarPanel('left')
     const rightPanel = findSidebarPanel('right')
     expect(leftPanel.classList.contains(styles.mobileSidebarOpen)).toBe(false)
     expect(rightPanel.classList.contains(styles.mobileSidebarOpen)).toBe(true)
+    expect(screen.getByTestId('tab-sheet-overlay')).not.toHaveClass(styles.sheetOverlayOpen)
   })
 
   it('renders the sheet scrim inert while closed and active when the sheet is open', () => {
@@ -89,8 +87,10 @@ describe('mobileLayout', () => {
     expect(screen.getByTestId('tab-sheet-overlay')).not.toHaveClass(styles.sheetOverlayOpen)
     closed.unmount()
 
-    renderMobile({ sheetOpen: true })
+    renderMobile({ overlay: 'sheet' })
     expect(screen.getByTestId('tab-sheet-overlay')).toHaveClass(styles.sheetOverlayOpen)
+    expect(findSidebarPanel('left').classList.contains(styles.mobileSidebarOpen)).toBe(false)
+    expect(findSidebarPanel('right').classList.contains(styles.mobileSidebarOpen)).toBe(false)
   })
 
   // With the soft keyboard up the bar carries nothing reachable, and the body
@@ -109,7 +109,7 @@ describe('mobileLayout', () => {
 
   it('a tap on the sheet scrim asks the overlay owner to close the sheet', () => {
     const onCloseSheet = vi.fn()
-    renderMobile({ sheetOpen: true }, onCloseSheet)
+    renderMobile({ overlay: 'sheet' }, onCloseSheet)
 
     fireEvent.click(screen.getByTestId('tab-sheet-overlay'))
 
@@ -129,7 +129,7 @@ describe('mobileLayout', () => {
 
   it('reports a swipe across an open drawer', () => {
     const onSwipe = vi.fn()
-    renderMobile({ leftSidebarOpen: true, onSwipe })
+    renderMobile({ overlay: 'left', onSwipe })
 
     swipeAcross(screen.getByTestId('sidebar-left'), -SWIPE_MIN_PX - 40)
     expect(onSwipe).toHaveBeenCalledExactlyOnceWith('left')

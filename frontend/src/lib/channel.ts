@@ -565,7 +565,7 @@ export class ChannelManager {
     ch.state = 'closed'
     this.session.abortRekey(ch)
     const termination = opts?.streamTermination ?? 'end'
-    const reason = opts?.reason ?? new ChannelError('client', 'channel closed')
+    const reason = opts?.reason ?? new ChannelError('client', 'channel closed', { disconnected: true })
     this.rpc.drainChannel(ch, reason, termination)
 
     this.pool.delete(channelId)

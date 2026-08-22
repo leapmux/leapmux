@@ -10,6 +10,7 @@ interface MockVisualViewport {
   height: number
   width: number
   offsetTop: number
+  scale: number
   pageTop: number
   listeners: Map<string, Set<(ev: Event) => void>>
   addEventListener: (type: string, fn: (ev: Event) => void) => void
@@ -18,12 +19,13 @@ interface MockVisualViewport {
   dispatchScroll: () => void
 }
 
-function makeMockVisualViewport(height: number, offsetTop = 0): MockVisualViewport {
+function makeMockVisualViewport(height: number, offsetTop = 0, scale = 1): MockVisualViewport {
   const listeners = new Map<string, Set<(ev: Event) => void>>()
   return {
     height,
     width: 390,
     offsetTop,
+    scale,
     pageTop: 0,
     listeners,
     addEventListener(type, fn) {
@@ -244,11 +246,14 @@ describe('useVisualViewportInset', () => {
 
       // The user taps the composer. Focus lands FIRST and the keyboard has not
       // opened yet, which is also what a programmatic focus looks like -- so
-      // nothing may change until the viewport actually loses height.
+      // nothing may change until the viewport actually loses height. The
+      // residual keyboard-down shift is withheld while an editable is focused:
+      // offsetTop grows during the raise, and the keyboard-down sign would
+      // double-shift the composer.
       const input = focusInput()
       await flush()
       expect(document.documentElement.style.getPropertyValue('--vvh')).toBe('')
-      expect(document.documentElement.style.getPropertyValue('--vv-shift')).toBe('-60px')
+      expect(document.documentElement.style.getPropertyValue('--vv-shift')).toBe('')
 
       // Now the keyboard opens: the viewport shrinks and iOS scrolls it down.
       vv.height = 380
@@ -297,7 +302,9 @@ describe('useVisualViewportInset', () => {
 
   // Browser chrome resizes the visual viewport too -- iOS Safari collapsing
   // its toolbar moves ~50-100px -- and taking that for a keyboard would hide
-  // the tab bar mid-scroll.
+  // the tab bar mid-scroll. That shrink becomes the new no-keyboard baseline,
+  // so a later keyboard is measured from the chrome-collapsed height, not from
+  // the height at mount.
   it('ignores a shrink too small to be a keyboard', async () => {
     Object.defineProperty(window, 'innerHeight', { value: 800, configurable: true })
     const vv = makeMockVisualViewport(800)
@@ -311,7 +318,14 @@ describe('useVisualViewportInset', () => {
       await flush()
       expect(result()).toBe(false)
 
-      vv.height = 680 // 120px: at the threshold
+      // The 100px became the new baseline, so 20px more is still chrome.
+      vv.height = 680
+      vv.dispatchResize()
+      await flush()
+      expect(result()).toBe(false)
+
+      // 120px below the latest no-keyboard height (680) is a keyboard.
+      vv.height = 560
       vv.dispatchResize()
       await flush()
       expect(result()).toBe(true)
@@ -321,12 +335,29 @@ describe('useVisualViewportInset', () => {
     }
   })
 
-  // On a desktop these values track a pinch-zoom, where resizing or
-  // translating the body fights the user's own gesture.
-  it('publishes neither property on a fine-pointer device', async () => {
-    stubPointer('fine') // afterEach restores; see the beforeEach note
+  it('treats a 120px shrink from the no-keyboard height as a keyboard', async () => {
     Object.defineProperty(window, 'innerHeight', { value: 800, configurable: true })
-    const vv = makeMockVisualViewport(380, 120)
+    const vv = makeMockVisualViewport(800)
+    Object.defineProperty(window, 'visualViewport', { value: vv, configurable: true })
+
+    const { result, cleanup } = renderHook(() => useVisualViewportInset())
+    try {
+      focusInput()
+      vv.height = 680
+      vv.dispatchResize()
+      await flush()
+      expect(result()).toBe(true)
+    }
+    finally {
+      cleanup()
+    }
+  })
+
+  // Pinch-zoom moves visualViewport.scale away from 1. Resizing or translating
+  // the body would fight the user's own gesture.
+  it('publishes neither property while the visual viewport is pinch-zoomed', async () => {
+    Object.defineProperty(window, 'innerHeight', { value: 800, configurable: true })
+    const vv = makeMockVisualViewport(380, 120, 2)
     Object.defineProperty(window, 'visualViewport', { value: vv, configurable: true })
 
     const { cleanup } = renderHook(() => useVisualViewportInset())
@@ -338,6 +369,26 @@ describe('useVisualViewportInset', () => {
 
       expect(document.documentElement.style.getPropertyValue('--vv-shift')).toBe('')
       expect(document.documentElement.style.getPropertyValue('--vvh')).toBe('')
+    }
+    finally {
+      cleanup()
+    }
+  })
+
+  // An iPad with a trackpad reports (pointer: fine) and still raises a
+  // software keyboard. The shrink is the measurement; the pointer type is not.
+  it('publishes the keyboard-up pair on a fine-pointer device when the viewport shrinks', async () => {
+    stubPointer('fine')
+    Object.defineProperty(window, 'innerHeight', { value: 800, configurable: true })
+    const vv = makeMockVisualViewport(800)
+    Object.defineProperty(window, 'visualViewport', { value: vv, configurable: true })
+
+    const { result, cleanup } = renderHook(() => useVisualViewportInset())
+    try {
+      focusInput()
+      await openKeyboard(vv)
+      expect(result()).toBe(true)
+      expect(document.documentElement.style.getPropertyValue('--vvh')).toBe('380px')
     }
     finally {
       cleanup()
@@ -386,8 +437,13 @@ describe('useVisualViewportInset', () => {
       await openKeyboard(vv)
       expect(isSoftKeyboardVisible()).toBe(true)
 
+      // Blur while the viewport is still shrunken: the keyboard has not
+      // finished leaving, so the measured state stays up.
       input.blur()
       await flush()
+      expect(isSoftKeyboardVisible()).toBe(true)
+
+      await openKeyboard(vv, 800)
       expect(isSoftKeyboardVisible()).toBe(false)
     }
     finally {
@@ -410,28 +466,6 @@ describe('useVisualViewportInset', () => {
     expect(isSoftKeyboardVisible()).toBe(false)
   })
 
-  // A fine pointer has no keyboard to take screen space, so neither focus nor
-  // a resize may hide the bar there.
-  it('never reports the soft keyboard as up on a fine-pointer device', async () => {
-    stubPointer('fine')
-    Object.defineProperty(window, 'innerHeight', { value: 800, configurable: true })
-    const vv = makeMockVisualViewport(800)
-    Object.defineProperty(window, 'visualViewport', { value: vv, configurable: true })
-
-    const { result, cleanup } = renderHook(() => useVisualViewportInset())
-    try {
-      focusInput()
-      await openKeyboard(vv)
-      expect(result()).toBe(false)
-    }
-    finally {
-      cleanup()
-    }
-  })
-
-  // A host with no media queries at all still gets the correction: it fires
-  // only on a non-zero offsetTop, and refusing it outright would drop the iOS
-  // mitigation wherever `matchMedia` is missing.
   it('publishes --vv-shift when the host implements no matchMedia', () => {
     delete (window as unknown as { matchMedia?: unknown }).matchMedia
     Object.defineProperty(window, 'innerHeight', { value: 800, configurable: true })
@@ -447,28 +481,74 @@ describe('useVisualViewportInset', () => {
     }
   })
 
-  it('publishes --vvh only while an editable is focused', async () => {
+  it('keeps --vvh after blur until the viewport recovers', async () => {
     Object.defineProperty(window, 'innerHeight', { value: 800, configurable: true })
     const vv = makeMockVisualViewport(800)
     Object.defineProperty(window, 'visualViewport', { value: vv, configurable: true })
 
     const { cleanup } = renderHook(() => useVisualViewportInset())
     try {
-      // No focus yet → unset.
       expect(document.documentElement.style.getPropertyValue('--vvh')).toBe('')
 
       const input = focusInput()
       await openKeyboard(vv)
       expect(document.documentElement.style.getPropertyValue('--vvh')).toBe('380px')
 
-      // Blur the editable. jsdom's blur() synchronously dispatches a
-      // bubbling focusout and updates document.activeElement to the
-      // body. The hook's focusout handler defers the editableFocused
-      // flip to a microtask so a Tab-key transition between two
-      // editables doesn't flicker. The property clears on the blur alone,
-      // before the keyboard has finished animating away.
+      // Blur while the keyboard is still covering the screen: the pair stays,
+      // so the body cannot jump to 100dvh and invert --vv-shift mid-dismiss.
       input.blur()
       await flush()
+      expect(document.documentElement.style.getPropertyValue('--vvh')).toBe('380px')
+
+      vv.height = 800
+      vv.dispatchResize()
+      await flush()
+      expect(document.documentElement.style.getPropertyValue('--vvh')).toBe('')
+    }
+    finally {
+      cleanup()
+    }
+  })
+
+  it('does not treat a rotation while the composer is focused as a keyboard', async () => {
+    Object.defineProperty(window, 'innerHeight', { value: 800, configurable: true })
+    Object.defineProperty(window, 'innerWidth', { value: 390, configurable: true })
+    const vv = makeMockVisualViewport(800)
+    Object.defineProperty(window, 'visualViewport', { value: vv, configurable: true })
+
+    const { result, cleanup } = renderHook(() => useVisualViewportInset())
+    try {
+      focusInput()
+      await flush()
+      expect(result()).toBe(false)
+
+      Object.defineProperty(window, 'innerWidth', { value: 844, configurable: true })
+      vv.height = 390
+      vv.dispatchResize()
+      await flush()
+
+      expect(result()).toBe(false)
+      expect(document.documentElement.style.getPropertyValue('--vvh')).toBe('')
+    }
+    finally {
+      cleanup()
+    }
+  })
+
+  it('does not treat a focused checkbox as a keyboard host', async () => {
+    Object.defineProperty(window, 'innerHeight', { value: 800, configurable: true })
+    const vv = makeMockVisualViewport(800)
+    Object.defineProperty(window, 'visualViewport', { value: vv, configurable: true })
+
+    const { result, cleanup } = renderHook(() => useVisualViewportInset())
+    try {
+      const box = document.createElement('input')
+      box.type = 'checkbox'
+      document.body.appendChild(box)
+      box.focus()
+      box.dispatchEvent(new FocusEvent('focusin', { bubbles: true }))
+      await openKeyboard(vv)
+      expect(result()).toBe(false)
       expect(document.documentElement.style.getPropertyValue('--vvh')).toBe('')
     }
     finally {
@@ -495,6 +575,8 @@ describe('useVisualViewportInset', () => {
 
         editor.blur()
         await flush()
+        expect(document.documentElement.style.getPropertyValue('--vvh')).toBe('380px')
+        await openKeyboard(vv, 800)
         expect(document.documentElement.style.getPropertyValue('--vvh')).toBe('')
       }
       finally {

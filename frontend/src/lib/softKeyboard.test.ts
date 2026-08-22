@@ -35,10 +35,14 @@ describe('isSoftKeyboardTarget', () => {
     expect(isSoftKeyboardTarget(off)).toBe(false)
   })
 
-  // A SELECT opens a picker, not a keyboard, which is the one difference from
-  // `isTypingElement`.
-  it('does not match a select', () => {
+  it('does not match a select, a checkbox, or a button input', () => {
     expect(isSoftKeyboardTarget(document.createElement('select'))).toBe(false)
+    const checkbox = document.createElement('input')
+    checkbox.type = 'checkbox'
+    expect(isSoftKeyboardTarget(checkbox)).toBe(false)
+    const button = document.createElement('input')
+    button.type = 'button'
+    expect(isSoftKeyboardTarget(button)).toBe(false)
   })
 })
 

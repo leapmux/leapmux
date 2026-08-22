@@ -7,6 +7,7 @@ import { calcPopoverPosition } from '~/lib/popoverPosition'
 import { popoverCard } from '~/styles/popover.css'
 import { clippedText, menuItemContent, menuItemShortcut } from '~/styles/shared.css'
 import { attachContextMenuGesture, holdIsOverMenu, pressAnchorRect } from './contextMenuGesture'
+import { dismissActiveTooltip } from './Tooltip'
 
 /**
  * Marks a dropdown's trigger element. An enclosing popover's dismiss handler
@@ -63,13 +64,30 @@ const TYPE_AHEAD_RESET_MS = 700
  * @returns whether the menu opened in manual mode, so the caller can arm the
  * dismissal that goes with it.
  */
+let swappingHoldMode = false
+
 function showMenuPopover(popover: HTMLElement): boolean {
+  dismissActiveTooltip()
   const manual = holdIsOverMenu()
   // The attribute can only be swapped while the popover is hidden -- changing
   // it on a showing one hides it -- so it brackets the show here and the close
   // in `handleToggle`. Every other way of opening this menu keeps `auto`.
-  if (manual)
+  if (manual) {
+    if (popover.matches(':popover-open') && popover.getAttribute('popover') !== 'manual') {
+      // jsdom (and some engines) dispatch `toggle` synchronously from
+      // hidePopover. That close must not wipe the press we are about to
+      // re-open under, or the kebab's element-anchor wins the next paint.
+      swappingHoldMode = true
+      try {
+        popover.hidePopover()
+      }
+      finally {
+        swappingHoldMode = false
+      }
+    }
     popover.setAttribute('popover', 'manual')
+    popover.setAttribute('data-ctx-hold-inert', '')
+  }
   popover.showPopover()
   return manual
 }
@@ -533,6 +551,8 @@ export function DropdownMenu(props: DropdownMenuProps) {
   const armPressDismiss = () => {
     disarmPressDismiss?.()
     const onOutsidePress = (e: Event) => {
+      if (holdIsOverMenu())
+        return
       if (!popoverEl?.matches(':popover-open'))
         return
       if (e.composedPath().includes(popoverEl))
@@ -553,6 +573,10 @@ export function DropdownMenu(props: DropdownMenuProps) {
     // a plain Event without the ToggleEvent shape — checking `:popover-open`
     // works in both environments.
     const opening = popoverEl?.matches(':popover-open') ?? false
+    // A hold that finds an already-open kebab menu hides it only to swap
+    // `popover="auto"` to `manual`. That hide is not a user close.
+    if (!opening && swappingHoldMode)
+      return
     setIsOpen(opening)
 
     if (opening) {
@@ -590,6 +614,8 @@ export function DropdownMenu(props: DropdownMenuProps) {
       // Deferred one frame, because the popover is not yet visible when
       // `toggle` fires and `focus()` on a hidden element does nothing.
       requestAnimationFrame(() => {
+        if (holdIsOverMenu())
+          return
         if (popoverEl?.matches(':popover-open') && !popoverEl.contains(document.activeElement))
           popoverEl.focus({ preventScroll: true })
       })
@@ -682,29 +708,19 @@ export function DropdownMenu(props: DropdownMenuProps) {
     const detach = attachContextMenuGesture(el, {
       onOpen: (press) => {
         setPressAnchor(press)
-        if (popoverEl?.matches(':popover-open')) {
-          // Already up from the kebab, or from a right-click on another row that
-          // shares this menu: re-point it at the new press.
+        if (!popoverEl)
+          return
+        if (popoverEl.matches(':popover-open') && !holdIsOverMenu()) {
           reposition()
+          return
         }
-        else if (popoverEl) {
-          // Manual, and dismissed by hand, whenever this menu appears under a
-          // finger that is still down -- see `showMenuPopover`.
-          if (showMenuPopover(popoverEl))
-            armPressDismiss()
-          // Position synchronously, before the browser paints this frame, so the
-          // popover never appears at the UA-default position and then jumps. The
-          // content is already in the DOM (rendered before this effect), so it
-          // measures at its real size here. The rAF reposition in handleToggle + the
-          // ResizeObserver then refine it for any late layout.
-          reposition()
-          // `showPopover` queues the `toggle` event as a task, and a menu that
-          // gates content on `onToggle` (FileActionsMenu's info block) has not
-          // rendered it yet, so the measurement above saw a shorter popover.
-          // Re-measure one task later, after that event and its render, before
-          // any paint can show the miss.
-          setTimeout(reposition, 0)
-        }
+        if (showMenuPopover(popoverEl))
+          armPressDismiss()
+        reposition()
+        setTimeout(reposition, 0)
+      },
+      onCancel: () => {
+        popoverEl?.hidePopover()
       },
     })
     onCleanup(detach)

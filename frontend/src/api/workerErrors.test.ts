@@ -108,7 +108,8 @@ describe('isdisconnecterror', () => {
   it('matches every transport ChannelError, whichever leg produced it', () => {
     expect(isDisconnectError(new ChannelError('transport', 'channel disconnected'))).toBe(true)
     expect(isDisconnectError(new ChannelError('transport', 'channel closed by server'))).toBe(true)
-    expect(isDisconnectError(new ChannelError('transport', 'cannot send channel message: WebSocket not open'))).toBe(true)
+    expect(isDisconnectError(new ChannelError('transport', 'session key past hard ceiling', { disconnected: false }))).toBe(false)
+    expect(isDisconnectError(new ChannelError('transport', 'open channel: hub returned an empty authenticated user id', { disconnected: false }))).toBe(false)
   })
 
   // The pair the user actually saw: one drop produced "channel disconnected"
@@ -132,8 +133,12 @@ describe('isdisconnecterror', () => {
   })
 
   // The hub leg is Connect HTTP, and Unavailable is its "nothing answered".
-  it('matches an Unavailable from the hub leg and no other connect code', () => {
-    expect(isDisconnectError(new ConnectError('hub is down', Code.Unavailable))).toBe(true)
+  it('matches a tagged worker-unreachable Unavailable and no other connect code', () => {
+    const tagged = new ConnectError('worker is offline', Code.Unavailable, {
+      'leapmux-worker-unreachable': '1',
+    })
+    expect(isDisconnectError(tagged)).toBe(true)
+    expect(isDisconnectError(new ConnectError('502 from the edge', Code.Unavailable))).toBe(false)
     expect(isDisconnectError(new ConnectError('worker gone', Code.NotFound))).toBe(false)
     expect(isDisconnectError(new ConnectError('log in again', Code.Unauthenticated))).toBe(false)
     expect(isDisconnectError(new ConnectError('not yours', Code.PermissionDenied))).toBe(false)

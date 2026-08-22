@@ -9,9 +9,8 @@ import { isSoftKeyboardTarget, setSoftKeyboardVisible } from '~/lib/softKeyboard
  * standalone PWA alike):
  *
  *   --vvh        `visualViewport.height` (px) — the SIZE of the region
- *                iOS actually shows. Published while an editable is
- *                focused, which is to say while the keyboard is up.
- *                Body height consumes it as
+ *                iOS actually shows. Published while the on-screen
+ *                keyboard is up. Body height consumes it as
  *                `height: var(--vvh, 100dvh)`, because on iOS `dvh`
  *                does NOT shrink for the on-screen keyboard: WebKit
  *                moves part of the viewport out of sight instead of
@@ -35,6 +34,11 @@ import { isSoftKeyboardTarget, setSoftKeyboardVisible } from '~/lib/softKeyboard
  *                  Keyboard DOWN: iOS 26 WebKit leaves a residual
  *                  `offsetTop` it never returns to 0 after the keyboard
  *                  dismisses (FB19889436). Correction: `-offsetTop`.
+ *                  Never published while an editable is focused: during
+ *                  the raise, `offsetTop` grows before the height has
+ *                  dropped enough to count as a keyboard, and the
+ *                  keyboard-down sign on top of WebKit's own translate
+ *                  would double-shift the composer.
  *
  * THE KEYBOARD-UP PAIR SHIPS TOGETHER OR NOT AT ALL. The shift alone
  * runs away: with the body still `100dvh` it is taller than the visible
@@ -47,10 +51,10 @@ import { isSoftKeyboardTarget, setSoftKeyboardVisible } from '~/lib/softKeyboard
  * edge, and iOS has nothing left to scroll into view, which is what ends
  * the loop.
  *
- * Both are published on a SOFT-KEYBOARD device only, which
- * `(pointer: coarse)` identifies. On a desktop these same values track
- * a pinch-zoom, where resizing or translating the body fights the
- * user's own gesture.
+ * Pinch-zoom is skipped (`visualViewport.scale` away from 1): resizing
+ * or translating the body fights the user's own gesture. A rotation or
+ * split-view resize is not a keyboard: `window.innerWidth` changing
+ * retakes the no-keyboard baseline before the shrink is measured.
  *
  * RETURNS that same keyboard-is-up condition as a signal, for the layout
  * decisions the properties above cannot express. `AppShell` hides the
@@ -59,13 +63,16 @@ import { isSoftKeyboardTarget, setSoftKeyboardVisible } from '~/lib/softKeyboard
  * just moved makes it re-place itself in view on every focus and blur.
  * Hiding gives its height to the transcript instead.
  *
- * KEYBOARD-UP IS FOCUS **AND** A SHRUNK VIEWPORT, never focus alone.
- * `MarkdownEditor` focuses the composer whenever it is enabled, so a
- * chat that merely opens holds focus with no keyboard anywhere — iOS
- * does not raise one for a programmatic focus outside a user gesture.
- * Keying on focus alone therefore hid the tab bar the moment a chat
- * opened, and gave the body a height for a keyboard that was not there.
- * The shrink is measured against `baselineHeight` below, not against
+ * KEYBOARD-UP IS A SHRUNK VIEWPORT, never focus alone, and it STAYS UP
+ * after blur until the height recovers. `MarkdownEditor` focuses the
+ * composer whenever it is enabled, so a chat that merely opens holds
+ * focus with no keyboard anywhere — iOS does not raise one for a
+ * programmatic focus outside a user gesture. Keying on focus alone
+ * therefore hid the tab bar the moment a chat opened. Requiring focus
+ * to KEEP the keyboard-up pair, though, inverted `--vv-shift` and
+ * cleared `--vvh` the instant a transcript tap blurred the composer,
+ * while the keyboard was still covering the screen. The shrink is
+ * measured against `baselineHeight` below, not against
  * `window.innerHeight`: in the iOS standalone PWA `innerHeight` shrinks
  * alongside `visualViewport.height`, so that difference is always 0
  * there. Listeners are rAF-coalesced.
@@ -80,17 +87,18 @@ import { isSoftKeyboardTarget, setSoftKeyboardVisible } from '~/lib/softKeyboard
  * and mistaking that for a keyboard would hide the tab bar mid-scroll.
  */
 const KEYBOARD_MIN_INSET_PX = 120
-/**
- * The soft-keyboard test, or undefined where `matchMedia` is absent
- * (jsdom, an exotic host). Absent reads as "correct anyway": the
- * correction fires only on a non-zero `offsetTop`, and refusing it
- * outright would drop the iOS mitigation on any host that reports no
- * media queries.
- */
-function coarsePointerQuery(): MediaQueryList | undefined {
-  return typeof window.matchMedia === 'function'
-    ? window.matchMedia('(pointer: coarse)')
-    : undefined
+
+/** Pinch-zoom slop: `scale` is 1 when there is no zoom. */
+const ZOOM_SCALE_SLOP = 0.01
+
+function writeRootVar(root: HTMLElement, name: string, next: string, last: string): string {
+  if (next === last)
+    return last
+  if (next)
+    root.style.setProperty(name, next)
+  else
+    root.style.removeProperty(name)
+  return next
 }
 
 /** @returns whether the soft keyboard is up, for layout that must react to it. */
@@ -100,6 +108,7 @@ export function useVisualViewportInset(): Accessor<boolean> {
     return softKeyboardUp
 
   onMount(() => {
+    let live = true
     let editableFocused = isSoftKeyboardTarget(document.activeElement)
     // Skip redundant DOM writes: iOS Safari fires `visualViewport.scroll`
     // continuously during address-bar / keyboard animation, and most
@@ -108,63 +117,60 @@ export function useVisualViewportInset(): Accessor<boolean> {
     let lastShift = ''
     // The visible height with no keyboard, which every shrink is measured
     // against. Seeded at mount because a page that just loaded cannot have a
-    // keyboard up, then re-taken on every tick with nothing focused, so it
+    // keyboard up, then re-taken on every tick while the keyboard is down, so it
     // follows a rotation or a browser-chrome change while it can.
     let baselineHeight = window.visualViewport?.height ?? 0
-    // Held rather than re-queried per frame: a MediaQueryList tracks the
-    // device live, so this stays current when a paired mouse flips an
-    // iPad to a fine pointer.
-    const coarsePointer = coarsePointerQuery()
+    let lastInnerWidth = window.innerWidth
+    // Hysteresis: once the keyboard is up it stays up across a blur until the
+    // viewport recovers, so a dismiss animation cannot invert the CSS pair.
+    let keyboardWasUp = false
 
     const apply = () => {
       const root = document.documentElement
       const vv = window.visualViewport
-      const softKeyboard = coarsePointer?.matches ?? true
       const height = vv?.height ?? 0
-      if (!editableFocused && height > 0)
+      const scale = vv?.scale ?? 1
+      const zoomed = Math.abs(scale - 1) > ZOOM_SCALE_SLOP
+      const innerWidth = window.innerWidth
+      // A rotation or split-view resize changes the layout width. Retake the
+      // baseline BEFORE measuring the shrink, or a landscape height against a
+      // portrait baseline looks like a keyboard.
+      if (innerWidth !== lastInnerWidth) {
+        lastInnerWidth = innerWidth
+        if (height > 0)
+          baselineHeight = height
+      }
+      const inset = baselineHeight > 0 ? baselineHeight - height : 0
+      const shrunken = height > 0 && inset >= KEYBOARD_MIN_INSET_PX
+      const keyboardUp = !zoomed && shrunken && (editableFocused || keyboardWasUp)
+      keyboardWasUp = keyboardUp
+      if (!keyboardUp && height > 0)
         baselineHeight = height
-      // An editable holds focus on a device whose keyboard takes screen
-      // space, AND the viewport lost enough height to be that keyboard. Both
-      // properties below and the returned signal answer to it; see the module
-      // comment for why the focus half alone is not the keyboard.
-      const keyboardUp = editableFocused
-        && softKeyboard
-        && height > 0
-        && baselineHeight - height >= KEYBOARD_MIN_INSET_PX
       setSoftKeyboardUp(keyboardUp)
       // The same fact, for the callers that are not in the reactive graph:
       // the composer releases focus on a completed send only when a keyboard
       // is genuinely in the way. See `~/lib/softKeyboard`.
       setSoftKeyboardVisible(keyboardUp)
 
-      const nextVvh = keyboardUp && vv ? `${vv.height}px` : ''
-      if (nextVvh !== lastVvh) {
-        if (nextVvh)
-          root.style.setProperty('--vvh', nextVvh)
-        else
-          root.style.removeProperty('--vvh')
-        lastVvh = nextVvh
-      }
+      const nextVvh = keyboardUp && vv ? `${Math.round(height)}px` : ''
+      lastVvh = writeRootVar(root, '--vvh', nextVvh, lastVvh)
 
       // Sub-pixel jitter (e.g. 0.333 after a scroll) is ignored.
       const offsetTop = vv?.offsetTop ?? 0
       // See the module comment for why the two keyboard states take
       // opposite signs, and why the keyboard-up sign is only correct
       // beside the `--vvh` height above.
-      const nextShift = offsetTop > 0.5 && softKeyboard
-        ? (keyboardUp ? `${offsetTop}px` : `-${offsetTop}px`)
+      const nextShift = offsetTop > 0.5 && !zoomed
+        ? (keyboardUp ? `${offsetTop}px` : (editableFocused ? '' : `-${offsetTop}px`))
         : ''
-      if (nextShift !== lastShift) {
-        if (nextShift)
-          root.style.setProperty('--vv-shift', nextShift)
-        else
-          root.style.removeProperty('--vv-shift')
-        lastShift = nextShift
-      }
+      lastShift = writeRootVar(root, '--vv-shift', nextShift, lastShift)
     }
 
     const coalescer = createRafCoalescer<void>(apply)
-    const schedule = () => coalescer.push()
+    const schedule = () => {
+      if (live)
+        coalescer.push()
+    }
 
     const onFocusIn = (e: FocusEvent) => {
       if (isSoftKeyboardTarget(e.target as Element | null)) {
@@ -176,6 +182,8 @@ export function useVisualViewportInset(): Accessor<boolean> {
       // Wait a microtask so a focus *transition* between two editables
       // (e.g. Tab key) doesn't flicker `--vvh` off and back on.
       queueMicrotask(() => {
+        if (!live)
+          return
         if (!isSoftKeyboardTarget(document.activeElement)) {
           editableFocused = false
           schedule()
@@ -205,6 +213,7 @@ export function useVisualViewportInset(): Accessor<boolean> {
     document.addEventListener('focusout', onFocusOut)
 
     onCleanup(() => {
+      live = false
       if (vv) {
         vv.removeEventListener('resize', schedule)
         vv.removeEventListener('scroll', schedule)

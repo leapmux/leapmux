@@ -49,11 +49,11 @@ export class ChannelError extends Error {
    * There was no live link to carry the operation: the socket dropped, or the
    * channel it needed is gone.
    *
-   * True for every `transport` failure, and for the one `client` failure that
-   * reports connection state rather than a caller mistake -- see
-   * `channelNotOpenError`. It stays false for the rest of `client`, where the
-   * link is healthy and the call itself was refused (an over-size payload, an
-   * aborted call, a per-RPC timeout).
+   * True for a dropped socket or a channel that is gone, and false for a
+   * transport-shaped fault that is not a drop -- a session-key ceiling, a
+   * malformed hub reply, an identity mismatch. Those sites pass
+   * `{ disconnected: false }`. The rest of `client` stays false as well,
+   * because the link is healthy and the call itself was refused.
    *
    * The flag exists so `isDisconnectError` can answer "did the link drop?" from
    * data instead of matching on the message text, which drifts the moment

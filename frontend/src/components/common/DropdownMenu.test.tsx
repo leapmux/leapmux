@@ -2,6 +2,8 @@
 import { cleanup, fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { popoverCard } from '~/styles/popover.css'
+import { motion } from '~/styles/tokens'
+import { pointerEvent } from '~/test-support/pointer'
 import { DropdownMenu, DropdownMenuCheckableItem, DropdownMenuItemContent } from './DropdownMenu'
 
 // The jsdom popover stubs (showPopover/hidePopover/togglePopover plus the
@@ -533,6 +535,30 @@ describe('dropdownMenu contextMenuFor', () => {
       expect(popover.matches(':popover-open')).toBe(false)
     }
     finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps the press anchor when a hold swaps an already-open kebab menu to manual', () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('innerHeight', 800)
+    vi.stubGlobal('innerWidth', 1200)
+    try {
+      const { row, popover } = renderRowMenu()
+      fireEvent.click(screen.getByTestId('row-kebab'))
+      expect(popover.matches(':popover-open')).toBe(true)
+      expect(popover.getAttribute('popover')).not.toBe('manual')
+
+      row.dispatchEvent(pointerEvent('pointerdown', { x: 150, y: 108, pointerType: 'touch' }))
+      vi.advanceTimersByTime(motion.longPress)
+      vi.runAllTimers()
+
+      expect(popover.getAttribute('popover')).toBe('manual')
+      expect(popover.matches(':popover-open')).toBe(true)
+      expect(popover.style.left).toBe('150px')
+    }
+    finally {
+      vi.unstubAllGlobals()
       vi.useRealTimers()
     }
   })

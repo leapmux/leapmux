@@ -55,17 +55,19 @@ export const CONTENT_EDITABLE_SELECTOR = '[contenteditable=""], [contenteditable
  * pointer gesture wants the wide form: a press on any INPUT belongs to that
  * control.
  *
- * Each gesture composes this fragment into an `EMBEDDED_UI_SELECTOR` of its
- * own and adds what it alone declines. Those three lists must NOT merge into
- * one, and they must not push their own additions down into this fragment.
- * See ~/components/common/contextMenuGesture.ts,
- * ~/components/shell/guardedPointerSensor.ts and ~/lib/dragActivators.ts --
- * each one states the behavior that a merge would break.
+ * Each gesture composes this fragment into a selector of its own and adds
+ * what it alone declines. Those lists must NOT merge into one, and they must
+ * not push their own additions down into this fragment. See
+ * ~/components/common/contextMenuGesture.ts,
+ * ~/components/shell/guardedPointerSensor.ts, ~/lib/dragActivators.ts and
+ * ~/lib/dismissSoftKeyboardOnTap.ts -- each one states the behavior that a
+ * merge would break.
  *
- * All three lists also carry `[popover]`, and each one states that token
- * itself rather than take it from here. A single self-describing token gains
- * nothing from a name, and unlike `contenteditable` it has no second spelling
- * to get wrong -- which is the whole reason the editable fragment exists.
+ * Each of those lists also carries `[popover]`, and each one states that
+ * token itself rather than take it from here. A single self-describing token
+ * gains nothing from a name, and unlike `contenteditable` it has no second
+ * spelling to get wrong -- which is the whole reason the editable fragment
+ * exists.
  */
 export const INPUT_OR_EDITABLE_SELECTOR = `input, textarea, ${CONTENT_EDITABLE_SELECTOR}`
 
@@ -119,6 +121,24 @@ export function isTypingContext(): boolean {
 }
 
 /**
+ * Whether `el` holds free text, so an on-screen keyboard comes up for it and
+ * the platform's text substitutions have something to act on.
+ *
+ * Narrower than `isTypingElement`: a SELECT, a checkbox, a radio, a file
+ * picker, a range, and a button INPUT take no typing. The keyboard layout and
+ * `shouldDisableTextSubstitutions` must agree on this set.
+ */
+export function isTextEntryElement(el: Element | null): boolean {
+  if (!el)
+    return false
+  if (el instanceof HTMLTextAreaElement)
+    return true
+  if (el instanceof HTMLInputElement)
+    return TEXT_ENTRY_INPUT_TYPES.has(el.type.toLowerCase())
+  return isContentEditableElement(el)
+}
+
+/**
  * Whether the platform's text substitutions apply to `el`.
  *
  * Narrower than `isTypingElement`: only an element that holds free text has
@@ -126,13 +146,7 @@ export function isTypingContext(): boolean {
  * on, so a SELECT and a checkbox are out.
  */
 function shouldDisableTextSubstitutions(el: Element): el is HTMLInputElement | HTMLTextAreaElement | HTMLElement {
-  if (el instanceof HTMLTextAreaElement)
-    return true
-  if (el instanceof HTMLInputElement)
-    return TEXT_ENTRY_INPUT_TYPES.has(el.type.toLowerCase())
-  if (!(el instanceof HTMLElement))
-    return false
-  return isContentEditableElement(el)
+  return el instanceof HTMLElement && isTextEntryElement(el)
 }
 
 function applyTextSubstitutionAttrs(el: HTMLInputElement | HTMLTextAreaElement | HTMLElement) {

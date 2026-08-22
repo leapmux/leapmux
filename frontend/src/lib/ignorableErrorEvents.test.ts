@@ -95,6 +95,11 @@ describe('ignorableErrorReason', () => {
     expect(ignorableErrorReason(mutedEventFields())).toBe('muted')
   })
 
+  it('labels a ResizeObserver rejection whose reason carries no message field', () => {
+    expect(ignorableErrorReason({ reason: 'ResizeObserver loop limit exceeded' } as PromiseRejectionEvent))
+      .toBe('resize-observer-loop')
+  })
+
   it('returns undefined for a real fault', () => {
     expect(ignorableErrorReason(mutedEventFields({
       message: 'TypeError: boom',

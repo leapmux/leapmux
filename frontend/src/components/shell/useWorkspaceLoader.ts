@@ -4,7 +4,7 @@ import type { createSectionStore } from '~/stores/section.store'
 import type { createWorkspaceStore } from '~/stores/workspace.store'
 import { onMount } from 'solid-js'
 import { sectionClient, workspaceClient } from '~/api/clients'
-import { showWarnToast } from '~/components/common/Toast'
+import { showWarnToast, showWarnToastUnlessDisconnected } from '~/components/common/Toast'
 import { formatErrorMessage } from '~/lib/errors'
 import { createIdentityCache } from '~/lib/identityCache'
 
@@ -55,7 +55,7 @@ export function useWorkspaceLoader(opts: UseWorkspaceLoaderOpts) {
       // `resolveActiveWorkspace`); the toast is what tells the user their
       // sidebar is stale rather than empty.
       workspaceStore.setError(formatErrorMessage(err, 'Failed to load workspaces'))
-      showWarnToast('Failed to load workspaces', err)
+      showWarnToastUnlessDisconnected('Failed to load workspaces', err)
     }
     finally {
       if (seq === workspaceSeq) {
@@ -91,7 +91,7 @@ export function useWorkspaceLoader(opts: UseWorkspaceLoaderOpts) {
       if (seq !== sectionSeq)
         return
       sectionStore.setError(formatErrorMessage(err, 'Failed to load sections'))
-      showWarnToast('Failed to load sections', err)
+      showWarnToastUnlessDisconnected('Failed to load sections', err)
     }
     finally {
       if (seq === sectionSeq)

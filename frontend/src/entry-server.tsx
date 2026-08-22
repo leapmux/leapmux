@@ -23,9 +23,12 @@ export default createHandler(() => (
             the keyboard and the composer stays visible with no JS. Without
             it Chromium defaults to `resizes-visual`, which leaves the layout
             viewport at full height and hides the composer behind the
-            keyboard. WebKit does not implement the key yet and ignores it;
-            iOS shrinks `dvh` on its own, and `~/hooks/useVisualViewportInset`
-            corrects the displacement WebKit adds on top.
+            keyboard.             WebKit does not implement the key yet and ignores it.
+            iOS does not shrink `dvh` for the keyboard either -- WebKit
+            moves part of the viewport out of sight instead of resizing
+            it -- and `~/hooks/useVisualViewportInset` publishes
+            `--vvh` from `visualViewport.height` so the body covers the
+            visible region.
           */}
           <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
           <link rel="icon" href="/icons/leapmux-icon.ico" sizes="48x48" />

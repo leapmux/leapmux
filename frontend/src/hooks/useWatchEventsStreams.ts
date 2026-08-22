@@ -3,6 +3,7 @@ import type { WatchEventsHandle } from '~/api/workerRpc'
 import type { WatchEventsResponse, WatchRejection } from '~/generated/leapmux/v1/workspace_pb'
 import type { TabView } from '~/stores/tabView'
 import { createEffect, onCleanup } from 'solid-js'
+import { isDisconnectError } from '~/api/workerErrors'
 import { channelManager, watchEventsViaChannel } from '~/api/workerRpc'
 import { showWarnToastWithLoggedCause } from '~/components/common/Toast'
 import { WatchMode } from '~/generated/leapmux/v1/workspace_pb'
@@ -320,13 +321,14 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
       handle.onEnd(() => {
         if (s.closed)
           return
+        markWorkerOffline(workerId)
         resetForReconnect(s)
         scheduleReconnect(workerId)
       })
       handle.onError((err) => {
         if (s.closed)
           return
-        if (isTransportError(err))
+        if (isTransportError(err) || isDisconnectError(err))
           markWorkerOffline(workerId)
         else
           log.warn('[watchEvents] stream error, retrying:', err)
@@ -335,14 +337,17 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
         scheduleReconnect(workerId, err)
       })
 
-      // The link is back, so the announcement it produced is spent and the next
-      // outage must be free to announce itself.
-      outageAnnounced = false
+      // The announcement is spent only when every worker that was down has a
+      // handle again. Clearing it on the first sibling that reopens let the
+      // next redial of a still-down worker toast a second "connection lost"
+      // for the same outage.
+      if (![...streams.values()].some(other => !other.closed && other.handle === null))
+        outageAnnounced = false
       opts.onWorkerOnline(workerId, true)
     }
     catch (err) {
       log.debug('failed to open watch stream; will retry', { workerId, err })
-      if (isTransportError(err))
+      if (isTransportError(err) || isDisconnectError(err))
         markWorkerOffline(workerId)
       s.inflightPlan = null
       s.inflightKey = ''

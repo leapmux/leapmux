@@ -545,6 +545,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
           : undefined),
         createdAt: props.message.createdAt,
       }),
+      onCancel: () => contextMenu.close(),
     })
     onCleanup(detach)
   }

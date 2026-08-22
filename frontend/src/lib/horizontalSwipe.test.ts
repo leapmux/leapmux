@@ -404,6 +404,21 @@ describe('attachHorizontalSwipe', () => {
 
       expect(clicked).toHaveBeenCalledOnce()
     })
+
+    it('still swallows the click when a second finger lands after the swipe reports', () => {
+      const h = mount()
+      const clicked = vi.fn()
+      h.root.addEventListener('click', clicked)
+
+      h.row.dispatchEvent(pointerEvent('pointerdown', { x: 200, y: 300, pointerType: 'touch' }))
+      h.row.dispatchEvent(pointerEvent('pointermove', { x: 200 + SWIPE_MIN_PX + 40, y: 300, pointerType: 'touch' }))
+      expect(h.swipes).toEqual(['right'])
+
+      h.row.dispatchEvent(pointerEvent('pointerdown', { x: 100, y: 300, pointerType: 'touch', pointerId: 2, isPrimary: false }))
+      h.row.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+
+      expect(clicked).not.toHaveBeenCalled()
+    })
   })
 
   it('stops reporting once detached', () => {

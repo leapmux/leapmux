@@ -92,6 +92,15 @@ describe('installGlobalErrorSink', () => {
     expect(report).not.toHaveBeenCalled()
   })
 
+  it('ignores a ResizeObserver loop rejected as an unhandled promise', () => {
+    const report = vi.fn()
+    const t = install(report)
+
+    t.fire('unhandledrejection', { reason: 'ResizeObserver loop limit exceeded' })
+
+    expect(report).not.toHaveBeenCalled()
+  })
+
   // iOS Safari mutes an error to "Script error." when the share sheet resizes
   // and snapshots the page. Every field the toast could report is already
   // stripped, so reporting it puts "Something went wrong" in front of a user

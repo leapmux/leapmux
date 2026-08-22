@@ -1,4 +1,4 @@
-import { isContentEditableElement } from './textInputBehavior'
+import { isTextEntryElement } from './textInputBehavior'
 
 /**
  * The soft-keyboard facts, shared by the layout that reacts to the keyboard
@@ -12,22 +12,11 @@ import { isContentEditableElement } from './textInputBehavior'
 /**
  * Whether the on-screen keyboard comes up for this element.
  *
- * Not `isTypingElement`, which also counts a SELECT. That one asks whether the
- * user is typing, so a SELECT belongs in it and not in this set.
+ * The same set as `isTextEntryElement`: a SELECT and a non-text INPUT open a
+ * picker or a control, not a keyboard.
  */
 export function isSoftKeyboardTarget(el: Element | null): boolean {
-  if (!el)
-    return false
-  const tag = el.tagName
-  if (tag === 'INPUT' || tag === 'TEXTAREA')
-    return true
-  // The property half of `isContentEditableElement` is browser-only: jsdom
-  // implements neither `isContentEditable` nor `contentEditable`, so it
-  // answers false there for every editable element. The attribute half is
-  // what makes this branch reachable under the unit tests, and a browser
-  // needs the property half for an element that INHERITS editing from an
-  // editable ancestor. Both halves are load-bearing; neither one alone is.
-  return isContentEditableElement(el)
+  return isTextEntryElement(el)
 }
 
 /**

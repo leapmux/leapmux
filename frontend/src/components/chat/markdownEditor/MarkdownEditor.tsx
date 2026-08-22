@@ -255,10 +255,16 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
    */
   const applySendFocus = (hadFocus: boolean, sent: boolean) => {
     const action = decideSendFocus({ hadFocus, sent, softKeyboardVisible: isSoftKeyboardVisible() })
-    if (action === 'restore')
-      focusEditor()
-    else if (action === 'release')
+    if (action === 'restore') {
+      // The editor may still hold the caret: keepFocusOnPress stopped the
+      // button from taking it, or Android hid the keyboard with Back without
+      // blurring. Focusing an already-focused view raises the keyboard again.
+      if (!editorHasFocus())
+        focusEditor()
+    }
+    else if (action === 'release') {
       dismissSoftKeyboard()
+    }
   }
 
   const handleSend = () => {

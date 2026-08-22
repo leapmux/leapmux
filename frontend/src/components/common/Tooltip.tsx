@@ -1,6 +1,7 @@
 import type { JSX } from 'solid-js'
 import { createEffect, createSignal, createUniqueId, getOwner, onCleanup, onMount, runWithOwner, Show } from 'solid-js'
 import { Portal } from 'solid-js/web'
+import { holdIsOverMenu, touchReleaseOpensMenu } from './contextMenuGesture'
 import * as styles from './Tooltip.css'
 
 /** Exported so a test advances its fake timers by the real delay. */
@@ -15,6 +16,11 @@ const WHITESPACE_RE = /\s+/
 
 /** Dismiss callback of the currently visible tooltip (at most one). */
 let activeHide: (() => void) | undefined
+
+/** Hide the visible tooltip, if any. A menu that is about to open calls this. */
+export function dismissActiveTooltip(): void {
+  activeHide?.()
+}
 
 export interface TooltipProps {
   /** Plain-text tooltip. When both `text` and `content` are empty, the tooltip is disabled. */
@@ -218,6 +224,9 @@ export function Tooltip(props: TooltipProps) {
 
   /** Show the tooltip now, if it has content and passes the clip test. */
   const present = () => {
+    // Recheck at fire time: a hold can start after `show` armed the delay.
+    if (holdIsOverMenu() || touchReleaseOpensMenu())
+      return
     const target = targetEl()
     const rect = target?.getBoundingClientRect()
     if (!target || !rect)
@@ -287,7 +296,13 @@ export function Tooltip(props: TooltipProps) {
     // owner capture at the top of this component.
     const wrapInOwner = (fn: () => void): (() => void) =>
       tooltipOwner ? () => { runWithOwner(tooltipOwner, fn) } : fn
-    const handleShow = wrapInOwner(show)
+    const handleShow = wrapInOwner(() => {
+      // A long-press menu is up, or its release just fired a compatibility
+      // mouseenter. Presenting now would stack the tooltip above the menu.
+      if (holdIsOverMenu() || touchReleaseOpensMenu())
+        return
+      show()
+    })
     const handleHide = wrapInOwner(hide)
     // Clicking (or activating via Space/Enter) means the user is taking an
     // action — dismiss immediately so the tooltip doesn't linger over a

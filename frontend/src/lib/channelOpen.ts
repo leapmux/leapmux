@@ -139,7 +139,7 @@ export class ChannelOpen<T extends OpeningChannel = OpeningChannel> {
       // same invariant at the same boundary (backend/tunnel/channel.go, "hub
       // returned an empty authenticated user id").
       if (!result.userId) {
-        throw new ChannelError('transport', 'open channel: hub returned an empty authenticated user id')
+        throw new ChannelError('transport', 'open channel: hub returned an empty authenticated user id', { disconnected: false })
       }
 
       // Cross-check the Hub's answer against who this page thinks it is. Taking the
@@ -152,6 +152,7 @@ export class ChannelOpen<T extends OpeningChannel = OpeningChannel> {
         throw new ChannelError(
           'transport',
           `open channel: hub authenticated this channel as ${result.userId}, not the expected ${expectedUserId}`,
+          { disconnected: false },
         )
       }
 
@@ -245,6 +246,6 @@ export class ChannelOpen<T extends OpeningChannel = OpeningChannel> {
       const reassembled = this.deps.testReassembledCeiling ?? maxReassembledMessageSize(payload)
       return { payload, reassembled }
     }
-    throw new ChannelError('transport', 'open channel: hub returned no max_message_size')
+    throw new ChannelError('transport', 'open channel: hub returned no max_message_size', { disconnected: false })
   }
 }

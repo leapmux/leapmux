@@ -226,4 +226,17 @@ describe('messageContextMenuHost', () => {
       vi.unstubAllGlobals()
     }
   })
+
+  it('unmounts the items when the host closes', () => {
+    const captured = renderHost()
+
+    captured.host!.open({
+      press: { clientX: 150, clientY: 60 },
+      actions: [action('quote')],
+    })
+    expect(screen.getByTestId('message-menu-quote')).toBeInTheDocument()
+
+    captured.host!.close()
+    expect(screen.queryByTestId('message-menu-quote')).not.toBeInTheDocument()
+  })
 })

@@ -3181,8 +3181,23 @@ describe('chat view virtualized with stubbed deps', () => {
       fireEvent.pointerUp(scroller(container))
       expect(rail(container).className).toContain(railIdle)
 
-      // The first MOVE is what lights it.
-      fireEvent.pointerMove(scroller(container))
+      // The first MOVE is what lights it. A mouse hover does not: that is
+      // pointermove with no button down. A touch move (or a mouse drag) does.
+      fireEvent.pointerMove(scroller(container), { pointerType: 'mouse', buttons: 0 })
+      expect(rail(container).className).toContain(railIdle)
+
+      fireEvent.pointerMove(scroller(container), { pointerType: 'touch' })
+      expect(rail(container).className).not.toContain(railIdle)
+    })
+
+    it('does not light the rail for a mouse hover', () => {
+      vi.useFakeTimers({ toFake: ['performance', 'setTimeout', 'clearTimeout'] })
+      const { container } = renderWithRail()
+
+      fireEvent.pointerMove(scroller(container), { pointerType: 'mouse', buttons: 0 })
+      expect(rail(container).className).toContain(railIdle)
+
+      fireEvent.pointerMove(scroller(container), { pointerType: 'mouse', buttons: 1 })
       expect(rail(container).className).not.toContain(railIdle)
     })
 

@@ -4,9 +4,10 @@ import { abortError, ChannelError, channelNotOpenError } from './channelError'
 describe('channelError disconnected marker', () => {
   // The default carries the whole `transport` arm of isDisconnectError, so no
   // relay/session/open site has to remember to set it.
-  it('marks every transport failure as a dropped link', () => {
+  it('marks a dropped socket as a dropped link, and not a protocol fault', () => {
     expect(new ChannelError('transport', 'channel disconnected').disconnected).toBe(true)
     expect(new ChannelError('transport', 'WebSocket open timed out after 10s').disconnected).toBe(true)
+    expect(new ChannelError('transport', 'session key past hard ceiling', { disconnected: false }).disconnected).toBe(false)
   })
 
   it('leaves the other sources unmarked, because the link was healthy', () => {

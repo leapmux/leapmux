@@ -218,21 +218,27 @@ export function attachHorizontalSwipe(root: HTMLElement, opts: HorizontalSwipeOp
   let swallowClick = false
 
   function endGesture() {
+    if (pointerId !== null && root.hasPointerCapture?.(pointerId))
+      root.releasePointerCapture(pointerId)
     pointerId = null
     pressTarget = null
     lockedDirection = null
     reported = false
+    root.removeEventListener('pointermove', onPointerMove)
   }
 
   const onPointerDown = (e: PointerEvent) => {
-    // Any new press ends the previous gesture and its claim on the click that
-    // follows. A second finger — the start of a pinch — lands here too, and
-    // ends the swipe the first one was making.
+    if (e.pointerType !== 'touch' || e.button !== 0)
+      return
+    // A second finger is a pinch. End the in-flight swipe but keep a
+    // trailing-click claim a completed swipe already armed.
+    if (!e.isPrimary) {
+      endGesture()
+      return
+    }
     swallowClick = false
     endGesture()
 
-    if (e.pointerType !== 'touch' || !e.isPrimary || e.button !== 0)
-      return
     const target = e.target instanceof Element ? e.target : null
     if (!target || pressBelongsToAnotherOwner(target, root))
       return
@@ -241,9 +247,16 @@ export function attachHorizontalSwipe(root: HTMLElement, opts: HorizontalSwipeOp
     startX = e.clientX
     startY = e.clientY
     pressTarget = target
+    try {
+      root.setPointerCapture(e.pointerId)
+    }
+    catch {
+      // jsdom and a detached root have no capture.
+    }
+    root.addEventListener('pointermove', onPointerMove, { passive: true })
   }
 
-  const onPointerMove = (e: PointerEvent) => {
+  function onPointerMove(e: PointerEvent) {
     if (pointerId === null || e.pointerId !== pointerId)
       return
     const dx = e.clientX - startX
@@ -330,10 +343,6 @@ export function attachHorizontalSwipe(root: HTMLElement, opts: HorizontalSwipeOp
   }
 
   root.addEventListener('pointerdown', onPointerDown)
-  // Passive: the gesture never prevents a POINTER event's default action. What
-  // it prevents is the touch move below, which is the event the scroll comes
-  // from.
-  root.addEventListener('pointermove', onPointerMove, { passive: true })
   root.addEventListener('pointerup', onPointerUp)
   root.addEventListener('pointercancel', onPointerCancel)
   // Non-passive, and registered here rather than when a gesture starts. See the

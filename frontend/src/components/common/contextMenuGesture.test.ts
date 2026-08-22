@@ -40,6 +40,7 @@ describe('attachContextMenuGesture', () => {
   let row: HTMLElement
   let detach: () => void
   let onOpen: ReturnType<typeof vi.fn<(press: ContextMenuPress) => void>>
+  let onCancel: ReturnType<typeof vi.fn<() => void>>
   /** The rect the row reports; a test moves it to make a scroll "move the row". */
   let rowRect: { top: number, left: number }
 
@@ -60,7 +61,8 @@ describe('attachContextMenuGesture', () => {
     })
     document.body.appendChild(row)
     onOpen = vi.fn()
-    detach = attachContextMenuGesture(row, { onOpen })
+    onCancel = vi.fn()
+    detach = attachContextMenuGesture(row, { onOpen, onCancel })
   })
 
   afterEach(() => {
@@ -260,11 +262,9 @@ describe('attachContextMenuGesture', () => {
     expect(row.hasAttribute('data-press-hold')).toBe(false)
   })
 
-  // The hold's menu is already up by the time a pan can claim the touch, so a
-  // cancel can no longer un-open it -- what it still does is stop the gesture
-  // from asserting that menu again. Before the menu moved to the hold, this
-  // dropped the open outright.
-  it('opens once on the hold and not again when a pointercancel follows', () => {
+  // The hold already opened the menu. A pan that claims the touch must take
+  // that menu away: the user is scrolling, not choosing an item.
+  it('cancels the open menu when a pointercancel follows the hold', () => {
     row.dispatchEvent(pointer('pointerdown', { x: 90, y: 110 }))
     vi.advanceTimersByTime(HOLD_MS)
     vi.runAllTimers()
@@ -275,6 +275,7 @@ describe('attachContextMenuGesture', () => {
     vi.runAllTimers()
 
     expect(onOpen).toHaveBeenCalledTimes(1)
+    expect(onCancel).toHaveBeenCalledTimes(1)
   })
 
   it('cancels when a scroll moves the row', () => {
@@ -286,6 +287,19 @@ describe('attachContextMenuGesture', () => {
     vi.runAllTimers()
 
     expect(onOpen).not.toHaveBeenCalled()
+    expect(onCancel).not.toHaveBeenCalled()
+  })
+
+  it('cancels the open menu when a scroll moves the row after the hold', () => {
+    row.dispatchEvent(pointer('pointerdown', { x: 90, y: 110 }))
+    vi.advanceTimersByTime(HOLD_MS)
+    vi.runAllTimers()
+    expect(onOpen).toHaveBeenCalledTimes(1)
+
+    rowRect.top += 40
+    document.dispatchEvent(new Event('scroll'))
+
+    expect(onCancel).toHaveBeenCalledTimes(1)
   })
 
   it('keeps the hold through a scroll that does not move the row', () => {
@@ -687,6 +701,77 @@ describe('attachContextMenuGesture', () => {
 
       expect(e.defaultPrevented).toBe(true)
       expect(onOpenSelectable).toHaveBeenCalledTimes(1)
+    })
+
+    /**
+     * A live selection owns the finger until it is gone.
+     *
+     * Adjusting a selection means dragging the platform's own handles, which sit
+     * at the edges of the highlight and below its last line -- so the press that
+     * reaches for one lands on the row. A hold that opened the menu there would
+     * cover the text the user is still choosing, and there is no other way to
+     * change the range. ~/lib/tapSelect.ts is how a finger makes the selection.
+     */
+    describe('while the row holds a live selection', () => {
+      /** Run a full touch hold on the row and let its menu open. */
+      function hold() {
+        selectable.dispatchEvent(pointer('pointerdown', { x: 150, y: 60 }))
+        vi.advanceTimersByTime(HOLD_MS)
+        vi.runAllTimers()
+        selectable.dispatchEvent(pointer('pointerup', { x: 150, y: 60 }))
+        vi.runAllTimers()
+      }
+
+      it('does not open the menu on a hold', () => {
+        selectTextWithRect(selectable, { left: 100, right: 300, top: 50, bottom: 70 })
+        hold()
+        expect(onOpenSelectable).not.toHaveBeenCalled()
+      })
+
+      // The press point is beside the highlight, not on it. The rule is about
+      // the ROW holding a selection, because the handle a finger reaches for is
+      // outside every rect the selection reports.
+      it('does not open the menu for a hold beside the highlight either', () => {
+        selectTextWithRect(selectable, { left: 100, right: 300, top: 50, bottom: 70 })
+        selectable.dispatchEvent(pointer('pointerdown', { x: 500, y: 200 }))
+        vi.advanceTimersByTime(HOLD_MS)
+        vi.runAllTimers()
+        expect(onOpenSelectable).not.toHaveBeenCalled()
+      })
+
+      // Android raises its own `contextmenu` at its long-press threshold, on the
+      // very press this gesture stood aside for. Left alone, that event brings
+      // the platform's own selection menu -- which is the one that can act on
+      // the selection.
+      it('leaves the platform contextmenu alone on that press', () => {
+        selectTextWithRect(selectable, { left: 100, right: 300, top: 50, bottom: 70 })
+        selectable.dispatchEvent(pointer('pointerdown', { x: 500, y: 200 }))
+        const e = new MouseEvent('contextmenu', { clientX: 500, clientY: 200, bubbles: true, cancelable: true })
+        selectable.dispatchEvent(e)
+        vi.runAllTimers()
+
+        expect(e.defaultPrevented).toBe(false)
+        expect(onOpenSelectable).not.toHaveBeenCalled()
+      })
+
+      it('opens the menu again once the selection is gone', () => {
+        selectTextWithRect(selectable, { left: 100, right: 300, top: 50, bottom: 70 })
+        hold()
+        expect(onOpenSelectable).not.toHaveBeenCalled()
+
+        window.getSelection()?.removeAllRanges()
+        hold()
+        expect(onOpenSelectable).toHaveBeenCalledTimes(1)
+      })
+
+      // A row whose only selection is white space has nothing to adjust, so the
+      // hold is still the menu's.
+      it('opens the menu when the selection holds no text', () => {
+        selectable.textContent = '   '
+        selectTextWithRect(selectable, { left: 100, right: 300, top: 50, bottom: 70 })
+        hold()
+        expect(onOpenSelectable).toHaveBeenCalledTimes(1)
+      })
     })
   })
 

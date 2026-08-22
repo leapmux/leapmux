@@ -270,6 +270,37 @@ describe('useWatchEventsStreams', () => {
     expect(showWarnToastWithLoggedCause).toHaveBeenCalledTimes(1)
   })
 
+  it('keeps the outage latch while a sibling worker is still down', async () => {
+    const { harness } = mount(() => new Map([
+      ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }],
+      ['w2', { agents: [{ agentId: 'a2', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }],
+    ]))
+    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+    emitAddTab({ type: TabType.AGENT, id: 'a2', tileId: harness.rootTileId, position: '2', workerId: 'w2' })
+    await flush()
+    vi.mocked(watchEventsViaChannel).mockImplementation(async () => {
+      throw new ChannelError('transport', 'channel disconnected')
+    })
+    handles[0]!._error(new ChannelError('transport', 'channel disconnected'))
+    handles[1]!._error(new ChannelError('transport', 'channel disconnected'))
+    await flush()
+    await vi.advanceTimersByTimeAsync(10_000)
+    await flush()
+    expect(showWarnToastWithLoggedCause).toHaveBeenCalledTimes(1)
+
+    vi.mocked(watchEventsViaChannel).mockImplementation(async (id: string) => {
+      if (id === 'w1') {
+        const h = makeHandle()
+        handles.push(h)
+        return h as never
+      }
+      throw new ChannelError('transport', 'channel disconnected')
+    })
+    await vi.advanceTimersByTimeAsync(300_000)
+    await flush()
+    expect(showWarnToastWithLoggedCause).toHaveBeenCalledTimes(1)
+  })
+
   // The latch must die with the outage it described, or a second, genuinely new
   // outage an hour later is announced nowhere.
   it('announces a second outage after the link came back', async () => {
@@ -594,7 +625,7 @@ describe('useWatchEventsStreams', () => {
     expect(promoted).toHaveLength(1)
   })
 
-  it('reconnects after a clean stream end without marking offline', async () => {
+  it('marks the worker offline on a clean stream end, then reconnects', async () => {
     const online: boolean[] = []
     const { harness } = mount(
       () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }]]),
@@ -605,8 +636,9 @@ describe('useWatchEventsStreams', () => {
     handles[0]!._end()
     await vi.advanceTimersByTimeAsync(1000)
     await flush()
-    expect(online).not.toContain(false)
+    expect(online).toContain(false)
     expect(vi.mocked(watchEventsViaChannel).mock.calls.length).toBeGreaterThanOrEqual(2)
+    expect(online.at(-1)).toBe(true)
   })
 
   // A stream that ends on its own has no error to hand scheduleReconnect, so a
