@@ -95,6 +95,80 @@ test.describe('Quote and Mention', () => {
     expect(clipboardText.length).toBeGreaterThan(0)
   })
 
+  // A non-secure origin -- plain http:// on a LAN, which is how the app is read
+  // on a phone -- exposes no `navigator.clipboard` at all. The harness serves on
+  // localhost, which is always secure, so the property is taken away here
+  // instead. `~/lib/clipboard` then falls back to `execCommand`, which is the
+  // only path that copies anything there.
+  test('text selection copy button copies with no Clipboard API', async ({ page, context, authenticatedWorkspace }) => {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await expect(editor).toBeVisible()
+
+    await sendMessage(page, 'Say exactly: The quick brown fox jumps over the lazy dog')
+    await waitForAgentIdle(page)
+
+    const assistantBubble = firstAssistantMessageRow(page).locator(ASSISTANT_BUBBLE_SELECTOR)
+    await expect(assistantBubble).toBeVisible()
+    const messageContent = assistantBubble.locator('[data-testid="message-content"]')
+
+    // Park a known value on the clipboard FIRST. Without it a fallback that
+    // copied nothing would still pass, because the previous test left the same
+    // message text there.
+    await page.evaluate(() => navigator.clipboard.writeText('nothing was copied'))
+    // An OWN property shadowing the prototype getter, so deleting it below hands
+    // the real API back for the read.
+    await page.evaluate(() => {
+      Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined })
+    })
+
+    await messageContent.click({ clickCount: 3 })
+    const copyButton = page.locator('[data-testid="copy-selection-button"]')
+    await expect(copyButton).toBeVisible()
+    await copyButton.click()
+
+    // The popover closes only on a write that landed, so its absence is the
+    // app agreeing that something was copied.
+    await expect(copyButton).toBeHidden()
+
+    await page.evaluate(() => Reflect.deleteProperty(navigator, 'clipboard'))
+    const clipboardText = await page.evaluate(() => navigator.clipboard.readText())
+    expect(clipboardText).toContain('quick brown fox')
+  })
+
+  // Both paths gone. Clearing the highlight and closing the popover is what the
+  // app uses to say "copied", so a failed write must do neither -- and must say
+  // why, because a Copy button that silently does nothing reads as a dead button.
+  test('text selection copy button keeps the selection and says why when nothing can copy', async ({ page, authenticatedWorkspace }) => {
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await expect(editor).toBeVisible()
+
+    await sendMessage(page, 'Say exactly: The quick brown fox jumps over the lazy dog')
+    await waitForAgentIdle(page)
+
+    const assistantBubble = firstAssistantMessageRow(page).locator(ASSISTANT_BUBBLE_SELECTOR)
+    await expect(assistantBubble).toBeVisible()
+    const messageContent = assistantBubble.locator('[data-testid="message-content"]')
+
+    await page.evaluate(() => {
+      Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined })
+      document.execCommand = () => false
+    })
+
+    await messageContent.click({ clickCount: 3 })
+    const copyButton = page.locator('[data-testid="copy-selection-button"]')
+    await expect(copyButton).toBeVisible()
+    await copyButton.click()
+
+    await expect(page.locator('output .toast-message').filter({ hasText: 'Could not copy' })).toBeVisible()
+    // The popover stays up, so the button is still there to try again...
+    await expect(copyButton).toBeVisible()
+    // ...and so is the text it acts on.
+    const selected = await page.evaluate(() => window.getSelection()?.toString() ?? '')
+    expect(selected).toContain('quick brown fox')
+  })
+
   test('text selection in chat message shows quote popover', async ({ page, authenticatedWorkspace }) => {
     const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
     await expect(editor).toBeVisible()

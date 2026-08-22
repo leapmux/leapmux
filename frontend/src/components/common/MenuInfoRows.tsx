@@ -61,9 +61,10 @@ export interface MenuInfoButtonProps {
  * list without guarding.
  */
 export const MenuInfoButton: Component<MenuInfoButtonProps> = (props) => {
-  // Routed through `copyTextToClipboard`, which is guarded: a non-secure origin
-  // exposes no `navigator.clipboard` at all. The toast waits for the write to
-  // land rather than assuming it did.
+  // Routed through `copyTextToClipboard`, which falls back to `execCommand`
+  // where the platform exposes no `navigator.clipboard` -- any non-secure
+  // origin -- and names the cause on screen when neither path works. The
+  // success toast below waits for the write to land rather than assuming it did.
   const copy = async () => {
     if (await copyTextToClipboard(props.copyText()))
       showInfoToast(props.toastMessage)

@@ -296,13 +296,22 @@ export function Tooltip(props: TooltipProps) {
     // owner capture at the top of this component.
     const wrapInOwner = (fn: () => void): (() => void) =>
       tooltipOwner ? () => { runWithOwner(tooltipOwner, fn) } : fn
-    const handleShow = wrapInOwner(() => {
-      // A long-press menu is up, or its release just fired a compatibility
-      // mouseenter. Presenting now would stack the tooltip above the menu.
+    // A long-press menu is up, or its release just fired a compatibility
+    // mouseenter. Presenting now would stack the tooltip above the menu.
+    //
+    // A NAMED function, like the two handlers below it. `show` reads
+    // `props.text` and `props.content`, and an inline function expression
+    // carrying those reads into a call that `solid/reactivity` cannot follow --
+    // `wrapInOwner` is a plain local helper, not a tracked scope -- is reported
+    // as reactivity that will be ignored. The reads are correct here, because
+    // the wrapped result IS an event handler, so the fix is to let the rule see
+    // a reference rather than to silence it.
+    const showUnlessMenuOwnsPress = () => {
       if (holdIsOverMenu() || touchReleaseOpensMenu())
         return
       show()
-    })
+    }
+    const handleShow = wrapInOwner(showUnlessMenuOwnsPress)
     const handleHide = wrapInOwner(hide)
     // Clicking (or activating via Space/Enter) means the user is taking an
     // action — dismiss immediately so the tooltip doesn't linger over a

@@ -1,6 +1,13 @@
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { flush } from '~/test-support/async'
 import { SelectionQuotePopover } from './SelectionQuotePopover'
+
+// `~/lib/clipboard` announces a failed write itself. Mocked here so the copy
+// tests can assert that the user was told, and so the real helper does not
+// reach for a toast host that jsdom has not installed.
+const showWarnToastWithLoggedCause = vi.hoisted(() => vi.fn())
+vi.mock('~/components/common/Toast', () => ({ showWarnToastWithLoggedCause }))
 
 const originalGetSelection = window.getSelection
 
@@ -107,7 +114,7 @@ describe('selection quote popover', () => {
     cancelFrame.mockRestore()
   })
 
-  it('clears active selection state when copying without waiting for selectionchange', () => {
+  it('clears active selection state when copying without waiting for selectionchange', async () => {
     const writeText = vi.fn()
     const clipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
     Object.defineProperty(navigator, 'clipboard', {
@@ -149,10 +156,15 @@ describe('selection quote popover', () => {
 
       fireEvent.mouseUp(screen.getByTestId('selectable'))
       fireEvent.click(screen.getByTestId('copy-selection-button'))
+      // The handler awaits the write, so its three closing statements land a
+      // microtask after the click rather than inside it.
+      await flush()
 
       expect(writeText).toHaveBeenCalledWith('selected text')
       expect(removeAllRanges).toHaveBeenCalled()
       expect(onSelectionActiveChange).toHaveBeenLastCalledWith(false)
+      expect(screen.queryByTestId('quote-selection-popover')).not.toBeInTheDocument()
+      expect(showWarnToastWithLoggedCause).not.toHaveBeenCalled()
     }
     finally {
       if (clipboardDescriptor)
@@ -164,12 +176,15 @@ describe('selection quote popover', () => {
     }
   })
 
-  // A non-secure origin (plain http:// on a LAN) exposes no `navigator.clipboard`
-  // at all. The handler used to call `navigator.clipboard.writeText` bare, so it
-  // died on a TypeError right there and never reached the three statements after
-  // it -- leaving the text highlighted and the popover stuck open on top of not
-  // copying.
-  it('still clears the selection when the platform exposes no clipboard', () => {
+  // A non-secure origin (plain http:// on a LAN, which is how the app is read on
+  // a phone) exposes no `navigator.clipboard` at all, and jsdom implements no
+  // `execCommand` for the fallback to reach either -- so nothing is copied.
+  //
+  // Clearing the highlight and closing the popover is the app SAYING "copied".
+  // Doing it here reported a copy that never happened, which is the whole reason
+  // an unreachable clipboard read as a dead button. The selection stays up, and
+  // the Copy button with it, so the user can try again once told why.
+  it('keeps the selection and the popover when the write does not land', async () => {
     const clipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined })
     const requestFrame = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => {
@@ -207,9 +222,15 @@ describe('selection quote popover', () => {
 
       fireEvent.mouseUp(screen.getByTestId('selectable'))
       fireEvent.click(screen.getByTestId('copy-selection-button'))
+      await flush()
 
-      expect(removeAllRanges).toHaveBeenCalled()
-      expect(onSelectionActiveChange).toHaveBeenLastCalledWith(false)
+      expect(removeAllRanges).not.toHaveBeenCalled()
+      expect(onSelectionActiveChange).toHaveBeenLastCalledWith(true)
+      expect(screen.getByTestId('quote-selection-popover')).toBeInTheDocument()
+      // ...and the user is told why, rather than left to guess at a button that
+      // appears to do nothing.
+      expect(showWarnToastWithLoggedCause).toHaveBeenCalledTimes(1)
+      expect(showWarnToastWithLoggedCause.mock.calls[0]![0]).toContain('Could not copy')
     }
     finally {
       if (clipboardDescriptor)

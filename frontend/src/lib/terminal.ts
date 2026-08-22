@@ -408,7 +408,11 @@ export function createTerminalInstance(opts?: TerminalFontOptions & { theme?: IT
   // (e.g. a click that clears highlight) are skipped so we don't
   // clobber whatever the user has on the clipboard.
   terminal.onSelectionChange(() => {
-    void copyTextToClipboard(terminal.getSelection())
+    // Silent on failure, unlike every other copy in the app: this fires on each
+    // change of the selection, so one drag across the screen would raise a
+    // toast per update. The user pressed no Copy button here, and the buttons
+    // that they do press still report what went wrong.
+    void copyTextToClipboard(terminal.getSelection(), { announceFailure: false })
   })
 
   const instance: TerminalInstance = {

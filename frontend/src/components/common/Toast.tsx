@@ -93,6 +93,18 @@ const liveSticky = new Map<string, HTMLElement>()
 // durationMs of 0 means "until dismissed"; the toast already renders its own
 // close button, so a sticky one is never a dead end.
 function renderToast(message: string, type: ToastType, durationMs = 3000) {
+  // `window.ot` is DECLARED non-optional (see ~/lib/oat.ts) because the design
+  // system installs it during startup. It is genuinely absent before that runs,
+  // and under test, so the annotation widens what the declaration promises.
+  // Reaching a missing host must not throw: every caller here is already
+  // reporting a failure, and a toast that raises a second one on top of it
+  // would take down the handler that was explaining the first.
+  const host: Window['ot'] | undefined = window.ot
+  if (!host) {
+    log.warn('no toast host is installed, so this message reached no screen', { message })
+    return
+  }
+
   const sticky = durationMs === 0
   if (sticky) {
     // isConnected rather than mere presence: the map is a cache over the DOM,
@@ -128,7 +140,7 @@ function renderToast(message: string, type: ToastType, durationMs = 3000) {
   // actually sees. Auto-dismissal hid that for as long as every toast expired
   // on its own; a sticky toast makes the button the only way out. _show()
   // returns the mounted clone, so bind to that.
-  const mounted = window.ot.toast.el(toast, {
+  const mounted = host.toast.el(toast, {
     placement: 'bottom-right',
     duration: durationMs,
   })

@@ -194,3 +194,17 @@ describe('oat treats a zero duration as sticky', () => {
     }
   })
 })
+
+// The design system installs `window.ot` during startup, so a toast raised
+// before that runs finds no host. Every helper in this module is already
+// reporting a failure, and a throw here would take down the handler that was
+// explaining the first one -- `~/lib/clipboard` announces an unreachable
+// clipboard from inside a click handler, which is exactly that shape.
+describe('a missing toast host', () => {
+  it('drops the message instead of throwing', () => {
+    vi.stubGlobal('ot', undefined)
+
+    expect(() => showWarnToast('a problem nobody will see')).not.toThrow()
+    expect(shown).toHaveLength(0)
+  })
+})

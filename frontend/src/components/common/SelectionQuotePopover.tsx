@@ -133,7 +133,7 @@ export function SelectionQuotePopover(props: SelectionQuotePopoverProps): JSX.El
     })
   }
 
-  const handleCopyClick = (e: MouseEvent) => {
+  const handleCopyClick = async (e: MouseEvent) => {
     e.preventDefault()
     e.stopPropagation()
     const selection = window.getSelection()
@@ -142,12 +142,13 @@ export function SelectionQuotePopover(props: SelectionQuotePopoverProps): JSX.El
 
     const lineRange = extractLineRange(selection)
     const text = lineRange ? selection.toString() : extractSelectionMarkdown(selection)
-    // Guarded, because the three statements below depend on reaching them. A
-    // non-secure origin exposes no `navigator.clipboard` at all, so the bare
-    // `navigator.clipboard.writeText` this replaced threw a TypeError right
-    // here -- leaving the selection highlighted and the popover stuck open, on
-    // top of not copying.
-    void copyTextToClipboard(text)
+    // AWAITED, and the three statements below run only on a write that landed.
+    // Clearing the highlight and closing the popover is what tells the user
+    // "copied"; doing it after a failed write reported a copy that never
+    // happened. `copyTextToClipboard` has already named the cause on screen, so
+    // leaving the selection up also leaves the Copy button there to try again.
+    if (!await copyTextToClipboard(text))
+      return
     selection.removeAllRanges()
     setSelectionActive(false)
     hidePopover()
@@ -212,7 +213,7 @@ export function SelectionQuotePopover(props: SelectionQuotePopoverProps): JSX.El
           </button>
           <button
             class={styles.quoteButton}
-            onClick={handleCopyClick}
+            onClick={e => void handleCopyClick(e)}
             data-testid="copy-selection-button"
           >
             <Icon icon={Copy} size="sm" />
