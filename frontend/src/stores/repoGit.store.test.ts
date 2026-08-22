@@ -125,4 +125,40 @@ describe('createRepoGitStore', () => {
       })
     })
   })
+
+  describe('refresh failure', () => {
+    it('does not corrupt the focused repo when a different repo refresh fails', async () => {
+      await createRoot(async (dispose) => {
+        const store = createRepoGitStore()
+        const activeKey = repoKey('worker1', '/active')
+        const otherKey = repoKey('worker1', '/other')
+
+        store.setFocusedKey(activeKey)
+        store.upsert(activeKey, {
+          workerId: 'worker1',
+          toplevel: '/active',
+          branch: 'main',
+          diffAdded: 5,
+        })
+        store.upsert(otherKey, {
+          workerId: 'worker1',
+          toplevel: '/other',
+          branch: 'dev',
+          diffAdded: 2,
+        })
+
+        mockGetGitFileStatus.mockRejectedValueOnce(new Error('worker unreachable'))
+
+        await expect(store.refresh('worker1', '/other')).rejects.toThrow('worker unreachable')
+
+        expect(store.focusedKey()).toBe(activeKey)
+        expect(store.get(activeKey)?.branch).toBe('main')
+        expect(store.get(activeKey)?.diffAdded).toBe(5)
+        expect(store.get(otherKey)?.branch).toBe('dev')
+        expect(store.get(otherKey)?.diffAdded).toBe(2)
+
+        dispose()
+      })
+    })
+  })
 })

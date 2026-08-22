@@ -531,7 +531,7 @@ export const AppShell: Component = () => {
   }
 
   /**
-   * Point the git-status singleton at the active tab's working tree.
+   * Refresh git file status for the active tab's working tree.
    *
    * Two effects need exactly this — a turn ending, and the active tab's
    * context changing — and each used to hand-write the same three steps 460
@@ -539,19 +539,16 @@ export const AppShell: Component = () => {
    * while the active tab is still inside its phase-0 window, so both must
    * defer until `activeTabReady` (see its definition for why).
    *
-   * `clearWhenUnresolved` is the one genuine difference. A context change to a
-   * tab with no working tree means there is nothing to show and the previous
-   * repo's status must go; a turn ending in that state means nothing at all and
-   * must leave the singleton alone.
+   * A context change to a tab with no working tree leaves nothing to refresh;
+   * the focused-key effect clears `focusedState()` and readers show empty git UI
+   * without wiping other repos in the keyed store.
    */
-  const refreshGitStatusForActiveTab = (opts?: { clearWhenUnresolved?: boolean }) => {
+  const refreshGitStatusForActiveTab = () => {
     if (!activeTabReady())
       return
     const ctx = getCurrentTabContext()
     if (ctx.workerId && ctx.workingDir)
       void repoGitStore.refresh(ctx.workerId, ctx.workingDir)
-    else if (opts?.clearWhenUnresolved)
-      repoGitStore.clearAll()
   }
 
   // Refresh git file status when a turn ends.
@@ -1108,7 +1105,7 @@ export const AppShell: Component = () => {
       const ctx = getCurrentTabContext()
       return `${ctx.workerId}\0${ctx.workingDir}\0${activeTabReady() ? '1' : '0'}`
     },
-    () => refreshGitStatusForActiveTab({ clearWhenUnresolved: true }),
+    () => refreshGitStatusForActiveTab(),
   ))
 
   // The layer components close over the parent's scope so the outer JSX

@@ -39,7 +39,7 @@ describe('handleBranchChanged', () => {
     await flush()
   })
 
-  it('refreshes git status for the affected repo', async () => {
+  it('refreshes git status for the active repo', async () => {
     const repoGitStore = createRepoGitStore()
     const refresh = vi.spyOn(repoGitStore, 'refresh').mockResolvedValue(undefined)
 
@@ -51,6 +51,38 @@ describe('handleBranchChanged', () => {
     await flush()
 
     expect(refresh).toHaveBeenCalledWith('w1', '/repo')
+    expect(mockGetGitFileStatus).not.toHaveBeenCalled()
+  })
+
+  it('fetches git status directly for a non-active repo', async () => {
+    const repoGitStore = createRepoGitStore()
+    const refresh = vi.spyOn(repoGitStore, 'refresh').mockResolvedValue(undefined)
+    repoGitStore.upsert(repoKey('w1', '/other'), {
+      workerId: 'w1',
+      toplevel: '/other',
+      branch: 'dev',
+      diffAdded: 3,
+    })
+    mockGetGitFileStatus.mockResolvedValueOnce({
+      repoRoot: '/other',
+      status: { toplevel: '/other', branch: 'feature', originUrl: 'o' },
+      files: [],
+    })
+
+    handleBranchChanged(
+      { repoGitStore, getCurrentTabContext: () => ({ workerId: 'w1', gitToplevel: '/active' } as never) },
+      { workerId: 'w1', gitToplevel: '/other' },
+      'feature',
+    )
+    await flush()
+    await vi.waitFor(() => {
+      expect(mockGetGitFileStatus).toHaveBeenCalled()
+    })
+
+    expect(refresh).not.toHaveBeenCalled()
+    expect(mockGetGitFileStatus).toHaveBeenCalledWith('w1', { workerId: 'w1', path: '/other' })
+    expect(repoGitStore.get(repoKey('w1', '/other'))?.branch).toBe('feature')
+    expect(repoGitStore.get(repoKey('w1', '/other'))?.diffAdded).toBe(0)
   })
 
   it('does not stamp when the repo path never resolved', async () => {

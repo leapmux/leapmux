@@ -97,7 +97,7 @@ export interface AgentEditorPanelProps {
    */
   branchDisabledReason?: string
   /** Repo-keyed git store for branch label and info-card flags. */
-  repoGitStore?: ReturnType<typeof createRepoGitStore>
+  repoGitStore: ReturnType<typeof createRepoGitStore>
   /** Tab git identity (`workerId`, `gitToplevel`) for {@link repoGitView}. */
   gitTab?: Pick<Tab, 'workerId' | 'gitToplevel'>
   /** Height of the parent container, used for max editor height calculation. */
@@ -281,13 +281,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
     void att.addDroppedDataTransfer(dataTransfer)
   }
 
-  const branchGitView = createMemo(() => {
-    const store = props.repoGitStore
-    const tab = props.gitTab
-    if (!store || !tab)
-      return undefined
-    return repoGitView(tab, store)
-  })
+  const branchGitView = createMemo(() => repoGitView(props.gitTab ?? {}, props.repoGitStore))
   const branchName = () => branchGitView()?.branchLabel
   const info = useAgentInfoCard({
     get agent() { return props.agent },

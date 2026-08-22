@@ -774,7 +774,7 @@ export function handleAgentStatusChange(
   agentId: string,
   sc: AgentStatusChange,
   catchUpPhase: CatchUpPhase,
-  stores: AgentMessageStores & { controlStore: ReturnType<typeof createControlStore>, repoGitStore?: ReturnType<typeof createRepoGitStore> },
+  stores: AgentMessageStores & { controlStore: ReturnType<typeof createControlStore>, repoGitStore: ReturnType<typeof createRepoGitStore> },
   settingsLoading: ReturnType<typeof createLoadingSignal>,
   setWorkerOnline: (online: boolean) => void,
   onTurnEnd: ((agentId: string, numToolUses?: number) => void) | undefined,
@@ -808,7 +808,7 @@ export function handleAgentStatusChange(
  */
 function applyAgentStatusTabUpdate(
   sc: AgentStatusChange,
-  stores: Pick<AgentMessageStores, 'chatStore' | 'view' | 'metadata'> & { repoGitStore?: ReturnType<typeof createRepoGitStore> },
+  stores: Pick<AgentMessageStores, 'chatStore' | 'view' | 'metadata'> & { repoGitStore: ReturnType<typeof createRepoGitStore> },
   settingsLoading: ReturnType<typeof createLoadingSignal>,
 ): void {
   const { chatStore, view, metadata, repoGitStore } = stores
@@ -819,7 +819,7 @@ function applyAgentStatusTabUpdate(
   const workerId = prev?.workerId ?? ''
   const patch = protoToRepoGitPatch(workerId, sc.gitStatus)
   const key = workerId ? repoKeyFromStatus(workerId, sc.gitStatus) : undefined
-  if (patch && key && repoGitStore)
+  if (patch && key)
     repoGitStore.upsert(key, patch)
   const settingsFields = resolveSettingsTabFields(prev, sc.optionGroups, settingsLoading.pendingAxes(sc.agentId))
   // Consolidate every per-status field into one patch so the row is written once.

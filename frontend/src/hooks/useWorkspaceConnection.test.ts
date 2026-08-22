@@ -1218,12 +1218,12 @@ describe('handleAgentStatusChange for background agents', () => {
     const chatStore = createChatStore()
     emitAddTab({ type: TabType.AGENT, id: 'bg-1', tileId: harness.rootTileId, position: 'a', workerId: 'w1' })
     stores.metadata.patch('bg-1', { agentStatus: AgentStatus.STARTING })
-    return { ...stores, chatStore }
+    return { ...stores, chatStore, repoGitStore: createRepoGitStore() }
   }
 
   it('drains a message queued against a starting agent', () => {
     createRoot((dispose) => {
-      const { view, metadata, chatStore, selection } = backgroundStores()
+      const { view, metadata, chatStore, selection, repoGitStore } = backgroundStores()
       const agentSessionStore = createAgentSessionStore()
       chatStore.pendingOutbound.enqueue('bg-1', { localId: 'l1', content: 'hi', attachments: [] })
 
@@ -1231,7 +1231,7 @@ describe('handleAgentStatusChange for background agents', () => {
         'bg-1',
         { agentId: 'bg-1', status: AgentStatus.STARTUP_FAILED, startupError: 'boom', optionGroups: [] } as unknown as AgentStatusChange,
         'live',
-        { chatStore, view, metadata, selection, getActiveWorkspaceId: () => WS, controlStore: createControlStore(), agentSessionStore },
+        { chatStore, view, metadata, selection, getActiveWorkspaceId: () => WS, controlStore: createControlStore(), agentSessionStore, repoGitStore },
         createLoadingSignal(),
         () => {},
         undefined,
@@ -1245,14 +1245,14 @@ describe('handleAgentStatusChange for background agents', () => {
 
   it('writes the startup fields the foreground path writes', () => {
     createRoot((dispose) => {
-      const { view, metadata, chatStore, selection } = backgroundStores()
+      const { view, metadata, chatStore, selection, repoGitStore } = backgroundStores()
       const agentSessionStore = createAgentSessionStore()
 
       handleAgentStatusChange(
         'bg-1',
         { agentId: 'bg-1', status: AgentStatus.STARTUP_FAILED, startupError: 'boom', optionGroups: [] } as unknown as AgentStatusChange,
         'live',
-        { chatStore, view, metadata, selection, getActiveWorkspaceId: () => WS, controlStore: createControlStore(), agentSessionStore },
+        { chatStore, view, metadata, selection, getActiveWorkspaceId: () => WS, controlStore: createControlStore(), agentSessionStore, repoGitStore },
         createLoadingSignal(),
         () => {},
         undefined,
@@ -1929,6 +1929,7 @@ describe('extracted handleAgentEvent arm handlers', () => {
       selection: tabs.selection,
       getActiveWorkspaceId: () => WS,
       controlStore: createControlStore(),
+      repoGitStore: createRepoGitStore(),
       tabs,
     }
   }

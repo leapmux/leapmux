@@ -96,13 +96,6 @@ export function createRepoGitStore() {
       }
       upsert(mapped.key, mapped.patch)
     }
-    catch {
-      if (mine !== gen)
-        return
-      const key = focusedKey()
-      if (key)
-        upsert(key, emptyRepoState())
-    }
     finally {
       if (mine === gen)
         setLoading(false)

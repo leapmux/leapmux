@@ -57,7 +57,7 @@ export function markTerminalExited(metadata: TabMetadataStore, terminalId: strin
  */
 export function applyTerminalStatusChange(
   metadata: TabMetadataStore,
-  repoGitStore: ReturnType<typeof createRepoGitStore> | undefined,
+  repoGitStore: ReturnType<typeof createRepoGitStore>,
   existingTab: TerminalTab | undefined,
   terminalId: string,
   sc: TerminalStatusChange,
@@ -65,7 +65,7 @@ export function applyTerminalStatusChange(
   const workerId = existingTab?.workerId ?? ''
   const patch = protoToRepoGitPatch(workerId, sc.gitStatus)
   const key = workerId ? repoKeyFromStatus(workerId, sc.gitStatus) : undefined
-  if (patch && key && repoGitStore)
+  if (patch && key)
     repoGitStore.upsert(key, patch)
   if (sc.gitStatus?.toplevel)
     metadata.patch(terminalId, { gitToplevel: sc.gitStatus.toplevel })

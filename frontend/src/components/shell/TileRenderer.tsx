@@ -85,7 +85,7 @@ interface TileRendererOpts {
     controlStore: ReturnType<typeof createControlStore>
     layoutStore: ReturnType<typeof createLayoutStore>
     agentSessionStore: ReturnType<typeof createAgentSessionStore>
-    repoGitStore?: ReturnType<typeof createRepoGitStore>
+    repoGitStore: ReturnType<typeof createRepoGitStore>
   }
   /** Tab/agent/terminal lifecycle hooks. */
   ops: {
@@ -985,7 +985,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
             // `hasStagedAndUnstaged` so both props read from one memo
             // cell instead of walking the file-status map on every
             // reactive tick.
-            const gitEntry = createMemo(() => repoGitStore?.getFileStatus(filePath()))
+            const gitEntry = createMemo(() => repoGitStore.getFileStatus(filePath()))
             const hasStagedAndUnstaged = createMemo(() => {
               const entry = gitEntry()
               if (!entry)
@@ -1093,7 +1093,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
       tab: view.getAgentTab(agentId()),
       workspaceId: activeWorkspace()?.id ?? '',
       workspaceTabs: () => view.forWorkspace(activeWorkspace()?.id ?? ''),
-      repoGitStore: repoGitStore!,
+      repoGitStore,
       isWorkerKnownOnline: branchCallbacks?.isWorkerKnownOnline,
     })
     const branchDisabledReason = () => branchAction().disabledReason

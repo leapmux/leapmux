@@ -245,6 +245,35 @@ func TestGetGitFileStatus_MainTreeToplevelEqualsRepoRoot(t *testing.T) {
 		"main-tree query must report toplevel == repo_root")
 }
 
+// TestGetGitFileStatus_ReturnsAheadBehind pins that the handler's
+// gitutil.GetGitStatus path surfaces upstream ahead/behind on the
+// GitRepoStatus envelope, not only in InspectBranchDeletion.
+func TestGetGitFileStatus_ReturnsAheadBehind(t *testing.T) {
+	t.Parallel()
+
+	_, d, w := setupTestService(t)
+	bareDir := filepath.Join(t.TempDir(), "ahead-behind.git")
+	require.NoError(t, os.MkdirAll(bareDir, 0o755))
+	run(t, bareDir, "git", "init", "--bare")
+
+	repoDir := initRepo(t)
+	run(t, repoDir, "git", "remote", "add", "origin", bareDir)
+	run(t, repoDir, "git", "push", "-u", "origin", "HEAD")
+	run(t, repoDir, "git", "commit", "--allow-empty", "-m", "ahead 1")
+	run(t, repoDir, "git", "commit", "--allow-empty", "-m", "ahead 2")
+
+	dispatch(d, "GetGitFileStatus", &leapmuxv1.GetGitFileStatusRequest{
+		Path: repoDir,
+	}, w)
+	require.Len(t, w.responses, 1)
+	var resp leapmuxv1.GetGitFileStatusResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+
+	assert.Equal(t, int32(2), resp.GetStatus().GetAhead(),
+		"GetGitFileStatus must report commits ahead of upstream")
+	assert.Equal(t, int32(0), resp.GetStatus().GetBehind())
+}
+
 // TestGetGitFileStatus_DetachedHEAD covers the branchOrShortSHA
 // fallback the GetGitFileStatus refactor enabled. On a detached HEAD,
 // `--abbrev-ref HEAD` returns the literal "HEAD"; branchOrShortSHA
