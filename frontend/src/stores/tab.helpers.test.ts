@@ -7,7 +7,7 @@ import { AgentGitStatusSchema, AgentInfoSchema, AgentProvider, AgentStatus, Avai
 import { TerminalInfoSchema, TerminalProgress_State, TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { clearSettingsLabelCache, getCachedSettingsGroupLabel } from '~/lib/settingsLabelCache'
-import { agentTabToInfo, deriveOptionGroupTabFields, descendantAgentTabs, isSameRepo, isSteerableAgentTab, isTabReadyForGitStatus, mruSteerableAgentTab, openedTerminalMetadata, protoToAgentTabFields, resolveOptimisticGitInfo, rootAgentIdFor, setOptionValue, tabDisplayLabel, tabTooltipShowWhen, tabTooltipText, terminalMetadata, terminalProgressBarProps, toAgentGitTabFields, toGitTabFields } from './tab.helpers'
+import { agentTabToInfo, deriveOptionGroupTabFields, descendantAgentTabs, isSameRepo, isSteerableAgentTab, isTabReadyForGitStatus, mruSteerableAgentTab, openedTerminalMetadata, protoToAgentTabFields, resolveOptimisticGitInfo, rootAgentIdFor, setOptionValue, tabDisplayLabel, tabGitBranchLabel, tabTooltipShowWhen, tabTooltipText, terminalMetadata, terminalProgressBarProps, toAgentGitTabFields, toGitTabFields } from './tab.helpers'
 import { createTabMetadataStore } from './tabMetadata.store'
 
 // `tabDisplayLabel` is the shared "what should we render in the tab strip
@@ -255,6 +255,21 @@ describe('toGitTabFields', () => {
     const settled = metadata.get('t1')!
     metadata.patch('t1', next)
     expect(metadata.get('t1'), 'and re-sending it is a no-op - the loop converges').toBe(settled)
+  })
+})
+
+describe('tabGitBranchLabel', () => {
+  it('prefers a stamped flat branch over a stale nested copy', () => {
+    expect(tabGitBranchLabel('renamed', 'main')).toBe('renamed')
+  })
+
+  it('treats an explicit empty flat branch as no branch', () => {
+    expect(tabGitBranchLabel('', 'main')).toBeUndefined()
+  })
+
+  it('falls back to nested only before the first flat stamp', () => {
+    expect(tabGitBranchLabel(undefined, 'main')).toBe('main')
+    expect(tabGitBranchLabel(undefined, undefined)).toBeUndefined()
   })
 })
 

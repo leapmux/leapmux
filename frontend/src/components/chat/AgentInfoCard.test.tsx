@@ -10,7 +10,7 @@ import { formatAgentSessionIdForDisplay, useAgentInfoCard } from './AgentInfoCar
 import './providers/claude/plugin'
 import './providers/pi/plugin'
 
-function InfoCardContent(props: { agent?: AgentInfo, agentSessionInfo?: AgentSessionInfo }) {
+function InfoCardContent(props: { agent?: AgentInfo, agentSessionInfo?: AgentSessionInfo, branchName?: string }) {
   const { infoHoverCardContent } = useAgentInfoCard(props)
   return <div>{infoHoverCardContent()}</div>
 }
@@ -172,6 +172,47 @@ describe('agent info card rate-limit rows', () => {
     expect(text).toContain('Exceeded')
     expect(text).toContain('resets in')
     expect(text).not.toContain('% used')
+  })
+})
+
+describe('agent info card branch row', () => {
+  function withGit(fields: Partial<AgentInfo>): AgentInfo {
+    return { agentProvider: AgentProvider.CLAUDE_CODE, agentSessionId: 'sid', ...fields } as AgentInfo
+  }
+
+  it('prefers the flat branch name over a stale nested gitStatus branch', () => {
+    render(() => (
+      <InfoCardContent
+        agent={withGit({ gitStatus: { branch: 'main', modified: true } } as unknown as Partial<AgentInfo>)}
+        branchName="renamed"
+      />
+    ))
+
+    expect(screen.getByText('renamed')).toBeInTheDocument()
+    expect(screen.queryByText(/^main$/)).toBeNull()
+    expect(screen.getByText('Modified')).toBeInTheDocument()
+  })
+
+  it('hides the branch row when the flat branch is explicitly empty', () => {
+    render(() => (
+      <InfoCardContent
+        agent={withGit({ gitStatus: { branch: 'main', modified: true } } as unknown as Partial<AgentInfo>)}
+        branchName=""
+      />
+    ))
+
+    expect(screen.queryByText(/^main$/)).toBeNull()
+    expect(screen.getByText('Modified')).toBeInTheDocument()
+  })
+
+  it('falls back to nested gitStatus before the first flat stamp', () => {
+    render(() => (
+      <InfoCardContent
+        agent={withGit({ gitStatus: { branch: 'main' } } as unknown as Partial<AgentInfo>)}
+      />
+    ))
+
+    expect(screen.getByText('main')).toBeInTheDocument()
   })
 })
 
