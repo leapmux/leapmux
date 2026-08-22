@@ -25,10 +25,14 @@ function agent(overrides: Partial<AgentInfo> = {}): AgentInfo {
   } as unknown as AgentInfo
 }
 
-function renderBar(a: AgentInfo | undefined, extra: { disabledReason?: string, branchDisabledReason?: string } = {}) {
+function renderBar(
+  a: AgentInfo | undefined,
+  extra: { disabledReason?: string, branchDisabledReason?: string, branchName?: string } = {},
+) {
   return render(() => (
     <ComposerStatusBar
       agent={a}
+      branchName={extra.branchName}
       optionValues={{}}
       onSettingChange={() => {}}
       onChangeBranch={() => {}}
@@ -132,5 +136,14 @@ describe('composerStatusBar', () => {
 
     renderBar(agent({ gitStatus: { branch: 'main' } } as unknown as Partial<AgentInfo>))
     expect(screen.getByText('main')).toBeInTheDocument()
+  })
+
+  it('prefers the flat branchName over a stale nested gitStatus branch', () => {
+    renderBar(
+      agent({ gitStatus: { branch: 'main' } } as unknown as Partial<AgentInfo>),
+      { branchName: 'renamed' },
+    )
+    expect(screen.getByText('renamed')).toBeInTheDocument()
+    expect(screen.queryByText('main')).toBeNull()
   })
 })

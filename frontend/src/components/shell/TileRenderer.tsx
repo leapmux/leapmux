@@ -1100,6 +1100,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
       <AgentEditorPanel
         agentId={agentId()}
         agent={agentTabToInfo(view.getAgentTab(agentId()))}
+        branchName={view.getAgentTab(agentId())?.gitBranch || undefined}
         // eslint-disable-next-line solid/reactivity -- async event handler; reactive tracking isn't needed for user-invoked callbacks
         onSendMessage={async (content, fileAttachments?: FileAttachment[]) => {
           const id = focusedAgentId()

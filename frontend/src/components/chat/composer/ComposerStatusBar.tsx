@@ -18,6 +18,12 @@ export interface ComposerStatusBarProps {
   optionValues: Record<string, string>
   /** Dispatch a settings change for the model/effort/mode chips. Optional to match the panel's `onChange?`. */
   onSettingChange?: (change: ProviderSettingChange) => void
+  /**
+   * Current branch from the tab's flat git mirror (`gitBranch`). Prefer this
+   * over `agent.gitStatus.branch`: `applyGitStatusToTabs` stamps the flat
+   * fields alone and the worker re-broadcasts `agentGitStatus` only at turn end.
+   */
+  branchName?: string
   /** Branch chip callbacks. */
   onChangeBranch: () => void
   onDeleteBranch: () => void
@@ -67,7 +73,7 @@ export function ComposerStatusBar(props: ComposerStatusBarProps): JSX.Element {
     <div class={styles.statusBar} data-testid="composer-status-bar">
       <div class={styles.statusBarLeft}>
         <GitBranchChip
-          branchName={props.agent?.gitStatus?.branch || undefined}
+          branchName={(props.branchName ?? props.agent?.gitStatus?.branch) || undefined}
           disabledReason={props.branchDisabledReason}
           onChangeBranch={props.onChangeBranch}
           onDeleteBranch={props.onDeleteBranch}

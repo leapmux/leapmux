@@ -93,6 +93,12 @@ export interface AgentEditorPanelProps {
    * when usable. Both actions need the Worker, so one reason covers both.
    */
   branchDisabledReason?: string
+  /**
+   * Current branch from the tab's flat git mirror (`gitBranch`). The shell
+   * passes this so the composer tracks `applyGitStatusToTabs` stamps; the
+   * nested `agent.gitStatus` can stay stale until the worker's next broadcast.
+   */
+  branchName?: string
   /** Height of the parent container, used for max editor height calculation. */
   containerHeight?: number
   /** Ref to expose the addFiles function for external callers (e.g. ChatDropZone). */
@@ -449,7 +455,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
               canAttach={!ctrl.activeControlRequest()}
               disabledReason={props.disabledReason}
               settingsLoading={props.settingsLoading}
-              branchName={props.agent?.gitStatus?.branch || undefined}
+              branchName={(props.branchName ?? props.agent?.gitStatus?.branch) || undefined}
               onChangeBranch={() => props.onChangeBranch?.()}
               onDeleteBranch={() => props.onDeleteBranch?.()}
               branchDisabledReason={props.branchDisabledReason}
@@ -549,6 +555,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
       <Show when={preferences.showComposerStatusBar()}>
         <ComposerStatusBar
           agent={props.agent}
+          branchName={props.branchName}
           optionValues={currentOptionValues()}
           onSettingChange={props.onSettingChange}
           onChangeBranch={() => props.onChangeBranch?.()}
