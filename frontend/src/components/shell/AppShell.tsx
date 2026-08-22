@@ -612,6 +612,7 @@ export const AppShell: Component = () => {
     setNewAgentLoadingProvider,
     focusEditor: () => focusEditorRef()?.(),
     forceScrollToBottom: () => forceScrollToBottomRef()?.(),
+    repoGitStore,
   })
 
   // Terminal operations hook

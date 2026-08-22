@@ -7,6 +7,7 @@ import type { createAgentSessionStore } from '~/stores/agentSession.store'
 import type { createChatStore } from '~/stores/chat.store'
 import type { createControlStore } from '~/stores/control.store'
 import type { createLayoutStore } from '~/stores/layout.store'
+import type { createRepoGitStore } from '~/stores/repoGit.store'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
@@ -25,6 +26,7 @@ import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { base64ToUint8Array } from '~/lib/base64'
 import { getInnerMessage, parseMessageContent } from '~/lib/messageParser'
 import { getMruProviders, touchMruProvider } from '~/lib/mruAgentProviders'
+import { protoToRepoGitPatch, repoKeyFromStatus } from '~/stores/repoGit'
 import { protoToAgentTabFields, resolveOptimisticGitInfo, setOptionValue } from '~/stores/tab.helpers'
 import { emitRemoveTab, emitRemoveTabs, hasLiveTabRecord } from '~/stores/tabOps'
 import { openTabInFocusedTile } from './openTabInFocusedTile'
@@ -51,6 +53,7 @@ export interface UseAgentOperationsProps {
   setNewAgentLoadingProvider: (provider: AgentProvider | null) => void
   focusEditor?: () => void
   forceScrollToBottom?: () => void
+  repoGitStore: ReturnType<typeof createRepoGitStore>
 }
 
 export function useAgentOperations(props: UseAgentOperationsProps) {
@@ -180,6 +183,10 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
         const seed = resolveOptimisticGitInfo(props.selection.activeTabForWorkspace(workspaceId), {
           workingDir: agentFields.workingDir,
         })
+        const gitPatch = protoToRepoGitPatch(resp.agent.workerId, resp.agent.gitStatus)
+        const gitKey = repoKeyFromStatus(resp.agent.workerId, resp.agent.gitStatus)
+        if (gitPatch && gitKey)
+          props.repoGitStore.upsert(gitKey, gitPatch)
         // `hydrated`: the OpenAgent response IS the worker's answer for this
         // tab, so `useTabHydrators` must not immediately re-ask. Its reply
         // would land without the pending-axis suppression the live settings
