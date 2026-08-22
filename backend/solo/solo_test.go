@@ -1228,7 +1228,10 @@ func TestSoloStart_AWorkerBringUpFailureIsStillTheWorkers(t *testing.T) {
 // slow one as a worker that failed to drain.
 func TestInstanceShutdown_StopsTheHubOnTheDrainNotTheWorkersFullExit(t *testing.T) {
 	orig := workerDrainTimeout
-	workerDrainTimeout = 20 * time.Millisecond
+	// Generous against scheduler jitter; still far below a mistaken wait for the
+	// full backstop. 20ms was too tight once CaptureStderr and logging.Setup
+	// sat inside the same wall-clock budget on Windows CI.
+	workerDrainTimeout = 100 * time.Millisecond
 	t.Cleanup(func() { workerDrainTimeout = orig })
 
 	hubDone := make(chan struct{})
@@ -1257,16 +1260,20 @@ func TestInstanceShutdown_StopsTheHubOnTheDrainNotTheWorkersFullExit(t *testing.
 		<-releaseTeardown
 	}()
 
-	start := time.Now()
+	var elapsed time.Duration
 	// logging.Setup inside the capture, or the handler still points at the real
 	// stderr and the NotContains below holds no matter what shutdown logs.
+	// Time only shutdown: CaptureStderr's pipe setup and logging.Setup are not
+	// part of the drain-vs-backstop claim and blew a 20ms budget on Windows CI.
 	logs := testutil.CaptureStderr(t, func() {
 		logging.Setup()
+		start := time.Now()
 		inst.shutdown()
+		elapsed = time.Since(start)
 	})
 
 	assert.True(t, hubCancelled.Load())
-	assert.Less(t, time.Since(start), workerDrainTimeout,
+	assert.Less(t, elapsed, workerDrainTimeout,
 		"the hub must stop on the drain signal, not wait out the backstop for a teardown it has no stake in")
 	assert.NotContains(t, logs, "did not finish before the hub shutdown deadline",
 		"a worker that drained promptly must not be reported as failing to")
