@@ -283,6 +283,17 @@ describe('a user row whose provider has no plugin', () => {
     expect(container.textContent).toContain('see this')
   })
 
+  it('draws an attachment-only send, whose content is the empty string', () => {
+    // A file dragged in with no typed text. The empty string is the boundary the
+    // neutral branch has to pass through to UserContentMessage: a renderer that
+    // treated it as "nothing to draw" would show an empty card for a real message.
+    const parsed = { content: '', attachments: [{ filename: 'notes.pdf', mime_type: 'application/pdf' }] }
+    const { container } = render(() =>
+      renderMessageContent(parsed, undefined, { kind: 'user_content' } as MessageCategory, AgentProvider.UNSPECIFIED))
+    expect(container.textContent).toContain('notes.pdf')
+    expect(container.textContent).not.toContain('mime_type')
+  })
+
   it('still drops an AGENT-shaped row to the raw-JSON span', () => {
     // The neutral branch is keyed on the category, and only a USER row reaches
     // `user_content` without a plugin (see classifyMessage). A provider's own

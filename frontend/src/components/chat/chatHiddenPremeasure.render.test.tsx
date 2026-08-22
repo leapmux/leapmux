@@ -58,6 +58,22 @@ function renderPremeasureRow(
 }
 
 describe('chat hidden premeasure rendering', () => {
+  // The root publishes what a reader -- a screen reader, or an e2e measurement --
+  // needs to tell a hidden COPY of a row from the row itself. Both markers are
+  // load-bearing and neither is visible from inside a row, so nothing else fails
+  // if one is dropped: the copy simply starts passing for the real thing.
+  it('marks its root as a hidden copy, reachable from any bubble inside it', () => {
+    const { row } = renderPremeasureRow('user_text', MessageSource.USER)
+    const root = row.parentElement!
+    expect(root.getAttribute('aria-hidden')).toBe('true')
+    expect(root.getAttribute('data-chat-premeasure-root')).toBe('true')
+    // The query a chat measurement actually runs: from the bubble UP. It is how
+    // measureBubbleEdges names a premeasure copy instead of reporting the same
+    // "not inside the chat scroll container" a remounted row produces
+    // (tests/e2e/helpers/ui.ts, and https://github.com/leapmux/leapmux/issues/402).
+    expect(screen.getByTestId('bubble').closest('[data-chat-premeasure-root="true"]')).toBe(root)
+  })
+
   it('reserves the same width as visible span-line columns', () => {
     expect(spanLinesReservedWidth(0)).toBe(CONTAINER_PAD_RIGHT)
     expect(spanLinesReservedWidth(1)).toBe(COL_SPACING + CONTAINER_PAD_RIGHT)

@@ -202,13 +202,6 @@ describe('classifyMessage', () => {
       expect(result.kind).toBe('user_content')
     })
 
-    it('still reports an AGENT row as unsupported_provider', () => {
-      // The carve-out is for rows LeapMux WROTE. Agent bytes that happen to hold a
-      // `content` string are still a provider envelope nobody can read.
-      const result = classifyMessage(input({ content: 'hi' }, null, AgentProvider.UNSPECIFIED, MessageSource.AGENT))
-      expect(result.kind).toBe('unsupported_provider')
-    })
-
     it('still reports a TAGGED user envelope as unsupported_provider', () => {
       // A `type` key marks a provider's own wire shape, which LeapMux's flat user
       // payload never carries -- and which the neutral renderer cannot draw.
@@ -218,6 +211,40 @@ describe('classifyMessage', () => {
 
     it('still reports a user row with no content string as unsupported_provider', () => {
       const result = classifyMessage(input({ attachments: [] }, null, AgentProvider.UNSPECIFIED, MessageSource.USER))
+      expect(result.kind).toBe('unsupported_provider')
+    })
+
+    it('still reports a row with no parsed object as unsupported_provider', () => {
+      // An envelope that failed to parse leaves parentObject undefined. There is
+      // nothing to read, so the loud error is the right answer even for a user row.
+      const result = classifyMessage(input(undefined, null, AgentProvider.UNSPECIFIED, MessageSource.USER))
+      expect(result.kind).toBe('unsupported_provider')
+    })
+
+    it('takes an attachment-only send, whose content is the empty string', () => {
+      // Sending a file with no typed text persists `content: ''`. The empty string
+      // is still a string, so this is a real user row -- and the one whose payload
+      // most looks like an absent field.
+      const result = classifyMessage(input(
+        { content: '', attachments: [{ filename: 'diagram.png' }] },
+        null,
+        AgentProvider.UNSPECIFIED,
+        MessageSource.USER,
+      ))
+      expect(result.kind).toBe('user_content')
+    })
+
+    it.each([
+      ['UNSPECIFIED', MessageSource.UNSPECIFIED],
+      ['LEAPMUX', MessageSource.LEAPMUX],
+      ['AGENT', MessageSource.AGENT],
+    ])('reports the same payload from a %s source as unsupported_provider', (_label, source) => {
+      // The carve-out is for rows LeapMux WROTE, so it turns on the SOURCE and not
+      // on the shape: agent bytes that happen to hold a `content` string are still
+      // a provider envelope nobody can read. Swept rather than asserted once,
+      // because widening the predicate to "any row that looks flat" is the mistake
+      // that would put those bytes in a user card.
+      const result = classifyMessage(input({ content: 'hi' }, null, AgentProvider.UNSPECIFIED, source))
       expect(result.kind).toBe('unsupported_provider')
     })
 
