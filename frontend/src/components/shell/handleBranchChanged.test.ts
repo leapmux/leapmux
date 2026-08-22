@@ -77,4 +77,21 @@ describe('handleBranchChanged', () => {
     )).not.toThrow()
     await flush()
   })
+
+  it('does not change focused key when refreshing a non-active repo', async () => {
+    const repoGitStore = createRepoGitStore()
+    repoGitStore.setFocusedKey(repoKey('w1', '/active'))
+    repoGitStore.upsert(repoKey('w1', '/active'), { workerId: 'w1', toplevel: '/active', branch: 'main' })
+    repoGitStore.upsert(repoKey('w1', '/other'), { workerId: 'w1', toplevel: '/other', branch: 'dev' })
+
+    handleBranchChanged(
+      { repoGitStore, getCurrentTabContext: () => ({ workerId: 'w1', gitToplevel: '/active' } as never) },
+      { workerId: 'w1', gitToplevel: '/other' },
+      'feature',
+    )
+    await flush()
+
+    expect(repoGitStore.focusedKey()).toBe(repoKey('w1', '/active'))
+    expect(repoGitStore.get(repoKey('w1', '/other'))?.branch).toBe('feature')
+  })
 })

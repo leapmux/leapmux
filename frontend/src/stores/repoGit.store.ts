@@ -95,7 +95,6 @@ export function createRepoGitStore() {
         return
       }
       upsert(mapped.key, mapped.patch)
-      setFocusedKeySignal(mapped.key)
     }
     catch {
       if (mine !== gen)
