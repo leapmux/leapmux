@@ -15,6 +15,7 @@ import (
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 	"github.com/leapmux/leapmux/internal/worker/hub"
 	"github.com/leapmux/leapmux/internal/worker/wakelock"
+	"github.com/leapmux/leapmux/util/clockjump"
 	"github.com/leapmux/leapmux/util/version"
 )
 
@@ -54,6 +55,12 @@ func runWorker(args []string) error {
 	// Shutdown race a closed connection and never reach watchers.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// Report the periods in which this process did not run, so a suspended machine
+	// explains the ended streams and refused credentials that follow it. This
+	// entry point needs its own call: worker.Run has one, but only solo goes
+	// through worker.Run -- `leapmux worker` builds its client here instead.
+	clockjump.StartLoop(ctx)
 
 	// Check if we already have credentials from a previous registration.
 	state, err := cfg.LoadState()

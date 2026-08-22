@@ -23,6 +23,17 @@ type fakeRevStore struct {
 
 func (s fakeRevStore) RevocationEvents() store.RevocationEventStore { return s.rev }
 
+// attachLease wires a hand-built Watcher's runtimeLease to its owner. Production
+// Watchers get this from New; package tests that construct Watcher by hand must
+// call it before any lease method talks to the store, logs the holder, or
+// reads closed.
+func attachLease(w *Watcher, holderID string, duration time.Duration) *Watcher {
+	w.lease.watcher = w
+	w.lease.holderID = holderID
+	w.lease.duration = duration
+	return w
+}
+
 type renewCountingEvents struct {
 	store.RevocationEventStore
 	renewals int
@@ -37,22 +48,18 @@ func (s *renewCountingEvents) RenewHubRuntimeLease(context.Context, store.RenewH
 // on the lease having passed half its duration.
 func TestRenewLeaseIfStaleSkipsFreshLease(t *testing.T) {
 	rev := &renewCountingEvents{}
-	w := &Watcher{
-		store:         fakeRevStore{rev: rev},
-		leaseDuration: time.Hour,
-		holderID:      "holder",
-	}
+	w := attachLease(&Watcher{store: fakeRevStore{rev: rev}}, "holder", time.Hour)
 	_ = w.lease.mu.Lock(context.Background())
 	defer w.lease.mu.Unlock()
 
 	// Fresh lease (well over half its duration remaining): renewal is skipped.
 	w.lease.leaseExpiresAt = time.Now().Add(time.Hour)
-	require.NoError(t, w.renewLeaseIfStaleLocked(context.Background()))
+	require.NoError(t, w.lease.renewIfStale(context.Background()))
 	require.Equal(t, 0, rev.renewals, "a fresh lease must not be renewed")
 
 	// Stale lease (under half its duration remaining): renewal fires.
 	w.lease.leaseExpiresAt = time.Now().Add(time.Minute)
-	require.NoError(t, w.renewLeaseIfStaleLocked(context.Background()))
+	require.NoError(t, w.lease.renewIfStale(context.Background()))
 	require.Equal(t, 1, rev.renewals, "a past-half-life lease must be renewed")
 }
 
@@ -108,11 +115,7 @@ func (s *blockingListEvents) ListPublishedAfter(context.Context, int64, int32) (
 // store would self-fence the sole Hub.
 func TestConsumePageReleasesLockDuringSlowStoreRead(t *testing.T) {
 	rev := &blockingListEvents{entered: make(chan struct{}), release: make(chan struct{})}
-	w := &Watcher{
-		store:         fakeRevStore{rev: rev},
-		leaseDuration: time.Hour,
-		holderID:      "holder",
-	}
+	w := attachLease(&Watcher{store: fakeRevStore{rev: rev}}, "holder", time.Hour)
 	// Ample lease so the read is not aborted by its deadline during the test.
 	w.lease.leaseExpiresAt = time.Now().Add(time.Hour)
 
@@ -158,20 +161,18 @@ func TestConsumeReDerivesDeadlineAfterRenewal(t *testing.T) {
 			{{Seq: 1, Event: store.RevocationEvent{ID: "e1", Kind: store.RevocationEventKindUserInfo, UserID: "u"}}},
 		},
 	}
-	w := &Watcher{
+	w := attachLease(&Watcher{
 		store:           fakeRevStore{rev: rev},
 		lifecycle:       auth.NewCredentialLifecycleEffects(nil, nil, nil),
-		leaseDuration:   time.Hour,
 		pageSize:        1,
 		maxEventsPerRun: 10,
-		holderID:        "holder",
-		lease: leaseState{
+		lease: runtimeLease{
 			seeded: true,
 			// Start with a near-term deadline; the first page's renewal must push
-			// it far into the future so the second page is not bounded by this.
+			// it far into the future so the second page is not limited by this.
 			leaseExpiresAt: time.Now().Add(time.Second),
 		},
-	}
+	}, "holder", time.Hour)
 
 	_, err := w.runOnce(context.Background())
 	require.NoError(t, err)
@@ -198,17 +199,15 @@ func (s *transientRenewEvents) RenewHubRuntimeLease(context.Context, store.Renew
 // applied and no error surfaced to the server.
 func TestRenewTransientErrorIsNotFatal(t *testing.T) {
 	rev := &transientRenewEvents{err: errors.New("database is locked")}
-	w := &Watcher{
-		store:         fakeRevStore{rev: rev},
-		leaseDuration: time.Hour,
-		holderID:      "holder",
-		errors:        make(chan error, 1),
-	}
+	w := attachLease(&Watcher{
+		store:  fakeRevStore{rev: rev},
+		errors: make(chan error, 1),
+	}, "holder", time.Hour)
 	_ = w.lease.mu.Lock(context.Background())
-	// Stale lease (past half-life) with real budget left, so renewLocked calls
+	// Stale lease (past half-life) with real budget left, so renew calls
 	// the store rather than short-circuiting on a locally-expired lease.
 	w.lease.leaseExpiresAt = time.Now().Add(20 * time.Minute)
-	err := w.renewLeaseIfStaleLocked(context.Background())
+	err := w.lease.renewIfStale(context.Background())
 	w.lease.mu.Unlock()
 
 	require.Error(t, err)
@@ -242,12 +241,10 @@ func (s *publishRenewCountingEvents) RenewHubRuntimeLease(context.Context, store
 // page.
 func TestPublishRenewsLeaseBetweenPages(t *testing.T) {
 	rev := &publishRenewCountingEvents{}
-	w := &Watcher{
-		store:         fakeRevStore{rev: rev},
-		leaseDuration: time.Hour,
-		holderID:      "holder",
-		errors:        make(chan error, 1),
-	}
+	w := attachLease(&Watcher{
+		store:  fakeRevStore{rev: rev},
+		errors: make(chan error, 1),
+	}, "holder", time.Hour)
 	_ = w.lease.mu.Lock(context.Background())
 	// Stale lease so the between-pages renewLeaseIfStaleLocked actually renews.
 	w.lease.leaseExpiresAt = time.Now().Add(20 * time.Minute)
@@ -261,32 +258,318 @@ func TestPublishRenewsLeaseBetweenPages(t *testing.T) {
 
 type errPublishEvents struct {
 	store.RevocationEventStore
+	// reacquireErr is what the recovery attempt an expired lease triggers gets
+	// back: nil for a lapse this process may repair, ErrHubAlreadyRunning for a
+	// rival holder it must fence on.
+	reacquireErr   error
+	reacquireCalls int
 }
 
 func (*errPublishEvents) PublishPending(context.Context, int32) (int64, error) {
 	return 0, errors.New("store unavailable")
 }
 
-// When the lease has expired, a publish store error is lease-fatal: publish
-// now returns the error (rather than only logging it) so runOnce aborts instead
-// of consuming on a lost lease, and handleStoreErrorLocked signals it on the
-// errors channel so the server fences.
-func TestPublishErrorOnExpiredLeaseIsFatalAndSignaled(t *testing.T) {
-	rev := &errPublishEvents{}
-	w := &Watcher{
-		store:         fakeRevStore{rev: rev},
-		leaseDuration: time.Hour,
-		holderID:      "holder",
-		errors:        make(chan error, 1),
-	}
+func (s *errPublishEvents) ReacquireHubRuntimeLease(context.Context, store.ReacquireHubRuntimeLeaseParams) error {
+	s.reacquireCalls++
+	return s.reacquireErr
+}
+
+// MaxPublishedSeq answers the cursor verification that follows a successful
+// reacquisition: nothing was published past seq 0, so the cursor is trivially
+// replayable and the test stays focused on the store-error classification.
+func (*errPublishEvents) MaxPublishedSeq(context.Context) (int64, error) { return 0, nil }
+
+// A publish store error on a LAPSED lease is fatal only when the lease cannot be
+// taken back. A rival holder means that Hub may have consumed and compacted past
+// this cursor, so the watcher signals the server to fence.
+func TestPublishErrorOnLeaseLostToRivalIsFatalAndSignaled(t *testing.T) {
+	rev := &errPublishEvents{reacquireErr: store.ErrHubAlreadyRunning}
+	w := attachLease(&Watcher{
+		store:  fakeRevStore{rev: rev},
+		errors: make(chan error, 1),
+	}, "holder", time.Hour)
 	_ = w.lease.mu.Lock(context.Background())
-	w.lease.leaseExpiresAt = time.Now().Add(-time.Second) // already expired
+	w.lease.leaseExpiresAt = time.Now().Add(-time.Second) // already lapsed
 	err := w.publishPendingLocked(context.Background(), 100, 1000)
 	w.lease.mu.Unlock()
 
 	require.Error(t, err)
-	assert.True(t, errorsIsLeaseFatal(err), "a publish store error on an expired lease must be lease-fatal")
+	assert.True(t, errorsIsLeaseFatal(err), "a lease held by a rival must be lease-fatal")
 	assert.Len(t, w.errors, 1, "the fatal must be signaled to the server so it fences")
+}
+
+// The same lapse with no rival must NOT fence: recovery takes the lease back and
+// the publish failure is reported as the ordinary transient store error it is.
+// This is the suspend path -- a laptop that slept past its lease keeps serving.
+func TestPublishErrorOnLapsedLeaseRecoversAndReportsStoreError(t *testing.T) {
+	rev := &errPublishEvents{}
+	w := attachLease(&Watcher{
+		store:  fakeRevStore{rev: rev},
+		errors: make(chan error, 1),
+	}, "holder", time.Hour)
+	_ = w.lease.mu.Lock(context.Background())
+	w.lease.leaseExpiresAt = time.Now().Add(-time.Second) // already lapsed
+	err := w.publishPendingLocked(context.Background(), 100, 1000)
+	remaining := w.lease.remaining()
+	w.lease.mu.Unlock()
+
+	require.Error(t, err)
+	assert.False(t, errorsIsLeaseFatal(err), "a recovered lapse must not be lease-fatal")
+	assert.Empty(t, w.errors, "a recovered lapse must not fence the server")
+	assert.Equal(t, 1, rev.reacquireCalls, "the lapsed lease must be reacquired")
+	assert.Greater(t, remaining, time.Duration(0), "recovery must leave a live lease behind")
+	// A lapse that only the WALL clock can see -- the state a suspend actually
+	// leaves -- has no test of its own: that time.Time cannot be built in Go (see
+	// remaining). TestWatcher_ReacquiresLeaseLapsedDuringSuspend
+	// covers the same recovery from the database side.
+}
+
+// recoverEvents drives the recovery paths a lapsed lease reaches. Every field is
+// what one of those paths needs the store to do, so one fake covers them instead
+// of four near-identical ones.
+type recoverEvents struct {
+	store.RevocationEventStore
+	reacquireErr    error
+	reacquireDelay  time.Duration
+	beforeReacquire func()
+	maxSeqErr       error
+	maxSeq          int64
+	listed          []store.PublishedRevocationEvent
+	listErr         error
+
+	reacquireCalls int
+	released       []string
+}
+
+func (*recoverEvents) PublishPending(context.Context, int32) (int64, error) { return 0, nil }
+
+func (s *recoverEvents) ReacquireHubRuntimeLease(context.Context, store.ReacquireHubRuntimeLeaseParams) error {
+	s.reacquireCalls++
+	if s.beforeReacquire != nil {
+		s.beforeReacquire()
+	}
+	time.Sleep(s.reacquireDelay)
+	return s.reacquireErr
+}
+
+func (s *recoverEvents) MaxPublishedSeq(context.Context) (int64, error) {
+	return s.maxSeq, s.maxSeqErr
+}
+
+func (s *recoverEvents) ReleaseHubRuntimeLease(_ context.Context, holderID string) (int64, error) {
+	s.released = append(s.released, holderID)
+	return 1, nil
+}
+
+func lapsedWatcher(rev store.RevocationEventStore, leaseDuration time.Duration) *Watcher {
+	w := attachLease(&Watcher{
+		store:  fakeRevStore{rev: rev},
+		errors: make(chan error, 1),
+	}, "holder", leaseDuration)
+	w.lease.seeded = true
+	w.lease.leaseExpiresAt = time.Now().Add(-time.Second)
+	return w
+}
+
+// A store that cannot answer the reacquisition must NOT fence the Hub. The
+// lease merely lapsed, so the right response is to try again on the next tick --
+// killing the process over a SQLITE_BUSY would reintroduce the outage this
+// recovery path exists to remove.
+func TestRecoverRetriesAfterATransientStoreFailure(t *testing.T) {
+	rev := &recoverEvents{reacquireErr: errors.New("database is locked")}
+	w := lapsedWatcher(rev, time.Hour)
+
+	_ = w.lease.mu.Lock(context.Background())
+	defer w.lease.mu.Unlock()
+
+	err := w.lease.renewIfStale(context.Background())
+	require.Error(t, err)
+	assert.False(t, errorsIsLeaseFatal(err), "a store blip during recovery must not be lease-fatal")
+	assert.NotErrorIs(t, err, ErrLeaseLost,
+		"the lapse cause must not be wrapped in, or callers stop the watcher for a store blip")
+	assert.Empty(t, w.errors, "a retryable failure must not fence the server")
+
+	// The lease is still lapsed, so the next attempt must try again rather than
+	// latch. A recovery that gave up once would leave the Hub running without a
+	// lease for the rest of the process.
+	_ = w.lease.renewIfStale(context.Background())
+	assert.Equal(t, 2, rev.reacquireCalls, "recovery must retry while the lease is still lapsed")
+}
+
+// A reacquisition that outlasts the whole lease duration hands back a lease that
+// may already have expired at the database. Trusting it would let the Hub write
+// on a lease it does not hold, so this is one of the two genuinely fatal
+// outcomes.
+func TestRecoverRejectsALeaseThatOutlivedItsOwnBudget(t *testing.T) {
+	const leaseDuration = 20 * time.Millisecond
+	rev := &recoverEvents{reacquireDelay: 3 * leaseDuration}
+	w := lapsedWatcher(rev, leaseDuration)
+
+	_ = w.lease.mu.Lock(context.Background())
+	defer w.lease.mu.Unlock()
+
+	err := w.lease.renewIfStale(context.Background())
+	require.ErrorIs(t, err, ErrLeaseLost)
+	assert.ErrorContains(t, err, "exceeded local lease budget")
+	assert.Len(t, w.errors, 1, "a lease that cannot be trusted must fence the server")
+}
+
+// Close can set `closed` while a reacquisition is already in flight. The row
+// that lands afterwards would outlive the Watcher and fence the next launch
+// until its TTL, so recovery must remove what it just took.
+func TestRecoverReleasesALeaseTakenWhileCloseWasRacing(t *testing.T) {
+	rev := &recoverEvents{}
+	w := lapsedWatcher(rev, time.Hour)
+	// Close sets `closed` before it releases; model that landing mid-flight.
+	rev.beforeReacquire = func() { w.closed.Store(true) }
+
+	_ = w.lease.mu.Lock(context.Background())
+	defer w.lease.mu.Unlock()
+
+	err := w.lease.renewIfStale(context.Background())
+	require.ErrorIs(t, err, ErrClosed)
+	assert.Equal(t, []string{"holder"}, rev.released,
+		"a lease taken during a concurrent Close must be released, not orphaned for its TTL")
+	assert.Empty(t, w.errors, "losing a race with Close is not a fatal lease loss")
+}
+
+// Recovery keeps the cursor, so the cursor must be proven replayable before any
+// event is applied. When that proof cannot be READ, the watcher must hold the
+// unverified flag and re-prove later -- not assume the cursor is fine and start
+// applying events from it.
+func TestRecoverHoldsTheCursorUnverifiedUntilItCanBeProven(t *testing.T) {
+	rev := &recoverEvents{maxSeqErr: errors.New("store unavailable")}
+	w := lapsedWatcher(rev, time.Hour)
+
+	_ = w.lease.mu.Lock(context.Background())
+	defer w.lease.mu.Unlock()
+
+	err := w.lease.renewIfStale(context.Background())
+	require.Error(t, err)
+	assert.False(t, errorsIsLeaseFatal(err), "an unreadable cursor proof is not a lost lease")
+	assert.True(t, w.lease.cursorUnverified, "the cursor must stay unverified until it is proven")
+	assert.Empty(t, w.errors)
+
+	// Consumption stays blocked while the flag is set, so no event is applied
+	// from a cursor that was never proven.
+	require.Error(t, w.lease.ensure(context.Background()))
+
+	// Once the store answers, the proof completes and consume may proceed. maxSeq at
+	// the cursor means nothing was published past it, so there is nothing to
+	// replay and no gap to find.
+	rev.maxSeqErr = nil
+	require.NoError(t, w.lease.ensure(context.Background()))
+	assert.False(t, w.lease.cursorUnverified, "a completed proof must clear the flag")
+}
+
+func (s *recoverEvents) ListPublishedAfter(context.Context, int64, int32) ([]store.PublishedRevocationEvent, error) {
+	return s.listed, s.listErr
+}
+
+// Compaction can delete every row past the cursor while last_seq still
+// reports a higher head. Consume would see an empty page and treat the stream
+// as drained. verifyCursor is the proof that catches that empty-list hole.
+func TestVerifyCursorFencesWhenTheListIsEmptyPastTheCursor(t *testing.T) {
+	rev := &recoverEvents{maxSeq: 5}
+	w := attachLease(&Watcher{
+		store:  fakeRevStore{rev: rev},
+		errors: make(chan error, 1),
+	}, "holder", time.Hour)
+	w.lease.lastSeq = 1
+	w.lease.cursorUnverified = true
+	w.lease.leaseExpiresAt = time.Now().Add(time.Hour)
+
+	_ = w.lease.mu.Lock(context.Background())
+	defer w.lease.mu.Unlock()
+
+	err := w.lease.verifyCursor(context.Background())
+	require.ErrorIs(t, err, ErrLeaseLost)
+	assert.True(t, w.lease.cursorUnverified, "a hole must leave the cursor unverified")
+	assert.Len(t, w.errors, 1, "an empty-list hole must fence the Hub")
+}
+
+// The first surviving event past the cursor is cursor+1: the stream is still
+// gapless, so consume may apply from here.
+func TestVerifyCursorAcceptsTheNextSeq(t *testing.T) {
+	rev := &recoverEvents{
+		maxSeq: 2,
+		listed: []store.PublishedRevocationEvent{{
+			Seq:   2,
+			Event: store.RevocationEvent{Kind: store.RevocationEventKindSession, SubjectID: "s"},
+		}},
+	}
+	w := attachLease(&Watcher{
+		store:  fakeRevStore{rev: rev},
+		errors: make(chan error, 1),
+	}, "holder", time.Hour)
+	w.lease.lastSeq = 1
+	w.lease.cursorUnverified = true
+	w.lease.leaseExpiresAt = time.Now().Add(time.Hour)
+
+	_ = w.lease.mu.Lock(context.Background())
+	defer w.lease.mu.Unlock()
+
+	require.NoError(t, w.lease.verifyCursor(context.Background()))
+	assert.False(t, w.lease.cursorUnverified)
+	assert.Empty(t, w.errors)
+}
+
+// WithDeadline uses the monotonic reading of the Time it is given. A lapsed
+// lease must therefore hand it a Time that is already in the past, not the
+// original leaseExpiresAt (which can still look live on the monotonic clock).
+func TestLeaseDeadlineIsAlreadyPastWhenTheLeaseHasLapsed(t *testing.T) {
+	w := attachLease(&Watcher{}, "holder", time.Hour)
+	_ = w.lease.mu.Lock(context.Background())
+	defer w.lease.mu.Unlock()
+	w.lease.leaseExpiresAt = time.Now().Add(-time.Second)
+
+	deadline := w.lease.deadline()
+	assert.True(t, deadline.Before(time.Now()),
+		"a lapsed lease must abort in-flight store calls instead of waiting on a frozen monotonic deadline")
+}
+
+func TestLeaseBudgetExpiryRejectsAGrantThatOutlastedItsBudget(t *testing.T) {
+	_, exceeded := leaseBudgetExpiry(time.Now().Add(-time.Hour), time.Minute)
+	assert.True(t, exceeded, "a grant round-trip that outlasted the lease must not be trusted")
+
+	started := time.Now()
+	expires, exceeded := leaseBudgetExpiry(started, time.Hour)
+	assert.False(t, exceeded)
+	assert.WithinDuration(t, started.Add(time.Hour), expires, time.Millisecond)
+}
+
+type holeEvents struct {
+	store.RevocationEventStore
+}
+
+func (holeEvents) ListPublishedAfter(context.Context, int64, int32) ([]store.PublishedRevocationEvent, error) {
+	return []store.PublishedRevocationEvent{{
+		Seq:   5,
+		Event: store.RevocationEvent{Kind: store.RevocationEventKindSession, SubjectID: "s"},
+	}}, nil
+}
+
+// A hole in a live stream is the same loss as a compacted gap after a lapse:
+// the watcher would skip revocations. Fence on every consume page, not only on
+// the recovery preflight.
+func TestConsumeFencesWhenTheStreamHasAHole(t *testing.T) {
+	w := attachLease(&Watcher{
+		store:  fakeRevStore{rev: holeEvents{}},
+		errors: make(chan error, 1),
+	}, "holder", time.Hour)
+	w.lease.seeded = true
+	w.lease.lastSeq = 1
+	w.lease.leaseExpiresAt = time.Now().Add(time.Hour)
+
+	_ = w.lease.mu.Lock(context.Background())
+	defer w.lease.mu.Unlock()
+
+	n, drained, err := w.consumePageLocked(context.Background(), 10)
+	require.ErrorIs(t, err, ErrLeaseLost)
+	assert.Zero(t, n)
+	assert.False(t, drained)
+	assert.Len(t, w.errors, 1, "a hole must be signaled so the server fences")
+	assert.Equal(t, int64(1), w.lease.lastSeq, "no event past the hole may advance the cursor")
 }
 
 func TestApplyEventSkipsUnknownKind(t *testing.T) {
@@ -388,18 +671,16 @@ func (*singleSessionEventStore) ReleaseHubRuntimeLease(context.Context, string) 
 // shared DB, so it cannot corrupt a Hub that has since acquired the released
 // lease. In production the owned loop is still drained via stopLoop before the
 // store closes; only a directly-invoked RunOnce (no production caller) is left
-// to unwind on its own. renewLocked is gated on `closed`, so the unwind cannot
+// to unwind on its own. renew checks `closed`, so the unwind cannot
 // re-acquire the lease; it observes `closed`/`!seeded` and returns ErrClosed.
 func TestCloseReleasesLeaseWithoutWaitingForInFlightApply(t *testing.T) {
 	closer := &blockingCloser{started: make(chan struct{}), release: make(chan struct{})}
-	w := &Watcher{
+	w := attachLease(&Watcher{
 		store:           fakeRevStore{rev: &singleSessionEventStore{}},
 		lifecycle:       auth.NewCredentialLifecycleEffects(nil, closer, nil),
-		leaseDuration:   time.Hour,
 		pageSize:        10,
 		maxEventsPerRun: 10,
-		holderID:        "holder",
-	}
+	}, "holder", time.Hour)
 	w.lease.seeded = true
 	w.lease.leaseExpiresAt = time.Now().Add(time.Hour)
 
@@ -467,7 +748,7 @@ func TestRunStoreUnlockedReLocksAfterPanic(t *testing.T) {
 		defer func() {
 			require.NotNil(t, recover(), "expected the store round-trip panic to propagate")
 		}()
-		_ = w.runStoreUnlocked(context.Background(), func(context.Context) error {
+		_ = w.lease.runStoreUnlocked(context.Background(), func(context.Context) error {
 			panic("boom in store round-trip")
 		})
 	}()

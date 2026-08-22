@@ -1,12 +1,50 @@
 package hub
 
 import (
+	"context"
 	"errors"
 	"net"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/leapmux/leapmux/internal/util/testutil"
 )
+
+// A Hub that stops because something failed must SAY so, at the moment it
+// stops. Reporting the cause only through the aggregate error Serve returns is
+// what left a user's bug report showing a Hub that stopped for no stated
+// reason.
+func TestLogShutdownCauseReportsAFatalCause(t *testing.T) {
+	logs := testutil.CaptureDefaultLogger(t)
+	ctx, cancel := context.WithCancelCause(context.Background())
+	fatal := errors.New("revocation watcher lease lost: holder h1")
+	cancel(fatal)
+
+	logShutdownCause(ctx)
+
+	out := logs.String()
+	assert.Contains(t, out, "hub shutting down after a fatal error")
+	assert.Contains(t, out, "revocation watcher lease lost", "the cause must be readable without the returned error")
+	assert.Contains(t, out, "level=ERROR", "a fatal stop must not be logged at INFO alongside ordinary shutdowns")
+}
+
+// An exit somebody asked for carries nothing worth a field, and must not be
+// dressed up as a failure: a Ctrl-C that logged at ERROR would train operators
+// to ignore the level that matters.
+func TestLogShutdownCauseStaysQuietForARequestedStop(t *testing.T) {
+	logs := testutil.CaptureDefaultLogger(t)
+	ctx, cancel := context.WithCancelCause(context.Background())
+	cancel(nil) // what a Ctrl-C reaching Serve's parent context looks like
+
+	logShutdownCause(ctx)
+
+	out := logs.String()
+	assert.Contains(t, out, "hub shutting down...")
+	assert.NotContains(t, out, "fatal")
+	assert.NotContains(t, out, "level=ERROR")
+}
 
 type closeErrorListener struct {
 	err error

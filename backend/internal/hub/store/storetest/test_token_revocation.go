@@ -737,6 +737,117 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 		require.NoError(t, err, "clean release must permit immediate handoff")
 	})
 
+	// A Hub whose own lease lapsed while it could not renew -- a suspended
+	// laptop, a paused VM -- must be able to take that lease back WITHOUT losing
+	// its place in the stream, and must be refused whenever any other holder's
+	// row is present.
+	t.Run("a lapsed Hub lease is reacquirable by its own holder at its own cursor", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "user")
+
+		require.Error(t, st.RevocationEvents().ReacquireHubRuntimeLease(ctx, store.ReacquireHubRuntimeLeaseParams{
+			HolderID: "", CursorSeq: 0, LeaseDuration: time.Hour,
+		}), "an empty holder must be rejected")
+		require.Error(t, st.RevocationEvents().ReacquireHubRuntimeLease(ctx, store.ReacquireHubRuntimeLeaseParams{
+			HolderID: "first", CursorSeq: -1, LeaseDuration: time.Hour,
+		}), "a negative cursor must be rejected")
+		require.Error(t, st.RevocationEvents().ReacquireHubRuntimeLease(ctx, store.ReacquireHubRuntimeLeaseParams{
+			HolderID: "first", CursorSeq: 0, LeaseDuration: time.Nanosecond,
+		}), "a sub-millisecond lease must be rejected")
+
+		_, err := st.RevocationEvents().AcquireHubRuntimeLease(ctx, store.AcquireHubRuntimeLeaseParams{
+			HolderID: "first", PublishLimit: 10, LeaseDuration: expiringLeaseDuration,
+		})
+		require.NoError(t, err)
+
+		// A rival must not take a live row. The holder itself may: local clocks
+		// can report a lapse while this row is still live, and that must become
+		// a force-renewal rather than a false "another Hub" fence.
+		require.ErrorIs(t, st.RevocationEvents().ReacquireHubRuntimeLease(ctx, store.ReacquireHubRuntimeLeaseParams{
+			HolderID: "second", CursorSeq: 0, LeaseDuration: time.Hour,
+		}), store.ErrHubAlreadyRunning)
+		require.NoError(t, st.RevocationEvents().ReacquireHubRuntimeLease(ctx, store.ReacquireHubRuntimeLeaseParams{
+			HolderID: "first", CursorSeq: 0, LeaseDuration: expiringLeaseDuration,
+		}))
+
+		for range 3 {
+			tokenID := seedAPIToken(t, st, user.ID)
+			_, revokeErr := st.APITokens().Revoke(ctx, tokenID)
+			require.NoError(t, revokeErr)
+		}
+		published, err := st.RevocationEvents().PublishPending(ctx, 10)
+		require.NoError(t, err)
+		require.Equal(t, int64(3), published)
+
+		time.Sleep(4 * expiringLeaseDuration)
+
+		// Another holder's EXPIRED row also refuses: that Hub may have consumed
+		// and compacted past this cursor, which no reacquisition can undo.
+		require.ErrorIs(t, st.RevocationEvents().ReacquireHubRuntimeLease(ctx, store.ReacquireHubRuntimeLeaseParams{
+			HolderID: "second", CursorSeq: 0, LeaseDuration: time.Hour,
+		}), store.ErrHubAlreadyRunning)
+
+		// The original holder takes its own lapsed lease back, keeping cursor 1
+		// where AcquireHubRuntimeLease would have fenced to the head at 3.
+		require.NoError(t, st.RevocationEvents().ReacquireHubRuntimeLease(ctx, store.ReacquireHubRuntimeLeaseParams{
+			HolderID: "first", CursorSeq: 1, LeaseDuration: time.Hour,
+		}))
+
+		// The lease is live again: a rival is fenced out, and the recovered
+		// cursor -- not the head of the stream -- bounds compaction, so the two
+		// events this Hub still owes delivery on survive.
+		_, err = st.RevocationEvents().AcquireHubRuntimeLease(ctx, store.AcquireHubRuntimeLeaseParams{
+			HolderID: "rival", PublishLimit: 10, LeaseDuration: time.Hour,
+		})
+		require.ErrorIs(t, err, store.ErrHubAlreadyRunning)
+		deleted, err := st.Cleanup().CompactPublishedRevocationEvents(ctx, store.CompactRevocationEventsParams{
+			Cutoff: time.Now().UTC().Add(time.Hour),
+		})
+		require.NoError(t, err)
+		require.Equal(t, int64(1), deleted, "the reacquired cursor must bound compaction to seq 1")
+		events, err := st.RevocationEvents().ListPublishedAfter(ctx, 0, 10)
+		require.NoError(t, err)
+		require.Len(t, events, 2, "events past the recovered cursor must survive for replay")
+		assert.Equal(t, int64(2), events[0].Seq)
+
+		// Renewal works on the reacquired row, so recovery hands a usable lease
+		// back to the normal heartbeat rather than a row only reacquisition can
+		// touch again.
+		advanced, err := st.RevocationEvents().RenewHubRuntimeLease(ctx, store.RenewHubRuntimeLeaseParams{
+			HolderID: "first", CursorSeq: 3, LeaseDuration: time.Hour,
+		})
+		require.NoError(t, err)
+		assert.True(t, advanced)
+	})
+
+	// A lease whose row was swept entirely -- CompactPublished deletes an expired
+	// row before it compacts -- must still be reacquirable. This is the ordinary
+	// state a Hub wakes into after sleeping through a cleanup pass.
+	t.Run("a swept Hub lease is reacquirable at its own cursor", func(t *testing.T) {
+		st := s.NewStore(t)
+
+		_, err := st.RevocationEvents().AcquireHubRuntimeLease(ctx, store.AcquireHubRuntimeLeaseParams{
+			HolderID: "first", PublishLimit: 10, LeaseDuration: expiringLeaseDuration,
+		})
+		require.NoError(t, err)
+		time.Sleep(4 * expiringLeaseDuration)
+
+		// The cleanup pass that sweeps the expired lease row.
+		_, err = st.Cleanup().CompactPublishedRevocationEvents(ctx, store.CompactRevocationEventsParams{
+			Cutoff: time.Now().UTC().Add(time.Hour),
+		})
+		require.NoError(t, err)
+
+		require.NoError(t, st.RevocationEvents().ReacquireHubRuntimeLease(ctx, store.ReacquireHubRuntimeLeaseParams{
+			HolderID: "first", CursorSeq: 0, LeaseDuration: time.Hour,
+		}))
+		_, err = st.RevocationEvents().AcquireHubRuntimeLease(ctx, store.AcquireHubRuntimeLeaseParams{
+			HolderID: "rival", PublishLimit: 10, LeaseDuration: time.Hour,
+		})
+		require.ErrorIs(t, err, store.ErrHubAlreadyRunning,
+			"reacquiring a swept lease must restore a live, exclusive row")
+	})
+
 	// The bound compaction applies is the LIVE lease's cursor; an abandoned Hub
 	// must not pin the backlog forever. CompactPublished deletes the expired
 	// lease row before compacting, so the COALESCE bound falls back to last_seq

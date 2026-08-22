@@ -176,6 +176,24 @@ func TestRevocationCorePublishesAndFencesLeaseInOneTransaction(t *testing.T) {
 	assert.False(t, conn.leasePresent)
 }
 
+func TestRevocationCoreReacquireReplacesOwnLiveRow(t *testing.T) {
+	conn := &revocationCoreTestConn{leasePresent: true, lease: RevocationLease{HolderID: "holder", CursorSeq: 3, LeaseMillis: 1000}}
+	core := newRevocationCoreTestSubject(conn)
+
+	require.NoError(t, core.ReacquireHubRuntimeLease(context.Background(), ReacquireHubRuntimeLeaseParams{
+		HolderID: "holder", CursorSeq: 4, LeaseDuration: 2 * time.Second,
+	}))
+	assert.True(t, conn.leasePresent, "own-row reacquire must put a live row back")
+	assert.Equal(t, RevocationLease{HolderID: "holder", CursorSeq: 4, LeaseMillis: 2000}, conn.lease)
+
+	err := core.ReacquireHubRuntimeLease(context.Background(), ReacquireHubRuntimeLeaseParams{
+		HolderID: "other", CursorSeq: 0, LeaseDuration: time.Second,
+	})
+	assert.True(t, errors.Is(err, ErrHubAlreadyRunning))
+	assert.True(t, conn.leasePresent, "a rival reacquire must not delete the live row")
+	assert.Equal(t, "holder", conn.lease.HolderID, "a rival reacquire must leave the live row in place")
+}
+
 func TestRevocationCoreRejectsInvalidLeaseBeforeDatabaseWork(t *testing.T) {
 	conn := &revocationCoreTestConn{pending: 1}
 	core := newRevocationCoreTestSubject(conn)
@@ -189,4 +207,11 @@ func TestRevocationCoreRejectsInvalidLeaseBeforeDatabaseWork(t *testing.T) {
 	})
 	assert.False(t, ok)
 	require.EqualError(t, err, "hub runtime lease duration must be at least 1ms")
+
+	err = core.ReacquireHubRuntimeLease(context.Background(), ReacquireHubRuntimeLeaseParams{
+		HolderID: "holder", CursorSeq: -1, LeaseDuration: time.Second,
+	})
+	require.EqualError(t, err, "hub runtime lease cursor must not be negative")
+	assert.Equal(t, int64(1), conn.pending, "invalid reacquire must not open a write transaction")
+	assert.Zero(t, conn.transactions)
 }
