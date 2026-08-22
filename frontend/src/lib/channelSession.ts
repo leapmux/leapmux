@@ -269,7 +269,7 @@ export class ChannelSession {
       return
     if (this.pastHardCeiling(ch)) {
       await this.deps.closeChannel(ch.channelId)
-      throw new ChannelError('transport', 'session key past hard ceiling')
+      throw new ChannelError('transport', 'session key past hard ceiling', { disconnected: false })
     }
     if (!this.shouldInitiateRekey(ch))
       return
@@ -365,7 +365,7 @@ export class ChannelSession {
       ch.rekeyNotBefore = monotonicNow() + backoff
       if (this.pastHardCeiling(ch)) {
         await this.deps.closeChannel(ch.channelId)
-        throw new ChannelError('transport', 'session key past hard ceiling after rekey reject')
+        throw new ChannelError('transport', 'session key past hard ceiling after rekey reject', { disconnected: false })
       }
     }
   }

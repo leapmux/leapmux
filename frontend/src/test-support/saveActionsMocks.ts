@@ -71,10 +71,24 @@ export function fileDownloadMock(spies: SaveActionsSpies) {
   }
 }
 
+/**
+ * The WHOLE surface of `~/components/common/Toast`, not only the two helpers
+ * that the save actions call.
+ *
+ * A `vi.mock` factory replaces the module for every importer in the file,
+ * including a transitive one -- `~/lib/clipboard` announces a failed write
+ * through `showWarnToastWithLoggedCause` -- and a named import that the factory
+ * omits fails the whole test file at load with "No such export". Every warning
+ * helper routes to `warnToastImpl`, so a test can still assert on any of them.
+ */
 export function toastMock(spies: SaveActionsSpies) {
   return {
     showWarnToast: (...args: unknown[]) => spies.warnToastImpl(...args),
     showInfoToast: (...args: unknown[]) => spies.infoToastImpl(...args),
+    showWarnToastWithLoggedCause: (...args: unknown[]) => spies.warnToastImpl(...args),
+    showWarnToastUnlessDisconnected: (...args: unknown[]) => spies.warnToastImpl(...args),
+    showStickyWarnToast: (...args: unknown[]) => spies.warnToastImpl(...args),
+    showErrorToast: (...args: unknown[]) => spies.warnToastImpl(...args),
   }
 }
 

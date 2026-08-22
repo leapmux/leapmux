@@ -1,7 +1,7 @@
 import { Code, ConnectError } from '@connectrpc/connect'
 import { describe, expect, it } from 'vitest'
-import { isWorkerUnreachable } from '~/api/workerErrors'
-import { ChannelError } from '~/lib/channelError'
+import { isDisconnectError, isWorkerUnreachable } from '~/api/workerErrors'
+import { ChannelError, channelNotOpenError } from '~/lib/channelError'
 
 // isWorkerUnreachable backs the tab-close fallback for unreachable
 // workers (useTabOperations.handleTabClose). The CONNECT-CODE half of the
@@ -88,8 +88,8 @@ describe('isworkerunreachable', () => {
     // Offline is passed deliberately: a false here then proves the SOURCE gate
     // rejected these, not the liveness gate.
     expect(isWorkerUnreachable(new ChannelError('client', 'RPC call \'X\' timed out after 10s'), false)).toBe(false)
-    expect(isWorkerUnreachable(new ChannelError('rpc', 'agent not found', 5), false)).toBe(false)
-    expect(isWorkerUnreachable(new ChannelError('stream', 'boom', 13), false)).toBe(false)
+    expect(isWorkerUnreachable(new ChannelError('rpc', 'agent not found', { code: 5 }), false)).toBe(false)
+    expect(isWorkerUnreachable(new ChannelError('stream', 'boom', { code: 13 }), false)).toBe(false)
   })
 
   it('returns false for non-connect errors', () => {
@@ -98,5 +98,57 @@ describe('isworkerunreachable', () => {
     expect(isWorkerUnreachable(null, undefined)).toBe(false)
     expect(isWorkerUnreachable(undefined, undefined)).toBe(false)
     expect(isWorkerUnreachable({ code: Code.NotFound }, undefined)).toBe(false)
+  })
+})
+
+// isDisconnectError decides whether a BACKGROUND failure is worth a toast.
+// A false negative costs one redundant toast; a false positive silences a real
+// failure that nothing is retrying, so the predicate stays narrow.
+describe('isdisconnecterror', () => {
+  it('matches every transport ChannelError, whichever leg produced it', () => {
+    expect(isDisconnectError(new ChannelError('transport', 'channel disconnected'))).toBe(true)
+    expect(isDisconnectError(new ChannelError('transport', 'channel closed by server'))).toBe(true)
+    expect(isDisconnectError(new ChannelError('transport', 'session key past hard ceiling', { disconnected: false }))).toBe(false)
+    expect(isDisconnectError(new ChannelError('transport', 'open channel: hub returned an empty authenticated user id', { disconnected: false }))).toBe(false)
+  })
+
+  // The pair the user actually saw: one drop produced "channel disconnected"
+  // from the drained stream and "channel not open" from the call that raced it,
+  // and both were rendered as toasts.
+  it('matches a channel that is not there, though its source is client', () => {
+    expect(isDisconnectError(channelNotOpenError())).toBe(true)
+  })
+
+  it('leaves the rest of the client source alone, because the link was up', () => {
+    expect(isDisconnectError(new ChannelError('client', 'message too large: 9 > 8'))).toBe(false)
+    expect(isDisconnectError(new ChannelError('client', 'RPC call \'X\' timed out after 10s'))).toBe(false)
+    expect(isDisconnectError(new ChannelError('client', 'RPC call \'X\' aborted'))).toBe(false)
+  })
+
+  // A worker that ANSWERED is the opposite of a dropped link, and its refusal is
+  // exactly what the user needs to read.
+  it('never matches an answer from the worker', () => {
+    expect(isDisconnectError(new ChannelError('rpc', 'agent not found', { code: 5 }))).toBe(false)
+    expect(isDisconnectError(new ChannelError('stream', 'boom', { code: 13 }))).toBe(false)
+  })
+
+  // The hub leg is Connect HTTP, and Unavailable is its "nothing answered".
+  it('matches a tagged worker-unreachable Unavailable and no other connect code', () => {
+    const tagged = new ConnectError('worker is offline', Code.Unavailable, {
+      'leapmux-worker-unreachable': '1',
+    })
+    expect(isDisconnectError(tagged)).toBe(true)
+    expect(isDisconnectError(new ConnectError('502 from the edge', Code.Unavailable))).toBe(false)
+    expect(isDisconnectError(new ConnectError('worker gone', Code.NotFound))).toBe(false)
+    expect(isDisconnectError(new ConnectError('log in again', Code.Unauthenticated))).toBe(false)
+    expect(isDisconnectError(new ConnectError('not yours', Code.PermissionDenied))).toBe(false)
+    expect(isDisconnectError(new ConnectError('slow', Code.DeadlineExceeded))).toBe(false)
+  })
+
+  it('returns false for anything that is neither error shape', () => {
+    expect(isDisconnectError(new Error('bare error'))).toBe(false)
+    expect(isDisconnectError('channel not open')).toBe(false)
+    expect(isDisconnectError(null)).toBe(false)
+    expect(isDisconnectError(undefined)).toBe(false)
   })
 })

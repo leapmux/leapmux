@@ -31,6 +31,7 @@ import { assertNever } from '~/lib/assertNever'
 import { KEY_CLI_PATH_CHECKED, localStorageGet, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
 import { getCRDTBridge } from '~/lib/crdt'
 import { hasWorkspaceDesktopChrome } from '~/lib/desktopChrome'
+import { attachDismissSoftKeyboardOnTap } from '~/lib/dismissSoftKeyboardOnTap'
 import { createImperativeRef } from '~/lib/imperativeRef'
 import { createLogger } from '~/lib/logger'
 import { setDashboardTitle, setWorkspaceTitle } from '~/lib/pageTitle'
@@ -204,9 +205,14 @@ export const AppShell: Component = () => {
   // this catches.
   setExpectedUserId(() => auth.user()?.id)
 
-  // Publish `--vvh` (visible viewport height in px) for mobile layout.
-  // No-op on desktop beyond a one-time write of window.innerHeight.
-  useVisualViewportInset()
+  // Publish `--vvh` / `--vv-shift` (the visible region's size and place) for
+  // the mobile layout, and report whether the soft keyboard is up. No-op on a
+  // fine-pointer device, which has no keyboard to take screen space.
+  const softKeyboardUp = useVisualViewportInset()
+  // One recognizer for every surface: a short still tap outside an editor
+  // puts the on-screen keyboard away. `dismissSoftKeyboard` is a no-op when
+  // no keyboard is covering the screen.
+  onCleanup(attachDismissSoftKeyboardOnTap())
 
   // Mobile layout state. The overlay state is the ONE owner of "which
   // overlay is up" (drawers, tab sheet); exclusion between them is structural
@@ -218,6 +224,7 @@ export const AppShell: Component = () => {
     toggleDrawer: toggleMobileDrawer,
     closeSheet: closeMobileSheet,
     closeAll: closeMobileOverlay,
+    applySwipe: applyMobileSwipe,
   } = mobileOverlayState
 
   // Shared turn-end signal: bumped when an agent turn ends.
@@ -1112,13 +1119,16 @@ export const AppShell: Component = () => {
 
   const MobileShellLayer = () => (
     <MobileLayout
-      leftSidebarOpen={mobileOverlay() === 'left'}
-      rightSidebarOpen={mobileOverlay() === 'right'}
-      sheetOpen={mobileOverlay() === 'sheet'}
+      overlay={mobileOverlay()}
       onCloseSheet={closeMobileSheet}
+      onSwipe={applyMobileSwipe}
       leftSidebarElement={createLeftSidebarElement(sidebarOpts())}
       rightSidebarElement={createRightSidebarElement(sidebarOpts())}
       tabBarElement={tileRenderer.tabBarElement()}
+      // Only while an overlay is not depending on the bar: a drawer and the
+      // tab sheet both close through its toggles, and the sheet carries text
+      // fields of its own, so the keyboard being up is not sufficient there.
+      tabBarHidden={softKeyboardUp() && mobileOverlay() === 'none'}
       tileContent={
         // The same gate the desktop center paints on, for the same reason:
         // `state.root` falls back to a locally-minted placeholder leaf while

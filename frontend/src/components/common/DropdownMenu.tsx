@@ -6,7 +6,8 @@ import { Dynamic } from 'solid-js/web'
 import { calcPopoverPosition } from '~/lib/popoverPosition'
 import { popoverCard } from '~/styles/popover.css'
 import { clippedText, menuItemContent, menuItemShortcut } from '~/styles/shared.css'
-import { attachContextMenuGesture, pressAnchorRect } from './contextMenuGesture'
+import { attachContextMenuGesture, holdIsOverMenu, pressAnchorRect } from './contextMenuGesture'
+import { dismissActiveTooltip } from './Tooltip'
 
 /**
  * Marks a dropdown's trigger element. An enclosing popover's dismiss handler
@@ -38,6 +39,58 @@ const MENU_ITEM_SELECTOR = [
  * slowly means "the next thing starting with g".
  */
 const TYPE_AHEAD_RESET_MS = 700
+
+/**
+ * Show the menu, as `manual` when a long press is still holding a finger over
+ * it and as the plain `auto` popover otherwise.
+ *
+ * A menu that opens under a pressing finger cannot be an `auto` popover: the
+ * release still to come is what the HTML light-dismiss pass acts on, and it
+ * hides every `auto` popover whose chain excludes that release. Which engine
+ * hides what, and when, is not something to code around -- Chromium hides
+ * before dispatching the release, WebKit after, and WebKit hit-tests the
+ * release live, so whether the menu survived came down to where the finger
+ * happened to be sitting. `manual` is not light-dismissed at all, and
+ * `armPressDismiss` takes over the one job that costs, closing on a press
+ * outside. `Escape` needs nothing: `handleMenuKeyDown` calls `hidePopover`
+ * itself.
+ *
+ * Asked at SHOW TIME, of the gesture rather than of the caller, because both
+ * ways this component opens need it: the gesture it attaches itself, and a
+ * controlled `open` driven by a singleton host -- which is how the chat list's
+ * shared message menu opens, and why fixing only the first path left the menu
+ * a phone user actually presses still vanishing on release.
+ *
+ * @returns whether the menu opened in manual mode, so the caller can arm the
+ * dismissal that goes with it.
+ */
+let swappingHoldMode = false
+
+function showMenuPopover(popover: HTMLElement): boolean {
+  dismissActiveTooltip()
+  const manual = holdIsOverMenu()
+  // The attribute can only be swapped while the popover is hidden -- changing
+  // it on a showing one hides it -- so it brackets the show here and the close
+  // in `handleToggle`. Every other way of opening this menu keeps `auto`.
+  if (manual) {
+    if (popover.matches(':popover-open') && popover.getAttribute('popover') !== 'manual') {
+      // jsdom (and some engines) dispatch `toggle` synchronously from
+      // hidePopover. That close must not wipe the press we are about to
+      // re-open under, or the kebab's element-anchor wins the next paint.
+      swappingHoldMode = true
+      try {
+        popover.hidePopover()
+      }
+      finally {
+        swappingHoldMode = false
+      }
+    }
+    popover.setAttribute('popover', 'manual')
+    popover.setAttribute('data-ctx-hold-inert', '')
+  }
+  popover.showPopover()
+  return manual
+}
 
 export interface DropdownTriggerProps {
   /** Whether the dropdown is currently open. */
@@ -482,6 +535,37 @@ export function DropdownMenu(props: DropdownMenuProps) {
     }
   }
 
+  /**
+   * The outside-press dismissal a `manual` popover has to supply itself.
+   *
+   * Armed only for a menu that a long press opened (see `showPressMenu`), and
+   * disarmed the moment it closes, so nothing here is standing while the app is
+   * idle. On `pointerdown`, which is where the native pass acts too, and in the
+   * CAPTURE phase so a row that swallows its own presses cannot hide one.
+   *
+   * The finger that OPENED the menu never reaches this: its `pointerdown`
+   * happened before the menu existed, and its release is a `pointerup`.
+   */
+  let disarmPressDismiss: (() => void) | undefined
+
+  const armPressDismiss = () => {
+    disarmPressDismiss?.()
+    const onOutsidePress = (e: Event) => {
+      if (holdIsOverMenu())
+        return
+      if (!popoverEl?.matches(':popover-open'))
+        return
+      if (e.composedPath().includes(popoverEl))
+        return
+      popoverEl.hidePopover()
+    }
+    document.addEventListener('pointerdown', onOutsidePress, true)
+    disarmPressDismiss = () => {
+      document.removeEventListener('pointerdown', onOutsidePress, true)
+      disarmPressDismiss = undefined
+    }
+  }
+
   const handleToggle = (_e: Event) => {
     // Read the post-transition state from the popover element rather than
     // ToggleEvent.newState. Spec-wise both are equivalent (the toggle event
@@ -489,6 +573,10 @@ export function DropdownMenu(props: DropdownMenuProps) {
     // a plain Event without the ToggleEvent shape — checking `:popover-open`
     // works in both environments.
     const opening = popoverEl?.matches(':popover-open') ?? false
+    // A hold that finds an already-open kebab menu hides it only to swap
+    // `popover="auto"` to `manual`. That hide is not a user close.
+    if (!opening && swappingHoldMode)
+      return
     setIsOpen(opening)
 
     if (opening) {
@@ -526,6 +614,8 @@ export function DropdownMenu(props: DropdownMenuProps) {
       // Deferred one frame, because the popover is not yet visible when
       // `toggle` fires and `focus()` on a hidden element does nothing.
       requestAnimationFrame(() => {
+        if (holdIsOverMenu())
+          return
         if (popoverEl?.matches(':popover-open') && !popoverEl.contains(document.activeElement))
           popoverEl.focus({ preventScroll: true })
       })
@@ -544,6 +634,12 @@ export function DropdownMenu(props: DropdownMenuProps) {
       // opened by a press has no element anchor to clear `aria-expanded` on -- the
       // trigger's own copy is reactive on `isOpen()` and falls with it.
       setPressAnchor(undefined)
+      // Hand the popover back to the platform. A long press opened it as
+      // `manual` and dismissed it by hand (see `showPressMenu`); every other way
+      // of opening this menu wants the native light dismiss, and the attribute
+      // can only be swapped while it is closed -- which it now is.
+      disarmPressDismiss?.()
+      popoverEl?.setAttribute('popover', 'auto')
     }
 
     props.onToggle?.(opening)
@@ -577,7 +673,12 @@ export function DropdownMenu(props: DropdownMenuProps) {
       // dialog-driven auto-dismiss can leave stale.
       const nativeOpen = popoverEl.matches(':popover-open')
       if (shouldOpen && !nativeOpen) {
-        popoverEl.showPopover()
+        // The same choice the gesture path makes, because a singleton host
+        // opens THROUGH here: the chat list's shared message menu is driven by
+        // this `open` accessor, and its opens come from a long press whose
+        // finger is still down. See `showMenuPopover`.
+        if (showMenuPopover(popoverEl))
+          armPressDismiss()
         // Position synchronously, before the browser paints this frame, so the
         // popover never appears at the UA-default position and then jumps. The
         // content is already in the DOM (rendered before this effect), so it
@@ -597,10 +698,9 @@ export function DropdownMenu(props: DropdownMenuProps) {
     }))
   }
 
-  // Right-click / long-press on the owning row. The gesture defers its callback
-  // past the pointer event that completed it, so by the time this runs the
-  // browser's light-dismiss pass is over and showPopover() sticks -- see
-  // `scheduleOpen` in ~/components/common/contextMenuGesture.ts.
+  // Right-click / long-press on the owning row. See `scheduleOpen` in
+  // ~/components/common/contextMenuGesture.ts for the two calls a touch hold
+  // makes and why.
   createEffect(() => {
     const el = props.contextMenuFor?.()
     if (!el)
@@ -608,26 +708,19 @@ export function DropdownMenu(props: DropdownMenuProps) {
     const detach = attachContextMenuGesture(el, {
       onOpen: (press) => {
         setPressAnchor(press)
-        if (popoverEl?.matches(':popover-open')) {
-          // Already up from the kebab, or from a right-click on another row that
-          // shares this menu: re-point it at the new press.
+        if (!popoverEl)
+          return
+        if (popoverEl.matches(':popover-open') && !holdIsOverMenu()) {
           reposition()
+          return
         }
-        else {
-          popoverEl?.showPopover()
-          // Position synchronously, before the browser paints this frame, so the
-          // popover never appears at the UA-default position and then jumps. The
-          // content is already in the DOM (rendered before this effect), so it
-          // measures at its real size here. The rAF reposition in handleToggle + the
-          // ResizeObserver then refine it for any late layout.
-          reposition()
-          // `showPopover` queues the `toggle` event as a task, and a menu that
-          // gates content on `onToggle` (FileActionsMenu's info block) has not
-          // rendered it yet, so the measurement above saw a shorter popover.
-          // Re-measure one task later, after that event and its render, before
-          // any paint can show the miss.
-          setTimeout(reposition, 0)
-        }
+        if (showMenuPopover(popoverEl))
+          armPressDismiss()
+        reposition()
+        setTimeout(reposition, 0)
+      },
+      onCancel: () => {
+        popoverEl?.hidePopover()
       },
     })
     onCleanup(detach)
@@ -637,6 +730,9 @@ export function DropdownMenu(props: DropdownMenuProps) {
     popoverEl?.removeEventListener('toggle', handleToggle)
     window.removeEventListener('scroll', repositionOnExternalScroll, true)
     resizeObserver?.disconnect()
+    // A menu unmounted while open never fires its closing `toggle`, so the
+    // document listener that dismisses a press-opened one is dropped here too.
+    disarmPressDismiss?.()
   })
 
   const handleTriggerPointerDown = () => {

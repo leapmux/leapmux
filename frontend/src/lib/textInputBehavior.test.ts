@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { CONTENT_EDITABLE_SELECTOR, disableTextSubstitutions, INPUT_OR_EDITABLE_SELECTOR, isContentEditableElement, isTypingContext, isTypingElement } from '~/lib/textInputBehavior'
+import { CONTENT_EDITABLE_SELECTOR, disableTextSubstitutions, INPUT_OR_EDITABLE_SELECTOR, isContentEditableElement, isTextEntryElement, isTypingContext, isTypingElement } from '~/lib/textInputBehavior'
 
 /**
  * An element that carries `contenteditable` set to `value`.
@@ -162,6 +162,34 @@ describe('isTypingElement', () => {
     expect(isTypingElement(document.createElement('div'))).toBe(false)
     expect(isTypingElement(editable('false'))).toBe(false)
     expect(isTypingElement(null)).toBe(false)
+  })
+})
+
+describe('isTextEntryElement', () => {
+  it('reports a text input, a textarea and an editing host', () => {
+    expect(isTextEntryElement(document.createElement('input'))).toBe(true)
+    expect(isTextEntryElement(document.createElement('textarea'))).toBe(true)
+    for (const value of ['true', '', 'plaintext-only'])
+      expect(isTextEntryElement(editable(value))).toBe(true)
+  })
+
+  it('does not report a select, a checkbox, or a button input', () => {
+    expect(isTextEntryElement(document.createElement('select'))).toBe(false)
+    const checkbox = document.createElement('input')
+    checkbox.type = 'checkbox'
+    expect(isTextEntryElement(checkbox)).toBe(false)
+    const button = document.createElement('input')
+    button.type = 'button'
+    expect(isTextEntryElement(button)).toBe(false)
+    expect(isTextEntryElement(null)).toBe(false)
+  })
+
+  it('reports the input types that hold free text', () => {
+    for (const type of ['text', 'search', 'email', 'password', 'tel', 'url', 'number']) {
+      const el = document.createElement('input')
+      el.type = type
+      expect(isTextEntryElement(el), type).toBe(true)
+    }
   })
 })
 

@@ -11,7 +11,7 @@ import { AgentInfoSchema, AgentProvider, ContentCompression, MessageSource } fro
 import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { KEY_MRU_AGENT_PROVIDERS, localStorageClearForTests, localStorageGet, localStorageSet } from '~/lib/browserStorage'
-import { ChannelError } from '~/lib/channelError'
+import { ChannelError, channelNotOpenError } from '~/lib/channelError'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createControlStore } from '~/stores/control.store'
 import { protoToAgentTabFields } from '~/stores/tab.helpers'
@@ -50,9 +50,19 @@ vi.mock('~/api/clients', () => ({
   },
 }))
 
-vi.mock('~/components/common/Toast', () => ({
-  showWarnToast: (...args: unknown[]) => mockShowWarnToast(...args),
-}))
+vi.mock('~/components/common/Toast', async () => {
+  // The disconnect-aware helper keeps its REAL rule and reports through the same
+  // spy: what these tests care about is whether the user was told, and a stub
+  // that always forwarded would pass whether the rule held or not.
+  const { isDisconnectError } = await import('~/api/workerErrors')
+  return {
+    showWarnToast: (...args: unknown[]) => mockShowWarnToast(...args),
+    showWarnToastUnlessDisconnected: (message: string, err: unknown) => {
+      if (!isDisconnectError(err))
+        mockShowWarnToast(message, err)
+    },
+  }
+})
 
 let nextPosition = 0
 
@@ -1092,12 +1102,31 @@ describe('useAgentOperations', () => {
       await createRoot(async (dispose) => {
         try {
           mockShowWarnToast.mockClear()
-          const unavailable = new ChannelError('rpc', 'provider scan did not finish; retry', Code.Unavailable)
+          const unavailable = new ChannelError('rpc', 'provider scan did not finish; retry', { code: Code.Unavailable })
           mockListAvailableProviders.mockRejectedValue(unavailable)
           const { ops } = setup()
           await flush()
           expect(ops.availableProviders()).toBeUndefined()
           expect(mockShowWarnToast).toHaveBeenCalledWith('Failed to load available agent providers', unavailable)
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    // The scan runs from an effect, so a dropped link fails it alongside every
+    // other background load. Each one that spoke turned a single outage into a
+    // row of toasts, all of them reading as our own plumbing.
+    it('stays silent when a dropped link is what failed the scan', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          mockShowWarnToast.mockClear()
+          mockListAvailableProviders.mockRejectedValue(channelNotOpenError())
+          const { ops } = setup()
+          await flush()
+          expect(ops.availableProviders()).toBeUndefined()
+          expect(mockShowWarnToast).not.toHaveBeenCalled()
         }
         finally {
           dispose()

@@ -21,6 +21,7 @@ export interface MessageContextMenuRequest {
 
 export interface MessageContextMenuHost {
   open: (request: MessageContextMenuRequest) => void
+  close: () => void
 }
 
 const MessageContextMenuContext = createStableContext<MessageContextMenuHost | undefined>(
@@ -65,6 +66,9 @@ export const MessageContextMenuHostProvider: ParentComponent = (props) => {
     // the path that opens over an open menu.)
     open: (req) => {
       setRequest(req)
+    },
+    close: () => {
+      setRequest(null)
     },
   }
 

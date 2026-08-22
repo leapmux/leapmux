@@ -1,8 +1,8 @@
 /// <reference types="vitest/globals" />
 import type { GlobalErrorTarget } from './installGlobalErrorSink'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { installIgnorableErrorSuppressor } from './ignorableErrorEvents'
 import { installGlobalErrorSink } from './installGlobalErrorSink'
-import { installResizeObserverLoopErrorSuppressor } from './suppressResizeObserverLoopError'
 
 /**
  * A stand-in for `window` that records its listeners, so a test can fire an
@@ -92,6 +92,41 @@ describe('installGlobalErrorSink', () => {
     expect(report).not.toHaveBeenCalled()
   })
 
+  it('ignores a ResizeObserver loop rejected as an unhandled promise', () => {
+    const report = vi.fn()
+    const t = install(report)
+
+    t.fire('unhandledrejection', { reason: 'ResizeObserver loop limit exceeded' })
+
+    expect(report).not.toHaveBeenCalled()
+  })
+
+  // iOS Safari mutes an error to "Script error." when the share sheet resizes
+  // and snapshots the page. Every field the toast could report is already
+  // stripped, so reporting it puts "Something went wrong" in front of a user
+  // whose app is working, on an event nobody can act on.
+  it('ignores a muted error the browser refused to describe', () => {
+    const report = vi.fn()
+    const t = install(report)
+
+    t.fire('error', { message: 'Script error.', filename: '', lineno: 0, colno: 0, error: null })
+
+    expect(report).not.toHaveBeenCalled()
+  })
+
+  // The other side of that filter: a real fault keeps its thrown value, so a
+  // same-origin error is reported even when its message reads the same.
+  it('still reports an error that carries the thrown value', () => {
+    const report = vi.fn()
+    const t = install(report)
+    const error = new Error('Script error.')
+
+    t.fire('error', { message: 'Script error.', filename: 'app.js', lineno: 12, error })
+
+    expect(report).toHaveBeenCalledTimes(1)
+    expect(report.mock.calls[0][1]).toBe(error)
+  })
+
   it('deduplicates a repeating fault', () => {
     const report = vi.fn()
     const t = install(report)
@@ -148,17 +183,19 @@ describe('installGlobalErrorSink', () => {
   })
 
   // In dev the suppressor is registered first and in the capture phase, so it
-  // stops the RO event before this sink's bubble-phase listener runs. Pinned
-  // because the two installers' ORDER in `entry-client.tsx` is load-bearing.
-  it('never sees an RO error the dev-mode suppressor already stopped', () => {
+  // stops an ignorable event before this sink's bubble-phase listener runs.
+  // Pinned because the two installers' ORDER in `entry-client.tsx` is
+  // load-bearing. Both classes are covered: each one reaches the sink by a
+  // different route in prod, where the suppressor is not installed at all.
+  it.each([
+    ['an RO error', 'ResizeObserver loop limit exceeded'],
+    ['a muted error', 'Script error.'],
+  ])('never sees %s the dev-mode suppressor already stopped', (_label, message) => {
     const report = vi.fn()
-    disposers.push(installResizeObserverLoopErrorSuppressor(window))
+    disposers.push(installIgnorableErrorSuppressor(window))
     disposers.push(installGlobalErrorSink({ report, target: window }))
 
-    window.dispatchEvent(new ErrorEvent('error', {
-      message: 'ResizeObserver loop limit exceeded',
-      cancelable: true,
-    }))
+    window.dispatchEvent(new ErrorEvent('error', { message, cancelable: true }))
 
     expect(report).not.toHaveBeenCalled()
   })

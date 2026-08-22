@@ -79,6 +79,16 @@ export interface ExponentialBackoff<K> {
    */
   isExhausted: (key: K) => boolean
   /**
+   * How many retries `key` has been scheduled since its last `reset`. Zero for
+   * a key that has never failed, or that succeeded and reset.
+   *
+   * For a caller that acts on HOW LONG a key has been failing rather than on
+   * whether it gave up — announcing an outage only once the quiet retries are
+   * spent, say. Reading it here keeps one counter: a second tally kept beside
+   * the scheduler would drift from the one the backoff actually advances.
+   */
+  attemptCount: (key: K) => number
+  /**
    * Cancel `key`'s pending timer (if any) and forget its last delay so
    * the next `schedule(key, …)` restarts at `initialMs`. Idempotent.
    */
@@ -177,5 +187,6 @@ export function createExponentialBackoff<K>(opts: ExponentialBackoffOpts): Expon
     size: () => timers.size,
     peekNextDelay: key => (timers.has(key) ? null : nextBaseDelayFor(key)),
     isExhausted,
+    attemptCount: key => attempts.get(key) ?? 0,
   }
 }

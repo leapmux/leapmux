@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from '@solidjs/testing-library'
-import { describe, expect, it, vi } from 'vitest'
-import { Tooltip } from './Tooltip'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import * as gesture from './contextMenuGesture'
+import { dismissActiveTooltip, Tooltip } from './Tooltip'
 
 describe('tooltip', () => {
   beforeEach(() => {
@@ -307,5 +308,49 @@ describe('tooltip', () => {
     expect(warn).toHaveBeenCalled()
     expect(container.textContent).toContain('OneTwo')
     expect(screen.queryByRole('tooltip')).toBeNull()
+  })
+
+  it('does not present while a long-press menu is up', () => {
+    vi.spyOn(gesture, 'holdIsOverMenu').mockReturnValue(true)
+
+    render(() => (
+      <Tooltip text="Tooltip text">
+        <button type="button">Trigger</button>
+      </Tooltip>
+    ))
+
+    fireEvent.mouseEnter(screen.getByRole('button', { name: 'Trigger' }))
+    vi.advanceTimersByTime(700)
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+  })
+
+  it('does not present when a hold starts after the delay is armed', () => {
+    const hold = vi.spyOn(gesture, 'holdIsOverMenu').mockReturnValue(false)
+
+    render(() => (
+      <Tooltip text="Tooltip text">
+        <button type="button">Trigger</button>
+      </Tooltip>
+    ))
+
+    fireEvent.mouseEnter(screen.getByRole('button', { name: 'Trigger' }))
+    hold.mockReturnValue(true)
+    vi.advanceTimersByTime(700)
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+  })
+
+  it('hides a visible tooltip when dismissActiveTooltip runs', () => {
+    render(() => (
+      <Tooltip text="Tooltip text">
+        <button type="button">Trigger</button>
+      </Tooltip>
+    ))
+
+    fireEvent.mouseEnter(screen.getByRole('button', { name: 'Trigger' }))
+    vi.advanceTimersByTime(700)
+    expect(screen.getByRole('tooltip', { hidden: true })).toBeInTheDocument()
+
+    dismissActiveTooltip()
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
   })
 })

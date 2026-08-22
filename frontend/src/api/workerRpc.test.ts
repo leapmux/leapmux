@@ -23,7 +23,7 @@ vi.mock('~/api/transport', () => ({
 }))
 
 function unavailable() {
-  return new ChannelError('rpc', 'provider scan did not finish; retry', Code.Unavailable)
+  return new ChannelError('rpc', 'provider scan did not finish; retry', { code: Code.Unavailable })
 }
 
 beforeEach(() => {
@@ -67,7 +67,7 @@ describe('callWorker retries an Unavailable reply', () => {
   // "ask again"; retrying the latter would hide a dead connection.
   it('does not retry a transport failure with the same code', async () => {
     const { listAvailableProviders } = await import('./workerRpc')
-    const err = new ChannelError('transport', 'socket closed', Code.Unavailable)
+    const err = new ChannelError('transport', 'socket closed', { code: Code.Unavailable })
     callWorkerMock.mockRejectedValue(err)
 
     await expect(listAvailableProviders('w-1')).rejects.toBe(err)
@@ -76,7 +76,7 @@ describe('callWorker retries an Unavailable reply', () => {
 
   it('does not retry a different code', async () => {
     const { listAvailableProviders } = await import('./workerRpc')
-    const err = new ChannelError('rpc', 'no', Code.FailedPrecondition)
+    const err = new ChannelError('rpc', 'no', { code: Code.FailedPrecondition })
     callWorkerMock.mockRejectedValue(err)
 
     await expect(listAvailableProviders('w-1')).rejects.toBe(err)

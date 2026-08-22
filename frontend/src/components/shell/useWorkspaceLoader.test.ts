@@ -3,8 +3,8 @@ import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
 import { create } from '@bufbuild/protobuf'
 import { createRoot } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { showWarnToast } from '~/components/common/Toast'
 import { WorkspaceSchema } from '~/generated/leapmux/v1/workspace_pb'
+import { ChannelError } from '~/lib/channelError'
 import { createSectionStore } from '~/stores/section.store'
 import { createWorkspaceStore } from '~/stores/workspace.store'
 import { useWorkspaceLoader } from './useWorkspaceLoader'
@@ -19,7 +19,17 @@ vi.mock('~/api/clients', () => ({
   },
 }))
 
-vi.mock('~/components/common/Toast', () => ({ showWarnToast: vi.fn() }))
+const mockShowWarnToast = vi.fn()
+vi.mock('~/components/common/Toast', async () => {
+  const { isDisconnectError } = await import('~/api/workerErrors')
+  return {
+    showWarnToast: (...args: unknown[]) => mockShowWarnToast(...args),
+    showWarnToastUnlessDisconnected: (message: string, err: unknown) => {
+      if (!isDisconnectError(err))
+        mockShowWarnToast(message, err)
+    },
+  }
+})
 
 interface Deferred<T> {
   promise: Promise<T>
@@ -74,7 +84,7 @@ describe('useWorkspaceLoader', () => {
     const { workspaceStore } = mount()
     await settle()
 
-    expect(showWarnToast).toHaveBeenCalledWith('Failed to load workspaces', expect.any(Error))
+    expect(mockShowWarnToast).toHaveBeenCalledWith('Failed to load workspaces', expect.any(Error))
     expect(workspaceStore.state.error).toBe('hub unavailable')
   })
 
@@ -84,8 +94,18 @@ describe('useWorkspaceLoader', () => {
     const { sectionStore } = mount()
     await settle()
 
-    expect(showWarnToast).toHaveBeenCalledWith('Failed to load sections', expect.any(Error))
+    expect(mockShowWarnToast).toHaveBeenCalledWith('Failed to load sections', expect.any(Error))
     expect(sectionStore.state.error).toBe('hub unavailable')
+  })
+
+  it('does not toast a workspace load that failed because the link dropped', async () => {
+    mockListWorkspaces.mockRejectedValue(new ChannelError('transport', 'channel disconnected'))
+
+    const { workspaceStore } = mount()
+    await settle()
+
+    expect(mockShowWarnToast).not.toHaveBeenCalled()
+    expect(workspaceStore.state.error).toBe('channel disconnected')
   })
 
   it('clears a recorded workspace error once a load succeeds', async () => {

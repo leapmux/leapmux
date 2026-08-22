@@ -74,7 +74,10 @@ async function revealRailByTouch(page: Page) {
   expect(railBox).not.toBeNull()
   // Swipe well clear of the rail strip on the right edge.
   const swipeX = scrollerBox!.x + scrollerBox!.width / 3
-  await touchSwipe(page, { x: swipeX, fromY: scrollerBox!.y + scrollerBox!.height * 0.7, toY: scrollerBox!.y + scrollerBox!.height * 0.5 })
+  await touchSwipe(page, {
+    from: { x: swipeX, y: scrollerBox!.y + scrollerBox!.height * 0.7 },
+    to: { x: swipeX, y: scrollerBox!.y + scrollerBox!.height * 0.5 },
+  })
   await expect(rail).toHaveCSS('opacity', '1')
   return railBox!
 }

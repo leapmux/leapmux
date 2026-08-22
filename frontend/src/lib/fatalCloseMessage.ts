@@ -58,5 +58,5 @@ export function fatalCloseMessage(info: FatalCloseInfo): string {
  * which are opposite diagnoses for the user.
  */
 export function fatalCloseError(info: FatalCloseInfo): ChannelError {
-  return new ChannelError('transport', fatalCloseMessage(info), 0, true)
+  return new ChannelError('transport', fatalCloseMessage(info), { fatal: true })
 }

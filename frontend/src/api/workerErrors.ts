@@ -110,3 +110,36 @@ export function isWorkerUnreachable(err: unknown, workerOnline: boolean | undefi
       return false
   }
 }
+
+/**
+ * isDisconnectError reports whether `err` says there was no live link to carry
+ * the operation — as opposed to the operation itself being refused.
+ *
+ * It answers for BOTH legs a worker call crosses, which is why it lives here
+ * beside `isWorkerUnreachable` rather than in `~/lib/channelError`. The E2EE leg
+ * marks its own failures (see `ChannelError.disconnected`). The hub leg is
+ * Connect HTTP. `Unavailable` is worn both by a hub that did not answer and
+ * by an edge 503 that shares the code. Only the Hub's tagged
+ * worker-unreachable verdict is a dropped link on that leg; an untagged
+ * Unavailable is a failed call, and swallowing it left an empty chat with
+ * no toast while the watch socket was still up. Every other connect code
+ * is a verdict about the request, so it stays out.
+ *
+ * Written for a BACKGROUND operation the app retries on its own — a chat-history
+ * page, a provider refresh. Those all fail together the moment the connection
+ * drops, so each one that announced its own failure turned a single outage into
+ * a row of toasts. `useWatchEventsStreams` announces the outage once, in plain
+ * language, after the redial has genuinely failed; a background caller that sees
+ * this predicate return true has nothing to add and stays silent.
+ *
+ * Do NOT gate an operation the user just asked for on it. A send or a rename
+ * that silently does nothing is worse than a redundant toast, because the user
+ * is waiting for a result and no retry is coming.
+ */
+export function isDisconnectError(err: unknown): boolean {
+  if (err instanceof ChannelError)
+    return err.disconnected
+  return err instanceof ConnectError
+    && err.code === Code.Unavailable
+    && err.metadata.get(WORKER_UNREACHABLE_META) === '1'
+}

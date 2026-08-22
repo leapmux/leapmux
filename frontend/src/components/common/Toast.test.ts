@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { showStickyWarnToast, showWarnToast } from './Toast'
+import { ChannelError, channelNotOpenError } from '~/lib/channelError'
+import { showStickyWarnToast, showWarnToast, showWarnToastUnlessDisconnected, showWarnToastWithLoggedCause } from './Toast'
 
 // The toast host is a runtime global the design system installs; jsdom has no
 // such thing, so stand in for it and record what each helper asked for.
@@ -35,6 +36,44 @@ describe('showWarnToast', () => {
     expect(shown).toHaveLength(1)
     expect(shown[0]!.duration).toBe(3000)
     expect(shown[0]!.el.textContent).toContain('a transient problem')
+  })
+})
+
+describe('showWarnToastWithLoggedCause', () => {
+  // The whole reason it exists: showWarnToast renders err.message, and a
+  // transport failure's message names our own plumbing.
+  it('renders the caller\'s sentence, not the error\'s', () => {
+    showWarnToastWithLoggedCause('Connection to worker lost, reconnecting\u2026', new ChannelError('transport', 'channel disconnected'))
+
+    expect(shown).toHaveLength(1)
+    expect(shown[0]!.el.textContent).toContain('Connection to worker lost')
+    expect(shown[0]!.el.textContent).not.toContain('channel disconnected')
+  })
+
+  it('dismisses itself, because a redial is still running behind it', () => {
+    showWarnToastWithLoggedCause('Connection to worker lost, reconnecting\u2026', undefined)
+
+    expect(shown[0]!.duration).toBe(3000)
+  })
+})
+
+describe('showWarnToastUnlessDisconnected', () => {
+  // One dropped socket fails every background load at once. Each one that spoke
+  // added another toast, and each read as our own jargon.
+  it('says nothing when a dropped link is what failed the operation', () => {
+    showWarnToastUnlessDisconnected('Failed to load chat history', channelNotOpenError())
+    showWarnToastUnlessDisconnected('Failed to load chat history', new ChannelError('transport', 'channel disconnected'))
+
+    expect(shown).toHaveLength(0)
+  })
+
+  // The other half. A worker that answered "no" is not a disconnect, and
+  // suppressing that would hide a failure nothing is retrying.
+  it('still announces a failure the worker itself reported', () => {
+    showWarnToastUnlessDisconnected('Failed to load chat history', new ChannelError('rpc', 'agent not found', { code: 5 }))
+
+    expect(shown).toHaveLength(1)
+    expect(shown[0]!.el.textContent).toContain('agent not found')
   })
 })
 
@@ -153,5 +192,19 @@ describe('oat treats a zero duration as sticky', () => {
     finally {
       vi.useRealTimers()
     }
+  })
+})
+
+// The design system installs `window.ot` during startup, so a toast raised
+// before that runs finds no host. Every helper in this module is already
+// reporting a failure, and a throw here would take down the handler that was
+// explaining the first one -- `~/lib/clipboard` announces an unreachable
+// clipboard from inside a click handler, which is exactly that shape.
+describe('a missing toast host', () => {
+  it('drops the message instead of throwing', () => {
+    vi.stubGlobal('ot', undefined)
+
+    expect(() => showWarnToast('a problem nobody will see')).not.toThrow()
+    expect(shown).toHaveLength(0)
   })
 })

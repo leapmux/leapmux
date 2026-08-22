@@ -141,8 +141,9 @@ export const mobileCenter = style({
   flexDirection: 'column',
   // Fill the shell column below the bar (the shell itself fills the body's
   // *content* area — body consumes safe-area insets via padding +
-  // border-box, so the visible region sits inside the system bars). The body
-  // still holds the `--vvh` contract for keyboard-up shrinkage.
+  // border-box, so the visible region sits inside the system bars).
+  // Keyboard-up shrinkage stays the body's business: it sizes to `--vvh`
+  // while the keyboard is up, and `--vv-shift` corrects where iOS put it.
   flex: 1,
   minHeight: 0,
   overflow: 'hidden',
@@ -194,6 +195,25 @@ export const mobileSidebarOpen = style({
 export const mobileTabBar = style({
   position: 'relative',
   zIndex: 100,
+})
+
+/**
+ * The bar, gone while the soft keyboard is up.
+ *
+ * `display: none`, not a transform or `visibility`: the point is to give the
+ * bar's height back to the transcript, and to take its controls out of the
+ * a11y tree while none of them can be reached anyway. The body is pinned to
+ * the visible region with the keyboard up (see `~/styles/global.css.ts`), so a
+ * bar that stayed would re-place itself at the top of the screen on every
+ * focus and blur -- motion that says nothing, over a strip that does nothing.
+ *
+ * `AppShell` withholds this while a drawer or the tab sheet is open: those
+ * overlays close through the bar's own toggles, and the sheet holds text
+ * fields of its own, so hiding the bar there would strand the user in an
+ * overlay with no way out.
+ */
+export const mobileTabBarHidden = style({
+  display: 'none',
 })
 
 // The tab sheet's scrim. Rendered unconditionally by MobileLayout; opacity +

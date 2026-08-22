@@ -8,7 +8,7 @@ import { installTestBridge } from '~/test-support/crdtBridge'
 import { createTestTabStores } from '~/test-support/tabStores'
 
 vi.mock('~/components/common/Toast', () => ({
-  showWarnToast: vi.fn(),
+  showWarnToastWithLoggedCause: vi.fn(),
 }))
 
 vi.mock('~/api/workerRpc', () => ({
@@ -20,7 +20,7 @@ vi.mock('~/api/workerRpc', () => ({
 }))
 
 const { channelManager, watchEventsViaChannel } = await import('~/api/workerRpc')
-const { showWarnToast } = await import('~/components/common/Toast')
+const { showWarnToastWithLoggedCause } = await import('~/components/common/Toast')
 const { useWatchEventsStreams } = await import('./useWatchEventsStreams')
 
 interface FakeHandle {
@@ -63,7 +63,7 @@ describe('useWatchEventsStreams', () => {
     disposeRoot = undefined
     // Module mocks are shared across the file; without this a toast raised by an
     // earlier test would satisfy a later test's call assertion.
-    vi.mocked(showWarnToast).mockClear()
+    vi.mocked(showWarnToastWithLoggedCause).mockClear()
     vi.mocked(watchEventsViaChannel).mockReset()
     vi.mocked(watchEventsViaChannel).mockImplementation(async () => {
       const h = makeHandle()
@@ -172,24 +172,203 @@ describe('useWatchEventsStreams', () => {
     )
     emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
     await flush()
-    handles[0]!._error(new ChannelError('transport', 'too many places', 0, true))
+    handles[0]!._error(new ChannelError('transport', 'too many places', { fatal: true }))
     await vi.advanceTimersByTimeAsync(1000)
     await flush()
     expect(online).toContain(false)
-    expect(showWarnToast).not.toHaveBeenCalled()
+    expect(showWarnToastWithLoggedCause).not.toHaveBeenCalled()
   })
 
-  // An ordinary transport loss keeps its toast -- the suppression above must be
-  // scoped to the fatal case, not to transport errors at large.
-  it('a recoverable transport error still toasts', async () => {
+  // The mobile case this whole gate exists for: the socket dies while the user
+  // is in another app, and the redial succeeds the moment they come back. The
+  // user must never learn that happened.
+  it('says nothing about a drop the first redial repairs', async () => {
     const { harness } = mount(
       () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }]]),
     )
     emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
     await flush()
-    handles[0]!._error(new ChannelError('transport', 'lost'))
+    handles[0]!._error(new ChannelError('transport', 'channel disconnected'))
     await flush()
-    expect(showWarnToast).toHaveBeenCalledTimes(1)
+    expect(showWarnToastWithLoggedCause, 'the loss itself is never announced').not.toHaveBeenCalled()
+
+    // The first redial reopens, which is the whole outage.
+    await vi.advanceTimersByTimeAsync(1000)
+    await flush()
+    expect(watchEventsViaChannel).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(120_000)
+    await flush()
+    expect(showWarnToastWithLoggedCause).not.toHaveBeenCalled()
+  })
+
+  // An outage that the redials cannot repair still has to reach the user -- the
+  // silence above is a grace period, not a mute.
+  it('announces an outage once the quiet redials are spent', async () => {
+    const { harness } = mount(
+      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }]]),
+    )
+    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+    await flush()
+    vi.mocked(watchEventsViaChannel).mockImplementation(async () => {
+      throw new ChannelError('transport', 'channel disconnected')
+    })
+    handles[0]!._error(new ChannelError('transport', 'channel disconnected'))
+    await flush()
+
+    // Redial 1 fails at ~1s: still inside the grace period.
+    await vi.advanceTimersByTimeAsync(1000)
+    await flush()
+    expect(showWarnToastWithLoggedCause).not.toHaveBeenCalled()
+
+    // Redial 2 fails at ~2s more. Two quiet retries are spent, so the user
+    // finally hears about it.
+    await vi.advanceTimersByTimeAsync(2000)
+    await flush()
+    expect(showWarnToastWithLoggedCause).toHaveBeenCalledTimes(1)
+    // The app's own sentence, not the drained channel's. Rendering err.message
+    // is what put "channel disconnected" on a user's screen.
+    expect(vi.mocked(showWarnToastWithLoggedCause).mock.calls[0]![0]).toContain('Connection to worker lost')
+  })
+
+  // The user reported TWO toasts for one drop. The redial loop must not add a
+  // third, fourth and fifth as the backoff climbs.
+  it('announces a continuing outage only once', async () => {
+    const { harness } = mount(
+      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }]]),
+    )
+    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+    await flush()
+    vi.mocked(watchEventsViaChannel).mockImplementation(async () => {
+      throw new ChannelError('transport', 'channel disconnected')
+    })
+    handles[0]!._error(new ChannelError('transport', 'channel disconnected'))
+    await flush()
+    await vi.advanceTimersByTimeAsync(300_000)
+    await flush()
+    expect(vi.mocked(watchEventsViaChannel).mock.calls.length, 'it is still redialing').toBeGreaterThan(3)
+    expect(showWarnToastWithLoggedCause).toHaveBeenCalledTimes(1)
+  })
+
+  // One hub blip drops every worker at once, and the user has one connection.
+  it('announces one outage, not one per worker', async () => {
+    const { harness } = mount(() => new Map([
+      ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }],
+      ['w2', { agents: [{ agentId: 'a2', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }],
+    ]))
+    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+    emitAddTab({ type: TabType.AGENT, id: 'a2', tileId: harness.rootTileId, position: '2', workerId: 'w2' })
+    await flush()
+    expect(handles).toHaveLength(2)
+    vi.mocked(watchEventsViaChannel).mockImplementation(async () => {
+      throw new ChannelError('transport', 'channel disconnected')
+    })
+    handles[0]!._error(new ChannelError('transport', 'channel disconnected'))
+    handles[1]!._error(new ChannelError('transport', 'channel disconnected'))
+    await flush()
+    await vi.advanceTimersByTimeAsync(300_000)
+    await flush()
+    expect(showWarnToastWithLoggedCause).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the outage latch while a sibling worker is still down', async () => {
+    const { harness } = mount(() => new Map([
+      ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }],
+      ['w2', { agents: [{ agentId: 'a2', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }],
+    ]))
+    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+    emitAddTab({ type: TabType.AGENT, id: 'a2', tileId: harness.rootTileId, position: '2', workerId: 'w2' })
+    await flush()
+    vi.mocked(watchEventsViaChannel).mockImplementation(async () => {
+      throw new ChannelError('transport', 'channel disconnected')
+    })
+    handles[0]!._error(new ChannelError('transport', 'channel disconnected'))
+    handles[1]!._error(new ChannelError('transport', 'channel disconnected'))
+    await flush()
+    await vi.advanceTimersByTimeAsync(10_000)
+    await flush()
+    expect(showWarnToastWithLoggedCause).toHaveBeenCalledTimes(1)
+
+    vi.mocked(watchEventsViaChannel).mockImplementation(async (id: string) => {
+      if (id === 'w1') {
+        const h = makeHandle()
+        handles.push(h)
+        return h as never
+      }
+      throw new ChannelError('transport', 'channel disconnected')
+    })
+    await vi.advanceTimersByTimeAsync(300_000)
+    await flush()
+    expect(showWarnToastWithLoggedCause).toHaveBeenCalledTimes(1)
+  })
+
+  // The latch must die with the outage it described, or a second, genuinely new
+  // outage an hour later is announced nowhere.
+  it('announces a second outage after the link came back', async () => {
+    const { harness } = mount(
+      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }]]),
+    )
+    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+    await flush()
+
+    const failOpen = async () => {
+      throw new ChannelError('transport', 'channel disconnected')
+    }
+    vi.mocked(watchEventsViaChannel).mockImplementation(failOpen as never)
+    handles[0]!._error(new ChannelError('transport', 'channel disconnected'))
+    await flush()
+    await vi.advanceTimersByTimeAsync(10_000)
+    await flush()
+    expect(showWarnToastWithLoggedCause).toHaveBeenCalledTimes(1)
+
+    // Let it reconnect, and let the reopened stream carry an event -- that is
+    // what resets the backoff, so the next outage starts its grace period over.
+    vi.mocked(watchEventsViaChannel).mockImplementation(async () => {
+      const h = makeHandle()
+      handles.push(h)
+      return h as never
+    })
+    await vi.advanceTimersByTimeAsync(60_000)
+    await flush()
+    const reopened = handles[handles.length - 1]!
+    reopened._emit({ event: { case: 'agentEvent', value: {} } } as never)
+    await flush()
+
+    vi.mocked(watchEventsViaChannel).mockImplementation(failOpen as never)
+    reopened._error(new ChannelError('transport', 'channel disconnected'))
+    await flush()
+    expect(showWarnToastWithLoggedCause, 'the new outage gets its own grace period').toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(10_000)
+    await flush()
+    expect(showWarnToastWithLoggedCause).toHaveBeenCalledTimes(2)
+  })
+
+  // A failed open used to re-drain itself on the next microtask, because
+  // openStream's finally could not tell a plan parked BY the failure path from
+  // one that arrived during the open. Every scheduled delay was skipped and the
+  // client redialed as fast as the hub could refuse.
+  it('honours the backoff between redials instead of looping on microtasks', async () => {
+    vi.mocked(watchEventsViaChannel).mockImplementation(async () => {
+      throw new ChannelError('transport', 'channel disconnected')
+    })
+    const { harness } = mount(
+      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }]]),
+    )
+    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+    // No timer advance at all: the first open is the only one allowed.
+    for (let i = 0; i < 50; i++)
+      await Promise.resolve()
+    expect(watchEventsViaChannel).toHaveBeenCalledTimes(1)
+
+    // 1s -> the second, 2s more -> the third. The doubling sequence, not a spin.
+    await vi.advanceTimersByTimeAsync(1000)
+    await flush()
+    expect(watchEventsViaChannel).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(1999)
+    await flush()
+    expect(watchEventsViaChannel).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(1)
+    await flush()
+    expect(watchEventsViaChannel).toHaveBeenCalledTimes(3)
   })
 
   // Once ChannelRelay latches, every later dial rejects with the same error
@@ -202,7 +381,7 @@ describe('useWatchEventsStreams', () => {
     emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
     await flush()
     expect(watchEventsViaChannel).toHaveBeenCalledTimes(1)
-    handles[0]!._error(new ChannelError('transport', 'too many places', 0, true))
+    handles[0]!._error(new ChannelError('transport', 'too many places', { fatal: true }))
     await vi.advanceTimersByTimeAsync(120_000)
     await flush()
     expect(watchEventsViaChannel).toHaveBeenCalledTimes(1)
@@ -213,7 +392,7 @@ describe('useWatchEventsStreams', () => {
   // identical throw.
   it('a fatal open failure does not retry forever', async () => {
     vi.mocked(watchEventsViaChannel).mockImplementation(async () => {
-      throw new ChannelError('transport', 'too many places', 0, true)
+      throw new ChannelError('transport', 'too many places', { fatal: true })
     })
     const { harness } = mount(
       () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }]]),
@@ -446,7 +625,7 @@ describe('useWatchEventsStreams', () => {
     expect(promoted).toHaveLength(1)
   })
 
-  it('reconnects after a clean stream end without marking offline', async () => {
+  it('marks the worker offline on a clean stream end, then reconnects', async () => {
     const online: boolean[] = []
     const { harness } = mount(
       () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }]]),
@@ -457,8 +636,9 @@ describe('useWatchEventsStreams', () => {
     handles[0]!._end()
     await vi.advanceTimersByTimeAsync(1000)
     await flush()
-    expect(online).not.toContain(false)
+    expect(online).toContain(false)
     expect(vi.mocked(watchEventsViaChannel).mock.calls.length).toBeGreaterThanOrEqual(2)
+    expect(online.at(-1)).toBe(true)
   })
 
   // A stream that ends on its own has no error to hand scheduleReconnect, so a

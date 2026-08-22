@@ -67,12 +67,23 @@ export const SYNTAX_HIGHLIGHT_SCROLL_IDLE_MS = 160
  */
 export const RAIL_VISIBLE_IDLE_MS = 1200
 /**
- * How long after a real user input a bare `scroll` event still counts as that gesture's
- * momentum, so the rail stays lit through a touch flick's coast (no touch or pointer
- * event fires while the content glides -- only `scroll`). See createScrollActivity for
- * why the grace is measured from the last INPUT and never extended by `scroll` itself.
+ * The longest coast the rail will hold itself lit for, measured from the last
+ * real user input.
+ *
+ * A flick's glide fires no touch or pointer event -- only `scroll` -- so the
+ * rail has to relight from those, and only the hook can say which of them are
+ * the reader's own momentum rather than our stick-to-bottom echoing back (see
+ * `onMomentumScroll`). This bound is the belt to that classifier's braces:
+ * echo detection can miss when the browser delivers an echo after the guard's
+ * marker expires, and without a cap one missed echo during a streaming turn
+ * would relight the rail commit after commit. Measured from the last INPUT and
+ * never re-based by a scroll, so a turn with no reader input can never reach
+ * it at all.
+ *
+ * Long enough for the hardest flick on a long transcript; the rail then fades
+ * `RAIL_VISIBLE_IDLE_MS` after the last coast scroll, not at this bound.
  */
-export const RAIL_MOMENTUM_GRACE_MS = 750
+export const RAIL_COAST_MAX_MS = 4000
 // How long an outgoing skeleton lingers (fading via rowSkeletonClosing) after
 // its real content takes over, so the swap reads as a crossfade instead of a
 // pop. The shared motion token keeps this unmount timer and the CSS fade
@@ -617,13 +628,15 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   //   - highlightActivity takes EVERY scroll, our own programmatic writes included -- a
   //     streaming stick-to-bottom is exactly when the highlighter and the premeasure
   //     warm-up must stay out of the way.
-  //   - railActivity takes USER INPUT only, plus a momentum-gated `scroll` for the
-  //     post-flick coast. A rail lit by our own scrollTop writes would stay lit for a
-  //     whole streaming response, defeating its auto-hide when it matters most.
+  //   - railActivity takes MOVEMENT only: a scroll input that actually moved, plus the
+  //     scrolls the hook classifies as the reader's own momentum. A rail lit by our own
+  //     scrollTop writes would stay lit for a whole streaming response, defeating its
+  //     auto-hide when it matters most, and one lit by a bare press put a scrollbar on
+  //     screen every time the reader touched the transcript.
   const highlightActivity = createScrollActivity({ idleMs: SYNTAX_HIGHLIGHT_SCROLL_IDLE_MS })
   const railActivity = createScrollActivity({
     idleMs: RAIL_VISIBLE_IDLE_MS,
-    momentumGraceMs: RAIL_MOMENTUM_GRACE_MS,
+    momentumGraceMs: RAIL_COAST_MAX_MS,
   })
   const syntaxHighlightingPaused = highlightActivity.active
 
@@ -852,6 +865,21 @@ export const ChatView: Component<ChatViewProps> = (props) => {
       .filter((entry): entry is ClassifiedEntry => entry !== undefined)
   })
 
+  // The rail window only matters when a rail could render. On a conversation with no marks
+  // prop, or before the marks RPC seeds, no rail mounts and railActivity.active() has no
+  // subscriber -- so feeding it arms a 1200ms timer that fires into a dead signal on every
+  // wheel, touch, and keypress for nothing. Gate the feed on rail presence to skip that work
+  // entirely when there is no rail to light.
+  const noteRailInput = () => {
+    if (props.rail !== undefined)
+      railActivity.noteInput()
+  }
+  /** A coast scroll: it relights the rail only inside `RAIL_COAST_MAX_MS`. */
+  const noteRailCoast = () => {
+    if (props.rail !== undefined)
+      railActivity.noteScroll()
+  }
+
   const scroll = useChatScroll({
     messages: () => props.messages,
     messageVersion: () => props.messageVersion,
@@ -873,6 +901,12 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     savedViewportScroll: () => props.savedViewportScroll,
     onClearSavedViewportScroll: () => props.onClearSavedViewportScroll?.(),
     onSaveViewportScroll: state => props.onSaveViewportScroll?.(state),
+    // The reader's own coast. Relighting on it holds the rail for the whole
+    // fling -- no pointer or touch event fires then, only `scroll`, and the
+    // hook is the one place that can tell that scroll apart from our own
+    // programmatic writes. Routed through the coast entry, so a missed echo
+    // still cannot relight it past `RAIL_COAST_MAX_MS` from a real input.
+    onMomentumScroll: () => noteRailCoast(),
   })
   // Now that the scroll hook (and its anchor engine) exists, point the toggle-time row
   // pin at it (see the `let` declaration above and buildMessageHost).
@@ -881,20 +915,6 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // The rail's seq-space bounds (window-aware min/max) and loaded-window seqs are resolved
   // once in the store's getRailData (see resolveRailRange), so ChatView passes props.rail
   // straight through to ChatScrollRail rather than re-deriving the range in the view.
-
-  // The rail window only matters when a rail could render. On a conversation with no marks
-  // prop, or before the marks RPC seeds, no rail mounts and railActivity.active() has no
-  // subscriber -- so feeding it arms a 1200ms timer that fires into a dead signal on every
-  // wheel, touch, and keypress for nothing. Gate the feed on rail presence to skip that work
-  // entirely when there is no rail to light.
-  const noteRailInput = () => {
-    if (props.rail !== undefined)
-      railActivity.noteInput()
-  }
-  const noteRailScroll = () => {
-    if (props.rail !== undefined)
-      railActivity.noteScroll()
-  }
 
   /**
    * Wrap a genuine USER scroll input so BOTH activity windows see it. The `onScroll`
@@ -912,17 +932,39 @@ export const ChatView: Component<ChatViewProps> = (props) => {
       handler(...args)
     }
 
+  /**
+   * The same, for a press that has not moved yet.
+   *
+   * The highlight pause takes it -- a press is the reader arriving, and that is
+   * exactly when the highlighter should get out of the way -- but the RAIL does
+   * not. A bare tap scrolls nothing, and lighting the rail for it put a scrollbar
+   * on screen every time the reader touched the transcript to dismiss the
+   * keyboard. The rail lights on the first MOVE instead, which is when there is
+   * a scroll position worth showing.
+   */
+  const notePressOnly = <Args extends unknown[]>(handler: (...args: Args) => void): ((...args: Args) => void) =>
+    (...args: Args) => {
+      highlightActivity.noteInput()
+      handler(...args)
+    }
+
+  const pointerMoveIsScroll = (event: PointerEvent): boolean => {
+    // A mouse hover is not a scroll. A mouse drag, and any touch or pen move,
+    // is: those are the inputs that change the scroll position.
+    if (event.pointerType === 'mouse')
+      return event.buttons !== 0
+    return true
+  }
+
   const scrollHandlers = {
     // The one asymmetric handler. A `scroll` event alone is NOT user intent -- the
     // stick-to-bottom writes scrollTop on every streaming commit. The highlight pause
     // WANTS those (that churn is exactly when highlighting and the premeasure warm-up must
-    // not run), so it keeps taking noteInput, unchanged from before this split. The rail
-    // takes the momentum-gated noteScroll instead, which opens its window only within
-    // RAIL_MOMENTUM_GRACE_MS of a real input: enough to ride out a touch flick's coast,
-    // never enough for a streaming turn to hold the rail lit.
+    // not run), so it keeps taking noteInput. The RAIL takes none of them here: it
+    // relights from `onMomentumScroll` below, which fires only for the scrolls the
+    // hook classifies as the reader's own coast.
     onScroll: () => {
       highlightActivity.noteInput()
-      noteRailScroll()
       scroll.handlers.onScroll()
     },
     onKeyDown: (event: KeyboardEvent) => {
@@ -938,12 +980,17 @@ export const ChatView: Component<ChatViewProps> = (props) => {
       }
       scroll.handlers.onKeyDown(event)
     },
-    onPointerDown: noteScrollInput(scroll.handlers.onPointerDown),
+    onPointerDown: notePressOnly(scroll.handlers.onPointerDown),
+    // The first MOVE is what lights the rail: from here the press is a scroll.
     onPointerMove: (event: PointerEvent) => {
+      if (pointerMoveIsScroll(event)) {
+        highlightActivity.noteInput()
+        noteRailInput()
+      }
       scroll.handlers.onPointerMove(event)
     },
-    onPointerUp: noteScrollInput(scroll.handlers.onPointerUp),
-    onPointerCancel: noteScrollInput(scroll.handlers.onPointerCancel),
+    onPointerUp: notePressOnly(scroll.handlers.onPointerUp),
+    onPointerCancel: notePressOnly(scroll.handlers.onPointerCancel),
   }
 
   // Wheel and touch listeners attach PASSIVE, imperatively: nothing in their
@@ -959,10 +1006,13 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   const attachPassiveScrollListeners = (el: HTMLElement): void => {
     const passive = { passive: true } as const
     el.addEventListener('wheel', noteScrollInput(scroll.handlers.onWheel), passive)
-    el.addEventListener('touchstart', noteScrollInput(scroll.handlers.onTouchStart), passive)
+    // `touchstart` and the two enders are presses, not scrolls: a finger landing
+    // on the transcript moves nothing, and `touchmove` lights the rail the moment
+    // it does. See `notePressOnly`.
+    el.addEventListener('touchstart', notePressOnly(scroll.handlers.onTouchStart), passive)
     el.addEventListener('touchmove', noteScrollInput(scroll.handlers.onTouchMove), passive)
-    el.addEventListener('touchend', noteScrollInput(scroll.handlers.onTouchEnd), passive)
-    el.addEventListener('touchcancel', noteScrollInput(scroll.handlers.onTouchCancel), passive)
+    el.addEventListener('touchend', notePressOnly(scroll.handlers.onTouchEnd), passive)
+    el.addEventListener('touchcancel', notePressOnly(scroll.handlers.onTouchCancel), passive)
   }
 
   // Re-stick to the bottom after a TAIL SIBLING of the virtual spacer grows. These

@@ -267,6 +267,60 @@ describe('createExponentialBackoff', () => {
     })
   })
 
+  describe('attemptCount', () => {
+    it('starts at zero for a key that has never failed', () => {
+      const backoff = createExponentialBackoff<string>({ initialMs: 100, maxMs: 1000 })
+      expect(backoff.attemptCount('never-seen')).toBe(0)
+    })
+
+    // The reading a caller acts on: how long this key has been failing. It is
+    // what gates the outage announcement in useWatchEventsStreams, so it has to
+    // advance once per scheduled retry and not once per call.
+    it('advances once for each scheduled retry', () => {
+      const backoff = createExponentialBackoff<string>({ initialMs: 100, maxMs: 1000 })
+      backoff.schedule('k', () => {})
+      expect(backoff.attemptCount('k')).toBe(1)
+      vi.advanceTimersByTime(1000)
+      backoff.schedule('k', () => {})
+      expect(backoff.attemptCount('k')).toBe(2)
+    })
+
+    it('does not advance for a schedule that no-ops on a pending timer', () => {
+      const backoff = createExponentialBackoff<string>({ initialMs: 100, maxMs: 1000 })
+      backoff.schedule('k', () => {})
+      expect(backoff.schedule('k', () => {})).toBeNull()
+      expect(backoff.attemptCount('k')).toBe(1)
+    })
+
+    it('returns to zero on reset, so a key that recovered is quiet again', () => {
+      const backoff = createExponentialBackoff<string>({ initialMs: 100, maxMs: 1000 })
+      backoff.schedule('k', () => {})
+      vi.advanceTimersByTime(1000)
+      backoff.schedule('k', () => {})
+      backoff.reset('k')
+      expect(backoff.attemptCount('k')).toBe(0)
+    })
+
+    it('counts each key separately', () => {
+      const backoff = createExponentialBackoff<string>({ initialMs: 100, maxMs: 1000 })
+      backoff.schedule('a', () => {})
+      vi.advanceTimersByTime(1000)
+      backoff.schedule('a', () => {})
+      backoff.schedule('b', () => {})
+      expect(backoff.attemptCount('a')).toBe(2)
+      expect(backoff.attemptCount('b')).toBe(1)
+    })
+
+    it('returns to zero for every key on cancelAll', () => {
+      const backoff = createExponentialBackoff<string>({ initialMs: 100, maxMs: 1000 })
+      backoff.schedule('a', () => {})
+      backoff.schedule('b', () => {})
+      backoff.cancelAll()
+      expect(backoff.attemptCount('a')).toBe(0)
+      expect(backoff.attemptCount('b')).toBe(0)
+    })
+  })
+
   /**
    * `maxMs` bounds how OFTEN a key retries, not how LONG. A caller whose work
    * can never succeed (an RPC to a deregistered worker) has no other exit, so

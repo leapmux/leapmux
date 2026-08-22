@@ -10,6 +10,7 @@ import { createEffect, createSignal, getOwner, on, onCleanup, onMount, runWithOw
 import { isTauriApp, readClipboardImage } from '~/api/platformBridge'
 import { usePreferences } from '~/context/PreferencesContext'
 import { loadDraft } from '~/lib/editor/draftPersistence'
+import { dismissSoftKeyboard, isSoftKeyboardVisible } from '~/lib/softKeyboard'
 import { syntaxThemeGeneration } from '~/lib/syntaxThemeStore'
 import { CodeLanguagePopover } from './CodeLanguagePopover'
 import { createComposerLayout } from './composerLayout'
@@ -20,6 +21,7 @@ import { buildEditor, computeDocStats, refreshEditorHighlight } from './editorSe
 import { LinkPopover } from './LinkPopover'
 import * as styles from './MarkdownEditor.css'
 import { decidePasteHandling } from './pasteDecision'
+import { decideSendFocus } from './sendFocus'
 
 export { clearDraft }
 
@@ -232,9 +234,45 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     }
   }
 
+  const editorHasFocus = (): boolean => {
+    if (!editorInstance)
+      return false
+    let focused = false
+    try {
+      editorInstance.action((ctx: Ctx) => {
+        focused = ctx.get(editorViewCtx).hasFocus()
+      })
+    }
+    catch {
+      // The editor is mid-teardown. Nothing holds a caret worth repairing.
+    }
+    return focused
+  }
+
+  /**
+   * Put the caret where the send leaves it. See `decideSendFocus` for which of
+   * the three outcomes each send gets, and why.
+   */
+  const applySendFocus = (hadFocus: boolean, sent: boolean) => {
+    const action = decideSendFocus({ hadFocus, sent, softKeyboardVisible: isSoftKeyboardVisible() })
+    if (action === 'restore') {
+      // The editor may still hold the caret: keepFocusOnPress stopped the
+      // button from taking it, or Android hid the keyboard with Back without
+      // blurring. Focusing an already-focused view raises the keyboard again.
+      if (!editorHasFocus())
+        focusEditor()
+    }
+    else if (action === 'release') {
+      dismissSoftKeyboard()
+    }
+  }
+
   const handleSend = () => {
     if (props.disabled || !editorInstance)
       return
+    // Read the caret BEFORE anything moves it: `onSendRef` can open a dialog,
+    // and `replaceAll` rebuilds the document under the selection.
+    const hadFocus = editorHasFocus()
     // Read markdown directly from ProseMirror's document state rather than
     // the `markdown` signal, which is updated by a debounced listener (200ms)
     // and may be stale when Enter is pressed immediately after typing.
@@ -254,11 +292,13 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
       if (allowEmptySendRef) {
         onSendRef('')
       }
-      focusEditor()
+      // An empty draft commits only under `allowEmptySend`; otherwise nothing
+      // left the composer and the caret stays for the user to type into.
+      applySendFocus(hadFocus, allowEmptySendRef)
       return
     }
     if (onSendRef(text) === false) {
-      focusEditor()
+      applySendFocus(hadFocus, false)
       return
     }
     editorInstance.action(replaceAll(''))
@@ -268,7 +308,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     if (key) {
       clearDraft(key)
     }
-    focusEditor()
+    applySendFocus(hadFocus, true)
   }
 
   // Enter key mode reference for ProseMirror plugin (closures capture signal)

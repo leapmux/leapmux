@@ -17,7 +17,7 @@ import * as workerRpc from '~/api/workerRpc'
 import { clearAttachments } from '~/components/chat/attachments'
 import { openAgentRequestOptions } from '~/components/chat/providers/registry'
 import { ACCOUNT_DEFAULT_MODEL, OPTION_ID_EFFORT, OPTION_ID_MODEL, OPTION_ID_PERMISSION_MODE, optionGroupLabel } from '~/components/chat/settingsGroups'
-import { showWarnToast } from '~/components/common/Toast'
+import { showWarnToast, showWarnToastUnlessDisconnected } from '~/components/common/Toast'
 import { awaitCloseResult, warnWorktreeUnreachable } from '~/components/shell/closeResultToast'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
@@ -108,7 +108,12 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
         // failure with "backend said none" would masquerade as an empty
         // provider list once the backend stops forcing a CLAUDE_CODE
         // fallback.
-        showWarnToast('Failed to load available agent providers', err)
+        //
+        // The scan runs from an effect, not from a gesture, so a dropped
+        // connection needs no toast of its own here: useWatchEventsStreams
+        // announces the outage once, and this effect re-runs on the next
+        // worker change.
+        showWarnToastUnlessDisconnected('Failed to load available agent providers', err)
       })
   }
 

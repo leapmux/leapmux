@@ -108,10 +108,16 @@ globalStyle('[data-ctx-menu="owned"]', {
  * The variant for an element whose text must stay selectable -- the chat message
  * rows, which the gesture marks `selectable`.
  *
- * The suppression is scoped to `(pointer: coarse)`: a phone trades partial-text
- * selection for the menu (which carries Copy and Quote in its place), while a mouse
- * -- including a hybrid laptop's, where `pointer` is `fine` and only `any-pointer`
- * is coarse -- keeps selection intact and reaches the menu through right-click.
+ * The suppression is scoped to `(pointer: coarse)`: it gives the LONG PRESS to the
+ * message menu, because iOS raises its selection callout on a long press over any
+ * selectable text and that callout would cover the menu. A mouse -- including a
+ * hybrid laptop's, where `pointer` is `fine` and only `any-pointer` is coarse --
+ * keeps selection intact and reaches the menu through right-click.
+ *
+ * A finger still selects part of a message. It uses a gesture the platform leaves
+ * free instead: a double tap takes the word and a triple tap takes the paragraph,
+ * and that gesture lifts this rule with an inline `user-select` for exactly as long
+ * as the selection it made lives. See ~/lib/tapSelect.ts, which owns both halves.
  */
 globalStyle('[data-ctx-menu="selectable"]', {
   '@media': {
@@ -121,4 +127,21 @@ globalStyle('[data-ctx-menu="selectable"]', {
       WebkitUserSelect: 'none',
     },
   },
+})
+
+/**
+ * While a fired hold's finger is still down, an open menu takes no pointers.
+ *
+ * The menu opens under that finger, and a held touch carries a hover state, so
+ * whichever item it landed on painted itself accented (see
+ * `[role^="menuitem"]:is(:hover, :focus)` in ~/styles/global.css.ts) -- an item
+ * looking chosen while the user was still deciding. Refusing hit-testing takes
+ * the hover with it, and takes any activation with it too, so the lift cannot
+ * pick an item either.
+ *
+ * The attribute lives on the opening popover, not the document, so a
+ * tooltip or another already-open popover keeps its pointers.
+ */
+globalStyle('[popover][data-ctx-hold-inert]:popover-open', {
+  pointerEvents: 'none',
 })

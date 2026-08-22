@@ -569,3 +569,84 @@ describe('usechatscroll down-jump on a small scroll-down', () => {
       })
     }))
 })
+
+describe('usechatscroll momentum reporting', () => {
+  /**
+   * `onMomentumScroll` is what keeps the floating scroll rail lit through a
+   * flick: no touch or pointer event fires while the content glides, so the
+   * rail can only relight from `scroll` events -- and only this hook can say
+   * which of those are the reader's own coast rather than a stick-to-bottom
+   * write echoing back. A rail lit by the latter would stay lit for a whole
+   * streaming response.
+   */
+  function setupMomentum() {
+    const div = makeFakeScrollDiv()
+    div.setScrollHeight(2000)
+    div.setClientHeight(500)
+    div.setScrollTop(0)
+    const [messages] = createSignal<AgentChatMessage[]>([])
+    const [streamingText] = createSignal('')
+    let momentumReports = 0
+    const hook = useChatScroll({
+      virtualizer: makeStubVirtualizer(),
+      messages,
+      streamingText,
+      onMomentumScroll: () => { momentumReports++ },
+    })
+    hook.attachListRef(div.el)
+    return { div, hook, reports: () => momentumReports }
+  }
+
+  it('reports a scroll the reader coasted to', () =>
+    createRoot((dispose) => {
+      const { div, hook, reports } = setupMomentum()
+
+      // Landed somewhere this hook never wrote, with no finger down: a coast.
+      div.setScrollTop(300)
+      hook.handlers.onScroll()
+
+      expect(reports()).toBe(1)
+      dispose()
+    }))
+
+  it('reports nothing while the finger is still down', () =>
+    createRoot((dispose) => {
+      const { div, hook, reports } = setupMomentum()
+
+      // A drag under the finger has no inertia to protect, and the pointer
+      // events it fires already light the rail on their own.
+      hook.handlers.onTouchStart({ touches: [{ clientY: 10 }] } as unknown as TouchEvent)
+      div.setScrollTop(300)
+      hook.handlers.onScroll()
+
+      expect(reports()).toBe(0)
+
+      // The finger lifts and the content glides on: the same scroll now counts,
+      // which is what proves the silence above was the guard and not the setup.
+      hook.handlers.onTouchEnd({ touches: [] } as unknown as TouchEvent)
+      div.setScrollTop(600)
+      hook.handlers.onScroll()
+
+      expect(reports()).toBe(1)
+      dispose()
+    }))
+
+  it('reports nothing for its own write echoing back', () =>
+    createRoot((dispose) => {
+      const { div, hook, reports } = setupMomentum()
+
+      // The stick-to-bottom's write, then the native scroll event it causes.
+      hook.forceScrollToBottom()
+      hook.handlers.onScroll()
+
+      expect(reports()).toBe(0)
+
+      // A reader-driven move away from that landing IS reported, so the silence
+      // above was the echo guard and not a harness that reports nothing at all.
+      div.setScrollTop(div.getScrollTop() - 400)
+      hook.handlers.onScroll()
+
+      expect(reports()).toBe(1)
+      dispose()
+    }))
+})

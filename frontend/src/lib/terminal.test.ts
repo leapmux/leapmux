@@ -1,9 +1,15 @@
 import type { Terminal } from '@xterm/xterm'
+import type { CopyTextOptions } from './clipboard'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { resolveVariant, themeById } from '~/styles/themes'
 import { stubMatchMedia } from '~/test-support/matchMediaStub'
 import { KEY_BROWSER_PREFS, localStorageClearForTests, localStorageSet } from './browserStorage'
 import { applyTerminalData, attachWebgl, createTerminalInstance, detachWebgl, getTerminalRendererPreference, getTerminalThemePreference, loadTerminalFonts, refreshTerminalFont, resolveTerminalRendererPreference, resolveTerminalTheme, resolveTerminalThemeMode, serializeXtermBuffer, terminalThemeFor } from './terminal'
+
+// The clipboard is mocked for the whole file, because the only thing here that
+// reaches it is copy-on-select, and its contract is the ARGUMENTS it passes.
+const copyTextToClipboard = vi.hoisted(() => vi.fn(async (_text: string, _options?: CopyTextOptions) => true))
+vi.mock('./clipboard', () => ({ copyTextToClipboard }))
 
 // xterm.js requires a DOM element for open(), but we can still test
 // the suppressInput mechanism without rendering.
@@ -689,5 +695,58 @@ describe('loadTerminalFonts cold-start retry', () => {
     // clearing the atlas (nothing loaded) and without an unhandled rejection.
     await vi.runAllTimersAsync()
     expect(clearTextureAtlas).not.toHaveBeenCalled()
+  })
+})
+
+describe('terminal copy-on-select', () => {
+  const writeToTerminal = (instance: ReturnType<typeof createTerminalInstance>, data: string) =>
+    new Promise<void>(resolve => instance.terminal.write(data, resolve))
+
+  /**
+   * A terminal with a container, because `select()` reaches the selection
+   * service and `open()` is what builds it. The rest of this file never
+   * renders, so the container is created here rather than at file level.
+   */
+  async function openWithText(text: string) {
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const instance = createTerminalInstance({ cols: 80, rows: 24 })
+    instance.terminal.open(container)
+    await writeToTerminal(instance, text)
+    return {
+      instance,
+      dispose: () => {
+        instance.dispose()
+        container.remove()
+      },
+    }
+  }
+
+  it('copies the selection', async () => {
+    const { instance, dispose } = await openWithText('hello world')
+    try {
+      instance.terminal.select(0, 0, 5)
+
+      expect(copyTextToClipboard).toHaveBeenCalledOnce()
+      expect(copyTextToClipboard.mock.calls[0]![0]).toBe('hello')
+    }
+    finally {
+      dispose()
+    }
+  })
+
+  // Copy-on-select is the one caller in the app that must NOT announce a failed
+  // write: it fires on every change of the selection, so a single drag would
+  // raise one toast per update. The user pressed no Copy button here.
+  it('declines to announce a failure, unlike every other copy in the app', async () => {
+    const { instance, dispose } = await openWithText('hello world')
+    try {
+      instance.terminal.select(0, 0, 5)
+
+      expect(copyTextToClipboard.mock.calls[0]![1]).toEqual({ announceFailure: false })
+    }
+    finally {
+      dispose()
+    }
   })
 })

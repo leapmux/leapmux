@@ -21,6 +21,7 @@ import {
   MockWebSocket,
   sessions,
 } from './channel.test-support'
+import { ChannelError } from './channelError'
 
 describe('channelManager call', () => {
   const h = new ChannelManagerTestHarness()
@@ -106,6 +107,19 @@ describe('channelManager call', () => {
     const channelId = await h.openTestChannel('w1')
     await h.mgr.closeChannel(channelId)
     await expect(h.mgr.call(channelId, 'Test', new Uint8Array())).rejects.toThrow('channel not open')
+  })
+
+  // The message alone is not what a caller reads. A background load that fails
+  // this way is explained by the outage the reconnect loop already announces, so
+  // it must be recognisable as a dropped link -- and the `client` source must
+  // survive, because widening it to `transport` feeds isWorkerUnreachable, which
+  // retires a tab.
+  it('marks a call onto a vanished channel as a dropped link, not a caller mistake', async () => {
+    const err = await h.mgr.call('nonexistent', 'Test', new Uint8Array()).catch((e: unknown) => e)
+
+    expect(err).toBeInstanceOf(ChannelError)
+    expect((err as ChannelError).disconnected).toBe(true)
+    expect((err as ChannelError).source).toBe('client')
   })
 
   it('rejects promptly when the socket is not OPEN instead of hanging until the RPC timeout', async () => {

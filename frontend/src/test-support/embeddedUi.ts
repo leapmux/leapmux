@@ -1,11 +1,11 @@
-// Shared DOM fixtures for the three pointer-gesture guards. Each of them
-// composes `INPUT_OR_EDITABLE_SELECTOR` (see ~/lib/textInputBehavior.ts) into
-// an `EMBEDDED_UI_SELECTOR` of its own and declines a press that starts inside
-// one of these elements.
+// Shared DOM fixtures for the pointer-gesture guards. Each of them composes
+// `INPUT_OR_EDITABLE_SELECTOR` (see ~/lib/textInputBehavior.ts) into a
+// selector of its own and declines a press that starts inside one of these
+// elements.
 //
-// The membership lives here once rather than in three hand-copied lists. A
-// member dropped from the shared fragment then fails all three specs at once,
-// instead of the one spec that happened to name it.
+// The membership lives here once rather than in hand-copied lists. A member
+// dropped from the shared fragment then fails every spec that uses these
+// hosts, instead of the one spec that happened to name it.
 
 /** An element a guard must decline, and the descendant a real press lands on. */
 export interface EmbeddedUiHost {

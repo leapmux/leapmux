@@ -33,6 +33,25 @@ function serverOf(leapmuxServer: { hubUrl: string, adminToken: string, workerId:
   }
 }
 
+/**
+ * Wait until the input events already dispatched have been RENDERED.
+ *
+ * CDP acknowledges the dispatch of a pointer event, not its processing on the
+ * main thread, so a lift issued straight after the last move can race the
+ * dragOver that decides where the drop lands. Two frames is the guarantee: the
+ * first callback runs after the pending work is consumed, the second after
+ * that work has painted.
+ *
+ * This is what a drag settles on instead of a sleep. A wall-clock wait elapses
+ * on schedule no matter how far behind the main thread is, which makes it
+ * exactly wrong under load — the condition it is supposed to cover.
+ */
+async function settleFrames(page: Page) {
+  await page.evaluate(() => new Promise<void>(resolve =>
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+  ))
+}
+
 /** Position of the row/tab whose text contains `needle`, throwing if absent. */
 async function textIndex(rows: Locator, needle: string): Promise<number> {
   const texts = await rows.allTextContents()
@@ -108,13 +127,9 @@ async function touchDragGripOnto(
         grip.y + 20 + ((fingerTarget.y - grip.y - 20) * step) / steps,
       )
     }
-    // Settle before lifting: CDP acknowledges the DISPATCH of a touchMove,
-    // not its processing on the main thread, so a lift that races the final
-    // dragOver resolves the drop prematurely. Two rAFs guarantee the queued
-    // moves were consumed by a rendered frame; the pause after covers the
-    // dragOver-to-store flush.
-    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))))
-    await page.waitForTimeout(100)
+    // Settle before lifting, or a lift that races the final dragOver resolves
+    // the drop prematurely.
+    await settleFrames(page)
   }
   finally {
     await finger.end()
@@ -196,10 +211,18 @@ test.describe('mobile tab sheet (phone)', () => {
     // the finger with no movement, and the menu opened over a stuck overlay.
     const box = (await alphaRow.boundingBox())!
     const hold = await touchDown(page, box.x + box.width / 2, box.y + box.height / 2)
-    await page.waitForTimeout(650)
-    await hold.end()
 
-    await expect(page.locator('[data-testid="tab-sheet-row-menu"]:popover-open')).toBeVisible()
+    // WHILE the finger is still down: the hold is the confirmation, so the menu
+    // belongs to it and not to the lift that follows.
+    const menu = page.locator('[data-testid="tab-sheet-row-menu"]:popover-open')
+    await expect(menu).toBeVisible()
+
+    // ...and the lift leaves it up. A `popover="auto"` shown under a finger is
+    // the case the HTML light-dismiss pass acts on, so this is the assertion
+    // that the release does not take the menu with it.
+    await hold.end()
+    await expect(menu).toBeVisible()
+
     // The hold did not also reorder anything.
     expect(await rows.allTextContents()).toEqual(before)
   })
@@ -282,6 +305,165 @@ test.describe('mobile drawers (phone)', () => {
   })
 })
 
+/**
+ * The two halves of the soft-keyboard layout contract, each of which is one
+ * string that a careless edit drops silently.
+ *
+ * The displacement they correct cannot be driven from here: Playwright raises
+ * no soft keyboard, and the visual-viewport offset this compensates is WebKit
+ * behaviour on a real iOS device. What IS testable is that the wiring holds --
+ * the meta key Chromium reads, and that the body consumes the property the
+ * hook publishes under the name it publishes it under.
+ */
+test.describe('soft-keyboard viewport contract (phone)', () => {
+  test.use(COARSE_POINTER_METRICS)
+
+  test('the viewport meta asks Chromium to resize the layout viewport for the keyboard', async ({ page, authenticatedWorkspace }) => {
+    // Without this key Chromium defaults to `resizes-visual`: the layout
+    // viewport keeps its full height, `100dvh` reports it, and the composer
+    // sits behind the keyboard.
+    await expect(page.locator('meta[name="viewport"]')).toHaveAttribute(
+      'content',
+      /interactive-widget=resizes-content/,
+    )
+  })
+
+  // The bar has nothing reachable while the keyboard is up, and the body is
+  // pinned to the visible region then, so a bar left in place re-seats itself
+  // at the top of the screen on every focus and blur.
+  test('the tab bar leaves the layout only while the keyboard takes screen space', async ({ page, authenticatedWorkspace }) => {
+    const bar = page.getByTestId('tab-bar')
+    await expect(bar).toBeVisible()
+
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await editor.click()
+    await expect(editor).toBeFocused()
+
+    // FOCUS ALONE MUST NOT HIDE IT. `MarkdownEditor` focuses the composer
+    // whenever it is enabled, so a chat that merely opens holds focus with no
+    // keyboard anywhere -- keying on focus alone hid the bar on open.
+    await expect(bar).toBeVisible()
+
+    // The keyboard, as Chromium models it under
+    // `interactive-widget=resizes-content`: the viewport loses its height.
+    const size = page.viewportSize()!
+    await page.setViewportSize({ width: size.width, height: size.height - 300 })
+    await expect(bar).toBeHidden()
+
+    // ...and it returns, intact, when that height comes back.
+    await page.setViewportSize(size)
+    await expect(bar).toBeVisible()
+    await expect(page.getByTestId('tab-chip')).toBeVisible()
+  })
+
+  // A completed send gives the screen back, but ONLY when a keyboard is taking
+  // it. `handleSend` used to call `focusEditor()` on every path, which brought
+  // the keyboard straight back after a tap on Send -- the tap does not move
+  // focus on iOS, so the editor kept it.
+  //
+  // Both halves in one spec because they are one rule. A coarse pointer does
+  // not imply an on-screen keyboard: this viewport reports one throughout, and
+  // the first half is the phone-with-a-hardware-keyboard case, where dropping
+  // the caret would reclaim nothing.
+  test('a send releases focus only while the keyboard takes screen space', async ({ page, authenticatedWorkspace }) => {
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const size = page.viewportSize()!
+
+    await editor.click()
+    await page.keyboard.type('hardware')
+    await page.getByTestId('send-button').tap()
+    // The editor emptying is the app's acknowledgement that the send committed,
+    // so each assertion below is about the SUCCESS path, not a refused send.
+    await expect(editor).toHaveText('')
+    await expect(editor).toBeFocused()
+
+    // Now a keyboard really is in the way, as Chromium models it under
+    // `interactive-widget=resizes-content`: the viewport loses its height.
+    await page.keyboard.type('soft')
+    await page.setViewportSize({ width: size.width, height: size.height - 300 })
+    await page.getByTestId('send-button').tap()
+    await expect(editor).toHaveText('')
+    await expect(editor).not.toBeFocused()
+
+    await page.setViewportSize(size)
+  })
+
+  // Reaching for the transcript is the user asking to read it, and the
+  // keyboard is covering half of it. WebKit does not blur an editing host for
+  // a tap on a plain region, so the app has to say so itself.
+  //
+  // DISPATCHED pointer events, not a real tap, and both halves of that matter.
+  // Chromium blurs an editing host natively on a tap outside it, so a real tap
+  // would pass whether or not the handler exists; synthetic events run no
+  // default action, which leaves the handler as the only thing that can
+  // release the composer. They also skip hit-testing, which an empty
+  // conversation makes unreliable -- the transcript is then shorter than the
+  // composer that overlays its centre. Hit-testing is the browser's job; what
+  // is ours is what the handler makes of the gesture.
+  test('a tap on the transcript releases the composer only while the keyboard takes screen space', async ({ page, authenticatedWorkspace }) => {
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    const transcript = page.locator('[data-chat-scroll-container="true"]')
+    const size = page.viewportSize()!
+
+    /** A tap: down and up at one point. `dx` drags instead, past the slop. */
+    const tapTranscript = async (dx = 0) => {
+      await transcript.dispatchEvent('pointerdown', { clientX: 100, clientY: 100 })
+      await transcript.dispatchEvent('pointerup', { clientX: 100 + dx, clientY: 100 })
+    }
+
+    await editor.click()
+    await expect(editor).toBeFocused()
+
+    // No keyboard in the way: nothing to reclaim, so the caret stays.
+    await tapTranscript()
+    await expect(editor).toBeFocused()
+
+    // With the viewport shortened -- Chromium's model of a keyboard under
+    // `interactive-widget=resizes-content` -- the same tap gives the screen back.
+    await page.setViewportSize({ width: size.width, height: size.height - 300 })
+    await expect(editor).toBeFocused()
+
+    // A DRAG past the slop is a scroll, not a tap: the caret survives it, or
+    // every flick over the transcript would close the keyboard mid-scroll.
+    await tapTranscript(40)
+    await expect(editor).toBeFocused()
+
+    await tapTranscript()
+    await expect(editor).not.toBeFocused()
+
+    await page.setViewportSize(size)
+  })
+
+  test('the body takes its size from --vvh and its place from --vv-shift', async ({ page, authenticatedWorkspace }) => {
+    const measured = await page.evaluate(() => {
+      const read = () => {
+        const style = getComputedStyle(document.body)
+        return { height: style.height, transform: style.transform }
+      }
+      const idle = read()
+      // What the hook publishes together while the keyboard is up.
+      document.documentElement.style.setProperty('--vvh', '321px')
+      document.documentElement.style.setProperty('--vv-shift', '17px')
+      const keyboardUp = read()
+      document.documentElement.style.removeProperty('--vvh')
+      document.documentElement.style.removeProperty('--vv-shift')
+      return { idle, keyboardUp, viewport: window.innerHeight }
+    })
+
+    // Identity, NOT `none`: the fallback keeps a transform on the body at all
+    // times, which is what makes it the containing block SelectionQuotePopover
+    // counter-translates against.
+    expect(measured.idle.transform).toBe('matrix(1, 0, 0, 1, 0, 0)')
+    // No `--vvh` → the `100dvh` fallback, which on this desktop-engine phone
+    // emulation is the full viewport.
+    expect(measured.idle.height).toBe(`${measured.viewport}px`)
+
+    // Both published names reach the layout, the shift with its sign intact.
+    expect(measured.keyboardUp.height).toBe('321px')
+    expect(measured.keyboardUp.transform).toBe('matrix(1, 0, 0, 1, 0, 17)')
+  })
+})
+
 test.describe('tablet touch (desktop layout)', () => {
   // iPad-like metrics: wide enough for the DESKTOP tiling layout (>=768px)
   // but mobile metrics throughout, so Blink reports a coarse primary pointer
@@ -310,15 +492,32 @@ test.describe('tablet touch (desktop layout)', () => {
     // pressed the tab's NEIGHBOR), and the `tabDragging` class is the
     // activation oracle — a press that never claims the pointer fails
     // HERE, not as a mysteriously unchanged order later.
+    //
+    // The gesture is the same shape `touchDragGripOnto` uses, and for the same
+    // reason: every window below ends on a STATE, never on a timer. A mouse
+    // press activates on the first move past `ACTIVATION_DISTANCE_PX` (the
+    // 250ms hold timer is the other route, and this never waits for it), so a
+    // short move followed by the class assertion is what "the sensor claimed
+    // the press" looks like. The 100ms sleeps this replaced only guessed at
+    // that: a wall-clock window elapses on schedule while a loaded main thread
+    // has processed nothing, which is how this test failed under load.
     const alphaBox = (await alphaTab.boundingBox())!
     const betaBox = (await betaTab.boundingBox())!
     await page.mouse.move(alphaBox.x + alphaBox.width / 2, alphaBox.y + alphaBox.height / 2)
     await page.mouse.down()
-    await page.waitForTimeout(100)
-    await page.mouse.move(betaBox.x + betaBox.width / 2, betaBox.y + betaBox.height / 2, { steps: 12 })
+
+    // Past the 10px activation distance, offset on BOTH axes so it does not
+    // depend on which side of Alpha the Beta tab sits.
+    await page.mouse.move(alphaBox.x + alphaBox.width / 2 + 8, alphaBox.y + alphaBox.height / 2 + 20)
     await expect(alphaTab).toHaveClass(/tabDragging/)
-    await page.waitForTimeout(100)
+
+    await page.mouse.move(betaBox.x + betaBox.width / 2, betaBox.y + betaBox.height / 2, { steps: 12 })
+    await settleFrames(page)
     await page.mouse.up()
+
+    // The lift ended the drag: a press whose pointerup the pipeline lost would
+    // leave the row lifted and the reorder would never be attempted.
+    await expect(alphaTab).not.toHaveClass(/tabDragging/)
     // Dropping Alpha ONTO Beta inserts it at Beta's slot — landing AFTER
     // Beta, whatever else the strip holds. Polled: the reorder lands when
     // the store confirms it, which can be after mouse.up returns.

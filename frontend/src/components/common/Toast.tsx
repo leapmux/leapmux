@@ -1,3 +1,4 @@
+import { isDisconnectError } from '~/api/workerErrors'
 import { formatErrorMessage } from '~/lib/errors'
 import { createLogger } from '~/lib/logger'
 
@@ -9,6 +10,43 @@ type ToastType = 'danger' | 'success'
 export function showWarnToast(message: string, err?: unknown) {
   log.warn(message, err)
   renderToast(formatErrorMessage(err, message), 'danger')
+}
+
+/**
+ * Show a warning toast whose copy the CALLER owns, and log `err` as the cause.
+ *
+ * `showWarnToast` renders `err.message` and keeps its own `message` only as a
+ * fallback for a thrown non-Error. That is right when the error carries a
+ * sentence the user can act on, and wrong for a transport failure, whose message
+ * names our own plumbing: "channel not open", "channel disconnected", "cannot
+ * send channel message: WebSocket not open". The user read the jargon and the
+ * app's real sentence never reached the screen.
+ *
+ * Use this where the caller knows what to say and the error is a diagnostic.
+ */
+export function showWarnToastWithLoggedCause(message: string, err: unknown) {
+  log.warn(message, err)
+  renderToast(message, 'danger')
+}
+
+/**
+ * Show a warning toast, unless a dropped connection is what failed the
+ * operation.
+ *
+ * For a BACKGROUND operation the app retries on its own. See `isDisconnectError`
+ * for which failures qualify and why a user-requested operation must not use
+ * this.
+ *
+ * It lives here, beside its siblings, rather than in a module of its own: a
+ * reader choosing a toast helper then sees every option in one place, and the
+ * import it costs is one predicate with no cycle back to the components layer.
+ */
+export function showWarnToastUnlessDisconnected(message: string, err: unknown) {
+  if (isDisconnectError(err)) {
+    log.debug('suppressed a background failure that the dropped connection explains', { message, err })
+    return
+  }
+  showWarnToast(message, err)
 }
 
 /**
@@ -55,6 +93,18 @@ const liveSticky = new Map<string, HTMLElement>()
 // durationMs of 0 means "until dismissed"; the toast already renders its own
 // close button, so a sticky one is never a dead end.
 function renderToast(message: string, type: ToastType, durationMs = 3000) {
+  // `window.ot` is DECLARED non-optional (see ~/lib/oat.ts) because the design
+  // system installs it during startup. It is genuinely absent before that runs,
+  // and under test, so the annotation widens what the declaration promises.
+  // Reaching a missing host must not throw: every caller here is already
+  // reporting a failure, and a toast that raises a second one on top of it
+  // would take down the handler that was explaining the first.
+  const host: Window['ot'] | undefined = window.ot
+  if (!host) {
+    log.warn('no toast host is installed, so this message reached no screen', { message })
+    return
+  }
+
   const sticky = durationMs === 0
   if (sticky) {
     // isConnected rather than mere presence: the map is a cache over the DOM,
@@ -90,7 +140,7 @@ function renderToast(message: string, type: ToastType, durationMs = 3000) {
   // actually sees. Auto-dismissal hid that for as long as every toast expired
   // on its own; a sticky toast makes the button the only way out. _show()
   // returns the mounted clone, so bind to that.
-  const mounted = window.ot.toast.el(toast, {
+  const mounted = host.toast.el(toast, {
     placement: 'bottom-right',
     duration: durationMs,
   })

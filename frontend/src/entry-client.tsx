@@ -1,19 +1,21 @@
 // @refresh reload
 import { mount, StartClient } from '@solidjs/start/client'
 import { showWarnToast } from '~/components/common/Toast'
+import { installIgnorableErrorSuppressor } from '~/lib/ignorableErrorEvents'
 import { installGlobalErrorSink } from '~/lib/installGlobalErrorSink'
 import { scheduleRenderPipelineWarmup } from '~/lib/renderPipelineWarmup'
-import { installResizeObserverLoopErrorSuppressor } from '~/lib/suppressResizeObserverLoopError'
 
-// Suppress the benign "ResizeObserver loop ..." window error before mount(), so
-// this listener is registered ahead of @solidjs/start's dev overlay (which
-// registers its own window `error` listener during mount) and can
-// stopImmediatePropagation the event before the overlay pops a 500 dialog. The
-// long/busy chat transcript trips this loop routinely; see the helper for the
-// full rationale. Dev-only: the overlay only exists in dev, and prod keeps the
-// browser's native error reporting untouched.
+// Suppress the window errors that carry nothing to act on -- the benign
+// "ResizeObserver loop ..." warning and an error the browser muted to "Script
+// error." -- before mount(), so this listener is registered ahead of
+// @solidjs/start's dev overlay (which registers its own window `error` listener
+// during mount) and can stopImmediatePropagation the event before the overlay
+// pops a 500 dialog. The long/busy chat transcript trips the loop routinely, and
+// iOS Safari mutes an error when the share sheet resizes and snapshots the page;
+// see the helper for the full rationale. Dev-only: the overlay only exists in
+// dev, and prod keeps the browser's native error reporting untouched.
 if (import.meta.env.DEV)
-  installResizeObserverLoopErrorSuppressor()
+  installIgnorableErrorSuppressor()
 
 // Catch what the ErrorBoundaries structurally cannot: faults thrown from event
 // handlers, promise rejections, timers and socket callbacks never touch the
