@@ -2,7 +2,7 @@ import { CODE_BLOCK_TINT_PERCENT } from '../../src/styles/codePalette'
 import { colorAlpha } from '../../src/test-support/color'
 import { expect, test } from './fixtures'
 import { enterAndExitPlanMode } from './helpers/plan-mode'
-import { resolvedColor, userBubbles } from './helpers/ui'
+import { readAttached, resolvedColor, userBubbles } from './helpers/ui'
 
 const MONOSPACE_FONT_RE = /HackNerdFont|Menlo|Monaco|Courier New|monospace/
 
@@ -63,7 +63,13 @@ test.describe('Code block field', () => {
    * case a tint cannot answer.
    */
   async function blockBackground(block: import('@playwright/test').Locator): Promise<string> {
-    return block.evaluate(el => getComputedStyle(el).backgroundColor)
+    // Skip a detached match, because half these blocks live in a chat row: a row
+    // that remounts between a resolve and a read leaves a DETACHED node, whose
+    // computed style is empty rather than wrong. See readAttached.
+    return readAttached(block, 'blockBackground', (matches) => {
+      const el = matches.find(candidate => candidate.isConnected)
+      return el ? getComputedStyle(el).backgroundColor : null
+    })
   }
 
   test('paints the composer code block a field that composites on its host, in both polarities', async ({ page, authenticatedWorkspace }) => {
@@ -128,7 +134,10 @@ test.describe('Code block field', () => {
     // ...and that is not a trivial match: the bubble it lands in paints a
     // DIFFERENT surface than the panel behind the composer. One declaration on
     // two hosts is the whole point of a field that composites.
-    const bubbleSurface = await bubble.evaluate(el => getComputedStyle(el).backgroundColor)
+    const bubbleSurface = await readAttached(bubble, 'the bubble surface', (matches) => {
+      const el = matches.find(candidate => candidate.isConnected)
+      return el ? getComputedStyle(el).backgroundColor : null
+    })
     const panelSurface = await resolvedColor(page, 'var(--background)')
     expect(bubbleSurface, 'a user bubble is a different surface from the panel').not.toBe(panelSurface)
 
@@ -136,7 +145,10 @@ test.describe('Code block field', () => {
     // transient, so the field is measured on a bare `<pre>` placed in the same
     // markdown body rather than by racing the render: a selector narrowed back
     // to `pre.shiki` leaves this one on the app's own tint instead.
-    const unhighlighted = await sent.evaluate((el) => {
+    const unhighlighted = await readAttached(sent, 'an un-highlighted <pre>', (matches) => {
+      const el = matches.find(candidate => candidate.isConnected)
+      if (!el)
+        return null
       const bare = document.createElement('pre')
       el.parentElement!.append(bare)
       const painted = getComputedStyle(bare).backgroundColor

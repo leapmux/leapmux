@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures'
 import { COARSE_POINTER_METRICS } from './helpers/touch'
-import { sendMessage, userBubbles, waitForAgentIdle } from './helpers/ui'
+import { readAttached, sendMessage, userBubbles, waitForAgentIdle } from './helpers/ui'
 
 /**
  * The scroll rail's floating auto-hide, which is E2E-only by construction. Everything that
@@ -223,7 +223,17 @@ test.describe('chat scroll rail auto-hide', () => {
     // Scoped to a band row inside the scroller: only a row that gives its whole width to
     // the content floats its actions absolutely, so a user row's toolbar -- which is
     // in-flow in a mirrored grid -- reads `right: auto` and would prove nothing.
-    const toolbarRight = () => page.locator(`${SCROLLER} [data-band] [data-testid="message-toolbar"]`).first().evaluate(el => globalThis.getComputedStyle(el).right)
+    //
+    // Read through readAttached: this toolbar is inside a chat row, and a row that
+    // remounts between the resolve and the read reports no computed style at all.
+    const toolbarRight = () => readAttached(
+      page.locator(`${SCROLLER} [data-band] [data-testid="message-toolbar"]`).first(),
+      'the row toolbar inset',
+      (matches) => {
+        const el = matches.find(candidate => candidate.isConnected)
+        return el ? globalThis.getComputedStyle(el).right : null
+      },
+    )
     expect(await toolbarRight()).toBe('0px')
 
     // Below the phone breakpoint the gutter shrinks to 4px but the column keeps its

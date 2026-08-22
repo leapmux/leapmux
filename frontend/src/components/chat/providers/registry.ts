@@ -13,7 +13,7 @@ import type { ActionsProps, AskQuestionState, ContentProps, Question } from '../
 import type { MessageCategory } from '../messageClassification'
 import type { RenderContext } from '../messageRenderers'
 import type { ControlResponseDeriver } from '../persistedControlResponse'
-import type { AgentInfo, AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentInfo, AgentProvider, MessageSource } from '~/generated/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { AgentSessionInfo, ContextUsageInfo, RateLimitInfo } from '~/stores/agentSession.store'
 import type { CommandStreamSegment } from '~/stores/chatTypes'
@@ -52,6 +52,13 @@ export interface AttachmentCapabilities {
 
 export interface ClassificationInput extends ParsedMessageContent {
   agentProvider?: AgentProvider
+  /**
+   * Who wrote the row. Read ONLY by the provider-neutral carve-outs in
+   * `classifyMessage`, never by a plugin: a plugin recognizes its own wire
+   * format by shape, and branching on the source instead would let it claim a
+   * row LeapMux wrote.
+   */
+  source?: MessageSource
   spanId?: string
   spanType?: string
   parentSpanId?: string

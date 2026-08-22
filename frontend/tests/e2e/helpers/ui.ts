@@ -215,26 +215,175 @@ export function chatScrollContainer(page: Page) {
 }
 
 /**
+ * How long {@link readAttached} waits for a match that is still in the document.
+ *
+ * The only thing it waits out is a REMOUNT, which is a handful of frames, so the
+ * budget is deliberately far below `expect.timeout`: an element that is genuinely
+ * outside every chat list must report THAT, rather than expire as a bare test
+ * timeout with no named assertion.
+ */
+const ATTACHED_READ_TIMEOUT_MS = 15_000
+
+/**
+ * Read from the first match of `locator` that is still in the document.
+ *
+ * Use this, not `locator.evaluate`, for anything the app can re-create -- every
+ * chat row, and everything inside one.
+ *
+ * Reading a chat row is racy in a way no Playwright API removes. Resolving a
+ * locator and reading from what it resolved are two browser round trips, and a
+ * chat row does not survive the gap: ChatView re-creates a row whenever its entry
+ * is replaced, and every send does exactly that about 350ms later, when the
+ * optimistic local (`local-…`, seq 0) reconciles to a server echo carrying a
+ * different id AND a different seq. A resolve that lands just before the swap
+ * leaves the read holding a DETACHED node, whose `closest()` is null, whose rect
+ * is all zeroes and whose computed style is EMPTY -- which fails an assertion on
+ * geometry at random (https://github.com/leapmux/leapmux/issues/402) and silently
+ * PASSES one that only asks for two colours to differ.
+ *
+ * `evaluateAll` does not close that gap, and assuming it did was the first attempt
+ * at this fix. Playwright runs it as `querySelectorAll` into an array HANDLE, then
+ * a second call that applies `read` to that handle -- so the elements are pinned
+ * one round trip before `read` sees them, exactly like `evaluate`. Driving a
+ * probe that replaced its element on every event-loop turn, both forms handed
+ * `read` a detached node on most attempts. The one-round-trip alternative,
+ * `page.evaluate` with the query inside it, gives up Playwright's `:visible`
+ * engine -- which is what keeps the hidden premeasure copy out of every chat
+ * locator -- so it trades this defect for that one.
+ *
+ * What IS guaranteed is that the element and everything `read` derives from it
+ * belong to the same synchronous page turn. So `read` filters out what has left
+ * the document and returns null, and this retries. A measurement it does return
+ * came off a node that was attached when it was taken.
+ *
+ * `read` takes the match ARRAY, and must skip the detached candidates itself,
+ * because a wrapper cannot do it for them: Playwright serializes `read` and runs
+ * it inside the page, so a wrapper that called it would have to close over a
+ * Node-side function that does not survive the crossing. For the same reason
+ * `read` cannot reach {@link CHAT_SCROLL_CONTAINER}, so every read is handed it as
+ * a second argument; one that does not need the list just declares one parameter.
+ */
+export async function readAttached<R>(
+  locator: Locator,
+  what: string,
+  read: (possiblyDetachedMatches: (SVGElement | HTMLElement)[], chatScrollContainerSelector: string) => R | null,
+): Promise<R> {
+  // Held on an object rather than in a `let`: the assignment happens inside the
+  // retry closure, which control-flow narrowing cannot see through.
+  const held: { value: R | null } = { value: null }
+  await expect(async () => {
+    held.value = await locator.evaluateAll(read, CHAT_SCROLL_CONTAINER)
+    expect(held.value, `${what}: matched no element that was still in the document`).not.toBeNull()
+  }).toPass({ timeout: ATTACHED_READ_TIMEOUT_MS })
+  return held.value!
+}
+
+/**
+ * Every number the two chat measurements below need, read together.
+ *
+ * One page-side reader serves both so they cannot drift apart on how they read
+ * the box -- the guarantee their own doc comments claim, made structural instead
+ * of aspirational. Each caller projects the fields it asked for.
+ */
+interface ChatBoxGeometry {
+  /** The element's own border-box width. */
+  width: number
+  /** The list's padding-box width, the native scrollbar excluded. */
+  listWidth: number
+  /** Distance from the element's right side to the list's padding-box right edge. */
+  rightGap: number
+  /** Distance from the list's padding-box left edge to the element's left side. */
+  leftGap: number
+  /** Distance from the element's top edge down from its ROW's top edge, null when it has no parent. */
+  topGapInRow: number | null
+  /** The element's computed `border-top-right-radius`, as CSS reports it. */
+  radius: string
+}
+
+/** A match that cannot be measured, and what it turned out to be instead. */
+interface ChatBoxOutsideList {
+  outside: string
+}
+
+/**
+ * Measure the first still-attached match against its chat scroll container and
+ * its own row.
+ *
+ * The container is resolved from the element itself rather than from a hard-coded
+ * position in the DOM, and by the attribute the app publishes rather than by a
+ * computed-style walk that has to guess which ancestor scrolls. `clientLeft` is
+ * the list's left border and `clientWidth` stops before a native scrollbar, so
+ * both edges track the same padding box whichever scrollbar the list is wearing.
+ * Every number comes off one layout, so none of them can straddle a resize.
+ */
+function readChatBoxGeometry(
+  possiblyDetachedMatches: (SVGElement | HTMLElement)[],
+  chatScrollContainerSelector: string,
+): ChatBoxGeometry | ChatBoxOutsideList | null {
+  // A row that remounted between the resolve and this read is gone for good, and
+  // reports a zero rect and an empty computed style rather than an error.
+  const el = possiblyDetachedMatches.find(candidate => candidate.isConnected)
+  if (!el)
+    return null
+  const list = el.closest(chatScrollContainerSelector)
+  if (!list) {
+    // Name the copy outright. The premeasure root sits OUTSIDE the scroll
+    // container, so a measurement that lands on it looks exactly like a row that
+    // remounted -- telling the two apart by hand is what made issue 402 a guess.
+    if (el.closest('[data-chat-premeasure-root="true"]'))
+      return { outside: 'it is ChatView\'s hidden premeasure copy, not the live row' }
+    const chain: string[] = []
+    for (let node: Element | null = el; node && chain.length < 8; node = node.parentElement) {
+      const testId = node.getAttribute('data-testid')
+      chain.push(node.tagName.toLowerCase() + (testId ? `[${testId}]` : ''))
+    }
+    return { outside: `ancestors: ${chain.join(' < ')}` }
+  }
+  const listRect = list.getBoundingClientRect()
+  const self = el.getBoundingClientRect()
+  const row = el.parentElement
+  const padLeft = listRect.left + list.clientLeft
+  return {
+    width: self.width,
+    listWidth: list.clientWidth,
+    rightGap: padLeft + list.clientWidth - self.right,
+    leftGap: self.left - padLeft,
+    topGapInRow: row ? self.top - row.getBoundingClientRect().top : null,
+    radius: globalThis.getComputedStyle(el).borderTopRightRadius,
+  }
+}
+
+/** Run {@link readChatBoxGeometry} through {@link readAttached} and reject a match it cannot measure. */
+async function measureChatBox(locator: Locator, what: string): Promise<ChatBoxGeometry> {
+  const read = await readAttached(locator, what, readChatBoxGeometry)
+  // Not retried: an element outside every chat list stays outside, so looping on
+  // it would replace this message with a test timeout 15 seconds later.
+  if ('outside' in read)
+    throw new Error(`${what}: element is not inside the chat scroll container -- ${read.outside}`)
+  return read
+}
+
+/**
  * Measure a full-bleed chat element against the width it must span: the chat
  * scroll container's `clientWidth`, which IS its padding box (the scrollbar
  * excluded), and which is exactly what a band or a turn-end rule reaches.
- *
- * The container is resolved from the element itself rather than from a
- * hard-coded position in the DOM, and by the attribute the app publishes rather
- * than by a computed-style walk that has to guess which ancestor scrolls. Both
- * numbers are read in one browser round trip, so they cannot straddle a resize.
  */
 export async function measureAgainstChatList(locator: Locator): Promise<{ width: number, listWidth: number }> {
-  return locator.evaluate((el, selector) => {
-    const list = el.closest(selector)
-    if (!list)
-      throw new Error('measureAgainstChatList: element is not inside the chat scroll container')
-    return { width: el.getBoundingClientRect().width, listWidth: list.clientWidth }
-  }, CHAT_SCROLL_CONTAINER)
+  const { width, listWidth } = await measureChatBox(locator, 'measureAgainstChatList')
+  return { width, listWidth }
 }
 
 /** Where an end-of-line card's sides sit, and the corner it turns at the edge. */
 export interface BubbleEdges {
+  /**
+   * The list's padding-box width, which the two gaps are measured against.
+   *
+   * Carried so a failure reports the SHAPE and not just the symptom: with it, a
+   * card measured against the wrong list is one glance away from a card the
+   * bleed rule simply missed. The card's own width is `listWidth - leftGap -
+   * rightGap`, so it is not repeated here.
+   */
+  listWidth: number
   /** Distance from the card's right side to the list's padding-box right edge. */
   rightGap: number
   /** Distance from the list's padding-box left edge to the card's left side. */
@@ -250,9 +399,7 @@ export interface BubbleEdges {
  *
  * One rule runs a user message and a plan execution to the right edge, so both
  * specs measure through this function and cannot drift apart on how they read
- * the box. `clientLeft` is the list's left border and `clientWidth` stops before
- * a native scrollbar, so the right edge tracks the same padding box that
- * {@link measureAgainstChatList} reads, whichever scrollbar the list is wearing.
+ * the box.
  *
  * `topGapInRow` is the vertical half: the ROW places its bubble on both axes, so
  * a card's top edge must sit on its row's. It is what a bubble-level `alignSelf`
@@ -260,23 +407,10 @@ export interface BubbleEdges {
  * that line.
  */
 export async function measureBubbleEdges(locator: Locator): Promise<BubbleEdges> {
-  return locator.evaluate((el, selector) => {
-    const list = el.closest(selector)
-    if (!list)
-      throw new Error('measureBubbleEdges: element is not inside the chat scroll container')
-    const row = el.parentElement
-    if (!row)
-      throw new Error('measureBubbleEdges: element has no row to measure against')
-    const listRect = list.getBoundingClientRect()
-    const self = el.getBoundingClientRect()
-    const padLeft = listRect.left + list.clientLeft
-    return {
-      rightGap: padLeft + list.clientWidth - self.right,
-      leftGap: self.left - padLeft,
-      topGapInRow: self.top - row.getBoundingClientRect().top,
-      radius: globalThis.getComputedStyle(el).borderTopRightRadius,
-    }
-  }, CHAT_SCROLL_CONTAINER)
+  const { listWidth, rightGap, leftGap, topGapInRow, radius } = await measureChatBox(locator, 'measureBubbleEdges')
+  if (topGapInRow === null)
+    throw new Error('measureBubbleEdges: element has no row to measure against')
+  return { listWidth, rightGap, leftGap, topGapInRow, radius }
 }
 
 /**

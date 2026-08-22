@@ -1,5 +1,5 @@
 import type { ClassificationInput } from './registry'
-import type { AvailableOption } from '~/generated/leapmux/v1/agent_pb'
+import type { AvailableOption, MessageSource } from '~/generated/leapmux/v1/agent_pb'
 import { create } from '@bufbuild/protobuf'
 import {
   AgentProvider,
@@ -13,11 +13,16 @@ import {
  * dispatches to the Claude plugin (now that classifyMessage no longer falls back
  * to Claude for an unset provider); pass an explicit provider to exercise another
  * plugin's dispatch or the `unsupported_provider` path.
+ *
+ * `source` is left unset by default because only the provider-neutral carve-outs
+ * in classifyMessage read it; pass MessageSource.USER to exercise the LeapMux
+ * user-row path.
  */
 export function input(
   parent?: Record<string, unknown>,
   wrapper?: { old_seqs: number[], messages: unknown[] } | null,
   agentProvider: AgentProvider = AgentProvider.CLAUDE_CODE,
+  source?: MessageSource,
 ): ClassificationInput {
   return {
     rawText: '',
@@ -25,6 +30,7 @@ export function input(
     parentObject: parent,
     wrapper: wrapper ?? null,
     agentProvider,
+    source,
   }
 }
 

@@ -56,6 +56,7 @@ export function toClassificationInput(
     parentObject: parsed.parentObject,
     wrapper: parsed.wrapper,
     agentProvider: message.agentProvider,
+    source: message.source,
     spanId: message.spanId,
     spanType: message.spanType,
     parentSpanId: message.parentSpanId,
@@ -65,21 +66,58 @@ export function toClassificationInput(
 }
 
 /**
+ * True for LeapMux's OWN user-row payload: the flat `{content, attachments?}`
+ * object every user message is persisted as.
+ *
+ * Tests exactly what the shared `UserContentMessage` renderer reads, and the same
+ * `type`-free shape Claude's `userContentRenderer` requires, so a row this accepts
+ * is one the neutral renderer can draw. The absence of `type` is what separates it
+ * from a provider envelope, every one of which is tagged.
+ *
+ * Restricted to a USER source and to an unwrapped row: a notification thread
+ * carries its own wrapper and classifies as a notification, and an AGENT row is
+ * provider bytes whatever it happens to look like.
+ */
+function isLeapMuxUserPayload(input: ClassificationInput): boolean {
+  return input.source === MessageSource.USER
+    && input.wrapper === null
+    && input.parentObject !== undefined
+    && typeof input.parentObject.content === 'string'
+    && !('type' in input.parentObject)
+}
+
+/**
  * Classify a parsed message into exactly one category.
  *
  * Dispatches strictly through the message's own provider plugin. An UNSPECIFIED
  * or unregistered provider has no plugin: we refuse to guess one (e.g. default
  * to Claude), because misreading another provider's envelope is worse than a
  * visible failure -- the result is `unsupported_provider`, which MessageBubble
- * surfaces as a loud error.
+ * surfaces as a loud error. A row LeapMux wrote ITSELF is the exception; see
+ * {@link isLeapMuxUserPayload}.
  */
 export function classifyMessage(
   input: ClassificationInput,
   context?: ClassificationContext,
 ): MessageCategory {
   const plugin = pluginFor(input.agentProvider)
-  if (!plugin)
+  if (!plugin) {
+    // A USER row is the one message no plugin is needed to read: LeapMux writes
+    // every one of them itself, in its own flat `{content, attachments?}` shape
+    // (see the SendAgentMessage handler and chatReconcile's payload extractor).
+    // There are no provider bytes here to misread, so the loud error below is
+    // the wrong answer for it -- and it is not hypothetical. An agent tab
+    // arrives from the CRDT projection with NO worker-side metadata, because the
+    // hub strips the agent payload (it is E2EE on the worker) and useTabHydrators
+    // fetches it separately. Until that answers, the tab carries no
+    // agentProvider, so the optimistic bubble a send builds from it claims
+    // UNSPECIFIED -- and the user's own message rendered as "Unsupported agent
+    // provider: Unknown (0)" for as long as the echo took to arrive, in a META
+    // row that also lost the full-bleed geometry a user row is laid out with.
+    if (isLeapMuxUserPayload(input))
+      return { kind: 'user_content' }
     return { kind: 'unsupported_provider' }
+  }
 
   // A persisted control-response row ({isSynthetic, controlResponse}) is a LeapMux-NEUTRAL synthetic
   // shape, not a provider wire format, so its classification lives here once instead of being

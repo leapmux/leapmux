@@ -216,6 +216,15 @@ export function ChatHiddenPremeasure(props: ChatDomPremeasureProps): JSX.Element
       class={styles.premeasureRoot}
       style={{ width: `${Math.max(1, props.contentWidthPx)}px` }}
       aria-hidden="true"
+      // An e2e hook, like `data-chat-scroll-container` and `data-band`: the class
+      // is a hashed vanilla-extract name, so a spec has no other stable way to
+      // ask "is this element the hidden COPY of a row rather than the row?".
+      // A chat measurement that lands on a copy is a real defect (the copy sits
+      // outside the scroll container and carries no live geometry), and without
+      // this marker the failure is indistinguishable from a row that simply
+      // remounted -- which is what made
+      // https://github.com/leapmux/leapmux/issues/402 a three-way guess.
+      data-chat-premeasure-root="true"
     >
       <For each={props.candidates}>
         {candidate => (
