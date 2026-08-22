@@ -1,7 +1,7 @@
 import type { Accessor, Component } from 'solid-js'
 import type { FileSortFields, FileSortKey, FileSortOrder } from '~/lib/fileSort'
 import type { PathFlavor } from '~/lib/paths'
-import type { createGitFileStatusStore, DiffStats } from '~/stores/gitFileStatus.store'
+import type { createRepoGitStore, DiffStats } from '~/stores/repoGit.store'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
 import File from 'lucide-solid/icons/file'
 import FolderClosed from 'lucide-solid/icons/folder-closed'
@@ -45,7 +45,7 @@ export interface DirectoryTreeProps {
    *  best-effort sniff from homeDir/rootPath.
    */
   flavor?: PathFlavor
-  gitStatusStore?: ReturnType<typeof createGitFileStatusStore>
+  gitStatusStore?: ReturnType<typeof createRepoGitStore>
   /**
    * When set, the tree is FILTERED: only nodes this predicate accepts render.
    * Built by the git-aware caller (see makeGitVisibilityPredicate), so the
@@ -132,7 +132,7 @@ interface TreeContextValue {
   homeDir?: string
   flavor: () => PathFlavor
   scrollContainer?: HTMLDivElement
-  gitStatusStore: () => ReturnType<typeof createGitFileStatusStore> | undefined
+  gitStatusStore: () => ReturnType<typeof createRepoGitStore> | undefined
   showHiddenFiles: boolean
   /** Comparator for the current sort order, shared by every node. */
   comparator: () => (a: TreeNodeData, b: TreeNodeData) => number

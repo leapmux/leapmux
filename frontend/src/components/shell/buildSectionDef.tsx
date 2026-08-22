@@ -168,6 +168,7 @@ export function buildSectionDef(
           isWorkerKnownOnline={workerId => isWorkerKnownOnline(ctx.workers, workerId)}
           onChangeBranch={ctx.onChangeBranch}
           onDeleteBranch={ctx.onDeleteBranch}
+          repoGitStore={ctx.gitStatusStore!}
         />
       ),
     }

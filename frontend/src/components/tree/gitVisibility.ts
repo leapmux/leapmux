@@ -1,7 +1,7 @@
 import type { GitFileStatusEntry } from '~/generated/leapmux/v1/common_pb'
 import type { PathFlavor } from '~/lib/paths'
 import { join, lastSepIndex, sep, trimLastSegment } from '~/lib/paths'
-import { isUntrackedDirEntry, untrackedDirBasePath } from '~/stores/gitFileStatus.store'
+import { isUntrackedDirEntry, untrackedDirBasePath } from '~/stores/repoGit.store'
 
 /**
  * The two sets a filtered tree needs: `paths` holds every entry the filter

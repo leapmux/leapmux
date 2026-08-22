@@ -3,7 +3,7 @@ import type { DirectoryTreeHandle } from './DirectoryTree'
 import type { GitFileStatusEntry } from '~/generated/leapmux/v1/common_pb'
 import type { FileSortFields, FileSortOrder } from '~/lib/fileSort'
 import type { PathFlavor } from '~/lib/paths'
-import type { createGitFileStatusStore, GitFilterTab } from '~/stores/gitFileStatus.store'
+import type { createRepoGitStore, GitFilterTab } from '~/stores/repoGit.store'
 import ChevronsDownUp from 'lucide-solid/icons/chevrons-down-up'
 import Eye from 'lucide-solid/icons/eye'
 import EyeOff from 'lucide-solid/icons/eye-off'
@@ -20,7 +20,7 @@ import { PREFIX_FILES_SHOW_HIDDEN, PREFIX_FILES_SORT_ORDER } from '~/lib/browser
 import { createPersistedSignal, persistedBoolean } from '~/lib/createPersistedSignal'
 import { DEFAULT_FILE_SORT_ORDER, makeFileComparator, parseFileSortOrder } from '~/lib/fileSort'
 import { shortcutHint } from '~/lib/shortcuts/display'
-import { fileEntryToDiffStats, isUntrackedDirEntry } from '~/stores/gitFileStatus.store'
+import { fileEntryToDiffStats, isUntrackedDirEntry } from '~/stores/repoGit.store'
 import { DirectoryTree } from './DirectoryTree'
 import * as styles from './FilesSection.css'
 import { FilesSortMenu } from './FilesSortMenu'
@@ -50,7 +50,7 @@ export interface FilesSectionProps {
   onFileOpen?: (path: string, openSource?: GitFilterTab) => void
   onMention?: (path: string) => void
   onOpenTerminal?: (dirPath: string) => void
-  gitStatusStore: ReturnType<typeof createGitFileStatusStore>
+  gitStatusStore: ReturnType<typeof createRepoGitStore>
   /** Currently active file tab's path (for locate file). */
   activeFilePath?: string
   /** Whether the active tab is a file tab (for locate button enabled state). */
@@ -248,6 +248,8 @@ export const FilesSection: Component<FilesSectionProps> = (props) => {
     return makeGitVisibilityPredicate(computeGitVisibility(changedFiles(), root, props.flavor), props.flavor)
   })
 
+  const isGitRepo = () => Boolean(props.gitStatusStore.focusedState()?.toplevel)
+
   return (
     // `data-working-dir` carries the RESOLVED dir, unlike the tree below, which
     // falls back to `~` so it can render something while the dir is still
@@ -257,7 +259,7 @@ export const FilesSection: Component<FilesSectionProps> = (props) => {
     // to wait for the real thing rather than for a placeholder that is already
     // on screen.
     <div class={styles.wrapper} data-working-dir={props.workingDir}>
-      <Show when={props.gitStatusStore.state.isGitRepo}>
+      <Show when={isGitRepo()}>
         <FilterTabBar
           tabs={FILTER_TABS}
           active={activeFilter()}
@@ -271,8 +273,8 @@ export const FilesSection: Component<FilesSectionProps> = (props) => {
 
       <div
         id={filterPanelId}
-        role={props.gitStatusStore.state.isGitRepo ? 'tabpanel' : undefined}
-        tabIndex={props.gitStatusStore.state.isGitRepo ? 0 : undefined}
+        role={isGitRepo() ? 'tabpanel' : undefined}
+        tabIndex={isGitRepo() ? 0 : undefined}
         class={styles.panel}
       >
         <Show

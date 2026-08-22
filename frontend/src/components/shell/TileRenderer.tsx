@@ -51,6 +51,7 @@ import { chipTasksFor, rootWorkState, subagentWorkState } from '~/stores/chatBac
 import { insertIntoAgentEditor, insertIntoMruAgentEditor } from '~/stores/editorRef.store'
 import { buildTilePredicateMap, CLOSE_MODE_NONE } from '~/stores/layout.store'
 import { agentTabToInfo, isSteerableAgentTab, rootAgentIdFor } from '~/stores/tab.helpers'
+import { repoGitView } from '~/stores/repoGit'
 import { emitMergeTabsIntoTile, emitReassignTabsToTile } from '~/stores/tabOps'
 import { workerInfoStore } from '~/stores/workerInfo.store'
 import { shouldShowThinkingIndicator } from '~/utils/agentState'
@@ -1093,6 +1094,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
       tab: view.getAgentTab(agentId()),
       workspaceId: activeWorkspace()?.id ?? '',
       workspaceTabs: () => view.forWorkspace(activeWorkspace()?.id ?? ''),
+      repoGitStore: repoGitStore!,
       isWorkerKnownOnline: branchCallbacks?.isWorkerKnownOnline,
     })
     const branchDisabledReason = () => branchAction().disabledReason
@@ -1101,7 +1103,8 @@ export function createTileRenderer(opts: TileRendererOpts) {
       <AgentEditorPanel
         agentId={agentId()}
         agent={agentTabToInfo(focusedAgentTab())}
-        branchName={focusedAgentTab()?.gitBranch}
+        repoGitStore={repoGitStore}
+        gitTab={focusedAgentTab()}
         // eslint-disable-next-line solid/reactivity -- async event handler; reactive tracking isn't needed for user-invoked callbacks
         onSendMessage={async (content, fileAttachments?: FileAttachment[]) => {
           const id = focusedAgentId()

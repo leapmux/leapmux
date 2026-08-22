@@ -1,5 +1,7 @@
 import type { BranchRef } from './WorkspaceTabTree'
 import type { Tab } from '~/stores/tab.types'
+import type { createRepoGitStore } from '~/stores/repoGit.store'
+import { repoGitView } from '~/stores/repoGit'
 import { tabBranchKey } from './branchKeys'
 
 /**
@@ -30,16 +32,10 @@ export type FocusedBranchAction
 /**
  * Resolve the branch action for `tab`.
  *
- * Every field is read from the FLAT git mirror (`gitBranch`, `gitToplevel`,
- * `gitIsWorktree`) rather than from the nested `agentGitStatus`. The two are
- * written together on hydration, but `stampBranchOnTabs` (after a branch change)
- * and `applyGitStatusToTabs` (after a checkout in a terminal) write the flat
- * fields ALONE, and the worker re-broadcasts `agentGitStatus` only at turn end.
- * On an idle agent the nested branch therefore stays stale for as long as the
- * agent is idle. Since `tabBranchKey` -- the membership test the sidebar groups
- * by -- reads the flat fields, mixing the two sources would name the OLD branch
- * in the delete dialog while listing the tabs already stamped with the NEW one:
- * a wrong tab set on a destructive confirmation.
+ * Branch name and worktree disposition are read from the repo-keyed git store
+ * via {@link repoGitView}, not from per-tab fields or nested `agentGitStatus`.
+ * `tabBranchKey` -- the membership test the sidebar groups by -- uses the same
+ * store, so the delete dialog's tab set always matches the tree.
  *
  * `buildRef` is lazy. The guard is read reactively on every tick, and building
  * the ref walks every tab of the workspace.
@@ -49,6 +45,7 @@ export function focusedBranchAction(opts: {
   workspaceId: string
   /** Every tab of the active workspace, for the affected-tab set. */
   workspaceTabs: () => Tab[]
+  repoGitStore: ReturnType<typeof createRepoGitStore>
   isWorkerKnownOnline?: (workerId: string) => boolean
 }): FocusedBranchAction {
   const { tab } = opts
@@ -58,22 +55,24 @@ export function focusedBranchAction(opts: {
     return { disabledReason: WORKER_OFFLINE_BRANCH_REASON }
   if (!tab.gitToplevel)
     return { disabledReason: 'The repository root for this agent is not known yet. Branch actions need it.' }
-  if (!tab.gitBranch)
+
+  const git = repoGitView(tab, opts.repoGitStore)
+  if (!git.branchLabel)
     return { disabledReason: 'The branch for this agent is not known yet. Branch actions need it.' }
 
   const workerId = tab.workerId
   const gitToplevel = tab.gitToplevel
-  const branchName = tab.gitBranch
+  const branchName = git.branchLabel
   return {
     buildRef: () => {
-      const key = tabBranchKey(tab)
+      const key = tabBranchKey(tab, opts.repoGitStore)
       return {
         workspaceId: opts.workspaceId,
         workerId,
         gitToplevel,
-        isWorktree: !!tab.gitIsWorktree,
+        isWorktree: !!git.isWorktree,
         branchName,
-        tabs: opts.workspaceTabs().filter(t => tabBranchKey(t) === key),
+        tabs: opts.workspaceTabs().filter(t => tabBranchKey(t, opts.repoGitStore) === key),
       }
     },
   }

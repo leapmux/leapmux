@@ -19,6 +19,8 @@
  */
 
 import type { Tab } from '~/stores/tab.types'
+import type { RepoGitStore } from '~/stores/repoGit'
+import { repoGitView } from '~/stores/repoGit'
 
 const KEY_SEP = '\x00'
 const NO_BRANCH_NAME_SEGMENT = '\x02'
@@ -55,8 +57,9 @@ export function branchKey(branchName: string | null, workerId: string, gitToplev
  * carries `branchName`, not `gitBranch` -- a valid argument that silently
  * returned the "(no branch)" key, which is exactly the drift above.
  */
-export function tabBranchKey(tab: Pick<Tab, 'gitBranch' | 'workerId' | 'gitToplevel'>): string {
-  return branchKey(tab.gitBranch || null, tab.workerId ?? '', tab.gitToplevel ?? '')
+export function tabBranchKey(tab: Pick<Tab, 'workerId' | 'gitToplevel'>, store: RepoGitStore): string {
+  const git = repoGitView(tab, store)
+  return branchKey(git.branchLabel || null, tab.workerId ?? '', tab.gitToplevel ?? '')
 }
 
 /** Repo key for an origin-less local repo, identified by its toplevel. */

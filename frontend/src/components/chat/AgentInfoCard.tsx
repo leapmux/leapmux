@@ -1,5 +1,6 @@
 import type { AgentInfo, AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { AgentSessionInfo } from '~/stores/agentSession.store'
+import type { RepoGitView } from '~/stores/repoGit'
 import Check from 'lucide-solid/icons/check'
 import Copy from 'lucide-solid/icons/copy'
 import { createMemo, createSignal, For, onCleanup, Show } from 'solid-js'
@@ -9,7 +10,6 @@ import { Tooltip } from '~/components/common/Tooltip'
 import { useCopyButton } from '~/hooks/useCopyButton'
 import { basename, tildify } from '~/lib/paths'
 import { formatCountdown, formatResetTimestamp, getResetsAt, pickUrgentRateLimit, RATE_LIMIT_POPOVER_LABELS } from '~/lib/rateLimitUtils'
-import { tabGitBranchLabel } from '~/stores/tab.helpers'
 import * as styles from './ChatView.css'
 import { pluginFor } from './providers/registry'
 import { formatTokenCount } from './rendererUtils'
@@ -19,8 +19,10 @@ import { computePercentage, contextBufferPct, contextSize, resolveContextWindow 
 export interface AgentInfoCardProps {
   agent?: AgentInfo
   agentSessionInfo?: AgentSessionInfo
-  /** Raw flat `gitBranch` from the tab; resolved via {@link tabGitBranchLabel}. */
+  /** Branch label from {@link repoGitView}. */
   branchName?: string
+  /** Git flags and ahead/behind from {@link repoGitView}. */
+  gitView?: RepoGitView
 }
 
 export function formatAgentSessionIdForDisplay(agentProvider: AgentProvider | undefined, sessionId: string): string {
@@ -66,8 +68,8 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
    */
   const agent = createMemo(() => props.agent)
   const sessionInfo = createMemo(() => props.agentSessionInfo)
-  const gitStatus = createMemo(() => agent()?.gitStatus)
-  const branchLabel = createMemo(() => tabGitBranchLabel(props.branchName, gitStatus()?.branch))
+  const gitView = createMemo(() => props.gitView)
+  const branchLabel = createMemo(() => props.branchName)
 
   const hasContextInfo = () => {
     const info = sessionInfo()
@@ -161,12 +163,12 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
             <span class={styles.infoValue}>
               {name}
               {(() => {
-                const gs = gitStatus()
+                const git = gitView()
                 const parts: string[] = []
-                if (gs?.ahead)
-                  parts.push(`+${gs.ahead}`)
-                if (gs?.behind)
-                  parts.push(`-${gs.behind}`)
+                if (git?.ahead)
+                  parts.push(`+${git.ahead}`)
+                if (git?.behind)
+                  parts.push(`-${git.behind}`)
                 return parts.length > 0 ? ` [${parts.join(' ')}]` : ''
               })()}
             </span>
@@ -178,23 +180,23 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
         )}
       </Show>
       {(() => {
-        const gs = gitStatus()
+        const git = gitView()
         const flags: string[] = []
-        if (gs?.conflicted)
+        if (git?.conflicted)
           flags.push('Conflicted')
-        if (gs?.stashed)
+        if (git?.stashed)
           flags.push('Stashed')
-        if (gs?.modified)
+        if (git?.modified)
           flags.push('Modified')
-        if (gs?.added)
+        if (git?.added)
           flags.push('Added')
-        if (gs?.deleted)
+        if (git?.deleted)
           flags.push('Deleted')
-        if (gs?.renamed)
+        if (git?.renamed)
           flags.push('Renamed')
-        if (gs?.typeChanged)
+        if (git?.typeChanged)
           flags.push('Type-changed')
-        if (gs?.untracked)
+        if (git?.untracked)
           flags.push('Untracked')
         return (
           <Show when={flags.length > 0}>
