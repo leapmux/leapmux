@@ -18,8 +18,8 @@
  * rather than concatenating control bytes inline.
  */
 
-import type { Tab } from '~/stores/tab.types'
 import type { RepoGitStore } from '~/stores/repoGit'
+import type { Tab } from '~/stores/tab.types'
 import { repoGitView } from '~/stores/repoGit'
 
 const KEY_SEP = '\x00'

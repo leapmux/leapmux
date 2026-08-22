@@ -13,6 +13,7 @@ import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { createAgentSessionStore, RateLimitInfo } from '~/stores/agentSession.store'
 import type { createChatStore } from '~/stores/chat.store'
 import type { createControlStore } from '~/stores/control.store'
+import type { createRepoGitStore } from '~/stores/repoGit.store'
 import type { AgentTab } from '~/stores/tab.types'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
@@ -30,7 +31,8 @@ import { emitSettingsChanged } from '~/lib/settingsChangedEvent'
 import { updateSettingsLabelCache } from '~/lib/settingsLabelCache'
 import { compactionContextUsage } from '~/stores/agentSession.store'
 import { MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.store'
-import { deriveOptionGroupTabFields, tabKey, toAgentGitTabFields } from '~/stores/tab.helpers'
+import { protoToRepoGitPatch, repoKeyFromStatus } from '~/stores/repoGit'
+import { deriveOptionGroupTabFields, tabKey } from '~/stores/tab.helpers'
 
 const log = createLogger('agentEvents')
 
@@ -586,8 +588,8 @@ export function buildAgentStatusTabUpdate(
       : hasStatus ? { startupMessage: '' } : {}),
     // The reconciled catalog (never optimistic) + per-axis-suppressed current values.
     ...settingsFields,
-    // The whole git group as one unit, verbatim from the push.
-    ...toAgentGitTabFields(sc.gitStatus),
+    // Repo identity only on the tab; full git state lives in repoGitStore.
+    ...(sc.gitStatus?.toplevel ? { gitToplevel: sc.gitStatus.toplevel } : {}),
   }
 }
 
@@ -772,7 +774,7 @@ export function handleAgentStatusChange(
   agentId: string,
   sc: AgentStatusChange,
   catchUpPhase: CatchUpPhase,
-  stores: AgentMessageStores & { controlStore: ReturnType<typeof createControlStore> },
+  stores: AgentMessageStores & { controlStore: ReturnType<typeof createControlStore>, repoGitStore?: ReturnType<typeof createRepoGitStore> },
   settingsLoading: ReturnType<typeof createLoadingSignal>,
   setWorkerOnline: (online: boolean) => void,
   onTurnEnd: ((agentId: string, numToolUses?: number) => void) | undefined,
@@ -806,14 +808,19 @@ export function handleAgentStatusChange(
  */
 function applyAgentStatusTabUpdate(
   sc: AgentStatusChange,
-  stores: Pick<AgentMessageStores, 'chatStore' | 'view' | 'metadata'>,
+  stores: Pick<AgentMessageStores, 'chatStore' | 'view' | 'metadata'> & { repoGitStore?: ReturnType<typeof createRepoGitStore> },
   settingsLoading: ReturnType<typeof createLoadingSignal>,
 ): void {
-  const { chatStore, view, metadata } = stores
+  const { chatStore, view, metadata, repoGitStore } = stores
   const prev = view.getAgentTab(sc.agentId)
   drainPendingOutboundOnStart(sc, prev, chatStore)
   if (sc.optionGroups.length > 0)
     updateSettingsLabelCache(sc.agentProvider, sc.optionGroups)
+  const workerId = prev?.workerId ?? ''
+  const patch = protoToRepoGitPatch(workerId, sc.gitStatus)
+  const key = workerId ? repoKeyFromStatus(workerId, sc.gitStatus) : undefined
+  if (patch && key && repoGitStore)
+    repoGitStore.upsert(key, patch)
   const settingsFields = resolveSettingsTabFields(prev, sc.optionGroups, settingsLoading.pendingAxes(sc.agentId))
   // Consolidate every per-status field into one patch so the row is written once.
   metadata.patch(sc.agentId, buildAgentStatusTabUpdate(sc, sc.status !== AgentStatus.UNSPECIFIED, settingsFields))

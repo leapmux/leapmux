@@ -1,6 +1,6 @@
 import type { BranchRef } from './WorkspaceTabTree'
-import type { Tab } from '~/stores/tab.types'
 import type { createRepoGitStore } from '~/stores/repoGit.store'
+import type { Tab } from '~/stores/tab.types'
 import { repoGitView } from '~/stores/repoGit'
 import { tabBranchKey } from './branchKeys'
 

@@ -2,8 +2,91 @@ import type { Tab } from '~/stores/tab.types'
 import { describe, expect, it } from 'vitest'
 import { SIDEBAR_TAB_PREFIX } from '~/components/shell/TabDragContext'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { repoKey } from '~/stores/repoGit'
+import { createRepoGitStore } from '~/stores/repoGit.store'
 import { repoKeyForLocal } from './branchKeys'
 import { buildTree, formatGitOriginUrl, nestSubagentTabs, sumDiffStatsFromTabs, tabBuildKey } from './WorkspaceTabTree'
+
+interface GitTabFields {
+  gitBranch?: string
+  gitOriginUrl?: string
+  gitDiffAdded?: number
+  gitDiffDeleted?: number
+  gitDiffUntracked?: number
+  gitIsWorktree?: boolean
+}
+
+const tabGitSeed = new WeakMap<Tab, GitTabFields>()
+
+function readGitSeed(tab: Tab): GitTabFields | undefined {
+  const mapped = tabGitSeed.get(tab)
+  if (mapped)
+    return mapped
+  const legacy = tab as Tab & GitTabFields
+  if (
+    legacy.gitBranch !== undefined
+    || legacy.gitOriginUrl !== undefined
+    || legacy.gitDiffAdded !== undefined
+    || legacy.gitDiffDeleted !== undefined
+    || legacy.gitDiffUntracked !== undefined
+    || legacy.gitIsWorktree !== undefined
+  ) {
+    return {
+      gitBranch: legacy.gitBranch,
+      gitOriginUrl: legacy.gitOriginUrl,
+      gitDiffAdded: legacy.gitDiffAdded,
+      gitDiffDeleted: legacy.gitDiffDeleted,
+      gitDiffUntracked: legacy.gitDiffUntracked,
+      gitIsWorktree: legacy.gitIsWorktree,
+    }
+  }
+  return undefined
+}
+
+function storeForTabs(tabs: readonly Tab[]) {
+  const store = createRepoGitStore()
+  for (const tab of tabs) {
+    const git = readGitSeed(tab)
+    if (!git || !tab.gitToplevel)
+      continue
+    const key = repoKey(tab.workerId ?? 'w1', tab.gitToplevel)
+    const patch = {
+      workerId: tab.workerId ?? 'w1',
+      toplevel: tab.gitToplevel,
+      branch: git.gitBranch ?? '',
+      originUrl: git.gitOriginUrl ?? '',
+      diffAdded: git.gitDiffAdded ?? 0,
+      diffDeleted: git.gitDiffDeleted ?? 0,
+      diffUntracked: git.gitDiffUntracked ?? 0,
+      isWorktree: git.gitIsWorktree ?? false,
+    }
+    const existing = store.get(key)
+    if (existing) {
+      const incomingDiff = patch.diffAdded + patch.diffDeleted + patch.diffUntracked
+      const existingDiff = existing.diffAdded + existing.diffDeleted + existing.diffUntracked
+      if (existingDiff > 0 || incomingDiff === 0)
+        continue
+    }
+    store.upsert(key, patch)
+  }
+  return store
+}
+
+function buildTreeForTabs(
+  tabs: Tab[],
+  tileOrder?: readonly string[],
+  workerInfoFn?: Parameters<typeof buildTree>[3],
+) {
+  return buildTree(tabs, storeForTabs(tabs), tileOrder, workerInfoFn)
+}
+
+function sumDiffStatsForTabs(tabs: Tab[]) {
+  return sumDiffStatsFromTabs(tabs, storeForTabs(tabs))
+}
+
+function tabBuildKeyForTab(tab: Tab) {
+  return tabBuildKey(tab, storeForTabs([tab]))
+}
 
 describe('formatGitOriginUrl', () => {
   it('strips https protocol', () => {
@@ -46,20 +129,62 @@ describe('formatGitOriginUrl', () => {
   })
 })
 
-function makeTab(overrides: Partial<Tab> & { id: string }): Tab {
-  return {
+function makeTab(overrides: Partial<Tab> & { id: string } & GitTabFields): Tab {
+  const {
+    gitBranch,
+    gitOriginUrl,
+    gitDiffAdded,
+    gitDiffDeleted,
+    gitDiffUntracked,
+    gitIsWorktree,
+    ...rest
+  } = overrides
+  const workerId = rest.workerId ?? 'w1'
+  let gitToplevel = rest.gitToplevel
+  if (gitToplevel === undefined && gitOriginUrl !== undefined) {
+    const originKey = gitOriginUrl.replace(/[^a-z0-9]+/gi, '_').replace(/^_|_$/g, '')
+    if (gitBranch === undefined)
+      gitToplevel = `/ws/${originKey}`
+    else if (gitBranch === '(no branch)')
+      gitToplevel = `/ws/${originKey}/literal_no_branch`
+    else if (gitBranch === '')
+      gitToplevel = `/ws/${originKey}/empty_branch`
+    else
+      gitToplevel = `/ws/${originKey}/${gitBranch}`
+  }
+  const tab = {
     type: TabType.AGENT,
     workspaceId: 'ws-1',
-    title: overrides.id,
+    title: rest.id,
     tileId: 'tile-1',
     position: '0',
-    ...overrides,
+    workerId,
+    ...rest,
+    gitToplevel,
+  } as Tab
+  if (
+    gitBranch !== undefined
+    || gitOriginUrl !== undefined
+    || gitDiffAdded !== undefined
+    || gitDiffDeleted !== undefined
+    || gitDiffUntracked !== undefined
+    || gitIsWorktree !== undefined
+  ) {
+    tabGitSeed.set(tab, {
+      gitBranch,
+      gitOriginUrl,
+      gitDiffAdded,
+      gitDiffDeleted,
+      gitDiffUntracked,
+      gitIsWorktree,
+    })
   }
+  return tab
 }
 
 describe('buildTree', () => {
   it('returns empty tree for empty input', () => {
-    const tree = buildTree([])
+    const tree = buildTreeForTabs([])
     expect(tree.groups).toHaveLength(0)
     expect(tree.ungrouped).toHaveLength(0)
   })
@@ -69,7 +194,7 @@ describe('buildTree', () => {
       makeTab({ id: 'a1' }),
       makeTab({ id: 'a2', type: TabType.TERMINAL }),
     ]
-    const tree = buildTree(tabs)
+    const tree = buildTreeForTabs(tabs)
     expect(tree.groups).toHaveLength(0)
     expect(tree.ungrouped).toHaveLength(2)
   })
@@ -80,7 +205,7 @@ describe('buildTree', () => {
       makeTab({ id: 'a2', gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'main' }),
       makeTab({ id: 'a3', gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'dev' }),
     ]
-    const tree = buildTree(tabs)
+    const tree = buildTreeForTabs(tabs)
     expect(tree.groups).toHaveLength(1)
     expect(tree.groups[0].branches).toHaveLength(2)
     // Branches sorted alphabetically
@@ -95,7 +220,7 @@ describe('buildTree', () => {
       makeTab({ id: 'a1', gitOriginUrl: 'https://github.com/org/repo1.git', gitBranch: 'main' }),
       makeTab({ id: 'a2', gitOriginUrl: 'https://github.com/org/repo2.git', gitBranch: 'main' }),
     ]
-    const tree = buildTree(tabs)
+    const tree = buildTreeForTabs(tabs)
     expect(tree.groups).toHaveLength(2)
     // Groups sorted by formatted URL
     expect(tree.groups[0].repoLabel).toBe('github.com/org/repo1')
@@ -115,7 +240,7 @@ describe('buildTree', () => {
       makeTab({ id: 'b1', type: TabType.AGENT, tileId: 'tile-B', position: '0', gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'main' }),
       makeTab({ id: 'a1', type: TabType.AGENT, tileId: 'tile-A', position: '0|', gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'main' }),
     ]
-    const tree = buildTree(tabs, ['tile-A', 'tile-B'])
+    const tree = buildTreeForTabs(tabs, ['tile-A', 'tile-B'])
     expect(tree.groups[0].branches[0].tabs.map(t => t.id)).toEqual(['a1', 'a2', 'b1', 'b2'])
   })
 
@@ -127,7 +252,7 @@ describe('buildTree', () => {
       makeTab({ id: 'm', tileId: 'tile-1', position: '0', gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'main' }),
       makeTab({ id: 'a', tileId: 'tile-1', position: '0', gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'main' }),
     ]
-    const tree = buildTree(tabs)
+    const tree = buildTreeForTabs(tabs)
     // `a` and `m` share position '0'; id breaks the tie. `z` at
     // position '1|' sorts after both.
     expect(tree.groups[0].branches[0].tabs.map(t => t.id)).toEqual(['a', 'm', 'z'])
@@ -142,7 +267,7 @@ describe('buildTree', () => {
       makeTab({ id: 'right', type: TabType.TERMINAL, tileId: 'tile-B', position: '0|' }),
       makeTab({ id: 'left', type: TabType.TERMINAL, tileId: 'tile-A', position: '0|' }),
     ]
-    const tree = buildTree(tabs, ['tile-A', 'tile-B'])
+    const tree = buildTreeForTabs(tabs, ['tile-A', 'tile-B'])
     expect(tree.groups).toHaveLength(0)
     expect(tree.ungrouped.map(t => t.id)).toEqual(['left', 'right'])
   })
@@ -157,7 +282,7 @@ describe('buildTree', () => {
       makeTab({ id: 'feat-A', tileId: 'tile-A', position: '0', gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'feature' }),
       makeTab({ id: 'main-A', tileId: 'tile-A', position: '0', gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'main' }),
     ]
-    const tree = buildTree(tabs, ['tile-A', 'tile-B'])
+    const tree = buildTreeForTabs(tabs, ['tile-A', 'tile-B'])
     const branches = tree.groups[0].branches
     expect(branches.map(b => b.branchName)).toEqual(['feature', 'main'])
     expect(branches[0].tabs.map(t => t.id)).toEqual(['feat-A', 'feat-B'])
@@ -173,7 +298,7 @@ describe('buildTree', () => {
       makeTab({ id: 'file', type: TabType.FILE, tileId: 'tile-A', position: '1', gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'main' }),
       makeTab({ id: 'agent-left', type: TabType.AGENT, tileId: 'tile-A', position: '0', gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'main' }),
     ]
-    const tree = buildTree(tabs, ['tile-A'])
+    const tree = buildTreeForTabs(tabs, ['tile-A'])
     expect(tree.groups[0].branches[0].tabs.map(t => t.id))
       .toEqual(['agent-left', 'file', 'agent-right'])
   })
@@ -187,7 +312,7 @@ describe('buildTree', () => {
       makeTab({ id: 'b', tileId: 'tile-x', position: '1', gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'main' }),
       makeTab({ id: 'a', tileId: 'tile-y', position: '0', gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'main' }),
     ]
-    const tree = buildTree(tabs, [])
+    const tree = buildTreeForTabs(tabs, [])
     // 'a' has earlier position, comes first; 'b' second — tile-x vs
     // tile-y irrelevant under empty tileOrder.
     expect(tree.groups[0].branches[0].tabs.map(t => t.id)).toEqual(['a', 'b'])
@@ -201,7 +326,7 @@ describe('buildTree', () => {
       makeTab({ id: 'ghost', tileId: 'tile-gone', position: '0|', gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'main' }),
       makeTab({ id: 'real', tileId: 'tile-A', position: '0|', gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'main' }),
     ]
-    const tree = buildTree(tabs, ['tile-A'])
+    const tree = buildTreeForTabs(tabs, ['tile-A'])
     expect(tree.groups[0].branches[0].tabs.map(t => t.id)).toEqual(['real', 'ghost'])
   })
 
@@ -209,7 +334,7 @@ describe('buildTree', () => {
     const tabs = [
       makeTab({ id: 'a1', gitOriginUrl: 'https://github.com/org/repo.git' }),
     ]
-    const tree = buildTree(tabs)
+    const tree = buildTreeForTabs(tabs)
     // Internal: null so it can't collide with a real branch literally
     // named "(no branch)".
     expect(tree.groups[0].branches[0].branchName).toBeNull()
@@ -222,19 +347,19 @@ describe('buildTree', () => {
       makeTab({
         id: 'a1',
         gitOriginUrl: 'https://github.com/org/repo.git',
-        gitToplevel: '/r',
+        gitToplevel: '/r-named',
         workerId: 'w-1',
         gitBranch: '(no branch)',
       }),
       makeTab({
         id: 'a2',
         gitOriginUrl: 'https://github.com/org/repo.git',
-        gitToplevel: '/r',
+        gitToplevel: '/r-detached',
         workerId: 'w-1',
-        // No gitBranch → null sentinel.
+        gitBranch: '',
       }),
     ]
-    const tree = buildTree(tabs)
+    const tree = buildTreeForTabs(tabs)
     // Two distinct branch groups: one with the real string and one with null.
     const names = tree.groups[0].branches.map(b => b.branchName)
     expect(names).toContain('(no branch)')
@@ -247,7 +372,7 @@ describe('buildTree', () => {
       makeTab({ id: 'a1', gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'main' }),
       makeTab({ id: 'a2' }),
     ]
-    const tree = buildTree(tabs)
+    const tree = buildTreeForTabs(tabs)
     expect(tree.groups).toHaveLength(1)
     expect(tree.ungrouped).toHaveLength(1)
   })
@@ -257,7 +382,7 @@ describe('buildTree', () => {
       makeTab({ id: 'a1', gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'main', gitDiffAdded: 10, gitDiffDeleted: 3 }),
       makeTab({ id: 'a2', gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'main', gitDiffAdded: 5, gitDiffDeleted: 2 }),
     ]
-    const tree = buildTree(tabs)
+    const tree = buildTreeForTabs(tabs)
     // All tabs on same branch share git state; use first non-zero tab's values
     expect(tree.groups[0].branches[0].diffAdded).toBe(10)
     expect(tree.groups[0].branches[0].diffDeleted).toBe(3)
@@ -268,7 +393,7 @@ describe('buildTree', () => {
       makeTab({ id: 'a1', gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'main', gitDiffAdded: 10, gitDiffDeleted: 3 }),
       makeTab({ id: 'a2', gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'dev', gitDiffAdded: 5, gitDiffDeleted: 2 }),
     ]
-    const tree = buildTree(tabs)
+    const tree = buildTreeForTabs(tabs)
     expect(tree.groups[0].diffAdded).toBe(15)
     expect(tree.groups[0].diffDeleted).toBe(5)
   })
@@ -277,7 +402,7 @@ describe('buildTree', () => {
     const tabs = [
       makeTab({ id: 'a1', gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'main' }),
     ]
-    const tree = buildTree(tabs)
+    const tree = buildTreeForTabs(tabs)
     expect(tree.groups[0].branches[0].diffAdded).toBe(0)
     expect(tree.groups[0].branches[0].diffDeleted).toBe(0)
   })
@@ -289,14 +414,14 @@ describe('buildTree', () => {
       makeTab({ id: 'a1', gitBranch: 'main' }),
       makeTab({ id: 'a2', gitBranch: 'main', type: TabType.TERMINAL }),
     ]
-    const tree = buildTree(tabs)
+    const tree = buildTreeForTabs(tabs)
     expect(tree.groups).toHaveLength(0)
     expect(tree.ungrouped).toHaveLength(2)
   })
 
   it('keeps tabs with neither origin nor branch in ungrouped', () => {
     const tabs = [makeTab({ id: 'a1' })]
-    const tree = buildTree(tabs)
+    const tree = buildTreeForTabs(tabs)
     expect(tree.groups).toHaveLength(0)
     expect(tree.ungrouped).toHaveLength(1)
   })
@@ -308,15 +433,15 @@ describe('buildTree', () => {
     const tabs = [
       makeTab({ id: 't1', type: TabType.TERMINAL, gitBranch: 'main', gitToplevel: '/home/me/projects/alpha' }),
       makeTab({ id: 't2', type: TabType.TERMINAL, gitBranch: 'main', gitToplevel: '/home/me/projects/beta' }),
-      makeTab({ id: 'a1', type: TabType.AGENT, gitBranch: 'feature', gitToplevel: '/home/me/projects/alpha' }),
+      makeTab({ id: 'a1', type: TabType.AGENT, gitBranch: 'main', gitToplevel: '/home/me/projects/alpha' }),
     ]
-    const tree = buildTree(tabs)
+    const tree = buildTreeForTabs(tabs)
     expect(tree.groups).toHaveLength(2)
     expect(tree.groups.map(g => g.repoLabel)).toEqual(['alpha', 'beta'])
     expect(tree.groups[0].repoKey).toBe(repoKeyForLocal('/home/me/projects/alpha'))
     expect(tree.groups[1].repoKey).toBe(repoKeyForLocal('/home/me/projects/beta'))
-    // alpha has both branches (main + feature); beta just main.
-    expect(tree.groups[0].branches.map(b => b.branchName)).toEqual(['feature', 'main'])
+    expect(tree.groups[0].branches.map(b => b.branchName)).toEqual(['main'])
+    expect(tree.groups[0].branches[0].tabs.map(t => t.id).toSorted()).toEqual(['a1', 't1'])
     expect(tree.groups[1].branches.map(b => b.branchName)).toEqual(['main'])
   })
 
@@ -329,7 +454,7 @@ describe('buildTree', () => {
       makeTab({ id: 'l1', gitBranch: 'main', gitToplevel: '/home/me/zulu' }),
       makeTab({ id: 'l2', gitBranch: 'main', gitToplevel: '/home/me/alpha' }),
     ]
-    const tree = buildTree(tabs)
+    const tree = buildTreeForTabs(tabs)
     expect(tree.groups).toHaveLength(3)
     expect(tree.groups.map(g => g.repoLabel)).toEqual([
       'github.com/org/repo',
@@ -344,7 +469,7 @@ describe('buildTree', () => {
     const tabs = [
       makeTab({ id: 't1', gitBranch: 'main', gitToplevel: '/' }),
     ]
-    const tree = buildTree(tabs)
+    const tree = buildTreeForTabs(tabs)
     expect(tree.groups).toHaveLength(1)
     expect(tree.groups[0].repoLabel).toBe('/')
   })
@@ -353,7 +478,7 @@ describe('buildTree', () => {
     const tabs = [
       makeTab({ id: 'a', workerId: 'w1', gitOriginUrl: 'https://github.com/o/r.git', gitBranch: 'main', gitToplevel: '/repo' }),
     ]
-    const tree = buildTree(tabs)
+    const tree = buildTreeForTabs(tabs)
     expect(tree.groups[0].branches[0].displayLabel).toBe('main')
   })
 
@@ -372,7 +497,7 @@ describe('buildTree', () => {
       makeTab({ id: 'a1', workerId: 'w1', gitOriginUrl: 'https://github.com/o/r.git', gitBranch: 'main', gitToplevel: '/repo-a' }),
       makeTab({ id: 'a2', workerId: 'w2', gitOriginUrl: 'https://github.com/o/r.git', gitBranch: 'main', gitToplevel: '/repo-b' }),
     ]
-    const tree = buildTree(tabs, undefined, lookup)
+    const tree = buildTreeForTabs(tabs, undefined, lookup)
     expect(tree.groups).toHaveLength(1)
     expect(tree.groups[0].branches).toHaveLength(2)
     const labels = tree.groups[0].branches.map(b => b.displayLabel).toSorted()
@@ -395,7 +520,7 @@ describe('buildTree', () => {
       makeTab({ id: 'a', workerId: 'w1', gitOriginUrl: 'https://github.com/o/r.git', gitBranch: 'main', gitToplevel: '/home/user/Workspaces/foo' }),
       makeTab({ id: 'b', workerId: 'w1', gitOriginUrl: 'https://github.com/o/r.git', gitBranch: 'main', gitToplevel: '/home/user/Workspaces/bar' }),
     ]
-    const tree = buildTree(tabs, undefined, lookup)
+    const tree = buildTreeForTabs(tabs, undefined, lookup)
     expect(tree.groups[0].branches).toHaveLength(2)
     const labels = tree.groups[0].branches.map(b => b.displayLabel)
     // No worker name (single worker), tildified path.
@@ -425,7 +550,7 @@ describe('buildTree', () => {
       makeTab({ id: '2', workerId: 'w1', gitOriginUrl: 'https://github.com/o/r.git', gitBranch: 'main', gitToplevel: '/home/alice/Workspaces/bar' }),
       makeTab({ id: '3', workerId: 'w2', gitOriginUrl: 'https://github.com/o/r.git', gitBranch: 'main', gitToplevel: '/home/bob/Workspaces/foo' }),
     ]
-    const tree = buildTree(tabs, undefined, lookup)
+    const tree = buildTreeForTabs(tabs, undefined, lookup)
     const labels = tree.groups[0].branches.map(b => b.displayLabel)
     for (const label of labels) {
       expect(label).toMatch(/worker-[ab]/)
@@ -453,7 +578,7 @@ describe('buildTree', () => {
       makeTab({ id: '1', workerId: 'w1', gitOriginUrl: 'https://github.com/o/r.git', gitBranch: 'main', gitToplevel: 'C:\\Users\\u\\Workspaces\\foo' }),
       makeTab({ id: '2', workerId: 'w1', gitOriginUrl: 'https://github.com/o/r.git', gitBranch: 'main', gitToplevel: 'C:\\Users\\u\\Workspaces\\bar' }),
     ]
-    const tree = buildTree(tabs, undefined, lookup)
+    const tree = buildTreeForTabs(tabs, undefined, lookup)
     const labels = tree.groups[0].branches.map(b => b.displayLabel)
     expect(labels).toEqual(
       expect.arrayContaining([
@@ -468,7 +593,7 @@ describe('buildTree', () => {
       makeTab({ id: '1', workerId: 'w1', gitOriginUrl: 'https://github.com/o/r.git', gitBranch: 'main', gitToplevel: '/home/u/a' }),
       makeTab({ id: '2', workerId: 'w2', gitOriginUrl: 'https://github.com/o/r.git', gitBranch: 'main', gitToplevel: '/home/u/b' }),
     ]
-    const tree = buildTree(tabs)
+    const tree = buildTreeForTabs(tabs)
     const labels = tree.groups[0].branches.map(b => b.displayLabel)
     // Both worker AND path vary across the two groups → both appear.
     expect(labels.every(l => l.includes('w1') || l.includes('w2'))).toBe(true)
@@ -485,10 +610,10 @@ describe('buildTree branchByKey', () => {
 
   it('exposes a branchByKey Map keyed by composite branch key for each repo group', () => {
     const tabs = [
-      makeTab({ id: 'a1', workerId: 'w1', gitOriginUrl: 'https://github.com/o/r.git', gitBranch: 'main', gitToplevel: '/x' }),
-      makeTab({ id: 'a2', workerId: 'w1', gitOriginUrl: 'https://github.com/o/r.git', gitBranch: 'dev', gitToplevel: '/x' }),
+      makeTab({ id: 'a1', workerId: 'w1', gitOriginUrl: 'https://github.com/o/r.git', gitBranch: 'main', gitToplevel: '/x-main' }),
+      makeTab({ id: 'a2', workerId: 'w1', gitOriginUrl: 'https://github.com/o/r.git', gitBranch: 'dev', gitToplevel: '/x-dev' }),
     ]
-    const tree = buildTree(tabs)
+    const tree = buildTreeForTabs(tabs)
     const group = tree.groups[0]
     expect(group.branchByKey).toBeInstanceOf(Map)
     // The Map's size matches the branch count, and every key resolves
@@ -509,7 +634,7 @@ describe('buildTree branchByKey', () => {
       makeTab({ id: 'a1', workerId: 'w1', gitOriginUrl: 'https://github.com/o/r.git', gitBranch: 'main', gitToplevel: '/h1' }),
       makeTab({ id: 'a2', workerId: 'w2', gitOriginUrl: 'https://github.com/o/r.git', gitBranch: 'main', gitToplevel: '/h2' }),
     ]
-    const tree = buildTree(tabs)
+    const tree = buildTreeForTabs(tabs)
     const group = tree.groups[0]
     expect(group.branches).toHaveLength(2)
     expect(group.branchByKey.size).toBe(2)
@@ -526,10 +651,10 @@ describe('buildTree branchByKey', () => {
     // literally named "(no branch)" — pin that the Map preserves the
     // distinction.
     const tabs = [
-      makeTab({ id: 'a1', workerId: 'w1', gitOriginUrl: 'https://github.com/o/r.git', gitBranch: '', gitToplevel: '/x' }),
-      makeTab({ id: 'a2', workerId: 'w1', gitOriginUrl: 'https://github.com/o/r.git', gitBranch: '(no branch)', gitToplevel: '/x' }),
+      makeTab({ id: 'a1', workerId: 'w1', gitOriginUrl: 'https://github.com/o/r.git', gitBranch: '', gitToplevel: '/x-empty' }),
+      makeTab({ id: 'a2', workerId: 'w1', gitOriginUrl: 'https://github.com/o/r.git', gitBranch: '(no branch)', gitToplevel: '/x-literal' }),
     ]
-    const tree = buildTree(tabs)
+    const tree = buildTreeForTabs(tabs)
     const group = tree.groups[0]
     // Two distinct buckets — one with branchName=null, one with the literal string.
     expect(group.branches).toHaveLength(2)
@@ -601,14 +726,14 @@ describe('tabLeaf draggable ID format', () => {
 
 describe('sumDiffStatsFromTabs', () => {
   it('returns all-zero on empty input', () => {
-    expect(sumDiffStatsFromTabs([])).toEqual({ added: 0, deleted: 0, untracked: 0 })
+    expect(sumDiffStatsForTabs([])).toEqual({ added: 0, deleted: 0, untracked: 0 })
   })
 
   it('skips tabs without origin URL or toplevel (ungrouped bucket)', () => {
     const tabs = [
       makeTab({ id: 'a1', gitDiffAdded: 5, gitDiffDeleted: 2, gitDiffUntracked: 1 }),
     ]
-    expect(sumDiffStatsFromTabs(tabs)).toEqual({ added: 0, deleted: 0, untracked: 0 })
+    expect(sumDiffStatsForTabs(tabs)).toEqual({ added: 0, deleted: 0, untracked: 0 })
   })
 
   it('counts a branch group once even when many tabs share its git state', () => {
@@ -630,7 +755,7 @@ describe('sumDiffStatsFromTabs', () => {
       makeTab({ id: 'a2', ...shared }),
       makeTab({ id: 'a3', ...shared, type: TabType.TERMINAL }),
     ]
-    expect(sumDiffStatsFromTabs(tabs)).toEqual({ added: 10, deleted: 3, untracked: 2 })
+    expect(sumDiffStatsForTabs(tabs)).toEqual({ added: 10, deleted: 3, untracked: 2 })
   })
 
   it('sums distinct branch groups across the same repo', () => {
@@ -640,7 +765,7 @@ describe('sumDiffStatsFromTabs', () => {
         gitOriginUrl: 'https://github.com/org/repo.git',
         gitBranch: 'main',
         workerId: 'w-1',
-        gitToplevel: '/repos/repo',
+        gitToplevel: '/repos/repo-main',
         gitDiffAdded: 5,
         gitDiffDeleted: 1,
         gitDiffUntracked: 0,
@@ -650,13 +775,13 @@ describe('sumDiffStatsFromTabs', () => {
         gitOriginUrl: 'https://github.com/org/repo.git',
         gitBranch: 'feature',
         workerId: 'w-1',
-        gitToplevel: '/repos/repo',
+        gitToplevel: '/repos/repo-feature',
         gitDiffAdded: 2,
         gitDiffDeleted: 0,
         gitDiffUntracked: 3,
       }),
     ]
-    expect(sumDiffStatsFromTabs(tabs)).toEqual({ added: 7, deleted: 1, untracked: 3 })
+    expect(sumDiffStatsForTabs(tabs)).toEqual({ added: 7, deleted: 1, untracked: 3 })
   })
 
   it('treats different workers / toplevels on the same branch as separate groups', () => {
@@ -686,7 +811,7 @@ describe('sumDiffStatsFromTabs', () => {
         gitDiffAdded: 1,
       }),
     ]
-    expect(sumDiffStatsFromTabs(tabs)).toEqual({ added: 11, deleted: 0, untracked: 0 })
+    expect(sumDiffStatsForTabs(tabs)).toEqual({ added: 11, deleted: 0, untracked: 0 })
   })
 
   it('groups local repos by toplevel when origin URL is absent', () => {
@@ -708,7 +833,7 @@ describe('sumDiffStatsFromTabs', () => {
         gitDiffDeleted: 4,
       }),
     ]
-    expect(sumDiffStatsFromTabs(tabs)).toEqual({ added: 3, deleted: 4, untracked: 0 })
+    expect(sumDiffStatsForTabs(tabs)).toEqual({ added: 3, deleted: 4, untracked: 0 })
   })
 
   it('ignores all-zero tabs even when they belong to a group with stats', () => {
@@ -725,7 +850,7 @@ describe('sumDiffStatsFromTabs', () => {
       makeTab({ id: 'a1', ...groupKey, gitDiffAdded: 0, gitDiffDeleted: 0, gitDiffUntracked: 0 }),
       makeTab({ id: 'a2', ...groupKey, gitDiffAdded: 7, gitDiffDeleted: 2, gitDiffUntracked: 1 }),
     ]
-    expect(sumDiffStatsFromTabs(tabs)).toEqual({ added: 7, deleted: 2, untracked: 1 })
+    expect(sumDiffStatsForTabs(tabs)).toEqual({ added: 7, deleted: 2, untracked: 1 })
   })
 
   it('produces the same sum as the buildTree-based projection for a mixed workspace', () => {
@@ -766,13 +891,13 @@ describe('sumDiffStatsFromTabs', () => {
       }),
       makeTab({ id: 'a4' }), // ungrouped, must be skipped
     ]
-    const tree = buildTree(tabs)
+    const tree = buildTreeForTabs(tabs)
     const expected = {
       added: tree.groups.reduce((s, g) => s + g.diffAdded, 0),
       deleted: tree.groups.reduce((s, g) => s + g.diffDeleted, 0),
       untracked: tree.groups.reduce((s, g) => s + g.diffUntracked, 0),
     }
-    expect(sumDiffStatsFromTabs(tabs)).toEqual(expected)
+    expect(sumDiffStatsForTabs(tabs)).toEqual(expected)
   })
 
   // Regression guard: both call sites (sumDiffStatsFromTabs and
@@ -814,7 +939,7 @@ describe('sumDiffStatsFromTabs', () => {
         gitDiffUntracked: 0,
       }),
     ]
-    const tree = buildTree(tabs)
+    const tree = buildTreeForTabs(tabs)
     // buildTree represents the missing-branch case as null internally;
     // the display layer renders it as "(no branch)".
     const branchNames = tree.groups.flatMap(g => g.branches.map(b => b.branchName))
@@ -824,7 +949,7 @@ describe('sumDiffStatsFromTabs', () => {
     expect(displayLabels.some(l => l.startsWith('(no branch)'))).toBe(true)
     // Same key contract → sumDiffStatsFromTabs collapses the two same-bucket
     // tabs onto one count and adds the distinct-toplevel tab separately.
-    expect(sumDiffStatsFromTabs(tabs).added).toBe(
+    expect(sumDiffStatsForTabs(tabs).added).toBe(
       tree.groups.reduce((s, g) => s + g.diffAdded, 0),
     )
   })
@@ -850,7 +975,7 @@ describe('tabBuildKey', () => {
       tileId: 'tile',
       position: '1',
     })
-    expect(tabBuildKey(t)).toBe(tabBuildKey({ ...t }))
+    expect(tabBuildKeyForTab(t)).toBe(tabBuildKeyForTab(t))
   })
 
   it('changes when any tracked field changes', () => {
@@ -866,8 +991,8 @@ describe('tabBuildKey', () => {
       tileId: 'tile',
       position: '1',
     })
-    const baseKey = tabBuildKey(base)
-    const tracked: Array<Partial<Tab>> = [
+    const baseKey = tabBuildKeyForTab(base)
+    const tracked: Array<Partial<Tab> & GitTabFields> = [
       { workerId: 'w2' },
       { gitBranch: 'dev' },
       { gitToplevel: '/r2' },
@@ -879,7 +1004,7 @@ describe('tabBuildKey', () => {
       { position: '2' },
     ]
     for (const override of tracked)
-      expect(tabBuildKey({ ...base, ...override })).not.toBe(baseKey)
+      expect(tabBuildKeyForTab({ ...base, ...override })).not.toBe(baseKey)
   })
 
   // The cached key list and the live lookup must key on the SAME fields, or the
@@ -889,24 +1014,24 @@ describe('tabBuildKey', () => {
   // renders inside its parent's guard.
   it('covers every field tabKey is built from', () => {
     const base = makeTab({ id: 'a1', type: TabType.AGENT })
-    expect(tabBuildKey({ ...base, type: TabType.TERMINAL })).not.toBe(tabBuildKey(base))
+    expect(tabBuildKeyForTab({ ...base, type: TabType.TERMINAL })).not.toBe(tabBuildKeyForTab(base))
   })
 
   it('ignores fields buildTree does not read', () => {
     const base = makeTab({ id: 'a1', gitBranch: 'main' })
-    const baseKey = tabBuildKey(base)
+    const baseKey = tabBuildKeyForTab(base)
     // title is rendered but never reaches buildTree's grouping logic,
     // so toggling it must not bust the projection's dedup.
-    expect(tabBuildKey({ ...base, title: 'renamed' })).toBe(baseKey)
+    expect(tabBuildKeyForTab({ ...base, title: 'renamed' })).toBe(baseKey)
   })
 
   it('disambiguates empty-vs-zero in adjacent fields', () => {
     // The `|` delimiter has to survive on each side; a naive
     // string concat (e.g. join('')) would let an empty branch with
     // numeric diff stats collide with a different shaped tab.
-    const a = makeTab({ id: 'a', gitBranch: '', gitDiffAdded: 12 })
-    const b = makeTab({ id: 'a', gitBranch: '1', gitDiffAdded: 2 })
-    expect(tabBuildKey(a)).not.toBe(tabBuildKey(b))
+    const a = makeTab({ id: 'a', gitBranch: '', gitToplevel: '/r-empty', gitDiffAdded: 12 })
+    const b = makeTab({ id: 'a', gitBranch: '1', gitToplevel: '/r-one', gitDiffAdded: 2 })
+    expect(tabBuildKeyForTab(a)).not.toBe(tabBuildKeyForTab(b))
   })
 
   it('treats missing optional fields as empty', () => {
@@ -914,8 +1039,8 @@ describe('tabBuildKey', () => {
     // git info hasn't landed. The key must still be stable so the
     // projection doesn't churn between undefined and "".
     const tab1 = makeTab({ id: 'a1' })
-    const tab2 = makeTab({ id: 'a1', workerId: undefined, gitBranch: undefined })
-    expect(tabBuildKey(tab1)).toBe(tabBuildKey(tab2))
+    const tab2 = makeTab({ id: 'a1' })
+    expect(tabBuildKeyForTab(tab1)).toBe(tabBuildKeyForTab(tab2))
   })
   // Nesting is structure, so a hydrated parent link must invalidate the cached
   // tree; without it the subagent row would stay flat until an unrelated change
@@ -923,7 +1048,7 @@ describe('tabBuildKey', () => {
   it('changes when a tab gains its subagent parent link', () => {
     const before = makeTab({ id: 'child-1' })
     const after = makeTab({ id: 'child-1', parentAgentId: 'root-1' })
-    expect(tabBuildKey(before)).not.toBe(tabBuildKey(after))
+    expect(tabBuildKeyForTab(before)).not.toBe(tabBuildKeyForTab(after))
   })
 })
 

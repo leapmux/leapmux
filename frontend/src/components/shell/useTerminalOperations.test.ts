@@ -229,8 +229,6 @@ function seedActiveRepoTab(s: ReturnType<typeof setupForOpen>) {
     id: 'active-tab',
     workerId: 'worker-1',
     workingDir: '/tmp',
-    gitBranch: 'main',
-    gitOriginUrl: 'git@example.com:o/r.git',
     gitToplevel: '/repo',
   })
   s.selection.setActiveById(TabType.TERMINAL, 'active-tab')
@@ -293,8 +291,6 @@ describe('useterminaloperations.handleopenterminal', () => {
     await s.ops.handleOpenTerminal('/repo-worktree')
 
     const newTab = s.view.getTerminalTab('new-tid')
-    expect(newTab?.gitBranch, 'a sibling worktree must not inherit the branch').toBeUndefined()
-    expect(newTab?.gitOriginUrl).toBeUndefined()
     expect(newTab?.gitToplevel).toBeUndefined()
   })
 
@@ -309,7 +305,6 @@ describe('useterminaloperations.handleopenterminal', () => {
     await s.ops.handleOpenTerminal()
 
     const newTab = s.view.getTerminalTab('new-tid')
-    expect(newTab?.gitBranch).toBe('main')
     expect(newTab?.gitToplevel).toBe('/repo')
   })
 

@@ -4,10 +4,11 @@ import type { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import type { createAgentSessionStore } from '~/stores/agentSession.store'
 import type { createChatStore } from '~/stores/chat.store'
 import type { createControlStore } from '~/stores/control.store'
+import type { createRepoGitStore } from '~/stores/repoGit.store'
 import type { AgentTab, Tab } from '~/stores/tab.types'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
-import type { TabSelectionStore } from '~/stores/tabSelection.store'
 
+import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
 import { batch, createEffect, createMemo, createSignal, onCleanup, untrack } from 'solid-js'
 import { showWarnToastUnlessDisconnected } from '~/components/common/Toast'
@@ -152,13 +153,14 @@ export interface WorkspaceConnectionParams {
   controlStore: ReturnType<typeof createControlStore>
   agentSessionStore: ReturnType<typeof createAgentSessionStore>
   settingsLoading: ReturnType<typeof createLoadingSignal>
+  repoGitStore: ReturnType<typeof createRepoGitStore>
   getActiveWorkspaceId: () => string | null
   /** Called when an agent turn ends (turn completed or control request received). */
   onTurnEnd?: (agentId: string, numToolUses?: number) => void
 }
 
 export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
-  const { chatStore, view, metadata, selection, controlStore, agentSessionStore, settingsLoading } = params
+  const { chatStore, view, metadata, selection, controlStore, agentSessionStore, settingsLoading, repoGitStore } = params
   const [offlineWorkers, setOfflineWorkers] = createSignal<ReadonlySet<string>>(new Set())
 
   // Per-agent catch-up phase across all workers.
@@ -279,7 +281,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           agentId,
           inner.value,
           catchUpPhase,
-          { agentSessionStore, chatStore, view, metadata, selection, getActiveWorkspaceId: params.getActiveWorkspaceId, controlStore },
+          { agentSessionStore, chatStore, view, metadata, selection, getActiveWorkspaceId: params.getActiveWorkspaceId, controlStore, repoGitStore },
           settingsLoading,
           online => setWorkerOnline(view.getAgentTab(agentId)?.workerId ?? '', online),
           params.onTurnEnd,
@@ -401,7 +403,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         dropPendingTerminalData(pendingTerminalData, terminalId)
         break
       case 'statusChange':
-        applyTerminalStatusChange(metadata, view.getTerminalTab(terminalId), terminalId, termEvent.event.value)
+        applyTerminalStatusChange(metadata, repoGitStore, view.getTerminalTab(terminalId), terminalId, termEvent.event.value)
         break
       case 'bell':
         handleTerminalBell(terminalId, { metadata, selection, getActiveWorkspaceId: params.getActiveWorkspaceId, view })

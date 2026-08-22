@@ -214,18 +214,12 @@ describe('useTabOperations', () => {
           // the next git-status refresh reaches it.
           metadata.patch('agent-a', {
             workingDir: '/tmp',
-            gitBranch: 'feature',
-            gitOriginUrl: 'https://example.com/o/r.git',
             gitToplevel: '/tmp',
-            gitIsWorktree: false,
           })
           ops.handleFileOpen('/tmp/myfile.go')
           const opened = view.forWorkspace('ws-test').find(t => t.type === TabType.FILE)
           expect(opened).toMatchObject({
-            gitBranch: 'feature',
-            gitOriginUrl: 'https://example.com/o/r.git',
             gitToplevel: '/tmp',
-            gitIsWorktree: false,
             workingDir: '/tmp',
           })
         }

@@ -1,6 +1,6 @@
 import type { FilesSectionHandle } from './FilesSection'
 import type { GitFileStatusEntry } from '~/generated/leapmux/v1/common_pb'
-import type { createGitFileStatusStore, GitFilterTab } from '~/stores/gitFileStatus.store'
+import type { createRepoGitStore, GitFilterTab } from '~/stores/repoGit.store'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'
@@ -46,15 +46,15 @@ function gitEntry(init: EntryInit): GitFileStatusEntry {
  * would need an RPC round trip to hold any entries, and this test is about the
  * ordering the section applies to whatever the store returns.
  */
-function fakeGitStore(files: GitFileStatusEntry[]): ReturnType<typeof createGitFileStatusStore> {
+function fakeGitStore(files: GitFileStatusEntry[]): ReturnType<typeof createRepoGitStore> {
   return {
-    state: { isGitRepo: true, repoRoot: WORKING_DIR, toplevel: WORKING_DIR, files },
+    focusedState: () => ({ toplevel: WORKING_DIR, files }),
     statusRoot: () => WORKING_DIR,
     getChangedFiles: (_filter: GitFilterTab) => files,
     getFileStatus: () => undefined,
-    getNodeDiffStats: () => null,
+    getNodeDiffStats: () => ({ added: 0, deleted: 0, untracked: 0 }),
     hasChanges: () => false,
-  } as unknown as ReturnType<typeof createGitFileStatusStore>
+  } as unknown as ReturnType<typeof createRepoGitStore>
 }
 
 function renderSection(files: GitFileStatusEntry[]) {

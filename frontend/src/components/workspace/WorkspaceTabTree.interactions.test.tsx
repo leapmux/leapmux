@@ -1,11 +1,43 @@
 import type { Tab } from '~/stores/tab.types'
 import { fireEvent, render, screen, within } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { repoKey } from '~/stores/repoGit'
+import { createRepoGitStore } from '~/stores/repoGit.store'
 import { buildTree, WorkspaceTabTree } from './WorkspaceTabTree'
+
+const repoGitStore = createRepoGitStore()
+
+beforeEach(() => {
+  repoGitStore.clearAll()
+})
+
+function seedRepo(
+  workerId: string,
+  toplevel: string,
+  git: {
+    branch?: string
+    originUrl?: string
+    isWorktree?: boolean
+    diffAdded?: number
+    diffDeleted?: number
+    diffUntracked?: number
+  } = {},
+) {
+  repoGitStore.upsert(repoKey(workerId, toplevel), {
+    workerId,
+    toplevel,
+    branch: git.branch ?? '',
+    originUrl: git.originUrl ?? '',
+    isWorktree: git.isWorktree ?? false,
+    diffAdded: git.diffAdded ?? 0,
+    diffDeleted: git.diffDeleted ?? 0,
+    diffUntracked: git.diffUntracked ?? 0,
+  })
+}
 
 // Captures the `data` object each row hands solid-dnd, so a test can read it
 // back the way `TabDragContext`'s overlay renderer does.
@@ -72,6 +104,7 @@ describe('workspaceTabTree interactions', () => {
     const onTabClose = vi.fn()
     render(() => (
       <WorkspaceTabTree
+        repoGitStore={repoGitStore}
         tabs={[makeTab(TabType.AGENT, 'a1', 'Agent 1')]}
         activeTabKey={null}
         onTabClick={onTabClick}
@@ -91,6 +124,7 @@ describe('workspaceTabTree interactions', () => {
     const onTabClose = vi.fn()
     render(() => (
       <WorkspaceTabTree
+        repoGitStore={repoGitStore}
         tabs={[makeTab(TabType.TERMINAL, 't1', 'Terminal 1')]}
         activeTabKey={null}
         onTabClick={() => {}}
@@ -109,6 +143,7 @@ describe('workspaceTabTree interactions', () => {
   it('hides close controls for agent and terminal tabs in readOnly mode', () => {
     render(() => (
       <WorkspaceTabTree
+        repoGitStore={repoGitStore}
         tabs={[
           makeTab(TabType.AGENT, 'a1', 'Agent 1'),
           makeTab(TabType.TERMINAL, 't1', 'Terminal 1'),
@@ -126,6 +161,7 @@ describe('workspaceTabTree interactions', () => {
   it('keeps file tab close control in readOnly mode', () => {
     render(() => (
       <WorkspaceTabTree
+        repoGitStore={repoGitStore}
         tabs={[makeTab(TabType.FILE, 'f1', 'readme.md')]}
         activeTabKey={null}
         onTabClick={() => {}}
@@ -140,6 +176,7 @@ describe('workspaceTabTree interactions', () => {
   it('disables the close control while the tab is closing', () => {
     render(() => (
       <WorkspaceTabTree
+        repoGitStore={repoGitStore}
         tabs={[makeTab(TabType.AGENT, 'a1', 'Agent 1')]}
         activeTabKey={null}
         onTabClick={() => {}}
@@ -155,6 +192,7 @@ describe('workspaceTabTree interactions', () => {
     const onRename = vi.fn()
     render(() => (
       <WorkspaceTabTree
+        repoGitStore={repoGitStore}
         tabs={[makeTab(TabType.AGENT, 'a1', 'Agent 1')]}
         activeTabKey={null}
         onTabClick={() => {}}
@@ -175,6 +213,7 @@ describe('workspaceTabTree interactions', () => {
   it('does not enter rename mode without tabItemOps.onRename', async () => {
     render(() => (
       <WorkspaceTabTree
+        repoGitStore={repoGitStore}
         tabs={[makeTab(TabType.AGENT, 'a1', 'Agent 1')]}
         activeTabKey={null}
         onTabClick={() => {}}
@@ -190,6 +229,7 @@ describe('workspaceTabTree interactions', () => {
   it('keeps file tabs non-renamable even when onRename is provided', async () => {
     render(() => (
       <WorkspaceTabTree
+        repoGitStore={repoGitStore}
         tabs={[makeTab(TabType.FILE, 'f1', 'readme.md')]}
         activeTabKey={null}
         onTabClick={() => {}}
@@ -206,6 +246,8 @@ describe('workspaceTabTree interactions', () => {
   // ----- BranchContextMenu integration -----------------------------------
 
   function gitTab(id: string): Tab {
+    const toplevel = '/home/user/Workspaces/r'
+    seedRepo('w1', toplevel, { branch: 'feature', originUrl: 'https://github.com/o/r.git' })
     return {
       type: TabType.AGENT,
       workspaceId: 'ws-1',
@@ -214,9 +256,7 @@ describe('workspaceTabTree interactions', () => {
       tileId: 'tile-1',
       position: '0',
       workerId: 'w1',
-      gitOriginUrl: 'https://github.com/o/r.git',
-      gitBranch: 'feature',
-      gitToplevel: '/home/user/Workspaces/r',
+      gitToplevel: toplevel,
     } as Tab
   }
 
@@ -225,6 +265,7 @@ describe('workspaceTabTree interactions', () => {
     const onDeleteBranch = vi.fn()
     render(() => (
       <WorkspaceTabTree
+        repoGitStore={repoGitStore}
         tabs={[gitTab('a1')]}
         activeTabKey={null}
         onTabClick={() => {}}
@@ -255,6 +296,7 @@ describe('workspaceTabTree interactions', () => {
     const onDeleteBranch = vi.fn()
     render(() => (
       <WorkspaceTabTree
+        repoGitStore={repoGitStore}
         tabs={[gitTab('a1'), gitTab('a2')]}
         activeTabKey={null}
         onTabClick={() => {}}
@@ -284,6 +326,7 @@ describe('workspaceTabTree interactions', () => {
     const onDeleteBranch = vi.fn()
     render(() => (
       <WorkspaceTabTree
+        repoGitStore={repoGitStore}
         tabs={[gitTab('a1')]}
         activeTabKey={null}
         onTabClick={() => {}}
@@ -317,6 +360,7 @@ describe('workspaceTabTree interactions', () => {
     const onChangeBranch = vi.fn()
     render(() => (
       <WorkspaceTabTree
+        repoGitStore={repoGitStore}
         tabs={[gitTab('a1')]}
         activeTabKey={null}
         onTabClick={() => {}}
@@ -347,6 +391,7 @@ describe('workspaceTabTree interactions', () => {
     const onChangeBranch = vi.fn()
     render(() => (
       <WorkspaceTabTree
+        repoGitStore={repoGitStore}
         tabs={[gitTab('a1')]}
         activeTabKey={null}
         onTabClick={() => {}}
@@ -373,6 +418,7 @@ describe('workspaceTabTree interactions', () => {
     const onChangeBranch = vi.fn()
     render(() => (
       <WorkspaceTabTree
+        repoGitStore={repoGitStore}
         tabs={[gitTab('a1')]}
         activeTabKey={null}
         onTabClick={() => {}}
@@ -399,9 +445,12 @@ describe('workspaceTabTree interactions', () => {
    * since a workspace's tabs can be spread across machines.
    */
   it('gates each branch row on its own worker', async () => {
-    const offlineTab = { ...gitTab('a2'), workerId: 'w2', gitToplevel: '/home/user/Workspaces/other' } as Tab
+    const offlineToplevel = '/home/user/Workspaces/other'
+    seedRepo('w2', offlineToplevel, { branch: 'feature', originUrl: 'https://github.com/o/r.git' })
+    const offlineTab = { ...gitTab('a2'), workerId: 'w2', gitToplevel: offlineToplevel } as Tab
     render(() => (
       <WorkspaceTabTree
+        repoGitStore={repoGitStore}
         tabs={[gitTab('a1'), offlineTab]}
         activeTabKey={null}
         onTabClick={() => {}}
@@ -443,6 +492,7 @@ describe('workspaceTabTree interactions', () => {
   it('hides the branch menu when readOnly is true', () => {
     render(() => (
       <WorkspaceTabTree
+        repoGitStore={repoGitStore}
         tabs={[gitTab('a1')]}
         activeTabKey={null}
         onTabClick={() => {}}
@@ -460,6 +510,7 @@ describe('workspaceTabTree interactions', () => {
   it('hides the branch menu when no menu callbacks are supplied', () => {
     render(() => (
       <WorkspaceTabTree
+        repoGitStore={repoGitStore}
         tabs={[gitTab('a1')]}
         activeTabKey={null}
         onTabClick={() => {}}
@@ -477,6 +528,7 @@ describe('workspaceTabTree interactions', () => {
     // menu where one item silently no-ops.
     render(() => (
       <WorkspaceTabTree
+        repoGitStore={repoGitStore}
         tabs={[gitTab('a1')]}
         activeTabKey={null}
         onTabClick={() => {}}
@@ -491,6 +543,7 @@ describe('workspaceTabTree interactions', () => {
   it('hides the branch menu when only onDeleteBranch is supplied', () => {
     render(() => (
       <WorkspaceTabTree
+        repoGitStore={repoGitStore}
         tabs={[gitTab('a1')]}
         activeTabKey={null}
         onTabClick={() => {}}
@@ -513,6 +566,7 @@ describe('workspaceTabTree interactions', () => {
     const onDeleteBranch = vi.fn()
     render(() => (
       <WorkspaceTabTree
+        repoGitStore={repoGitStore}
         tabs={[gitTab('a1'), gitTab('a2')]}
         activeTabKey={null}
         onTabClick={() => {}}
@@ -538,19 +592,23 @@ describe('workspaceTabTree interactions', () => {
     expect(deleteRef.isWorktree).toBe(false)
   })
 
-  it('propagates gitIsWorktree from tab fields onto the BranchRef', async () => {
-    // The whole point of plumbing gitIsWorktree onto Tab is so the
-    // branch-row context menu can hand the disposition to
-    // ChangeBranchDialog (it seeds isRepoRoot/isWorktreeRoot pre-RPC).
-    // Use a worktree tab (gitIsWorktree=true) and verify the ref
-    // carries it.
+  it('propagates gitIsWorktree from the repo store onto the BranchRef', async () => {
+    const toplevel = '/home/user/Workspaces/r'
+    seedRepo('w1', toplevel, { branch: 'feature', originUrl: 'https://github.com/o/r.git', isWorktree: true })
     const wtTab: Tab = {
-      ...gitTab('wt-a1'),
-      gitIsWorktree: true,
+      type: TabType.AGENT,
+      workspaceId: 'ws-1',
+      id: 'wt-a1',
+      title: 'wt-a1',
+      tileId: 'tile-1',
+      position: '0',
+      workerId: 'w1',
+      gitToplevel: toplevel,
     } as Tab
     const onDeleteBranch = vi.fn()
     render(() => (
       <WorkspaceTabTree
+        repoGitStore={repoGitStore}
         tabs={[wtTab]}
         activeTabKey={null}
         onTabClick={() => {}}
@@ -575,6 +633,8 @@ describe('workspaceTabTree interactions', () => {
    * two branch rows under one repo header.
    */
   function gitTabOnBranch(id: string, branchName: string): Tab {
+    const toplevel = `/home/user/Workspaces/r-${branchName}`
+    seedRepo('w1', toplevel, { branch: branchName, originUrl: 'https://github.com/o/r.git' })
     return {
       type: TabType.AGENT,
       workspaceId: 'ws-1',
@@ -583,9 +643,7 @@ describe('workspaceTabTree interactions', () => {
       tileId: 'tile-1',
       position: '0',
       workerId: 'w1',
-      gitOriginUrl: 'https://github.com/o/r.git',
-      gitBranch: branchName,
-      gitToplevel: `/home/user/Workspaces/r-${branchName}`,
+      gitToplevel: toplevel,
     } as Tab
   }
 
@@ -614,6 +672,7 @@ describe('workspaceTabTree interactions', () => {
     // toggle dance per row.
     render(() => (
       <WorkspaceTabTree
+        repoGitStore={repoGitStore}
         tabs={[
           gitTabOnBranch('a1', 'feature-1'),
           gitTabOnBranch('a2', 'feature-2'),
@@ -639,6 +698,7 @@ describe('workspaceTabTree interactions', () => {
     // action is wired.
     render(() => (
       <WorkspaceTabTree
+        repoGitStore={repoGitStore}
         tabs={[gitTabOnBranch('a1', 'feature-1')]}
         activeTabKey={null}
         onTabClick={() => {}}
@@ -655,6 +715,8 @@ describe('workspaceTabTree interactions', () => {
     // returns the short SHA as the branch label, then DeleteBranch
     // tries `git branch -D <short-sha>` and git refuses. Gate the menu
     // out so the user never sees an action that's guaranteed to error.
+    const toplevel = '/home/user/Workspaces/r'
+    seedRepo('w1', toplevel, { branch: '' })
     const detachedTab: Tab = {
       $typeName: 'leapmux.v1.Tab',
       type: TabType.TERMINAL,
@@ -664,12 +726,11 @@ describe('workspaceTabTree interactions', () => {
       tileId: 'tile-1',
       position: '0',
       workerId: 'w1',
-      gitOriginUrl: '',
-      gitBranch: '', // detached HEAD: no branch name on the tab
-      gitToplevel: '/home/user/Workspaces/r',
+      gitToplevel: toplevel,
     } as Tab
     render(() => (
       <WorkspaceTabTree
+        repoGitStore={repoGitStore}
         tabs={[detachedTab]}
         activeTabKey={null}
         onTabClick={() => {}}
@@ -687,6 +748,7 @@ describe('workspaceTabTree interactions', () => {
   it('does not mount any row menu in readOnly mode', () => {
     render(() => (
       <WorkspaceTabTree
+        repoGitStore={repoGitStore}
         tabs={[gitTabOnBranch('a1', 'feature-1'), gitTabOnBranch('a2', 'feature-2')]}
         activeTabKey={null}
         onTabClick={() => {}}
@@ -707,6 +769,7 @@ describe('workspaceTabTree interactions', () => {
     // that would do nothing rather than showing a dead one.
     render(() => (
       <WorkspaceTabTree
+        repoGitStore={repoGitStore}
         tabs={[makeTab(TabType.FILE, 'f1', 'readme.md')]}
         activeTabKey={null}
         onTabClick={() => {}}
@@ -723,6 +786,7 @@ describe('workspaceTabTree interactions', () => {
   it('offers no Rename when the tree has no rename handler', () => {
     render(() => (
       <WorkspaceTabTree
+        repoGitStore={repoGitStore}
         tabs={[makeTab(TabType.AGENT, 'a1', 'Agent')]}
         activeTabKey={null}
         onTabClick={() => {}}
@@ -738,6 +802,7 @@ describe('workspaceTabTree interactions', () => {
   it('mounts a context menu on each tab leaf', () => {
     render(() => (
       <WorkspaceTabTree
+        repoGitStore={repoGitStore}
         tabs={[gitTabOnBranch('a1', 'feature-1'), gitTabOnBranch('a2', 'feature-1')]}
         activeTabKey={null}
         onTabClick={() => {}}
@@ -759,6 +824,7 @@ describe('workspaceTabTree interactions', () => {
     const onChangeBranch = vi.fn()
     render(() => (
       <WorkspaceTabTree
+        repoGitStore={repoGitStore}
         tabs={[
           gitTabOnBranch('a1', 'feature-1'),
           gitTabOnBranch('a2', 'feature-2'),
@@ -808,18 +874,29 @@ describe('workspaceTabTree interactions', () => {
    * groups independent — collapsing one must not toggle the other.
    */
   function collisionPairTabs(): [Tab, Tab] {
-    const base = {
-      type: TabType.AGENT,
-      workspaceId: 'ws-1',
-      title: 'agent',
-      tileId: 'tile-1',
-      position: '0',
-      gitOriginUrl: 'https://github.com/o/r.git',
-      gitBranch: 'feature',
-    }
+    seedRepo('a:b', '/p', { branch: 'feature', originUrl: 'https://github.com/o/r.git' })
+    seedRepo('a', 'b:/p', { branch: 'feature', originUrl: 'https://github.com/o/r.git' })
     return [
-      { ...base, id: 'a1', workerId: 'a:b', gitToplevel: '/p' } as Tab,
-      { ...base, id: 'a2', workerId: 'a', gitToplevel: 'b:/p' } as Tab,
+      {
+        type: TabType.AGENT,
+        workspaceId: 'ws-1',
+        id: 'a1',
+        title: 'agent',
+        tileId: 'tile-1',
+        position: '0',
+        workerId: 'a:b',
+        gitToplevel: '/p',
+      } as Tab,
+      {
+        type: TabType.AGENT,
+        workspaceId: 'ws-1',
+        id: 'a2',
+        title: 'agent',
+        tileId: 'tile-1',
+        position: '0',
+        workerId: 'a',
+        gitToplevel: 'b:/p',
+      } as Tab,
     ]
   }
 
@@ -829,6 +906,8 @@ describe('workspaceTabTree interactions', () => {
   // (branch) For's reconciliation; one tab per branch keeps the per-row
   // assertion uncluttered.
   function gitTabWithBranch(id: string, branch: string, diffAdded = 0): Tab {
+    const toplevel = `/repo/${branch}`
+    seedRepo('w1', toplevel, { branch, originUrl: 'https://github.com/o/r.git', diffAdded })
     return {
       type: TabType.AGENT,
       workspaceId: 'ws-1',
@@ -837,10 +916,7 @@ describe('workspaceTabTree interactions', () => {
       tileId: 'tile-1',
       position: '0',
       workerId: 'w1',
-      gitOriginUrl: 'https://github.com/o/r.git',
-      gitBranch: branch,
-      gitToplevel: '/repo',
-      gitDiffAdded: diffAdded,
+      gitToplevel: toplevel,
     } as Tab
   }
 
@@ -855,6 +931,7 @@ describe('workspaceTabTree interactions', () => {
     ])
     render(() => (
       <WorkspaceTabTree
+        repoGitStore={repoGitStore}
         tabs={tabs()}
         activeTabKey={null}
         onTabClick={() => {}}
@@ -875,7 +952,7 @@ describe('workspaceTabTree interactions', () => {
     // reference while every other tab keeps its identity.
     setTabs(prev => [
       gitTabWithBranch('a1', 'main', 5),
-      prev[1], // same reference as before
+      prev[1],
     ])
 
     const branchRowsAfter = screen.getAllByTestId('tab-tree-branch-group')
@@ -906,6 +983,8 @@ describe('workspaceTabTree interactions', () => {
     // disturb repo B's row identity — the outer For keys by repoKey
     // strings so unrelated rows stay mounted across rebuilds.
     function repoTab(id: string, originUrl: string): Tab {
+      const toplevel = `/repos/${id}`
+      seedRepo('w1', toplevel, { branch: 'main', originUrl })
       return {
         type: TabType.AGENT,
         workspaceId: 'ws-1',
@@ -914,9 +993,7 @@ describe('workspaceTabTree interactions', () => {
         tileId: 'tile-1',
         position: '0',
         workerId: 'w1',
-        gitOriginUrl: originUrl,
-        gitBranch: 'main',
-        gitToplevel: `/repos/${id}`,
+        gitToplevel: toplevel,
       } as Tab
     }
 
@@ -926,6 +1003,7 @@ describe('workspaceTabTree interactions', () => {
     ])
     render(() => (
       <WorkspaceTabTree
+        repoGitStore={repoGitStore}
         tabs={tabs()}
         activeTabKey={null}
         onTabClick={() => {}}
@@ -937,12 +1015,12 @@ describe('workspaceTabTree interactions', () => {
     expect(repoRowsBefore).toHaveLength(2)
     const [alphaBefore, betaBefore] = repoRowsBefore
 
-    // Replace alpha's tab reference (e.g. its gitDiffAdded changed);
-    // beta's tab keeps its identity.
-    setTabs(prev => [
-      { ...prev[0], gitDiffAdded: 7 } as Tab,
-      prev[1],
-    ])
+    // Replace alpha's tab reference after its diff stats change; beta's tab
+    // keeps its identity.
+    setTabs((prev) => {
+      seedRepo('w1', `/repos/${prev[0].id}`, { branch: 'main', originUrl: 'https://github.com/o/alpha.git', diffAdded: 7 })
+      return [repoTab('a1', 'https://github.com/o/alpha.git'), prev[1]]
+    })
 
     const repoRowsAfter = screen.getAllByTestId('tab-tree-repo-group')
     expect(repoRowsAfter).toHaveLength(2)
@@ -968,6 +1046,7 @@ describe('workspaceTabTree interactions', () => {
    * leaves render a frozen `Tab` — see the live-row block below.
    */
   it('does not re-reconcile branch rows when only non-tree fields change', async () => {
+    seedRepo('w-1', '/repo', { branch: 'main', originUrl: 'https://github.com/o/r.git' })
     const initial: Tab = {
       type: TabType.AGENT,
       workspaceId: 'ws-1',
@@ -977,13 +1056,12 @@ describe('workspaceTabTree interactions', () => {
       position: '0|',
       workerId: 'w-1',
       gitToplevel: '/repo',
-      gitOriginUrl: 'https://github.com/o/r.git',
-      gitBranch: 'main',
     }
     const [tabs, setTabs] = createSignal<Tab[]>([initial])
 
     render(() => (
       <WorkspaceTabTree
+        repoGitStore={repoGitStore}
         tabs={tabs()}
         activeTabKey={null}
         onTabClick={() => {}}
@@ -1013,6 +1091,13 @@ describe('workspaceTabTree interactions', () => {
    * stale.
    */
   it('rebuilds the branch group when a tree-relevant field (diffAdded) changes', () => {
+    seedRepo('w-1', '/repo', {
+      branch: 'main',
+      originUrl: 'https://github.com/o/r.git',
+      diffAdded: 0,
+      diffDeleted: 0,
+      diffUntracked: 0,
+    })
     const base: Tab = {
       type: TabType.AGENT,
       workspaceId: 'ws-1',
@@ -1022,14 +1107,16 @@ describe('workspaceTabTree interactions', () => {
       position: '0|',
       workerId: 'w-1',
       gitToplevel: '/repo',
-      gitOriginUrl: 'https://github.com/o/r.git',
-      gitBranch: 'main',
-      gitDiffAdded: 0,
-      gitDiffDeleted: 0,
-      gitDiffUntracked: 0,
     }
-    const before = buildTree([base])
-    const after = buildTree([{ ...base, gitDiffAdded: 5 }])
+    const before = buildTree([base], repoGitStore)
+    seedRepo('w-1', '/repo', {
+      branch: 'main',
+      originUrl: 'https://github.com/o/r.git',
+      diffAdded: 5,
+      diffDeleted: 0,
+      diffUntracked: 0,
+    })
+    const after = buildTree([base], repoGitStore)
     expect(before.groups[0].branches[0].diffAdded).toBe(0)
     expect(after.groups[0].branches[0].diffAdded).toBe(5)
   })
@@ -1042,6 +1129,7 @@ describe('workspaceTabTree interactions', () => {
   // signal driving the rebuild here mirrors the WatchEvents push that
   // empties (or repopulates) a branch group.
   it('survives a tabs swap that empties every branch group without crashing', () => {
+    seedRepo('w-1', '/repo', { branch: 'main', originUrl: 'https://github.com/o/r.git' })
     const before: Tab[] = [{
       type: TabType.AGENT,
       workspaceId: 'ws-1',
@@ -1051,12 +1139,11 @@ describe('workspaceTabTree interactions', () => {
       position: '0|',
       workerId: 'w-1',
       gitToplevel: '/repo',
-      gitOriginUrl: 'https://github.com/o/r.git',
-      gitBranch: 'main',
     } as Tab]
     const [tabs, setTabs] = createSignal<Tab[]>(before)
     render(() => (
       <WorkspaceTabTree
+        repoGitStore={repoGitStore}
         tabs={tabs()}
         activeTabKey={null}
         onTabClick={() => {}}
@@ -1094,6 +1181,7 @@ describe('workspaceTabTree interactions', () => {
    * wrong, because the fingerprint has already settled before hydration lands.
    */
   describe('resolves each row against the live tab list', () => {
+    seedRepo('w-1', '/repo', { branch: 'main', originUrl: 'https://github.com/o/r.git' })
     const bareAgent: Tab = {
       type: TabType.AGENT,
       workspaceId: 'ws-1',
@@ -1102,14 +1190,13 @@ describe('workspaceTabTree interactions', () => {
       position: '0|',
       workerId: 'w-1',
       gitToplevel: '/repo',
-      gitOriginUrl: 'https://github.com/o/r.git',
-      gitBranch: 'main',
     } as Tab
 
     function renderTabs(initial: Tab[]) {
       const [tabs, setTabs] = createSignal<Tab[]>(initial)
       render(() => (
         <WorkspaceTabTree
+          repoGitStore={repoGitStore}
           tabs={tabs()}
           activeTabKey={null}
           onTabClick={() => {}}
@@ -1224,6 +1311,7 @@ describe('workspaceTabTree interactions', () => {
       const [tabs, setTabs] = createSignal<Tab[]>([bareAgent])
       render(() => (
         <WorkspaceTabTree
+          repoGitStore={repoGitStore}
           tabs={tabs()}
           activeTabKey={null}
           onTabClick={() => {}}
@@ -1246,6 +1334,7 @@ describe('workspaceTabTree interactions', () => {
   it('keeps colon-overlapping branch groups independent when one is toggled', async () => {
     render(() => (
       <WorkspaceTabTree
+        repoGitStore={repoGitStore}
         tabs={collisionPairTabs()}
         activeTabKey={null}
         onTabClick={() => {}}
@@ -1288,6 +1377,7 @@ describe('workspaceTabTree subagent nesting', () => {
   it('indents a subagent row one level under its parent', () => {
     render(() => (
       <WorkspaceTabTree
+        repoGitStore={repoGitStore}
         tabs={[makeTab(TabType.AGENT, 'root', 'Root'), subagentTab('kid', 'root')]}
         activeTabKey={null}
         onTabClick={() => {}}
@@ -1303,6 +1393,7 @@ describe('workspaceTabTree subagent nesting', () => {
   it('renders a subagent of a subagent two levels deep', () => {
     render(() => (
       <WorkspaceTabTree
+        repoGitStore={repoGitStore}
         tabs={[
           makeTab(TabType.AGENT, 'root', 'Root'),
           subagentTab('kid', 'root'),
@@ -1323,6 +1414,7 @@ describe('workspaceTabTree subagent nesting', () => {
   it('keeps a subagent flush with the roots when its parent tab is closed', () => {
     render(() => (
       <WorkspaceTabTree
+        repoGitStore={repoGitStore}
         tabs={[makeTab(TabType.AGENT, 'other', 'Other'), subagentTab('kid', 'gone')]}
         activeTabKey={null}
         onTabClick={() => {}}
@@ -1343,6 +1435,7 @@ describe('workspaceTabTree subagent nesting', () => {
     ])
     render(() => (
       <WorkspaceTabTree
+        repoGitStore={repoGitStore}
         tabs={tabs()}
         activeTabKey={null}
         onTabClick={() => {}}

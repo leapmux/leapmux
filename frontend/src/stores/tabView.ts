@@ -313,13 +313,7 @@ export function createTabView(opts: CreateTabViewOpts) {
       mru: m.mru,
       workingDir: m.workingDir,
       createdAt: m.createdAt,
-      gitBranch: m.gitBranch,
-      gitOriginUrl: m.gitOriginUrl,
       gitToplevel: m.gitToplevel,
-      gitIsWorktree: m.gitIsWorktree,
-      gitDiffAdded: m.gitDiffAdded,
-      gitDiffDeleted: m.gitDiffDeleted,
-      gitDiffUntracked: m.gitDiffUntracked,
     }
     switch (r.tabType) {
       case TabType.AGENT:
@@ -331,7 +325,6 @@ export function createTabView(opts: CreateTabViewOpts) {
           agentSessionId: m.agentSessionId,
           optionValues: m.optionValues,
           optionGroups: m.optionGroups,
-          agentGitStatus: m.agentGitStatus,
           startupError: m.startupError,
           startupMessage: m.startupMessage,
           parentAgentId: m.parentAgentId,

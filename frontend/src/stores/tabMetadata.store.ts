@@ -1,5 +1,5 @@
 import type { FileDiffBase, FileOpenSource, FileViewMode } from './tab.types'
-import type { AgentGitStatus, AgentProvider, AgentStatus, AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentProvider, AgentStatus, AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
 import type { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import type { HLC, UserCrdtState } from '~/generated/leapmux/v1/user_crdt_pb'
 import { createEffect, createMemo } from 'solid-js'
@@ -87,14 +87,8 @@ export interface SharedMeta {
   mru?: number
   workingDir?: string
   createdAt?: string
-  // ---- git (worker-reported, mirrored onto every tab kind) ----
-  gitBranch?: string
-  gitOriginUrl?: string
+  /** Repo toplevel linking this tab to the repo-keyed git store entry. */
   gitToplevel?: string
-  gitIsWorktree?: boolean
-  gitDiffAdded?: number
-  gitDiffDeleted?: number
-  gitDiffUntracked?: number
 }
 
 export interface AgentMeta {
@@ -103,7 +97,6 @@ export interface AgentMeta {
   agentSessionId?: string
   optionValues?: Record<string, string>
   optionGroups?: AvailableOptionGroup[]
-  agentGitStatus?: AgentGitStatus
   /**
    * Subagent linkage. parentAgentId is set only for virtual child agents
    * (protoToAgentTabFields hydrates it from AgentInfo). Without it in AgentMeta

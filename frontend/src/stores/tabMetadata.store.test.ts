@@ -3,7 +3,7 @@ import { create } from '@bufbuild/protobuf'
 import { createEffect, createRoot, createSignal } from 'solid-js'
 import { unwrap } from 'solid-js/store'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { AgentGitStatusSchema, AgentStatus, AvailableOptionGroupSchema } from '~/generated/leapmux/v1/agent_pb'
+import { AgentStatus, AvailableOptionGroupSchema } from '~/generated/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { KEY_TAB_MRU, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
 import { createTabMetadataStore, liveTabIds, useMetadataSweep } from './tabMetadata.store'
@@ -45,9 +45,9 @@ describe('tabMetadata', () => {
     it('skips undefined values rather than writing them', () => {
       const m = createTabMetadataStore()
       m.patch('a1', { title: 'Keep', workingDir: '/repo' })
-      m.patch('a1', { title: undefined, gitBranch: 'main' })
+      m.patch('a1', { title: undefined, gitToplevel: '/repo' })
       expect(m.get('a1')?.title).toBe('Keep')
-      expect(m.get('a1')?.gitBranch).toBe('main')
+      expect(m.get('a1')?.gitToplevel).toBe('/repo')
     })
 
     // Empty string and 0 are real values, not "absent" — a shell that reports
@@ -67,46 +67,6 @@ describe('tabMetadata', () => {
      * that identity, so writing one back re-keys the tab and tears down every
      * row rendered from it -- including the chat pane, mid-selection.
      */
-    it('keeps the stored object when an equal one is written over it', () => {
-      const m = createTabMetadataStore()
-      const first = create(AgentGitStatusSchema, { branch: 'main', ahead: 1, toplevel: '/repo' })
-      m.patch('a1', { agentGitStatus: first })
-      const stored = unwrap(m.get('a1')!).agentGitStatus
-
-      // Byte-identical, freshly decoded -- what every no-op status push looks like.
-      m.patch('a1', { agentGitStatus: create(AgentGitStatusSchema, { branch: 'main', ahead: 1, toplevel: '/repo' }) })
-
-      expect(unwrap(m.get('a1')!).agentGitStatus, 'an equal payload must not re-key the tab').toBe(stored)
-    })
-
-    it('writes an object whose content genuinely changed', () => {
-      const m = createTabMetadataStore()
-      m.patch('a1', { agentGitStatus: create(AgentGitStatusSchema, { branch: 'main', ahead: 1 }) })
-      const stored = unwrap(m.get('a1')!).agentGitStatus
-
-      m.patch('a1', { agentGitStatus: create(AgentGitStatusSchema, { branch: 'main', ahead: 2 }) })
-
-      expect(unwrap(m.get('a1')!).agentGitStatus).not.toBe(stored)
-      expect(m.get('a1')?.agentGitStatus?.ahead).toBe(2)
-    })
-
-    /**
-     * A dirty-flag flip carries no branch or toplevel change, so a comparison
-     * that only looked at the four flat mirrors would call it unchanged and
-     * strand the info card on stale ahead/behind and dirty-state flags. The
-     * per-key compare sees it.
-     */
-    it('writes a change only the full proto can see', () => {
-      const m = createTabMetadataStore()
-      m.patch('a1', { agentGitStatus: create(AgentGitStatusSchema, { branch: 'main', toplevel: '/repo' }) })
-      const stored = unwrap(m.get('a1')!).agentGitStatus
-
-      m.patch('a1', { agentGitStatus: create(AgentGitStatusSchema, { branch: 'main', toplevel: '/repo', conflicted: true }) })
-
-      expect(unwrap(m.get('a1')!).agentGitStatus).not.toBe(stored)
-      expect(m.get('a1')?.agentGitStatus?.conflicted).toBe(true)
-    })
-
     it('reuses an option-group array whose groups are all the same objects', () => {
       const m = createTabMetadataStore()
       const groups = [create(AvailableOptionGroupSchema, { id: 'model', currentValue: 'opus' })]
@@ -168,30 +128,6 @@ describe('tabMetadata', () => {
       m.patch('t1', { screen: equalButFresh })
 
       expect(unwrap(m.get('t1')!).screen, 'a fresh buffer is a real update').toBe(equalButFresh)
-    })
-
-    it('does not notify a subscriber when an equal object is written', async () => {
-      await createRoot(async (dispose) => {
-        const m = createTabMetadataStore()
-        m.patch('a1', { agentGitStatus: create(AgentGitStatusSchema, { branch: 'main' }) })
-
-        let runs = 0
-        createEffect(() => {
-          void m.state.byTabId.a1?.agentGitStatus
-          runs++
-        })
-        await flush()
-        const baseline = runs
-
-        m.patch('a1', { agentGitStatus: create(AgentGitStatusSchema, { branch: 'main' }) })
-        await flush()
-        expect(runs, 'a no-op re-broadcast must stay a no-op').toBe(baseline)
-
-        m.patch('a1', { agentGitStatus: create(AgentGitStatusSchema, { branch: 'feature' }) })
-        await flush()
-        expect(runs, 'a real change must still propagate').toBeGreaterThan(baseline)
-        dispose()
-      })
     })
 
     it('returns undefined for a tab it has never seen', () => {
@@ -267,15 +203,15 @@ describe('tabMetadata', () => {
   describe('patchMatching', () => {
     it('writes the fields onto every matching row and leaves the rest alone', () => {
       const m = createTabMetadataStore()
-      m.patch('a1', { gitToplevel: '/repo', gitBranch: 'old' })
-      m.patch('t1', { gitToplevel: '/repo', gitBranch: 'old' })
-      m.patch('a2', { gitToplevel: '/other', gitBranch: 'old' })
+      m.patch('a1', { gitToplevel: '/repo', title: 'old' })
+      m.patch('t1', { gitToplevel: '/repo', title: 'old' })
+      m.patch('a2', { gitToplevel: '/other', title: 'old' })
 
-      m.patchMatching(meta => meta.gitToplevel === '/repo', { gitBranch: 'new' })
+      m.patchMatching(meta => meta.gitToplevel === '/repo', { title: 'new' })
 
-      expect(m.get('a1')?.gitBranch).toBe('new')
-      expect(m.get('t1')?.gitBranch).toBe('new')
-      expect(m.get('a2')?.gitBranch, 'a different repo is untouched').toBe('old')
+      expect(m.get('a1')?.title).toBe('new')
+      expect(m.get('t1')?.title).toBe('new')
+      expect(m.get('a2')?.title, 'a different repo is untouched').toBe('old')
     })
 
     it('passes the tab id to the predicate', () => {
@@ -291,17 +227,17 @@ describe('tabMetadata', () => {
 
     it('skips undefined values, like patch', () => {
       const m = createTabMetadataStore()
-      m.patch('a1', { title: 'Keep', gitBranch: 'old' })
-      m.patchMatching(() => true, { title: undefined, gitBranch: 'new' })
+      m.patch('a1', { title: 'Keep', gitToplevel: '/old' })
+      m.patchMatching(() => true, { title: undefined, gitToplevel: '/new' })
       expect(m.get('a1')?.title).toBe('Keep')
-      expect(m.get('a1')?.gitBranch).toBe('new')
+      expect(m.get('a1')?.gitToplevel).toBe('/new')
     })
 
     it('is a no-op when nothing matches', () => {
       const m = createTabMetadataStore()
-      m.patch('a1', { gitBranch: 'old' })
-      m.patchMatching(() => false, { gitBranch: 'new' })
-      expect(m.get('a1')?.gitBranch).toBe('old')
+      m.patch('a1', { gitToplevel: '/repo' })
+      m.patchMatching(() => false, { gitToplevel: '/new' })
+      expect(m.get('a1')?.gitToplevel).toBe('/repo')
     })
 
     // The counterpart to the old `equalsFields` short-circuit: rows that
@@ -309,39 +245,24 @@ describe('tabMetadata', () => {
     it('does not notify rows whose value already matches', async () => {
       await createRoot(async (dispose) => {
         const m = createTabMetadataStore()
-        m.patch('stale', { gitToplevel: '/repo', gitBranch: 'old' })
-        m.patch('fresh', { gitToplevel: '/repo', gitBranch: 'new' })
+        m.patch('stale', { gitToplevel: '/repo', title: 'old' })
+        m.patch('fresh', { gitToplevel: '/repo', title: 'new' })
 
         let freshRuns = 0
         createEffect(() => {
-          void m.state.byTabId.fresh?.gitBranch
+          void m.state.byTabId.fresh?.title
           freshRuns++
         })
         await flush()
         const baseline = freshRuns
 
-        m.patchMatching(meta => meta.gitToplevel === '/repo', { gitBranch: 'new' })
+        m.patchMatching(meta => meta.gitToplevel === '/repo', { title: 'new' })
         await flush()
 
-        expect(m.get('stale')?.gitBranch, 'the stale row is written').toBe('new')
+        expect(m.get('stale')?.title, 'the stale row is written').toBe('new')
         expect(freshRuns, 'the already-correct row is not re-fired').toBe(baseline)
         dispose()
       })
-    })
-
-    // `patchMatching` shares `mergeDefined`, so the object dedupe has to hold on
-    // the fan-out path too -- this is the one that reaches EVERY workspace at
-    // once, so a spurious re-key here re-mounts every matching tab's row.
-    it('reuses an equal object on the fan-out path as well', () => {
-      const m = createTabMetadataStore()
-      m.patch('a1', { workerId: 'wkr-1', agentGitStatus: create(AgentGitStatusSchema, { branch: 'main' }) } as never)
-      const stored = unwrap(m.get('a1')!).agentGitStatus
-
-      m.patchMatching(() => true, { agentGitStatus: create(AgentGitStatusSchema, { branch: 'main' }) })
-      expect(unwrap(m.get('a1')!).agentGitStatus).toBe(stored)
-
-      m.patchMatching(() => true, { agentGitStatus: create(AgentGitStatusSchema, { branch: 'feature' }) })
-      expect(unwrap(m.get('a1')!).agentGitStatus).not.toBe(stored)
     })
   })
 

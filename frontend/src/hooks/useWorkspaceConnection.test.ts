@@ -18,6 +18,8 @@ import { extractCompactionContextTokens, extractResultMetadata, parseMessageCont
 import { compactionContextUsage, createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore, MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.store'
 import { createControlStore } from '~/stores/control.store'
+import { repoKey } from '~/stores/repoGit'
+import { createRepoGitStore } from '~/stores/repoGit.store'
 import { createTabMetadataStore } from '~/stores/tabMetadata.store'
 import { emitAddTab } from '~/stores/tabOps'
 import { installTestBridge } from '~/test-support/crdtBridge'
@@ -1091,54 +1093,38 @@ describe('buildAgentStatusTabUpdate', () => {
     expect(failed.startupError).toBe('spawn failed')
   })
 
-  it('derives the git fields + full proto from a gitStatus payload (a git-only push)', () => {
+  it('derives repo identity from a gitStatus payload (a git-only push)', () => {
     const sc = {
       status: AgentStatus.UNSPECIFIED,
       gitStatus: { branch: 'main', originUrl: 'git@x:y.git', toplevel: '/repo', isWorktree: true },
     } as unknown as AgentStatusChange
     const update = buildAgentStatusTabUpdate(sc, false, {})
-    expect(update.gitBranch).toBe('main')
-    expect(update.gitOriginUrl).toBe('git@x:y.git')
     expect(update.gitToplevel).toBe('/repo')
-    expect(update.gitIsWorktree).toBe(true)
-    expect(update.agentGitStatus).toBe(sc.gitStatus) // full proto carried for the diff view
+    expect('gitBranch' in update).toBe(false)
+    expect('agentGitStatus' in update).toBe(false)
   })
 
-  // The worker recomputes and re-ships the WHOLE git status on every push
-  // (buildStatusChange / BroadcastGitStatus in its output sink), so the frontend
-  // decodes an equal-but-fresh proto each time. `Tab` is compared with shallowEqual --
-  // per-key Object.is -- and `<For>` keys its rows by item IDENTITY, so writing that
-  // fresh object back re-keys the tab and tears down every row rendered from it: the
-  // whole ChatView subtree included, taking the user's in-progress text selection and
-  // the lifted per-message expand/collapse state down with it.
-  // The builder reports the git group UNCONDITIONALLY now; suppressing an
-  // equal-but-fresh payload moved to `tabMetadata.patch`, which does it for every
-  // object-valued field rather than only the ones whose producer remembered to
-  // ask. The end-to-end case below is what proves the tab still survives a no-op
-  // push -- which is the property that actually matters.
-  it('carries the git group whenever the push has one', () => {
+  it('carries gitToplevel whenever the push has a toplevel', () => {
     const gs = { branch: 'main', originUrl: 'git@x:y.git', toplevel: '/repo', ahead: 2, modified: true }
     const sc = { status: AgentStatus.UNSPECIFIED, gitStatus: gs } as unknown as AgentStatusChange
 
     const update = buildAgentStatusTabUpdate(sc, false, {})
-    expect(update.agentGitStatus).toBe(gs)
-    expect(update.gitBranch).toBe('main')
+    expect(update.gitToplevel).toBe('/repo')
   })
 
-  it('applies a git status that genuinely changed', () => {
+  it('applies a changed git toplevel', () => {
     const gs = { branch: 'main', originUrl: 'git@x:y.git', toplevel: '/repo', ahead: 2 }
-    const sc = { status: AgentStatus.UNSPECIFIED, gitStatus: { ...gs, ahead: 3 } } as unknown as AgentStatusChange
+    const sc = { status: AgentStatus.UNSPECIFIED, gitStatus: { ...gs, toplevel: '/other' } } as unknown as AgentStatusChange
 
     const update = buildAgentStatusTabUpdate(sc, false, {})
-    expect(update.agentGitStatus).toBe(sc.gitStatus)
+    expect(update.gitToplevel).toBe('/other')
   })
 
-  it('leaves a known git status alone when a status-only push carries none', () => {
+  it('leaves git identity alone when a status-only push carries none', () => {
     const sc = { status: AgentStatus.INACTIVE, agentSessionId: 's1' } as unknown as AgentStatusChange
 
     const update = buildAgentStatusTabUpdate(sc, true, {})
-    expect('agentGitStatus' in update).toBe(false)
-    expect('gitBranch' in update).toBe(false)
+    expect('gitToplevel' in update).toBe(false)
     expect(update.agentStatus).toBe(AgentStatus.INACTIVE)
   })
 
@@ -1433,64 +1419,28 @@ describe('startupMessage handling in terminal statusChange', () => {
       dispose()
     })
   })
-
-  // Mirrors the git-fields branch of useWorkspaceConnection.handleTerminalEvent:
-  // on any STARTING event that carries non-empty git_branch / git_origin_url,
-  // update the tab so the sidebar badge matches the new worktree immediately.
-  function applyGitFromStatusChange(
-    tabs: TabStores,
-    terminalId: string,
-    gitBranch: string,
-    gitOriginUrl: string,
-  ) {
-    const existing = tabs.view.all().find(
-      (t): t is TerminalTab => t.type === TabType.TERMINAL && t.id === terminalId,
-    )
-    if (!existing)
-      return
-    const nextBranch = gitBranch || undefined
-    const nextOrigin = gitOriginUrl || undefined
-    if (existing.gitBranch !== nextBranch || existing.gitOriginUrl !== nextOrigin) {
-      tabs.metadata.patch(terminalId, { gitBranch: nextBranch, gitOriginUrl: nextOrigin })
-    }
-  }
-
-  it('updates gitBranch/gitOriginUrl from a terminal statusChange event', () => {
-    createRoot((dispose) => {
-      const tabs = makeTabStores()
-      tabs.addTerminal('term-1', { terminalStatus: TerminalStatus.STARTING })
-
-      applyGitFromStatusChange(tabs, 'term-1', 'feature/x', 'git@example.com:org/repo.git')
-
-      const tab = tabs.view.getTerminalTab('term-1')
-      expect(tab?.gitBranch).toBe('feature/x')
-      expect(tab?.gitOriginUrl).toBe('git@example.com:org/repo.git')
-      dispose()
-    })
-  })
 })
 
-/**
- * The REAL transition, not a mirror of it. The two blocks above re-implement
- * `handleTerminalEvent`'s branches in the test file, so they cannot catch a
- * branch that never runs — which is exactly what happened: the arm for a
- * terminal outside the active workspace patched git fields ONLY, so a
- * STARTING -> READY / STARTUP_FAILED transition never reached the sidebar and
- * the row kept its startup spinner until the user switched into that
- * workspace. Both arms now route through `applyTerminalStatusChange`.
- */
 describe('applyTerminalStatusChange', () => {
   function statusChange(fields: Partial<TerminalStatusChange>): TerminalStatusChange {
-    return { status: TerminalStatus.READY, gitBranch: '', gitOriginUrl: '', gitToplevel: '', gitIsWorktree: false, startupError: '', startupMessage: '', ...fields } as TerminalStatusChange
+    return {
+      status: TerminalStatus.READY,
+      gitStatus: undefined,
+      startupError: '',
+      startupMessage: '',
+      ...fields,
+    } as TerminalStatusChange
   }
 
   it('clears a starting terminal to READY', () => {
     createRoot((dispose) => {
       const tabs = makeTabStores()
+      const repoGitStore = createRepoGitStore()
       tabs.addTerminal('term-1', { terminalStatus: TerminalStatus.STARTING, startupMessage: 'Starting zsh…' })
 
       applyTerminalStatusChange(
         tabs.metadata,
+        repoGitStore,
         tabs.view.getTerminalTab('term-1'),
         'term-1',
         statusChange({ status: TerminalStatus.READY }),
@@ -1506,10 +1456,12 @@ describe('applyTerminalStatusChange', () => {
   it('records STARTUP_FAILED with its error', () => {
     createRoot((dispose) => {
       const tabs = makeTabStores()
+      const repoGitStore = createRepoGitStore()
       tabs.addTerminal('term-1', { terminalStatus: TerminalStatus.STARTING })
 
       applyTerminalStatusChange(
         tabs.metadata,
+        repoGitStore,
         tabs.view.getTerminalTab('term-1'),
         'term-1',
         statusChange({ status: TerminalStatus.STARTUP_FAILED, startupError: 'no such shell' }),
@@ -1522,15 +1474,15 @@ describe('applyTerminalStatusChange', () => {
     })
   })
 
-  // A previously-alive terminal whose worker reconnected must not be dragged
-  // back to READY — the sweep marked it DISCONNECTED for a reason.
   it('leaves a DISCONNECTED terminal alone on a READY event', () => {
     createRoot((dispose) => {
       const tabs = makeTabStores()
+      const repoGitStore = createRepoGitStore()
       tabs.addTerminal('term-1', { terminalStatus: TerminalStatus.DISCONNECTED })
 
       applyTerminalStatusChange(
         tabs.metadata,
+        repoGitStore,
         tabs.view.getTerminalTab('term-1'),
         'term-1',
         statusChange({ status: TerminalStatus.READY }),
@@ -1541,39 +1493,32 @@ describe('applyTerminalStatusChange', () => {
     })
   })
 
-  /**
-   * The git group lands even when the tab is not joined yet.
-   *
-   * `tabMetadata` is keyed by tab id independently of the projection, so a tab
-   * that is momentarily absent from it -- between a Batch frame and the
-   * EntityMaterialized frame that creates its new tile -- still has a row to
-   * write to, and the join picks the values up when it returns. Gating this
-   * write on the joined tab existing dropped it silently instead, and nothing
-   * re-sends: `applyGitStatusToTabs` repairs branch/origin/toplevel but
-   * deliberately never touches `gitIsWorktree`, so a terminal that became a
-   * worktree during that window kept the wrong badge until a reconnect.
-   */
-  it('writes the git group for a terminal that has no joined tab yet', () => {
+  it('writes repo identity for a terminal that has no joined tab yet', () => {
     createRoot((dispose) => {
       const tabs = makeTabStores()
+      const repoGitStore = createRepoGitStore()
       expect(tabs.view.getTerminalTab('term-unjoined'), 'precondition: not joined').toBeUndefined()
 
       applyTerminalStatusChange(
         tabs.metadata,
-        undefined,
+        repoGitStore,
+        { type: TabType.TERMINAL, id: 'term-unjoined', workspaceId: WS, workerId: 'wkr-1' } as TerminalTab,
         'term-unjoined',
         statusChange({
           status: TerminalStatus.STARTING,
-          gitBranch: 'feature',
-          gitToplevel: '/repo',
-          gitIsWorktree: true,
+          gitStatus: {
+            branch: 'feature',
+            toplevel: '/repo',
+            originUrl: 'git@example.com:org/repo.git',
+            isWorktree: true,
+          } as never,
         }),
       )
 
       const row = tabs.metadata.get('term-unjoined')
-      expect(row?.gitBranch).toBe('feature')
       expect(row?.gitToplevel).toBe('/repo')
-      expect(row?.gitIsWorktree).toBe(true)
+      expect(repoGitStore.get(repoKey('wkr-1', '/repo'))?.branch).toBe('feature')
+      expect(repoGitStore.get(repoKey('wkr-1', '/repo'))?.isWorktree).toBe(true)
       dispose()
     })
   })
@@ -2545,6 +2490,7 @@ describe('useWorkspaceConnection chat history load', () => {
         selection: tabs.selection,
         controlStore: createControlStore(),
         agentSessionStore: createAgentSessionStore(),
+        repoGitStore: createRepoGitStore(),
         settingsLoading: createLoadingSignal(),
         getActiveWorkspaceId: () => WS,
       })

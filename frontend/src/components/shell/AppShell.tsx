@@ -46,9 +46,9 @@ import { createChatStore } from '~/stores/chat.store'
 import { shouldShowBackgroundTasksSection } from '~/stores/chatBackgroundTasks'
 import { createControlStore } from '~/stores/control.store'
 import { createFloatingWindowStore } from '~/stores/floatingWindow.store'
+import { createLayoutStore, useLayoutFocusSweep } from '~/stores/layout.store'
 import { repoKeyFromTab } from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
-import { createLayoutStore, useLayoutFocusSweep } from '~/stores/layout.store'
 import { createSectionStore } from '~/stores/section.store'
 import { agentTabToInfo, isTabReadyForGitStatus, mruSteerableAgentTab, rootAgentIdFor, tabKey } from '~/stores/tab.helpers'
 import { createTabMetadataStore, useMetadataSweep } from '~/stores/tabMetadata.store'
@@ -253,6 +253,7 @@ export const AppShell: Component = () => {
   useTabHydrators({
     view: tabView,
     metadata: tabMetadata,
+    repoGitStore,
     // Worker liveness, so a worker coming back re-arms the tabs that gave up on
     // it. The sidebar already tracks this off `WORKERS_CHANGED`; hydration had
     // no other way to learn it, because a worker reconnecting changes nothing

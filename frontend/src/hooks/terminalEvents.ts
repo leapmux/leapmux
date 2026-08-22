@@ -8,6 +8,7 @@
  * at once. Re-stating a subset in one arm is how the status half went missing.
  */
 import type { TerminalNotification, TerminalProgress, TerminalStatusChange, TerminalTitleChanged } from '~/generated/leapmux/v1/terminal_pb'
+import type { createRepoGitStore } from '~/stores/repoGit.store'
 import type { TerminalTab } from '~/stores/tab.types'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
@@ -15,7 +16,8 @@ import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { isTabOnScreen } from '~/hooks/watchPlan'
 import { notifyOs } from '~/lib/osNotification'
-import { tabKey, toGitTabFields } from '~/stores/tab.helpers'
+import { protoToRepoGitPatch, repoKeyFromStatus } from '~/stores/repoGit'
+import { tabKey } from '~/stores/tab.helpers'
 
 /**
  * The terminal-exit transition, in one place.
@@ -55,29 +57,18 @@ export function markTerminalExited(metadata: TabMetadataStore, terminalId: strin
  */
 export function applyTerminalStatusChange(
   metadata: TabMetadataStore,
+  repoGitStore: ReturnType<typeof createRepoGitStore> | undefined,
   existingTab: TerminalTab | undefined,
   terminalId: string,
   sc: TerminalStatusChange,
 ): void {
-  // Git branch / origin / toplevel are carried on every post-phase-0 STARTING
-  // broadcast. Update the tab whenever the probe answered at all, so a
-  // reconnect or a late worktree-creation refreshes the badge. Whether it
-  // answered is `toGitTabFields`' call, not this site's — re-stating the test
-  // here is how the three producers drifted apart in the first place.
-  //
-  // Unconditional beyond that. Neither an "is it different?" test nor an "is
-  // the tab joined yet?" test belongs here either: `tabMetadata.patch` drops a
-  // write equal to what is stored (see `sameStoredValue`), and it is keyed by
-  // tab id independently of the projection, so writing for a tab that is
-  // momentarily unjoined -- between a Batch frame and the EntityMaterialized
-  // frame that creates its new tile -- is safe, and is the only way the value
-  // is not simply lost. Requiring `existingTab` dropped it silently, and
-  // nothing re-sends: `applyGitStatusToTabs` repairs branch/origin/toplevel but
-  // deliberately never touches `gitIsWorktree`, so that one stayed wrong until
-  // a reconnect.
-  const next = toGitTabFields(sc.gitBranch, sc.gitOriginUrl, sc.gitToplevel, sc.gitIsWorktree)
-  if (next)
-    metadata.patch(terminalId, next)
+  const workerId = existingTab?.workerId ?? ''
+  const patch = protoToRepoGitPatch(workerId, sc.gitStatus)
+  const key = workerId ? repoKeyFromStatus(workerId, sc.gitStatus) : undefined
+  if (patch && key && repoGitStore)
+    repoGitStore.upsert(key, patch)
+  if (sc.gitStatus?.toplevel)
+    metadata.patch(terminalId, { gitToplevel: sc.gitStatus.toplevel })
   switch (sc.status) {
     case TerminalStatus.STARTING:
       if (existingTab && existingTab.status !== TerminalStatus.READY && existingTab.status !== TerminalStatus.STARTING) {

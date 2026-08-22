@@ -10,7 +10,7 @@ import { createImperativeRef } from '~/lib/imperativeRef'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore } from '~/stores/chat.store'
 import { createControlStore } from '~/stores/control.store'
-import { createGitFileStatusStore } from '~/stores/gitFileStatus.store'
+import { createRepoGitStore } from '~/stores/repoGit.store'
 import { tabKey } from '~/stores/tab.helpers'
 import { emitAddTab, emitRemoveTab } from '~/stores/tabOps'
 import { installTestBridge } from '~/test-support/crdtBridge'
@@ -91,7 +91,7 @@ function renderRenderer(s: RendererSetup, focusedTileId: string, getMruAgentCont
         controlStore: createControlStore(),
         layoutStore: s.layoutStore,
         agentSessionStore: createAgentSessionStore(),
-        gitFileStatusStore: createGitFileStatusStore(),
+        repoGitStore: createRepoGitStore(),
       },
       ops: {
         agentOps: {
@@ -264,7 +264,7 @@ describe('tileRenderer pane identity', () => {
     const pane = await screen.findByTestId('chat-container')
 
     // The unprompted worker-sourced writes that land on a tab the user is reading.
-    s.metadata.patch('a1', { title: 'Renamed', gitDiffAdded: 7, hasNotification: true })
+    s.metadata.patch('a1', { title: 'Renamed', hasNotification: true })
     await waitFor(() => expect(s.view.getAgentTab('a1')?.title).toBe('Renamed'))
 
     expect(screen.getByTestId('chat-container'), 'the pane is the SAME DOM node').toBe(pane)
