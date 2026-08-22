@@ -250,3 +250,46 @@ describe('thinking renderer honors context.expandUiKey', () => {
     expect(getMessageUiState).not.toHaveBeenCalledWith(MESSAGE_UI_KEY.THINKING)
   })
 })
+
+describe('a user row whose provider has no plugin', () => {
+  // LeapMux writes every user row itself, in its own flat `{content, attachments?}`
+  // shape, so it needs no plugin to draw -- and the optimistic bubble a send builds
+  // routinely has none, because an agent tab projected from the CRDT carries no
+  // agentProvider until useTabHydrators fetches the worker-side metadata. Without
+  // the neutral branch this fell through to the raw-JSON span.
+  it('draws the same card a registered provider would, not raw JSON', () => {
+    const parsed = { content: 'hello there' }
+    const category = { kind: 'user_content' } as MessageCategory
+
+    const neutral = render(() => renderMessageContent(parsed, undefined, category, AgentProvider.UNSPECIFIED))
+    expect(neutral.container.textContent).toContain('hello there')
+    expect(neutral.container.textContent).not.toContain('"content"')
+
+    // Byte-for-byte the same markup as the plugin path, which is what keeps the
+    // optimistic bubble and its server echo the same size: a difference here is a
+    // re-measure the reader sees as the row blinking.
+    const viaPlugin = render(() => renderMessageContent(parsed, undefined, category, AgentProvider.CLAUDE_CODE))
+    expect(neutral.container.innerHTML).toBe(viaPlugin.container.innerHTML)
+  })
+
+  it('lists the attachments carried on the same payload', () => {
+    const parsed = { content: 'see this', attachments: [{ filename: 'diagram.png', mime_type: 'image/png' }] }
+    const { container } = render(() =>
+      renderMessageContent(parsed, undefined, { kind: 'user_content' } as MessageCategory, AgentProvider.UNSPECIFIED))
+    expect(container.textContent).toContain('diagram.png')
+    // Not merely present in a serialized blob: the raw-JSON span this replaced
+    // also "contained" the filename, so assert the payload's own keys are gone.
+    expect(container.textContent).not.toContain('mime_type')
+    expect(container.textContent).toContain('see this')
+  })
+
+  it('still drops an AGENT-shaped row to the raw-JSON span', () => {
+    // The neutral branch is keyed on the category, and only a USER row reaches
+    // `user_content` without a plugin (see classifyMessage). A provider's own
+    // unreadable bytes must still surface as raw JSON rather than as a user card.
+    const parsed = { type: 'result', subtype: 'success', duration_ms: 1095 }
+    const { container } = render(() =>
+      renderMessageContent(parsed, undefined, { kind: 'unsupported_provider' } as MessageCategory, AgentProvider.UNSPECIFIED))
+    expect(container.textContent).toContain('"duration_ms"')
+  })
+})

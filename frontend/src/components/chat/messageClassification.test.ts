@@ -169,6 +169,85 @@ describe('classifyMessage', () => {
     expect(result.kind).toBe('unsupported_provider')
   })
 
+  // -- LeapMux's own user row, whatever the provider ------------------------
+
+  describe('a user row with no registered plugin', () => {
+    // The optimistic bubble a send builds carries whatever provider its agent TAB
+    // holds, and a tab projected from the CRDT holds none until useTabHydrators
+    // fetches the worker-side metadata. Classifying that as unsupported_provider
+    // rendered the user's own message as "Unsupported agent provider: Unknown (0)"
+    // until the server echo replaced it -- in a META row, which also cost the
+    // full-bleed geometry every user row is laid out with.
+    it('classifies LeapMux\'s flat user payload as user_content', () => {
+      const result = classifyMessage(input({ content: 'hi' }, null, AgentProvider.UNSPECIFIED, MessageSource.USER))
+      expect(result.kind).toBe('user_content')
+    })
+
+    it('keeps that row out of META_KINDS, so it stays widened and mirrored', () => {
+      // The geometry half: a META kind is neither mirrored nor widened, which is
+      // what made the pending bubble 32px narrower than its own echo.
+      const { kind } = classifyMessage(input({ content: 'hi' }, null, AgentProvider.UNSPECIFIED, MessageSource.USER))
+      expect(isMirroredMessageRow(kind, MessageSource.USER)).toBe(true)
+      expect(rowIsWidened(kind, MessageSource.USER)).toBe(true)
+      expect(bubbleRunsToRightEdge(kind, MessageSource.USER, false)).toBe(true)
+    })
+
+    it('carries attachments through, since they are part of the same payload', () => {
+      const result = classifyMessage(input(
+        { content: 'see this', attachments: [{ filename: 'a.png' }] },
+        null,
+        AgentProvider.UNSPECIFIED,
+        MessageSource.USER,
+      ))
+      expect(result.kind).toBe('user_content')
+    })
+
+    it('still reports an AGENT row as unsupported_provider', () => {
+      // The carve-out is for rows LeapMux WROTE. Agent bytes that happen to hold a
+      // `content` string are still a provider envelope nobody can read.
+      const result = classifyMessage(input({ content: 'hi' }, null, AgentProvider.UNSPECIFIED, MessageSource.AGENT))
+      expect(result.kind).toBe('unsupported_provider')
+    })
+
+    it('still reports a TAGGED user envelope as unsupported_provider', () => {
+      // A `type` key marks a provider's own wire shape, which LeapMux's flat user
+      // payload never carries -- and which the neutral renderer cannot draw.
+      const result = classifyMessage(input({ type: 'user', content: 'hi' }, null, AgentProvider.UNSPECIFIED, MessageSource.USER))
+      expect(result.kind).toBe('unsupported_provider')
+    })
+
+    it('still reports a user row with no content string as unsupported_provider', () => {
+      const result = classifyMessage(input({ attachments: [] }, null, AgentProvider.UNSPECIFIED, MessageSource.USER))
+      expect(result.kind).toBe('unsupported_provider')
+    })
+
+    it('leaves a notification thread to the notification path', () => {
+      // A wrapper classifies as a notification wherever it comes from; the
+      // carve-out must not intercept one that happens to be user-sourced.
+      const result = classifyMessage(input(
+        { content: 'hi' },
+        wrapper({ type: 'settings_changed' }),
+        AgentProvider.UNSPECIFIED,
+        MessageSource.USER,
+      ))
+      expect(result.kind).not.toBe('user_content')
+    })
+
+    it('agrees with the plugin that would have read the same payload', () => {
+      // The point of the carve-out is that the optimistic bubble and the server
+      // echo it reconciles to are the SAME row. They differ only in the provider
+      // the tab could supply at the time, so they must classify alike -- otherwise
+      // the echo re-classifies, ChatView replaces the row, and the send visibly
+      // reshapes. Claude reaches user_content through its own plugin; assert the
+      // two answers are equal rather than restating the literal, so a plugin that
+      // moves this payload elsewhere fails here instead of drifting silently.
+      const payload = { content: 'hi' }
+      const withoutPlugin = classifyMessage(input(payload, null, AgentProvider.UNSPECIFIED, MessageSource.USER))
+      const withPlugin = classifyMessage(input(payload, null, AgentProvider.CLAUDE_CODE, MessageSource.USER))
+      expect(withoutPlugin.kind).toBe(withPlugin.kind)
+    })
+  })
+
   // -- hidden ---------------------------------------------------------------
 
   describe('hidden', () => {
