@@ -1096,11 +1096,12 @@ export function createTileRenderer(opts: TileRendererOpts) {
       isWorkerKnownOnline: branchCallbacks?.isWorkerKnownOnline,
     })
     const branchDisabledReason = () => branchAction().disabledReason
+    const focusedAgentTab = () => view.getAgentTab(agentId())
     return (
       <AgentEditorPanel
         agentId={agentId()}
-        agent={agentTabToInfo(view.getAgentTab(agentId()))}
-        branchName={view.getAgentTab(agentId())?.gitBranch || undefined}
+        agent={agentTabToInfo(focusedAgentTab())}
+        branchName={focusedAgentTab()?.gitBranch}
         // eslint-disable-next-line solid/reactivity -- async event handler; reactive tracking isn't needed for user-invoked callbacks
         onSendMessage={async (content, fileAttachments?: FileAttachment[]) => {
           const id = focusedAgentId()

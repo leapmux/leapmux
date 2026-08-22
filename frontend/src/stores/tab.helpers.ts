@@ -492,6 +492,24 @@ export function toGitTabFields(branch: string, originUrl: string, toplevel: stri
 }
 
 /**
+ * Branch label for UI surfaces that must track `applyGitStatusToTabs` stamps.
+ *
+ * The flat `gitBranch` on the tab is stamped by `applyGitStatusToTabs` and
+ * `stampBranchOnTabs`; the nested `agentGitStatus.branch` updates only when
+ * the worker broadcasts. When the flat field is defined — including `''` for
+ * detached HEAD — it is authoritative. Fall back to nested only before the
+ * first flat stamp (`gitBranch` still undefined).
+ */
+export function tabGitBranchLabel(
+  flatBranch: string | undefined,
+  nestedBranch?: string,
+): string | undefined {
+  if (flatBranch !== undefined)
+    return flatBranch || undefined
+  return nestedBranch || undefined
+}
+
+/**
  * THE producer of an agent tab's git group: the full `AgentGitStatus` the info
  * card renders ahead/behind and the dirty-state flags from, plus the four flat
  * fields every other consumer reads (see `toGitTabFields`). Both agent producers

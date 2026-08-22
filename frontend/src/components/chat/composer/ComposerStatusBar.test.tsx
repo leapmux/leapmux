@@ -146,4 +146,13 @@ describe('composerStatusBar', () => {
     expect(screen.getByText('renamed')).toBeInTheDocument()
     expect(screen.queryByText('main')).toBeNull()
   })
+
+  it('hides the branch chip when the flat branch is explicitly empty', () => {
+    renderBar(
+      agent({ gitStatus: { branch: 'main' } } as unknown as Partial<AgentInfo>),
+      { branchName: '' },
+    )
+    expect(screen.queryByTestId('composer-branch-trigger')).toBeNull()
+    expect(screen.queryByText('main')).toBeNull()
+  })
 })

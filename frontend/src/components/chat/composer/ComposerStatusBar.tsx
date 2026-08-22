@@ -4,6 +4,7 @@ import type { AgentInfo } from '~/generated/leapmux/v1/agent_pb'
 import { Show } from 'solid-js'
 import { pluginFor } from '~/components/chat/providers/registry'
 import { groupHasOptions, OPTION_ID_EFFORT, OPTION_ID_MODEL } from '~/components/chat/settingsGroups'
+import { tabGitBranchLabel } from '~/stores/tab.helpers'
 import * as styles from './composer.css'
 import { GitBranchChip } from './GitBranchChip'
 import { OptionAxisChip } from './OptionAxisChip'
@@ -18,11 +19,7 @@ export interface ComposerStatusBarProps {
   optionValues: Record<string, string>
   /** Dispatch a settings change for the model/effort/mode chips. Optional to match the panel's `onChange?`. */
   onSettingChange?: (change: ProviderSettingChange) => void
-  /**
-   * Current branch from the tab's flat git mirror (`gitBranch`). Prefer this
-   * over `agent.gitStatus.branch`: `applyGitStatusToTabs` stamps the flat
-   * fields alone and the worker re-broadcasts `agentGitStatus` only at turn end.
-   */
+  /** Raw flat `gitBranch` from the tab; resolved via {@link tabGitBranchLabel}. */
   branchName?: string
   /** Branch chip callbacks. */
   onChangeBranch: () => void
@@ -73,7 +70,7 @@ export function ComposerStatusBar(props: ComposerStatusBarProps): JSX.Element {
     <div class={styles.statusBar} data-testid="composer-status-bar">
       <div class={styles.statusBarLeft}>
         <GitBranchChip
-          branchName={(props.branchName ?? props.agent?.gitStatus?.branch) || undefined}
+          branchName={tabGitBranchLabel(props.branchName, props.agent?.gitStatus?.branch)}
           disabledReason={props.branchDisabledReason}
           onChangeBranch={props.onChangeBranch}
           onDeleteBranch={props.onDeleteBranch}

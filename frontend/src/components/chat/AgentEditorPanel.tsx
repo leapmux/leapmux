@@ -23,7 +23,7 @@ import { formatResetTimestamp, getResetsAt } from '~/lib/rateLimitUtils'
 import { dismissSoftKeyboard } from '~/lib/softKeyboard'
 import { registerEditorRef, unregisterEditorRef } from '~/stores/editorRef.store'
 import { registerPanelSend, unregisterPanelSend } from '~/stores/focusedChatSend.store'
-import { optionValuesFromGroups } from '~/stores/tab.helpers'
+import { optionValuesFromGroups, tabGitBranchLabel } from '~/stores/tab.helpers'
 import { iconSize } from '~/styles/tokens'
 import { useAgentInfoCard } from './AgentInfoCard'
 import { AttachmentStrip } from './AttachmentStrip'
@@ -93,11 +93,7 @@ export interface AgentEditorPanelProps {
    * when usable. Both actions need the Worker, so one reason covers both.
    */
   branchDisabledReason?: string
-  /**
-   * Current branch from the tab's flat git mirror (`gitBranch`). The shell
-   * passes this so the composer tracks `applyGitStatusToTabs` stamps; the
-   * nested `agent.gitStatus` can stay stale until the worker's next broadcast.
-   */
+  /** Raw flat `gitBranch` from the tab; resolved via {@link tabGitBranchLabel}. */
   branchName?: string
   /** Height of the parent container, used for max editor height calculation. */
   containerHeight?: number
@@ -280,6 +276,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
     void att.addDroppedDataTransfer(dataTransfer)
   }
 
+  const branchLabel = () => tabGitBranchLabel(props.branchName, props.agent?.gitStatus?.branch)
   const info = useAgentInfoCard(props)
   const modelContextWindow = createMemo(() =>
     selectedModelContextWindow(props.agent?.optionGroups, currentModel()) || undefined,
@@ -455,7 +452,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
               canAttach={!ctrl.activeControlRequest()}
               disabledReason={props.disabledReason}
               settingsLoading={props.settingsLoading}
-              branchName={(props.branchName ?? props.agent?.gitStatus?.branch) || undefined}
+              branchName={branchLabel()}
               onChangeBranch={() => props.onChangeBranch?.()}
               onDeleteBranch={() => props.onDeleteBranch?.()}
               branchDisabledReason={props.branchDisabledReason}

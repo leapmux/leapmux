@@ -9,6 +9,7 @@ import { Tooltip } from '~/components/common/Tooltip'
 import { useCopyButton } from '~/hooks/useCopyButton'
 import { basename, tildify } from '~/lib/paths'
 import { formatCountdown, formatResetTimestamp, getResetsAt, pickUrgentRateLimit, RATE_LIMIT_POPOVER_LABELS } from '~/lib/rateLimitUtils'
+import { tabGitBranchLabel } from '~/stores/tab.helpers'
 import * as styles from './ChatView.css'
 import { pluginFor } from './providers/registry'
 import { formatTokenCount } from './rendererUtils'
@@ -18,6 +19,8 @@ import { computePercentage, contextBufferPct, contextSize, resolveContextWindow 
 export interface AgentInfoCardProps {
   agent?: AgentInfo
   agentSessionInfo?: AgentSessionInfo
+  /** Raw flat `gitBranch` from the tab; resolved via {@link tabGitBranchLabel}. */
+  branchName?: string
 }
 
 export function formatAgentSessionIdForDisplay(agentProvider: AgentProvider | undefined, sessionId: string): string {
@@ -63,6 +66,8 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
    */
   const agent = createMemo(() => props.agent)
   const sessionInfo = createMemo(() => props.agentSessionInfo)
+  const gitStatus = createMemo(() => agent()?.gitStatus)
+  const branchLabel = createMemo(() => tabGitBranchLabel(props.branchName, gitStatus()?.branch))
 
   const hasContextInfo = () => {
     const info = sessionInfo()
@@ -149,61 +154,57 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
           />
         </div>
       </Show>
-      {/* Two reads of `agent()` in one expression, which is safe BECAUSE it is
-          the memo: reading the prop twice here is what could answer with two
-          different agents, and did. Optional-chained anyway, so the row stays
-          total on its own terms. */}
-      <Show when={agent()?.gitStatus?.branch ? agent()?.gitStatus : undefined} keyed>
-        {gs => (
-          <>
-            <div class={styles.infoRow}>
-              <span class={styles.infoLabel}>Branch</span>
-              <span class={styles.infoValue}>
-                {gs.branch}
-                {(() => {
-                  const parts: string[] = []
-                  if (gs.ahead)
-                    parts.push(`+${gs.ahead}`)
-                  if (gs.behind)
-                    parts.push(`-${gs.behind}`)
-                  return parts.length > 0 ? ` [${parts.join(' ')}]` : ''
-                })()}
-              </span>
-              <CopyButton
-                getText={() => gs.branch}
-                title="Copy branch name"
-              />
-            </div>
-            {(() => {
-              const flags: string[] = []
-              if (gs.conflicted)
-                flags.push('Conflicted')
-              if (gs.stashed)
-                flags.push('Stashed')
-              if (gs.modified)
-                flags.push('Modified')
-              if (gs.added)
-                flags.push('Added')
-              if (gs.deleted)
-                flags.push('Deleted')
-              if (gs.renamed)
-                flags.push('Renamed')
-              if (gs.typeChanged)
-                flags.push('Type-changed')
-              if (gs.untracked)
-                flags.push('Untracked')
-              return (
-                <Show when={flags.length > 0}>
-                  <div class={styles.infoRow}>
-                    <span class={styles.infoLabel}>Status</span>
-                    <span class={styles.infoValueText}>{flags.join(', ')}</span>
-                  </div>
-                </Show>
-              )
-            })()}
-          </>
+      <Show when={branchLabel()} keyed>
+        {name => (
+          <div class={styles.infoRow}>
+            <span class={styles.infoLabel}>Branch</span>
+            <span class={styles.infoValue}>
+              {name}
+              {(() => {
+                const gs = gitStatus()
+                const parts: string[] = []
+                if (gs?.ahead)
+                  parts.push(`+${gs.ahead}`)
+                if (gs?.behind)
+                  parts.push(`-${gs.behind}`)
+                return parts.length > 0 ? ` [${parts.join(' ')}]` : ''
+              })()}
+            </span>
+            <CopyButton
+              getText={() => name}
+              title="Copy branch name"
+            />
+          </div>
         )}
       </Show>
+      {(() => {
+        const gs = gitStatus()
+        const flags: string[] = []
+        if (gs?.conflicted)
+          flags.push('Conflicted')
+        if (gs?.stashed)
+          flags.push('Stashed')
+        if (gs?.modified)
+          flags.push('Modified')
+        if (gs?.added)
+          flags.push('Added')
+        if (gs?.deleted)
+          flags.push('Deleted')
+        if (gs?.renamed)
+          flags.push('Renamed')
+        if (gs?.typeChanged)
+          flags.push('Type-changed')
+        if (gs?.untracked)
+          flags.push('Untracked')
+        return (
+          <Show when={flags.length > 0}>
+            <div class={styles.infoRow}>
+              <span class={styles.infoLabel}>Status</span>
+              <span class={styles.infoValueText}>{flags.join(', ')}</span>
+            </div>
+          </Show>
+        )
+      })()}
       <Show when={agent()?.workingDir} keyed>
         {workingDir => (
           <div class={styles.infoRow} data-testid="info-row-directory">
