@@ -124,7 +124,7 @@ export interface TerminalTab extends BaseTab {
 
 /**
  * FILE tab. Path + display mode are the canonical inputs; per-file
- * git status flows through `gitFileStatusStore`.
+ * git status flows through the repo-keyed {@link createRepoGitStore}.
  */
 export interface FileTab extends BaseTab {
   type: TabType.FILE

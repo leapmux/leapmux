@@ -3,7 +3,7 @@
  *
  * "Did the membership change?" was answered five different ways across the
  * shell — two hand-written loops (`AppShell`'s metadata sweep,
- * `syncGitStatusToTabs`' unstamped-tab signature), a third in
+ * repo-git refresh routing), a third in
  * `floatingWindow.store`, and two sorted-string-join surrogates
  * (`useTabHydrators`, `useWorkerPrivateStreams`). Five copies of a five-line
  * loop is well past the point where a fix to one leaves the others wrong.

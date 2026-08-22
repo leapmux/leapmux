@@ -25,7 +25,7 @@ type ProtoTerminal = Awaited<ReturnType<typeof listTerminals>>['terminals'][numb
  *
  * The two fields travel together through the whole branch flow — the sidebar
  * row that opens a dialog, the dialog's payload, `onBranchChanged`,
- * `handleBranchChanged`, `stampBranchOnTabs` and `isSameRepo`. As two
+ * `handleBranchChanged`, `stampBranchOnRepo` and `isSameRepo`. As two
  * adjacent same-typed strings they were transposable at every hop, and a
  * transposition compiles and then matches nothing, so the branch stamp
  * silently reaches zero tabs. One parameter makes that mistake
@@ -44,9 +44,8 @@ export interface RepoRef {
  * Repository-identity equality for matching a {@link RepoRef} against a
  * Tab-shaped value. Used by:
  *  - AppShell's branch-changed routing to decide whether to refresh the
- *    gitFileStatusStore singleton (only when the changed repo is the
- *    active tab's repo).
- *  - AppShell's branch stamp, to find every tab in the same repo.
+ *    focused repo's git state in {@link createRepoGitStore}.
+ *  - Branch stamp paths that target one repo key in the keyed store.
  *
  * An empty `workerId` or `repoToplevel` never matches. Without those guards the
  * `?? ''` coercions below turn each into a WILDCARD over every tab whose git
@@ -57,10 +56,9 @@ export interface RepoRef {
  * active one, so the blast radius of that leak is the whole account.)
  *
  * BOTH halves are guarded HERE. The worker half used to live at one call site
- * — `stampBranchOnTabs`, whose own doc said the two halves need the guard "for
- * the same reason" — which left the predicate itself answering `true` for
- * `('' === '')` and made every future caller responsible for remembering. A
- * guard that only one caller applies is a guard the next caller does not have.
+ * only, which left the predicate itself answering `true` for `('' === '')` and
+ * made every future caller responsible for remembering. A guard that only one
+ * caller applies is a guard the next caller does not have.
  */
 export function isSameRepo(
   tabLike: { workerId?: string, gitToplevel?: string } | null | undefined,

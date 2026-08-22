@@ -243,7 +243,7 @@ export function liveTabIds(state: { tabs: Record<string, { tombstoneAt?: HLC } |
  */
 function mergeDefined(target: TabMetadata, fields: TabMetadata): void {
   // `unwrap` because `target` is a store DRAFT: Solid wraps every nested plain
-  // object and array in a proxy, so reading `target.agentGitStatus` hands back a
+  // object and array in a proxy, so reading `target.optionValues` hands back a
   // proxy that can never be `Object.is`-equal to the raw object a producer is
   // trying to write. Comparing against the unwrapped row is what makes the
   // check below answer about VALUES rather than about proxy identity.

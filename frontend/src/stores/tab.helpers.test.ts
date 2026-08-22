@@ -142,7 +142,7 @@ describe('isSameRepo', () => {
     // A freshly-created tab may not have a workerId yet, and `?? ''` would
     // then make an empty QUERY match every one of them regardless of worker —
     // the symmetric half of the empty-toplevel wildcard below. The guard used
-    // to live at one call site (`stampBranchOnTabs`), so the predicate itself
+    // to live at one call site (`stampBranchOnRepo`), so the predicate itself
     // answered `('' === '')` -> true and every other caller was on its own.
     expect(isSameRepo({ gitToplevel: '/repo' }, { workerId: '', gitToplevel: '/repo' })).toBe(false)
     expect(isSameRepo({ workerId: '', gitToplevel: '/repo' }, { workerId: '', gitToplevel: '/repo' })).toBe(false)
