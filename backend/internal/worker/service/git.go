@@ -208,7 +208,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 			info      *gitPathInfo
 			infoErr   error
 			files     []*leapmuxv1.GitFileStatusEntry
-			originURL string
+			gitStatus *leapmuxv1.GitRepoStatus
 		)
 		g, gctx := errgroup.WithContext(ctx)
 		g.Go(func() error {
@@ -223,7 +223,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 			return nil
 		})
 		g.Go(func() error {
-			originURL = gitutil.GetOriginURL(gctx, dirPath)
+			gitStatus = gitutil.GetGitStatus(gctx, dirPath)
 			return nil
 		})
 		_ = g.Wait()
@@ -255,26 +255,22 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 		// against agent.workingDir (native separators), so normalize.
 		// `repo_root` is intentionally the main repo root (not TopLevel)
 		// — the sidebar groups worktree tabs with their parent repo so
-		// the user sees a single "repo" node. `is_worktree` describes the
-		// QUERIED dirPath (not repo_root), so consumers must not mass-stamp
-		// it onto every tab in the repo — see syncGitStatusToTabs.
-		//
-		// `toplevel` is the working-tree root the caller queried (worktree
-		// root for an in-worktree path, repo root otherwise). The frontend
-		// uses it as the stamping identity so a worktree refresh updates
-		// only the worktree's tabs — not every tab whose gitToplevel
-		// happens to equal repo_root. Without this, switching focus to a
-		// freshly-created worktree's agent stamps the worktree's branch
-		// onto every main-tree tab in the same repo.
+		// `is_worktree` describes the QUERIED dirPath (not repo_root). The
+		// frontend keys repo state by `toplevel` so a worktree refresh
+		// updates only that worktree's tabs.
+		status := gitStatus
+		if status == nil {
+			status = &leapmuxv1.GitRepoStatus{}
+		}
+		if status.Toplevel == "" {
+			status.Toplevel = pathutil.NormalizeNative(info.TopLevel)
+		} else {
+			status.Toplevel = pathutil.NormalizeNative(status.Toplevel)
+		}
 		sendProtoResponse(sender, &leapmuxv1.GetGitFileStatusResponse{
 			RepoRoot: pathutil.NormalizeNative(info.RepoRoot),
 			Files:    files,
-			Status: &leapmuxv1.GitRepoStatus{
-				Branch:     branchOrShortSHA(info),
-				OriginUrl:  originURL,
-				Toplevel:   pathutil.NormalizeNative(info.TopLevel),
-				IsWorktree: info.IsWorktree,
-			},
+			Status:   status,
 		})
 	})
 

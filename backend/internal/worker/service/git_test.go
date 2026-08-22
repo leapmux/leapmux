@@ -189,10 +189,8 @@ func TestGetGitFileStatus_ReturnsOriginUrlAndCurrentBranch(t *testing.T) {
 
 // TestGetGitFileStatus_WorktreeReturnsToplevel pins that GetGitFileStatus
 // returns the worktree-aware `toplevel` field separately from the
-// canonical `repo_root`. The frontend's syncGitStatusToTabs uses
-// `toplevel` for tab matching so that switching focus to a worktree's
-// agent doesn't smear the worktree's branch onto every main-tree tab
-// in the same repo — the regression this field exists for.
+// canonical `repo_root`. The frontend keys repo state by `toplevel` so a
+// worktree refresh updates only that worktree's tabs.
 func TestGetGitFileStatus_WorktreeReturnsToplevel(t *testing.T) {
 	t.Parallel()
 
