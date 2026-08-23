@@ -90,14 +90,15 @@ test.describe('creation dialog on a phone', () => {
 
     // The top-layer panel must declare safe-area insets itself — body's
     // padding-top does not reach the top layer. Chromium reports 0 here, so
-    // we assert the shipped CSS rather than geometry.
-    const shipsSafeArea = await page.evaluate(() => {
-      const needles = [
-        'safe-area-inset-top',
-        'safe-area-inset-right',
-        'safe-area-inset-bottom',
-        'safe-area-inset-left',
-      ]
+    // we assert the shipped :modal rule wires each edge, not merely that the
+    // inset names appear somewhere in the stylesheet.
+    const modalSafeArea = await page.evaluate(() => {
+      const edges = [
+        ['top', 'safe-area-inset-top'],
+        ['right', 'safe-area-inset-right'],
+        ['bottom', 'safe-area-inset-bottom'],
+        ['left', 'safe-area-inset-left'],
+      ] as const
       for (const sheet of Array.from(document.styleSheets)) {
         let rules: CSSRuleList
         try {
@@ -107,14 +108,24 @@ test.describe('creation dialog on a phone', () => {
           continue
         }
         for (const rule of Array.from(rules)) {
-          const text = rule.cssText
-          if (needles.every(n => text.includes(n)))
-            return true
+          if (!(rule instanceof CSSStyleRule))
+            continue
+          const sel = rule.selectorText
+          if (!sel.includes('dialog') || !sel.includes(':modal'))
+            continue
+          // Prefer the base panel rule (no .tall/.huge compound) if several match.
+          const wired = edges.every(([prop, inset]) => {
+            const value = rule.style.getPropertyValue(prop)
+            return value.includes(inset)
+          })
+          if (wired)
+            return { selector: sel, ok: true as const }
         }
       }
-      return false
+      return { selector: null, ok: false as const }
     })
-    expect(shipsSafeArea, 'dialog CSS must include all four safe-area insets').toBe(true)
+    expect(modalSafeArea.ok, 'dialog:modal must wire all four safe-area edges').toBe(true)
+    expect(modalSafeArea.selector, 'matched a dialog:modal rule').toBeTruthy()
 
     // The section is the ONE scroll container and actually scrolls. Before the
     // form-wrapped shape learned overflow-y, its content spilled visible under
