@@ -91,7 +91,9 @@ export function tabBuildKey(t: Tab, store: RepoGitStore): string {
     isAgentTab(t) ? t.parentAgentId ?? '' : '',
     t.workerId ?? '',
     git.branchLabel ?? '',
-    t.gitToplevel ?? '',
+    // Prefer store toplevel so the fingerprint matches buildTree / tabBranchKey
+    // when tab metadata still lags a resolved repo identity.
+    git.toplevel ?? t.gitToplevel ?? '',
     git.isWorktree ? '1' : '0',
     git.originUrl ?? '',
     git.diffStats.added,

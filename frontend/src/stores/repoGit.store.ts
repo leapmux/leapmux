@@ -1,6 +1,6 @@
 import type { GitFilterTab, RepoGitRefreshOpts, RepoGitState, RepoKey } from './repoGit'
 import type { GitFileStatusEntry } from '~/generated/leapmux/v1/common_pb'
-import { createMemo, createSignal } from 'solid-js'
+import { createMemo, createSignal, untrack } from 'solid-js'
 import { createStore, produce, reconcile } from 'solid-js/store'
 import * as workerRpc from '~/api/workerRpc'
 import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'
@@ -148,7 +148,9 @@ export function createRepoGitStore() {
   }
 
   const upsert = (key: RepoKey, patch: Partial<RepoGitState>) => {
-    const prev = repos[key]
+    // Write APIs must not track. A seed/upsert from JSX or an effect that
+    // also reads this key would otherwise loop: read prev → write → re-run.
+    const prev = untrack(() => repos[key])
     const { files, ...rest } = patch
     setRepos(produce((map) => {
       const base = map[key] ?? emptyRepoState()
@@ -193,7 +195,7 @@ export function createRepoGitStore() {
   }
 
   const clear = (key: RepoKey) => {
-    const prev = repos[key]
+    const prev = untrack(() => repos[key])
     setRepos(produce((map) => {
       delete map[key]
     }))

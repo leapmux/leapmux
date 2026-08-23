@@ -152,6 +152,25 @@ describe('createRepoGitStore', () => {
 
       expect(store.get(key)?.branch).toBe('')
     })
+
+    it('does not loop when upsert runs inside a reactive computation that seeds tabs', async () => {
+      await createRoot(async (dispose) => {
+        const store = createRepoGitStore()
+        const key = repoKey('w1', '/repo')
+        let runs = 0
+        createMemo(() => {
+          runs++
+          // Same pattern as WorkspaceTabTree.interactions: seed while building
+          // a value a parent render tracks. Without untrack in upsert, this
+          // would read-then-write the same key and Solid would abort.
+          store.upsert(key, { workerId: 'w1', toplevel: '/repo', branch: 'main' })
+          return store.get(key)?.branch
+        })
+        expect(runs).toBe(1)
+        expect(store.get(key)?.branch).toBe('main')
+        dispose()
+      })
+    })
   })
 
   describe('file reconcile', () => {

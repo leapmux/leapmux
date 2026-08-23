@@ -74,9 +74,19 @@ describe('branchUpdate (change branch → sidebar reflects new label)', () => {
     expect(repoGitView(makeAgentTab('a1'), store).isGitRepo).toBe(true)
   })
 
-  it('reports false and writes nothing when the store already holds the branch', () => {
+  it('re-pins when the branch matches but the pin is clear', () => {
     const store = createRepoGitStore()
     seedBranch(store, 'w1', '/repo', 'A')
+
+    expect(stampBranchOnRepo(store, { workerId: 'w1', gitToplevel: '/repo' }, 'A')).toBe(true)
+    expect(store.get(repoKey('w1', '/repo'))?.branch).toBe('A')
+    expect(store.get(repoKey('w1', '/repo'))?.branchPinnedUntilRefresh).toBe(true)
+  })
+
+  it('reports false when the branch is already stamped and pinned', () => {
+    const store = createRepoGitStore()
+    seedBranch(store, 'w1', '/repo', 'A')
+    store.upsert(repoKey('w1', '/repo'), { branchPinnedUntilRefresh: true })
 
     expect(stampBranchOnRepo(store, { workerId: 'w1', gitToplevel: '/repo' }, 'A')).toBe(false)
     expect(store.get(repoKey('w1', '/repo'))?.branch).toBe('A')
