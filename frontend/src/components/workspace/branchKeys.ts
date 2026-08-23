@@ -57,9 +57,22 @@ export function branchKey(branchName: string | null, workerId: string, gitToplev
  * carries `branchName`, not `gitBranch` -- a valid argument that silently
  * returned the "(no branch)" key, which is exactly the drift above.
  */
-export function tabBranchKey(tab: Pick<Tab, 'workerId' | 'gitToplevel'>, store: RepoGitStore): string {
+/**
+ * Repo toplevel for structural keys (branch buckets, delete-branch tab sets).
+ * Prefer the store's canonical identity over tab metadata, which can lag on
+ * probe-path orphans and subdir agents until the next status broadcast.
+ */
+export function tabGitToplevelForKey(
+  tab: Pick<Tab, 'workerId' | 'gitToplevel' | 'workingDir'>,
+  store: RepoGitStore,
+): string {
   const git = repoGitView(tab, store)
-  return branchKey(git.branchLabel || null, tab.workerId ?? '', tab.gitToplevel ?? '')
+  return git.toplevel ?? tab.gitToplevel ?? ''
+}
+
+export function tabBranchKey(tab: Pick<Tab, 'workerId' | 'gitToplevel' | 'workingDir'>, store: RepoGitStore): string {
+  const git = repoGitView(tab, store)
+  return branchKey(git.branchLabel || null, tab.workerId ?? '', tabGitToplevelForKey(tab, store))
 }
 
 /** Repo key for an origin-less local repo, identified by its toplevel. */

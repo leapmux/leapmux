@@ -483,6 +483,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
             if (tab.agentStatus === AgentStatus.ACTIVE)
               metadata.patch(tab.id, { agentStatus: AgentStatus.INACTIVE })
           }
+          repoGitStore.clearForWorker(workerId)
         })
       }
     })

@@ -87,6 +87,8 @@ export interface FilesSectionHeaderActionsProps {
   onLocateFile: () => void
   onRefresh: () => void
   hasActiveFileTab: boolean
+  /** True while a git file-status refresh is in flight for the active tab. */
+  gitRefreshing?: () => boolean
 }
 
 const FILTER_TABS: { key: GitFilterTab, label: string }[] = [
@@ -170,6 +172,7 @@ export const FilesSectionHeaderActions: Component<FilesSectionHeaderActionsProps
       <RefreshButton
         title={shortcutHint('Refresh', 'app.refreshDirectoryTree')}
         onClick={() => props.onRefresh()}
+        disabled={props.gitRefreshing?.() ?? false}
         data-testid="files-refresh"
       />
     </>

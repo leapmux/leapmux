@@ -118,4 +118,11 @@ describe('tabBranchKey', () => {
     expect(tabBranchKey(tab('/repo', undefined), store)).toBe(branchKey(null, '', '/repo'))
     expect(tabBranchKey({}, store)).toBe(branchKey(null, '', ''))
   })
+
+  it('uses store toplevel when tab gitToplevel is absent', () => {
+    const local = createRepoGitStore()
+    local.upsert(repoKey('w1', '/repo'), { workerId: 'w1', toplevel: '/repo', branch: 'feature' })
+    expect(tabBranchKey({ workerId: 'w1', workingDir: '/repo/pkg' }, local))
+      .toBe(branchKey('feature', 'w1', '/repo'))
+  })
 })

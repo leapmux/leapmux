@@ -872,4 +872,16 @@ describe('createRepoGitStore', () => {
       })
     })
   })
+
+  describe('clearForWorker', () => {
+    it('removes every repo entry for the worker', () => {
+      const store = createRepoGitStore()
+      store.upsert(repoKey('w1', '/a'), { workerId: 'w1', toplevel: '/a' })
+      store.upsert(repoKey('w1', '/b'), { workerId: 'w1', toplevel: '/b' })
+      store.upsert(repoKey('w2', '/c'), { workerId: 'w2', toplevel: '/c' })
+      store.clearForWorker('w1')
+      expect(store.keysForWorker('w1')).toEqual([])
+      expect(store.keysForWorker('w2')).toEqual([repoKey('w2', '/c')])
+    })
+  })
 })

@@ -259,6 +259,23 @@ export function createRepoGitStore() {
     }
   }
 
+  const clearForWorker = (workerId: string) => {
+    if (!workerId)
+      return
+    const keys = [...(workerKeys.get(workerId) ?? [])]
+    for (const key of keys)
+      clear(key)
+  }
+
+  /**
+   * Refresh git file status for one probe path.
+   *
+   * Ordering and pin policy use four side maps:
+   *   - `clock` / `probeGen` — per-probe generation; stale RPC results are dropped
+   *   - `inflightByProbe` — keys a refresh may pin; blocks nested probes from clobbering
+   *   - `lastCompletedByKey` — `{ gen, keptPin }` for apply ordering vs pin retention
+   *   - `workerKeys` — Solid-indexed repo keys per worker (for canonical lookup)
+   */
   const refresh = async (workerId: string, path: string, opts?: RepoGitRefreshOpts): Promise<RepoKey | undefined> => {
     if (!workerId || !path)
       return undefined
@@ -315,6 +332,7 @@ export function createRepoGitStore() {
           log.warn('ignored non-repo git status response; keeping last-good repo state', { workerId, path })
           writtenKey = findCanonicalRepoKey(lookup, workerId, path) ?? nonRepoKey
           // Keep an optimistic branch pin across a transient non-repo probe.
+          // Entries for a deregistered/offline worker are dropped via clearForWorker.
         }
         realignFocusedKeyAfterRefresh(writtenKey, workerId, path, nonRepoKey)
         return writtenKey
@@ -492,6 +510,7 @@ export function createRepoGitStore() {
     upsert,
     clear,
     clearAll,
+    clearForWorker,
     repos: () => repos as Readonly<Record<RepoKey, RepoGitState>>,
     keysForWorker,
     focusedKey,

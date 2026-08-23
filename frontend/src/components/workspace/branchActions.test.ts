@@ -65,6 +65,14 @@ describe('focusedBranchAction gating', () => {
     expect(action(tab({ gitToplevel: '' }), store, () => true).disabledReason).toBeDefined()
   })
 
+  it('enables branch actions from store toplevel when tab gitToplevel is absent', () => {
+    const store = createRepoGitStore()
+    const t = { id: 't1', workerId: 'w1', workingDir: '/repo/pkg' } as Tab
+    store.upsert(repoKey('w1', '/repo'), { workerId: 'w1', toplevel: '/repo', branch: 'main' })
+    expect(action(t, store, () => true).disabledReason).toBeUndefined()
+    expect(action(t, store, () => true).buildRef!().gitToplevel).toBe('/repo')
+  })
+
   it('disables the actions when the branch is unknown', () => {
     const store = createRepoGitStore()
     const t = tab()

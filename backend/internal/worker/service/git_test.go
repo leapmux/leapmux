@@ -141,7 +141,7 @@ func TestGetGitFileStatusEntries_NonGitDir(t *testing.T) {
 
 	dir := t.TempDir()
 	files, err := getGitFileStatusEntries(context.Background(), dir)
-	require.NoError(t, err)
+	require.Error(t, err)
 	assert.Nil(t, files)
 }
 
@@ -296,6 +296,11 @@ func TestGetGitFileStatus_ReturnsBehind(t *testing.T) {
 	run(t, pusher, "git", "commit", "--allow-empty", "-m", "remote ahead")
 	run(t, pusher, "git", "push", "origin", "main")
 	run(t, repoDir, "git", "fetch", "origin")
+	run(t, repoDir, "git", "branch", "--set-upstream-to=origin/main", "main")
+
+	behindOut, err := gitutil.Output(context.Background(), repoDir, "rev-list", "--count", "HEAD..origin/main")
+	require.NoError(t, err)
+	assert.Equal(t, "1", strings.TrimSpace(behindOut), "precondition: local main is one commit behind origin/main")
 
 	dispatch(d, "GetGitFileStatus", &leapmuxv1.GetGitFileStatusRequest{
 		Path: repoDir,

@@ -216,6 +216,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 			info      *gitPathInfo
 			infoErr   error
 			files     []*leapmuxv1.GitFileStatusEntry
+			filesErr  error
 			gitStatus *leapmuxv1.GitRepoStatus
 			originURL string
 		)
@@ -225,10 +226,9 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 			return nil
 		})
 		g.Go(func() error {
-			// getGitFileStatusEntries treats a git failure as an empty
-			// status (best-effort sidebar refresh), so its returned
-			// error is intentionally discarded here.
-			files, _ = getGitFileStatusEntries(gctx, dirPath)
+			var err error
+			files, err = getGitFileStatusEntries(gctx, dirPath)
+			filesErr = err
 			return nil
 		})
 		g.Go(func() error {
@@ -278,11 +278,21 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 		// good frontend store state. Always canonicalize toplevel the same
 		// way as repo_root so repo keys do not split on /var vs /private/var.
 		status := mergeGitFileStatusFromPathInfo(gitStatus, info, originURL)
-		sendProtoResponse(sender, &leapmuxv1.GetGitFileStatusResponse{
+		resp := &leapmuxv1.GetGitFileStatusResponse{
 			RepoRoot: pathutil.NormalizeNative(info.RepoRoot),
 			Files:    files,
 			Status:   status,
-		})
+		}
+		if filesErr != nil {
+			if hint := filesErr.Error(); hint != "" {
+				if resp.ErrorHint != "" {
+					resp.ErrorHint = resp.ErrorHint + ": " + hint
+				} else {
+					resp.ErrorHint = hint
+				}
+			}
+		}
+		sendProtoResponse(sender, resp)
 	})
 
 	d.Register("ReadGitFile", func(ctx context.Context, userID userid.UserID, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
@@ -2466,9 +2476,8 @@ func diffStatsForPath(ctx context.Context, dir string) (added, deleted, untracke
 		// sees the underlying failure instead of zero stats.
 		return 0, 0, 0, false, shortstatErr
 	}
-	// getGitFileStatusEntries swallows its own `git status --porcelain=v2`
-	// failure as (nil, nil) — see its top-of-function early return. If the
-	// outer porcelain status reported changes but the inner v2 status
+	// getGitFileStatusEntries now returns porcelain errors instead of (nil, nil).
+	// If the outer porcelain status reported changes but the inner v2 status
 	// returned no entries, the two probes disagree and we have no signal
 	// to compute line counts. Surface the original shortstat error rather
 	// than silently shipping 0/0 to the close-prompt; staging-only changes
@@ -2671,7 +2680,7 @@ func parseRevListCount(out string) (int32, error) {
 func getGitFileStatusEntries(ctx context.Context, repoRoot string) ([]*leapmuxv1.GitFileStatusEntry, error) {
 	statusOut, err := gitutil.Bytes(ctx, repoRoot, "status", "--porcelain=v2", "-z")
 	if err != nil {
-		return nil, nil // Not a git repo or git unavailable.
+		return nil, err
 	}
 
 	files := parseStatusV2(statusOut)

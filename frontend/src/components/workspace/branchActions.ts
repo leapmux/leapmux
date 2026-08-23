@@ -2,7 +2,7 @@ import type { BranchRef } from './WorkspaceTabTree'
 import type { createRepoGitStore } from '~/stores/repoGit.store'
 import type { Tab } from '~/stores/tab.types'
 import { repoGitView } from '~/stores/repoGit'
-import { tabBranchKey } from './branchKeys'
+import { tabBranchKey, tabGitToplevelForKey } from './branchKeys'
 
 /**
  * Why the branch actions are unusable when the Worker is unreachable.
@@ -53,15 +53,14 @@ export function focusedBranchAction(opts: {
     return { disabledReason: 'This agent is not attached to a Worker yet.' }
   if (opts.isWorkerKnownOnline && !opts.isWorkerKnownOnline(tab.workerId))
     return { disabledReason: WORKER_OFFLINE_BRANCH_REASON }
-  if (!tab.gitToplevel)
-    return { disabledReason: 'The repository root for this agent is not known yet. Branch actions need it.' }
-
   const git = repoGitView(tab, opts.repoGitStore)
+  const gitToplevel = tabGitToplevelForKey(tab, opts.repoGitStore)
+  if (!gitToplevel)
+    return { disabledReason: 'The repository root for this agent is not known yet. Branch actions need it.' }
   if (!git.branchLabel)
     return { disabledReason: 'The branch for this agent is not known yet. Branch actions need it.' }
 
   const workerId = tab.workerId
-  const gitToplevel = tab.gitToplevel
   const branchName = git.branchLabel
   return {
     buildRef: () => {

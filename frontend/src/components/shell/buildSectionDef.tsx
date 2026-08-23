@@ -203,6 +203,7 @@ export function buildSectionDef(
             ctx.filesSectionHandle()?.refresh()
           }}
           hasActiveFileTab={ctx.hasActiveFileTab ?? false}
+          gitRefreshing={() => ctx.gitStatusStore.loading()}
         />
       ),
       content: () => (

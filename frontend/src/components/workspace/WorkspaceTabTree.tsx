@@ -41,6 +41,7 @@ import {
   repoKeyForLocal,
   repoKeyTooltip,
   tabBranchKey,
+  tabGitToplevelForKey,
 } from './branchKeys'
 import * as css from './workspaceTabTree.css'
 
@@ -1000,9 +1001,10 @@ function repoKeyAndLabel(tab: Tab, store: RepoGitStore): { key: string, label: s
   const git = repoGitView(tab, store)
   if (git.originUrl)
     return { key: git.originUrl, label: formatGitOriginUrl(git.originUrl) }
-  if (tab.gitToplevel) {
-    const label = basename(tab.gitToplevel) || tab.gitToplevel
-    return { key: repoKeyForLocal(tab.gitToplevel), label }
+  const toplevel = git.toplevel ?? tab.gitToplevel
+  if (toplevel) {
+    const label = basename(toplevel) || toplevel
+    return { key: repoKeyForLocal(toplevel), label }
   }
   return null
 }
@@ -1023,7 +1025,7 @@ export function sumDiffStatsFromTabs(tabs: Tab[], store: RepoGitStore): { added:
   let untracked = 0
   for (const t of tabs) {
     const git = repoGitView(t, store)
-    if (!git.originUrl && !t.gitToplevel)
+    if (!git.originUrl && !git.toplevel && !t.gitToplevel)
       continue
     const { added: a, deleted: d, untracked: u } = git.diffStats
     if (a === 0 && d === 0 && u === 0)
@@ -1081,7 +1083,7 @@ export function buildTree(
     const git = repoGitView(tab, store)
     const branchName = git.branchLabel || null
     const workerId = tab.workerId ?? ''
-    const gitToplevel = tab.gitToplevel ?? ''
+    const gitToplevel = tabGitToplevelForKey(tab, store)
     // Through the shared function, not a second copy of its body. This IS the
     // "the sidebar groups its tree by it" caller tabBranchKey's own doc names,
     // and the composer's delete-branch dialog collects its tab list by the same
