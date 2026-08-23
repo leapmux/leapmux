@@ -36,9 +36,9 @@ export const BOOT_SPLASH_ICON_WIDTH = 64
 export const BOOT_SPLASH_ICON_HEIGHT = 64
 
 /**
- * Spacing token for the splash column gap. Used in the document `<style>` and
- * in `BootSplash.css.ts`. The boot document CSS also seeds `--space-4: 1rem`
- * so the gap resolves before oat's theme sheet loads.
+ * Spacing token for the splash column gap. Used in `bootSplashDocumentCss`.
+ * That stylesheet also seeds `--space-4: 1rem` so the gap resolves before
+ * oat's theme sheet loads.
  */
 export const BOOT_SPLASH_GAP = 'var(--space-4)'
 
@@ -61,8 +61,12 @@ export function resolveBootPolarity(
 
 /**
  * Read `theme.mode` from a `leapmux:browser-prefs` TTL envelope (`{ v, e }`).
- * Returns `"system"` when the raw value is missing, expired, or malformed —
- * same failure mode as the blocking head script.
+ * Returns `"system"` when the raw value is missing, expired, or malformed.
+ *
+ * The blocking head script cannot import this function; it inlines the same
+ * checks. The matrix in `bootSplashTheme.test.ts` compares script outcomes to
+ * `resolveBootPolarity(parseBootPrefsThemeMode(...), systemDark)` so the two
+ * paths cannot drift silently.
  */
 export function parseBootPrefsThemeMode(raw: string | null, nowMs: number): string {
   if (!raw)
@@ -87,9 +91,10 @@ export function parseBootPrefsThemeMode(raw: string | null, nowMs: number): stri
 }
 
 /**
- * Inline document CSS for the static splash and the html/body fill that covers
- * the brief gap between Solid `mount` clearing `#app` and the next BootSplash
- * paint. Keep selectors in lockstep with `BootSplash.css.ts`.
+ * Inline document CSS for the static splash, the Solid `BootSplash` (same
+ * `data-testid`), and the html/body fill that covers the brief gap between
+ * Solid `mount` clearing `#app` and the next splash paint. This is the only
+ * splash stylesheet — do not reintroduce a vanilla-extract twin.
  */
 export function bootSplashDocumentCss(): string {
   const lightBg = bootSplashLight.background
@@ -134,6 +139,10 @@ html[data-theme="dark"] #boot-splash,html[data-theme="dark"] [data-testid="${BOO
  * the browser document — the key and `{ v, e }` shape must stay aligned with
  * that module (see `KEY_BROWSER_PREFS` / `parseBootPrefsThemeMode`).
  *
+ * Prefs parse failures stay inside an inner try so a bad envelope still paints
+ * `system` polarity (same as `parseBootPrefsThemeMode`), rather than leaving
+ * `data-theme` unset.
+ *
  * When the device tier pins light or dark, every `theme-color` meta is set to
  * that colour and its `media` attribute is removed so an OS preference cannot
  * override the pin. System mode keeps the dual media metas and only rewrites
@@ -143,5 +152,5 @@ export function bootThemeScript(): string {
   const lightBg = bootSplashLight.background
   const darkBg = bootSplashDark.background
   const key = KEY_BROWSER_PREFS
-  return `(function(){try{var mode="system";var raw=localStorage.getItem(${JSON.stringify(key)});if(raw){var wrap=JSON.parse(raw);if(wrap&&typeof wrap.e==="number"&&wrap.e>Date.now()&&wrap.v&&wrap.v.theme&&typeof wrap.v.theme.mode==="string")mode=wrap.v.theme.mode;}var dark=mode==="dark"||(mode!=="light"&&window.matchMedia("(prefers-color-scheme: dark)").matches);var root=document.documentElement;root.setAttribute("data-theme",dark?"dark":"light");root.style.colorScheme=dark?"dark":"light";root.style.backgroundColor=dark?${JSON.stringify(darkBg)}:${JSON.stringify(lightBg)};var color=dark?${JSON.stringify(darkBg)}:${JSON.stringify(lightBg)};var metas=document.querySelectorAll('meta[name="theme-color"]');var pinned=mode==="light"||mode==="dark";if(pinned){for(var i=0;i<metas.length;i++){metas[i].setAttribute("content",color);metas[i].removeAttribute("media");}}else{var fallback=document.querySelector('meta[name="theme-color"]:not([media])');if(fallback)fallback.setAttribute("content",color);}}catch(e){}})();`
+  return `(function(){var mode="system";try{var raw=localStorage.getItem(${JSON.stringify(key)});if(raw){var wrap=JSON.parse(raw);if(wrap&&typeof wrap.e==="number"&&wrap.e>Date.now()&&wrap.v&&wrap.v.theme&&typeof wrap.v.theme.mode==="string")mode=wrap.v.theme.mode;}}catch(e){}try{var dark=mode==="dark"||(mode!=="light"&&window.matchMedia("(prefers-color-scheme: dark)").matches);var root=document.documentElement;root.setAttribute("data-theme",dark?"dark":"light");root.style.colorScheme=dark?"dark":"light";root.style.backgroundColor=dark?${JSON.stringify(darkBg)}:${JSON.stringify(lightBg)};var color=dark?${JSON.stringify(darkBg)}:${JSON.stringify(lightBg)};var metas=document.querySelectorAll('meta[name="theme-color"]');var pinned=mode==="light"||mode==="dark";if(pinned){for(var i=0;i<metas.length;i++){metas[i].setAttribute("content",color);metas[i].removeAttribute("media");}}else{var fallback=document.querySelector('meta[name="theme-color"]:not([media])');if(fallback)fallback.setAttribute("content",color);}}catch(e){}})();`
 }

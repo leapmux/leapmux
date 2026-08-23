@@ -116,6 +116,12 @@ describe('bootThemeScript', () => {
     new Function(bootThemeScript())()
   }
 
+  function expectBackground(hex: string): void {
+    const probe = document.createElement('div')
+    probe.style.backgroundColor = hex
+    expect(document.documentElement.style.backgroundColor).toBe(probe.style.backgroundColor)
+  }
+
   it('applies a dark device pin over a light OS and strips theme-color media', () => {
     installThemeColorMetas()
     localStorage.setItem(
@@ -125,14 +131,29 @@ describe('bootThemeScript', () => {
     runBootScript(false)
 
     expect(document.documentElement.getAttribute('data-theme')).toBe('dark')
-    // jsdom normalizes hex to rgb(); compare via the same assignment path.
-    const probe = document.createElement('div')
-    probe.style.backgroundColor = bootSplashDark.background
-    expect(document.documentElement.style.backgroundColor).toBe(probe.style.backgroundColor)
+    expectBackground(bootSplashDark.background)
     const metas = [...document.querySelectorAll('meta[name="theme-color"]')]
     expect(metas.length).toBeGreaterThan(0)
     for (const meta of metas) {
       expect(meta.getAttribute('content')).toBe(bootSplashDark.background)
+      expect(meta.hasAttribute('media')).toBe(false)
+    }
+  })
+
+  it('applies a light device pin over a dark OS and strips theme-color media', () => {
+    installThemeColorMetas()
+    localStorage.setItem(
+      KEY_BROWSER_PREFS,
+      JSON.stringify({ v: { theme: { mode: 'light' } }, e: Date.now() + 60_000 }),
+    )
+    runBootScript(true)
+
+    expect(document.documentElement.getAttribute('data-theme')).toBe('light')
+    expectBackground(bootSplashLight.background)
+    const metas = [...document.querySelectorAll('meta[name="theme-color"]')]
+    expect(metas.length).toBeGreaterThan(0)
+    for (const meta of metas) {
+      expect(meta.getAttribute('content')).toBe(bootSplashLight.background)
       expect(meta.hasAttribute('media')).toBe(false)
     }
   })
@@ -153,15 +174,91 @@ describe('bootThemeScript', () => {
     const fallback = document.querySelector('meta[name="theme-color"]:not([media])')
     expect(fallback?.getAttribute('content')).toBe(bootSplashDark.background)
   })
+
+  /**
+   * The head script cannot import `parseBootPrefsThemeMode`. This matrix is
+   * the contract that keeps the inlined parse aligned with the TypeScript
+   * helper + `resolveBootPolarity`.
+   */
+  it('matches parseBootPrefsThemeMode + resolveBootPolarity for every envelope × OS case', () => {
+    const now = Date.now()
+    const cases: Array<{
+      label: string
+      raw: string | null
+      systemDark: boolean
+    }> = [
+      { label: 'null prefs, light OS', raw: null, systemDark: false },
+      { label: 'null prefs, dark OS', raw: null, systemDark: true },
+      {
+        label: 'dark pin, light OS',
+        raw: JSON.stringify({ v: { theme: { mode: 'dark' } }, e: now + 60_000 }),
+        systemDark: false,
+      },
+      {
+        label: 'light pin, dark OS',
+        raw: JSON.stringify({ v: { theme: { mode: 'light' } }, e: now + 60_000 }),
+        systemDark: true,
+      },
+      {
+        label: 'system mode, dark OS',
+        raw: JSON.stringify({ v: { theme: { mode: 'system' } }, e: now + 60_000 }),
+        systemDark: true,
+      },
+      {
+        label: 'system mode, light OS',
+        raw: JSON.stringify({ v: { theme: { mode: 'system' } }, e: now + 60_000 }),
+        systemDark: false,
+      },
+      {
+        label: 'expired dark pin, dark OS',
+        raw: JSON.stringify({ v: { theme: { mode: 'dark' } }, e: now - 1 }),
+        systemDark: true,
+      },
+      {
+        label: 'expired dark pin, light OS',
+        raw: JSON.stringify({ v: { theme: { mode: 'dark' } }, e: now - 1 }),
+        systemDark: false,
+      },
+      {
+        label: 'malformed JSON, dark OS',
+        raw: '{',
+        systemDark: true,
+      },
+      {
+        label: 'missing mode, light OS',
+        raw: JSON.stringify({ v: { theme: {} }, e: now + 60_000 }),
+        systemDark: false,
+      },
+    ]
+
+    for (const c of cases) {
+      document.documentElement.removeAttribute('data-theme')
+      document.documentElement.style.colorScheme = ''
+      document.documentElement.style.backgroundColor = ''
+      localStorage.removeItem(KEY_BROWSER_PREFS)
+      if (c.raw !== null)
+        localStorage.setItem(KEY_BROWSER_PREFS, c.raw)
+
+      const expected = resolveBootPolarity(
+        parseBootPrefsThemeMode(c.raw, now),
+        c.systemDark,
+      )
+      runBootScript(c.systemDark)
+
+      expect(
+        document.documentElement.getAttribute('data-theme'),
+        c.label,
+      ).toBe(expected)
+    }
+  })
 })
 
 describe('boot splash lockstep sources', () => {
   const here = dirname(fileURLToPath(import.meta.url))
 
-  it('keeps entry-server and BootSplash on the shared module constants', () => {
+  it('keeps entry-server and BootSplash on the shared module; no twin stylesheet', () => {
     const entry = readFileSync(resolve(here, '../entry-server.tsx'), 'utf8')
     const splash = readFileSync(resolve(here, '../components/common/BootSplash.tsx'), 'utf8')
-    const splashCss = readFileSync(resolve(here, '../components/common/BootSplash.css.ts'), 'utf8')
 
     for (const src of [entry, splash]) {
       expect(src).toContain('BOOT_SPLASH_LABEL')
@@ -171,9 +268,14 @@ describe('boot splash lockstep sources', () => {
     }
     expect(entry).toContain('bootSplashDocumentCss')
     expect(entry).toContain('bootThemeScript')
-    expect(splashCss).toContain('BOOT_SPLASH_GAP')
+    expect(splash).not.toContain('BootSplash.css')
     expect(BOOT_SPLASH_ICON_SRC).toBe('/icons/leapmux-icon.svg')
     expect(BOOT_SPLASH_TEST_ID).toBe('boot-splash')
     expect(BOOT_SPLASH_LABEL).toBe('Loading LeapMux…')
+  })
+
+  it('does not ship a BootSplash.css.ts twin', () => {
+    const path = resolve(here, '../components/common/BootSplash.css.ts')
+    expect(() => readFileSync(path, 'utf8')).toThrow()
   })
 })
