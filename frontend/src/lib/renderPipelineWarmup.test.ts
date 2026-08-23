@@ -46,7 +46,7 @@ describe('renderpipelinewarmup', () => {
     vi.useRealTimers()
   })
 
-  it('runs one worker warm-up per surface plus the artifact sweep at idle', () => {
+  it('runs one worker warm-up per surface plus the artifact sweep at idle', async () => {
     const callbacks: Array<() => void> = []
     vi.stubGlobal('requestIdleCallback', (cb: () => void) => {
       callbacks.push(cb)
@@ -58,7 +58,9 @@ describe('renderpipelinewarmup', () => {
     expect(renderMarkdownInWorker).not.toHaveBeenCalled() // deferred to idle
 
     callbacks[0]!()
-    expect(renderMarkdownInWorker).toHaveBeenCalledTimes(1)
+    await vi.waitFor(() => {
+      expect(renderMarkdownInWorker).toHaveBeenCalledTimes(1)
+    })
     expect(vi.mocked(renderMarkdownInWorker).mock.calls[0]![0]).toContain('```ts')
     expect(tokenizeAsync).toHaveBeenCalledWith('typescript', 'const warm = 1')
     expect(sweepArtifacts).toHaveBeenCalledTimes(1)
@@ -83,18 +85,20 @@ describe('renderpipelinewarmup', () => {
     expect(ric).not.toHaveBeenCalled()
   })
 
-  it('falls back to a timeout when requestIdleCallback is unavailable (Safari)', () => {
+  it('falls back to a timeout when requestIdleCallback is unavailable (Safari)', async () => {
     vi.stubGlobal('requestIdleCallback', undefined)
     vi.useFakeTimers()
     scheduleRenderPipelineWarmup()
     expect(renderMarkdownInWorker).not.toHaveBeenCalled()
-    vi.advanceTimersByTime(WARMUP_FALLBACK_DELAY_MS)
-    expect(renderMarkdownInWorker).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(WARMUP_FALLBACK_DELAY_MS)
+    await vi.waitFor(() => {
+      expect(renderMarkdownInWorker).toHaveBeenCalledTimes(1)
+    })
     expect(tokenizeAsync).toHaveBeenCalledTimes(1)
     expect(sweepArtifacts).toHaveBeenCalledTimes(1)
   })
 
-  it('defers far longer on a phone-width viewport instead of idle-forcing workers', () => {
+  it('defers far longer on a phone-width viewport instead of idle-forcing workers', async () => {
     vi.stubGlobal('matchMedia', (query: string) => ({
       matches: query.includes('max-width: 767px'),
       media: query,
@@ -112,9 +116,11 @@ describe('renderpipelinewarmup', () => {
     scheduleRenderPipelineWarmup()
     expect(ric).not.toHaveBeenCalled()
     expect(renderMarkdownInWorker).not.toHaveBeenCalled()
-    vi.advanceTimersByTime(WARMUP_CONSTRAINED_DELAY_MS - 1)
+    await vi.advanceTimersByTimeAsync(WARMUP_CONSTRAINED_DELAY_MS - 1)
     expect(renderMarkdownInWorker).not.toHaveBeenCalled()
-    vi.advanceTimersByTime(1)
-    expect(renderMarkdownInWorker).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1)
+    await vi.waitFor(() => {
+      expect(renderMarkdownInWorker).toHaveBeenCalledTimes(1)
+    })
   })
 })

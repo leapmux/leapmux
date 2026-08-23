@@ -1,7 +1,5 @@
-import { renderMarkdownInWorker } from './markdownWorkerClient'
 import { sweepArtifacts } from './renderArtifactStore'
 import { syntaxThemePair } from './shikiThemes'
-import { tokenizeAsync } from './shikiWorkerClient'
 
 // ---------------------------------------------------------------------------
 // Idle warm-start for the render pipeline
@@ -13,6 +11,10 @@ import { tokenizeAsync } from './shikiWorkerClient'
 // trivial job through each worker at idle moves all of that to a moment nobody
 // is waiting on. The same idle slot runs the persisted-artifact sweep (TTL +
 // entry cap), which wants exactly one execution per session.
+//
+// The worker CLIENTS are imported dynamically inside warmUpNow — a static
+// import here would pull shikiWorkerClient onto entry-client's modulepreload
+// graph and undo the critical-path cut.
 // ---------------------------------------------------------------------------
 
 /** Fallback delay when requestIdleCallback is unavailable (Safari). */
@@ -67,10 +69,15 @@ export function isConstrainedStartupNetwork(): boolean {
 }
 
 function warmUpNow(): void {
+  // Dynamic imports keep the worker bridges off the entry-client graph.
   // Results are discarded (markdown) or cached harmlessly (tokens); both calls
   // resolve null gracefully if a worker can't spawn.
-  void renderMarkdownInWorker(WARMUP_MARKDOWN, syntaxThemePair())
-  void tokenizeAsync(WARMUP_CODE_LANG, WARMUP_CODE)
+  void import('./markdownWorkerClient').then(({ renderMarkdownInWorker }) => {
+    void renderMarkdownInWorker(WARMUP_MARKDOWN, syntaxThemePair())
+  })
+  void import('./shikiWorkerClient').then(({ tokenizeAsync }) => {
+    void tokenizeAsync(WARMUP_CODE_LANG, WARMUP_CODE)
+  })
   void sweepArtifacts()
 }
 

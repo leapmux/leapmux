@@ -45,15 +45,12 @@ export default createHandler(() => (
           <meta name="apple-mobile-web-app-capable" content="yes" />
           <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
           {/*
-            Preload ONLY the Regular Hack NF face. All four faces are ~1.1 MB
-            each; preloading Bold/Italic/BoldItalic on every cold load competed
-            with the entry JS graph on mobile LTE and left `#app` blank for
-            tens of seconds. Bold/Italic still load lazily when a code surface
-            first matches those @font-face rules. `crossorigin` is required:
-            font preloads without it use a different fetch mode and the
-            browser re-downloads.
+            Do NOT preload Hack NF faces here. Each face is ~1.1 MB; the LTE
+            cold-start tracer ranked even a single Regular preload as ~50% of
+            bytes before shell_visible. The @font-face rules in
+            ~/styles/global.css.ts still fetch a face when a code surface first
+            needs it — after the shell is up.
           */}
-          <link rel="preload" href="/fonts/HackNerdFont-3.003-Regular.woff2" as="font" type="font/woff2" crossorigin="anonymous" />
           {assets}
         </head>
         <body>

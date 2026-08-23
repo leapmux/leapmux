@@ -125,9 +125,9 @@ test.describe('mobile LTE cold-start timing', () => {
     const totalBytes = STARTUP_BUCKETS.reduce((s, b) => s + bytes[b], 0)
     expect(totalBytes, 'some bytes finished before the shell').toBeGreaterThan(0)
 
-    // Regular Hack NF only on the critical path (~1.1 MB). All four faces
-    // used to preload (~4.2 MB) and dominated LTE cold start.
-    expect(bytes.fonts, 'fonts before shell (Regular only)').toBeLessThan(1.5 * 1024 * 1024)
+    // Regular Hack NF alone was ~50% of bytes-before-shell on LTE; document
+    // font preloads are gone. A code surface may still fetch a face later.
+    expect(bytes.fonts, 'no font preload on the critical path').toBe(0)
 
     // Splash must be in the static HTML (or Suspense fallback) so the page is
     // never a blank #app while the CSR graph downloads.
