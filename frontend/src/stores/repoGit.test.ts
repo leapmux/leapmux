@@ -210,6 +210,8 @@ describe('patchFromNonRepoGetGitFileStatus', () => {
       diffAdded: 0,
       diffDeleted: 0,
       diffUntracked: 0,
+      gitStatusSeen: true,
+      branchPinnedUntilRefresh: false,
     })
   })
 })

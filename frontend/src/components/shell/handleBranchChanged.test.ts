@@ -114,6 +114,7 @@ describe('handleBranchChanged', () => {
     })
     expect(repoGitStore.get(repoKey('w1', '/other'))?.toplevel).toBe('')
     expect(repoGitStore.get(repoKey('w1', '/other'))?.branch).toBe('')
+    expect(repoGitStore.get(repoKey('w1', '/other'))?.branchPinnedUntilRefresh).toBe(false)
   })
 
   it('keeps file state when refresh returns a transient non-repo response', async () => {

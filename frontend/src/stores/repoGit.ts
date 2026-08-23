@@ -526,6 +526,9 @@ export function patchFromNonRepoGetGitFileStatus(
       files: [],
       errorHint: resp.errorHint ?? '',
       gitStatusSeen: true,
+      // A branch stamp may have set the pin before this probe returned
+      // non-repo. Clear it so a later status cannot keep an empty branch.
+      branchPinnedUntilRefresh: false,
     },
   }
 }

@@ -71,6 +71,16 @@ export function createRepoGitStore() {
 
   const bumpWorkerKeyIndex = () => setWorkerKeyEpoch(n => n + 1)
 
+  /**
+   * Newest in-flight refresh targets, plus the last completed refresh.
+   * A superseded refresh clears pins only for keys the successor (in flight
+   * or already finished) does not cover, so a same-path refresh keeps the
+   * optimistic pin until it finishes — including when the stale RPC returns
+   * after that successor has already applied.
+   */
+  let inflightRefresh: { gen: number, keys: Set<RepoKey> } | undefined
+  let lastCompletedRefresh: { gen: number, keys: Set<RepoKey> } | undefined
+
   const indexKey = (key: RepoKey, workerId: string) => {
     if (!workerId)
       return
@@ -79,6 +89,8 @@ export function createRepoGitStore() {
       set = new Set()
       workerKeys.set(workerId, set)
     }
+    if (set.has(key))
+      return
     set.add(key)
     bumpWorkerKeyIndex()
   }
@@ -90,7 +102,8 @@ export function createRepoGitStore() {
     const set = workerKeys.get(id)
     if (!set)
       return
-    set.delete(key)
+    if (!set.delete(key))
+      return
     if (set.size === 0)
       workerKeys.delete(id)
     bumpWorkerKeyIndex()
@@ -117,6 +130,29 @@ export function createRepoGitStore() {
       setRepos(key, 'files', reconcile(files, { key: 'path' }))
   }
 
+  /** Keys this refresh may have stamped a branch pin onto. */
+  const pinKeysForProbe = (workerId: string, path: string, hintKey?: RepoKey): Set<RepoKey> => {
+    const pinKeys = new Set<RepoKey>()
+    if (hintKey)
+      pinKeys.add(hintKey)
+    pinKeys.add(repoKey(workerId, path))
+    const canonical = findCanonicalRepoKey(
+      { get, repos: () => repos as Readonly<Record<RepoKey, RepoGitState>>, keysForWorker },
+      workerId,
+      path,
+    )
+    if (canonical)
+      pinKeys.add(canonical)
+    return pinKeys
+  }
+
+  const clearBranchPins = (keys: Iterable<RepoKey>) => {
+    for (const key of keys) {
+      if (get(key)?.branchPinnedUntilRefresh)
+        upsert(key, { branchPinnedUntilRefresh: false })
+    }
+  }
+
   const clear = (key: RepoKey) => {
     const prev = repos[key]
     setRepos(produce((map) => {
@@ -129,9 +165,11 @@ export function createRepoGitStore() {
   }
 
   const clearAll = () => {
+    const hadKeys = workerKeys.size > 0
     setRepos({})
     workerKeys.clear()
-    bumpWorkerKeyIndex()
+    if (hadKeys)
+      bumpWorkerKeyIndex()
   }
 
   const realignFocusedKeyAfterRefresh = (
@@ -155,18 +193,40 @@ export function createRepoGitStore() {
     }
   }
 
+  const releaseStaleRefreshPins = (mine: number, myKeys: Set<RepoKey>) => {
+    const successor = inflightRefresh && inflightRefresh.gen !== mine
+      ? inflightRefresh
+      : lastCompletedRefresh && lastCompletedRefresh.gen > mine
+        ? lastCompletedRefresh
+        : undefined
+    if (successor) {
+      for (const key of myKeys) {
+        if (successor.keys.has(key))
+          continue
+        if (get(key)?.branchPinnedUntilRefresh)
+          upsert(key, { branchPinnedUntilRefresh: false })
+      }
+      return
+    }
+    clearBranchPins(myKeys)
+  }
+
   const refresh = async (workerId: string, path: string, opts?: RepoGitRefreshOpts): Promise<RepoKey | undefined> => {
     if (!workerId || !path)
       return undefined
     const nonRepoKey = opts?.repoKey ?? (workerId && path ? repoKey(workerId, path) : undefined)
     gen += 1
     const mine = gen
+    const myKeys = pinKeysForProbe(workerId, path, nonRepoKey)
+    inflightRefresh = { gen: mine, keys: myKeys }
     setLoading(true)
     let writtenKey: RepoKey | undefined
     try {
       const resp = await workerRpc.getGitFileStatus(workerId, { workerId, path })
-      if (mine !== gen)
+      if (mine !== gen) {
+        releaseStaleRefreshPins(mine, myKeys)
         return undefined
+      }
       const mapped = patchFromGetGitFileStatus(workerId, resp)
       if (!mapped) {
         const lookup = { get, repos: () => repos as Readonly<Record<RepoKey, RepoGitState>>, keysForWorker }
@@ -189,29 +249,22 @@ export function createRepoGitStore() {
       return writtenKey
     }
     catch (err) {
-      if (mine !== gen)
+      if (mine !== gen) {
+        releaseStaleRefreshPins(mine, myKeys)
         return undefined
+      }
       log.warn('failed to refresh git file status', err)
       // Unstick an optimistic branch pin so metadata broadcasts can proceed.
-      const pinKeys = new Set<RepoKey>()
-      if (nonRepoKey)
-        pinKeys.add(nonRepoKey)
-      const canonical = findCanonicalRepoKey(
-        { get, repos: () => repos as Readonly<Record<RepoKey, RepoGitState>>, keysForWorker },
-        workerId,
-        path,
-      )
-      if (canonical)
-        pinKeys.add(canonical)
-      for (const key of pinKeys) {
-        if (get(key)?.branchPinnedUntilRefresh)
-          upsert(key, { branchPinnedUntilRefresh: false })
-      }
+      clearBranchPins(myKeys)
       return undefined
     }
     finally {
-      if (mine === gen)
+      if (mine === gen) {
         setLoading(false)
+        lastCompletedRefresh = { gen: mine, keys: myKeys }
+        if (inflightRefresh?.gen === mine)
+          inflightRefresh = undefined
+      }
     }
   }
 

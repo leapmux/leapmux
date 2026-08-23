@@ -1,6 +1,6 @@
 import type { GitFileStatusEntry } from '~/generated/leapmux/v1/common_pb'
-import { createRoot } from 'solid-js'
-import { describe, expect, it, vi } from 'vitest'
+import { createMemo, createRoot } from 'solid-js'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'
 import { repoKey } from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
@@ -9,6 +9,10 @@ const mockGetGitFileStatus = vi.fn()
 vi.mock('~/api/workerRpc', () => ({
   getGitFileStatus: (...args: unknown[]) => mockGetGitFileStatus(...args),
 }))
+
+beforeEach(() => {
+  mockGetGitFileStatus.mockReset()
+})
 
 function makeEntry(overrides: Partial<GitFileStatusEntry> & { path: string }): GitFileStatusEntry {
   return {
@@ -54,6 +58,35 @@ describe('createRepoGitStore', () => {
       store.clearAll()
       expect(store.keysForWorker('w1')).toEqual([])
       expect(store.keysForWorker('w2')).toEqual([])
+    })
+
+    it('recomputation tracks keysForWorker when the index changes', async () => {
+      await createRoot(async (dispose) => {
+        const store = createRepoGitStore()
+        let reads = 0
+        const count = createMemo(() => {
+          reads++
+          return store.keysForWorker('w1').length
+        })
+
+        expect(count()).toBe(0)
+        const afterInit = reads
+
+        store.upsert(repoKey('w1', '/repo'), { workerId: 'w1', toplevel: '/repo' })
+        expect(count()).toBe(1)
+        expect(reads).toBeGreaterThan(afterInit)
+
+        const afterAdd = reads
+        store.upsert(repoKey('w1', '/repo'), { branch: 'feature' })
+        expect(count()).toBe(1)
+        expect(reads).toBe(afterAdd)
+
+        store.clear(repoKey('w1', '/repo'))
+        expect(count()).toBe(0)
+        expect(reads).toBeGreaterThan(afterAdd)
+
+        dispose()
+      })
     })
   })
 
@@ -155,6 +188,91 @@ describe('createRepoGitStore', () => {
         dispose()
       })
     })
+
+    it('clears a branch pin when a different-path refresh cancels this one', async () => {
+      await createRoot(async (dispose) => {
+        const store = createRepoGitStore()
+        const otherKey = repoKey('worker1', '/other')
+        store.upsert(otherKey, {
+          workerId: 'worker1',
+          toplevel: '/other',
+          branch: 'feature',
+          branchPinnedUntilRefresh: true,
+        })
+
+        let resolveOther!: (value: unknown) => void
+        const otherRpc = new Promise((resolve) => {
+          resolveOther = resolve
+        })
+        mockGetGitFileStatus
+          .mockReturnValueOnce(otherRpc)
+          .mockResolvedValueOnce({
+            repoRoot: '/active',
+            status: { toplevel: '/active', branch: 'main' },
+            files: [],
+          })
+
+        const cancelled = store.refresh('worker1', '/other', { repoKey: otherKey })
+        const active = store.refresh('worker1', '/active')
+        await active
+        resolveOther({
+          repoRoot: '',
+          status: undefined,
+          files: [],
+          errorHint: 'not a git repository',
+        })
+        await cancelled
+
+        expect(store.get(otherKey)?.branch).toBe('feature')
+        expect(store.get(otherKey)?.branchPinnedUntilRefresh).toBe(false)
+        expect(store.get(repoKey('worker1', '/active'))?.branch).toBe('main')
+
+        dispose()
+      })
+    })
+
+    it('keeps a branch pin when a same-path refresh cancels this one', async () => {
+      await createRoot(async (dispose) => {
+        const store = createRepoGitStore()
+        const key = repoKey('worker1', '/repo')
+        store.upsert(key, {
+          workerId: 'worker1',
+          toplevel: '/repo',
+          branch: 'feature',
+          branchPinnedUntilRefresh: true,
+        })
+
+        let resolveFirst!: (value: unknown) => void
+        const first = new Promise((resolve) => {
+          resolveFirst = resolve
+        })
+        mockGetGitFileStatus
+          .mockReturnValueOnce(first)
+          .mockResolvedValueOnce({
+            repoRoot: '/repo',
+            // RPC still reports the old name; pin must survive until this refresh applies.
+            status: { toplevel: '/repo', branch: 'main' },
+            files: [],
+          })
+
+        const cancelled = store.refresh('worker1', '/repo', { repoKey: key })
+        const newest = store.refresh('worker1', '/repo', { repoKey: key })
+        await newest
+        // Stale RPC returns after the successor finished and kept the pin.
+        resolveFirst({
+          repoRoot: '/repo',
+          status: { toplevel: '/repo', branch: 'stale' },
+          files: [],
+        })
+        await cancelled
+
+        // Newest refresh saw pin + mismatched RPC branch and kept the stamp.
+        expect(store.get(key)?.branch).toBe('feature')
+        expect(store.get(key)?.branchPinnedUntilRefresh).toBe(true)
+
+        dispose()
+      })
+    })
   })
 
   describe('refresh failure', () => {
@@ -238,6 +356,34 @@ describe('createRepoGitStore', () => {
 
         await store.refresh('worker1', '/plain-dir')
 
+        expect(store.get(key)?.errorHint).toBe('not a git repository')
+        dispose()
+      })
+    })
+
+    it('clears the branch pin when writing a non-repo stub', async () => {
+      await createRoot(async (dispose) => {
+        const store = createRepoGitStore()
+        const key = repoKey('worker1', '/plain-dir')
+        store.upsert(key, {
+          workerId: 'worker1',
+          toplevel: '/plain-dir',
+          branch: 'feature',
+          branchPinnedUntilRefresh: true,
+        })
+
+        mockGetGitFileStatus.mockResolvedValueOnce({
+          repoRoot: '',
+          status: undefined,
+          files: [],
+          errorHint: 'not a git repository',
+        })
+
+        await store.refresh('worker1', '/plain-dir', { repoKey: key })
+
+        expect(store.get(key)?.toplevel).toBe('')
+        expect(store.get(key)?.branch).toBe('')
+        expect(store.get(key)?.branchPinnedUntilRefresh).toBe(false)
         expect(store.get(key)?.errorHint).toBe('not a git repository')
         dispose()
       })
