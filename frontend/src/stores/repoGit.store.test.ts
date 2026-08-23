@@ -785,6 +785,34 @@ describe('createRepoGitStore', () => {
       })
     })
 
+    it('clears a restamped branch pin when refresh fails after an earlier successful refresh', async () => {
+      await createRoot(async (dispose) => {
+        const store = createRepoGitStore()
+        const key = repoKey('worker1', '/repo')
+        store.upsert(key, {
+          workerId: 'worker1',
+          toplevel: '/repo',
+          branch: 'main',
+        })
+
+        mockGetGitFileStatus.mockResolvedValueOnce({
+          repoRoot: '/repo',
+          status: { toplevel: '/repo', branch: 'main' },
+          files: [],
+        })
+        await store.refresh('worker1', '/repo', { repoKey: key })
+
+        store.upsert(key, { branch: 'feature', branchPinnedUntilRefresh: true })
+
+        mockGetGitFileStatus.mockRejectedValueOnce(new Error('branch refresh failed'))
+        await store.refresh('worker1', '/repo', { repoKey: key })
+
+        expect(store.get(key)?.branch).toBe('feature')
+        expect(store.get(key)?.branchPinnedUntilRefresh).toBe(false)
+        dispose()
+      })
+    })
+
     it('drops completed refresh gens when the branch pin clears', async () => {
       await createRoot(async (dispose) => {
         const store = createRepoGitStore()

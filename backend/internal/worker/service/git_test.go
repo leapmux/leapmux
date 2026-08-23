@@ -51,6 +51,13 @@ func run(t *testing.T, dir string, name string, args ...string) {
 	require.NoError(t, cmd.Run(), "command failed: %s %v", name, args)
 }
 
+func swapGitStatusForFileStatusHook(t *testing.T, fn func(context.Context, string) *leapmuxv1.GitRepoStatus) {
+	t.Helper()
+	prev := gitFileStatusProbe.status
+	gitFileStatusProbe.status = fn
+	t.Cleanup(func() { gitFileStatusProbe.status = prev })
+}
+
 func TestGetGitFileStatusEntries_UntrackedFile(t *testing.T) {
 	t.Parallel()
 
@@ -408,14 +415,33 @@ func TestMergeGitFileStatusFromPathInfo_DoesNotMutateInput(t *testing.T) {
 	assert.Equal(t, int32(3), merged.GetAhead())
 }
 
+func TestMergeGitFileStatusFromPathInfo_CorrectsStaleOriginUrl(t *testing.T) {
+	t.Parallel()
+
+	dir := initRepo(t)
+	run(t, dir, "git", "remote", "add", "origin", "https://github.com/test/correct.git")
+
+	info, err := queryGitPathInfo(context.Background(), dir)
+	require.NoError(t, err)
+
+	stale := &leapmuxv1.GitRepoStatus{
+		OriginUrl: "https://github.com/test/stale.git",
+		Branch:    "stale",
+	}
+	merged := mergeGitFileStatusFromPathInfo(stale, info, context.Background(), dir)
+
+	assert.Equal(t, "https://github.com/test/stale.git", stale.GetOriginUrl(),
+		"merge must not mutate the caller's origin_url")
+	assert.Equal(t, "https://github.com/test/correct.git", merged.GetOriginUrl(),
+		"path-info probe must override a stale origin_url from GetGitStatus")
+}
+
 func TestGetGitFileStatus_BackfillsIdentityWhenGetGitStatusNil(t *testing.T) {
 	t.Parallel()
 
-	prev := getGitStatusForFileStatus
-	t.Cleanup(func() { getGitStatusForFileStatus = prev })
-	getGitStatusForFileStatus = func(context.Context, string) *leapmuxv1.GitRepoStatus {
+	swapGitStatusForFileStatusHook(t, func(context.Context, string) *leapmuxv1.GitRepoStatus {
 		return nil
-	}
+	})
 
 	_, d, w := setupTestService(t)
 	dir := initRepo(t)

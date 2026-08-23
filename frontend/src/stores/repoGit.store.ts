@@ -69,7 +69,7 @@ export function createRepoGitStore() {
   let clock = 0
   const probeGen = new Map<string, number>()
   const inflightByProbe = new Map<string, { gen: number, keys: Set<RepoKey> }>()
-  const lastCompletedGenByKey = new Map<RepoKey, number>()
+  const lastCompletedByKey = new Map<RepoKey, { gen: number, keptPin: boolean }>()
   let loadingCount = 0
 
   const get = (key: RepoKey): RepoGitState | undefined => repos[key]
@@ -123,9 +123,10 @@ export function createRepoGitStore() {
     return [...(workerKeys.get(workerId) ?? [])]
   }
 
-  const dropCompletedGenWhenUnpinned = (key: RepoKey) => {
-    if (!get(key)?.branchPinnedUntilRefresh)
-      lastCompletedGenByKey.delete(key)
+  const dropCompletedKeepPinWhenUnpinned = (key: RepoKey) => {
+    const completed = lastCompletedByKey.get(key)
+    if (completed && !get(key)?.branchPinnedUntilRefresh)
+      completed.keptPin = false
   }
 
   const upsert = (key: RepoKey, patch: Partial<RepoGitState>) => {
@@ -142,7 +143,7 @@ export function createRepoGitStore() {
     if (files)
       setRepos(key, 'files', reconcile(files, { key: 'path' }))
     if ('branchPinnedUntilRefresh' in rest && rest.branchPinnedUntilRefresh === false)
-      dropCompletedGenWhenUnpinned(key)
+      dropCompletedKeepPinWhenUnpinned(key)
   }
 
   /** Keys this refresh may have stamped a branch pin onto. */
@@ -163,7 +164,8 @@ export function createRepoGitStore() {
 
   const clearBranchPins = (keys: Iterable<RepoKey>, opts?: { respectCompletedKeep?: boolean }) => {
     for (const key of keys) {
-      if (opts?.respectCompletedKeep && lastCompletedGenByKey.has(key) && get(key)?.branchPinnedUntilRefresh)
+      const completed = lastCompletedByKey.get(key)
+      if (opts?.respectCompletedKeep && completed?.keptPin && get(key)?.branchPinnedUntilRefresh)
         continue
       if (get(key)?.branchPinnedUntilRefresh)
         upsert(key, { branchPinnedUntilRefresh: false })
@@ -175,7 +177,7 @@ export function createRepoGitStore() {
     setRepos(produce((map) => {
       delete map[key]
     }))
-    lastCompletedGenByKey.delete(key)
+    lastCompletedByKey.delete(key)
     if (prev)
       unindexKey(key, prev.workerId)
     else
@@ -186,7 +188,7 @@ export function createRepoGitStore() {
     const hadKeys = workerKeys.size > 0
     setRepos({})
     workerKeys.clear()
-    lastCompletedGenByKey.clear()
+    lastCompletedByKey.clear()
     probeGen.clear()
     inflightByProbe.clear()
     if (hadKeys)
@@ -219,8 +221,8 @@ export function createRepoGitStore() {
       if (inflight.gen > mine && inflight.keys.has(key))
         return true
     }
-    const completedGen = lastCompletedGenByKey.get(key)
-    return completedGen !== undefined && completedGen > mine
+    const completedGen = lastCompletedByKey.get(key)
+    return completedGen !== undefined && completedGen.gen > mine
   }
 
   const releaseStaleRefreshPins = (mine: number, myKeys: Set<RepoKey>) => {
@@ -229,7 +231,8 @@ export function createRepoGitStore() {
         continue
       // An earlier completed refresh already applied pin policy for this key.
       // A cancelled nested/canonical probe must not undo that keep.
-      if (lastCompletedGenByKey.has(key) && get(key)?.branchPinnedUntilRefresh)
+      const completed = lastCompletedByKey.get(key)
+      if (completed?.keptPin && get(key)?.branchPinnedUntilRefresh)
         continue
       if (get(key)?.branchPinnedUntilRefresh)
         upsert(key, { branchPinnedUntilRefresh: false })
@@ -258,7 +261,10 @@ export function createRepoGitStore() {
     }
 
     const recordCompletedApply = (appliedKey: RepoKey) => {
-      lastCompletedGenByKey.set(appliedKey, mine)
+      lastCompletedByKey.set(appliedKey, {
+        gen: mine,
+        keptPin: Boolean(get(appliedKey)?.branchPinnedUntilRefresh),
+      })
     }
 
     beginLoading()

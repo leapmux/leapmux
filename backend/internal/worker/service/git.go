@@ -27,9 +27,13 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// getGitStatusForFileStatus is the GetGitStatus call used by GetGitFileStatus.
-// Tests may replace it to simulate nil or partial GetGitStatus results.
-var getGitStatusForFileStatus = gitutil.GetGitStatus
+// gitFileStatusProbe holds the GetGitStatus implementation for
+// GetGitFileStatus. Package tests may swap gitFileStatusProbe.status.
+var gitFileStatusProbe = struct {
+	status func(context.Context, string) *leapmuxv1.GitRepoStatus
+}{
+	status: gitutil.GetGitStatus,
+}
 
 // pushBranchTimeout caps the worker-side git push (and its preceding
 // `add` / `commit -m WIP`) so a credential helper, hung SSH passphrase
@@ -227,7 +231,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 			return nil
 		})
 		g.Go(func() error {
-			gitStatus = getGitStatusForFileStatus(gctx, dirPath)
+			gitStatus = gitFileStatusProbe.status(gctx, dirPath)
 			return nil
 		})
 		_ = g.Wait()
@@ -3188,8 +3192,8 @@ func parseGitPathInfoOutput(output string, hasHeadFields bool) (*gitPathInfo, er
 
 // mergeGitFileStatusFromPathInfo backfills identity fields from path-info when
 // GetGitStatus returned nil or omitted them. Path-info is authoritative for
-// branch / toplevel / worktree on the queried dir; porcelain-derived counters
-// on the input status are preserved.
+// branch / toplevel / worktree / origin on the queried dir; porcelain-derived
+// counters on the input status are preserved.
 func mergeGitFileStatusFromPathInfo(
 	status *leapmuxv1.GitRepoStatus,
 	info *gitPathInfo,
@@ -3203,9 +3207,7 @@ func mergeGitFileStatusFromPathInfo(
 	}
 	status.Toplevel = pathutil.NormalizeNative(pathutil.Canonicalize(info.TopLevel))
 	status.Branch = branchOrShortSHA(info)
-	if status.OriginUrl == "" {
-		status.OriginUrl = strings.TrimSpace(gitutil.GetOriginURL(ctx, dirPath))
-	}
+	status.OriginUrl = strings.TrimSpace(gitutil.GetOriginURL(ctx, dirPath))
 	status.IsWorktree = info.IsWorktree
 	return status
 }
