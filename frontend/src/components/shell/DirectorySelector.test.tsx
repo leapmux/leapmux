@@ -1,6 +1,7 @@
 import { cleanup, render, screen } from '@solidjs/testing-library'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { refreshFileTree, toggleHiddenFiles } from '~/lib/fileTreeOps'
+import { createRepoGitStore } from '~/stores/repoGit.store'
 import { withPreferences } from '~/test-support/preferencesProvider'
 import { DirectorySelector } from './DirectorySelector'
 
@@ -49,7 +50,7 @@ function makeState() {
 describe('directorySelector', () => {
   it('refreshFileTree invokes the current tree state refreshTree', () => {
     const { state, tree, refreshTree } = makeState()
-    render(withPreferences(() => <DirectorySelector state={state as any} tree={tree as any} />))
+    render(withPreferences(() => <DirectorySelector state={state as any} tree={tree as any} repoGitStore={createRepoGitStore()} />))
 
     refreshFileTree()
 
@@ -58,7 +59,7 @@ describe('directorySelector', () => {
 
   it('toggleHiddenFiles updates the visible button title through the registry callback', () => {
     const { state, tree } = makeState()
-    render(withPreferences(() => <DirectorySelector state={state as any} tree={tree as any} />))
+    render(withPreferences(() => <DirectorySelector state={state as any} tree={tree as any} repoGitStore={createRepoGitStore()} />))
 
     expect(screen.getByRole('button', { name: 'Hide hidden files' })).toBeInTheDocument()
 
@@ -69,7 +70,7 @@ describe('directorySelector', () => {
 
   it('unregisters dialog ops on unmount', () => {
     const { state, tree, refreshTree } = makeState()
-    const view = render(withPreferences(() => <DirectorySelector state={state as any} tree={tree as any} />))
+    const view = render(withPreferences(() => <DirectorySelector state={state as any} tree={tree as any} repoGitStore={createRepoGitStore()} />))
 
     view.unmount()
     refreshFileTree()

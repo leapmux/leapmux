@@ -1287,6 +1287,7 @@ export const AppShell: Component = () => {
         onSelectWorkspace={id => handleSelectWorkspace(id)}
         availableProviders={agentOps.availableProviders()}
         onRefreshProviders={agentOps.loadAvailableProviders}
+        repoGitStore={repoGitStore}
       />
 
       <workerSection.Dialogs />

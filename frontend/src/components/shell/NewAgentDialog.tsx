@@ -1,5 +1,6 @@
 import type { Component } from 'solid-js'
 import type { AgentInfo, AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import type { createRepoGitStore } from '~/stores/repoGit.store'
 import { createMemo, Show } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { openAgentRequestOptions } from '~/components/chat/providers/registry'
@@ -33,6 +34,7 @@ interface NewAgentDialogProps {
   blockedReason?: () => string | undefined
   onCreated: (agent: AgentInfo) => void
   onClose: () => void
+  repoGitStore: ReturnType<typeof createRepoGitStore>
 }
 
 export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
@@ -119,7 +121,7 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
       </DialogTopSection>
       <BlockedReasonNotice reason={blockedReason()} />
       <DialogColumns
-        left={<DirectorySelector state={worker} tree={tree} />}
+        left={<DirectorySelector state={worker} tree={tree} repoGitStore={props.repoGitStore} />}
         right={(
           <>
             <SessionIdInput state={sessionId} />

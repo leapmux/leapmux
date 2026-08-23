@@ -10,6 +10,7 @@ import { showWarnToast } from '~/components/common/Toast'
 import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createDialogState, createToggleDialog, createUpdatableDialogState } from '~/hooks/createDialogState'
+import { createRepoGitStore } from '~/stores/repoGit.store'
 import { makeInspectResp, makeWorktreeRemovalResp } from '~/test-support/gitBranchFixtures'
 import { pickMenuValue } from '~/test-support/menu'
 import { AppShellDialogs } from './AppShellDialogs'
@@ -136,6 +137,7 @@ function renderDialogs(
   // operational stores (agentOps / termOps / view / metadata / …) that the
   // closed dialogs never ask for.
   const tabOps = { closeWorktreeTabsAndReport: closeWorktreeTabs } satisfies Pick<ReturnType<typeof useTabOperations>, 'closeWorktreeTabsAndReport'>
+  const repoGitStore = createRepoGitStore()
   const props = {
     dialogs,
     onBranchChanged,
@@ -143,6 +145,7 @@ function renderDialogs(
     activeWorkspace,
     isActiveWorkspaceMutatable: () => opts.mutatable ?? true,
     layoutStore: { placementTileId } as unknown as ComponentProps<typeof AppShellDialogs>['layoutStore'],
+    repoGitStore,
     getCurrentTabContext: () => ({
       workerId: 'w1',
       workingDir: '/repo',

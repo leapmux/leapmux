@@ -154,7 +154,8 @@ describe('createRepoGitStore', () => {
         expect(store.focusedKey()).toBe(activeKey)
         expect(store.get(activeKey)?.branch).toBe('main')
         expect(store.get(activeKey)?.diffAdded).toBe(5)
-        expect(store.get(otherKey)).toBeUndefined()
+        expect(store.get(otherKey)?.branch).toBe('dev')
+        expect(store.get(otherKey)?.diffAdded).toBe(2)
 
         dispose()
       })
@@ -169,7 +170,7 @@ describe('createRepoGitStore', () => {
       })
     })
 
-    it('clears the hinted repo on a non-repo response', async () => {
+    it('persists errorHint on a non-repo response without clearing the hinted key', async () => {
       await createRoot(async (dispose) => {
         const store = createRepoGitStore()
         const key = repoKey('worker1', '/repo')
@@ -184,7 +185,11 @@ describe('createRepoGitStore', () => {
 
         await store.refresh('worker1', '/plain-dir', { repoKey: key })
 
-        expect(store.get(key)).toBeUndefined()
+        const state = store.get(key)!
+        expect(state.branch).toBe('')
+        expect(state.toplevel).toBe('')
+        expect(state.errorHint).toBe('not a git repository')
+        expect(state.files).toEqual([])
         dispose()
       })
     })

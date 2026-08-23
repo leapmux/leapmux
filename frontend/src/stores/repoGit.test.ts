@@ -1,5 +1,7 @@
+import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
-import { gitStatusProbePath, repoGitView, repoKey } from '~/stores/repoGit'
+import { GetGitFileStatusResponseSchema } from '~/generated/leapmux/v1/git_pb'
+import { gitStatusProbePath, patchFromNonRepoGetGitFileStatus, repoGitView, repoKey } from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 
 describe('gitStatusProbePath', () => {
@@ -9,6 +11,29 @@ describe('gitStatusProbePath', () => {
 
   it('falls back to workingDir when toplevel is unset', () => {
     expect(gitStatusProbePath({ workingDir: '/repo/pkg' })).toBe('/repo/pkg')
+  })
+})
+
+describe('patchFromNonRepoGetGitFileStatus', () => {
+  it('clears git fields and keeps errorHint on the hinted key', () => {
+    const key = repoKey('w1', '/repo')
+    const mapped = patchFromNonRepoGetGitFileStatus('w1', create(GetGitFileStatusResponseSchema, {
+      repoRoot: '',
+      files: [],
+      errorHint: 'not a git repository',
+    }), key)
+
+    expect(mapped.key).toBe(key)
+    expect(mapped.patch).toMatchObject({
+      workerId: 'w1',
+      toplevel: '',
+      branch: '',
+      errorHint: 'not a git repository',
+      files: [],
+      diffAdded: 0,
+      diffDeleted: 0,
+      diffUntracked: 0,
+    })
   })
 })
 

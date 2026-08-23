@@ -1,5 +1,6 @@
 import type { Accessor, Component } from 'solid-js'
 import type { DirectoryTreeState } from '~/hooks/createDirectoryTreeState'
+import type { createRepoGitStore } from '~/stores/repoGit.store'
 import Eye from 'lucide-solid/icons/eye'
 import EyeOff from 'lucide-solid/icons/eye-off'
 import { createEffect, onCleanup, Show } from 'solid-js'
@@ -31,6 +32,7 @@ export interface DirectorySelectorState {
 interface DirectorySelectorProps {
   state: DirectorySelectorState
   tree: DirectoryTreeState
+  repoGitStore: ReturnType<typeof createRepoGitStore>
 }
 
 export const DirectorySelector: Component<DirectorySelectorProps> = (props) => {
@@ -91,6 +93,7 @@ export const DirectorySelector: Component<DirectorySelectorProps> = (props) => {
             homeDir={workerInfoStore.getHomeDir(props.state.workerId())}
             flavor={flavorFromOs(workerInfoStore.getOs(props.state.workerId()))}
             showHiddenFiles={showHiddenFiles()}
+            gitStatusStore={props.repoGitStore}
             ref={props.tree.setTreeRef}
           />
         </div>

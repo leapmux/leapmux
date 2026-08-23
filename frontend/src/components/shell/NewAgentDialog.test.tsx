@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as workerRpc from '~/api/workerRpc'
 import { NewAgentDialog } from '~/components/shell/NewAgentDialog'
 import { WorkerSchema } from '~/generated/leapmux/v1/worker_pb'
+import { createRepoGitStore } from '~/stores/repoGit.store'
 /// <reference types="vitest/globals" />
 import { withPreferences } from '~/test-support/preferencesProvider'
 
@@ -46,6 +47,7 @@ function renderDialog(blockedReason?: () => string | undefined) {
       blockedReason={blockedReason}
       onCreated={() => {}}
       onClose={() => {}}
+      repoGitStore={createRepoGitStore()}
     />
   )))
 }

@@ -10,6 +10,7 @@ import {
   fileEntryToDiffStats,
   isUntrackedDirEntry,
   patchFromGetGitFileStatus,
+  patchFromNonRepoGetGitFileStatus,
   untrackedDirBasePath,
 } from './repoGit'
 
@@ -94,8 +95,10 @@ export function createRepoGitStore() {
         return
       const mapped = patchFromGetGitFileStatus(workerId, resp)
       if (!mapped) {
-        if (repoKeyHint)
-          clear(repoKeyHint)
+        if (repoKeyHint) {
+          const nonRepo = patchFromNonRepoGetGitFileStatus(workerId, resp, repoKeyHint)
+          upsert(nonRepo.key, nonRepo.patch)
+        }
         return
       }
       upsert(mapped.key, mapped.patch)
@@ -103,8 +106,6 @@ export function createRepoGitStore() {
     catch (err) {
       if (mine !== gen)
         return
-      if (repoKeyHint)
-        clear(repoKeyHint)
       log.warn('failed to refresh git file status', err)
     }
     finally {

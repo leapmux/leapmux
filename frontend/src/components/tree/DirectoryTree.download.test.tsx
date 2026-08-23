@@ -1,6 +1,6 @@
 import type { SaveActionsSpies } from '~/test-support/saveActionsMocks'
 import { render, screen, waitFor, within } from '@solidjs/testing-library'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { createRepoGitStore } from '~/stores/repoGit.store'
 import {
   fileDownloadMock,
   platformBridgeMock,
@@ -52,6 +52,7 @@ function setupTree() {
   render(() => (
     <DirectoryTree
       workerId="w1"
+      gitStatusStore={createRepoGitStore()}
       selectedPath="/repo"
       rootPath="/repo"
       homeDir="/home/alice"

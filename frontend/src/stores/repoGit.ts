@@ -226,6 +226,43 @@ export function patchFromGetGitFileStatus(
   }
 }
 
+/**
+ * Map a successful but non-repo GetGitFileStatus response onto the hinted key.
+ * Keeps `errorHint` for UI diagnostics and clears git fields so `isGitRepo` is false.
+ */
+export function patchFromNonRepoGetGitFileStatus(
+  workerId: string,
+  resp: GetGitFileStatusResponse,
+  key: RepoKey,
+): { key: RepoKey, patch: Partial<RepoGitState> } {
+  return {
+    key,
+    patch: {
+      workerId,
+      repoRoot: resp.repoRoot,
+      toplevel: '',
+      branch: '',
+      originUrl: '',
+      isWorktree: false,
+      ahead: 0,
+      behind: 0,
+      conflicted: false,
+      stashed: false,
+      deleted: false,
+      renamed: false,
+      modified: false,
+      typeChanged: false,
+      added: false,
+      untracked: false,
+      diffAdded: 0,
+      diffDeleted: 0,
+      diffUntracked: 0,
+      files: [],
+      errorHint: resp.errorHint ?? '',
+    },
+  }
+}
+
 /** Join a tab's repo identity to the keyed store for UI reads. */
 export function repoGitView(
   tab: { workerId?: string, gitToplevel?: string },
