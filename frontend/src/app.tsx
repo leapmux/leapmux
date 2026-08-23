@@ -70,6 +70,11 @@ const PreferencesApplier: ParentComponent = (props) => {
   // leaves the pair unchanged, so `setSyntaxTheme` early-returns and the write
   // lands in a microtask, before paint. A failed import now leaves surface and
   // tokens both on the previous theme, which is consistent, and it is logged.
+  //
+  // `syntaxAttrGen` drops stale attribute writes when a later effect run wins
+  // the race after the lazy `renderMarkdown` import — without it an older
+  // `variant` can land on `<html>` after a newer one.
+  let syntaxAttrGen = 0
   createEffect(() => {
     const pair = resolveSyntaxPair(
       preferences.syntaxTheme(),
@@ -84,6 +89,7 @@ const PreferencesApplier: ParentComponent = (props) => {
       themeStore.systemMode(),
       themeStore.resolvedMode(),
     )
+    const gen = ++syntaxAttrGen
     // `setSyntaxTheme` now REJECTS when a theme chunk fails to load, so the
     // rejection is reported rather than dropped. Without a handler it reaches
     // the global sink as "Something went wrong", which says nothing about the
@@ -96,6 +102,8 @@ const PreferencesApplier: ParentComponent = (props) => {
     void import('~/lib/renderMarkdown')
       .then(({ shikiHighlighter }) => setSyntaxTheme(pair, shikiHighlighter))
       .then(() => {
+        if (gen !== syntaxAttrGen)
+          return
         if (typeof document !== 'undefined') {
           document.documentElement.setAttribute('data-code-variant', variant.id)
           // The POLARITY beside the variant, because CSS cannot select on the
@@ -109,6 +117,8 @@ const PreferencesApplier: ParentComponent = (props) => {
         }
       })
       .catch((err: unknown) => {
+        if (gen !== syntaxAttrGen)
+          return
         console.error('[app] the syntax theme failed to load; the code surface keeps the previous one:', err)
       })
   })

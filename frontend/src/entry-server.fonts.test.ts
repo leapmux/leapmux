@@ -22,13 +22,11 @@ describe('entry-server font preloads', () => {
 })
 
 describe('entry-server boot splash polarity', () => {
-  it('ships prefers-color-scheme and data-theme splash rules plus a blocking script', () => {
+  it('ships document CSS and the blocking boot script from bootSplashTheme', () => {
     const path = resolve(dirname(fileURLToPath(import.meta.url)), 'entry-server.tsx')
     const src = readFileSync(path, 'utf8')
-    expect(src).toContain('prefers-color-scheme: dark')
-    expect(src).toContain('html[data-theme="dark"]')
-    expect(src).toContain('html[data-theme="light"]')
-    expect(src).toContain('leapmux:browser-prefs')
+    expect(src).toContain('bootSplashDocumentCss')
     expect(src).toContain('bootThemeScript')
+    expect(src).toContain('BOOT_SPLASH_LABEL')
   })
 })

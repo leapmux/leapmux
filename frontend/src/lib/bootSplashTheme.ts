@@ -1,11 +1,13 @@
 /**
- * Colours and polarity for the zero-JS boot splash.
+ * Colours, copy, document CSS, and the blocking boot script for the zero-JS
+ * splash. Shared by `entry-server.tsx` and `BootSplash` so the static HTML Go
+ * serves and the Solid Suspense/AuthGuard chrome cannot drift.
  *
- * Taken from Default theme so the static HTML in `entry-server.tsx`, the Solid
- * `BootSplash`, and the blocking head script cannot drift from the palette
- * `themeStore` later paints.
+ * Palette comes from Default theme so the splash matches what `themeStore`
+ * paints after hydration.
  */
 import type { ThemeMode } from '~/styles/themes'
+import { KEY_BROWSER_PREFS } from '~/lib/browserStorage'
 import { paletteColorToHex, resolveVariant } from '~/styles/themes'
 import { defaultTheme } from '~/styles/themes/default'
 
@@ -23,6 +25,22 @@ export const bootSplashDark = {
   foreground: hex('dark', '--foreground'),
 } as const
 
+/** `data-testid` on both the static splash and the Solid component. */
+export const BOOT_SPLASH_TEST_ID = 'boot-splash'
+
+/** Visible label; keep the ellipsis character identical in both trees. */
+export const BOOT_SPLASH_LABEL = 'Loading LeapMux…'
+
+export const BOOT_SPLASH_ICON_SRC = '/icons/leapmux-icon.svg'
+export const BOOT_SPLASH_ICON_WIDTH = 64
+export const BOOT_SPLASH_ICON_HEIGHT = 64
+
+/**
+ * Spacing token for the splash column gap. Used in the document `<style>` and
+ * in `BootSplash.css.ts` — never a bare `1rem` literal.
+ */
+export const BOOT_SPLASH_GAP = 'var(--space-4)'
+
 /**
  * Resolve splash polarity the same way `themeStore.resolvedMode` does for the
  * UI theme: an explicit light/dark pin wins; `system` (or anything else) follows
@@ -35,4 +53,90 @@ export function resolveBootPolarity(
   if (mode === 'light' || mode === 'dark')
     return mode
   return systemDark ? 'dark' : 'light'
+}
+
+/**
+ * Read `theme.mode` from a `leapmux:browser-prefs` TTL envelope (`{ v, e }`).
+ * Returns `"system"` when the raw value is missing, expired, or malformed —
+ * same failure mode as the blocking head script.
+ */
+export function parseBootPrefsThemeMode(raw: string | null, nowMs: number): string {
+  if (!raw)
+    return 'system'
+  try {
+    const wrap = JSON.parse(raw) as { e?: unknown, v?: { theme?: { mode?: unknown } } }
+    if (
+      wrap
+      && typeof wrap.e === 'number'
+      && wrap.e > nowMs
+      && wrap.v
+      && wrap.v.theme
+      && typeof wrap.v.theme.mode === 'string'
+    ) {
+      return wrap.v.theme.mode
+    }
+  }
+  catch {
+    // Malformed JSON → system.
+  }
+  return 'system'
+}
+
+/**
+ * Inline document CSS for the static splash and the html/body fill that covers
+ * the brief gap between Solid `mount` clearing `#app` and the next BootSplash
+ * paint. Keep selectors in lockstep with `BootSplash.css.ts`.
+ */
+export function bootSplashDocumentCss(): string {
+  const lightBg = bootSplashLight.background
+  const lightFg = bootSplashLight.foreground
+  const darkBg = bootSplashDark.background
+  const darkFg = bootSplashDark.foreground
+  return `
+html,body{margin:0;background:${lightBg}}
+@media (prefers-color-scheme: dark){
+  html,body{background:${darkBg}}
+}
+html[data-theme="light"],html[data-theme="light"] body{background:${lightBg}}
+html[data-theme="dark"],html[data-theme="dark"] body{background:${darkBg}}
+#boot-splash,[data-testid="${BOOT_SPLASH_TEST_ID}"]{
+  min-height:100dvh;display:flex;align-items:center;justify-content:center;
+  flex-direction:column;gap:${BOOT_SPLASH_GAP};font-family:system-ui,sans-serif;
+  background:${lightBg};
+  color:${lightFg};
+}
+@media (prefers-color-scheme: dark){
+  #boot-splash,[data-testid="${BOOT_SPLASH_TEST_ID}"]{
+    background:${darkBg};
+    color:${darkFg};
+  }
+}
+html[data-theme="light"] #boot-splash,html[data-theme="light"] [data-testid="${BOOT_SPLASH_TEST_ID}"]{
+  background:${lightBg};
+  color:${lightFg};
+}
+html[data-theme="dark"] #boot-splash,html[data-theme="dark"] [data-testid="${BOOT_SPLASH_TEST_ID}"]{
+  background:${darkBg};
+  color:${darkFg};
+}
+#boot-splash p,[data-testid="${BOOT_SPLASH_TEST_ID}"] p{margin:0;font-size:.95rem}
+`.trim()
+}
+
+/**
+ * Blocking head script: paint `data-theme` and chrome `theme-color` from the
+ * device tier before first paint. Cannot import `browserStorage` at runtime in
+ * the browser document — the key and `{ v, e }` shape must stay aligned with
+ * that module (see `KEY_BROWSER_PREFS` / `parseBootPrefsThemeMode`).
+ *
+ * When the device tier pins light or dark, every `theme-color` meta is set to
+ * that colour and its `media` attribute is removed so an OS preference cannot
+ * override the pin. System mode keeps the dual media metas and only rewrites
+ * the non-media fallback to the current OS answer.
+ */
+export function bootThemeScript(): string {
+  const lightBg = bootSplashLight.background
+  const darkBg = bootSplashDark.background
+  const key = KEY_BROWSER_PREFS
+  return `(function(){try{var mode="system";var raw=localStorage.getItem(${JSON.stringify(key)});if(raw){var wrap=JSON.parse(raw);if(wrap&&typeof wrap.e==="number"&&wrap.e>Date.now()&&wrap.v&&wrap.v.theme&&typeof wrap.v.theme.mode==="string")mode=wrap.v.theme.mode;}var dark=mode==="dark"||(mode!=="light"&&window.matchMedia("(prefers-color-scheme: dark)").matches);var root=document.documentElement;root.setAttribute("data-theme",dark?"dark":"light");root.style.colorScheme=dark?"dark":"light";root.style.backgroundColor=dark?${JSON.stringify(darkBg)}:${JSON.stringify(lightBg)};var color=dark?${JSON.stringify(darkBg)}:${JSON.stringify(lightBg)};var metas=document.querySelectorAll('meta[name="theme-color"]');var pinned=mode==="light"||mode==="dark";if(pinned){for(var i=0;i<metas.length;i++){metas[i].setAttribute("content",color);metas[i].removeAttribute("media");}}else{var fallback=document.querySelector('meta[name="theme-color"]:not([media])');if(fallback)fallback.setAttribute("content",color);}}catch(e){}})();`
 }

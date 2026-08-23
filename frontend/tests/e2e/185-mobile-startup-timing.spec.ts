@@ -129,6 +129,9 @@ test.describe('mobile LTE cold-start timing', () => {
     // font preloads are gone. A code surface may still fetch a face later.
     expect(bytes.fonts, 'no font preload on the critical path').toBe(0)
 
+    // Constrained warmup defers markdown/shiki worker chunks past shell_visible.
+    expect(bytes.workers, 'no render workers on the critical path').toBe(0)
+
     // Splash must be in the static HTML (or Suspense fallback) so the page is
     // never a blank #app while the CSR graph downloads.
     expect(

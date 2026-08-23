@@ -1,8 +1,9 @@
 import { style } from '@vanilla-extract/css'
-import { bootSplashDark, bootSplashLight } from '~/lib/bootSplashTheme'
+import { BOOT_SPLASH_GAP, bootSplashDark, bootSplashLight } from '~/lib/bootSplashTheme'
 
 /**
- * Solid-side boot splash. Mirrors the inline `<style>` in `entry-server.tsx`.
+ * Solid-side boot splash. Mirrors `bootSplashDocumentCss()` in
+ * `~/lib/bootSplashTheme` (used by `entry-server.tsx`).
  *
  * Literals only — not `var(--background)`. The app CSS chunk publishes a light
  * `:root` palette before `themeStore` runs, so a `var(--background, darkHex)`
@@ -14,7 +15,7 @@ export const root = style({
   'alignItems': 'center',
   'justifyContent': 'center',
   'flexDirection': 'column',
-  'gap': '1rem',
+  'gap': BOOT_SPLASH_GAP,
   'fontFamily': 'system-ui, sans-serif',
   'background': bootSplashLight.background,
   'color': bootSplashLight.foreground,
