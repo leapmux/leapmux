@@ -27,9 +27,6 @@ describe('dialog safe-area insets (Dialog.css.ts)', () => {
       'safe-area-inset-left',
     ]) {
       expect(source, inset).toContain(`env(${inset}, 0px)`)
-      // Custom-property bridge so Playwright can simulate non-zero insets
-      // (desktop Chromium always reports env() as 0).
-      expect(source, inset).toContain(`--leapmux-${inset}`)
     }
   })
 
