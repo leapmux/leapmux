@@ -166,6 +166,36 @@ describe('handleBranchChanged', () => {
     expect(repoGitStore.get(repoKey('w1', '/other'))?.branchPinnedUntilRefresh).toBe(false)
   })
 
+  it('keeps a metadata-only clean repo across a transient non-repo response', async () => {
+    const repoGitStore = createRepoGitStore()
+    repoGitStore.upsert(repoKey('w1', '/other'), {
+      workerId: 'w1',
+      toplevel: '/other',
+      branch: 'dev',
+      gitStatusSeen: true,
+    })
+    mockGetGitFileStatus.mockResolvedValueOnce({
+      repoRoot: '',
+      status: undefined,
+      files: [],
+      errorHint: 'not a git repository',
+    })
+
+    handleBranchChanged(
+      { repoGitStore, getCurrentTabContext: () => ({ workerId: 'w1', gitToplevel: '/active' } as never) },
+      { workerId: 'w1', gitToplevel: '/other' },
+      'feature',
+    )
+    await flush()
+    await vi.waitFor(() => {
+      expect(repoGitStore.get(repoKey('w1', '/other'))?.branch).toBe('feature')
+    })
+
+    expect(repoGitStore.get(repoKey('w1', '/other'))?.toplevel).toBe('/other')
+    expect(repoGitStore.get(repoKey('w1', '/other'))?.errorHint).toBe('')
+    expect(repoGitStore.get(repoKey('w1', '/other'))?.gitStatusSeen).toBe(true)
+  })
+
   it('clears the branch pin when a non-active refresh rejects', async () => {
     const repoGitStore = createRepoGitStore()
     mockGetGitFileStatus.mockRejectedValueOnce(new Error('worker unreachable'))

@@ -38,6 +38,11 @@ export interface RepoGitState {
    * `refresh()` or a full GetGitFileStatus upsert clears the pin.
    */
   branchPinnedUntilRefresh?: boolean
+  /**
+   * Set when a git-status proto or GetGitFileStatus response wrote this
+   * entry. Distinguishes a real status seed from an optimistic branch stamp.
+   */
+  gitStatusSeen?: boolean
 }
 
 export interface RepoGitView {
@@ -272,10 +277,8 @@ export function findCanonicalRepoKey(
   return best?.key
 }
 
-/** True when the entry holds more than a stamp-only branch seed. */
-export function hasPreservableRepoGitState(state: RepoGitState | undefined): boolean {
-  if (!state?.toplevel)
-    return false
+/** True when the entry has fields beyond a branch stamp seed. */
+export function hasHydratedRepoGitFields(state: RepoGitState): boolean {
   return Boolean(
     state.repoRoot
     || state.originUrl
@@ -296,19 +299,42 @@ export function hasPreservableRepoGitState(state: RepoGitState | undefined): boo
   )
 }
 
-/** True when the store already holds a healthy repo for this probe path. */
+/**
+ * True when the entry is only an optimistic branch stamp
+ * (`toplevel` + `branch` + pin) with no status payload yet.
+ */
+export function isStampOnlyRepoGitState(state: RepoGitState | undefined): boolean {
+  if (!state?.toplevel || !state.branchPinnedUntilRefresh)
+    return false
+  return !state.gitStatusSeen && !hasHydratedRepoGitFields(state)
+}
+
+/**
+ * True when the entry is a real repo identity worth keeping across a
+ * transient non-repo response. Stamp-only seeds are excluded so a first
+ * probe can still write an `errorHint` stub.
+ */
+export function hasPreservableRepoGitState(state: RepoGitState | undefined): boolean {
+  if (!state?.toplevel)
+    return false
+  if (state.gitStatusSeen || hasHydratedRepoGitFields(state))
+    return true
+  return false
+}
+
+/** True when the store already holds a preservable repo for this probe path. */
 export function hasHealthyRepoForProbe(
   store: RepoGitLookup,
   workerId: string,
   probePath: string,
   hintKey?: RepoKey,
 ): boolean {
-  if (hintKey) {
-    const hinted = store.get(hintKey)
-    if (hinted?.toplevel)
-      return true
-  }
-  return findCanonicalRepoKey(store, workerId, probePath) !== undefined
+  if (hintKey && hasPreservableRepoGitState(store.get(hintKey)))
+    return true
+  const canonical = findCanonicalRepoKey(store, workerId, probePath)
+  if (!canonical)
+    return false
+  return hasPreservableRepoGitState(store.get(canonical))
 }
 
 /**
@@ -332,15 +358,20 @@ export function applyFullGitStatusUpsert(
       branchPinnedUntilRefresh = true
     }
   }
-  store.upsert(mapped.key, { ...mapped.patch, branch, branchPinnedUntilRefresh })
+  store.upsert(mapped.key, {
+    ...mapped.patch,
+    branch,
+    branchPinnedUntilRefresh,
+    gitStatusSeen: true,
+  })
   return mapped.key
 }
 
 /**
  * Apply a git-status proto to the keyed store. Clears file-derived fields when
  * `toplevel` changes, or when `branch` changes and the branch is not pinned.
- * Metadata broadcasts do not carry `errorHint`; identity-stable upserts clear
- * a prior hint so orphan-migration tips do not stick after recovery.
+ * Metadata broadcasts do not carry diagnostics. Identity-stable upserts clear
+ * orphan-migration tips, but keep a refresh-sourced hint on a hydrated entry.
  */
 export function upsertRepoGitFromProtoStatus(
   store: RepoGitStore,
@@ -354,7 +385,7 @@ export function upsertRepoGitFromProtoStatus(
     return
 
   const prev = store.get(key)
-  let next: Partial<RepoGitState> = { ...patch }
+  let next: Partial<RepoGitState> = { ...patch, gitStatusSeen: true }
 
   if (prev?.branchPinnedUntilRefresh)
     next.branch = prev.branch
@@ -391,7 +422,9 @@ export function upsertRepoGitFromProtoStatus(
     }
   }
   else if (prev) {
-    next.errorHint = ''
+    // Clear orphan-migration tips after recovery. Keep a hint that arrived
+    // with a hydrated GetGitFileStatus payload (valid toplevel + diagnostics).
+    next.errorHint = hasHydratedRepoGitFields(prev) ? (prev.errorHint || '') : ''
   }
 
   store.upsert(key, next)
@@ -493,6 +526,7 @@ export function patchFromNonRepoGetGitFileStatus(
       diffUntracked: 0,
       files: [],
       errorHint: resp.errorHint ?? '',
+      gitStatusSeen: true,
     },
   }
 }
@@ -508,8 +542,8 @@ export function repoGitView(
     return EMPTY_VIEW
   const state = store.get(key)
   if (!state) {
-    const fromKey = key ? repoKeyParts(key).path : undefined
-    return { ...EMPTY_VIEW, key, toplevel: tab.gitToplevel || fromKey }
+    // Prefer tab.gitToplevel. Never treat a probe-path store key as the repo root.
+    return { ...EMPTY_VIEW, key, toplevel: tab.gitToplevel }
   }
   return {
     key,

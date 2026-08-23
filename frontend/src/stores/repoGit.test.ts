@@ -7,6 +7,9 @@ import {
   findCanonicalRepoKey,
   focusedRepoKeyFromTab,
   gitStatusProbePath,
+  hasHealthyRepoForProbe,
+  hasPreservableRepoGitState,
+  isStampOnlyRepoGitState,
   migrateErrorHintFromForResolvedRepo,
   patchFromNonRepoGetGitFileStatus,
   protoToRepoGitPatch,
@@ -54,6 +57,82 @@ describe('findCanonicalRepoKey', () => {
     const store = createRepoGitStore()
     store.upsert(repoKey('w1', '/repo'), { workerId: 'w1', toplevel: '/repo', branch: 'main' })
     expect(findCanonicalRepoKey(store, 'w1', '/repo/pkg')).toBe('w1\x00/repo')
+  })
+})
+
+describe('hasPreservableRepoGitState', () => {
+  it('treats metadata-only clean repos as preservable', () => {
+    expect(hasPreservableRepoGitState({
+      workerId: 'w1',
+      toplevel: '/repo',
+      branch: 'main',
+      repoRoot: '',
+      originUrl: '',
+      isWorktree: false,
+      ahead: 0,
+      behind: 0,
+      conflicted: false,
+      stashed: false,
+      deleted: false,
+      renamed: false,
+      modified: false,
+      typeChanged: false,
+      added: false,
+      untracked: false,
+      diffAdded: 0,
+      diffDeleted: 0,
+      diffUntracked: 0,
+      files: [],
+      errorHint: '',
+      gitStatusSeen: true,
+    })).toBe(true)
+  })
+
+  it('excludes stamp-only seeds', () => {
+    const stampOnly = {
+      workerId: 'w1',
+      toplevel: '/repo',
+      branch: 'feature',
+      branchPinnedUntilRefresh: true,
+      repoRoot: '',
+      originUrl: '',
+      isWorktree: false,
+      ahead: 0,
+      behind: 0,
+      conflicted: false,
+      stashed: false,
+      deleted: false,
+      renamed: false,
+      modified: false,
+      typeChanged: false,
+      added: false,
+      untracked: false,
+      diffAdded: 0,
+      diffDeleted: 0,
+      diffUntracked: 0,
+      files: [],
+      errorHint: '',
+    }
+    expect(isStampOnlyRepoGitState(stampOnly)).toBe(true)
+    expect(hasPreservableRepoGitState(stampOnly)).toBe(false)
+  })
+})
+
+describe('hasHealthyRepoForProbe', () => {
+  it('matches hasPreservableRepoGitState for hint and canonical keys', () => {
+    const store = createRepoGitStore()
+    const key = repoKey('w1', '/repo')
+    store.upsert(key, { workerId: 'w1', toplevel: '/repo', branch: 'main', gitStatusSeen: true })
+    expect(hasHealthyRepoForProbe(store, 'w1', '/repo/pkg', key)).toBe(true)
+
+    store.clear(key)
+    store.upsert(key, {
+      workerId: 'w1',
+      toplevel: '/repo',
+      branch: 'feature',
+      branchPinnedUntilRefresh: true,
+    })
+    expect(hasHealthyRepoForProbe(store, 'w1', '/repo', key)).toBe(false)
   })
 })
 
@@ -242,6 +321,28 @@ describe('upsertRepoGitFromProtoStatus', () => {
     expect(store.get(key)?.ahead).toBe(1)
   })
 
+  it('preserves a hydrated-repo errorHint across identity-stable metadata', () => {
+    const store = createRepoGitStore()
+    const key = repoKey('w1', '/repo')
+    store.upsert(key, {
+      workerId: 'w1',
+      toplevel: '/repo',
+      branch: 'main',
+      repoRoot: '/repo',
+      errorHint: 'dubious ownership',
+      gitStatusSeen: true,
+    })
+
+    upsertRepoGitFromProtoStatus(store, 'w1', create(GitRepoStatusSchema, {
+      toplevel: '/repo',
+      branch: 'main',
+      ahead: 1,
+    }))
+
+    expect(store.get(key)?.errorHint).toBe('dubious ownership')
+    expect(store.get(key)?.ahead).toBe(1)
+  })
+
   it('keeps a migrated errorHint until the next identity-stable broadcast', () => {
     const store = createRepoGitStore()
     const orphanKey = repoKey('w1', '/repo/pkg')
@@ -364,9 +465,8 @@ describe('repoGitView', () => {
     expect(view.diffStats).toEqual({ added: 0, deleted: 0, untracked: 0 })
   })
 
-  it('uses the canonical key path as toplevel when the tab has no gitToplevel', () => {
+  it('does not treat a probe-path key as toplevel when the store has no entry', () => {
     const store = createRepoGitStore()
-    // Key resolves via workingDir probe path; store has no entry yet.
     const view = repoGitView(
       { workerId: 'w1', workingDir: '/repo/pkg' },
       store,
@@ -374,7 +474,8 @@ describe('repoGitView', () => {
     )
 
     expect(view.key).toBe('w1\x00/repo/pkg')
-    expect(view.toplevel).toBe('/repo/pkg')
+    expect(view.toplevel).toBeUndefined()
+    expect(view.isGitRepo).toBe(false)
   })
 
   it('reads canonical repo state for a file tab without gitToplevel', () => {

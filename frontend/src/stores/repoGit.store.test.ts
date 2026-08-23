@@ -26,6 +26,37 @@ function makeEntry(overrides: Partial<GitFileStatusEntry> & { path: string }): G
 }
 
 describe('createRepoGitStore', () => {
+  describe('worker key index', () => {
+    it('tracks keys per worker and drops them on clear', () => {
+      const store = createRepoGitStore()
+      const key = repoKey('w1', '/repo')
+      store.upsert(key, { workerId: 'w1', toplevel: '/repo', branch: 'main' })
+      expect(store.keysForWorker('w1')).toEqual([key])
+
+      store.clear(key)
+      expect(store.keysForWorker('w1')).toEqual([])
+    })
+
+    it('moves a key when workerId changes', () => {
+      const store = createRepoGitStore()
+      const key = repoKey('w1', '/repo')
+      store.upsert(key, { workerId: 'w1', toplevel: '/repo', branch: 'main' })
+      store.upsert(key, { workerId: 'w2' })
+
+      expect(store.keysForWorker('w1')).toEqual([])
+      expect(store.keysForWorker('w2')).toEqual([key])
+    })
+
+    it('clears the index on clearAll', () => {
+      const store = createRepoGitStore()
+      store.upsert(repoKey('w1', '/a'), { workerId: 'w1', toplevel: '/a' })
+      store.upsert(repoKey('w2', '/b'), { workerId: 'w2', toplevel: '/b' })
+      store.clearAll()
+      expect(store.keysForWorker('w1')).toEqual([])
+      expect(store.keysForWorker('w2')).toEqual([])
+    })
+  })
+
   describe('upsert', () => {
     it('merges partial patches onto existing repo state', () => {
       const store = createRepoGitStore()
@@ -174,7 +205,7 @@ describe('createRepoGitStore', () => {
       await createRoot(async (dispose) => {
         const store = createRepoGitStore()
         const key = repoKey('worker1', '/repo')
-        store.upsert(key, { workerId: 'worker1', toplevel: '/repo', branch: 'main' })
+        store.upsert(key, { workerId: 'worker1', toplevel: '/repo', branch: 'main', gitStatusSeen: true })
 
         mockGetGitFileStatus.mockResolvedValueOnce({
           repoRoot: '',
