@@ -239,6 +239,21 @@ export function createRepoGitStore() {
     probeGen.set(probeId, mine)
     const myKeys = pinKeysForProbe(workerId, path, nonRepoKey)
     inflightByProbe.set(probeId, { gen: mine, keys: myKeys })
+
+    const canApplyToKey = (targetKey: RepoKey | undefined): targetKey is RepoKey => {
+      if (!targetKey)
+        return false
+      if (laterRefreshCoversKey(mine, targetKey)) {
+        releaseStaleRefreshPins(mine, myKeys)
+        return false
+      }
+      return true
+    }
+
+    const recordCompletedApply = (appliedKey: RepoKey) => {
+      lastCompletedGenByKey.set(appliedKey, mine)
+    }
+
     beginLoading()
     let writtenKey: RepoKey | undefined
     try {
@@ -252,8 +267,11 @@ export function createRepoGitStore() {
         const lookup = { get, repos: () => repos as Readonly<Record<RepoKey, RepoGitState>>, keysForWorker }
         if (nonRepoKey && !hasHealthyRepoForProbe(lookup, workerId, path, nonRepoKey)) {
           const nonRepo = patchFromNonRepoGetGitFileStatus(workerId, resp, nonRepoKey)
-          upsert(nonRepo.key, nonRepo.patch)
-          writtenKey = nonRepo.key
+          if (canApplyToKey(nonRepo.key)) {
+            upsert(nonRepo.key, nonRepo.patch)
+            writtenKey = nonRepo.key
+            recordCompletedApply(nonRepo.key)
+          }
         }
         else if (hasHealthyRepoForProbe(lookup, workerId, path, nonRepoKey)) {
           log.warn('ignored non-repo git status response; keeping last-good repo state', { workerId, path })
@@ -263,7 +281,10 @@ export function createRepoGitStore() {
         realignFocusedKeyAfterRefresh(writtenKey, workerId, path, nonRepoKey)
         return writtenKey
       }
+      if (!canApplyToKey(mapped.key))
+        return undefined
       writtenKey = applyFullGitStatusUpsert({ get, upsert }, mapped)
+      recordCompletedApply(writtenKey)
       realignFocusedKeyAfterRefresh(writtenKey, workerId, path, nonRepoKey)
       return writtenKey
     }
@@ -280,14 +301,11 @@ export function createRepoGitStore() {
     }
     finally {
       endLoading()
-      const stillMine = probeGen.get(probeId) === mine
-      if (stillMine) {
-        for (const key of myKeys)
-          lastCompletedGenByKey.set(key, mine)
-      }
       const tracked = inflightByProbe.get(probeId)
       if (tracked?.gen === mine)
         inflightByProbe.delete(probeId)
+      if (probeGen.get(probeId) === mine)
+        probeGen.delete(probeId)
     }
   }
 

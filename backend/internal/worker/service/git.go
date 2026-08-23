@@ -264,27 +264,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 		// worktree / toplevel from path-info so a partial probe cannot wipe
 		// good frontend store state. Always canonicalize toplevel the same
 		// way as repo_root so repo keys do not split on /var vs /private/var.
-		status := gitStatus
-		if status == nil {
-			status = &leapmuxv1.GitRepoStatus{}
-		}
-		if status.Toplevel == "" {
-			status.Toplevel = info.TopLevel
-		} else {
-			status.Toplevel = pathutil.Canonicalize(status.Toplevel)
-		}
-		status.Toplevel = pathutil.NormalizeNative(status.Toplevel)
-		if status.Branch == "" {
-			status.Branch = branchOrShortSHA(info)
-		}
-		if status.OriginUrl == "" {
-			status.OriginUrl = strings.TrimSpace(gitutil.GetOriginURL(ctx, dirPath))
-		}
-		// Prefer path-info disposition when GetGitStatus omitted it (zero
-		// value is indistinguishable from "main tree" on the wire).
-		if !status.IsWorktree && info.IsWorktree {
-			status.IsWorktree = true
-		}
+		status := mergeGitFileStatusFromPathInfo(gitStatus, info, ctx, dirPath)
 		sendProtoResponse(sender, &leapmuxv1.GetGitFileStatusResponse{
 			RepoRoot: pathutil.NormalizeNative(info.RepoRoot),
 			Files:    files,
@@ -3200,6 +3180,34 @@ func parseGitPathInfoOutput(output string, hasHeadFields bool) (*gitPathInfo, er
 		info.RepoRoot = pathutil.Canonicalize(filepath.Dir(filepath.Clean(commonDir)))
 	}
 	return info, nil
+}
+
+// mergeGitFileStatusFromPathInfo backfills identity fields from path-info when
+// GetGitStatus returned nil or omitted them. Path-info is authoritative for
+// worktree disposition on the queried dir.
+func mergeGitFileStatusFromPathInfo(
+	status *leapmuxv1.GitRepoStatus,
+	info *gitPathInfo,
+	ctx context.Context,
+	dirPath string,
+) *leapmuxv1.GitRepoStatus {
+	if status == nil {
+		status = &leapmuxv1.GitRepoStatus{}
+	}
+	if status.Toplevel == "" {
+		status.Toplevel = info.TopLevel
+	} else {
+		status.Toplevel = pathutil.Canonicalize(status.Toplevel)
+	}
+	status.Toplevel = pathutil.NormalizeNative(status.Toplevel)
+	if status.Branch == "" {
+		status.Branch = branchOrShortSHA(info)
+	}
+	if status.OriginUrl == "" {
+		status.OriginUrl = strings.TrimSpace(gitutil.GetOriginURL(ctx, dirPath))
+	}
+	status.IsWorktree = info.IsWorktree
+	return status
 }
 
 // branchOrShortSHA returns info.BranchName when set, otherwise a short

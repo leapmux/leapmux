@@ -333,6 +333,54 @@ func TestGetGitFileStatus_DetachedHEAD(t *testing.T) {
 	assert.NotEqual(t, "HEAD", branch, "must not surface the literal 'HEAD'")
 }
 
+func TestMergeGitFileStatusFromPathInfo_NilStatusBackfillsIdentity(t *testing.T) {
+	t.Parallel()
+
+	dir := initRepo(t)
+	run(t, dir, "git", "remote", "add", "origin", "https://github.com/test/repo.git")
+	run(t, dir, "git", "checkout", "-b", "feature-backfill")
+
+	info, err := queryGitPathInfo(context.Background(), dir)
+	require.NoError(t, err)
+
+	merged := mergeGitFileStatusFromPathInfo(nil, info, context.Background(), dir)
+
+	assert.Equal(t, "feature-backfill", merged.GetBranch())
+	assert.Equal(t, "https://github.com/test/repo.git", merged.GetOriginUrl())
+	assert.False(t, merged.GetIsWorktree())
+	expectedToplevel, err := filepath.EvalSymlinks(info.TopLevel)
+	require.NoError(t, err)
+	assert.True(t, pathutil.SamePath(expectedToplevel, merged.GetToplevel()))
+}
+
+func TestMergeGitFileStatusFromPathInfo_CorrectsWorktreeDisposition(t *testing.T) {
+	t.Parallel()
+
+	repoDir := initRepo(t)
+	wtDir := filepath.Join(t.TempDir(), "merge-wt")
+	run(t, repoDir, "git", "worktree", "add", "-b", "wt-merge", wtDir)
+
+	mainInfo, err := queryGitPathInfo(context.Background(), repoDir)
+	require.NoError(t, err)
+	require.False(t, mainInfo.IsWorktree)
+
+	wtInfo, err := queryGitPathInfo(context.Background(), wtDir)
+	require.NoError(t, err)
+	require.True(t, wtInfo.IsWorktree)
+
+	// Simulate GetGitStatus wrongly reporting worktree on a main-tree probe.
+	wrongMain := &leapmuxv1.GitRepoStatus{IsWorktree: true, Branch: "stale"}
+	mergedMain := mergeGitFileStatusFromPathInfo(wrongMain, mainInfo, context.Background(), repoDir)
+	assert.False(t, mergedMain.GetIsWorktree(),
+		"path-info must override a false-positive IsWorktree from GetGitStatus")
+
+	// Simulate GetGitStatus omitting worktree on a linked-worktree probe.
+	wrongWt := &leapmuxv1.GitRepoStatus{Branch: "stale"}
+	mergedWt := mergeGitFileStatusFromPathInfo(wrongWt, wtInfo, context.Background(), wtDir)
+	assert.True(t, mergedWt.GetIsWorktree(),
+		"path-info must set IsWorktree when GetGitStatus omitted it")
+}
+
 func TestCheckoutBranchIfRequested_RemoteBranch(t *testing.T) {
 	t.Parallel()
 
