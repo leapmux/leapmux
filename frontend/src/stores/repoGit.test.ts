@@ -2,7 +2,15 @@ import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
 import { GitRepoStatusSchema } from '~/generated/leapmux/v1/common_pb'
 import { GetGitFileStatusResponseSchema } from '~/generated/leapmux/v1/git_pb'
-import { gitStatusProbePath, patchFromNonRepoGetGitFileStatus, protoToRepoGitPatch, repoGitView, repoKey } from '~/stores/repoGit'
+import {
+  focusedRepoKeyFromTab,
+  gitStatusProbePath,
+  patchFromNonRepoGetGitFileStatus,
+  protoToRepoGitPatch,
+  repoGitView,
+  repoKey,
+  upsertRepoGitFromProtoStatus,
+} from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 
 describe('gitStatusProbePath', () => {
@@ -12,6 +20,12 @@ describe('gitStatusProbePath', () => {
 
   it('falls back to workingDir when toplevel is unset', () => {
     expect(gitStatusProbePath({ workingDir: '/repo/pkg' })).toBe('/repo/pkg')
+  })
+})
+
+describe('focusedRepoKeyFromTab', () => {
+  it('falls back to the probe path when gitToplevel is unset', () => {
+    expect(focusedRepoKeyFromTab({ workerId: 'w1', workingDir: '/repo/pkg' })).toBe('w1\x00/repo/pkg')
   })
 })
 
@@ -39,7 +53,58 @@ describe('patchFromNonRepoGetGitFileStatus', () => {
 })
 
 describe('protoToRepoGitPatch', () => {
-  it('clears file-derived fields so metadata upserts do not leave stale diffs', () => {
+  it('maps metadata fields only', () => {
+    const patch = protoToRepoGitPatch('w1', create(GitRepoStatusSchema, {
+      toplevel: '/repo',
+      branch: 'feature',
+      ahead: 2,
+    }))
+    expect(patch).toEqual({
+      workerId: 'w1',
+      toplevel: '/repo',
+      branch: 'feature',
+      originUrl: '',
+      isWorktree: false,
+      ahead: 2,
+      behind: 0,
+      conflicted: false,
+      stashed: false,
+      deleted: false,
+      renamed: false,
+      modified: false,
+      typeChanged: false,
+      added: false,
+      untracked: false,
+    })
+    expect(patch).not.toHaveProperty('files')
+  })
+})
+
+describe('upsertRepoGitFromProtoStatus', () => {
+  it('preserves files when branch and toplevel are unchanged', () => {
+    const store = createRepoGitStore()
+    const key = repoKey('w1', '/repo')
+    const files = [{ path: 'a.txt' } as never]
+    store.upsert(key, {
+      workerId: 'w1',
+      toplevel: '/repo',
+      branch: 'main',
+      diffAdded: 5,
+      files,
+    })
+
+    upsertRepoGitFromProtoStatus(store, 'w1', create(GitRepoStatusSchema, {
+      toplevel: '/repo',
+      branch: 'main',
+      ahead: 1,
+    }))
+
+    expect(store.get(key)?.ahead).toBe(1)
+    expect(store.get(key)?.diffAdded).toBe(5)
+    expect(store.get(key)?.files).toEqual(files)
+  })
+
+  it('clears file-derived fields when branch changes', () => {
     const store = createRepoGitStore()
     const key = repoKey('w1', '/repo')
     store.upsert(key, {
@@ -50,21 +115,28 @@ describe('protoToRepoGitPatch', () => {
       files: [{ path: 'a.txt' } as never],
     })
 
-    const patch = protoToRepoGitPatch('w1', create(GitRepoStatusSchema, {
+    upsertRepoGitFromProtoStatus(store, 'w1', create(GitRepoStatusSchema, {
       toplevel: '/repo',
       branch: 'feature',
     }))
-    expect(patch).toMatchObject({
-      branch: 'feature',
-      diffAdded: 0,
-      diffDeleted: 0,
-      diffUntracked: 0,
-      files: [],
-      errorHint: '',
-    })
-    store.upsert(key, patch!)
+
+    expect(store.get(key)?.branch).toBe('feature')
     expect(store.get(key)?.diffAdded).toBe(0)
     expect(store.get(key)?.files).toEqual([])
+  })
+
+  it('migrates errorHint from a probe-path orphan key when toplevel resolves', () => {
+    const store = createRepoGitStore()
+    const orphanKey = repoKey('w1', '/repo/pkg')
+    store.upsert(orphanKey, { workerId: 'w1', errorHint: 'not a git repository' })
+
+    upsertRepoGitFromProtoStatus(store, 'w1', create(GitRepoStatusSchema, {
+      toplevel: '/repo',
+      branch: 'main',
+    }), { migrateErrorHintFrom: orphanKey })
+
+    expect(store.get(orphanKey)).toBeUndefined()
+    expect(store.get(repoKey('w1', '/repo'))?.errorHint).toBe('not a git repository')
   })
 })
 

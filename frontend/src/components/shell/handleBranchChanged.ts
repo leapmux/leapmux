@@ -51,7 +51,12 @@ export function handleBranchChanged(
         return
       }
       const nonRepo = patchFromNonRepoGetGitFileStatus(repo.workerId, resp, key)
-      deps.repoGitStore.upsert(nonRepo.key, nonRepo.patch)
+      deps.repoGitStore.upsert(nonRepo.key, {
+        ...nonRepo.patch,
+        workerId: repo.workerId,
+        toplevel: repo.gitToplevel,
+        branch: newBranch,
+      })
     }
     catch (err) {
       log.warn('failed to refresh git status after branch change', err)

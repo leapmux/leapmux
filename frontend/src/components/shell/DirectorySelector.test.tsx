@@ -6,7 +6,9 @@ import { withPreferences } from '~/test-support/preferencesProvider'
 import { DirectorySelector } from './DirectorySelector'
 
 vi.mock('~/components/tree/DirectoryTree', () => ({
-  DirectoryTree: () => <div data-testid="directory-tree" />,
+  DirectoryTree: (props: { showGitStatus?: boolean }) => (
+    <div data-testid="directory-tree" data-show-git-status={String(props.showGitStatus ?? true)} />
+  ),
 }))
 
 // Partial mock: keep the real key constants (modules in this import graph --
@@ -76,5 +78,12 @@ describe('directorySelector', () => {
     refreshFileTree()
 
     expect(refreshTree).not.toHaveBeenCalled()
+  })
+
+  it('disables git status decorations in the picker tree', () => {
+    const { state, tree } = makeState()
+    render(withPreferences(() => <DirectorySelector state={state as any} tree={tree as any} repoGitStore={createRepoGitStore()} />))
+
+    expect(screen.getByTestId('directory-tree')).toHaveAttribute('data-show-git-status', 'false')
   })
 })

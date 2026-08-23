@@ -163,15 +163,13 @@ const EMPTY_VIEW: RepoGitView = {
   isGitRepo: false,
 }
 
-/** Map a worker git-status proto onto store fields. */
+/** Map a worker git-status proto onto store fields (metadata only). */
 export function protoToRepoGitPatch(
   workerId: string,
   status: GitRepoStatus | undefined,
 ): Partial<RepoGitState> | undefined {
   if (!status?.toplevel)
     return undefined
-  // Status pushes carry repo metadata only — not the per-file list. Clear
-  // file-derived fields so a branch rename does not leave stale diff badges.
   return {
     workerId,
     toplevel: status.toplevel,
@@ -188,12 +186,71 @@ export function protoToRepoGitPatch(
     typeChanged: status.typeChanged,
     added: status.added,
     untracked: status.untracked,
-    diffAdded: 0,
-    diffDeleted: 0,
-    diffUntracked: 0,
-    files: [],
-    errorHint: '',
   }
+}
+
+export interface UpsertRepoGitFromProtoOpts {
+  /** Copy errorHint from this orphan key when repo identity resolves, then delete it. */
+  migrateErrorHintFrom?: RepoKey
+}
+
+/**
+ * Apply a git-status proto to the keyed store. Clears file-derived fields only
+ * when `toplevel` or `branch` changes so turn-end metadata broadcasts do not
+ * wipe the file list before `refresh()` lands.
+ */
+export function upsertRepoGitFromProtoStatus(
+  store: RepoGitStore,
+  workerId: string,
+  status: GitRepoStatus | undefined,
+  opts?: UpsertRepoGitFromProtoOpts,
+): void {
+  const patch = protoToRepoGitPatch(workerId, status)
+  const key = repoKeyFromStatus(workerId, status)
+  if (!patch || !key)
+    return
+
+  const prev = store.get(key)
+  let next: Partial<RepoGitState> = { ...patch }
+
+  if (opts?.migrateErrorHintFrom) {
+    const orphan = store.get(opts.migrateErrorHintFrom)
+    if (orphan?.errorHint) {
+      next.errorHint = orphan.errorHint
+      store.clear(opts.migrateErrorHintFrom)
+    }
+  }
+
+  const identityChanged = !prev
+    || next.toplevel !== prev.toplevel
+    || next.branch !== prev.branch
+
+  if (identityChanged) {
+    next = {
+      ...next,
+      diffAdded: 0,
+      diffDeleted: 0,
+      diffUntracked: 0,
+      files: [],
+      errorHint: next.errorHint ?? '',
+    }
+  }
+
+  store.upsert(key, next)
+}
+
+/** Repo key for reads when a tab has not resolved `gitToplevel` yet. */
+export function focusedRepoKeyFromTab(
+  tab: { workerId?: string, gitToplevel?: string, workingDir?: string },
+): RepoKey | undefined {
+  const fromTab = repoKeyFromTab(tab)
+  if (fromTab)
+    return fromTab
+  const workerId = tab.workerId ?? ''
+  const path = gitStatusProbePath(tab)
+  if (!workerId || !path)
+    return undefined
+  return repoKey(workerId, path)
 }
 
 /** Map a GetGitFileStatus RPC response onto a repo upsert patch. */

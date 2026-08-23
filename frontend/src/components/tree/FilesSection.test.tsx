@@ -114,6 +114,31 @@ describe('filesSection git error hint', () => {
 
     expect(screen.getByTestId('files-git-error-hint')).toHaveTextContent(/not a git repository/i)
   })
+
+  it('shows errorHint even when the repo is otherwise valid', () => {
+    render(() => (
+      <FilesSection
+        workerId={WORKER_ID}
+        workingDir={WORKING_DIR}
+        homeDir="/home/alice"
+        flavor="posix"
+        fileTreePath={WORKING_DIR}
+        onFileSelect={() => {}}
+        gitStatusStore={{
+          focusedState: () => ({ toplevel: WORKING_DIR, errorHint: 'dubious ownership', files: [] }),
+          statusRoot: () => WORKING_DIR,
+          getChangedFiles: () => [],
+          getFileStatus: () => undefined,
+          getNodeDiffStats: () => ({ added: 0, deleted: 0, untracked: 0 }),
+          hasChanges: () => false,
+        } as unknown as ReturnType<typeof createRepoGitStore>}
+        hasActiveFileTab={false}
+      />
+    ))
+
+    expect(screen.getByTestId('files-git-error-hint')).toHaveTextContent(/dubious ownership/i)
+    expect(screen.getByTestId('files-filter-tab-bar')).toBeInTheDocument()
+  })
 })
 
 describe('filesSection sort preference', () => {

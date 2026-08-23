@@ -26,7 +26,7 @@ import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { base64ToUint8Array } from '~/lib/base64'
 import { getInnerMessage, parseMessageContent } from '~/lib/messageParser'
 import { getMruProviders, touchMruProvider } from '~/lib/mruAgentProviders'
-import { protoToRepoGitPatch, repoKeyFromStatus } from '~/stores/repoGit'
+import { upsertRepoGitFromProtoStatus } from '~/stores/repoGit'
 import { protoToAgentTabFields, resolveOptimisticGitInfo, setOptionValue } from '~/stores/tab.helpers'
 import { emitRemoveTab, emitRemoveTabs, hasLiveTabRecord } from '~/stores/tabOps'
 import { openTabInFocusedTile } from './openTabInFocusedTile'
@@ -183,10 +183,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
         const seed = resolveOptimisticGitInfo(props.selection.activeTabForWorkspace(workspaceId), {
           workingDir: agentFields.workingDir,
         })
-        const gitPatch = protoToRepoGitPatch(resp.agent.workerId, resp.agent.gitStatus)
-        const gitKey = repoKeyFromStatus(resp.agent.workerId, resp.agent.gitStatus)
-        if (gitPatch && gitKey)
-          props.repoGitStore.upsert(gitKey, gitPatch)
+        upsertRepoGitFromProtoStatus(props.repoGitStore, resp.agent.workerId, resp.agent.gitStatus)
         // `hydrated`: the OpenAgent response IS the worker's answer for this
         // tab, so `useTabHydrators` must not immediately re-ask. Its reply
         // would land without the pending-axis suppression the live settings

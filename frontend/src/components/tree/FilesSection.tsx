@@ -261,7 +261,7 @@ export const FilesSection: Component<FilesSectionProps> = (props) => {
     // to wait for the real thing rather than for a placeholder that is already
     // on screen.
     <div class={styles.wrapper} data-working-dir={props.workingDir}>
-      <Show when={!isGitRepo() && gitErrorHint()}>
+      <Show when={gitErrorHint()}>
         <div class={`${warningText} ${styles.gitErrorHint}`} data-testid="files-git-error-hint">
           {gitErrorHint()}
         </div>

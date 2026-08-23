@@ -128,7 +128,7 @@ describe('handleBranchChanged', () => {
     await vi.waitFor(() => {
       expect(repoGitStore.get(repoKey('w1', '/other'))?.errorHint).toBe('not a git repository')
     })
-    expect(repoGitStore.get(repoKey('w1', '/other'))?.branch).toBe('')
+    expect(repoGitStore.get(repoKey('w1', '/other'))?.branch).toBe('feature')
   })
 
   it('does not change focused key when refreshing a non-active repo', async () => {
