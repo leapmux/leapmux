@@ -977,7 +977,9 @@ func TestWriterFlushReturnsErrClosedWhenWriteFails(t *testing.T) {
 	release := make(chan struct{})
 	var writeStarted sync.WaitGroup
 	writeStarted.Add(1)
-	w := NewUnstarted(ctx, Config[string]{
+	var gaveUpSawWriting atomic.Bool
+	var w *Writer[string]
+	w = NewUnstarted(ctx, Config[string]{
 		Write: func(context.Context, string) error {
 			writeStarted.Done()
 			<-release
@@ -985,6 +987,14 @@ func TestWriterFlushReturnsErrClosedWhenWriteFails(t *testing.T) {
 		},
 		Size:     func(s string) int { return len(s) },
 		MaxBytes: 1024,
+		OnGiveUp: func(GiveUpReason, error) {
+			// Pin the race: giveUp must observe writing still set. If
+			// finishWrite ran first, Flush can return nil on a refused frame.
+			w.mu.Lock()
+			saw := w.writing
+			w.mu.Unlock()
+			gaveUpSawWriting.Store(saw)
+		},
 	})
 	t.Cleanup(w.Close)
 
@@ -1019,6 +1029,8 @@ func TestWriterFlushReturnsErrClosedWhenWriteFails(t *testing.T) {
 		t.Fatal("Flush never returned after the write failed")
 	}
 	assert.True(t, w.GaveUp(), "a write error must give up the writer")
+	assert.True(t, gaveUpSawWriting.Load(),
+		"giveUp must run before finishWrite clears writing (the Flush race)")
 }
 
 // A panicking Write must still make Flush report ErrClosed, without setting
@@ -1074,6 +1086,8 @@ func TestWriterFlushReturnsErrClosedWhenWritePanics(t *testing.T) {
 	}
 	assert.False(t, w.GaveUp(), "panic must not give up inside writeTurn")
 	assert.True(t, w.IsClosed(), "panic must latch closed so Flush sees torn-down")
+	assert.True(t, w.WritePanicked(),
+		"panic must set WritePanicked so shutdown notify can file Hub-side failure")
 }
 
 // OnGiveUp often cancels the writer context (Conn.Fence). Flush must still

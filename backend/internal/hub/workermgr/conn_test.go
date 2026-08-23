@@ -431,6 +431,48 @@ func TestConnFlushReturnsErrConnectionClosedOnWriteError(t *testing.T) {
 	assert.True(t, conn.GaveUp())
 }
 
+// Caller Flush deadline on a still-open queue must stay a deadline error.
+// Mapping every cancel to ErrConnectionClosed would hide a live slow peer.
+func TestConnFlushPreservesCallerDeadlineWhenQueueStillOpen(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	release := make(chan struct{})
+	defer close(release)
+	var writeStarted sync.WaitGroup
+	writeStarted.Add(1)
+	conn, pump := NewConn(ctx, cancel, "w1", "u1", sendq.NewMaxBytesPoolForTest(), func(*leapmuxv1.ConnectResponse) error {
+		writeStarted.Done()
+		<-release
+		return nil
+	}, nil)
+	t.Cleanup(conn.Fence)
+
+	go func() {
+		for {
+			select {
+			case <-pump.Ready():
+				_ = pump.Drain()
+			case <-conn.Done():
+				return
+			}
+		}
+	}()
+
+	require.NoError(t, conn.SendControl(&leapmuxv1.ConnectResponse{
+		Payload: &leapmuxv1.ConnectResponse_Heartbeat{Heartbeat: &leapmuxv1.Heartbeat{}},
+	}))
+	writeStarted.Wait()
+
+	flushCtx, flushCancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer flushCancel()
+	err := conn.Flush(flushCtx)
+	require.ErrorIs(t, err, context.DeadlineExceeded,
+		"Flush must not map a caller deadline to ErrConnectionClosed while the queue is open")
+	assert.False(t, conn.GaveUp())
+	assert.NotErrorIs(t, err, ErrConnectionClosed)
+}
+
 func TestSendPumpDrainTurnBoundsBatchAndResignals(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

@@ -258,6 +258,11 @@ type Writer[T any] struct {
 	controlBytes int64
 	closed       bool
 	gaveUp       bool
+	// writePanicked is set when a Write panic latched the writer closed without
+	// giveUp. Distinct from gaveUp so the handler-drained Fence path can still
+	// prove the watchdog disarmed without a give-up guard, while shutdown
+	// notify can still file the failure as Hub-side rather than "worker left".
+	writePanicked bool
 	// writing is true from the moment the drain pops a frame until
 	// its Write returns. Flush needs it because pop() removes the frame before
 	// the write happens, so an empty queue alone does not mean the last frame
@@ -780,7 +785,7 @@ func (w *Writer[T]) signalDrained() {
 // writer is still open. Returns ErrClosed if the writer closed or gave up --
 // including when Close discarded queued frames, and when a refused or
 // panicking Write latched the writer torn down -- so a caller that needs
-// "reached the wire" (shutdown notify) cannot mistakingly treat a failed
+// "reached the wire" (shutdown notify) cannot mistakenly treat a failed
 // delivery as success.
 //
 // Returns ctx.Err / the writer's context error only when the wait was cut
@@ -792,7 +797,8 @@ func (w *Writer[T]) signalDrained() {
 // clears the in-flight flag, so Flush cannot observe idle+open after the
 // transport failed. A panic still does not set gaveUp inside writeTurn -- the
 // handler-drained path recovers with Fence/Close and needs gaveUp false for
-// the watchdog test -- but it does set closed, which is enough for Flush.
+// the write-watchdog contract -- but it sets closed and writePanicked, which
+// are enough for Flush and for shutdown notify to file Hub-side failure.
 //
 // This is what makes a graceful shutdown's last words actually leave the
 // machine. Enqueue and EnqueueWait return once a frame is QUEUED, so a caller
@@ -937,6 +943,16 @@ func (w *Writer[T]) GaveUp() bool {
 	return w.gaveUp
 }
 
+// WritePanicked reports whether a transport Write panic latched this writer
+// closed. Distinct from GaveUp: the handler-drained path recovers with Fence
+// and must keep gaveUp false for the write-watchdog contract, but shutdown
+// notify still needs a Hub-side cause when Flush returns ErrClosed.
+func (w *Writer[T]) WritePanicked() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.writePanicked
+}
+
 // Wake returns the depth-1 wake channel that fires when a frame is enqueued
 // (or the writer closes). Exactly one goroutine may select on it: a second
 // consumer would steal the coalesced signal that signalNonBlocking depends on.
@@ -1009,7 +1025,8 @@ func (w *Writer[T]) DrainLimited(lim DrainLimits) error {
 
 // writeTurn writes one frame and always clears the in-flight flag, including
 // when Write PANICS. The flag left set would park every later Flush on this
-// writer until its deadline, and the deferred clear is what survives an unwind.
+// writer until its deadline, and the deferred clear is what survives an unwind
+// -- including a re-panic after the latch, or a panic from OnDiscard during it.
 //
 // On a transport error, giveUp runs before finishWrite. The other order left a
 // window where the queue was empty, writing was false, and gaveUp was still
@@ -1017,7 +1034,8 @@ func (w *Writer[T]) DrainLimited(lim DrainLimits) error {
 // the peer had already refused. On panic, closed is latched (without gaveUp /
 // OnGiveUp) before finishWrite for the same Flush reason; gaveUp stays false
 // so the handler-drained Fence path can still prove the write watchdog was
-// disarmed (see TestWriterPanickingWriteDisarmsTheWatchdog).
+// disarmed (see TestWriterPanickingWriteDisarmsTheWatchdog). writePanicked is
+// set instead so shutdown notify can still file the failure as Hub-side.
 //
 // Both drain modes catch that unwind, one layer up: a handler-drained writer
 // unwinds into workermgr.SendPump.drain, a goroutine-drained one (sendq.New --
@@ -1025,10 +1043,12 @@ func (w *Writer[T]) DrainLimited(lim DrainLimits) error {
 // way the connection is given up and the process survives. The frame's pool
 // charge is refunded at pop, so it is not leaked on that path either.
 func (w *Writer[T]) writeTurn(item T) (err error) {
+	// finishWrite is registered first so it still runs after a re-panic from the
+	// recover defer (and after a panic raised inside the latch itself).
+	defer w.finishWrite()
 	defer func() {
 		if r := recover(); r != nil {
 			w.latchClosedAfterTransportFailure()
-			w.finishWrite()
 			panic(r)
 		}
 	}()
@@ -1040,22 +1060,25 @@ func (w *Writer[T]) writeTurn(item T) (err error) {
 		}
 		w.giveUp(reason, err)
 	}
-	w.finishWrite()
 	return err
 }
 
 // latchClosedAfterTransportFailure marks the writer closed without giving up,
 // so Flush racing a panicking Write cannot observe idle+open while the
-// handler-drained recover still sees gaveUp false. Does not Detach or call
-// OnGiveUp -- Fence / Close / giveUp own those.
+// handler-drained recover still sees gaveUp false. Sets writePanicked so a
+// caller that maps ErrClosed can still tell Hub-side transport failure from a
+// worker that left. Does not Detach or call OnGiveUp -- Fence / Close / giveUp
+// own those.
 func (w *Writer[T]) latchClosedAfterTransportFailure() {
 	w.mu.Lock()
 	if w.closed {
+		w.writePanicked = true
 		w.mu.Unlock()
 		return
 	}
 	bytes, frames := w.discardQueueLocked()
 	w.closed = true
+	w.writePanicked = true
 	onDiscard := w.cfg.OnDiscard
 	w.mu.Unlock()
 	w.signalWake()

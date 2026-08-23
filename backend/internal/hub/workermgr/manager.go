@@ -493,6 +493,9 @@ const (
 //   - Conn.GaveUp: the queue's give-up callback fenced on a write timeout, a
 //     blown budget, or pool pressure. Without this the Hub reclaiming a slow
 //     worker reads as that worker having left.
+//   - Conn.WritePanicked: a transport Write panic latched the queue closed
+//     without giveUp (handler recover Fences). Same ErrConnectionClosed from
+//     Flush as a departed worker, but the Hub tore the stream down.
 //   - ctx.Err(): the caller's own budget expired, and NotifyShutdownAndFence
 //     fences everything on its way out -- so past this point Done() is a channel
 //     the Hub closed itself and says nothing about the worker.
@@ -505,7 +508,7 @@ func classifyNotifyErr(ctx context.Context, conn *Conn, err error) notifyOutcome
 	switch {
 	case err == nil:
 		return notifyDelivered
-	case errors.Is(err, ErrControlSaturated), conn.GaveUp(), ctx.Err() != nil:
+	case errors.Is(err, ErrControlSaturated), conn.GaveUp(), conn.WritePanicked(), ctx.Err() != nil:
 		return notifyFailed
 	case errors.Is(err, ErrConnectionClosed):
 		return notifyAlreadyGone

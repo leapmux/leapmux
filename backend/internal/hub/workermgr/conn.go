@@ -295,6 +295,13 @@ func (c *Conn) GaveUp() bool {
 	return c.q.GaveUp()
 }
 
+// WritePanicked reports whether a transport Write panic latched this
+// connection's queue closed without giveUp. classifyNotifyErr reads it so a
+// panicking stream is filed as Hub-side failure, not "worker already gone".
+func (c *Conn) WritePanicked() bool {
+	return c.q.WritePanicked()
+}
+
 // EncryptionMode returns the encryption mode cached from the worker's
 // heartbeat. Safe for concurrent use with SetEncryptionMode.
 func (c *Conn) EncryptionMode() leapmuxv1.EncryptionMode {
