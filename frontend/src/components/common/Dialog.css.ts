@@ -25,7 +25,13 @@ const SAFE_MAX_HEIGHT_OAT = `calc(85vh - ${SAFE_TOP} - ${SAFE_BOTTOM})`
 // drops an inset (LTR drops `right`), which is exactly the landscape-notch
 // failure: the close button sits under the cutout. `dvw` matches the height
 // path's preference for the dynamic viewport.
+//
+// Always compose with the design max (900 / huge's 1200) via `min(...)` —
+// a bare SAFE_MAX_WIDTH would replace `.standard`'s 900px ceiling (the
+// :modal selector outranks it) and let zero-inset modals grow to 100dvw.
 const SAFE_MAX_WIDTH = `calc(100dvw - ${SAFE_LEFT} - ${SAFE_RIGHT})`
+const SAFE_MAX_WIDTH_STANDARD = `min(900px, ${SAFE_MAX_WIDTH})`
+const SAFE_MAX_WIDTH_HUGE = `min(1200px, 92vw, ${SAFE_MAX_WIDTH})`
 
 // Oat caps every dialog at `max-height: 85vh` from `@layer components`, and a
 // max-height beats `tall`'s `height: 100vh` — so without the raise below, the
@@ -73,7 +79,8 @@ globalStyle(`dialog.${standard}:modal`, {
   // Desktop band (≥ sm) keeps Oat/content width, but must still clear a
   // landscape notch / display cutout. Without this cap, left+right+width is
   // over-constrained and the used box centers on the full viewport.
-  'maxWidth': SAFE_MAX_WIDTH,
+  // Compose with the 900px design ceiling — do not replace it.
+  'maxWidth': SAFE_MAX_WIDTH_STANDARD,
   'margin': 'auto',
   '@media': {
     [`(max-width: ${breakpoints.sm - 1}px)`]: {
@@ -258,8 +265,11 @@ export const huge = style({
 
 globalStyle(`dialog.${standard}.${huge}:modal`, {
   // Keep the desktop cap, but never taller than the safe rectangle.
+  // Re-state maxWidth so this compound selector (0,3,1) does not leave
+  // SAFE_MAX_WIDTH_STANDARD's 900px floor winning over huge's 1200 design.
   'height': `min(820px, calc(88vh - ${SAFE_TOP} - ${SAFE_BOTTOM}))`,
   'maxHeight': `min(820px, calc(88vh - ${SAFE_TOP} - ${SAFE_BOTTOM}))`,
+  'maxWidth': SAFE_MAX_WIDTH_HUGE,
   '@media': {
     [`(max-width: ${breakpoints.sm - 1}px)`]: {
       // `dvh` (via SAFE_MAX_HEIGHT), not `vh`: this rule FORCES a height and
@@ -267,7 +277,7 @@ globalStyle(`dialog.${standard}.${huge}:modal`, {
       // viewport, so with the browser chrome shown the dialog is taller than
       // the space it has and `overflow: hidden` cuts the bottom off.
       width: 'auto',
-      maxWidth: '100%',
+      maxWidth: SAFE_MAX_WIDTH,
       height: SAFE_MAX_HEIGHT,
       maxHeight: SAFE_MAX_HEIGHT,
     },

@@ -64,14 +64,25 @@ describe('dialog safe-area insets (Dialog.css.ts)', () => {
     expect(block).toMatch(/['"]height['"]\s*:\s*['"]fit-content['"]/)
     // Landscape notch / cutout: without a max-width that subtracts left+right,
     // abspos over-constraint drops an inset and the close button sits under
-    // the notch on the desktop band (≥ sm).
-    expect(block).toMatch(/['"]maxWidth['"]\s*:\s*SAFE_MAX_WIDTH\b/)
-    expect(source).toContain('SAFE_MAX_WIDTH')
+    // the notch on the desktop band (≥ sm). Compose with the 900px design
+    // ceiling — a bare SAFE_MAX_WIDTH would erase it (this selector outranks
+    // `.standard { maxWidth: 900px }`).
+    expect(block).toMatch(/['"]maxWidth['"]\s*:\s*SAFE_MAX_WIDTH_STANDARD\b/)
+    expect(source).toContain('SAFE_MAX_WIDTH_STANDARD')
+    expect(source).toContain('SAFE_MAX_WIDTH_HUGE')
+    expect(source).toMatch(
+      /SAFE_MAX_WIDTH_STANDARD\s*=\s*`min\(900px,\s*\$\{SAFE_MAX_WIDTH\}\)`/,
+    )
   })
 
   it('lets tall and huge dialogs fill the safe rectangle on the phone band', () => {
     expect(source).toMatch(/dialog\.\$\{standard\}\.\$\{tall\}:modal/)
     expect(source).toMatch(/dialog\.\$\{standard\}\.\$\{huge\}:modal/)
     expect(source).toContain('SAFE_MAX_HEIGHT')
+    // Huge must re-state its wider ceiling on :modal or SAFE_MAX_WIDTH_STANDARD
+    // (900px) would clamp Preferences on desktop.
+    expect(source).toMatch(
+      /dialog\.\$\{standard\}\.\$\{huge\}:modal[\s\S]*?SAFE_MAX_WIDTH_HUGE/,
+    )
   })
 })
