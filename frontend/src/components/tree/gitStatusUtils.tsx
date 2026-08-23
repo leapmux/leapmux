@@ -1,6 +1,6 @@
 import type { Component, JSX } from 'solid-js'
 import type { GitFileStatusEntry } from '~/generated/leapmux/v1/common_pb'
-import type { DiffStats } from '~/stores/gitFileStatus.store'
+import type { DiffStats } from '~/stores/repoGit'
 import { Show } from 'solid-js'
 import { Tooltip } from '~/components/common/Tooltip'
 import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'

@@ -1,8 +1,7 @@
 /// <reference types="vitest/globals" />
-import type { TabStampTarget } from './syncGitStatusToTabs'
-import type { Tab } from '~/stores/tab.types'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { repoKey } from '~/stores/repoGit'
+import { createRepoGitStore } from '~/stores/repoGit.store'
 import { handleBranchChanged } from './handleBranchChanged'
 
 const mockGetGitFileStatus = vi.fn()
@@ -12,171 +11,216 @@ vi.mock('~/api/workerRpc', () => ({
 
 const flush = () => new Promise<void>(resolve => setTimeout(resolve, 0))
 
-function agent(over: Partial<Extract<Tab, { type: TabType.AGENT }>> = {}): Tab {
-  return { type: TabType.AGENT, id: 'a1', workspaceId: 'ws-1', ...over } as Tab
-}
-
-/**
- * A recording {@link TabStampTarget}. This is exactly the seam the interface
- * exists for: the whole handler runs with no CRDT bridge and no reactive root.
- */
-function recordingTarget(tabs: Tab[]) {
-  const writes: Array<{ ids: string[], fields: Record<string, unknown> }> = []
-  const target: TabStampTarget = {
-    get tabs() {
-      return tabs
-    },
-    update: (tabIds, fields) => {
-      writes.push({ ids: tabs.filter(t => tabIds.has(t.id)).map(t => t.id), fields: fields as Record<string, unknown> })
-    },
-  }
-  return { target, writes }
-}
-
-function fakeGitStore(state: Record<string, unknown>, refresh = vi.fn().mockResolvedValue(undefined)) {
-  return { state, refresh } as never
-}
-
 beforeEach(() => {
   mockGetGitFileStatus.mockReset()
   mockGetGitFileStatus.mockResolvedValue({
-    toplevel: '/repo',
-    originUrl: 'o',
-    currentBranch: 'feature',
+    repoRoot: '/repo',
+    status: { toplevel: '/repo', branch: 'feature', originUrl: 'o' },
     files: [],
   })
 })
 
-/**
- * What has to happen after a branch change, extracted from a 60-line closure
- * that lived inside a JSX prop and was reachable only by rendering
- * `AppShellDialogs`.
- *
- * The fork is the part worth pinning: the ACTIVE repo refreshes the file-status
- * singleton (so the file tree follows), while any OTHER repo is fetched
- * directly and must NOT touch that singleton — it tracks the focused repo's
- * tree, and refreshing it for a background repo would swing the tree to a repo
- * the user is not looking at.
- */
 describe('handleBranchChanged', () => {
-  it('stamps the new branch on every tab in the repo, across workspaces', async () => {
-    const tabs = [
-      agent({ id: 'here', workerId: 'w1', gitToplevel: '/repo' }),
-      agent({ id: 'elsewhere', workspaceId: 'ws-2', workerId: 'w1', gitToplevel: '/repo' }),
-      agent({ id: 'other-repo', workerId: 'w1', gitToplevel: '/other' }),
-      agent({ id: 'other-worker', workerId: 'w2', gitToplevel: '/repo' }),
-    ]
-    const { target, writes } = recordingTarget(tabs)
-
-    handleBranchChanged(
-      { target, gitFileStatusStore: fakeGitStore({}), getCurrentTabContext: () => ({} as never) },
-      { workerId: 'w1', gitToplevel: '/repo' },
-      'feature',
-    )
-
-    expect(writes[0].fields).toEqual({ gitBranch: 'feature' })
-    expect(writes[0].ids, 'reaches other workspaces, and only this repo on this worker')
-      .toEqual(['here', 'elsewhere'])
-    await flush()
-  })
-
-  it('refreshes the singleton for the ACTIVE repo and reuses its state', async () => {
-    const refresh = vi.fn().mockResolvedValue(undefined)
-    const store = fakeGitStore({
+  it('stamps the new branch on the repo-keyed store', async () => {
+    const repoGitStore = createRepoGitStore()
+    repoGitStore.upsert(repoKey('w1', '/repo'), {
       workerId: 'w1',
       toplevel: '/repo',
-      originUrl: 'o',
-      currentBranch: 'feature',
-      files: [],
-    }, refresh)
-    const { target, writes } = recordingTarget([agent({ id: 'a', workerId: 'w1', gitToplevel: '/repo', workingDir: '/repo/sub' })])
+      branch: 'main',
+      gitStatusSeen: true,
+    })
 
     handleBranchChanged(
-      { target, gitFileStatusStore: store, getCurrentTabContext: () => ({ workerId: 'w1', gitToplevel: '/repo' } as never) },
+      { repoGitStore },
+      { workerId: 'w1', gitToplevel: '/repo' },
+      'feature',
+    )
+
+    expect(repoGitStore.get(repoKey('w1', '/repo'))?.branch).toBe('feature')
+    expect(repoGitStore.get(repoKey('w1', '/repo'))?.branchPinnedUntilRefresh).toBe(true)
+    await flush()
+  })
+
+  it('refreshes git status for the active repo', async () => {
+    const repoGitStore = createRepoGitStore()
+    const refresh = vi.spyOn(repoGitStore, 'refresh').mockResolvedValue(undefined)
+
+    handleBranchChanged(
+      { repoGitStore },
       { workerId: 'w1', gitToplevel: '/repo' },
       'feature',
     )
     await flush()
 
-    expect(refresh).toHaveBeenCalledWith('w1', '/repo')
-    expect(mockGetGitFileStatus, 'no second RPC — the singleton was just refreshed').not.toHaveBeenCalled()
-    expect(writes.length, 'branch stamp, then the diff-stat stamp').toBe(2)
+    expect(refresh).toHaveBeenCalledWith('w1', '/repo', { repoKey: repoKey('w1', '/repo') })
   })
 
-  /**
-   * `refresh` swallows its own RPC failure, but the continuation does not: it
-   * walks every tab in the account and writes metadata. An unhandled rejection
-   * there gave no toast and no diagnosis, while the identical failure on the
-   * non-active arm was logged -- two arms of one function answering the same
-   * question differently.
-   */
-  it('survives a throwing continuation on the ACTIVE repo', async () => {
-    const store = fakeGitStore({ workerId: 'w1', toplevel: '/repo', originUrl: 'o', currentBranch: 'feature', files: [] })
-    const tabs = [agent({ id: 'a', workerId: 'w1', gitToplevel: '/repo', workingDir: '/repo/sub' })]
-    const target: TabStampTarget = {
-      get tabs() {
-        return tabs
-      },
-      // The diff-stat stamp throws; the branch stamp before it must still land,
-      // and nothing may escape as an unhandled rejection.
-      update: vi.fn()
-        .mockImplementationOnce(() => {})
-        .mockImplementation(() => { throw new Error('metadata row reclaimed') }),
-    }
-
-    expect(() => handleBranchChanged(
-      { target, gitFileStatusStore: store, getCurrentTabContext: () => ({ workerId: 'w1', gitToplevel: '/repo' } as never) },
-      { workerId: 'w1', gitToplevel: '/repo' },
-      'feature',
-    )).not.toThrow()
-    await flush()
-
-    expect(target.update, 'the branch stamp landed before the failure').toHaveBeenCalled()
-  })
-
-  it('does NOT touch the singleton for a non-active repo', async () => {
-    const refresh = vi.fn().mockResolvedValue(undefined)
-    const store = fakeGitStore({}, refresh)
-    const { target, writes } = recordingTarget([agent({ id: 'a', workerId: 'w1', gitToplevel: '/repo', workingDir: '/repo/sub' })])
+  it('refreshes git status for a non-active repo through the store', async () => {
+    const repoGitStore = createRepoGitStore()
+    const refresh = vi.spyOn(repoGitStore, 'refresh').mockResolvedValue(undefined)
 
     handleBranchChanged(
-      // The user is looking at a DIFFERENT repo.
-      { target, gitFileStatusStore: store, getCurrentTabContext: () => ({ workerId: 'w1', gitToplevel: '/elsewhere' } as never) },
-      { workerId: 'w1', gitToplevel: '/repo' },
+      { repoGitStore },
+      { workerId: 'w1', gitToplevel: '/other' },
       'feature',
     )
     await flush()
 
-    expect(refresh, 'refreshing it would swing the file tree to a repo the user is not viewing').not.toHaveBeenCalled()
-    expect(mockGetGitFileStatus).toHaveBeenCalledWith('w1', { workerId: 'w1', path: '/repo' })
-    expect(writes.length, 'the tabs are still stamped from the direct fetch').toBe(2)
+    expect(refresh).toHaveBeenCalledWith('w1', '/other', { repoKey: repoKey('w1', '/other') })
   })
 
-  it('stamps nothing when the repo path never resolved', async () => {
-    // `isSameRepo` refuses an empty toplevel, so an unresolved path must stamp
-    // nothing rather than every un-stamped tab on the worker — the stamp now
-    // spans the whole account, so that would be a cross-repo leak.
-    const { target, writes } = recordingTarget([agent({ id: 'a', workerId: 'w1' })])
+  it('does not stamp when the repo path never resolved', async () => {
+    const repoGitStore = createRepoGitStore()
 
     handleBranchChanged(
-      { target, gitFileStatusStore: fakeGitStore({}), getCurrentTabContext: () => ({} as never) },
+      { repoGitStore },
       { workerId: 'w1', gitToplevel: '' },
       'feature',
     )
     await flush()
 
-    expect(writes).toHaveLength(0)
+    expect(repoGitStore.repos()).toEqual({})
   })
 
-  it('survives a failed background fetch without throwing', async () => {
-    mockGetGitFileStatus.mockRejectedValue(new Error('worker unreachable'))
-    const { target } = recordingTarget([agent({ id: 'a', workerId: 'w1', gitToplevel: '/repo', workingDir: '/repo/sub' })])
+  it('does not throw when refresh is in flight', async () => {
+    const repoGitStore = createRepoGitStore()
+    vi.spyOn(repoGitStore, 'refresh').mockResolvedValue(undefined)
 
     expect(() => handleBranchChanged(
-      { target, gitFileStatusStore: fakeGitStore({}), getCurrentTabContext: () => ({} as never) },
+      { repoGitStore },
       { workerId: 'w1', gitToplevel: '/repo' },
       'feature',
     )).not.toThrow()
     await flush()
+  })
+
+  it('writes a non-repo stub without inventing a toplevel', async () => {
+    const repoGitStore = createRepoGitStore()
+    mockGetGitFileStatus.mockResolvedValueOnce({
+      repoRoot: '',
+      status: undefined,
+      files: [],
+      errorHint: 'not a git repository',
+    })
+
+    handleBranchChanged(
+      { repoGitStore },
+      { workerId: 'w1', gitToplevel: '/other' },
+      'feature',
+    )
+    await flush()
+    await vi.waitFor(() => {
+      expect(repoGitStore.get(repoKey('w1', '/other'))?.errorHint).toBe('not a git repository')
+    })
+    expect(repoGitStore.get(repoKey('w1', '/other'))?.toplevel).toBe('')
+    expect(repoGitStore.get(repoKey('w1', '/other'))?.branch).toBe('')
+    expect(repoGitStore.get(repoKey('w1', '/other'))?.branchPinnedUntilRefresh).toBe(false)
+  })
+
+  it('keeps file state when refresh returns a transient non-repo response', async () => {
+    const repoGitStore = createRepoGitStore()
+    const files = [{ path: 'a.txt' } as never]
+    repoGitStore.upsert(repoKey('w1', '/other'), {
+      workerId: 'w1',
+      toplevel: '/other',
+      branch: 'dev',
+      diffAdded: 3,
+      files,
+      gitStatusSeen: true,
+    })
+    mockGetGitFileStatus.mockResolvedValueOnce({
+      repoRoot: '',
+      status: undefined,
+      files: [],
+      errorHint: 'not a git repository',
+    })
+
+    handleBranchChanged(
+      { repoGitStore },
+      { workerId: 'w1', gitToplevel: '/other' },
+      'feature',
+    )
+    await flush()
+    await vi.waitFor(() => {
+      expect(repoGitStore.get(repoKey('w1', '/other'))?.branch).toBe('feature')
+    })
+
+    expect(repoGitStore.get(repoKey('w1', '/other'))?.branchPinnedUntilRefresh).toBe(true)
+    expect(repoGitStore.get(repoKey('w1', '/other'))?.toplevel).toBe('/other')
+    expect(repoGitStore.get(repoKey('w1', '/other'))?.diffAdded).toBe(3)
+    expect(repoGitStore.get(repoKey('w1', '/other'))?.files).toEqual(files)
+    expect(repoGitStore.get(repoKey('w1', '/other'))?.errorHint).toBe('')
+  })
+
+  it('keeps a metadata-only clean repo across a transient non-repo response', async () => {
+    const repoGitStore = createRepoGitStore()
+    repoGitStore.upsert(repoKey('w1', '/other'), {
+      workerId: 'w1',
+      toplevel: '/other',
+      branch: 'dev',
+      gitStatusSeen: true,
+    })
+    mockGetGitFileStatus.mockResolvedValueOnce({
+      repoRoot: '',
+      status: undefined,
+      files: [],
+      errorHint: 'not a git repository',
+    })
+
+    handleBranchChanged(
+      { repoGitStore },
+      { workerId: 'w1', gitToplevel: '/other' },
+      'feature',
+    )
+    await flush()
+    await vi.waitFor(() => {
+      expect(repoGitStore.get(repoKey('w1', '/other'))?.branch).toBe('feature')
+    })
+
+    expect(repoGitStore.get(repoKey('w1', '/other'))?.toplevel).toBe('/other')
+    expect(repoGitStore.get(repoKey('w1', '/other'))?.branchPinnedUntilRefresh).toBe(true)
+    expect(repoGitStore.get(repoKey('w1', '/other'))?.errorHint).toBe('')
+    expect(repoGitStore.get(repoKey('w1', '/other'))?.gitStatusSeen).toBe(true)
+  })
+
+  it('clears the branch pin when refresh rejects', async () => {
+    const repoGitStore = createRepoGitStore()
+    mockGetGitFileStatus.mockRejectedValueOnce(new Error('worker unreachable'))
+
+    handleBranchChanged(
+      { repoGitStore },
+      { workerId: 'w1', gitToplevel: '/other' },
+      'feature',
+    )
+    await flush()
+    await vi.waitFor(() => {
+      expect(repoGitStore.get(repoKey('w1', '/other'))?.branchPinnedUntilRefresh).toBe(false)
+    })
+    expect(repoGitStore.get(repoKey('w1', '/other'))?.branch).toBe('feature')
+  })
+
+  it('does not change focused key when refreshing a non-active repo', async () => {
+    const repoGitStore = createRepoGitStore()
+    repoGitStore.setFocusedKey(repoKey('w1', '/active'))
+    repoGitStore.upsert(repoKey('w1', '/active'), { workerId: 'w1', toplevel: '/active', branch: 'main', gitStatusSeen: true })
+    repoGitStore.upsert(repoKey('w1', '/other'), { workerId: 'w1', toplevel: '/other', branch: 'dev', gitStatusSeen: true })
+    mockGetGitFileStatus.mockResolvedValueOnce({
+      repoRoot: '/other',
+      status: { toplevel: '/other', branch: 'feature', originUrl: 'o' },
+      files: [],
+    })
+
+    handleBranchChanged(
+      { repoGitStore },
+      { workerId: 'w1', gitToplevel: '/other' },
+      'feature',
+    )
+    await flush()
+    await vi.waitFor(() => {
+      expect(repoGitStore.get(repoKey('w1', '/other'))?.branchPinnedUntilRefresh).toBe(false)
+    })
+
+    expect(repoGitStore.focusedKey()).toBe(repoKey('w1', '/active'))
+    expect(repoGitStore.get(repoKey('w1', '/other'))?.branch).toBe('feature')
   })
 })

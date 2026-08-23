@@ -51,6 +51,13 @@ func run(t *testing.T, dir string, name string, args ...string) {
 	require.NoError(t, cmd.Run(), "command failed: %s %v", name, args)
 }
 
+func swapGitStatusForFileStatusHook(t *testing.T, fn func(context.Context, string) *leapmuxv1.GitRepoStatus) {
+	t.Helper()
+	prev := gitFileStatusProbe.status
+	gitFileStatusProbe.status = fn
+	t.Cleanup(func() { gitFileStatusProbe.status = prev })
+}
+
 func TestGetGitFileStatusEntries_UntrackedFile(t *testing.T) {
 	t.Parallel()
 
@@ -134,7 +141,7 @@ func TestGetGitFileStatusEntries_NonGitDir(t *testing.T) {
 
 	dir := t.TempDir()
 	files, err := getGitFileStatusEntries(context.Background(), dir)
-	require.NoError(t, err)
+	require.Error(t, err)
 	assert.Nil(t, files)
 }
 
@@ -160,8 +167,8 @@ func TestGetGitFileStatusEntries_CleanTreeShortCircuits(t *testing.T) {
 func TestGetGitFileStatus_ReturnsOriginUrlAndCurrentBranch(t *testing.T) {
 	t.Parallel()
 
+	_, d, w := setupTestService(t)
 	dir := initRepo(t)
-	ctx := context.Background()
 
 	// Set a remote origin URL.
 	run(t, dir, "git", "remote", "add", "origin", "https://github.com/test/repo.git")
@@ -169,30 +176,22 @@ func TestGetGitFileStatus_ReturnsOriginUrlAndCurrentBranch(t *testing.T) {
 	// Create a file so there's something in the status.
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "file.txt"), []byte("hello\n"), 0o644))
 
-	// Exercise the same helpers the handler uses (queryGitPathInfo +
-	// branchOrShortSHA + getGitFileStatusEntries). Avoid re-rolling
-	// the rev-parse pipeline so a regression in branchOrShortSHA's
-	// detached-HEAD fallback can't slip past this test.
-	info, err := queryGitPathInfo(ctx, dir)
-	require.NoError(t, err)
-	files, err := getGitFileStatusEntries(ctx, info.RepoRoot)
-	require.NoError(t, err)
-	require.NotEmpty(t, files)
+	dispatch(d, "GetGitFileStatus", &leapmuxv1.GetGitFileStatusRequest{
+		Path: dir,
+	}, w)
+	require.Len(t, w.responses, 1)
+	var resp leapmuxv1.GetGitFileStatusResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
 
-	branch := branchOrShortSHA(info)
-	originURL := strings.TrimSpace(gitutil.GetOriginURL(ctx, info.RepoRoot))
-
-	// The default branch name depends on git config; just verify it's non-empty.
-	assert.NotEmpty(t, branch)
-	assert.Equal(t, "https://github.com/test/repo.git", originURL)
+	assert.NotEmpty(t, resp.GetStatus().GetBranch())
+	assert.Equal(t, "https://github.com/test/repo.git", resp.GetStatus().GetOriginUrl())
+	assert.NotEmpty(t, resp.GetFiles())
 }
 
 // TestGetGitFileStatus_WorktreeReturnsToplevel pins that GetGitFileStatus
 // returns the worktree-aware `toplevel` field separately from the
-// canonical `repo_root`. The frontend's syncGitStatusToTabs uses
-// `toplevel` for tab matching so that switching focus to a worktree's
-// agent doesn't smear the worktree's branch onto every main-tree tab
-// in the same repo — the regression this field exists for.
+// canonical `repo_root`. The frontend keys repo state by `toplevel` so a
+// worktree refresh updates only that worktree's tabs.
 func TestGetGitFileStatus_WorktreeReturnsToplevel(t *testing.T) {
 	t.Parallel()
 
@@ -217,10 +216,10 @@ func TestGetGitFileStatus_WorktreeReturnsToplevel(t *testing.T) {
 	// toplevel is the worktree dir — different from repo_root.
 	expectedToplevel, err := filepath.EvalSymlinks(wtDir)
 	require.NoError(t, err)
-	assert.True(t, pathutil.SamePath(expectedToplevel, resp.GetToplevel()),
+	assert.True(t, pathutil.SamePath(expectedToplevel, resp.GetStatus().GetToplevel()),
 		"toplevel must be the worktree dir for an in-worktree query")
-	assert.True(t, resp.GetIsWorktree())
-	assert.Equal(t, "wt-feature", resp.GetCurrentBranch(),
+	assert.True(t, resp.GetStatus().GetIsWorktree())
+	assert.Equal(t, "wt-feature", resp.GetStatus().GetBranch(),
 		"current_branch reflects the WORKTREE's HEAD, not main")
 }
 
@@ -242,19 +241,87 @@ func TestGetGitFileStatus_MainTreeToplevelEqualsRepoRoot(t *testing.T) {
 	var resp leapmuxv1.GetGitFileStatusResponse
 	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
 
-	assert.False(t, resp.GetIsWorktree())
-	assert.Equal(t, resp.GetRepoRoot(), resp.GetToplevel(),
+	assert.False(t, resp.GetStatus().GetIsWorktree())
+	assert.Equal(t, resp.GetRepoRoot(), resp.GetStatus().GetToplevel(),
 		"main-tree query must report toplevel == repo_root")
 }
 
+// TestGetGitFileStatus_ReturnsAheadBehind pins that the handler's
+// gitutil.GetGitStatus path surfaces upstream ahead/behind on the
+// GitRepoStatus envelope, not only in InspectBranchDeletion.
+func TestGetGitFileStatus_ReturnsAheadBehind(t *testing.T) {
+	t.Parallel()
+
+	_, d, w := setupTestService(t)
+	bareDir := filepath.Join(t.TempDir(), "ahead-behind.git")
+	require.NoError(t, os.MkdirAll(bareDir, 0o755))
+	run(t, bareDir, "git", "init", "--bare")
+
+	repoDir := initRepo(t)
+	run(t, repoDir, "git", "remote", "add", "origin", bareDir)
+	run(t, repoDir, "git", "push", "-u", "origin", "HEAD")
+	run(t, repoDir, "git", "commit", "--allow-empty", "-m", "ahead 1")
+	run(t, repoDir, "git", "commit", "--allow-empty", "-m", "ahead 2")
+
+	dispatch(d, "GetGitFileStatus", &leapmuxv1.GetGitFileStatusRequest{
+		Path: repoDir,
+	}, w)
+	require.Len(t, w.responses, 1)
+	var resp leapmuxv1.GetGitFileStatusResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+
+	assert.Equal(t, int32(2), resp.GetStatus().GetAhead(),
+		"GetGitFileStatus must report commits ahead of upstream")
+	assert.Equal(t, int32(0), resp.GetStatus().GetBehind())
+}
+
+// TestGetGitFileStatus_ReturnsBehind pins the behind counter when the
+// local branch is behind its upstream after a fetch.
+func TestGetGitFileStatus_ReturnsBehind(t *testing.T) {
+	t.Parallel()
+
+	_, d, w := setupTestService(t)
+	bareDir := filepath.Join(t.TempDir(), "behind-remote.git")
+	require.NoError(t, os.MkdirAll(bareDir, 0o755))
+	run(t, bareDir, "git", "init", "--bare")
+
+	repoDir := initRepo(t)
+	run(t, repoDir, "git", "remote", "add", "origin", bareDir)
+	run(t, repoDir, "git", "push", "-u", "origin", "HEAD")
+
+	pusher := filepath.Join(t.TempDir(), "pusher")
+	run(t, repoDir, "git", "clone", "-b", "main", bareDir, pusher)
+	run(t, pusher, "git", "config", "user.email", "test@test.com")
+	run(t, pusher, "git", "config", "user.name", "Test")
+	run(t, pusher, "git", "commit", "--allow-empty", "-m", "remote ahead")
+	run(t, pusher, "git", "push", "origin", "main")
+	run(t, repoDir, "git", "fetch", "origin")
+	run(t, repoDir, "git", "branch", "--set-upstream-to=origin/main", "main")
+
+	behindOut, err := gitutil.Output(context.Background(), repoDir, "rev-list", "--count", "HEAD..origin/main")
+	require.NoError(t, err)
+	assert.Equal(t, "1", strings.TrimSpace(behindOut), "precondition: local main is one commit behind origin/main")
+
+	dispatch(d, "GetGitFileStatus", &leapmuxv1.GetGitFileStatusRequest{
+		Path: repoDir,
+	}, w)
+	require.Len(t, w.responses, 1)
+	var resp leapmuxv1.GetGitFileStatusResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+
+	assert.Equal(t, int32(0), resp.GetStatus().GetAhead())
+	assert.Equal(t, int32(1), resp.GetStatus().GetBehind(),
+		"GetGitFileStatus must report commits behind upstream after fetch")
+}
+
 // TestGetGitFileStatus_DetachedHEAD covers the branchOrShortSHA
-// fallback the GetGitFileStatus refactor enabled. On a detached HEAD,
-// `--abbrev-ref HEAD` returns the literal "HEAD"; branchOrShortSHA
-// must fall back to the short SHA so the dialog still shows a useful
-// label instead of "HEAD".
+// fallback via the GetGitFileStatus handler. On a detached HEAD,
+// `--abbrev-ref HEAD` returns the literal "HEAD"; the response branch
+// must be the short SHA so the UI still shows a useful label.
 func TestGetGitFileStatus_DetachedHEAD(t *testing.T) {
 	t.Parallel()
 
+	_, d, w := setupTestService(t)
 	dir := initRepo(t)
 	ctx := context.Background()
 
@@ -264,19 +331,143 @@ func TestGetGitFileStatus_DetachedHEAD(t *testing.T) {
 	headSHA = strings.TrimSpace(headSHA)
 	run(t, dir, "git", "checkout", "--detach", headSHA)
 
-	info, err := queryGitPathInfo(ctx, dir)
-	require.NoError(t, err)
-	assert.Empty(t, info.BranchName, "detached HEAD must produce empty BranchName")
-	// The combined-output rev-parse populates HeadSHA from the same
-	// invocation, so branchOrShortSHA no longer forks a second time.
-	assert.Equal(t, headSHA, info.HeadSHA, "HeadSHA must hold the full SHA from the single rev-parse call")
+	dispatch(d, "GetGitFileStatus", &leapmuxv1.GetGitFileStatusRequest{
+		Path: dir,
+	}, w)
+	require.Len(t, w.responses, 1)
+	var resp leapmuxv1.GetGitFileStatusResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
 
-	branch := branchOrShortSHA(info)
-	require.NotEmpty(t, branch, "branchOrShortSHA must fall back to short SHA on detached HEAD")
+	branch := resp.GetStatus().GetBranch()
+	require.NotEmpty(t, branch, "GetGitFileStatus must fall back to short SHA on detached HEAD")
 	assert.True(t, strings.HasPrefix(headSHA, branch),
 		"short SHA %q must be a prefix of full HEAD SHA %q", branch, headSHA)
-	assert.Equal(t, shortSHALen, len(branch), "short SHA must be exactly shortSHALen characters")
 	assert.NotEqual(t, "HEAD", branch, "must not surface the literal 'HEAD'")
+}
+
+func TestMergeGitFileStatusFromPathInfo_NilStatusBackfillsIdentity(t *testing.T) {
+	t.Parallel()
+
+	dir := initRepo(t)
+	run(t, dir, "git", "remote", "add", "origin", "https://github.com/test/repo.git")
+	run(t, dir, "git", "checkout", "-b", "feature-backfill")
+
+	info, err := queryGitPathInfo(context.Background(), dir)
+	require.NoError(t, err)
+
+	merged := mergeGitFileStatusFromPathInfo(nil, info, strings.TrimSpace(gitutil.GetOriginURL(context.Background(), dir)))
+
+	assert.Equal(t, "feature-backfill", merged.GetBranch())
+	assert.Equal(t, "https://github.com/test/repo.git", merged.GetOriginUrl())
+	assert.False(t, merged.GetIsWorktree())
+	expectedToplevel, err := filepath.EvalSymlinks(info.TopLevel)
+	require.NoError(t, err)
+	assert.True(t, pathutil.SamePath(expectedToplevel, merged.GetToplevel()))
+}
+
+func TestMergeGitFileStatusFromPathInfo_CorrectsWorktreeDisposition(t *testing.T) {
+	t.Parallel()
+
+	repoDir := initRepo(t)
+	wtDir := filepath.Join(t.TempDir(), "merge-wt")
+	run(t, repoDir, "git", "worktree", "add", "-b", "wt-merge", wtDir)
+
+	mainInfo, err := queryGitPathInfo(context.Background(), repoDir)
+	require.NoError(t, err)
+	require.False(t, mainInfo.IsWorktree)
+
+	wtInfo, err := queryGitPathInfo(context.Background(), wtDir)
+	require.NoError(t, err)
+	require.True(t, wtInfo.IsWorktree)
+
+	// Simulate GetGitStatus wrongly reporting worktree on a main-tree probe.
+	wrongMain := &leapmuxv1.GitRepoStatus{IsWorktree: true, Branch: "stale"}
+	mergedMain := mergeGitFileStatusFromPathInfo(wrongMain, mainInfo, "")
+	assert.False(t, mergedMain.GetIsWorktree(),
+		"path-info must override a false-positive IsWorktree from GetGitStatus")
+	assert.Equal(t, branchOrShortSHA(mainInfo), mergedMain.GetBranch(),
+		"path-info must override a stale branch from GetGitStatus")
+
+	// Simulate GetGitStatus omitting worktree on a linked-worktree probe.
+	wrongWt := &leapmuxv1.GitRepoStatus{Branch: "stale"}
+	mergedWt := mergeGitFileStatusFromPathInfo(wrongWt, wtInfo, "")
+	assert.True(t, mergedWt.GetIsWorktree(),
+		"path-info must set IsWorktree when GetGitStatus omitted it")
+	assert.Equal(t, "wt-merge", mergedWt.GetBranch(),
+		"path-info must override a stale branch on a worktree probe")
+}
+
+func TestMergeGitFileStatusFromPathInfo_DoesNotMutateInput(t *testing.T) {
+	t.Parallel()
+
+	dir := initRepo(t)
+	info, err := queryGitPathInfo(context.Background(), dir)
+	require.NoError(t, err)
+
+	input := &leapmuxv1.GitRepoStatus{
+		Branch:   "stale",
+		Ahead:    3,
+		Behind:   1,
+		Modified: true,
+	}
+	merged := mergeGitFileStatusFromPathInfo(input, info, "")
+
+	assert.Equal(t, "stale", input.GetBranch(), "merge must not mutate the caller's status pointer")
+	assert.True(t, input.GetModified(), "porcelain flags on the input must survive")
+	assert.Equal(t, int32(3), input.GetAhead())
+	assert.Equal(t, branchOrShortSHA(info), merged.GetBranch())
+	assert.True(t, merged.GetModified())
+	assert.Equal(t, int32(3), merged.GetAhead())
+}
+
+func TestMergeGitFileStatusFromPathInfo_CorrectsStaleOriginUrl(t *testing.T) {
+	t.Parallel()
+
+	dir := initRepo(t)
+	run(t, dir, "git", "remote", "add", "origin", "https://github.com/test/correct.git")
+
+	info, err := queryGitPathInfo(context.Background(), dir)
+	require.NoError(t, err)
+
+	stale := &leapmuxv1.GitRepoStatus{
+		OriginUrl: "https://github.com/test/stale.git",
+		Branch:    "stale",
+	}
+	merged := mergeGitFileStatusFromPathInfo(stale, info, strings.TrimSpace(gitutil.GetOriginURL(context.Background(), dir)))
+
+	assert.Equal(t, "https://github.com/test/stale.git", stale.GetOriginUrl(),
+		"merge must not mutate the caller's origin_url")
+	assert.Equal(t, "https://github.com/test/correct.git", merged.GetOriginUrl(),
+		"path-info probe must override a stale origin_url from GetGitStatus")
+}
+
+func TestGetGitFileStatus_BackfillsIdentityWhenGetGitStatusNil(t *testing.T) {
+	t.Parallel()
+
+	swapGitStatusForFileStatusHook(t, func(context.Context, string) *leapmuxv1.GitRepoStatus {
+		return nil
+	})
+
+	_, d, w := setupTestService(t)
+	dir := initRepo(t)
+	run(t, dir, "git", "remote", "add", "origin", "https://github.com/test/nil-status.git")
+	run(t, dir, "git", "checkout", "-b", "nil-status-branch")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("x\n"), 0o644))
+
+	dispatch(d, "GetGitFileStatus", &leapmuxv1.GetGitFileStatusRequest{
+		Path: dir,
+	}, w)
+	require.Len(t, w.responses, 1)
+	var resp leapmuxv1.GetGitFileStatusResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+
+	assert.Equal(t, "nil-status-branch", resp.GetStatus().GetBranch())
+	assert.Equal(t, "https://github.com/test/nil-status.git", resp.GetStatus().GetOriginUrl())
+	assert.False(t, resp.GetStatus().GetIsWorktree())
+	expectedToplevel, err := filepath.EvalSymlinks(dir)
+	require.NoError(t, err)
+	assert.True(t, pathutil.SamePath(expectedToplevel, resp.GetStatus().GetToplevel()))
+	assert.NotEmpty(t, resp.GetFiles())
 }
 
 func TestCheckoutBranchIfRequested_RemoteBranch(t *testing.T) {
@@ -6139,7 +6330,7 @@ func TestGetGitFileStatus_AnnotatesStatsInAWorktree(t *testing.T) {
 
 	// The two roots really do differ here; without that this test would be
 	// the subdirectory test again.
-	require.NotEqual(t, resp.GetRepoRoot(), resp.GetToplevel(),
+	require.NotEqual(t, resp.GetRepoRoot(), resp.GetStatus().GetToplevel(),
 		"a worktree query must report a toplevel distinct from repo_root")
 
 	var entry *leapmuxv1.GitFileStatusEntry

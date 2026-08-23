@@ -1,7 +1,7 @@
 import type { Accessor, Component } from 'solid-js'
 import type { FileSortFields, FileSortKey, FileSortOrder } from '~/lib/fileSort'
 import type { PathFlavor } from '~/lib/paths'
-import type { createGitFileStatusStore, DiffStats } from '~/stores/gitFileStatus.store'
+import type { createRepoGitStore, DiffStats } from '~/stores/repoGit.store'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
 import File from 'lucide-solid/icons/file'
 import FolderClosed from 'lucide-solid/icons/folder-closed'
@@ -45,7 +45,13 @@ export interface DirectoryTreeProps {
    *  best-effort sniff from homeDir/rootPath.
    */
   flavor?: PathFlavor
-  gitStatusStore?: ReturnType<typeof createGitFileStatusStore>
+  gitStatusStore: ReturnType<typeof createRepoGitStore>
+  /**
+   * When false, skip git change icons and diff-stat annotations on tree rows.
+   * The directory picker passes false: the shared store is keyed to the
+   * focused tab's repo, not the path being browsed.
+   */
+  showGitStatus?: boolean
   /**
    * When set, the tree is FILTERED: only nodes this predicate accepts render.
    * Built by the git-aware caller (see makeGitVisibilityPredicate), so the
@@ -132,7 +138,8 @@ interface TreeContextValue {
   homeDir?: string
   flavor: () => PathFlavor
   scrollContainer?: HTMLDivElement
-  gitStatusStore: () => ReturnType<typeof createGitFileStatusStore> | undefined
+  gitStatusStore: () => ReturnType<typeof createRepoGitStore>
+  showGitStatus: boolean
   showHiddenFiles: boolean
   /** Comparator for the current sort order, shared by every node. */
   comparator: () => (a: TreeNodeData, b: TreeNodeData) => number
@@ -537,9 +544,9 @@ const TreeNode: Component<{
 
   const indent = () => `${8 + props.depth * 16}px`
   const gitIcon = createMemo<GitIconInfo>(() => {
-    const store = tree.gitStatusStore()
-    if (!store)
+    if (!tree.showGitStatus)
       return NO_GIT_ICON
+    const store = tree.gitStatusStore()
     if (props.node.isDir) {
       return store.hasChanges(props.node.path)
         ? { class: styles.iconDirChanged, testId: undefined }
@@ -549,8 +556,9 @@ const TreeNode: Component<{
     return entry ? getGitFileIconClass(entry) : NO_GIT_ICON
   })
   const diffStats = createMemo<DiffStats | null>(() => {
-    const store = tree.gitStatusStore()
-    return store ? store.getNodeDiffStats(props.node.path, props.node.isDir) : null
+    if (!tree.showGitStatus)
+      return null
+    return tree.gitStatusStore().getNodeDiffStats(props.node.path, props.node.isDir)
   })
 
   return (
@@ -912,8 +920,9 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
   ))
 
   const rootDiffStats = createMemo<DiffStats | null>(() => {
-    const store = props.gitStatusStore
-    return store ? store.getNodeDiffStats(rootPath(), true) : null
+    if (props.showGitStatus === false)
+      return null
+    return props.gitStatusStore.getNodeDiffStats(rootPath(), true)
   })
 
   const treeContextValue: TreeContextValue = {
@@ -927,6 +936,7 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
     comparator,
     truncationNotice,
     gitStatusStore: () => props.gitStatusStore,
+    get showGitStatus() { return props.showGitStatus !== false },
     isVisible: () => props.isVisible,
     refreshVersion,
     onSelect: path => props.onSelect(path),

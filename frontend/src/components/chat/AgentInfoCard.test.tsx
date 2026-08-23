@@ -1,5 +1,6 @@
 import type { AgentInfo } from '~/generated/leapmux/v1/agent_pb'
 import type { AgentSessionInfo } from '~/stores/agentSession.store'
+import type { RepoGitView } from '~/stores/repoGit'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
@@ -10,7 +11,7 @@ import { formatAgentSessionIdForDisplay, useAgentInfoCard } from './AgentInfoCar
 import './providers/claude/plugin'
 import './providers/pi/plugin'
 
-function InfoCardContent(props: { agent?: AgentInfo, agentSessionInfo?: AgentSessionInfo }) {
+function InfoCardContent(props: { agent?: AgentInfo, agentSessionInfo?: AgentSessionInfo, branchName?: string, gitView?: RepoGitView }) {
   const { infoHoverCardContent } = useAgentInfoCard(props)
   return <div>{infoHoverCardContent()}</div>
 }
@@ -172,6 +173,50 @@ describe('agent info card rate-limit rows', () => {
     expect(text).toContain('Exceeded')
     expect(text).toContain('resets in')
     expect(text).not.toContain('% used')
+  })
+})
+
+describe('agent info card branch row', () => {
+  function withGit(fields: Partial<AgentInfo>): AgentInfo {
+    return { agentProvider: AgentProvider.CLAUDE_CODE, agentSessionId: 'sid', ...fields } as AgentInfo
+  }
+
+  it('prefers the flat branch name over a stale nested gitStatus branch', () => {
+    render(() => (
+      <InfoCardContent
+        agent={withGit({})}
+        branchName="renamed"
+        gitView={{ modified: true } as RepoGitView}
+      />
+    ))
+
+    expect(screen.getByText('renamed')).toBeInTheDocument()
+    expect(screen.queryByText(/^main$/)).toBeNull()
+    expect(screen.getByText('Modified')).toBeInTheDocument()
+  })
+
+  it('hides the branch row when the flat branch is explicitly empty', () => {
+    render(() => (
+      <InfoCardContent
+        agent={withGit({})}
+        branchName=""
+        gitView={{ modified: true } as RepoGitView}
+      />
+    ))
+
+    expect(screen.queryByText(/^main$/)).toBeNull()
+    expect(screen.getByText('Modified')).toBeInTheDocument()
+  })
+
+  it('shows branchName from repoGitView when provided', () => {
+    render(() => (
+      <InfoCardContent
+        agent={withGit({})}
+        branchName="main"
+      />
+    ))
+
+    expect(screen.getByText('main')).toBeInTheDocument()
   })
 })
 

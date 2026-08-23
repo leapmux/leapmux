@@ -4,10 +4,11 @@ import type { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import type { createAgentSessionStore } from '~/stores/agentSession.store'
 import type { createChatStore } from '~/stores/chat.store'
 import type { createControlStore } from '~/stores/control.store'
+import type { createRepoGitStore } from '~/stores/repoGit.store'
 import type { AgentTab, Tab } from '~/stores/tab.types'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
-import type { TabSelectionStore } from '~/stores/tabSelection.store'
 
+import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
 import { batch, createEffect, createMemo, createSignal, onCleanup, untrack } from 'solid-js'
 import { showWarnToastUnlessDisconnected } from '~/components/common/Toast'
@@ -152,13 +153,14 @@ export interface WorkspaceConnectionParams {
   controlStore: ReturnType<typeof createControlStore>
   agentSessionStore: ReturnType<typeof createAgentSessionStore>
   settingsLoading: ReturnType<typeof createLoadingSignal>
+  repoGitStore: ReturnType<typeof createRepoGitStore>
   getActiveWorkspaceId: () => string | null
   /** Called when an agent turn ends (turn completed or control request received). */
   onTurnEnd?: (agentId: string, numToolUses?: number) => void
 }
 
 export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
-  const { chatStore, view, metadata, selection, controlStore, agentSessionStore, settingsLoading } = params
+  const { chatStore, view, metadata, selection, controlStore, agentSessionStore, settingsLoading, repoGitStore } = params
   const [offlineWorkers, setOfflineWorkers] = createSignal<ReadonlySet<string>>(new Set())
 
   // Per-agent catch-up phase across all workers.
@@ -238,7 +240,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
 
   let abortSignalFor: (workerId: string) => AbortSignal | undefined = () => undefined
 
-  const handleAgentEvent = (agentEvent: AgentEvent) => {
+  const handleAgentEvent = (agentEvent: AgentEvent, streamWorkerId: string) => {
     const agentId = agentEvent.agentId
     const inner = agentEvent.event
 
@@ -246,7 +248,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     const markLiveAgentActive = () => {
       if (catchUpPhase !== 'live')
         return
-      const wid = view.getAgentTab(agentId)?.workerId ?? ''
+      const wid = view.getAgentTab(agentId)?.workerId || streamWorkerId || ''
       if (wid)
         setWorkerOnline(wid, true)
       const current = view.getAgentTab(agentId)
@@ -279,10 +281,11 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           agentId,
           inner.value,
           catchUpPhase,
-          { agentSessionStore, chatStore, view, metadata, selection, getActiveWorkspaceId: params.getActiveWorkspaceId, controlStore },
+          { agentSessionStore, chatStore, view, metadata, selection, getActiveWorkspaceId: params.getActiveWorkspaceId, controlStore, repoGitStore },
           settingsLoading,
-          online => setWorkerOnline(view.getAgentTab(agentId)?.workerId ?? '', online),
+          online => setWorkerOnline(view.getAgentTab(agentId)?.workerId || streamWorkerId || '', online),
           params.onTurnEnd,
+          streamWorkerId,
         )
         break
       case 'controlRequest':
@@ -358,7 +361,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     }
   }
 
-  const handleTerminalEvent = (termEvent: TerminalEvent) => {
+  const handleTerminalEvent = (termEvent: TerminalEvent, streamWorkerId: string) => {
     const terminalId = termEvent.terminalId
 
     switch (termEvent.event.case) {
@@ -401,7 +404,14 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         dropPendingTerminalData(pendingTerminalData, terminalId)
         break
       case 'statusChange':
-        applyTerminalStatusChange(metadata, view.getTerminalTab(terminalId), terminalId, termEvent.event.value)
+        applyTerminalStatusChange(
+          metadata,
+          repoGitStore,
+          view.getTerminalTab(terminalId),
+          terminalId,
+          termEvent.event.value,
+          streamWorkerId,
+        )
         break
       case 'bell':
         handleTerminalBell(terminalId, { metadata, selection, getActiveWorkspaceId: params.getActiveWorkspaceId, view })
@@ -429,10 +439,10 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     onEvent: (workerId, resp) => {
       switch (resp.event.case) {
         case 'agentEvent':
-          handleAgentEvent(resp.event.value)
+          handleAgentEvent(resp.event.value, workerId)
           break
         case 'terminalEvent':
-          handleTerminalEvent(resp.event.value)
+          handleTerminalEvent(resp.event.value, workerId)
           break
       }
     },
@@ -473,6 +483,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
             if (tab.agentStatus === AgentStatus.ACTIVE)
               metadata.patch(tab.id, { agentStatus: AgentStatus.INACTIVE })
           }
+          repoGitStore.clearForWorker(workerId)
         })
       }
     })

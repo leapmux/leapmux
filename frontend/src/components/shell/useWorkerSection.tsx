@@ -38,6 +38,12 @@ export interface UseWorkerSectionOpts {
    * that must be registered exactly once.
    */
   keyPinConfirmDialog: DialogState<KeyPinConfirmState>
+  /**
+   * Drop keyed git state for a worker that left the account. Called from the
+   * deregister success path so entries do not depend on the offline sweep
+   * (which may never run if the worker was already offline).
+   */
+  clearRepoGitForWorker?: (workerId: string) => void
 }
 
 export interface WorkerSection {
@@ -125,7 +131,9 @@ export function useWorkerSection(opts: UseWorkerSectionOpts): WorkerSection {
             worker={target()}
             onClose={() => setDeregisterTarget(null)}
             onDeregistered={() => {
-              setWorkers(prev => prev.filter(w => w.id !== target().id))
+              const id = target().id
+              opts.clearRepoGitForWorker?.(id)
+              setWorkers(prev => prev.filter(w => w.id !== id))
               setDeregisterTarget(null)
             }}
           />

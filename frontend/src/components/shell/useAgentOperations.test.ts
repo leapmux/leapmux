@@ -14,6 +14,7 @@ import { KEY_MRU_AGENT_PROVIDERS, localStorageClearForTests, localStorageGet, lo
 import { ChannelError, channelNotOpenError } from '~/lib/channelError'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createControlStore } from '~/stores/control.store'
+import { createRepoGitStore } from '~/stores/repoGit.store'
 import { protoToAgentTabFields } from '~/stores/tab.helpers'
 import { emitAddTab } from '~/stores/tabOps'
 import { deferred, flush } from '~/test-support/async'
@@ -126,6 +127,7 @@ function setup(storeWorkspaceId: string = 'ws-1', getWorkerId: () => string = ()
     getCurrentTabContext: () => ({ workerId: getWorkerId(), workingDir: '/tmp' }),
     newAgentDialog: { open: vi.fn(), close: vi.fn(), isOpen: () => false },
     setNewAgentLoadingProvider: vi.fn(),
+    repoGitStore: createRepoGitStore(),
   })
 
   return {
@@ -260,6 +262,7 @@ describe('useAgentOperations', () => {
             getCurrentTabContext: () => ({ workerId: 'w-1', workingDir: '' }),
             newAgentDialog,
             setNewAgentLoadingProvider: vi.fn(),
+            repoGitStore: createRepoGitStore(),
           })
 
           await ops.handleOpenAgent()

@@ -1,7 +1,8 @@
-import type { AgentTab, GitTabFields, Tab, TerminalTab } from './tab.types'
+import type { RepoGitStore } from './repoGit'
+import type { AgentTab, Tab, TerminalTab } from './tab.types'
 import type { TerminalMeta } from './tabMetadata.store'
 import type { listTerminals } from '~/api/workerRpc'
-import type { AgentGitStatus, AgentInfo, AgentProvider, AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentInfo, AgentProvider, AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
 import { pluginFor } from '~/components/chat/providers/registry'
 import { effectiveCurrent, OPTION_ID_MODEL, optionGroup } from '~/components/chat/settingsGroups'
 import { AgentStatus } from '~/generated/leapmux/v1/agent_pb'
@@ -9,6 +10,7 @@ import { TerminalProgress_State, TerminalStatus } from '~/generated/leapmux/v1/t
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { basename } from '~/lib/paths'
 import { updateSettingsLabelCache } from '~/lib/settingsLabelCache'
+import { repoKey, repoKeyFromTab } from './repoGit'
 import { isTerminalTab } from './tab.types'
 
 /**
@@ -25,7 +27,7 @@ type ProtoTerminal = Awaited<ReturnType<typeof listTerminals>>['terminals'][numb
  *
  * The two fields travel together through the whole branch flow — the sidebar
  * row that opens a dialog, the dialog's payload, `onBranchChanged`,
- * `handleBranchChanged`, `stampBranchOnTabs` and `isSameRepo`. As two
+ * `handleBranchChanged`, `stampBranchOnRepo` and `isSameRepo`. As two
  * adjacent same-typed strings they were transposable at every hop, and a
  * transposition compiles and then matches nothing, so the branch stamp
  * silently reaches zero tabs. One parameter makes that mistake
@@ -44,9 +46,8 @@ export interface RepoRef {
  * Repository-identity equality for matching a {@link RepoRef} against a
  * Tab-shaped value. Used by:
  *  - AppShell's branch-changed routing to decide whether to refresh the
- *    gitFileStatusStore singleton (only when the changed repo is the
- *    active tab's repo).
- *  - AppShell's branch stamp, to find every tab in the same repo.
+ *    focused repo's git state in {@link createRepoGitStore}.
+ *  - Branch stamp paths that target one repo key in the keyed store.
  *
  * An empty `workerId` or `repoToplevel` never matches. Without those guards the
  * `?? ''` coercions below turn each into a WILDCARD over every tab whose git
@@ -57,10 +58,9 @@ export interface RepoRef {
  * active one, so the blast radius of that leak is the whole account.)
  *
  * BOTH halves are guarded HERE. The worker half used to live at one call site
- * — `stampBranchOnTabs`, whose own doc said the two halves need the guard "for
- * the same reason" — which left the predicate itself answering `true` for
- * `('' === '')` and made every future caller responsible for remembering. A
- * guard that only one caller applies is a guard the next caller does not have.
+ * only, which left the predicate itself answering `true` for `('' === '')` and
+ * made every future caller responsible for remembering. A guard that only one
+ * caller applies is a guard the next caller does not have.
  */
 export function isSameRepo(
   tabLike: { workerId?: string, gitToplevel?: string } | null | undefined,
@@ -88,16 +88,7 @@ export function protoToTerminalTabFields(workerId: string, term: ProtoTerminal):
     lastOffset: term.screen.length > 0 ? Number(term.screenEndOffset) : undefined,
     cols: term.cols || undefined,
     rows: term.rows || undefined,
-    // The four git fields as one group, through the shared normalizer, so this
-    // producer cannot answer "no answer" differently from the other two.
-    // Real values, NOT collapsed to undefined -- `tabMetadata.patch` skips
-    // undefined, and this producer runs a SECOND time over a populated row:
-    // `useTabHydrators` re-arms on DISCONNECTED, which the worker-offline sweep
-    // sets. Collapsing the negative cases means a terminal that stopped being a
-    // worktree, or finished starting, can never be told. (`title` above is
-    // deliberately NOT in this group: an empty OSC title must leave a user's
-    // rename alone.)
-    ...toGitTabFields(term.gitBranch, term.gitOriginUrl, term.gitToplevel, term.gitIsWorktree),
+    ...(term.gitStatus?.toplevel ? { gitToplevel: term.gitStatus.toplevel } : {}),
     status,
     startupError: term.startupError,
     startupMessage: term.startupMessage,
@@ -193,11 +184,7 @@ export function protoToAgentTabFields(workerId: string, agent: AgentInfo): Parti
     parentAgentId: agent.parentAgentId || undefined,
     acceptsMessages: agent.acceptsMessages,
     rootAgentId: agent.rootAgentId || undefined,
-    // The whole git group as one unit, through the shared producer. Both agent
-    // producers of this group must agree about what "no answer" is and about
-    // reference reuse, and the only way to make that true rather than merely
-    // asserted is for the answer to live in one place.
-    ...toAgentGitTabFields(agent.gitStatus),
+    ...(agent.gitStatus?.toplevel ? { gitToplevel: agent.gitStatus.toplevel } : {}),
   }
 }
 
@@ -440,7 +427,7 @@ export function agentTabToInfo(tab: Tab | undefined): AgentInfo | undefined {
     status: tab.agentStatus ?? AgentStatus.UNSPECIFIED,
     agentSessionId: tab.agentSessionId ?? '',
     optionGroups: agentTabOptionGroups(tab),
-    gitStatus: tab.agentGitStatus,
+    gitStatus: undefined,
     createdAt: tab.createdAt ?? '',
     closedAt: '',
     homeDir: '',
@@ -450,74 +437,6 @@ export function agentTabToInfo(tab: Tab | undefined): AgentInfo | undefined {
     acceptsMessages: tab.acceptsMessages ?? false,
     rootAgentId: tab.rootAgentId ?? '',
   } as AgentInfo
-}
-
-/**
- * THE normalizer for the four git fields, from either producer shape
- * (`AgentGitStatus` or a flat `TerminalStatusChange`). Returns `undefined` when
- * the probe produced no answer at all, so callers say nothing rather than
- * asserting a negative.
- *
- * Two rules, and they are the same rule applied to all four fields.
- *
- * NO ANSWER IS NOT A NEGATIVE. The worker leaves all four at proto zero when
- * the probe returns nothing (`gitutil.GetGitStatus` yields nil when both
- * porcelain probes fail, and its caller only assigns `if gs != nil`). Writing
- * `isWorktree: false` into that is an assertion the worker never made — the tab
- * keeps its branch but loses its worktree disposition, so the sidebar regroups
- * it under the non-worktree branch row and ChangeBranchDialog offers an
- * in-place checkout on a worktree, with nothing left to re-probe it. One gate
- * over the whole group, here, so the three producers cannot each decide
- * differently: they used to, and the comment claiming they agreed was written
- * while they did not.
- *
- * AN EMPTY ANSWER IS A REAL VALUE, so the strings stay `''` rather than
- * collapsing to `undefined`. `tabMetadata.patch` SKIPS undefined by design — a
- * partial row must not blank fields another source owns — so a collapsed field
- * cannot clear a populated one: `patch` drops the undefined, nothing changes,
- * and the next status event repeats that forever. A repo that loses its remote would keep the dead origin in the
- * sidebar's grouping for the life of the page. `applyGitStatusToTabs` reached
- * the same conclusion independently and already sends raw `''`; this is the
- * other half of that agreement.
- */
-export function toGitTabFields(branch: string, originUrl: string, toplevel: string, isWorktree: boolean): GitTabFields | undefined {
-  if (!branch && !originUrl && !toplevel)
-    return undefined
-  return {
-    gitBranch: branch,
-    gitOriginUrl: originUrl,
-    gitToplevel: toplevel,
-    gitIsWorktree: isWorktree,
-  }
-}
-
-/**
- * THE producer of an agent tab's git group: the full `AgentGitStatus` the info
- * card renders ahead/behind and the dirty-state flags from, plus the four flat
- * fields every other consumer reads (see `toGitTabFields`). Both agent producers
- * -- the live `statusChange` handler and the hydration/open reply -- go through
- * here, so the five fields cannot be assembled two different ways.
- *
- * Reference reuse is deliberately NOT this function's problem, though the worker
- * re-ships the whole status on every push and an unchanged repo therefore arrives
- * as an equal-but-fresh proto on every turn end. This used to take the tab's
- * current status as a `prev` argument and report `undefined` when the two matched.
- * That worked, but it made "do not re-key the tab" a rule every producer had to
- * opt into, and the opt-in leaked into the callers: one of them needed a
- * `tab.type === TabType.AGENT ? tab.agentGitStatus : undefined` dance just to
- * supply it, and another read `prev` across an `await` where a concurrent status
- * push could stale it. `tabMetadata.patch` now compares object-valued fields at
- * the single write point (see `sameStoredValue`), so an equal payload is dropped
- * there for EVERY field and every producer, including ones written later that
- * would never have known to ask.
- */
-export function toAgentGitTabFields(status: AgentGitStatus | undefined): Partial<AgentTab> {
-  if (!status)
-    return {}
-  return {
-    agentGitStatus: status,
-    ...toGitTabFields(status.branch, status.originUrl, status.toplevel, status.isWorktree),
-  }
 }
 
 /**
@@ -532,68 +451,73 @@ function effectiveGitDir(tab: { shellStartDir?: string, workingDir?: string }): 
 }
 
 /**
- * Optimistic git branch/origin to seed on a freshly-opened tab of ANY kind --
- * agent, terminal, or file.
- * A new tab starts with empty gitBranch/gitOriginUrl and only learns
- * them once the async phase-1 startup broadcasts TerminalStatusChange; in
- * that window the sidebar renders the tab under the workspace instead of
- * nested under its branch (WorkspaceTabTree.buildTree groups solely on
- * gitOriginUrl). Seeding avoids that flash.
+ * Optimistic `gitToplevel` to seed on a freshly-opened tab of ANY kind --
+ * agent, terminal, or file. Branch/origin/worktree live in the repo-keyed git
+ * store; only the toplevel identity travels on the tab row. Call
+ * {@link seedOptimisticRepoGit} alongside this so the store has branch/origin
+ * for sidebar grouping before the first status broadcast.
  *
  * Only safe to seed when the active tab and the new tab resolve to the same
- * git directory — otherwise the seeded values would be wrong for the new
- * tab's repo.
+ * git directory — otherwise the seeded value would be wrong for the new tab's
+ * repo.
  *
- * ANY tab kind may be the SOURCE. A file tab now carries a `workingDir` and
- * gets its git fields stamped by the same containment match as the other two,
- * so "file tabs have no authoritative git info" — the reason this used to
- * refuse them outright — stopped being true when that column landed. Nothing
- * was protecting: the two guards below already do the whole job. A tab with
- * neither origin nor toplevel has nothing to seed and returns early, and one in
- * a different directory fails the dir match. A type test on top of those could
- * only reject a tab that passes both, which is precisely a tab that would have
- * seeded correctly — a file tab opened from an agent, whose branch group is the
- * one the next file opened beside it belongs in.
+ * ANY tab kind may be the SOURCE. A tab with no toplevel has nothing to seed
+ * and returns early; one in a different directory fails the dir match.
  *
  * ABSENT KEYS ARE OMITTED, not set to `undefined`. Object spread copies
  * `undefined`-valued OWN keys, so a key present-but-undefined does not "leave
- * the value alone", it ERASES it. That matters most where the seed is spread
- * AFTER the worker's own fields — `useAgentOperations` (`{ ...agentFields,
- * ...seed }`) and `useTerminalOperations` (`{ ...meta, ...seed }`): an active
- * tab in the same directory whose branch has not resolved yet still passes the
- * origin/toplevel guard above, and would have wiped the authoritative
- * `gitBranch` the OpenAgent response just supplied. The FILE caller
- * (`useTabOperations.handleFileOpen`) spreads the seed FIRST instead, which is
- * safe for a different reason — the fields it writes after it (`filePath`,
- * `workingDir`, `title`) are disjoint from the four this returns, so neither
- * side can erase the other. A seed whose job is to ADD information must never
- * subtract, whichever order it lands in.
+ * the value alone", it ERASES it.
  */
 export function resolveOptimisticGitInfo(
   activeTab: Tab | null | undefined,
   newTab: { shellStartDir?: string, workingDir?: string },
-): { gitBranch?: string, gitOriginUrl?: string, gitToplevel?: string, gitIsWorktree?: boolean } {
+): { gitToplevel?: string } {
   if (!activeTab)
     return {}
-  // Needs at least an origin or a toplevel — otherwise there is no grouping
-  // value to seed, and the sidebar would still fall through to ungrouped
-  // until the authoritative broadcast arrives.
-  if (!activeTab.gitOriginUrl && !activeTab.gitToplevel)
+  if (!activeTab.gitToplevel)
     return {}
   const activeDir = effectiveGitDir(activeTab)
   const newDir = effectiveGitDir(newTab)
   if (!activeDir || activeDir !== newDir)
     return {}
-  const seed: { gitBranch?: string, gitOriginUrl?: string, gitToplevel?: string, gitIsWorktree?: boolean } = {}
-  if (activeTab.gitBranch)
-    seed.gitBranch = activeTab.gitBranch
-  if (activeTab.gitOriginUrl)
-    seed.gitOriginUrl = activeTab.gitOriginUrl
-  if (activeTab.gitToplevel)
-    seed.gitToplevel = activeTab.gitToplevel
-  if (activeTab.gitIsWorktree !== undefined)
-    seed.gitIsWorktree = activeTab.gitIsWorktree
-  return seed
+  return { gitToplevel: activeTab.gitToplevel }
+}
+
+/**
+ * Copy branch/origin/worktree from the active tab's repo store entry onto the
+ * new tab's key when both resolve to the same git directory. Same-worker opens
+ * share a key and need no copy; different workerIds need this to avoid a
+ * sidebar flash under "(no branch)".
+ */
+export function seedOptimisticRepoGit(
+  store: Pick<RepoGitStore, 'get' | 'upsert'>,
+  activeTab: Tab | null | undefined,
+  newTab: { workerId?: string, shellStartDir?: string, workingDir?: string },
+): void {
+  const seed = resolveOptimisticGitInfo(activeTab, newTab)
+  const workerId = newTab.workerId ?? ''
+  if (!seed.gitToplevel || !workerId || !activeTab?.workerId)
+    return
+  const fromKey = repoKeyFromTab(activeTab)
+  if (!fromKey)
+    return
+  const from = store.get(fromKey)
+  if (!from?.toplevel)
+    return
+  const toKey = repoKey(workerId, seed.gitToplevel)
+  if (toKey === fromKey)
+    return
+  const existing = store.get(toKey)
+  if (existing?.originUrl || existing?.branch)
+    return
+  store.upsert(toKey, {
+    workerId,
+    toplevel: seed.gitToplevel,
+    branch: from.branch,
+    originUrl: from.originUrl,
+    isWorktree: from.isWorktree,
+    gitStatusSeen: from.gitStatusSeen,
+  })
 }
 
 /**

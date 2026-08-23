@@ -18,6 +18,8 @@ export interface ComposerStatusBarProps {
   optionValues: Record<string, string>
   /** Dispatch a settings change for the model/effort/mode chips. Optional to match the panel's `onChange?`. */
   onSettingChange?: (change: ProviderSettingChange) => void
+  /** Branch label from {@link repoGitView}. */
+  branchName?: string
   /** Branch chip callbacks. */
   onChangeBranch: () => void
   onDeleteBranch: () => void
@@ -67,7 +69,7 @@ export function ComposerStatusBar(props: ComposerStatusBarProps): JSX.Element {
     <div class={styles.statusBar} data-testid="composer-status-bar">
       <div class={styles.statusBarLeft}>
         <GitBranchChip
-          branchName={props.agent?.gitStatus?.branch || undefined}
+          branchName={props.branchName}
           disabledReason={props.branchDisabledReason}
           onChangeBranch={props.onChangeBranch}
           onDeleteBranch={props.onDeleteBranch}

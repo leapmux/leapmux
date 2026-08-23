@@ -59,6 +59,7 @@ function makeProps() {
     onExpand: vi.fn(),
     workerId: 'worker-1',
     workingDir: '/repo',
+    gitToplevel: '/repo',
     homeDir: '/home/user',
     fileTreePath: '/repo',
     onFileSelect: vi.fn(),
@@ -105,7 +106,9 @@ describe('rightSidebar file tree shortcut registration', () => {
     refreshFileTree()
     toggleHiddenFiles()
 
-    expect(props.gitStatusStore.refresh).toHaveBeenCalledWith('worker-1', '/repo')
+    expect(props.gitStatusStore.refresh).toHaveBeenCalledWith('worker-1', '/repo', {
+      repoKey: 'worker-1\x00/repo',
+    })
     expect(handle.refresh).toHaveBeenCalledOnce()
     expect(handle.toggleShowHiddenFiles).toHaveBeenCalledOnce()
   })

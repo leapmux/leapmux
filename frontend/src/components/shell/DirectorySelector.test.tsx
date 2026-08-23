@@ -1,11 +1,14 @@
 import { cleanup, render, screen } from '@solidjs/testing-library'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { refreshFileTree, toggleHiddenFiles } from '~/lib/fileTreeOps'
+import { createRepoGitStore } from '~/stores/repoGit.store'
 import { withPreferences } from '~/test-support/preferencesProvider'
 import { DirectorySelector } from './DirectorySelector'
 
 vi.mock('~/components/tree/DirectoryTree', () => ({
-  DirectoryTree: () => <div data-testid="directory-tree" />,
+  DirectoryTree: (props: { showGitStatus?: boolean }) => (
+    <div data-testid="directory-tree" data-show-git-status={String(props.showGitStatus ?? true)} />
+  ),
 }))
 
 // Partial mock: keep the real key constants (modules in this import graph --
@@ -49,7 +52,7 @@ function makeState() {
 describe('directorySelector', () => {
   it('refreshFileTree invokes the current tree state refreshTree', () => {
     const { state, tree, refreshTree } = makeState()
-    render(withPreferences(() => <DirectorySelector state={state as any} tree={tree as any} />))
+    render(withPreferences(() => <DirectorySelector state={state as any} tree={tree as any} repoGitStore={createRepoGitStore()} />))
 
     refreshFileTree()
 
@@ -58,7 +61,7 @@ describe('directorySelector', () => {
 
   it('toggleHiddenFiles updates the visible button title through the registry callback', () => {
     const { state, tree } = makeState()
-    render(withPreferences(() => <DirectorySelector state={state as any} tree={tree as any} />))
+    render(withPreferences(() => <DirectorySelector state={state as any} tree={tree as any} repoGitStore={createRepoGitStore()} />))
 
     expect(screen.getByRole('button', { name: 'Hide hidden files' })).toBeInTheDocument()
 
@@ -69,11 +72,18 @@ describe('directorySelector', () => {
 
   it('unregisters dialog ops on unmount', () => {
     const { state, tree, refreshTree } = makeState()
-    const view = render(withPreferences(() => <DirectorySelector state={state as any} tree={tree as any} />))
+    const view = render(withPreferences(() => <DirectorySelector state={state as any} tree={tree as any} repoGitStore={createRepoGitStore()} />))
 
     view.unmount()
     refreshFileTree()
 
     expect(refreshTree).not.toHaveBeenCalled()
+  })
+
+  it('disables git status decorations in the picker tree', () => {
+    const { state, tree } = makeState()
+    render(withPreferences(() => <DirectorySelector state={state as any} tree={tree as any} repoGitStore={createRepoGitStore()} />))
+
+    expect(screen.getByTestId('directory-tree')).toHaveAttribute('data-show-git-status', 'false')
   })
 })

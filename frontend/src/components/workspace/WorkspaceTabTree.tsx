@@ -1,5 +1,7 @@
 import type { Accessor, Component } from 'solid-js'
 import type { WorkerInfo } from '~/lib/workerInfoCache'
+import type { RepoGitStore } from '~/stores/repoGit'
+import type { createRepoGitStore } from '~/stores/repoGit.store'
 import type { Tab, TabItemOps } from '~/stores/tab.types'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
 import FolderGit from 'lucide-solid/icons/folder-git'
@@ -21,7 +23,7 @@ import { createGuardedDraggableRow } from '~/lib/dragRow'
 import { createKeyedRows, createKeyLookup, createStableKeys, KeyedFor } from '~/lib/keyedRows'
 import { basename, flavorFromOs, tildify } from '~/lib/paths'
 import { shallowEqualArrays } from '~/lib/shallowEqual'
-import { diffStatsFromTabFields } from '~/stores/gitFileStatus.store'
+import { diffStatsFromRepo, repoGitView } from '~/stores/repoGit'
 import { canCloseTab, tabDisplayLabel, tabKey, tabTooltipShowWhen, tabTooltipText, terminalProgressBarProps, terminalProgressVisible } from '~/stores/tab.helpers'
 import { isAgentTab, isTerminalTab } from '~/stores/tab.types'
 import * as tabBarStyles from '../shell/TabBar.css'
@@ -39,6 +41,7 @@ import {
   repoKeyForLocal,
   repoKeyTooltip,
   tabBranchKey,
+  tabGitToplevelForKey,
 } from './branchKeys'
 import * as css from './workspaceTabTree.css'
 
@@ -72,7 +75,8 @@ function branchGroupKey(b: BranchGroup): string {
 // on each one is precisely what this gate exists to prevent. The rows read
 // those fields from the live lookup instead (see `TabLeafList`), so a field
 // missing here is not a field that goes stale.
-export function tabBuildKey(t: Tab): string {
+export function tabBuildKey(t: Tab, store: RepoGitStore): string {
+  const git = repoGitView(t, store)
   return [
     t.id,
     // `type` because the ROW key is `${type}:${id}` (tabKey), not the id alone.
@@ -86,13 +90,15 @@ export function tabBuildKey(t: Tab): string {
     // so including it costs one rebuild per subagent rather than churn.
     isAgentTab(t) ? t.parentAgentId ?? '' : '',
     t.workerId ?? '',
-    t.gitBranch ?? '',
-    t.gitToplevel ?? '',
-    t.gitIsWorktree ? '1' : '0',
-    t.gitOriginUrl ?? '',
-    t.gitDiffAdded ?? 0,
-    t.gitDiffDeleted ?? 0,
-    t.gitDiffUntracked ?? 0,
+    git.branchLabel ?? '',
+    // Prefer store toplevel so the fingerprint matches buildTree / tabBranchKey
+    // when tab metadata still lags a resolved repo identity.
+    git.toplevel ?? t.gitToplevel ?? '',
+    git.isWorktree ? '1' : '0',
+    git.originUrl ?? '',
+    git.diffStats.added,
+    git.diffStats.deleted,
+    git.diffStats.untracked,
     t.tileId ?? '',
     t.position ?? '',
   ].join('\0')
@@ -546,7 +552,7 @@ const BranchGroupRow: Component<{
 }> = (props) => {
   const sel = useRowSelection()
   const actions = useBranchActions()
-  const branchStats = createMemo(() => diffStatsFromTabFields(props.branch()))
+  const branchStats = createMemo(() => diffStatsFromRepo(props.branch()))
   const collapseKey = createMemo(() => collapseKeyForBranch(props.repoKey, props.branchKey))
   // Both menu items need this row's Worker: Change reads the branch state from
   // it, Delete mutates it. Undefined when they are usable -- see
@@ -620,7 +626,7 @@ const RepoGroupRow: Component<{
   repoKey: string
 }> = (props) => {
   const sel = useRowSelection()
-  const groupStats = createMemo(() => diffStatsFromTabFields(props.group()))
+  const groupStats = createMemo(() => diffStatsFromRepo(props.group()))
   const branchKeys = createStableKeys(() => props.group().branches, branchGroupKey)
   return (
     <>
@@ -696,6 +702,7 @@ export interface WorkspaceTabTreeProps {
   isWorkerKnownOnline?: (workerId: string) => boolean
   onChangeBranch?: (ref: BranchRef) => void
   onDeleteBranch?: (ref: BranchRef) => void
+  repoGitStore: ReturnType<typeof createRepoGitStore>
 }
 
 /**
@@ -735,7 +742,7 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
   // each field's contribution unambiguous (an empty branch can't be
   // confused with a numeric diff value).
   const tabsProjection = createMemo<readonly string[]>(
-    () => props.tabs.map(tabBuildKey),
+    () => props.tabs.map(t => tabBuildKey(t, props.repoGitStore)),
     [],
     { equals: shallowEqualArrays },
   )
@@ -779,7 +786,7 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
   const tree = createMemo(
     on(
       () => [tabsProjection(), tileOrderProjection(), workersProjection()] as const,
-      () => buildTree(props.tabs, props.tileOrder, props.workerInfoFn),
+      () => buildTree(props.tabs, props.repoGitStore, props.tileOrder, props.workerInfoFn),
     ),
   )
   // Outer For iterates stable repoKey strings (interned by JS, so a fresh
@@ -992,12 +999,14 @@ export function formatGitOriginUrl(url: string): string {
  *      distinct repos distinct.
  * Tabs that lack both fall through to the ungrouped bucket.
  */
-function repoKeyAndLabel(tab: Tab): { key: string, label: string } | null {
-  if (tab.gitOriginUrl)
-    return { key: tab.gitOriginUrl, label: formatGitOriginUrl(tab.gitOriginUrl) }
-  if (tab.gitToplevel) {
-    const label = basename(tab.gitToplevel) || tab.gitToplevel
-    return { key: repoKeyForLocal(tab.gitToplevel), label }
+function repoKeyAndLabel(tab: Tab, store: RepoGitStore): { key: string, label: string } | null {
+  const git = repoGitView(tab, store)
+  if (git.originUrl)
+    return { key: git.originUrl, label: formatGitOriginUrl(git.originUrl) }
+  const toplevel = git.toplevel ?? tab.gitToplevel
+  if (toplevel) {
+    const label = basename(toplevel) || toplevel
+    return { key: repoKeyForLocal(toplevel), label }
   }
   return null
 }
@@ -1011,20 +1020,19 @@ function repoKeyAndLabel(tab: Tab): { key: string, label: string } | null {
  * top-line diff badge can use this helper instead of allocating the full
  * group/branch structure.
  */
-export function sumDiffStatsFromTabs(tabs: Tab[]): { added: number, deleted: number, untracked: number } {
+export function sumDiffStatsFromTabs(tabs: Tab[], store: RepoGitStore): { added: number, deleted: number, untracked: number } {
   const seen = new Set<string>()
   let added = 0
   let deleted = 0
   let untracked = 0
   for (const t of tabs) {
-    if (!t.gitOriginUrl && !t.gitToplevel)
+    const git = repoGitView(t, store)
+    if (!git.originUrl && !git.toplevel && !t.gitToplevel)
       continue
-    const a = t.gitDiffAdded ?? 0
-    const d = t.gitDiffDeleted ?? 0
-    const u = t.gitDiffUntracked ?? 0
+    const { added: a, deleted: d, untracked: u } = git.diffStats
     if (a === 0 && d === 0 && u === 0)
       continue
-    const key = tabBranchKey(t)
+    const key = tabBranchKey(t, store)
     if (seen.has(key))
       continue
     seen.add(key)
@@ -1037,6 +1045,7 @@ export function sumDiffStatsFromTabs(tabs: Tab[]): { added: number, deleted: num
 
 export function buildTree(
   tabs: Tab[],
+  store: RepoGitStore,
   tileOrder?: readonly string[],
   workerInfoFn?: (id: string) => WorkerInfo | null,
 ): TabTree {
@@ -1063,7 +1072,7 @@ export function buildTree(
   // its git info (origin URL, toplevel, or as a last resort just a branch).
   // Tabs with none of those (non-git dirs) stay ungrouped.
   for (const tab of tabs) {
-    const rk = repoKeyAndLabel(tab)
+    const rk = repoKeyAndLabel(tab, store)
     if (!rk) {
       ungrouped.push(tab)
       continue
@@ -1073,24 +1082,25 @@ export function buildTree(
       entry = { label: rk.label, branches: new Map() }
       repoMap.set(rk.key, entry)
     }
-    const branchName = tab.gitBranch || null
+    const git = repoGitView(tab, store)
+    const branchName = git.branchLabel || null
     const workerId = tab.workerId ?? ''
-    const gitToplevel = tab.gitToplevel ?? ''
+    const gitToplevel = tabGitToplevelForKey(tab, store)
     // Through the shared function, not a second copy of its body. This IS the
     // "the sidebar groups its tree by it" caller tabBranchKey's own doc names,
     // and the composer's delete-branch dialog collects its tab list by the same
     // function -- a second membership test here would let the dialog report a
     // different set of affected tabs than the tree shows.
-    const key = tabBranchKey(tab)
+    const key = tabBranchKey(tab, store)
     let bucket = entry.branches.get(key)
     if (!bucket) {
       // Tabs are bucketed by (branchName, workerId, gitToplevel), so
       // every tab in a bucket shares the same worker view of the same
-      // path — `gitIsWorktree` is uniform across the bucket. Seed it
+      // path — `isWorktree` is uniform across the bucket. Seed it
       // from the first tab; later tabs that happen to disagree (e.g.
       // a stale broadcast races a probe refresh) leave the seed as-is
       // rather than flickering the group's worktree flag.
-      bucket = { branchName, workerId, gitToplevel, isWorktree: tab.gitIsWorktree ?? false, tabs: [] }
+      bucket = { branchName, workerId, gitToplevel, isWorktree: git.isWorktree ?? false, tabs: [] }
       entry.branches.set(key, bucket)
     }
     bucket.tabs.push(tab)
@@ -1162,10 +1172,11 @@ export function buildTree(
       let diffDeleted = 0
       let diffUntracked = 0
       for (const t of branchTabs) {
-        if ((t.gitDiffAdded ?? 0) > 0 || (t.gitDiffDeleted ?? 0) > 0 || (t.gitDiffUntracked ?? 0) > 0) {
-          diffAdded = t.gitDiffAdded ?? 0
-          diffDeleted = t.gitDiffDeleted ?? 0
-          diffUntracked = t.gitDiffUntracked ?? 0
+        const stats = repoGitView(t, store).diffStats
+        if (stats.added > 0 || stats.deleted > 0 || stats.untracked > 0) {
+          diffAdded = stats.added
+          diffDeleted = stats.deleted
+          diffUntracked = stats.untracked
           break
         }
       }

@@ -8,7 +8,7 @@ import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
 import type { WorkerInfo } from '~/lib/workerInfoCache'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import type { TodoItem } from '~/stores/chatTodos'
-import type { createGitFileStatusStore, GitFilterTab } from '~/stores/gitFileStatus.store'
+import type { createRepoGitStore, GitFilterTab } from '~/stores/repoGit.store'
 import type { createSectionStore } from '~/stores/section.store'
 import type { TabItemOps } from '~/stores/tab.types'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
@@ -46,7 +46,7 @@ export interface SidebarElementsOpts {
   onFileSelect: (path: string) => void
   onFileOpen: (path: string, openSource?: GitFilterTab) => void
   isActiveWorkspaceArchived: boolean
-  gitStatusStore: ReturnType<typeof createGitFileStatusStore>
+  gitStatusStore: ReturnType<typeof createRepoGitStore>
   activeFilePath?: string
   hasActiveFileTab: boolean
   showTodos: boolean
@@ -143,6 +143,7 @@ export function buildCommonSidebarProps(opts: SidebarElementsOpts, display?: Sid
     onSectionStateChange: display?.onStateChange,
     get workerId() { return opts.getCurrentTabContext().workerId },
     get workingDir() { return opts.getCurrentTabContext().workingDir },
+    get gitToplevel() { return opts.getCurrentTabContext().gitToplevel },
     get homeDir() { return opts.getCurrentTabContext().homeDir },
     // Archived workspaces expose no mention/terminal affordance, and whether a
     // workspace is archived can change while the sidebar is mounted -- so the

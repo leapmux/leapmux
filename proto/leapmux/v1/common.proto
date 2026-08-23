@@ -128,3 +128,23 @@ message TabHydrationVerdict {
   string tab_id = 1;
   TabHydrationStatus status = 2;
 }
+
+// GitRepoStatus is the unified git summary for a working tree. Every producer
+// (GetGitFileStatus, agent/terminal status broadcasts, hydration) emits this
+// shape so the frontend stores one record per (worker_id, toplevel).
+message GitRepoStatus {
+  string branch = 1;
+  int32 ahead = 2;
+  int32 behind = 3;
+  bool conflicted = 4;
+  bool stashed = 5;
+  bool deleted = 6;
+  bool renamed = 7;
+  bool modified = 8;
+  bool type_changed = 9;
+  bool added = 10;
+  bool untracked = 11;
+  string origin_url = 12;
+  string toplevel = 13;
+  bool is_worktree = 14;
+}

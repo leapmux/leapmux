@@ -7,6 +7,7 @@ import * as workerRpc from '~/api/workerRpc'
 import { AgentInfoSchema, AgentProvider, AgentStatus, OpenAgentResponseSchema } from '~/generated/leapmux/v1/agent_pb'
 import { CreateWorkspaceResponseSchema, DeleteWorkspaceResponseSchema, TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { seedTabIntoNewWorkspace } from '~/lib/crdt'
+import { createRepoGitStore } from '~/stores/repoGit.store'
 /// <reference types="vitest/globals" />
 import { withPreferences } from '~/test-support/preferencesProvider'
 import { NewWorkspaceDialog } from './NewWorkspaceDialog'
@@ -105,6 +106,7 @@ function renderDialog(overrides: Partial<Parameters<typeof NewWorkspaceDialog>[0
     onClose: vi.fn(),
     availableProviders: [AgentProvider.CLAUDE_CODE],
     metadata: { patch: vi.fn() } as unknown as TabMetadataStore,
+    repoGitStore: createRepoGitStore(),
     ...overrides,
   }
   render(withPreferences(() => <NewWorkspaceDialog {...props} />))

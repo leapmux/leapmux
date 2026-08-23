@@ -4,6 +4,7 @@ import type { Section } from '~/generated/leapmux/v1/section_pb'
 import type { TabType, Workspace } from '~/generated/leapmux/v1/workspace_pb'
 import type { WorkerInfo } from '~/lib/workerInfoCache'
 
+import type { createRepoGitStore } from '~/stores/repoGit.store'
 import type { Tab, TabItemOps } from '~/stores/tab.types'
 import { createDroppable, SortableProvider } from '@thisbeyond/solid-dnd'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
@@ -69,6 +70,7 @@ export interface WorkspaceSectionContentProps {
   isWorkerKnownOnline?: (workerId: string) => boolean
   onChangeBranch?: (ref: BranchRef) => void
   onDeleteBranch?: (ref: BranchRef) => void
+  repoGitStore: ReturnType<typeof createRepoGitStore>
 }
 
 export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = (props) => {
@@ -143,7 +145,7 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
 
   /** Per-workspace diff stats. */
   function workspaceDiffStatsFor(workspaceId: string) {
-    return sumDiffStatsFromTabs(tabsFor(workspaceId))
+    return sumDiffStatsFromTabs(tabsFor(workspaceId), props.repoGitStore)
   }
 
   const workspaceIds = () => props.workspaces.map(w => w.id)
@@ -327,6 +329,7 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                         isWorkerKnownOnline={props.isWorkerKnownOnline}
                         onChangeBranch={props.onChangeBranch}
                         onDeleteBranch={props.onDeleteBranch}
+                        repoGitStore={props.repoGitStore}
                       />
                     </div>
                   </div>

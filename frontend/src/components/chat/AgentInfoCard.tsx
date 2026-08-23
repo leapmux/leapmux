@@ -1,5 +1,6 @@
 import type { AgentInfo, AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { AgentSessionInfo } from '~/stores/agentSession.store'
+import type { RepoGitView } from '~/stores/repoGit'
 import Check from 'lucide-solid/icons/check'
 import Copy from 'lucide-solid/icons/copy'
 import { createMemo, createSignal, For, onCleanup, Show } from 'solid-js'
@@ -18,6 +19,10 @@ import { computePercentage, contextBufferPct, contextSize, resolveContextWindow 
 export interface AgentInfoCardProps {
   agent?: AgentInfo
   agentSessionInfo?: AgentSessionInfo
+  /** Branch label from {@link repoGitView}. */
+  branchName?: string
+  /** Git flags and ahead/behind from {@link repoGitView}. */
+  gitView?: RepoGitView
 }
 
 export function formatAgentSessionIdForDisplay(agentProvider: AgentProvider | undefined, sessionId: string): string {
@@ -63,6 +68,8 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
    */
   const agent = createMemo(() => props.agent)
   const sessionInfo = createMemo(() => props.agentSessionInfo)
+  const gitView = createMemo(() => props.gitView)
+  const branchLabel = createMemo(() => props.branchName)
 
   const hasContextInfo = () => {
     const info = sessionInfo()
@@ -149,61 +156,57 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
           />
         </div>
       </Show>
-      {/* Two reads of `agent()` in one expression, which is safe BECAUSE it is
-          the memo: reading the prop twice here is what could answer with two
-          different agents, and did. Optional-chained anyway, so the row stays
-          total on its own terms. */}
-      <Show when={agent()?.gitStatus?.branch ? agent()?.gitStatus : undefined} keyed>
-        {gs => (
-          <>
-            <div class={styles.infoRow}>
-              <span class={styles.infoLabel}>Branch</span>
-              <span class={styles.infoValue}>
-                {gs.branch}
-                {(() => {
-                  const parts: string[] = []
-                  if (gs.ahead)
-                    parts.push(`+${gs.ahead}`)
-                  if (gs.behind)
-                    parts.push(`-${gs.behind}`)
-                  return parts.length > 0 ? ` [${parts.join(' ')}]` : ''
-                })()}
-              </span>
-              <CopyButton
-                getText={() => gs.branch}
-                title="Copy branch name"
-              />
-            </div>
-            {(() => {
-              const flags: string[] = []
-              if (gs.conflicted)
-                flags.push('Conflicted')
-              if (gs.stashed)
-                flags.push('Stashed')
-              if (gs.modified)
-                flags.push('Modified')
-              if (gs.added)
-                flags.push('Added')
-              if (gs.deleted)
-                flags.push('Deleted')
-              if (gs.renamed)
-                flags.push('Renamed')
-              if (gs.typeChanged)
-                flags.push('Type-changed')
-              if (gs.untracked)
-                flags.push('Untracked')
-              return (
-                <Show when={flags.length > 0}>
-                  <div class={styles.infoRow}>
-                    <span class={styles.infoLabel}>Status</span>
-                    <span class={styles.infoValueText}>{flags.join(', ')}</span>
-                  </div>
-                </Show>
-              )
-            })()}
-          </>
+      <Show when={branchLabel()} keyed>
+        {name => (
+          <div class={styles.infoRow}>
+            <span class={styles.infoLabel}>Branch</span>
+            <span class={styles.infoValue}>
+              {name}
+              {(() => {
+                const git = gitView()
+                const parts: string[] = []
+                if (git?.ahead)
+                  parts.push(`+${git.ahead}`)
+                if (git?.behind)
+                  parts.push(`-${git.behind}`)
+                return parts.length > 0 ? ` [${parts.join(' ')}]` : ''
+              })()}
+            </span>
+            <CopyButton
+              getText={() => name}
+              title="Copy branch name"
+            />
+          </div>
         )}
       </Show>
+      {(() => {
+        const git = gitView()
+        const flags: string[] = []
+        if (git?.conflicted)
+          flags.push('Conflicted')
+        if (git?.stashed)
+          flags.push('Stashed')
+        if (git?.modified)
+          flags.push('Modified')
+        if (git?.added)
+          flags.push('Added')
+        if (git?.deleted)
+          flags.push('Deleted')
+        if (git?.renamed)
+          flags.push('Renamed')
+        if (git?.typeChanged)
+          flags.push('Type-changed')
+        if (git?.untracked)
+          flags.push('Untracked')
+        return (
+          <Show when={flags.length > 0}>
+            <div class={styles.infoRow}>
+              <span class={styles.infoLabel}>Status</span>
+              <span class={styles.infoValueText}>{flags.join(', ')}</span>
+            </div>
+          </Show>
+        )
+      })()}
       <Show when={agent()?.workingDir} keyed>
         {workingDir => (
           <div class={styles.infoRow} data-testid="info-row-directory">

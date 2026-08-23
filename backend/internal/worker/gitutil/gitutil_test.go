@@ -182,7 +182,7 @@ func TestGetToplevelInfo(t *testing.T) {
 
 func TestGetGitStatus_IsWorktree(t *testing.T) {
 	// fanoutGitStatusProbes routes through GetToplevelInfo so every
-	// AgentGitStatus / Terminal git probe carries the worktree
+	// GitRepoStatus / Terminal git probe carries the worktree
 	// disposition. Pin both ends of the dichotomy so a future probe
 	// reshuffle can't drop the field.
 	t.Run("populates IsWorktree=false for a main repo", func(t *testing.T) {
@@ -200,7 +200,7 @@ func TestGetGitStatus_IsWorktree(t *testing.T) {
 		require.NoError(t, cmd.Run())
 		status := GetGitStatus(context.Background(), wtDir)
 		require.NotNil(t, status)
-		assert.True(t, status.GetIsWorktree(), "AgentGitStatus.IsWorktree must mirror the worktree disposition so DeleteBranchDialog can hint without re-probing")
+		assert.True(t, status.GetIsWorktree(), "GitRepoStatus.IsWorktree must mirror the worktree disposition so DeleteBranchDialog can hint without re-probing")
 	})
 }
 

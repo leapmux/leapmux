@@ -1,5 +1,6 @@
 import type { Component } from 'solid-js'
 import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import type { createRepoGitStore } from '~/stores/repoGit.store'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import { generateSlug } from 'random-word-slugs'
 import { createMemo, createSignal, Show } from 'solid-js'
@@ -40,6 +41,7 @@ interface NewWorkspaceDialogProps {
    * the hydrator's `listAgents` round-trip lands ("Agent not found").
    */
   metadata: TabMetadataStore
+  repoGitStore: ReturnType<typeof createRepoGitStore>
 }
 
 export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) => {
@@ -210,7 +212,7 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
         </div>
       </DialogTopSection>
       <DialogColumns
-        left={<DirectorySelector state={worker} tree={tree} />}
+        left={<DirectorySelector state={worker} tree={tree} repoGitStore={props.repoGitStore} />}
         right={(
           <>
             <SessionIdInput state={sessionId} />

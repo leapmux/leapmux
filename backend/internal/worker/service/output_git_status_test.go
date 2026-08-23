@@ -62,7 +62,7 @@ func (m *agentEventCapturingWriter) count() int64 {
 
 // newGitStatusFixture mints a minimal service + sink against a tempdir agent.
 // The tempdir is *not* a git repo, so gitutil.GetGitStatus returns an empty
-// AgentGitStatus — sufficient to assert event shape without dragging git
+// GitRepoStatus — sufficient to assert event shape without dragging git
 // state into the test. Returns the concrete *agentOutputSink so tests can
 // reach BroadcastGitStatus directly (it's not on the agent.OutputSink
 // interface — providers don't call it; the sink fires it automatically

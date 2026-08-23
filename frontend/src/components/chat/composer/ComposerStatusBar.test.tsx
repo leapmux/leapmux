@@ -25,10 +25,14 @@ function agent(overrides: Partial<AgentInfo> = {}): AgentInfo {
   } as unknown as AgentInfo
 }
 
-function renderBar(a: AgentInfo | undefined, extra: { disabledReason?: string, branchDisabledReason?: string } = {}) {
+function renderBar(
+  a: AgentInfo | undefined,
+  extra: { disabledReason?: string, branchDisabledReason?: string, branchName?: string } = {},
+) {
   return render(() => (
     <ComposerStatusBar
       agent={a}
+      branchName={extra.branchName}
       optionValues={{}}
       onSettingChange={() => {}}
       onChangeBranch={() => {}}
@@ -126,11 +130,23 @@ describe('composerStatusBar', () => {
     expect(screen.getByTestId('info')).toBeInTheDocument()
   })
 
-  it('shows the branch chip only when the agent reports a branch', () => {
+  it('shows the branch chip only when branchName is provided', () => {
     renderBar(agent())
     expect(screen.queryByText('main')).toBeNull()
 
-    renderBar(agent({ gitStatus: { branch: 'main' } } as unknown as Partial<AgentInfo>))
+    renderBar(agent(), { branchName: 'main' })
     expect(screen.getByText('main')).toBeInTheDocument()
+  })
+
+  it('uses the branchName prop for the chip label', () => {
+    renderBar(agent(), { branchName: 'renamed' })
+    expect(screen.getByText('renamed')).toBeInTheDocument()
+    expect(screen.queryByText('main')).toBeNull()
+  })
+
+  it('hides the branch chip when branchName is explicitly empty', () => {
+    renderBar(agent(), { branchName: '' })
+    expect(screen.queryByTestId('composer-branch-trigger')).toBeNull()
+    expect(screen.queryByText('main')).toBeNull()
   })
 })

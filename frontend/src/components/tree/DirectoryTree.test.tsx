@@ -4,7 +4,10 @@ import { fireEvent, render, waitFor } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { PREFIX_DIRECTORY_TREE, sessionStorageSet } from '~/lib/browserStorage'
+import { createRepoGitStore } from '~/stores/repoGit.store'
 import { DIRECTORY_TREE_STATE_VERSION, DirectoryTree } from './DirectoryTree'
+
+const gitStatusStore = createRepoGitStore()
 
 const listDirectory = vi.fn()
 const statFile = vi.fn()
@@ -75,6 +78,7 @@ describe('directoryTree', () => {
     render(() => (
       <DirectoryTree
         workerId="w1"
+        gitStatusStore={gitStatusStore}
         showFiles
         rootPath={root}
         selectedPath=""
@@ -106,6 +110,7 @@ describe('directoryTree', () => {
     render(() => (
       <DirectoryTree
         workerId="w1"
+        gitStatusStore={gitStatusStore}
         showFiles
         rootPath={root}
         selectedPath={`${root}/a.txt`}
@@ -146,6 +151,7 @@ describe('directoryTree sorting', () => {
     const result = render(() => (
       <DirectoryTree
         workerId="w1"
+        gitStatusStore={gitStatusStore}
         showFiles
         rootPath={root}
         selectedPath=""
@@ -358,7 +364,7 @@ describe('directoryTree root row info', () => {
     statFile.mockResolvedValue({ info: { modTime: '2026-04-01T09:00:00Z' } })
 
     render(() => (
-      <DirectoryTree workerId="w1" showFiles rootPath={root} selectedPath="" onSelect={() => {}} />
+      <DirectoryTree workerId="w1" gitStatusStore={gitStatusStore} showFiles rootPath={root} selectedPath="" onSelect={() => {}} />
     ))
 
     await waitFor(() => expect(statFile).toHaveBeenCalledWith('w1', { workerId: 'w1', path: root }))
@@ -379,7 +385,7 @@ describe('directoryTree root row info', () => {
     const [enabled, setEnabled] = createSignal(false)
 
     render(() => (
-      <DirectoryTree workerId="w1" showFiles rootPath={root} selectedPath="" onSelect={() => {}} enabled={enabled()} />
+      <DirectoryTree workerId="w1" gitStatusStore={gitStatusStore} showFiles rootPath={root} selectedPath="" onSelect={() => {}} enabled={enabled()} />
     ))
     expect(statFile).not.toHaveBeenCalled()
 
@@ -401,6 +407,7 @@ describe('directoryTree root row info', () => {
     render(() => (
       <DirectoryTree
         workerId="w1"
+        gitStatusStore={gitStatusStore}
         showFiles
         rootPath={root}
         selectedPath=""
@@ -424,7 +431,7 @@ describe('directoryTree root row info', () => {
     statFile.mockRejectedValue(new Error('permission denied'))
 
     render(() => (
-      <DirectoryTree workerId="w1" showFiles rootPath={root} selectedPath="" onSelect={() => {}} />
+      <DirectoryTree workerId="w1" gitStatusStore={gitStatusStore} showFiles rootPath={root} selectedPath="" onSelect={() => {}} />
     ))
 
     await waitFor(() => expect(rowFor('a.txt')).toBeTruthy())
@@ -457,6 +464,7 @@ describe('directoryTree filtering', () => {
     return render(() => (
       <DirectoryTree
         workerId="w1"
+        gitStatusStore={gitStatusStore}
         showFiles
         rootPath={root}
         selectedPath=""

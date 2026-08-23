@@ -5,6 +5,8 @@ import type { ProviderSettingChange } from './providers/registry'
 import type { AgentInfo } from '~/generated/leapmux/v1/agent_pb'
 import type { AgentSessionInfo } from '~/stores/agentSession.store'
 import type { ControlRequest } from '~/stores/control.store'
+import type { createRepoGitStore } from '~/stores/repoGit.store'
+import type { Tab } from '~/stores/tab.types'
 import type { PermissionMode } from '~/utils/controlResponse'
 import SendHorizontal from 'lucide-solid/icons/send-horizontal'
 import Square from 'lucide-solid/icons/square'
@@ -23,6 +25,7 @@ import { formatResetTimestamp, getResetsAt } from '~/lib/rateLimitUtils'
 import { dismissSoftKeyboard } from '~/lib/softKeyboard'
 import { registerEditorRef, unregisterEditorRef } from '~/stores/editorRef.store'
 import { registerPanelSend, unregisterPanelSend } from '~/stores/focusedChatSend.store'
+import { repoGitView } from '~/stores/repoGit'
 import { optionValuesFromGroups } from '~/stores/tab.helpers'
 import { iconSize } from '~/styles/tokens'
 import { useAgentInfoCard } from './AgentInfoCard'
@@ -93,6 +96,10 @@ export interface AgentEditorPanelProps {
    * when usable. Both actions need the Worker, so one reason covers both.
    */
   branchDisabledReason?: string
+  /** Repo-keyed git store for branch label and info-card flags. */
+  repoGitStore: ReturnType<typeof createRepoGitStore>
+  /** Tab git identity for {@link repoGitView} (includes `workingDir` for file tabs). */
+  gitTab?: Pick<Tab, 'workerId' | 'gitToplevel' | 'workingDir'>
   /** Height of the parent container, used for max editor height calculation. */
   containerHeight?: number
   /** Ref to expose the addFiles function for external callers (e.g. ChatDropZone). */
@@ -274,7 +281,17 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
     void att.addDroppedDataTransfer(dataTransfer)
   }
 
-  const info = useAgentInfoCard(props)
+  const branchGitView = createMemo(() => {
+    const tab = props.gitTab ?? {}
+    return repoGitView(tab, props.repoGitStore, tab)
+  })
+  const branchName = () => branchGitView()?.branchLabel
+  const info = useAgentInfoCard({
+    get agent() { return props.agent },
+    get agentSessionInfo() { return props.agentSessionInfo },
+    get branchName() { return branchGitView()?.branchLabel },
+    get gitView() { return branchGitView() },
+  })
   const modelContextWindow = createMemo(() =>
     selectedModelContextWindow(props.agent?.optionGroups, currentModel()) || undefined,
   )
@@ -449,7 +466,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
               canAttach={!ctrl.activeControlRequest()}
               disabledReason={props.disabledReason}
               settingsLoading={props.settingsLoading}
-              branchName={props.agent?.gitStatus?.branch || undefined}
+              branchName={branchName()}
               onChangeBranch={() => props.onChangeBranch?.()}
               onDeleteBranch={() => props.onDeleteBranch?.()}
               branchDisabledReason={props.branchDisabledReason}
@@ -549,6 +566,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
       <Show when={preferences.showComposerStatusBar()}>
         <ComposerStatusBar
           agent={props.agent}
+          branchName={branchName()}
           optionValues={currentOptionValues()}
           onSettingChange={props.onSettingChange}
           onChangeBranch={() => props.onChangeBranch?.()}

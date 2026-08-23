@@ -11,6 +11,7 @@ import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { handleTerminalBell } from '~/hooks/terminalEvents'
+import { createRepoGitStore } from '~/stores/repoGit.store'
 import { emitAddTab } from '~/stores/tabOps'
 import { deferred, flush } from '~/test-support/async'
 import { installTestBridge } from '~/test-support/crdtBridge'
@@ -158,6 +159,7 @@ function setup(status: TerminalStatus | undefined = undefined, tabOverrides: Tab
       newTerminalDialog: { open: () => {}, close: () => {}, isOpen: () => false },
       setNewTerminalLoading: () => {},
       setNewShellLoading: () => {},
+      repoGitStore: createRepoGitStore(),
     })
     return d
   })
@@ -210,6 +212,7 @@ function setupForOpen(opts: OpenSetupOpts = {}) {
       newTerminalDialog: { open: opts.dialogOpen ?? (() => {}), close: () => {}, isOpen: () => false },
       setNewTerminalLoading: opts.setNewTerminalLoading ?? (() => {}),
       setNewShellLoading: opts.setNewShellLoading ?? (() => {}),
+      repoGitStore: createRepoGitStore(),
     })
     return d
   })
@@ -229,8 +232,6 @@ function seedActiveRepoTab(s: ReturnType<typeof setupForOpen>) {
     id: 'active-tab',
     workerId: 'worker-1',
     workingDir: '/tmp',
-    gitBranch: 'main',
-    gitOriginUrl: 'git@example.com:o/r.git',
     gitToplevel: '/repo',
   })
   s.selection.setActiveById(TabType.TERMINAL, 'active-tab')
@@ -293,8 +294,6 @@ describe('useterminaloperations.handleopenterminal', () => {
     await s.ops.handleOpenTerminal('/repo-worktree')
 
     const newTab = s.view.getTerminalTab('new-tid')
-    expect(newTab?.gitBranch, 'a sibling worktree must not inherit the branch').toBeUndefined()
-    expect(newTab?.gitOriginUrl).toBeUndefined()
     expect(newTab?.gitToplevel).toBeUndefined()
   })
 
@@ -309,7 +308,6 @@ describe('useterminaloperations.handleopenterminal', () => {
     await s.ops.handleOpenTerminal()
 
     const newTab = s.view.getTerminalTab('new-tid')
-    expect(newTab?.gitBranch).toBe('main')
     expect(newTab?.gitToplevel).toBe('/repo')
   })
 

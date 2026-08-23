@@ -7,6 +7,7 @@ import type { createAgentSessionStore } from '~/stores/agentSession.store'
 import type { createChatStore } from '~/stores/chat.store'
 import type { createControlStore } from '~/stores/control.store'
 import type { createLayoutStore } from '~/stores/layout.store'
+import type { createRepoGitStore } from '~/stores/repoGit.store'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
@@ -25,7 +26,8 @@ import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { base64ToUint8Array } from '~/lib/base64'
 import { getInnerMessage, parseMessageContent } from '~/lib/messageParser'
 import { getMruProviders, touchMruProvider } from '~/lib/mruAgentProviders'
-import { protoToAgentTabFields, resolveOptimisticGitInfo, setOptionValue } from '~/stores/tab.helpers'
+import { migrateErrorHintFromForResolvedRepo, upsertRepoGitFromProtoStatus } from '~/stores/repoGit'
+import { protoToAgentTabFields, resolveOptimisticGitInfo, seedOptimisticRepoGit, setOptionValue } from '~/stores/tab.helpers'
 import { emitRemoveTab, emitRemoveTabs, hasLiveTabRecord } from '~/stores/tabOps'
 import { openTabInFocusedTile } from './openTabInFocusedTile'
 import { warnUnlessPlaceableTab } from './placeableTabGuard'
@@ -51,6 +53,7 @@ export interface UseAgentOperationsProps {
   setNewAgentLoadingProvider: (provider: AgentProvider | null) => void
   focusEditor?: () => void
   forceScrollToBottom?: () => void
+  repoGitStore: ReturnType<typeof createRepoGitStore>
 }
 
 export function useAgentOperations(props: UseAgentOperationsProps) {
@@ -179,6 +182,18 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
         // effectiveGitDir collapses to workingDir for them.
         const seed = resolveOptimisticGitInfo(props.selection.activeTabForWorkspace(workspaceId), {
           workingDir: agentFields.workingDir,
+        })
+        seedOptimisticRepoGit(
+          props.repoGitStore,
+          props.selection.activeTabForWorkspace(workspaceId),
+          { workerId: resp.agent.workerId, workingDir: agentFields.workingDir },
+        )
+        upsertRepoGitFromProtoStatus(props.repoGitStore, resp.agent.workerId, resp.agent.gitStatus, {
+          migrateErrorHintFrom: migrateErrorHintFromForResolvedRepo(
+            resp.agent.workerId,
+            { workingDir: agentFields.workingDir, gitToplevel: agentFields.gitToplevel },
+            resp.agent.gitStatus,
+          ),
         })
         // `hydrated`: the OpenAgent response IS the worker's answer for this
         // tab, so `useTabHydrators` must not immediately re-ask. Its reply

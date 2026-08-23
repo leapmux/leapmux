@@ -85,7 +85,7 @@ type Service struct {
 	// batchGitStatusFn runs the concurrent git-status batch for a watch
 	// catch-up. A seam (same contract as its siblings above) so tests can
 	// observe the overlap's cancellation without spawning real git processes.
-	batchGitStatusFn func(ctx context.Context, dirs []string) []*leapmuxv1.AgentGitStatus
+	batchGitStatusFn func(ctx context.Context, dirs []string) []*leapmuxv1.GitRepoStatus
 
 	// ---- Mutable runtime state: everything that changes over the worker's
 	// life, touched concurrently by the handler goroutines DispatchAsync

@@ -27,6 +27,14 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// gitFileStatusProbe holds the GetGitStatus implementation for
+// GetGitFileStatus. Package tests may swap gitFileStatusProbe.status.
+var gitFileStatusProbe = struct {
+	status func(context.Context, string) *leapmuxv1.GitRepoStatus
+}{
+	status: gitutil.GetGitStatus,
+}
+
 // pushBranchTimeout caps the worker-side git push (and its preceding
 // `add` / `commit -m WIP`) so a credential helper, hung SSH passphrase
 // prompt, or unreachable remote can't leak a git subprocess after the
@@ -208,6 +216,8 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 			info      *gitPathInfo
 			infoErr   error
 			files     []*leapmuxv1.GitFileStatusEntry
+			filesErr  error
+			gitStatus *leapmuxv1.GitRepoStatus
 			originURL string
 		)
 		g, gctx := errgroup.WithContext(ctx)
@@ -216,10 +226,13 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 			return nil
 		})
 		g.Go(func() error {
-			// getGitFileStatusEntries treats a git failure as an empty
-			// status (best-effort sidebar refresh), so its returned
-			// error is intentionally discarded here.
-			files, _ = getGitFileStatusEntries(gctx, dirPath)
+			var err error
+			files, err = getGitFileStatusEntries(gctx, dirPath)
+			filesErr = err
+			return nil
+		})
+		g.Go(func() error {
+			gitStatus = gitFileStatusProbe.status(gctx, dirPath)
 			return nil
 		})
 		g.Go(func() error {
@@ -255,25 +268,30 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 		// against agent.workingDir (native separators), so normalize.
 		// `repo_root` is intentionally the main repo root (not TopLevel)
 		// — the sidebar groups worktree tabs with their parent repo so
-		// the user sees a single "repo" node. `is_worktree` describes the
-		// QUERIED dirPath (not repo_root), so consumers must not mass-stamp
-		// it onto every tab in the repo — see syncGitStatusToTabs.
+		// `is_worktree` describes the QUERIED dirPath (not repo_root). The
+		// frontend keys repo state by `toplevel` so a worktree refresh
+		// updates only that worktree's tabs.
 		//
-		// `toplevel` is the working-tree root the caller queried (worktree
-		// root for an in-worktree path, repo root otherwise). The frontend
-		// uses it as the stamping identity so a worktree refresh updates
-		// only the worktree's tabs — not every tab whose gitToplevel
-		// happens to equal repo_root. Without this, switching focus to a
-		// freshly-created worktree's agent stamps the worktree's branch
-		// onto every main-tree tab in the same repo.
-		sendProtoResponse(sender, &leapmuxv1.GetGitFileStatusResponse{
-			RepoRoot:      pathutil.NormalizeNative(info.RepoRoot),
-			Files:         files,
-			CurrentBranch: branchOrShortSHA(info),
-			OriginUrl:     originURL,
-			IsWorktree:    info.IsWorktree,
-			Toplevel:      pathutil.NormalizeNative(info.TopLevel),
-		})
+		// GetGitStatus may return nil (porcelain failure) or omit identity
+		// fields while path-info still succeeded. Backfill branch / origin /
+		// worktree / toplevel from path-info so a partial probe cannot wipe
+		// good frontend store state. Always canonicalize toplevel the same
+		// way as repo_root so repo keys do not split on /var vs /private/var.
+		status := mergeGitFileStatusFromPathInfo(gitStatus, info, originURL)
+		resp := &leapmuxv1.GetGitFileStatusResponse{
+			RepoRoot: pathutil.NormalizeNative(info.RepoRoot),
+			Files:    files,
+			Status:   status,
+		}
+		// Path-info already succeeded, so ErrorHint is empty here. Set it only
+		// when porcelain failed; never concatenate onto an existing hint (the
+		// non-repo early return owns that field alone).
+		if filesErr != nil {
+			if hint := filesErr.Error(); hint != "" {
+				resp.ErrorHint = hint
+			}
+		}
+		sendProtoResponse(sender, resp)
 	})
 
 	d.Register("ReadGitFile", func(ctx context.Context, userID userid.UserID, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
@@ -2457,9 +2475,8 @@ func diffStatsForPath(ctx context.Context, dir string) (added, deleted, untracke
 		// sees the underlying failure instead of zero stats.
 		return 0, 0, 0, false, shortstatErr
 	}
-	// getGitFileStatusEntries swallows its own `git status --porcelain=v2`
-	// failure as (nil, nil) — see its top-of-function early return. If the
-	// outer porcelain status reported changes but the inner v2 status
+	// getGitFileStatusEntries now returns porcelain errors instead of (nil, nil).
+	// If the outer porcelain status reported changes but the inner v2 status
 	// returned no entries, the two probes disagree and we have no signal
 	// to compute line counts. Surface the original shortstat error rather
 	// than silently shipping 0/0 to the close-prompt; staging-only changes
@@ -2662,7 +2679,7 @@ func parseRevListCount(out string) (int32, error) {
 func getGitFileStatusEntries(ctx context.Context, repoRoot string) ([]*leapmuxv1.GitFileStatusEntry, error) {
 	statusOut, err := gitutil.Bytes(ctx, repoRoot, "status", "--porcelain=v2", "-z")
 	if err != nil {
-		return nil, nil // Not a git repo or git unavailable.
+		return nil, err
 	}
 
 	files := parseStatusV2(statusOut)
@@ -3184,6 +3201,27 @@ func parseGitPathInfoOutput(output string, hasHeadFields bool) (*gitPathInfo, er
 		info.RepoRoot = pathutil.Canonicalize(filepath.Dir(filepath.Clean(commonDir)))
 	}
 	return info, nil
+}
+
+// mergeGitFileStatusFromPathInfo backfills identity fields from path-info when
+// GetGitStatus returned nil or omitted them. Path-info is authoritative for
+// branch / toplevel / worktree / origin on the queried dir; porcelain-derived
+// counters on the input status are preserved.
+func mergeGitFileStatusFromPathInfo(
+	status *leapmuxv1.GitRepoStatus,
+	info *gitPathInfo,
+	originURL string,
+) *leapmuxv1.GitRepoStatus {
+	if status == nil {
+		status = &leapmuxv1.GitRepoStatus{}
+	} else {
+		status = proto.Clone(status).(*leapmuxv1.GitRepoStatus)
+	}
+	status.Toplevel = pathutil.NormalizeNative(pathutil.Canonicalize(info.TopLevel))
+	status.Branch = branchOrShortSHA(info)
+	status.OriginUrl = strings.TrimSpace(originURL)
+	status.IsWorktree = info.IsWorktree
+	return status
 }
 
 // branchOrShortSHA returns info.BranchName when set, otherwise a short

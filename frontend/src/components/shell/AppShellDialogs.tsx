@@ -8,6 +8,7 @@ import type { AgentInfo, AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { DialogState, ToggleDialogState, UpdatableDialogState } from '~/hooks/createDialogState'
 import type { KeyPinDecision } from '~/lib/keyPinStore'
 import type { createLayoutStore } from '~/stores/layout.store'
+import type { createRepoGitStore } from '~/stores/repoGit.store'
 import type { createSectionStore } from '~/stores/section.store'
 import type { RepoRef } from '~/stores/tab.helpers'
 import type { Tab } from '~/stores/tab.types'
@@ -109,9 +110,8 @@ interface AppShellDialogsProps {
   /**
    * Called after a successful Change branch / non-worktree Delete
    * branch with the branch the working directory is now on. The
-   * parent stamps every tab in `(workerId, gitToplevel)` with the new
-   * label and, if that repo is the active tab's repo, refreshes the
-   * gitFileStatusStore so diff stats track the new HEAD.
+   * parent updates the repo-keyed git store with the new branch label and
+   * refreshes diff stats for the affected repo.
    */
   onBranchChanged?: (repo: RepoRef, newBranch: string) => void
   activeWorkspace: () => { id: string } | null
@@ -132,6 +132,7 @@ interface AppShellDialogsProps {
   onSelectWorkspace: (id: string) => void
   availableProviders?: AgentProvider[]
   onRefreshProviders?: () => void
+  repoGitStore: ReturnType<typeof createRepoGitStore>
 }
 
 export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
@@ -181,6 +182,7 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
           availableProviders={props.availableProviders}
           onRefreshProviders={props.onRefreshProviders}
           blockedReason={newTabBlockedReason}
+          repoGitStore={props.repoGitStore}
           onCreated={(agent) => {
             props.dialogs.newAgent.close()
             addAgentTabToFocusedTile(agent)
@@ -195,6 +197,7 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
           defaultWorkerId={props.getCurrentTabContext().workerId}
           defaultWorkingDir={props.getCurrentTabContext().workingDir}
           blockedReason={newTabBlockedReason}
+          repoGitStore={props.repoGitStore}
           onCreated={(terminalId, workerId, workingDir, title) => {
             props.dialogs.newTerminal.close()
             if (!props.activeWorkspace())
@@ -225,6 +228,7 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
         {payload => (
           <NewWorkspaceDialog
             metadata={props.metadata}
+            repoGitStore={props.repoGitStore}
             preselectedWorkerId={payload.preselectedWorkerId}
             availableProviders={props.availableProviders}
             onRefreshProviders={props.onRefreshProviders}

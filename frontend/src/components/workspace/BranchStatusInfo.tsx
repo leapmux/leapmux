@@ -3,7 +3,7 @@ import type { BranchGitState } from '~/generated/leapmux/v1/git_pb'
 import { Show } from 'solid-js'
 import { DiffStatsBadge } from '~/components/tree/gitStatusUtils'
 import { pluralize } from '~/lib/plural'
-import { diffStatsFromTabFields } from '~/stores/gitFileStatus.store'
+import { diffStatsFromRepo } from '~/stores/repoGit.store'
 import * as css from './BranchStatusInfo.css'
 
 export interface BranchSnapshot {
@@ -88,7 +88,7 @@ export const BranchStatusInfo: Component<BranchStatusInfoProps> = (props) => {
               <div>
                 Uncommitted changes:
                 {' '}
-                <DiffStatsBadge stats={diffStatsFromTabFields(gs())} />
+                <DiffStatsBadge stats={diffStatsFromRepo(gs())} />
               </div>
             </Show>
             <Show when={gs().unpushedCommitCount > 0}>

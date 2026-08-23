@@ -1115,7 +1115,7 @@ func TestBuildAgentStatusChange(t *testing.T) {
 	}
 
 	t.Run("STARTING carries startupMessage and gitStatus, no option groups", func(t *testing.T) {
-		gs := &leapmuxv1.AgentGitStatus{Branch: "main", OriginUrl: "https://example.com/repo.git"}
+		gs := &leapmuxv1.GitRepoStatus{Branch: "main", OriginUrl: "https://example.com/repo.git"}
 		sc := buildAgentStartingStatus(dbAgent, "Checking Git status…", gs)
 		assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_STARTING, sc.GetStatus())
 		assert.Equal(t, "Checking Git status…", sc.GetStartupMessage())
@@ -1128,7 +1128,7 @@ func TestBuildAgentStatusChange(t *testing.T) {
 	})
 
 	t.Run("STARTUP_FAILED carries startupError and gitStatus", func(t *testing.T) {
-		gs := &leapmuxv1.AgentGitStatus{Branch: "main"}
+		gs := &leapmuxv1.GitRepoStatus{Branch: "main"}
 		sc := buildAgentFailedStatus(dbAgent, "exec: claude: not found", gs)
 		assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED, sc.GetStatus())
 		assert.Equal(t, "exec: claude: not found", sc.GetStartupError())
@@ -1426,7 +1426,7 @@ func TestExecuteGitMode_HonorsCtxCancellation(t *testing.T) {
 func TestBuildTerminalStatusChange_CarriesGitInfo(t *testing.T) {
 	t.Parallel()
 
-	sc := buildTerminalStartingStatus("term-1", "Starting zsh…", &leapmuxv1.AgentGitStatus{
+	sc := buildTerminalStartingStatus("term-1", "Starting zsh…", &leapmuxv1.GitRepoStatus{
 		Branch:    "feature/x",
 		OriginUrl: "git@example.com:org/repo.git",
 		Toplevel:  "/home/u/repo",
@@ -1434,7 +1434,7 @@ func TestBuildTerminalStatusChange_CarriesGitInfo(t *testing.T) {
 	assert.Equal(t, "term-1", sc.GetTerminalId())
 	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING, sc.GetStatus())
 	assert.Equal(t, "Starting zsh…", sc.GetStartupMessage())
-	assert.Equal(t, "feature/x", sc.GetGitBranch())
-	assert.Equal(t, "git@example.com:org/repo.git", sc.GetGitOriginUrl())
-	assert.Equal(t, "/home/u/repo", sc.GetGitToplevel())
+	assert.Equal(t, "feature/x", sc.GetGitStatus().GetBranch())
+	assert.Equal(t, "git@example.com:org/repo.git", sc.GetGitStatus().GetOriginUrl())
+	assert.Equal(t, "/home/u/repo", sc.GetGitStatus().GetToplevel())
 }

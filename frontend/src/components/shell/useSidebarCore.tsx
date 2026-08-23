@@ -8,7 +8,7 @@ import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
 import type { WorkerInfo } from '~/lib/workerInfoCache'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import type { TodoItem } from '~/stores/chatTodos'
-import type { createGitFileStatusStore, GitFilterTab } from '~/stores/gitFileStatus.store'
+import type { createRepoGitStore, GitFilterTab } from '~/stores/repoGit.store'
 import type { createSectionStore } from '~/stores/section.store'
 import type { TabItemOps } from '~/stores/tab.types'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
@@ -17,6 +17,7 @@ import type { ChannelStatus } from '~/stores/workerChannelStatus.store'
 
 import { createEffect, createMemo, createSignal, onCleanup } from 'solid-js'
 import { registerSidebarFileTreeOps } from '~/lib/fileTreeOps'
+import { focusedRepoKeyFromTab, gitStatusProbePath } from '~/stores/repoGit'
 import { buildSectionDef } from './buildSectionDef'
 import { useWorkspaceOperations } from './useWorkspaceOperations'
 
@@ -54,13 +55,14 @@ export interface SidebarCommonProps {
   // Content
   workerId: string
   workingDir: string
+  gitToplevel: string
   homeDir: string
   fileTreePath: string
   onFileSelect: (path: string) => void
   onFileOpen?: (path: string, openSource?: GitFilterTab) => void
   onFileMention?: (path: string) => void
   onOpenTerminal?: (dirPath: string) => void
-  gitStatusStore?: ReturnType<typeof createGitFileStatusStore>
+  gitStatusStore: ReturnType<typeof createRepoGitStore>
   activeFilePath?: string
   hasActiveFileTab?: boolean
   showTodos: boolean
@@ -126,8 +128,12 @@ export function useSidebarCore(props: SidebarCommonProps, side: Sidebar) {
 
     const unregister = registerSidebarFileTreeOps({
       refresh: () => {
-        if (props.workerId && props.workingDir)
-          props.gitStatusStore?.refresh(props.workerId, props.workingDir)
+        const tab = { workerId: props.workerId, gitToplevel: props.gitToplevel, workingDir: props.workingDir }
+        const probeCtx = { gitToplevel: props.gitToplevel, workingDir: props.workingDir }
+        const path = gitStatusProbePath(probeCtx)
+        const key = focusedRepoKeyFromTab(tab, probeCtx, props.gitStatusStore)
+        if (props.workerId && path)
+          void props.gitStatusStore.refresh(props.workerId, path, { repoKey: key })
         handle.refresh()
       },
       toggleHiddenFiles: () => handle.toggleShowHiddenFiles(),
@@ -184,6 +190,7 @@ export function useSidebarCore(props: SidebarCommonProps, side: Sidebar) {
     get onDeleteBranch() { return props.onDeleteBranch },
     get workerId() { return props.workerId },
     get workingDir() { return props.workingDir },
+    get gitToplevel() { return props.gitToplevel },
     get homeDir() { return props.homeDir },
     get fileTreePath() { return props.fileTreePath },
     onFileSelect: props.onFileSelect,

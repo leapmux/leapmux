@@ -7,6 +7,7 @@ import { WorktreeAction, WorktreeRemovalOutcome } from '~/generated/leapmux/v1/c
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { ChannelError } from '~/lib/channelError'
 import { createChatStore, MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.store'
+import { createRepoGitStore } from '~/stores/repoGit.store'
 import { emitAddTab, emitRemoveTab } from '~/stores/tabOps'
 import { flush } from '~/test-support/async'
 import { installTestBridge } from '~/test-support/crdtBridge'
@@ -138,6 +139,7 @@ function setup(
     setFileTreePath: vi.fn(),
     getActiveWorkspaceId: () => 'ws-test',
     workerOnlineState,
+    repoGitStore: createRepoGitStore(),
   })
 
   return {
@@ -214,18 +216,12 @@ describe('useTabOperations', () => {
           // the next git-status refresh reaches it.
           metadata.patch('agent-a', {
             workingDir: '/tmp',
-            gitBranch: 'feature',
-            gitOriginUrl: 'https://example.com/o/r.git',
             gitToplevel: '/tmp',
-            gitIsWorktree: false,
           })
           ops.handleFileOpen('/tmp/myfile.go')
           const opened = view.forWorkspace('ws-test').find(t => t.type === TabType.FILE)
           expect(opened).toMatchObject({
-            gitBranch: 'feature',
-            gitOriginUrl: 'https://example.com/o/r.git',
             gitToplevel: '/tmp',
-            gitIsWorktree: false,
             workingDir: '/tmp',
           })
         }
@@ -993,6 +989,7 @@ describe('useTabOperations.handleTabClose cross-workspace', () => {
       // The client is on ws-active; the seeded tab is on ws-other.
       getActiveWorkspaceId: () => 'ws-active',
       workerOnlineState: () => true,
+      repoGitStore: createRepoGitStore(),
     })
 
     const tab = stores.view.getById(type, id)!
@@ -1120,6 +1117,7 @@ describe('useTabOperations.handleTabClose focus migration', () => {
         setFileTreePath: vi.fn(),
         getActiveWorkspaceId: () => 'ws-test',
         workerOnlineState: () => true,
+        repoGitStore: createRepoGitStore(),
       })
 
       await ops.handleTabClose(view.getById(TabType.FILE, 'file-a')!)
@@ -1167,6 +1165,7 @@ describe('useTabOperations.handleTabClose focus migration', () => {
         setFileTreePath: vi.fn(),
         getActiveWorkspaceId: () => 'ws-test',
         workerOnlineState: () => true,
+        repoGitStore: createRepoGitStore(),
       })
 
       await ops.handleTabClose(view.getById(TabType.FILE, 'file-a')!)
@@ -1215,6 +1214,7 @@ function setupWithFloatingWindow() {
     setFileTreePath: vi.fn(),
     getActiveWorkspaceId: () => 'ws-test',
     workerOnlineState: () => true,
+    repoGitStore: createRepoGitStore(),
   })
 
   return {
@@ -1556,6 +1556,7 @@ describe('useTabOperations.closeTabWithAction', () => {
       setFileTreePath: vi.fn(),
       getActiveWorkspaceId: () => 'ws-active',
       workerOnlineState: () => true,
+      repoGitStore: createRepoGitStore(),
     })
     return { ...stores, ops, tab: stores.view.getById(type, id)!, handleAgentClose, handleTerminalClose }
   }
@@ -1643,6 +1644,7 @@ function setupForFocusMigration() {
     setFileTreePath: vi.fn(),
     getActiveWorkspaceId: () => 'ws-test',
     workerOnlineState: () => true,
+    repoGitStore: createRepoGitStore(),
   })
   return { ...stores, ops, homeTileId, otherTileId, handleAgentClose, handleTerminalClose }
 }

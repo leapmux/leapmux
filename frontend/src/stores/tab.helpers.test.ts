@@ -1,13 +1,15 @@
 import type { AgentTab, Tab } from './tab.types'
-import type { AgentGitStatus, AgentInfo, AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentInfo, AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
+import type { GitRepoStatus } from '~/generated/leapmux/v1/common_pb'
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
 import { registerProvider } from '~/components/chat/providers/registry'
-import { AgentGitStatusSchema, AgentInfoSchema, AgentProvider, AgentStatus, AvailableOptionGroupSchema, AvailableOptionSchema } from '~/generated/leapmux/v1/agent_pb'
+import { AgentInfoSchema, AgentProvider, AgentStatus, AvailableOptionGroupSchema, AvailableOptionSchema } from '~/generated/leapmux/v1/agent_pb'
+import { GitRepoStatusSchema } from '~/generated/leapmux/v1/common_pb'
 import { TerminalInfoSchema, TerminalProgress_State, TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { clearSettingsLabelCache, getCachedSettingsGroupLabel } from '~/lib/settingsLabelCache'
-import { agentTabToInfo, deriveOptionGroupTabFields, descendantAgentTabs, isSameRepo, isSteerableAgentTab, isTabReadyForGitStatus, mruSteerableAgentTab, openedTerminalMetadata, protoToAgentTabFields, resolveOptimisticGitInfo, rootAgentIdFor, setOptionValue, tabDisplayLabel, tabTooltipShowWhen, tabTooltipText, terminalMetadata, terminalProgressBarProps, toAgentGitTabFields, toGitTabFields } from './tab.helpers'
+import { agentTabToInfo, deriveOptionGroupTabFields, descendantAgentTabs, isSameRepo, isSteerableAgentTab, isTabReadyForGitStatus, mruSteerableAgentTab, openedTerminalMetadata, protoToAgentTabFields, resolveOptimisticGitInfo, rootAgentIdFor, seedOptimisticRepoGit, setOptionValue, tabDisplayLabel, tabTooltipShowWhen, tabTooltipText, terminalMetadata, terminalProgressBarProps } from './tab.helpers'
 import { createTabMetadataStore } from './tabMetadata.store'
 
 // `tabDisplayLabel` is the shared "what should we render in the tab strip
@@ -140,7 +142,7 @@ describe('isSameRepo', () => {
     // A freshly-created tab may not have a workerId yet, and `?? ''` would
     // then make an empty QUERY match every one of them regardless of worker —
     // the symmetric half of the empty-toplevel wildcard below. The guard used
-    // to live at one call site (`stampBranchOnTabs`), so the predicate itself
+    // to live at one call site (`stampBranchOnRepo`), so the predicate itself
     // answered `('' === '')` -> true and every other caller was on its own.
     expect(isSameRepo({ gitToplevel: '/repo' }, { workerId: '', gitToplevel: '/repo' })).toBe(false)
     expect(isSameRepo({ workerId: '', gitToplevel: '/repo' }, { workerId: '', gitToplevel: '/repo' })).toBe(false)
@@ -194,196 +196,24 @@ describe('isSameRepo', () => {
   })
 })
 
-// `toGitTabFields` carries the four-field git tuple
-// (branch + originUrl + toplevel + isWorktree) onto every tab. The
-// disposition was added when wires were already in place for the other
-// three; pin its inclusion so a future "factor out branch+origin" refactor
-// can't quietly drop it.
-describe('toGitTabFields', () => {
-  it('answers undefined when the probe returned nothing at all', () => {
-    // All four at proto zero is the worker saying "I could not tell you"
-    // (`gitutil.GetGitStatus` yields nil when both porcelain probes fail).
-    // Emitting `isWorktree: false` there asserts a negative the worker never
-    // made, and the tab loses a worktree disposition it can never re-probe.
-    expect(toGitTabFields('', '', '', false)).toBeUndefined()
-    expect(toGitTabFields('', '', '', true)).toBeUndefined()
-  })
-
-  // Regression: these three used to collapse to `undefined` while
-  // `gitIsWorktree` did not. `tabMetadata.patch` SKIPS undefined, so a
-  // collapsed field cannot CLEAR a populated one -- the write is dropped, the
-  // value never changes, and the next status event repeats that forever. A repo that loses its remote kept the dead origin for the life of
-  // the page, and the sidebar kept grouping the tab under it.
-  it('emits an empty string, not undefined, for a field the repo has lost', () => {
-    expect(toGitTabFields('main', '', '/repo', false)).toEqual({
-      gitBranch: 'main',
-      gitOriginUrl: '',
-      gitToplevel: '/repo',
-      gitIsWorktree: false,
-    })
-  })
-
-  it('carries every non-empty field through', () => {
-    expect(toGitTabFields('main', 'https://example.com/r.git', '/repo', true)).toEqual({
-      gitBranch: 'main',
-      gitOriginUrl: 'https://example.com/r.git',
-      gitToplevel: '/repo',
-      gitIsWorktree: true,
-    })
-  })
-
-  /**
-   * `false` must survive as `false`. `tabMetadata.patch` SKIPS undefined
-   * values, so collapsing the negative case means a tab that stops being a
-   * worktree can never be told: the patch drops the field, the value never
-   * changes, and every subsequent event re-sends it — a write loop that never
-   * converges, with the sidebar stuck showing the worktree badge.
-   */
-  it('keeps isWorktree=false as a real false, so a tab can stop being a worktree', () => {
-    expect(toGitTabFields('main', '', '/repo', false)!.gitIsWorktree).toBe(false)
-  })
-
-  it('converges: a true -> false transition actually lands through patch', () => {
-    const metadata = createTabMetadataStore()
-    metadata.patch('t1', toGitTabFields('main', '', '/repo', true)!)
-    expect(metadata.get('t1')?.gitIsWorktree).toBe(true)
-
-    const next = toGitTabFields('main', '', '/repo', false)!
-    metadata.patch('t1', next)
-    expect(metadata.get('t1')?.gitIsWorktree, 'the write actually landed').toBe(false)
-
-    const settled = metadata.get('t1')!
-    metadata.patch('t1', next)
-    expect(metadata.get('t1'), 'and re-sending it is a no-op - the loop converges').toBe(settled)
-  })
-})
-
-/**
- * The producer of an agent tab's whole git group. Its reference-reuse rule is
- * load-bearing rather than an optimization: the worker recomputes and re-ships
- * the full status on every push, so an unchanged repo arrives as an
- * equal-but-FRESH proto. `Tab` is compared with `shallowEqual` (per-key
- * `Object.is`) and consumers iterate with `<For>`, which keys rows by item
- * identity -- so writing that fresh object back re-keys the tab and tears down
- * every row rendered from it.
- */
-describe('toAgentGitTabFields', () => {
-  // Only the fields these cases vary; `Partial<AgentGitStatus>` would drag in
-  // `$typeName`, which `create`'s init shape rejects.
-  const status = (over: { ahead?: number, conflicted?: boolean } = {}) =>
-    create(AgentGitStatusSchema, { branch: 'main', toplevel: '/repo', originUrl: 'o', ahead: 2, modified: true, ...over })
-
-  it('reports nothing at all when the push carried no status', () => {
-    expect(toAgentGitTabFields(undefined)).toEqual({})
-  })
-
-  it('carries the proto plus the four flat mirrors as one group', () => {
-    const gs = status()
-    expect(toAgentGitTabFields(gs)).toEqual({
-      agentGitStatus: gs,
-      gitBranch: 'main',
-      gitOriginUrl: 'o',
-      gitToplevel: '/repo',
-      gitIsWorktree: false,
-    })
-  })
-
-  // Reference reuse is NOT this function's job -- it reports the status it was
-  // given, every time, and `tabMetadata.patch` drops the write when the stored
-  // value is already equal (see `sameStoredValue`, and the store's own tests for
-  // the dedupe). Keeping the producer unconditional is what lets every other
-  // producer of an object-valued field get the same treatment for free.
-  it('reports the status unconditionally, leaving the dedupe to the write point', () => {
-    const gs = status()
-    expect(toAgentGitTabFields(gs).agentGitStatus).toBe(gs)
-  })
-})
-
 describe('protoToAgentTabFields git status', () => {
-  const agent = (gs: AgentGitStatus | undefined) =>
+  const agent = (gs: GitRepoStatus | undefined) =>
     create(AgentInfoSchema, { id: 'a1', workingDir: '/repo', agentProvider: AgentProvider.CLAUDE_CODE, gitStatus: gs })
-  const status = () => create(AgentGitStatusSchema, { branch: 'main', toplevel: '/repo' })
+  const status = () => create(GitRepoStatusSchema, { branch: 'main', toplevel: '/repo' })
 
-  it('routes the git group through the shared producer', () => {
-    const gs = status()
-    const fields = protoToAgentTabFields('wkr-1', agent(gs))
-    expect(fields.agentGitStatus).toBe(gs)
-    expect(fields.gitBranch).toBe('main')
+  it('writes repo identity onto the tab when git status carries a toplevel', () => {
+    const fields = protoToAgentTabFields('wkr-1', agent(status()))
     expect(fields.gitToplevel).toBe('/repo')
   })
 
-  it('reports no git group at all for an agent with no status', () => {
-    expect(protoToAgentTabFields('wkr-1', agent(undefined)).agentGitStatus).toBeUndefined()
+  it('reports no git identity for an agent with no status', () => {
+    expect(protoToAgentTabFields('wkr-1', agent(undefined)).gitToplevel).toBeUndefined()
   })
 
   it('leaves the rest of the payload alone', () => {
     const fields = protoToAgentTabFields('wkr-1', agent(status()))
     expect(fields.workerId).toBe('wkr-1')
     expect(fields.workingDir).toBe('/repo')
-  })
-})
-
-/**
- * The four git fields must LAND through `metadata.patch`, and must stop
- * re-writing once they have.
- *
- * These used to drive `gitTabFieldsDiffer`, a per-producer comparator the
- * terminal path consulted before patching. That rule now lives at the single
- * write point (`sameStoredValue`), so the behaviour is asserted where it is
- * actually enforced -- a producer-side test would have kept passing while the
- * producer stopped being consulted.
- */
-describe('git tab fields through patch', () => {
-  const base = { gitBranch: 'main', gitOriginUrl: 'o', gitToplevel: '/r', gitIsWorktree: false }
-
-  function stamped(fields: Partial<typeof base>) {
-    const metadata = createTabMetadataStore()
-    metadata.patch('t1', base)
-    const before = metadata.get('t1')!
-    metadata.patch('t1', { ...base, ...fields })
-    return { metadata, before, after: metadata.get('t1')! }
-  }
-
-  it('does not re-write the row for an identical tuple', () => {
-    const { before, after } = stamped({})
-    // Same ROW OBJECT: a fresh one would re-key the tab and remount every
-    // `<For>` row rendered from it.
-    expect(after).toBe(before)
-  })
-
-  it('lands a branch change', () => {
-    expect(stamped({ gitBranch: 'feature' }).after.gitBranch).toBe('feature')
-  })
-
-  it('lands an originUrl change', () => {
-    expect(stamped({ gitOriginUrl: 'other' }).after.gitOriginUrl).toBe('other')
-  })
-
-  it('lands a toplevel change', () => {
-    expect(stamped({ gitToplevel: '/other' }).after.gitToplevel).toBe('/other')
-  })
-
-  it('lands an isWorktree change (false -> true)', () => {
-    // Regression guard for the isWorktree plumbing: if a worker re-probes and
-    // reports the path as a linked worktree where it previously wasn't (or vice
-    // versa), the tab MUST update -- the sidebar's BranchGroup.isWorktree
-    // disposition is derived from it and ChangeBranchDialog reads that to seed
-    // its path-info shape.
-    expect(stamped({ gitIsWorktree: true }).after.gitIsWorktree).toBe(true)
-  })
-
-  it('converges: a true -> false transition lands once and then stops', () => {
-    const metadata = createTabMetadataStore()
-    metadata.patch('t1', toGitTabFields('main', '', '/repo', true)!)
-    expect(metadata.get('t1')?.gitIsWorktree).toBe(true)
-
-    const next = toGitTabFields('main', '', '/repo', false)!
-    metadata.patch('t1', next)
-    expect(metadata.get('t1')?.gitIsWorktree, 'the write actually landed').toBe(false)
-
-    const settled = metadata.get('t1')!
-    metadata.patch('t1', next)
-    expect(metadata.get('t1'), 'and re-sending it changes nothing').toBe(settled)
   })
 })
 
@@ -720,68 +550,86 @@ describe('isTabReadyForGitStatus', () => {
  * worker-offline sweep sets -- so a collapsed negative can never be delivered.
  */
 describe('terminalMetadata convergence', () => {
-  it('delivers a false gitIsWorktree and empty startup fields on a re-hydration', () => {
+  it('clears startup fields on a re-hydration', () => {
     const metadata = createTabMetadataStore()
-    metadata.patch('t1', { gitIsWorktree: true, startupMessage: 'Creating worktree...' })
+    metadata.patch('t1', { startupMessage: 'Creating worktree...' })
 
     metadata.patch('t1', terminalMetadata('w1', create(TerminalInfoSchema, {
       terminalId: 't1',
       status: TerminalStatus.READY,
-      // A REAL negative carries a toplevel: the dir is still a git repo, it
-      // just stopped being a worktree. Without one this fixture would be the
-      // failed-probe shape below, which must behave the opposite way.
-      gitToplevel: '/repo',
-      gitIsWorktree: false,
+      gitStatus: { toplevel: '/repo' },
     })))
 
-    expect(metadata.get('t1')?.gitIsWorktree, 'the tab stopped being a worktree').toBe(false)
+    expect(metadata.get('t1')?.gitToplevel).toBe('/repo')
     expect(metadata.get('t1')?.startupMessage, 'the phase label must not outlive the phase').toBe('')
   })
 
-  // The other half of the same rule. `gitIsWorktree` is the one field whose
-  // negative is indistinguishable from "no answer": the worker leaves all four
-  // git fields at proto zero when the probe returns nothing (gitutil yields nil
-  // when both porcelain probes fail, and the caller only assigns `if gs != nil`).
-  // Writing a bare `false` there while branch/origin/toplevel collapse to
-  // undefined and are SKIPPED splits a pair that has to travel together -- the
-  // tab keeps its branch but loses its worktree disposition, so the sidebar
-  // regroups it under the non-worktree branch row and ChangeBranchDialog offers
-  // an in-place checkout on a worktree, with nothing left to re-probe it.
-  it('preserves the worktree disposition when the git probe returned nothing', () => {
+  it('does not clear a known toplevel when the git probe returned nothing', () => {
     const metadata = createTabMetadataStore()
-    metadata.patch('t1', { gitBranch: 'feature', gitToplevel: '/repo', gitIsWorktree: true })
+    metadata.patch('t1', { gitToplevel: '/repo' })
 
     metadata.patch('t1', terminalMetadata('w1', create(TerminalInfoSchema, {
       terminalId: 't1',
       status: TerminalStatus.READY,
-      // All four git fields at proto zero -- a failed probe, not an answer.
     })))
 
-    expect(metadata.get('t1')?.gitIsWorktree, 'a failed probe must not assert "not a worktree"').toBe(true)
-    expect(metadata.get('t1')?.gitBranch, 'the branch it could not re-probe survives').toBe('feature')
-    expect(metadata.get('t1')?.gitToplevel, 'and so does the toplevel it travels with').toBe('/repo')
+    expect(metadata.get('t1')?.gitToplevel, 'a failed probe must not erase repo identity').toBe('/repo')
   })
 })
 
 describe('resolveOptimisticGitInfo', () => {
-  // The seed is a FALLBACK, spread AFTER the worker's own fields. Object spread
-  // copies `undefined`-valued OWN keys, so a key present-but-undefined does not
-  // "leave the value alone" -- it ERASES it.
   it('omits keys it has no value for, so it cannot subtract from the payload', () => {
-    const active = agent({ gitOriginUrl: 'o', gitToplevel: '/r', workingDir: '/r' })
+    const active = agent({ gitToplevel: '/r', workingDir: '/r' })
     const seed = resolveOptimisticGitInfo(active, { workingDir: '/r' })
 
-    expect('gitBranch' in seed, 'an unresolved branch must not be spread as undefined').toBe(false)
-    expect({ gitBranch: 'main', ...seed }.gitBranch, 'the authoritative value survives').toBe('main')
+    expect('gitToplevel' in seed).toBe(true)
+    expect({ gitToplevel: '/other', ...seed }.gitToplevel, 'the authoritative value survives').toBe('/r')
   })
 
-  it('still seeds the values it does have', () => {
+  it('still seeds the toplevel when the dirs match', () => {
     const seed = resolveOptimisticGitInfo(
-      agent({ gitBranch: 'feature', gitOriginUrl: 'o', gitToplevel: '/r', workingDir: '/r' }),
+      agent({ gitToplevel: '/r', workingDir: '/r' }),
       { workingDir: '/r' },
     )
-    expect(seed.gitBranch).toBe('feature')
     expect(seed.gitToplevel).toBe('/r')
+  })
+})
+
+describe('seedOptimisticRepoGit', () => {
+  it('copies branch and origin onto a different worker key when dirs match', async () => {
+    const { createRepoGitStore } = await import('~/stores/repoGit.store')
+    const { repoKey } = await import('~/stores/repoGit')
+    const store = createRepoGitStore()
+    const active = agent({ workerId: 'w1', gitToplevel: '/r', workingDir: '/r' })
+    store.upsert(repoKey('w1', '/r'), {
+      workerId: 'w1',
+      toplevel: '/r',
+      branch: 'main',
+      originUrl: 'git@example.com:o/r.git',
+      gitStatusSeen: true,
+    })
+
+    seedOptimisticRepoGit(store, active, { workerId: 'w2', workingDir: '/r' })
+
+    expect(store.get(repoKey('w2', '/r'))?.branch).toBe('main')
+    expect(store.get(repoKey('w2', '/r'))?.originUrl).toBe('git@example.com:o/r.git')
+  })
+
+  it('does nothing when the new tab shares the active store key', async () => {
+    const { createRepoGitStore } = await import('~/stores/repoGit.store')
+    const { repoKey } = await import('~/stores/repoGit')
+    const store = createRepoGitStore()
+    const active = agent({ workerId: 'w1', gitToplevel: '/r', workingDir: '/r' })
+    store.upsert(repoKey('w1', '/r'), {
+      workerId: 'w1',
+      toplevel: '/r',
+      branch: 'main',
+      originUrl: 'git@example.com:o/r.git',
+    })
+
+    seedOptimisticRepoGit(store, active, { workerId: 'w1', workingDir: '/r' })
+
+    expect(store.get(repoKey('w1', '/r'))?.branch).toBe('main')
   })
 })
 

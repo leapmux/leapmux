@@ -9,6 +9,7 @@ import type { createChatStore } from '~/stores/chat.store'
 import type { SavedViewportScroll } from '~/stores/chatTypes'
 import type { createFloatingWindowStore } from '~/stores/floatingWindow.store'
 import type { createLayoutStore } from '~/stores/layout.store'
+import type { createRepoGitStore } from '~/stores/repoGit.store'
 import type { AgentTab, FileOpenSource, FileTab, Tab } from '~/stores/tab.types'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
@@ -25,7 +26,7 @@ import { createUpdatableDialogState } from '~/hooks/createDialogState'
 import { makeIdGenerator } from '~/lib/idGenerator'
 import { basename } from '~/lib/paths'
 import { MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.store'
-import { descendantAgentTabs, resolveOptimisticGitInfo, tabKey } from '~/stores/tab.helpers'
+import { descendantAgentTabs, resolveOptimisticGitInfo, seedOptimisticRepoGit, tabKey } from '~/stores/tab.helpers'
 import { emitRemoveTab } from '~/stores/tabOps'
 import { openTabInFocusedTile } from './openTabInFocusedTile'
 import { focusTile, removeEmptyFloatingWindow } from './tileLifecycle'
@@ -69,6 +70,7 @@ interface UseTabOperationsOpts {
    * from reaching the path that retires a tab.
    */
   workerOnlineState: (workerId: string) => boolean | undefined
+  repoGitStore: ReturnType<typeof createRepoGitStore>
 }
 
 export function useTabOperations(opts: UseTabOperationsOpts) {
@@ -630,6 +632,10 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     // renders ungrouped until the next git-status refresh reaches it, even
     // though the answer was on screen at the moment of the open.
     const gitSeed = resolveOptimisticGitInfo(activeTab(), { workingDir: ctx.workingDir })
+    seedOptimisticRepoGit(opts.repoGitStore, activeTab(), {
+      workerId: ctx.workerId,
+      workingDir: ctx.workingDir,
+    })
     const placedTileId = openTabInFocusedTile(
       { view, layoutStore, selection, metadata },
       { type: TabType.FILE, id: tabId, workerId: ctx.workerId },

@@ -1,4 +1,4 @@
-import type { AgentGitStatus, AgentProvider, AgentStatus, AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentProvider, AgentStatus, AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
 import type { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 
@@ -44,12 +44,6 @@ export interface BaseTab {
   mru?: number
   workingDir?: string
   createdAt?: string
-  // ---- Git status. Populated for EVERY tab type: a file tab carries a
-  // `workingDir` of its own (the tab it was opened from), so `syncGitStatusToTabs`
-  // matches it by containment the same way it matches agents and terminals. The
-  // file path is only the fallback for a tab whose dir has not arrived yet. ----
-  gitBranch?: string
-  gitOriginUrl?: string
   /**
    * Absolute working-tree root of the tab's enclosing git repository
    * (from `git rev-parse --show-toplevel`). Used to group origin-less
@@ -57,18 +51,6 @@ export interface BaseTab {
    * the same repo, different toplevels mean different repos.
    */
   gitToplevel?: string
-  /**
-   * True iff `gitToplevel` resolves to a linked worktree (i.e. `git
-   * rev-parse --git-dir` differs from `--git-common-dir`). Drives the
-   * sidebar's BranchGroup.isWorktree disposition, which ChangeBranchDialog
-   * reads to seed `isWorktreeRoot`/`isRepoRoot` before its inspect RPC
-   * lands. Undefined when the tab hasn't been git-resolved yet, matching
-   * the convention used by the other git fields on this tab.
-   */
-  gitIsWorktree?: boolean
-  gitDiffAdded?: number
-  gitDiffDeleted?: number
-  gitDiffUntracked?: number
 }
 
 /**
@@ -87,14 +69,6 @@ export interface AgentTab extends BaseTab {
   optionValues?: Record<string, string>
   // Full option-group catalog (model/effort/permission/provider axes) reported by the agent.
   optionGroups?: AvailableOptionGroup[]
-  /**
-   * Structured git status reported by the agent process. Flat
-   * `gitBranch`/`gitOriginUrl`/`gitToplevel` mirror the most-used fields
-   * for sidebar grouping, terminal tabs, and the AppShell git sync;
-   * this full record is kept for consumers that need ahead/behind/
-   * conflicted/modified/etc.
-   */
-  agentGitStatus?: AgentGitStatus
   /**
    * Error string carried while AgentStatus.STARTUP_FAILED so the chat
    * startup banner can render the agent's failure reason.
@@ -150,7 +124,7 @@ export interface TerminalTab extends BaseTab {
 
 /**
  * FILE tab. Path + display mode are the canonical inputs; per-file
- * git status flows through `gitFileStatusStore`.
+ * git status flows through the repo-keyed {@link createRepoGitStore}.
  */
 export interface FileTab extends BaseTab {
   type: TabType.FILE
@@ -179,8 +153,8 @@ export function isFileTab(t: Tab): t is FileTab {
   return t.type === TabType.FILE
 }
 
-/** The four tab fields derived from git status. */
-export type GitTabFields = Pick<BaseTab, 'gitBranch' | 'gitOriginUrl' | 'gitToplevel' | 'gitIsWorktree'>
+/** The tab field that links a tab to its repo-keyed git store entry. */
+export type GitTabFields = Pick<BaseTab, 'gitToplevel'>
 
 export interface TabItemOps {
   onClose?: (tab: Tab) => void

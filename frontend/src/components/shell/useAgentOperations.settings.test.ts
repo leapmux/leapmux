@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { showWarnToast } from '~/components/common/Toast'
 import { AvailableOptionGroupSchema, AvailableOptionSchema } from '~/generated/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { createRepoGitStore } from '~/stores/repoGit.store'
 import { emitAddTab } from '~/stores/tabOps'
 import { installTestBridge } from '~/test-support/crdtBridge'
 import { createTestTabStores } from '~/test-support/tabStores'
@@ -109,6 +110,7 @@ function stubProps(stores: Stores) {
     activeWorkspace: () => null,
     newAgentDialog: {},
     setNewAgentLoadingProvider: () => {},
+    repoGitStore: createRepoGitStore(),
   } as unknown as Parameters<typeof useAgentOperations>[0]
 }
 

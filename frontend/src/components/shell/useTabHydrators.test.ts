@@ -6,6 +6,7 @@ import { TabHydrationStatus } from '~/generated/leapmux/v1/common_pb'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { setCRDTBridge } from '~/lib/crdt'
+import { createRepoGitStore } from '~/stores/repoGit.store'
 import { isFileTab } from '~/stores/tab.types'
 import { emitAddTab } from '~/stores/tabOps'
 import { installTestBridge, seedWorkspace } from '~/test-support/crdtBridge'
@@ -93,12 +94,19 @@ function terminalInfo(id: string, over: Record<string, unknown> = {}) {
 function setup(workspaceId = 'ws-test') {
   const harness = installTestBridge({ workspaceId })
   const stores = createTestTabStores(workspaceId)
+  const repoGitStore = createRepoGitStore()
   let seq = 0
   return {
     ...stores,
+    repoGitStore,
     harness,
     mount: (onlineWorkerIds?: () => ReadonlySet<string>) =>
-      useTabHydrators({ view: stores.view, metadata: stores.metadata, onlineWorkerIds }),
+      useTabHydrators({
+        view: stores.view,
+        metadata: stores.metadata,
+        repoGitStore,
+        onlineWorkerIds,
+      }),
     add(type: TabType, id: string, workerId = 'w1', tileId = harness.rootTileId) {
       seq += 1
       emitAddTab({ type, id, tileId, position: `p${seq}`, workerId })

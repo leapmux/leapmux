@@ -19,9 +19,9 @@ import type { TabWorkState } from '~/stores/chatBackgroundTasks'
 import type { SavedViewportScroll } from '~/stores/chatTypes'
 import type { createControlStore } from '~/stores/control.store'
 import type { createFloatingWindowStore } from '~/stores/floatingWindow.store'
-import type { createGitFileStatusStore } from '~/stores/gitFileStatus.store'
 import type { createLayoutStore, SplitOrientation, TilePredicates } from '~/stores/layout.store'
 import type { LayoutOwner } from '~/stores/layoutOwner'
+import type { createRepoGitStore } from '~/stores/repoGit.store'
 import type { AgentTab, FileTab, Tab, TerminalTab } from '~/stores/tab.types'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
@@ -85,7 +85,7 @@ interface TileRendererOpts {
     controlStore: ReturnType<typeof createControlStore>
     layoutStore: ReturnType<typeof createLayoutStore>
     agentSessionStore: ReturnType<typeof createAgentSessionStore>
-    gitFileStatusStore?: ReturnType<typeof createGitFileStatusStore>
+    repoGitStore: ReturnType<typeof createRepoGitStore>
   }
   /** Tab/agent/terminal lifecycle hooks. */
   ops: {
@@ -174,7 +174,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
     controlStore,
     layoutStore,
     agentSessionStore,
-    gitFileStatusStore,
+    repoGitStore,
   } = opts.stores
   const { agentOps, termOps } = opts.ops
   const mruEditorDeps = opts.mruEditorDeps
@@ -985,7 +985,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
             // `hasStagedAndUnstaged` so both props read from one memo
             // cell instead of walking the file-status map on every
             // reactive tick.
-            const gitEntry = createMemo(() => gitFileStatusStore?.getFileStatus(filePath()))
+            const gitEntry = createMemo(() => repoGitStore.getFileStatus(filePath()))
             const hasStagedAndUnstaged = createMemo(() => {
               const entry = gitEntry()
               if (!entry)
@@ -1093,13 +1093,17 @@ export function createTileRenderer(opts: TileRendererOpts) {
       tab: view.getAgentTab(agentId()),
       workspaceId: activeWorkspace()?.id ?? '',
       workspaceTabs: () => view.forWorkspace(activeWorkspace()?.id ?? ''),
+      repoGitStore,
       isWorkerKnownOnline: branchCallbacks?.isWorkerKnownOnline,
     })
     const branchDisabledReason = () => branchAction().disabledReason
+    const focusedAgentTab = () => view.getAgentTab(agentId())
     return (
       <AgentEditorPanel
         agentId={agentId()}
-        agent={agentTabToInfo(view.getAgentTab(agentId()))}
+        agent={agentTabToInfo(focusedAgentTab())}
+        repoGitStore={repoGitStore}
+        gitTab={focusedAgentTab()}
         // eslint-disable-next-line solid/reactivity -- async event handler; reactive tracking isn't needed for user-invoked callbacks
         onSendMessage={async (content, fileAttachments?: FileAttachment[]) => {
           const id = focusedAgentId()

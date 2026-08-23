@@ -1,4 +1,5 @@
 import type { Component } from 'solid-js'
+import type { createRepoGitStore } from '~/stores/repoGit.store'
 import { createMemo, Show } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { DialogColumns, DialogTopRow, DialogTopSection } from '~/components/common/Dialog'
@@ -28,6 +29,7 @@ interface NewTerminalDialogProps {
   blockedReason?: () => string | undefined
   onCreated: (terminalId: string, workerId: string, workingDir: string, title: string) => void
   onClose: () => void
+  repoGitStore: ReturnType<typeof createRepoGitStore>
 }
 
 export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
@@ -115,7 +117,7 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
       <BlockedReasonNotice reason={blockedReason()} />
       <DialogColumns
         twoColumn={Boolean(worker.workerId()) && (pathInfo.loading() || pathInfo.showGitOptions())}
-        left={<DirectorySelector state={worker} tree={tree} />}
+        left={<DirectorySelector state={worker} tree={tree} repoGitStore={props.repoGitStore} />}
         right={(
           <Show when={worker.workerId()}>
             <GitOptionsLoader gitInfo={pathInfo}>

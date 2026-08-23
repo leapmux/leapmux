@@ -39,7 +39,7 @@ func terminalStartingLabel(shell string) string {
 // existing git fields when STARTING arrives without them, so a nil
 // first broadcast is non-clobbering). Returns the ctx AND the startup handle
 // the caller passes into runTerminalStartup / runTerminalRestart.
-func (svc *Service) beginTerminalStartup(terminalID, shell string, gs *leapmuxv1.AgentGitStatus) (context.Context, *startupEntry) {
+func (svc *Service) beginTerminalStartup(terminalID, shell string, gs *leapmuxv1.GitRepoStatus) (context.Context, *startupEntry) {
 	startupCtx, cancel := context.WithCancel(context.Background())
 	h := svc.TerminalStartup.begin(terminalID, cancel)
 	msg := terminalStartingLabel(shell)
@@ -475,10 +475,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 		gitStatuses := gitutil.BatchGetGitStatus(ctx, gitDirs)
 		for i, gs := range gitStatuses {
 			if gs != nil {
-				terminals[i].GitBranch = gs.Branch
-				terminals[i].GitOriginUrl = gs.OriginUrl
-				terminals[i].GitToplevel = gs.Toplevel
-				terminals[i].GitIsWorktree = gs.IsWorktree
+				terminals[i].GitStatus = gs
 			}
 		}
 
@@ -781,17 +778,14 @@ func (svc *Service) persistTerminalStartupError(terminalID, errMsg string) {
 // status has been computed (phase 0 mode labels, rollback labels, the
 // seed broadcast from registerTerminalHandlers) and non-nil once
 // runTerminalStartup's phase 1 has run `git status` on the final dir.
-func buildTerminalStartingStatus(terminalID, message string, gs *leapmuxv1.AgentGitStatus) *leapmuxv1.TerminalStatusChange {
+func buildTerminalStartingStatus(terminalID, message string, gs *leapmuxv1.GitRepoStatus) *leapmuxv1.TerminalStatusChange {
 	sc := &leapmuxv1.TerminalStatusChange{
 		TerminalId:     terminalID,
 		Status:         leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING,
 		StartupMessage: message,
 	}
 	if gs != nil {
-		sc.GitBranch = gs.GetBranch()
-		sc.GitOriginUrl = gs.GetOriginUrl()
-		sc.GitToplevel = gs.GetToplevel()
-		sc.GitIsWorktree = gs.GetIsWorktree()
+		sc.GitStatus = gs
 	}
 	return sc
 }
@@ -853,7 +847,7 @@ func (svc *Service) effectiveTerminalTitle(row db.Terminal) string {
 // broadcastTerminalStarting fans out a STARTING TerminalStatusChange.
 // Used by runTerminalStartup for each phase label transition; gs is
 // non-nil only once phase 1 has computed git status.
-func (svc *Service) broadcastTerminalStarting(terminalID, message string, gs *leapmuxv1.AgentGitStatus) {
+func (svc *Service) broadcastTerminalStarting(terminalID, message string, gs *leapmuxv1.GitRepoStatus) {
 	svc.Watchers.BroadcastTerminalEvent(terminalID, &leapmuxv1.TerminalEvent{
 		TerminalId: terminalID,
 		Event: &leapmuxv1.TerminalEvent_StatusChange{

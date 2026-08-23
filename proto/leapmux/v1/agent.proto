@@ -214,7 +214,7 @@ message AgentInfo {
   string startup_message = 15;  // Populated when status=AGENT_STATUS_STARTING (e.g. "Checking Git status...")
 
   // Git.
-  AgentGitStatus git_status = 16; // Git status for the agent's working directory
+  GitRepoStatus git_status = 16; // Git status for the agent's working directory
 
   // Reserved: slots freed when the model/effort/permission_mode scalars, the
   // extra_settings map, and the available_models / available_option_groups lists collapsed
@@ -361,7 +361,7 @@ message AgentStatusChange {
   repeated AvailableOptionGroup option_groups = 8;
 
   // Git.
-  AgentGitStatus git_status = 9; // Git status for the agent's working directory
+  GitRepoStatus git_status = 9; // Git status for the agent's working directory
 
   // Reserved: slots freed when the model/effort/permission_mode scalars, the
   // extra_settings map, and the available_models / available_option_groups lists collapsed
@@ -371,23 +371,7 @@ message AgentStatusChange {
   reserved "model", "effort", "permission_mode", "extra_settings", "available_models", "available_option_groups", "supports_model_effort";
 }
 
-// AgentGitStatus holds git repository status for an agent's working directory.
-message AgentGitStatus {
-  string branch = 1;        // Current branch name
-  int32 ahead = 2;          // Commits ahead of upstream
-  int32 behind = 3;         // Commits behind upstream
-  bool conflicted = 4;      // Has merge conflicts (unmerged paths)
-  bool stashed = 5;         // Has stashed changes
-  bool deleted = 6;         // Has staged deletions
-  bool renamed = 7;         // Has staged renames
-  bool modified = 8;        // Has modifications in working directory
-  bool type_changed = 9;    // Has type changes in staging area
-  bool added = 10;          // Has staged additions
-  bool untracked = 11;      // Has untracked files
-  string origin_url = 12;   // Remote origin URL
-  string toplevel = 13;     // Working-tree root (`git rev-parse --show-toplevel`)
-  bool is_worktree = 14;    // True if `toplevel` is a linked worktree, not the main repo root
-}
+// AgentGitStatus was replaced by GitRepoStatus in leapmux/v1/common.proto.
 
 // --- Message History ---
 

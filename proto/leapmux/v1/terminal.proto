@@ -118,13 +118,11 @@ message TerminalInfo {
   bool exited = 5;
   string working_dir = 6;       // Tab's working directory context
   string shell_start_dir = 7;   // Where the shell started
-  string git_branch = 8;        // Current git branch (if in a git repo)
-  string git_origin_url = 9;    // Remote origin URL (if in a git repo)
   string title = 10;            // User-visible tab title
   TerminalStatus status = 11;   // Lifecycle state (starting/ready/failed)
   string startup_error = 12;    // Populated when status=TERMINAL_STATUS_STARTUP_FAILED
   string startup_message = 13;  // Populated when status=TERMINAL_STATUS_STARTING (e.g. "Starting zsh…")
-  string git_toplevel = 14;     // Working-tree root of the enclosing git repo, if any
+  GitRepoStatus git_status = 17;
   // Cumulative PTY byte offset at the end of `screen`. It counts PTY
   // bytes only, and `screen` leads with the synthesized escape sequences
   // that restore the sticky xterm modes. `screen` is therefore longer
@@ -133,7 +131,8 @@ message TerminalInfo {
   // `after_offset` from this so a resubscribe picks up exactly where
   // the snapshot left off instead of replaying `screen`.
   int64 screen_end_offset = 15;
-  bool git_is_worktree = 16;    // True if `git_toplevel` is a linked worktree (not the main repo root)
+  reserved 8, 9, 14, 16;
+  reserved "git_branch", "git_origin_url", "git_toplevel", "git_is_worktree";
 }
 
 message TerminalData {
@@ -204,14 +203,9 @@ message TerminalStatusChange {
   TerminalStatus status = 2;
   string startup_error = 3;   // Populated when status=TERMINAL_STATUS_STARTUP_FAILED
   string startup_message = 4; // Populated when status=TERMINAL_STATUS_STARTING (e.g. "Starting zsh…")
-  // Populated by runTerminalStartup once git-mode execution finishes and
-  // the final working dir is known. Frontend reads these into the tab's
-  // gitBranch / gitOriginUrl fields (replaces the sync-response fields
-  // that used to live on OpenTerminalResponse).
-  string git_branch = 5;
-  string git_origin_url = 6;
-  string git_toplevel = 7;
-  bool git_is_worktree = 8;   // True if `git_toplevel` is a linked worktree
+  GitRepoStatus git_status = 9;
+  reserved 5, 6, 7, 8;
+  reserved "git_branch", "git_origin_url", "git_toplevel", "git_is_worktree";
 }
 
 message ListAvailableShellsRequest {

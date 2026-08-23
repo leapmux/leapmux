@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest'
+import { repoKey } from '~/stores/repoGit'
+import { createRepoGitStore } from '~/stores/repoGit.store'
 import {
   branchKey,
   branchNameSegment,
@@ -41,11 +43,6 @@ describe('branchKey', () => {
   })
 
   it('keeps a colliding worker:path/branch:worker pair distinct', () => {
-    // Legacy colon-joined keys would have collapsed these two:
-    //   branch="feature:a", worker="b",   toplevel="/p"  → "feature:a:b:/p"
-    //   branch="feature",   worker="a:b", toplevel="/p"  → "feature:a:b:/p"
-    // (Branch names can't contain ':' per git-check-ref-format, but worker
-    // ids and paths can.)
     const a = branchKey('feature', 'a:b', '/p')
     const b = branchKey('feature:a', 'b', '/p')
     expect(a).not.toBe(b)
@@ -73,8 +70,6 @@ describe('repoKeyForLocal / isLocalRepoKey / repoKeyTooltip', () => {
   })
 
   it('cannot collide with any real origin URL (control byte prefix)', () => {
-    // Git origin URLs cannot begin with a control byte, so the prefix
-    // guarantees a local key never matches a remote key by coincidence.
     const local = repoKeyForLocal('/x')
     expect(local.charCodeAt(0)).toBeLessThan(0x20)
   })
@@ -88,9 +83,6 @@ describe('collapseKeyForBranch', () => {
   })
 
   it('cannot collide across (repo, branch) split (sentinel separator)', () => {
-    // If the separator weren't a control byte, splitting at the first
-    // ':' could ambiguously assign chars in one of the halves to the
-    // other. The control-byte separator prevents the ambiguity entirely.
     const a = collapseKeyForBranch('foo', branchKey('bar', 'w', '/p'))
     const b = collapseKeyForBranch('foo:bar', branchKey('', 'w', '/p'))
     expect(a).not.toBe(b)
@@ -98,28 +90,39 @@ describe('collapseKeyForBranch', () => {
 })
 
 describe('tabBranchKey', () => {
-  const tab = (gitBranch?: string, workerId?: string, gitToplevel?: string) => ({ gitBranch, workerId, gitToplevel })
+  const store = createRepoGitStore()
+  const tab = (gitToplevel?: string, workerId?: string) => ({ gitToplevel, workerId })
+
+  function seedBranch(workerId: string, gitToplevel: string, branch: string) {
+    store.upsert(repoKey(workerId, gitToplevel), { workerId, toplevel: gitToplevel, branch })
+  }
 
   it('agrees with branchKey for the same triple', () => {
-    // The sidebar groups its tree by this and the composer's branch chip
-    // collects the tabs it hands to the delete dialog by it, so the two must
-    // resolve identically or the dialog reports a different set than the tree
-    // shows.
-    expect(tabBranchKey(tab('main', 'w1', '/repo'))).toBe(branchKey('main', 'w1', '/repo'))
+    seedBranch('w1', '/repo', 'main')
+    expect(tabBranchKey(tab('/repo', 'w1'), store)).toBe(branchKey('main', 'w1', '/repo'))
   })
 
   it('maps a tab with no branch to the no-branch bucket, not to an empty name', () => {
-    expect(tabBranchKey(tab(undefined, 'w1', '/repo'))).toBe(branchKey(null, 'w1', '/repo'))
-    expect(tabBranchKey(tab('', 'w1', '/repo'))).toBe(branchKey(null, 'w1', '/repo'))
+    seedBranch('w1', '/repo', '')
+    expect(tabBranchKey(tab('/repo', 'w1'), store)).toBe(branchKey(null, 'w1', '/repo'))
   })
 
   it('keeps two clones of one repo on the same branch apart', () => {
-    expect(tabBranchKey(tab('main', 'w1', '/a'))).not.toBe(tabBranchKey(tab('main', 'w1', '/b')))
-    expect(tabBranchKey(tab('main', 'w1', '/a'))).not.toBe(tabBranchKey(tab('main', 'w2', '/a')))
+    seedBranch('w1', '/a', 'main')
+    seedBranch('w1', '/b', 'main')
+    expect(tabBranchKey(tab('/a', 'w1'), store)).not.toBe(tabBranchKey(tab('/b', 'w1'), store))
+    expect(tabBranchKey(tab('/a', 'w1'), store)).not.toBe(tabBranchKey(tab('/a', 'w2'), store))
   })
 
   it('treats absent workerId and toplevel as empty rather than throwing', () => {
-    expect(tabBranchKey(tab('main'))).toBe(branchKey('main', '', ''))
-    expect(tabBranchKey({})).toBe(branchKey(null, '', ''))
+    expect(tabBranchKey(tab('/repo', undefined), store)).toBe(branchKey(null, '', '/repo'))
+    expect(tabBranchKey({}, store)).toBe(branchKey(null, '', ''))
+  })
+
+  it('uses store toplevel when tab gitToplevel is absent', () => {
+    const local = createRepoGitStore()
+    local.upsert(repoKey('w1', '/repo'), { workerId: 'w1', toplevel: '/repo', branch: 'feature' })
+    expect(tabBranchKey({ workerId: 'w1', workingDir: '/repo/pkg' }, local))
+      .toBe(branchKey('feature', 'w1', '/repo'))
   })
 })

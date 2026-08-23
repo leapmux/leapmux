@@ -68,3 +68,8 @@ export const flatListItemSelected = style({
 export const panel = style({
   display: 'contents',
 })
+
+export const gitErrorHint = style({
+  padding: 'var(--space-2) var(--space-3) var(--space-1)',
+  fontSize: 'var(--text-7)',
+})
