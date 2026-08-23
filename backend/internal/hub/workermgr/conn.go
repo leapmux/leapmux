@@ -245,9 +245,17 @@ func (c *Conn) SendControl(msg *leapmuxv1.ConnectResponse) error {
 // Its only escape besides a drain is the caller's deadline or a fence; every
 // caller MUST pass a bounded context. ErrConnectionClosed means the queue
 // tore down before delivery -- not success.
+//
+// A write-error give-up Fences this conn (OnGiveUp), which cancels the writer
+// context Flush may be selecting on. sendq usually returns ErrClosed once
+// torn down; if Flush still surfaces that cancel/deadline, map it to
+// ErrConnectionClosed only when GaveUp is set -- not every error.
 func (c *Conn) Flush(ctx context.Context) error {
 	if err := c.q.Flush(ctx); err != nil {
 		if errors.Is(err, sendq.ErrClosed) {
+			return ErrConnectionClosed
+		}
+		if c.GaveUp() && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 			return ErrConnectionClosed
 		}
 		return err
@@ -285,6 +293,13 @@ func (c *Conn) Fence() {
 // "the worker had already left".
 func (c *Conn) GaveUp() bool {
 	return c.q.GaveUp()
+}
+
+// WritePanicked reports whether a transport Write panic latched this
+// connection's queue closed without giveUp. classifyNotifyErr reads it so a
+// panicking stream is filed as Hub-side failure, not "worker already gone".
+func (c *Conn) WritePanicked() bool {
+	return c.q.WritePanicked()
 }
 
 // EncryptionMode returns the encryption mode cached from the worker's

@@ -969,6 +969,257 @@ func TestWriterDrainAfterCloseWritesNothing(t *testing.T) {
 	assert.Zero(t, wrote)
 }
 
+func TestWriterFlushReturnsErrClosedWhenWriteFails(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	release := make(chan struct{})
+	var writeStarted sync.WaitGroup
+	writeStarted.Add(1)
+	var gaveUpSawWriting atomic.Bool
+	var w *Writer[string]
+	w = NewUnstarted(ctx, Config[string]{
+		Write: func(context.Context, string) error {
+			writeStarted.Done()
+			<-release
+			return errors.New("connection reset")
+		},
+		Size:     func(s string) int { return len(s) },
+		MaxBytes: 1024,
+		OnGiveUp: func(GiveUpReason, error) {
+			// Pin the race: giveUp must observe writing still set. If
+			// finishWrite ran first, Flush can return nil on a refused frame.
+			w.mu.Lock()
+			saw := w.writing
+			w.mu.Unlock()
+			gaveUpSawWriting.Store(saw)
+		},
+	})
+	t.Cleanup(w.Close)
+
+	go func() {
+		for {
+			select {
+			case <-w.Wake():
+				_ = w.Drain()
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	require.True(t, w.TryEnqueueControl("frame"))
+	writeStarted.Wait()
+
+	flushed := make(chan error, 1)
+	fctx, fcancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer fcancel()
+	go func() { flushed <- w.Flush(fctx) }()
+
+	// Write is in flight (writing=true). Releasing it fails the transport;
+	// giveUp must latch closed before finishWrite or Flush can return nil.
+	close(release)
+
+	select {
+	case err := <-flushed:
+		require.ErrorIs(t, err, ErrClosed,
+			"Flush must not report success when the in-flight write failed")
+	case <-time.After(3 * time.Second):
+		t.Fatal("Flush never returned after the write failed")
+	}
+	assert.True(t, w.GaveUp(), "a write error must give up the writer")
+	assert.True(t, gaveUpSawWriting.Load(),
+		"giveUp must run before finishWrite clears writing (the Flush race)")
+}
+
+// A panicking Write must still make Flush report ErrClosed, without setting
+// gaveUp inside writeTurn (the handler-drained Fence path needs that false).
+func TestWriterFlushReturnsErrClosedWhenWritePanics(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	release := make(chan struct{})
+	var writeStarted sync.WaitGroup
+	writeStarted.Add(1)
+	w := NewUnstarted(ctx, Config[string]{
+		Write: func(context.Context, string) error {
+			writeStarted.Done()
+			<-release
+			panic("transport exploded")
+		},
+		Size:     func(s string) int { return len(s) },
+		MaxBytes: 1024,
+	})
+	t.Cleanup(w.Close)
+
+	go func() {
+		for {
+			select {
+			case <-w.Wake():
+				func() {
+					defer func() { _ = recover() }()
+					_ = w.Drain()
+				}()
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	require.True(t, w.TryEnqueueControl("frame"))
+	writeStarted.Wait()
+
+	flushed := make(chan error, 1)
+	fctx, fcancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer fcancel()
+	go func() { flushed <- w.Flush(fctx) }()
+	close(release)
+
+	select {
+	case err := <-flushed:
+		require.ErrorIs(t, err, ErrClosed,
+			"Flush must not report success when the in-flight write panicked")
+	case <-time.After(3 * time.Second):
+		t.Fatal("Flush never returned after the write panicked")
+	}
+	assert.False(t, w.GaveUp(), "panic must not give up inside writeTurn")
+	assert.True(t, w.IsClosed(), "panic must latch closed so Flush sees torn-down")
+	assert.True(t, w.WritePanicked(),
+		"panic must set WritePanicked so shutdown notify can file Hub-side failure")
+}
+
+// If OnDiscard panics while latching a panicking Write, finishWrite must still
+// clear writing -- otherwise Flush parks until its deadline on a dead writer.
+func TestWriterFlushClearsWritingWhenOnDiscardPanicsAfterWritePanic(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	release := make(chan struct{})
+	var writeStarted sync.WaitGroup
+	writeStarted.Add(1)
+	w := NewUnstarted(ctx, Config[string]{
+		Write: func(context.Context, string) error {
+			writeStarted.Done()
+			<-release
+			panic("transport exploded")
+		},
+		Size:     func(s string) int { return len(s) },
+		MaxBytes: 1024,
+		OnDiscard: func(int, int64) {
+			panic("OnDiscard exploded")
+		},
+	})
+	t.Cleanup(w.Close)
+
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		for {
+			select {
+			case <-w.Wake():
+				func() {
+					defer func() { _ = recover() }()
+					_ = w.Drain()
+				}()
+				return
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	// Second frame stays queued so latchClosed's discard path runs OnDiscard.
+	require.True(t, w.TryEnqueueControl("in-flight"))
+	require.True(t, w.TryEnqueueControl("discard-me"))
+	writeStarted.Wait()
+
+	flushed := make(chan error, 1)
+	fctx, fcancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer fcancel()
+	go func() { flushed <- w.Flush(fctx) }()
+	close(release)
+
+	select {
+	case <-drained:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Drain never returned after Write+OnDiscard panicked")
+	}
+
+	w.mu.Lock()
+	writing := w.writing
+	w.mu.Unlock()
+	assert.False(t, writing,
+		"finishWrite must run after an OnDiscard panic during the write-panic latch")
+
+	select {
+	case err := <-flushed:
+		require.ErrorIs(t, err, ErrClosed,
+			"Flush must not hang or succeed after Write+OnDiscard panic")
+	case <-time.After(3 * time.Second):
+		t.Fatal("Flush never returned after Write+OnDiscard panicked")
+	}
+	assert.True(t, w.WritePanicked())
+	assert.False(t, w.GaveUp())
+}
+
+// OnGiveUp often cancels the writer context (Conn.Fence). Flush must still
+// report ErrClosed for the refused write, not the cancel that teardown used.
+func TestWriterFlushReturnsErrClosedWhenGiveUpCancelsWriterCtx(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	release := make(chan struct{})
+	var writeStarted sync.WaitGroup
+	writeStarted.Add(1)
+	w := NewUnstarted(ctx, Config[string]{
+		Write: func(context.Context, string) error {
+			writeStarted.Done()
+			<-release
+			return errors.New("connection reset")
+		},
+		Size:     func(s string) int { return len(s) },
+		MaxBytes: 1024,
+		OnGiveUp: func(GiveUpReason, error) {
+			cancel()
+		},
+	})
+	t.Cleanup(w.Close)
+
+	go func() {
+		for {
+			select {
+			case <-w.Wake():
+				_ = w.Drain()
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	require.True(t, w.TryEnqueueControl("frame"))
+	writeStarted.Wait()
+
+	flushed := make(chan error, 1)
+	fctx, fcancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer fcancel()
+	go func() { flushed <- w.Flush(fctx) }()
+	close(release)
+
+	select {
+	case err := <-flushed:
+		require.ErrorIs(t, err, ErrClosed,
+			"Flush must prefer ErrClosed over the OnGiveUp writer-ctx cancel")
+		assert.NotErrorIs(t, err, context.Canceled)
+	case <-time.After(3 * time.Second):
+		t.Fatal("Flush never returned after the write failed")
+	}
+	assert.True(t, w.GaveUp())
+}
+
 func TestWriterFlushReturnsErrClosedWhenQueueWasDiscarded(t *testing.T) {
 	t.Parallel()
 	w := NewUnstarted(context.Background(), Config[string]{

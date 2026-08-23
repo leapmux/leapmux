@@ -199,6 +199,10 @@ func TestNotifyShutdownAndFence_ContinuesOnSendError(t *testing.T) {
 	// error is the way to reach them. Asserted here because a broken transport
 	// fences the conn on its way out, so without the give-up latch this reports
 	// as the worker having left and the warning silently becomes a Debug line.
+	//
+	// That latch lives in sendq.writeTurn: giveUp runs before finishWrite, or
+	// Flush can return nil on a refused write and this tally becomes
+	// Delivered:2 Failed:0 (see TestWriterFlushReturnsErrClosedWhenWriteFails).
 	assert.Equal(t, ShutdownNotifyResult{Delivered: 1, Failed: 1, Total: 2}, got)
 	assert.Contains(t, logs.String(), "failed to send shutdown notification to worker")
 	assert.Contains(t, logs.String(), "level=WARN")
@@ -570,8 +574,43 @@ func TestClassifyNotifyErr(t *testing.T) {
 		require.NoError(t, conn.SendControl(&leapmuxv1.ConnectResponse{}))
 		ctx, cancel := boundedNotifyCtx(t)
 		defer cancel()
-		_ = conn.Flush(ctx)
+		require.ErrorIs(t, conn.Flush(ctx), ErrConnectionClosed,
+			"Flush must surface the write failure; nil here is the sendq race that mis-counts Delivered")
 		require.True(t, conn.GaveUp(), "fixture must model a queue the Hub gave up on")
+		return conn
+	}
+	// A Write panic latches closed without giveUp (handler Fence owns teardown).
+	// Flush still returns ErrConnectionClosed; without WritePanicked this files
+	// as "worker already gone" and hides a Hub-side stream failure.
+	writePanickedConn := func(t *testing.T) *Conn {
+		t.Helper()
+		release := make(chan struct{})
+		var writeStarted sync.WaitGroup
+		writeStarted.Add(1)
+		conn, pump := newTestConn(t, "write-panic", func(*leapmuxv1.ConnectResponse) error {
+			writeStarted.Done()
+			<-release
+			panic("transport exploded")
+		}, nil)
+		pumpStart(t, pump, conn)
+		require.NoError(t, conn.SendControl(&leapmuxv1.ConnectResponse{}))
+		writeStarted.Wait()
+
+		flushed := make(chan error, 1)
+		ctx, cancel := boundedNotifyCtx(t)
+		defer cancel()
+		go func() { flushed <- conn.Flush(ctx) }()
+		close(release)
+
+		select {
+		case err := <-flushed:
+			require.ErrorIs(t, err, ErrConnectionClosed,
+				"Flush must surface the panicking write; nil is a Delivered mis-count")
+		case <-time.After(3 * time.Second):
+			t.Fatal("Flush never returned after the write panicked")
+		}
+		require.True(t, conn.WritePanicked(), "fixture must model a panicking Write latch")
+		require.False(t, conn.GaveUp(), "panic must not set GaveUp inside writeTurn")
 		return conn
 	}
 	expired := func(t *testing.T) context.Context {
@@ -598,6 +637,14 @@ func TestClassifyNotifyErr(t *testing.T) {
 			// operator can act on.
 			name: "hub gave up on the queue",
 			conn: gaveUpConn,
+			err:  ErrConnectionClosed,
+			want: notifyFailed,
+		},
+		{
+			// Write panic: same ErrConnectionClosed from Flush, gaveUp still
+			// false (Fence recovers), but WritePanicked marks Hub-side failure.
+			name: "transport write panicked",
+			conn: writePanickedConn,
 			err:  ErrConnectionClosed,
 			want: notifyFailed,
 		},
