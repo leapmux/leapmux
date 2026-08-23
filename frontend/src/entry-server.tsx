@@ -1,10 +1,12 @@
 import { createHandler, StartServer } from '@solidjs/start/server'
+import { BootSplashIcon } from '~/components/common/BootSplash'
 import {
-  BOOT_SPLASH_ICON_HEIGHT,
-  BOOT_SPLASH_ICON_SRC,
-  BOOT_SPLASH_ICON_WIDTH,
+  BOOT_SPLASH_FAIL_TITLE,
   BOOT_SPLASH_LABEL,
+  BOOT_SPLASH_RELOAD_LABEL,
+  BOOT_SPLASH_STATIC_ID,
   BOOT_SPLASH_TEST_ID,
+  bootFailureWatchdogScript,
   bootSplashDark,
   bootSplashDocumentCss,
   bootSplashLight,
@@ -80,24 +82,36 @@ export default createHandler(() => (
             Static boot splash (no SSR): Go serves this HTML as-is. Solid's
             client mount replaces `#app` contents. Copy comes from
             `~/lib/bootSplashTheme` — same module as `BootSplash`.
+
+            `id="boot-splash"` is the success signal for
+            `bootFailureWatchdogScript`: mount removes it. Solid's fallback
+            splash keeps only `data-testid`.
           */}
           <div id="app">
             <div
-              id="boot-splash"
+              id={BOOT_SPLASH_STATIC_ID}
               data-testid={BOOT_SPLASH_TEST_ID}
               role="status"
               aria-live="polite"
             >
-              <img
-                src={BOOT_SPLASH_ICON_SRC}
-                width={BOOT_SPLASH_ICON_WIDTH}
-                height={BOOT_SPLASH_ICON_HEIGHT}
-                alt=""
-              />
-              <p>{BOOT_SPLASH_LABEL}</p>
+              <div class="boot-splash-loading">
+                <BootSplashIcon />
+                <p>{BOOT_SPLASH_LABEL}</p>
+              </div>
+              <div class="boot-splash-error" hidden>
+                <p data-boot-fail-title>{BOOT_SPLASH_FAIL_TITLE}</p>
+                <pre data-boot-fail-detail />
+                <button type="button" data-boot-reload>{BOOT_SPLASH_RELOAD_LABEL}</button>
+              </div>
             </div>
             {children}
           </div>
+          {/*
+            After `#app` so a failed entry chunk still leaves the splash in
+            the DOM for the watchdog to rewrite. Inline — must not depend on
+            a module that may already have failed to load.
+          */}
+          <script>{bootFailureWatchdogScript()}</script>
           {scripts}
         </body>
       </html>

@@ -4,11 +4,16 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { KEY_BROWSER_PREFS } from '~/lib/browserStorage'
 import {
+  BOOT_SPLASH_FAIL_TIMEOUT_DETAIL,
+  BOOT_SPLASH_FAIL_TIMEOUT_MS,
+  BOOT_SPLASH_FAIL_TITLE,
   BOOT_SPLASH_GAP,
-  BOOT_SPLASH_ICON_SRC,
   BOOT_SPLASH_LABEL,
+  BOOT_SPLASH_RELOAD_LABEL,
   BOOT_SPLASH_SPACE_4,
+  BOOT_SPLASH_STATIC_ID,
   BOOT_SPLASH_TEST_ID,
+  bootFailureWatchdogScript,
   bootSplashDark,
   bootSplashDocumentCss,
   bootSplashLight,
@@ -64,15 +69,27 @@ describe('parseBootPrefsThemeMode', () => {
 })
 
 describe('bootSplashDocumentCss', () => {
-  it('covers html/body fill, splash polarity, and the shared gap token', () => {
+  it('covers html/body/#app fill, safe-area body lock, and the shared gap token', () => {
     const css = bootSplashDocumentCss()
     expect(css).toContain(`:root{--space-4:${BOOT_SPLASH_SPACE_4}}`)
     expect(css).toContain(`gap:${BOOT_SPLASH_GAP}`)
     expect(css).toContain(bootSplashLight.background)
     expect(css).toContain(bootSplashDark.background)
-    expect(css).toContain(`html,body{margin:0;background:${bootSplashLight.background}}`)
+    expect(css).toContain('html,body,#app{margin:0;height:100%;width:100%;overflow:hidden}')
+    expect(css).toContain('padding-top:env(safe-area-inset-top,0px)')
+    expect(css).toContain('position:fixed')
+    expect(css).toContain(`#${BOOT_SPLASH_STATIC_ID}{min-height:100%}`)
+    expect(css).toContain(
+      `[data-testid="${BOOT_SPLASH_TEST_ID}"]:not(#${BOOT_SPLASH_STATIC_ID}){min-height:100dvh}`,
+    )
+    // Static splash must not pick up the Solid-only 100dvh floor.
+    expect(css).not.toContain(`#${BOOT_SPLASH_STATIC_ID}{min-height:100dvh}`)
     expect(css).toContain(`html[data-theme="dark"]`)
     expect(css).toContain(`[data-testid="${BOOT_SPLASH_TEST_ID}"]`)
+    expect(css).toContain(`#${BOOT_SPLASH_STATIC_ID}[data-boot-failed]`)
+    expect(css).toContain('width:max-content')
+    expect(css).toContain('max-width:min(100%,20rem)')
+    expect(css).toContain('.boot-splash-error pre{margin:0 auto')
     expect(css).not.toContain('gap:1rem')
   })
 })
@@ -253,6 +270,149 @@ describe('bootThemeScript', () => {
   })
 })
 
+describe('bootFailureWatchdogScript', () => {
+  afterEach(() => {
+    document.body.replaceChildren()
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  function mountStaticSplash(): HTMLElement {
+    document.body.innerHTML = `
+      <div id="app">
+        <div id="${BOOT_SPLASH_STATIC_ID}" data-testid="${BOOT_SPLASH_TEST_ID}" role="status" aria-live="polite">
+          <div class="boot-splash-loading"><p>${BOOT_SPLASH_LABEL}</p></div>
+          <div class="boot-splash-error" hidden>
+            <p data-boot-fail-title></p>
+            <pre data-boot-fail-detail></pre>
+            <button type="button" data-boot-reload></button>
+          </div>
+        </div>
+      </div>
+    `
+    return document.getElementById(BOOT_SPLASH_STATIC_ID)!
+  }
+
+  function runWatchdog(): void {
+    // eslint-disable-next-line no-new-func -- evaluate the same string the document ships
+    new Function(bootFailureWatchdogScript())()
+  }
+
+  it('rewrites the static splash when a script resource fails to load', () => {
+    const splash = mountStaticSplash()
+    runWatchdog()
+
+    const script = document.createElement('script')
+    script.src = 'https://example.test/entry.js'
+    document.body.appendChild(script)
+    script.dispatchEvent(new Event('error', { bubbles: true }))
+
+    expect(splash.getAttribute('data-boot-failed')).toBe('true')
+    expect(splash.getAttribute('role')).toBe('alert')
+    expect(splash.querySelector('[data-boot-fail-title]')?.textContent).toBe(BOOT_SPLASH_FAIL_TITLE)
+    expect(splash.querySelector('[data-boot-fail-detail]')?.textContent).toBe(
+      'Failed to load\nhttps://example.test/entry.js',
+    )
+    expect(splash.querySelector('[data-boot-reload]')?.textContent).toBe(BOOT_SPLASH_RELOAD_LABEL)
+    expect(splash.querySelector('.boot-splash-loading')?.hasAttribute('hidden')).toBe(true)
+    expect(splash.querySelector('.boot-splash-error')?.hasAttribute('hidden')).toBe(false)
+  })
+
+  it('ignores favicon and manifest link load errors', () => {
+    const splash = mountStaticSplash()
+    runWatchdog()
+
+    for (const [rel, href] of [
+      ['icon', 'https://example.test/icons/leapmux-icon.ico'],
+      ['manifest', 'https://example.test/manifest.webmanifest'],
+      ['stylesheet', 'https://example.test/assets/app.css'],
+    ] as const) {
+      const link = document.createElement('link')
+      link.rel = rel
+      link.href = href
+      document.head.appendChild(link)
+      link.dispatchEvent(new Event('error', { bubbles: true }))
+    }
+
+    expect(splash.getAttribute('data-boot-failed')).toBeNull()
+    expect(splash.querySelector('.boot-splash-loading')?.hasAttribute('hidden')).toBe(false)
+  })
+
+  it('wires Reload to location.reload', () => {
+    const splash = mountStaticSplash()
+    runWatchdog()
+    const reload = vi.fn()
+    vi.stubGlobal('location', { ...window.location, reload })
+
+    const script = document.createElement('script')
+    script.src = 'https://example.test/entry.js'
+    document.body.appendChild(script)
+    script.dispatchEvent(new Event('error', { bubbles: true }))
+
+    const button = splash.querySelector<HTMLButtonElement>('[data-boot-reload]')
+    expect(button).not.toBeNull()
+    button!.click()
+    expect(reload).toHaveBeenCalledTimes(1)
+  })
+
+  it('fires on the timeout only while the static splash node remains', () => {
+    vi.useFakeTimers()
+    const splash = mountStaticSplash()
+    runWatchdog()
+
+    vi.advanceTimersByTime(BOOT_SPLASH_FAIL_TIMEOUT_MS - 1)
+    expect(splash.getAttribute('data-boot-failed')).toBeNull()
+
+    vi.advanceTimersByTime(1)
+    expect(splash.getAttribute('data-boot-failed')).toBe('true')
+    expect(splash.querySelector('[data-boot-fail-detail]')?.textContent).toBe(BOOT_SPLASH_FAIL_TIMEOUT_DETAIL)
+  })
+
+  it('does not treat a Solid BootSplash (testid only) as a failed static boot', () => {
+    vi.useFakeTimers()
+    // Solid mount replaced #app: static id is gone, Suspense splash remains.
+    document.body.innerHTML = `<div id="app"><div data-testid="${BOOT_SPLASH_TEST_ID}" role="status"><p>${BOOT_SPLASH_LABEL}</p></div></div>`
+    runWatchdog()
+
+    vi.advanceTimersByTime(BOOT_SPLASH_FAIL_TIMEOUT_MS + 1)
+    expect(document.querySelector('[data-boot-failed]')).toBeNull()
+    expect(document.querySelector('[data-testid="boot-splash"]')).toBeInTheDocument()
+  })
+
+  it('finishes when Solid mount removes the static splash before the timeout', async () => {
+    vi.useFakeTimers()
+    mountStaticSplash()
+    runWatchdog()
+
+    document.getElementById('app')!.replaceChildren(
+      document.createElement('div'),
+    )
+    // MutationObserver delivers on a microtask in jsdom.
+    await Promise.resolve()
+
+    // Before the timeout: capture listener must already be gone.
+    const orphan = document.createElement('div')
+    orphan.id = BOOT_SPLASH_STATIC_ID
+    orphan.innerHTML = `
+      <div class="boot-splash-loading"></div>
+      <div class="boot-splash-error" hidden>
+        <p data-boot-fail-title></p>
+        <pre data-boot-fail-detail></pre>
+        <button type="button" data-boot-reload></button>
+      </div>
+    `
+    document.body.appendChild(orphan)
+    const script = document.createElement('script')
+    script.src = 'https://example.test/late.js'
+    document.body.appendChild(script)
+    script.dispatchEvent(new Event('error', { bubbles: true }))
+    expect(orphan.getAttribute('data-boot-failed')).toBeNull()
+
+    vi.advanceTimersByTime(BOOT_SPLASH_FAIL_TIMEOUT_MS + 1)
+    expect(document.querySelector('[data-boot-failed]')).toBeNull()
+  })
+})
+
 describe('boot splash lockstep sources', () => {
   const here = dirname(fileURLToPath(import.meta.url))
 
@@ -263,15 +423,40 @@ describe('boot splash lockstep sources', () => {
     for (const src of [entry, splash]) {
       expect(src).toContain('BOOT_SPLASH_LABEL')
       expect(src).toContain('BOOT_SPLASH_TEST_ID')
-      expect(src).toContain('BOOT_SPLASH_ICON_SRC')
       expect(src).toContain('from \'~/lib/bootSplashTheme\'')
     }
     expect(entry).toContain('bootSplashDocumentCss')
     expect(entry).toContain('bootThemeScript')
+    expect(entry).toContain('bootFailureWatchdogScript')
+    expect(entry).toContain('BOOT_SPLASH_STATIC_ID')
+    expect(entry).toContain('BootSplashIcon')
+    expect(splash).toContain('data-boot-splash-icon')
+    expect(splash).toContain('viewBox="0 0 64 64"')
     expect(splash).not.toContain('BootSplash.css')
-    expect(BOOT_SPLASH_ICON_SRC).toBe('/icons/leapmux-icon.svg')
+    expect(splash).not.toMatch(/\bid=["']boot-splash["']/)
+    expect(splash).not.toMatch(/src=["']\/icons\/leapmux-icon\.svg["']/)
+    expect(entry).not.toMatch(/\bsrc=\{?BOOT_SPLASH_ICON/)
+    expect(entry).not.toMatch(/<img[\s\S]*leapmux-icon\.svg/)
     expect(BOOT_SPLASH_TEST_ID).toBe('boot-splash')
+    expect(BOOT_SPLASH_STATIC_ID).toBe(BOOT_SPLASH_TEST_ID)
     expect(BOOT_SPLASH_LABEL).toBe('Loading LeapMux…')
+  })
+
+  it('keeps BootSplashIcon geometry aligned with the public icon file', () => {
+    const splash = readFileSync(resolve(here, '../components/common/BootSplash.tsx'), 'utf8')
+    const file = readFileSync(resolve(here, '../../public/icons/leapmux-icon.svg'), 'utf8')
+    const fileCore = file.replace(/\s+/g, ' ').trim().replace(/^<\?xml[^>]*>\s*/i, '')
+    expect(splash).toContain('viewBox="0 0 64 64"')
+    expect(splash).toContain('fill="#0D9488"')
+    expect(splash).toContain('fill="#F59E0B"')
+    expect(fileCore).toContain('viewBox="0 0 64 64"')
+    for (const path of [
+      'M16 20 L30 32 L16 44',
+      'M44 17 L48 28 L58 32 L48 36 L44 47 L40 36 L30 32 L40 28 Z',
+    ]) {
+      expect(splash).toContain(path)
+      expect(fileCore).toContain(path)
+    }
   })
 
   it('does not ship a BootSplash.css.ts twin', () => {
