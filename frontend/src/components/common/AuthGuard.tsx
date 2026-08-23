@@ -1,6 +1,7 @@
 import type { ParentComponent } from 'solid-js'
 import { useLocation, useNavigate } from '@solidjs/router'
 import { createEffect, createMemo, Match, Switch } from 'solid-js'
+import { BootSplash } from '~/components/common/BootSplash'
 import { useAuth } from '~/context/AuthContext'
 import { assertNever } from '~/lib/assertNever'
 import { isSetupRequired, isSoloMode } from '~/lib/systemInfo'
@@ -132,7 +133,7 @@ export const AuthGuard: ParentComponent = (props) => {
   return (
     <Switch>
       <Match when={arm() === 'spinner'}>
-        <div class={centeredFull}><span>Loading...</span></div>
+        <BootSplash />
       </Match>
       <Match when={arm() === 'children'}>
         {props.children}

@@ -97,7 +97,8 @@ describe('authGuard', () => {
 
     const { navigations } = renderGuard()
 
-    expect(screen.getByText('Loading...')).toBeInTheDocument()
+    expect(screen.getByTestId('boot-splash')).toBeInTheDocument()
+    expect(screen.getByText('Loading LeapMux…')).toBeInTheDocument()
     expect(screen.queryByText('Protected Content')).not.toBeInTheDocument()
     // Nothing is decided until auth resolves.
     expect(navigations).toEqual([])
@@ -172,7 +173,7 @@ describe('authGuard', () => {
     const { navigations } = renderGuard()
 
     expect(await screen.findByTestId('auth-bootstrap-error')).toBeInTheDocument()
-    expect(screen.queryByText('Loading...')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('boot-splash')).not.toBeInTheDocument()
     expect(screen.queryByText('Protected Content')).not.toBeInTheDocument()
     // Still no redirect: there is no login form to send them to.
     expect(navigations).toEqual([])
@@ -208,7 +209,7 @@ describe('authGuard', () => {
     const panel = await screen.findByTestId('auth-bootstrap-error')
     expect(panel).toBeInTheDocument()
     expect(panel).toHaveTextContent('connection refused')
-    expect(screen.queryByText('Loading...')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('boot-splash')).not.toBeInTheDocument()
     expect(navigations).toEqual([])
   })
 

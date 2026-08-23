@@ -1,7 +1,16 @@
 import { createHandler, StartServer } from '@solidjs/start/server'
+import {
+  BOOT_SPLASH_ICON_HEIGHT,
+  BOOT_SPLASH_ICON_SRC,
+  BOOT_SPLASH_ICON_WIDTH,
+  BOOT_SPLASH_LABEL,
+  BOOT_SPLASH_TEST_ID,
+  bootSplashDark,
+  bootSplashDocumentCss,
+  bootSplashLight,
+  bootThemeScript,
+} from '~/lib/bootSplashTheme'
 import { frontendBuildInfo } from '~/lib/buildEnv'
-import { paletteColorToHex, resolveVariant } from '~/styles/themes'
-import { defaultTheme } from '~/styles/themes/default'
 
 export default createHandler(() => (
   <StartServer
@@ -35,31 +44,60 @@ export default createHandler(() => (
           <link rel="icon" href="/icons/leapmux-icon.svg" type="image/svg+xml" />
           <link rel="manifest" href="/manifest.webmanifest" />
           {/*
-            The pre-hydration chrome colour, taken from the palette rather than
-            restated. ~/lib/themeStore rewrites it from the RESOLVED theme once
-            it runs; until then :root carries the default light palette, so this
-            tag has to agree with it. Three literals used to disagree here.
+            Dual theme-color metas so the browser chrome matches OS polarity
+            before any JS runs. `bootThemeScript` strips `media` and rewrites
+            every tag when the device tier pins light or dark, so the pin
+            cannot lose to prefers-color-scheme.
           */}
-          <meta name="theme-color" content={paletteColorToHex(resolveVariant(defaultTheme, undefined, 'light').palette['--background']!)} />
+          <meta name="theme-color" media="(prefers-color-scheme: light)" content={bootSplashLight.background} />
+          <meta name="theme-color" media="(prefers-color-scheme: dark)" content={bootSplashDark.background} />
+          <meta name="theme-color" content={bootSplashLight.background} />
           <link rel="apple-touch-icon" href="/icons/leapmux-icon-square-apple-touch.png" />
           <meta name="apple-mobile-web-app-capable" content="yes" />
           <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
           {/*
-            Preload the Hack NF faces so code blocks lay out with the real font
-            on first paint. Without this the woff2 fetch starts only when the
-            first code block matches the @font-face, and the late swap changes
-            code-block heights — every one of which the chat virtualizer must
-            re-measure and re-anchor. `crossorigin` is required: font preloads
-            without it use a different fetch mode and the browser re-downloads.
+            Zero-JS splash polarity + html/body fill for the Solid mount gap.
+            `bootSplashDocumentCss` is the only splash stylesheet — Solid's
+            `BootSplash` matches via `[data-testid]`.
           */}
-          <link rel="preload" href="/fonts/HackNerdFont-3.003-Regular.woff2" as="font" type="font/woff2" crossorigin="anonymous" />
-          <link rel="preload" href="/fonts/HackNerdFont-3.003-Bold.woff2" as="font" type="font/woff2" crossorigin="anonymous" />
-          <link rel="preload" href="/fonts/HackNerdFont-3.003-Italic.woff2" as="font" type="font/woff2" crossorigin="anonymous" />
-          <link rel="preload" href="/fonts/HackNerdFont-3.003-BoldItalic.woff2" as="font" type="font/woff2" crossorigin="anonymous" />
+          <style>{bootSplashDocumentCss()}</style>
+          {/*
+            Do NOT preload Hack NF faces here. Each face is ~1.1 MB; the LTE
+            cold-start tracer ranked even a single Regular preload as ~50% of
+            bytes before shell_visible. The @font-face rules in
+            ~/styles/global.css.ts still fetch a face when a code surface first
+            needs it — after the shell is up.
+          */}
+          {/*
+            Runs before first paint so a device-tier dark pin is not a light
+            flash. Logic lives in `bootThemeScript` / `parseBootPrefsThemeMode`.
+          */}
+          <script>{bootThemeScript()}</script>
           {assets}
         </head>
         <body>
-          <div id="app">{children}</div>
+          {/*
+            Static boot splash (no SSR): Go serves this HTML as-is. Solid's
+            client mount replaces `#app` contents. Copy comes from
+            `~/lib/bootSplashTheme` — same module as `BootSplash`.
+          */}
+          <div id="app">
+            <div
+              id="boot-splash"
+              data-testid={BOOT_SPLASH_TEST_ID}
+              role="status"
+              aria-live="polite"
+            >
+              <img
+                src={BOOT_SPLASH_ICON_SRC}
+                width={BOOT_SPLASH_ICON_WIDTH}
+                height={BOOT_SPLASH_ICON_HEIGHT}
+                alt=""
+              />
+              <p>{BOOT_SPLASH_LABEL}</p>
+            </div>
+            {children}
+          </div>
           {scripts}
         </body>
       </html>
