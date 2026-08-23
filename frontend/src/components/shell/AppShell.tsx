@@ -196,6 +196,7 @@ export const AppShell: Component = () => {
   const workerSection = useWorkerSection({
     getUserId: () => userId(),
     keyPinConfirmDialog,
+    clearRepoGitForWorker: workerId => repoGitStore.clearForWorker(workerId),
   })
 
   // Tell the channel manager who this page thinks it is, so an open the Hub

@@ -283,13 +283,12 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 			Files:    files,
 			Status:   status,
 		}
+		// Path-info already succeeded, so ErrorHint is empty here. Set it only
+		// when porcelain failed; never concatenate onto an existing hint (the
+		// non-repo early return owns that field alone).
 		if filesErr != nil {
 			if hint := filesErr.Error(); hint != "" {
-				if resp.ErrorHint != "" {
-					resp.ErrorHint = resp.ErrorHint + ": " + hint
-				} else {
-					resp.ErrorHint = hint
-				}
+				resp.ErrorHint = hint
 			}
 		}
 		sendProtoResponse(sender, resp)

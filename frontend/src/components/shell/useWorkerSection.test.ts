@@ -1,13 +1,18 @@
 /// <reference types="vitest/globals" />
-import { createRoot } from 'solid-js'
+import { createComponent, createRoot } from 'solid-js'
+import { render } from 'solid-js/web'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { HubControlEvent } from '~/generated/leapmux/v1/channel_pb'
 import { createDialogState } from '~/hooks/createDialogState'
 import { useWorkerSection } from './useWorkerSection'
 
 const mockListWorkers = vi.fn()
+const mockDeregisterWorker = vi.fn()
 vi.mock('~/api/clients', () => ({
-  workerClient: { listWorkers: (...a: unknown[]) => mockListWorkers(...a) },
+  workerClient: {
+    listWorkers: (...a: unknown[]) => mockListWorkers(...a),
+    deregisterWorker: (...a: unknown[]) => mockDeregisterWorker(...a),
+  },
 }))
 
 const hubControlHandlers: Array<(frame: { events: HubControlEvent[] }) => void> = []
@@ -61,6 +66,8 @@ beforeEach(() => {
   hubControlHandlers.length = 0
   mockListWorkers.mockReset()
   mockListWorkers.mockResolvedValue({ workers: [worker('w1')] })
+  mockDeregisterWorker.mockReset()
+  mockDeregisterWorker.mockResolvedValue({})
   mockFetchWorkerInfo.mockReset()
   mockSetConfirmKeyPin.mockReset()
   mockUnregisterKeyPin.mockReset()
@@ -72,8 +79,11 @@ beforeEach(() => {
  * testable on its own, which it was not while it lived inline.
  */
 describe('useWorkerSection', () => {
-  function mount(getUserId: () => string = () => 'u1') {
-    return useWorkerSection({ getUserId, keyPinConfirmDialog: createDialogState() })
+  function mount(
+    getUserId: () => string = () => 'u1',
+    clearRepoGitForWorker?: (workerId: string) => void,
+  ) {
+    return useWorkerSection({ getUserId, keyPinConfirmDialog: createDialogState(), clearRepoGitForWorker })
   }
 
   it('fetches workers once the user id is known', async () => {
@@ -186,6 +196,31 @@ describe('useWorkerSection', () => {
       const s = mount()
       await flush()
       expect(s.workers()).toEqual([])
+      dispose()
+    })
+  })
+
+  it('clears keyed git state when a worker is deregistered', async () => {
+    await createRoot(async (dispose) => {
+      const clearRepoGitForWorker = vi.fn()
+      const s = mount(() => 'u1', clearRepoGitForWorker)
+      await flush()
+
+      s.openWorkerSettings(worker('w1') as never)
+      const host = document.createElement('div')
+      document.body.appendChild(host)
+      const unmount = render(() => createComponent(s.Dialogs, {}), host)
+      await flush()
+
+      host.querySelector<HTMLButtonElement>('[data-testid="deregister-confirm"]')!.click()
+      await flush()
+
+      expect(mockDeregisterWorker).toHaveBeenCalledWith({ workerId: 'w1' })
+      expect(clearRepoGitForWorker).toHaveBeenCalledWith('w1')
+      expect(s.workers().map(w => w.id)).toEqual([])
+
+      unmount()
+      host.remove()
       dispose()
     })
   })

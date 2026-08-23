@@ -807,7 +807,7 @@ export function handleAgentStatusChange(
 /**
  * Everything a status push writes onto an agent's tab row.
  */
-export function applyAgentStatusTabUpdate(
+function applyAgentStatusTabUpdate(
   sc: AgentStatusChange,
   stores: Pick<AgentMessageStores, 'chatStore' | 'view' | 'metadata'> & { repoGitStore: ReturnType<typeof createRepoGitStore> },
   settingsLoading: ReturnType<typeof createLoadingSignal>,

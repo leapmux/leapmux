@@ -3,9 +3,11 @@ import { createRoot } from 'solid-js'
 import { describe, expect, it } from 'vitest'
 import { AgentStatus } from '~/generated/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
-import { applyAgentStatusTabUpdate } from '~/hooks/agentEvents'
+import { handleAgentStatusChange } from '~/hooks/agentEvents'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
+import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore } from '~/stores/chat.store'
+import { createControlStore } from '~/stores/control.store'
 import { repoKey } from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 import { emitAddTab } from '~/stores/tabOps'
@@ -24,16 +26,50 @@ function statusChange(overrides: Partial<AgentStatusChange> & { agentId: string 
   } as AgentStatusChange
 }
 
-describe('applyAgentStatusTabUpdate repo git wiring', () => {
+function runStatus(
+  agentId: string,
+  sc: AgentStatusChange,
+  stores: {
+    chatStore: ReturnType<typeof createChatStore>
+    view: ReturnType<typeof createTestTabStores>['view']
+    metadata: ReturnType<typeof createTestTabStores>['metadata']
+    selection: ReturnType<typeof createTestTabStores>['selection']
+    repoGitStore: ReturnType<typeof createRepoGitStore>
+  },
+  streamWorkerId = '',
+) {
+  handleAgentStatusChange(
+    agentId,
+    sc,
+    'live',
+    {
+      chatStore: stores.chatStore,
+      view: stores.view,
+      metadata: stores.metadata,
+      selection: stores.selection,
+      getActiveWorkspaceId: () => WS,
+      controlStore: createControlStore(),
+      agentSessionStore: createAgentSessionStore(),
+      repoGitStore: stores.repoGitStore,
+    },
+    createLoadingSignal(),
+    () => {},
+    undefined,
+    streamWorkerId,
+  )
+}
+
+describe('handleAgentStatusChange repo git wiring', () => {
   it('upserts git status from a status broadcast into the repo-keyed store', () => {
     createRoot((dispose) => {
       const harness = installTestBridge({ workspaceId: WS })
-      const { view, metadata } = createTestTabStores(WS)
+      const { view, metadata, selection } = createTestTabStores(WS)
       emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '0', workerId: 'w1' })
       const repoGitStore = createRepoGitStore()
       const chatStore = createChatStore()
 
-      applyAgentStatusTabUpdate(
+      runStatus(
+        'a1',
         statusChange({
           agentId: 'a1',
           gitStatus: {
@@ -43,8 +79,7 @@ describe('applyAgentStatusTabUpdate repo git wiring', () => {
             isWorktree: true,
           } as never,
         }),
-        { chatStore, view, metadata, repoGitStore },
-        createLoadingSignal(),
+        { chatStore, view, metadata, selection, repoGitStore },
       )
 
       const state = repoGitStore.get(repoKey('w1', '/repo'))
@@ -61,17 +96,16 @@ describe('applyAgentStatusTabUpdate repo git wiring', () => {
     createRoot((dispose) => {
       const repoGitStore = createRepoGitStore()
       const chatStore = createChatStore()
-      const harness = installTestBridge({ workspaceId: WS })
-      const { view, metadata } = createTestTabStores(WS)
-      void harness
+      installTestBridge({ workspaceId: WS })
+      const { view, metadata, selection } = createTestTabStores(WS)
 
-      applyAgentStatusTabUpdate(
+      runStatus(
+        'unjoined',
         statusChange({
           agentId: 'unjoined',
           gitStatus: { toplevel: '/repo', branch: 'main' } as never,
         }),
-        { chatStore, view, metadata, repoGitStore },
-        createLoadingSignal(),
+        { chatStore, view, metadata, selection, repoGitStore },
         'w-stream',
       )
 
@@ -83,7 +117,7 @@ describe('applyAgentStatusTabUpdate repo git wiring', () => {
   it('migrates a probe-path orphan when toplevel resolves', () => {
     createRoot((dispose) => {
       const harness = installTestBridge({ workspaceId: WS })
-      const { view, metadata } = createTestTabStores(WS)
+      const { view, metadata, selection } = createTestTabStores(WS)
       emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '0', workerId: 'w1' })
       metadata.patch('a1', { workingDir: '/repo/pkg' })
       const repoGitStore = createRepoGitStore()
@@ -95,13 +129,13 @@ describe('applyAgentStatusTabUpdate repo git wiring', () => {
         gitStatusSeen: true,
       })
 
-      applyAgentStatusTabUpdate(
+      runStatus(
+        'a1',
         statusChange({
           agentId: 'a1',
           gitStatus: { toplevel: '/repo', branch: 'main' } as never,
         }),
-        { chatStore, view, metadata, repoGitStore },
-        createLoadingSignal(),
+        { chatStore, view, metadata, selection, repoGitStore },
       )
 
       expect(repoGitStore.get(orphanKey)).toBeUndefined()
@@ -113,7 +147,7 @@ describe('applyAgentStatusTabUpdate repo git wiring', () => {
   it('keeps a stamped branch when metadata broadcasts a different branch', () => {
     createRoot((dispose) => {
       const harness = installTestBridge({ workspaceId: WS })
-      const { view, metadata } = createTestTabStores(WS)
+      const { view, metadata, selection } = createTestTabStores(WS)
       emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '0', workerId: 'w1' })
       const repoGitStore = createRepoGitStore()
       const chatStore = createChatStore()
@@ -124,13 +158,13 @@ describe('applyAgentStatusTabUpdate repo git wiring', () => {
         branchPinnedUntilRefresh: true,
       })
 
-      applyAgentStatusTabUpdate(
+      runStatus(
+        'a1',
         statusChange({
           agentId: 'a1',
           gitStatus: { toplevel: '/repo', branch: 'other' } as never,
         }),
-        { chatStore, view, metadata, repoGitStore },
-        createLoadingSignal(),
+        { chatStore, view, metadata, selection, repoGitStore },
       )
 
       expect(repoGitStore.get(repoKey('w1', '/repo'))?.branch).toBe('stamped')
