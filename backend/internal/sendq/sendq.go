@@ -778,10 +778,15 @@ func (w *Writer[T]) signalDrained() {
 //
 // Returns nil only when the queue is idle (empty and not writing) while the
 // writer is still open. Returns ErrClosed if the writer closed or gave up --
-// including when Close discarded queued frames -- so a caller that needs
-// "reached the wire" (shutdown notify) cannot mistakingly treat a discard as
-// success. Returns ctx.Err / the writer's context error when the wait was cut
-// short while frames were still drainable.
+// including when Close discarded queued frames, and when a refused or
+// panicking Write latched the writer torn down -- so a caller that needs
+// "reached the wire" (shutdown notify) cannot mistakingly treat a failed
+// delivery as success.
+//
+// Returns ctx.Err / the writer's context error only when the wait was cut
+// short while the writer was still open and able to deliver. If a cancel
+// races a give-up or close, Flush prefers ErrClosed: the frame did not
+// reach the wire, regardless of which deadline fired first.
 //
 // A refused or panicking Write latches the writer closed before finishWrite
 // clears the in-flight flag, so Flush cannot observe idle+open after the
@@ -813,36 +818,24 @@ func (w *Writer[T]) Flush(ctx context.Context) error {
 		select {
 		case <-drained:
 		case <-ctx.Done():
-			// Give-up may have raced the caller's budget; prefer ErrClosed when
-			// the writer is already idle and torn down.
 			w.mu.Lock()
-			idle = len(w.queue) == 0 && !w.writing
 			tornDown = w.closed || w.gaveUp
 			w.mu.Unlock()
-			if idle && tornDown {
+			if tornDown {
 				return ErrClosed
 			}
 			return ctx.Err()
 		case <-w.ctx.Done():
-			// OnGiveUp often Fences (cancels w.ctx) before finishWrite clears
-			// writing. Do not return that cancel while a give-up is still
-			// finishing the refused frame -- wait for idle, then ErrClosed.
+			// OnGiveUp often Fences (cancels w.ctx) during give-up. Prefer
+			// ErrClosed whenever the writer is already torn down, whether or
+			// not finishWrite has cleared writing yet.
 			w.mu.Lock()
-			idle = len(w.queue) == 0 && !w.writing
 			tornDown = w.closed || w.gaveUp
-			drained = w.drained
 			w.mu.Unlock()
-			if !tornDown {
-				return w.ctx.Err()
-			}
-			if idle {
+			if tornDown {
 				return ErrClosed
 			}
-			select {
-			case <-drained:
-			case <-ctx.Done():
-				return ctx.Err()
-			}
+			return w.ctx.Err()
 		}
 	}
 }

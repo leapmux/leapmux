@@ -247,12 +247,15 @@ func (c *Conn) SendControl(msg *leapmuxv1.ConnectResponse) error {
 // tore down before delivery -- not success.
 //
 // A write-error give-up Fences this conn (OnGiveUp), which cancels the writer
-// context Flush may be selecting on. That cancel is mapped to
-// ErrConnectionClosed when GaveUp is set, so callers do not see a bare
-// context.Canceled for a Hub-side reclaim.
+// context Flush may be selecting on. sendq usually returns ErrClosed once
+// torn down; if Flush still surfaces that cancel/deadline, map it to
+// ErrConnectionClosed only when GaveUp is set -- not every error.
 func (c *Conn) Flush(ctx context.Context) error {
 	if err := c.q.Flush(ctx); err != nil {
-		if errors.Is(err, sendq.ErrClosed) || c.GaveUp() {
+		if errors.Is(err, sendq.ErrClosed) {
+			return ErrConnectionClosed
+		}
+		if c.GaveUp() && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 			return ErrConnectionClosed
 		}
 		return err

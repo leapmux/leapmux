@@ -1076,6 +1076,61 @@ func TestWriterFlushReturnsErrClosedWhenWritePanics(t *testing.T) {
 	assert.True(t, w.IsClosed(), "panic must latch closed so Flush sees torn-down")
 }
 
+// OnGiveUp often cancels the writer context (Conn.Fence). Flush must still
+// report ErrClosed for the refused write, not the cancel that teardown used.
+func TestWriterFlushReturnsErrClosedWhenGiveUpCancelsWriterCtx(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	release := make(chan struct{})
+	var writeStarted sync.WaitGroup
+	writeStarted.Add(1)
+	w := NewUnstarted(ctx, Config[string]{
+		Write: func(context.Context, string) error {
+			writeStarted.Done()
+			<-release
+			return errors.New("connection reset")
+		},
+		Size:     func(s string) int { return len(s) },
+		MaxBytes: 1024,
+		OnGiveUp: func(GiveUpReason, error) {
+			cancel()
+		},
+	})
+	t.Cleanup(w.Close)
+
+	go func() {
+		for {
+			select {
+			case <-w.Wake():
+				_ = w.Drain()
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	require.True(t, w.TryEnqueueControl("frame"))
+	writeStarted.Wait()
+
+	flushed := make(chan error, 1)
+	fctx, fcancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer fcancel()
+	go func() { flushed <- w.Flush(fctx) }()
+	close(release)
+
+	select {
+	case err := <-flushed:
+		require.ErrorIs(t, err, ErrClosed,
+			"Flush must prefer ErrClosed over the OnGiveUp writer-ctx cancel")
+		assert.NotErrorIs(t, err, context.Canceled)
+	case <-time.After(3 * time.Second):
+		t.Fatal("Flush never returned after the write failed")
+	}
+	assert.True(t, w.GaveUp())
+}
+
 func TestWriterFlushReturnsErrClosedWhenQueueWasDiscarded(t *testing.T) {
 	t.Parallel()
 	w := NewUnstarted(context.Background(), Config[string]{
