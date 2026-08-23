@@ -574,7 +574,8 @@ func TestClassifyNotifyErr(t *testing.T) {
 		require.NoError(t, conn.SendControl(&leapmuxv1.ConnectResponse{}))
 		ctx, cancel := boundedNotifyCtx(t)
 		defer cancel()
-		_ = conn.Flush(ctx)
+		require.ErrorIs(t, conn.Flush(ctx), ErrConnectionClosed,
+			"Flush must surface the write failure; nil here is the sendq race that mis-counts Delivered")
 		require.True(t, conn.GaveUp(), "fixture must model a queue the Hub gave up on")
 		return conn
 	}

@@ -3,6 +3,7 @@ package workermgr
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -384,6 +385,50 @@ func TestConnFlushReturnsErrConnectionClosedAfterDiscard(t *testing.T) {
 	defer flushCancel()
 	assert.ErrorIs(t, conn.Flush(flushCtx), ErrConnectionClosed,
 		"Flush must map a discarded queue to ErrConnectionClosed, not success")
+}
+
+func TestConnFlushReturnsErrConnectionClosedOnWriteError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	release := make(chan struct{})
+	var writeStarted sync.WaitGroup
+	writeStarted.Add(1)
+	conn, pump := NewConn(ctx, cancel, "w1", "u1", sendq.NewMaxBytesPoolForTest(), func(*leapmuxv1.ConnectResponse) error {
+		writeStarted.Done()
+		<-release
+		return fmt.Errorf("connection reset")
+	}, nil)
+	t.Cleanup(conn.Fence)
+
+	go func() {
+		for {
+			select {
+			case <-pump.Ready():
+				_ = pump.Drain()
+			case <-conn.Done():
+				return
+			}
+		}
+	}()
+
+	require.NoError(t, conn.SendControl(&leapmuxv1.ConnectResponse{
+		Payload: &leapmuxv1.ConnectResponse_Heartbeat{Heartbeat: &leapmuxv1.Heartbeat{}},
+	}))
+	writeStarted.Wait()
+
+	flushed := make(chan error, 1)
+	flushCtx, flushCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer flushCancel()
+	go func() { flushed <- conn.Flush(flushCtx) }()
+	close(release)
+
+	select {
+	case err := <-flushed:
+		require.ErrorIs(t, err, ErrConnectionClosed,
+			"Flush must map a refused write to ErrConnectionClosed, not success")
+	case <-time.After(3 * time.Second):
+		t.Fatal("Flush never returned after the write failed")
+	}
+	assert.True(t, conn.GaveUp())
 }
 
 func TestSendPumpDrainTurnBoundsBatchAndResignals(t *testing.T) {

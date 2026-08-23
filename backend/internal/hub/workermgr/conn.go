@@ -245,9 +245,14 @@ func (c *Conn) SendControl(msg *leapmuxv1.ConnectResponse) error {
 // Its only escape besides a drain is the caller's deadline or a fence; every
 // caller MUST pass a bounded context. ErrConnectionClosed means the queue
 // tore down before delivery -- not success.
+//
+// A write-error give-up Fences this conn (OnGiveUp), which cancels the writer
+// context Flush may be selecting on. That cancel is mapped to
+// ErrConnectionClosed when GaveUp is set, so callers do not see a bare
+// context.Canceled for a Hub-side reclaim.
 func (c *Conn) Flush(ctx context.Context) error {
 	if err := c.q.Flush(ctx); err != nil {
-		if errors.Is(err, sendq.ErrClosed) {
+		if errors.Is(err, sendq.ErrClosed) || c.GaveUp() {
 			return ErrConnectionClosed
 		}
 		return err
