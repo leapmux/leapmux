@@ -64,6 +64,10 @@ type testSink struct {
 	childIDVal  string
 	// bgTasks records the latest registry state per row key (owner == this sink).
 	bgTasks map[string]bgtask.Item
+	// bgTaskStatuses records every status write per row key, in order. A
+	// fast-exiting shell can Close before a test reads bgTasks, so the trail
+	// is the only way to prove Running landed first.
+	bgTaskStatuses map[string][]bgtask.Status
 	// revivedTasks records every row key ReviveBackgroundTask actually reopened,
 	// in order. The effect alone cannot prove the call: a revive leaves the row
 	// running, which is also how it looked before it ever finished.
@@ -542,7 +546,15 @@ func (s *testSink) UpsertBackgroundTask(task bgtask.Upsert) error {
 		item.EndedAt = testFakeEndedAt
 	}
 	s.bgTasks[task.RowKey] = item
+	s.recordBgTaskStatusLocked(task.RowKey, item.Status)
 	return nil
+}
+
+func (s *testSink) recordBgTaskStatusLocked(rowKey string, status bgtask.Status) {
+	if s.bgTaskStatuses == nil {
+		s.bgTaskStatuses = make(map[string][]bgtask.Status)
+	}
+	s.bgTaskStatuses[rowKey] = append(s.bgTaskStatuses[rowKey], status)
 }
 
 func (s *testSink) UpdateBackgroundTaskStatus(rowKey string, status bgtask.Status, activeForm string) error {
@@ -561,6 +573,7 @@ func (s *testSink) UpdateBackgroundTaskStatus(rowKey string, status bgtask.Statu
 		item.Status = status
 		item.ActiveForm = activeForm
 		s.bgTasks[rowKey] = item
+		s.recordBgTaskStatusLocked(rowKey, status)
 	}
 	return nil
 }
@@ -578,6 +591,7 @@ func (s *testSink) CloseBackgroundTask(rowKey string, status bgtask.Status) erro
 		item.Status = status
 		item.EndedAt = testFakeEndedAt
 		s.bgTasks[rowKey] = item
+		s.recordBgTaskStatusLocked(rowKey, status)
 	}
 	return nil
 }
@@ -620,6 +634,7 @@ func (s *testSink) ReviveBackgroundTask(rowKey string) error {
 	item.Description = ""
 	item.EndedAt = time.Time{}
 	s.bgTasks[rowKey] = item
+	s.recordBgTaskStatusLocked(rowKey, item.Status)
 	s.revivedTasks = append(s.revivedTasks, rowKey)
 	return nil
 }
