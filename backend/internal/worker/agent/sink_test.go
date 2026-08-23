@@ -64,9 +64,11 @@ type testSink struct {
 	childIDVal  string
 	// bgTasks records the latest registry state per row key (owner == this sink).
 	bgTasks map[string]bgtask.Item
-	// bgTaskStatuses records every status write per row key, in order. A
-	// fast-exiting shell can Close before a test reads bgTasks, so the trail
-	// is the only way to prove Running landed first.
+	// bgTaskStatuses records distinct status values per row key, in order.
+	// A fast-exiting shell can Close before a test reads bgTasks, so the
+	// trail is the only way to prove Running landed first. Duplicate writes
+	// (no-op upsert, absorbed reject) are skipped so length asserts stay
+	// meaningful.
 	bgTaskStatuses map[string][]bgtask.Status
 	// revivedTasks records every row key ReviveBackgroundTask actually reopened,
 	// in order. The effect alone cannot prove the call: a revive leaves the row
@@ -554,7 +556,11 @@ func (s *testSink) recordBgTaskStatusLocked(rowKey string, status bgtask.Status)
 	if s.bgTaskStatuses == nil {
 		s.bgTaskStatuses = make(map[string][]bgtask.Status)
 	}
-	s.bgTaskStatuses[rowKey] = append(s.bgTaskStatuses[rowKey], status)
+	log := s.bgTaskStatuses[rowKey]
+	if len(log) > 0 && log[len(log)-1] == status {
+		return
+	}
+	s.bgTaskStatuses[rowKey] = append(log, status)
 }
 
 func (s *testSink) UpdateBackgroundTaskStatus(rowKey string, status bgtask.Status, activeForm string) error {
