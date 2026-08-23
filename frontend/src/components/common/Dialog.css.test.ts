@@ -37,7 +37,7 @@ function standardModalBlock(): string {
 }
 
 describe('dialog safe-area insets (Dialog.css.ts)', () => {
-  it('defines each inset as env() with a test-only CSS-variable override', () => {
+  it('defines each inset as env() with an optional CSS-variable override', () => {
     for (const inset of [
       'safe-area-inset-top',
       'safe-area-inset-right',
