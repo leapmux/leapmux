@@ -130,6 +130,7 @@ async function readDialogGeometry(page: import('@playwright/test').Page) {
         bottom: d.bottom,
         left: d.left,
         width: d.width,
+        height: d.height,
       },
       close: { top: c.top, right: c.right, bottom: c.bottom, left: c.left },
       computed: {
