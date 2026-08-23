@@ -8,10 +8,10 @@ import { breakpoints, motion } from '~/styles/tokens'
 // status bar / Dynamic Island / notch / home indicator / display cutout, and
 // 0px on ordinary desktop browsers.
 //
-// `--leapmux-safe-area-inset-*` is a test-only override: desktop Chromium
-// always reports env() as 0px, so the geometry e2e sets these custom
-// properties to iPhone-like values. Production leaves them unset, so env()
-// wins.
+// `--leapmux-safe-area-inset-*` is an optional override (manual DevTools /
+// ad-hoc probes). The geometry e2e injects real `env()` values via CDP
+// `Emulation.setSafeAreaInsetsOverride` instead, so production leaves these
+// custom properties unset and `env()` wins.
 const SAFE_TOP = 'var(--leapmux-safe-area-inset-top, env(safe-area-inset-top, 0px))'
 const SAFE_RIGHT = 'var(--leapmux-safe-area-inset-right, env(safe-area-inset-right, 0px))'
 const SAFE_BOTTOM = 'var(--leapmux-safe-area-inset-bottom, env(safe-area-inset-bottom, 0px))'

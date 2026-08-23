@@ -4,10 +4,12 @@ import { openPreferencesDialog } from './helpers/ui'
 /**
  * Runtime geometry for modal safe-area insets.
  *
- * Desktop Chromium always reports `env(safe-area-inset-*)` as 0, so these
- * specs set the `--leapmux-safe-area-inset-*` bridges from Dialog.css.ts and
- * assert the open panel and its close button clear those insets. No
- * screenshots — bounding boxes only.
+ * Desktop Chromium reports `env(safe-area-inset-*)` as 0 by default. These
+ * specs inject real device insets via the experimental CDP command
+ * `Emulation.setSafeAreaInsetsOverride`, which overrides Blink's CSS
+ * environment variables (the same `env()` path production uses) — not a
+ * custom-property shim. Chromium-only; this suite's Playwright project is
+ * chromium. No screenshots — bounding boxes only.
  *
  * Coverage:
  *   - Portrait (standard): status bar + home indicator (top/bottom).
@@ -54,19 +56,25 @@ const ZERO_INSETS: SafeInsets = {
   left: 0,
 }
 
+/**
+ * Inject real `env(safe-area-inset-*)` values through CDP.
+ *
+ * Pass every edge, including 0: an omitted key makes that variable undefined
+ * even if a previous override set it
+ * (https://chromedevtools.github.io/devtools-protocol/tot/Emulation/#method-setSafeAreaInsetsOverride).
+ */
 async function applySimulatedSafeArea(
   page: import('@playwright/test').Page,
   insets: SafeInsets,
 ) {
-  await page.addStyleTag({
-    content: `
-      :root {
-        --leapmux-safe-area-inset-top: ${insets.top}px;
-        --leapmux-safe-area-inset-right: ${insets.right}px;
-        --leapmux-safe-area-inset-bottom: ${insets.bottom}px;
-        --leapmux-safe-area-inset-left: ${insets.left}px;
-      }
-    `,
+  const session = await page.context().newCDPSession(page)
+  await session.send('Emulation.setSafeAreaInsetsOverride', {
+    insets: {
+      top: insets.top,
+      right: insets.right,
+      bottom: insets.bottom,
+      left: insets.left,
+    },
   })
 }
 
@@ -138,7 +146,7 @@ function assertClearsSafeArea(
   g: NonNullable<Awaited<ReturnType<typeof readDialogGeometry>>>,
   insets: SafeInsets,
 ) {
-  // Computed style must resolve the test bridges (not stay at UA inset:0).
+  // Computed style must resolve CDP-injected env() (not stay at UA inset:0).
   expect(g.computed.top).toBe(`${insets.top}px`)
   expect(g.computed.right).toBe(`${insets.right}px`)
   expect(g.computed.bottom).toBe(`${insets.bottom}px`)
