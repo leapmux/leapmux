@@ -350,7 +350,7 @@ func TestMergeGitFileStatusFromPathInfo_NilStatusBackfillsIdentity(t *testing.T)
 	info, err := queryGitPathInfo(context.Background(), dir)
 	require.NoError(t, err)
 
-	merged := mergeGitFileStatusFromPathInfo(nil, info, context.Background(), dir)
+	merged := mergeGitFileStatusFromPathInfo(nil, info, strings.TrimSpace(gitutil.GetOriginURL(context.Background(), dir)))
 
 	assert.Equal(t, "feature-backfill", merged.GetBranch())
 	assert.Equal(t, "https://github.com/test/repo.git", merged.GetOriginUrl())
@@ -377,7 +377,7 @@ func TestMergeGitFileStatusFromPathInfo_CorrectsWorktreeDisposition(t *testing.T
 
 	// Simulate GetGitStatus wrongly reporting worktree on a main-tree probe.
 	wrongMain := &leapmuxv1.GitRepoStatus{IsWorktree: true, Branch: "stale"}
-	mergedMain := mergeGitFileStatusFromPathInfo(wrongMain, mainInfo, context.Background(), repoDir)
+	mergedMain := mergeGitFileStatusFromPathInfo(wrongMain, mainInfo, "")
 	assert.False(t, mergedMain.GetIsWorktree(),
 		"path-info must override a false-positive IsWorktree from GetGitStatus")
 	assert.Equal(t, branchOrShortSHA(mainInfo), mergedMain.GetBranch(),
@@ -385,7 +385,7 @@ func TestMergeGitFileStatusFromPathInfo_CorrectsWorktreeDisposition(t *testing.T
 
 	// Simulate GetGitStatus omitting worktree on a linked-worktree probe.
 	wrongWt := &leapmuxv1.GitRepoStatus{Branch: "stale"}
-	mergedWt := mergeGitFileStatusFromPathInfo(wrongWt, wtInfo, context.Background(), wtDir)
+	mergedWt := mergeGitFileStatusFromPathInfo(wrongWt, wtInfo, "")
 	assert.True(t, mergedWt.GetIsWorktree(),
 		"path-info must set IsWorktree when GetGitStatus omitted it")
 	assert.Equal(t, "wt-merge", mergedWt.GetBranch(),
@@ -405,7 +405,7 @@ func TestMergeGitFileStatusFromPathInfo_DoesNotMutateInput(t *testing.T) {
 		Behind:   1,
 		Modified: true,
 	}
-	merged := mergeGitFileStatusFromPathInfo(input, info, context.Background(), dir)
+	merged := mergeGitFileStatusFromPathInfo(input, info, "")
 
 	assert.Equal(t, "stale", input.GetBranch(), "merge must not mutate the caller's status pointer")
 	assert.True(t, input.GetModified(), "porcelain flags on the input must survive")
@@ -428,7 +428,7 @@ func TestMergeGitFileStatusFromPathInfo_CorrectsStaleOriginUrl(t *testing.T) {
 		OriginUrl: "https://github.com/test/stale.git",
 		Branch:    "stale",
 	}
-	merged := mergeGitFileStatusFromPathInfo(stale, info, context.Background(), dir)
+	merged := mergeGitFileStatusFromPathInfo(stale, info, strings.TrimSpace(gitutil.GetOriginURL(context.Background(), dir)))
 
 	assert.Equal(t, "https://github.com/test/stale.git", stale.GetOriginUrl(),
 		"merge must not mutate the caller's origin_url")

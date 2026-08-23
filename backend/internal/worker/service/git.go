@@ -217,6 +217,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 			infoErr   error
 			files     []*leapmuxv1.GitFileStatusEntry
 			gitStatus *leapmuxv1.GitRepoStatus
+			originURL string
 		)
 		g, gctx := errgroup.WithContext(ctx)
 		g.Go(func() error {
@@ -232,6 +233,10 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 		})
 		g.Go(func() error {
 			gitStatus = gitFileStatusProbe.status(gctx, dirPath)
+			return nil
+		})
+		g.Go(func() error {
+			originURL = gitutil.GetOriginURL(gctx, dirPath)
 			return nil
 		})
 		_ = g.Wait()
@@ -272,7 +277,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 		// worktree / toplevel from path-info so a partial probe cannot wipe
 		// good frontend store state. Always canonicalize toplevel the same
 		// way as repo_root so repo keys do not split on /var vs /private/var.
-		status := mergeGitFileStatusFromPathInfo(gitStatus, info, ctx, dirPath)
+		status := mergeGitFileStatusFromPathInfo(gitStatus, info, originURL)
 		sendProtoResponse(sender, &leapmuxv1.GetGitFileStatusResponse{
 			RepoRoot: pathutil.NormalizeNative(info.RepoRoot),
 			Files:    files,
@@ -3197,8 +3202,7 @@ func parseGitPathInfoOutput(output string, hasHeadFields bool) (*gitPathInfo, er
 func mergeGitFileStatusFromPathInfo(
 	status *leapmuxv1.GitRepoStatus,
 	info *gitPathInfo,
-	ctx context.Context,
-	dirPath string,
+	originURL string,
 ) *leapmuxv1.GitRepoStatus {
 	if status == nil {
 		status = &leapmuxv1.GitRepoStatus{}
@@ -3207,7 +3211,7 @@ func mergeGitFileStatusFromPathInfo(
 	}
 	status.Toplevel = pathutil.NormalizeNative(pathutil.Canonicalize(info.TopLevel))
 	status.Branch = branchOrShortSHA(info)
-	status.OriginUrl = strings.TrimSpace(gitutil.GetOriginURL(ctx, dirPath))
+	status.OriginUrl = strings.TrimSpace(originURL)
 	status.IsWorktree = info.IsWorktree
 	return status
 }

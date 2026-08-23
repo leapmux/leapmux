@@ -123,9 +123,27 @@ export function createRepoGitStore() {
     return [...(workerKeys.get(workerId) ?? [])]
   }
 
+  const pruneCompletedIfIdle = (key: RepoKey) => {
+    const completed = lastCompletedByKey.get(key)
+    if (!completed || completed.keptPin || get(key)?.branchPinnedUntilRefresh)
+      return
+    for (const inflight of inflightByProbe.values()) {
+      if (inflight.gen < completed.gen)
+        return
+    }
+    lastCompletedByKey.delete(key)
+  }
+
   const dropCompletedKeepPinWhenUnpinned = (key: RepoKey) => {
     const completed = lastCompletedByKey.get(key)
     if (completed && !get(key)?.branchPinnedUntilRefresh)
+      completed.keptPin = false
+    pruneCompletedIfIdle(key)
+  }
+
+  const resetCompletedKeepPinForNewStamp = (key: RepoKey) => {
+    const completed = lastCompletedByKey.get(key)
+    if (completed)
       completed.keptPin = false
   }
 
@@ -144,6 +162,8 @@ export function createRepoGitStore() {
       setRepos(key, 'files', reconcile(files, { key: 'path' }))
     if ('branchPinnedUntilRefresh' in rest && rest.branchPinnedUntilRefresh === false)
       dropCompletedKeepPinWhenUnpinned(key)
+    if ('branchPinnedUntilRefresh' in rest && rest.branchPinnedUntilRefresh === true)
+      resetCompletedKeepPinForNewStamp(key)
   }
 
   /** Keys this refresh may have stamped a branch pin onto. */
@@ -326,6 +346,8 @@ export function createRepoGitStore() {
         inflightByProbe.delete(probeId)
       if (probeGen.get(probeId) === mine)
         probeGen.delete(probeId)
+      for (const key of myKeys)
+        pruneCompletedIfIdle(key)
     }
   }
 
