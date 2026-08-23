@@ -68,10 +68,14 @@ describe('dialog safe-area insets (Dialog.css.ts)', () => {
     // ceiling — a bare SAFE_MAX_WIDTH would erase it (this selector outranks
     // `.standard { maxWidth: 900px }`).
     expect(block).toMatch(/['"]maxWidth['"]\s*:\s*SAFE_MAX_WIDTH_STANDARD\b/)
-    expect(source).toContain('SAFE_MAX_WIDTH_STANDARD')
-    expect(source).toContain('SAFE_MAX_WIDTH_HUGE')
+    // Lock the full min(...) composition for both design ceilings. A bare
+    // SAFE_MAX_WIDTH (or min(1200px, 92vw) without the safe-area term) would
+    // either erase the design max or drop the notch cap.
     expect(source).toMatch(
       /SAFE_MAX_WIDTH_STANDARD\s*=\s*`min\(900px,\s*\$\{SAFE_MAX_WIDTH\}\)`/,
+    )
+    expect(source).toMatch(
+      /SAFE_MAX_WIDTH_HUGE\s*=\s*`min\(1200px,\s*92vw,\s*\$\{SAFE_MAX_WIDTH\}\)`/,
     )
   })
 
@@ -82,7 +86,7 @@ describe('dialog safe-area insets (Dialog.css.ts)', () => {
     // Huge must re-state its wider ceiling on :modal or SAFE_MAX_WIDTH_STANDARD
     // (900px) would clamp Preferences on desktop.
     expect(source).toMatch(
-      /dialog\.\$\{standard\}\.\$\{huge\}:modal[\s\S]*?SAFE_MAX_WIDTH_HUGE/,
+      /dialog\.\$\{standard\}\.\$\{huge\}:modal[\s\S]*?['"]maxWidth['"]\s*:\s*SAFE_MAX_WIDTH_HUGE\b/,
     )
   })
 })

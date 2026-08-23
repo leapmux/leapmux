@@ -1,4 +1,5 @@
 import { expect, test } from './fixtures'
+import { openPreferencesDialog } from './helpers/ui'
 
 /**
  * Runtime geometry for modal safe-area insets.
@@ -8,11 +9,15 @@ import { expect, test } from './fixtures'
  * assert the open panel and its close button clear those insets. No
  * screenshots — bounding boxes only.
  *
- * Two orientations:
- *   - Portrait: status bar + home indicator (top/bottom).
- *   - Landscape: notch on the right (the close button's side) so a missing
- *     right inset would put the close control under the notch. Width ≥ sm so
- *     this also covers the desktop-band dialog path.
+ * Coverage:
+ *   - Portrait (standard): status bar + home indicator (top/bottom).
+ *   - Landscape notch (standard): notch on the right (close button side);
+ *     width ≥ sm so the desktop-band dialog path applies.
+ *   - Landscape notch (huge / Preferences): same notch path for the wider
+ *     Preferences panel, which restates SAFE_MAX_WIDTH_HUGE on :modal.
+ *   - Zero-inset desktop (standard): design ceiling still caps width at 900px
+ *     when safe-area insets are 0 (SAFE_MAX_WIDTH_STANDARD must not become
+ *     a bare 100dvw).
  */
 
 interface SafeInsets {
@@ -40,6 +45,13 @@ const IPHONE_LANDSCAPE_NOTCH_RIGHT: SafeInsets = {
   right: 59,
   bottom: 21,
   left: 59,
+}
+
+const ZERO_INSETS: SafeInsets = {
+  top: 0,
+  right: 0,
+  bottom: 0,
+  left: 0,
 }
 
 async function applySimulatedSafeArea(
@@ -102,13 +114,20 @@ async function readDialogGeometry(page: import('@playwright/test').Page) {
     const c = close.getBoundingClientRect()
     const cs = getComputedStyle(dlg)
     return {
-      dialog: { top: d.top, right: d.right, bottom: d.bottom, left: d.left },
+      dialog: {
+        top: d.top,
+        right: d.right,
+        bottom: d.bottom,
+        left: d.left,
+        width: d.width,
+      },
       close: { top: c.top, right: c.right, bottom: c.bottom, left: c.left },
       computed: {
         top: cs.top,
         right: cs.right,
         bottom: cs.bottom,
         left: cs.left,
+        maxWidth: cs.maxWidth,
       },
       viewport: { w: window.innerWidth, h: window.innerHeight },
     }
@@ -178,5 +197,55 @@ test.describe('dialog safe-area geometry (landscape notch)', () => {
     expect(geometry!.close.right).toBeLessThanOrEqual(
       geometry!.viewport.w - IPHONE_LANDSCAPE_NOTCH_RIGHT.right + 1,
     )
+  })
+
+  test('Preferences (huge) panel and close button clear a right-side notch', async ({
+    page,
+    authenticatedWorkspace,
+  }) => {
+    void authenticatedWorkspace
+    await applySimulatedSafeArea(page, IPHONE_LANDSCAPE_NOTCH_RIGHT)
+    await openPreferencesDialog(page)
+
+    const geometry = await readDialogGeometry(page)
+    expect(geometry, 'open Preferences dialog + close button').not.toBeNull()
+    assertClearsSafeArea(geometry!, IPHONE_LANDSCAPE_NOTCH_RIGHT)
+
+    // Huge restates SAFE_MAX_WIDTH_HUGE on :modal; with 59px side insets the
+    // panel must still fit the safe rectangle (not bleed under the notch).
+    expect(geometry!.dialog.width).toBeLessThanOrEqual(
+      geometry!.viewport.w
+      - IPHONE_LANDSCAPE_NOTCH_RIGHT.left
+      - IPHONE_LANDSCAPE_NOTCH_RIGHT.right
+      + 1,
+    )
+    expect(geometry!.close.right).toBeLessThanOrEqual(
+      geometry!.viewport.w - IPHONE_LANDSCAPE_NOTCH_RIGHT.right + 1,
+    )
+  })
+})
+
+test.describe('dialog design max-width (zero safe-area insets)', () => {
+  // Wide desktop: without composition, SAFE_MAX_WIDTH alone is ~100dvw and
+  // would let a standard modal grow past the 900px design ceiling.
+  test.use({ viewport: { width: 1400, height: 900 } })
+
+  test('standard dialog width stays at or below 900px', async ({
+    page,
+    authenticatedWorkspace,
+  }) => {
+    void authenticatedWorkspace
+    await applySimulatedSafeArea(page, ZERO_INSETS)
+    await openNewWorkspaceDialog(page)
+
+    const geometry = await readDialogGeometry(page)
+    expect(geometry, 'open dialog + close button').not.toBeNull()
+    assertClearsSafeArea(geometry!, ZERO_INSETS)
+
+    expect(geometry!.dialog.width).toBeLessThanOrEqual(900 + 1)
+    // getComputedStyle resolves min(900px, calc(100dvw - 0 - 0)) to the used
+    // value. On a 1400px viewport that must be 900px — not ~1400px from a bare
+    // SAFE_MAX_WIDTH that replaced the design ceiling.
+    expect(geometry!.computed.maxWidth).toBe('900px')
   })
 })
