@@ -83,6 +83,9 @@ describe('bootSplashDocumentCss', () => {
     expect(css).toContain(`html[data-theme="dark"]`)
     expect(css).toContain(`[data-testid="${BOOT_SPLASH_TEST_ID}"]`)
     expect(css).toContain(`#${BOOT_SPLASH_STATIC_ID}[data-boot-failed]`)
+    expect(css).toContain('width:max-content')
+    expect(css).toContain('max-width:min(100%,20rem)')
+    expect(css).toContain('.boot-splash-error pre{margin:0 auto')
     expect(css).not.toContain('gap:1rem')
   })
 })
@@ -300,7 +303,9 @@ describe('bootFailureWatchdogScript', () => {
     expect(splash.getAttribute('data-boot-failed')).toBe('true')
     expect(splash.getAttribute('role')).toBe('alert')
     expect(splash.querySelector('[data-boot-fail-title]')?.textContent).toBe(BOOT_SPLASH_FAIL_TITLE)
-    expect(splash.querySelector('[data-boot-fail-detail]')?.textContent).toContain('entry.js')
+    expect(splash.querySelector('[data-boot-fail-detail]')?.textContent).toBe(
+      'Failed to load\nhttps://example.test/entry.js',
+    )
     expect(splash.querySelector('[data-boot-reload]')?.textContent).toBe(BOOT_SPLASH_RELOAD_LABEL)
     expect(splash.querySelector('.boot-splash-loading')?.hasAttribute('hidden')).toBe(true)
     expect(splash.querySelector('.boot-splash-error')?.hasAttribute('hidden')).toBe(false)
