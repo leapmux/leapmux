@@ -123,6 +123,11 @@ export function createRepoGitStore() {
     return [...(workerKeys.get(workerId) ?? [])]
   }
 
+  const dropCompletedGenWhenUnpinned = (key: RepoKey) => {
+    if (!get(key)?.branchPinnedUntilRefresh)
+      lastCompletedGenByKey.delete(key)
+  }
+
   const upsert = (key: RepoKey, patch: Partial<RepoGitState>) => {
     const prev = repos[key]
     const { files, ...rest } = patch
@@ -136,6 +141,8 @@ export function createRepoGitStore() {
     indexKey(key, workerId)
     if (files)
       setRepos(key, 'files', reconcile(files, { key: 'path' }))
+    if ('branchPinnedUntilRefresh' in rest && rest.branchPinnedUntilRefresh === false)
+      dropCompletedGenWhenUnpinned(key)
   }
 
   /** Keys this refresh may have stamped a branch pin onto. */
@@ -272,6 +279,11 @@ export function createRepoGitStore() {
             writtenKey = nonRepo.key
             recordCompletedApply(nonRepo.key)
           }
+          else {
+            const canonical = findCanonicalRepoKey(lookup, workerId, path)
+            if (canonical)
+              realignFocusedKeyAfterRefresh(canonical, workerId, path, nonRepoKey)
+          }
         }
         else if (hasHealthyRepoForProbe(lookup, workerId, path, nonRepoKey)) {
           log.warn('ignored non-repo git status response; keeping last-good repo state', { workerId, path })
@@ -281,8 +293,10 @@ export function createRepoGitStore() {
         realignFocusedKeyAfterRefresh(writtenKey, workerId, path, nonRepoKey)
         return writtenKey
       }
-      if (!canApplyToKey(mapped.key))
+      if (!canApplyToKey(mapped.key)) {
+        realignFocusedKeyAfterRefresh(mapped.key, workerId, path, nonRepoKey)
         return undefined
+      }
       writtenKey = applyFullGitStatusUpsert({ get, upsert }, mapped)
       recordCompletedApply(writtenKey)
       realignFocusedKeyAfterRefresh(writtenKey, workerId, path, nonRepoKey)

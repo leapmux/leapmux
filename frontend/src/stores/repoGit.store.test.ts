@@ -252,6 +252,42 @@ describe('createRepoGitStore', () => {
       })
     })
 
+    it('realigns focusedKey to canonical when a stale nested refresh is blocked', async () => {
+      await createRoot(async (dispose) => {
+        const store = createRepoGitStore()
+        const probeKey = repoKey('worker1', '/repo/pkg')
+        const canonicalKey = repoKey('worker1', '/repo')
+        store.setFocusedKey(probeKey)
+
+        let resolveNested!: (value: unknown) => void
+        const nestedRpc = new Promise((resolve) => {
+          resolveNested = resolve
+        })
+        mockGetGitFileStatus
+          .mockReturnValueOnce(nestedRpc)
+          .mockResolvedValueOnce({
+            repoRoot: '/repo',
+            status: { toplevel: '/repo', branch: 'from-toplevel' },
+            files: [{ path: 'toplevel.txt' }],
+          })
+
+        const nested = store.refresh('worker1', '/repo/pkg', { repoKey: probeKey })
+        await store.refresh('worker1', '/repo')
+        resolveNested({
+          repoRoot: '/repo',
+          status: { toplevel: '/repo', branch: 'from-nested-stale' },
+          files: [{ path: 'nested.txt' }],
+        })
+        await nested
+
+        expect(store.focusedKey()).toBe(canonicalKey)
+        expect(store.get(probeKey)).toBeUndefined()
+        expect(store.get(canonicalKey)?.branch).toBe('from-toplevel')
+
+        dispose()
+      })
+    })
+
     it('clears a branch pin when a same-path refresh cancels this one without a later keeper', async () => {
       await createRoot(async (dispose) => {
         const store = createRepoGitStore()
@@ -745,6 +781,35 @@ describe('createRepoGitStore', () => {
         await store.refresh('worker1', '/repo', { repoKey: key })
 
         expect(store.get(key)?.branchPinnedUntilRefresh).toBe(false)
+        dispose()
+      })
+    })
+
+    it('drops completed refresh gens when the branch pin clears', async () => {
+      await createRoot(async (dispose) => {
+        const store = createRepoGitStore()
+        const key = repoKey('worker1', '/repo')
+        store.upsert(key, {
+          workerId: 'worker1',
+          toplevel: '/repo',
+          branch: 'feature',
+          branchPinnedUntilRefresh: true,
+        })
+
+        mockGetGitFileStatus
+          .mockResolvedValueOnce({
+            repoRoot: '/repo',
+            status: { toplevel: '/repo', branch: 'feature' },
+            files: [],
+          })
+          .mockRejectedValueOnce(new Error('second failure'))
+
+        await store.refresh('worker1', '/repo', { repoKey: key })
+        expect(store.get(key)?.branchPinnedUntilRefresh).toBe(false)
+
+        await store.refresh('worker1', '/repo', { repoKey: key })
+        expect(store.get(key)?.branchPinnedUntilRefresh).toBe(false)
+
         dispose()
       })
     })

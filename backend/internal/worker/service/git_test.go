@@ -373,12 +373,70 @@ func TestMergeGitFileStatusFromPathInfo_CorrectsWorktreeDisposition(t *testing.T
 	mergedMain := mergeGitFileStatusFromPathInfo(wrongMain, mainInfo, context.Background(), repoDir)
 	assert.False(t, mergedMain.GetIsWorktree(),
 		"path-info must override a false-positive IsWorktree from GetGitStatus")
+	assert.Equal(t, branchOrShortSHA(mainInfo), mergedMain.GetBranch(),
+		"path-info must override a stale branch from GetGitStatus")
 
 	// Simulate GetGitStatus omitting worktree on a linked-worktree probe.
 	wrongWt := &leapmuxv1.GitRepoStatus{Branch: "stale"}
 	mergedWt := mergeGitFileStatusFromPathInfo(wrongWt, wtInfo, context.Background(), wtDir)
 	assert.True(t, mergedWt.GetIsWorktree(),
 		"path-info must set IsWorktree when GetGitStatus omitted it")
+	assert.Equal(t, "wt-merge", mergedWt.GetBranch(),
+		"path-info must override a stale branch on a worktree probe")
+}
+
+func TestMergeGitFileStatusFromPathInfo_DoesNotMutateInput(t *testing.T) {
+	t.Parallel()
+
+	dir := initRepo(t)
+	info, err := queryGitPathInfo(context.Background(), dir)
+	require.NoError(t, err)
+
+	input := &leapmuxv1.GitRepoStatus{
+		Branch:   "stale",
+		Ahead:    3,
+		Behind:   1,
+		Modified: true,
+	}
+	merged := mergeGitFileStatusFromPathInfo(input, info, context.Background(), dir)
+
+	assert.Equal(t, "stale", input.GetBranch(), "merge must not mutate the caller's status pointer")
+	assert.True(t, input.GetModified(), "porcelain flags on the input must survive")
+	assert.Equal(t, int32(3), input.GetAhead())
+	assert.Equal(t, branchOrShortSHA(info), merged.GetBranch())
+	assert.True(t, merged.GetModified())
+	assert.Equal(t, int32(3), merged.GetAhead())
+}
+
+func TestGetGitFileStatus_BackfillsIdentityWhenGetGitStatusNil(t *testing.T) {
+	t.Parallel()
+
+	prev := getGitStatusForFileStatus
+	t.Cleanup(func() { getGitStatusForFileStatus = prev })
+	getGitStatusForFileStatus = func(context.Context, string) *leapmuxv1.GitRepoStatus {
+		return nil
+	}
+
+	_, d, w := setupTestService(t)
+	dir := initRepo(t)
+	run(t, dir, "git", "remote", "add", "origin", "https://github.com/test/nil-status.git")
+	run(t, dir, "git", "checkout", "-b", "nil-status-branch")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("x\n"), 0o644))
+
+	dispatch(d, "GetGitFileStatus", &leapmuxv1.GetGitFileStatusRequest{
+		Path: dir,
+	}, w)
+	require.Len(t, w.responses, 1)
+	var resp leapmuxv1.GetGitFileStatusResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+
+	assert.Equal(t, "nil-status-branch", resp.GetStatus().GetBranch())
+	assert.Equal(t, "https://github.com/test/nil-status.git", resp.GetStatus().GetOriginUrl())
+	assert.False(t, resp.GetStatus().GetIsWorktree())
+	expectedToplevel, err := filepath.EvalSymlinks(dir)
+	require.NoError(t, err)
+	assert.True(t, pathutil.SamePath(expectedToplevel, resp.GetStatus().GetToplevel()))
+	assert.NotEmpty(t, resp.GetFiles())
 }
 
 func TestCheckoutBranchIfRequested_RemoteBranch(t *testing.T) {
