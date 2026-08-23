@@ -79,11 +79,42 @@ test.describe('creation dialog on a phone', () => {
 
     // Full-viewport dialog: Oat caps every dialog at max-height 85vh, and the
     // phone band raises that cap — without it the "fullscreen" dialog rendered
-    // at 85vh with strips of backdrop above and below. Chromium rounds 100vh a
+    // at 85vh with strips of backdrop above and below. Chromium rounds 100dvh a
     // few pixels off the layout viewport and margin-auto centers the slack, so
     // assert the share of the viewport, not the pixel: 85vh sits at 85%.
+    // Safe-area insets are 0 in this desktop-engine phone viewport, so the
+    // panel still fills the layout viewport; on a real notched PWA the same
+    // rules inset the panel (see Dialog.css.ts :modal safe-area comment).
     expect(g.dialog.top).toBeGreaterThanOrEqual(-1)
     expect(g.dialog.height).toBeGreaterThanOrEqual(g.viewportH * 0.95)
+
+    // The top-layer panel must declare safe-area insets itself — body's
+    // padding-top does not reach the top layer. Chromium reports 0 here, so
+    // we assert the shipped CSS rather than geometry.
+    const shipsSafeArea = await page.evaluate(() => {
+      const needles = [
+        'safe-area-inset-top',
+        'safe-area-inset-right',
+        'safe-area-inset-bottom',
+        'safe-area-inset-left',
+      ]
+      for (const sheet of Array.from(document.styleSheets)) {
+        let rules: CSSRuleList
+        try {
+          rules = sheet.cssRules
+        }
+        catch {
+          continue
+        }
+        for (const rule of Array.from(rules)) {
+          const text = rule.cssText
+          if (needles.every(n => text.includes(n)))
+            return true
+        }
+      }
+      return false
+    })
+    expect(shipsSafeArea, 'dialog CSS must include all four safe-area insets').toBe(true)
 
     // The section is the ONE scroll container and actually scrolls. Before the
     // form-wrapped shape learned overflow-y, its content spilled visible under

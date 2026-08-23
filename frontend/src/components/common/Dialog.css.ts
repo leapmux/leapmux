@@ -3,6 +3,18 @@ import { breakpoints, motion } from '~/styles/tokens'
 
 // Dialog container
 
+// Safe-area env() values. Resolve to 0px on ordinary desktop browsers; on an
+// iOS/Android PWA (or iPhone Safari) with `viewport-fit=cover` they report the
+// status bar / Dynamic Island / notch / home indicator / display cutout.
+const SAFE_TOP = 'env(safe-area-inset-top, 0px)'
+const SAFE_RIGHT = 'env(safe-area-inset-right, 0px)'
+const SAFE_BOTTOM = 'env(safe-area-inset-bottom, 0px)'
+const SAFE_LEFT = 'env(safe-area-inset-left, 0px)'
+// Prefer dvh: on iOS Safari `vh` is the LARGE viewport and overshoots when
+// browser chrome is visible (same reason `huge` uses dvh on the phone band).
+const SAFE_MAX_HEIGHT = `calc(100dvh - ${SAFE_TOP} - ${SAFE_BOTTOM})`
+const SAFE_MAX_HEIGHT_OAT = `calc(85vh - ${SAFE_TOP} - ${SAFE_BOTTOM})`
+
 // Oat caps every dialog at `max-height: 85vh` from `@layer components`, and a
 // max-height beats `tall`'s `height: 100vh` — so without the raise below, the
 // full-screen phone treatment rendered at 85vh with a strip of backdrop above
@@ -20,7 +32,41 @@ export const standard = style({
       minWidth: 'unset',
       maxWidth: '100%',
       width: '100%',
-      maxHeight: '100vh',
+      // Height cap lives on `dialog.${standard}:modal` below so it can also
+      // subtract the safe-area insets. A bare `100vh` here would let the panel
+      // cover the status bar in a standalone PWA.
+    },
+  },
+})
+
+// Modal dialogs live in the TOP LAYER, so they escape `body`'s
+// `padding-top: env(safe-area-inset-top)` (see ~/styles/global.css.ts). Without
+// this rule a phone-band dialog paints under the status bar / Dynamic Island
+// in an iOS standalone PWA (`viewport-fit=cover` + `black-translucent`), and
+// the close button is untappable. The same insets cover landscape notches,
+// the iPad home indicator, and Android display cutouts.
+//
+// Selector is `dialog.<standard>:modal` so its specificity (0,2,1) beats the
+// UA's `dialog:modal { inset: 0 }` (0,1,1). `height: fit-content` stops
+// top+bottom from stretching a short confirm dialog to fill the safe
+// rectangle (abspos height:auto stretch); `tall` / `huge` override it below.
+// The ::backdrop still paints the full viewport — only the panel insets.
+globalStyle(`dialog.${standard}:modal`, {
+  'top': SAFE_TOP,
+  'right': SAFE_RIGHT,
+  'bottom': SAFE_BOTTOM,
+  'left': SAFE_LEFT,
+  'height': 'fit-content',
+  'maxHeight': SAFE_MAX_HEIGHT_OAT,
+  'margin': 'auto',
+  '@media': {
+    [`(max-width: ${breakpoints.sm - 1}px)`]: {
+      // Fill the safe rectangle's width (left+right are set above).
+      // `width: 100%` would be 100% of the viewport and overflow the
+      // horizontal insets on a landscape notched phone.
+      width: 'auto',
+      maxWidth: '100%',
+      maxHeight: SAFE_MAX_HEIGHT,
     },
   },
 })
@@ -150,10 +196,22 @@ export const wide = style({
 })
 
 export const tall = style({
-  'height': '80vh',
+  // Desktop height only. The phone-band and safe-area overrides live on
+  // `dialog.${standard}.${tall}:modal` below — they must beat the base
+  // `:modal { height: fit-content }` rule (specificity 0,2,1).
+  height: '80vh',
+})
+
+// Beat `dialog.${standard}:modal { height: fit-content }` so tall dialogs
+// still fill their band, and subtract the safe-area insets so the panel
+// cannot cover the status bar / home indicator.
+globalStyle(`dialog.${standard}.${tall}:modal`, {
+  'height': `calc(80vh - ${SAFE_TOP} - ${SAFE_BOTTOM})`,
+  'maxHeight': `calc(80vh - ${SAFE_TOP} - ${SAFE_BOTTOM})`,
   '@media': {
     [`(max-width: ${breakpoints.sm - 1}px)`]: {
-      height: '100vh',
+      height: SAFE_MAX_HEIGHT,
+      maxHeight: SAFE_MAX_HEIGHT,
     },
   },
 })
@@ -172,17 +230,30 @@ export const huge = style({
     [`(max-width: ${breakpoints.sm - 1}px)`]: {
       // 100% of the viewport containing block, not 100vw: 100vw includes
       // the scrollbar gutter and overflows the screen by that strip.
+      // Height/maxHeight for the phone band live on the `:modal` rule below
+      // so they subtract safe-area insets and beat `height: fit-content`.
       width: '100%',
       maxWidth: '100%',
       minWidth: 0,
-      // `dvh`, not `vh`: this is the one rule that FORCES a height and then
-      // clips at it. On iOS Safari `vh` resolves against the LARGE viewport,
-      // so with the browser chrome shown the dialog is taller than the space
-      // it has and `overflow: hidden` cuts the bottom of the panel off with
-      // no way to scroll to it.
-      height: '100dvh',
-      maxHeight: '100dvh',
       overflow: 'hidden',
+    },
+  },
+})
+
+globalStyle(`dialog.${standard}.${huge}:modal`, {
+  // Keep the desktop cap, but never taller than the safe rectangle.
+  'height': `min(820px, calc(88vh - ${SAFE_TOP} - ${SAFE_BOTTOM}))`,
+  'maxHeight': `min(820px, calc(88vh - ${SAFE_TOP} - ${SAFE_BOTTOM}))`,
+  '@media': {
+    [`(max-width: ${breakpoints.sm - 1}px)`]: {
+      // `dvh` (via SAFE_MAX_HEIGHT), not `vh`: this rule FORCES a height and
+      // then clips at it. On iOS Safari `vh` resolves against the LARGE
+      // viewport, so with the browser chrome shown the dialog is taller than
+      // the space it has and `overflow: hidden` cuts the bottom off.
+      width: 'auto',
+      maxWidth: '100%',
+      height: SAFE_MAX_HEIGHT,
+      maxHeight: SAFE_MAX_HEIGHT,
     },
   },
 })
