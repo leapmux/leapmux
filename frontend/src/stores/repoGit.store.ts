@@ -72,14 +72,13 @@ export function createRepoGitStore() {
   const bumpWorkerKeyIndex = () => setWorkerKeyEpoch(n => n + 1)
 
   /**
-   * Newest in-flight refresh targets, plus the last completed refresh.
-   * A superseded refresh clears pins only for keys the successor (in flight
-   * or already finished) does not cover, so a same-path refresh keeps the
-   * optimistic pin until it finishes — including when the stale RPC returns
-   * after that successor has already applied.
+   * In-flight refresh targets, plus the last completed gen per repo key.
+   * A superseded refresh clears a pin only when no later refresh (in flight
+   * or completed) covered that key — so a same-path successor can keep the
+   * optimistic pin even after a different-path refresh has moved on.
    */
   let inflightRefresh: { gen: number, keys: Set<RepoKey> } | undefined
-  let lastCompletedRefresh: { gen: number, keys: Set<RepoKey> } | undefined
+  const lastCompletedGenByKey = new Map<RepoKey, number>()
 
   const indexKey = (key: RepoKey, workerId: string) => {
     if (!workerId)
@@ -158,6 +157,7 @@ export function createRepoGitStore() {
     setRepos(produce((map) => {
       delete map[key]
     }))
+    lastCompletedGenByKey.delete(key)
     if (prev)
       unindexKey(key, prev.workerId)
     else
@@ -168,6 +168,7 @@ export function createRepoGitStore() {
     const hadKeys = workerKeys.size > 0
     setRepos({})
     workerKeys.clear()
+    lastCompletedGenByKey.clear()
     if (hadKeys)
       bumpWorkerKeyIndex()
   }
@@ -193,22 +194,20 @@ export function createRepoGitStore() {
     }
   }
 
+  const laterRefreshCoversKey = (mine: number, key: RepoKey): boolean => {
+    if (inflightRefresh && inflightRefresh.gen > mine && inflightRefresh.keys.has(key))
+      return true
+    const completedGen = lastCompletedGenByKey.get(key)
+    return completedGen !== undefined && completedGen > mine
+  }
+
   const releaseStaleRefreshPins = (mine: number, myKeys: Set<RepoKey>) => {
-    const successor = inflightRefresh && inflightRefresh.gen !== mine
-      ? inflightRefresh
-      : lastCompletedRefresh && lastCompletedRefresh.gen > mine
-        ? lastCompletedRefresh
-        : undefined
-    if (successor) {
-      for (const key of myKeys) {
-        if (successor.keys.has(key))
-          continue
-        if (get(key)?.branchPinnedUntilRefresh)
-          upsert(key, { branchPinnedUntilRefresh: false })
-      }
-      return
+    for (const key of myKeys) {
+      if (laterRefreshCoversKey(mine, key))
+        continue
+      if (get(key)?.branchPinnedUntilRefresh)
+        upsert(key, { branchPinnedUntilRefresh: false })
     }
-    clearBranchPins(myKeys)
   }
 
   const refresh = async (workerId: string, path: string, opts?: RepoGitRefreshOpts): Promise<RepoKey | undefined> => {
@@ -261,7 +260,8 @@ export function createRepoGitStore() {
     finally {
       if (mine === gen) {
         setLoading(false)
-        lastCompletedRefresh = { gen: mine, keys: myKeys }
+        for (const key of myKeys)
+          lastCompletedGenByKey.set(key, mine)
         if (inflightRefresh?.gen === mine)
           inflightRefresh = undefined
       }

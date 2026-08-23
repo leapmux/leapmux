@@ -51,6 +51,37 @@ describe('createRepoGitStore', () => {
       expect(store.keysForWorker('w2')).toEqual([key])
     })
 
+    it('recomputation tracks a workerId move on both sides of the index', async () => {
+      await createRoot(async (dispose) => {
+        const store = createRepoGitStore()
+        const key = repoKey('w1', '/repo')
+        let readsW1 = 0
+        let readsW2 = 0
+        const countW1 = createMemo(() => {
+          readsW1++
+          return store.keysForWorker('w1').length
+        })
+        const countW2 = createMemo(() => {
+          readsW2++
+          return store.keysForWorker('w2').length
+        })
+
+        store.upsert(key, { workerId: 'w1', toplevel: '/repo' })
+        expect(countW1()).toBe(1)
+        expect(countW2()).toBe(0)
+        const afterAddW1 = readsW1
+        const afterAddW2 = readsW2
+
+        store.upsert(key, { workerId: 'w2' })
+        expect(countW1()).toBe(0)
+        expect(countW2()).toBe(1)
+        expect(readsW1).toBeGreaterThan(afterAddW1)
+        expect(readsW2).toBeGreaterThan(afterAddW2)
+
+        dispose()
+      })
+    })
+
     it('clears the index on clearAll', () => {
       const store = createRepoGitStore()
       store.upsert(repoKey('w1', '/a'), { workerId: 'w1', toplevel: '/a' })
@@ -269,6 +300,108 @@ describe('createRepoGitStore', () => {
         // Newest refresh saw pin + mismatched RPC branch and kept the stamp.
         expect(store.get(key)?.branch).toBe('feature')
         expect(store.get(key)?.branchPinnedUntilRefresh).toBe(true)
+
+        dispose()
+      })
+    })
+
+    it('keeps a same-path pin after a later different-path refresh finishes', async () => {
+      await createRoot(async (dispose) => {
+        const store = createRepoGitStore()
+        const repoKeyPath = repoKey('worker1', '/repo')
+        store.upsert(repoKeyPath, {
+          workerId: 'worker1',
+          toplevel: '/repo',
+          branch: 'feature',
+          branchPinnedUntilRefresh: true,
+        })
+
+        let resolveFirst!: (value: unknown) => void
+        const first = new Promise((resolve) => {
+          resolveFirst = resolve
+        })
+        mockGetGitFileStatus
+          .mockReturnValueOnce(first)
+          .mockResolvedValueOnce({
+            repoRoot: '/repo',
+            status: { toplevel: '/repo', branch: 'main' },
+            files: [],
+          })
+          .mockResolvedValueOnce({
+            repoRoot: '/active',
+            status: { toplevel: '/active', branch: 'main' },
+            files: [],
+          })
+
+        const cancelled = store.refresh('worker1', '/repo', { repoKey: repoKeyPath })
+        const samePath = store.refresh('worker1', '/repo', { repoKey: repoKeyPath })
+        await samePath
+        expect(store.get(repoKeyPath)?.branchPinnedUntilRefresh).toBe(true)
+
+        // A different-path refresh must not erase the same-path pin record.
+        await store.refresh('worker1', '/active')
+        resolveFirst({
+          repoRoot: '/repo',
+          status: { toplevel: '/repo', branch: 'stale' },
+          files: [],
+        })
+        await cancelled
+
+        expect(store.get(repoKeyPath)?.branch).toBe('feature')
+        expect(store.get(repoKeyPath)?.branchPinnedUntilRefresh).toBe(true)
+        expect(store.get(repoKey('worker1', '/active'))?.branch).toBe('main')
+
+        dispose()
+      })
+    })
+
+    it('keeps a same-path pin while a later different-path refresh is in flight', async () => {
+      await createRoot(async (dispose) => {
+        const store = createRepoGitStore()
+        const repoKeyPath = repoKey('worker1', '/repo')
+        store.upsert(repoKeyPath, {
+          workerId: 'worker1',
+          toplevel: '/repo',
+          branch: 'feature',
+          branchPinnedUntilRefresh: true,
+        })
+
+        let resolveFirst!: (value: unknown) => void
+        let resolveActive!: (value: unknown) => void
+        const first = new Promise((resolve) => {
+          resolveFirst = resolve
+        })
+        const activeRpc = new Promise((resolve) => {
+          resolveActive = resolve
+        })
+        mockGetGitFileStatus
+          .mockReturnValueOnce(first)
+          .mockResolvedValueOnce({
+            repoRoot: '/repo',
+            status: { toplevel: '/repo', branch: 'main' },
+            files: [],
+          })
+          .mockReturnValueOnce(activeRpc)
+
+        const cancelled = store.refresh('worker1', '/repo', { repoKey: repoKeyPath })
+        await store.refresh('worker1', '/repo', { repoKey: repoKeyPath })
+        const active = store.refresh('worker1', '/active')
+        resolveFirst({
+          repoRoot: '/repo',
+          status: { toplevel: '/repo', branch: 'stale' },
+          files: [],
+        })
+        await cancelled
+
+        expect(store.get(repoKeyPath)?.branch).toBe('feature')
+        expect(store.get(repoKeyPath)?.branchPinnedUntilRefresh).toBe(true)
+
+        resolveActive({
+          repoRoot: '/active',
+          status: { toplevel: '/active', branch: 'main' },
+          files: [],
+        })
+        await active
 
         dispose()
       })
