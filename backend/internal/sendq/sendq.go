@@ -974,14 +974,9 @@ func (w *Writer[T]) DrainLimited(lim DrainLimits) error {
 		// relief to write latency for no functional reason.
 		w.signalBudgetFreed()
 		if err := w.writeTurn(frame.item); err != nil {
-			if w.isClosed() {
-				return err
-			}
-			reason := GiveUpWriteError
-			if errors.Is(err, errStalled) {
-				reason = GiveUpStall
-			}
-			w.giveUp(reason, err)
+			// writeTurn already gave up on a transport error (or found the
+			// writer closed). Do not clear writing here -- writeTurn pairs
+			// giveUp with finishWrite so Flush cannot observe idle+open.
 			return err
 		}
 	}
@@ -991,6 +986,14 @@ func (w *Writer[T]) DrainLimited(lim DrainLimits) error {
 // when Write PANICS. The flag left set would park every later Flush on this
 // writer until its deadline, and the deferred clear is what survives an unwind.
 //
+// On a transport error, giveUp runs before the deferred finishWrite. The other
+// order left a window where the queue was empty, writing was false, and
+// gaveUp was still unset -- Flush returned nil and shutdown notify counted a
+// delivered frame the peer had already refused. Panic must NOT give up here:
+// the handler-drained path recovers with Fence/Close and leaves gaveUp false
+// so the write watchdog stays the thing that proves a late timer was disarmed
+// (see TestWriterPanickingWriteDisarmsTheWatchdog).
+//
 // Both drain modes catch that unwind, one layer up: a handler-drained writer
 // unwinds into workermgr.SendPump.drain, a goroutine-drained one (sendq.New --
 // the frontend relay and the worker's Hub client) into run's own recover. Either
@@ -998,7 +1001,15 @@ func (w *Writer[T]) DrainLimited(lim DrainLimits) error {
 // charge is refunded at pop, so it is not leaked on that path either.
 func (w *Writer[T]) writeTurn(item T) error {
 	defer w.finishWrite()
-	return w.writeItem(item)
+	err := w.writeItem(item)
+	if err != nil && !w.isClosed() {
+		reason := GiveUpWriteError
+		if errors.Is(err, errStalled) {
+			reason = GiveUpStall
+		}
+		w.giveUp(reason, err)
+	}
+	return err
 }
 
 func (w *Writer[T]) signalWakeIfQueued() {

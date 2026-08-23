@@ -969,19 +969,59 @@ func TestWriterDrainAfterCloseWritesNothing(t *testing.T) {
 	assert.Zero(t, wrote)
 }
 
-func TestWriterFlushReturnsErrClosedWhenQueueWasDiscarded(t *testing.T) {
+func TestWriterFlushReturnsErrClosedWhenWriteFails(t *testing.T) {
 	t.Parallel()
-	w := NewUnstarted(context.Background(), Config[string]{
-		Write:    func(context.Context, string) error { return nil },
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	release := make(chan struct{})
+	var writeStarted sync.WaitGroup
+	writeStarted.Add(1)
+	w := NewUnstarted(ctx, Config[string]{
+		Write: func(context.Context, string) error {
+			writeStarted.Done()
+			<-release
+			return errors.New("connection reset")
+		},
 		Size:     func(s string) int { return len(s) },
 		MaxBytes: 1024,
 	})
-	require.NoError(t, w.Enqueue("frame"))
-	w.Close() // discards without writing
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	assert.ErrorIs(t, w.Flush(ctx), ErrClosed,
-		"Flush must not report success when Close discarded queued frames")
+	t.Cleanup(w.Close)
+
+	go func() {
+		for {
+			select {
+			case <-w.Wake():
+				_ = w.Drain()
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	require.True(t, w.TryEnqueueControl("frame"))
+	writeStarted.Wait()
+
+	flushed := make(chan error, 1)
+	fctx, fcancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer fcancel()
+	go func() { flushed <- w.Flush(fctx) }()
+
+	// Park Flush on the in-flight write, then let Write fail.
+	time.Sleep(20 * time.Millisecond)
+	close(release)
+
+	select {
+	case err := <-flushed:
+		// A nil return here is the race: finishWrite cleared `writing` before
+		// giveUp latched the writer closed, so Flush saw idle+open and reported
+		// success while the transport had already refused the frame.
+		require.ErrorIs(t, err, ErrClosed,
+			"Flush must not report success when the in-flight write failed")
+	case <-time.After(3 * time.Second):
+		t.Fatal("Flush never returned after the write failed")
+	}
+	assert.True(t, w.GaveUp(), "a write error must give up the writer")
 }
 
 func TestWriterDrainLimitedYieldsAndResignals(t *testing.T) {
