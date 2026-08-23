@@ -3,7 +3,7 @@ import type { createRepoGitStore } from '~/stores/repoGit.store'
 import type { RepoRef } from '~/stores/tab.helpers'
 import * as workerRpc from '~/api/workerRpc'
 import { createLogger } from '~/lib/logger'
-import { patchFromGetGitFileStatus, repoKey } from '~/stores/repoGit'
+import { patchFromGetGitFileStatus, patchFromNonRepoGetGitFileStatus, repoKey } from '~/stores/repoGit'
 import { isSameRepo } from '~/stores/tab.helpers'
 import { stampBranchOnRepo } from './stampBranchOnTabs'
 
@@ -35,21 +35,23 @@ export function handleBranchChanged(
     void deps.repoGitStore.refresh(repo.workerId, repo.gitToplevel, {
       repoKey: repoKey(repo.workerId, repo.gitToplevel),
     })
-      .catch((err) => {
-        log.warn('failed to refresh git status after branch change', err)
-      })
     return
   }
 
   void (async () => {
+    const key = repoKey(repo.workerId, repo.gitToplevel)
     try {
       const resp = await workerRpc.getGitFileStatus(repo.workerId, {
         workerId: repo.workerId,
         path: repo.gitToplevel,
       })
       const mapped = patchFromGetGitFileStatus(repo.workerId, resp)
-      if (mapped)
+      if (mapped) {
         deps.repoGitStore.upsert(mapped.key, mapped.patch)
+        return
+      }
+      const nonRepo = patchFromNonRepoGetGitFileStatus(repo.workerId, resp, key)
+      deps.repoGitStore.upsert(nonRepo.key, nonRepo.patch)
     }
     catch (err) {
       log.warn('failed to refresh git status after branch change', err)

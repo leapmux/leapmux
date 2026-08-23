@@ -98,16 +98,37 @@ describe('handleBranchChanged', () => {
     expect(repoGitStore.repos()).toEqual({})
   })
 
-  it('survives a failed refresh without throwing', async () => {
+  it('does not throw when the active-repo refresh is in flight', async () => {
     const repoGitStore = createRepoGitStore()
-    vi.spyOn(repoGitStore, 'refresh').mockRejectedValue(new Error('worker unreachable'))
+    vi.spyOn(repoGitStore, 'refresh').mockResolvedValue(undefined)
 
     expect(() => handleBranchChanged(
-      { repoGitStore, getCurrentTabContext: () => ({} as never) },
+      { repoGitStore, getCurrentTabContext: () => ({ workerId: 'w1', gitToplevel: '/repo' } as never) },
       { workerId: 'w1', gitToplevel: '/repo' },
       'feature',
     )).not.toThrow()
     await flush()
+  })
+
+  it('writes a non-repo stub when refreshing a non-active repo fails as non-git', async () => {
+    const repoGitStore = createRepoGitStore()
+    mockGetGitFileStatus.mockResolvedValueOnce({
+      repoRoot: '',
+      status: undefined,
+      files: [],
+      errorHint: 'not a git repository',
+    })
+
+    handleBranchChanged(
+      { repoGitStore, getCurrentTabContext: () => ({ workerId: 'w1', gitToplevel: '/active' } as never) },
+      { workerId: 'w1', gitToplevel: '/other' },
+      'feature',
+    )
+    await flush()
+    await vi.waitFor(() => {
+      expect(repoGitStore.get(repoKey('w1', '/other'))?.errorHint).toBe('not a git repository')
+    })
+    expect(repoGitStore.get(repoKey('w1', '/other'))?.branch).toBe('')
   })
 
   it('does not change focused key when refreshing a non-active repo', async () => {

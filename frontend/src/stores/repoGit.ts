@@ -63,8 +63,9 @@ export type RepoGitStore = ReturnType<typeof createRepoGitStore>
 /** Options for {@link RepoGitStore.refresh}. */
 export interface RepoGitRefreshOpts {
   /**
-   * Repo identity to clear when the probe fails or reports a non-repo path.
-   * Omitted when the tab has not resolved `gitToplevel` yet.
+   * Repo identity for a non-repo response stub (`errorHint`, cleared git
+   * fields). Falls back to `repoKey(workerId, path)` when omitted. RPC
+   * failures keep the last-good entry and do not use this hint.
    */
   repoKey?: RepoKey
 }
@@ -169,6 +170,8 @@ export function protoToRepoGitPatch(
 ): Partial<RepoGitState> | undefined {
   if (!status?.toplevel)
     return undefined
+  // Status pushes carry repo metadata only — not the per-file list. Clear
+  // file-derived fields so a branch rename does not leave stale diff badges.
   return {
     workerId,
     toplevel: status.toplevel,
@@ -185,6 +188,11 @@ export function protoToRepoGitPatch(
     typeChanged: status.typeChanged,
     added: status.added,
     untracked: status.untracked,
+    diffAdded: 0,
+    diffDeleted: 0,
+    diffUntracked: 0,
+    files: [],
+    errorHint: '',
   }
 }
 

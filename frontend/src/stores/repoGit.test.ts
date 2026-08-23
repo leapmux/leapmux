@@ -1,7 +1,8 @@
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
+import { GitRepoStatusSchema } from '~/generated/leapmux/v1/common_pb'
 import { GetGitFileStatusResponseSchema } from '~/generated/leapmux/v1/git_pb'
-import { gitStatusProbePath, patchFromNonRepoGetGitFileStatus, repoGitView, repoKey } from '~/stores/repoGit'
+import { gitStatusProbePath, patchFromNonRepoGetGitFileStatus, protoToRepoGitPatch, repoGitView, repoKey } from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 
 describe('gitStatusProbePath', () => {
@@ -34,6 +35,36 @@ describe('patchFromNonRepoGetGitFileStatus', () => {
       diffDeleted: 0,
       diffUntracked: 0,
     })
+  })
+})
+
+describe('protoToRepoGitPatch', () => {
+  it('clears file-derived fields so metadata upserts do not leave stale diffs', () => {
+    const store = createRepoGitStore()
+    const key = repoKey('w1', '/repo')
+    store.upsert(key, {
+      workerId: 'w1',
+      toplevel: '/repo',
+      branch: 'main',
+      diffAdded: 5,
+      files: [{ path: 'a.txt' } as never],
+    })
+
+    const patch = protoToRepoGitPatch('w1', create(GitRepoStatusSchema, {
+      toplevel: '/repo',
+      branch: 'feature',
+    }))
+    expect(patch).toMatchObject({
+      branch: 'feature',
+      diffAdded: 0,
+      diffDeleted: 0,
+      diffUntracked: 0,
+      files: [],
+      errorHint: '',
+    })
+    store.upsert(key, patch!)
+    expect(store.get(key)?.diffAdded).toBe(0)
+    expect(store.get(key)?.files).toEqual([])
   })
 })
 

@@ -21,6 +21,7 @@ import { createPersistedSignal, persistedBoolean } from '~/lib/createPersistedSi
 import { DEFAULT_FILE_SORT_ORDER, makeFileComparator, parseFileSortOrder } from '~/lib/fileSort'
 import { shortcutHint } from '~/lib/shortcuts/display'
 import { fileEntryToDiffStats, isUntrackedDirEntry } from '~/stores/repoGit.store'
+import { warningText } from '~/styles/shared.css'
 import { DirectoryTree } from './DirectoryTree'
 import * as styles from './FilesSection.css'
 import { FilesSortMenu } from './FilesSortMenu'
@@ -249,6 +250,7 @@ export const FilesSection: Component<FilesSectionProps> = (props) => {
   })
 
   const isGitRepo = () => Boolean(props.gitStatusStore.focusedState()?.toplevel)
+  const gitErrorHint = () => props.gitStatusStore.focusedState()?.errorHint || undefined
 
   return (
     // `data-working-dir` carries the RESOLVED dir, unlike the tree below, which
@@ -259,6 +261,11 @@ export const FilesSection: Component<FilesSectionProps> = (props) => {
     // to wait for the real thing rather than for a placeholder that is already
     // on screen.
     <div class={styles.wrapper} data-working-dir={props.workingDir}>
+      <Show when={!isGitRepo() && gitErrorHint()}>
+        <div class={`${warningText} ${styles.gitErrorHint}`} data-testid="files-git-error-hint">
+          {gitErrorHint()}
+        </div>
+      </Show>
       <Show when={isGitRepo()}>
         <FilterTabBar
           tabs={FILTER_TABS}

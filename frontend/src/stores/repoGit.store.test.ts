@@ -193,5 +193,24 @@ describe('createRepoGitStore', () => {
         dispose()
       })
     })
+
+    it('persists errorHint on a non-repo probe using the path when repoKey is omitted', async () => {
+      await createRoot(async (dispose) => {
+        const store = createRepoGitStore()
+        const key = repoKey('worker1', '/plain-dir')
+
+        mockGetGitFileStatus.mockResolvedValueOnce({
+          repoRoot: '',
+          status: undefined,
+          files: [],
+          errorHint: 'not a git repository',
+        })
+
+        await store.refresh('worker1', '/plain-dir')
+
+        expect(store.get(key)?.errorHint).toBe('not a git repository')
+        dispose()
+      })
+    })
   })
 })

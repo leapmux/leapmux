@@ -94,6 +94,7 @@ export const DirectorySelector: Component<DirectorySelectorProps> = (props) => {
             flavor={flavorFromOs(workerInfoStore.getOs(props.state.workerId()))}
             showHiddenFiles={showHiddenFiles()}
             gitStatusStore={props.repoGitStore}
+            showGitStatus={false}
             ref={props.tree.setTreeRef}
           />
         </div>

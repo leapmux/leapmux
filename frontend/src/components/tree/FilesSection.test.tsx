@@ -90,6 +90,32 @@ beforeEach(() => {
   localStorage.clear()
 })
 
+describe('filesSection git error hint', () => {
+  it('shows errorHint when the focused repo probe failed', () => {
+    render(() => (
+      <FilesSection
+        workerId={WORKER_ID}
+        workingDir={WORKING_DIR}
+        homeDir="/home/alice"
+        flavor="posix"
+        fileTreePath={WORKING_DIR}
+        onFileSelect={() => {}}
+        gitStatusStore={{
+          focusedState: () => ({ toplevel: '', errorHint: 'not a git repository', files: [] }),
+          statusRoot: () => '',
+          getChangedFiles: () => [],
+          getFileStatus: () => undefined,
+          getNodeDiffStats: () => ({ added: 0, deleted: 0, untracked: 0 }),
+          hasChanges: () => false,
+        } as unknown as ReturnType<typeof createRepoGitStore>}
+        hasActiveFileTab={false}
+      />
+    ))
+
+    expect(screen.getByTestId('files-git-error-hint')).toHaveTextContent(/not a git repository/i)
+  })
+})
+
 describe('filesSection sort preference', () => {
   it('defaults to name ascending', () => {
     const { handle } = renderSection([])

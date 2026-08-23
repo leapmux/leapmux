@@ -47,6 +47,12 @@ export interface DirectoryTreeProps {
   flavor?: PathFlavor
   gitStatusStore: ReturnType<typeof createRepoGitStore>
   /**
+   * When false, skip git change icons and diff-stat annotations on tree rows.
+   * The directory picker passes false: the shared store is keyed to the
+   * focused tab's repo, not the path being browsed.
+   */
+  showGitStatus?: boolean
+  /**
    * When set, the tree is FILTERED: only nodes this predicate accepts render.
    * Built by the git-aware caller (see makeGitVisibilityPredicate), so the
    * untracked-subtree semantics stay out of the generic tree. Its presence is
@@ -133,6 +139,7 @@ interface TreeContextValue {
   flavor: () => PathFlavor
   scrollContainer?: HTMLDivElement
   gitStatusStore: () => ReturnType<typeof createRepoGitStore>
+  showGitStatus: boolean
   showHiddenFiles: boolean
   /** Comparator for the current sort order, shared by every node. */
   comparator: () => (a: TreeNodeData, b: TreeNodeData) => number
@@ -537,6 +544,8 @@ const TreeNode: Component<{
 
   const indent = () => `${8 + props.depth * 16}px`
   const gitIcon = createMemo<GitIconInfo>(() => {
+    if (!tree.showGitStatus)
+      return NO_GIT_ICON
     const store = tree.gitStatusStore()
     if (props.node.isDir) {
       return store.hasChanges(props.node.path)
@@ -547,6 +556,8 @@ const TreeNode: Component<{
     return entry ? getGitFileIconClass(entry) : NO_GIT_ICON
   })
   const diffStats = createMemo<DiffStats | null>(() => {
+    if (!tree.showGitStatus)
+      return null
     return tree.gitStatusStore().getNodeDiffStats(props.node.path, props.node.isDir)
   })
 
@@ -909,6 +920,8 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
   ))
 
   const rootDiffStats = createMemo<DiffStats | null>(() => {
+    if (props.showGitStatus === false)
+      return null
     return props.gitStatusStore.getNodeDiffStats(rootPath(), true)
   })
 
@@ -923,6 +936,7 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
     comparator,
     truncationNotice,
     gitStatusStore: () => props.gitStatusStore,
+    get showGitStatus() { return props.showGitStatus !== false },
     isVisible: () => props.isVisible,
     refreshVersion,
     onSelect: path => props.onSelect(path),

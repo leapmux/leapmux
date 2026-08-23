@@ -11,6 +11,7 @@ import {
   isUntrackedDirEntry,
   patchFromGetGitFileStatus,
   patchFromNonRepoGetGitFileStatus,
+  repoKey,
   untrackedDirBasePath,
 } from './repoGit'
 
@@ -85,7 +86,7 @@ export function createRepoGitStore() {
   const refresh = async (workerId: string, path: string, opts?: RepoGitRefreshOpts) => {
     if (!workerId || !path)
       return
-    const repoKeyHint = opts?.repoKey
+    const nonRepoKey = opts?.repoKey ?? (workerId && path ? repoKey(workerId, path) : undefined)
     gen += 1
     const mine = gen
     setLoading(true)
@@ -95,8 +96,8 @@ export function createRepoGitStore() {
         return
       const mapped = patchFromGetGitFileStatus(workerId, resp)
       if (!mapped) {
-        if (repoKeyHint) {
-          const nonRepo = patchFromNonRepoGetGitFileStatus(workerId, resp, repoKeyHint)
+        if (nonRepoKey) {
+          const nonRepo = patchFromNonRepoGetGitFileStatus(workerId, resp, nonRepoKey)
           upsert(nonRepo.key, nonRepo.patch)
         }
         return
