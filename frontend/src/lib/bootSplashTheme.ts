@@ -25,15 +25,24 @@ export const bootSplashDark = {
   foreground: hex('dark', '--foreground'),
 } as const
 
+/**
+ * Shared DOM key for the static splash `id` and both trees' `data-testid`.
+ * One string on purpose: the static node carries both attributes. The contract
+ * is that Solid's `BootSplash` sets `data-testid` only and omits the `id`
+ * attribute — not that these two exports differ.
+ */
+const BOOT_SPLASH_DOM_KEY = 'boot-splash'
+
 /** `data-testid` on both the static splash and the Solid component. */
-export const BOOT_SPLASH_TEST_ID = 'boot-splash'
+export const BOOT_SPLASH_TEST_ID = BOOT_SPLASH_DOM_KEY
 
 /**
- * Document id of the STATIC splash only. Solid's `BootSplash` must not reuse
- * this id: the boot-failure watchdog treats `#boot-splash` disappearing as
- * "the client mounted", even when Suspense/AuthGuard still show a splash.
+ * HTML `id` of the STATIC document splash only. Same string as
+ * {@link BOOT_SPLASH_TEST_ID}. The boot-failure watchdog treats this node's
+ * removal as "the client mounted", even when Suspense/AuthGuard still show a
+ * splash that keeps only `data-testid`.
  */
-export const BOOT_SPLASH_STATIC_ID = 'boot-splash'
+export const BOOT_SPLASH_STATIC_ID = BOOT_SPLASH_DOM_KEY
 
 /** Visible label; keep the ellipsis character identical in both trees. */
 export const BOOT_SPLASH_LABEL = 'Loading LeapMux…'
@@ -67,7 +76,7 @@ export const BOOT_SPLASH_RELOAD_LABEL = 'Reload'
  */
 export const BOOT_SPLASH_FAIL_TIMEOUT_MS = 45_000
 
-/** Detail when the watchdog timer fires with no earlier script/resource fault. */
+/** Detail when the watchdog timer fires with no earlier script fault. */
 export const BOOT_SPLASH_FAIL_TIMEOUT_DETAIL
   = 'The app did not start in time. Check your network connection, then reload the page.'
 
@@ -126,6 +135,13 @@ export function parseBootPrefsThemeMode(raw: string | null, nowMs: number): stri
  * padding, `#app` fill) so first paint already uses the geometry that lands
  * when the app stylesheet loads. Without that lockstep the flex-centered
  * splash jumped down when `padding-top: env(safe-area-inset-top)` arrived.
+ *
+ * Sizing is split on purpose:
+ * - `#boot-splash` fills `#app` (`min-height: 100%`) and must not use
+ *   `100dvh`, or safe-area padding on body re-centers it downward.
+ * - `[data-testid]:not(#boot-splash)` (Solid Suspense/AuthGuard) also sets
+ *   `min-height: 100dvh` so a missing definite-height ancestor cannot collapse
+ *   it to content size. The `:not(#id)` keeps the static node on `%` only.
  */
 export function bootSplashDocumentCss(): string {
   const lightBg = bootSplashLight.background
@@ -148,12 +164,14 @@ body{
   padding-top:env(safe-area-inset-top,0px);box-sizing:border-box;
 }
 #${id},[data-testid="${testId}"]{
-  box-sizing:border-box;width:100%;height:100%;min-height:100%;
+  box-sizing:border-box;width:100%;height:100%;
   display:flex;align-items:center;justify-content:center;
   flex-direction:column;gap:${BOOT_SPLASH_GAP};font-family:system-ui,sans-serif;
   background:${lightBg};
   color:${lightFg};
 }
+#${id}{min-height:100%}
+[data-testid="${testId}"]:not(#${id}){min-height:100%;min-height:100dvh}
 @media (prefers-color-scheme: dark){
   #${id},[data-testid="${testId}"]{
     background:${darkBg};
@@ -208,15 +226,20 @@ export function bootThemeScript(): string {
 
 /**
  * Document script that surfaces a boot failure when the static splash never
- * yields to Solid mount, or when a script/style resource fails to load.
+ * yields to Solid mount, or when a script resource fails to load.
  *
  * Solid's `ErrorBoundary` and `installGlobalErrorSink` only exist after the
  * entry graph runs. A missing or broken entry chunk leaves `#boot-splash` on
  * screen forever with no recovery — this watchdog is the UI for that class.
  *
+ * Only `<script>` load errors count. Favicon, manifest, and stylesheet `<link>`
+ * failures must not tombstone the splash: they are common and non-fatal.
+ *
  * Success signal: the static node `#boot-splash` is gone (Solid `mount`
- * replaces `#app`). The Suspense/AuthGuard `BootSplash` keeps only
- * `data-testid`, so a long auth bootstrap does not look like a failed boot.
+ * replaces `#app`). A MutationObserver finishes the watchdog then (clears the
+ * timer and removes the capture listener). The Suspense/AuthGuard `BootSplash`
+ * keeps only `data-testid`, so a long auth bootstrap does not look like a
+ * failed boot.
  */
 export function bootFailureWatchdogScript(): string {
   const id = BOOT_SPLASH_STATIC_ID
@@ -224,5 +247,63 @@ export function bootFailureWatchdogScript(): string {
   const reload = BOOT_SPLASH_RELOAD_LABEL
   const timeoutDetail = BOOT_SPLASH_FAIL_TIMEOUT_DETAIL
   const timeoutMs = BOOT_SPLASH_FAIL_TIMEOUT_MS
-  return `(function(){var id=${JSON.stringify(id)};var title=${JSON.stringify(title)};var reloadLabel=${JSON.stringify(reload)};var timeoutDetail=${JSON.stringify(timeoutDetail)};var timeoutMs=${timeoutMs};var done=false;function root(){return document.getElementById(id);}function finish(){done=true;if(timer)clearTimeout(timer);}function fail(detail){if(done)return;var el=root();if(!el){finish();return;}done=true;if(timer)clearTimeout(timer);el.setAttribute("data-boot-failed","true");el.setAttribute("role","alert");el.removeAttribute("aria-live");var loading=el.querySelector(".boot-splash-loading");if(loading)loading.setAttribute("hidden","");var err=el.querySelector(".boot-splash-error");if(!err)return;err.removeAttribute("hidden");var t=err.querySelector("[data-boot-fail-title]");if(t)t.textContent=title;var d=err.querySelector("[data-boot-fail-detail]");if(d)d.textContent=detail||timeoutDetail;var b=err.querySelector("[data-boot-reload]");if(b){b.textContent=reloadLabel;b.onclick=function(){location.reload();}};}function onResourceError(ev){var t=ev&&ev.target;if(!t||!t.tagName)return;var tag=String(t.tagName).toLowerCase();if(tag!=="script"&&tag!=="link")return;var src=t.src||t.href||tag;fail("Failed to load\\n"+src);}window.addEventListener("error",onResourceError,true);var timer=setTimeout(function(){if(done)return;if(!root()){finish();return;}fail(timeoutDetail);},timeoutMs);})();`
+  // One IIFE string for the document. Keep logic flat; tests evaluate this
+  // exact source via `new Function`.
+  return `(function(){`
+    + `var id=${JSON.stringify(id)};`
+    + `var title=${JSON.stringify(title)};`
+    + `var reloadLabel=${JSON.stringify(reload)};`
+    + `var timeoutDetail=${JSON.stringify(timeoutDetail)};`
+    + `var timeoutMs=${timeoutMs};`
+    + `var done=false;`
+    + `var timer=null;`
+    + `var observer=null;`
+    + `function root(){return document.getElementById(id);}`
+    + `function finish(){`
+    + `if(done)return;`
+    + `done=true;`
+    + `if(timer)clearTimeout(timer);`
+    + `timer=null;`
+    + `window.removeEventListener("error",onScriptError,true);`
+    + `if(observer){observer.disconnect();observer=null;}`
+    + `}`
+    + `function fail(detail){`
+    + `if(done)return;`
+    + `var el=root();`
+    + `if(!el){finish();return;}`
+    + `finish();`
+    + `el.setAttribute("data-boot-failed","true");`
+    + `el.setAttribute("role","alert");`
+    + `el.removeAttribute("aria-live");`
+    + `var loading=el.querySelector(".boot-splash-loading");`
+    + `if(loading)loading.setAttribute("hidden","");`
+    + `var err=el.querySelector(".boot-splash-error");`
+    + `if(!err)return;`
+    + `err.removeAttribute("hidden");`
+    + `var t=err.querySelector("[data-boot-fail-title]");`
+    + `if(t)t.textContent=title;`
+    + `var d=err.querySelector("[data-boot-fail-detail]");`
+    + `if(d)d.textContent=detail||timeoutDetail;`
+    + `var b=err.querySelector("[data-boot-reload]");`
+    + `if(b){b.textContent=reloadLabel;b.onclick=function(){location.reload();}}`
+    + `}`
+    + `function onScriptError(ev){`
+    + `var t=ev&&ev.target;`
+    + `if(!t||!t.tagName)return;`
+    + `if(String(t.tagName).toLowerCase()!=="script")return;`
+    + `var src=t.src||"script";`
+    + `fail("Failed to load\\n"+src);`
+    + `}`
+    + `window.addEventListener("error",onScriptError,true);`
+    + `var app=document.getElementById("app");`
+    + `if(app&&typeof MutationObserver==="function"){`
+    + `observer=new MutationObserver(function(){if(!root())finish();});`
+    + `observer.observe(app,{childList:true,subtree:true});`
+    + `}`
+    + `timer=setTimeout(function(){`
+    + `if(done)return;`
+    + `if(!root()){finish();return;}`
+    + `fail(timeoutDetail);`
+    + `},timeoutMs);`
+    + `})();`
 }
