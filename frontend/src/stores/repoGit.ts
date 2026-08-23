@@ -3,6 +3,7 @@ import type { Tab } from './tab.types'
 import type { GitFileStatusEntry, GitRepoStatus } from '~/generated/leapmux/v1/common_pb'
 import type { GetGitFileStatusResponse } from '~/generated/leapmux/v1/git_pb'
 import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'
+import { detectFlavor, relativeUnder } from '~/lib/paths'
 
 export type RepoKey = `${string}\0${string}`
 
@@ -64,6 +65,9 @@ export interface RepoGitView {
 export type GitFilterTab = 'all' | 'changed' | 'staged' | 'unstaged'
 
 export type RepoGitStore = ReturnType<typeof createRepoGitStore>
+
+/** Minimal store surface for repo-key resolution helpers. */
+export type RepoGitLookup = Pick<RepoGitStore, 'get' | 'repos'>
 
 /** Options for {@link RepoGitStore.refresh}. */
 export interface RepoGitRefreshOpts {
@@ -222,9 +226,76 @@ export function migrateErrorHintFromForResolvedRepo(
 }
 
 /**
+ * Canonical repo key for `probePath` when refresh already wrote toplevel-keyed
+ * state but the tab still lacks `gitToplevel` (file tabs, probe-path orphans).
+ */
+export function findCanonicalRepoKey(
+  store: RepoGitLookup,
+  workerId: string,
+  probePath: string,
+): RepoKey | undefined {
+  if (!workerId || !probePath)
+    return undefined
+  let best: { key: RepoKey, len: number } | undefined
+  for (const [key, state] of Object.entries(store.repos())) {
+    if (state.workerId !== workerId || !state.toplevel)
+      continue
+    if (state.toplevel === probePath)
+      return key as RepoKey
+    const flavor = detectFlavor(state.toplevel)
+    if (relativeUnder(probePath, state.toplevel, flavor) !== null) {
+      const len = state.toplevel.length
+      if (!best || len > best.len)
+        best = { key: key as RepoKey, len }
+    }
+  }
+  return best?.key
+}
+
+/** True when the store already holds a healthy repo for this probe path. */
+export function hasHealthyRepoForProbe(
+  store: RepoGitLookup,
+  workerId: string,
+  probePath: string,
+  hintKey?: RepoKey,
+): boolean {
+  if (hintKey) {
+    const hinted = store.get(hintKey)
+    if (hinted?.toplevel)
+      return true
+  }
+  return findCanonicalRepoKey(store, workerId, probePath) !== undefined
+}
+
+/**
+ * Apply a GetGitFileStatus upsert. Keeps a stamped branch until the RPC
+ * reports the same branch name.
+ */
+export function applyFullGitStatusUpsert(
+  store: Pick<RepoGitStore, 'get' | 'upsert'>,
+  mapped: { key: RepoKey, patch: Partial<RepoGitState> },
+): RepoKey {
+  const prev = store.get(mapped.key)
+  let branch = mapped.patch.branch ?? ''
+  let branchPinnedUntilRefresh = false
+  if (prev?.branchPinnedUntilRefresh) {
+    const rpcBranch = mapped.patch.branch ?? ''
+    if (rpcBranch === prev.branch) {
+      branch = rpcBranch
+    }
+    else {
+      branch = prev.branch
+      branchPinnedUntilRefresh = true
+    }
+  }
+  store.upsert(mapped.key, { ...mapped.patch, branch, branchPinnedUntilRefresh })
+  return mapped.key
+}
+
+/**
  * Apply a git-status proto to the keyed store. Clears file-derived fields when
  * `toplevel` changes, or when `branch` changes and the branch is not pinned.
- * Turn-end metadata broadcasts with unchanged identity clear stale `errorHint`.
+ * Metadata broadcasts do not carry `errorHint`; stable upserts preserve it.
  */
 export function upsertRepoGitFromProtoStatus(
   store: RepoGitStore,
@@ -274,17 +345,18 @@ export function upsertRepoGitFromProtoStatus(
       errorHint: next.errorHint ?? '',
     }
   }
-  else {
-    next.errorHint = ''
+  else if (prev) {
+    next.errorHint = prev.errorHint
   }
 
   store.upsert(key, next)
 }
 
-/** Repo key for reads; pass `ctx` when the probe path differs from tab fields (file tabs). */
+/** Repo key for reads; pass `ctx` and `store` when the probe path differs from tab fields. */
 export function focusedRepoKeyFromTab(
   tab: { workerId?: string, gitToplevel?: string, workingDir?: string },
   ctx?: { gitToplevel?: string, workingDir?: string },
+  store?: RepoGitLookup,
 ): RepoKey | undefined {
   const fromTab = repoKeyFromTab(tab)
   if (fromTab)
@@ -293,6 +365,15 @@ export function focusedRepoKeyFromTab(
   const path = gitStatusProbePath(ctx ?? tab)
   if (!workerId || !path)
     return undefined
+  if (store) {
+    const canonical = findCanonicalRepoKey(store, workerId, path)
+    if (canonical)
+      return canonical
+    const probeKey = repoKey(workerId, path)
+    const probeState = store.get(probeKey)
+    if (probeState?.toplevel)
+      return repoKey(workerId, probeState.toplevel)
+  }
   return repoKey(workerId, path)
 }
 
@@ -373,10 +454,11 @@ export function patchFromNonRepoGetGitFileStatus(
 
 /** Join a tab's repo identity to the keyed store for UI reads. */
 export function repoGitView(
-  tab: { workerId?: string, gitToplevel?: string },
+  tab: { workerId?: string, gitToplevel?: string, workingDir?: string },
   store: RepoGitStore,
+  ctx?: { gitToplevel?: string, workingDir?: string },
 ): RepoGitView {
-  const key = repoKeyFromTab(tab)
+  const key = focusedRepoKeyFromTab(tab, ctx ?? tab, store)
   if (!key)
     return EMPTY_VIEW
   const state = store.get(key)
@@ -407,5 +489,5 @@ export function repoGitView(
 
 /** Tab-shaped git view for buildTree / tabBuildKey. */
 export function repoGitViewForTab(tab: Tab, store: RepoGitStore): RepoGitView {
-  return repoGitView(tab, store)
+  return repoGitView(tab, store, tab)
 }

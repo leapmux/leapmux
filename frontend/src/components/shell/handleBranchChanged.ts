@@ -3,7 +3,7 @@ import type { createRepoGitStore } from '~/stores/repoGit.store'
 import type { RepoRef } from '~/stores/tab.helpers'
 import * as workerRpc from '~/api/workerRpc'
 import { createLogger } from '~/lib/logger'
-import { patchFromGetGitFileStatus, patchFromNonRepoGetGitFileStatus, repoKey } from '~/stores/repoGit'
+import { applyFullGitStatusUpsert, patchFromGetGitFileStatus, patchFromNonRepoGetGitFileStatus, repoKey } from '~/stores/repoGit'
 import { isSameRepo } from '~/stores/tab.helpers'
 import { stampBranchOnRepo } from './stampBranchOnTabs'
 
@@ -49,7 +49,9 @@ export function handleBranchChanged(
       })
       const mapped = patchFromGetGitFileStatus(repo.workerId, resp)
       if (mapped) {
-        deps.repoGitStore.upsert(mapped.key, { ...mapped.patch, branchPinnedUntilRefresh: false })
+        const writtenKey = applyFullGitStatusUpsert(deps.repoGitStore, mapped)
+        if (deps.repoGitStore.focusedKey() === key)
+          deps.repoGitStore.setFocusedKey(writtenKey)
         return
       }
       const nonRepo = patchFromNonRepoGetGitFileStatus(repo.workerId, resp, key)
@@ -58,6 +60,7 @@ export function handleBranchChanged(
         workerId: repo.workerId,
         toplevel: repo.gitToplevel,
         branch: newBranch,
+        branchPinnedUntilRefresh: false,
       })
     }
     catch (err) {

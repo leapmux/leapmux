@@ -30,7 +30,7 @@ import { shortcutHint } from '~/lib/shortcuts/display'
 import { isWorkerKnownOnline } from '~/lib/workerLiveness'
 import { countActiveBackgroundTasks } from '~/stores/chatBackgroundTasks'
 import { todoProgress } from '~/stores/chatTodos'
-import { gitStatusProbePath, repoKey } from '~/stores/repoGit'
+import { focusedRepoKeyFromTab, gitStatusProbePath } from '~/stores/repoGit'
 import * as csStyles from './CollapsibleSidebar.css'
 import { getSectionIcon, isWorkspaceSection, sectionTypeTestId } from './sectionUtils'
 
@@ -194,10 +194,10 @@ export function buildSectionDef(
           // Not on the handle: a refresh also re-reads git status, which the
           // section does not own.
           onRefresh={() => {
-            const path = gitStatusProbePath({ gitToplevel: ctx.gitToplevel, workingDir: ctx.workingDir })
-            const key = ctx.gitToplevel && ctx.workerId
-              ? repoKey(ctx.workerId, ctx.gitToplevel)
-              : undefined
+            const tab = { workerId: ctx.workerId, gitToplevel: ctx.gitToplevel, workingDir: ctx.workingDir }
+            const probeCtx = { gitToplevel: ctx.gitToplevel, workingDir: ctx.workingDir }
+            const path = gitStatusProbePath(probeCtx)
+            const key = focusedRepoKeyFromTab(tab, probeCtx, ctx.gitStatusStore)
             if (ctx.workerId && path)
               void ctx.gitStatusStore.refresh(ctx.workerId, path, { repoKey: key })
             ctx.filesSectionHandle()?.refresh()

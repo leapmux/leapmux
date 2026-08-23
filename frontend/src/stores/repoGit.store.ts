@@ -7,7 +7,10 @@ import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'
 import { createLogger } from '~/lib/logger'
 import { detectFlavor, relativeUnder, toPosixSeparators } from '~/lib/paths'
 import {
+  applyFullGitStatusUpsert,
   fileEntryToDiffStats,
+  findCanonicalRepoKey,
+  hasHealthyRepoForProbe,
   isUntrackedDirEntry,
   patchFromGetGitFileStatus,
   patchFromNonRepoGetGitFileStatus,
@@ -83,31 +86,63 @@ export function createRepoGitStore() {
     setRepos({})
   }
 
-  const refresh = async (workerId: string, path: string, opts?: RepoGitRefreshOpts) => {
-    if (!workerId || !path)
+  const realignFocusedKeyAfterRefresh = (
+    writtenKey: RepoKey | undefined,
+    workerId: string,
+    path: string,
+    hintKey?: RepoKey,
+  ) => {
+    if (!writtenKey)
       return
+    const focused = focusedKey()
+    const probeKey = repoKey(workerId, path)
+    if (focused === hintKey || focused === probeKey || focused === writtenKey) {
+      if (focused !== writtenKey)
+        setFocusedKeySignal(writtenKey)
+    }
+    if (hintKey && hintKey !== writtenKey) {
+      const orphan = repos[hintKey]
+      if (orphan && !orphan.toplevel)
+        clear(hintKey)
+    }
+  }
+
+  const refresh = async (workerId: string, path: string, opts?: RepoGitRefreshOpts): Promise<RepoKey | undefined> => {
+    if (!workerId || !path)
+      return undefined
     const nonRepoKey = opts?.repoKey ?? (workerId && path ? repoKey(workerId, path) : undefined)
     gen += 1
     const mine = gen
     setLoading(true)
+    let writtenKey: RepoKey | undefined
     try {
       const resp = await workerRpc.getGitFileStatus(workerId, { workerId, path })
       if (mine !== gen)
-        return
+        return undefined
       const mapped = patchFromGetGitFileStatus(workerId, resp)
       if (!mapped) {
-        if (nonRepoKey) {
+        const lookup = { get, repos: () => repos as Readonly<Record<RepoKey, RepoGitState>> }
+        if (nonRepoKey && !hasHealthyRepoForProbe(lookup, workerId, path, nonRepoKey)) {
           const nonRepo = patchFromNonRepoGetGitFileStatus(workerId, resp, nonRepoKey)
           upsert(nonRepo.key, nonRepo.patch)
+          writtenKey = nonRepo.key
         }
-        return
+        else if (hasHealthyRepoForProbe(lookup, workerId, path, nonRepoKey)) {
+          log.warn('ignored non-repo git status response; keeping last-good repo state', { workerId, path })
+          writtenKey = findCanonicalRepoKey(lookup, workerId, path) ?? nonRepoKey
+        }
+        realignFocusedKeyAfterRefresh(writtenKey, workerId, path, nonRepoKey)
+        return writtenKey
       }
-      upsert(mapped.key, { ...mapped.patch, branchPinnedUntilRefresh: false })
+      writtenKey = applyFullGitStatusUpsert({ get, upsert }, mapped)
+      realignFocusedKeyAfterRefresh(writtenKey, workerId, path, nonRepoKey)
+      return writtenKey
     }
     catch (err) {
       if (mine !== gen)
-        return
+        return undefined
       log.warn('failed to refresh git file status', err)
+      return undefined
     }
     finally {
       if (mine === gen)

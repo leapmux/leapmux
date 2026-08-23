@@ -17,7 +17,7 @@ import type { ChannelStatus } from '~/stores/workerChannelStatus.store'
 
 import { createEffect, createMemo, createSignal, onCleanup } from 'solid-js'
 import { registerSidebarFileTreeOps } from '~/lib/fileTreeOps'
-import { gitStatusProbePath, repoKey } from '~/stores/repoGit'
+import { focusedRepoKeyFromTab, gitStatusProbePath } from '~/stores/repoGit'
 import { buildSectionDef } from './buildSectionDef'
 import { useWorkspaceOperations } from './useWorkspaceOperations'
 
@@ -128,10 +128,10 @@ export function useSidebarCore(props: SidebarCommonProps, side: Sidebar) {
 
     const unregister = registerSidebarFileTreeOps({
       refresh: () => {
-        const path = gitStatusProbePath({ gitToplevel: props.gitToplevel, workingDir: props.workingDir })
-        const key = props.gitToplevel && props.workerId
-          ? repoKey(props.workerId, props.gitToplevel)
-          : undefined
+        const tab = { workerId: props.workerId, gitToplevel: props.gitToplevel, workingDir: props.workingDir }
+        const probeCtx = { gitToplevel: props.gitToplevel, workingDir: props.workingDir }
+        const path = gitStatusProbePath(probeCtx)
+        const key = focusedRepoKeyFromTab(tab, probeCtx, props.gitStatusStore)
         if (props.workerId && path)
           void props.gitStatusStore.refresh(props.workerId, path, { repoKey: key })
         handle.refresh()

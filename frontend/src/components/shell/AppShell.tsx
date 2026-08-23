@@ -549,7 +549,7 @@ export const AppShell: Component = () => {
     const ctx = getCurrentTabContext()
     const tab = activeTab() ?? {}
     const path = gitStatusProbePath(ctx)
-    const key = focusedRepoKeyFromTab(tab, ctx)
+    const key = focusedRepoKeyFromTab(tab, ctx, repoGitStore)
     if (ctx.workerId && path)
       void repoGitStore.refresh(ctx.workerId, path, { repoKey: key })
   }
@@ -567,7 +567,7 @@ export const AppShell: Component = () => {
   createEffect(() => {
     const tab = activeTab() ?? {}
     const ctx = getCurrentTabContext()
-    repoGitStore.setFocusedKey(focusedRepoKeyFromTab(tab, ctx))
+    repoGitStore.setFocusedKey(focusedRepoKeyFromTab(tab, ctx, repoGitStore))
   })
 
   // Get working directory and home directory from the MRU agent tab

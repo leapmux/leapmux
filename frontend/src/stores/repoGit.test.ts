@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest'
 import { GitRepoStatusSchema } from '~/generated/leapmux/v1/common_pb'
 import { GetGitFileStatusResponseSchema } from '~/generated/leapmux/v1/git_pb'
 import {
+  applyFullGitStatusUpsert,
+  findCanonicalRepoKey,
   focusedRepoKeyFromTab,
   gitStatusProbePath,
   migrateErrorHintFromForResolvedRepo,
@@ -33,6 +35,66 @@ describe('focusedRepoKeyFromTab', () => {
     const tab = { workerId: 'w1', workingDir: '/repo/pkg' }
     const ctx = { gitToplevel: '/repo', workingDir: '/repo/pkg' }
     expect(focusedRepoKeyFromTab(tab, ctx)).toBe('w1\x00/repo')
+  })
+
+  it('resolves the canonical toplevel key from store state', () => {
+    const store = createRepoGitStore()
+    store.upsert(repoKey('w1', '/repo'), {
+      workerId: 'w1',
+      toplevel: '/repo',
+      branch: 'main',
+    })
+    const tab = { workerId: 'w1', workingDir: '/repo/pkg' }
+    expect(focusedRepoKeyFromTab(tab, tab, store)).toBe('w1\x00/repo')
+  })
+})
+
+describe('findCanonicalRepoKey', () => {
+  it('returns the longest matching toplevel for a nested probe path', () => {
+    const store = createRepoGitStore()
+    store.upsert(repoKey('w1', '/repo'), { workerId: 'w1', toplevel: '/repo', branch: 'main' })
+    expect(findCanonicalRepoKey(store, 'w1', '/repo/pkg')).toBe('w1\x00/repo')
+  })
+})
+
+describe('applyFullGitStatusUpsert', () => {
+  it('keeps a stamped branch when refresh returns a stale branch name', () => {
+    const store = createRepoGitStore()
+    const key = repoKey('w1', '/repo')
+    store.upsert(key, {
+      workerId: 'w1',
+      toplevel: '/repo',
+      branch: 'feature',
+      branchPinnedUntilRefresh: true,
+    })
+
+    applyFullGitStatusUpsert(store, {
+      key,
+      patch: { workerId: 'w1', toplevel: '/repo', branch: 'main', diffAdded: 3 },
+    })
+
+    expect(store.get(key)?.branch).toBe('feature')
+    expect(store.get(key)?.branchPinnedUntilRefresh).toBe(true)
+    expect(store.get(key)?.diffAdded).toBe(3)
+  })
+
+  it('clears the pin when refresh confirms the stamped branch', () => {
+    const store = createRepoGitStore()
+    const key = repoKey('w1', '/repo')
+    store.upsert(key, {
+      workerId: 'w1',
+      toplevel: '/repo',
+      branch: 'feature',
+      branchPinnedUntilRefresh: true,
+    })
+
+    applyFullGitStatusUpsert(store, {
+      key,
+      patch: { workerId: 'w1', toplevel: '/repo', branch: 'feature' },
+    })
+
+    expect(store.get(key)?.branch).toBe('feature')
+    expect(store.get(key)?.branchPinnedUntilRefresh).toBe(false)
   })
 })
 
@@ -160,14 +222,14 @@ describe('upsertRepoGitFromProtoStatus', () => {
     expect(store.get(repoKey('w1', '/repo'))?.errorHint).toBe('not a git repository')
   })
 
-  it('clears errorHint on identity-stable metadata upsert', () => {
+  it('preserves errorHint on identity-stable metadata upsert', () => {
     const store = createRepoGitStore()
     const key = repoKey('w1', '/repo')
     store.upsert(key, {
       workerId: 'w1',
       toplevel: '/repo',
       branch: 'main',
-      errorHint: 'stale hint',
+      errorHint: 'dubious ownership',
     })
 
     upsertRepoGitFromProtoStatus(store, 'w1', create(GitRepoStatusSchema, {
@@ -176,8 +238,27 @@ describe('upsertRepoGitFromProtoStatus', () => {
       ahead: 1,
     }))
 
-    expect(store.get(key)?.errorHint).toBe('')
+    expect(store.get(key)?.errorHint).toBe('dubious ownership')
     expect(store.get(key)?.ahead).toBe(1)
+  })
+
+  it('clears errorHint when toplevel first resolves on a non-repo stub', () => {
+    const store = createRepoGitStore()
+    const key = repoKey('w1', '/repo')
+    store.upsert(key, {
+      workerId: 'w1',
+      toplevel: '',
+      branch: '',
+      errorHint: 'not a git repository',
+    })
+
+    upsertRepoGitFromProtoStatus(store, 'w1', create(GitRepoStatusSchema, {
+      toplevel: '/repo',
+      branch: 'main',
+    }))
+
+    expect(store.get(key)?.errorHint).toBe('')
+    expect(store.get(key)?.toplevel).toBe('/repo')
   })
 
   it('keeps pinned branch and files when a stale broadcast arrives', () => {
@@ -259,5 +340,25 @@ describe('repoGitView', () => {
     expect(view.originUrl).toBeUndefined()
     expect(view.isGitRepo).toBe(false)
     expect(view.diffStats).toEqual({ added: 0, deleted: 0, untracked: 0 })
+  })
+
+  it('reads canonical repo state for a file tab without gitToplevel', () => {
+    const store = createRepoGitStore()
+    store.upsert(repoKey('w1', '/repo'), {
+      workerId: 'w1',
+      toplevel: '/repo',
+      branch: 'feature',
+      diffAdded: 4,
+    })
+
+    const view = repoGitView(
+      { workerId: 'w1', workingDir: '/repo/pkg' },
+      store,
+      { workingDir: '/repo/pkg' },
+    )
+
+    expect(view.key).toBe('w1\x00/repo')
+    expect(view.branchLabel).toBe('feature')
+    expect(view.diffStats).toEqual({ added: 4, deleted: 0, untracked: 0 })
   })
 })

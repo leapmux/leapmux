@@ -170,7 +170,7 @@ describe('createRepoGitStore', () => {
       })
     })
 
-    it('persists errorHint on a non-repo response without clearing the hinted key', async () => {
+    it('keeps last-good repo state when a non-repo response targets a healthy hinted key', async () => {
       await createRoot(async (dispose) => {
         const store = createRepoGitStore()
         const key = repoKey('worker1', '/repo')
@@ -186,10 +186,9 @@ describe('createRepoGitStore', () => {
         await store.refresh('worker1', '/plain-dir', { repoKey: key })
 
         const state = store.get(key)!
-        expect(state.branch).toBe('')
-        expect(state.toplevel).toBe('')
-        expect(state.errorHint).toBe('not a git repository')
-        expect(state.files).toEqual([])
+        expect(state.branch).toBe('main')
+        expect(state.toplevel).toBe('/repo')
+        expect(state.errorHint).toBe('')
         dispose()
       })
     })
@@ -209,6 +208,55 @@ describe('createRepoGitStore', () => {
         await store.refresh('worker1', '/plain-dir')
 
         expect(store.get(key)?.errorHint).toBe('not a git repository')
+        dispose()
+      })
+    })
+
+    it('realigns focusedKey to the canonical toplevel after refresh', async () => {
+      await createRoot(async (dispose) => {
+        const store = createRepoGitStore()
+        const probeKey = repoKey('worker1', '/repo/pkg')
+        store.setFocusedKey(probeKey)
+
+        mockGetGitFileStatus.mockResolvedValueOnce({
+          repoRoot: '/repo',
+          status: { toplevel: '/repo', branch: 'main' },
+          files: [{ path: 'a.txt' }],
+        })
+
+        const written = await store.refresh('worker1', '/repo/pkg', { repoKey: probeKey })
+
+        expect(written).toBe(repoKey('worker1', '/repo'))
+        expect(store.focusedKey()).toBe(repoKey('worker1', '/repo'))
+        expect(store.get(probeKey)).toBeUndefined()
+        dispose()
+      })
+    })
+
+    it('does not overwrite a healthy repo with a transient non-repo response', async () => {
+      await createRoot(async (dispose) => {
+        const store = createRepoGitStore()
+        const key = repoKey('worker1', '/repo')
+        store.upsert(key, {
+          workerId: 'worker1',
+          toplevel: '/repo',
+          branch: 'main',
+          diffAdded: 5,
+        })
+
+        mockGetGitFileStatus.mockResolvedValueOnce({
+          repoRoot: '',
+          status: undefined,
+          files: [],
+          errorHint: 'not a git repository',
+        })
+
+        await store.refresh('worker1', '/repo', { repoKey: key })
+
+        expect(store.get(key)?.branch).toBe('main')
+        expect(store.get(key)?.toplevel).toBe('/repo')
+        expect(store.get(key)?.diffAdded).toBe(5)
+        expect(store.get(key)?.errorHint).toBe('')
         dispose()
       })
     })
