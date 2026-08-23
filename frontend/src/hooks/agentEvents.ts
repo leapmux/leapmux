@@ -778,6 +778,7 @@ export function handleAgentStatusChange(
   settingsLoading: ReturnType<typeof createLoadingSignal>,
   setWorkerOnline: (online: boolean) => void,
   onTurnEnd: ((agentId: string, numToolUses?: number) => void) | undefined,
+  streamWorkerId = '',
 ): void {
   const hasStatus = sc.status !== AgentStatus.UNSPECIFIED
   // `workerOnline` is only authoritative on full status snapshots. Status-less partial
@@ -796,7 +797,7 @@ export function handleAgentStatusChange(
   // Whether THIS agent has any settings change in flight -- gates only the aggregate
   // spinner stop below; the optimistic-value suppression is per-AXIS (pendingAxes).
   const pendingSettings = settingsLoading.isPending(sc.agentId)
-  applyAgentStatusTabUpdate(sc, stores, settingsLoading)
+  applyAgentStatusTabUpdate(sc, stores, settingsLoading, streamWorkerId)
   if (!pendingSettings)
     settingsLoading.stop()
   if (sc.status === AgentStatus.INACTIVE)
@@ -810,13 +811,14 @@ function applyAgentStatusTabUpdate(
   sc: AgentStatusChange,
   stores: Pick<AgentMessageStores, 'chatStore' | 'view' | 'metadata'> & { repoGitStore: ReturnType<typeof createRepoGitStore> },
   settingsLoading: ReturnType<typeof createLoadingSignal>,
+  streamWorkerId = '',
 ): void {
   const { chatStore, view, metadata, repoGitStore } = stores
   const prev = view.getAgentTab(sc.agentId)
   drainPendingOutboundOnStart(sc, prev, chatStore)
   if (sc.optionGroups.length > 0)
     updateSettingsLabelCache(sc.agentProvider, sc.optionGroups)
-  const workerId = prev?.workerId ?? ''
+  const workerId = prev?.workerId || streamWorkerId || ''
   upsertRepoGitFromProtoStatus(repoGitStore, workerId, sc.gitStatus, {
     migrateErrorHintFrom: prev
       ? migrateErrorHintFromForResolvedRepo(workerId, prev, sc.gitStatus)

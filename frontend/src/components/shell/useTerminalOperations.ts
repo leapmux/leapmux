@@ -5,9 +5,10 @@ import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
 import type { ToggleDialogState } from '~/hooks/createDialogState'
 import type { InputQueueDrain } from '~/lib/inputQueue'
 import type { createLayoutStore } from '~/stores/layout.store'
+import type { createRepoGitStore } from '~/stores/repoGit.store'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
-import type { TabSelectionStore } from '~/stores/tabSelection.store'
 
+import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
 import { apiLoadingTimeoutMs } from '~/api/transport'
 import * as workerRpc from '~/api/workerRpc'
@@ -21,7 +22,7 @@ import { useAvailableShells } from '~/hooks/useAvailableShells'
 import { createInflightCache } from '~/lib/inflightCache'
 import { createSharedInputQueues } from '~/lib/inputQueue'
 import { DEFAULT_TERMINAL_COLS, DEFAULT_TERMINAL_ROWS, ENTER_KEY_CR } from '~/lib/terminal'
-import { openedTerminalMetadata, resolveOptimisticGitInfo } from '~/stores/tab.helpers'
+import { openedTerminalMetadata, resolveOptimisticGitInfo, seedOptimisticRepoGit } from '~/stores/tab.helpers'
 import { emitRemoveTab } from '~/stores/tabOps'
 import { openTabInFocusedTile } from './openTabInFocusedTile'
 import { warnUnlessPlaceableTab } from './placeableTabGuard'
@@ -58,6 +59,7 @@ export interface UseTerminalOperationsProps {
   newTerminalDialog: ToggleDialogState
   setNewTerminalLoading: (v: boolean) => void
   setNewShellLoading: (v: boolean) => void
+  repoGitStore: ReturnType<typeof createRepoGitStore>
 }
 
 export function useTerminalOperations(props: UseTerminalOperationsProps) {
@@ -171,6 +173,11 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
       // terminal here" on a sibling worktree inherited the wrong repo's
       // branch, origin and diff badges.
       const seed = resolveOptimisticGitInfo(activeTab, {
+        shellStartDir: args.shellStartDir,
+        workingDir: ctx.workingDir,
+      })
+      seedOptimisticRepoGit(props.repoGitStore, activeTab, {
+        workerId: ctx.workerId,
         shellStartDir: args.shellStartDir,
         workingDir: ctx.workingDir,
       })

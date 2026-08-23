@@ -629,6 +629,7 @@ export const AppShell: Component = () => {
     newTerminalDialog,
     setNewTerminalLoading,
     setNewShellLoading,
+    repoGitStore,
   })
 
   // Tab operations (select, close, file open, worktree confirm).
@@ -651,6 +652,7 @@ export const AppShell: Component = () => {
     setFileTreePath,
     getActiveWorkspaceId: () => workspace.activeWorkspaceId() ?? undefined,
     workerOnlineState: workerId => workerOnlineState(workerSection.workers(), workerId),
+    repoGitStore,
   })
   // Build the final dialog map now that tabOps owns its handle.
   const dialogs: AppShellDialogStates = {

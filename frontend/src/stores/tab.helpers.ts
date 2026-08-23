@@ -1,3 +1,4 @@
+import type { RepoGitStore } from './repoGit'
 import type { AgentTab, Tab, TerminalTab } from './tab.types'
 import type { TerminalMeta } from './tabMetadata.store'
 import type { listTerminals } from '~/api/workerRpc'
@@ -9,6 +10,7 @@ import { TerminalProgress_State, TerminalStatus } from '~/generated/leapmux/v1/t
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { basename } from '~/lib/paths'
 import { updateSettingsLabelCache } from '~/lib/settingsLabelCache'
+import { repoKey, repoKeyFromTab } from './repoGit'
 import { isTerminalTab } from './tab.types'
 
 /**
@@ -451,7 +453,9 @@ function effectiveGitDir(tab: { shellStartDir?: string, workingDir?: string }): 
 /**
  * Optimistic `gitToplevel` to seed on a freshly-opened tab of ANY kind --
  * agent, terminal, or file. Branch/origin/worktree live in the repo-keyed git
- * store; only the toplevel identity travels on the tab row.
+ * store; only the toplevel identity travels on the tab row. Call
+ * {@link seedOptimisticRepoGit} alongside this so the store has branch/origin
+ * for sidebar grouping before the first status broadcast.
  *
  * Only safe to seed when the active tab and the new tab resolve to the same
  * git directory — otherwise the seeded value would be wrong for the new tab's
@@ -477,6 +481,43 @@ export function resolveOptimisticGitInfo(
   if (!activeDir || activeDir !== newDir)
     return {}
   return { gitToplevel: activeTab.gitToplevel }
+}
+
+/**
+ * Copy branch/origin/worktree from the active tab's repo store entry onto the
+ * new tab's key when both resolve to the same git directory. Same-worker opens
+ * share a key and need no copy; different workerIds need this to avoid a
+ * sidebar flash under "(no branch)".
+ */
+export function seedOptimisticRepoGit(
+  store: Pick<RepoGitStore, 'get' | 'upsert'>,
+  activeTab: Tab | null | undefined,
+  newTab: { workerId?: string, shellStartDir?: string, workingDir?: string },
+): void {
+  const seed = resolveOptimisticGitInfo(activeTab, newTab)
+  const workerId = newTab.workerId ?? ''
+  if (!seed.gitToplevel || !workerId || !activeTab?.workerId)
+    return
+  const fromKey = repoKeyFromTab(activeTab)
+  if (!fromKey)
+    return
+  const from = store.get(fromKey)
+  if (!from?.toplevel)
+    return
+  const toKey = repoKey(workerId, seed.gitToplevel)
+  if (toKey === fromKey)
+    return
+  const existing = store.get(toKey)
+  if (existing?.originUrl || existing?.branch)
+    return
+  store.upsert(toKey, {
+    workerId,
+    toplevel: seed.gitToplevel,
+    branch: from.branch,
+    originUrl: from.originUrl,
+    isWorktree: from.isWorktree,
+    gitStatusSeen: from.gitStatusSeen,
+  })
 }
 
 /**

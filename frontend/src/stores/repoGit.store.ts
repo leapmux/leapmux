@@ -65,20 +65,29 @@ export function createRepoGitStore() {
   const [workerKeyEpoch, setWorkerKeyEpoch] = createSignal(0)
   const workerKeys = new Map<string, Set<RepoKey>>()
 
-  let gen = 0
+  /** Global clock for ordering; each probe path has its own generation slot. */
+  let clock = 0
+  const probeGen = new Map<string, number>()
+  const inflightByProbe = new Map<string, { gen: number, keys: Set<RepoKey> }>()
+  const lastCompletedGenByKey = new Map<RepoKey, number>()
+  let loadingCount = 0
 
   const get = (key: RepoKey): RepoGitState | undefined => repos[key]
 
   const bumpWorkerKeyIndex = () => setWorkerKeyEpoch(n => n + 1)
 
-  /**
-   * In-flight refresh targets, plus the last completed gen per repo key.
-   * A superseded refresh clears a pin only when no later refresh (in flight
-   * or completed) covered that key — so a same-path successor can keep the
-   * optimistic pin even after a different-path refresh has moved on.
-   */
-  let inflightRefresh: { gen: number, keys: Set<RepoKey> } | undefined
-  const lastCompletedGenByKey = new Map<RepoKey, number>()
+  const beginLoading = () => {
+    loadingCount += 1
+    setLoading(true)
+  }
+
+  const endLoading = () => {
+    loadingCount = Math.max(0, loadingCount - 1)
+    if (loadingCount === 0)
+      setLoading(false)
+  }
+
+  const probeIdFor = (workerId: string, path: string) => `${workerId}\0${path}`
 
   const indexKey = (key: RepoKey, workerId: string) => {
     if (!workerId)
@@ -145,8 +154,10 @@ export function createRepoGitStore() {
     return pinKeys
   }
 
-  const clearBranchPins = (keys: Iterable<RepoKey>) => {
+  const clearBranchPins = (keys: Iterable<RepoKey>, opts?: { respectCompletedKeep?: boolean }) => {
     for (const key of keys) {
+      if (opts?.respectCompletedKeep && lastCompletedGenByKey.has(key) && get(key)?.branchPinnedUntilRefresh)
+        continue
       if (get(key)?.branchPinnedUntilRefresh)
         upsert(key, { branchPinnedUntilRefresh: false })
     }
@@ -169,6 +180,8 @@ export function createRepoGitStore() {
     setRepos({})
     workerKeys.clear()
     lastCompletedGenByKey.clear()
+    probeGen.clear()
+    inflightByProbe.clear()
     if (hadKeys)
       bumpWorkerKeyIndex()
   }
@@ -195,8 +208,10 @@ export function createRepoGitStore() {
   }
 
   const laterRefreshCoversKey = (mine: number, key: RepoKey): boolean => {
-    if (inflightRefresh && inflightRefresh.gen > mine && inflightRefresh.keys.has(key))
-      return true
+    for (const inflight of inflightByProbe.values()) {
+      if (inflight.gen > mine && inflight.keys.has(key))
+        return true
+    }
     const completedGen = lastCompletedGenByKey.get(key)
     return completedGen !== undefined && completedGen > mine
   }
@@ -204,6 +219,10 @@ export function createRepoGitStore() {
   const releaseStaleRefreshPins = (mine: number, myKeys: Set<RepoKey>) => {
     for (const key of myKeys) {
       if (laterRefreshCoversKey(mine, key))
+        continue
+      // An earlier completed refresh already applied pin policy for this key.
+      // A cancelled nested/canonical probe must not undo that keep.
+      if (lastCompletedGenByKey.has(key) && get(key)?.branchPinnedUntilRefresh)
         continue
       if (get(key)?.branchPinnedUntilRefresh)
         upsert(key, { branchPinnedUntilRefresh: false })
@@ -214,15 +233,17 @@ export function createRepoGitStore() {
     if (!workerId || !path)
       return undefined
     const nonRepoKey = opts?.repoKey ?? (workerId && path ? repoKey(workerId, path) : undefined)
-    gen += 1
-    const mine = gen
+    clock += 1
+    const mine = clock
+    const probeId = probeIdFor(workerId, path)
+    probeGen.set(probeId, mine)
     const myKeys = pinKeysForProbe(workerId, path, nonRepoKey)
-    inflightRefresh = { gen: mine, keys: myKeys }
-    setLoading(true)
+    inflightByProbe.set(probeId, { gen: mine, keys: myKeys })
+    beginLoading()
     let writtenKey: RepoKey | undefined
     try {
       const resp = await workerRpc.getGitFileStatus(workerId, { workerId, path })
-      if (mine !== gen) {
+      if (probeGen.get(probeId) !== mine) {
         releaseStaleRefreshPins(mine, myKeys)
         return undefined
       }
@@ -237,8 +258,7 @@ export function createRepoGitStore() {
         else if (hasHealthyRepoForProbe(lookup, workerId, path, nonRepoKey)) {
           log.warn('ignored non-repo git status response; keeping last-good repo state', { workerId, path })
           writtenKey = findCanonicalRepoKey(lookup, workerId, path) ?? nonRepoKey
-          if (writtenKey && get(writtenKey)?.branchPinnedUntilRefresh)
-            upsert(writtenKey, { branchPinnedUntilRefresh: false })
+          // Keep an optimistic branch pin across a transient non-repo probe.
         }
         realignFocusedKeyAfterRefresh(writtenKey, workerId, path, nonRepoKey)
         return writtenKey
@@ -248,23 +268,26 @@ export function createRepoGitStore() {
       return writtenKey
     }
     catch (err) {
-      if (mine !== gen) {
+      if (probeGen.get(probeId) !== mine) {
         releaseStaleRefreshPins(mine, myKeys)
         return undefined
       }
       log.warn('failed to refresh git file status', err)
-      // Unstick an optimistic branch pin so metadata broadcasts can proceed.
-      clearBranchPins(myKeys)
+      // Unstick an optimistic branch pin so metadata broadcasts can proceed,
+      // but do not undo a keep that an earlier completed refresh already set.
+      clearBranchPins(myKeys, { respectCompletedKeep: true })
       return undefined
     }
     finally {
-      if (mine === gen) {
-        setLoading(false)
+      endLoading()
+      const stillMine = probeGen.get(probeId) === mine
+      if (stillMine) {
         for (const key of myKeys)
           lastCompletedGenByKey.set(key, mine)
-        if (inflightRefresh?.gen === mine)
-          inflightRefresh = undefined
       }
+      const tracked = inflightByProbe.get(probeId)
+      if (tracked?.gen === mine)
+        inflightByProbe.delete(probeId)
     }
   }
 

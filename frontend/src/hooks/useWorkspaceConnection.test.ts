@@ -1502,7 +1502,7 @@ describe('applyTerminalStatusChange', () => {
       applyTerminalStatusChange(
         tabs.metadata,
         repoGitStore,
-        { type: TabType.TERMINAL, id: 'term-unjoined', workspaceId: WS, workerId: 'wkr-1' } as TerminalTab,
+        undefined,
         'term-unjoined',
         statusChange({
           status: TerminalStatus.STARTING,
@@ -1513,6 +1513,7 @@ describe('applyTerminalStatusChange', () => {
             isWorktree: true,
           } as never,
         }),
+        'wkr-1',
       )
 
       const row = tabs.metadata.get('term-unjoined')

@@ -18,13 +18,19 @@ export function stampBranchOnRepo(
     return false
   const key = repoKey(repo.workerId, repo.gitToplevel)
   const prev = repoGitStore.get(key)
-  if (prev?.branch === newBranch)
+  if (prev?.branch === newBranch && prev.branchPinnedUntilRefresh)
     return false
+
+  // Stamping over a non-repo stub restores toplevel while clearing the tip so
+  // the entry is not preservable until a real status arrives.
+  const fromNonRepo = Boolean(prev && !prev.toplevel && (prev.errorHint || prev.gitStatusSeen))
   repoGitStore.upsert(key, {
     workerId: repo.workerId,
     toplevel: repo.gitToplevel,
     branch: newBranch,
     branchPinnedUntilRefresh: true,
+    errorHint: '',
+    ...(fromNonRepo ? { gitStatusSeen: false } : {}),
   })
   return true
 }

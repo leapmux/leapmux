@@ -11,6 +11,7 @@ import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { handleTerminalBell } from '~/hooks/terminalEvents'
+import { createRepoGitStore } from '~/stores/repoGit.store'
 import { emitAddTab } from '~/stores/tabOps'
 import { deferred, flush } from '~/test-support/async'
 import { installTestBridge } from '~/test-support/crdtBridge'
@@ -158,6 +159,7 @@ function setup(status: TerminalStatus | undefined = undefined, tabOverrides: Tab
       newTerminalDialog: { open: () => {}, close: () => {}, isOpen: () => false },
       setNewTerminalLoading: () => {},
       setNewShellLoading: () => {},
+      repoGitStore: createRepoGitStore(),
     })
     return d
   })
@@ -210,6 +212,7 @@ function setupForOpen(opts: OpenSetupOpts = {}) {
       newTerminalDialog: { open: opts.dialogOpen ?? (() => {}), close: () => {}, isOpen: () => false },
       setNewTerminalLoading: opts.setNewTerminalLoading ?? (() => {}),
       setNewShellLoading: opts.setNewShellLoading ?? (() => {}),
+      repoGitStore: createRepoGitStore(),
     })
     return d
   })

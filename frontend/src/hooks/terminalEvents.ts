@@ -61,8 +61,10 @@ export function applyTerminalStatusChange(
   existingTab: TerminalTab | undefined,
   terminalId: string,
   sc: TerminalStatusChange,
+  /** Watch-stream worker id; used when the tab row is not joined yet. */
+  streamWorkerId = '',
 ): void {
-  const workerId = existingTab?.workerId ?? ''
+  const workerId = existingTab?.workerId || streamWorkerId || ''
   upsertRepoGitFromProtoStatus(repoGitStore, workerId, sc.gitStatus, {
     migrateErrorHintFrom: existingTab
       ? migrateErrorHintFromForResolvedRepo(workerId, existingTab, sc.gitStatus)

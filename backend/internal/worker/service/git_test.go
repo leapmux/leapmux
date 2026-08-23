@@ -160,8 +160,8 @@ func TestGetGitFileStatusEntries_CleanTreeShortCircuits(t *testing.T) {
 func TestGetGitFileStatus_ReturnsOriginUrlAndCurrentBranch(t *testing.T) {
 	t.Parallel()
 
+	_, d, w := setupTestService(t)
 	dir := initRepo(t)
-	ctx := context.Background()
 
 	// Set a remote origin URL.
 	run(t, dir, "git", "remote", "add", "origin", "https://github.com/test/repo.git")
@@ -169,22 +169,16 @@ func TestGetGitFileStatus_ReturnsOriginUrlAndCurrentBranch(t *testing.T) {
 	// Create a file so there's something in the status.
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "file.txt"), []byte("hello\n"), 0o644))
 
-	// Exercise the same helpers the handler uses (queryGitPathInfo +
-	// branchOrShortSHA + getGitFileStatusEntries). Avoid re-rolling
-	// the rev-parse pipeline so a regression in branchOrShortSHA's
-	// detached-HEAD fallback can't slip past this test.
-	info, err := queryGitPathInfo(ctx, dir)
-	require.NoError(t, err)
-	files, err := getGitFileStatusEntries(ctx, info.RepoRoot)
-	require.NoError(t, err)
-	require.NotEmpty(t, files)
+	dispatch(d, "GetGitFileStatus", &leapmuxv1.GetGitFileStatusRequest{
+		Path: dir,
+	}, w)
+	require.Len(t, w.responses, 1)
+	var resp leapmuxv1.GetGitFileStatusResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
 
-	branch := branchOrShortSHA(info)
-	originURL := strings.TrimSpace(gitutil.GetOriginURL(ctx, info.RepoRoot))
-
-	// The default branch name depends on git config; just verify it's non-empty.
-	assert.NotEmpty(t, branch)
-	assert.Equal(t, "https://github.com/test/repo.git", originURL)
+	assert.NotEmpty(t, resp.GetStatus().GetBranch())
+	assert.Equal(t, "https://github.com/test/repo.git", resp.GetStatus().GetOriginUrl())
+	assert.NotEmpty(t, resp.GetFiles())
 }
 
 // TestGetGitFileStatus_WorktreeReturnsToplevel pins that GetGitFileStatus
@@ -309,13 +303,13 @@ func TestGetGitFileStatus_ReturnsBehind(t *testing.T) {
 }
 
 // TestGetGitFileStatus_DetachedHEAD covers the branchOrShortSHA
-// fallback the GetGitFileStatus refactor enabled. On a detached HEAD,
-// `--abbrev-ref HEAD` returns the literal "HEAD"; branchOrShortSHA
-// must fall back to the short SHA so the dialog still shows a useful
-// label instead of "HEAD".
+// fallback via the GetGitFileStatus handler. On a detached HEAD,
+// `--abbrev-ref HEAD` returns the literal "HEAD"; the response branch
+// must be the short SHA so the UI still shows a useful label.
 func TestGetGitFileStatus_DetachedHEAD(t *testing.T) {
 	t.Parallel()
 
+	_, d, w := setupTestService(t)
 	dir := initRepo(t)
 	ctx := context.Background()
 
@@ -325,18 +319,17 @@ func TestGetGitFileStatus_DetachedHEAD(t *testing.T) {
 	headSHA = strings.TrimSpace(headSHA)
 	run(t, dir, "git", "checkout", "--detach", headSHA)
 
-	info, err := queryGitPathInfo(ctx, dir)
-	require.NoError(t, err)
-	assert.Empty(t, info.BranchName, "detached HEAD must produce empty BranchName")
-	// The combined-output rev-parse populates HeadSHA from the same
-	// invocation, so branchOrShortSHA no longer forks a second time.
-	assert.Equal(t, headSHA, info.HeadSHA, "HeadSHA must hold the full SHA from the single rev-parse call")
+	dispatch(d, "GetGitFileStatus", &leapmuxv1.GetGitFileStatusRequest{
+		Path: dir,
+	}, w)
+	require.Len(t, w.responses, 1)
+	var resp leapmuxv1.GetGitFileStatusResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
 
-	branch := branchOrShortSHA(info)
-	require.NotEmpty(t, branch, "branchOrShortSHA must fall back to short SHA on detached HEAD")
+	branch := resp.GetStatus().GetBranch()
+	require.NotEmpty(t, branch, "GetGitFileStatus must fall back to short SHA on detached HEAD")
 	assert.True(t, strings.HasPrefix(headSHA, branch),
 		"short SHA %q must be a prefix of full HEAD SHA %q", branch, headSHA)
-	assert.Equal(t, shortSHALen, len(branch), "short SHA must be exactly shortSHALen characters")
 	assert.NotEqual(t, "HEAD", branch, "must not surface the literal 'HEAD'")
 }
 

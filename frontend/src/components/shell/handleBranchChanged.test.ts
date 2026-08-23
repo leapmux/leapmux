@@ -142,10 +142,10 @@ describe('handleBranchChanged', () => {
     )
     await flush()
     await vi.waitFor(() => {
-      expect(repoGitStore.get(repoKey('w1', '/other'))?.branchPinnedUntilRefresh).toBe(false)
+      expect(repoGitStore.get(repoKey('w1', '/other'))?.branch).toBe('feature')
     })
 
-    expect(repoGitStore.get(repoKey('w1', '/other'))?.branch).toBe('feature')
+    expect(repoGitStore.get(repoKey('w1', '/other'))?.branchPinnedUntilRefresh).toBe(true)
     expect(repoGitStore.get(repoKey('w1', '/other'))?.toplevel).toBe('/other')
     expect(repoGitStore.get(repoKey('w1', '/other'))?.diffAdded).toBe(3)
     expect(repoGitStore.get(repoKey('w1', '/other'))?.files).toEqual(files)
@@ -174,11 +174,11 @@ describe('handleBranchChanged', () => {
     )
     await flush()
     await vi.waitFor(() => {
-      expect(repoGitStore.get(repoKey('w1', '/other'))?.branchPinnedUntilRefresh).toBe(false)
+      expect(repoGitStore.get(repoKey('w1', '/other'))?.branch).toBe('feature')
     })
 
     expect(repoGitStore.get(repoKey('w1', '/other'))?.toplevel).toBe('/other')
-    expect(repoGitStore.get(repoKey('w1', '/other'))?.branch).toBe('feature')
+    expect(repoGitStore.get(repoKey('w1', '/other'))?.branchPinnedUntilRefresh).toBe(true)
     expect(repoGitStore.get(repoKey('w1', '/other'))?.errorHint).toBe('')
     expect(repoGitStore.get(repoKey('w1', '/other'))?.gitStatusSeen).toBe(true)
   })

@@ -124,6 +124,7 @@ func RunTerminalGet(rawCtx any, args []string) error {
 // status is rendered through terminalStatusName so the envelope shows
 // "ready" / "starting" / etc. instead of an opaque integer ordinal.
 func terminalInfoToMap(t *leapmuxv1.TerminalInfo) map[string]any {
+	gs := t.GetGitStatus()
 	return map[string]any{
 		"terminal_id":       t.GetTerminalId(),
 		"cols":              t.GetCols(),
@@ -133,9 +134,12 @@ func terminalInfoToMap(t *leapmuxv1.TerminalInfo) map[string]any {
 		"exited":            t.GetExited(),
 		"working_dir":       t.GetWorkingDir(),
 		"shell_start_dir":   t.GetShellStartDir(),
-		"git_branch":        t.GetGitStatus().GetBranch(),
-		"git_origin_url":    t.GetGitStatus().GetOriginUrl(),
-		"git_toplevel":      t.GetGitStatus().GetToplevel(),
+		"git_branch":        gs.GetBranch(),
+		"git_origin_url":    gs.GetOriginUrl(),
+		"git_toplevel":      gs.GetToplevel(),
+		"git_is_worktree":   gs.GetIsWorktree(),
+		"git_ahead":         gs.GetAhead(),
+		"git_behind":        gs.GetBehind(),
 		"title":             t.GetTitle(),
 		"status":            terminalStatusName(t.GetStatus()),
 		"startup_error":     t.GetStartupError(),

@@ -371,7 +371,7 @@ message AgentStatusChange {
   reserved "model", "effort", "permission_mode", "extra_settings", "available_models", "available_option_groups", "supports_model_effort";
 }
 
-// AgentGitStatus was replaced by GitRepoStatus in leapmux/v1/git.proto.
+// AgentGitStatus was replaced by GitRepoStatus in leapmux/v1/common.proto.
 
 // --- Message History ---
 

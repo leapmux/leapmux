@@ -240,7 +240,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
 
   let abortSignalFor: (workerId: string) => AbortSignal | undefined = () => undefined
 
-  const handleAgentEvent = (agentEvent: AgentEvent) => {
+  const handleAgentEvent = (agentEvent: AgentEvent, streamWorkerId: string) => {
     const agentId = agentEvent.agentId
     const inner = agentEvent.event
 
@@ -248,7 +248,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     const markLiveAgentActive = () => {
       if (catchUpPhase !== 'live')
         return
-      const wid = view.getAgentTab(agentId)?.workerId ?? ''
+      const wid = view.getAgentTab(agentId)?.workerId || streamWorkerId || ''
       if (wid)
         setWorkerOnline(wid, true)
       const current = view.getAgentTab(agentId)
@@ -283,8 +283,9 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           catchUpPhase,
           { agentSessionStore, chatStore, view, metadata, selection, getActiveWorkspaceId: params.getActiveWorkspaceId, controlStore, repoGitStore },
           settingsLoading,
-          online => setWorkerOnline(view.getAgentTab(agentId)?.workerId ?? '', online),
+          online => setWorkerOnline(view.getAgentTab(agentId)?.workerId || streamWorkerId || '', online),
           params.onTurnEnd,
+          streamWorkerId,
         )
         break
       case 'controlRequest':
@@ -360,7 +361,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     }
   }
 
-  const handleTerminalEvent = (termEvent: TerminalEvent) => {
+  const handleTerminalEvent = (termEvent: TerminalEvent, streamWorkerId: string) => {
     const terminalId = termEvent.terminalId
 
     switch (termEvent.event.case) {
@@ -403,7 +404,14 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         dropPendingTerminalData(pendingTerminalData, terminalId)
         break
       case 'statusChange':
-        applyTerminalStatusChange(metadata, repoGitStore, view.getTerminalTab(terminalId), terminalId, termEvent.event.value)
+        applyTerminalStatusChange(
+          metadata,
+          repoGitStore,
+          view.getTerminalTab(terminalId),
+          terminalId,
+          termEvent.event.value,
+          streamWorkerId,
+        )
         break
       case 'bell':
         handleTerminalBell(terminalId, { metadata, selection, getActiveWorkspaceId: params.getActiveWorkspaceId, view })
@@ -431,10 +439,10 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     onEvent: (workerId, resp) => {
       switch (resp.event.case) {
         case 'agentEvent':
-          handleAgentEvent(resp.event.value)
+          handleAgentEvent(resp.event.value, workerId)
           break
         case 'terminalEvent':
-          handleTerminalEvent(resp.event.value)
+          handleTerminalEvent(resp.event.value, workerId)
           break
       }
     },

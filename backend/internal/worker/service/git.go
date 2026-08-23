@@ -258,14 +258,32 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 		// `is_worktree` describes the QUERIED dirPath (not repo_root). The
 		// frontend keys repo state by `toplevel` so a worktree refresh
 		// updates only that worktree's tabs.
+		//
+		// GetGitStatus may return nil (porcelain failure) or omit identity
+		// fields while path-info still succeeded. Backfill branch / origin /
+		// worktree / toplevel from path-info so a partial probe cannot wipe
+		// good frontend store state. Always canonicalize toplevel the same
+		// way as repo_root so repo keys do not split on /var vs /private/var.
 		status := gitStatus
 		if status == nil {
 			status = &leapmuxv1.GitRepoStatus{}
 		}
 		if status.Toplevel == "" {
-			status.Toplevel = pathutil.NormalizeNative(info.TopLevel)
+			status.Toplevel = info.TopLevel
 		} else {
-			status.Toplevel = pathutil.NormalizeNative(status.Toplevel)
+			status.Toplevel = pathutil.Canonicalize(status.Toplevel)
+		}
+		status.Toplevel = pathutil.NormalizeNative(status.Toplevel)
+		if status.Branch == "" {
+			status.Branch = branchOrShortSHA(info)
+		}
+		if status.OriginUrl == "" {
+			status.OriginUrl = strings.TrimSpace(gitutil.GetOriginURL(ctx, dirPath))
+		}
+		// Prefer path-info disposition when GetGitStatus omitted it (zero
+		// value is indistinguishable from "main tree" on the wire).
+		if !status.IsWorktree && info.IsWorktree {
+			status.IsWorktree = true
 		}
 		sendProtoResponse(sender, &leapmuxv1.GetGitFileStatusResponse{
 			RepoRoot: pathutil.NormalizeNative(info.RepoRoot),

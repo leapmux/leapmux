@@ -268,15 +268,16 @@ describe('upsertRepoGitFromProtoStatus', () => {
     expect(store.get(key)?.files).toEqual(files)
   })
 
-  it('clears file-derived fields when branch changes', () => {
+  it('keeps file-derived fields when branch changes on metadata upsert', () => {
     const store = createRepoGitStore()
     const key = repoKey('w1', '/repo')
+    const files = [{ path: 'a.txt' } as never]
     store.upsert(key, {
       workerId: 'w1',
       toplevel: '/repo',
       branch: 'main',
       diffAdded: 5,
-      files: [{ path: 'a.txt' } as never],
+      files,
     })
 
     upsertRepoGitFromProtoStatus(store, 'w1', create(GitRepoStatusSchema, {
@@ -285,8 +286,8 @@ describe('upsertRepoGitFromProtoStatus', () => {
     }))
 
     expect(store.get(key)?.branch).toBe('feature')
-    expect(store.get(key)?.diffAdded).toBe(0)
-    expect(store.get(key)?.files).toEqual([])
+    expect(store.get(key)?.diffAdded).toBe(5)
+    expect(store.get(key)?.files).toEqual(files)
   })
 
   it('clears a probe-path orphan without copying its errorHint onto a resolved repo', () => {

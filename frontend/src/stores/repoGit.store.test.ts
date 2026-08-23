@@ -220,7 +220,7 @@ describe('createRepoGitStore', () => {
       })
     })
 
-    it('clears a branch pin when a different-path refresh cancels this one', async () => {
+    it('clears a branch pin when a same-path refresh cancels this one without a later keeper', async () => {
       await createRoot(async (dispose) => {
         const store = createRepoGitStore()
         const otherKey = repoKey('worker1', '/other')
@@ -231,6 +231,34 @@ describe('createRepoGitStore', () => {
           branchPinnedUntilRefresh: true,
         })
 
+        let resolveFirst!: (value: unknown) => void
+        const first = new Promise((resolve) => {
+          resolveFirst = resolve
+        })
+        mockGetGitFileStatus
+          .mockReturnValueOnce(first)
+          .mockRejectedValueOnce(new Error('worker unreachable'))
+
+        const cancelled = store.refresh('worker1', '/other', { repoKey: otherKey })
+        const newest = store.refresh('worker1', '/other', { repoKey: otherKey })
+        await newest
+        resolveFirst({
+          repoRoot: '/other',
+          status: { toplevel: '/other', branch: 'stale' },
+          files: [],
+        })
+        await cancelled
+
+        expect(store.get(otherKey)?.branch).toBe('feature')
+        expect(store.get(otherKey)?.branchPinnedUntilRefresh).toBe(false)
+
+        dispose()
+      })
+    })
+
+    it('applies a refresh result even when another path refreshed meanwhile', async () => {
+      await createRoot(async (dispose) => {
+        const store = createRepoGitStore()
         let resolveOther!: (value: unknown) => void
         const otherRpc = new Promise((resolve) => {
           resolveOther = resolve
@@ -240,23 +268,22 @@ describe('createRepoGitStore', () => {
           .mockResolvedValueOnce({
             repoRoot: '/active',
             status: { toplevel: '/active', branch: 'main' },
-            files: [],
+            files: [{ path: 'a.txt' }],
           })
 
-        const cancelled = store.refresh('worker1', '/other', { repoKey: otherKey })
-        const active = store.refresh('worker1', '/active')
-        await active
+        const other = store.refresh('worker1', '/other', { repoKey: repoKey('worker1', '/other') })
+        await store.refresh('worker1', '/active')
         resolveOther({
-          repoRoot: '',
-          status: undefined,
-          files: [],
-          errorHint: 'not a git repository',
+          repoRoot: '/other',
+          status: { toplevel: '/other', branch: 'dev', originUrl: 'o' },
+          files: [{ path: 'b.txt' }],
         })
-        await cancelled
+        await other
 
-        expect(store.get(otherKey)?.branch).toBe('feature')
-        expect(store.get(otherKey)?.branchPinnedUntilRefresh).toBe(false)
         expect(store.get(repoKey('worker1', '/active'))?.branch).toBe('main')
+        expect(store.get(repoKey('worker1', '/active'))?.files.map(f => f.path)).toEqual(['a.txt'])
+        expect(store.get(repoKey('worker1', '/other'))?.branch).toBe('dev')
+        expect(store.get(repoKey('worker1', '/other'))?.files.map(f => f.path)).toEqual(['b.txt'])
 
         dispose()
       })
@@ -299,6 +326,81 @@ describe('createRepoGitStore', () => {
 
         // Newest refresh saw pin + mismatched RPC branch and kept the stamp.
         expect(store.get(key)?.branch).toBe('feature')
+        expect(store.get(key)?.branchPinnedUntilRefresh).toBe(true)
+
+        dispose()
+      })
+    })
+
+    it('keeps a same-path pin after a cancelled nested probe', async () => {
+      await createRoot(async (dispose) => {
+        const store = createRepoGitStore()
+        const key = repoKey('worker1', '/repo')
+        store.upsert(key, {
+          workerId: 'worker1',
+          toplevel: '/repo',
+          branch: 'feature',
+          branchPinnedUntilRefresh: true,
+          gitStatusSeen: true,
+        })
+
+        mockGetGitFileStatus.mockResolvedValueOnce({
+          repoRoot: '/repo',
+          status: { toplevel: '/repo', branch: 'main' },
+          files: [],
+        })
+        await store.refresh('worker1', '/repo', { repoKey: key })
+        expect(store.get(key)?.branchPinnedUntilRefresh).toBe(true)
+
+        let resolveNested!: (value: unknown) => void
+        const nestedRpc = new Promise((resolve) => {
+          resolveNested = resolve
+        })
+        mockGetGitFileStatus
+          .mockReturnValueOnce(nestedRpc)
+          .mockRejectedValueOnce(new Error('superseded'))
+
+        const nested = store.refresh('worker1', '/repo/pkg', { repoKey: repoKey('worker1', '/repo/pkg') })
+        await store.refresh('worker1', '/repo/pkg', { repoKey: repoKey('worker1', '/repo/pkg') })
+        resolveNested({
+          repoRoot: '',
+          status: undefined,
+          files: [],
+          errorHint: 'not a git repository',
+        })
+        await nested
+
+        expect(store.get(key)?.branch).toBe('feature')
+        expect(store.get(key)?.branchPinnedUntilRefresh).toBe(true)
+
+        dispose()
+      })
+    })
+
+    it('keeps the branch pin when ignoring a transient non-repo for a healthy repo', async () => {
+      await createRoot(async (dispose) => {
+        const store = createRepoGitStore()
+        const key = repoKey('worker1', '/repo')
+        store.upsert(key, {
+          workerId: 'worker1',
+          toplevel: '/repo',
+          branch: 'feature',
+          branchPinnedUntilRefresh: true,
+          gitStatusSeen: true,
+          diffAdded: 3,
+        })
+
+        mockGetGitFileStatus.mockResolvedValueOnce({
+          repoRoot: '',
+          status: undefined,
+          files: [],
+          errorHint: 'not a git repository',
+        })
+
+        await store.refresh('worker1', '/repo', { repoKey: key })
+
+        expect(store.get(key)?.branch).toBe('feature')
+        expect(store.get(key)?.diffAdded).toBe(3)
         expect(store.get(key)?.branchPinnedUntilRefresh).toBe(true)
 
         dispose()

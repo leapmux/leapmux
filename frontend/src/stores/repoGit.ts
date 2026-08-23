@@ -369,9 +369,10 @@ export function applyFullGitStatusUpsert(
 
 /**
  * Apply a git-status proto to the keyed store. Clears file-derived fields when
- * `toplevel` changes, or when `branch` changes and the branch is not pinned.
- * Metadata broadcasts do not carry diagnostics. Identity-stable upserts clear
- * orphan-migration tips, but keep a refresh-sourced hint on a hydrated entry.
+ * `toplevel` changes. Branch-only metadata updates keep the last file list
+ * until a GetGitFileStatus refresh replaces it. Metadata broadcasts do not
+ * carry diagnostics. Identity-stable upserts clear orphan-migration tips, but
+ * keep a refresh-sourced hint on a hydrated entry.
  */
 export function upsertRepoGitFromProtoStatus(
   store: RepoGitStore,
@@ -411,12 +412,11 @@ export function upsertRepoGitFromProtoStatus(
     }
   }
   else if (branchChanged && !prev?.branchPinnedUntilRefresh) {
+    // Metadata broadcasts do not carry file lists. Keep the last file list
+    // until GetGitFileStatus refresh replaces it — clearing here flashes an
+    // empty Changed filter between status and refresh.
     next = {
       ...next,
-      diffAdded: 0,
-      diffDeleted: 0,
-      diffUntracked: 0,
-      files: [],
       errorHint: prev?.errorHint && hasHydratedRepoGitFields(prev) ? prev.errorHint : '',
     }
   }

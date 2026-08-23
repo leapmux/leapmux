@@ -9,7 +9,7 @@ import { GitRepoStatusSchema } from '~/generated/leapmux/v1/common_pb'
 import { TerminalInfoSchema, TerminalProgress_State, TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { clearSettingsLabelCache, getCachedSettingsGroupLabel } from '~/lib/settingsLabelCache'
-import { agentTabToInfo, deriveOptionGroupTabFields, descendantAgentTabs, isSameRepo, isSteerableAgentTab, isTabReadyForGitStatus, mruSteerableAgentTab, openedTerminalMetadata, protoToAgentTabFields, resolveOptimisticGitInfo, rootAgentIdFor, setOptionValue, tabDisplayLabel, tabTooltipShowWhen, tabTooltipText, terminalMetadata, terminalProgressBarProps } from './tab.helpers'
+import { agentTabToInfo, deriveOptionGroupTabFields, descendantAgentTabs, isSameRepo, isSteerableAgentTab, isTabReadyForGitStatus, mruSteerableAgentTab, openedTerminalMetadata, protoToAgentTabFields, resolveOptimisticGitInfo, rootAgentIdFor, seedOptimisticRepoGit, setOptionValue, tabDisplayLabel, tabTooltipShowWhen, tabTooltipText, terminalMetadata, terminalProgressBarProps } from './tab.helpers'
 import { createTabMetadataStore } from './tabMetadata.store'
 
 // `tabDisplayLabel` is the shared "what should we render in the tab strip
@@ -592,6 +592,44 @@ describe('resolveOptimisticGitInfo', () => {
       { workingDir: '/r' },
     )
     expect(seed.gitToplevel).toBe('/r')
+  })
+})
+
+describe('seedOptimisticRepoGit', () => {
+  it('copies branch and origin onto a different worker key when dirs match', async () => {
+    const { createRepoGitStore } = await import('~/stores/repoGit.store')
+    const { repoKey } = await import('~/stores/repoGit')
+    const store = createRepoGitStore()
+    const active = agent({ workerId: 'w1', gitToplevel: '/r', workingDir: '/r' })
+    store.upsert(repoKey('w1', '/r'), {
+      workerId: 'w1',
+      toplevel: '/r',
+      branch: 'main',
+      originUrl: 'git@example.com:o/r.git',
+      gitStatusSeen: true,
+    })
+
+    seedOptimisticRepoGit(store, active, { workerId: 'w2', workingDir: '/r' })
+
+    expect(store.get(repoKey('w2', '/r'))?.branch).toBe('main')
+    expect(store.get(repoKey('w2', '/r'))?.originUrl).toBe('git@example.com:o/r.git')
+  })
+
+  it('does nothing when the new tab shares the active store key', async () => {
+    const { createRepoGitStore } = await import('~/stores/repoGit.store')
+    const { repoKey } = await import('~/stores/repoGit')
+    const store = createRepoGitStore()
+    const active = agent({ workerId: 'w1', gitToplevel: '/r', workingDir: '/r' })
+    store.upsert(repoKey('w1', '/r'), {
+      workerId: 'w1',
+      toplevel: '/r',
+      branch: 'main',
+      originUrl: 'git@example.com:o/r.git',
+    })
+
+    seedOptimisticRepoGit(store, active, { workerId: 'w1', workingDir: '/r' })
+
+    expect(store.get(repoKey('w1', '/r'))?.branch).toBe('main')
   })
 })
 
