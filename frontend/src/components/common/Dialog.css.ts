@@ -20,6 +20,12 @@ const SAFE_LEFT = 'var(--leapmux-safe-area-inset-left, env(safe-area-inset-left,
 // browser chrome is visible (same reason `huge` uses dvh on the phone band).
 const SAFE_MAX_HEIGHT = `calc(100dvh - ${SAFE_TOP} - ${SAFE_BOTTOM})`
 const SAFE_MAX_HEIGHT_OAT = `calc(85vh - ${SAFE_TOP} - ${SAFE_BOTTOM})`
+// Cap width so a content-sized or `NNvw` panel cannot ignore left/right when
+// those insets are non-zero. Abspos with left+right+width over-constrained
+// drops an inset (LTR drops `right`), which is exactly the landscape-notch
+// failure: the close button sits under the cutout. `dvw` matches the height
+// path's preference for the dynamic viewport.
+const SAFE_MAX_WIDTH = `calc(100dvw - ${SAFE_LEFT} - ${SAFE_RIGHT})`
 
 // Oat caps every dialog at `max-height: 85vh` from `@layer components`, and a
 // max-height beats `tall`'s `height: 100vh` — so without the raise below, the
@@ -64,6 +70,10 @@ globalStyle(`dialog.${standard}:modal`, {
   'left': SAFE_LEFT,
   'height': 'fit-content',
   'maxHeight': SAFE_MAX_HEIGHT_OAT,
+  // Desktop band (≥ sm) keeps Oat/content width, but must still clear a
+  // landscape notch / display cutout. Without this cap, left+right+width is
+  // over-constrained and the used box centers on the full viewport.
+  'maxWidth': SAFE_MAX_WIDTH,
   'margin': 'auto',
   '@media': {
     [`(max-width: ${breakpoints.sm - 1}px)`]: {
@@ -71,7 +81,7 @@ globalStyle(`dialog.${standard}:modal`, {
       // `width: 100%` would be 100% of the viewport and overflow the
       // horizontal insets on a landscape notched phone.
       width: 'auto',
-      maxWidth: '100%',
+      maxWidth: SAFE_MAX_WIDTH,
       maxHeight: SAFE_MAX_HEIGHT,
     },
   },

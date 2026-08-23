@@ -62,6 +62,11 @@ describe('dialog safe-area insets (Dialog.css.ts)', () => {
     expect(block).toMatch(/['"]bottom['"]\s*:\s*SAFE_BOTTOM\b/)
     expect(block).toMatch(/['"]left['"]\s*:\s*SAFE_LEFT\b/)
     expect(block).toMatch(/['"]height['"]\s*:\s*['"]fit-content['"]/)
+    // Landscape notch / cutout: without a max-width that subtracts left+right,
+    // abspos over-constraint drops an inset and the close button sits under
+    // the notch on the desktop band (≥ sm).
+    expect(block).toMatch(/['"]maxWidth['"]\s*:\s*SAFE_MAX_WIDTH\b/)
+    expect(source).toContain('SAFE_MAX_WIDTH')
   })
 
   it('lets tall and huge dialogs fill the safe rectangle on the phone band', () => {
