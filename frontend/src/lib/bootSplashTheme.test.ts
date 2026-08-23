@@ -80,10 +80,10 @@ describe('bootSplashDocumentCss', () => {
     expect(css).toContain('position:fixed')
     expect(css).toContain(`#${BOOT_SPLASH_STATIC_ID}{min-height:100%}`)
     expect(css).toContain(
-      `[data-testid="${BOOT_SPLASH_TEST_ID}"]:not(#${BOOT_SPLASH_STATIC_ID}){min-height:100%;min-height:100dvh}`,
+      `[data-testid="${BOOT_SPLASH_TEST_ID}"]:not(#${BOOT_SPLASH_STATIC_ID}){min-height:100dvh}`,
     )
     // Static splash must not pick up the Solid-only 100dvh floor.
-    expect(css).not.toContain(`#${BOOT_SPLASH_STATIC_ID}{min-height:100%;min-height:100dvh}`)
+    expect(css).not.toContain(`#${BOOT_SPLASH_STATIC_ID}{min-height:100dvh}`)
     expect(css).toContain(`html[data-theme="dark"]`)
     expect(css).toContain(`[data-testid="${BOOT_SPLASH_TEST_ID}"]`)
     expect(css).toContain(`#${BOOT_SPLASH_STATIC_ID}[data-boot-failed]`)

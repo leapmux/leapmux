@@ -171,7 +171,7 @@ body{
   color:${lightFg};
 }
 #${id}{min-height:100%}
-[data-testid="${testId}"]:not(#${id}){min-height:100%;min-height:100dvh}
+[data-testid="${testId}"]:not(#${id}){min-height:100dvh}
 @media (prefers-color-scheme: dark){
   #${id},[data-testid="${testId}"]{
     background:${darkBg};
