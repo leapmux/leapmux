@@ -1090,6 +1090,81 @@ func TestWriterFlushReturnsErrClosedWhenWritePanics(t *testing.T) {
 		"panic must set WritePanicked so shutdown notify can file Hub-side failure")
 }
 
+// If OnDiscard panics while latching a panicking Write, finishWrite must still
+// clear writing -- otherwise Flush parks until its deadline on a dead writer.
+func TestWriterFlushClearsWritingWhenOnDiscardPanicsAfterWritePanic(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	release := make(chan struct{})
+	var writeStarted sync.WaitGroup
+	writeStarted.Add(1)
+	w := NewUnstarted(ctx, Config[string]{
+		Write: func(context.Context, string) error {
+			writeStarted.Done()
+			<-release
+			panic("transport exploded")
+		},
+		Size:     func(s string) int { return len(s) },
+		MaxBytes: 1024,
+		OnDiscard: func(int, int64) {
+			panic("OnDiscard exploded")
+		},
+	})
+	t.Cleanup(w.Close)
+
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		for {
+			select {
+			case <-w.Wake():
+				func() {
+					defer func() { _ = recover() }()
+					_ = w.Drain()
+				}()
+				return
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	// Second frame stays queued so latchClosed's discard path runs OnDiscard.
+	require.True(t, w.TryEnqueueControl("in-flight"))
+	require.True(t, w.TryEnqueueControl("discard-me"))
+	writeStarted.Wait()
+
+	flushed := make(chan error, 1)
+	fctx, fcancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer fcancel()
+	go func() { flushed <- w.Flush(fctx) }()
+	close(release)
+
+	select {
+	case <-drained:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Drain never returned after Write+OnDiscard panicked")
+	}
+
+	w.mu.Lock()
+	writing := w.writing
+	w.mu.Unlock()
+	assert.False(t, writing,
+		"finishWrite must run after an OnDiscard panic during the write-panic latch")
+
+	select {
+	case err := <-flushed:
+		require.ErrorIs(t, err, ErrClosed,
+			"Flush must not hang or succeed after Write+OnDiscard panic")
+	case <-time.After(3 * time.Second):
+		t.Fatal("Flush never returned after Write+OnDiscard panicked")
+	}
+	assert.True(t, w.WritePanicked())
+	assert.False(t, w.GaveUp())
+}
+
 // OnGiveUp often cancels the writer context (Conn.Fence). Flush must still
 // report ErrClosed for the refused write, not the cancel that teardown used.
 func TestWriterFlushReturnsErrClosedWhenGiveUpCancelsWriterCtx(t *testing.T) {
