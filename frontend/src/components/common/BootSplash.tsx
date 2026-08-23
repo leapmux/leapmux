@@ -18,7 +18,6 @@ export const BootSplashIcon: Component = () => (
     width={BOOT_SPLASH_ICON_WIDTH}
     height={BOOT_SPLASH_ICON_HEIGHT}
     aria-hidden="true"
-    focusable="false"
     data-boot-splash-icon
   >
     <rect width="64" height="64" rx="14" fill="#0D9488" />
