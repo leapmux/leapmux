@@ -262,7 +262,7 @@ export const huge = style({
 globalStyle(`dialog.${standard}.${huge}:modal`, {
   // Keep the desktop cap, but never taller than the safe rectangle.
   // Re-state maxWidth so this compound selector (0,3,1) does not leave
-  // SAFE_MAX_WIDTH_STANDARD's 900px floor winning over huge's 1200 design.
+  // SAFE_MAX_WIDTH_STANDARD's 900px ceiling winning over huge's 1200 design.
   'height': `min(820px, calc(88vh - ${SAFE_TOP} - ${SAFE_BOTTOM}))`,
   'maxHeight': `min(820px, calc(88vh - ${SAFE_TOP} - ${SAFE_BOTTOM}))`,
   'maxWidth': SAFE_MAX_WIDTH_HUGE,

@@ -13,6 +13,8 @@ import { openPreferencesDialog } from './helpers/ui'
  *
  * Coverage:
  *   - Portrait (standard): status bar + home indicator (top/bottom).
+ *   - Portrait phone-band (huge / Preferences): same vertical insets on the
+ *     phone full-bleed huge path (`width: auto`, SAFE_MAX_HEIGHT).
  *   - Landscape notch (standard): notch on the right (close button side);
  *     width ≥ sm so the desktop-band dialog path applies.
  *   - Landscape notch (huge / Preferences): same notch path for the wider
@@ -167,6 +169,8 @@ function assertClearsSafeArea(
 }
 
 test.describe('dialog safe-area geometry (portrait)', () => {
+  // Width < sm so phone-band dialog rules apply (huge uses width:auto +
+  // SAFE_MAX_HEIGHT, not the desktop SAFE_MAX_WIDTH_HUGE path).
   test.use({ viewport: { width: 390, height: 844 } })
 
   test('panel and close button clear status bar and home indicator', async ({
@@ -180,6 +184,32 @@ test.describe('dialog safe-area geometry (portrait)', () => {
     const geometry = await readDialogGeometry(page)
     expect(geometry, 'open dialog + close button').not.toBeNull()
     assertClearsSafeArea(geometry!, IPHONE_PORTRAIT)
+  })
+
+  test('Preferences (huge) panel and close button clear status bar and home indicator', async ({
+    page,
+    authenticatedWorkspace,
+  }) => {
+    void authenticatedWorkspace
+    await applySimulatedSafeArea(page, IPHONE_PORTRAIT)
+    await openPreferencesDialog(page)
+
+    const geometry = await readDialogGeometry(page)
+    expect(geometry, 'open Preferences dialog + close button').not.toBeNull()
+    assertClearsSafeArea(geometry!, IPHONE_PORTRAIT)
+
+    // Phone-band huge forces SAFE_MAX_HEIGHT; the panel must fill the safe
+    // rectangle vertically without covering the Island or home indicator.
+    expect(geometry!.dialog.height).toBeGreaterThanOrEqual(
+      geometry!.viewport.h
+      - IPHONE_PORTRAIT.top
+      - IPHONE_PORTRAIT.bottom
+      - 2,
+    )
+    expect(geometry!.dialog.top).toBeGreaterThanOrEqual(IPHONE_PORTRAIT.top - 1)
+    expect(geometry!.dialog.bottom).toBeLessThanOrEqual(
+      geometry!.viewport.h - IPHONE_PORTRAIT.bottom + 1,
+    )
   })
 })
 
