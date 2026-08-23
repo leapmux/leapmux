@@ -3,19 +3,15 @@ import { breakpoints, motion } from '~/styles/tokens'
 
 // Dialog container
 
-// Safe-area inset values. Prefer `env(safe-area-inset-*)`, which is non-zero
-// on an iOS/Android PWA (or iPhone Safari) with `viewport-fit=cover` for the
-// status bar / Dynamic Island / notch / home indicator / display cutout, and
-// 0px on ordinary desktop browsers.
-//
-// `--leapmux-safe-area-inset-*` is an optional override (manual DevTools /
-// ad-hoc probes). The geometry e2e injects real `env()` values via CDP
-// `Emulation.setSafeAreaInsetsOverride` instead, so production leaves these
-// custom properties unset and `env()` wins.
-const SAFE_TOP = 'var(--leapmux-safe-area-inset-top, env(safe-area-inset-top, 0px))'
-const SAFE_RIGHT = 'var(--leapmux-safe-area-inset-right, env(safe-area-inset-right, 0px))'
-const SAFE_BOTTOM = 'var(--leapmux-safe-area-inset-bottom, env(safe-area-inset-bottom, 0px))'
-const SAFE_LEFT = 'var(--leapmux-safe-area-inset-left, env(safe-area-inset-left, 0px))'
+// Safe-area inset values from `env(safe-area-inset-*)`: non-zero on an
+// iOS/Android PWA (or iPhone Safari) with `viewport-fit=cover` for the
+// status bar / Dynamic Island / notch / home indicator / display cutout,
+// and 0px on ordinary desktop browsers. Geometry e2e injects these via CDP
+// `Emulation.setSafeAreaInsetsOverride` (real `env()`, not a CSS-var shim).
+const SAFE_TOP = 'env(safe-area-inset-top, 0px)'
+const SAFE_RIGHT = 'env(safe-area-inset-right, 0px)'
+const SAFE_BOTTOM = 'env(safe-area-inset-bottom, 0px)'
+const SAFE_LEFT = 'env(safe-area-inset-left, 0px)'
 // Prefer dvh: on iOS Safari `vh` is the LARGE viewport and overshoots when
 // browser chrome is visible (same reason `huge` uses dvh on the phone band).
 const SAFE_MAX_HEIGHT = `calc(100dvh - ${SAFE_TOP} - ${SAFE_BOTTOM})`

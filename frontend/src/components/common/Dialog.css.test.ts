@@ -37,16 +37,16 @@ function standardModalBlock(): string {
 }
 
 describe('dialog safe-area insets (Dialog.css.ts)', () => {
-  it('defines each inset as env() with an optional CSS-variable override', () => {
+  it('defines each inset as env() with a 0px fallback', () => {
     for (const inset of [
       'safe-area-inset-top',
       'safe-area-inset-right',
       'safe-area-inset-bottom',
       'safe-area-inset-left',
     ]) {
-      expect(source, inset).toContain(
-        `var(--leapmux-${inset}, env(${inset}, 0px))`,
-      )
+      expect(source, inset).toContain(`env(${inset}, 0px)`)
+      // No CSS-var bridge: geometry e2e injects real env() via CDP.
+      expect(source, inset).not.toContain(`--leapmux-${inset}`)
     }
   })
 
