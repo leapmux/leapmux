@@ -7,6 +7,7 @@ import {
   BOOT_SPLASH_GAP,
   BOOT_SPLASH_ICON_SRC,
   BOOT_SPLASH_LABEL,
+  BOOT_SPLASH_SPACE_4,
   BOOT_SPLASH_TEST_ID,
   bootSplashDark,
   bootSplashDocumentCss,
@@ -65,6 +66,7 @@ describe('parseBootPrefsThemeMode', () => {
 describe('bootSplashDocumentCss', () => {
   it('covers html/body fill, splash polarity, and the shared gap token', () => {
     const css = bootSplashDocumentCss()
+    expect(css).toContain(`:root{--space-4:${BOOT_SPLASH_SPACE_4}}`)
     expect(css).toContain(`gap:${BOOT_SPLASH_GAP}`)
     expect(css).toContain(bootSplashLight.background)
     expect(css).toContain(bootSplashDark.background)

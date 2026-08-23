@@ -37,9 +37,13 @@ export const BOOT_SPLASH_ICON_HEIGHT = 64
 
 /**
  * Spacing token for the splash column gap. Used in the document `<style>` and
- * in `BootSplash.css.ts` — never a bare `1rem` literal.
+ * in `BootSplash.css.ts`. The boot document CSS also seeds `--space-4: 1rem`
+ * so the gap resolves before oat's theme sheet loads.
  */
 export const BOOT_SPLASH_GAP = 'var(--space-4)'
+
+/** Literal that matches oat's `--space-4` (see `@knadh/oat` `01-theme.css`). */
+export const BOOT_SPLASH_SPACE_4 = '1rem'
 
 /**
  * Resolve splash polarity the same way `themeStore.resolvedMode` does for the
@@ -93,6 +97,7 @@ export function bootSplashDocumentCss(): string {
   const darkBg = bootSplashDark.background
   const darkFg = bootSplashDark.foreground
   return `
+:root{--space-4:${BOOT_SPLASH_SPACE_4}}
 html,body{margin:0;background:${lightBg}}
 @media (prefers-color-scheme: dark){
   html,body{background:${darkBg}}
