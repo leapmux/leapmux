@@ -13,7 +13,13 @@ vi.mock('./renderArtifactStore', () => ({
 const { renderMarkdownInWorker } = await import('./markdownWorkerClient')
 const { tokenizeAsync } = await import('./shikiWorkerClient')
 const { sweepArtifacts } = await import('./renderArtifactStore')
-const { _resetWarmupForTest, scheduleRenderPipelineWarmup, WARMUP_FALLBACK_DELAY_MS } = await import('./renderPipelineWarmup')
+const {
+  _resetWarmupForTest,
+  isConstrainedStartupNetwork,
+  scheduleRenderPipelineWarmup,
+  WARMUP_CONSTRAINED_DELAY_MS,
+  WARMUP_FALLBACK_DELAY_MS,
+} = await import('./renderPipelineWarmup')
 
 describe('renderpipelinewarmup', () => {
   beforeEach(() => {
@@ -22,6 +28,16 @@ describe('renderpipelinewarmup', () => {
     vi.mocked(tokenizeAsync).mockClear()
     vi.mocked(sweepArtifacts).mockClear()
     ;(globalThis as unknown as { Worker: unknown }).Worker = class {}
+    // Desktop-sized viewport so the constrained path does not steal these cases.
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: false,
+      media: query,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    }))
   })
 
   afterEach(() => {
@@ -41,9 +57,9 @@ describe('renderpipelinewarmup', () => {
     expect(callbacks).toHaveLength(1)
     expect(renderMarkdownInWorker).not.toHaveBeenCalled() // deferred to idle
 
-    callbacks[0]()
+    callbacks[0]!()
     expect(renderMarkdownInWorker).toHaveBeenCalledTimes(1)
-    expect(vi.mocked(renderMarkdownInWorker).mock.calls[0][0]).toContain('```ts')
+    expect(vi.mocked(renderMarkdownInWorker).mock.calls[0]![0]).toContain('```ts')
     expect(tokenizeAsync).toHaveBeenCalledWith('typescript', 'const warm = 1')
     expect(sweepArtifacts).toHaveBeenCalledTimes(1)
   })
@@ -76,5 +92,29 @@ describe('renderpipelinewarmup', () => {
     expect(renderMarkdownInWorker).toHaveBeenCalledTimes(1)
     expect(tokenizeAsync).toHaveBeenCalledTimes(1)
     expect(sweepArtifacts).toHaveBeenCalledTimes(1)
+  })
+
+  it('defers far longer on a phone-width viewport instead of idle-forcing workers', () => {
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: query.includes('max-width: 767px'),
+      media: query,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    }))
+    expect(isConstrainedStartupNetwork()).toBe(true)
+
+    const ric = vi.fn()
+    vi.stubGlobal('requestIdleCallback', ric)
+    vi.useFakeTimers()
+    scheduleRenderPipelineWarmup()
+    expect(ric).not.toHaveBeenCalled()
+    expect(renderMarkdownInWorker).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(WARMUP_CONSTRAINED_DELAY_MS - 1)
+    expect(renderMarkdownInWorker).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(1)
+    expect(renderMarkdownInWorker).toHaveBeenCalledTimes(1)
   })
 })

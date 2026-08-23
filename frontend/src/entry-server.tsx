@@ -45,21 +45,47 @@ export default createHandler(() => (
           <meta name="apple-mobile-web-app-capable" content="yes" />
           <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
           {/*
-            Preload the Hack NF faces so code blocks lay out with the real font
-            on first paint. Without this the woff2 fetch starts only when the
-            first code block matches the @font-face, and the late swap changes
-            code-block heights — every one of which the chat virtualizer must
-            re-measure and re-anchor. `crossorigin` is required: font preloads
-            without it use a different fetch mode and the browser re-downloads.
+            Preload ONLY the Regular Hack NF face. All four faces are ~1.1 MB
+            each; preloading Bold/Italic/BoldItalic on every cold load competed
+            with the entry JS graph on mobile LTE and left `#app` blank for
+            tens of seconds. Bold/Italic still load lazily when a code surface
+            first matches those @font-face rules. `crossorigin` is required:
+            font preloads without it use a different fetch mode and the
+            browser re-downloads.
           */}
           <link rel="preload" href="/fonts/HackNerdFont-3.003-Regular.woff2" as="font" type="font/woff2" crossorigin="anonymous" />
-          <link rel="preload" href="/fonts/HackNerdFont-3.003-Bold.woff2" as="font" type="font/woff2" crossorigin="anonymous" />
-          <link rel="preload" href="/fonts/HackNerdFont-3.003-Italic.woff2" as="font" type="font/woff2" crossorigin="anonymous" />
-          <link rel="preload" href="/fonts/HackNerdFont-3.003-BoldItalic.woff2" as="font" type="font/woff2" crossorigin="anonymous" />
           {assets}
         </head>
         <body>
-          <div id="app">{children}</div>
+          {/*
+            Static boot splash (no SSR): Go serves this HTML as-is. Solid's
+            client mount replaces `#app` contents. Keep in lockstep with
+            `~/components/common/BootSplash` (Suspense / AuthGuard fallback).
+            Inline styles only — the CSS chunk may not have arrived yet.
+          */}
+          <div id="app">
+            <div
+              id="boot-splash"
+              data-testid="boot-splash"
+              role="status"
+              aria-live="polite"
+              style={{
+                'min-height': '100dvh',
+                'display': 'flex',
+                'align-items': 'center',
+                'justify-content': 'center',
+                'flex-direction': 'column',
+                'gap': '1rem',
+                'font-family': 'system-ui, sans-serif',
+                'color': 'var(--foreground, #1a1917)',
+                'background': 'var(--background, #fffefc)',
+              }}
+            >
+              <img src="/icons/leapmux-icon.svg" width="64" height="64" alt="" />
+              <p style={{ 'margin': '0', 'font-size': '0.95rem' }}>Loading LeapMux…</p>
+            </div>
+            {children}
+          </div>
           {scripts}
         </body>
       </html>
