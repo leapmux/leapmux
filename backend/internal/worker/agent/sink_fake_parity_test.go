@@ -46,3 +46,42 @@ func TestTestSinkKeysRowsTheWayProductionDoes(t *testing.T) {
 	assert.Equal(t, bgtask.StatusCompleted, rows[0].Status)
 	assert.Equal(t, "working", rows[0].ActiveForm)
 }
+
+// Distinct status writes form a trail so a fast Close cannot hide that Running
+// landed first. No-op and absorbed writes must not pad the trail.
+func TestTestSinkRecordsDistinctBackgroundTaskStatuses(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "term_1", Kind: bgtask.KindShell, Title: "printf hi", Status: bgtask.StatusRunning,
+	}))
+	// Same status again: active-form-only update must not pad the trail.
+	require.NoError(t, sink.UpdateBackgroundTaskStatus("term_1", bgtask.StatusRunning, "still going"))
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "term_1", Kind: bgtask.KindShell, Title: "printf hi", Status: bgtask.StatusRunning,
+	}))
+	require.NoError(t, sink.CloseBackgroundTask("term_1", bgtask.StatusCompleted))
+	// First close wins: a second close must not append.
+	require.NoError(t, sink.CloseBackgroundTask("term_1", bgtask.StatusFailed))
+	// Absorbed non-final upsert must not append either.
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "term_1", Kind: bgtask.KindShell, Title: "printf hi", Status: bgtask.StatusRunning,
+	}))
+
+	sink.bgTasksMu.Lock()
+	log := append([]bgtask.Status(nil), sink.bgTaskStatuses["term_1"]...)
+	row := sink.bgTasks["term_1"]
+	sink.bgTasksMu.Unlock()
+
+	assert.Equal(t, []bgtask.Status{bgtask.StatusRunning, bgtask.StatusCompleted}, log)
+	assert.Equal(t, bgtask.StatusCompleted, row.Status)
+
+	require.NoError(t, sink.ReviveBackgroundTask("term_1"))
+	sink.bgTasksMu.Lock()
+	log = append([]bgtask.Status(nil), sink.bgTaskStatuses["term_1"]...)
+	sink.bgTasksMu.Unlock()
+	assert.Equal(t, []bgtask.Status{
+		bgtask.StatusRunning, bgtask.StatusCompleted, bgtask.StatusRunning,
+	}, log)
+}

@@ -125,10 +125,16 @@ func TestACPTerminal_CreateWaitOutputRelease(t *testing.T) {
 
 	sink.bgTasksMu.Lock()
 	row, ok := sink.bgTasks[termID]
+	statusLog := append([]bgtask.Status(nil), sink.bgTaskStatuses[termID]...)
 	sink.bgTasksMu.Unlock()
 	require.True(t, ok)
 	assert.Equal(t, bgtask.KindShell, row.Kind)
-	assert.Equal(t, bgtask.StatusRunning, row.Status)
+	// printf often exits before this read; the status trail proves Running was
+	// upserted first (see terminalCreate), which a live snapshot cannot.
+	require.NotEmpty(t, statusLog)
+	assert.Equal(t, bgtask.StatusRunning, statusLog[0])
+	assert.Contains(t, []bgtask.Status{bgtask.StatusRunning, bgtask.StatusCompleted}, row.Status,
+		"create must leave the row Running or already Completed, not Failed/Stopped")
 	assert.Equal(t, "printf 'hello-acp'", row.Title)
 	// terminal/create carries the command and nothing else, so this title IS the
 	// command and the client may set it as code -- unlike Claude's shell rows,
@@ -163,8 +169,10 @@ func TestACPTerminal_CreateWaitOutputRelease(t *testing.T) {
 
 	sink.bgTasksMu.Lock()
 	row = sink.bgTasks[termID]
+	statusLog = append([]bgtask.Status(nil), sink.bgTaskStatuses[termID]...)
 	sink.bgTasksMu.Unlock()
 	assert.Equal(t, bgtask.StatusCompleted, row.Status)
+	assert.Equal(t, []bgtask.Status{bgtask.StatusRunning, bgtask.StatusCompleted}, statusLog)
 
 	b.terminalsMu.Lock()
 	_, still := b.terminals[termID]
@@ -641,6 +649,12 @@ func TestACPTerminal_OutputBeforeExitOmitsExitStatus(t *testing.T) {
 	})
 	resps := rec.wait(t, 1, 3*time.Second)
 	termID := resps[0]["result"].(map[string]interface{})["terminalId"].(string)
+
+	sink.bgTasksMu.Lock()
+	row, ok := sink.bgTasks[termID]
+	sink.bgTasksMu.Unlock()
+	require.True(t, ok, "create must upsert a background-task row")
+	assert.Equal(t, bgtask.StatusRunning, row.Status, "a still-running sleep must stay Running")
 
 	dispatchTerminal(b, acpMethodTerminalOutput, 2, map[string]interface{}{
 		"sessionId":  "sess-1",

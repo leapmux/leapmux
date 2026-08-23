@@ -64,6 +64,12 @@ type testSink struct {
 	childIDVal  string
 	// bgTasks records the latest registry state per row key (owner == this sink).
 	bgTasks map[string]bgtask.Item
+	// bgTaskStatuses records distinct status values per row key, in order.
+	// A fast-exiting shell can Close before a test reads bgTasks, so the
+	// trail is the only way to prove Running landed first. Duplicate writes
+	// (no-op upsert, absorbed reject) are skipped so length asserts stay
+	// meaningful.
+	bgTaskStatuses map[string][]bgtask.Status
 	// revivedTasks records every row key ReviveBackgroundTask actually reopened,
 	// in order. The effect alone cannot prove the call: a revive leaves the row
 	// running, which is also how it looked before it ever finished.
@@ -542,7 +548,19 @@ func (s *testSink) UpsertBackgroundTask(task bgtask.Upsert) error {
 		item.EndedAt = testFakeEndedAt
 	}
 	s.bgTasks[task.RowKey] = item
+	s.recordBgTaskStatusLocked(task.RowKey, item.Status)
 	return nil
+}
+
+func (s *testSink) recordBgTaskStatusLocked(rowKey string, status bgtask.Status) {
+	if s.bgTaskStatuses == nil {
+		s.bgTaskStatuses = make(map[string][]bgtask.Status)
+	}
+	log := s.bgTaskStatuses[rowKey]
+	if len(log) > 0 && log[len(log)-1] == status {
+		return
+	}
+	s.bgTaskStatuses[rowKey] = append(log, status)
 }
 
 func (s *testSink) UpdateBackgroundTaskStatus(rowKey string, status bgtask.Status, activeForm string) error {
@@ -561,6 +579,7 @@ func (s *testSink) UpdateBackgroundTaskStatus(rowKey string, status bgtask.Statu
 		item.Status = status
 		item.ActiveForm = activeForm
 		s.bgTasks[rowKey] = item
+		s.recordBgTaskStatusLocked(rowKey, status)
 	}
 	return nil
 }
@@ -578,6 +597,7 @@ func (s *testSink) CloseBackgroundTask(rowKey string, status bgtask.Status) erro
 		item.Status = status
 		item.EndedAt = testFakeEndedAt
 		s.bgTasks[rowKey] = item
+		s.recordBgTaskStatusLocked(rowKey, status)
 	}
 	return nil
 }
@@ -620,6 +640,7 @@ func (s *testSink) ReviveBackgroundTask(rowKey string) error {
 	item.Description = ""
 	item.EndedAt = time.Time{}
 	s.bgTasks[rowKey] = item
+	s.recordBgTaskStatusLocked(rowKey, item.Status)
 	s.revivedTasks = append(s.revivedTasks, rowKey)
 	return nil
 }
