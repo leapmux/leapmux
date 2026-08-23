@@ -287,7 +287,7 @@ describe('upsertRepoGitFromProtoStatus', () => {
     expect(store.get(key)?.files).toEqual([])
   })
 
-  it('migrates errorHint from a probe-path orphan key when toplevel resolves', () => {
+  it('clears a probe-path orphan without copying its errorHint onto a resolved repo', () => {
     const store = createRepoGitStore()
     const orphanKey = repoKey('w1', '/repo/pkg')
     store.upsert(orphanKey, { workerId: 'w1', errorHint: 'not a git repository' })
@@ -298,7 +298,22 @@ describe('upsertRepoGitFromProtoStatus', () => {
     }), { migrateErrorHintFrom: orphanKey })
 
     expect(store.get(orphanKey)).toBeUndefined()
-    expect(store.get(repoKey('w1', '/repo'))?.errorHint).toBe('not a git repository')
+    expect(store.get(repoKey('w1', '/repo'))?.errorHint).toBe('')
+    expect(store.get(repoKey('w1', '/repo'))?.gitStatusSeen).toBe(true)
+  })
+
+  it('clears a probe-path orphan even when it has no errorHint', () => {
+    const store = createRepoGitStore()
+    const orphanKey = repoKey('w1', '/repo/pkg')
+    store.upsert(orphanKey, { workerId: 'w1', errorHint: '' })
+
+    upsertRepoGitFromProtoStatus(store, 'w1', create(GitRepoStatusSchema, {
+      toplevel: '/repo',
+      branch: 'main',
+    }), { migrateErrorHintFrom: orphanKey })
+
+    expect(store.get(orphanKey)).toBeUndefined()
+    expect(store.get(repoKey('w1', '/repo'))?.toplevel).toBe('/repo')
   })
 
   it('clears errorHint on identity-stable metadata upsert after recovery', () => {
@@ -343,7 +358,7 @@ describe('upsertRepoGitFromProtoStatus', () => {
     expect(store.get(key)?.ahead).toBe(1)
   })
 
-  it('keeps a migrated errorHint until the next identity-stable broadcast', () => {
+  it('does not keep a stale tip when the resolving status is otherwise hydrated', () => {
     const store = createRepoGitStore()
     const orphanKey = repoKey('w1', '/repo/pkg')
     store.upsert(orphanKey, { workerId: 'w1', errorHint: 'not a git repository' })
@@ -351,15 +366,19 @@ describe('upsertRepoGitFromProtoStatus', () => {
     upsertRepoGitFromProtoStatus(store, 'w1', create(GitRepoStatusSchema, {
       toplevel: '/repo',
       branch: 'main',
+      originUrl: 'git@example.com:o/r.git',
+      ahead: 2,
     }), { migrateErrorHintFrom: orphanKey })
 
     const key = repoKey('w1', '/repo')
-    expect(store.get(key)?.errorHint).toBe('not a git repository')
+    expect(store.get(key)?.errorHint).toBe('')
+    expect(store.get(key)?.originUrl).toBe('git@example.com:o/r.git')
 
     upsertRepoGitFromProtoStatus(store, 'w1', create(GitRepoStatusSchema, {
       toplevel: '/repo',
       branch: 'main',
-      ahead: 1,
+      originUrl: 'git@example.com:o/r.git',
+      ahead: 2,
     }))
 
     expect(store.get(key)?.errorHint).toBe('')

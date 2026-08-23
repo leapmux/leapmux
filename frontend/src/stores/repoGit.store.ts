@@ -62,11 +62,14 @@ export function createRepoGitStore() {
   const [repos, setRepos] = createStore<Record<RepoKey, RepoGitState>>({})
   const [focusedKey, setFocusedKeySignal] = createSignal<RepoKey | undefined>(undefined)
   const [loading, setLoading] = createSignal(false)
+  const [workerKeyEpoch, setWorkerKeyEpoch] = createSignal(0)
   const workerKeys = new Map<string, Set<RepoKey>>()
 
   let gen = 0
 
   const get = (key: RepoKey): RepoGitState | undefined => repos[key]
+
+  const bumpWorkerKeyIndex = () => setWorkerKeyEpoch(n => n + 1)
 
   const indexKey = (key: RepoKey, workerId: string) => {
     if (!workerId)
@@ -77,6 +80,7 @@ export function createRepoGitStore() {
       workerKeys.set(workerId, set)
     }
     set.add(key)
+    bumpWorkerKeyIndex()
   }
 
   const unindexKey = (key: RepoKey, workerId?: string) => {
@@ -89,10 +93,14 @@ export function createRepoGitStore() {
     set.delete(key)
     if (set.size === 0)
       workerKeys.delete(id)
+    bumpWorkerKeyIndex()
   }
 
-  const keysForWorker = (workerId: string): readonly RepoKey[] =>
-    [...(workerKeys.get(workerId) ?? [])]
+  const keysForWorker = (workerId: string): readonly RepoKey[] => {
+    // Track epoch so Solid recomputes when the index changes.
+    workerKeyEpoch()
+    return [...(workerKeys.get(workerId) ?? [])]
+  }
 
   const upsert = (key: RepoKey, patch: Partial<RepoGitState>) => {
     const prev = repos[key]
@@ -123,6 +131,7 @@ export function createRepoGitStore() {
   const clearAll = () => {
     setRepos({})
     workerKeys.clear()
+    bumpWorkerKeyIndex()
   }
 
   const realignFocusedKeyAfterRefresh = (
@@ -169,6 +178,8 @@ export function createRepoGitStore() {
         else if (hasHealthyRepoForProbe(lookup, workerId, path, nonRepoKey)) {
           log.warn('ignored non-repo git status response; keeping last-good repo state', { workerId, path })
           writtenKey = findCanonicalRepoKey(lookup, workerId, path) ?? nonRepoKey
+          if (writtenKey && get(writtenKey)?.branchPinnedUntilRefresh)
+            upsert(writtenKey, { branchPinnedUntilRefresh: false })
         }
         realignFocusedKeyAfterRefresh(writtenKey, workerId, path, nonRepoKey)
         return writtenKey

@@ -213,7 +213,7 @@ export function protoToRepoGitPatch(
 }
 
 export interface UpsertRepoGitFromProtoOpts {
-  /** Copy errorHint from this orphan key when repo identity resolves, then delete it. */
+  /** Delete this probe-path orphan key when repo identity resolves. */
   migrateErrorHintFrom?: RepoKey
 }
 
@@ -391,11 +391,10 @@ export function upsertRepoGitFromProtoStatus(
     next.branch = prev.branch
 
   if (opts?.migrateErrorHintFrom) {
-    const orphan = store.get(opts.migrateErrorHintFrom)
-    if (orphan?.errorHint) {
-      next.errorHint = orphan.errorHint
-      store.clear(opts.migrateErrorHintFrom)
-    }
+    // Repo identity resolved from a probe-path orphan. Drop the orphan always.
+    // Do not copy its tip onto a healthy status entry — "not a git repository"
+    // is stale once toplevel is known.
+    store.clear(opts.migrateErrorHintFrom)
   }
 
   const toplevelChanged = !prev || next.toplevel !== prev.toplevel
@@ -408,7 +407,7 @@ export function upsertRepoGitFromProtoStatus(
       diffDeleted: 0,
       diffUntracked: 0,
       files: [],
-      errorHint: next.errorHint ?? '',
+      errorHint: '',
     }
   }
   else if (branchChanged && !prev?.branchPinnedUntilRefresh) {
@@ -418,12 +417,12 @@ export function upsertRepoGitFromProtoStatus(
       diffDeleted: 0,
       diffUntracked: 0,
       files: [],
-      errorHint: next.errorHint ?? '',
+      errorHint: prev?.errorHint && hasHydratedRepoGitFields(prev) ? prev.errorHint : '',
     }
   }
   else if (prev) {
-    // Clear orphan-migration tips after recovery. Keep a hint that arrived
-    // with a hydrated GetGitFileStatus payload (valid toplevel + diagnostics).
+    // Metadata does not carry diagnostics. Keep a refresh-sourced hint on a
+    // hydrated entry; clear everything else (including leftover migrate tips).
     next.errorHint = hasHydratedRepoGitFields(prev) ? (prev.errorHint || '') : ''
   }
 

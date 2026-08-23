@@ -27,10 +27,11 @@ describe('handleBranchChanged', () => {
       workerId: 'w1',
       toplevel: '/repo',
       branch: 'main',
+      gitStatusSeen: true,
     })
 
     handleBranchChanged(
-      { repoGitStore, getCurrentTabContext: () => ({ workerId: 'w1', gitToplevel: '/repo' } as never) },
+      { repoGitStore },
       { workerId: 'w1', gitToplevel: '/repo' },
       'feature',
     )
@@ -45,52 +46,34 @@ describe('handleBranchChanged', () => {
     const refresh = vi.spyOn(repoGitStore, 'refresh').mockResolvedValue(undefined)
 
     handleBranchChanged(
-      { repoGitStore, getCurrentTabContext: () => ({ workerId: 'w1', gitToplevel: '/repo' } as never) },
+      { repoGitStore },
       { workerId: 'w1', gitToplevel: '/repo' },
       'feature',
     )
     await flush()
 
     expect(refresh).toHaveBeenCalledWith('w1', '/repo', { repoKey: repoKey('w1', '/repo') })
-    expect(mockGetGitFileStatus).not.toHaveBeenCalled()
   })
 
-  it('fetches git status directly for a non-active repo', async () => {
+  it('refreshes git status for a non-active repo through the store', async () => {
     const repoGitStore = createRepoGitStore()
     const refresh = vi.spyOn(repoGitStore, 'refresh').mockResolvedValue(undefined)
-    repoGitStore.upsert(repoKey('w1', '/other'), {
-      workerId: 'w1',
-      toplevel: '/other',
-      branch: 'dev',
-      diffAdded: 3,
-    })
-    mockGetGitFileStatus.mockResolvedValueOnce({
-      repoRoot: '/other',
-      status: { toplevel: '/other', branch: 'feature', originUrl: 'o' },
-      files: [],
-    })
 
     handleBranchChanged(
-      { repoGitStore, getCurrentTabContext: () => ({ workerId: 'w1', gitToplevel: '/active' } as never) },
+      { repoGitStore },
       { workerId: 'w1', gitToplevel: '/other' },
       'feature',
     )
     await flush()
-    await vi.waitFor(() => {
-      expect(mockGetGitFileStatus).toHaveBeenCalled()
-    })
 
-    expect(refresh).not.toHaveBeenCalled()
-    expect(mockGetGitFileStatus).toHaveBeenCalledWith('w1', { workerId: 'w1', path: '/other' })
-    expect(repoGitStore.get(repoKey('w1', '/other'))?.branch).toBe('feature')
-    expect(repoGitStore.get(repoKey('w1', '/other'))?.diffAdded).toBe(0)
+    expect(refresh).toHaveBeenCalledWith('w1', '/other', { repoKey: repoKey('w1', '/other') })
   })
 
   it('does not stamp when the repo path never resolved', async () => {
     const repoGitStore = createRepoGitStore()
 
     handleBranchChanged(
-      { repoGitStore, getCurrentTabContext: () => ({} as never) },
+      { repoGitStore },
       { workerId: 'w1', gitToplevel: '' },
       'feature',
     )
@@ -99,19 +82,19 @@ describe('handleBranchChanged', () => {
     expect(repoGitStore.repos()).toEqual({})
   })
 
-  it('does not throw when the active-repo refresh is in flight', async () => {
+  it('does not throw when refresh is in flight', async () => {
     const repoGitStore = createRepoGitStore()
     vi.spyOn(repoGitStore, 'refresh').mockResolvedValue(undefined)
 
     expect(() => handleBranchChanged(
-      { repoGitStore, getCurrentTabContext: () => ({ workerId: 'w1', gitToplevel: '/repo' } as never) },
+      { repoGitStore },
       { workerId: 'w1', gitToplevel: '/repo' },
       'feature',
     )).not.toThrow()
     await flush()
   })
 
-  it('writes a non-repo stub when refreshing a non-active repo fails as non-git', async () => {
+  it('writes a non-repo stub without inventing a toplevel', async () => {
     const repoGitStore = createRepoGitStore()
     mockGetGitFileStatus.mockResolvedValueOnce({
       repoRoot: '',
@@ -121,7 +104,7 @@ describe('handleBranchChanged', () => {
     })
 
     handleBranchChanged(
-      { repoGitStore, getCurrentTabContext: () => ({ workerId: 'w1', gitToplevel: '/active' } as never) },
+      { repoGitStore },
       { workerId: 'w1', gitToplevel: '/other' },
       'feature',
     )
@@ -129,10 +112,11 @@ describe('handleBranchChanged', () => {
     await vi.waitFor(() => {
       expect(repoGitStore.get(repoKey('w1', '/other'))?.errorHint).toBe('not a git repository')
     })
-    expect(repoGitStore.get(repoKey('w1', '/other'))?.branch).toBe('feature')
+    expect(repoGitStore.get(repoKey('w1', '/other'))?.toplevel).toBe('')
+    expect(repoGitStore.get(repoKey('w1', '/other'))?.branch).toBe('')
   })
 
-  it('keeps file state when a non-active refresh returns a transient non-repo response', async () => {
+  it('keeps file state when refresh returns a transient non-repo response', async () => {
     const repoGitStore = createRepoGitStore()
     const files = [{ path: 'a.txt' } as never]
     repoGitStore.upsert(repoKey('w1', '/other'), {
@@ -141,6 +125,7 @@ describe('handleBranchChanged', () => {
       branch: 'dev',
       diffAdded: 3,
       files,
+      gitStatusSeen: true,
     })
     mockGetGitFileStatus.mockResolvedValueOnce({
       repoRoot: '',
@@ -150,20 +135,20 @@ describe('handleBranchChanged', () => {
     })
 
     handleBranchChanged(
-      { repoGitStore, getCurrentTabContext: () => ({ workerId: 'w1', gitToplevel: '/active' } as never) },
+      { repoGitStore },
       { workerId: 'w1', gitToplevel: '/other' },
       'feature',
     )
     await flush()
     await vi.waitFor(() => {
-      expect(repoGitStore.get(repoKey('w1', '/other'))?.branch).toBe('feature')
+      expect(repoGitStore.get(repoKey('w1', '/other'))?.branchPinnedUntilRefresh).toBe(false)
     })
 
+    expect(repoGitStore.get(repoKey('w1', '/other'))?.branch).toBe('feature')
     expect(repoGitStore.get(repoKey('w1', '/other'))?.toplevel).toBe('/other')
     expect(repoGitStore.get(repoKey('w1', '/other'))?.diffAdded).toBe(3)
     expect(repoGitStore.get(repoKey('w1', '/other'))?.files).toEqual(files)
     expect(repoGitStore.get(repoKey('w1', '/other'))?.errorHint).toBe('')
-    expect(repoGitStore.get(repoKey('w1', '/other'))?.branchPinnedUntilRefresh).toBe(false)
   })
 
   it('keeps a metadata-only clean repo across a transient non-repo response', async () => {
@@ -182,26 +167,27 @@ describe('handleBranchChanged', () => {
     })
 
     handleBranchChanged(
-      { repoGitStore, getCurrentTabContext: () => ({ workerId: 'w1', gitToplevel: '/active' } as never) },
+      { repoGitStore },
       { workerId: 'w1', gitToplevel: '/other' },
       'feature',
     )
     await flush()
     await vi.waitFor(() => {
-      expect(repoGitStore.get(repoKey('w1', '/other'))?.branch).toBe('feature')
+      expect(repoGitStore.get(repoKey('w1', '/other'))?.branchPinnedUntilRefresh).toBe(false)
     })
 
     expect(repoGitStore.get(repoKey('w1', '/other'))?.toplevel).toBe('/other')
+    expect(repoGitStore.get(repoKey('w1', '/other'))?.branch).toBe('feature')
     expect(repoGitStore.get(repoKey('w1', '/other'))?.errorHint).toBe('')
     expect(repoGitStore.get(repoKey('w1', '/other'))?.gitStatusSeen).toBe(true)
   })
 
-  it('clears the branch pin when a non-active refresh rejects', async () => {
+  it('clears the branch pin when refresh rejects', async () => {
     const repoGitStore = createRepoGitStore()
     mockGetGitFileStatus.mockRejectedValueOnce(new Error('worker unreachable'))
 
     handleBranchChanged(
-      { repoGitStore, getCurrentTabContext: () => ({ workerId: 'w1', gitToplevel: '/active' } as never) },
+      { repoGitStore },
       { workerId: 'w1', gitToplevel: '/other' },
       'feature',
     )
@@ -215,15 +201,23 @@ describe('handleBranchChanged', () => {
   it('does not change focused key when refreshing a non-active repo', async () => {
     const repoGitStore = createRepoGitStore()
     repoGitStore.setFocusedKey(repoKey('w1', '/active'))
-    repoGitStore.upsert(repoKey('w1', '/active'), { workerId: 'w1', toplevel: '/active', branch: 'main' })
-    repoGitStore.upsert(repoKey('w1', '/other'), { workerId: 'w1', toplevel: '/other', branch: 'dev' })
+    repoGitStore.upsert(repoKey('w1', '/active'), { workerId: 'w1', toplevel: '/active', branch: 'main', gitStatusSeen: true })
+    repoGitStore.upsert(repoKey('w1', '/other'), { workerId: 'w1', toplevel: '/other', branch: 'dev', gitStatusSeen: true })
+    mockGetGitFileStatus.mockResolvedValueOnce({
+      repoRoot: '/other',
+      status: { toplevel: '/other', branch: 'feature', originUrl: 'o' },
+      files: [],
+    })
 
     handleBranchChanged(
-      { repoGitStore, getCurrentTabContext: () => ({ workerId: 'w1', gitToplevel: '/active' } as never) },
+      { repoGitStore },
       { workerId: 'w1', gitToplevel: '/other' },
       'feature',
     )
     await flush()
+    await vi.waitFor(() => {
+      expect(repoGitStore.get(repoKey('w1', '/other'))?.branchPinnedUntilRefresh).toBe(false)
+    })
 
     expect(repoGitStore.focusedKey()).toBe(repoKey('w1', '/active'))
     expect(repoGitStore.get(repoKey('w1', '/other'))?.branch).toBe('feature')

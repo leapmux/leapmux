@@ -1270,7 +1270,7 @@ export const AppShell: Component = () => {
       <AppShellDialogs
         dialogs={dialogs}
         onBranchChanged={(repo, newBranch) => handleBranchChanged(
-          { repoGitStore, getCurrentTabContext },
+          { repoGitStore },
           repo,
           newBranch,
         )}
