@@ -783,6 +783,13 @@ func (w *Writer[T]) signalDrained() {
 // success. Returns ctx.Err / the writer's context error when the wait was cut
 // short while frames were still drainable.
 //
+// A transport write error gives up before finishWrite clears the in-flight
+// flag, so Flush cannot observe idle+open after a refused write. A panicking
+// Write is different: finishWrite still runs before the outer recover /
+// Fence, so a Flush racing that unwind can still see a brief idle+open window.
+// Panic recovery must not give up inside writeTurn (handler-drained Fence
+// leaves gaveUp false for the watchdog test), so that window stays.
+//
 // This is what makes a graceful shutdown's last words actually leave the
 // machine. Enqueue and EnqueueWait return once a frame is QUEUED, so a caller
 // that broadcasts and then tears the connection down is racing the drain
@@ -974,9 +981,8 @@ func (w *Writer[T]) DrainLimited(lim DrainLimits) error {
 		// relief to write latency for no functional reason.
 		w.signalBudgetFreed()
 		if err := w.writeTurn(frame.item); err != nil {
-			// writeTurn already gave up on a transport error (or found the
-			// writer closed). Do not clear writing here -- writeTurn pairs
-			// giveUp with finishWrite so Flush cannot observe idle+open.
+			// writeTurn owns give-up and finishWrite for this frame. Returning
+			// here avoids a second giveUp after writing has already cleared.
 			return err
 		}
 	}
@@ -992,7 +998,8 @@ func (w *Writer[T]) DrainLimited(lim DrainLimits) error {
 // delivered frame the peer had already refused. Panic must NOT give up here:
 // the handler-drained path recovers with Fence/Close and leaves gaveUp false
 // so the write watchdog stays the thing that proves a late timer was disarmed
-// (see TestWriterPanickingWriteDisarmsTheWatchdog).
+// (see TestWriterPanickingWriteDisarmsTheWatchdog). That choice leaves a brief
+// idle+open window for Flush across a panicking Write; see Flush's docs.
 //
 // Both drain modes catch that unwind, one layer up: a handler-drained writer
 // unwinds into workermgr.SendPump.drain, a goroutine-drained one (sendq.New --

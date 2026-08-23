@@ -199,6 +199,10 @@ func TestNotifyShutdownAndFence_ContinuesOnSendError(t *testing.T) {
 	// error is the way to reach them. Asserted here because a broken transport
 	// fences the conn on its way out, so without the give-up latch this reports
 	// as the worker having left and the warning silently becomes a Debug line.
+	//
+	// That latch lives in sendq.writeTurn: giveUp runs before finishWrite, or
+	// Flush can return nil on a refused write and this tally becomes
+	// Delivered:2 Failed:0 (see TestWriterFlushReturnsErrClosedWhenWriteFails).
 	assert.Equal(t, ShutdownNotifyResult{Delivered: 1, Failed: 1, Total: 2}, got)
 	assert.Contains(t, logs.String(), "failed to send shutdown notification to worker")
 	assert.Contains(t, logs.String(), "level=WARN")

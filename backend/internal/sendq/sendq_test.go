@@ -1024,6 +1024,21 @@ func TestWriterFlushReturnsErrClosedWhenWriteFails(t *testing.T) {
 	assert.True(t, w.GaveUp(), "a write error must give up the writer")
 }
 
+func TestWriterFlushReturnsErrClosedWhenQueueWasDiscarded(t *testing.T) {
+	t.Parallel()
+	w := NewUnstarted(context.Background(), Config[string]{
+		Write:    func(context.Context, string) error { return nil },
+		Size:     func(s string) int { return len(s) },
+		MaxBytes: 1024,
+	})
+	require.NoError(t, w.Enqueue("frame"))
+	w.Close() // discards without writing
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	assert.ErrorIs(t, w.Flush(ctx), ErrClosed,
+		"Flush must not report success when Close discarded queued frames")
+}
+
 func TestWriterDrainLimitedYieldsAndResignals(t *testing.T) {
 	t.Parallel()
 	wrote := make([]string, 0, 4)
