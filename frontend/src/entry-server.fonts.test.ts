@@ -22,11 +22,14 @@ describe('entry-server font preloads', () => {
 })
 
 describe('entry-server boot splash polarity', () => {
-  it('ships document CSS and the blocking boot script from bootSplashTheme', () => {
+  it('ships document CSS and the blocking boot scripts from bootSplashTheme', () => {
     const path = resolve(dirname(fileURLToPath(import.meta.url)), 'entry-server.tsx')
     const src = readFileSync(path, 'utf8')
     expect(src).toContain('bootSplashDocumentCss')
     expect(src).toContain('bootThemeScript')
+    expect(src).toContain('bootFailureWatchdogScript')
     expect(src).toContain('BOOT_SPLASH_LABEL')
+    expect(src).toContain('BOOT_SPLASH_STATIC_ID')
+    expect(src).toContain('BootSplashIcon')
   })
 })
