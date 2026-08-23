@@ -67,7 +67,16 @@ export type GitFilterTab = 'all' | 'changed' | 'staged' | 'unstaged'
 export type RepoGitStore = ReturnType<typeof createRepoGitStore>
 
 /** Minimal store surface for repo-key resolution helpers. */
-export type RepoGitLookup = Pick<RepoGitStore, 'get' | 'repos'>
+export type RepoGitLookup = Pick<RepoGitStore, 'get' | 'repos'> & {
+  /** Optional per-worker key index; avoids a full-map scan when present. */
+  keysForWorker?: (workerId: string) => readonly RepoKey[]
+}
+
+/** Split a repo key into worker id and path. */
+export function repoKeyParts(key: RepoKey): { workerId: string, path: string } {
+  const i = key.indexOf('\0')
+  return { workerId: key.slice(0, i), path: key.slice(i + 1) }
+}
 
 /** Options for {@link RepoGitStore.refresh}. */
 export interface RepoGitRefreshOpts {
@@ -236,9 +245,20 @@ export function findCanonicalRepoKey(
 ): RepoKey | undefined {
   if (!workerId || !probePath)
     return undefined
+
+  const exactKey = repoKey(workerId, probePath)
+  const exact = store.get(exactKey)
+  if (exact?.toplevel === probePath)
+    return exactKey
+
   let best: { key: RepoKey, len: number } | undefined
-  for (const [key, state] of Object.entries(store.repos())) {
-    if (state.workerId !== workerId || !state.toplevel)
+  const keys = store.keysForWorker?.(workerId)
+  const entries: Iterable<[string, RepoGitState | undefined]> = keys
+    ? keys.map(k => [k, store.get(k)] as [string, RepoGitState | undefined])
+    : Object.entries(store.repos())
+
+  for (const [key, state] of entries) {
+    if (!state || state.workerId !== workerId || !state.toplevel)
       continue
     if (state.toplevel === probePath)
       return key as RepoKey
@@ -250,6 +270,30 @@ export function findCanonicalRepoKey(
     }
   }
   return best?.key
+}
+
+/** True when the entry holds more than a stamp-only branch seed. */
+export function hasPreservableRepoGitState(state: RepoGitState | undefined): boolean {
+  if (!state?.toplevel)
+    return false
+  return Boolean(
+    state.repoRoot
+    || state.originUrl
+    || state.files.length > 0
+    || state.diffAdded
+    || state.diffDeleted
+    || state.diffUntracked
+    || state.ahead
+    || state.behind
+    || state.modified
+    || state.untracked
+    || state.added
+    || state.deleted
+    || state.renamed
+    || state.conflicted
+    || state.stashed
+    || state.isWorktree,
+  )
 }
 
 /** True when the store already holds a healthy repo for this probe path. */
@@ -295,7 +339,8 @@ export function applyFullGitStatusUpsert(
 /**
  * Apply a git-status proto to the keyed store. Clears file-derived fields when
  * `toplevel` changes, or when `branch` changes and the branch is not pinned.
- * Metadata broadcasts do not carry `errorHint`; stable upserts preserve it.
+ * Metadata broadcasts do not carry `errorHint`; identity-stable upserts clear
+ * a prior hint so orphan-migration tips do not stick after recovery.
  */
 export function upsertRepoGitFromProtoStatus(
   store: RepoGitStore,
@@ -346,7 +391,7 @@ export function upsertRepoGitFromProtoStatus(
     }
   }
   else if (prev) {
-    next.errorHint = prev.errorHint
+    next.errorHint = ''
   }
 
   store.upsert(key, next)
@@ -462,8 +507,10 @@ export function repoGitView(
   if (!key)
     return EMPTY_VIEW
   const state = store.get(key)
-  if (!state)
-    return { ...EMPTY_VIEW, key, toplevel: tab.gitToplevel }
+  if (!state) {
+    const fromKey = key ? repoKeyParts(key).path : undefined
+    return { ...EMPTY_VIEW, key, toplevel: tab.gitToplevel || fromKey }
+  }
   return {
     key,
     branchLabel: state.branch || undefined,

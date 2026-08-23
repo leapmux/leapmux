@@ -222,14 +222,14 @@ describe('upsertRepoGitFromProtoStatus', () => {
     expect(store.get(repoKey('w1', '/repo'))?.errorHint).toBe('not a git repository')
   })
 
-  it('preserves errorHint on identity-stable metadata upsert', () => {
+  it('clears errorHint on identity-stable metadata upsert after recovery', () => {
     const store = createRepoGitStore()
     const key = repoKey('w1', '/repo')
     store.upsert(key, {
       workerId: 'w1',
       toplevel: '/repo',
       branch: 'main',
-      errorHint: 'dubious ownership',
+      errorHint: 'not a git repository',
     })
 
     upsertRepoGitFromProtoStatus(store, 'w1', create(GitRepoStatusSchema, {
@@ -238,8 +238,30 @@ describe('upsertRepoGitFromProtoStatus', () => {
       ahead: 1,
     }))
 
-    expect(store.get(key)?.errorHint).toBe('dubious ownership')
+    expect(store.get(key)?.errorHint).toBe('')
     expect(store.get(key)?.ahead).toBe(1)
+  })
+
+  it('keeps a migrated errorHint until the next identity-stable broadcast', () => {
+    const store = createRepoGitStore()
+    const orphanKey = repoKey('w1', '/repo/pkg')
+    store.upsert(orphanKey, { workerId: 'w1', errorHint: 'not a git repository' })
+
+    upsertRepoGitFromProtoStatus(store, 'w1', create(GitRepoStatusSchema, {
+      toplevel: '/repo',
+      branch: 'main',
+    }), { migrateErrorHintFrom: orphanKey })
+
+    const key = repoKey('w1', '/repo')
+    expect(store.get(key)?.errorHint).toBe('not a git repository')
+
+    upsertRepoGitFromProtoStatus(store, 'w1', create(GitRepoStatusSchema, {
+      toplevel: '/repo',
+      branch: 'main',
+      ahead: 1,
+    }))
+
+    expect(store.get(key)?.errorHint).toBe('')
   })
 
   it('clears errorHint when toplevel first resolves on a non-repo stub', () => {
@@ -340,6 +362,19 @@ describe('repoGitView', () => {
     expect(view.originUrl).toBeUndefined()
     expect(view.isGitRepo).toBe(false)
     expect(view.diffStats).toEqual({ added: 0, deleted: 0, untracked: 0 })
+  })
+
+  it('uses the canonical key path as toplevel when the tab has no gitToplevel', () => {
+    const store = createRepoGitStore()
+    // Key resolves via workingDir probe path; store has no entry yet.
+    const view = repoGitView(
+      { workerId: 'w1', workingDir: '/repo/pkg' },
+      store,
+      { workingDir: '/repo/pkg' },
+    )
+
+    expect(view.key).toBe('w1\x00/repo/pkg')
+    expect(view.toplevel).toBe('/repo/pkg')
   })
 
   it('reads canonical repo state for a file tab without gitToplevel', () => {

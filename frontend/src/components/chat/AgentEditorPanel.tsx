@@ -98,8 +98,8 @@ export interface AgentEditorPanelProps {
   branchDisabledReason?: string
   /** Repo-keyed git store for branch label and info-card flags. */
   repoGitStore: ReturnType<typeof createRepoGitStore>
-  /** Tab git identity (`workerId`, `gitToplevel`) for {@link repoGitView}. */
-  gitTab?: Pick<Tab, 'workerId' | 'gitToplevel'>
+  /** Tab git identity for {@link repoGitView} (includes `workingDir` for file tabs). */
+  gitTab?: Pick<Tab, 'workerId' | 'gitToplevel' | 'workingDir'>
   /** Height of the parent container, used for max editor height calculation. */
   containerHeight?: number
   /** Ref to expose the addFiles function for external callers (e.g. ChatDropZone). */
@@ -281,7 +281,10 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
     void att.addDroppedDataTransfer(dataTransfer)
   }
 
-  const branchGitView = createMemo(() => repoGitView(props.gitTab ?? {}, props.repoGitStore))
+  const branchGitView = createMemo(() => {
+    const tab = props.gitTab ?? {}
+    return repoGitView(tab, props.repoGitStore, tab)
+  })
   const branchName = () => branchGitView()?.branchLabel
   const info = useAgentInfoCard({
     get agent() { return props.agent },

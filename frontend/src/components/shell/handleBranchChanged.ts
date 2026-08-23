@@ -3,7 +3,7 @@ import type { createRepoGitStore } from '~/stores/repoGit.store'
 import type { RepoRef } from '~/stores/tab.helpers'
 import * as workerRpc from '~/api/workerRpc'
 import { createLogger } from '~/lib/logger'
-import { applyFullGitStatusUpsert, patchFromGetGitFileStatus, patchFromNonRepoGetGitFileStatus, repoKey } from '~/stores/repoGit'
+import { applyFullGitStatusUpsert, hasPreservableRepoGitState, patchFromGetGitFileStatus, patchFromNonRepoGetGitFileStatus, repoKey } from '~/stores/repoGit'
 import { isSameRepo } from '~/stores/tab.helpers'
 import { stampBranchOnRepo } from './stampBranchOnTabs'
 
@@ -54,6 +54,18 @@ export function handleBranchChanged(
           deps.repoGitStore.setFocusedKey(writtenKey)
         return
       }
+      const prev = deps.repoGitStore.get(key)
+      if (hasPreservableRepoGitState(prev)) {
+        log.warn('ignored non-repo git status after branch change; keeping last-good repo state', {
+          workerId: repo.workerId,
+          path: repo.gitToplevel,
+        })
+        deps.repoGitStore.upsert(key, {
+          branch: newBranch,
+          branchPinnedUntilRefresh: false,
+        })
+        return
+      }
       const nonRepo = patchFromNonRepoGetGitFileStatus(repo.workerId, resp, key)
       deps.repoGitStore.upsert(nonRepo.key, {
         ...nonRepo.patch,
@@ -65,6 +77,8 @@ export function handleBranchChanged(
     }
     catch (err) {
       log.warn('failed to refresh git status after branch change', err)
+      if (deps.repoGitStore.get(key)?.branchPinnedUntilRefresh)
+        deps.repoGitStore.upsert(key, { branchPinnedUntilRefresh: false })
     }
   })()
 }

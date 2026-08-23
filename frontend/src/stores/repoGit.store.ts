@@ -15,6 +15,7 @@ import {
   patchFromGetGitFileStatus,
   patchFromNonRepoGetGitFileStatus,
   repoKey,
+  repoKeyParts,
   untrackedDirBasePath,
 } from './repoGit'
 
@@ -61,29 +62,67 @@ export function createRepoGitStore() {
   const [repos, setRepos] = createStore<Record<RepoKey, RepoGitState>>({})
   const [focusedKey, setFocusedKeySignal] = createSignal<RepoKey | undefined>(undefined)
   const [loading, setLoading] = createSignal(false)
+  const workerKeys = new Map<string, Set<RepoKey>>()
 
   let gen = 0
 
   const get = (key: RepoKey): RepoGitState | undefined => repos[key]
 
+  const indexKey = (key: RepoKey, workerId: string) => {
+    if (!workerId)
+      return
+    let set = workerKeys.get(workerId)
+    if (!set) {
+      set = new Set()
+      workerKeys.set(workerId, set)
+    }
+    set.add(key)
+  }
+
+  const unindexKey = (key: RepoKey, workerId?: string) => {
+    const id = workerId || repoKeyParts(key).workerId
+    if (!id)
+      return
+    const set = workerKeys.get(id)
+    if (!set)
+      return
+    set.delete(key)
+    if (set.size === 0)
+      workerKeys.delete(id)
+  }
+
+  const keysForWorker = (workerId: string): readonly RepoKey[] =>
+    [...(workerKeys.get(workerId) ?? [])]
+
   const upsert = (key: RepoKey, patch: Partial<RepoGitState>) => {
+    const prev = repos[key]
     const { files, ...rest } = patch
     setRepos(produce((map) => {
-      const prev = map[key] ?? emptyRepoState()
-      map[key] = { ...prev, ...rest }
+      const base = map[key] ?? emptyRepoState()
+      map[key] = { ...base, ...rest }
     }))
+    const workerId = patch.workerId || prev?.workerId || repoKeyParts(key).workerId
+    if (prev?.workerId && prev.workerId !== workerId)
+      unindexKey(key, prev.workerId)
+    indexKey(key, workerId)
     if (files)
       setRepos(key, 'files', reconcile(files, { key: 'path' }))
   }
 
   const clear = (key: RepoKey) => {
+    const prev = repos[key]
     setRepos(produce((map) => {
       delete map[key]
     }))
+    if (prev)
+      unindexKey(key, prev.workerId)
+    else
+      unindexKey(key)
   }
 
   const clearAll = () => {
     setRepos({})
+    workerKeys.clear()
   }
 
   const realignFocusedKeyAfterRefresh = (
@@ -121,7 +160,7 @@ export function createRepoGitStore() {
         return undefined
       const mapped = patchFromGetGitFileStatus(workerId, resp)
       if (!mapped) {
-        const lookup = { get, repos: () => repos as Readonly<Record<RepoKey, RepoGitState>> }
+        const lookup = { get, repos: () => repos as Readonly<Record<RepoKey, RepoGitState>>, keysForWorker }
         if (nonRepoKey && !hasHealthyRepoForProbe(lookup, workerId, path, nonRepoKey)) {
           const nonRepo = patchFromNonRepoGetGitFileStatus(workerId, resp, nonRepoKey)
           upsert(nonRepo.key, nonRepo.patch)
@@ -142,6 +181,21 @@ export function createRepoGitStore() {
       if (mine !== gen)
         return undefined
       log.warn('failed to refresh git file status', err)
+      // Unstick an optimistic branch pin so metadata broadcasts can proceed.
+      const pinKeys = new Set<RepoKey>()
+      if (nonRepoKey)
+        pinKeys.add(nonRepoKey)
+      const canonical = findCanonicalRepoKey(
+        { get, repos: () => repos as Readonly<Record<RepoKey, RepoGitState>>, keysForWorker },
+        workerId,
+        path,
+      )
+      if (canonical)
+        pinKeys.add(canonical)
+      for (const key of pinKeys) {
+        if (get(key)?.branchPinnedUntilRefresh)
+          upsert(key, { branchPinnedUntilRefresh: false })
+      }
       return undefined
     }
     finally {
@@ -292,6 +346,7 @@ export function createRepoGitStore() {
     clear,
     clearAll,
     repos: () => repos as Readonly<Record<RepoKey, RepoGitState>>,
+    keysForWorker,
     focusedKey,
     setFocusedKey: setFocusedKeySignal,
     refresh,
