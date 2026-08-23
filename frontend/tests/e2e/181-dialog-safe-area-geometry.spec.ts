@@ -59,25 +59,34 @@ async function applySimulatedSafeArea(
 }
 
 /**
- * Open New Workspace. Portrait phone keeps the control behind the workspaces
- * drawer; landscape (≥ sm) may show the sidebar or fall back to the empty-
- * state create button (rail / collapsed sidebar).
+ * Open New Workspace.
+ *
+ * On the phone band the control lives behind the workspaces drawer — always
+ * open the drawer first (same as 180-dialog-mobile-scroll). `isVisible()` is
+ * not enough: the button can report visible while still translated off-screen.
+ * On the desktop band (≥ sm), prefer the sidebar control and fall back to the
+ * empty-state create button when the sidebar is collapsed to a rail.
  */
 async function openNewWorkspaceDialog(page: import('@playwright/test').Page) {
   const sidebarBtn = page.locator('[data-testid="sidebar-new-workspace"]')
   const createBtn = page.locator('[data-testid="create-workspace-button"]')
   const toggle = page.getByRole('button', { name: 'Toggle workspaces' })
+  const phoneBand = (page.viewportSize()?.width ?? 0) < 640
 
-  if (await toggle.isVisible().catch(() => false)) {
-    // Open the drawer when the sidebar control is not already reachable.
-    if (!await sidebarBtn.isVisible().catch(() => false))
-      await toggle.click()
-  }
-
-  if (await sidebarBtn.isVisible().catch(() => false))
+  if (phoneBand) {
+    await toggle.click()
     await sidebarBtn.click()
-  else
+  }
+  else if (await sidebarBtn.isVisible().catch(() => false)) {
+    await sidebarBtn.click()
+  }
+  else if (await toggle.isVisible().catch(() => false)) {
+    await toggle.click()
+    await sidebarBtn.click()
+  }
+  else {
     await createBtn.click()
+  }
 
   await expect(page.getByRole('heading', { name: /New workspace/i, level: 2 })).toBeVisible()
   await expect(page.locator('dialog[open]').getByRole('button', { name: 'Close' })).toBeVisible()
