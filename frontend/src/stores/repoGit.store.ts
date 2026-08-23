@@ -102,7 +102,7 @@ export function createRepoGitStore() {
         }
         return
       }
-      upsert(mapped.key, mapped.patch)
+      upsert(mapped.key, { ...mapped.patch, branchPinnedUntilRefresh: false })
     }
     catch (err) {
       if (mine !== gen)

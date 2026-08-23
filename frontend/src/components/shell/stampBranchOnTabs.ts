@@ -24,6 +24,7 @@ export function stampBranchOnRepo(
     workerId: repo.workerId,
     toplevel: repo.gitToplevel,
     branch: newBranch,
+    branchPinnedUntilRefresh: true,
   })
   return true
 }

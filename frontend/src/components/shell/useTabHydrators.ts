@@ -8,7 +8,7 @@ import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createExponentialBackoff } from '~/lib/retry'
 import { sameKeys } from '~/lib/sameKeys'
-import { upsertRepoGitFromProtoStatus } from '~/stores/repoGit'
+import { migrateErrorHintFromForResolvedRepo, upsertRepoGitFromProtoStatus } from '~/stores/repoGit'
 import { protoToAgentTabFields, tabKey, terminalMetadata } from '~/stores/tab.helpers'
 
 /**
@@ -416,7 +416,9 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
         // push landing meanwhile would have made the pre-await snapshot a stale
         // basis for the comparison.
         opts.metadata.patch(tab.id, protoToAgentTabFields(workerId, agent))
-        upsertRepoGitFromProtoStatus(opts.repoGitStore, workerId, agent.gitStatus)
+        upsertRepoGitFromProtoStatus(opts.repoGitStore, workerId, agent.gitStatus, {
+          migrateErrorHintFrom: migrateErrorHintFromForResolvedRepo(workerId, tab, agent.gitStatus),
+        })
         resolved.add(tab.id)
       }
       return { resolved, verdicts: resp.verdicts }
@@ -458,7 +460,9 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
         const term = byId.get(tab.id)
         if (term) {
           opts.metadata.patch(tab.id, terminalMetadata(workerId, term))
-          upsertRepoGitFromProtoStatus(opts.repoGitStore, workerId, term.gitStatus)
+          upsertRepoGitFromProtoStatus(opts.repoGitStore, workerId, term.gitStatus, {
+            migrateErrorHintFrom: migrateErrorHintFromForResolvedRepo(workerId, tab, term.gitStatus),
+          })
           resolved.add(tab.id)
         }
       }

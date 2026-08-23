@@ -47,7 +47,7 @@ import { shouldShowBackgroundTasksSection } from '~/stores/chatBackgroundTasks'
 import { createControlStore } from '~/stores/control.store'
 import { createFloatingWindowStore } from '~/stores/floatingWindow.store'
 import { createLayoutStore, useLayoutFocusSweep } from '~/stores/layout.store'
-import { gitStatusProbePath, repoKey, repoKeyFromTab } from '~/stores/repoGit'
+import { focusedRepoKeyFromTab, gitStatusProbePath } from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 import { createSectionStore } from '~/stores/section.store'
 import { agentTabToInfo, isTabReadyForGitStatus, mruSteerableAgentTab, rootAgentIdFor, tabKey } from '~/stores/tab.helpers'
@@ -549,7 +549,7 @@ export const AppShell: Component = () => {
     const ctx = getCurrentTabContext()
     const tab = activeTab() ?? {}
     const path = gitStatusProbePath(ctx)
-    const key = repoKeyFromTab(tab) ?? (ctx.workerId && path ? repoKey(ctx.workerId, path) : undefined)
+    const key = focusedRepoKeyFromTab(tab, ctx)
     if (ctx.workerId && path)
       void repoGitStore.refresh(ctx.workerId, path, { repoKey: key })
   }
@@ -567,10 +567,7 @@ export const AppShell: Component = () => {
   createEffect(() => {
     const tab = activeTab() ?? {}
     const ctx = getCurrentTabContext()
-    const path = gitStatusProbePath(ctx)
-    repoGitStore.setFocusedKey(
-      repoKeyFromTab(tab) ?? (ctx.workerId && path ? repoKey(ctx.workerId, path) : undefined),
-    )
+    repoGitStore.setFocusedKey(focusedRepoKeyFromTab(tab, ctx))
   })
 
   // Get working directory and home directory from the MRU agent tab

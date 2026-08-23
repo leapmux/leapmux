@@ -36,6 +36,7 @@ describe('handleBranchChanged', () => {
     )
 
     expect(repoGitStore.get(repoKey('w1', '/repo'))?.branch).toBe('feature')
+    expect(repoGitStore.get(repoKey('w1', '/repo'))?.branchPinnedUntilRefresh).toBe(true)
     await flush()
   })
 

@@ -5,6 +5,7 @@ import { GetGitFileStatusResponseSchema } from '~/generated/leapmux/v1/git_pb'
 import {
   focusedRepoKeyFromTab,
   gitStatusProbePath,
+  migrateErrorHintFromForResolvedRepo,
   patchFromNonRepoGetGitFileStatus,
   protoToRepoGitPatch,
   repoGitView,
@@ -26,6 +27,26 @@ describe('gitStatusProbePath', () => {
 describe('focusedRepoKeyFromTab', () => {
   it('falls back to the probe path when gitToplevel is unset', () => {
     expect(focusedRepoKeyFromTab({ workerId: 'w1', workingDir: '/repo/pkg' })).toBe('w1\x00/repo/pkg')
+  })
+
+  it('uses ctx probe path for file tabs before gitToplevel resolves', () => {
+    const tab = { workerId: 'w1', workingDir: '/repo/pkg' }
+    const ctx = { gitToplevel: '/repo', workingDir: '/repo/pkg' }
+    expect(focusedRepoKeyFromTab(tab, ctx)).toBe('w1\x00/repo')
+  })
+})
+
+describe('migrateErrorHintFromForResolvedRepo', () => {
+  it('returns the orphan probe-path key when toplevel resolves to a different key', () => {
+    const tab = { workingDir: '/repo/pkg' }
+    const status = create(GitRepoStatusSchema, { toplevel: '/repo', branch: 'main' })
+    expect(migrateErrorHintFromForResolvedRepo('w1', tab, status)).toBe('w1\x00/repo/pkg')
+  })
+
+  it('returns undefined when tab already has gitToplevel', () => {
+    const tab = { gitToplevel: '/repo', workingDir: '/repo/pkg' }
+    const status = create(GitRepoStatusSchema, { toplevel: '/repo', branch: 'main' })
+    expect(migrateErrorHintFromForResolvedRepo('w1', tab, status)).toBeUndefined()
   })
 })
 
@@ -137,6 +158,51 @@ describe('upsertRepoGitFromProtoStatus', () => {
 
     expect(store.get(orphanKey)).toBeUndefined()
     expect(store.get(repoKey('w1', '/repo'))?.errorHint).toBe('not a git repository')
+  })
+
+  it('clears errorHint on identity-stable metadata upsert', () => {
+    const store = createRepoGitStore()
+    const key = repoKey('w1', '/repo')
+    store.upsert(key, {
+      workerId: 'w1',
+      toplevel: '/repo',
+      branch: 'main',
+      errorHint: 'stale hint',
+    })
+
+    upsertRepoGitFromProtoStatus(store, 'w1', create(GitRepoStatusSchema, {
+      toplevel: '/repo',
+      branch: 'main',
+      ahead: 1,
+    }))
+
+    expect(store.get(key)?.errorHint).toBe('')
+    expect(store.get(key)?.ahead).toBe(1)
+  })
+
+  it('keeps pinned branch and files when a stale broadcast arrives', () => {
+    const store = createRepoGitStore()
+    const key = repoKey('w1', '/repo')
+    const files = [{ path: 'a.txt' } as never]
+    store.upsert(key, {
+      workerId: 'w1',
+      toplevel: '/repo',
+      branch: 'feature',
+      branchPinnedUntilRefresh: true,
+      diffAdded: 5,
+      files,
+    })
+
+    upsertRepoGitFromProtoStatus(store, 'w1', create(GitRepoStatusSchema, {
+      toplevel: '/repo',
+      branch: 'main',
+      ahead: 1,
+    }))
+
+    expect(store.get(key)?.branch).toBe('feature')
+    expect(store.get(key)?.diffAdded).toBe(5)
+    expect(store.get(key)?.files).toEqual(files)
+    expect(store.get(key)?.ahead).toBe(1)
   })
 })
 

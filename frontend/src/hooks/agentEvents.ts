@@ -31,7 +31,7 @@ import { emitSettingsChanged } from '~/lib/settingsChangedEvent'
 import { updateSettingsLabelCache } from '~/lib/settingsLabelCache'
 import { compactionContextUsage } from '~/stores/agentSession.store'
 import { MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.store'
-import { repoKey, repoKeyFromStatus, upsertRepoGitFromProtoStatus } from '~/stores/repoGit'
+import { migrateErrorHintFromForResolvedRepo, upsertRepoGitFromProtoStatus } from '~/stores/repoGit'
 import { deriveOptionGroupTabFields, tabKey } from '~/stores/tab.helpers'
 
 const log = createLogger('agentEvents')
@@ -817,12 +817,10 @@ function applyAgentStatusTabUpdate(
   if (sc.optionGroups.length > 0)
     updateSettingsLabelCache(sc.agentProvider, sc.optionGroups)
   const workerId = prev?.workerId ?? ''
-  const resolvedKey = workerId ? repoKeyFromStatus(workerId, sc.gitStatus) : undefined
-  const orphanKey = !prev?.gitToplevel && prev?.workingDir && workerId
-    ? repoKey(workerId, prev.workingDir)
-    : undefined
   upsertRepoGitFromProtoStatus(repoGitStore, workerId, sc.gitStatus, {
-    migrateErrorHintFrom: orphanKey && orphanKey !== resolvedKey ? orphanKey : undefined,
+    migrateErrorHintFrom: prev
+      ? migrateErrorHintFromForResolvedRepo(workerId, prev, sc.gitStatus)
+      : undefined,
   })
   const settingsFields = resolveSettingsTabFields(prev, sc.optionGroups, settingsLoading.pendingAxes(sc.agentId))
   // Consolidate every per-status field into one patch so the row is written once.

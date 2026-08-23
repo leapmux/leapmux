@@ -32,6 +32,11 @@ export interface RepoGitState {
   diffUntracked: number
   files: GitFileStatusEntry[]
   errorHint: string
+  /**
+   * When true, metadata broadcasts must not override `branch` until
+   * `refresh()` or a full GetGitFileStatus upsert clears the pin.
+   */
+  branchPinnedUntilRefresh?: boolean
 }
 
 export interface RepoGitView {
@@ -194,10 +199,32 @@ export interface UpsertRepoGitFromProtoOpts {
   migrateErrorHintFrom?: RepoKey
 }
 
+/** Probe-path store key when a tab has not resolved `gitToplevel` yet. */
+export function probePathOrphanKey(
+  workerId: string,
+  tab: { gitToplevel?: string, workingDir?: string },
+): RepoKey | undefined {
+  if (!workerId || tab.gitToplevel || !tab.workingDir)
+    return undefined
+  return repoKey(workerId, tab.workingDir)
+}
+
+export function migrateErrorHintFromForResolvedRepo(
+  workerId: string,
+  tab: { gitToplevel?: string, workingDir?: string },
+  status: GitRepoStatus | undefined,
+): RepoKey | undefined {
+  const orphanKey = probePathOrphanKey(workerId, tab)
+  const resolvedKey = repoKeyFromStatus(workerId, status)
+  if (!orphanKey || !resolvedKey || orphanKey === resolvedKey)
+    return undefined
+  return orphanKey
+}
+
 /**
- * Apply a git-status proto to the keyed store. Clears file-derived fields only
- * when `toplevel` or `branch` changes so turn-end metadata broadcasts do not
- * wipe the file list before `refresh()` lands.
+ * Apply a git-status proto to the keyed store. Clears file-derived fields when
+ * `toplevel` changes, or when `branch` changes and the branch is not pinned.
+ * Turn-end metadata broadcasts with unchanged identity clear stale `errorHint`.
  */
 export function upsertRepoGitFromProtoStatus(
   store: RepoGitStore,
@@ -213,6 +240,9 @@ export function upsertRepoGitFromProtoStatus(
   const prev = store.get(key)
   let next: Partial<RepoGitState> = { ...patch }
 
+  if (prev?.branchPinnedUntilRefresh)
+    next.branch = prev.branch
+
   if (opts?.migrateErrorHintFrom) {
     const orphan = store.get(opts.migrateErrorHintFrom)
     if (orphan?.errorHint) {
@@ -221,11 +251,10 @@ export function upsertRepoGitFromProtoStatus(
     }
   }
 
-  const identityChanged = !prev
-    || next.toplevel !== prev.toplevel
-    || next.branch !== prev.branch
+  const toplevelChanged = !prev || next.toplevel !== prev.toplevel
+  const branchChanged = Boolean(prev && next.branch !== prev.branch)
 
-  if (identityChanged) {
+  if (toplevelChanged) {
     next = {
       ...next,
       diffAdded: 0,
@@ -235,19 +264,33 @@ export function upsertRepoGitFromProtoStatus(
       errorHint: next.errorHint ?? '',
     }
   }
+  else if (branchChanged && !prev?.branchPinnedUntilRefresh) {
+    next = {
+      ...next,
+      diffAdded: 0,
+      diffDeleted: 0,
+      diffUntracked: 0,
+      files: [],
+      errorHint: next.errorHint ?? '',
+    }
+  }
+  else {
+    next.errorHint = ''
+  }
 
   store.upsert(key, next)
 }
 
-/** Repo key for reads when a tab has not resolved `gitToplevel` yet. */
+/** Repo key for reads; pass `ctx` when the probe path differs from tab fields (file tabs). */
 export function focusedRepoKeyFromTab(
   tab: { workerId?: string, gitToplevel?: string, workingDir?: string },
+  ctx?: { gitToplevel?: string, workingDir?: string },
 ): RepoKey | undefined {
   const fromTab = repoKeyFromTab(tab)
   if (fromTab)
     return fromTab
   const workerId = tab.workerId ?? ''
-  const path = gitStatusProbePath(tab)
+  const path = gitStatusProbePath(ctx ?? tab)
   if (!workerId || !path)
     return undefined
   return repoKey(workerId, path)

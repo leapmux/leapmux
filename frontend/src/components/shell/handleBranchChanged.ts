@@ -34,6 +34,8 @@ export function handleBranchChanged(
   if (active) {
     void deps.repoGitStore.refresh(repo.workerId, repo.gitToplevel, {
       repoKey: repoKey(repo.workerId, repo.gitToplevel),
+    }).catch((err) => {
+      log.warn('failed to refresh git status after branch change', err)
     })
     return
   }
@@ -47,7 +49,7 @@ export function handleBranchChanged(
       })
       const mapped = patchFromGetGitFileStatus(repo.workerId, resp)
       if (mapped) {
-        deps.repoGitStore.upsert(mapped.key, mapped.patch)
+        deps.repoGitStore.upsert(mapped.key, { ...mapped.patch, branchPinnedUntilRefresh: false })
         return
       }
       const nonRepo = patchFromNonRepoGetGitFileStatus(repo.workerId, resp, key)

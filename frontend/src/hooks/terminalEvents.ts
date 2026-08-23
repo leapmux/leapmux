@@ -16,7 +16,7 @@ import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { isTabOnScreen } from '~/hooks/watchPlan'
 import { notifyOs } from '~/lib/osNotification'
-import { upsertRepoGitFromProtoStatus } from '~/stores/repoGit'
+import { migrateErrorHintFromForResolvedRepo, upsertRepoGitFromProtoStatus } from '~/stores/repoGit'
 import { tabKey } from '~/stores/tab.helpers'
 
 /**
@@ -63,7 +63,11 @@ export function applyTerminalStatusChange(
   sc: TerminalStatusChange,
 ): void {
   const workerId = existingTab?.workerId ?? ''
-  upsertRepoGitFromProtoStatus(repoGitStore, workerId, sc.gitStatus)
+  upsertRepoGitFromProtoStatus(repoGitStore, workerId, sc.gitStatus, {
+    migrateErrorHintFrom: existingTab
+      ? migrateErrorHintFromForResolvedRepo(workerId, existingTab, sc.gitStatus)
+      : undefined,
+  })
   if (sc.gitStatus?.toplevel)
     metadata.patch(terminalId, { gitToplevel: sc.gitStatus.toplevel })
   switch (sc.status) {
