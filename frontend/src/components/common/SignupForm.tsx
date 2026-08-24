@@ -1,22 +1,20 @@
 import type { Timestamp } from '@bufbuild/protobuf/wkt'
 import type { Component, JSX } from 'solid-js'
 
-import type { User } from '~/generated/leapmux/v1/auth_pb'
+import type { EmailVerificationStatus, User } from '~/generated/leapmux/v1/auth_pb'
 import { createSignal, Show } from 'solid-js'
 import { authClient } from '~/api/clients'
 import { CaptchaSection } from '~/components/common/CaptchaSection'
 import { PillGroup } from '~/components/common/PillGroup'
+import { createAuthMethodSelection } from '~/lib/authMethodSelection'
 import { createCaptchaForm } from '~/lib/captchaForm'
-import { formatErrorMessage } from '~/lib/errors'
 import { isEmailEnabled, isPasskeyEnabled } from '~/lib/systemInfo'
 import { sanitizeDisplayName, sanitizeSlug, validateEmail, validateReservedUsername } from '~/lib/validate'
-import { startRegistration } from '~/lib/webauthn'
+import { passkeyErrorMessage, startRegistration } from '~/lib/webauthn'
 import { errorText } from '~/styles/shared.css'
 import { passwordCanSubmit, PasswordFields } from './PasswordFields'
 import { Spinner } from './Spinner'
 import { UsernameField } from './UsernameField'
-
-type SignupMethod = 'password' | 'passkey'
 
 /**
  * What a successful sign-up hands its caller. `user` is always set on a
@@ -54,7 +52,8 @@ export const SignupForm: Component<SignupFormProps> = (props) => {
   const [displayName, setDisplayName] = createSignal('')
   const [displayNameEdited, setDisplayNameEdited] = createSignal(false)
   const [email, setEmail] = createSignal('')
-  const [signupMethod, setSignupMethod] = createSignal<SignupMethod>('password')
+  const methodSelection = createAuthMethodSelection('signup')
+  const effectiveMethod = methodSelection.effectiveMethod
   const [submitting, setSubmitting] = createSignal(false)
   const [error, setError] = createSignal<string | null>(null)
   const captcha = createCaptchaForm()
@@ -105,22 +104,17 @@ export const SignupForm: Component<SignupFormProps> = (props) => {
     return { slug, sanitizedDisplayName, email: trimmedEmail }
   }
 
-  // The passkey pill renders only when the hub can run ceremonies; a stale
-  // passkey selection falls back to the password arm.
-  const effectiveMethod = (): SignupMethod => {
-    return signupMethod() === 'passkey' && isPasskeyEnabled() ? 'passkey' : 'password'
-  }
-
   const handleSubmit = async (e: Event) => {
     e.preventDefault()
     const fields = validateCommonFields()
     if (!fields)
       return
-    if (signupMethod() === 'password' && !passwordCanSubmit(pwProps))
+    if (effectiveMethod() === 'password' && !passwordCanSubmit(pwProps))
       return
     setSubmitting(true)
     setError(null)
     try {
+      let resp: { user?: User, emailVerification?: EmailVerificationStatus }
       if (effectiveMethod() === 'passkey') {
         const begin = await authClient.beginPasskeySignUp({
           username: fields.slug,
@@ -129,43 +123,41 @@ export const SignupForm: Component<SignupFormProps> = (props) => {
           ...captcha.fields(),
         })
         const credentialJson = await startRegistration(begin.optionsJson)
-        const resp = await authClient.finishPasskeySignUp({
+        const passkeyResp = await authClient.finishPasskeySignUp({
           sessionId: begin.sessionId,
           credentialJson,
         })
-        if (!resp.user)
-          throw new Error('sign-up response missing user')
-        props.onSuccess({
-          user: resp.user,
-          verificationRequired: resp.emailVerification?.verificationRequired ?? false,
-          nextResendAvailableAt: resp.emailVerification?.nextResendAvailableAt,
-        })
+        resp = passkeyResp
       }
       else {
-        const resp = await authClient.signUp({
+        resp = await authClient.signUp({
           username: fields.slug,
           password: password(),
           displayName: fields.sanitizedDisplayName,
           email: fields.email,
           ...captcha.fields(),
         })
-        if (!resp.user)
-          throw new Error('sign-up response missing user')
-        props.onSuccess({
-          user: resp.user,
-          verificationRequired: resp.emailVerification?.verificationRequired ?? false,
-          nextResendAvailableAt: resp.emailVerification?.nextResendAvailableAt,
-        })
       }
+      // One success path for both arms: the two responses carry the same
+      // two fields, and the `?? false` defaults were spelled twice.
+      if (!resp.user)
+        throw new Error('sign-up response missing user')
+      props.onSuccess({
+        user: resp.user,
+        verificationRequired: resp.emailVerification?.verificationRequired ?? false,
+        nextResendAvailableAt: resp.emailVerification?.nextResendAvailableAt,
+      })
     }
     catch (err) {
-      setError(formatErrorMessage(err, props.errorPrefix ?? 'Sign up failed'))
+      // A dismissed passkey prompt is not a sign-up failure: leave the
+      // banner empty and let the user try again.
+      setError(passkeyErrorMessage(err, props.errorPrefix ?? 'Sign up failed') ?? '')
       captcha.reset(err)
       setSubmitting(false)
     }
   }
 
-  const captchaAction = () => effectiveMethod() === 'passkey' ? 'passkey_signup' as const : 'signup' as const
+  const captchaAction = methodSelection.captchaAction
 
   const emailRequired = () => isEmailEnabled()
 
@@ -211,10 +203,10 @@ export const SignupForm: Component<SignupFormProps> = (props) => {
               ...(isPasskeyEnabled() ? [{ value: 'passkey' as const, label: 'Passkey' }] : []),
             ]}
             selected={v => effectiveMethod() === v}
-            onSelect={setSignupMethod}
+            onSelect={methodSelection.select}
           />
         </Show>
-        <Show when={signupMethod() === 'password' || props.passwordOnly}>
+        <Show when={effectiveMethod() === 'password'}>
           <PasswordFields
             password={password}
             setPassword={setPassword}

@@ -9,13 +9,12 @@ import { OAuthProviderList } from '~/components/common/OAuthProviderList'
 import { PillGroup } from '~/components/common/PillGroup'
 import { Spinner } from '~/components/common/Spinner'
 import { useAuth } from '~/context/AuthContext'
+import { createAuthMethodSelection } from '~/lib/authMethodSelection'
 import { createCaptchaForm } from '~/lib/captchaForm'
 import { safeRedirect } from '~/lib/safeRedirect'
 import { isEmailEnabled, isPasskeyEnabled, isSetupRequired, isSignupEnabled, isSoloMode, loadOAuthProviders } from '~/lib/systemInfo'
 import { errorText, pageCard } from '~/styles/shared.css'
 import * as styles from './LoginPage.css'
-
-type LoginMethod = 'password' | 'passkey'
 
 export const LoginPage: Component = () => {
   const auth = useAuth()
@@ -23,7 +22,8 @@ export const LoginPage: Component = () => {
   const [searchParams] = useSearchParams()
   const [username, setUsername] = createSignal('')
   const [password, setPassword] = createSignal('')
-  const [loginMethod, setLoginMethod] = createSignal<LoginMethod>('password')
+  const methodSelection = createAuthMethodSelection('login')
+  const effectiveMethod = methodSelection.effectiveMethod
   const [submitting, setSubmitting] = createSignal(false)
   const [oauthProviders, setOAuthProviders] = createSignal<OAuthProviderInfo[]>([])
   const captcha = createCaptchaForm()
@@ -95,12 +95,6 @@ export const LoginPage: Component = () => {
     navigate(redirect ?? '/', { replace: true })
   }
 
-  // The passkey pill renders only when the hub can run ceremonies; a stale
-  // passkey selection falls back to the password arm.
-  const effectiveMethod = (): LoginMethod => {
-    return loginMethod() === 'passkey' && isPasskeyEnabled() ? 'passkey' : 'password'
-  }
-
   const handleSubmit = async (e: Event) => {
     e.preventDefault()
     setSubmitting(true)
@@ -134,7 +128,7 @@ export const LoginPage: Component = () => {
     return url
   }
 
-  const captchaAction = () => effectiveMethod() === 'passkey' ? 'passkey_login' as const : 'login' as const
+  const captchaAction = methodSelection.captchaAction
 
   const canSubmit = () => {
     if (!username() || captcha.blocksSubmit())
@@ -174,7 +168,7 @@ export const LoginPage: Component = () => {
               ...(isPasskeyEnabled() ? [{ value: 'passkey' as const, label: 'Passkey' }] : []),
             ]}
             selected={v => effectiveMethod() === v}
-            onSelect={setLoginMethod}
+            onSelect={methodSelection.select}
           />
           <Show when={effectiveMethod() === 'password'}>
             <label>
@@ -201,7 +195,7 @@ export const LoginPage: Component = () => {
               ? 'Signing in...'
               : effectiveMethod() === 'passkey' ? 'Sign in with passkey' : 'Sign in'}
           </button>
-          <Show when={isEmailEnabled() && loginMethod() === 'password'}>
+          <Show when={isEmailEnabled() && effectiveMethod() === 'password'}>
             <div>
               <A href="/forgot-password">Forgot password?</A>
             </div>

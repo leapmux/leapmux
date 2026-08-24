@@ -23,7 +23,11 @@ vi.mock('~/api/clients', () => ({
   },
 }))
 
-vi.mock('~/lib/webauthn', () => ({
+// Partial mock: only the ceremony is faked. passkeyErrorMessage is the real
+// classifier, so these tests exercise the same cancel-vs-failure rule the
+// component ships with.
+vi.mock('~/lib/webauthn', async importOriginal => ({
+  ...await importOriginal<typeof import('~/lib/webauthn')>(),
   startRegistration: vi.fn().mockResolvedValue('{"id":"cred"}'),
 }))
 

@@ -137,11 +137,12 @@ func (s *Suite) testCleanup(t *testing.T) {
 		// expires_at is older than retention, so this exercises the
 		// "expired-and-aged-out" path.
 		past := time.Now().Add(-48 * time.Hour).UTC()
-		err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
+		_, err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
 			ID:                    user.ID,
 			PendingEmail:          "stale@example.com",
 			PendingEmailToken:     "ABC123",
 			PendingEmailExpiresAt: &past,
+			CooldownCutoff:        store.UnconditionalMintCutoff(),
 		})
 		require.NoError(t, err)
 
@@ -159,6 +160,43 @@ func (s *Suite) testCleanup(t *testing.T) {
 		assert.Zero(t, got.PendingEmailAttempts)
 	})
 
+	// A send the relay refused leaves the ADDRESS with no token and no
+	// expiry, so the expiry compare can never see it. Without the second
+	// arm that row outlived the database: the sweep it is subject to
+	// matched neither predicate, and an abandoned address stayed forever.
+	t.Run("clear stale pending emails reaps a codeless address", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "cleanup-codeless-pending-user")
+
+		expires := time.Now().Add(30 * time.Minute).UTC()
+		minted, err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
+			ID:                    user.ID,
+			PendingEmail:          "undelivered@example.com",
+			PendingEmailToken:     "DEAD12",
+			PendingEmailExpiresAt: &expires,
+			CooldownCutoff:        store.UnconditionalMintCutoff(),
+		})
+		require.NoError(t, err)
+		require.True(t, minted)
+		// The failed-send state: the code is gone, the address remains.
+		require.NoError(t, st.Users().ClearPendingEmailCode(ctx, user.ID))
+
+		// A cutoff before the row's updated_at leaves it alone: the address
+		// is recent, and the user can still ask for a fresh code.
+		n, err := st.Cleanup().ClearStalePendingEmails(ctx, time.Now().Add(-24*time.Hour))
+		require.NoError(t, err)
+		assert.Equal(t, int64(0), n, "a recent codeless address is not stale yet")
+
+		// A cutoff past it reaps the address.
+		n, err = st.Cleanup().ClearStalePendingEmails(ctx, time.Now().Add(24*time.Hour))
+		require.NoError(t, err)
+		assert.Equal(t, int64(1), n)
+
+		got, err := st.Users().GetByID(ctx, user.ID)
+		require.NoError(t, err)
+		assert.Empty(t, got.PendingEmail, "an abandoned address must not outlive the retention window")
+	})
+
 	t.Run("clear stale pending emails skips live ones", func(t *testing.T) {
 		st := s.NewStore(t)
 		user := SeedUser(t, st, "cleanup-live-pending-user")
@@ -167,11 +205,12 @@ func (s *Suite) testCleanup(t *testing.T) {
 		// — the code is still usable and wiping it would silently lock
 		// the user out of completing verification.
 		future := time.Now().Add(15 * time.Minute).UTC()
-		err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
+		_, err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
 			ID:                    user.ID,
 			PendingEmail:          "still-valid@example.com",
 			PendingEmailToken:     "LIVE12",
 			PendingEmailExpiresAt: &future,
+			CooldownCutoff:        store.UnconditionalMintCutoff(),
 		})
 		require.NoError(t, err)
 

@@ -2,6 +2,8 @@ import {
   startAuthentication as browserStartAuthentication,
   startRegistration as browserStartRegistration,
 } from '@simplewebauthn/browser'
+import { arrayBufferToBase64 } from '~/lib/base64'
+import { formatErrorMessage } from '~/lib/errors'
 import { createLogger } from '~/lib/logger'
 
 const log = createLogger('webauthn')
@@ -21,17 +23,73 @@ export function parseWebAuthnOptionsJSON<T>(optionsJson: string): T {
   return parsed as T
 }
 
+/**
+ * A ceremony the user dismissed, or that the browser ended without an
+ * error the user caused. Callers treat it as a no-op instead of an error
+ * banner: dismissing the OS passkey sheet is not a failure to report.
+ *
+ * `isPasskeyCeremonyCancelled` is the test; the raw SimpleWebAuthn error
+ * stays as the `cause` for the log.
+ */
+export class PasskeyCeremonyCancelledError extends Error {
+  constructor(cause: unknown) {
+    super('Passkey prompt dismissed', { cause })
+    this.name = 'PasskeyCeremonyCancelledError'
+  }
+}
+
+/** True when a rejected ceremony was a dismissal, not a real failure. */
+export function isPasskeyCeremonyCancelled(err: unknown): boolean {
+  return err instanceof PasskeyCeremonyCancelledError
+}
+
+/**
+ * The banner text for a rejected passkey action, or null when the user
+ * dismissed the prompt and there is nothing to report. Every surface that
+ * runs a ceremony routes its catch through here, so "cancel is not an
+ * error" is one rule rather than seven.
+ */
+export function passkeyErrorMessage(err: unknown, fallback: string): string | null {
+  if (isPasskeyCeremonyCancelled(err))
+    return null
+  return formatErrorMessage(err, fallback)
+}
+
+/**
+ * Classify a rejected ceremony at the ONE boundary that knows the
+ * SimpleWebAuthn error shape.
+ *
+ * Every call site used to fall through to `formatErrorMessage`, which
+ * returns `err.message` for any `Error` -- and SimpleWebAuthn passes the
+ * browser's raw DOMException text through verbatim. A user who simply
+ * dismissed the OS sheet read "The operation either timed out or was not
+ * allowed. See: https://www.w3.org/TR/webauthn-2/..." in a red banner.
+ *
+ * The library's own `code` carries the distinction, so the mapping lives
+ * here once instead of as seven ad-hoc fallback strings.
+ */
+function classifyCeremonyError(err: unknown): never {
+  const code = (err as { code?: string } | null)?.code
+  const causeName = (err as { cause?: { name?: string } } | null)?.cause?.name
+  if (code === 'ERROR_CEREMONY_ABORTED'
+    || causeName === 'AbortError'
+    || causeName === 'NotAllowedError') {
+    throw new PasskeyCeremonyCancelledError(err)
+  }
+  throw err
+}
+
 /** Begin a WebAuthn registration ceremony from server JSON options. */
 export async function startRegistration(optionsJson: string): Promise<string> {
   const optionsJSON = parseWebAuthnOptionsJSON<RegistrationOptionsJSON>(optionsJson)
-  const credential = await browserStartRegistration({ optionsJSON })
+  const credential = await browserStartRegistration({ optionsJSON }).catch(classifyCeremonyError)
   return JSON.stringify(credential)
 }
 
 /** Begin a WebAuthn authentication ceremony from server JSON options. */
 export async function startAuthentication(optionsJson: string): Promise<string> {
   const optionsJSON = parseWebAuthnOptionsJSON<AuthenticationOptionsJSON>(optionsJson)
-  const credential = await browserStartAuthentication({ optionsJSON })
+  const credential = await browserStartAuthentication({ optionsJSON }).catch(classifyCeremonyError)
   return JSON.stringify(credential)
 }
 
@@ -60,11 +118,7 @@ function publicKeyCredentialSignal(): PublicKeyCredentialSignal | undefined {
  * Server user handles are `[]byte(uuid)` — base64url of those UTF-8 bytes.
  */
 export function encodeWebAuthnUserId(userId: string): string {
-  const bytes = new TextEncoder().encode(userId)
-  let binary = ''
-  for (let i = 0; i < bytes.length; i++)
-    binary += String.fromCharCode(bytes[i]!)
-  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+  return arrayBufferToBase64(userId).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 }
 
 /** Tell the browser a passkey was removed (best-effort; no-op when unsupported). */

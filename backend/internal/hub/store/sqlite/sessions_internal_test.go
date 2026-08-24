@@ -66,11 +66,11 @@ func TestSessionExpiryPredicatesPreserveFractionalPrecision(t *testing.T) {
 		require.NoError(t, err)
 		_, err = st.Sessions().ValidateWithUser(context.Background(), sessionID, time.Now().UTC())
 		require.NoError(t, err)
-		byUserPage, err := st.Sessions().ListByUserID(context.Background(), store.ListUserSessionsParams{UserID: userid.MustNew(userID), PageParams: store.PageParams{Limit: 1000}})
+		byUserPage, err := st.Sessions().ListByUserID(context.Background(), store.ListUserSessionsParams{UserID: userid.MustNew(userID), PageParams: store.PageParams{Limit: 1000}}, time.Now().UTC())
 		require.NoError(t, err)
 		byUser := byUserPage.Rows
 		assert.Len(t, byUser, 1)
-		page, err := st.Sessions().ListAllActive(context.Background(), store.ListAllActiveSessionsParams{PageParams: store.PageParams{Limit: 10}})
+		page, err := st.Sessions().ListAllActive(context.Background(), store.ListAllActiveSessionsParams{PageParams: store.PageParams{Limit: 10}}, time.Now().UTC())
 		require.NoError(t, err)
 		assert.Len(t, page.Rows, 1)
 	})
@@ -126,7 +126,7 @@ func TestListAllActiveSessionsPreservesFractionalCursorPrecision(t *testing.T) {
 
 	page, err := st.Sessions().ListAllActive(context.Background(), store.ListAllActiveSessionsParams{
 		PageParams: store.PageParams{Cursor: store.EncodeCursor(cursorTime, tieCursorID), Limit: 10},
-	})
+	}, time.Now().UTC())
 	require.NoError(t, err)
 	// The cursor row itself is excluded (id not < itself); the tied row with
 	// the smaller id survives via the equality branch; the 400ms row survives
@@ -226,7 +226,7 @@ func TestTouchStoresExpiresAtCanonical(t *testing.T) {
 		ID:           sessionID,
 		ExpiresAt:    newExpiry,
 		LastActiveAt: time.Now().UTC(),
-	})
+	}, time.Now().UTC())
 	require.NoError(t, err)
 	require.Equal(t, int64(1), n, "Touch must fire against the backdated row")
 
@@ -320,7 +320,7 @@ func TestKeysetCursorTrailingZeroMillisecondTie(t *testing.T) {
 	page, err := st.Sessions().ListByUserID(context.Background(), store.ListUserSessionsParams{
 		UserID:     userid.MustNew(user.ID),
 		PageParams: store.PageParams{Cursor: store.EncodeCursor(tieInstant, boundary), Limit: 10},
-	})
+	}, time.Now().UTC())
 	require.NoError(t, err)
 	require.Len(t, page.Rows, 2, "the tied smaller-id row and the earlier row must both survive the boundary")
 	assert.Equal(t, expectTied, page.Rows[0].ID)

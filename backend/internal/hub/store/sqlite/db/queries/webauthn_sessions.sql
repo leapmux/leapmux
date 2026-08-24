@@ -23,7 +23,7 @@ DELETE FROM webauthn_sessions WHERE id = ?;
 
 -- name: ConsumeWebAuthnProof :execresult
 -- kind is a parameter so the Go constant (webauthn.KindReauthProof) stays
--- the single spelling of what a proof row is named.
+-- the single spelling of what identifies a proof row.
 DELETE FROM webauthn_sessions
 WHERE id = sqlc.arg(id) AND kind = sqlc.arg(kind) AND user_id = sqlc.arg(user_id) AND expires_at > sqlc.arg(now);
 

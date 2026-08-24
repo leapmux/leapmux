@@ -79,10 +79,13 @@ func (h *APIAuthHandler) handleActivate(w http.ResponseWriter, r *http.Request) 
 			http.Error(w, "invalid user_code", http.StatusBadRequest)
 			return
 		}
+		// h.now(), not time.Now(): the handler's seam is the one clock every
+		// instant it mints or compares comes from, so a test that advances
+		// the fake clock past the grant TTL sees the expiry it set up.
 		rows, err := h.store.DeviceAuthorizations().ApproveByUserCode(r.Context(), store.ApproveDeviceAuthorizationByUserCodeParams{
 			UserCode: normalized,
 			UserID:   user.ID,
-		})
+		}, h.now().UTC())
 		if err != nil {
 			writeInternalError(w, "device authorization approval failed", err)
 			return

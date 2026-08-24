@@ -49,7 +49,7 @@ describe('collectFiles', () => {
     expect(found.filter(file => directoriesOf(file).includes('node_modules'))).toEqual([])
   })
 
-  it('skips a named directory anywhere in the walk', () => {
+  it('skips a directory by basename anywhere in the walk', () => {
     const srcRoot = join(frontendRoot, 'src')
     const matches = (name: string): boolean => name.endsWith('.ts')
     const all = collectFiles(srcRoot, { matches })
@@ -57,6 +57,26 @@ describe('collectFiles', () => {
 
     expect(withoutTestSupport.length).toBeLessThan(all.length)
     expect(withoutTestSupport.filter(file => directoriesOf(file).includes('test-support'))).toEqual([])
+  })
+
+  // The distinction REMOVALS-9 turns on: a basename skip exempts every
+  // directory with that name at every depth, an exact path skip exempts
+  // exactly one location.
+  it('skips a path exactly, so a same-named directory elsewhere is still walked', () => {
+    const srcRoot = join(frontendRoot, 'src')
+    const matches = (name: string): boolean => name.endsWith('.ts')
+
+    // 'components' exists directly under src/, so an exact skip removes it.
+    const exact = collectFiles(srcRoot, { matches, skipPaths: new Set(['components']) })
+    expect(exact.filter(file => file.startsWith(join(srcRoot, 'components')))).toEqual([])
+
+    // A nested directory that shares a basename with an exact skip entry
+    // survives, where alsoSkip would have removed it too.
+    const nestedName = 'test-support'
+    const byPath = collectFiles(frontendRoot, { matches, skipPaths: new Set([nestedName]) })
+    expect(byPath.some(file => directoriesOf(file).includes(nestedName))).toBe(true)
+    const byName = collectFiles(frontendRoot, { matches, alsoSkip: new Set([nestedName]) })
+    expect(byName.some(file => directoriesOf(file).includes(nestedName))).toBe(false)
   })
 
   it('returns nothing when the filter accepts no file', () => {

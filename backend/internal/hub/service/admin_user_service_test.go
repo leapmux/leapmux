@@ -298,7 +298,7 @@ func TestAdminUserService_DeleteUser_ForceAndCredentialRevocation(t *testing.T) 
 	sessions, err := env.st.Sessions().ListByUserID(ctx, store.ListUserSessionsParams{
 		UserID:     userid.MustNew(carolID),
 		PageParams: store.PageParams{Limit: 10},
-	})
+	}, time.Now().UTC())
 	require.NoError(t, err)
 	assert.Empty(t, sessions.Rows)
 
@@ -581,6 +581,71 @@ func TestAdminUserService_SetUserAdmin_FencesADemotedUser(t *testing.T) {
 	assert.False(t, revoked.Msg.GetUser().GetIsAdmin())
 	assert.Greater(t, generation(), before,
 		"a demotion must bump auth_generation so admin-era sessions and tokens die")
+}
+
+// Promotion forces email_verified=true so the stored flag matches the
+// runtime IsAdmin exemption. Demotion has to repair that, or the account
+// keeps a verified state it never earned: the demoted row would then pass
+// the login verification gate, pass UpdateUser's clear-email guard, and
+// satisfy the "no durable identity" refusal that protects a first passkey.
+func TestAdminUserService_SetUserAdmin_DemotionClearsUnearnedVerification(t *testing.T) {
+	env := setupAdminUserTest(t)
+	ctx := context.Background()
+
+	created, err := env.client.CreateUser(ctx, authedReq(&leapmuxv1.CreateUserRequest{
+		Username: "noaddress", Password: "password123",
+	}, env.token))
+	require.NoError(t, err)
+	target := created.Msg.GetUser().GetId()
+
+	row, err := env.st.Users().GetByID(ctx, target)
+	require.NoError(t, err)
+	require.Empty(t, row.Email, "precondition: the account has no address to verify")
+	require.False(t, row.EmailVerified)
+
+	_, err = env.client.SetUserAdmin(ctx, authedReq(&leapmuxv1.SetUserAdminRequest{
+		Username: "noaddress", IsAdmin: true,
+	}, env.token))
+	require.NoError(t, err)
+	row, err = env.st.Users().GetByID(ctx, target)
+	require.NoError(t, err)
+	require.True(t, row.EmailVerified, "the admin invariant forces the flag")
+
+	_, err = env.client.SetUserAdmin(ctx, authedReq(&leapmuxv1.SetUserAdminRequest{
+		Username: "noaddress", IsAdmin: false,
+	}, env.token))
+	require.NoError(t, err)
+	row, err = env.st.Users().GetByID(ctx, target)
+	require.NoError(t, err)
+	assert.False(t, row.EmailVerified,
+		"with no address there is nothing that could have been confirmed")
+}
+
+// The other half of the rule: a demotion must NOT un-verify an address the
+// user really did confirm, because the row records no pre-promotion value.
+func TestAdminUserService_SetUserAdmin_DemotionKeepsAConfirmedAddress(t *testing.T) {
+	env := setupAdminUserTest(t)
+	ctx := context.Background()
+
+	created, err := env.client.CreateUser(ctx, authedReq(&leapmuxv1.CreateUserRequest{
+		Username: "hasaddress", Password: "password123", Email: "real@example.com",
+	}, env.token))
+	require.NoError(t, err)
+	target := created.Msg.GetUser().GetId()
+	require.NoError(t, env.st.Users().UpdateEmail(ctx, store.UpdateUserEmailParams{
+		ID: target, Email: "real@example.com", EmailVerified: true,
+	}))
+
+	for _, isAdmin := range []bool{true, false} {
+		_, err = env.client.SetUserAdmin(ctx, authedReq(&leapmuxv1.SetUserAdminRequest{
+			Username: "hasaddress", IsAdmin: isAdmin,
+		}, env.token))
+		require.NoError(t, err)
+	}
+
+	row, err := env.st.Users().GetByID(ctx, target)
+	require.NoError(t, err)
+	assert.True(t, row.EmailVerified, "a confirmed address survives a promote/demote round trip")
 }
 
 func ptr(s string) *string { return &s }
@@ -1050,7 +1115,7 @@ func TestAdminUserService_ResetPassword_TearsDownEveryCredential(t *testing.T) {
 	sessions, err := env.st.Sessions().ListByUserID(ctx, store.ListUserSessionsParams{
 		UserID:     userid.MustNew(env.userID),
 		PageParams: store.PageParams{Limit: 10},
-	})
+	}, time.Now().UTC())
 	require.NoError(t, err)
 	assert.Empty(t, sessions.Rows, "every session of the user must be deleted")
 	_, err = auth.ValidateToken(ctx, env.st, env.session)
@@ -1159,7 +1224,7 @@ func TestAdminUserService_ResetPassword_SelfResetEndsTheActingSession(t *testing
 	sessions, err := env.st.Sessions().ListByUserID(ctx, store.ListUserSessionsParams{
 		UserID:     userid.MustNew(env.adminID),
 		PageParams: store.PageParams{Limit: 10},
-	})
+	}, time.Now().UTC())
 	require.NoError(t, err)
 	assert.Empty(t, sessions.Rows, "the caller's own session row is deleted too")
 

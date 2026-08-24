@@ -1303,7 +1303,7 @@ func TestAPIAuth_DeviceCode_UserLookupFailureLeavesGrantRetryable(t *testing.T) 
 	}))
 	rows, err := env.store.DeviceAuthorizations().Approve(context.Background(), store.ApproveDeviceAuthorizationParams{
 		DeviceCode: deviceCode, UserID: userid.MustNew(env.userID),
-	})
+	}, env.clock.now().UTC())
 	require.NoError(t, err)
 	require.Equal(t, int64(1), rows)
 
@@ -1390,7 +1390,7 @@ func TestAPIAuth_DeviceCode_ConsumeRequiresOneRow(t *testing.T) {
 	}))
 	rows, err := env.store.DeviceAuthorizations().Approve(context.Background(), store.ApproveDeviceAuthorizationParams{
 		DeviceCode: deviceCode, UserID: userid.MustNew(env.userID),
-	})
+	}, env.clock.now().UTC())
 	require.NoError(t, err)
 	require.Equal(t, int64(1), rows)
 	device := deviceAuthorizationOverride{DeviceAuthorizationStore: env.store.DeviceAuthorizations(), consume: func(context.Context, string) (int64, error) {
@@ -1428,7 +1428,7 @@ func TestAPIAuth_DeviceCode_ApprovedPollAdvancesThrottleDespiteIssuanceFailure(t
 	}))
 	rows, err := env.store.DeviceAuthorizations().Approve(context.Background(), store.ApproveDeviceAuthorizationParams{
 		DeviceCode: deviceCode, UserID: userid.MustNew(env.userID),
-	})
+	}, env.clock.now().UTC())
 	require.NoError(t, err)
 	require.Equal(t, int64(1), rows)
 

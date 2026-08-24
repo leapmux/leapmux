@@ -10,10 +10,16 @@ function cooldownSeconds(untilMs: number, nowMs: number): number {
 
 export interface UseVerificationResendOptions {
   /**
-   * Accessor for the cooldown seed from a login/signup response. An
-   * accessor (not a value) so a session that restores after this hook
-   * mounts still seeds the countdown — a hard reload of /verify-email
-   * starts with the signal unset and receives it once auth bootstraps.
+   * Accessor for the cooldown seed. An accessor (not a value) so a session
+   * that restores after this hook mounts still seeds the countdown: a hard
+   * reload of /verify-email starts with the signal unset and receives it
+   * once auth bootstraps.
+   *
+   * That re-seed needs `GetCurrentUserResponse.email_verification`, which
+   * the bootstrap reads in `AuthContext.restoreSession`. Without it the
+   * signal stayed undefined after a reload, the countdown restarted at
+   * zero, and the click got a ResourceExhausted with no timestamp to
+   * restart from.
    */
   nextResendAvailableAt?: () => Timestamp | undefined
 }

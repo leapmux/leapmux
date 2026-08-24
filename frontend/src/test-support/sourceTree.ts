@@ -33,11 +33,24 @@ export const SKIP_DIRS: ReadonlySet<string> = new Set([
   'test-results',
 ])
 
+/** The empty default for `skipPaths`: no location is exempt. */
+const NO_PATHS: ReadonlySet<string> = new Set()
+
 export interface CollectFilesOptions {
   /** Reports whether a file belongs in the result, from its basename. */
   matches: (basename: string) => boolean
-  /** Directory basenames to skip in ADDITION to `SKIP_DIRS`. */
+  /** Directory basenames to skip in ADDITION to `SKIP_DIRS`, at ANY depth. */
   alsoSkip?: ReadonlySet<string>
+  /**
+   * Directory paths to skip, each relative to `dir` and matched EXACTLY.
+   *
+   * Use this, not `alsoSkip`, for an exemption that names one sanctioned
+   * location. A basename skip exempts every directory with that name at
+   * every depth: `alsoSkip: new Set(['e2e'])` exempted `tests/e2e/` as
+   * intended and also `tests/unit/e2e/`, so the guard that keeps the
+   * retired unit mirror out could be defeated by one directory name.
+   */
+  skipPaths?: ReadonlySet<string>
 }
 
 /**
@@ -55,18 +68,33 @@ export function collectFiles(dir: string, options: CollectFilesOptions): string[
   const skip = options.alsoSkip === undefined
     ? SKIP_DIRS
     : new Set([...SKIP_DIRS, ...options.alsoSkip])
-  return walk(dir, options.matches, skip)
+  return walk(dir, options.matches, skip, options.skipPaths ?? NO_PATHS, '')
 }
 
-/** The recursive half, with the skip set merged one time by the caller. */
-function walk(dir: string, matches: (basename: string) => boolean, skip: ReadonlySet<string>): string[] {
+/**
+ * The recursive half, with the skip set merged one time by the caller.
+ *
+ * `rel` is the current directory's path relative to the walk root, so a
+ * `skipPaths` entry names one location instead of every directory that
+ * shares its basename.
+ */
+function walk(
+  dir: string,
+  matches: (basename: string) => boolean,
+  skip: ReadonlySet<string>,
+  skipPaths: ReadonlySet<string>,
+  rel: string,
+): string[] {
   const found: string[] = []
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     if (skip.has(entry.name))
       continue
+    const entryRel = rel === '' ? entry.name : `${rel}/${entry.name}`
+    if (skipPaths.has(entryRel))
+      continue
     const full = join(dir, entry.name)
     if (entry.isDirectory())
-      found.push(...walk(full, matches, skip))
+      found.push(...walk(full, matches, skip, skipPaths, entryRel))
     else if (matches(entry.name))
       found.push(full)
   }

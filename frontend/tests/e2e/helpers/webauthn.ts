@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import process from 'node:process'
 
 import { solveCaptchaViaAPI } from './altcha'
+import { loginViaToken, readSessionCookie } from './ui'
 
 const SIMPLEWEBAUTHN_BUNDLE = readFileSync(
   join(process.cwd(), 'node_modules/@simplewebauthn/browser/dist/bundle/index.umd.min.js'),
@@ -152,24 +153,6 @@ async function postConnectInPage(
   }, { hubUrl, procedure, body })
 }
 
-async function readSessionCookie(page: Page, step: string): Promise<string> {
-  const session = (await page.context().cookies()).find(c => c.name === 'leapmux-session')
-  if (!session?.value)
-    throw new Error(`${step} did not set a session cookie on the browser context`)
-  return `leapmux-session=${session.value}`
-}
-
-async function setSessionCookie(page: Page, cookie: string): Promise<void> {
-  const value = cookie.split('=').slice(1).join('=')
-  await page.context().addCookies([{
-    name: 'leapmux-session',
-    value,
-    domain: 'localhost',
-    path: '/',
-    httpOnly: true,
-  }])
-}
-
 /**
  * Complete a passkey sign-up through the Connect API while running the
  * WebAuthn ceremony inside `page` (virtual authenticator required).
@@ -216,7 +199,7 @@ export async function addPasskeyViaAPIInBrowser(
   cookie: string,
   currentPassword = '',
 ): Promise<void> {
-  await setSessionCookie(page, cookie)
+  await loginViaToken(page, cookie)
   await page.goto(`${hubUrl}/`)
   await runCeremonyInPage(page, hubUrl, {
     beginProcedure: 'UserService/BeginPasskeyRegistration',
@@ -237,7 +220,7 @@ export async function deactivatePasskeyAuthViaAPIInBrowser(
   cookie: string,
   newPassword: string,
 ): Promise<void> {
-  await setSessionCookie(page, cookie)
+  await loginViaToken(page, cookie)
   await page.goto(`${hubUrl}/`)
   const finish = await runCeremonyInPage(page, hubUrl, {
     beginProcedure: 'UserService/BeginPasskeyReauth',

@@ -507,12 +507,14 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 		// Staging the pending email is a plain mutation (no event); only the
 		// promotion changes the cached email/email_verified and must emit.
 		expiresAt := time.Now().Add(time.Hour)
-		require.NoError(t, st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
+		minted, err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
 			ID:                    user.ID,
 			PendingEmail:          "promoted@example.com",
 			PendingEmailToken:     "tok",
 			PendingEmailExpiresAt: &expiresAt,
-		}))
+			CooldownCutoff:        store.UnconditionalMintCutoff(),
+		})
+		mustSetPendingEmail(t, minted, err)
 		assertUserInfoEvent(t, st, user.ID, func() error {
 			return st.Users().PromotePendingEmail(ctx, user.ID)
 		})

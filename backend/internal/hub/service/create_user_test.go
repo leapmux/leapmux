@@ -227,7 +227,7 @@ func TestSetPendingEmailWithToken_RejectsAlreadyVerifiedEmail(t *testing.T) {
 	userB := createSimpleUser(t, st, "user-b", "")
 
 	// User B tries to set pending_email to the already-verified address.
-	err := issuePendingEmailVerificationOrRollback(ctx, st, sender, mail.Renderer{BaseURL: func() string { return "https://hub.example.test" }}, userB.ID, "taken@example.com")
+	err := issuePendingEmailVerificationOrFail(ctx, st, sender, mail.Renderer{BaseURL: func() string { return "https://hub.example.test" }}, userB.ID, "taken@example.com")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "already in use")
 
@@ -246,7 +246,7 @@ func TestSetPendingEmailWithToken_StoresPendingForUnclaimedEmail(t *testing.T) {
 
 	user := createSimpleUser(t, st, "user-a", "")
 
-	err := issuePendingEmailVerificationOrRollback(ctx, st, sender, mail.Renderer{BaseURL: func() string { return "https://hub.example.test" }}, user.ID, "free@example.com")
+	err := issuePendingEmailVerificationOrFail(ctx, st, sender, mail.Renderer{BaseURL: func() string { return "https://hub.example.test" }}, user.ID, "free@example.com")
 	require.NoError(t, err)
 
 	// The row stays pending until the user submits a code via UserService.VerifyEmail.
@@ -267,11 +267,12 @@ func TestCreateUser_ClearsCompetingPendingEmails(t *testing.T) {
 	// User A sets pending_email.
 	userA := createSimpleUser(t, st, "user-a", "")
 	expiresAt := mustTime(t)
-	err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
+	_, err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
 		ID:                    userA.ID,
 		PendingEmail:          "race@example.com",
 		PendingEmailToken:     verifycode.Generate(),
 		PendingEmailExpiresAt: &expiresAt,
+		CooldownCutoff:        store.UnconditionalMintCutoff(),
 	})
 	require.NoError(t, err)
 
@@ -301,11 +302,12 @@ func TestSetEmailAndClearCompeting(t *testing.T) {
 	// User A has pending_email.
 	userA := createSimpleUser(t, st, "user-a", "")
 	expiresAt := mustTime(t)
-	err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
+	_, err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
 		ID:                    userA.ID,
 		PendingEmail:          "target@example.com",
 		PendingEmailToken:     verifycode.Generate(),
 		PendingEmailExpiresAt: &expiresAt,
+		CooldownCutoff:        store.UnconditionalMintCutoff(),
 	})
 	require.NoError(t, err)
 
@@ -346,4 +348,93 @@ func TestSetEmailAndClearCompeting_Unverified(t *testing.T) {
 func mustTime(t *testing.T) time.Time {
 	t.Helper()
 	return time.Now().Add(24 * time.Hour).UTC()
+}
+
+// Every account-creation invariant lives in createUserInTx, so every
+// sign-up flavor gets it. These pin the two that used to sit in CreateUser
+// alone, which the OAuth and passkey flavors called past.
+func TestCreateUserInTx_EnforcesTheAdminInvariants(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	// An admin is always email_verified in the database, whatever the
+	// caller passed: the stored flag is what keeps the auth interceptor's
+	// runtime IsAdmin exemption honest.
+	t.Run("an admin is always email_verified", func(t *testing.T) {
+		t.Parallel()
+		st := setupCreateUserTestDB(t)
+		user, code, err := createUserInTx(ctx, st, createUserTxParams{
+			username: "forced-admin", displayName: "Forced", isAdmin: true,
+			emailVerified: false, passwordHash: "hash", passwordSet: true,
+		})
+		require.NoError(t, err)
+		assert.True(t, user.EmailVerified, "the caller's false must not survive")
+		assert.Empty(t, code, "no pending row, so no code")
+	})
+
+	// An admin never waits behind a pending verification row: the address
+	// moves to the email column instead. Committing an admin with email=''
+	// and email_verified=1 leaves the hub's only administrator with no
+	// address to reset a password to, and nothing prompts them for one.
+	t.Run("an admin's pending address is promoted into the email column", func(t *testing.T) {
+		t.Parallel()
+		st := setupCreateUserTestDB(t)
+		user, code, err := createUserInTx(ctx, st, createUserTxParams{
+			username: "promoted-admin", displayName: "Promoted", isAdmin: true,
+			email: "", pendingEmail: "admin@example.com",
+			passwordHash: "hash", passwordSet: true,
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "admin@example.com", user.Email)
+		assert.True(t, user.EmailVerified)
+		assert.Empty(t, user.PendingEmail, "there is nothing left to verify")
+		// The returned code is what the caller keys its send on. An empty
+		// one means "no pending row was written", and the passkey first-user
+		// branch mailed a BLANK code -- and rolled the hub's only admin back
+		// when that pointless send failed -- until it read this instead of
+		// its own pre-call intent.
+		assert.Empty(t, code, "no pending row was written, so there is nothing to mail")
+	})
+
+	// A non-admin keeps the pending row, and the code comes back for the
+	// caller to deliver.
+	t.Run("a non-admin keeps its pending row and returns the code", func(t *testing.T) {
+		t.Parallel()
+		st := setupCreateUserTestDB(t)
+		user, code, err := createUserInTx(ctx, st, createUserTxParams{
+			username: "pending-user", displayName: "Pending",
+			pendingEmail: "user@example.com", passwordHash: "hash", passwordSet: true,
+		})
+		require.NoError(t, err)
+		assert.Empty(t, user.Email)
+		assert.False(t, user.EmailVerified)
+		assert.Equal(t, "user@example.com", user.PendingEmail)
+		assert.Len(t, code, verifycode.Length, "the caller mails this code")
+	})
+
+	// The claim clears every other account's pending target for the same
+	// address, inside the same transaction. Without it the loser is pinned
+	// on /verify-email with a dead row for an address it can never take.
+	t.Run("claiming an address clears a competing pending row", func(t *testing.T) {
+		t.Parallel()
+		st := setupCreateUserTestDB(t)
+		loser, _, err := createUserInTx(ctx, st, createUserTxParams{
+			username: "loser", displayName: "Loser",
+			pendingEmail: "contested@example.com", passwordHash: "hash", passwordSet: true,
+		})
+		require.NoError(t, err)
+		require.Equal(t, "contested@example.com", loser.PendingEmail)
+
+		_, _, err = createUserInTx(ctx, st, createUserTxParams{
+			username: "winner", displayName: "Winner",
+			email: "contested@example.com", emailVerified: true,
+			passwordHash: "hash", passwordSet: true,
+		})
+		require.NoError(t, err)
+
+		after, err := st.Users().GetByID(ctx, loser.ID)
+		require.NoError(t, err)
+		assert.Empty(t, after.PendingEmail,
+			"a claimed address must not stay pending for anyone else")
+	})
 }

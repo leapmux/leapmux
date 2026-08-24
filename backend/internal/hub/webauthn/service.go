@@ -286,27 +286,34 @@ func (s *Service) BeginRegistration(ctx context.Context, userID, origin string) 
 	return sessionID, optionsJSON, rpID, err
 }
 
-// FinishRegistration validates attestation and stores a new passkey for userID.
-func (s *Service) FinishRegistration(ctx context.Context, userID, sessionID, credentialJSON, friendlyName string) (*store.PasskeyCredential, error) {
+// VerifyRegistration consumes the ceremony session and validates the
+// attestation, WITHOUT writing the credential. It is the half that needs no
+// transaction, so a caller that must write inside one can keep this work
+// outside it.
+//
+// That split is not cosmetic on SQLite, which has a single writer lock:
+// this runs a keystore decrypt per existing credential plus a JSON, base64,
+// and CBOR parse of a caller-supplied body capped only at the 4 MiB request
+// limit. Holding the writer lock for all of that queues every other write
+// on the hub behind one registration. The ceremony consume is its own
+// atomic conditional UPDATE, so it does not need to share the caller's
+// transaction either -- only the credential INSERT does.
+//
+// FinishSignUp and CompletePasswordReset already order their expensive work
+// this way; this is the same shape for the registration path.
+func (s *Service) VerifyRegistration(ctx context.Context, userID, sessionID, credentialJSON string) (FinishedSignUpCredential, error) {
 	row, sessionData, err := s.consumeCeremonySession(ctx, sessionID, KindRegister)
 	if err != nil {
-		return nil, err
+		return FinishedSignUpCredential{}, err
 	}
 	if row.UserID != userID {
-		return nil, fmt.Errorf("%w: owner mismatch", ErrCeremonyInvalid)
+		return FinishedSignUpCredential{}, fmt.Errorf("%w: owner mismatch", ErrCeremonyInvalid)
 	}
 	w, waUser, _, err := s.loadUserWithRPID(ctx, userID, ceremonyRPID(row.PayloadJSON))
 	if err != nil {
-		return nil, err
+		return FinishedSignUpCredential{}, err
 	}
-	finished, err := verifyAttestation(w, waUser, *sessionData, credentialJSON)
-	if err != nil {
-		return nil, err
-	}
-	if friendlyName == "" {
-		friendlyName = "Passkey"
-	}
-	return s.StoreCredential(ctx, s.store, id.Generate(), userID, finished, friendlyName)
+	return verifyAttestation(w, waUser, *sessionData, credentialJSON)
 }
 
 // BeginReauth starts a passkey assertion for step-up authentication.
@@ -346,6 +353,12 @@ func (s *Service) FinishReauth(ctx context.Context, userID, sessionID, credentia
 // in that same transaction. It returns the persisted row, built from the
 // same values it wrote, so the credential-to-row mapping has one home.
 func (s *Service) StoreCredential(ctx context.Context, st store.Store, rowID, userID string, cred FinishedSignUpCredential, friendlyName string) (*store.PasskeyCredential, error) {
+	// The default lives at the WRITE, not at one caller: every path that
+	// stores a credential gets it, and a row with an empty name renders as
+	// a blank entry in the settings list.
+	if friendlyName == "" {
+		friendlyName = "Passkey"
+	}
 	encKey, keyVersion, err := s.encryptPublicKey(rowID, cred.PublicKey)
 	if err != nil {
 		return nil, err

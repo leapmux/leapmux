@@ -111,9 +111,16 @@ type UserStore interface {
 	UpdateEmailVerified(ctx context.Context, p UpdateUserEmailVerifiedParams) error
 	UpdateAdmin(ctx context.Context, p UpdateUserAdminParams) error
 	UpdatePrefs(ctx context.Context, p UpdateUserPrefsParams) error
-	SetPendingEmail(ctx context.Context, p SetPendingEmailParams) error
+	// SetPendingEmail conditionally mints a verification code. It reports
+	// false when a previous code is still inside its resend cooldown, so
+	// the caller neither sends nor overwrites the live code.
+	SetPendingEmail(ctx context.Context, p SetPendingEmailParams) (bool, error)
 	PromotePendingEmail(ctx context.Context, id string) error
 	ClearPendingEmail(ctx context.Context, id string) error
+	// ClearPendingEmailCode drops an undelivered code and keeps the
+	// pending address, so a failed send does not lose the only record of
+	// what the account is verifying.
+	ClearPendingEmailCode(ctx context.Context, id string) error
 	ClearCompetingPendingEmails(ctx context.Context, p ClearCompetingPendingEmailsParams) error
 	SetPendingPasswordReset(ctx context.Context, p SetPendingPasswordResetParams) (bool, error)
 	ClearPendingPasswordReset(ctx context.Context, id string) error
@@ -146,7 +153,7 @@ type SessionStore interface {
 	// recently-touched session matches zero rows; callers must gate any
 	// in-memory lifecycle extension on rowsAffected > 0 so cached deadlines
 	// never advance past the un-updated DB expiry.
-	Touch(ctx context.Context, p TouchSessionParams) (int64, error)
+	Touch(ctx context.Context, p TouchSessionParams, now time.Time) (int64, error)
 	Delete(ctx context.Context, id string) (int64, error)
 	DeleteByUser(ctx context.Context, userID userid.UserID) error
 	DeleteOthers(ctx context.Context, p DeleteOtherSessionsParams) error
@@ -154,8 +161,8 @@ type SessionStore interface {
 	// user's latest auth_generation after a password change. Other
 	// sessions remain deleted or stale.
 	RefreshAuthGeneration(ctx context.Context, p RefreshSessionAuthGenerationParams) (int64, error)
-	ListByUserID(ctx context.Context, p ListUserSessionsParams) (Page[UserSession], error)
-	ListAllActive(ctx context.Context, p ListAllActiveSessionsParams) (Page[ActiveSession], error)
+	ListByUserID(ctx context.Context, p ListUserSessionsParams, now time.Time) (Page[UserSession], error)
+	ListAllActive(ctx context.Context, p ListAllActiveSessionsParams, now time.Time) (Page[ActiveSession], error)
 	ValidateWithUser(ctx context.Context, id string, now time.Time) (*SessionWithUser, error)
 }
 
@@ -533,8 +540,8 @@ type DeviceAuthorizationStore interface {
 	Create(ctx context.Context, p CreateDeviceAuthorizationParams) error
 	Get(ctx context.Context, deviceCode string) (*DeviceAuthorization, error)
 	GetByUserCode(ctx context.Context, userCode string) (*DeviceAuthorization, error)
-	Approve(ctx context.Context, p ApproveDeviceAuthorizationParams) (int64, error)
-	ApproveByUserCode(ctx context.Context, p ApproveDeviceAuthorizationByUserCodeParams) (int64, error)
+	Approve(ctx context.Context, p ApproveDeviceAuthorizationParams, now time.Time) (int64, error)
+	ApproveByUserCode(ctx context.Context, p ApproveDeviceAuthorizationByUserCodeParams, now time.Time) (int64, error)
 	Deny(ctx context.Context, deviceCode string) (int64, error)
 	Consume(ctx context.Context, deviceCode string, now time.Time) (int64, error)
 	TouchPoll(ctx context.Context, deviceCode string) error
@@ -732,11 +739,11 @@ type CleanupStore interface {
 	DeleteExpiredOAuthStates(ctx context.Context, now time.Time) (int64, error)
 	DeleteExpiredPendingOAuthSignups(ctx context.Context, now time.Time) (int64, error)
 	DeleteExpiredWebAuthnSessions(ctx context.Context, now time.Time) (int64, error)
-	DeleteExpiredDeviceAuthorizations(ctx context.Context, cutoff time.Time) (int64, error)
-	DeleteExpiredCLIAuthorizationCodes(ctx context.Context, cutoff time.Time) (int64, error)
+	DeleteExpiredDeviceAuthorizations(ctx context.Context, now time.Time) (int64, error)
+	DeleteExpiredCLIAuthorizationCodes(ctx context.Context, now time.Time) (int64, error)
 	DeleteRevokedAPITokensBefore(ctx context.Context, cutoff time.Time) (int64, error)
 	DeleteRevokedDelegationTokensBefore(ctx context.Context, cutoff time.Time) (int64, error)
-	DeleteExpiredDelegationTokensBefore(ctx context.Context, cutoff time.Time) (int64, error)
+	DeleteExpiredDelegationTokensBefore(ctx context.Context, now time.Time) (int64, error)
 	// DeleteExpiredAltchaSalts purges consumed ALTCHA salts whose
 	// challenge window passed; the salt can no longer verify after
 	// expiry, so the row only caps table growth until this sweep drops

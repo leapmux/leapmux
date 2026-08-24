@@ -400,13 +400,24 @@ func (s *userStore) UpdatePrefs(ctx context.Context, p store.UpdateUserPrefsPara
 	}))
 }
 
-func (s *userStore) SetPendingEmail(ctx context.Context, p store.SetPendingEmailParams) error {
-	return mapErr(s.conn.q.SetPendingEmail(ctx, gendb.SetPendingEmailParams{
+func (s *userStore) SetPendingEmail(ctx context.Context, p store.SetPendingEmailParams) (bool, error) {
+	n, err := rowsAffected(s.conn.q.SetPendingEmail(ctx, gendb.SetPendingEmailParams{
 		PendingEmail:          store.NormalizeEmail(p.PendingEmail),
 		PendingEmailToken:     p.PendingEmailToken,
 		PendingEmailExpiresAt: sqltime.NewMySQLNullTime(p.PendingEmailExpiresAt),
 		ID:                    p.ID,
+		CooldownCutoff:        sqltime.MySQLNullTimeOf(p.CooldownCutoff),
 	}))
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// ClearPendingEmailCode drops an undelivered code and keeps the pending
+// address; see the query comment for why the address must survive.
+func (s *userStore) ClearPendingEmailCode(ctx context.Context, id string) error {
+	return mapErr(s.conn.q.ClearPendingEmailCode(ctx, id))
 }
 
 // PromotePendingEmail moves pending_email into email (email_verified=1). A row

@@ -28,7 +28,7 @@ WHERE code = ? AND consumed_at IS NULL AND expires_at > sqlc.arg(now)
 RETURNING *;
 
 -- name: DeleteExpiredCLIAuthorizationCodes :execresult
--- Raw compare against a SQLiteTime cutoff (same canonical layout); see
+-- Raw compare against a SQLiteTime instant (same canonical layout); see
 -- DeleteExpiredDelegationTokensBefore for the pattern.
 DELETE FROM cli_authorization_codes
-WHERE expires_at < sqlc.arg(cutoff);
+WHERE expires_at < sqlc.arg(now);

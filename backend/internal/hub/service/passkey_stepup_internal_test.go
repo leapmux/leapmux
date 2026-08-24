@@ -46,18 +46,22 @@ func stepUpUser(t *testing.T, st store.Store, passwordSet bool) *store.User {
 func TestRecheckStepUpUnderLock(t *testing.T) {
 	t.Parallel()
 
+	// The password and reauth-proof admissions never re-read the count, so
+	// a nil store proves the writer lock pays for no query on those paths.
+	passwordAdmission := stepUpAdmission{}
+
 	t.Run("unchanged row passes without re-verification", func(t *testing.T) {
 		t.Parallel()
 		peek := &store.User{PasswordSet: true, PasswordHash: "h1"}
 		locked := &store.User{PasswordSet: true, PasswordHash: "h1"}
-		assert.NoError(t, recheckStepUpUnderLock(locked, peek, "pw"))
+		assert.NoError(t, recheckStepUpUnderLock(context.Background(), nil, locked, peek, "pw", passwordAdmission))
 	})
 
 	t.Run("structural flip refuses with a retry error", func(t *testing.T) {
 		t.Parallel()
 		peek := &store.User{PasswordSet: false}
 		locked := &store.User{PasswordSet: true, PasswordHash: "h2"}
-		err := recheckStepUpUnderLock(locked, peek, "pw")
+		err := recheckStepUpUnderLock(context.Background(), nil, locked, peek, "pw", passwordAdmission)
 		require.Error(t, err)
 		connectErr := new(connect.Error)
 		require.ErrorAs(t, err, &connectErr)
@@ -74,13 +78,56 @@ func TestRecheckStepUpUnderLock(t *testing.T) {
 		require.NoError(t, err)
 		peek := &store.User{PasswordSet: true, PasswordHash: "stale-hash"}
 		locked := &store.User{PasswordSet: true, PasswordHash: realHash}
-		assert.NoError(t, recheckStepUpUnderLock(locked, peek, "stepup-password"))
+		assert.NoError(t, recheckStepUpUnderLock(context.Background(), nil, locked, peek, "stepup-password", passwordAdmission))
 
-		wrong := recheckStepUpUnderLock(locked, peek, "not-the-password")
+		wrong := recheckStepUpUnderLock(context.Background(), nil, locked, peek, "not-the-password", passwordAdmission)
 		require.Error(t, wrong)
 		connectErr := new(connect.Error)
 		require.ErrorAs(t, wrong, &connectErr)
 		assert.Equal(t, connect.CodeUnauthenticated, connectErr.Code())
+	})
+
+	// The first-credential admission is the one input a concurrent write
+	// can invalidate: the account was admitted BECAUSE it held no
+	// credential to present, so a registration that commits in the window
+	// means the caller should have presented a reauth proof for it.
+	//
+	// Without this re-read, two concurrent first-credential mutations both
+	// commit and the second sets a password with no step-up at all.
+	t.Run("first-credential admission re-reads the count under the lock", func(t *testing.T) {
+		t.Parallel()
+		st := newStepUpTestStore(t)
+		user := stepUpUser(t, st, false)
+		firstCredential := stepUpAdmission{firstCredential: true}
+
+		// Nothing committed in the window: the admission still holds.
+		assert.NoError(t, recheckStepUpUnderLock(context.Background(), st, user, user, "", firstCredential))
+
+		// A passkey committed in the window: the account now HAS a
+		// credential, so the admission no longer holds.
+		require.NoError(t, st.PasskeyCredentials().Create(context.Background(), store.CreatePasskeyCredentialParams{
+			ID:           id.Generate(),
+			UserID:       user.ID,
+			CredentialID: []byte("raced-credential"),
+			PublicKey:    []byte("key"),
+			FriendlyName: "Raced",
+		}))
+
+		err := recheckStepUpUnderLock(context.Background(), st, user, user, "", firstCredential)
+		require.Error(t, err)
+		connectErr := new(connect.Error)
+		require.ErrorAs(t, err, &connectErr)
+		assert.Equal(t, connect.CodeFailedPrecondition, connectErr.Code())
+	})
+
+	// The count re-read is scoped to the admission that needs it: a
+	// proof-bearing caller already presented a credential, so the writer
+	// lock must not pay for a query on that path.
+	t.Run("a proof-bearing admission does not re-read the count", func(t *testing.T) {
+		t.Parallel()
+		user := &store.User{ID: "u", PasswordSet: false}
+		// A nil store panics on any query, so passing gives the assertion.
+		assert.NoError(t, recheckStepUpUnderLock(context.Background(), nil, user, user, "", stepUpAdmission{needsReauth: true}))
 	})
 }
 
@@ -102,11 +149,14 @@ func (failingSender) Send(_ context.Context, _ mail.Message) error {
 	return errors.New("smtp unavailable")
 }
 
-// A failed verification send must clear the freshly stamped pending row:
-// a code that was never delivered must not block the immediate retry
-// behind the resend cooldown, and the failure must not surface as err
-// (the callers report it through the sent flag instead).
-func TestIssuePendingEmailVerificationFailedSendClearsRow(t *testing.T) {
+// A failed verification send must drop the undelivered CODE and keep the
+// pending ADDRESS. The code must not linger and arm the resend cooldown,
+// and the failure must not surface as err (the callers report it through
+// the sent flag instead). The address must survive, because a
+// verification-required sign-up leaves users.email empty, so it is the only
+// record of what the account is trying to verify -- clearing it leaves
+// ResendVerificationEmail with nothing to re-send to.
+func TestIssuePendingEmailVerificationFailedSendKeepsAddressDropsCode(t *testing.T) {
 	t.Parallel()
 	st := newStepUpTestStore(t)
 	user := stepUpUser(t, st, true)
@@ -117,10 +167,38 @@ func TestIssuePendingEmailVerificationFailedSendClearsRow(t *testing.T) {
 
 	after, err := st.Users().GetByID(context.Background(), user.ID)
 	require.NoError(t, err)
-	assert.Empty(t, after.PendingEmail, "an undelivered code must not linger and arm the cooldown")
+	assert.Equal(t, "retry@example.com", after.PendingEmail,
+		"the address must survive a failed send: it is the only record of what to re-send to")
+	assert.Empty(t, after.PendingEmailToken, "an undelivered code must not stay live")
+	assert.Nil(t, after.PendingEmailExpiresAt,
+		"no expiry means no armed cooldown, so the retry the failure invites is not blocked")
 
-	// The cleared row means an immediate retry is not cooldown-blocked.
+	// The dropped code means an immediate retry is not cooldown-blocked.
 	sent2, err2 := issuePendingEmailVerification(context.Background(), st, failingSender{}, mail.Renderer{}, user.ID, "retry@example.com")
 	require.NoError(t, err2)
 	assert.False(t, sent2)
+}
+
+// The regression this pair exists for: a sign-up that requires
+// verification stores the address ONLY in pending_email, so a failed
+// resend that wiped the row left the account with no address anywhere and
+// ResendVerificationEmail refusing forever with "no pending email change".
+func TestResendAfterFailedSendStillFindsTheAddress(t *testing.T) {
+	t.Parallel()
+	st := newStepUpTestStore(t)
+	user := stepUpUser(t, st, true)
+	// A verification-required sign-up: the address lives in pending_email
+	// and users.email is empty.
+	require.NoError(t, st.Users().UpdateEmail(context.Background(), store.UpdateUserEmailParams{
+		ID: user.ID, Email: "", EmailVerified: false,
+	}))
+
+	_, err := issuePendingEmailVerification(context.Background(), st, failingSender{}, mail.Renderer{}, user.ID, "signup@example.com")
+	require.NoError(t, err)
+
+	after, err := st.Users().GetByID(context.Background(), user.ID)
+	require.NoError(t, err)
+	require.Empty(t, after.Email, "precondition: the address is only in pending_email")
+	assert.Equal(t, "signup@example.com", after.PendingEmail,
+		"ResendVerificationEmail reads PendingEmail; an empty one is a permanent dead end")
 }

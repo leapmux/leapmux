@@ -14,7 +14,7 @@ import { createStableContext } from '~/lib/createStableContext'
 import { formatErrorMessage } from '~/lib/errors'
 import { createLogger } from '~/lib/logger'
 import { isSoloMode, loadSystemInfo } from '~/lib/systemInfo'
-import { startAuthentication } from '~/lib/webauthn'
+import { passkeyErrorMessage, startAuthentication } from '~/lib/webauthn'
 
 const log = createLogger('auth')
 
@@ -131,6 +131,11 @@ export const AuthProvider: ParentComponent = (props) => {
     try {
       const resp = await authClient.getCurrentUser({})
       setUser(resp.user ?? null)
+      // GetCurrentUser is the only response the /verify-email page's own
+      // bootstrap reads. Seeding the cooldown from it is what lets a hard
+      // reload of that page resume the countdown instead of restarting at
+      // zero and letting the button hammer a ResourceExhausted refusal.
+      setVerificationResendAvailableAt(resp.emailVerification?.nextResendAvailableAt)
       loadTimeouts().catch(() => {})
     }
     catch (err) {
@@ -188,20 +193,25 @@ export const AuthProvider: ParentComponent = (props) => {
     nextResendAvailableAt: status?.nextResendAvailableAt,
   })
 
-  const login = async (username: string, password: string, captcha?: CaptchaRequestFields): Promise<AuthLoginResult> => {
+  /**
+   * The state machine both sign-in paths share: clear the banner, hold
+   * `loading` for the whole attempt, adopt the returned user, and report
+   * the verification status.
+   *
+   * `login` and `loginWithPasskey` were byte-identical apart from the RPC
+   * in the middle and the fallback message, so a fix to the identity
+   * transition below had to be made twice. `fallback` is passed through
+   * `passkeyErrorMessage`, which returns null for a dismissed passkey
+   * prompt -- that is not a failure to report, so the banner stays empty.
+   */
+  const runSignIn = async (
+    fallback: string,
+    attempt: () => Promise<{ user?: User, emailVerification?: EmailVerificationStatus }>,
+  ): Promise<AuthLoginResult> => {
     setError(null)
     setLoading(true)
     try {
-      const req = create(LoginRequestSchema, {
-        username,
-        password,
-        // The honeypot rides on every attempt; the payload is empty until
-        // the widget verifies (the hub ignores it while captcha is
-        // disabled — see createCaptchaForm's requirement gate).
-        captchaPayload: captcha?.captchaPayload ?? '',
-        honeypot: captcha?.honeypot ?? '',
-      })
-      const resp = await authClient.login(req)
+      const resp = await attempt()
       // Logging in over a still-authenticated session (a bookmarked /login, a stale
       // tab) is an identity transition just like logout: setUser drives the eager
       // release of the previous user's pooled channels through the createEffect above,
@@ -212,8 +222,7 @@ export const AuthProvider: ParentComponent = (props) => {
       return loginResultFromResponse(resp.emailVerification)
     }
     catch (e) {
-      const msg = formatErrorMessage(e, 'Login failed')
-      setError(msg)
+      setError(passkeyErrorMessage(e, fallback) ?? '')
       // The login form's captcha.reset() (see createCaptchaForm) triggers
       // the system-info reload that converges a stale captcha snapshot
       // after a runtime enable/disable or provider switch.
@@ -224,33 +233,29 @@ export const AuthProvider: ParentComponent = (props) => {
     }
   }
 
-  const loginWithPasskey = async (username: string, captcha?: CaptchaRequestFields): Promise<AuthLoginResult> => {
-    setError(null)
-    setLoading(true)
-    try {
+  const login = (username: string, password: string, captcha?: CaptchaRequestFields): Promise<AuthLoginResult> =>
+    runSignIn('Login failed', () => authClient.login(create(LoginRequestSchema, {
+      username,
+      password,
+      // The honeypot rides on every attempt; the payload is empty until
+      // the widget verifies (the hub ignores it while captcha is
+      // disabled — see createCaptchaForm's requirement gate).
+      captchaPayload: captcha?.captchaPayload ?? '',
+      honeypot: captcha?.honeypot ?? '',
+    })))
+
+  const loginWithPasskey = (username: string, captcha?: CaptchaRequestFields): Promise<AuthLoginResult> =>
+    runSignIn('Passkey login failed', async () => {
       const begin = await authClient.beginPasskeyLogin({
         username,
         captchaPayload: captcha?.captchaPayload ?? '',
         honeypot: captcha?.honeypot ?? '',
       })
-      const credentialJson = await startAuthentication(begin.optionsJson)
-      const resp = await authClient.finishPasskeyLogin({
+      return await authClient.finishPasskeyLogin({
         sessionId: begin.sessionId,
-        credentialJson,
+        credentialJson: await startAuthentication(begin.optionsJson),
       })
-      setUser(resp.user ?? null)
-      loadTimeouts().catch(() => {})
-      return loginResultFromResponse(resp.emailVerification)
-    }
-    catch (e) {
-      const msg = formatErrorMessage(e, 'Passkey login failed')
-      setError(msg)
-      throw e
-    }
-    finally {
-      setLoading(false)
-    }
-  }
+    })
 
   const logout = async () => {
     if (isSoloMode())

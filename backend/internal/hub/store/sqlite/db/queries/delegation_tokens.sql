@@ -128,4 +128,4 @@ WHERE revoked_at IS NOT NULL AND revoked_at < sqlc.arg(cutoff);
 -- idx_delegation_tokens_expires_at -- the hourly sweep of this high-churn table
 -- seeks just the expired live rows.
 DELETE FROM delegation_tokens
-WHERE expires_at < sqlc.arg(cutoff) AND revoked_at IS NULL;
+WHERE expires_at < sqlc.arg(now) AND revoked_at IS NULL;

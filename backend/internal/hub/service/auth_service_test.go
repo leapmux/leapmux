@@ -159,6 +159,56 @@ func TestAuthService_GetCurrentUser(t *testing.T) {
 	assert.Equal(t, "admin", resp.Msg.GetUser().GetUsername())
 }
 
+// GetCurrentUser is the only response the /verify-email page's own
+// bootstrap reads, so it has to carry the resend cooldown: without it a
+// hard reload restarted the countdown at zero, the button re-enabled, and
+// the click got a ResourceExhausted with no timestamp to restart from.
+//
+// It must also REPORT and never SEND, because every page load calls it.
+func TestAuthService_GetCurrentUser_CarriesTheVerificationCooldown(t *testing.T) {
+	t.Parallel()
+
+	// An admin already exists, so this is a PUBLIC sign-up rather than the
+	// setup-mode first user (which is always an admin, and admins are
+	// exempt from verification).
+	client, st, _ := setupAuthTestServer(t, testConfig(), func(t *testing.T, set *settings.Manager) {
+		t.Helper()
+		seedSMTP(t, set)
+		enableSignup(t, set)
+	})
+
+	signUp, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+		Username: "pending", Password: "strongpass1", DisplayName: "Pending",
+		Email: "pending@example.test",
+	}))
+	require.NoError(t, err)
+	require.True(t, signUp.Msg.GetEmailVerification().GetVerificationRequired())
+	seeded := signUp.Msg.GetEmailVerification().GetNextResendAvailableAt()
+	require.NotNil(t, seeded, "sign-up hands out the first cooldown")
+
+	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
+	req.Header().Set("Cookie", auth.CookieName+"="+sessionFromCookie(t, signUp.Header().Get("Set-Cookie")))
+	resp, err := client.GetCurrentUser(context.Background(), req)
+	require.NoError(t, err)
+
+	status := resp.Msg.GetEmailVerification()
+	require.NotNil(t, status, "the bootstrap response must carry the status")
+	assert.True(t, status.GetVerificationRequired())
+	require.NotNil(t, status.GetNextResendAvailableAt(),
+		"a reload must resume the countdown the sign-up handed out")
+	assert.WithinDuration(t, seeded.AsTime(), status.GetNextResendAvailableAt().AsTime(), time.Second)
+
+	// Reporting, not sending: the pending code is untouched by the call.
+	before, err := st.Users().GetByUsername(context.Background(), "pending")
+	require.NoError(t, err)
+	_, err = client.GetCurrentUser(context.Background(), req)
+	require.NoError(t, err)
+	after, err := st.Users().GetByUsername(context.Background(), "pending")
+	require.NoError(t, err)
+	assert.Equal(t, before.PendingEmailToken, after.PendingEmailToken,
+		"a page load must not mint or re-send a verification code")
+}
+
 func TestAuthService_GetCurrentUser_NoToken(t *testing.T) {
 	t.Parallel()
 
@@ -408,11 +458,12 @@ func TestPromotePendingEmail_ClearsCompetingPendingEmails(t *testing.T) {
 			IsAdmin:      false,
 		})
 		require.NoError(t, err)
-		err = st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
+		_, err = st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
 			PendingEmail:          "shared@example.com",
 			PendingEmailToken:     verifycode.Generate(),
 			PendingEmailExpiresAt: ptrTime(time.Now().Add(24 * time.Hour).UTC()),
 			ID:                    userID,
+			CooldownCutoff:        store.UnconditionalMintCutoff(),
 		})
 		require.NoError(t, err)
 	}
@@ -468,11 +519,12 @@ func TestSignUp_DirectEmail_ClearsCompetingPendingEmails(t *testing.T) {
 		IsAdmin:      false,
 	})
 	require.NoError(t, err)
-	err = st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
+	_, err = st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
 		PendingEmail:          "race@example.com",
 		PendingEmailToken:     verifycode.Generate(),
 		PendingEmailExpiresAt: ptrTime(time.Now().Add(24 * time.Hour).UTC()),
 		ID:                    userAID,
+		CooldownCutoff:        store.UnconditionalMintCutoff(),
 	})
 	require.NoError(t, err)
 

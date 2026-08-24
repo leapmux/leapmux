@@ -9,6 +9,7 @@ import { useAuth } from '~/context/AuthContext'
 import { formatErrorMessage } from '~/lib/errors'
 import { isReauthProofRejected, obtainPasskeyReauthProof } from '~/lib/passkeyManagement'
 import { sanitizeDisplayName, sanitizeName, sanitizeSlug, validateEmail } from '~/lib/validate'
+import { passkeyErrorMessage } from '~/lib/webauthn'
 import { errorText, successText, warningText } from '~/styles/shared.css'
 import * as styles from './ProfileSettings.css'
 
@@ -140,7 +141,10 @@ export const ProfileSettings: Component = () => {
       setReauthProof(await obtainPasskeyReauthProof())
     }
     catch (e) {
-      setPasswordMessage({ type: 'error', text: formatErrorMessage(e, 'Passkey verification failed') })
+      // A dismissed prompt is not a failure to report.
+      const text = passkeyErrorMessage(e, 'Passkey verification failed')
+      if (text)
+        setPasswordMessage({ type: 'error', text })
     }
     finally {
       setReauthBusy(false)

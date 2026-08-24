@@ -125,7 +125,14 @@ export const VerifyEmailPage: Component = () => {
         <button
           type="button"
           data-testid="verify-email-resend"
-          onClick={() => void resend.resend()}
+          onClick={() => {
+            // Clear the code error first. resend() clears only its own
+            // signals, so a stale "invalid or expired verification code"
+            // would otherwise render beside "A fresh code has been sent",
+            // which reads as though the new code was rejected too.
+            setError(null)
+            void resend.resend()
+          }}
           disabled={resend.disabled()}
         >
           {resend.buttonLabel()}

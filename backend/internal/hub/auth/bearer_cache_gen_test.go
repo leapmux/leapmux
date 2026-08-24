@@ -52,6 +52,9 @@ type touchRecordingSessionStore struct {
 	store.SessionStore
 	row     *store.SessionWithUser
 	touched store.TouchSessionParams
+	// touchedNow records the hub clock the interceptor passed, so a test can
+	// assert the liveness predicate is bound and not left at the zero time.
+	touchedNow time.Time
 	// touchMissed simulates the conditional UPDATE matching zero rows (the
 	// session was touched within the threshold). Default false = one row
 	// matched.
@@ -67,8 +70,9 @@ func (s *touchRecordingSessionStore) ValidateWithUser(context.Context, string, t
 	return s.row, nil
 }
 
-func (s *touchRecordingSessionStore) Touch(_ context.Context, p store.TouchSessionParams) (int64, error) {
+func (s *touchRecordingSessionStore) Touch(_ context.Context, p store.TouchSessionParams, now time.Time) (int64, error) {
 	s.touched = p
+	s.touchedNow = now
 	s.touchCalls++
 	if s.touchErr != nil {
 		return 0, s.touchErr

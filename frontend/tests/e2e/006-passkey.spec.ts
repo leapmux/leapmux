@@ -18,17 +18,6 @@ import {
 
 const APP_HOME_URL_RE = /\/$/
 
-async function setSessionCookie(page: import('@playwright/test').Page, cookie: string) {
-  const value = cookie.split('=').slice(1).join('=')
-  await page.context().addCookies([{
-    name: 'leapmux-session',
-    value,
-    domain: 'localhost',
-    path: '/',
-    httpOnly: true,
-  }])
-}
-
 test.describe('Passkey authentication', () => {
   test('signs up with a passkey via the signup form and logs in again', async ({ page, leapmuxServer }) => {
     await enableVirtualAuthenticator(page)
@@ -49,13 +38,13 @@ test.describe('Passkey authentication', () => {
     const username = `passkey-api-${Date.now()}`
     const email = `${username}@test.local`
     const cookie = await signUpWithPasskeyViaAPIInBrowser(page, leapmuxServer.hubUrl, username, email, 'Passkey API')
-    await setSessionCookie(page, cookie)
+    await loginViaToken(page, cookie)
     await page.goto('/')
     await expect(page).toHaveURL(APP_HOME_URL_RE)
 
     await logoutViaUI(page)
     const loginCookie = await loginWithPasskeyViaAPIInBrowser(page, leapmuxServer.hubUrl, username)
-    await setSessionCookie(page, loginCookie)
+    await loginViaToken(page, loginCookie)
     await page.goto('/')
     await expect(page).toHaveURL(APP_HOME_URL_RE)
   })
@@ -73,7 +62,7 @@ test.describe('Passkey authentication', () => {
       `${username}@test.local`,
     )
 
-    await setSessionCookie(page, cookie)
+    await loginViaToken(page, cookie)
     await page.goto('/')
     await expect(page).toHaveURL(APP_HOME_URL_RE)
 
@@ -98,7 +87,7 @@ test.describe('Passkey authentication', () => {
       `${username}@test.local`,
     )
 
-    await setSessionCookie(page, cookie)
+    await loginViaToken(page, cookie)
     await page.goto('/')
     await addPasskeyViaAPIInBrowser(page, leapmuxServer.hubUrl, cookie, password)
 
@@ -119,7 +108,7 @@ test.describe('Passkey authentication', () => {
       'Remove Passkey',
       `${username}@test.local`,
     )
-    await setSessionCookie(page, cookie)
+    await loginViaToken(page, cookie)
     await page.goto('/')
     await addPasskeyViaAPIInBrowser(page, leapmuxServer.hubUrl, cookie, password)
 

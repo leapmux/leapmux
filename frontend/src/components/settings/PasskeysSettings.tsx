@@ -14,7 +14,7 @@ import {
   loadPasskeys,
   obtainPasskeyReauthProof,
 } from '~/lib/passkeyManagement'
-import { signalAcceptedPasskeys, signalPasskeyRemoved, startRegistration } from '~/lib/webauthn'
+import { passkeyErrorMessage, signalAcceptedPasskeys, signalPasskeyRemoved, startRegistration } from '~/lib/webauthn'
 import { errorText, successText, warningText } from '~/styles/shared.css'
 import * as styles from './ProfileSettings.css'
 
@@ -49,14 +49,35 @@ export const PasskeysSettings: Component<{
     props.onPasskeysChange?.(list.length)
   }
 
+  const resetModalFields = () => {
+    setCurrentPassword('')
+    setNewPassword('')
+    setConfirmPassword('')
+    setReauthProof('')
+    setFriendlyName('')
+    setTargetPasskey(null)
+  }
+
+  const applyLocalList = (list: PasskeyInfo[]) => {
+    setPasskeys(list)
+    notifyCount(list)
+  }
+
+  const forceCloseModal = () => {
+    setModal(null)
+    setModalMessage(null)
+    resetModalFields()
+  }
+
   const refresh = async (opts?: { preserveSuccess?: boolean, refreshUser?: boolean }) => {
     const preserveSuccess = opts?.preserveSuccess === true && message()?.type === 'success'
     setLoading(true)
     try {
       const list = await loadPasskeys()
       setRpId(list.rpId)
-      setPasskeys(list.passkeys)
-      notifyCount(list.passkeys)
+      // Through applyLocalList, so "every list write notifies the parent"
+      // is structural rather than remembered at each write.
+      applyLocalList(list.passkeys)
       if (opts?.refreshUser === true)
         await auth.refreshUser()
     }
@@ -82,21 +103,11 @@ export const PasskeysSettings: Component<{
       setReauthProof('')
   }
 
-  const resetModalFields = () => {
-    setCurrentPassword('')
-    setNewPassword('')
-    setConfirmPassword('')
-    setReauthProof('')
-    setFriendlyName('')
-    setTargetPasskey(null)
-  }
-
+  // A busy dialog is not dismissible; everything else is forceCloseModal.
   const closeModal = () => {
     if (busy())
       return
-    setModal(null)
-    setModalMessage(null)
-    resetModalFields()
+    forceCloseModal()
   }
 
   const openAdd = () => {
@@ -139,9 +150,19 @@ export const PasskeysSettings: Component<{
     return !reauthProof() || !newPasswordReady()
   }
 
-  const applyLocalList = (list: PasskeyInfo[]) => {
-    setPasskeys(list)
-    notifyCount(list)
+  /**
+   * The step-up proof for an action, acquiring one only when the action
+   * needs it and the dialog does not already hold one.
+   *
+   * Four handlers repeated this three-line dance, and each one spelled its
+   * own `needed` condition beside it; a fifth action meant remembering the
+   * shape rather than passing a boolean.
+   */
+  const ensureProof = async (needed: boolean): Promise<string> => {
+    const held = reauthProof()
+    if (held || !needed)
+      return held
+    return await obtainPasskeyReauthProof()
   }
 
   const handleReauth = async () => {
@@ -151,30 +172,21 @@ export const PasskeysSettings: Component<{
       setReauthProof(await obtainPasskeyReauthProof())
     }
     catch (e) {
-      const text = formatErrorMessage(e, 'Passkey verification failed')
-      if (modal())
-        setModalMessage({ type: 'error', text })
-      else
-        setMessage({ type: 'error', text })
+      // A dismissed prompt is not a failure to report.
+      const text = passkeyErrorMessage(e, 'Passkey verification failed')
+      if (text)
+        (modal() ? setModalMessage : setMessage)({ type: 'error', text })
     }
     finally {
       setBusy(false)
     }
   }
 
-  const forceCloseModal = () => {
-    setModal(null)
-    setModalMessage(null)
-    resetModalFields()
-  }
-
   const handleAddPasskey = async () => {
     setBusy(true)
     setModalMessage(null)
     try {
-      let proof = reauthProof()
-      if (needsReauthForAdd() && !proof)
-        proof = await obtainPasskeyReauthProof()
+      const proof = await ensureProof(needsReauthForAdd())
       const begin = await userClient.beginPasskeyRegistration({
         currentPassword: currentPassword(),
         reauthProof: proof,
@@ -207,7 +219,9 @@ export const PasskeysSettings: Component<{
     }
     catch (e) {
       dropProofIfInvalid(e)
-      setModalMessage({ type: 'error', text: formatErrorMessage(e, 'Failed to add passkey') })
+      const text = passkeyErrorMessage(e, 'Failed to add passkey')
+      if (text)
+        setModalMessage({ type: 'error', text })
     }
     finally {
       setBusy(false)
@@ -227,9 +241,7 @@ export const PasskeysSettings: Component<{
     setBusy(true)
     setModalMessage(null)
     try {
-      let proof = reauthProof()
-      if ((needsReauthForDelete() || deleteIsDeactivation()) && !proof)
-        proof = await obtainPasskeyReauthProof()
+      const proof = await ensureProof(needsReauthForDelete() || deleteIsDeactivation())
       await userClient.deletePasskey({
         id: passkey.id,
         currentPassword: currentPassword(),
@@ -248,7 +260,9 @@ export const PasskeysSettings: Component<{
     }
     catch (e) {
       dropProofIfInvalid(e)
-      setModalMessage({ type: 'error', text: formatErrorMessage(e, 'Failed to remove passkey') })
+      const text = passkeyErrorMessage(e, 'Failed to remove passkey')
+      if (text)
+        setModalMessage({ type: 'error', text })
     }
     finally {
       setBusy(false)
@@ -265,9 +279,7 @@ export const PasskeysSettings: Component<{
     setBusy(true)
     setModalMessage(null)
     try {
-      let proof = reauthProof()
-      if (!passwordSet() && !proof)
-        proof = await obtainPasskeyReauthProof()
+      const proof = await ensureProof(!passwordSet())
       await userClient.deactivatePasskeyAuth({
         currentPassword: currentPassword(),
         reauthProof: proof,
@@ -285,7 +297,9 @@ export const PasskeysSettings: Component<{
     }
     catch (e) {
       dropProofIfInvalid(e)
-      setModalMessage({ type: 'error', text: formatErrorMessage(e, 'Failed to deactivate passkeys') })
+      const text = passkeyErrorMessage(e, 'Failed to deactivate passkeys')
+      if (text)
+        setModalMessage({ type: 'error', text })
     }
     finally {
       setBusy(false)
@@ -310,9 +324,7 @@ export const PasskeysSettings: Component<{
     setBusy(true)
     setMessage(null)
     try {
-      let proof = reauthProof()
-      if (!passwordSet() && !proof)
-        proof = await obtainPasskeyReauthProof()
+      const proof = await ensureProof(!passwordSet())
       const resp = await userClient.renamePasskey({
         id,
         friendlyName: renameValue().trim() || 'Passkey',

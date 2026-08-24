@@ -55,6 +55,22 @@ func (r Renderer) footer() string {
 		"Please do not reply.\n"
 }
 
+// expiresIn renders a token lifetime as the prose the email bodies use.
+// The two production lifetimes keep their pinned English; any other
+// duration falls back to whole minutes so a future lifetime cannot render
+// empty. Callers pass the same constant that governs the real expiry, so
+// the sentence and the token cannot promise different lifetimes.
+func expiresIn(ttl time.Duration) string {
+	switch ttl {
+	case time.Hour:
+		return "one hour"
+	case 30 * time.Minute:
+		return "30 minutes"
+	default:
+		return fmt.Sprintf("%d minutes", int(ttl.Minutes()))
+	}
+}
+
 // VerificationEmail builds the email that delivers a verification code
 // to confirm a new or changed email address.
 //
@@ -79,7 +95,7 @@ func (r Renderer) footer() string {
 //
 //	    {link}
 //
-//	The code expires in 30 minutes.
+//	The code expires in {ttl}.
 //
 //	-- ␠
 //	This is an automated message from your LeapMux hub at {hubURL}.
@@ -87,22 +103,6 @@ func (r Renderer) footer() string {
 //
 // (The "␠" marker stands in for a literal trailing space on the "-- "
 // signature delimiter; see RFC 3676 §4.3.)
-// expiresIn renders a token lifetime as the prose the email bodies use.
-// The two production lifetimes keep their pinned English; any other
-// duration falls back to whole minutes so a future lifetime cannot render
-// empty. Callers pass the same constant that governs the real expiry, so
-// the sentence and the token cannot promise different lifetimes.
-func expiresIn(ttl time.Duration) string {
-	switch ttl {
-	case time.Hour:
-		return "one hour"
-	case 30 * time.Minute:
-		return "30 minutes"
-	default:
-		return fmt.Sprintf("%d minutes", int(ttl.Minutes()))
-	}
-}
-
 func (r Renderer) VerificationEmail(to, storedCode string, ttl time.Duration) Message {
 	display := verifycode.Format(storedCode)
 	link := r.hubURL() + verifyEmailPath + display
@@ -165,11 +165,16 @@ func (r Renderer) RegistrationInstructions(to, command string) Message {
 // PasswordResetEmail builds the self-service password reset email.
 func (r Renderer) PasswordResetEmail(to, token string, ttl time.Duration) Message {
 	link := r.hubURL() + resetPasswordPath + token
+	// expiresIn is an ARGUMENT, never spliced into the format string: a
+	// concatenated value carries its own text into the verb list, so one
+	// stray %% in a future duration string would shift every verb after it
+	// and render "%!o(string=F)f an hour" into the delivered mail.
 	body := fmt.Sprintf(
 		"You requested a password reset for your LeapMux account.\n\n"+
 			"Click the link below to choose a new password:\n\n    %s\n\n"+
-			"The link expires in "+expiresIn(ttl)+". If you did not request this, you can ignore this email.\n\n%s",
+			"The link expires in %s. If you did not request this, you can ignore this email.\n\n%s",
 		link,
+		expiresIn(ttl),
 		r.footer(),
 	)
 	return Message{

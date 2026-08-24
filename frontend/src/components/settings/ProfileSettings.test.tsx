@@ -96,7 +96,7 @@ describe('profileSettings passkeys', () => {
     })
   })
 
-  it('lists passkeys and offers password-gated add flow', async () => {
+  it('lists passkeys and offers password-protected add flow', async () => {
     render(() => <ProfileSettings />)
     expect(await screen.findByText('Laptop')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Add passkey' }))
@@ -136,7 +136,7 @@ describe('profileSettings passkeys', () => {
     expect(mockSignalPasskeyRemoved).toHaveBeenCalledWith('localhost', 'cred-abc')
   })
 
-  it('offers reauth-gated add flow when password is not set', async () => {
+  it('offers reauth-protected add flow when password is not set', async () => {
     mockUser.mockReturnValue({
       username: 'alice',
       displayName: 'Alice',

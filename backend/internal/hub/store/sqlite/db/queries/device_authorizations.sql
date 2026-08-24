@@ -50,7 +50,7 @@ SET last_polled_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE device_code = ?;
 
 -- name: DeleteExpiredDeviceAuthorizations :execresult
--- Raw compare against a SQLiteTime cutoff (same canonical layout); see
+-- Raw compare against a SQLiteTime instant (same canonical layout); see
 -- DeleteExpiredDelegationTokensBefore for the pattern.
 DELETE FROM device_authorizations
-WHERE expires_at < sqlc.arg(cutoff);
+WHERE expires_at < sqlc.arg(now);

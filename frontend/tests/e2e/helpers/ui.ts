@@ -981,10 +981,30 @@ export async function setInitialBrowserPref(page: Page, field: string, value: st
   }, [KEY_BROWSER_PREFS, field, value, BROWSER_PREFS_TTL_MS] as const)
 }
 
+/** The hub's session cookie name, as `readSessionCookie` looks it up. */
+const SESSION_COOKIE_NAME = 'leapmux-session'
+
+/**
+ * The session cookie the browser context currently holds, as the
+ * "leapmux-session=<value>" token `loginViaToken` takes. Its inverse.
+ *
+ * Three specs hand-rolled this lookup. One home means a rename of the
+ * cookie name moves every reader with it.
+ */
+export async function readSessionCookie(page: Page, step: string): Promise<string> {
+  const session = (await page.context().cookies()).find(c => c.name === SESSION_COOKIE_NAME)
+  if (!session?.value)
+    throw new Error(`${step} did not set a session cookie on the browser context`)
+  return `${SESSION_COOKIE_NAME}=${session.value}`
+}
+
 /**
  * Set the session cookie in the browser context so subsequent navigations
  * are authenticated. The token is a cookie string like "leapmux-session=<value>".
  * Must be called **before** any page.goto() calls.
+ *
+ * The NAME comes from the token, not from SESSION_COOKIE_NAME: the caller
+ * passes back what a login handed it, whatever it was called.
  */
 export async function loginViaToken(page: Page, token: string) {
   const [name, ...rest] = token.split('=')

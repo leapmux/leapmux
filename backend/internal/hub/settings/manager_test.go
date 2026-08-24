@@ -45,6 +45,17 @@ type errTest string
 
 func (e errTest) Error() string { return string(e) }
 
+// newSettingsTestStore is the bare in-memory store the cross-key cases
+// build their own manager over, when the shared newTestManager registry is
+// not the one under test.
+func newSettingsTestStore(t *testing.T) store.Store {
+	t.Helper()
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = st.Close() })
+	return st
+}
+
 func newTestManager(t *testing.T) (*Manager, *Key[testValue]) {
 	t.Helper()
 	m, k, _ := newTestManagerWithStore(t)
@@ -1890,12 +1901,100 @@ func TestEveryWriteVerbRefusesAnUnregisteredKey(t *testing.T) {
 
 // TestSetIfAbsentSharesPrepareRowsWithOtherWrites pins that SetIfAbsent
 // goes through the same prepareRows path as Update (validation, registry
-// check). Email verification no longer has a cross-key rule — it follows SMTP.
+// check). Email verification no longer has a cross-key rule -- it follows SMTP.
 func TestSetIfAbsentSharesPrepareRowsWithOtherWrites(t *testing.T) {
 	m, k := newTestManager(t)
 	ctx := context.Background()
 	require.NoError(t, k.SetIfAbsent(ctx, m, testValue{Port: 2525}))
 	assert.Equal(t, 2525, k.Of(m.Snapshot(ctx)).Port)
+}
+
+// TestEveryWriteVerbRunsTheCrossKeyRules pins that a cross-key refusal
+// reaches EVERY write verb, and keeps its error class through each one's
+// wrap.
+//
+// The email-verification cross rule was deleted with its key, and the tests
+// that pinned this went with it -- leaving the machinery live
+// (prepareRows -> crossValidate for Update/UpdateMany/SetValue/SetIfAbsent,
+// ResetMany for Reset/ResetMany) with the only remaining coverage asserting
+// the rules run ZERO times. A regression that dropped crossValidate from a
+// single-key verb, or that lost *InvalidError through Reset's
+// fmt.Errorf wrap, then passed the whole suite. This is not about email
+// verification; it is about the verb surface the rule has to cover.
+func TestEveryWriteVerbRunsTheCrossKeyRules(t *testing.T) {
+	ctx := context.Background()
+	a := NewKey[int64]("cross.a")
+	b := NewKey[int64]("cross.b")
+
+	// The rule refuses any state in which both keys are customized.
+	refuse := func(s *Snapshot) error {
+		if s.Customized(a) && s.Customized(b) {
+			return fmt.Errorf("cross.a and cross.b cannot both be set")
+		}
+		return nil
+	}
+
+	for _, tc := range []struct {
+		name  string
+		write func(m *Manager) error
+	}{
+		{"Update", func(m *Manager) error { return m.Update(ctx, b, json.RawMessage(`2`)) }},
+		{"UpdateMany", func(m *Manager) error {
+			return m.UpdateMany(ctx, []KeyWrite{{Desc: b, Public: json.RawMessage(`2`)}})
+		}},
+		{"SetValue", func(m *Manager) error { return m.SetValue(ctx, b, int64(2)) }},
+		{"SetIfAbsent", func(m *Manager) error { return m.SetIfAbsent(ctx, b, int64(2)) }},
+	} {
+		t.Run(tc.name+" refuses", func(t *testing.T) {
+			st := newSettingsTestStore(t)
+			m := NewManager(st, nil, []Descriptor{a, b}, WithCrossValidation(refuse))
+			require.NoError(t, m.Load(ctx))
+			require.NoError(t, m.SetValue(ctx, a, int64(1)), "the first key alone is a legal state")
+			before := m.currentEpoch()
+
+			err := tc.write(m)
+			require.Error(t, err, "the verb must run the cross-key rules")
+			require.ErrorContains(t, err, "cannot both be set")
+			var invalid *InvalidError
+			assert.ErrorAs(t, err, &invalid, "a refused combination is the caller's mistake, not a fault")
+			assert.Equal(t, before, m.currentEpoch(), "a refused write must not publish")
+			assert.False(t, m.Snapshot(ctx).Customized(b), "and must not land in the store")
+		})
+	}
+
+	// Reset and ResetMany reach crossValidate through ResetMany, and Reset
+	// wraps the error -- the class has to survive that wrap.
+	for _, tc := range []struct {
+		name  string
+		write func(m *Manager) error
+	}{
+		{"Reset", func(m *Manager) error { return m.Reset(ctx, a) }},
+		{"ResetMany", func(m *Manager) error { return m.ResetMany(ctx, []Descriptor{a}) }},
+	} {
+		t.Run(tc.name+" refuses", func(t *testing.T) {
+			st := newSettingsTestStore(t)
+			// This rule refuses the state a reset PRODUCES, so the reset
+			// itself is what the rule has to see.
+			requireA := func(s *Snapshot) error {
+				if !s.Customized(a) {
+					return fmt.Errorf("cross.a must stay set")
+				}
+				return nil
+			}
+			m := NewManager(st, nil, []Descriptor{a, b}, WithCrossValidation(requireA))
+			require.NoError(t, m.Load(ctx))
+			require.NoError(t, m.SetValue(ctx, a, int64(1)))
+			before := m.currentEpoch()
+
+			err := tc.write(m)
+			require.Error(t, err, "the verb must run the cross-key rules")
+			require.ErrorContains(t, err, "must stay set")
+			var invalid *InvalidError
+			assert.ErrorAs(t, err, &invalid, "the error class must survive Reset's wrap")
+			assert.Equal(t, before, m.currentEpoch(), "a refused reset must not publish")
+			assert.True(t, m.Snapshot(ctx).Customized(a), "and must leave the row in place")
+		})
+	}
 }
 
 // TestUpdateSecretRefusalOrder pins the ORDER the secret verb's three

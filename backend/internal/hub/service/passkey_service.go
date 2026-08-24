@@ -19,9 +19,23 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	hubwebauthn "github.com/leapmux/leapmux/internal/hub/webauthn"
+	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/util/validate"
 )
+
+// lastPasskeyNeedsPasswordError is the one refusal that protects a user
+// from locking themselves out of a passwordless account.
+//
+// Two sites raise it: DeletePasskey's pre-lock decision and the locked
+// re-derivation in commitPasskeyDeactivation. They must stay byte-identical
+// -- the pre-lock message is what the user sees on the common path, and the
+// locked one is what they see when the state moved under them, so a drift
+// between the two reads as two different rules.
+func lastPasskeyNeedsPasswordError() error {
+	return connect.NewError(connect.CodeFailedPrecondition,
+		fmt.Errorf("cannot delete your only passkey; provide new_password or use DeactivatePasskeyAuth"))
+}
 
 func rejectSoloPasskeyManagement(solo bool) error {
 	if !solo {
@@ -51,53 +65,72 @@ func verifyPasswordForPasskeyManagement(user *store.User, currentPassword string
 	return nil
 }
 
+// stepUpAdmission records HOW passkeyManagementAuth admitted a mutation, so
+// the locked re-check can re-derive the same decision from the locked row
+// instead of trusting the pre-lock peek.
+//
+// A bare "needsReauth" bool collapsed two different admissions into one
+// value -- "the password verified" and "there was no credential to present"
+// -- and only the second is racy.
+type stepUpAdmission struct {
+	// needsReauth is true when the caller presented a reauth proof that the
+	// mutation transaction must consume after the mutation succeeds.
+	needsReauth bool
+	// firstCredential is true when the account had NO password and NO
+	// passkey, so no step-up credential existed to present at all.
+	//
+	// This is the one admission input a concurrent write can invalidate: a
+	// registration that commits between the peek and the lock gives the
+	// account a passkey, and the caller should then have presented a reauth
+	// proof for it. recheckStepUpUnderLock re-reads the count for exactly
+	// this case, and only for it.
+	firstCredential bool
+}
+
 // passkeyManagementAuth verifies the step-up credential OUTSIDE the
 // user-auth transaction: password verification runs Argon2 (tens of
 // milliseconds) and that transaction holds the database writer lock on
-// SQLite (see auth.Login's comment on the same trade). It returns whether
-// the caller must consume a reauth proof after its mutation succeeds; the
-// proof is only consumed inside the mutation transaction, and only then.
-func (s *UserService) passkeyManagementAuth(ctx context.Context, user *store.User, currentPassword, reauthProof string) (bool, error) {
+// SQLite (see auth.Login's comment on the same trade). It returns how the
+// mutation was admitted; a reauth proof, when one was required, is consumed
+// only inside the mutation transaction.
+func (s *UserService) passkeyManagementAuth(ctx context.Context, user *store.User, currentPassword, reauthProof string) (stepUpAdmission, error) {
 	if user.PasswordSet {
-		return false, verifyPasswordForPasskeyManagement(user, currentPassword)
+		return stepUpAdmission{}, verifyPasswordForPasskeyManagement(user, currentPassword)
 	}
 	count, err := s.store.PasskeyCredentials().CountByUser(ctx, user.ID)
 	if err != nil {
-		return false, connect.NewError(connect.CodeInternal, err)
+		return stepUpAdmission{}, connect.NewError(connect.CodeInternal, err)
 	}
 	if count == 0 {
-		return false, assertFirstCredentialWithoutPasswordAllowed(ctx, s.store, user)
+		return stepUpAdmission{firstCredential: true}, assertFirstCredentialWithoutPasswordAllowed(ctx, s.store, user)
 	}
 	if reauthProof == "" {
-		return true, invalidReauthProofError()
+		return stepUpAdmission{needsReauth: true}, invalidReauthProofError()
 	}
 	// Peek with the same validity predicate the consume uses, so an
 	// admission check and the consume cannot disagree on what a valid
 	// proof is.
 	if _, err := s.store.WebAuthnSessions().GetValidProof(ctx, reauthProof, user.ID, hubwebauthn.KindReauthProof, time.Now().UTC()); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return true, invalidReauthProofError()
+			return stepUpAdmission{needsReauth: true}, invalidReauthProofError()
 		}
-		return true, connect.NewError(connect.CodeInternal, err)
+		return stepUpAdmission{needsReauth: true}, connect.NewError(connect.CodeInternal, err)
 	}
-	return true, nil
+	return stepUpAdmission{needsReauth: true}, nil
 }
 
 // assertFirstCredentialWithoutPasswordAllowed refuses a session-only first
 // lasting credential (a passkey, or the first password) when the account has
 // no durable identity (verified email or OAuth link). A stolen session on an
 // unverified shell must not attach a credential it can keep.
+//
+// The caller decides WHEN the rule applies -- it holds both facts already
+// (no password, no passkey) -- and this decides WHETHER the account has a
+// durable identity. It carried its own copies of the caller's two checks
+// plus a second CountByUser for the same answer; both branches were
+// unreachable, and the query doubled a round trip on every passwordless
+// admission.
 func assertFirstCredentialWithoutPasswordAllowed(ctx context.Context, tx store.Store, user *store.User) error {
-	if user.PasswordSet {
-		return nil
-	}
-	count, err := tx.PasskeyCredentials().CountByUser(ctx, user.ID)
-	if err != nil {
-		return connect.NewError(connect.CodeInternal, err)
-	}
-	if count > 0 {
-		return nil
-	}
 	if user.EmailVerified {
 		return nil
 	}
@@ -156,7 +189,7 @@ func (s *UserService) runPasskeyManagementTx(
 	if err != nil {
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("query user: %w", err))
 	}
-	needsReauth, err := s.passkeyManagementAuth(ctx, peek, currentPassword, reauthProof)
+	admission, err := s.passkeyManagementAuth(ctx, peek, currentPassword, reauthProof)
 	if err != nil {
 		return err
 	}
@@ -170,34 +203,70 @@ func (s *UserService) runPasskeyManagementTx(
 		if err != nil {
 			return fmt.Errorf("query user: %w", err)
 		}
-		if err := recheckStepUpUnderLock(user, peek, currentPassword); err != nil {
+		if err := recheckStepUpUnderLock(ctx, tx, user, peek, currentPassword, admission); err != nil {
 			return err
 		}
 		if err := mutate(tx, user); err != nil {
 			return err
 		}
-		if needsReauth {
+		if admission.needsReauth {
 			return consumePasskeyManagementReauth(ctx, tx, user, reauthProof)
 		}
 		return nil
 	})
 }
 
-// recheckStepUpUnderLock re-verifies the step-up credential when the
-// account's password state moved between the pre-transaction peek and the
-// locked re-read. The common case (nothing moved) is one string comparison,
-// so Argon2 stays out of the lock unless the hash actually changed. A
-// structural flip (password added or removed concurrently) cannot be
-// re-verified from what the caller presented, so it fails with a clean
-// retry error instead.
-func recheckStepUpUnderLock(locked, peek *store.User, currentPassword string) error {
+// recheckStepUpUnderLock re-derives the admission from the LOCKED row when
+// a concurrent write could have invalidated the pre-transaction peek.
+//
+// The common case (nothing moved) is one string comparison, so Argon2 stays
+// out of the lock unless the hash actually changed. A structural flip
+// (password added or removed concurrently) cannot be re-verified from what
+// the caller presented, so it fails with a clean retry error instead.
+//
+// The count re-read runs ONLY on the first-credential admission, which is
+// the one input a concurrent write can invalidate. It is one indexed COUNT,
+// and only for a passwordless account that had no passkey -- the password
+// and reauth-proof paths never reach it, so the writer lock is not paying
+// for a query on the common paths.
+func recheckStepUpUnderLock(
+	ctx context.Context,
+	tx store.Store,
+	locked, peek *store.User,
+	currentPassword string,
+	admission stepUpAdmission,
+) error {
 	if locked.PasswordSet != peek.PasswordSet {
-		return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("account credentials changed; please retry"))
+		return stepUpStateMovedError()
 	}
 	if locked.PasswordSet && locked.PasswordHash != peek.PasswordHash {
 		return verifyPasswordForPasskeyManagement(locked, currentPassword)
 	}
+	if !admission.firstCredential {
+		return nil
+	}
+	// The account was admitted BECAUSE it held no credential to present.
+	// A registration that committed in the window gave it one, so the
+	// caller should have presented a reauth proof for that passkey; without
+	// this re-read, two concurrent first-credential mutations both commit
+	// and the second sets a password with no step-up at all.
+	count, err := tx.PasskeyCredentials().CountByUser(ctx, locked.ID)
+	if err != nil {
+		return connect.NewError(connect.CodeInternal, err)
+	}
+	if count > 0 {
+		return stepUpStateMovedError()
+	}
 	return nil
+}
+
+// stepUpStateMovedError reports credential state that moved between the
+// admission and the lock. The caller must retry, because the credential
+// they presented no longer matches the state the mutation would commit
+// against.
+func stepUpStateMovedError() error {
+	return connect.NewError(connect.CodeFailedPrecondition,
+		fmt.Errorf("account credentials changed; please retry"))
 }
 
 func (s *UserService) BeginPasskeyRegistration(ctx context.Context, req *connect.Request[leapmuxv1.BeginPasskeyRegistrationRequest]) (*connect.Response[leapmuxv1.BeginPasskeyRegistrationResponse], error) {
@@ -214,16 +283,16 @@ func (s *UserService) BeginPasskeyRegistration(ctx context.Context, req *connect
 	}
 	// Peek only: FinishPasskeyRegistration consumes the reauth proof.
 	if _, err := s.passkeyManagementAuth(ctx, user, req.Msg.GetCurrentPassword(), req.Msg.GetReauthProof()); err != nil {
-		return nil, mapPasskeyConnectError(err)
+		return nil, mapPasskeyConnectError(ctx, err)
 	}
 
 	wa, err := s.webauthnService(ctx)
 	if err != nil {
-		return nil, mapPasskeyConnectError(err)
+		return nil, mapPasskeyConnectError(ctx, err)
 	}
 	sessionID, optionsJSON, rpID, err := wa.BeginRegistration(ctx, user.ID, originFromRequest(req))
 	if err != nil {
-		return nil, mapPasskeyConnectError(err)
+		return nil, mapPasskeyConnectError(ctx, err)
 	}
 	return connect.NewResponse(&leapmuxv1.BeginPasskeyRegistrationResponse{
 		SessionId:   sessionID,
@@ -252,21 +321,39 @@ func (s *UserService) FinishPasskeyRegistration(ctx context.Context, req *connec
 	}
 
 	var passkey *store.PasskeyCredential
-	// Peek before the attestation so a failed attestation does not burn the
-	// proof; the proof is consumed inside the transaction after the write.
-	if err := s.runPasskeyManagementTx(ctx, userInfo, req.Msg.GetCurrentPassword(), req.Msg.GetReauthProof(), nil, func(tx store.Store, user *store.User) error {
-		wa, err := s.webauthnServiceWithStore(ctx, tx)
-		if err != nil {
+	var verified hubwebauthn.FinishedSignUpCredential
+	// The attestation is verified in prepare -- after admission, still
+	// OUTSIDE the write transaction. It is a keystore decrypt per existing
+	// credential plus a JSON/base64/CBOR parse of a body capped only at the
+	// request limit, and on SQLite the transaction holds the single writer
+	// lock, so every other write on the hub would queue behind it. Only the
+	// credential INSERT needs the lock.
+	//
+	// Admission still precedes the attestation, so a failed attestation does
+	// not burn the reauth proof; the proof is consumed inside the
+	// transaction after the write, as before.
+	if err := s.runPasskeyManagementTx(ctx, userInfo, req.Msg.GetCurrentPassword(), req.Msg.GetReauthProof(),
+		func(peek *store.User) error {
+			wa, err := s.webauthnService(ctx)
+			if err != nil {
+				return err
+			}
+			verified, err = wa.VerifyRegistration(ctx, peek.ID, req.Msg.GetSessionId(), req.Msg.GetCredentialJson())
 			return err
-		}
-		passkey, err = wa.FinishRegistration(ctx, user.ID, req.Msg.GetSessionId(), req.Msg.GetCredentialJson(), friendlyName)
-		return err
-	}); err != nil {
-		return nil, mapPasskeyConnectError(err)
+		},
+		func(tx store.Store, user *store.User) error {
+			wa, err := s.webauthnServiceWithStore(ctx, tx)
+			if err != nil {
+				return err
+			}
+			passkey, err = wa.StoreCredential(ctx, tx, id.Generate(), user.ID, verified, friendlyName)
+			return err
+		}); err != nil {
+		return nil, mapPasskeyConnectError(ctx, err)
 	}
 
 	return connect.NewResponse(&leapmuxv1.FinishPasskeyRegistrationResponse{
-		Passkey: passkeyInfoToProto(passkey),
+		Passkey: passkeyInfoToProto(ctx, passkey),
 	}), nil
 }
 
@@ -285,11 +372,11 @@ func (s *UserService) BeginPasskeyReauth(ctx context.Context, req *connect.Reque
 	}
 	wa, err := s.webauthnService(ctx)
 	if err != nil {
-		return nil, mapPasskeyConnectError(err)
+		return nil, mapPasskeyConnectError(ctx, err)
 	}
 	sessionID, optionsJSON, rpID, err := wa.BeginReauth(ctx, user.ID, originFromRequest(req))
 	if err != nil {
-		return nil, mapPasskeyConnectError(err)
+		return nil, mapPasskeyConnectError(ctx, err)
 	}
 	return connect.NewResponse(&leapmuxv1.BeginPasskeyReauthResponse{
 		SessionId:   sessionID,
@@ -319,25 +406,30 @@ func (s *UserService) FinishPasskeyReauth(ctx context.Context, req *connect.Requ
 	}
 	wa, err := s.webauthnService(ctx)
 	if err != nil {
-		return nil, mapPasskeyConnectError(err)
+		return nil, mapPasskeyConnectError(ctx, err)
 	}
 	proof, err := wa.FinishReauth(ctx, user.ID, req.Msg.GetSessionId(), req.Msg.GetCredentialJson())
 	if err != nil {
-		switch {
-		case errors.Is(err, hubwebauthn.ErrCloneDetected):
+		switch classifyWebAuthnError(err) {
+		case webAuthnErrorClone:
 			// A clone warning is a security event, not a proof failure: log
 			// it server-side and report it as itself, so it never counts
 			// against the reauth-proof rate-limit budget.
 			slog.WarnContext(ctx, "passkey clone warning during reauth", "user_id", user.ID)
 			return nil, connect.NewError(connect.CodeUnauthenticated, err)
-		case errors.Is(err, hubwebauthn.ErrCeremonyInvalid), errors.Is(err, hubwebauthn.ErrAssertionRejected):
+		case webAuthnErrorCredential:
+			// The rate-limit interceptor keys on ErrInvalidReauthProof, so a
+			// credential failure re-labels as this surface's own sentinel.
 			return nil, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("%w: %s", auth.ErrInvalidReauthProof, err.Error()))
-		default:
+		case webAuthnErrorUnavailable:
+			return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+		case webAuthnErrorInfrastructure:
 			// Store and infrastructure failures are not proof failures.
 			// Reporting them as CodeInternal keeps them out of the shared
 			// passkey-management rate-limit budget.
 			return nil, connect.NewError(connect.CodeInternal, err)
 		}
+		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	return connect.NewResponse(&leapmuxv1.FinishPasskeyReauthResponse{ReauthProof: proof}), nil
 }
@@ -359,11 +451,11 @@ func (s *UserService) ListPasskeys(ctx context.Context, _ *connect.Request[leapm
 	// here", and the settings page would render a broken section.
 	wa, err := s.webauthnService(ctx)
 	if err != nil {
-		return nil, mapPasskeyConnectError(err)
+		return nil, mapPasskeyConnectError(ctx, err)
 	}
 	passkeys := make([]*leapmuxv1.PasskeyInfo, 0, len(rows))
 	for i := range rows {
-		passkeys = append(passkeys, passkeyInfoToProto(&rows[i]))
+		passkeys = append(passkeys, passkeyInfoToProto(ctx, &rows[i]))
 	}
 	return connect.NewResponse(&leapmuxv1.ListPasskeysResponse{Passkeys: passkeys, RpId: wa.RPID()}), nil
 }
@@ -400,10 +492,10 @@ func (s *UserService) RenamePasskey(ctx context.Context, req *connect.Request[le
 		row = got
 		return nil
 	}); err != nil {
-		return nil, mapPasskeyConnectError(err)
+		return nil, mapPasskeyConnectError(ctx, err)
 	}
 	return connect.NewResponse(&leapmuxv1.RenamePasskeyResponse{
-		Passkey: passkeyInfoToProto(row),
+		Passkey: passkeyInfoToProto(ctx, row),
 	}), nil
 }
 
@@ -439,7 +531,7 @@ func (s *UserService) DeletePasskey(ctx context.Context, req *connect.Request[le
 			return nil
 		}
 		if req.Msg.GetNewPassword() == "" {
-			return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("cannot delete your only passkey; provide new_password or use DeactivatePasskeyAuth"))
+			return lastPasskeyNeedsPasswordError()
 		}
 		hashed, err := hashReplacementPassword(req.Msg.GetNewPassword())
 		if err != nil {
@@ -473,7 +565,7 @@ func (s *UserService) DeletePasskey(ctx context.Context, req *connect.Request[le
 		}
 		return tx.PasskeyCredentials().Delete(ctx, row.ID, user.ID)
 	}); err != nil {
-		return nil, mapPasskeyConnectError(err)
+		return nil, mapPasskeyConnectError(ctx, err)
 	}
 	if shouldRevoke {
 		s.lifecycle.RevokeUserPreservingSession(userInfo.ID.String(), actingSessionID, committedAuthGeneration)
@@ -517,7 +609,7 @@ func (s *UserService) DeactivatePasskeyAuth(ctx context.Context, req *connect.Re
 		shouldRevoke = revoked
 		return nil
 	}); err != nil {
-		return nil, mapPasskeyConnectError(err)
+		return nil, mapPasskeyConnectError(ctx, err)
 	}
 	if shouldRevoke {
 		s.lifecycle.RevokeUserPreservingSession(userInfo.ID.String(), actingSessionID, committedAuthGeneration)
@@ -549,7 +641,7 @@ func (s *UserService) commitPasskeyDeactivation(ctx context.Context, tx store.St
 	wasPasskeyOnly := !user.PasswordSet
 	if wasPasskeyOnly {
 		if hashedNewPassword == "" {
-			return 0, false, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("cannot delete your only passkey; provide new_password or use DeactivatePasskeyAuth"))
+			return 0, false, lastPasskeyNeedsPasswordError()
 		}
 		if err := tx.Users().UpdatePassword(ctx, store.UpdateUserPasswordParams{
 			PasswordHash: hashedNewPassword,
@@ -630,7 +722,7 @@ func validatePasskeyFriendlyName(name string) (string, error) {
 	return name, nil
 }
 
-func passkeyInfoToProto(row *store.PasskeyCredential) *leapmuxv1.PasskeyInfo {
+func passkeyInfoToProto(ctx context.Context, row *store.PasskeyCredential) *leapmuxv1.PasskeyInfo {
 	if row == nil {
 		return nil
 	}
@@ -644,7 +736,15 @@ func passkeyInfoToProto(row *store.PasskeyCredential) *leapmuxv1.PasskeyInfo {
 	if row.LastUsedAt != nil {
 		info.LastUsedAt = timestamppb.New(*row.LastUsedAt)
 	}
-	transports, _ := parsePasskeyTransports(row.Transports)
+	// A malformed transports column degrades the browser hint rather than
+	// failing the RPC, but it must not pass silently: the only production
+	// writer emits json.Marshal output, so a value that will not parse
+	// means the row was written from outside that path.
+	transports, err := parsePasskeyTransports(row.Transports)
+	if err != nil {
+		slog.WarnContext(ctx, "passkey transports column did not parse",
+			"passkey_id", row.ID, "err", err)
+	}
 	info.Transports = transports
 	return info
 }
@@ -660,16 +760,30 @@ func parsePasskeyTransports(raw string) ([]string, error) {
 	return transports, nil
 }
 
-func mapPasskeyConnectError(err error) error {
+// mapPasskeyConnectError classifies every error the passkey-management and
+// registration surface can return. A connect error that a handler already
+// built passes through; a store miss is NotFound; everything else routes
+// through classifyWebAuthnError, so a cancelled prompt and an unserved
+// origin answer the same way here as they do on the login surface.
+func mapPasskeyConnectError(ctx context.Context, err error) error {
 	var connectErr *connect.Error
 	if errors.As(err, &connectErr) {
 		return connectErr
 	}
-	if errors.Is(err, ErrPasskeysUnavailable) {
-		return connect.NewError(connect.CodeFailedPrecondition, err)
-	}
 	if errors.Is(err, store.ErrNotFound) {
 		return connect.NewError(connect.CodeNotFound, err)
+	}
+	switch classifyWebAuthnError(err) {
+	case webAuthnErrorClone:
+		// A clone warning is a security event, not a registration failure.
+		slog.WarnContext(ctx, "passkey clone warning during passkey management")
+		return connect.NewError(connect.CodeUnauthenticated, err)
+	case webAuthnErrorCredential:
+		return connect.NewError(connect.CodeUnauthenticated, err)
+	case webAuthnErrorUnavailable:
+		return connect.NewError(connect.CodeFailedPrecondition, err)
+	case webAuthnErrorInfrastructure:
+		return connect.NewError(connect.CodeInternal, err)
 	}
 	return connect.NewError(connect.CodeInternal, err)
 }

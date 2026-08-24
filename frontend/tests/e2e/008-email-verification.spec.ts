@@ -11,7 +11,7 @@ import {
   waitForEmailEnabled,
 } from './helpers/api'
 import { withCaptureSmtp } from './helpers/mail'
-import { signUpViaUI, solveCaptchaViaUI } from './helpers/ui'
+import { readSessionCookie, signUpViaUI, solveCaptchaViaUI } from './helpers/ui'
 
 function hubDataDir(dataDir: string): string {
   return join(dataDir, 'hub')
@@ -66,12 +66,7 @@ test.describe('Email verification', () => {
       await signUpViaUI(page, username, 'password123', 'Unverified', `${username}@test.local`)
       await expect(page).toHaveURL(/\/verify-email/)
 
-      const cookie = await (async () => {
-        const session = (await page.context().cookies()).find(c => c.name === 'leapmux-session')
-        if (!session)
-          throw new Error('expected session cookie on verify-email page')
-        return `leapmux-session=${session.value}`
-      })()
+      const cookie = await readSessionCookie(page, 'sign-up')
       await fetch(`${leapmuxServer.hubUrl}/leapmux.v1.AuthService/Logout`, {
         method: 'POST',
         headers: authedHeaders(cookie),
@@ -120,7 +115,7 @@ test.describe('Email verification', () => {
     expect(String(loginBody.code ?? '')).toMatch(/unauthenticated/i)
   })
 
-  test('enabling SMTP later gates previously unverified users', async ({ page, leapmuxServer }) => {
+  test('enabling SMTP later restricts previously unverified users', async ({ page, leapmuxServer }) => {
     await clearSmtpViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken)
 
     const username = `transition-${Date.now()}`

@@ -66,12 +66,12 @@ func (s *sessionStore) GetByID(ctx context.Context, id string, now time.Time) (*
 	return &out, nil
 }
 
-func (s *sessionStore) Touch(ctx context.Context, p store.TouchSessionParams) (int64, error) {
+func (s *sessionStore) Touch(ctx context.Context, p store.TouchSessionParams, now time.Time) (int64, error) {
 	n, err := s.conn.q.TouchUserSession(ctx, gendb.TouchUserSessionParams{
 		ExpiresAt:    pgtime.New(p.ExpiresAt),
 		ID:           p.ID,
 		LastActiveAt: pgtime.New(p.LastActiveAt),
-		Now:          pgtime.New(p.Now),
+		Now:          pgtime.New(now),
 	})
 	return n, mapErr(err)
 }
@@ -134,7 +134,7 @@ func (s *sessionStore) RefreshAuthGeneration(ctx context.Context, p store.Refres
 	return n, mapErr(err)
 }
 
-func (s *sessionStore) ListByUserID(ctx context.Context, p store.ListUserSessionsParams) (store.Page[store.UserSession], error) {
+func (s *sessionStore) ListByUserID(ctx context.Context, p store.ListUserSessionsParams, now time.Time) (store.Page[store.UserSession], error) {
 	owner, ok := userid.OwnerFilter(p.UserID)
 	if !ok {
 		// An unminted caller owns nothing; binding "" would MATCH every
@@ -143,15 +143,15 @@ func (s *sessionStore) ListByUserID(ctx context.Context, p store.ListUserSession
 	}
 	return queryPage(ctx, p.Limit,
 		func() (gendb.ListUserSessionsByUserIDParams, error) {
-			return listUserSessionsParams(owner, p.Cursor, p.Limit, p.Now)
+			return listUserSessionsParams(owner, p.Cursor, p.Limit, now)
 		},
 		s.conn.q.ListUserSessionsByUserID, fromDBSession)
 }
 
-func (s *sessionStore) ListAllActive(ctx context.Context, p store.ListAllActiveSessionsParams) (store.Page[store.ActiveSession], error) {
+func (s *sessionStore) ListAllActive(ctx context.Context, p store.ListAllActiveSessionsParams, now time.Time) (store.Page[store.ActiveSession], error) {
 	return queryPage(ctx, p.Limit,
 		func() (gendb.ListAllActiveSessionsParams, error) {
-			return listAllActiveSessionsParams(p.Cursor, p.Limit, p.Now)
+			return listAllActiveSessionsParams(p.Cursor, p.Limit, now)
 		},
 		s.conn.q.ListAllActiveSessions, fromDBActiveSessionRow)
 }

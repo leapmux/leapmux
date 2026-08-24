@@ -190,7 +190,12 @@ describe('turnstileField', () => {
     expect(onPayload).toHaveBeenLastCalledWith(null)
   })
 
-  it('re-renders the widget when the form action changes', async () => {
+  // The action is a MOUNT-TIME constant here. CaptchaField wraps this field
+  // in a keyed Show, so an action change disposes the instance and mounts a
+  // fresh one; the field itself must not also track the prop, or the two
+  // mechanisms fight and only one of them clears the stale payload. This
+  // test fails if an in-field re-arm effect comes back.
+  it('binds the action at mount and does not track later changes', async () => {
     const turnstile = installFakeTurnstile()
     const onPayload = vi.fn()
     const [action, setAction] = createSignal('login')
@@ -203,11 +208,30 @@ describe('turnstileField', () => {
     expect(turnstile.calls[0]?.options.action).toBe('login')
 
     setAction('passkey_login')
+    await Promise.resolve()
+    expect(turnstile.calls).toHaveLength(1)
+    expect(turnstile.removes).toEqual([])
+  })
+
+  // The other half of the contract: the fresh instance a keyed remount
+  // creates arms the real widget under the new action.
+  it('arms a fresh mount under its own action', async () => {
+    const turnstile = installFakeTurnstile()
+    const first = render(() => (
+      <div><TurnstileField action="login" onPayload={vi.fn()} /></div>
+    ))
+    await vi.waitFor(() => {
+      expect(turnstile.calls).toHaveLength(1)
+    })
+    expect(turnstile.calls[0]?.options.action).toBe('login')
+    first.unmount()
+
+    render(() => (
+      <div><TurnstileField action="passkey_login" onPayload={vi.fn()} /></div>
+    ))
     await vi.waitFor(() => {
       expect(turnstile.calls).toHaveLength(2)
     })
     expect(turnstile.calls[1]?.options.action).toBe('passkey_login')
-    expect(turnstile.removes).toEqual(['widget-1'])
-    expect(onPayload).toHaveBeenLastCalledWith(null)
   })
 })

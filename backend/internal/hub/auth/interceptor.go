@@ -1249,14 +1249,13 @@ func (a *authInterceptor) touchSession(ctx context.Context, sessionID string, us
 	a.state.lastTouch.Store(sessionID, now)
 
 	newExpiry := now.Add(a.slideDuration(p)).UTC()
+	// The trailing instant is the hub clock that judges the previous
+	// expiry, so an expired session cannot match and revive.
 	rows, err := a.store.Sessions().Touch(ctx, store.TouchSessionParams{
 		ID:           sessionID,
 		ExpiresAt:    newExpiry,
 		LastActiveAt: now.Add(-threshold).UTC(),
-		// The hub clock judges the previous expiry; a zero Now would let an
-		// expired session match and revive.
-		Now: now.UTC(),
-	})
+	}, now.UTC())
 	if err != nil {
 		// Nothing above this call reports the failure, and the caller cannot
 		// tell it apart from a throttled request. Log it, or a store that

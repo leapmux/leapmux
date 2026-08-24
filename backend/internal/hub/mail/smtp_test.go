@@ -565,6 +565,53 @@ func TestSMTPSender_ContextCancelledBeforeDial(t *testing.T) {
 	}
 }
 
+// A caller that supplies no deadline still gets one: Send is called inline
+// on interactive RPC paths, and a Connect request context carries no
+// server-side deadline, so a relay that completes the TCP handshake and
+// then stalls would hold the request goroutine open indefinitely.
+func TestSMTPSender_BoundsAnUndeadlinedSend(t *testing.T) {
+	// A dialer that returns a connection nobody ever answers on: the
+	// exchange stalls after the dial, which is exactly the phase the
+	// pre-existing net.Dialer timeout does not cover.
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			// Accept and say nothing. The client waits for the greeting.
+			t.Cleanup(func() { _ = conn.Close() })
+		}
+	}()
+
+	sender := mail.NewSMTPSender(mail.SMTPConfig{
+		Host: "127.0.0.1", Port: 25, From: "hub@example.test", TLSMode: "none",
+		Dialer: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, network, listener.Addr().String())
+		},
+	})
+
+	// The caller's own deadline wins, and it proves the bound is honored
+	// across the post-dial phases without making the test wait for the
+	// production default.
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	err = sender.Send(ctx, mail.Message{To: "alice@example.test", Subject: "x", Body: "y\n"})
+	if err == nil {
+		t.Fatal("expected the stalled exchange to fail, got nil")
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("Send took %v; the exchange is not bounded", elapsed)
+	}
+}
+
 // poolFromServerCfg lifts the leaf cert from a server-side *tls.Config
 // (where it lives as a tls.Certificate) into a *x509.CertPool the
 // client can trust. Avoids re-minting cert material per test.

@@ -53,6 +53,71 @@ func seedUser(t *testing.T, st store.Store) string {
 	return userID
 }
 
+// FinishRegistration is split so the expensive half -- a keystore decrypt
+// per existing credential plus a parse of a caller-supplied body -- runs
+// OUTSIDE the caller's write transaction, which on SQLite holds the single
+// writer lock. The split must not weaken either guard the one-shot form
+// enforced before the attestation.
+//
+// A real attestation needs a virtual authenticator, which this package has
+// no harness for; the full ceremony is covered end to end by the Playwright
+// spec. What is asserted here is what the split could have broken.
+func TestVerifyRegistration_KeepsTheCeremonyGuards(t *testing.T) {
+	svc, st := newMigratedWebAuthnService(t)
+	owner := seedUser(t, st)
+	other := seedUser(t, st)
+
+	t.Run("refuses a session owned by another user", func(t *testing.T) {
+		sessionID, _, _, err := svc.BeginRegistration(context.Background(), owner, "")
+		require.NoError(t, err)
+		_, err = svc.VerifyRegistration(context.Background(), other, sessionID, "{}")
+		require.ErrorIs(t, err, webauthn.ErrCeremonyInvalid,
+			"a ceremony belongs to the user who started it")
+	})
+
+	t.Run("consumes the session, so it cannot be replayed", func(t *testing.T) {
+		sessionID, _, _, err := svc.BeginRegistration(context.Background(), owner, "")
+		require.NoError(t, err)
+
+		// The first call consumes the row; the attestation then fails on the
+		// placeholder body, which is past the point this asserts.
+		_, first := svc.VerifyRegistration(context.Background(), owner, sessionID, "{}")
+		require.Error(t, first)
+
+		_, second := svc.VerifyRegistration(context.Background(), owner, sessionID, "{}")
+		require.ErrorIs(t, second, webauthn.ErrCeremonyInvalid,
+			"the verify half owns the single-use consume, so a replay finds no session")
+	})
+
+	t.Run("refuses an unknown session", func(t *testing.T) {
+		_, err := svc.VerifyRegistration(context.Background(), owner, id.Generate(), "{}")
+		require.ErrorIs(t, err, webauthn.ErrCeremonyInvalid)
+	})
+}
+
+// The empty-name default moved from FinishRegistration to StoreCredential
+// when the two halves split, so every path that stores a credential keeps
+// it. Without it a row renders as a blank entry in the settings list.
+func TestStoreCredential_DefaultsTheFriendlyName(t *testing.T) {
+	svc, st := newMigratedWebAuthnService(t)
+	userID := seedUser(t, st)
+
+	cred := webauthn.FinishedSignUpCredential{
+		CredentialID: []byte("credential-id"),
+		PublicKey:    []byte("public-key"),
+		SignCount:    0,
+	}
+	row, err := svc.StoreCredential(context.Background(), st, id.Generate(), userID, cred, "")
+	require.NoError(t, err)
+	assert.Equal(t, "Passkey", row.FriendlyName)
+
+	named, err := svc.StoreCredential(context.Background(), st, id.Generate(), userID, webauthn.FinishedSignUpCredential{
+		CredentialID: []byte("credential-id-2"), PublicKey: []byte("public-key"),
+	}, "Work laptop")
+	require.NoError(t, err)
+	assert.Equal(t, "Work laptop", named.FriendlyName, "a supplied name is kept")
+}
+
 func TestBeginSignUp_AllocatesStableUserID(t *testing.T) {
 	svc, st := newMigratedWebAuthnService(t)
 

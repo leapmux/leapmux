@@ -222,6 +222,8 @@ func (s *AuthService) GetCurrentUser(ctx context.Context, req *connect.Request[l
 	userProto.OauthProviders = linkedProviders
 	return connect.NewResponse(&leapmuxv1.GetCurrentUserResponse{
 		User: userProto,
+		// Reported, never sent: this runs on every page load.
+		EmailVerification: emailVerificationToProto(s.verificationStatusFor(ctx, user)),
 	}), nil
 }
 
@@ -307,11 +309,11 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 		resp := connect.NewResponse(&leapmuxv1.SignUpResponse{
 			// A password sign-up carries no passkeys yet.
 			User: userToProto(createdUser, 0),
-			EmailVerification: &leapmuxv1.EmailVerificationStatus{
-				VerificationRequired:  true,
-				VerificationEmailSent: true,
-				NextResendAvailableAt: protoTimestamp(&nextResend),
-			},
+			EmailVerification: emailVerificationToProto(verificationOutcome{
+				Required:              true,
+				EmailSent:             true,
+				NextResendAvailableAt: &nextResend,
+			}),
 		})
 		s.setSessionCookie(ctx, resp.Header(), sessionID, sessionExpires)
 		s.hasAnyUser.Store(true)
@@ -571,7 +573,9 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 	}
 
 	// Use the email from the pending signup (provider-reported, already validated
-	// at callback time). The request's email field is ignored.
+	// at callback time). The request's email field is a FALLBACK only, read
+	// below when an untrusted provider supplied nothing; a provider-supplied
+	// address always wins, so the caller cannot substitute one.
 	email := pending.Email
 	rawDisplayName := req.Msg.GetDisplayName()
 	if rawDisplayName == "" {
@@ -606,6 +610,17 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 		// Untrusted provider: the hub applies its own signup email policy
 		// (required + verified-available when SMTP is on, optional
 		// otherwise), exactly like local signup.
+		//
+		// A provider that omits the email claim leaves the caller to supply
+		// one. Without this the sign-up is a dead end whenever SMTP is on:
+		// validateSignupEmail refuses an empty address, and no other step in
+		// the flow can produce one, so the pending token expires and the
+		// account can never be created. The request field is only honored
+		// when the provider gave nothing -- a provider-supplied address
+		// still wins, so the caller cannot substitute one.
+		if email == "" {
+			email = req.Msg.GetEmail()
+		}
 		if err := s.validateSignupEmail(ctx, email); err != nil {
 			return nil, err
 		}
@@ -681,11 +696,11 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 	resp := connect.NewResponse(&leapmuxv1.CompleteOAuthSignupResponse{
 		// An OAuth sign-up carries no passkeys yet.
 		User: userToProto(finalUser, 0),
-		EmailVerification: &leapmuxv1.EmailVerificationStatus{
-			VerificationRequired:  pendingEmail != "",
-			VerificationEmailSent: emailSent,
-			NextResendAvailableAt: protoTimestamp(nextResend),
-		},
+		EmailVerification: emailVerificationToProto(verificationOutcome{
+			Required:              pendingEmail != "",
+			EmailSent:             emailSent,
+			NextResendAvailableAt: nextResend,
+		}),
 	})
 	s.setSessionCookie(ctx, resp.Header(), sessionID, expiresAt)
 	return resp, nil
@@ -807,7 +822,7 @@ func (s *AuthService) validateSignupEmail(ctx context.Context, email string) err
 // signed-up account whose code was never delivered. That account
 // self-recovers — its credential committed with it, Login and the passkey
 // finish are public, and ResendVerificationEmail is allowlisted for
-// unverified sessions — so the strand is bounded to a double fault and
+// unverified sessions — so the strand is limited to a double fault and
 // needs no outbox. A rollback that itself fails is logged, never surfaced.
 func (s *AuthService) deliverSignupVerification(ctx context.Context, userID, email, code string) error {
 	if err := s.mail.Send(ctx, s.renderer.VerificationEmail(email, code, pendingEmailExpiry)); err != nil {

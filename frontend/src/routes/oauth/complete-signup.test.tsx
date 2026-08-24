@@ -22,12 +22,17 @@ vi.mock('~/api/clients', () => ({
 
 const mockIsCaptchaEnabled = vi.fn<() => boolean>(() => false)
 const mockGetCaptchaProvider = vi.fn<() => number>(() => 1) // CaptchaProvider.ALTCHA
+// The hub requires an address exactly when it can verify one, so the
+// field's required-ness follows this.
+const mockIsEmailEnabled = vi.fn(() => false)
+
 vi.mock('~/lib/systemInfo', () => ({
   isSoloMode: () => false,
   loadSystemInfo: () => Promise.resolve(),
   isSignupEnabled: () => false,
   loadOAuthProviders: () => Promise.resolve([]),
   isSystemInfoLoaded: () => true,
+  isEmailEnabled: () => mockIsEmailEnabled(),
   isCaptchaEnabled: () => mockIsCaptchaEnabled(),
   getAltchaAlgorithm: () => '',
   getCaptchaProvider: () => mockGetCaptchaProvider(),
@@ -138,6 +143,9 @@ describe('signup completion page (OAuthCompleteSignupPage)', () => {
         signupToken: 'test-token',
         username: 'testuser',
         displayName: 'Test User',
+        // The hub reads this only when the provider supplied nothing; a
+        // provider-supplied address always wins, so echoing it back is safe.
+        email: 'test@example.com',
         captchaPayload: '',
         honeypot: '',
       })
@@ -162,6 +170,40 @@ describe('signup completion page (OAuthCompleteSignupPage)', () => {
     const emailInput = screen.getByLabelText('Email') as HTMLInputElement
     expect(emailInput.value).toBe('provider@example.com')
     expect(emailInput.readOnly).toBe(true)
+  })
+
+  // An untrusted provider that omits the email claim used to leave the
+  // sign-up unrecoverable whenever SMTP was on: the hub refuses an empty
+  // address and no step in the flow could produce one, so the pending
+  // token expired and the account could never be created.
+  it('lets the user supply an email when the provider gave none', async () => {
+    mockIsEmailEnabled.mockReturnValue(true)
+    mockGetPendingOAuthSignup.mockResolvedValue({
+      email: '',
+      displayName: 'Test User',
+      providerName: 'GitHub',
+    })
+    mockCompleteOAuthSignup.mockResolvedValue({ user: { id: 'u1', username: 'testuser' } })
+
+    renderPage()
+
+    await vi.waitFor(() => {
+      expect(screen.getByLabelText('Email')).toBeInTheDocument()
+    })
+    const emailInput = screen.getByLabelText('Email') as HTMLInputElement
+    expect(emailInput.readOnly).toBe(false)
+    expect(emailInput.required).toBe(true)
+
+    fireEvent.input(screen.getByLabelText('Username'), { target: { value: 'testuser' } })
+    fireEvent.input(emailInput, { target: { value: '  typed@example.com  ' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create account' }))
+
+    await vi.waitFor(() => {
+      expect(mockCompleteOAuthSignup).toHaveBeenCalledWith(
+        expect.objectContaining({ email: 'typed@example.com' }),
+      )
+    })
+    mockIsEmailEnabled.mockReturnValue(false)
   })
 
   it('shows error for username taken', async () => {

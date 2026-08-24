@@ -71,10 +71,17 @@ export const AltchaField: Component<AltchaFieldProps> = (props) => {
   }
 
   function resetWidget() {
-    // reset() is not always a function: the element can still be mounting,
-    // or a keyed remount (Password/Passkey action switch) can tear it
-    // down while this handle still runs. A throw here used to skip arm()
-    // and leave the checkbox dead.
+    // reset() is not always a function: <altcha-widget> is a custom
+    // element, and the method is genuinely absent until the browser
+    // upgrades it. A throw here used to skip arm() and leave the checkbox
+    // dead.
+    //
+    // NOT a keyed remount: CaptchaField wraps only the Turnstile and
+    // reCAPTCHA arms in a keyed Show, and ALTCHA is the unwrapped
+    // fallback, so this field never tears down on a Password/Passkey
+    // switch. Skipping the reset is safe either way -- the caller has
+    // already cleared the payload and readiness, and arm() re-configures
+    // the widget with a fresh challenge.
     try {
       if (typeof widget?.reset === 'function')
         widget.reset()

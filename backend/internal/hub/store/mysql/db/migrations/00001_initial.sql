@@ -570,7 +570,7 @@ CREATE TABLE pending_oauth_signups (
 CREATE TABLE passkey_credentials (
     id              VARCHAR(255) PRIMARY KEY,
     user_id         VARCHAR(255) NOT NULL,
-    credential_id   VARBINARY(1023) NOT NULL,   -- plaintext: login lookup + unique index (WebAuthn max 1023 bytes; not BLOB — MySQL/TiDB reject unique indexes on TEXT/BLOB)
+    credential_id   VARBINARY(1023) NOT NULL,   -- plaintext: login lookup + unique index (WebAuthn max 1023 bytes; not BLOB -- MySQL/TiDB reject unique indexes on TEXT/BLOB)
     public_key      BLOB NOT NULL,   -- keystore-encrypted COSE public key, AAD: 'passkey_public_key:' || id
     sign_count      BIGINT NOT NULL DEFAULT 0,
     aaguid          BLOB,
@@ -610,7 +610,7 @@ CREATE INDEX idx_webauthn_sessions_user_kind ON webauthn_sessions(user_id, kind)
 -- (internal/hub/settings); secret-bearing keys keep the secret half in the
 -- keystore-encrypted column (AAD bound to the key name). An absent row means
 -- the code default, so adding, removing, or reshaping a setting is a Go
--- change only — never a migration. This table is the single home for all
+-- change only -- never a migration. This table is the single home for all
 -- runtime-changeable configuration (auth policy, SMTP, timeouts, limits,
 -- captcha providers, rate-limit overrides).
 CREATE TABLE hub_settings (

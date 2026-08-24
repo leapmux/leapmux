@@ -62,3 +62,62 @@ func (s *AuthService) passkeysAvailable(ctx context.Context) bool {
 func originFromRequest[T any](req *connect.Request[T]) string {
 	return req.Header().Get("Origin")
 }
+
+// webAuthnErrorClass says how a passkey surface must answer a ceremony
+// error. It is the ONE place that knows the hubwebauthn sentinels.
+//
+// Every passkey surface asked the same question and answered it
+// separately: login and reauth each carried their own switch, and the
+// passkey-management surface had no classifier at all, so a cancelled
+// platform prompt (ErrAssertionRejected) and an unserved origin
+// (ErrOriginNotAllowed) both left FinishPasskeyRegistration as CodeInternal
+// -- a 500 for ordinary user input. A sentinel added to the webauthn
+// package is now classified on every surface at once.
+//
+// The class decides the CODE only. The rate-limit interceptor accounts on
+// the error SENTINEL (auth.ErrInvalidCurrentPassword and
+// auth.ErrInvalidReauthProof), never on the connect code, so nothing here
+// changes which attempts count against a budget.
+//
+// Each surface keeps its own message, log payload, and error wrap, because
+// those genuinely differ:
+// login answers a missing account and a passkey-less account identically
+// so the error is not an enumeration oracle, and reauth re-labels a
+// credential failure as auth.ErrInvalidReauthProof so the interceptor can
+// key on it.
+type webAuthnErrorClass int
+
+const (
+	// webAuthnErrorInfrastructure is the default. A store, keystore, or
+	// ceremony-session failure is not a credential failure, so it reports
+	// CodeInternal rather than telling the caller their credential was
+	// refused.
+	webAuthnErrorInfrastructure webAuthnErrorClass = iota
+	// webAuthnErrorCredential is a ceremony that ran and failed: a missing,
+	// expired, or rejected credential. CodeUnauthenticated.
+	webAuthnErrorCredential
+	// webAuthnErrorClone is a sign-count clone warning. It is a security
+	// event, not a login failure: the surface logs it and reports it as
+	// itself rather than as a rejected credential.
+	webAuthnErrorClone
+	// webAuthnErrorUnavailable is a precondition the user can correct: the
+	// hub runs no ceremonies, the account has no passkeys, or the browser
+	// origin is one the hub does not serve. CodeFailedPrecondition.
+	webAuthnErrorUnavailable
+)
+
+// classifyWebAuthnError maps a ceremony error to the class its surface must
+// answer with. An error it does not recognize is infrastructure.
+func classifyWebAuthnError(err error) webAuthnErrorClass {
+	switch {
+	case errors.Is(err, hubwebauthn.ErrCloneDetected):
+		return webAuthnErrorClone
+	case errors.Is(err, hubwebauthn.ErrCeremonyInvalid), errors.Is(err, hubwebauthn.ErrAssertionRejected):
+		return webAuthnErrorCredential
+	case errors.Is(err, hubwebauthn.ErrNoPasskeys), errors.Is(err, hubwebauthn.ErrOriginNotAllowed),
+		errors.Is(err, ErrPasskeysUnavailable):
+		return webAuthnErrorUnavailable
+	default:
+		return webAuthnErrorInfrastructure
+	}
+}

@@ -8,7 +8,7 @@ import {
   verifyEmailViaAPI,
 } from './helpers/api'
 import { extractPasswordResetToken, withCaptureSmtp } from './helpers/mail'
-import { loginViaUI, logoutViaUI, solveCaptchaViaUI } from './helpers/ui'
+import { loginViaToken, loginViaUI, logoutViaUI, solveCaptchaViaUI } from './helpers/ui'
 import { enableVirtualAuthenticator, loginWithPasskeyViaAPIInBrowser, signUpWithPasskeyViaAPIInBrowser } from './helpers/webauthn'
 
 function hubDataDir(dataDir: string): string {
@@ -26,13 +26,7 @@ test.describe('Password reset', () => {
       const verifyToken = await readPendingEmailToken(hubDataDir(leapmuxServer.dataDir), username)
       await verifyEmailViaAPI(leapmuxServer.hubUrl, passkeyCookie, verifyToken)
       const verifiedCookie = await loginWithPasskeyViaAPIInBrowser(page, leapmuxServer.hubUrl, username)
-      await page.context().addCookies([{
-        name: 'leapmux-session',
-        value: verifiedCookie.split('=').slice(1).join('='),
-        domain: 'localhost',
-        path: '/',
-        httpOnly: true,
-      }])
+      await loginViaToken(page, verifiedCookie)
       await page.goto('/')
       await expect(page).toHaveURL(/\/$/)
       expect((await listPasskeysViaAPI(leapmuxServer.hubUrl, verifiedCookie)).length).toBeGreaterThan(0)

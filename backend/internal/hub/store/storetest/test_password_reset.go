@@ -13,10 +13,6 @@ import (
 
 func hashFor(s string) string { return "hash-" + s }
 
-// farFutureCutoff lets a seeded mint always land: the conditional write
-// compares the previous expiry against this cutoff.
-func farFutureCutoff() time.Time { return time.Now().Add(48 * time.Hour).UTC() }
-
 // testPasswordResetStore pins the password-reset user-store queries across
 // every dialect: the token-keyed consume (attempts increment, force-expiry
 // past the budget, ErrNotFound for a cleared or unknown token), the
@@ -37,7 +33,7 @@ func (s *Suite) testPasswordResetStore(t *testing.T) {
 			ID:                            user.ID,
 			PendingPasswordResetToken:     token,
 			PendingPasswordResetExpiresAt: time.Now().Add(24 * time.Hour).UTC(),
-			CooldownCutoff:                farFutureCutoff(),
+			CooldownCutoff:                store.UnconditionalMintCutoff(),
 		})
 		require.NoError(t, err)
 		require.True(t, minted)
@@ -66,7 +62,7 @@ func (s *Suite) testPasswordResetStore(t *testing.T) {
 			ID:                            user.ID,
 			PendingPasswordResetToken:     "tok-live",
 			PendingPasswordResetExpiresAt: time.Now().Add(time.Hour).UTC(),
-			CooldownCutoff:                farFutureCutoff(),
+			CooldownCutoff:                store.UnconditionalMintCutoff(),
 		})
 		require.NoError(t, err)
 		require.True(t, minted)
@@ -83,7 +79,7 @@ func (s *Suite) testPasswordResetStore(t *testing.T) {
 			ID:                            user.ID,
 			PendingPasswordResetToken:     "tok-budget",
 			PendingPasswordResetExpiresAt: time.Now().Add(24 * time.Hour).UTC(),
-			CooldownCutoff:                farFutureCutoff(),
+			CooldownCutoff:                store.UnconditionalMintCutoff(),
 		})
 		require.NoError(t, err)
 		require.True(t, minted)
@@ -156,7 +152,7 @@ func (s *Suite) testPasswordResetStore(t *testing.T) {
 			ID:                            user.ID,
 			PendingPasswordResetToken:     token,
 			PendingPasswordResetExpiresAt: time.Now().Add(time.Hour).UTC(),
-			CooldownCutoff:                farFutureCutoff(),
+			CooldownCutoff:                store.UnconditionalMintCutoff(),
 		})
 		require.NoError(t, err)
 		require.True(t, minted)

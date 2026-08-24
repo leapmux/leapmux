@@ -623,6 +623,40 @@ func (s *AdminUserService) SetUserAdmin(ctx context.Context, req *connect.Reques
 			}); err != nil {
 				return storeConnectError(err, "mark admin email verified")
 			}
+			return nil
+		}
+		// Demotion must repair the flag the admin invariant forced, or the
+		// promotion leaks a verified state the account never earned: the
+		// demoted row then passes the login verification gate, passes
+		// UpdateUser's clear-email guard, and satisfies the "no durable
+		// identity" refusal that protects a first passkey.
+		//
+		// An EMPTY email is the case this can decide. email_verified
+		// describes an address, so with no address there is nothing that
+		// could have been confirmed and the flag can only have come from the
+		// promotion above (or from createUserInTx forcing it for the /setup
+		// admin). A demoted account that HAS an address is left alone: the
+		// row records no pre-promotion value, so lowering it there would
+		// un-verify an address the user really did confirm.
+		if !req.Msg.GetIsAdmin() {
+			// Re-read INSIDE the transaction. `user` is the unlocked
+			// pre-transaction snapshot, and the decision turns on the very
+			// columns a concurrent VerifyEmail rewrites: promoting a pending
+			// address sets email and email_verified together, so deciding
+			// from the snapshot would clear a verification the user really
+			// completed between the read and this write.
+			locked, err := tx.Users().GetByID(ctx, user.ID)
+			if err != nil {
+				return storeConnectError(err, "re-read user for demotion")
+			}
+			if locked.EmailVerified && locked.Email == "" {
+				if err := tx.Users().UpdateEmailVerified(ctx, store.UpdateUserEmailVerifiedParams{
+					EmailVerified: false,
+					ID:            user.ID,
+				}); err != nil {
+					return storeConnectError(err, "clear unearned email verification")
+				}
+			}
 		}
 		return nil
 	}); err != nil {
@@ -722,7 +756,7 @@ func (s *AdminUserService) ListUserSessions(ctx context.Context, req *connect.Re
 	page, err := s.store.Sessions().ListByUserID(ctx, store.ListUserSessionsParams{
 		UserID:     uid,
 		PageParams: AdminPageParams(req.Msg.GetCursor(), req.Msg.GetLimit()),
-	})
+	}, time.Now().UTC())
 	if err != nil {
 		return nil, storeConnectError(err, "list user sessions")
 	}
@@ -745,7 +779,7 @@ func (s *AdminUserService) ListUserSessions(ctx context.Context, req *connect.Re
 func (s *AdminUserService) ListSessions(ctx context.Context, req *connect.Request[leapmuxv1.ListSessionsRequest]) (*connect.Response[leapmuxv1.ListSessionsResponse], error) {
 	page, err := s.store.Sessions().ListAllActive(ctx, store.ListAllActiveSessionsParams{
 		PageParams: AdminPageParams(req.Msg.GetCursor(), req.Msg.GetLimit()),
-	})
+	}, time.Now().UTC())
 	if err != nil {
 		return nil, storeConnectError(err, "list sessions")
 	}

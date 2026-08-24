@@ -517,6 +517,57 @@ func TestCompleteOAuthSignup_UsesProviderEmail_IgnoresRequestEmail(t *testing.T)
 	assert.Equal(t, "provider@example.com", user.Email, "email must come from provider, not request")
 }
 
+// An UNTRUSTED provider that omits the email claim leaves the caller to
+// supply the address. Without the fallback the sign-up was a dead end
+// whenever verification was on: validateSignupEmail refuses an empty
+// address, no step in the flow could produce one, and the pending token
+// expired with the account never created.
+func TestCompleteOAuthSignup_UntrustedProviderWithNoEmail_UsesRequestEmail(t *testing.T) {
+	t.Parallel()
+
+	_, client, st, ks, _ := setupOAuthTestServerWithAuthService(t)
+	providerID := createTestProviderWithTrustEmail(t, st, ks, false)
+	signupToken := id.Generate()
+	insertPendingSignup(t, st, ks, providerID, signupToken, "", "No Email", "sub-noemail", time.Now().Add(5*time.Minute).UTC())
+
+	resp, err := client.CompleteOAuthSignup(context.Background(), connect.NewRequest(&leapmuxv1.CompleteOAuthSignupRequest{
+		SignupToken: signupToken,
+		Username:    "noemailuser",
+		Email:       "typed@example.com",
+	}))
+	require.NoError(t, err)
+
+	user, err := st.Users().GetByID(context.Background(), resp.Msg.GetUser().GetId())
+	require.NoError(t, err)
+	assert.Equal(t, "typed@example.com", user.Email,
+		"the caller supplies the address the provider withheld")
+	assert.False(t, user.EmailVerified, "an untrusted provider's address is never trusted-verified")
+}
+
+// The fallback must not become a substitution channel: a provider that DID
+// supply an address still wins, whatever the request says. This is the
+// untrusted twin of TestCompleteOAuthSignup_UsesProviderEmail_IgnoresRequestEmail.
+func TestCompleteOAuthSignup_UntrustedProviderEmailBeatsRequestEmail(t *testing.T) {
+	t.Parallel()
+
+	_, client, st, ks, _ := setupOAuthTestServerWithAuthService(t)
+	providerID := createTestProviderWithTrustEmail(t, st, ks, false)
+	signupToken := id.Generate()
+	insertPendingSignup(t, st, ks, providerID, signupToken, "provider@example.com", "Provider", "sub-untrusted", time.Now().Add(5*time.Minute).UTC())
+
+	resp, err := client.CompleteOAuthSignup(context.Background(), connect.NewRequest(&leapmuxv1.CompleteOAuthSignupRequest{
+		SignupToken: signupToken,
+		Username:    "untrusteduser",
+		Email:       "attacker@evil.com",
+	}))
+	require.NoError(t, err)
+
+	user, err := st.Users().GetByID(context.Background(), resp.Msg.GetUser().GetId())
+	require.NoError(t, err)
+	assert.Equal(t, "provider@example.com", user.Email,
+		"a provider-supplied address is not substitutable")
+}
+
 func TestCompleteOAuthSignup_DuplicateUsername(t *testing.T) {
 	t.Parallel()
 

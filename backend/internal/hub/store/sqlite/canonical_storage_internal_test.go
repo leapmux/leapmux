@@ -159,7 +159,7 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	approved, err := st.DeviceAuthorizations().Approve(ctx, store.ApproveDeviceAuthorizationParams{
 		DeviceCode: "canon-device-code",
 		UserID:     userid.MustNew(user.ID),
-	})
+	}, time.Now().UTC())
 	require.NoError(t, err)
 	require.EqualValues(t, 1, approved)
 	consumed, err := st.DeviceAuthorizations().Consume(ctx, "canon-device-code", time.Now().UTC())
@@ -281,14 +281,17 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	require.EqualValues(t, 1, consumedSalt)
 
 	// users.pending_email_expires_at is Go-bound by SetPendingEmail.
-	require.NoError(t, st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
+	minted, err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
 		ID:                    user.ID,
 		PendingEmail:          "canon-pending@example.com",
 		PendingEmailToken:     "canon-token",
 		PendingEmailExpiresAt: ptr(future),
-	}))
+		CooldownCutoff:        store.UnconditionalMintCutoff(),
+	})
+	require.NoError(t, err)
+	require.True(t, minted)
 
-	minted, err := st.Users().SetPendingPasswordReset(ctx, store.SetPendingPasswordResetParams{
+	minted, err = st.Users().SetPendingPasswordReset(ctx, store.SetPendingPasswordResetParams{
 		ID:                            user.ID,
 		PendingPasswordResetToken:     "canon-reset-token",
 		PendingPasswordResetExpiresAt: future,

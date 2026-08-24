@@ -289,12 +289,14 @@ func (s *Suite) testCleanupBoundaries(t *testing.T) {
 		} {
 			user := SeedUser(t, st, "boundary-email-user-"+string(rune('a'+i)))
 			expiry := expiresAt
-			require.NoError(t, st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
+			minted, err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
 				ID:                    user.ID,
 				PendingEmail:          user.Username + "@example.com",
 				PendingEmailToken:     "TOKEN1",
 				PendingEmailExpiresAt: &expiry,
-			}))
+				CooldownCutoff:        store.UnconditionalMintCutoff(),
+			})
+			mustSetPendingEmail(t, minted, err)
 		}
 
 		assertBoundarySweep(t, cutoff, func(c time.Time) (int64, error) {

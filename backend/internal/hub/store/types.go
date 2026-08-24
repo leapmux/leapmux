@@ -526,11 +526,24 @@ type UpdateUserPrefsParams struct {
 	Prefs string
 }
 
+// UnconditionalMintCutoff always satisfies a conditional mint. Use it
+// where no previous code can exist (account creation) or where the caller
+// deliberately overwrites (a test seed). It says so at the call site
+// instead of leaving a zero cutoff to mean it by accident.
+func UnconditionalMintCutoff() time.Time {
+	return time.Now().UTC().Add(100 * 365 * 24 * time.Hour)
+}
+
 type SetPendingEmailParams struct {
 	ID                    string
 	PendingEmail          string
 	PendingEmailToken     string
 	PendingEmailExpiresAt *time.Time
+	// CooldownCutoff controls the conditional mint: the write lands only
+	// when no previous code exists or the previous code's expiry is at or
+	// before this instant. The caller derives it from the resend cooldown.
+	// Its twin is SetPendingPasswordResetParams.CooldownCutoff.
+	CooldownCutoff time.Time
 }
 
 type ClearCompetingPendingEmailsParams struct {
@@ -571,9 +584,6 @@ type TouchSessionParams struct {
 	ID           string
 	ExpiresAt    time.Time
 	LastActiveAt time.Time
-	// Now is the hub clock that judges the previous expiry. Expiries are
-	// written by the hub process, so liveness stays on one clock.
-	Now time.Time
 }
 
 type DeleteOtherSessionsParams struct {
@@ -588,8 +598,6 @@ type RefreshSessionAuthGenerationParams struct {
 
 type ListAllActiveSessionsParams struct {
 	PageParams // Keyset on (last_active_at DESC, id DESC).
-	// Now is the hub clock that judges session liveness.
-	Now time.Time
 }
 
 // ListUserSessionsParams pages a per-user session listing (ListByUserID),
@@ -597,8 +605,6 @@ type ListAllActiveSessionsParams struct {
 type ListUserSessionsParams struct {
 	UserID     userid.UserID
 	PageParams // Keyset on (last_active_at DESC, id DESC).
-	// Now is the hub clock that judges session liveness.
-	Now time.Time
 }
 
 type CreateWorkerParams struct {
@@ -1076,7 +1082,7 @@ type SetPendingPasswordResetParams struct {
 	ID                            string
 	PendingPasswordResetToken     string
 	PendingPasswordResetExpiresAt time.Time
-	// CooldownCutoff gates the conditional mint: the write lands only when
+	// CooldownCutoff controls the conditional mint: the write lands only when
 	// no previous token exists or the previous token's expiry is at or
 	// before this cutoff, so two concurrent first requests cannot both
 	// mint and both send. The caller derives the cutoff from the resend
@@ -1270,15 +1276,11 @@ type CreateDeviceAuthorizationParams struct {
 type ApproveDeviceAuthorizationParams struct {
 	DeviceCode string
 	UserID     userid.UserID
-	// Now is the hub clock that judges grant liveness.
-	Now time.Time
 }
 
 type ApproveDeviceAuthorizationByUserCodeParams struct {
 	UserCode string
 	UserID   userid.UserID
-	// Now is the hub clock that judges grant liveness.
-	Now time.Time
 }
 
 type CreateCLIAuthorizationCodeParams struct {

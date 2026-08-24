@@ -39,6 +39,25 @@ func TestSanitizeRedirectURI(t *testing.T) {
 		{"javascript scheme rejected", "javascript:alert(1)", ""},
 		{"data scheme rejected", "data:text/html,<h1>hi</h1>", ""},
 		{"backslash rejected", "\\evil.com", ""},
+		// A WHATWG parser reads a backslash as a slash for a special
+		// scheme, so "/\host" leaves the origin although Go's own URL
+		// parser calls it a path. This is why the guard reads raw bytes
+		// instead of parsing and comparing origins.
+		{"backslash twin rejected", "/\\evil.com", ""},
+		{"backslash twin with path rejected", "/\\evil.com/callback", ""},
+		// url.Parse refuses a control byte, so http.Redirect skips its
+		// cleaning branch and writes the value verbatim; the browser then
+		// strips the tab and reads "//evil.com".
+		{"tab-injected authority rejected", "/\t/evil.com", ""},
+		{"tab before a backslash twin rejected", "/\t\\evil.com", ""},
+		{"carriage return rejected", "/\r/evil.com", ""},
+		{"line feed rejected", "/\n/evil.com", ""},
+		{"delete byte rejected", "/\x7f/evil.com", ""},
+		{"null byte rejected", "/\x00/evil.com", ""},
+		// Percent-encodings are NOT decoded before the browser picks the
+		// authority, so these stay ordinary same-origin paths.
+		{"percent-encoded tab kept", "/%09/evil.com", "/%09/evil.com"},
+		{"percent-encoded backslash kept", "/%5Cevil.com", "/%5Cevil.com"},
 	}
 
 	for _, tt := range tests {

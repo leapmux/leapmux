@@ -2,6 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   encodeWebAuthnUserId,
+  isPasskeyCeremonyCancelled,
+  PasskeyCeremonyCancelledError,
+  passkeyErrorMessage,
   signalAcceptedPasskeys,
   signalPasskeyRemoved,
   startAuthentication,
@@ -103,5 +106,31 @@ describe('signal helpers', () => {
     })
     signalAcceptedPasskeys('example.com', 'user-1', [])
     expect(signalAllAcceptedCredentials).not.toHaveBeenCalled()
+  })
+})
+
+describe('passkey ceremony error classification', () => {
+  // SimpleWebAuthn passes the browser's raw DOMException text through, so
+  // an unclassified cancel put "The operation either timed out or was not
+  // allowed. See: https://www.w3.org/TR/webauthn-2/..." in a red banner.
+  it('classifies a dismissed prompt as cancelled, not an error', () => {
+    const cancelled = new PasskeyCeremonyCancelledError(new Error('raw'))
+    expect(isPasskeyCeremonyCancelled(cancelled)).toBe(true)
+    expect(passkeyErrorMessage(cancelled, 'Failed to add passkey')).toBeNull()
+  })
+
+  it('keeps the raw error as the cause so the log still has it', () => {
+    const raw = new Error('NotAllowedError')
+    expect(new PasskeyCeremonyCancelledError(raw).cause).toBe(raw)
+  })
+
+  it('reports a real failure with the caller fallback', () => {
+    const real = new Error('authenticator is unreachable')
+    expect(isPasskeyCeremonyCancelled(real)).toBe(false)
+    expect(passkeyErrorMessage(real, 'Failed to add passkey')).toBe('authenticator is unreachable')
+  })
+
+  it('falls back when the failure carries no message', () => {
+    expect(passkeyErrorMessage({}, 'Failed to add passkey')).toBe('Failed to add passkey')
   })
 })

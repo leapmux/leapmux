@@ -93,7 +93,32 @@ func NewSMTPSender(cfg SMTPConfig) *SMTPSender {
 //  7. Build RFC 5322 headers + body and write via Data(). The textproto
 //     DotWriter handles dot-stuffing AND \n→\r\n translation, so the
 //     body is written with plain LF line endings.
+//
+// sendTimeout caps one complete SMTP exchange when the caller supplies no
+// deadline. It has to cover dial, TLS handshake, EHLO, AUTH, and DATA
+// against a slow relay, while staying well inside the interactive request
+// a user is waiting on.
+const sendTimeout = 20 * time.Second
+
 func (s *SMTPSender) Send(ctx context.Context, msg Message) error {
+	// Bound the WHOLE exchange, not just the dial. Callers send inline on
+	// interactive RPC paths (login, sign-up, password reset), and a Connect
+	// request context carries no server-side deadline of its own, so a relay
+	// that completes the TCP handshake and then stalls in EHLO, AUTH, or
+	// DATA held the request goroutine open indefinitely: the sign-in button
+	// spun until the client's own timeout, and a login whose session was
+	// already minted and committed surfaced as a failure.
+	//
+	// The deadline goes here rather than at each call site because the steps
+	// below already honor it -- the watchdog closes the connection on
+	// cancellation and SetDeadline covers the non-ctx-aware stdlib calls. A
+	// caller that sets a shorter deadline keeps it.
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, sendTimeout)
+		defer cancel()
+	}
+
 	cfg := s.cfg
 	if err := validateNoCRLF("To", msg.To); err != nil {
 		return err

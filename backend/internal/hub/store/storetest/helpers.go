@@ -31,7 +31,7 @@ var ctx = context.Background()
 // membership rather than paging behavior.
 func ListAllSessions(t *testing.T, st store.Store, userID string) []store.UserSession {
 	t.Helper()
-	page, err := st.Sessions().ListByUserID(ctx, store.ListUserSessionsParams{UserID: userid.MustNew(userID), PageParams: store.PageParams{Limit: 1000}, Now: time.Now().UTC()})
+	page, err := st.Sessions().ListByUserID(ctx, store.ListUserSessionsParams{UserID: userid.MustNew(userID), PageParams: store.PageParams{Limit: 1000}}, time.Now().UTC())
 	require.NoError(t, err)
 	return page.Rows
 }
@@ -206,4 +206,13 @@ func SeedSession(t *testing.T, st store.Store, userID string) *store.UserSession
 	sess, err := st.Sessions().GetByID(ctx, sessID, time.Now().UTC())
 	require.NoError(t, err)
 	return sess
+}
+
+// mustSetPendingEmail asserts the conditional mint landed. Most suite cases
+// seed a fresh code and want the write, not the cooldown branch; a silent
+// false there would leave the row unset and fail the case somewhere else.
+func mustSetPendingEmail(t *testing.T, minted bool, err error) {
+	t.Helper()
+	require.NoError(t, err)
+	require.True(t, minted, "the conditional mint must land for a fresh pending code")
 }

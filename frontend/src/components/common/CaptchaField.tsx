@@ -42,9 +42,16 @@ export interface CaptchaFieldProps {
 // selected row — the safe default on both ends.
 //
 // Only the external providers key on the action: they bind the action into
-// the token, and their own effect re-arms when it changes. ALTCHA ignores
-// the action entirely (the hub drops it), so it stays mounted across
-// Password/Passkey toggles and keeps the user's solved challenge.
+// the token, so a Password/Passkey toggle must mint a fresh one or the hub
+// denies it. The keyed Show is the whole mechanism -- it disposes the field,
+// and createCaptchaFieldBase's onCleanup then tears the widget down and
+// clears the payload together, which an in-field effect would have to
+// re-derive by hand. Neither approach avoids the re-solve, because the
+// action is bound at render/execute time either way.
+//
+// ALTCHA ignores the action entirely (the hub drops it), so it stays
+// mounted across Password/Passkey toggles and keeps the user's solved
+// challenge.
 export const CaptchaField: Component<CaptchaFieldProps> = (props) => {
   return (
     <Switch fallback={<AltchaField onPayload={props.onPayload} onUnavailable={props.onUnavailable} ref={props.ref} />}>

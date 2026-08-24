@@ -166,9 +166,17 @@ func (s *UserService) RequestEmailChange(ctx context.Context, req *connect.Reque
 	}
 
 	// Non-admin, verification required: set pending email and dispatch
-	// the verification mail. On send failure the helper rolls back the
-	// row so the user can retry from a clean slate.
-	if err := issuePendingEmailVerificationOrRollback(ctx, s.store, s.mail, s.renderer, user.ID, newEmail); err != nil {
+	// the verification mail. On send failure the helper drops the
+	// undelivered code and keeps the pending address, so Resend retries
+	// the same change.
+	if err := issuePendingEmailVerificationOrFail(ctx, s.store, s.mail, s.renderer, user.ID, newEmail); err != nil {
+		// The conditional mint refuses inside the cooldown, which is the
+		// one thing that stops this RPC from being an open relay: the
+		// address is caller-supplied, so an unconditional mint sends a
+		// message per request to any address the caller names.
+		if errors.Is(err, ErrVerificationCooldown) {
+			return nil, connect.NewError(connect.CodeResourceExhausted, err)
+		}
 		return nil, connect.NewError(connect.CodeUnavailable, err)
 	}
 
@@ -225,13 +233,9 @@ func (s *UserService) ResendVerificationEmail(ctx context.Context, _ *connect.Re
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("no pending email change"))
 	}
 
-	// Refuse if the previous code was issued less than the cooldown ago.
-	if full.PendingEmail != "" && full.PendingEmailExpiresAt != nil {
-		issuedAt := full.PendingEmailExpiresAt.Add(-pendingEmailExpiry)
-		if time.Since(issuedAt) < resendVerificationCooldown {
-			return nil, connect.NewError(connect.CodeResourceExhausted, fmt.Errorf("please wait before requesting another verification email"))
-		}
-	}
+	// The cooldown lives in the conditional mint inside
+	// issuePendingEmailVerification, not in a read-then-check here: two
+	// concurrent resends both passed a Go check and both sent.
 
 	sent, err := issuePendingEmailVerification(ctx, s.store, s.mail, s.renderer, full.ID, targetEmail)
 	if err != nil {
@@ -323,7 +327,7 @@ func (s *UserService) ChangePassword(ctx context.Context, req *connect.Request[l
 		committedAuthGeneration = gen
 		return nil
 	}); err != nil {
-		return nil, mapPasskeyConnectError(err)
+		return nil, mapPasskeyConnectError(ctx, err)
 	}
 
 	// The acting session survives at the new generation

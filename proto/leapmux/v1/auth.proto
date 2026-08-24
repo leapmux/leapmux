@@ -86,6 +86,15 @@ message GetCurrentUserRequest {}
 
 message GetCurrentUserResponse {
   User user = 1;
+  // The same status the login and sign-up responses carry.
+  //
+  // This is the ONLY response the /verify-email page's own bootstrap
+  // reads, so without it a hard reload of that page starts with the
+  // resend cooldown unset: the countdown restarts at zero, the button
+  // re-enables, and the click gets ResourceExhausted with no timestamp
+  // to restart from. Carrying it here makes the cooldown derivable at
+  // every render instead of surviving exactly one navigation.
+  EmailVerificationStatus email_verification = 2;
 }
 
 message SignUpRequest {

@@ -137,8 +137,7 @@ func (s *Suite) testTimeFloor(t *testing.T) {
 			ID:           sessionID,
 			ExpiresAt:    touchedExpiresAt,
 			LastActiveAt: floorProbe(base, 1),
-			Now:          time.Now().UTC(),
-		})
+		}, time.Now().UTC())
 		require.NoError(t, err)
 		require.EqualValues(t, 1, n)
 		sess, err = st.Sessions().GetByID(ctx, sessionID, time.Now().UTC())
@@ -229,12 +228,14 @@ func (s *Suite) testTimeFloor(t *testing.T) {
 		user := SeedUser(t, st, "floor-user")
 
 		expiresAt := floorProbe(floorProbeBase(), 0)
-		require.NoError(t, st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
+		minted, err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
 			ID:                    user.ID,
 			PendingEmail:          "floor@example.com",
 			PendingEmailToken:     "TOKEN1",
 			PendingEmailExpiresAt: &expiresAt,
-		}))
+			CooldownCutoff:        store.UnconditionalMintCutoff(),
+		})
+		mustSetPendingEmail(t, minted, err)
 
 		got, err := st.Users().GetByID(ctx, user.ID)
 		require.NoError(t, err)

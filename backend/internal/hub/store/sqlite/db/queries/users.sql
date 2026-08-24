@@ -160,7 +160,15 @@ SELECT count(*) FROM users WHERE deleted_at IS NULL;
 -- name: HasAnyUser :one
 SELECT EXISTS(SELECT 1 FROM users WHERE deleted_at IS NULL LIMIT 1);
 
--- name: SetPendingEmail :exec
+-- name: SetPendingEmail :execresult
+-- Conditional mint: the write lands only when no previous code exists or
+-- the previous code's expiry is at or before cooldown_cutoff, so two
+-- concurrent resends for one account cannot both mint and both send (the
+-- loser matches no row), and RequestEmailChange cannot mint on every
+-- request. Its twin SetPendingPasswordReset carries the same predicate.
+-- The Go caller derives cooldown_cutoff from the resend cooldown; the
+-- comparison stays on the app clock, the clock that wrote the expiry.
+--
 -- pending_email_expires_at MUST land in the canonical strftime layout, so the
 -- bound instant is a SQLiteNullTime rather than the modernc driver layout a raw
 -- time.Time bind would produce: ConsumeVerificationAttempt's lockout branch
@@ -169,7 +177,20 @@ SELECT EXISTS(SELECT 1 FROM users WHERE deleted_at IS NULL LIMIT 1);
 -- lexicographic compare at the ' ' vs 'T' separator byte (byte 10). An invalid
 -- SQLiteNullTime binds NULL.
 UPDATE users SET pending_email = sqlc.arg(pending_email), pending_email_token = sqlc.arg(pending_email_token), pending_email_expires_at = sqlc.narg(pending_email_expires_at), pending_email_attempts = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-WHERE id = sqlc.arg(id);
+WHERE id = sqlc.arg(id)
+  AND (pending_email_expires_at IS NULL
+       OR pending_email_expires_at <= sqlc.arg(cooldown_cutoff));
+
+-- name: ClearPendingEmailCode :exec
+-- ClearPendingEmailCode drops an undelivered code and KEEPS the pending
+-- address. An empty token is the "no live code, address still pending"
+-- state: ConsumeVerificationAttempt and ClearStalePendingEmails both
+-- filter pending_email_token != '', so neither acts on it, and the
+-- cooldown -- which reads the expiry -- does not apply, so the retry a
+-- failed send invites is never blocked. Unconditional on purpose: it
+-- undoes a mint that the relay refused.
+UPDATE users SET pending_email_token = '', pending_email_expires_at = NULL, pending_email_attempts = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+WHERE id = ?;
 
 -- name: ClearPendingEmail :exec
 UPDATE users SET pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, pending_email_attempts = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
@@ -195,12 +216,19 @@ UPDATE users SET pending_email = '', pending_email_token = '', pending_email_exp
 WHERE pending_email = ? AND id != ?;
 
 -- name: ClearStalePendingEmails :execresult
+-- The second arm reaps a codeless row: a send the relay refused leaves the
+-- ADDRESS with no token and no expiry (ClearPendingEmailCode), so the
+-- expiry compare can never see it and an abandoned address would otherwise
+-- outlive the database. updated_at is the only instant such a row carries,
+-- and ClearPendingEmailCode stamps it.
 -- Raw compare: pending_email_expires_at is stored canonical on every write path
 -- (SetPendingEmail binds a SQLiteNullTime; ConsumeVerificationAttempt's lockout
 -- branch writes strftime('now')), so comparing it raw against the SQLiteTime
 -- cutoff (same canonical layout) is byte-exact; see HardDeleteUsersBefore.
 UPDATE users SET pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, pending_email_attempts = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-WHERE pending_email_token != '' AND pending_email_expires_at IS NOT NULL AND pending_email_expires_at < sqlc.arg(cutoff);
+WHERE pending_email != ''
+  AND ((pending_email_token != '' AND pending_email_expires_at IS NOT NULL AND pending_email_expires_at < sqlc.arg(cutoff))
+    OR (pending_email_token = '' AND updated_at < sqlc.arg(codeless_cutoff)));
 
 -- name: BumpUserTokensRevokedAt :one
 -- Bumps the user-wide revocation timestamp and credential epoch, then

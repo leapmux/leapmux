@@ -30,16 +30,19 @@ const (
 	passwordResetResendCooldown = 60 * time.Second
 )
 
-// loginVerificationOutcome carries the verification flags for login responses.
-type loginVerificationOutcome struct {
+// verificationOutcome carries the verification flags every login and
+// sign-up response reports. Not login-only: the four sign-up flavors and
+// the GetCurrentUser bootstrap build one too, and each used to hand-write
+// the proto literal instead.
+type verificationOutcome struct {
 	Required              bool
 	EmailSent             bool
 	NextResendAvailableAt *time.Time
 }
 
-// emailVerificationToProto maps a login verification outcome onto the
-// shared response message.
-func emailVerificationToProto(out loginVerificationOutcome) *leapmuxv1.EmailVerificationStatus {
+// emailVerificationToProto maps a verification outcome onto the shared
+// response message. Every response that carries the status builds it here.
+func emailVerificationToProto(out verificationOutcome) *leapmuxv1.EmailVerificationStatus {
 	return &leapmuxv1.EmailVerificationStatus{
 		VerificationRequired:  out.Required,
 		VerificationEmailSent: out.EmailSent,
@@ -47,11 +50,33 @@ func emailVerificationToProto(out loginVerificationOutcome) *leapmuxv1.EmailVeri
 	}
 }
 
-func (s *AuthService) loginVerificationOutcome(ctx context.Context, user *store.User) loginVerificationOutcome {
+// verificationStatusFor REPORTS the account's verification state without
+// sending anything. loginVerificationOutcome is the sending twin, and the
+// difference matters: this one serves GetCurrentUser, which every page load
+// calls, so issuing mail from it would send a message per reload.
+//
+// The cooldown it reports comes from the live pending row, so a hard reload
+// of /verify-email resumes the same countdown a login handed out instead of
+// starting at zero and letting the button hammer a refusal.
+func (s *AuthService) verificationStatusFor(ctx context.Context, user *store.User) verificationOutcome {
 	if !s.emailVerificationRequired(ctx) || user.IsAdmin || user.EmailVerified {
-		return loginVerificationOutcome{}
+		return verificationOutcome{}
 	}
-	out := loginVerificationOutcome{Required: true}
+	out := verificationOutcome{Required: true}
+	if user.PendingEmail != "" && user.PendingEmailExpiresAt != nil {
+		next := nextResendAt(issuedAtFromExpiry(*user.PendingEmailExpiresAt, pendingEmailExpiry))
+		if time.Now().UTC().Before(next) {
+			out.NextResendAvailableAt = &next
+		}
+	}
+	return out
+}
+
+func (s *AuthService) loginVerificationOutcome(ctx context.Context, user *store.User) verificationOutcome {
+	if !s.emailVerificationRequired(ctx) || user.IsAdmin || user.EmailVerified {
+		return verificationOutcome{}
+	}
+	out := verificationOutcome{Required: true}
 	targetEmail := user.PendingEmail
 	if targetEmail == "" {
 		targetEmail = user.Email
@@ -134,16 +159,16 @@ func (s *AuthService) BeginPasskeyLogin(ctx context.Context, req *connect.Reques
 	}
 	sessionID, optionsJSON, rpID, err := wa.BeginLogin(ctx, user.ID, originFromRequest(req))
 	if err != nil {
-		switch {
-		case errors.Is(err, hubwebauthn.ErrNoPasskeys):
-			// Same code and message as the missing-user path so callers
-			// cannot enumerate accounts by the error.
+		if classifyWebAuthnError(err) == webAuthnErrorUnavailable {
+			// An unserved origin names the remediation. Everything else in
+			// this class answers with the same code and message as the
+			// missing-user path, so the error is not an enumeration oracle.
+			if errors.Is(err, hubwebauthn.ErrOriginNotAllowed) {
+				return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("passkey login is not available on this origin; open the hub through its configured URL"))
+			}
 			return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("passkey login is not available for this account"))
-		case errors.Is(err, hubwebauthn.ErrOriginNotAllowed):
-			return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("passkey login is not available on this origin; open the hub through its configured URL"))
-		default:
-			return nil, connect.NewError(connect.CodeInternal, err)
 		}
+		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	return connect.NewResponse(&leapmuxv1.BeginPasskeyLoginResponse{
 		SessionId:   sessionID,
@@ -159,23 +184,31 @@ func (s *AuthService) FinishPasskeyLogin(ctx context.Context, req *connect.Reque
 	}
 	user, passkeyCount, err := wa.FinishLogin(ctx, req.Msg.GetSessionId(), req.Msg.GetCredentialJson())
 	if err != nil {
-		switch {
-		case errors.Is(err, hubwebauthn.ErrCloneDetected):
+		switch classifyWebAuthnError(err) {
+		case webAuthnErrorClone:
 			// A clone warning is a security event, not a login failure: log
 			// it server-side and report it as itself, so it never counts
 			// against the login rate-limit budget.
 			slog.WarnContext(ctx, "passkey clone warning during login")
 			return nil, connect.NewError(connect.CodeUnauthenticated, err)
-		case errors.Is(err, hubwebauthn.ErrCeremonyInvalid), errors.Is(err, hubwebauthn.ErrAssertionRejected):
+		case webAuthnErrorCredential:
 			return nil, connect.NewError(connect.CodeUnauthenticated, err)
-		default:
+		case webAuthnErrorUnavailable:
+			// Same code Begin answers for the same state. These sentinels
+			// describe the hub and the origin, not the account, so the
+			// enumeration argument that collapses a credential failure into
+			// Unauthenticated does not reach them -- and reporting a hub
+			// misconfiguration as "authentication failed" tells the user to
+			// try another credential for something no credential can fix.
+			return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+		case webAuthnErrorInfrastructure:
 			// Store and infrastructure failures (keystore decrypt, session
-			// consume, sign-count update) are not credential failures.
-			// Reporting them as CodeInternal keeps them out of the login
-			// rate-limit budget and out of the anonymous client's Unauthenticated
+			// consume, sign-count update) are not credential failures, so
+			// they must not read as one in the anonymous client's response
 			// body.
 			return nil, connect.NewError(connect.CodeInternal, err)
 		}
+		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	loginUID, mintErr := mintRowUserID(user.ID)
 	if mintErr != nil {
@@ -285,8 +318,6 @@ func (s *AuthService) FinishPasskeySignUp(ctx context.Context, req *connect.Requ
 		email = ""
 		pendingEmail = draft.Email
 	}
-	verificationRequired := pendingEmail != ""
-
 	createdUser, storedCode, err := createUserInTx(ctx, s.store, createUserTxParams{
 		userID:       draft.UserID,
 		username:     draft.Username,
@@ -304,10 +335,18 @@ func (s *AuthService) FinishPasskeySignUp(ctx context.Context, req *connect.Requ
 		return nil, mapSignupCommitError(err)
 	}
 
+	// The returned code is the authority on whether a pending verification
+	// was actually written, NOT the caller's pre-call intent: createUserInTx
+	// promotes an admin's pending address into the email column and writes
+	// no pending row, so the first-user branch reaches here with
+	// pendingEmail still set and nothing to verify. Sending on the local
+	// intent mailed a blank code, and a failed send then rolled back the
+	// hub's only administrator.
+	verificationRequired := storedCode != ""
 	emailSent := false
 	var nextResend *time.Time
-	if verificationRequired && pendingEmail != "" {
-		if err := s.deliverSignupVerification(ctx, createdUser.ID, pendingEmail, storedCode); err != nil {
+	if verificationRequired {
+		if err := s.deliverSignupVerification(ctx, createdUser.ID, createdUser.PendingEmail, storedCode); err != nil {
 			return nil, err
 		}
 		emailSent = true
@@ -327,11 +366,11 @@ func (s *AuthService) FinishPasskeySignUp(ctx context.Context, req *connect.Requ
 	resp := connect.NewResponse(&leapmuxv1.FinishPasskeySignUpResponse{
 		// The ceremony just stored this account's single passkey.
 		User: userToProto(createdUser, 1),
-		EmailVerification: &leapmuxv1.EmailVerificationStatus{
-			VerificationRequired:  verificationRequired,
-			VerificationEmailSent: emailSent,
-			NextResendAvailableAt: protoTimestamp(nextResend),
-		},
+		EmailVerification: emailVerificationToProto(verificationOutcome{
+			Required:              verificationRequired,
+			EmailSent:             emailSent,
+			NextResendAvailableAt: nextResend,
+		}),
 	})
 	s.setSessionCookie(ctx, resp.Header(), sessionID, sessionExpires)
 	return resp, nil
@@ -417,7 +456,14 @@ func (s *AuthService) RequestPasswordReset(ctx context.Context, req *connect.Req
 		return connect.NewResponse(&leapmuxv1.RequestPasswordResetResponse{}), nil
 	}
 	if err := s.mail.Send(ctx, s.renderer.PasswordResetEmail(targetEmail, rawToken, passwordResetExpiry)); err != nil {
-		_ = s.store.Users().ClearPendingPasswordReset(ctx, user.ID)
+		// Report the clear separately from the send. A log line that claims
+		// "cleared pending token" while the clear itself failed sends the
+		// operator looking for the wrong cause of a token that is still
+		// live for the full reset TTL.
+		if clearErr := s.store.Users().ClearPendingPasswordReset(ctx, user.ID); clearErr != nil {
+			slog.WarnContext(ctx, "clear pending password reset after failed send",
+				"user_id", user.ID, "err", clearErr)
+		}
 		slog.WarnContext(ctx, "password reset email send failed; cleared pending token",
 			"user_id", user.ID, "err", err)
 		// Still return empty success so the response cannot enumerate accounts,
@@ -452,7 +498,7 @@ func (s *AuthService) CompletePasswordReset(ctx context.Context, req *connect.Re
 	}
 	// Attempt 6+ expires the token in SQL (sets expires_at = now). Refuse
 	// before Argon2 so the attempt budget is a hard cap, not soft.
-	if charged.PendingPasswordResetAttempts > 5 {
+	if charged.PendingPasswordResetAttempts > maxPasswordResetAttempts {
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("invalid or expired reset token"))
 	}
 	if charged.PendingPasswordResetExpiresAt != nil && time.Now().UTC().After(*charged.PendingPasswordResetExpiresAt) {

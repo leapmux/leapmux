@@ -547,7 +547,7 @@ CREATE INDEX idx_webauthn_sessions_user_kind ON webauthn_sessions(user_id, kind)
 -- (internal/hub/settings); secret-bearing keys keep the secret half in the
 -- keystore-encrypted column (AAD bound to the key name). An absent row means
 -- the code default, so adding, removing, or reshaping a setting is a Go
--- change only — never a migration. This table is the single home for all
+-- change only -- never a migration. This table is the single home for all
 -- runtime-changeable configuration (auth policy, SMTP, timeouts, limits,
 -- captcha providers, rate-limit overrides).
 CREATE TABLE hub_settings (

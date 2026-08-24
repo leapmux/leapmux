@@ -69,7 +69,7 @@ func TestAdminUserService_RevokeSessionClosesThatSessionsChannels(t *testing.T) 
 	sessions, err := env.st.Sessions().ListByUserID(ctx, store.ListUserSessionsParams{
 		UserID:     userid.MustNew(userID),
 		PageParams: store.PageParams{Limit: 10},
-	})
+	}, time.Now().UTC())
 	require.NoError(t, err)
 	assert.Empty(t, sessions.Rows)
 }
