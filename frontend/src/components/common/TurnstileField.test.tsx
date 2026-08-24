@@ -1,6 +1,7 @@
 import type { CaptchaFieldHandle } from './CaptchaField'
 /// <reference types="vitest/globals" />
 import { render } from '@solidjs/testing-library'
+import { createSignal } from 'solid-js'
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mockLoadSystemInfo, resetSystemInfoMock, setSystemInfoMock } from '~/test-support/systemInfoMock'
@@ -186,6 +187,27 @@ describe('turnstileField', () => {
     })
     expect(turnstile.removes).toEqual(['widget-1'])
     expect(turnstile.calls[1]?.options.sitekey).toBe('2x00000000000000000000BB')
+    expect(onPayload).toHaveBeenLastCalledWith(null)
+  })
+
+  it('re-renders the widget when the form action changes', async () => {
+    const turnstile = installFakeTurnstile()
+    const onPayload = vi.fn()
+    const [action, setAction] = createSignal('login')
+    render(() => (
+      <div><TurnstileField action={action()} onPayload={onPayload} /></div>
+    ))
+    await vi.waitFor(() => {
+      expect(turnstile.calls).toHaveLength(1)
+    })
+    expect(turnstile.calls[0]?.options.action).toBe('login')
+
+    setAction('passkey_login')
+    await vi.waitFor(() => {
+      expect(turnstile.calls).toHaveLength(2)
+    })
+    expect(turnstile.calls[1]?.options.action).toBe('passkey_login')
+    expect(turnstile.removes).toEqual(['widget-1'])
     expect(onPayload).toHaveBeenLastCalledWith(null)
   })
 })

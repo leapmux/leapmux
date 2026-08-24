@@ -142,6 +142,13 @@ func runPasswordReset(cmd cmdCtx, args []string) error {
 				return fmt.Errorf("update password: %w", err)
 			}
 
+			// Offline break-glass matches online admin reset and self-service
+			// CompletePasswordReset: passkeys, ceremonies, and any pending
+			// reset email die with the password rotation.
+			if err := service.RevokePasskeyAuthState(ctx, tx, user.ID); err != nil {
+				return err
+			}
+
 			if err := tx.Sessions().DeleteByUser(ctx, revokeUID); err != nil {
 				return fmt.Errorf("delete sessions: %w", err)
 			}
@@ -163,7 +170,7 @@ func runPasswordReset(cmd cmdCtx, args []string) error {
 			return err
 		}
 
-		fmt.Printf("Password reset for user %q (id: %s). All sessions revoked.\n", user.Username, user.ID)
+		fmt.Printf("Password reset for user %q (id: %s). All sessions and passkeys revoked.\n", user.Username, user.ID)
 		return nil
 	})
 }

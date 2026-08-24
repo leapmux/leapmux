@@ -37,7 +37,7 @@ type sessionValidationStore struct {
 	validate func(context.Context, string) (*store.SessionWithUser, error)
 }
 
-func (s sessionValidationStore) ValidateWithUser(ctx context.Context, sessionID string) (*store.SessionWithUser, error) {
+func (s sessionValidationStore) ValidateWithUser(ctx context.Context, sessionID string, now time.Time) (*store.SessionWithUser, error) {
 	return s.validate(ctx, sessionID)
 }
 
@@ -63,7 +63,7 @@ type touchRecordingSessionStore struct {
 	touchCalls int
 }
 
-func (s *touchRecordingSessionStore) ValidateWithUser(context.Context, string) (*store.SessionWithUser, error) {
+func (s *touchRecordingSessionStore) ValidateWithUser(context.Context, string, time.Time) (*store.SessionWithUser, error) {
 	return s.row, nil
 }
 
@@ -159,7 +159,7 @@ type staticUserStore struct {
 
 func (s staticUserStore) GetByID(context.Context, string) (*store.User, error) { return s.row, nil }
 
-func (s validationErrorSessionStore) ValidateWithUser(context.Context, string) (*store.SessionWithUser, error) {
+func (s validationErrorSessionStore) ValidateWithUser(context.Context, string, time.Time) (*store.SessionWithUser, error) {
 	return nil, s.err
 }
 

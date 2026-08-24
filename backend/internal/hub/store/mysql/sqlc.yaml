@@ -83,3 +83,14 @@ sql:
             go_type:
               type: "byte"
               slice: true
+          # Passkey AAGUID: keep as []byte (sqlc would map MySQL BINARY/VARBINARY
+          # to NullString otherwise).
+          - column: "passkey_credentials.aaguid"
+            go_type:
+              type: "byte"
+              slice: true
+          - column: "passkey_credentials.aaguid"
+            nullable: true
+            go_type:
+              type: "byte"
+              slice: true

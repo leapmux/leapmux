@@ -1,3 +1,8 @@
+-- Clock rule: expires_at columns are written by the hub process, so every
+-- comparison of them binds the hub's clock (sqlc.arg(now)), never the
+-- database clock. Timestamps that record when something happened keep the
+-- database clock.
+
 -- name: CreateCLIAuthorizationCode :exec
 INSERT INTO cli_authorization_codes (
     code, user_id, code_challenge, device_name, expires_at
@@ -14,12 +19,12 @@ INSERT INTO cli_authorization_codes (
 -- binds a SQLiteTime), so the liveness guard is millisecond-exact against the
 -- same canonical RHS layout.
 SELECT * FROM cli_authorization_codes
-WHERE code = ? AND consumed_at IS NULL AND expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
+WHERE code = ? AND consumed_at IS NULL AND expires_at > sqlc.arg(now);
 
 -- name: ConsumeCLIAuthorizationCode :one
 UPDATE cli_authorization_codes
 SET consumed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-WHERE code = ? AND consumed_at IS NULL AND expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+WHERE code = ? AND consumed_at IS NULL AND expires_at > sqlc.arg(now)
 RETURNING *;
 
 -- name: DeleteExpiredCLIAuthorizationCodes :execresult

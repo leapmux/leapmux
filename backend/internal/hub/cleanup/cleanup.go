@@ -38,14 +38,15 @@ func run(ctx context.Context, st store.Store) {
 
 	// Order respects FK dependencies: child rows before parent rows.
 	// workspaces/workers reference users.
-	cleanupStep("expired sessions", func() (int64, error) { return cs.HardDeleteExpiredSessions(ctx) })
+	cleanupStep("expired sessions", func() (int64, error) { return cs.HardDeleteExpiredSessions(ctx, now) })
 	cleanupStep("workspaces", func() (int64, error) { return cs.HardDeleteWorkspacesBefore(ctx, cutoff) })
 	cleanupStep("workers", func() (int64, error) { return cs.HardDeleteWorkersBefore(ctx, cutoff) })
 	cleanupStep("expired registration keys", func() (int64, error) { return cs.HardDeleteExpiredRegistrationKeysBefore(ctx, cutoff) })
 	cleanupStep("stale pending emails", func() (int64, error) { return cs.ClearStalePendingEmails(ctx, cutoff) })
 	cleanupStep("users", func() (int64, error) { return cs.HardDeleteUsersBefore(ctx, cutoff) })
-	cleanupStep("expired oauth states", func() (int64, error) { return cs.DeleteExpiredOAuthStates(ctx) })
-	cleanupStep("expired pending signups", func() (int64, error) { return cs.DeleteExpiredPendingOAuthSignups(ctx) })
+	cleanupStep("expired oauth states", func() (int64, error) { return cs.DeleteExpiredOAuthStates(ctx, now) })
+	cleanupStep("expired pending signups", func() (int64, error) { return cs.DeleteExpiredPendingOAuthSignups(ctx, now) })
+	cleanupStep("expired webauthn sessions", func() (int64, error) { return cs.DeleteExpiredWebAuthnSessions(ctx, now) })
 	cleanupStep("expired device authorizations", func() (int64, error) { return cs.DeleteExpiredDeviceAuthorizations(ctx, now) })
 	cleanupStep("expired CLI authorization codes", func() (int64, error) {
 		return cs.DeleteExpiredCLIAuthorizationCodes(ctx, now)

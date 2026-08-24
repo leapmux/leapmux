@@ -144,7 +144,7 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 		CodeChallenge: "challenge",
 		ExpiresAt:     future,
 	}))
-	_, err = st.CLIAuthorizationCodes().Consume(ctx, "canon-code")
+	_, err = st.CLIAuthorizationCodes().Consume(ctx, "canon-code", time.Now().UTC())
 	require.NoError(t, err)
 
 	// device_authorizations: expires_at on Create, last_polled_at on
@@ -162,7 +162,7 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.EqualValues(t, 1, approved)
-	consumed, err := st.DeviceAuthorizations().Consume(ctx, "canon-device-code")
+	consumed, err := st.DeviceAuthorizations().Consume(ctx, "canon-device-code", time.Now().UTC())
 	require.NoError(t, err)
 	require.EqualValues(t, 1, consumed)
 
@@ -286,6 +286,46 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 		PendingEmail:          "canon-pending@example.com",
 		PendingEmailToken:     "canon-token",
 		PendingEmailExpiresAt: ptr(future),
+	}))
+
+	minted, err := st.Users().SetPendingPasswordReset(ctx, store.SetPendingPasswordResetParams{
+		ID:                            user.ID,
+		PendingPasswordResetToken:     "canon-reset-token",
+		PendingPasswordResetExpiresAt: future,
+		CooldownCutoff:                future,
+	})
+	require.NoError(t, err)
+	require.True(t, minted)
+
+	passkeyID := id.Generate()
+	credID := []byte("canon-cred")
+	require.NoError(t, st.PasskeyCredentials().Create(ctx, store.CreatePasskeyCredentialParams{
+		ID:           passkeyID,
+		UserID:       user.ID,
+		CredentialID: credID,
+		PublicKey:    []byte("canon-pub"),
+		SignCount:    0,
+		Transports:   "[]",
+		FriendlyName: "Canon Passkey",
+		KeyVersion:   1,
+		CreatedAt:    now.UTC(),
+	}))
+	require.NoError(t, st.PasskeyCredentials().UpdateSignCount(ctx, store.UpdatePasskeySignCountParams{
+		CredentialID: credID,
+		UserID:       user.ID,
+		SignCount:    1,
+		LastUsedAt:   now.UTC(),
+	}))
+
+	webauthnSessionID := id.Generate()
+	require.NoError(t, st.WebAuthnSessions().Create(ctx, store.CreateWebAuthnSessionParams{
+		ID:          webauthnSessionID,
+		Kind:        "reauth",
+		UserID:      user.ID,
+		PayloadJSON: "{}",
+		SessionData: []byte("canon-session"),
+		ExpiresAt:   future.UTC(),
+		CreatedAt:   now.UTC(),
 	}))
 
 	// workers.last_seen_at via UpdateLastSeen's strftime.

@@ -2,6 +2,7 @@ package mysql
 
 import (
 	"context"
+	"time"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
@@ -69,6 +70,7 @@ func (s *deviceAuthorizationStore) Approve(ctx context.Context, p store.ApproveD
 	return rowsAffected(s.conn.q.ApproveDeviceAuthorization(ctx, gendb.ApproveDeviceAuthorizationParams{
 		UserID:     sqlutil.NullUserID(p.UserID),
 		DeviceCode: p.DeviceCode,
+		Now:        sqltime.NewMySQLTime(p.Now),
 	}))
 }
 
@@ -85,6 +87,7 @@ func (s *deviceAuthorizationStore) ApproveByUserCode(ctx context.Context, p stor
 	return rowsAffected(s.conn.q.ApproveDeviceAuthorizationByUserCode(ctx, gendb.ApproveDeviceAuthorizationByUserCodeParams{
 		UserID:   sqlutil.NullUserID(p.UserID),
 		UserCode: p.UserCode,
+		Now:      sqltime.NewMySQLTime(p.Now),
 	}))
 }
 
@@ -92,8 +95,11 @@ func (s *deviceAuthorizationStore) Deny(ctx context.Context, deviceCode string) 
 	return rowsAffected(s.conn.q.DenyDeviceAuthorization(ctx, deviceCode))
 }
 
-func (s *deviceAuthorizationStore) Consume(ctx context.Context, deviceCode string) (int64, error) {
-	return rowsAffected(s.conn.q.ConsumeDeviceAuthorization(ctx, deviceCode))
+func (s *deviceAuthorizationStore) Consume(ctx context.Context, deviceCode string, now time.Time) (int64, error) {
+	return rowsAffected(s.conn.q.ConsumeDeviceAuthorization(ctx, gendb.ConsumeDeviceAuthorizationParams{
+		DeviceCode: deviceCode,
+		Now:        sqltime.NewMySQLTime(now),
+	}))
 }
 
 func (s *deviceAuthorizationStore) TouchPoll(ctx context.Context, deviceCode string) error {

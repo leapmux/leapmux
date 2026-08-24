@@ -56,6 +56,10 @@ CREATE TABLE users (
     -- Counts attempts against the active pending_email_token. Reset to 0
     -- whenever a new token is issued; force-expires the token at >5.
     pending_email_attempts   INT NOT NULL DEFAULT 0,
+    -- Password-reset break-glass: token stored hashed (SHA-256 hex).
+    pending_password_reset_token      VARCHAR(64) NOT NULL DEFAULT '',
+    pending_password_reset_expires_at DATETIME(3),
+    pending_password_reset_attempts   INT NOT NULL DEFAULT 0,
     password_set             BOOLEAN NOT NULL DEFAULT TRUE,
     is_admin                 BOOLEAN NOT NULL DEFAULT FALSE,
     prefs          MEDIUMTEXT NOT NULL,
@@ -83,6 +87,9 @@ CREATE INDEX idx_users_created_at ON users(created_at DESC, id DESC);
 -- Verification codes are looked up per-user (the session identifies who),
 -- so no global token index is needed. Index expiry instead, for cleanup.
 CREATE INDEX idx_users_pending_email_expires_at ON users(pending_email_expires_at);
+-- Password-reset tokens are looked up by hash on complete. MySQL has no
+-- partial indexes, so this covers every row (empty token is the common case).
+CREATE INDEX idx_users_pending_password_reset_token ON users(pending_password_reset_token);
 -- GetFirstAdmin scans for the earliest non-deleted admin (bootstrap path).
 -- MySQL has no partial indexes; the composite indexes deleted_at as a key
 -- part (IS NULL is a ref-able key part in MySQL), so the ORDER BY created_at
@@ -559,6 +566,45 @@ CREATE TABLE pending_oauth_signups (
     FOREIGN KEY (provider_id) REFERENCES oauth_providers(id)
 ) COLLATE=utf8mb4_bin;
 
+-- Passkey (WebAuthn) credentials for email-local accounts
+CREATE TABLE passkey_credentials (
+    id              VARCHAR(255) PRIMARY KEY,
+    user_id         VARCHAR(255) NOT NULL,
+    credential_id   VARBINARY(1023) NOT NULL,   -- plaintext: login lookup + unique index (WebAuthn max 1023 bytes; not BLOB — MySQL/TiDB reject unique indexes on TEXT/BLOB)
+    public_key      BLOB NOT NULL,   -- keystore-encrypted COSE public key, AAD: 'passkey_public_key:' || id
+    sign_count      BIGINT NOT NULL DEFAULT 0,
+    aaguid          BLOB,
+    backup_eligible BOOLEAN NOT NULL DEFAULT FALSE,
+    backup_state    BOOLEAN NOT NULL DEFAULT FALSE,
+    transports      TEXT NOT NULL,
+    friendly_name   TEXT NOT NULL,
+    key_version     BIGINT NOT NULL DEFAULT 1,  -- active keystore version at write; for reencrypt scans
+    created_at      DATETIME(3) NOT NULL,
+    last_used_at    DATETIME(3),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) COLLATE=utf8mb4_bin;
+CREATE UNIQUE INDEX idx_passkey_credentials_credential_id ON passkey_credentials(credential_id);
+CREATE INDEX idx_passkey_credentials_user_id ON passkey_credentials(user_id);
+CREATE INDEX idx_passkey_credentials_key_version ON passkey_credentials(key_version);
+
+-- Ephemeral WebAuthn ceremony state (signup, login, register, reauth)
+CREATE TABLE webauthn_sessions (
+    id           VARCHAR(255) PRIMARY KEY,
+    kind         VARCHAR(32) NOT NULL,
+    user_id      VARCHAR(255),
+    payload_json TEXT NOT NULL,              -- '{}' or keystore-encrypted signup draft (base64), AAD: 'webauthn_payload:' || id
+    session_data BLOB NOT NULL,              -- keystore-encrypted ceremony state, AAD: 'webauthn_session:' || id
+    expires_at   DATETIME(3) NOT NULL,
+    created_at   DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    CHECK (kind IN ('signup', 'login', 'register', 'reauth', 'reauth_proof'))
+) COLLATE=utf8mb4_bin;
+CREATE INDEX idx_webauthn_sessions_expires_at ON webauthn_sessions(expires_at);
+
+-- Ceremony begins delete prior rows per user and kind on every Begin*;
+-- without this index each begin full-scans the not-yet-swept rows.
+CREATE INDEX idx_webauthn_sessions_user_kind ON webauthn_sessions(user_id, kind);
+
 -- Instance-level hub settings: one row per setting key. `value` is a JSON
 -- document whose shape is defined by the owning package's typed key handle
 -- (internal/hub/settings); secret-bearing keys keep the secret half in the
@@ -596,6 +642,8 @@ DROP TABLE IF EXISTS revocation_events;
 DROP TABLE IF EXISTS revocation_event_sequence;
 DROP TABLE IF EXISTS pending_oauth_signups;
 DROP TABLE IF EXISTS altcha_used_salts;
+DROP TABLE IF EXISTS webauthn_sessions;
+DROP TABLE IF EXISTS passkey_credentials;
 DROP TABLE IF EXISTS hub_settings;
 DROP TABLE IF EXISTS oauth_states;
 DROP TABLE IF EXISTS oauth_tokens;

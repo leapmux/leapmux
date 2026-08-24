@@ -1,6 +1,7 @@
+import type { CaptchaFieldProps } from './CaptchaField'
+
 /// <reference types="vitest/globals" />
 import { render } from '@solidjs/testing-library'
-
 import { createSignal } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { CaptchaProvider } from '~/generated/leapmux/v1/auth_pb'
@@ -70,5 +71,19 @@ describe('captchaField dispatcher', () => {
     setProvider(99 as CaptchaProvider)
     renderDispatcher()
     expect(altchaMounted).toHaveBeenCalledTimes(1)
+  })
+
+  it('re-mounts the provider field when the form action changes', () => {
+    setProvider(CaptchaProvider.TURNSTILE)
+    const [action, setAction] = createSignal<CaptchaFieldProps['action']>('login')
+    render(() => (
+      <CaptchaField action={action()} onPayload={vi.fn()} onUnavailable={vi.fn()} ref={vi.fn()} />
+    ))
+    expect(turnstileMounted).toHaveBeenCalledTimes(1)
+    expect(turnstileMounted.mock.calls[0]?.[0]?.action).toBe('login')
+
+    setAction('passkey_login')
+    expect(turnstileMounted).toHaveBeenCalledTimes(2)
+    expect(turnstileMounted.mock.calls[1]?.[0]?.action).toBe('passkey_login')
   })
 })

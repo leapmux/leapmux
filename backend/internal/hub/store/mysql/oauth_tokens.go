@@ -2,6 +2,7 @@ package mysql
 
 import (
 	"context"
+	"time"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
@@ -62,8 +63,8 @@ func (s *oauthTokenStore) Get(ctx context.Context, p store.GetOAuthTokensParams)
 	return &out, nil
 }
 
-func (s *oauthTokenStore) ListExpiring(ctx context.Context) ([]store.OAuthToken, error) {
-	rows, err := s.conn.q.ListExpiringOAuthTokens(ctx)
+func (s *oauthTokenStore) ListExpiring(ctx context.Context, refreshDueAt time.Time) ([]store.OAuthToken, error) {
+	rows, err := s.conn.q.ListExpiringOAuthTokens(ctx, sqltime.NewMySQLTime(refreshDueAt))
 	if err != nil {
 		return nil, mapErr(err)
 	}

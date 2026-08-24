@@ -120,20 +120,18 @@ func TestValidateSMTPStagingRules(t *testing.T) {
 	assert.True(t, both.Enabled())
 }
 
-// TestSMTPConfiguredCrossRuleNeedsBothFields pins that the cross-key rule
-// got STRICTER, not weaker: email verification against a relay with no
-// from address can never send, so the combination stays refused.
-func TestSMTPConfiguredCrossRuleNeedsBothFields(t *testing.T) {
+// TestEmailVerificationEffectiveFollowsSMTP pins that verification gating
+// tracks SMTP.Enabled() only.
+func TestEmailVerificationEffectiveFollowsSMTP(t *testing.T) {
 	m, _, _ := newTestManagerWithStore(t)
 	ctx := context.Background()
 
+	assert.False(t, EmailVerificationEffective(m.Snapshot(ctx)))
+
 	require.NoError(t, m.Update(ctx, KeySMTP, json.RawMessage(`{"host":"smtp.example.com"}`)))
-	err := m.Update(ctx, KeyEmailVerificationRequired, json.RawMessage(`true`))
-	require.ErrorContains(t, err, "needs the smtp host and from address",
-		"a host without a from address cannot carry verification email")
+	assert.False(t, EmailVerificationEffective(m.Snapshot(ctx)), "host alone is not enough")
 
 	require.NoError(t, m.Update(ctx, KeySMTP, json.RawMessage(`{"from_address":"hub@example.com"}`)))
-	require.NoError(t, m.Update(ctx, KeyEmailVerificationRequired, json.RawMessage(`true`)))
 	assert.True(t, EmailVerificationEffective(m.Snapshot(ctx)))
 }
 

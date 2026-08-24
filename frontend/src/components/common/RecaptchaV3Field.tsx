@@ -1,7 +1,7 @@
 import type { Component } from 'solid-js'
 import type { CaptchaFieldHandle } from './CaptchaField'
 
-import { onMount } from 'solid-js'
+import { createEffect, onMount } from 'solid-js'
 import { loadExternalScript } from '~/lib/scriptLoader'
 import { getCaptchaSiteKey } from '~/lib/systemInfo'
 import { createCaptchaFieldBase, noteFieldArmFailure } from './captchaFieldBase'
@@ -98,6 +98,13 @@ export const RecaptchaV3Field: Component<RecaptchaV3FieldProps> = (props) => {
   // execute() are tracked.
   // eslint-disable-next-line solid/reactivity
   base.onSiteKeyChange(() => void execute())
+
+  createEffect((prev?: string) => {
+    const action = props.action
+    if (prev !== undefined && prev !== action)
+      void execute()
+    return action
+  })
 
   onMount(() => {
     void execute()

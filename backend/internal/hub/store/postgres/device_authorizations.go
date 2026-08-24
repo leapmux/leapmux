@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/leapmux/leapmux/internal/hub/store"
@@ -85,6 +86,7 @@ func (s *deviceAuthorizationStore) Approve(ctx context.Context, p store.ApproveD
 	return s.conn.q.ApproveDeviceAuthorization(ctx, gendb.ApproveDeviceAuthorizationParams{
 		UserID:     userIDText(p.UserID),
 		DeviceCode: p.DeviceCode,
+		Now:        pgtime.New(p.Now),
 	})
 }
 
@@ -101,6 +103,7 @@ func (s *deviceAuthorizationStore) ApproveByUserCode(ctx context.Context, p stor
 	return s.conn.q.ApproveDeviceAuthorizationByUserCode(ctx, gendb.ApproveDeviceAuthorizationByUserCodeParams{
 		UserID:   userIDText(p.UserID),
 		UserCode: p.UserCode,
+		Now:      pgtime.New(p.Now),
 	})
 }
 
@@ -108,8 +111,11 @@ func (s *deviceAuthorizationStore) Deny(ctx context.Context, deviceCode string) 
 	return s.conn.q.DenyDeviceAuthorization(ctx, deviceCode)
 }
 
-func (s *deviceAuthorizationStore) Consume(ctx context.Context, deviceCode string) (int64, error) {
-	return s.conn.q.ConsumeDeviceAuthorization(ctx, deviceCode)
+func (s *deviceAuthorizationStore) Consume(ctx context.Context, deviceCode string, now time.Time) (int64, error) {
+	return s.conn.q.ConsumeDeviceAuthorization(ctx, gendb.ConsumeDeviceAuthorizationParams{
+		DeviceCode: deviceCode,
+		Now:        pgtime.New(now),
+	})
 }
 
 func (s *deviceAuthorizationStore) TouchPoll(ctx context.Context, deviceCode string) error {

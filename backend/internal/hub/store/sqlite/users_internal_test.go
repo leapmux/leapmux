@@ -78,7 +78,7 @@ func TestClearStalePendingEmailsSweepsLockoutRowSameDay(t *testing.T) {
 	// Exceed the attempt budget so the lockout branch rewrites
 	// pending_email_expires_at to strftime('now').
 	for range 6 {
-		_, err := st.Users().ConsumeVerificationAttempt(ctx, user.ID)
+		_, err := st.Users().ConsumeVerificationAttempt(ctx, user.ID, time.Now().UTC(), 5)
 		require.NoError(t, err)
 	}
 

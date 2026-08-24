@@ -23,6 +23,7 @@ interface SystemInfoSnapshot {
   setupRequired: boolean
   workerHubUrl: string
   emailEnabled: boolean
+  passkeyEnabled: boolean
   captchaEnabled: boolean
   captchaProvider: GenCaptchaProvider
   captchaSiteKey: string
@@ -39,6 +40,7 @@ const DEFAULTS: SystemInfoSnapshot = {
   setupRequired: false,
   workerHubUrl: '',
   emailEnabled: false,
+  passkeyEnabled: false,
   captchaEnabled: false,
   captchaProvider: GenCaptchaProvider.ALTCHA,
   captchaSiteKey: '',
@@ -85,6 +87,7 @@ export async function loadSystemInfo(force = false): Promise<void> {
     setupRequired: resp.setupRequired,
     workerHubUrl: resp.workerHubUrl,
     emailEnabled: resp.emailEnabled,
+    passkeyEnabled: resp.passkeyEnabled,
     captchaEnabled: resp.captchaEnabled,
     captchaProvider: parseCaptchaProvider(resp.captchaProvider ?? GenCaptchaProvider.UNSPECIFIED),
     captchaSiteKey: resp.captchaSiteKey,
@@ -144,6 +147,15 @@ export function isSetupRequired(): boolean {
 // can't possibly work would mislead users.
 export function isEmailEnabled(): boolean {
   return current().emailEnabled
+}
+
+// isPasskeyEnabled returns whether passkey ceremonies can run on this hub
+// (a keystore is configured and the hub has a usable browser origin).
+// Sign-in and sign-up gate the passkey option on this flag: every Begin
+// would answer FailedPrecondition without it, so showing the option would
+// mislead users the same way an email affordance without SMTP does.
+export function isPasskeyEnabled(): boolean {
+  return current().passkeyEnabled
 }
 
 // isSystemInfoLoaded reports whether a system-info answer has arrived.

@@ -38,6 +38,7 @@ export const SetupPage: Component = () => {
             submittingLabel="Creating account..."
             errorPrefix="Setup failed"
             allowAdminUsername
+            passwordOnly
             header={<p>Create the first administrator account to get started.</p>}
             onSuccess={(resp) => {
               // Fire-and-forget refresh of `setupRequired`: the account now
@@ -45,7 +46,7 @@ export const SetupPage: Component = () => {
               // redirects once it re-reads. Nothing on this path may block or
               // fail on it, hence the swallowed rejection.
               void loadSystemInfo(true).catch(() => {})
-              auth.setAuth(resp.user!)
+              auth.setAuth(resp.user)
               navigate('/', { replace: true })
             }}
           />

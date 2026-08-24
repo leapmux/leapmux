@@ -130,7 +130,10 @@ func (s *SMTPSender) Send(ctx context.Context, msg Message) error {
 
 	dial := cfg.Dialer
 	if dial == nil {
-		dial = (&net.Dialer{}).DialContext
+		// Bound the connect phase: callers send mail inline on interactive
+		// RPC paths (login, signup), and the OS default TCP timeout is far
+		// longer than any user waits.
+		dial = (&net.Dialer{Timeout: 10 * time.Second}).DialContext
 	}
 	addr := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
 

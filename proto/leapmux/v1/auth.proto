@@ -1,6 +1,8 @@
 syntax = "proto3";
 package leapmux.v1;
 
+import "google/protobuf/timestamp.proto";
+
 // AuthService handles user authentication.
 // Called by Frontend on Hub via ConnectRPC.
 service AuthService {
@@ -28,6 +30,15 @@ service AuthService {
   // altcha provider. Empty when the selected provider is external
   // (recaptcha_v3 / turnstile) or captcha is disabled.
   rpc GetAltchaChallenge(GetAltchaChallengeRequest) returns (GetAltchaChallengeResponse);
+  // Begin/finish passkey login.
+  rpc BeginPasskeyLogin(BeginPasskeyLoginRequest) returns (BeginPasskeyLoginResponse);
+  rpc FinishPasskeyLogin(FinishPasskeyLoginRequest) returns (FinishPasskeyLoginResponse);
+  // Begin/finish passkey signup (passkey-only, no password).
+  rpc BeginPasskeySignUp(BeginPasskeySignUpRequest) returns (BeginPasskeySignUpResponse);
+  rpc FinishPasskeySignUp(FinishPasskeySignUpRequest) returns (FinishPasskeySignUpResponse);
+  // Self-service password reset (break-glass; clears passkeys).
+  rpc RequestPasswordReset(RequestPasswordResetRequest) returns (RequestPasswordResetResponse);
+  rpc CompletePasswordReset(CompletePasswordResetRequest) returns (CompletePasswordResetResponse);
 }
 
 message LoginRequest {
@@ -42,9 +53,29 @@ message LoginRequest {
   string honeypot = 4;
 }
 
+// Email-verification outcome shared by every login and sign-up response.
+// One message, one contract: a fourth field or a sixth flow touches this
+// message alone instead of five response shapes.
+message EmailVerificationStatus {
+  // True when the hub requires this account to verify an email address
+  // before it is fully active.
+  bool verification_required = 1;
+  // True when the verification email was dispatched. Sign-up is
+  // fail-closed: when verification is required and mail cannot be sent,
+  // the RPC fails and no account remains. On resend paths, false means
+  // the send failed and the frontend should surface a "couldn't send,
+  // try again" message; the pending row was cleared, so an immediate
+  // retry is allowed.
+  bool verification_email_sent = 2;
+  // Earliest time the client may request another verification email. Set
+  // only after a successful send.
+  google.protobuf.Timestamp next_resend_available_at = 3;
+}
+
 message LoginResponse {
   reserved 1; // was: token (now delivered via Set-Cookie)
   User user = 2;
+  EmailVerificationStatus email_verification = 3;
 }
 
 message LogoutRequest {}
@@ -71,12 +102,7 @@ message SignUpRequest {
 message SignUpResponse {
   reserved 1; // was: token (now delivered via Set-Cookie)
   User user = 2;
-  bool verification_required = 3;
-  // True iff the verification email was successfully dispatched. False
-  // means the user account exists but no email was sent (transient mail
-  // outage); the frontend should surface a "Resend" prompt. This flag is
-  // only meaningful when verification_required is true.
-  bool verification_email_sent = 4;
+  EmailVerificationStatus email_verification = 3;
 }
 
 message User {
@@ -89,6 +115,7 @@ message User {
   string pending_email = 7;
   repeated LinkedOAuthProvider oauth_providers = 8;
   bool password_set = 9;
+  int32 passkey_count = 10;
 }
 
 message LinkedOAuthProvider {
@@ -151,6 +178,12 @@ message GetSystemInfoResponse {
   // empty for altcha. The frontend pairs it with captcha_provider to load
   // the right widget.
   string captcha_site_key = 15;
+  // True when passkey ceremonies can run on this hub: a keystore is
+  // configured and the hub has a usable browser origin (public_url or a
+  // TCP listener). Frontend gating: when false, the passkey sign-in and
+  // sign-up options are hidden — every Begin would answer
+  // FailedPrecondition, so showing them would mislead users.
+  bool passkey_enabled = 16;
 }
 
 message GetOAuthProvidersRequest {}
@@ -201,14 +234,75 @@ message GetAltchaChallengeResponse {
 
 message CompleteOAuthSignupResponse {
   User user = 1;
-  // True when an OAuth provider returned an unverified email and the
-  // account requires email verification. The frontend shows the
-  // verify-email screen only when this flag is set, exactly as it does
-  // for SignUp.
-  bool verification_required = 2;
-  // True iff the verification email was successfully dispatched. False
-  // means the user account exists but no email was sent (transient mail
-  // outage); the frontend should surface a "Resend" prompt. This flag
-  // is only meaningful when verification_required is true.
-  bool verification_email_sent = 3;
+  EmailVerificationStatus email_verification = 2;
 }
+
+message BeginPasskeyLoginRequest {
+  string username = 1;
+  string captcha_payload = 2;
+  string honeypot = 3;
+}
+
+message BeginPasskeyLoginResponse {
+  string session_id = 1;
+  string options_json = 2;
+  // Relying party ID for this ceremony's origin; echo it in Signal API calls.
+  string rp_id = 3;
+}
+
+message FinishPasskeyLoginRequest {
+  string session_id = 1;
+  string credential_json = 2;
+}
+
+message FinishPasskeyLoginResponse {
+  User user = 1;
+  EmailVerificationStatus email_verification = 2;
+}
+
+message BeginPasskeySignUpRequest {
+  string username = 1;
+  string display_name = 2;
+  string email = 3;
+  string captcha_payload = 4;
+  string honeypot = 5;
+}
+
+message BeginPasskeySignUpResponse {
+  string session_id = 1;
+  string options_json = 2;
+  // Relying party ID for this ceremony's origin; echo it in Signal API calls.
+  string rp_id = 3;
+}
+
+message FinishPasskeySignUpRequest {
+  string session_id = 1;
+  string credential_json = 2;
+}
+
+message FinishPasskeySignUpResponse {
+  User user = 1;
+  EmailVerificationStatus email_verification = 2;
+}
+
+message RequestPasswordResetRequest {
+  string identifier = 1; // email or username
+  string captcha_payload = 2;
+  string honeypot = 3;
+}
+
+message RequestPasswordResetResponse {}
+
+message CompletePasswordResetRequest {
+  string token = 1;
+  string new_password = 2;
+  // Provider token; see LoginRequest.captcha_payload.
+  string captcha_payload = 3;
+  // Hidden anti-bot field value; see LoginRequest.honeypot.
+  string honeypot = 4;
+}
+
+// Empty on purpose: the caller is an anonymous bearer of the reset token,
+// and the flow ends at the login screen. Returning no account data keeps the
+// response free of information the token does not already carry.
+message CompletePasswordResetResponse {}

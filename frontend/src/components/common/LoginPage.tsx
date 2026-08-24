@@ -1,3 +1,4 @@
+import type { Timestamp } from '@bufbuild/protobuf/wkt'
 import type { Component } from 'solid-js'
 
 import type { OAuthProviderInfo } from '~/generated/leapmux/v1/auth_pb'
@@ -5,12 +6,16 @@ import { A, useNavigate, useSearchParams } from '@solidjs/router'
 import { createEffect, createSignal, Show } from 'solid-js'
 import { CaptchaSection } from '~/components/common/CaptchaSection'
 import { OAuthProviderList } from '~/components/common/OAuthProviderList'
+import { PillGroup } from '~/components/common/PillGroup'
 import { Spinner } from '~/components/common/Spinner'
 import { useAuth } from '~/context/AuthContext'
 import { createCaptchaForm } from '~/lib/captchaForm'
-import { isSetupRequired, isSignupEnabled, isSoloMode, loadOAuthProviders } from '~/lib/systemInfo'
+import { safeRedirect } from '~/lib/safeRedirect'
+import { isEmailEnabled, isPasskeyEnabled, isSetupRequired, isSignupEnabled, isSoloMode, loadOAuthProviders } from '~/lib/systemInfo'
 import { errorText, pageCard } from '~/styles/shared.css'
 import * as styles from './LoginPage.css'
+
+type LoginMethod = 'password' | 'passkey'
 
 export const LoginPage: Component = () => {
   const auth = useAuth()
@@ -18,6 +23,7 @@ export const LoginPage: Component = () => {
   const [searchParams] = useSearchParams()
   const [username, setUsername] = createSignal('')
   const [password, setPassword] = createSignal('')
+  const [loginMethod, setLoginMethod] = createSignal<LoginMethod>('password')
   const [submitting, setSubmitting] = createSignal(false)
   const [oauthProviders, setOAuthProviders] = createSignal<OAuthProviderInfo[]>([])
   const captcha = createCaptchaForm()
@@ -79,26 +85,42 @@ export const LoginPage: Component = () => {
     void loadOAuthProviders().then(setOAuthProviders)
   })
 
+  const navigateAfterAuth = (verificationRequired: boolean, nextResendAvailableAt?: Timestamp) => {
+    if (verificationRequired) {
+      auth.setVerificationResendAvailableAt(nextResendAvailableAt)
+      navigate('/verify-email', { replace: true })
+      return
+    }
+    const redirect = safeRedirect(typeof searchParams.redirect === 'string' ? searchParams.redirect : undefined)
+    navigate(redirect ?? '/', { replace: true })
+  }
+
+  // The passkey pill renders only when the hub can run ceremonies; a stale
+  // passkey selection falls back to the password arm.
+  const effectiveMethod = (): LoginMethod => {
+    return loginMethod() === 'passkey' && isPasskeyEnabled() ? 'passkey' : 'password'
+  }
+
   const handleSubmit = async (e: Event) => {
     e.preventDefault()
     setSubmitting(true)
     try {
-      await auth.login(username(), password(), captcha.fields())
-      const user = auth.user()
-      if (user) {
-        const redirect = typeof searchParams.redirect === 'string' ? searchParams.redirect : undefined
-        if (redirect && redirect.startsWith('/') && !redirect.startsWith('//')) {
-          navigate(redirect, { replace: true })
-        }
-        else {
-          navigate('/', { replace: true })
-        }
-      }
+      const result = effectiveMethod() === 'passkey'
+        ? await auth.loginWithPasskey(username(), captcha.fields())
+        : await auth.login(username(), password(), captcha.fields())
+      if (auth.user())
+        navigateAfterAuth(result.verificationRequired, result.nextResendAvailableAt)
+      // A success without a user leaves nowhere to navigate; the finally
+      // below re-enables the form instead of leaving a spinner with no
+      // error and no way to resubmit.
     }
     catch (err) {
       // Error is captured by auth context. A rejected captcha (expired
-      // solve, replay) must not linger: force a fresh challenge.
+      // solve, replay) must not linger: force a fresh challenge. Pass
+      // the error so PermissionDenied refreshes captcha system-info.
       captcha.reset(err)
+    }
+    finally {
       setSubmitting(false)
     }
   }
@@ -110,6 +132,16 @@ export const LoginPage: Component = () => {
       return `${url}?redirect=${encodeURIComponent(redirect)}`
     }
     return url
+  }
+
+  const captchaAction = () => effectiveMethod() === 'passkey' ? 'passkey_login' as const : 'login' as const
+
+  const canSubmit = () => {
+    if (!username() || captcha.blocksSubmit())
+      return false
+    if (effectiveMethod() === 'passkey')
+      return true
+    return !!password()
   }
 
   return (
@@ -135,27 +167,45 @@ export const LoginPage: Component = () => {
               autocomplete="username"
             />
           </label>
-          <label>
-            Password
-            <input
-              ref={passwordRef}
-              type="password"
-              value={password()}
-              onInput={e => setPassword(e.currentTarget.value)}
-              autocomplete="current-password"
-            />
-          </label>
-          <CaptchaSection action="login" captcha={captcha} />
+          <PillGroup
+            label="Sign-in method"
+            options={[
+              { value: 'password' as const, label: 'Password' },
+              ...(isPasskeyEnabled() ? [{ value: 'passkey' as const, label: 'Passkey' }] : []),
+            ]}
+            selected={v => effectiveMethod() === v}
+            onSelect={setLoginMethod}
+          />
+          <Show when={effectiveMethod() === 'password'}>
+            <label>
+              Password
+              <input
+                ref={passwordRef}
+                type="password"
+                value={password()}
+                onInput={e => setPassword(e.currentTarget.value)}
+                autocomplete="current-password"
+              />
+            </label>
+          </Show>
+          <CaptchaSection action={captchaAction()} captcha={captcha} />
           <Show when={auth.error()}>
             <div class={errorText}>{auth.error()}</div>
           </Show>
           <button
             type="submit"
-            disabled={submitting() || !username() || !password() || captcha.blocksSubmit()}
+            disabled={submitting() || !canSubmit()}
           >
             <Show when={submitting()}><Spinner /></Show>
-            {submitting() ? 'Signing in...' : 'Sign in'}
+            {submitting()
+              ? 'Signing in...'
+              : effectiveMethod() === 'passkey' ? 'Sign in with passkey' : 'Sign in'}
           </button>
+          <Show when={isEmailEnabled() && loginMethod() === 'password'}>
+            <div>
+              <A href="/forgot-password">Forgot password?</A>
+            </div>
+          </Show>
         </form>
         <Show when={isSignupEnabled()}>
           <div class={styles.authFooter}>

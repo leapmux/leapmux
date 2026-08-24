@@ -19,7 +19,7 @@ A Worker (`leapmux worker`) dials *out* to the Hub and holds a single bidirectio
 The Worker process prints an error and exits. The error says that the Worker is unregistered, and it tells you to pass a registration key from the hub UI.
 
 **Cause**
-The Worker has no saved credentials (no `state.json` in its data dir) and you started it without a `--registration-key`. Bare Workers cannot self-register — registration is single-shot and gated entirely by possessing a valid key.
+The Worker has no saved credentials (no `state.json` in its data dir) and you started it without a `--registration-key`. Bare Workers cannot self-register — registration is single-shot and controlled entirely by possessing a valid key.
 
 **Fix**
 Mint a key in the Hub UI: open the sidebar **Workers** section, click the **+** (Register worker) button, and copy the generated command. It already includes the right Hub URL and key:
@@ -240,7 +240,24 @@ Sign-in is refused, and the form says only that the credentials are invalid.
 For security, the Hub returns the identical error for both an unknown username and a wrong password — there's no way to tell which from the message. Usernames are lowercase slugs; passwords are 8-128 printable ASCII characters, and a password may hold spaces.
 
 **Fix**
-Double-check the exact username (lowercase, hyphens, no spaces). If you've lost the password, have an admin reset it with `leapmux control admin user reset-password` (see [User passwords](/docs/operating/control-cli/#user-passwords)), which runs over RPC against the live Hub. When the Hub is stopped, `leapmux recover password reset` does the same work offline (see [Recovery](/docs/operating/recover/)); that command opens the Hub's database directly, so run it on the Hub host with the Hub stopped. Either way, every session and token the account holds is revoked. Note: solo mode has no login at all — if you expected a login page in solo mode, you won't get one; it auto-authenticates.
+Double-check the exact username (lowercase, hyphens, no spaces). If you've lost the password, have an admin reset it with `leapmux control admin user reset-password` (see [User passwords](/docs/operating/control-cli/#user-passwords)), which runs over RPC against the live Hub. When the Hub is stopped, `leapmux recover password reset` does the same work offline (see [Recovery](/docs/operating/recover/)); that command opens the Hub's database directly, so run it on the Hub host with the Hub stopped. Either way, every session, token, **and passkey** the account holds is revoked. Note: solo mode has no login at all — if you expected a login page in solo mode, you won't get one; it auto-authenticates.
+
+### Passkey sign-in fails or the authenticator never appears
+
+**Symptom**
+Choosing **Passkey** on the login or signup form does nothing useful, the browser shows a WebAuthn error, or the Hub refuses the ceremony.
+
+**Cause and fix**
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Browser never opens a passkey prompt | The page origin does not match the Hub's relying-party ID | Set `public_url` to the exact origin users open in the browser (`leapmux control admin settings set public_url https://hub.example.com`). Localhost and `127.0.0.1` are different RPIDs. |
+| "origin header is required" / ceremony fails immediately | The browser request omitted `Origin` | Use a normal browser navigation to the Hub UI; do not strip `Origin` in a reverse proxy for `/leapmux.v1.*` RPCs. |
+| Passkey-only account cannot add another passkey | Step-up reauth proof was already consumed | Complete passkey reauth again, then finish registration in the same flow. Do not reuse an old proof. |
+| Passkey login works but app access is blocked | SMTP is configured and the email is still unverified | Complete `/verify-email` (or use **Resend code**). Passkey login does not skip email verification. |
+| After password reset, passkey login fails | Expected: reset clears all passkeys | Sign in with the new password, then add passkeys again under **Profile → Passkeys**. |
+
+Self-service password reset (`/forgot-password`) also clears every passkey on the account when the reset completes — the same break-glass rule as admin and offline password reset.
 
 ### Almost every action is refused until you verify your email
 
@@ -248,10 +265,10 @@ Double-check the exact username (lowercase, hyphens, no spaces). If you've lost 
 After signing up you're stuck — almost every action is refused because your email is unverified, and you land on the **"Verify your email"** page.
 
 **Cause**
-The Hub runs with `email_verification_required` enabled, so non-admin users with an unverified email may only verify, log out, or change their email until they verify. Verification uses a 6-character code (display form `XXX-XXX`) that expires in 30 minutes with a 5-attempt budget.
+The hub has SMTP configured, so non-admin users with an unverified email may only verify, log out, or change their email until they verify. Verification uses a 6-character code (display form `XXX-XXX`) that expires in 30 minutes with a 5-attempt budget.
 
 **Fix**
-Enter the code from the verification email, or click the link in it. If you didn't receive it, use **Resend code** (60-second cooldown between resends). Email features require SMTP to be configured on the Hub — if the operator hasn't configured SMTP (`leapmux control admin settings set smtp …`), verification emails can't be sent at all (and enabling `email_verification_required` without SMTP is refused at write time). See [Configuration](/docs/operating/configuration/).
+Enter the code from the verification email, or click the link in it. If you didn't receive it, use **Resend code** (60-second cooldown between resends). Email features require SMTP to be configured on the Hub — if the operator hasn't configured SMTP (`leapmux control admin settings set smtp …`), verification is off and this requirement does not apply. See [Configuration](/docs/operating/configuration/).
 
 ### OAuth sign-in fails or the provider isn't shown
 

@@ -70,6 +70,20 @@ export const AltchaField: Component<AltchaFieldProps> = (props) => {
     }
   }
 
+  function resetWidget() {
+    // reset() is not always a function: the element can still be mounting,
+    // or a keyed remount (Password/Passkey action switch) can tear it
+    // down while this handle still runs. A throw here used to skip arm()
+    // and leave the checkbox dead.
+    try {
+      if (typeof widget?.reset === 'function')
+        widget.reset()
+    }
+    catch {
+      // Ignore teardown and pre-configure failures.
+    }
+  }
+
   function handleStateChange(ev: Event) {
     const detail = (ev as CustomEvent<{ state: string, payload?: string }>).detail
     if (detail.state === 'verified' && detail.payload) {
@@ -80,7 +94,7 @@ export const AltchaField: Component<AltchaFieldProps> = (props) => {
       // An expired challenge (idle on the form too long) or a solve error
       // needs a fresh challenge before the user can try again.
       if (detail.state === 'expired' || detail.state === 'error') {
-        widget?.reset()
+        resetWidget()
         void arm()
       }
     }
@@ -94,8 +108,9 @@ export const AltchaField: Component<AltchaFieldProps> = (props) => {
         armEpoch++
         props.onPayload(null)
         base.setReady(false)
-        widget?.reset()
-        void arm()
+        resetWidget()
+        if (!base.disposed())
+          void arm()
       },
     })
   })

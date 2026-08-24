@@ -56,8 +56,11 @@ func (s *sessionStore) Create(ctx context.Context, p store.CreateSessionParams) 
 	})
 }
 
-func (s *sessionStore) GetByID(ctx context.Context, id string) (*store.UserSession, error) {
-	sess, err := s.conn.q.GetUserSessionByID(ctx, id)
+func (s *sessionStore) GetByID(ctx context.Context, id string, now time.Time) (*store.UserSession, error) {
+	sess, err := s.conn.q.GetUserSessionByID(ctx, gendb.GetUserSessionByIDParams{
+		ID:  id,
+		Now: sqltime.NewMySQLTime(now),
+	})
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -68,6 +71,7 @@ func (s *sessionStore) GetByID(ctx context.Context, id string) (*store.UserSessi
 func (s *sessionStore) Touch(ctx context.Context, p store.TouchSessionParams) (int64, error) {
 	n, err := s.conn.q.TouchUserSession(ctx, gendb.TouchUserSessionParams{
 		ExpiresAt:    sqltime.NewMySQLTime(p.ExpiresAt),
+		Now:          sqltime.NewMySQLTime(p.Now),
 		ID:           p.ID,
 		LastActiveAt: sqltime.NewMySQLTime(p.LastActiveAt),
 	})
@@ -151,7 +155,7 @@ func (s *sessionStore) ListByUserID(ctx context.Context, p store.ListUserSession
 	}
 	return queryPage(ctx, p.Limit,
 		func() (gendb.ListUserSessionsByUserIDParams, error) {
-			return listUserSessionsParams(owner, p.Cursor, p.Limit)
+			return listUserSessionsParams(owner, p.Cursor, p.Limit, p.Now)
 		},
 		s.conn.q.ListUserSessionsByUserID, fromDBSession)
 }
@@ -159,13 +163,16 @@ func (s *sessionStore) ListByUserID(ctx context.Context, p store.ListUserSession
 func (s *sessionStore) ListAllActive(ctx context.Context, p store.ListAllActiveSessionsParams) (store.Page[store.ActiveSession], error) {
 	return queryPage(ctx, p.Limit,
 		func() (gendb.ListAllActiveSessionsParams, error) {
-			return listAllActiveSessionsParams(p.Cursor, p.Limit)
+			return listAllActiveSessionsParams(p.Cursor, p.Limit, p.Now)
 		},
 		s.conn.q.ListAllActiveSessions, fromDBActiveSessionRow)
 }
 
-func (s *sessionStore) ValidateWithUser(ctx context.Context, id string) (*store.SessionWithUser, error) {
-	row, err := s.conn.q.ValidateSessionWithUser(ctx, id)
+func (s *sessionStore) ValidateWithUser(ctx context.Context, id string, now time.Time) (*store.SessionWithUser, error) {
+	row, err := s.conn.q.ValidateSessionWithUser(ctx, gendb.ValidateSessionWithUserParams{
+		ID:  id,
+		Now: sqltime.NewMySQLTime(now),
+	})
 	if err != nil {
 		return nil, mapErr(err)
 	}

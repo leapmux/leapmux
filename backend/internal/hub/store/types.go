@@ -56,24 +56,27 @@ func SearchLikePattern(query *string) *string {
 
 // User represents a user account.
 type User struct {
-	ID                    string
-	Username              string
-	PasswordHash          string
-	DisplayName           string
-	Email                 string
-	EmailVerified         bool
-	PendingEmail          string
-	PendingEmailToken     string
-	PendingEmailExpiresAt *time.Time
-	PendingEmailAttempts  int64
-	PasswordSet           bool
-	IsAdmin               bool
-	Prefs                 string
-	CreatedAt             time.Time
-	UpdatedAt             time.Time
-	TokensRevokedAt       *time.Time
-	AuthGeneration        int64
-	DeletedAt             *time.Time
+	ID                            string
+	Username                      string
+	PasswordHash                  string
+	DisplayName                   string
+	Email                         string
+	EmailVerified                 bool
+	PendingEmail                  string
+	PendingEmailToken             string
+	PendingEmailExpiresAt         *time.Time
+	PendingEmailAttempts          int64
+	PendingPasswordResetToken     string
+	PendingPasswordResetExpiresAt *time.Time
+	PendingPasswordResetAttempts  int64
+	PasswordSet                   bool
+	IsAdmin                       bool
+	Prefs                         string
+	CreatedAt                     time.Time
+	UpdatedAt                     time.Time
+	TokensRevokedAt               *time.Time
+	AuthGeneration                int64
+	DeletedAt                     *time.Time
 }
 
 // PageCursor returns the keyset position for user listings (ListAll/Search),
@@ -355,6 +358,36 @@ type OAuthState struct {
 	CreatedAt    time.Time
 }
 
+// PasskeyCredential stores one WebAuthn credential for a user. PublicKey is
+// keystore-encrypted at the service layer before persistence.
+type PasskeyCredential struct {
+	ID             string
+	UserID         string
+	CredentialID   []byte
+	PublicKey      []byte
+	SignCount      int64
+	AAGUID         []byte
+	BackupEligible bool
+	BackupState    bool
+	Transports     string
+	FriendlyName   string
+	KeyVersion     int64
+	CreatedAt      time.Time
+	LastUsedAt     *time.Time
+}
+
+// WebAuthnSession holds ephemeral ceremony state. SessionData is
+// keystore-encrypted at the service layer before persistence.
+type WebAuthnSession struct {
+	ID          string
+	Kind        string
+	UserID      string
+	PayloadJSON string
+	SessionData []byte
+	ExpiresAt   time.Time
+	CreatedAt   time.Time
+}
+
 // OAuthToken stores encrypted OAuth tokens for a user+provider pair.
 type OAuthToken struct {
 	UserID       string
@@ -538,6 +571,9 @@ type TouchSessionParams struct {
 	ID           string
 	ExpiresAt    time.Time
 	LastActiveAt time.Time
+	// Now is the hub clock that judges the previous expiry. Expiries are
+	// written by the hub process, so liveness stays on one clock.
+	Now time.Time
 }
 
 type DeleteOtherSessionsParams struct {
@@ -552,6 +588,8 @@ type RefreshSessionAuthGenerationParams struct {
 
 type ListAllActiveSessionsParams struct {
 	PageParams // Keyset on (last_active_at DESC, id DESC).
+	// Now is the hub clock that judges session liveness.
+	Now time.Time
 }
 
 // ListUserSessionsParams pages a per-user session listing (ListByUserID),
@@ -559,6 +597,8 @@ type ListAllActiveSessionsParams struct {
 type ListUserSessionsParams struct {
 	UserID     userid.UserID
 	PageParams // Keyset on (last_active_at DESC, id DESC).
+	// Now is the hub clock that judges session liveness.
+	Now time.Time
 }
 
 type CreateWorkerParams struct {
@@ -992,6 +1032,72 @@ type DeleteOAuthUserLinkParams struct {
 	ProviderID string
 }
 
+type CreatePasskeyCredentialParams struct {
+	ID             string
+	UserID         string
+	CredentialID   []byte
+	PublicKey      []byte
+	SignCount      int64
+	AAGUID         []byte
+	BackupEligible bool
+	BackupState    bool
+	Transports     string
+	FriendlyName   string
+	KeyVersion     int64
+	CreatedAt      time.Time
+	LastUsedAt     *time.Time
+}
+
+type UpdatePasskeySignCountParams struct {
+	CredentialID []byte
+	UserID       string
+	SignCount    int64
+	LastUsedAt   time.Time
+}
+
+type UpdatePasskeyPublicKeyParams struct {
+	ID         string
+	UserID     string
+	PublicKey  []byte
+	KeyVersion int64
+}
+
+type CreateWebAuthnSessionParams struct {
+	ID          string
+	Kind        string
+	UserID      string
+	PayloadJSON string
+	SessionData []byte
+	ExpiresAt   time.Time
+	CreatedAt   time.Time
+}
+
+type SetPendingPasswordResetParams struct {
+	ID                            string
+	PendingPasswordResetToken     string
+	PendingPasswordResetExpiresAt time.Time
+	// CooldownCutoff gates the conditional mint: the write lands only when
+	// no previous token exists or the previous token's expiry is at or
+	// before this cutoff, so two concurrent first requests cannot both
+	// mint and both send. The caller derives the cutoff from the resend
+	// cooldown.
+	CooldownCutoff time.Time
+}
+
+type CompletePasswordResetParams struct {
+	ID                        string
+	PasswordHash              string
+	PendingPasswordResetToken string
+}
+
+// PasswordResetRevocation is returned by CompletePasswordReset when the
+// user row was updated and tokens must be revoked cross-process.
+type PasswordResetRevocation struct {
+	UserID          string
+	TokensRevokedAt time.Time
+	AuthGeneration  int64
+}
+
 // --- API token types ---
 
 // APIToken is a durable bearer credential issued to leapmux control CLI
@@ -1164,11 +1270,15 @@ type CreateDeviceAuthorizationParams struct {
 type ApproveDeviceAuthorizationParams struct {
 	DeviceCode string
 	UserID     userid.UserID
+	// Now is the hub clock that judges grant liveness.
+	Now time.Time
 }
 
 type ApproveDeviceAuthorizationByUserCodeParams struct {
 	UserCode string
 	UserID   userid.UserID
+	// Now is the hub clock that judges grant liveness.
+	Now time.Time
 }
 
 type CreateCLIAuthorizationCodeParams struct {

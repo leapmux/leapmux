@@ -57,6 +57,26 @@ func SettingsSecretAAD(key string) []byte {
 	return []byte("hub_settings:" + key)
 }
 
+// PasskeyPublicKeyAAD returns the AAD for a passkey credential's encrypted
+// COSE public key. The credential row id is bound so ciphertext cannot be
+// moved across rows.
+func PasskeyPublicKeyAAD(credentialRowID string) []byte {
+	return []byte("passkey_public_key:" + credentialRowID)
+}
+
+// WebAuthnSessionDataAAD returns the AAD for encrypted WebAuthn ceremony
+// state stored in webauthn_sessions.session_data.
+func WebAuthnSessionDataAAD(sessionID string) []byte {
+	return []byte("webauthn_session:" + sessionID)
+}
+
+// WebAuthnPayloadAAD returns the AAD for an encrypted signup draft stored
+// in webauthn_sessions.payload_json. The session id is bound so ciphertext
+// cannot be swapped between ceremony rows.
+func WebAuthnPayloadAAD(sessionID string) []byte {
+	return []byte("webauthn_payload:" + sessionID)
+}
+
 // Keystore manages a versioned key ring for XChaCha20-Poly1305 envelope
 // encryption plus a dedicated, stable pepper for bearer-token hashing.
 type Keystore struct {

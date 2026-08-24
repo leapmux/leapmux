@@ -11,12 +11,14 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/config"
+	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/mail"
 	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/usersettings"
 	"github.com/leapmux/leapmux/util/validate"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // UserService implements the leapmux.v1.UserService ConnectRPC handler.
@@ -27,16 +29,18 @@ type UserService struct {
 	lifecycle *auth.CredentialLifecycleEffects
 	mail      mail.Sender
 	renderer  mail.Renderer
+	keystore  *keystore.Keystore
 }
 
 // NewUserService creates a new UserService. renderer carries the hub's
 // public URL used to build absolute deep-links in the verification
-// emails sent on email-change and resend.
-func NewUserService(st store.Store, cfg *config.Config, set *settings.Manager, lifecycle *auth.CredentialLifecycleEffects, sender mail.Sender, renderer mail.Renderer) *UserService {
+// emails sent on email-change and resend. ks encrypts passkey material;
+// pass nil only in tests that do not exercise passkey RPCs.
+func NewUserService(st store.Store, cfg *config.Config, set *settings.Manager, lifecycle *auth.CredentialLifecycleEffects, sender mail.Sender, renderer mail.Renderer, ks *keystore.Keystore) *UserService {
 	if lifecycle == nil {
 		panic("user service requires credential lifecycle effects")
 	}
-	return &UserService{store: st, cfg: cfg, set: set, lifecycle: lifecycle, mail: sender, renderer: renderer}
+	return &UserService{store: st, cfg: cfg, set: set, lifecycle: lifecycle, mail: sender, renderer: renderer, keystore: ks}
 }
 
 func (s *UserService) UpdateProfile(ctx context.Context, req *connect.Request[leapmuxv1.UpdateProfileRequest]) (*connect.Response[leapmuxv1.UpdateProfileResponse], error) {
@@ -181,6 +185,20 @@ func (s *UserService) RequestEmailChange(ctx context.Context, req *connect.Reque
 // is just expires_at - pendingEmailExpiry.
 const resendVerificationCooldown = 60 * time.Second
 
+// issuedAtFromExpiry reconstructs when a pending token was issued from the
+// expiry it set and the constant TTL used to mint it. SetPendingEmail and
+// SetPendingPasswordReset store no issued-at, so every cooldown derivation
+// goes through here: one spelling of the expiry-minus-TTL trick, paired
+// with the cooldown constant below.
+func issuedAtFromExpiry(expiresAt time.Time, ttl time.Duration) time.Time {
+	return expiresAt.Add(-ttl)
+}
+
+// nextResendAt seeds the next-resend timestamp a successful send returns.
+func nextResendAt(issuedAt time.Time) time.Time {
+	return issuedAt.Add(resendVerificationCooldown)
+}
+
 // ResendVerificationEmail re-issues the verification mail for the
 // session user's pending email. It's authenticated and restricted to users
 // who actually have a pending row — there's nothing to re-send
@@ -196,28 +214,40 @@ func (s *UserService) ResendVerificationEmail(ctx context.Context, _ *connect.Re
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	if full.PendingEmail == "" {
+
+	targetEmail := full.PendingEmail
+	if targetEmail == "" && full.Email != "" && !full.EmailVerified && settings.EmailVerificationEffective(s.set.Snapshot(ctx)) {
+		// SMTP was enabled after signup without verification: the user has a
+		// primary email but never received a pending row. Seed one now.
+		targetEmail = full.Email
+	}
+	if targetEmail == "" {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("no pending email change"))
 	}
 
 	// Refuse if the previous code was issued less than the cooldown ago.
-	// The TTL is constant, so the "issued at" time can be reconstructed
-	// from expires_at. A nil expires_at means no live row to throttle
-	// against — fall through.
-	if full.PendingEmailExpiresAt != nil {
+	if full.PendingEmail != "" && full.PendingEmailExpiresAt != nil {
 		issuedAt := full.PendingEmailExpiresAt.Add(-pendingEmailExpiry)
 		if time.Since(issuedAt) < resendVerificationCooldown {
 			return nil, connect.NewError(connect.CodeResourceExhausted, fmt.Errorf("please wait before requesting another verification email"))
 		}
 	}
 
-	sent, err := issuePendingEmailVerification(ctx, s.store, s.mail, s.renderer, full.ID, full.PendingEmail)
+	sent, err := issuePendingEmailVerification(ctx, s.store, s.mail, s.renderer, full.ID, targetEmail)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		// A claimed address surfaces as AlreadyExists, not Internal: the
+		// user can act on "email already in use", and the transport error
+		// chain stays out of the response.
+		return nil, AvailabilityConnectError(err)
 	}
-	return connect.NewResponse(&leapmuxv1.ResendVerificationEmailResponse{
-		EmailSent: sent,
-	}), nil
+	// Advertise a cooldown only after a successful send: a failed send
+	// leaves no live code, so blocking the retry the failure message
+	// invites would contradict the response.
+	resp := &leapmuxv1.ResendVerificationEmailResponse{EmailSent: sent}
+	if sent {
+		resp.NextResendAvailableAt = timestamppb.New(nextResendAt(time.Now().UTC()))
+	}
+	return connect.NewResponse(resp), nil
 }
 
 // VerifyEmail handles both signup verification and email-change verification.
@@ -241,8 +271,10 @@ func (s *UserService) VerifyEmail(ctx context.Context, req *connect.Request[leap
 	// that hit /verify-email.
 	s.lifecycle.UserInfoInvalidated(userInfo.ID.String())
 
+	userProto := userToProtoWithPasskeys(ctx, s.store, updatedUser)
+
 	return connect.NewResponse(&leapmuxv1.VerifyEmailResponse{
-		User: userToProto(updatedUser),
+		User: userProto,
 	}), nil
 }
 
@@ -259,95 +291,48 @@ func (s *UserService) ChangePassword(ctx context.Context, req *connect.Request[l
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
-	hashed, err := password.Hash(req.Msg.GetNewPassword())
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("hash password: %w", err))
-	}
-
-	var user *store.User
-	var committedAuthGeneration int64
-	if err := s.store.RunInUserAuthTransaction(ctx, userInfo.ID, func(tx store.Store) error {
-		var err error
-		user, err = tx.Users().GetByID(ctx, userInfo.ID.String())
+	// The step-up credential is verified, the new password hashed, and the
+	// write committed through runPasskeyManagementTx: admission runs outside
+	// the user-auth transaction (Argon2 must not hold the database writer
+	// lock), the locked row is re-checked before it writes, and the reauth
+	// proof is consumed inside the transaction after the write. An
+	// identity-less shell (no password, no passkeys, no verified email, no
+	// OAuth link) may not attach a first password with the session alone --
+	// the same rule the first-passkey path enforces.
+	var hashed string
+	prepare := func(*store.User) error {
+		h, err := password.Hash(req.Msg.GetNewPassword())
 		if err != nil {
-			return fmt.Errorf("query user: %w", err)
+			return connect.NewError(connect.CodeInternal, fmt.Errorf("hash password: %w", err))
 		}
-		// OAuth-only users can set a password without a current one. For
-		// password users, verify while holding the same auth-state lock used
-		// by login so the checked hash cannot change before commit.
-		if user.PasswordSet {
-			match, err := password.Verify(user.PasswordHash, req.Msg.GetCurrentPassword())
-			if err != nil {
-				return connect.NewError(connect.CodeInternal, fmt.Errorf("verify password: %w", err))
-			}
-			if !match {
-				return connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("%w", auth.ErrInvalidCurrentPassword))
-			}
-		}
+		hashed = h
+		return nil
+	}
+	var committedAuthGeneration int64
+	if err := s.runPasskeyManagementTx(ctx, userInfo, req.Msg.GetCurrentPassword(), req.Msg.GetReauthProof(), prepare, func(tx store.Store, user *store.User) error {
 		if err := tx.Users().UpdatePassword(ctx, store.UpdateUserPasswordParams{
 			PasswordHash: hashed,
 			ID:           user.ID,
 		}); err != nil {
 			return fmt.Errorf("update password: %w", err)
 		}
-		sessionID := userInfo.Credential.SessionID()
-		rowUID, mintErr := mintRowUserID(user.ID)
-		if mintErr != nil {
-			return mintErr
-		}
-		if err := tx.Sessions().DeleteOthers(ctx, store.DeleteOtherSessionsParams{
-			UserID: rowUID,
-			KeepID: sessionID,
-		}); err != nil {
-			return fmt.Errorf("delete other sessions: %w", err)
-		}
-		if _, _, err := auth.RevokeAllUserCredentials(ctx, tx, rowUID); err != nil {
+		gen, err := s.revokeOtherCredentialsPreservingSession(ctx, tx, user.ID, userInfo.Credential.SessionID())
+		if err != nil {
 			return err
 		}
-		if sessionID != "" {
-			n, err := tx.Sessions().RefreshAuthGeneration(ctx, store.RefreshSessionAuthGenerationParams{
-				SessionID: sessionID,
-				UserID:    rowUID,
-			})
-			if err != nil {
-				return fmt.Errorf("refresh current session auth generation: %w", err)
-			}
-			// n==0 means the acting session was concurrently deleted (a
-			// same-user logout / admin force-logout does not contend on this
-			// user-auth lock) after the tx began. The password change itself is
-			// valid and there is no surviving session row left to restamp, so do
-			// not roll the whole change back. The post-tx restamp is a true no-op
-			// for a same-process logout (which already tore down this Hub's
-			// in-memory leases/channels for the session); if the logout happened
-			// on another Hub, this Hub may still hold the deleted session's
-			// in-memory holders until the durable session-revoked event replays,
-			// and the restamp briefly re-stamps those before the following
-			// UserRevoked and the replayed SessionRevoked tear them down -- benign
-			// and self-healing. n>1 is impossible (session id is unique) and
-			// indicates corruption, so it stays fatal.
-			if n > 1 {
-				return fmt.Errorf("refresh current session auth generation: updated %d rows", n)
-			}
-		}
-		updatedUser, err := tx.Users().GetByID(ctx, user.ID)
-		if err != nil {
-			return fmt.Errorf("query updated user auth generation: %w", err)
-		}
-		committedAuthGeneration = updatedUser.AuthGeneration
+		committedAuthGeneration = gen
 		return nil
 	}); err != nil {
-		var connectErr *connect.Error
-		if errors.As(err, &connectErr) {
-			return nil, connectErr
-		}
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, mapPasskeyConnectError(err)
 	}
 
-	// The acting session survives at the new generation (RefreshAuthGeneration
-	// above), so re-stamp both its leases and its channels to that generation
-	// before the user-wide revocation below -- which cancels older-generation
-	// leases and closes older-generation channels -- would otherwise tear down
-	// the surviving session's own live WebSocket connections and channels.
+	// The acting session survives at the new generation
+	// (revokeOtherCredentialsPreservingSession restamped it inside the
+	// transaction), so re-stamp both its leases and its channels to that
+	// generation before the user-wide revocation below -- which cancels
+	// older-generation leases and closes older-generation channels -- would
+	// otherwise tear down the surviving session's own live WebSocket
+	// connections and channels.
 	//
 	// This restamp-before-revoke ordering is enforced only on the in-process
 	// path. The same-process revocation watcher independently replays the durable
@@ -358,12 +343,7 @@ func (s *UserService) ChangePassword(ctx context.Context, req *connect.Request[l
 	// generation, so the client reconnects with its still-valid cookie and
 	// rebuilds its context: a spurious transient disconnect, never a lost
 	// revocation or a forced logout.
-	// Restamp the acting session (empty SessionID for a non-cookie caller, which
-	// then only revokes) before evicting every credential older than the committed
-	// generation; RevokeUserPreservingSession enforces that preserve-before-revoke
-	// ordering in one call. A concurrent login committed afterward already belongs
-	// to this generation and survives.
-	s.lifecycle.RevokeUserPreservingSession(user.ID, userInfo.Credential.SessionID(), committedAuthGeneration)
+	s.lifecycle.RevokeUserPreservingSession(userInfo.ID.String(), userInfo.Credential.SessionID(), committedAuthGeneration)
 
 	return connect.NewResponse(&leapmuxv1.ChangePasswordResponse{}), nil
 }
@@ -404,9 +384,17 @@ func (s *UserService) UnlinkOAuthProvider(ctx context.Context, req *connect.Requ
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("no linked account for provider %q", providerID))
 	}
 
-	// Guard: cannot unlink the last provider if the user has no password set.
+	// Guard: cannot unlink the last provider when the user has no other
+	// login method. A passkey is a login method like a password, so it
+	// keeps the unlink allowed.
 	if len(links) <= 1 && !user.PasswordSet {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("cannot unlink your only login method; set a password first"))
+		passkeys, err := s.store.PasskeyCredentials().CountByUser(ctx, user.ID)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+		if passkeys == 0 {
+			return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("cannot unlink your only login method; set a password first"))
+		}
 	}
 
 	unlinkUID, mintErr := mintRowUserID(user.ID)

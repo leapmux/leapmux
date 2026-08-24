@@ -44,6 +44,12 @@ var publicProcedureRationale = map[string]string{
 	leapmuxv1connect.AuthServiceGetPendingOAuthSignupProcedure: "keyed by the single-use pending-signup id issued by the OAuth callback",
 	leapmuxv1connect.AuthServiceCompleteOAuthSignupProcedure:   "keyed by the single-use pending-signup id issued by the OAuth callback",
 	leapmuxv1connect.AuthServiceGetAltchaChallengeProcedure:    "discloses only a self-authenticating PoW challenge (no secret); needed pre-login so the captcha widget can arm Login/SignUp",
+	leapmuxv1connect.AuthServiceBeginPasskeyLoginProcedure:     "credential-acquiring: starts a passkey assertion ceremony",
+	leapmuxv1connect.AuthServiceFinishPasskeyLoginProcedure:    "credential-acquiring: verifies a passkey assertion and mints a session",
+	leapmuxv1connect.AuthServiceBeginPasskeySignUpProcedure:    "credential-acquiring: starts passkey registration during sign-up",
+	leapmuxv1connect.AuthServiceFinishPasskeySignUpProcedure:   "credential-acquiring: verifies passkey registration and creates the account",
+	leapmuxv1connect.AuthServiceRequestPasswordResetProcedure:  "self-service break-glass: issues a reset email when SMTP is configured",
+	leapmuxv1connect.AuthServiceCompletePasswordResetProcedure: "self-service break-glass: consumes a single-use reset token and sets a new password",
 
 	// Self-authenticating against a worker credential the interceptor cannot
 	// parse. Each handler resolves the caller itself and refuses without it.

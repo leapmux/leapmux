@@ -62,9 +62,9 @@ func TestSessionExpiryPredicatesPreserveFractionalPrecision(t *testing.T) {
 		_, err := db.Exec(`UPDATE user_sessions SET expires_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+0.500 seconds') WHERE id = ?`, sessionID)
 		require.NoError(t, err)
 
-		_, err = st.Sessions().GetByID(context.Background(), sessionID)
+		_, err = st.Sessions().GetByID(context.Background(), sessionID, time.Now().UTC())
 		require.NoError(t, err)
-		_, err = st.Sessions().ValidateWithUser(context.Background(), sessionID)
+		_, err = st.Sessions().ValidateWithUser(context.Background(), sessionID, time.Now().UTC())
 		require.NoError(t, err)
 		byUserPage, err := st.Sessions().ListByUserID(context.Background(), store.ListUserSessionsParams{UserID: userid.MustNew(userID), PageParams: store.PageParams{Limit: 1000}})
 		require.NoError(t, err)
@@ -82,7 +82,7 @@ func TestSessionExpiryPredicatesPreserveFractionalPrecision(t *testing.T) {
 		_, err := db.Exec(`UPDATE user_sessions SET expires_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-0.500 seconds') WHERE id = ?`, sessionID)
 		require.NoError(t, err)
 
-		deleted, err := st.Cleanup().HardDeleteExpiredSessions(context.Background())
+		deleted, err := st.Cleanup().HardDeleteExpiredSessions(context.Background(), time.Now().UTC())
 		require.NoError(t, err)
 		assert.Equal(t, int64(1), deleted)
 	})
@@ -260,7 +260,7 @@ func TestTouchStoresExpiresAtCanonical(t *testing.T) {
 	// The user-visible consequence: GetByID uses that same raw-string filter,
 	// so a non-canonical stored value returns ErrNotFound on the request after
 	// each Touch.
-	_, err = st.Sessions().GetByID(context.Background(), sessionID)
+	_, err = st.Sessions().GetByID(context.Background(), sessionID, time.Now().UTC())
 	require.NoError(t, err, "touched session must remain visible to GetByID")
 }
 

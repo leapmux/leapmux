@@ -1,7 +1,7 @@
 import type { Component } from 'solid-js'
 import type { CaptchaFieldHandle } from './CaptchaField'
 
-import { onMount } from 'solid-js'
+import { createEffect, onMount } from 'solid-js'
 import { loadExternalScript } from '~/lib/scriptLoader'
 import { getCaptchaSiteKey } from '~/lib/systemInfo'
 import { createCaptchaFieldBase, noteFieldArmFailure } from './captchaFieldBase'
@@ -98,6 +98,21 @@ export const TurnstileField: Component<TurnstileFieldProps> = (props) => {
   base.onSiteKeyChange(() => {
     clearWidget()
     void arm()
+  })
+
+  // Re-render when the form action changes. reset() keeps the action
+  // baked into the first render(); a Password/Passkey switch must mint
+  // a token under the new action or the hub denies it. The first run
+  // only records the action; onMount arms the widget.
+  createEffect((prev?: string) => {
+    const action = props.action
+    if (prev !== undefined && prev !== action) {
+      props.onPayload(null)
+      base.setReady(false)
+      clearWidget()
+      void arm()
+    }
+    return action
   })
 
   onMount(() => {

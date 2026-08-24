@@ -49,7 +49,7 @@ The two columns below are the heart of the threat model. Treat the left column a
 
 | The Hub **can** see | The Hub **cannot** see |
 |---------------------|------------------------|
-| Account metadata: user names, emails, password hashes, OAuth tokens, session tokens | Agent chat transcripts, tool-call arguments, or tool outputs |
+| Account metadata: user names, emails, password hashes, OAuth tokens, session tokens, passkey credential metadata (friendly names, credential IDs, encrypted public keys) | Agent chat transcripts, tool-call arguments, or tool outputs |
 | Account and workspace records | Terminal I/O, shell history, or PTY state |
 | Workspace **titles**, tab positions, and tiling layout geometry | File contents, diffs, or git status |
 | Worker registration data: Worker ID, composite public keys, online status, last-seen time | Worker hostname, OS, or filesystem paths (sent only inside the encrypted channel) |
@@ -210,9 +210,29 @@ The bundled Worker that solo and dev modes auto-register is created in-process a
 
 The **desktop app** avoids the exposure differently: it always starts its in-process Hub with the TCP listener disabled, reaching it over a local Unix socket (named pipe on Windows) instead. There is no `--no-tcp` flag or setting — it is how the desktop app is built, and `leapmux solo` on the command line does not do it. So the desktop app opens no loopback port for its Hub, and the non-loopback warning above cannot apply to it. Tunnels you create yourself still bind a loopback TCP port, by design.
 
+## Passkey step-up
+
+Passkey management — adding, removing, or disabling passkeys — is treated as a **privileged account change**, not a casual settings tweak. The hub enforces a step-up check before any of these mutations land:
+
+| Your account today | Step-up required |
+| --- | --- |
+| Password set | Confirm your **current password**. |
+| Passkey-only (no password) | Authenticate with an **existing passkey** (a short-lived reauth proof). |
+| Removing your last passkey | Passkey step-up **and** setting a new password (you must retain *some* sign-in method). |
+| Disabling passkey sign-in entirely | Password confirmation, or passkey step-up plus setting a password when you have none. |
+
+Self-service **password reset** and admin **reset-password** both **delete every passkey** on the account. That is deliberate: a password reset is break-glass recovery, and leaving old passkeys registered would let someone who still holds a device sign back in without knowing the new password.
+
+WebAuthn ceremony state (in-flight sign-up, login, and reauth handshakes) is encrypted at rest with the same keystore as passkey public keys; see [Encryption & Data](/docs/operating/encryption-and-data/).
+
 ## At-rest encryption (separate from E2EE)
 
-Distinct from the channel E2EE above, the Hub encrypts a small set of stored secrets **at rest** using a versioned XChaCha20-Poly1305 key ring kept in an `encryption.key` file (mode `0600`, default `<DataDir>/encryption.key`, auto-generated on first run). Exactly three things are encrypted, all of them OAuth secrets: the OAuth provider client secrets, per-user OAuth access/refresh tokens, and the access/refresh tokens held for a pending signup. If the Hub's database is exfiltrated without the key file, those stay unreadable.
+Distinct from the channel E2EE above, the Hub encrypts a small set of stored secrets **at rest** using a versioned XChaCha20-Poly1305 key ring kept in an `encryption.key` file (mode `0600`, default `<DataDir>/encryption.key`, auto-generated on first run). Exactly these are encrypted:
+
+- OAuth provider client secrets and per-user OAuth access/refresh tokens (including pending-signup tokens).
+- **Passkey credential public keys** and **WebAuthn ceremony session payloads** (each row's ciphertext is bound to that row's id as additional authenticated data).
+
+If the Hub's database is exfiltrated without the key file, those fields stay unreadable.
 
 Be clear on what this does **not** cover, since "encrypted at rest" invites over-reading. It is not the Frontend↔Worker channel keys, and it does not touch agent or terminal content (which never reaches the Hub at all). Other credentials in the database are protected by their storage form rather than this key: passwords are Argon2id hashes and API/delegation token secrets are HMAC hashes — neither is reversible, so neither needs encrypting. Worker auth tokens, registration keys, and session tokens are stored **as-is**.
 

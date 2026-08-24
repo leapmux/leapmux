@@ -180,6 +180,24 @@ describe('altchaField', () => {
       expect(mockFetchAltchaChallenge).toHaveBeenCalledTimes(2)
     })
   })
+
+  it('re-arms from the handle when widget.reset throws', async () => {
+    let handle: CaptchaFieldHandle | undefined
+    const { container } = render(() => (
+      <div><AltchaField onPayload={vi.fn()} onUnavailable={vi.fn()} ref={h => (handle = h)} /></div>
+    ))
+    await vi.waitFor(() => {
+      expect(widgetEls(container)[0].configure).toHaveBeenCalled()
+    })
+    widgetEls(container)[0].reset.mockImplementation(() => {
+      throw new Error('n?.reset is not a function')
+    })
+
+    expect(() => handle!.reset()).not.toThrow()
+    await vi.waitFor(() => {
+      expect(mockFetchAltchaChallenge).toHaveBeenCalledTimes(2)
+    })
+  })
 })
 
 describe('captchaHoneypot', () => {

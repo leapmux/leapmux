@@ -14,8 +14,8 @@ type cleanupStore struct {
 
 var _ store.CleanupStore = (*cleanupStore)(nil)
 
-func (s *cleanupStore) HardDeleteExpiredSessions(ctx context.Context) (int64, error) {
-	return rowsAffected(s.conn.q.DeleteExpiredUserSessions(ctx))
+func (s *cleanupStore) HardDeleteExpiredSessions(ctx context.Context, now time.Time) (int64, error) {
+	return rowsAffected(s.conn.q.DeleteExpiredUserSessions(ctx, sqltime.NewMySQLTime(now)))
 }
 
 func (s *cleanupStore) HardDeleteWorkspacesBefore(ctx context.Context, cutoff time.Time) (int64, error) {
@@ -38,12 +38,16 @@ func (s *cleanupStore) HardDeleteUsersBefore(ctx context.Context, cutoff time.Ti
 	return rowsAffected(s.conn.q.HardDeleteUsersBefore(ctx, sqltime.MySQLNullTimeOf(cutoff)))
 }
 
-func (s *cleanupStore) DeleteExpiredOAuthStates(ctx context.Context) (int64, error) {
-	return rowsAffected(s.conn.q.DeleteExpiredOAuthStates(ctx))
+func (s *cleanupStore) DeleteExpiredOAuthStates(ctx context.Context, now time.Time) (int64, error) {
+	return rowsAffected(s.conn.q.DeleteExpiredOAuthStates(ctx, sqltime.NewMySQLTime(now)))
 }
 
-func (s *cleanupStore) DeleteExpiredPendingOAuthSignups(ctx context.Context) (int64, error) {
-	return rowsAffected(s.conn.q.DeleteExpiredPendingOAuthSignups(ctx))
+func (s *cleanupStore) DeleteExpiredPendingOAuthSignups(ctx context.Context, now time.Time) (int64, error) {
+	return rowsAffected(s.conn.q.DeleteExpiredPendingOAuthSignups(ctx, sqltime.NewMySQLTime(now)))
+}
+
+func (s *cleanupStore) DeleteExpiredWebAuthnSessions(ctx context.Context, now time.Time) (int64, error) {
+	return rowsAffected(s.conn.q.DeleteExpiredWebAuthnSessions(ctx, sqltime.NewMySQLTime(now)))
 }
 
 func (s *cleanupStore) DeleteExpiredDeviceAuthorizations(ctx context.Context, cutoff time.Time) (int64, error) {

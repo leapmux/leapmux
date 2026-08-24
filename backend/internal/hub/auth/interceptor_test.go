@@ -607,7 +607,7 @@ func TestTouchSession_ThrottledWithinThreshold(t *testing.T) {
 	_, err := client.GetCurrentUser(context.Background(), req1)
 	require.NoError(t, err)
 
-	sess1, err := st.Sessions().GetByID(context.Background(), token)
+	sess1, err := st.Sessions().GetByID(context.Background(), token, time.Now().UTC())
 	require.NoError(t, err)
 	t1 := sess1.LastActiveAt
 
@@ -617,7 +617,7 @@ func TestTouchSession_ThrottledWithinThreshold(t *testing.T) {
 	_, err = client.GetCurrentUser(context.Background(), req2)
 	require.NoError(t, err)
 
-	sess2, err := st.Sessions().GetByID(context.Background(), token)
+	sess2, err := st.Sessions().GetByID(context.Background(), token, time.Now().UTC())
 	require.NoError(t, err)
 	t2 := sess2.LastActiveAt
 
@@ -666,7 +666,7 @@ func TestTouchSession_SlideRefreshesCookie(t *testing.T) {
 	assert.WithinDuration(t, before.Add(configured), parsed.Expires, 15*time.Minute,
 		"the slide must follow the configured duration, not the default")
 
-	sess, err := st.Sessions().GetByID(context.Background(), token)
+	sess, err := st.Sessions().GetByID(context.Background(), token, time.Now().UTC())
 	require.NoError(t, err)
 	assert.WithinDuration(t, sess.ExpiresAt, parsed.Expires, time.Second,
 		"the cookie and the row must expire together, or one outlives the other silently")
@@ -682,7 +682,7 @@ func TestLogin_UsesConfiguredSessionDuration(t *testing.T) {
 	before := time.Now()
 	token := loginAdmin(t, client)
 
-	sess, err := st.Sessions().GetByID(context.Background(), token)
+	sess, err := st.Sessions().GetByID(context.Background(), token, time.Now().UTC())
 	require.NoError(t, err)
 	hubtestutil.AssertSessionLifetime(t, before, configured, sess.ExpiresAt)
 }
@@ -695,7 +695,7 @@ func TestLogin_UnconfiguredUsesDefaultSessionDuration(t *testing.T) {
 	before := time.Now()
 	token := loginAdmin(t, client)
 
-	sess, err := st.Sessions().GetByID(context.Background(), token)
+	sess, err := st.Sessions().GetByID(context.Background(), token, time.Now().UTC())
 	require.NoError(t, err)
 	hubtestutil.AssertSessionLifetime(t, before, auth.DefaultSessionDuration, sess.ExpiresAt)
 }

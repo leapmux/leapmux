@@ -86,6 +86,19 @@ describe('createCaptchaForm', () => {
     await Promise.resolve()
   })
 
+  it('clears payload even when the field handle reset throws', () => {
+    setSystemInfoMock({ captchaEnabled: true })
+    const captcha = createCaptchaForm()
+    captcha.bindField({
+      reset: () => {
+        throw new Error('n?.reset is not a function')
+      },
+    })
+    captcha.setPayload('consumed')
+    expect(() => captcha.reset()).not.toThrow()
+    expect(captcha.payload()).toBeNull()
+  })
+
   it('reset skips the system-info refetch for failures that cannot change the captcha policy', async () => {
     setSystemInfoMock({ captchaEnabled: true })
     const captcha = createCaptchaForm()

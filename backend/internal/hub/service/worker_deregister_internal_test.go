@@ -190,7 +190,7 @@ func TestDeleteUserTellsEveryWorkerToStop(t *testing.T) {
 	broadcaster := NewHubEventBroadcaster(channelmgr.New(0))
 	scopeCache := auth.NewDelegationScopeCache(st)
 	svc := NewAdminUserService(st, nil, nil,
-		NewWorkerDeregisterEffects(scopeCache, newTestNotifier(t, st), broadcaster))
+		NewWorkerDeregisterEffects(scopeCache, newTestNotifier(t, st), broadcaster), nil)
 
 	// One memoized delegation scope per worker, so the eviction arm is
 	// observable per worker too.
@@ -253,7 +253,7 @@ func TestDeleteUserCarriesOnWhenOneWorkerCannotBeTold(t *testing.T) {
 	// instant are ordered by their random ids -- so failing a worker chosen
 	// by name would leave the "carries on" property untested whenever that
 	// worker happened to come last.
-	order, err := NewAdminUserService(st, nil, nil, nil).liveWorkerIDs(ctx, userid.MustNew(owner.ID))
+	order, err := NewAdminUserService(st, nil, nil, nil, nil).liveWorkerIDs(ctx, userid.MustNew(owner.ID))
 	require.NoError(t, err)
 	require.Len(t, order, 3)
 
@@ -261,7 +261,7 @@ func TestDeleteUserCarriesOnWhenOneWorkerCannotBeTold(t *testing.T) {
 	// one, so the deletion itself commits normally.
 	failing := failingNotificationStore{Store: st, failWorkerID: order[0]}
 	svc := NewAdminUserService(st, nil, nil,
-		NewWorkerDeregisterEffects(nil, newTestNotifier(t, failing), nil))
+		NewWorkerDeregisterEffects(nil, newTestNotifier(t, failing), nil), nil)
 
 	logs := testutil.CaptureDefaultLogger(t)
 	_, err = svc.DeleteUser(ctx, connectRequestForTest(&leapmuxv1.DeleteUserRequest{Id: owner.ID}))
@@ -307,7 +307,7 @@ func TestDeleteUserTellsEveryWorkerPastTheFirstPage(t *testing.T) {
 	}
 
 	svc := NewAdminUserService(st, nil, nil,
-		NewWorkerDeregisterEffects(nil, newTestNotifier(t, st), nil))
+		NewWorkerDeregisterEffects(nil, newTestNotifier(t, st), nil), nil)
 	_, err := svc.DeleteUser(ctx, connectRequestForTest(&leapmuxv1.DeleteUserRequest{Id: owner.ID}))
 	require.NoError(t, err)
 

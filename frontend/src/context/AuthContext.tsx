@@ -1,5 +1,6 @@
+import type { Timestamp } from '@bufbuild/protobuf/wkt'
 import type { ParentComponent } from 'solid-js'
-import type { User } from '~/generated/leapmux/v1/auth_pb'
+import type { EmailVerificationStatus, User } from '~/generated/leapmux/v1/auth_pb'
 import type { CaptchaRequestFields } from '~/lib/captchaForm'
 import { create } from '@bufbuild/protobuf'
 import { Code, ConnectError } from '@connectrpc/connect'
@@ -13,13 +14,22 @@ import { createStableContext } from '~/lib/createStableContext'
 import { formatErrorMessage } from '~/lib/errors'
 import { createLogger } from '~/lib/logger'
 import { isSoloMode, loadSystemInfo } from '~/lib/systemInfo'
+import { startAuthentication } from '~/lib/webauthn'
 
 const log = createLogger('auth')
+
+export interface AuthLoginResult {
+  verificationRequired: boolean
+  verificationEmailSent: boolean
+  nextResendAvailableAt?: Timestamp
+}
 
 export interface AuthState {
   user: () => User | null
   loading: () => boolean
   error: () => string | null
+  /** Cooldown timestamp seeded from login when verification is required. */
+  verificationResendAvailableAt: () => Timestamp | undefined
   /**
    * Set when bootstrap failed for a reason OTHER than "no session" -- i.e.
    * either `loadSystemInfo` could not reach the hub, or the session restore
@@ -38,7 +48,9 @@ export interface AuthState {
   bootstrapError: () => string | null
   /** Retry the bootstrap session-restore after a `bootstrapError`. */
   retryBootstrap: () => Promise<void>
-  login: (username: string, password: string, captcha?: CaptchaRequestFields) => Promise<void>
+  login: (username: string, password: string, captcha?: CaptchaRequestFields) => Promise<AuthLoginResult>
+  loginWithPasskey: (username: string, captcha?: CaptchaRequestFields) => Promise<AuthLoginResult>
+  setVerificationResendAvailableAt: (at?: Timestamp) => void
   logout: () => Promise<void>
   setAuth: (user: User) => void
   refreshUser: () => Promise<void>
@@ -52,6 +64,7 @@ export const AuthProvider: ParentComponent = (props) => {
   const [loading, setLoading] = createSignal(true)
   const [error, setError] = createSignal<string | null>(null)
   const [bootstrapError, setBootstrapError] = createSignal<string | null>(null)
+  const [verificationResendAvailableAt, setVerificationResendAvailableAt] = createSignal<Timestamp | undefined>()
 
   /**
    * Drop every pooled E2EE channel on an identity change.
@@ -93,10 +106,15 @@ export const AuthProvider: ParentComponent = (props) => {
       closePooledChannels()
   }, { defer: true }))
 
+  const clearAuthUser = () => {
+    setUser(null)
+    setVerificationResendAvailableAt(undefined)
+  }
+
   // Register auth error callback for auto-logout on 401.
   setOnAuthError(() => {
     if (!isSoloMode())
-      setUser(null)
+      clearAuthUser()
   })
 
   /**
@@ -117,7 +135,7 @@ export const AuthProvider: ParentComponent = (props) => {
     }
     catch (err) {
       if (err instanceof ConnectError && err.code === Code.Unauthenticated) {
-        setUser(null)
+        clearAuthUser()
       }
       else {
         const msg = formatErrorMessage(err)
@@ -164,7 +182,13 @@ export const AuthProvider: ParentComponent = (props) => {
     setLoading(false)
   }
 
-  const login = async (username: string, password: string, captcha?: CaptchaRequestFields) => {
+  const loginResultFromResponse = (status: EmailVerificationStatus | undefined): AuthLoginResult => ({
+    verificationRequired: status?.verificationRequired ?? false,
+    verificationEmailSent: status?.verificationEmailSent ?? false,
+    nextResendAvailableAt: status?.nextResendAvailableAt,
+  })
+
+  const login = async (username: string, password: string, captcha?: CaptchaRequestFields): Promise<AuthLoginResult> => {
     setError(null)
     setLoading(true)
     try {
@@ -185,6 +209,7 @@ export const AuthProvider: ParentComponent = (props) => {
       // one channel per request while the shared WebSocket stays held for the old user).
       setUser(resp.user ?? null)
       loadTimeouts().catch(() => {})
+      return loginResultFromResponse(resp.emailVerification)
     }
     catch (e) {
       const msg = formatErrorMessage(e, 'Login failed')
@@ -192,6 +217,34 @@ export const AuthProvider: ParentComponent = (props) => {
       // The login form's captcha.reset() (see createCaptchaForm) triggers
       // the system-info reload that converges a stale captcha snapshot
       // after a runtime enable/disable or provider switch.
+      throw e
+    }
+    finally {
+      setLoading(false)
+    }
+  }
+
+  const loginWithPasskey = async (username: string, captcha?: CaptchaRequestFields): Promise<AuthLoginResult> => {
+    setError(null)
+    setLoading(true)
+    try {
+      const begin = await authClient.beginPasskeyLogin({
+        username,
+        captchaPayload: captcha?.captchaPayload ?? '',
+        honeypot: captcha?.honeypot ?? '',
+      })
+      const credentialJson = await startAuthentication(begin.optionsJson)
+      const resp = await authClient.finishPasskeyLogin({
+        sessionId: begin.sessionId,
+        credentialJson,
+      })
+      setUser(resp.user ?? null)
+      loadTimeouts().catch(() => {})
+      return loginResultFromResponse(resp.emailVerification)
+    }
+    catch (e) {
+      const msg = formatErrorMessage(e, 'Passkey login failed')
+      setError(msg)
       throw e
     }
     finally {
@@ -209,7 +262,7 @@ export const AuthProvider: ParentComponent = (props) => {
       // Ignore logout errors.
     }
     finally {
-      setUser(null)
+      clearAuthUser()
     }
   }
 
@@ -232,7 +285,10 @@ export const AuthProvider: ParentComponent = (props) => {
     user,
     loading,
     error,
+    verificationResendAvailableAt,
     login,
+    loginWithPasskey,
+    setVerificationResendAvailableAt,
     logout,
     setAuth,
     refreshUser,

@@ -1,8 +1,10 @@
 import type { Component } from 'solid-js'
 import { useNavigate, useSearchParams } from '@solidjs/router'
-import { createSignal, onMount, Show } from 'solid-js'
+import { createEffect, createSignal, Show } from 'solid-js'
 import { userClient } from '~/api/clients'
 import { useAuth } from '~/context/AuthContext'
+import { formatErrorMessage } from '~/lib/errors'
+import { useVerificationResend } from '~/lib/useVerificationResend'
 import { errorText, pageCard } from '~/styles/shared.css'
 import * as styles from './LoginPage.css'
 
@@ -22,10 +24,19 @@ export const VerifyEmailPage: Component = () => {
   const [code, setCode] = createSignal('')
   const [submitting, setSubmitting] = createSignal(false)
   const [error, setError] = createSignal<string | null>(null)
-  const [resending, setResending] = createSignal(false)
-  const [resendStatus, setResendStatus] = createSignal<string | null>(null)
+  const resend = useVerificationResend({
+    nextResendAvailableAt: () => auth.verificationResendAvailableAt(),
+  })
 
-  onMount(async () => {
+  const [decided, setDecided] = createSignal(false)
+  createEffect(() => {
+    // Wait out the auth bootstrap before deciding "not signed in": on a
+    // fresh load the session cookie is often still restoring, and reading
+    // auth.user() too early bounces a valid session to the login form
+    // (LoginPage guards the same race with auth.loading()).
+    if (auth.loading() || decided())
+      return
+    setDecided(true)
     // Pull the URL code (used for both prefill and auto-submit). It may
     // arrive in display form ("XXX-XXX") or raw ("XXXXXX").
     const urlCode = typeof searchParams.code === 'string' ? searchParams.code : ''
@@ -42,7 +53,7 @@ export const VerifyEmailPage: Component = () => {
 
     if (urlCode) {
       setCode(urlCode)
-      await submitCode(urlCode)
+      void submitCode(urlCode)
     }
   })
 
@@ -62,7 +73,7 @@ export const VerifyEmailPage: Component = () => {
       navigate('/', { replace: true })
     }
     catch (e) {
-      setError(`${e}`)
+      setError(formatErrorMessage(e, 'Verification failed'))
     }
     finally {
       setSubmitting(false)
@@ -72,25 +83,6 @@ export const VerifyEmailPage: Component = () => {
   function handleSubmit(e: Event) {
     e.preventDefault()
     void submitCode(code())
-  }
-
-  async function handleResend() {
-    setResending(true)
-    setResendStatus(null)
-    setError(null)
-    try {
-      const resp = await userClient.resendVerificationEmail({})
-      // The backend may have updated the row but skipped the SMTP send
-      // (e.g. mail provider 5xx). Surface the difference so the user
-      // doesn't sit waiting for an email that's not coming.
-      setResendStatus(resp.emailSent ? 'A fresh code has been sent to your inbox.' : 'We couldn\'t send the email — please try again shortly.')
-    }
-    catch (e) {
-      setError(`${e}`)
-    }
-    finally {
-      setResending(false)
-    }
   }
 
   return (
@@ -124,16 +116,19 @@ export const VerifyEmailPage: Component = () => {
         <Show when={error()}>
           {msg => <div class={errorText}>{msg()}</div>}
         </Show>
-        <Show when={resendStatus()}>
+        <Show when={resend.error()}>
+          {msg => <div class={errorText}>{msg()}</div>}
+        </Show>
+        <Show when={resend.status()}>
           {msg => <div data-testid="verify-email-resend-status">{msg()}</div>}
         </Show>
         <button
           type="button"
           data-testid="verify-email-resend"
-          onClick={() => void handleResend()}
-          disabled={resending()}
+          onClick={() => void resend.resend()}
+          disabled={resend.disabled()}
         >
-          {resending() ? 'Sending…' : 'Resend code'}
+          {resend.buttonLabel()}
         </button>
       </div>
     </div>

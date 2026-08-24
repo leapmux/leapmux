@@ -1,6 +1,7 @@
 syntax = "proto3";
 package leapmux.v1;
 
+import "google/protobuf/timestamp.proto";
 import "leapmux/v1/settings.proto";
 import "leapmux/v1/auth.proto";
 
@@ -21,11 +22,11 @@ service UserService {
   // address. Authenticated; requires a pending verification to exist
   // (FailedPrecondition otherwise). The previous code is invalidated —
   // a fresh 6-character code with a new 30-minute TTL replaces it. Use
-  // this when the original mail was lost / never arrived, or when
-  // SignUpResponse.verification_email_sent came back false.
+  // this when the original mail was lost or never arrived.
   rpc ResendVerificationEmail(ResendVerificationEmailRequest) returns (ResendVerificationEmailResponse);
-  // Change the current user's password. When password_set is false (OAuth-only
-  // users), current_password may be empty.
+  // Change the current user's password. When password_set is false
+  // (OAuth-only with no passkeys), current_password may be empty. When
+  // password_set is false but passkeys exist, reauth_proof is required.
   rpc ChangePassword(ChangePasswordRequest) returns (ChangePasswordResponse);
   // Unlink an OAuth provider from the current user's account.
   rpc UnlinkOAuthProvider(UnlinkOAuthProviderRequest) returns (UnlinkOAuthProviderResponse);
@@ -42,6 +43,15 @@ service UserService {
   rpc ResetUserSetting(ResetUserSettingRequest) returns (ResetUserSettingResponse);
   // Get the current timeout configuration.
   rpc GetTimeouts(GetTimeoutsRequest) returns (GetTimeoutsResponse);
+  // Passkey management
+  rpc BeginPasskeyRegistration(BeginPasskeyRegistrationRequest) returns (BeginPasskeyRegistrationResponse);
+  rpc FinishPasskeyRegistration(FinishPasskeyRegistrationRequest) returns (FinishPasskeyRegistrationResponse);
+  rpc BeginPasskeyReauth(BeginPasskeyReauthRequest) returns (BeginPasskeyReauthResponse);
+  rpc FinishPasskeyReauth(FinishPasskeyReauthRequest) returns (FinishPasskeyReauthResponse);
+  rpc ListPasskeys(ListPasskeysRequest) returns (ListPasskeysResponse);
+  rpc RenamePasskey(RenamePasskeyRequest) returns (RenamePasskeyResponse);
+  rpc DeletePasskey(DeletePasskeyRequest) returns (DeletePasskeyResponse);
+  rpc DeactivatePasskeyAuth(DeactivatePasskeyAuthRequest) returns (DeactivatePasskeyAuthResponse);
 }
 
 message UpdateProfileRequest {
@@ -80,11 +90,15 @@ message ResendVerificationEmailResponse {
   // means the row was refreshed but the mail backend failed; the
   // frontend should surface a "couldn't send, try again" message.
   bool email_sent = 1;
+  google.protobuf.Timestamp next_resend_available_at = 2;
 }
 
 message ChangePasswordRequest {
   string current_password = 1;
   string new_password = 2;
+  // Required when the account has no password yet but has passkeys
+  // (passkey-only). Consumed like other passkey management proofs.
+  string reauth_proof = 3;
 }
 
 message ChangePasswordResponse {}
@@ -126,3 +140,95 @@ message GetTimeoutsResponse {
   int32 agent_startup_timeout_seconds = 2;
   int32 worktree_create_timeout_seconds = 3;
 }
+
+message BeginPasskeyRegistrationRequest {
+  string current_password = 1;
+  string reauth_proof = 2;
+}
+
+message BeginPasskeyRegistrationResponse {
+  string session_id = 1;
+  string options_json = 2;
+  // Relying party ID for this ceremony's origin; echo it in Signal API calls.
+  string rp_id = 3;
+}
+
+message FinishPasskeyRegistrationRequest {
+  string session_id = 1;
+  string credential_json = 2;
+  string friendly_name = 3;
+  string current_password = 4;
+  string reauth_proof = 5;
+}
+
+message FinishPasskeyRegistrationResponse {
+  PasskeyInfo passkey = 1;
+}
+
+message BeginPasskeyReauthRequest {}
+
+message BeginPasskeyReauthResponse {
+  string session_id = 1;
+  string options_json = 2;
+  // Relying party ID for this ceremony's origin; echo it in Signal API calls.
+  string rp_id = 3;
+}
+
+message FinishPasskeyReauthRequest {
+  string session_id = 1;
+  string credential_json = 2;
+}
+
+message FinishPasskeyReauthResponse {
+  string reauth_proof = 1;
+}
+
+message ListPasskeysRequest {}
+
+message ListPasskeysResponse {
+  repeated PasskeyInfo passkeys = 1;
+  // Relying party ID for passkey management on this hub; echo it in Signal
+  // API calls (the delete/deactivate flows have no Begin response).
+  string rp_id = 2;
+}
+
+message PasskeyInfo {
+  string id = 1;
+  string friendly_name = 2;
+  google.protobuf.Timestamp created_at = 3;
+  google.protobuf.Timestamp last_used_at = 4;
+  repeated string transports = 5;
+  // Base64url-encoded WebAuthn credential id (plaintext lookup key). Used by
+  // the browser Signal API after delete; not a secret.
+  string credential_id = 6;
+}
+
+message RenamePasskeyRequest {
+  string id = 1;
+  string friendly_name = 2;
+  // Required when password_set is true.
+  string current_password = 3;
+  // Required when password_set is false (passkey step-up).
+  string reauth_proof = 4;
+}
+
+message RenamePasskeyResponse {
+  PasskeyInfo passkey = 1;
+}
+
+message DeletePasskeyRequest {
+  string id = 1;
+  string current_password = 2;
+  string reauth_proof = 3;
+  string new_password = 4;
+}
+
+message DeletePasskeyResponse {}
+
+message DeactivatePasskeyAuthRequest {
+  string current_password = 1;
+  string reauth_proof = 2;
+  string new_password = 3;
+}
+
+message DeactivatePasskeyAuthResponse {}

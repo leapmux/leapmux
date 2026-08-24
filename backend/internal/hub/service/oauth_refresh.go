@@ -23,8 +23,14 @@ func (h *OAuthHandler) StartTokenRefresh(ctx context.Context) {
 	})
 }
 
+// oauthTokenRefreshLead is how far before its stored expiry a provider
+// OAuth token becomes refresh-eligible. The SQL compared the expiry
+// against the database clock plus this window; the clock and the window
+// both come from the hub now.
+const oauthTokenRefreshLead = 5 * time.Minute
+
 func (h *OAuthHandler) refreshExpiringTokens(ctx context.Context) {
-	tokens, err := h.store.OAuthTokens().ListExpiring(ctx)
+	tokens, err := h.store.OAuthTokens().ListExpiring(ctx, time.Now().UTC().Add(oauthTokenRefreshLead))
 	if err != nil {
 		slog.Error("oauth refresh: list expiring tokens", "error", err)
 		return

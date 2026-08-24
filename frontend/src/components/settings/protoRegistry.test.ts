@@ -252,7 +252,7 @@ describe('buildProtoRows', () => {
   it('depends_on can address another setting key', () => {
     const values = new Map([
       ['signup_enabled', value('signup_enabled', 'true')],
-      ['email_verification_required', value('email_verification_required', 'false')],
+      ['some_other_setting', value('some_other_setting', 'false')],
     ])
     expect(conditionHolds({ key: 'signup_enabled', field: '', in: ['true'] } as SettingFieldCondition, 'other', values)).toBe(true)
     expect(conditionHolds({ key: 'signup_enabled', field: '', in: ['false'] } as SettingFieldCondition, 'other', values)).toBe(false)

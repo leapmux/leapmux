@@ -1204,11 +1204,11 @@ func (s deviceAuthorizationOverride) TouchPoll(ctx context.Context, code string)
 	return s.DeviceAuthorizationStore.TouchPoll(ctx, code)
 }
 
-func (s deviceAuthorizationOverride) Consume(ctx context.Context, code string) (int64, error) {
+func (s deviceAuthorizationOverride) Consume(ctx context.Context, code string, now time.Time) (int64, error) {
 	if s.consume != nil {
 		return s.consume(ctx, code)
 	}
-	return s.DeviceAuthorizationStore.Consume(ctx, code)
+	return s.DeviceAuthorizationStore.Consume(ctx, code, now)
 }
 
 func (s userLookupFailStore) Users() store.UserStore { return s.users }
@@ -1890,7 +1890,7 @@ type blankGrantCodes struct {
 	row *store.CLIAuthorizationCode
 }
 
-func (s blankGrantCodes) GetActive(context.Context, string) (*store.CLIAuthorizationCode, error) {
+func (s blankGrantCodes) GetActive(context.Context, string, time.Time) (*store.CLIAuthorizationCode, error) {
 	return s.row, nil
 }
 

@@ -61,7 +61,13 @@ var publicProcedures = map[string]bool{
 	// fetchable before login. The captcha interceptor guards the
 	// procedures that consume solutions, not the one that issues
 	// challenges.
-	leapmuxv1connect.AuthServiceGetAltchaChallengeProcedure: true,
+	leapmuxv1connect.AuthServiceGetAltchaChallengeProcedure:    true,
+	leapmuxv1connect.AuthServiceBeginPasskeyLoginProcedure:     true,
+	leapmuxv1connect.AuthServiceFinishPasskeyLoginProcedure:    true,
+	leapmuxv1connect.AuthServiceBeginPasskeySignUpProcedure:    true,
+	leapmuxv1connect.AuthServiceFinishPasskeySignUpProcedure:   true,
+	leapmuxv1connect.AuthServiceRequestPasswordResetProcedure:  true,
+	leapmuxv1connect.AuthServiceCompletePasswordResetProcedure: true,
 }
 
 // PublicProcedures lists every procedure the auth interceptor waives, so
@@ -349,7 +355,7 @@ func NewInterceptor(opts InterceptorOptions) (connect.Interceptor, *AuthContextR
 		// session's cache row. ValidateWithUser returns ErrNotFound for a gone or
 		// expired session, which the caller degrades to the connect-time value.
 		sc.sessionExpiry = func(ctx context.Context, sessionID string) (time.Time, bool, error) {
-			sess, err := st.Sessions().ValidateWithUser(ctx, sessionID)
+			sess, err := st.Sessions().ValidateWithUser(ctx, sessionID, time.Now().UTC())
 			if errors.Is(err, store.ErrNotFound) {
 				return time.Time{}, false, nil
 			}
@@ -1247,6 +1253,9 @@ func (a *authInterceptor) touchSession(ctx context.Context, sessionID string, us
 		ID:           sessionID,
 		ExpiresAt:    newExpiry,
 		LastActiveAt: now.Add(-threshold).UTC(),
+		// The hub clock judges the previous expiry; a zero Now would let an
+		// expired session match and revive.
+		Now: now.UTC(),
 	})
 	if err != nil {
 		// Nothing above this call reports the failure, and the caller cannot

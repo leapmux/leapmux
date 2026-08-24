@@ -208,9 +208,10 @@ func TestRunSocketServerRetriesTransientAcceptError(t *testing.T) {
 // closed, then returns net.ErrClosed -- a retry storm that ends only when
 // the listener dies.
 type emfileListener struct {
-	mu     sync.Mutex
-	calls  int
-	closed chan struct{}
+	mu        sync.Mutex
+	calls     int
+	closed    chan struct{}
+	closeOnce sync.Once
 }
 
 func (l *emfileListener) Accept() (net.Conn, error) {
@@ -225,12 +226,12 @@ func (l *emfileListener) Accept() (net.Conn, error) {
 	}
 }
 
+// Close is idempotent and safe to call concurrently. A select/default
+// check-then-act races when closeListenerOnShutdown and the deferred
+// listener.Close() in runSocketServer both run -- both find the channel
+// open and both close it, panicking with "close of closed channel".
 func (l *emfileListener) Close() error {
-	select {
-	case <-l.closed:
-	default:
-		close(l.closed)
-	}
+	l.closeOnce.Do(func() { close(l.closed) })
 	return nil
 }
 
@@ -240,6 +241,23 @@ func (l *emfileListener) acceptCalls() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.calls
+}
+
+func TestEmfileListenerCloseIsConcurrencySafe(t *testing.T) {
+	t.Parallel()
+	for range 200 {
+		l := &emfileListener{closed: make(chan struct{})}
+		var wg sync.WaitGroup
+		for range 8 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				assert.NoError(t, l.Close())
+			}()
+		}
+		wg.Wait()
+		assert.ErrorIs(t, func() error { _, err := l.Accept(); return err }(), net.ErrClosed)
+	}
 }
 
 // An external shutdown must end the sidecar promptly even mid-retry-storm: the

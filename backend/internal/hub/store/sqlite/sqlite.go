@@ -108,6 +108,12 @@ func (s *sqliteStore) OAuthUserLinks() store.OAuthUserLinkStore {
 func (s *sqliteStore) PendingOAuthSignups() store.PendingOAuthSignupStore {
 	return &pendingOAuthSignupStore{conn: s.conn}
 }
+func (s *sqliteStore) PasskeyCredentials() store.PasskeyCredentialStore {
+	return &passkeyCredentialStore{conn: s.conn}
+}
+func (s *sqliteStore) WebAuthnSessions() store.WebAuthnSessionStore {
+	return &webAuthnSessionStore{conn: s.conn}
+}
 func (s *sqliteStore) Settings() store.SettingsStore {
 	return &settingsStore{conn: s.conn}
 }

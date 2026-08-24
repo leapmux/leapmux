@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
@@ -20,24 +21,27 @@ var _ store.UserStore = (*userStore)(nil)
 
 func fromDBUser(u gendb.User) store.User {
 	return store.User{
-		ID:                    u.ID,
-		Username:              u.Username,
-		PasswordHash:          u.PasswordHash,
-		DisplayName:           u.DisplayName,
-		Email:                 u.Email,
-		EmailVerified:         u.EmailVerified,
-		PendingEmail:          u.PendingEmail,
-		PendingEmailToken:     u.PendingEmailToken,
-		PendingEmailExpiresAt: u.PendingEmailExpiresAt.Ptr(),
-		PendingEmailAttempts:  int64(u.PendingEmailAttempts),
-		PasswordSet:           u.PasswordSet,
-		IsAdmin:               u.IsAdmin,
-		Prefs:                 u.Prefs,
-		CreatedAt:             u.CreatedAt.Time,
-		UpdatedAt:             u.UpdatedAt.Time,
-		TokensRevokedAt:       u.TokensRevokedAt.Ptr(),
-		AuthGeneration:        u.AuthGeneration,
-		DeletedAt:             u.DeletedAt.Ptr(),
+		ID:                            u.ID,
+		Username:                      u.Username,
+		PasswordHash:                  u.PasswordHash,
+		DisplayName:                   u.DisplayName,
+		Email:                         u.Email,
+		EmailVerified:                 u.EmailVerified,
+		PendingEmail:                  u.PendingEmail,
+		PendingEmailToken:             u.PendingEmailToken,
+		PendingEmailExpiresAt:         u.PendingEmailExpiresAt.Ptr(),
+		PendingEmailAttempts:          int64(u.PendingEmailAttempts),
+		PendingPasswordResetToken:     u.PendingPasswordResetToken,
+		PendingPasswordResetExpiresAt: u.PendingPasswordResetExpiresAt.Ptr(),
+		PendingPasswordResetAttempts:  int64(u.PendingPasswordResetAttempts),
+		PasswordSet:                   u.PasswordSet,
+		IsAdmin:                       u.IsAdmin,
+		Prefs:                         u.Prefs,
+		CreatedAt:                     u.CreatedAt.Time,
+		UpdatedAt:                     u.UpdatedAt.Time,
+		TokensRevokedAt:               u.TokensRevokedAt.Ptr(),
+		AuthGeneration:                u.AuthGeneration,
+		DeletedAt:                     u.DeletedAt.Ptr(),
 	}
 }
 
@@ -122,8 +126,12 @@ func (s *userStore) ExistsByEmail(ctx context.Context, email, excludeUserID stri
 	return exists, nil
 }
 
-func (s *userStore) ConsumeVerificationAttempt(ctx context.Context, id string) (*store.User, error) {
-	u, err := s.conn.q.ConsumeVerificationAttempt(ctx, id)
+func (s *userStore) ConsumeVerificationAttempt(ctx context.Context, id string, now time.Time, maxAttempts int64) (*store.User, error) {
+	u, err := s.conn.q.ConsumeVerificationAttempt(ctx, gendb.ConsumeVerificationAttemptParams{
+		ID:          id,
+		Now:         pgtime.NullOf(now),
+		MaxAttempts: int32(maxAttempts),
+	})
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -380,6 +388,59 @@ func (s *userStore) ClearCompetingPendingEmails(ctx context.Context, p store.Cle
 
 func (s *userStore) Delete(ctx context.Context, id string) error {
 	return mapErr(s.conn.q.DeleteUser(ctx, id))
+}
+
+func (s *userStore) SetPendingPasswordReset(ctx context.Context, p store.SetPendingPasswordResetParams) (bool, error) {
+	n, err := rowsAffected(s.conn.q.SetPendingPasswordReset(ctx, gendb.SetPendingPasswordResetParams{
+		PendingPasswordResetToken:     p.PendingPasswordResetToken,
+		PendingPasswordResetExpiresAt: pgtime.NullOf(p.PendingPasswordResetExpiresAt),
+		CooldownCutoff:                pgtime.NullOf(p.CooldownCutoff),
+		ID:                            p.ID,
+	}))
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+func (s *userStore) ClearPendingPasswordReset(ctx context.Context, id string) error {
+	return mapErr(s.conn.q.ClearPendingPasswordReset(ctx, id))
+}
+
+func (s *userStore) ConsumePasswordResetAttemptByToken(ctx context.Context, tokenHash string, now time.Time, maxAttempts int64) (*store.User, error) {
+	u, err := s.conn.q.ConsumePasswordResetAttemptByToken(ctx, gendb.ConsumePasswordResetAttemptByTokenParams{
+		Token:       tokenHash,
+		Now:         pgtime.NullOf(now),
+		MaxAttempts: int32(maxAttempts),
+	})
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	out := fromDBUser(u)
+	return &out, nil
+}
+
+func (s *userStore) CompletePasswordReset(ctx context.Context, p store.CompletePasswordResetParams) (*store.PasswordResetRevocation, error) {
+	row, err := s.conn.q.CompletePasswordReset(ctx, gendb.CompletePasswordResetParams{
+		PasswordHash:              p.PasswordHash,
+		ID:                        p.ID,
+		PendingPasswordResetToken: p.PendingPasswordResetToken,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, store.ErrNotFound
+	}
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	revokedAt, err := sqlutil.RequireTime(row.TokensRevokedAt.Time, row.TokensRevokedAt.Valid, "tokens_revoked_at")
+	if err != nil {
+		return nil, err
+	}
+	return &store.PasswordResetRevocation{
+		UserID:          row.ID,
+		TokensRevokedAt: revokedAt,
+		AuthGeneration:  row.AuthGeneration,
+	}, nil
 }
 
 func (s *userStore) RevokeUserTokens(ctx context.Context, userID userid.UserID) (int64, error) {

@@ -91,7 +91,7 @@ func TestLoginOAuthUser_UsesConfiguredSessionDuration(t *testing.T) {
 	require.NoError(t, err, "the callback must set a session cookie")
 	hubtestutil.AssertSessionLifetime(t, before, configured, parsed.Expires)
 
-	sess, err := st.Sessions().GetByID(context.Background(), parsed.Value)
+	sess, err := st.Sessions().GetByID(context.Background(), parsed.Value, time.Now().UTC())
 	require.NoError(t, err)
 	assert.WithinDuration(t, sess.ExpiresAt, parsed.Expires, time.Second,
 		"the cookie and the row must carry the same deadline")

@@ -1,6 +1,7 @@
 import type { CaptchaFieldHandle } from './CaptchaField'
 /// <reference types="vitest/globals" />
 import { render } from '@solidjs/testing-library'
+import { createSignal } from 'solid-js'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mockLoadSystemInfo, resetSystemInfoMock, setSystemInfoMock } from '~/test-support/systemInfoMock'
@@ -199,5 +200,21 @@ describe('recaptchaV3Field', () => {
     const callsAfterUnmount = execute.mock.calls.length
     vi.advanceTimersByTime(110_000)
     expect(execute.mock.calls.length).toBe(callsAfterUnmount)
+  })
+
+  it('re-executes when the form action changes', async () => {
+    const execute = installFakeGrecaptcha()
+    const [action, setAction] = createSignal('login')
+    render(() => (
+      <div><RecaptchaV3Field action={action()} onPayload={vi.fn()} /></div>
+    ))
+    await vi.waitFor(() => {
+      expect(execute).toHaveBeenCalledWith('site-key', { action: 'login' })
+    })
+
+    setAction('passkey_login')
+    await vi.waitFor(() => {
+      expect(execute).toHaveBeenCalledWith('site-key', { action: 'passkey_login' })
+    })
   })
 })

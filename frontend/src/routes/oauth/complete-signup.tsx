@@ -85,7 +85,9 @@ const OAuthCompleteSignupPage: Component = () => {
       // to /verify-email so they can paste the code (or click through).
       // The session was created server-side, so the authenticated
       // VerifyEmail RPC is reachable from there.
-      if (resp.verificationRequired) {
+      if (resp.emailVerification?.verificationRequired) {
+        if (resp.emailVerification.nextResendAvailableAt)
+          auth.setVerificationResendAvailableAt(resp.emailVerification.nextResendAvailableAt)
         navigate('/verify-email', { replace: true })
       }
       else {

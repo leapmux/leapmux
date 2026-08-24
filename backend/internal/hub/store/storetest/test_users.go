@@ -514,7 +514,7 @@ func (s *Suite) testUsers(t *testing.T) {
 		for range attemptCount {
 			go func() {
 				<-start
-				updated, err := st.Users().ConsumeVerificationAttempt(ctx, user.ID)
+				updated, err := st.Users().ConsumeVerificationAttempt(ctx, user.ID, time.Now().UTC(), 5)
 				if err != nil {
 					results <- attemptResult{err: err}
 					return

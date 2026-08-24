@@ -29,7 +29,7 @@ func (s *Suite) testCleanup(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		n, err := st.Cleanup().HardDeleteExpiredSessions(ctx)
+		n, err := st.Cleanup().HardDeleteExpiredSessions(ctx, time.Now().UTC())
 		require.NoError(t, err)
 		assert.Equal(t, int64(1), n)
 	})
@@ -272,7 +272,7 @@ func (s *Suite) testCleanup(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		_, err = st.Cleanup().DeleteExpiredOAuthStates(ctx)
+		_, err = st.Cleanup().DeleteExpiredOAuthStates(ctx, time.Now().UTC())
 		require.NoError(t, err)
 
 		_, err = st.OAuthStates().Get(ctx, state)
@@ -300,7 +300,7 @@ func (s *Suite) testCleanup(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		_, err = st.Cleanup().DeleteExpiredPendingOAuthSignups(ctx)
+		_, err = st.Cleanup().DeleteExpiredPendingOAuthSignups(ctx, time.Now().UTC())
 		require.NoError(t, err)
 
 		_, err = st.PendingOAuthSignups().Get(ctx, token)
@@ -311,7 +311,7 @@ func (s *Suite) testCleanup(t *testing.T) {
 		st := s.NewStore(t)
 		cutoff := time.Now()
 
-		n, err := st.Cleanup().HardDeleteExpiredSessions(ctx)
+		n, err := st.Cleanup().HardDeleteExpiredSessions(ctx, time.Now().UTC())
 		require.NoError(t, err)
 		assert.Equal(t, int64(0), n)
 
@@ -352,12 +352,12 @@ func (s *Suite) testCleanup(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		n, err := st.Cleanup().HardDeleteExpiredSessions(ctx)
+		n, err := st.Cleanup().HardDeleteExpiredSessions(ctx, time.Now().UTC())
 		require.NoError(t, err)
 		assert.Equal(t, int64(1), n)
 
 		// Active session should still exist.
-		_, err = st.Sessions().GetByID(ctx, activeSess.ID)
+		_, err = st.Sessions().GetByID(ctx, activeSess.ID, time.Now().UTC())
 		require.NoError(t, err)
 	})
 

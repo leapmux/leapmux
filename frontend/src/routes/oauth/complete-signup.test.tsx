@@ -42,6 +42,7 @@ vi.mock('~/components/common/CaptchaField', () => ({
 }))
 
 const mockSetAuth = vi.fn()
+const mockSetVerificationResendAvailableAt = vi.fn()
 vi.mock('~/context/AuthContext', () => ({
   useAuth: () => ({
     user: () => null,
@@ -50,6 +51,7 @@ vi.mock('~/context/AuthContext', () => ({
     login: vi.fn(),
     logout: vi.fn(),
     setAuth: mockSetAuth,
+    setVerificationResendAvailableAt: mockSetVerificationResendAvailableAt,
     isAuthenticated: () => false,
   }),
   AuthProvider: (props: { children: unknown }) => <>{props.children}</>,

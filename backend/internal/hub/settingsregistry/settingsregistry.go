@@ -16,16 +16,16 @@ import (
 )
 
 // NewManager builds the settings manager over st with every domain's
-// descriptors registered and both cross-key rules attached (SMTP
-// availability for email verification; provider completeness for the
-// captcha selection). Extra options — test TTLs and clock overrides —
-// apply after the registry defaults, so callers never restate the
-// registry itself.
+// descriptors registered and the captcha cross-key rule attached (provider
+// completeness for the captcha selection). Email verification follows SMTP
+// via EmailVerificationEffective — there is no separate verification toggle.
+// Extra options — test TTLs and clock overrides — apply after the registry
+// defaults, so callers never restate the registry itself.
 func NewManager(st store.Store, ks *keystore.Keystore, opts ...settings.Option) *settings.Manager {
 	descs := append(settings.CoreDescriptors(), captcha.SettingsDescriptors()...)
 	descs = append(descs, ratelimit.SettingsDescriptors()...)
 	opts = append([]settings.Option{
-		settings.WithCrossValidation(settings.SMTPConfigured, captcha.SelectedConfigured),
+		settings.WithCrossValidation(captcha.SelectedConfigured),
 	}, opts...)
 	return settings.NewManager(st, ks, descs, opts...)
 }

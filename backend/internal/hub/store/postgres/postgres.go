@@ -147,6 +147,12 @@ func (s *pgStore) OAuthUserLinks() store.OAuthUserLinkStore {
 func (s *pgStore) PendingOAuthSignups() store.PendingOAuthSignupStore {
 	return &pendingOAuthSignupStore{conn: s.conn}
 }
+func (s *pgStore) PasskeyCredentials() store.PasskeyCredentialStore {
+	return &passkeyCredentialStore{conn: s.conn}
+}
+func (s *pgStore) WebAuthnSessions() store.WebAuthnSessionStore {
+	return &webAuthnSessionStore{conn: s.conn}
+}
 func (s *pgStore) Settings() store.SettingsStore {
 	return &settingsStore{conn: s.conn}
 }

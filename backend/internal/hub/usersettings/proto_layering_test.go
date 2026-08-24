@@ -96,9 +96,11 @@ func TestUserProtoDoesNotReachAdminProto(t *testing.T) {
 	require.Equal(t, []string{userProtoPath, settingsProtoPath},
 		importChain(userProto, settingsProtoPath),
 		"user.proto no longer imports settings.proto directly")
-	require.Equal(t, []string{userProtoPath, settingsProtoPath, timestampProtoPath},
+	// user.proto also imports timestamp.proto directly (passkey RPCs), so the
+	// shortest chain to timestamp skips settings.
+	require.Equal(t, []string{userProtoPath, timestampProtoPath},
 		importChain(userProto, timestampProtoPath),
-		"the transitive walk is broken, so the refusal below would prove nothing")
+		"user.proto must still reach timestamp.proto (directly or transitively)")
 
 	chain := importChain(userProto, adminProtoPath)
 	assert.Nilf(t, chain,

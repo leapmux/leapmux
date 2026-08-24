@@ -837,6 +837,45 @@ export async function signUpViaUI(page: Page, username: string, password: string
   await page.getByRole('button', { name: 'Sign up' }).click()
 }
 
+/** Sign up with a passkey via the signup form (virtual authenticator must be enabled). */
+export async function signUpWithPasskeyViaUI(
+  page: Page,
+  username: string,
+  email: string,
+  displayName = '',
+) {
+  await page.goto('/signup')
+  await page.getByLabel('Username').fill(username)
+  if (displayName) {
+    await page.getByLabel('Display Name').fill(displayName)
+  }
+  await page.getByLabel('Email').fill(email)
+  await page.getByRole('radio', { name: 'Passkey' }).click()
+  await solveCaptchaViaUI(page)
+  await page.getByRole('button', { name: 'Sign up with passkey' }).click()
+  await expect(page).not.toHaveURL(/\/signup(?:\?.*)?$/)
+}
+
+/** Log in with a passkey via the login form (virtual authenticator must be enabled). */
+export async function loginWithPasskeyViaUI(page: Page, username: string) {
+  await page.goto('/login')
+  await page.getByLabel('Username').fill(username)
+  await page.getByLabel('Username').blur()
+  const passkeyRadio = page.getByRole('radio', { name: 'Passkey' })
+  if (await passkeyRadio.isVisible().catch(() => false))
+    await passkeyRadio.click()
+  await solveCaptchaViaUI(page)
+  await page.getByRole('button', { name: /Sign in with passkey/i }).click()
+  await expect(page).toHaveURL(/\/$/)
+  await appMenuTrigger(page).waitFor({ state: 'visible' })
+}
+
+/** Open Preferences on the account / profile section. */
+export async function openAccountSettings(page: Page) {
+  await openPreferencesDialog(page, 'account')
+  return page.getByRole('dialog', { name: 'Preferences' })
+}
+
 /**
  * Logout via the app menu (titlebar on desktop, tab-bar "+" menu on mobile).
  */

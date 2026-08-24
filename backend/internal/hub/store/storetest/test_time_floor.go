@@ -124,7 +124,7 @@ func (s *Suite) testTimeFloor(t *testing.T) {
 			UserID:    userid.MustNew(user.ID),
 			ExpiresAt: expiresAt,
 		}))
-		sess, err := st.Sessions().GetByID(ctx, sessionID)
+		sess, err := st.Sessions().GetByID(ctx, sessionID, time.Now().UTC())
 		require.NoError(t, err)
 		assertStoredInstant(t, "expires_at", expiresAt, sess.ExpiresAt)
 
@@ -137,10 +137,11 @@ func (s *Suite) testTimeFloor(t *testing.T) {
 			ID:           sessionID,
 			ExpiresAt:    touchedExpiresAt,
 			LastActiveAt: floorProbe(base, 1),
+			Now:          time.Now().UTC(),
 		})
 		require.NoError(t, err)
 		require.EqualValues(t, 1, n)
-		sess, err = st.Sessions().GetByID(ctx, sessionID)
+		sess, err = st.Sessions().GetByID(ctx, sessionID, time.Now().UTC())
 		require.NoError(t, err)
 		assertStoredInstant(t, "touched expires_at", touchedExpiresAt, sess.ExpiresAt)
 	})
@@ -181,7 +182,7 @@ func (s *Suite) testTimeFloor(t *testing.T) {
 			ExpiresAt:     expiresAt,
 		}))
 
-		code, err := st.CLIAuthorizationCodes().GetActive(ctx, "floor-code")
+		code, err := st.CLIAuthorizationCodes().GetActive(ctx, "floor-code", time.Now().UTC())
 		require.NoError(t, err)
 		assertStoredInstant(t, "expires_at", expiresAt, code.ExpiresAt)
 	})

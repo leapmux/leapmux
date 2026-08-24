@@ -31,7 +31,7 @@ var ctx = context.Background()
 // membership rather than paging behavior.
 func ListAllSessions(t *testing.T, st store.Store, userID string) []store.UserSession {
 	t.Helper()
-	page, err := st.Sessions().ListByUserID(ctx, store.ListUserSessionsParams{UserID: userid.MustNew(userID), PageParams: store.PageParams{Limit: 1000}})
+	page, err := st.Sessions().ListByUserID(ctx, store.ListUserSessionsParams{UserID: userid.MustNew(userID), PageParams: store.PageParams{Limit: 1000}, Now: time.Now().UTC()})
 	require.NoError(t, err)
 	return page.Rows
 }
@@ -203,7 +203,7 @@ func SeedSession(t *testing.T, st store.Store, userID string) *store.UserSession
 	})
 	require.NoError(t, err)
 
-	sess, err := st.Sessions().GetByID(ctx, sessID)
+	sess, err := st.Sessions().GetByID(ctx, sessID, time.Now().UTC())
 	require.NoError(t, err)
 	return sess
 }

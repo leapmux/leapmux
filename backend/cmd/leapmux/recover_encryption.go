@@ -76,10 +76,10 @@ func runRemoveEncryptionKey(cmd cmdCtx, args []string) error {
 // countEncryptedRefs returns human-readable descriptions of data still
 // encrypted under the given key version. An empty result means the version is
 // safe to remove. It scans the persistent encrypted secrets — OAuth provider
-// client secrets, user OAuth tokens, and captcha provider secrets. Transient
-// pending_oauth_signups are not scanned: they auto-expire, are never migrated
-// by reencrypt, and a bricked one only fails an in-flight signup the user can
-// simply retry.
+// client secrets, user OAuth tokens, captcha provider secrets, and passkey
+// public keys. Transient pending_oauth_signups and webauthn_sessions are not
+// scanned: they auto-expire, are never migrated by reencrypt, and a bricked
+// row only fails an in-flight signup or ceremony the user can simply retry.
 func countEncryptedRefs(ctx context.Context, st store.Store, version uint32) ([]string, error) {
 	var refs []string
 
@@ -120,6 +120,14 @@ func countEncryptedRefs(ctx context.Context, st store.Store, version uint32) ([]
 	}
 	if settingsCount > 0 {
 		refs = append(refs, fmt.Sprintf("%d settings secret(s)", settingsCount))
+	}
+
+	passkeys, err := st.PasskeyCredentials().CountByKeyVersion(ctx, int64(version))
+	if err != nil {
+		return nil, fmt.Errorf("count passkey credentials for key version %d: %w", version, err)
+	}
+	if passkeys > 0 {
+		refs = append(refs, fmt.Sprintf("%d passkey credential(s)", passkeys))
 	}
 
 	return refs, nil
@@ -265,6 +273,34 @@ func runReencryptSecrets(cmd cmdCtx, args []string) error {
 				return fmt.Errorf("update settings secret for %s: %w", row.Key, err)
 			}
 			count++
+		}
+
+		// Re-encrypt passkey_credentials.public_key rows.
+		for _, ver := range ks.Versions() {
+			if ver == activeVer {
+				continue
+			}
+			passkeys, listErr := st.PasskeyCredentials().ListByKeyVersion(ctx, int64(ver))
+			if listErr != nil {
+				return fmt.Errorf("list passkey credentials for key version %d: %w", ver, listErr)
+			}
+			for _, pk := range passkeys {
+				aad := keystore.PasskeyPublicKeyAAD(pk.ID)
+				newCt, err := reencryptBlob(ks, pk.PublicKey, aad,
+					fmt.Sprintf("passkey public key %s", pk.ID))
+				if err != nil {
+					return err
+				}
+				if err := st.PasskeyCredentials().UpdatePublicKey(ctx, store.UpdatePasskeyPublicKeyParams{
+					ID:         pk.ID,
+					UserID:     pk.UserID,
+					PublicKey:  newCt,
+					KeyVersion: int64(activeVer),
+				}); err != nil {
+					return fmt.Errorf("update passkey credential %s: %w", pk.ID, err)
+				}
+				count++
+			}
 		}
 
 		fmt.Printf("Re-encrypted %d secrets to key version %d.\n", count, activeVer)

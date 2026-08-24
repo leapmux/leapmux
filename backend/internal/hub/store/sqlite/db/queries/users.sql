@@ -184,10 +184,10 @@ RETURNING id, updated_at;
 UPDATE users
 SET pending_email_attempts = pending_email_attempts + 1,
     pending_email_expires_at = CASE
-        WHEN pending_email_attempts + 1 > 5 THEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        WHEN pending_email_attempts + 1 > sqlc.arg(max_attempts) THEN sqlc.arg(now)
         ELSE pending_email_expires_at END,
     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-WHERE id = ? AND pending_email_token != ''
+WHERE id = sqlc.arg(id) AND pending_email_token != ''
 RETURNING *;
 
 -- name: ClearCompetingPendingEmails :exec
@@ -220,4 +220,58 @@ SET tokens_revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
     auth_generation   = auth_generation + 1,
     updated_at        = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE id = ?
+RETURNING id, tokens_revoked_at, auth_generation;
+
+-- name: SetPendingPasswordReset :execresult
+-- Conditional mint: the write lands only when no previous token exists or
+-- the previous token's expiry is at or before cooldown_cutoff, so two
+-- concurrent requests for one account cannot both mint and both send (the
+-- loser matches no row). The Go caller derives cooldown_cutoff from the
+-- resend cooldown; the comparison stays on the app clock, the same clock
+-- that wrote the expiry.
+UPDATE users
+SET pending_password_reset_token = sqlc.arg(pending_password_reset_token),
+    pending_password_reset_expires_at = sqlc.arg(pending_password_reset_expires_at),
+    pending_password_reset_attempts = 0,
+    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+WHERE id = sqlc.arg(id)
+  AND (pending_password_reset_expires_at IS NULL
+       OR pending_password_reset_expires_at <= sqlc.arg(cooldown_cutoff));
+
+
+-- name: ClearPendingPasswordReset :exec
+UPDATE users
+SET pending_password_reset_token = '',
+    pending_password_reset_expires_at = NULL,
+    pending_password_reset_attempts = 0,
+    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+WHERE id = ?;
+
+-- name: ConsumePasswordResetAttemptByToken :one
+-- Charges one attempt against the row that holds this exact token. Keying
+-- the charge by the token (not the user id) makes the find, the charge, and
+-- the ownership re-check one statement: a token cleared between a caller's
+-- read and this update simply matches no row.
+UPDATE users
+SET pending_password_reset_expires_at = CASE
+        WHEN pending_password_reset_attempts + 1 > sqlc.arg(max_attempts) THEN sqlc.arg(now)
+        ELSE pending_password_reset_expires_at END,
+    pending_password_reset_attempts = pending_password_reset_attempts + 1,
+    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+WHERE pending_password_reset_token = sqlc.arg(token) AND pending_password_reset_token != ''
+  AND pending_password_reset_expires_at > sqlc.arg(now)
+  AND deleted_at IS NULL
+RETURNING *;
+
+-- name: CompletePasswordReset :one
+UPDATE users
+SET password_hash = sqlc.arg(password_hash),
+    password_set = 1,
+    pending_password_reset_token = '',
+    pending_password_reset_expires_at = NULL,
+    pending_password_reset_attempts = 0,
+    tokens_revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+    auth_generation = auth_generation + 1,
+    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+WHERE id = sqlc.arg(id) AND pending_password_reset_token = sqlc.arg(pending_password_reset_token)
 RETURNING id, tokens_revoked_at, auth_generation;

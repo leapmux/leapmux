@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/leapmux/leapmux/internal/hub/mail"
 )
@@ -44,6 +45,18 @@ func expectedRegistrationBody(command, hubURL string) string {
 	return b.String()
 }
 
+func expectedPasswordResetBody(link, hubURL string) string {
+	var b strings.Builder
+	b.WriteString("You requested a password reset for your LeapMux account.\n\n")
+	b.WriteString("Click the link below to choose a new password:\n\n    ")
+	b.WriteString(link)
+	b.WriteString("\n\nThe link expires in one hour. If you did not request this, you can ignore this email.\n\n")
+	b.WriteString(verificationFooterTrailingSpace + "\n")
+	b.WriteString("This is an automated message from your LeapMux hub at " + hubURL + ".\n")
+	b.WriteString("Please do not reply.\n")
+	return b.String()
+}
+
 // TestRenderer_VerificationEmail_Bytes is the exactness oracle for the
 // verification email's body. It pins every byte including the trailing
 // space on "-- ", the blank line before the link, and the {hubURL}
@@ -55,7 +68,7 @@ func TestRenderer_VerificationEmail_Bytes(t *testing.T) {
 	link := hubURL + "/verify-email?code=" + formatted
 
 	r := mail.Renderer{BaseURL: func() string { return hubURL }}
-	msg := r.VerificationEmail("alice@example.test", storedCode)
+	msg := r.VerificationEmail("alice@example.test", storedCode, 30*time.Minute)
 
 	if msg.To != "alice@example.test" {
 		t.Errorf("To = %q, want %q", msg.To, "alice@example.test")
@@ -70,6 +83,28 @@ func TestRenderer_VerificationEmail_Bytes(t *testing.T) {
 	}
 	if !strings.Contains(msg.Body, "\n-- \n") {
 		t.Error("body must contain the literal RFC 3676 §4.3 signature delimiter \"\\n-- \\n\" (dash-dash-space-newline)")
+	}
+}
+
+// TestRenderer_PasswordResetEmail_Bytes pins the password reset email body.
+func TestRenderer_PasswordResetEmail_Bytes(t *testing.T) {
+	const token = "abc123"
+	const hubURL = "https://hub.example.com"
+	link := hubURL + "/reset-password?token=" + token
+
+	r := mail.Renderer{BaseURL: func() string { return hubURL }}
+	msg := r.PasswordResetEmail("alice@example.test", token, time.Hour)
+
+	if msg.To != "alice@example.test" {
+		t.Errorf("To = %q, want %q", msg.To, "alice@example.test")
+	}
+	if msg.Subject != "[LeapMux] Reset your password" {
+		t.Errorf("Subject = %q, want %q", msg.Subject, "[LeapMux] Reset your password")
+	}
+
+	want := expectedPasswordResetBody(link, hubURL)
+	if msg.Body != want {
+		t.Errorf("Body bytes mismatch.\n got: %q\nwant: %q", msg.Body, want)
 	}
 }
 
@@ -110,7 +145,7 @@ func printForExample(msg mail.Message) string {
 
 func ExampleRenderer_VerificationEmail() {
 	r := mail.Renderer{BaseURL: func() string { return "https://hub.example.com" }}
-	msg := r.VerificationEmail("alice@example.test", "ABC234")
+	msg := r.VerificationEmail("alice@example.test", "ABC234", 30*time.Minute)
 	fmt.Print(printForExample(msg))
 	// Output:
 	// [LeapMux] Verify your email address
@@ -151,4 +186,17 @@ func ExampleRenderer_RegistrationInstructions() {
 	// -- ␠
 	// This is an automated message from your LeapMux hub at https://hub.example.com.
 	// Please do not reply.
+}
+
+// A renderer must reflect the TTL argument it was given: the sentence and
+// the token lifetime come from one constant, so they cannot drift.
+func TestRenderersReflectTTLArgument(t *testing.T) {
+	v := mail.Renderer{}.VerificationEmail("alice@example.test", "ABC234", 2*time.Hour)
+	if !strings.Contains(v.Body, "The code expires in 120 minutes.") {
+		t.Errorf("verification body does not reflect the TTL: %q", v.Body)
+	}
+	p := mail.Renderer{}.PasswordResetEmail("alice@example.test", "tok", 2*time.Hour)
+	if !strings.Contains(p.Body, "The link expires in 120 minutes.") {
+		t.Errorf("reset body does not reflect the TTL: %q", p.Body)
+	}
 }

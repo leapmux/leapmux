@@ -54,13 +54,11 @@ func seedSMTP(t *testing.T, set *settings.Manager) {
 		`{"host":"smtp.example.test","port":587,"from_address":"hub@example.test","tls_mode":"starttls"}`)))
 }
 
-// enableEmailVerification turns the verification gate on. The gate reads
-// the setting as EFFECTIVE (verification requires a working SMTP relay),
-// so the seed configures both.
+// enableEmailVerification turns the verification gate on by configuring SMTP.
+// EmailVerificationEffective follows SMTP.Enabled() only.
 func enableEmailVerification(t *testing.T, set *settings.Manager) {
 	t.Helper()
 	seedSMTP(t, set)
-	require.NoError(t, settings.KeyEmailVerificationRequired.Set(context.Background(), set, true))
 }
 
 // setSessionDuration stamps every session a service mints with the given

@@ -46,7 +46,7 @@ func (s *Suite) testCLIAuthorizations(t *testing.T) {
 		require.Equal(t, int64(1), rows)
 		time.Sleep(time.Until(expiresAt) + 100*time.Millisecond)
 
-		rows, err = st.DeviceAuthorizations().Consume(ctx, deviceCode)
+		rows, err = st.DeviceAuthorizations().Consume(ctx, deviceCode, time.Now().UTC())
 		require.NoError(t, err)
 		assert.Zero(t, rows)
 	})

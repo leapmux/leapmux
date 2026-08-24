@@ -1,10 +1,11 @@
 import type { Component } from 'solid-js'
 import type { OAuthProviderInfo } from '~/generated/leapmux/v1/auth_pb'
 
-import { A, useNavigate } from '@solidjs/router'
+import { A, useNavigate, useSearchParams } from '@solidjs/router'
 import { createSignal, onMount, Show } from 'solid-js'
 import { OAuthProviderList } from '~/components/common/OAuthProviderList'
 import { useAuth } from '~/context/AuthContext'
+import { safeRedirect } from '~/lib/safeRedirect'
 import { isSignupEnabled, loadOAuthProviders } from '~/lib/systemInfo'
 import { pageCard } from '~/styles/shared.css'
 import * as styles from './LoginPage.css'
@@ -13,6 +14,7 @@ import { SignupForm } from './SignupForm'
 
 export const SignupPage: Component = () => {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const auth = useAuth()
   const [ready, setReady] = createSignal(false)
   const [verificationSent, setVerificationSent] = createSignal(false)
@@ -60,20 +62,21 @@ export const SignupPage: Component = () => {
                   </Show>
                 )}
                 onSuccess={(resp) => {
+                  // The signup RPC creates a session even when verification
+                  // is required, so the user can hit the authenticated
+                  // VerifyEmail RPC directly. Send them to the verify page to
+                  // click the email link or paste the code.
+                  auth.setAuth(resp.user)
                   if (resp.verificationRequired) {
-                    // The signup RPC now creates a session even when
-                    // verification is required, so the user can hit the
-                    // authenticated VerifyEmail RPC directly. Navigate
-                    // them to the verify page so they can either click
-                    // the link from the email or paste the code.
-                    auth.setAuth(resp.user!)
+                    auth.setVerificationResendAvailableAt(resp.nextResendAvailableAt)
                     setVerificationSent(true)
                     navigate('/verify-email', { replace: true })
+                    return
                   }
-                  else {
-                    auth.setAuth(resp.user!)
-                    navigate('/', { replace: true })
-                  }
+                  // Same redirect contract as login (see safeRedirect):
+                  // a safe in-app path wins, anything else goes home.
+                  const redirect = safeRedirect(typeof searchParams.redirect === 'string' ? searchParams.redirect : undefined)
+                  navigate(redirect ?? '/', { replace: true })
                 }}
               />
               <div class={styles.authFooter}>

@@ -233,3 +233,35 @@ func TestDrainUntilEmpty(t *testing.T) {
 		assert.Zero(t, calls)
 	})
 }
+
+func TestRun_DeletesExpiredWebAuthnSessions(t *testing.T) {
+	st := setupTestStore(t)
+	ctx := context.Background()
+
+	userID := id.Generate()
+	hash, err := password.Hash("TestPassword1!")
+	require.NoError(t, err)
+	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
+		ID: userID, Username: "wauser",
+		PasswordHash: hash, DisplayName: "WA", PasswordSet: true,
+	}))
+
+	expiredID := id.Generate()
+	liveID := id.Generate()
+	now := time.Now().UTC()
+	require.NoError(t, st.WebAuthnSessions().Create(ctx, store.CreateWebAuthnSessionParams{
+		ID: expiredID, Kind: "login", UserID: userID, PayloadJSON: "{}",
+		SessionData: []byte("x"), ExpiresAt: now.Add(-time.Hour), CreatedAt: now.Add(-2 * time.Hour),
+	}))
+	require.NoError(t, st.WebAuthnSessions().Create(ctx, store.CreateWebAuthnSessionParams{
+		ID: liveID, Kind: "login", UserID: userID, PayloadJSON: "{}",
+		SessionData: []byte("y"), ExpiresAt: now.Add(time.Hour), CreatedAt: now,
+	}))
+
+	run(ctx, st)
+
+	_, err = st.WebAuthnSessions().Get(ctx, expiredID)
+	require.ErrorIs(t, err, store.ErrNotFound)
+	_, err = st.WebAuthnSessions().Get(ctx, liveID)
+	require.NoError(t, err)
+}

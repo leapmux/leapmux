@@ -95,7 +95,7 @@ func (s *Suite) testOAuthTokens(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		tokens, err := st.OAuthTokens().ListExpiring(ctx)
+		tokens, err := st.OAuthTokens().ListExpiring(ctx, time.Now().UTC().Add(5*time.Minute))
 		require.NoError(t, err)
 		assert.NotEmpty(t, tokens)
 	})
@@ -261,7 +261,7 @@ func (s *Suite) testOAuthTokens(t *testing.T) {
 	t.Run("list expiring empty", func(t *testing.T) {
 		st := s.NewStore(t)
 
-		tokens, err := st.OAuthTokens().ListExpiring(ctx)
+		tokens, err := st.OAuthTokens().ListExpiring(ctx, time.Now().UTC().Add(5*time.Minute))
 		require.NoError(t, err)
 		require.NotNil(t, tokens)
 		assert.Empty(t, tokens)

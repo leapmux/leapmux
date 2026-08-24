@@ -174,7 +174,7 @@ func (httpAuthFailureStore) Sessions() store.SessionStore {
 
 type httpAuthFailureSessions struct{ store.SessionStore }
 
-func (httpAuthFailureSessions) ValidateWithUser(context.Context, string) (*store.SessionWithUser, error) {
+func (httpAuthFailureSessions) ValidateWithUser(context.Context, string, time.Time) (*store.SessionWithUser, error) {
 	return nil, errors.New("sensitive database failure")
 }
 

@@ -23,6 +23,10 @@ var (
 	_ captchaRequest = (*leapmuxv1.LoginRequest)(nil)
 	_ captchaRequest = (*leapmuxv1.SignUpRequest)(nil)
 	_ captchaRequest = (*leapmuxv1.CompleteOAuthSignupRequest)(nil)
+	_ captchaRequest = (*leapmuxv1.BeginPasskeyLoginRequest)(nil)
+	_ captchaRequest = (*leapmuxv1.BeginPasskeySignUpRequest)(nil)
+	_ captchaRequest = (*leapmuxv1.RequestPasswordResetRequest)(nil)
+	_ captchaRequest = (*leapmuxv1.CompletePasswordResetRequest)(nil)
 )
 
 // protectedProcedure is one protected procedure's captcha contract.
@@ -42,9 +46,13 @@ type protectedProcedure struct {
 // action in the same entry makes a protected procedure without an action
 // structurally impossible.
 var protectedProcedures = map[string]protectedProcedure{
-	leapmuxv1connect.AuthServiceLoginProcedure:               {action: "login"},
-	leapmuxv1connect.AuthServiceSignUpProcedure:              {action: "signup"},
-	leapmuxv1connect.AuthServiceCompleteOAuthSignupProcedure: {action: "complete_signup"},
+	leapmuxv1connect.AuthServiceLoginProcedure:                 {action: "login"},
+	leapmuxv1connect.AuthServiceSignUpProcedure:                {action: "signup"},
+	leapmuxv1connect.AuthServiceCompleteOAuthSignupProcedure:   {action: "complete_signup"},
+	leapmuxv1connect.AuthServiceBeginPasskeyLoginProcedure:     {action: "passkey_login"},
+	leapmuxv1connect.AuthServiceBeginPasskeySignUpProcedure:    {action: "passkey_signup"},
+	leapmuxv1connect.AuthServiceRequestPasswordResetProcedure:  {action: "password_reset"},
+	leapmuxv1connect.AuthServiceCompletePasswordResetProcedure: {action: "complete_password_reset"},
 }
 
 // NewInterceptor returns a unary interceptor enforcing captcha + honeypot

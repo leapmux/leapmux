@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"time"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
@@ -34,8 +35,11 @@ func (s *cliAuthorizationCodeStore) Create(ctx context.Context, p store.CreateCL
 	}))
 }
 
-func (s *cliAuthorizationCodeStore) GetActive(ctx context.Context, code string) (*store.CLIAuthorizationCode, error) {
-	row, err := s.conn.q.GetActiveCLIAuthorizationCode(ctx, code)
+func (s *cliAuthorizationCodeStore) GetActive(ctx context.Context, code string, now time.Time) (*store.CLIAuthorizationCode, error) {
+	row, err := s.conn.q.GetActiveCLIAuthorizationCode(ctx, gendb.GetActiveCLIAuthorizationCodeParams{
+		Code: code,
+		Now:  pgtime.New(now),
+	})
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -43,8 +47,11 @@ func (s *cliAuthorizationCodeStore) GetActive(ctx context.Context, code string) 
 	return &out, nil
 }
 
-func (s *cliAuthorizationCodeStore) Consume(ctx context.Context, code string) (*store.CLIAuthorizationCode, error) {
-	row, err := s.conn.q.ConsumeCLIAuthorizationCode(ctx, code)
+func (s *cliAuthorizationCodeStore) Consume(ctx context.Context, code string, now time.Time) (*store.CLIAuthorizationCode, error) {
+	row, err := s.conn.q.ConsumeCLIAuthorizationCode(ctx, gendb.ConsumeCLIAuthorizationCodeParams{
+		Code: code,
+		Now:  pgtime.New(now),
+	})
 	if err != nil {
 		return nil, mapErr(err)
 	}

@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"connectrpc.com/connect"
@@ -25,8 +26,16 @@ const pendingEmailExpiry = 30 * time.Minute
 
 // maxVerificationAttempts is the per-code attempt budget. The 6th wrong
 // guess force-expires the code. With a 31-character alphabet this caps
-// the success probability of a remote brute-force at 5/31^6 ≈ 5e-9.
+// the success probability of a remote brute-force at 5/31^6 ≈ 5e-9. The
+// SQL force-expire binds this same constant (sqlc.arg(max_attempts)), so
+// the Go gate and the store can never disagree at the boundary attempt.
 const maxVerificationAttempts = 5
+
+// maxPasswordResetAttempts is the per-token attempt budget for the
+// self-service password reset. The token is a 285-bit secret, so the
+// budget is defense-in-depth against a throttled oracle, not a
+// brute-force bound; the SQL force-expire binds the same constant.
+const maxPasswordResetAttempts = 5
 
 // CreateUserParams holds the parameters for creating a new user.
 type CreateUserParams struct {
@@ -39,60 +48,121 @@ type CreateUserParams struct {
 	IsAdmin       bool
 }
 
-// CreateUser creates a user and seeds their default sidebar sections. It
-// returns the created user row.
-//
-// Both writes share ONE transaction, so a user can never exist without the
-// sections. That is what lets ListSections stay a pure read: seeding them
-// there instead was a read-modify-write that nothing serialized, so two
-// concurrent reads for one user each saw an empty list and each wrote a full
-// set, and the sidebar rendered two of every section.
-func CreateUser(ctx context.Context, st store.Store, p CreateUserParams) (*store.User, error) {
-	userID := id.Generate()
+// createUserTxParams describes one account creation. Extra runs inside the
+// same transaction after the user row exists, so a flavor-specific artifact
+// (a passkey credential, an OAuth link) commits with the account.
+type createUserTxParams struct {
+	userID        string // empty: generated here
+	username      string
+	displayName   string
+	email         string // direct email column value
+	emailVerified bool
+	pendingEmail  string // non-empty: stored as the pending verification row
+	passwordHash  string
+	passwordSet   bool
+	isAdmin       bool
+	extra         func(tx store.Store) error
+}
 
-	// The sections are keyed by a typed UserID. Refuse an empty id instead of
-	// panicking through MustNew: nothing is written yet, so failing here costs
-	// only the request, and a panic in a signup handler costs the process.
-	sectionOwner, ok := userid.New(userID)
-	if !ok {
-		return nil, fmt.Errorf("create user: generated an empty user id")
-	}
-
-	if err := st.RunInTransaction(ctx, func(tx store.Store) error {
+// createUserInTx creates the account, seeds the default sidebar sections,
+// runs the flavor hook, and stores the pending verification row, all in one
+// transaction. It returns the created user row and, when a pending email
+// was stored, the verification code. This one routine serves the admin
+// CreateUser verb and the password, OAuth, and passkey sign-up flavors, so
+// the create-user write shape and the user-always-has-sections invariant
+// cannot drift between them.
+func createUserInTx(ctx context.Context, st store.Store, opt createUserTxParams) (*store.User, string, error) {
+	var user *store.User
+	var code string
+	err := st.RunInTransaction(ctx, func(tx store.Store) error {
+		userID := opt.userID
+		if userID == "" {
+			userID = id.Generate()
+		}
+		sectionOwner, ok := userid.New(userID)
+		if !ok {
+			return fmt.Errorf("generated empty user id")
+		}
 		if err := tx.Users().Create(ctx, store.CreateUserParams{
 			ID:            userID,
-			Username:      p.Username,
-			PasswordHash:  p.PasswordHash,
-			DisplayName:   p.DisplayName,
-			Email:         p.Email,
-			EmailVerified: p.EmailVerified,
-			PasswordSet:   p.PasswordSet,
-			IsAdmin:       p.IsAdmin,
+			Username:      opt.username,
+			PasswordHash:  opt.passwordHash,
+			DisplayName:   opt.displayName,
+			Email:         opt.email,
+			EmailVerified: opt.emailVerified,
+			PasswordSet:   opt.passwordSet,
+			IsAdmin:       opt.isAdmin,
 		}); err != nil {
 			return fmt.Errorf("create user: %w", err)
 		}
 		if err := sections.InitDefaults(ctx, tx, sectionOwner); err != nil {
 			return fmt.Errorf("init sections: %w", err)
 		}
+		if opt.extra != nil {
+			if err := opt.extra(tx); err != nil {
+				return err
+			}
+		}
+		if opt.pendingEmail != "" {
+			code = verifycode.Generate()
+			expiresAt := time.Now().Add(pendingEmailExpiry).UTC()
+			if err := tx.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
+				ID:                    userID,
+				PendingEmail:          opt.pendingEmail,
+				PendingEmailToken:     code,
+				PendingEmailExpiresAt: &expiresAt,
+			}); err != nil {
+				return fmt.Errorf("set pending email: %w", err)
+			}
+		}
+		u, err := tx.Users().GetByID(ctx, userID)
+		if err != nil {
+			return err
+		}
+		user = u
 		return nil
-	}); err != nil {
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	return user, code, nil
+}
+
+// CreateUser creates a user and seeds their default sidebar sections. It
+// returns the created user row.
+//
+// The write itself lives in createUserInTx, the one transaction shared by
+// every account-creation flavor: a user can never exist without the
+// sections. That is what lets ListSections stay a pure read: seeding them
+// there instead was a read-modify-write that nothing serialized, so two
+// concurrent reads for one user each saw an empty list and each wrote a full
+// set, and the sidebar rendered two of every section.
+func CreateUser(ctx context.Context, st store.Store, p CreateUserParams) (*store.User, error) {
+	// Admins are always email_verified=true in the database, whatever the
+	// caller passed: the stored flag is what keeps the auth interceptor's
+	// runtime IsAdmin exemption honest, and UpdateUser's lowering verb
+	// refuses for admin accounts on the same invariant.
+	if p.IsAdmin {
+		p.EmailVerified = true
+	}
+
+	user, _, err := createUserInTx(ctx, st, createUserTxParams{
+		username:      p.Username,
+		displayName:   p.DisplayName,
+		email:         p.Email,
+		emailVerified: p.EmailVerified,
+		passwordHash:  p.PasswordHash,
+		passwordSet:   p.PasswordSet,
+		isAdmin:       p.IsAdmin,
+	})
+	if err != nil {
 		return nil, err
 	}
 
-	createdUser := &store.User{
-		ID:            userID,
-		Username:      p.Username,
-		DisplayName:   p.DisplayName,
-		Email:         p.Email,
-		EmailVerified: p.EmailVerified,
-		PasswordSet:   p.PasswordSet,
-		IsAdmin:       p.IsAdmin,
-	}
-
 	// If this user claimed a verified email, clear competing pending_email entries.
-	ClearCompetingPendingEmails(ctx, st, p.Email, createdUser.ID)
+	ClearCompetingPendingEmails(ctx, st, p.Email, user.ID)
 
-	return createdUser, nil
+	return user, nil
 }
 
 // SetEmailAndClearCompeting updates a user's email and clears competing
@@ -212,7 +282,7 @@ func verifyPendingEmailToken(ctx context.Context, st store.Store, userID, submit
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid verification code"))
 	}
 
-	user, err := st.Users().ConsumeVerificationAttempt(ctx, userID)
+	user, err := st.Users().ConsumeVerificationAttempt(ctx, userID, time.Now().UTC(), maxVerificationAttempts)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("no pending email change"))
@@ -285,9 +355,11 @@ func ClearCompetingPendingEmails(ctx context.Context, st store.Store, email, own
 // verification.
 //
 // Returns (sent, err): err signals a check or storage failure; sent=false
-// means the row was written but the mail send failed. The row stays in
-// place so signup / OAuth-signup / Resend callers can let the user try
-// again via Resend. Email-change callers should use
+// means the mail send failed. On a failed send the freshly stamped row is
+// cleared and the failure is logged server-side: a row whose code was
+// never delivered would block the immediate retry behind the resend
+// cooldown and leave the operator without a signal. Email-change callers
+// that surface the failure inline can use
 // issuePendingEmailVerificationOrRollback instead.
 func issuePendingEmailVerification(ctx context.Context, st store.Store, sender mail.Sender, renderer mail.Renderer, userID, email string) (bool, error) {
 	if err := CheckEmailAvailable(ctx, st, email, userID); err != nil {
@@ -304,24 +376,27 @@ func issuePendingEmailVerification(ctx context.Context, st store.Store, sender m
 		return false, fmt.Errorf("set pending email: %w", err)
 	}
 
-	if err := sender.Send(ctx, renderer.VerificationEmail(email, storedCode)); err != nil {
+	if err := sender.Send(ctx, renderer.VerificationEmail(email, storedCode, pendingEmailExpiry)); err != nil {
+		if clearErr := st.Users().ClearPendingEmail(ctx, userID); clearErr != nil {
+			slog.WarnContext(ctx, "clear pending email after failed verification send",
+				"user_id", userID, "err", clearErr)
+		}
+		slog.WarnContext(ctx, "verification email send failed; cleared pending row for retry",
+			"user_id", userID, "email", email, "err", err)
 		return false, nil
 	}
 	return true, nil
 }
 
 // issuePendingEmailVerificationOrRollback is like
-// issuePendingEmailVerification but, on send failure, clears the
-// pending_email row before returning the error so the user can retry
-// from a clean slate. Used by the email-change flow where the failure
-// is surfaced to the user inline.
+// issuePendingEmailVerification but returns an error on a failed send so
+// the email-change flow can surface the failure to the user inline.
 func issuePendingEmailVerificationOrRollback(ctx context.Context, st store.Store, sender mail.Sender, renderer mail.Renderer, userID, email string) error {
 	sent, err := issuePendingEmailVerification(ctx, st, sender, renderer, userID, email)
 	if err != nil {
 		return err
 	}
 	if !sent {
-		_ = st.Users().ClearPendingEmail(ctx, userID)
 		return fmt.Errorf("send verification email failed")
 	}
 	return nil

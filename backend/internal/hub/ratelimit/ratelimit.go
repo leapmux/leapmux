@@ -34,6 +34,11 @@ type Operation string
 const (
 	// OpChangePassword rate-limits UserService.ChangePassword per user.
 	OpChangePassword Operation = "change-password"
+	// OpPasskeyManagement rate-limits passkey management RPCs per user
+	// (Begin/Finish registration and reauth, rename, delete, deactivate).
+	// Same budget shape as ChangePassword: Argon2 verify on each failed
+	// current-password attempt; Begin/Finish also share the in-flight cap.
+	OpPasskeyManagement Operation = "passkey-management"
 )
 
 // Limits is one operation's effective budget.
@@ -82,7 +87,16 @@ var defaults = map[Operation]opSpec{
 	OpChangePassword: {
 		limits: Limits{MaxAttempts: 5, WindowSeconds: 900},
 		isCredentialFailure: func(err error) bool {
-			return errors.Is(err, auth.ErrInvalidCurrentPassword)
+			// ChangePassword also authenticates passkey-only accounts via a
+			// reauth proof; both wrong-secret classes count against the
+			// same budget.
+			return errors.Is(err, auth.ErrInvalidCurrentPassword) || errors.Is(err, auth.ErrInvalidReauthProof)
+		},
+	},
+	OpPasskeyManagement: {
+		limits: Limits{MaxAttempts: 5, WindowSeconds: 900},
+		isCredentialFailure: func(err error) bool {
+			return errors.Is(err, auth.ErrInvalidCurrentPassword) || errors.Is(err, auth.ErrInvalidReauthProof)
 		},
 	},
 }
@@ -156,7 +170,14 @@ func KnownOperations() []Operation {
 // The interceptor must be registered AFTER the auth interceptor so the
 // authenticated user is already in the context.
 var procedureOperations = map[string]Operation{
-	leapmuxv1connect.UserServiceChangePasswordProcedure: OpChangePassword,
+	leapmuxv1connect.UserServiceChangePasswordProcedure:            OpChangePassword,
+	leapmuxv1connect.UserServiceBeginPasskeyRegistrationProcedure:  OpPasskeyManagement,
+	leapmuxv1connect.UserServiceFinishPasskeyRegistrationProcedure: OpPasskeyManagement,
+	leapmuxv1connect.UserServiceBeginPasskeyReauthProcedure:        OpPasskeyManagement,
+	leapmuxv1connect.UserServiceFinishPasskeyReauthProcedure:       OpPasskeyManagement,
+	leapmuxv1connect.UserServiceRenamePasskeyProcedure:             OpPasskeyManagement,
+	leapmuxv1connect.UserServiceDeletePasskeyProcedure:             OpPasskeyManagement,
+	leapmuxv1connect.UserServiceDeactivatePasskeyAuthProcedure:     OpPasskeyManagement,
 }
 
 // effectiveLimit is the resolved per-operation policy.

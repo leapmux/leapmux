@@ -96,20 +96,6 @@ func TestSettingsReadTimeRulesAreRegistered(t *testing.T) {
 	// cross-key rules refuse them, which is exactly why a READ-time rule has
 	// to degrade them. Direct SQL plus a reload is how an operator reaches
 	// them, and how this test does.
-	t.Run("email_verification_required degrades without SMTP", func(t *testing.T) {
-		require.NoError(t, srv.Store().Settings().Upsert(ctx, store.UpsertSettingParams{
-			Key:   settings.KeyEmailVerificationRequired.Name(),
-			Value: ptrconv.Ptr("true"),
-		}))
-		require.NoError(t, set.Load(ctx))
-
-		snap := set.Snapshot(ctx)
-		require.Equal(t, true, snap.ValueOf(settings.KeyEmailVerificationRequired),
-			"the stored row says verification is required")
-		assert.Equal(t, false, set.Effective(snap, settings.KeyEmailVerificationRequired),
-			"with no SMTP host the hub cannot send, so verification degrades off")
-	})
-
 	t.Run("captcha.selected reports the provider that serves challenges", func(t *testing.T) {
 		selected := captcha.ProviderAlias(captcha.ProviderTurnstile)
 		require.NoError(t, srv.Store().Settings().Upsert(ctx, store.UpsertSettingParams{

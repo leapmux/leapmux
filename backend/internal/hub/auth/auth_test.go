@@ -68,7 +68,7 @@ func TestLogin_StampsTheGivenLifetime(t *testing.T) {
 	require.NoError(t, err)
 	hubtestutil.AssertSessionLifetime(t, before, lifetime, expiresAt)
 
-	sess, err := st.Sessions().GetByID(ctx, token)
+	sess, err := st.Sessions().GetByID(ctx, token, time.Now().UTC())
 	require.NoError(t, err)
 	assert.WithinDuration(t, expiresAt, sess.ExpiresAt, time.Second,
 		"the returned expiry and the stored row must be the same deadline")
@@ -286,6 +286,26 @@ func TestLogin_UnknownUser(t *testing.T) {
 
 	_, _, _, err := auth.Login(ctx, st, "nonexistent", "password", auth.DefaultSessionDuration)
 	require.Error(t, err)
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+}
+
+func TestLogin_PasswordNotSet_SameAsUnknownUser(t *testing.T) {
+	st := setupStore(t)
+	ctx := context.Background()
+	userID := id.Generate()
+	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
+		ID:           userID,
+		Username:     "pkonly",
+		PasswordHash: password.PlaceholderHash,
+		DisplayName:  "PK Only",
+		PasswordSet:  false,
+		IsAdmin:      false,
+	}))
+
+	_, _, _, err := auth.Login(ctx, st, "pkonly", "any-password", auth.DefaultSessionDuration)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), "invalid credentials")
 }
 
 func TestLogin_HashUnchangedAfterLogin(t *testing.T) {
@@ -483,7 +503,7 @@ func TestValidateToken_Success(t *testing.T) {
 	assert.Equal(t, "testuser", info.Username)
 	assert.True(t, info.IsAdmin)
 
-	session, err := st.Sessions().GetByID(ctx, token)
+	session, err := st.Sessions().GetByID(ctx, token, time.Now().UTC())
 	require.NoError(t, err)
 	assert.True(t, info.AuthenticatedAt.Equal(session.CreatedAt.UTC()),
 		"session auth basis should use the DB session creation timestamp")
@@ -667,7 +687,7 @@ type blankIDSessions struct {
 	row *store.SessionWithUser
 }
 
-func (s blankIDSessions) ValidateWithUser(context.Context, string) (*store.SessionWithUser, error) {
+func (s blankIDSessions) ValidateWithUser(context.Context, string, time.Time) (*store.SessionWithUser, error) {
 	return s.row, nil
 }
 

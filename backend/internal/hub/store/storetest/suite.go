@@ -38,6 +38,8 @@ func (s *Suite) Run(t *testing.T) {
 	t.Run("oauth_tokens", s.testOAuthTokens)
 	t.Run("oauth_user_links", s.testOAuthUserLinks)
 	t.Run("pending_oauth_signups", s.testPendingOAuthSignups)
+	t.Run("passkeys", s.testPasskeys)
+	t.Run("password reset store", s.testPasswordResetStore)
 	t.Run("hub_settings", s.testHubSettings)
 	t.Run("cli_authorizations", s.testCLIAuthorizations)
 	t.Run("transactions", s.testTransactions)
