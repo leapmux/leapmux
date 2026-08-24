@@ -68,8 +68,8 @@ export interface ThemeChooserProps<T extends ThemeValue | TerminalThemeValue> {
    */
   surface?: ThemeSurface
   /**
-   * How the row sits in its container. `center` for the first-impression
-   * surfaces, whose layouts are centred columns; `start` inside the Preferences
+   * How the row sits in its container. `center` for the no-workspace empty
+   * state, whose layout is a centred column; `start` inside the Preferences
    * dialog, where every other row's control begins at the left edge.
    */
   align?: 'start' | 'center'
@@ -82,9 +82,10 @@ export interface ThemeChooserProps<T extends ThemeValue | TerminalThemeValue> {
  * system/light/dark tri-switch, on one line.
  *
  * Purely presentational -- it neither reads nor writes a preference. Every
- * surface binds it through `useThemeChooser`, so the Preferences dialog, the
- * desktop launcher, the no-workspace empty state and the first-run setup page
- * cannot drift into writing different things.
+ * surface binds it through `useThemeChooser`, so the Preferences dialog and the
+ * no-workspace empty state cannot drift into writing different things. Those
+ * are the only two: a theme is stored per account, so the screens that render
+ * before an identity resolves carry no theme control at all.
  *
  * "FOLLOW THE APP" IS A PALETTE, AND IT GOVERNS THE ROW. `match-ui` used to be
  * offered twice -- as the first palette AND as the first mode pill -- which read

@@ -14,14 +14,15 @@ import { openPreferences, setShowAboutDialog, showAboutDialog } from '~/componen
 import { AuthProvider } from '~/context/AuthContext'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
 import { useCoreShortcuts } from '~/hooks/useCoreShortcuts'
-import { useReloadPreferencesOnIdentityChange } from '~/hooks/useReloadPreferencesOnIdentityChange'
+import { usePreferencesForIdentity } from '~/hooks/usePreferencesForIdentity'
 import { initStorageCleanup } from '~/lib/browserStorage'
 import { createLogger } from '~/lib/logger'
 import { resolveSyntaxPair, resolveSyntaxVariant, setSyntaxTheme } from '~/lib/syntaxThemeStore'
 import { disableTextSubstitutions } from '~/lib/textInputBehavior'
 // Importing this module is what starts the live theme: it builds its store in a
-// root of its own, which paints <html> from localStorage before any component
-// renders and owns the prefers-color-scheme and cross-tab subscriptions.
+// root of its own, which paints <html> with the default palette at the OS
+// polarity before any component renders, and owns the prefers-color-scheme
+// subscription that keeps that answer live.
 import { applyTheme, themeStore } from '~/lib/themeStore'
 import { heightFull } from '~/styles/shared.css'
 import '~/lib/oat'
@@ -37,20 +38,22 @@ const log = createLogger('app')
  * to the DOM.
  *
  * It is also the ONE component that sits inside both AuthProvider and
- * PreferencesProvider, so it hosts the account-settings reload that an
- * identity change needs. That trigger cannot live in PreferencesProvider
- * itself: `useAuth` throws without an AuthProvider, and the component tests
- * that render PreferencesProvider alone supply none.
+ * PreferencesProvider, so it hosts the work that needs the identity: seeding
+ * the account-scoped device tier, and reloading the account settings after an
+ * identity change. That trigger cannot live in PreferencesProvider itself:
+ * `useAuth` throws without an AuthProvider, and the component tests that render
+ * PreferencesProvider alone supply none.
  */
 const PreferencesApplier: ParentComponent = (props) => {
   const preferences = usePreferences()
 
-  useReloadPreferencesOnIdentityChange()
+  usePreferencesForIdentity()
 
   // Push the resolved theme into the store that owns the live palette, so a
-  // value arriving from the account tier repaints. ~/lib/themeStore already
-  // painted the device tier straight from localStorage, before this component
-  // (or the session) exists, which is what keeps the first frame flash-free.
+  // value arriving from either tier repaints. Until this runs, ~/lib/themeStore
+  // shows the default palette at the OS polarity: it reads no storage, because
+  // every stored theme is scoped to an account and this component is the first
+  // point at which one is known.
   createEffect(() => {
     applyTheme(preferences.theme())
   })

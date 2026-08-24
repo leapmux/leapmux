@@ -1,7 +1,8 @@
-import { fireEvent, render, screen, within } from '@solidjs/testing-library'
+import { render, screen } from '@solidjs/testing-library'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { loadBrowserPrefs, localStorageClearForTests } from '~/lib/browserStorage'
+import { KEY_BROWSER_PREFS, localStorageClearForTests, localStorageGet, resetStorageAccountForTests, setStorageAccount } from '~/lib/browserStorage'
 import { applyTheme, DEFAULT_THEME_VALUE } from '~/lib/themeStore'
+import { TEST_USER_ID } from '~/test-support/crdtBridge'
 import { LauncherView } from './LauncherView'
 
 const bridgeMocks = vi.hoisted(() => ({
@@ -24,12 +25,6 @@ vi.mock('~/api/platformBridge', async (importOriginal) => {
     },
   }
 })
-
-/** Pick a palette from the chooser's menu. It is a DropdownMenu, not a select. */
-function pickTheme(label: string) {
-  const popover = screen.getByTestId('theme-chooser-name-menu')
-  fireEvent.click(within(popover).getByRole('menuitemradio', { name: label, hidden: true }))
-}
 
 describe('launcherView', () => {
   beforeEach(() => {
@@ -55,37 +50,43 @@ describe('launcherView', () => {
     expect(await screen.findByText('lease release failed')).toBeInTheDocument()
   })
 
-  // This view renders OUTSIDE every provider (see app.tsx), so the chooser has
-  // no account tier here. It must still write the device tier of the ordinary
-  // `theme` preference, so the choice is the one the Preferences dialog reports
-  // once the app connects.
-  describe('theme picker', () => {
-    it('offers the theme picker before the app has a session', () => {
+  // This view renders OUTSIDE every provider (see app.tsx), and it is the only
+  // surface in the app that does. That is exactly why it carries no theme
+  // control: every stored preference is scoped to an account, and the launcher
+  // exists before there is a hub connection, let alone an account.
+  it('offers no theme picker', async () => {
+    render(() => <LauncherView onConnected={() => {}} />)
+    await screen.findByText('lease release failed')
+    expect(screen.queryByTestId('theme-chooser')).toBeNull()
+  })
+
+  // The load-bearing half of the pair: with no provider above it, the palette
+  // still has to be right, and `~/lib/themeStore` is what answers.
+  it('paints the default palette with no provider above it', async () => {
+    render(() => <LauncherView onConnected={() => {}} />)
+    await screen.findByText('lease release failed')
+    expect(document.documentElement.getAttribute('data-ui-theme')).toBe('default')
+  })
+
+  // With NO ACCOUNT SET, which is the state the launcher actually renders in:
+  // it is the screen shown before there is a hub connection, let alone an
+  // identity. Every account-scoped read and write throws there, so a component
+  // that touched storage would take the render down.
+  //
+  // The suite signs itself in (see `vitest.setup.ts`), so the account has to be
+  // dropped here. Asserting "no key was written" under the suite's account
+  // would pass for free -- `beforeEach` clears the store -- and would still
+  // pass if the launcher read storage on every render.
+  it('renders with no account set, so it touches no account-scoped key', async () => {
+    resetStorageAccountForTests()
+    try {
       render(() => <LauncherView onConnected={() => {}} />)
-      expect(screen.getByTestId('theme-chooser')).toBeInTheDocument()
-      expect(screen.getByRole('radiogroup', { name: 'Theme mode' })).toBeInTheDocument()
-    })
-
-    it('persists a palette to the shared browser-prefs document', () => {
-      render(() => <LauncherView onConnected={() => {}} />)
-      pickTheme('Nord')
-
-      expect(loadBrowserPrefs().theme).toEqual({ name: 'nord', mode: 'system' })
-    })
-
-    it('persists a mode without discarding the palette beside it', () => {
-      render(() => <LauncherView onConnected={() => {}} />)
-      pickTheme('Catppuccin')
-      fireEvent.click(screen.getByRole('radio', { name: 'Dark' }))
-
-      expect(loadBrowserPrefs().theme).toEqual({ name: 'catppuccin', mode: 'dark' })
-    })
-
-    it('paints the launcher itself with the chosen theme', () => {
-      render(() => <LauncherView onConnected={() => {}} />)
-      fireEvent.click(screen.getByRole('radio', { name: 'Dark' }))
-
-      expect(document.documentElement.getAttribute('data-theme')).toBe('dark')
-    })
+      await screen.findByText('lease release failed')
+      expect(document.documentElement.getAttribute('data-ui-theme')).toBe('default')
+    }
+    finally {
+      setStorageAccount(TEST_USER_ID)
+    }
+    expect(localStorageGet(KEY_BROWSER_PREFS)).toBeUndefined()
   })
 })

@@ -28,7 +28,7 @@ import { useShortcuts } from '~/hooks/useShortcuts'
 import { useVisualViewportInset } from '~/hooks/useVisualViewportInset'
 import { useWorkspaceConnection } from '~/hooks/useWorkspaceConnection'
 import { assertNever } from '~/lib/assertNever'
-import { KEY_CLI_PATH_CHECKED, localStorageGet, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
+import { KEY_ACTIVE_WORKSPACE, KEY_CLI_PATH_CHECKED, localStorageGet, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
 import { getCRDTBridge } from '~/lib/crdt'
 import { hasWorkspaceDesktopChrome } from '~/lib/desktopChrome'
 import { attachDismissSoftKeyboardOnTap } from '~/lib/dismissSoftKeyboardOnTap'
@@ -72,7 +72,6 @@ import { createTabSelectionRestorer } from './restoreTabSelection'
 import { SectionDragProvider } from './SectionDragContext'
 import { createLeftSidebarElement, createRightSidebarElement } from './SidebarElements'
 import { TabDragProvider } from './TabDragContext'
-import { activeWorkspaceKey } from './tabPersistenceKeys'
 import { focusTile as focusTileShared } from './tileLifecycle'
 import { createTileRenderer } from './TileRenderer'
 import { useAgentOperations } from './useAgentOperations'
@@ -372,13 +371,12 @@ export const AppShell: Component = () => {
   })
 
   // The only writer of WorkspaceContext's activeWorkspaceId. It flips the
-  // signal and persists the new selection under this user's key — see
-  // workspaceSwitcher for why the write has to happen there rather than in an
-  // effect. Terminal scrollback is NOT captured here: a workspace switch is
-  // only one of the ways a terminal's view goes away, so the capture lives in
-  // `disposeTerminalInstance`, the teardown chokepoint every path reaches.
+  // signal and persists the new selection — see workspaceSwitcher for why the
+  // write has to happen there rather than in an effect. Terminal scrollback is
+  // NOT captured here: a workspace switch is only one of the ways a terminal's
+  // view goes away, so the capture lives in `disposeTerminalInstance`, the
+  // teardown chokepoint every path reaches.
   const switchWorkspace = createWorkspaceSwitcher({
-    getUserId: () => userId(),
     setActiveWorkspaceId: next => workspace.setActiveWorkspaceId(next),
   })
 
@@ -446,7 +444,10 @@ export const AppShell: Component = () => {
       activeWorkspaceId: workspace.activeWorkspaceId(),
       userId: uid,
       workspaceState: workspaceStore.state,
-      savedWorkspaceId: uid ? localStorageGet<string>(activeWorkspaceKey(uid)) : undefined,
+      // The `uid` guard stays even though the key no longer carries it:
+      // `resolveActiveWorkspace` refuses to act on an empty user id, and a read
+      // that ran anyway would throw before the identity resolved.
+      savedWorkspaceId: uid ? localStorageGet<string>(KEY_ACTIVE_WORKSPACE) : undefined,
     })
     switch (decision.kind) {
       case 'keep':

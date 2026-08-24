@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { PREFIX_EDITOR_MIN_HEIGHT } from '~/lib/browserStorage'
+import { PREFIX_EDITOR_MIN_HEIGHT, storedKeyFor } from '~/lib/browserStorage'
 import {
   clampEditorHeight,
   clearEditorMinHeight,
@@ -18,7 +18,7 @@ const AGENT = 'agent-xyz'
  * envelope shape.
  */
 function readRawStored(agentId: string): string | null {
-  const raw = localStorage.getItem(`${PREFIX_EDITOR_MIN_HEIGHT}${agentId}`)
+  const raw = localStorage.getItem(storedKeyFor(`${PREFIX_EDITOR_MIN_HEIGHT}${agentId}`)!)
   if (!raw)
     return null
   try {
@@ -81,7 +81,7 @@ describe('getStoredEditorMinHeight', () => {
 
   it('returns undefined when the stored value is below the minimum (corrupt data)', () => {
     // Simulate a stale write below MIN. The reader rejects it.
-    localStorage.setItem(`${PREFIX_EDITOR_MIN_HEIGHT}${AGENT}`, JSON.stringify({ v: '20', e: Date.now() + 1000 * 60 * 60 }))
+    localStorage.setItem(storedKeyFor(`${PREFIX_EDITOR_MIN_HEIGHT}${AGENT}`)!, JSON.stringify({ v: '20', e: Date.now() + 1000 * 60 * 60 }))
     expect(getStoredEditorMinHeight(AGENT)).toBeUndefined()
   })
 })

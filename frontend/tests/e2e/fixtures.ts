@@ -12,6 +12,7 @@ import {
   cleanupWorkspaceViaAPI,
   createWorkspaceViaAPI,
   deleteWorkspaceViaAPI,
+  getUserId,
   getWorkerId,
   loginViaAPI,
   openAgentViaAPI,
@@ -30,6 +31,12 @@ import { loginViaToken, openWorkspace } from './helpers/ui'
 export interface ServerInfo {
   hubUrl: string
   adminToken: string
+  /**
+   * The admin's user id. Every browser-storage key is scoped to an account, so
+   * a spec that seeds a preference through `addInitScript` -- before the page
+   * signs in -- needs it up front.
+   */
+  adminUserId: string
   workerId: string
   newuserToken: string
   serverProc: ChildProcess
@@ -116,6 +123,7 @@ export const test = base.extend<
     // test to attach the tail to -- it is printed instead. Otherwise a dev
     // instance that died on startup reports as a bare "Timed out waiting".
     let adminToken: string
+    let adminUserId: string
     let workerId: string
     let newuserToken: string
     try {
@@ -125,6 +133,7 @@ export const test = base.extend<
       // The admin was bootstrapped offline above; log in over HTTP for the
       // session cookie the rest of the fixtures auth with.
       adminToken = await loginViaAPI(hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD)
+      adminUserId = await getUserId(hubUrl, adminToken)
       workerId = await getWorkerId(hubUrl, adminToken)
 
       // Create newuser for sharing tests
@@ -135,7 +144,7 @@ export const test = base.extend<
       reportStartupFailure(output, `dev instance on port ${port}`, err)
     }
 
-    await use({ hubUrl, adminToken, workerId, newuserToken, serverProc: proc, dataDir, output })
+    await use({ hubUrl, adminToken, adminUserId, workerId, newuserToken, serverProc: proc, dataDir, output })
 
     // Close any UserEvents subscriptions this worker opened. Per-worker
     // cleanup matters because the singleton cache is keyed by

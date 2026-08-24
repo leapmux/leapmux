@@ -8,12 +8,14 @@
 // `KEY_EXPANDED_WORKSPACES`) live in `~/lib/browserStorage` next to the
 // TTL registry that grants them persistence.
 //
-// All but `activeWorkspaceKey` are per-workspace sessionStorage keys.
-// `activeWorkspaceKey` is per-USER and localStorage — it has to outlive
-// a tab close, because it is the only record of which workspace to
-// reopen once the URL stopped carrying one.
+// Every key here is a per-workspace sessionStorage key. "Which workspace is
+// active" is NOT one of them: it has to outlive a tab close, so it lives in
+// localStorage under the exact `KEY_ACTIVE_WORKSPACE`. It used to be templated
+// by user id and to need a builder of its own here; `browserStorage` now scopes
+// every key to the signed-in account, so the user id is no longer part of any
+// name a caller writes.
 
-import { PREFIX_ACTIVE_TAB, PREFIX_ACTIVE_WORKSPACE, PREFIX_FOCUSED_TILE, PREFIX_TILE_ACTIVE_TABS } from '~/lib/browserStorage'
+import { PREFIX_ACTIVE_TAB, PREFIX_FOCUSED_TILE, PREFIX_TILE_ACTIVE_TABS } from '~/lib/browserStorage'
 
 export function activeTabKey(workspaceId: string): string {
   return `${PREFIX_ACTIVE_TAB}${workspaceId}`
@@ -25,13 +27,4 @@ export function tileActiveTabsKey(workspaceId: string): string {
 
 export function focusedTileKey(workspaceId: string): string {
   return `${PREFIX_FOCUSED_TILE}${workspaceId}`
-}
-
-/**
- * localStorage key holding the workspace `userId` was last on. Keyed by
- * user so a second account on the same browser gets its own memory
- * rather than inheriting — or overwriting — the first account's.
- */
-export function activeWorkspaceKey(userId: string): string {
-  return `${PREFIX_ACTIVE_WORKSPACE}${userId}`
 }

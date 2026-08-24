@@ -21,27 +21,16 @@ vi.mock('~/api/clients', () => ({
 }))
 
 /** Render the hook with a provider above it, and expose both it and the context. */
-function withProvider(options?: Parameters<typeof useThemeChooser>[0]) {
+function withProvider() {
   let binding!: ReturnType<typeof useThemeChooser>
   let prefs!: PreferencesState
   function Probe() {
-    binding = useThemeChooser(options)
+    binding = useThemeChooser()
     prefs = usePreferences()
     return null
   }
   render(() => <PreferencesProvider><Probe /></PreferencesProvider>)
   return { binding: () => binding, prefs: () => prefs }
-}
-
-/** Render the hook with NO provider — the desktop launcher's situation. */
-function withoutProvider() {
-  let binding!: ReturnType<typeof useThemeChooser>
-  function Probe() {
-    binding = useThemeChooser()
-    return null
-  }
-  render(() => <Probe />)
-  return { binding: () => binding }
 }
 
 beforeEach(() => {
@@ -59,10 +48,15 @@ afterEach(() => {
 })
 
 // Every surface that shows the theme picker binds through this hook, so what it
-// writes IS the persistence contract: a theme picked on the launcher, on the
-// setup page or in the empty state has to be the theme the Preferences dialog
-// reports afterwards. Nothing else in the suite covers that end to end.
-describe('useThemeChooser under a PreferencesProvider', () => {
+// writes IS the persistence contract: a theme picked in the no-workspace empty
+// state has to be the theme the Preferences dialog reports afterwards. Nothing
+// else in the suite covers that end to end.
+//
+// There is no provider-less counterpart any more. The hook used to carry a
+// second branch for the desktop launcher, which renders outside every provider;
+// that surface now shows no theme control at all, because every stored
+// preference is scoped to an account and the launcher has none.
+describe('useThemeChooser', () => {
   it('reads the resolved preference', () => {
     const { binding, prefs } = withProvider()
     expect(binding().value()).toEqual(DEFAULT_THEME_VALUE)
@@ -96,29 +90,11 @@ describe('useThemeChooser under a PreferencesProvider', () => {
 
     expect(loadBrowserPrefs().theme).toEqual({ name: 'gruvbox', mode: 'dark' })
     expect(clients.updateUserSetting).not.toHaveBeenCalled()
-  })
-
-  it('writes the DEVICE tier when the surface declares it has no session', () => {
-    // `/setup` renders inside the provider but BEFORE any account exists. The
-    // ordinary tiered write would go out unauthenticated, be refused, and roll
-    // back -- the theme would apply and then revert under the user.
-    const { binding } = withProvider({ deviceOnly: true })
-    void binding().onChange({ name: 'github', mode: 'dark' })
-
-    expect(loadBrowserPrefs().theme).toEqual({ name: 'github', mode: 'dark' })
-    expect(clients.updateUserSetting).not.toHaveBeenCalled()
-  })
-
-  it('moves the provider\'s own device tier on a device-only write', () => {
-    // Not through `themeStore.writeDeviceTheme`: both write the same field, but
-    // only the provider path also moves its device-tier signal. Writing around
-    // it would leave the dialog reporting "Account default" over a value the
-    // device had overridden.
-    const { binding, prefs } = withProvider({ deviceOnly: true })
-    void binding().onChange({ name: 'one', mode: 'light' })
-
-    expect(prefs().dual.theme.browser()).toEqual({ name: 'one', mode: 'light' })
-    expect(prefs().theme()).toEqual({ name: 'one', mode: 'light' })
+    // The provider's OWN device-tier signal moves with the write, not just the
+    // stored document. Writing around the provider would leave the dialog
+    // reporting "Account default" over a value the device had overridden.
+    expect(prefs().dual.theme.browser()).toEqual({ name: 'gruvbox', mode: 'dark' })
+    expect(prefs().theme()).toEqual({ name: 'gruvbox', mode: 'dark' })
   })
 
   it('paints the choice immediately', () => {
@@ -141,29 +117,37 @@ describe('the terminal and syntax rows bind their own preferences', () => {
   it('writes the terminal key, and only that key', () => {
     let binding!: ReturnType<typeof useTerminalThemeChooser>
     function Probe() {
-      binding = useTerminalThemeChooser({ deviceOnly: true })
+      binding = useTerminalThemeChooser()
       return null
     }
     render(() => <PreferencesProvider><Probe /></PreferencesProvider>)
     void binding.onChange({ name: 'nord', mode: 'dark' })
 
-    expect(loadBrowserPrefs().terminalTheme).toEqual({ name: 'nord', mode: 'dark' })
-    expect('syntaxTheme' in loadBrowserPrefs()).toBe(false)
-    expect('theme' in loadBrowserPrefs()).toBe(false)
+    // The account tier, which is where an un-overridden row writes. These
+    // cases used to force the device tier with a `deviceOnly` flag that no
+    // surface passes any more; asserting on the RPC pins the same failure on
+    // the tier the row actually uses.
+    expect(clients.updateUserSetting).toHaveBeenCalledTimes(1)
+    expect(clients.updateUserSetting).toHaveBeenCalledWith({
+      key: 'terminal_theme',
+      partialJson: JSON.stringify({ name: 'nord', mode: 'dark' }),
+    })
   })
 
   it('writes the syntax key, and only that key', () => {
     let binding!: ReturnType<typeof useSyntaxThemeChooser>
     function Probe() {
-      binding = useSyntaxThemeChooser({ deviceOnly: true })
+      binding = useSyntaxThemeChooser()
       return null
     }
     render(() => <PreferencesProvider><Probe /></PreferencesProvider>)
     void binding.onChange({ name: 'solarized', mode: 'light' })
 
-    expect(loadBrowserPrefs().syntaxTheme).toEqual({ name: 'solarized', mode: 'light' })
-    expect('terminalTheme' in loadBrowserPrefs()).toBe(false)
-    expect('theme' in loadBrowserPrefs()).toBe(false)
+    expect(clients.updateUserSetting).toHaveBeenCalledTimes(1)
+    expect(clients.updateUserSetting).toHaveBeenCalledWith({
+      key: 'syntax_theme',
+      partialJson: JSON.stringify({ name: 'solarized', mode: 'light' }),
+    })
   })
 
   it('reads each row back from its own key', () => {
@@ -171,13 +155,15 @@ describe('the terminal and syntax rows bind their own preferences', () => {
     let terminal!: ReturnType<typeof useTerminalThemeChooser>
     let syntax!: ReturnType<typeof useSyntaxThemeChooser>
     function Probe() {
-      ui = useThemeChooser({ deviceOnly: true })
-      terminal = useTerminalThemeChooser({ deviceOnly: true })
-      syntax = useSyntaxThemeChooser({ deviceOnly: true })
+      ui = useThemeChooser()
+      terminal = useTerminalThemeChooser()
+      syntax = useSyntaxThemeChooser()
       return null
     }
     render(() => <PreferencesProvider><Probe /></PreferencesProvider>)
 
+    // `writeAccount` applies optimistically before it awaits, so the read back
+    // is synchronous even though the write is an RPC.
     void ui.onChange({ name: 'catppuccin', mode: 'dark' })
     void terminal.onChange({ name: 'nord', mode: 'light' })
     void syntax.onChange({ name: 'gruvbox', mode: 'system' })
@@ -185,51 +171,5 @@ describe('the terminal and syntax rows bind their own preferences', () => {
     expect(ui.value()).toEqual({ name: 'catppuccin', mode: 'dark' })
     expect(terminal.value()).toEqual({ name: 'nord', mode: 'light' })
     expect(syntax.value()).toEqual({ name: 'gruvbox', mode: 'system' })
-  })
-})
-
-describe('useThemeChooser without a PreferencesProvider', () => {
-  it('reads the live theme', () => {
-    applyTheme({ name: 'solarized', mode: 'light' })
-    const { binding } = withoutProvider()
-    expect(binding().value()).toEqual({ name: 'solarized', mode: 'light' })
-  })
-
-  it('writes the device tier and never reaches for an account write', () => {
-    // The launcher has no hub connection yet. An account write there would fail
-    // against a hub the user has not connected to and surface an error on the
-    // connect screen.
-    const { binding } = withoutProvider()
-    void binding().onChange({ name: 'tokyo-night', mode: 'dark' })
-
-    expect(loadBrowserPrefs().theme).toEqual({ name: 'tokyo-night', mode: 'dark' })
-    expect(clients.updateUserSetting).not.toHaveBeenCalled()
-  })
-
-  it('writes the same field a provider-backed device write produces', () => {
-    // The round trip that makes the launcher's choice survive: no
-    // launcher-specific key, no second shape.
-    const { binding } = withoutProvider()
-    void binding().onChange({ name: 'everforest', mode: 'dark' })
-    const fromLauncher = loadBrowserPrefs()
-
-    localStorageClearForTests()
-    const { prefs } = withProvider()
-    prefs().dual.theme.setBrowser({ name: 'everforest', mode: 'dark' })
-
-    expect(loadBrowserPrefs()).toEqual(fromLauncher)
-  })
-
-  it('leaves the choice as the resolved value once a provider mounts', () => {
-    // The launcher connects: PreferencesProvider seeds its device tier from the
-    // document the launcher wrote, so the dialog reports "This device" over
-    // exactly that value rather than reverting to the account default.
-    const { binding } = withoutProvider()
-    void binding().onChange({ name: 'rose-pine', mode: 'light' })
-
-    const { prefs, binding: bound } = withProvider()
-    expect(prefs().theme()).toEqual({ name: 'rose-pine', mode: 'light' })
-    expect(prefs().dual.theme.browser()).toEqual({ name: 'rose-pine', mode: 'light' })
-    expect(bound().value()).toEqual({ name: 'rose-pine', mode: 'light' })
   })
 })

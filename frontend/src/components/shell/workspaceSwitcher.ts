@@ -1,10 +1,7 @@
-import { localStorageRemove, localStorageSet } from '~/lib/browserStorage'
-import { activeWorkspaceKey } from './tabPersistenceKeys'
+import { KEY_ACTIVE_WORKSPACE, localStorageRemove, localStorageSet } from '~/lib/browserStorage'
 
 export interface CreateWorkspaceSwitcherOpts {
   setActiveWorkspaceId: (next: string | null) => void
-  /** Authenticated user id; the persisted key is scoped to it. */
-  getUserId: () => string
 }
 
 /**
@@ -25,20 +22,23 @@ export interface CreateWorkspaceSwitcherOpts {
  * floating window closed with a terminal in it).
  *
  * So what remains is two statements: flip the signal, then persist the new
- * selection under this user's key so a reload reopens here. Persisting after
- * the flip rather than before means a throwing quota-exceeded write leaves the
- * signal already correct for this session and only loses the reload hint.
+ * selection so a reload reopens here. Persisting after the flip rather than
+ * before means a throwing quota-exceeded write leaves the signal already
+ * correct for this session and only loses the reload hint.
+ *
+ * The switcher used to take the user id and skip the write while it was empty,
+ * because the key was templated by user. `browserStorage` now scopes every key
+ * to the signed-in account, so there is no id to thread and no
+ * not-signed-in-yet case to guard: the shell constructs this only inside
+ * `AuthGuard`, where an account always exists.
  */
 export function createWorkspaceSwitcher(opts: CreateWorkspaceSwitcherOpts): (next: string | null) => void {
   return (next: string | null) => {
     opts.setActiveWorkspaceId(next)
 
-    const userId = opts.getUserId()
-    if (!userId)
-      return
     if (next)
-      localStorageSet(activeWorkspaceKey(userId), next)
+      localStorageSet(KEY_ACTIVE_WORKSPACE, next)
     else
-      localStorageRemove(activeWorkspaceKey(userId))
+      localStorageRemove(KEY_ACTIVE_WORKSPACE)
   }
 }

@@ -1,7 +1,13 @@
 import { createRoot } from 'solid-js'
 import { afterEach, beforeEach } from 'vitest'
+import {
+  localStorageClearForTests,
+  resetStorageAccountForTests,
+  sessionStorageClearForTests,
+  setStorageAccount,
+} from './src/lib/browserStorage'
 import { setCRDTBridge } from './src/lib/crdt'
-import { installTestBridge } from './src/test-support/crdtBridge'
+import { installTestBridge, TEST_USER_ID } from './src/test-support/crdtBridge'
 import '@testing-library/jest-dom/vitest'
 
 // Install a default CRDT bridge before every test so the projection-
@@ -23,7 +29,10 @@ let disposeBridgeRoot: (() => void) | null = null
 beforeEach(() => {
   createRoot((dispose) => {
     disposeBridgeRoot = dispose
-    installTestBridge({ userId: 'user-test', workspaceId: 'ws-test', rootTileId: 'main-tile' })
+    // No `userId`: `installTestBridge` defaults to `TEST_USER_ID`, which is the
+    // account the storage namespace is set to below. Stating it here as a
+    // literal is how the two identities drift apart.
+    installTestBridge({ workspaceId: 'ws-test', rootTileId: 'main-tile' })
   })
   // Clear browser storage: several stores now seed themselves from sessionStorage
   // on construction (e.g. `createTabMetadataStore` reads `KEY_TAB_MRU` eagerly,
@@ -32,8 +41,16 @@ beforeEach(() => {
   // hydrates into the next. Per-file `beforeEach` clears remain where a test
   // needs finer control, but this is the backstop that makes the eager-seed
   // stores safe to construct anywhere.
-  sessionStorage.clear()
-  localStorage.clear()
+  sessionStorageClearForTests()
+  localStorageClearForTests()
+  // Sign the suite in. Every `leapmux:` key is scoped to an account, and a read
+  // or write with none set throws, so without this every test that touches
+  // storage -- directly or through a store that seeds itself -- would fail on
+  // the namespace rather than on what it means to test. A test that needs a
+  // different account, or none, calls `setStorageAccount` /
+  // `resetStorageAccountForTests` itself.
+  resetStorageAccountForTests()
+  setStorageAccount(TEST_USER_ID)
 })
 
 afterEach(() => {

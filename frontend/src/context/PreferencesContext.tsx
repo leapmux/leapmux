@@ -3,16 +3,20 @@ import type { SettingDescriptor, SettingValue } from '~/generated/leapmux/v1/set
 import type { BrowserPreferences, BrowserPrefValue, EnterKeyMode, TerminalRendererPreference } from '~/lib/browserStorage'
 import type { UserKeybindingOverride } from '~/lib/shortcuts/types'
 import type { TerminalThemeValue, ThemeValue } from '~/styles/themes'
-import { createEffect, createSignal, onMount, useContext } from 'solid-js'
+import { createEffect, createSignal, onCleanup, onMount, useContext } from 'solid-js'
 import { userClient } from '~/api/clients'
 import {
   batchBrowserPrefWrites,
+  hasStorageAccount,
+  KEY_BROWSER_PREFS,
   KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN,
   KEY_PREFERRED_EDITOR,
   loadBrowserPrefs,
   localStorageGet,
   localStorageRemove,
   localStorageSet,
+  onStorageAccountChange,
+  storedKeyFor,
   updateBrowserPref,
 } from '~/lib/browserStorage'
 import { createStableContext } from '~/lib/createStableContext'
@@ -190,6 +194,24 @@ export interface PreferencesState {
   accountLoadError: () => string | null
   /** Reload account settings from Hub. */
   reload: () => Promise<void>
+  /**
+   * Return every tier to its built-in default, for a page with no signed-in
+   * account.
+   *
+   * A sign-out is client-side, so this provider and everything under it stay
+   * mounted. Both tiers still hold the values of the account that LEFT -- the
+   * device tier from its stored document, the account tier from its hub reply --
+   * and `PreferencesApplier` keeps painting them. Without this the sign-in page
+   * renders in the departed account's palette and fonts, which is the leak that
+   * scoping the keys exists to close, in the window between sign-out and the
+   * next sign-in.
+   *
+   * `usePreferencesForIdentity` calls it on the transition to no identity. The
+   * SEEDING half needs no call: the provider subscribes to
+   * `onStorageAccountChange`, so an account arriving re-reads the device tier on
+   * its own.
+   */
+  resetForSignOut: () => void
 }
 
 const PreferencesContext = createStableContext<PreferencesState>('context/PreferencesContext')
@@ -303,6 +325,14 @@ interface AccountSetting<T> {
    * the Reset button would sit over a value the row does not show.
    */
   applyServer: (raw: unknown) => boolean
+  /**
+   * Return the account signal to its built-in default, with no hub call.
+   *
+   * For a page that has no account to answer for. `reset` is the other
+   * direction: it asks the hub to REMOVE the stored value, which needs a
+   * signed-in session that a signed-out page does not have.
+   */
+  clear: () => void
 }
 
 /**
@@ -374,8 +404,70 @@ export const PreferencesProvider: ParentComponent = (props) => {
   /** Which account keys carry a stored value, by proto key. */
   const [accountCustomized, setAccountCustomized] = createSignal<Record<string, boolean>>({})
 
-  // --- Browser-level (localStorage) --- load once from consolidated key
-  const initialPrefs = loadBrowserPrefs()
+  /**
+   * Every device-tier signal, and how it re-reads and re-applies itself.
+   *
+   * THE DEVICE TIER CANNOT BE READ AT MOUNT. This provider sits above the
+   * Router and renders unconditionally, so it mounts while the auth bootstrap
+   * is still in flight; every stored preference is scoped to an account, and a
+   * read before one resolves throws. So each signal starts at its own default,
+   * and the entry it registers here is how it catches up.
+   *
+   * ONE registry rather than one array per purpose. Seeding an account,
+   * following another tab and returning to the defaults are three passes over
+   * the same set, and a second array is a set a signal can be missing from: the
+   * cross-tab pass covered the nine dual settings alone, so a diff view or an
+   * Enter-key mode changed next door did not follow, and neither did the two
+   * preferences that live in a key of their own.
+   */
+  interface DeviceTierEntry {
+    /**
+     * The LOGICAL storage name a write to this signal changes. Most share the
+     * consolidated document; two have a key of their own.
+     */
+    storageName: string
+    /**
+     * Re-read the signal. `null` means "no account" and takes the built-in
+     * default -- an entry that reads its own key MUST honour it, because the
+     * namespace still points at the account that left.
+     */
+    seed: (prefs: BrowserPreferences | null) => void
+    /** Re-apply the resolved value, for a setting that paints something. */
+    apply?: () => void
+  }
+
+  const deviceTier: DeviceTierEntry[] = []
+
+  /** Re-read every device-tier signal from the account now in force. */
+  const reseedBrowserTier = () => {
+    const prefs = loadBrowserPrefs()
+    for (const entry of deviceTier)
+      entry.seed(prefs)
+  }
+
+  /**
+   * Follow the device-tier writes another tab made under `stored`.
+   *
+   * `stored` is the key AS STORED, so the match carries the account: another
+   * account's document changing next door says nothing about this one. A null
+   * key is a whole-store clear, which every entry has to answer for.
+   */
+  const syncFromOtherTab = (stored: string | null) => {
+    // No account, no document to read: every account-scoped read throws, and
+    // nothing another tab wrote can belong to a page that has no identity.
+    if (!hasStorageAccount())
+      return
+    const prefs = loadBrowserPrefs()
+    for (const entry of deviceTier) {
+      if (stored !== null && storedKeyFor(entry.storageName) !== stored)
+        continue
+      entry.seed(prefs)
+      // The applier, WITHOUT the write that a `set` performs. Echoing the value
+      // back to storage would raise a `storage` event in the tab that wrote it,
+      // and the two tabs would write to each other for as long as both are open.
+      entry.apply?.()
+    }
+  }
 
   /**
    * One browser-only boolean with a fixed default.
@@ -385,8 +477,14 @@ export const PreferencesProvider: ParentComponent = (props) => {
    * every browser that never touched it.
    */
   function createBrowserToggle(key: keyof BrowserPreferences, defaultOn: boolean) {
-    const stored = initialPrefs[key]
-    const [value, setSignal] = createSignal(typeof stored === 'boolean' ? stored : defaultOn)
+    const [value, setSignal] = createSignal(defaultOn)
+    deviceTier.push({
+      storageName: KEY_BROWSER_PREFS,
+      seed: (prefs) => {
+        const stored = prefs?.[key]
+        setSignal(typeof stored === 'boolean' ? stored : defaultOn)
+      },
+    })
     const set = (next: boolean) => {
       setSignal(next)
       updateBrowserPref(key, next === defaultOn ? undefined : next)
@@ -409,8 +507,17 @@ export const PreferencesProvider: ParentComponent = (props) => {
    * which compares against `true` and rendered OFF.
    */
   function createOwnKeyToggle(storageKey: string, defaultOn: boolean) {
-    const stored = localStorageGet<unknown>(storageKey)
-    const [value, setSignal] = createSignal(typeof stored === 'boolean' ? stored : defaultOn)
+    const [value, setSignal] = createSignal(defaultOn)
+    deviceTier.push({
+      storageName: storageKey,
+      // Reads its OWN key rather than the consolidated document, so it ignores
+      // the argument the other entries use -- except for the null, which means
+      // there is no account whose key it may read.
+      seed: (prefs) => {
+        const stored = prefs === null ? undefined : localStorageGet<unknown>(storageKey)
+        setSignal(typeof stored === 'boolean' ? stored : defaultOn)
+      },
+    })
     const set = (next: boolean) => {
       setSignal(next)
       if (next === defaultOn)
@@ -433,9 +540,13 @@ export const PreferencesProvider: ParentComponent = (props) => {
   // value set it was written against. An unrecognised mode reaches the
   // composer, whose menu compares against 'cmd-enter-sends' and renders
   // neither entry as checked, so the first click appears to do nothing.
-  const [enterKeyMode, setEnterKeyModeSignal] = createSignal<EnterKeyMode>(
-    oneOf<EnterKeyMode>('enter-sends', 'cmd-enter-sends')(initialPrefs.enterKeyMode) ?? 'cmd-enter-sends',
-  )
+  const [enterKeyMode, setEnterKeyModeSignal] = createSignal<EnterKeyMode>('cmd-enter-sends')
+  deviceTier.push({
+    storageName: KEY_BROWSER_PREFS,
+    seed: prefs => setEnterKeyModeSignal(
+      oneOf<EnterKeyMode>('enter-sends', 'cmd-enter-sends')(prefs?.enterKeyMode) ?? 'cmd-enter-sends',
+    ),
+  })
   const setEnterKeyMode = (value: EnterKeyMode | null) => {
     setEnterKeyModeSignal(value ?? 'cmd-enter-sends')
     updateBrowserPref('enterKeyMode', value ?? undefined)
@@ -446,17 +557,23 @@ export const PreferencesProvider: ParentComponent = (props) => {
   // disagree is the whole defect. A stored 'x' resolved to 'auto' for the
   // terminal and to 'x' for the settings row, whose enum control then held
   // a value absent from its three options.
-  const [terminalRenderer, setTerminalRendererSignal] = createSignal<TerminalRendererPreference>(
-    getTerminalRendererPreference(initialPrefs),
-  )
+  const [terminalRenderer, setTerminalRendererSignal] = createSignal<TerminalRendererPreference>('auto')
+  deviceTier.push({
+    storageName: KEY_BROWSER_PREFS,
+    seed: prefs => setTerminalRendererSignal(getTerminalRendererPreference(prefs ?? {})),
+  })
   const setTerminalRenderer = (value: TerminalRendererPreference | null) => {
     setTerminalRendererSignal(value ?? 'auto')
     updateBrowserPref('terminalRenderer', value ?? undefined)
   }
 
-  const [preferredEditorId, setPreferredEditorIdSignal] = createSignal<string | undefined>(
-    localStorageGet<string>(KEY_PREFERRED_EDITOR),
-  )
+  const [preferredEditorId, setPreferredEditorIdSignal] = createSignal<string | undefined>(undefined)
+  deviceTier.push({
+    storageName: KEY_PREFERRED_EDITOR,
+    seed: prefs => setPreferredEditorIdSignal(
+      prefs === null ? undefined : localStorageGet<string>(KEY_PREFERRED_EDITOR),
+    ),
+  })
   const setPreferredEditorId = (id: string | undefined) => {
     setPreferredEditorIdSignal(id)
     if (id === undefined)
@@ -662,16 +779,39 @@ export const PreferencesProvider: ParentComponent = (props) => {
         write(parsed)
         return true
       },
+      clear: () => write(opts.fallback),
     }
   }
 
   function createDualSetting<T extends BrowserPrefValue>(opts: DualSettingOptions<T>): DualSetting<T> {
     const base = createAccountSetting<T>(opts)
-    // The stored browser value passes the SAME parse as a server document,
-    // so a corrupt localStorage entry cannot put a value on screen that the
-    // hub would refuse.
-    const [browser, setSignal] = createSignal<T | null>(opts.parse(initialPrefs[opts.browserPrefKey]) ?? null)
+    // `null` means "this device has no opinion, use the account value" -- the
+    // same thing an absent field means on disk. Starting here rather than at a
+    // parsed default is what lets the account tier win before any device
+    // override is read.
+    // A VALUE comparator, not the default reference one. Every device-tier
+    // parse builds a fresh object, so an unchanged field still reads as a new
+    // value: one unrelated preference written in another tab would notify all
+    // nine dual settings and repaint the whole palette. The values all come
+    // from JSON and each parse builds a fixed key order, so serializing is an
+    // exact comparison here.
+    const [browser, setSignal] = createSignal<T | null>(null, {
+      equals: (a, b) => a === b || JSON.stringify(a) === JSON.stringify(b),
+    })
     const resolved = () => browser() ?? base.account()
+    deviceTier.push({
+      storageName: KEY_BROWSER_PREFS,
+      // The stored browser value passes the SAME parse as a server document,
+      // so a corrupt localStorage entry cannot put a value on screen that the
+      // hub would refuse.
+      seed: prefs => setSignal(() => (prefs === null ? null : opts.parse(prefs[opts.browserPrefKey]) ?? null)),
+      // Runs from the `storage` handler and the sign-out reset, never a tracked
+      // scope. It re-applies the value WITHOUT the write that `setBrowser`
+      // performs: echoing the value back to storage would raise a `storage`
+      // event in the tab that wrote it, and the two tabs would write to each
+      // other for as long as both are open.
+      apply: () => opts.onBrowserWrite?.(resolved()),
+    })
     const setBrowser = (value: T | null) => {
       setSignal(() => value)
       updateBrowserPref(opts.browserPrefKey, value ?? undefined)
@@ -833,8 +973,80 @@ export const PreferencesProvider: ParentComponent = (props) => {
     return buildFontFamily(tier.fonts)
   }
 
+  /**
+   * Return every tier to its built-in default. See `resetForSignOut`.
+   *
+   * Both tiers, because both hold the departing account's values: the device
+   * tier from its stored document, the account tier from its hub reply. The
+   * account half calls `clear` rather than `reset` -- there is no session left
+   * to ask the hub to remove anything.
+   *
+   * THE ACCOUNT TIER GOES FIRST. A device entry's applier paints
+   * `browser() ?? account()`, so applying while the account tier still holds the
+   * departing values would paint those values -- corrected on the next flush by
+   * `PreferencesApplier`, but a repaint to the wrong palette and back all the
+   * same.
+   */
+  const resetForSignOut = () => {
+    for (const setting of settingsByProtoKey.values())
+      setting.clear()
+    setAccountCustomized({})
+    for (const entry of deviceTier) {
+      entry.seed(null)
+      entry.apply?.()
+    }
+  }
+  // `accountLoadError` and `accountDescriptors` deliberately survive. Neither
+  // is a VALUE of the account that left: the error is the record of the load
+  // that failed, which the preferences dialog renders and retries, and the
+  // descriptors are the hub's schema, which does not change with the identity.
+  // The mount load of a page nobody is signed in to answers Unauthenticated,
+  // and clearing its record here would erase the one thing that reports it.
+
+  // Seed from the account in force, and re-seed each time it moves.
+  //
+  // The subscription is what makes an unseeded device tier impossible: it fires
+  // from inside `setStorageAccount`, which `AuthContext` calls SYNCHRONOUSLY as
+  // it writes the identity, so the signals are correct before the render effect
+  // that mounts the authenticated tree can read them. An effect-driven seed runs
+  // after that render, and every consumer that reads once at mount would take
+  // the built-in default.
+  //
+  // The eager call covers the account that resolved BEFORE this provider
+  // mounted: the error boundary's reset remounts this subtree, and component
+  // tests mount it directly, where waiting for a move that will never come
+  // would leave every device-tier signal at its default.
+  //
+  // Placed after every signal is created, because that is what fills
+  // `deviceTier`.
+  if (hasStorageAccount())
+    reseedBrowserTier()
+  onCleanup(onStorageAccountChange(reseedBrowserTier))
+
   createEffect(() => {
     setDebugEnabled(dualSettings.debugLogging.resolved())
+  })
+
+  // Follow a device-tier write made in another tab.
+  //
+  // The event says only WHICH key changed; the value is read back through
+  // `loadBrowserPrefs`, so the reader unwraps the `{ v, e }` TTL envelope
+  // exactly as every other read does. `event.newValue` carries the raw envelope,
+  // so a field read straight off it is always `undefined`.
+  //
+  // It matches the key AS STORED, which carries the account: another account's
+  // document changing in another tab says nothing about this one. Before an
+  // identity resolves `storedKeyFor` answers null, which matches no event -- the
+  // right answer, and the reason it does not throw here.
+  //
+  // A null `event.key` is a whole-store `clear()` next door, and it names no
+  // key, so every entry answers for it. Dropping it left the signals showing
+  // values whose document was gone, and the next write in this tab merged onto
+  // an empty one and silently discarded them.
+  onMount(() => {
+    const onStorage = (event: StorageEvent) => syncFromOtherTab(event.key)
+    window.addEventListener('storage', onStorage)
+    onCleanup(() => window.removeEventListener('storage', onStorage))
   })
 
   onMount(() => {
@@ -854,11 +1066,12 @@ export const PreferencesProvider: ParentComponent = (props) => {
       //
       // This is the only load this provider issues on its own. Two callers
       // ask again, and each owns a different failure:
-      // `useReloadPreferencesOnIdentityChange` reloads whenever the
-      // signed-in identity changes, which is what covers the user who signs
-      // in through the form after this attempt answered Unauthenticated;
-      // `PreferencesDialog` retries on open, which covers a failure with no
-      // identity change behind it (an unreachable hub, a timeout, a 500).
+      // `usePreferencesForIdentity` seeds the device tier and reloads the
+      // account tier for every resolved identity, which covers both the
+      // ordinary page load and the user who signs in through the form after
+      // this attempt answered Unauthenticated; `PreferencesDialog` retries on
+      // open, which covers a failure with no identity change behind it (an
+      // unreachable hub, a timeout, a 500).
       log.debug('account settings load failed; using defaults until the next reload', err)
     })
   })
@@ -913,6 +1126,7 @@ export const PreferencesProvider: ParentComponent = (props) => {
       updateUserSetting,
       resetUserSetting,
       reload,
+      resetForSignOut,
       batchBrowserPrefWrites,
     }}
     >
@@ -921,24 +1135,19 @@ export const PreferencesProvider: ParentComponent = (props) => {
   )
 }
 
+/**
+ * The preferences state. Throws outside a `PreferencesProvider`.
+ *
+ * There is deliberately no optional variant. One existed for a control that
+ * rendered on both sides of the provider boundary -- the desktop launcher's
+ * theme picker -- and that control is gone: every stored preference is scoped
+ * to an account, so a surface rendering before the identity resolves has no
+ * preferences to show. Outside the provider is now a bug, and it fails loudly.
+ */
 export function usePreferences(): PreferencesState {
-  const ctx = usePreferencesOptional()
+  const ctx = useContext(PreferencesContext)
   if (!ctx) {
     throw new Error('usePreferences must be used within PreferencesProvider')
   }
   return ctx
-}
-
-/**
- * The preferences state, or `undefined` outside a `PreferencesProvider`.
- *
- * For a control that must render on BOTH sides of the provider boundary. The
- * desktop launcher (app.tsx) renders before any provider exists and has no hub
- * connection, so it has no account tier at all; `useThemeChooser` uses this to
- * fall back to the device tier there and to the ordinary tiered write
- * everywhere else. Prefer `usePreferences`: a component that only ever renders
- * inside the provider should fail loudly rather than silently take a fallback.
- */
-export function usePreferencesOptional(): PreferencesState | undefined {
-  return useContext(PreferencesContext)
 }

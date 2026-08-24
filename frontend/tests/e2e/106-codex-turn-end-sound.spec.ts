@@ -2,7 +2,7 @@ import { codexTest, expect } from './codex-fixtures'
 import { sendMessage, setInitialBrowserPref, waitForAgentIdle } from './helpers/ui'
 
 codexTest.describe('Codex Turn End Sound', () => {
-  codexTest('should play ding-dong sound when Codex turn ends with tool use', async ({ page, authenticatedCodexWorkspace }) => {
+  codexTest('should play ding-dong sound when Codex turn ends with tool use', async ({ page, authenticatedCodexWorkspace, leapmuxServer }) => {
     void authenticatedCodexWorkspace // fixture trigger
 
     // Set up audio spy and preference
@@ -13,7 +13,7 @@ codexTest.describe('Codex Turn End Sound', () => {
         return Promise.resolve()
       }
     })
-    await setInitialBrowserPref(page, 'turnEndSound', 'ding-dong')
+    await setInitialBrowserPref(page, leapmuxServer.adminUserId, 'turnEndSound', 'ding-dong')
 
     // Reload so the init scripts take effect
     await page.reload()
@@ -31,7 +31,7 @@ codexTest.describe('Codex Turn End Sound', () => {
     expect(calls.some((src: string) => src.includes('benkirb-electronic-doorbell'))).toBe(true)
   })
 
-  codexTest('should NOT play sound for simple Codex text exchange', async ({ page, authenticatedCodexWorkspace }) => {
+  codexTest('should NOT play sound for simple Codex text exchange', async ({ page, authenticatedCodexWorkspace, leapmuxServer }) => {
     void authenticatedCodexWorkspace // fixture trigger
 
     // Set up audio spy and preference
@@ -42,7 +42,7 @@ codexTest.describe('Codex Turn End Sound', () => {
         return Promise.resolve()
       }
     })
-    await setInitialBrowserPref(page, 'turnEndSound', 'ding-dong')
+    await setInitialBrowserPref(page, leapmuxServer.adminUserId, 'turnEndSound', 'ding-dong')
 
     // Reload so the init scripts take effect
     await page.reload()

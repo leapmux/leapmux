@@ -1,11 +1,11 @@
 /// <reference types="vitest/globals" />
 import type { TestBridgeHandle } from '~/test-support/crdtBridge'
 import { createRoot, createSignal } from 'solid-js'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { activeTabKey, focusedTileKey, tileActiveTabsKey } from '~/components/shell/tabPersistenceKeys'
-import { useTabPersistence } from '~/components/shell/useTabPersistence'
+import { createDedupedSessionWriter, useTabPersistence } from '~/components/shell/useTabPersistence'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
-import { KEY_TAB_MRU, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
+import { KEY_TAB_MRU, sessionStorageGet, sessionStorageSet, storedKeyFor } from '~/lib/browserStorage'
 import { setCRDTBridge } from '~/lib/crdt'
 import { emitAddTab, emitMoveTabToWorkspace, emitRemoveTab } from '~/stores/tabOps'
 import { seedWorkspace, withTestBridge } from '~/test-support/crdtBridge'
@@ -72,7 +72,7 @@ async function withPersistence(
  * their own -- they used to ride along in the registry snapshot.
  *
  * Which workspace is active is NOT persisted here; that moved to
- * `createWorkspaceSwitcher`, which writes it to localStorage keyed by user id.
+ * `createWorkspaceSwitcher`, which writes it to localStorage.
  */
 describe('useTabPersistence', () => {
   it('persists the workspace active tab key', async () => {
@@ -310,5 +310,54 @@ describe('useTabPersistence', () => {
     })
     const parsed = JSON.parse(sessionStorageGet<string>(tileActiveTabsKey(WS))!)
     expect(parsed[windowTileId]).toBe(`${TabType.AGENT}:floating`)
+  })
+})
+
+// The cache is a second record of what is stored, so it can disagree with the
+// store. `sessionStorageSet` re-stamps the TTL on every write, and a skipped
+// write skipped the stamp too: a tab open past the key's 30-day TTL had its
+// entry collected by the sweep while the cache still reported it as written, so
+// the effect never wrote it again and the next reload reopened on the default
+// tab with no error anywhere.
+describe('createDedupedSessionWriter', () => {
+  const KEY = activeTabKey(WS)
+  const storedAt = () => JSON.parse(sessionStorage.getItem(storedKeyFor(KEY)!)!).e as number
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('skips the repeated write of an unchanged value', () => {
+    const session = createDedupedSessionWriter()
+    session.write(KEY, 'a')
+    const first = storedAt()
+
+    vi.advanceTimersByTime(1000)
+    session.write(KEY, 'a')
+
+    expect(storedAt()).toBe(first)
+  })
+
+  it('writes again once the skip has gone stale, to re-stamp the TTL', () => {
+    const session = createDedupedSessionWriter()
+    session.write(KEY, 'a')
+    const first = storedAt()
+
+    vi.advanceTimersByTime(60 * 60 * 1000 + 1)
+    session.write(KEY, 'a')
+
+    expect(storedAt()).toBeGreaterThan(first)
+    expect(sessionStorageGet<string>(KEY)).toBe('a')
+  })
+
+  it('writes a changed value at once, whatever the clock says', () => {
+    const session = createDedupedSessionWriter()
+    session.write(KEY, 'a')
+    session.write(KEY, 'b')
+    expect(sessionStorageGet<string>(KEY)).toBe('b')
   })
 })

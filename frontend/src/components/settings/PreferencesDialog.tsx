@@ -146,7 +146,7 @@ export const PreferencesDialog: Component<PreferencesDialogProps> = (props) => {
       void adminStore.load()
     // RETRY a failed account load, here, where its rows are about to be
     // rendered. The context loads once at PROVIDER mount, and
-    // `useReloadPreferencesOnIdentityChange` covers the one failure that
+    // `usePreferencesForIdentity` covers the one failure that
     // has an event to hang off: the load that answered Unauthenticated
     // because the visitor signed in later in the same page.
     //

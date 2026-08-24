@@ -2,10 +2,11 @@ import type { JSX } from 'solid-js'
 import { render, waitFor } from '@solidjs/testing-library'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
-import { KEY_BROWSER_PREFS, KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN, loadBrowserPrefs, localStorageClearForTests, localStorageGet, localStorageSet } from '~/lib/browserStorage'
+import { accountStorageKey, KEY_BROWSER_PREFS, KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN, KEY_PREFERRED_EDITOR, loadBrowserPrefs, localStorageClearForTests, localStorageGet, localStorageSet, resetStorageAccountForTests, setStorageAccount, storedKeyFor } from '~/lib/browserStorage'
 import { buildFontFamily } from '~/lib/fontStack'
-import { applyTheme, themeStore } from '~/lib/themeStore'
+import { applyTheme, DEFAULT_THEME_VALUE, themeStore } from '~/lib/themeStore'
 import { goldenAccountSchema } from '~/test-support/accountSchema'
+import { TEST_USER_ID } from '~/test-support/crdtBridge'
 
 // Mock the user settings API: ListUserSettings returns no values (every
 // account key stays at its default), and the write RPCs succeed with an echo
@@ -161,7 +162,7 @@ describe('preferencesContext — browser-level theme override', () => {
 })
 
 // The terminal theme is a SECOND appearance choice. It defaults to following
-// the UI, which is what makes the first-impression pickers move the terminal
+// the UI, which is what makes the empty state's single picker move the terminal
 // too without writing to this key at all.
 describe('preferencesContext — terminal theme override', () => {
   const MATCH_BOTH = { name: 'match-ui', mode: 'match-ui' } as const
@@ -1178,3 +1179,263 @@ function deferred<T>() {
   promise.catch(() => {})
   return { promise, resolve, reject }
 }
+
+// Moved here from `themeStore.test.ts`. The listener cannot live in that module
+// any more: it runs before any identity exists, so it cannot know which
+// account's key an event belongs to, and following the wrong one is the
+// cross-tab shape of the leak account scoping exists to close. Here it also
+// covers every dual preference rather than the theme alone.
+describe('preferencesContext — cross-tab sync', () => {
+  /** Announce that another tab rewrote this account's prefs document. */
+  function announceWrite(key: string | null = storedKeyFor(KEY_BROWSER_PREFS)) {
+    window.dispatchEvent(new StorageEvent('storage', { key }))
+  }
+
+  it('re-reads the stored value when another tab rewrites the prefs document', async () => {
+    const ctx = captureContext()
+    await flushMicrotasks()
+
+    localStorageSet(KEY_BROWSER_PREFS, { theme: { name: 'tokyo-night', mode: 'dark' } })
+    announceWrite()
+
+    expect(ctx.get().theme()).toEqual({ name: 'tokyo-night', mode: 'dark' })
+    // The applier runs too, so the palette actually repaints rather than only
+    // the signal moving.
+    expect(themeStore.theme()).toEqual({ name: 'tokyo-night', mode: 'dark' })
+  })
+
+  it('ignores a storage event for an unrelated key', async () => {
+    const ctx = captureContext()
+    await flushMicrotasks()
+
+    localStorageSet(KEY_BROWSER_PREFS, { theme: { name: 'ayu', mode: 'light' } })
+    announceWrite('leapmux:something-else')
+
+    expect(ctx.get().theme()).toEqual(DEFAULT_THEME_VALUE)
+  })
+
+  // ANOTHER ACCOUNT's document changing says nothing about this one. Following
+  // it would put the other user's palette on this user's screen -- the exact
+  // leak scoping the keys exists to prevent, arriving through the side door.
+  it('ignores a write to a different account, however well formed', async () => {
+    const ctx = captureContext()
+    await flushMicrotasks()
+
+    localStorage.setItem(
+      accountStorageKey('someoneelse', KEY_BROWSER_PREFS),
+      JSON.stringify({ v: { theme: { name: 'nord', mode: 'dark' } }, e: Date.now() + 60_000 }),
+    )
+    announceWrite(accountStorageKey('someoneelse', KEY_BROWSER_PREFS))
+
+    expect(ctx.get().theme()).toEqual(DEFAULT_THEME_VALUE)
+  })
+
+  // The document holds EVERY device preference, so this event fires for a diff
+  // view or an Enter-key mode written next door. A user whose theme lives at
+  // account scope has no `theme` field in it, and answering with the default
+  // used to repaint them from their palette to Default on any unrelated write.
+  it('leaves an account-tier value alone when another tab writes an unrelated preference', async () => {
+    listUserSettings.mockResolvedValue({
+      descriptors: goldenAccountSchema(),
+      values: [settingValue('theme', JSON.stringify({ name: 'nord', mode: 'dark' }))],
+    })
+    const ctx = captureContext()
+    await waitFor(() => expect(ctx.get().theme()).toEqual({ name: 'nord', mode: 'dark' }))
+
+    localStorageSet(KEY_BROWSER_PREFS, { diffView: 'split' })
+    announceWrite()
+
+    expect(ctx.get().theme()).toEqual({ name: 'nord', mode: 'dark' })
+    expect(ctx.get().diffView()).toBe('split')
+  })
+
+  it('does not write back, so two tabs cannot ping-pong', async () => {
+    const ctx = captureContext()
+    await flushMicrotasks()
+
+    localStorageSet(KEY_BROWSER_PREFS, { theme: { name: 'github', mode: 'light' } })
+    const writes = vi.spyOn(Storage.prototype, 'setItem')
+    announceWrite()
+
+    expect(ctx.get().theme()).toEqual({ name: 'github', mode: 'light' })
+    expect(writes).not.toHaveBeenCalled()
+    writes.mockRestore()
+  })
+
+  it('reads the value back through the store rather than off the event', async () => {
+    // `newValue` carries the raw `{ v, e }` TTL envelope that localStorageSet
+    // writes, so parsing it directly reads `undefined` for every field. That
+    // bug made cross-tab theme sync silently do nothing.
+    const ctx = captureContext()
+    await flushMicrotasks()
+
+    localStorageSet(KEY_BROWSER_PREFS, { theme: { name: 'github', mode: 'light' } })
+    window.dispatchEvent(new StorageEvent('storage', {
+      key: storedKeyFor(KEY_BROWSER_PREFS),
+      newValue: JSON.stringify({ theme: { name: 'nord', mode: 'dark' } }),
+    }))
+
+    expect(ctx.get().theme()).toEqual({ name: 'github', mode: 'light' })
+  })
+
+  // EVERY device-tier signal follows, not only the nine that have an account
+  // half. The browser-only fields share the same document and the same event,
+  // so a set they were missing from meant a diff view or an Enter-key mode
+  // changed next door stayed stale here until the tab was reloaded.
+  it('follows a browser-only preference in the same document', async () => {
+    const ctx = captureContext()
+    await flushMicrotasks()
+
+    localStorageSet(KEY_BROWSER_PREFS, { enterKeyMode: 'enter-sends', showHiddenMessages: true })
+    announceWrite()
+
+    expect(ctx.get().enterKeyMode()).toBe('enter-sends')
+    expect(ctx.get().showHiddenMessages()).toBe(true)
+  })
+
+  // The two preferences that live in a key of their OWN. A listener that
+  // matched the consolidated document alone could never see their event.
+  it('follows a preference stored under its own key', async () => {
+    const ctx = captureContext()
+    await flushMicrotasks()
+
+    localStorageSet(KEY_PREFERRED_EDITOR, 'vscode')
+    announceWrite(storedKeyFor(KEY_PREFERRED_EDITOR))
+    expect(ctx.get().preferredEditorId()).toBe('vscode')
+
+    localStorageSet(KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN, false)
+    announceWrite(storedKeyFor(KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN))
+    expect(ctx.get().directoryPickerShowHidden()).toBe(false)
+  })
+
+  // An event for one key must not re-read the others. The signals would land on
+  // the same values today, but the appliers would run -- repainting the palette
+  // and re-highlighting every code block on an unrelated write.
+  it('applies only the entries the changed key belongs to', async () => {
+    const ctx = captureContext()
+    await flushMicrotasks()
+    ctx.get().dual.theme.setBrowser({ name: 'nord', mode: 'dark' })
+
+    const applied = vi.spyOn(themeStore, 'applyTheme')
+    localStorageSet(KEY_PREFERRED_EDITOR, 'vscode')
+    announceWrite(storedKeyFor(KEY_PREFERRED_EDITOR))
+
+    expect(ctx.get().preferredEditorId()).toBe('vscode')
+    expect(applied).not.toHaveBeenCalled()
+    applied.mockRestore()
+  })
+
+  // `localStorage.clear()` next door fires ONE event whose key is null, naming
+  // no key at all. Dropping it left every signal showing a value whose document
+  // was gone, and the next write in this tab merged onto the empty document and
+  // silently discarded the rest.
+  it('returns every signal to its default when another tab clears the store', async () => {
+    const ctx = captureContext()
+    await flushMicrotasks()
+
+    localStorageSet(KEY_BROWSER_PREFS, { theme: { name: 'nord', mode: 'dark' }, enterKeyMode: 'enter-sends' })
+    announceWrite()
+    expect(ctx.get().theme()).toEqual({ name: 'nord', mode: 'dark' })
+
+    localStorageClearForTests()
+    announceWrite(null)
+
+    expect(ctx.get().theme()).toEqual(DEFAULT_THEME_VALUE)
+    expect(ctx.get().enterKeyMode()).toBe('cmd-enter-sends')
+  })
+
+  // A `storage` event can arrive on a page with no identity -- another tab
+  // signed out, or a device-scoped key moved. Every account-scoped read throws
+  // there, and this handler fires on ANY tab's write, so a throw would take the
+  // listener down for the rest of the session.
+  it('does not throw for an event that arrives before an identity resolves', async () => {
+    const ctx = captureContext()
+    await flushMicrotasks()
+
+    resetStorageAccountForTests()
+    expect(() => announceWrite('leapmux:channel-relay-seq')).not.toThrow()
+    expect(() => announceWrite(null)).not.toThrow()
+    setStorageAccount(TEST_USER_ID)
+    expect(ctx.get().theme()).toEqual(DEFAULT_THEME_VALUE)
+  })
+})
+
+describe('preferencesContext — the device tier follows the account', () => {
+  const OTHER = 'otheraccount'
+
+  afterEach(() => {
+    setStorageAccount(TEST_USER_ID)
+  })
+
+  it('seeds every device-tier family from the signed-in account', async () => {
+    localStorageSet(KEY_BROWSER_PREFS, {
+      theme: { name: 'nord', mode: 'dark' },
+      diffView: 'split',
+      enterKeyMode: 'enter-sends',
+      terminalRenderer: 'canvas',
+      showHiddenMessages: true,
+    })
+    localStorageSet(KEY_PREFERRED_EDITOR, 'vscode')
+    localStorageSet(KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN, false)
+
+    const ctx = captureContext()
+    await flushMicrotasks()
+
+    expect(ctx.get().theme()).toEqual({ name: 'nord', mode: 'dark' })
+    expect(ctx.get().diffView()).toBe('split')
+    expect(ctx.get().enterKeyMode()).toBe('enter-sends')
+    expect(ctx.get().terminalRenderer()).toBe('canvas')
+    expect(ctx.get().showHiddenMessages()).toBe(true)
+    expect(ctx.get().preferredEditorId()).toBe('vscode')
+    expect(ctx.get().directoryPickerShowHidden()).toBe(false)
+  })
+
+  // THE REGRESSION THIS CHANGE EXISTS FOR. The device tier used to be read once,
+  // at the provider's mount, and never again -- so after a user switch with no
+  // page reload every one of these signals still held the PREVIOUS user's
+  // values, and the dialog reported them as "This device" over the new user's
+  // own account settings.
+  it('drops the previous account values on a switch, without a reload', async () => {
+    localStorageSet(KEY_BROWSER_PREFS, {
+      theme: { name: 'nord', mode: 'dark' },
+      diffView: 'split',
+      enterKeyMode: 'enter-sends',
+      terminalRenderer: 'canvas',
+      showHiddenMessages: true,
+    })
+    localStorageSet(KEY_PREFERRED_EDITOR, 'vscode')
+    localStorageSet(KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN, false)
+
+    const ctx = captureContext()
+    await flushMicrotasks()
+    expect(ctx.get().theme()).toEqual({ name: 'nord', mode: 'dark' })
+
+    // No manual re-seed: moving the namespace is what drives it, through the
+    // provider's `onStorageAccountChange` subscription. A test that called a
+    // re-seed by hand would pass with that subscription deleted.
+    setStorageAccount(OTHER)
+
+    // Every family is back at its built-in default, holding nothing of the
+    // account that just left.
+    expect(ctx.get().theme()).toEqual(DEFAULT_THEME_VALUE)
+    expect(ctx.get().diffView()).toBe('unified')
+    expect(ctx.get().enterKeyMode()).toBe('cmd-enter-sends')
+    expect(ctx.get().terminalRenderer()).toBe('auto')
+    expect(ctx.get().showHiddenMessages()).toBe(false)
+    expect(ctx.get().preferredEditorId()).toBeUndefined()
+    expect(ctx.get().directoryPickerShowHidden()).toBe(true)
+  })
+
+  it('writes under the new account and leaves the previous one intact', async () => {
+    localStorageSet(KEY_BROWSER_PREFS, { theme: { name: 'nord', mode: 'dark' } })
+    const ctx = captureContext()
+    await flushMicrotasks()
+
+    setStorageAccount(OTHER)
+    ctx.get().dual.theme.setBrowser({ name: 'ayu', mode: 'light' })
+
+    expect(loadBrowserPrefs().theme).toEqual({ name: 'ayu', mode: 'light' })
+    setStorageAccount(TEST_USER_ID)
+    expect(loadBrowserPrefs().theme).toEqual({ name: 'nord', mode: 'dark' })
+  })
+})

@@ -2,11 +2,10 @@
 import { createRoot } from 'solid-js'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
-import { localStorageGet } from '~/lib/browserStorage'
+import { KEY_ACTIVE_WORKSPACE, localStorageGet, resetStorageAccountForTests, setStorageAccount } from '~/lib/browserStorage'
 import { emitAddTab } from '~/stores/tabOps'
-import { withTestBridge } from '~/test-support/crdtBridge'
+import { TEST_USER_ID, withTestBridge } from '~/test-support/crdtBridge'
 import { createTestTabStores } from '~/test-support/tabStores'
-import { activeWorkspaceKey } from './tabPersistenceKeys'
 import { createWorkspaceSwitcher } from './workspaceSwitcher'
 
 /**
@@ -23,13 +22,10 @@ import { createWorkspaceSwitcher } from './workspaceSwitcher'
  * coverage lives in `TerminalView.test.tsx` alongside the other teardown paths.
  */
 
-const USER = 'u1'
-
-function setup(getUserId: () => string = () => USER) {
+function setup() {
   const stores = createTestTabStores('ws-test')
   const active: Array<string | null> = []
   const switchWorkspace = createWorkspaceSwitcher({
-    getUserId,
     setActiveWorkspaceId: next => active.push(next),
   })
   return { ...stores, switchWorkspace, active }
@@ -40,27 +36,33 @@ describe('createWorkspaceSwitcher', () => {
     localStorage.clear()
   })
 
-  it('persists the new workspace under this user key', () => {
+  it('persists the new workspace', () => {
     withTestBridge(() => {
       createRoot((dispose) => {
         const { switchWorkspace } = setup()
         switchWorkspace('w1')
-        expect(localStorageGet<string>(activeWorkspaceKey(USER))).toBe('w1')
+        expect(localStorageGet<string>(KEY_ACTIVE_WORKSPACE)).toBe('w1')
         dispose()
       })
     })
   })
 
-  it('keeps each user id on its own key', () => {
+  // The switcher no longer takes a user id: browserStorage scopes every key to
+  // the signed-in account, so two accounts keep their own last workspace
+  // without any caller threading an id through. This is the same guarantee the
+  // old per-user key template gave, moved under the whole namespace.
+  it('keeps each account on its own key', () => {
     withTestBridge(() => {
       createRoot((dispose) => {
-        let user = 'alice'
-        const { switchWorkspace } = setup(() => user)
+        const { switchWorkspace } = setup()
         switchWorkspace('w1')
-        user = 'bob'
+
+        setStorageAccount('bob')
         switchWorkspace('w2')
-        expect(localStorageGet<string>(activeWorkspaceKey('alice'))).toBe('w1')
-        expect(localStorageGet<string>(activeWorkspaceKey('bob'))).toBe('w2')
+        expect(localStorageGet<string>(KEY_ACTIVE_WORKSPACE)).toBe('w2')
+
+        setStorageAccount(TEST_USER_ID)
+        expect(localStorageGet<string>(KEY_ACTIVE_WORKSPACE)).toBe('w1')
         dispose()
       })
     })
@@ -72,22 +74,26 @@ describe('createWorkspaceSwitcher', () => {
         const { switchWorkspace } = setup()
         switchWorkspace('w1')
         switchWorkspace(null)
-        expect(localStorageGet<string>(activeWorkspaceKey(USER))).toBeUndefined()
+        expect(localStorageGet<string>(KEY_ACTIVE_WORKSPACE)).toBeUndefined()
         dispose()
       })
     })
   })
 
-  // The switcher runs before the session restore resolves on a cold load. A
-  // blank user id would key the write to `leapmux:activeWorkspace:`, which no
-  // later read reconstructs -- so skip the write and keep the signal flip.
-  it('flips the signal but writes nothing when the user is not restored yet', () => {
+  // Replaces 'writes nothing when the user is not restored yet'. That case
+  // guarded a blank user id keying the write to a name no later read could
+  // reconstruct; the id is no longer part of the name, so the guard is gone and
+  // the namespace enforces the same thing one level down -- loudly, because
+  // AppShell only ever builds this switcher inside AuthGuard.
+  it('throws rather than writing when no account is set', () => {
     withTestBridge(() => {
       createRoot((dispose) => {
-        const { switchWorkspace, active } = setup(() => '')
-        switchWorkspace('w1')
+        const { switchWorkspace, active } = setup()
+        resetStorageAccountForTests()
+        expect(() => switchWorkspace('w1')).toThrow(/No storage account is set/)
+        // The signal still flipped: the write is the last statement.
         expect(active).toEqual(['w1'])
-        expect(localStorage.getItem(activeWorkspaceKey(''))).toBeNull()
+        setStorageAccount(TEST_USER_ID)
         dispose()
       })
     })

@@ -1,18 +1,22 @@
 import type { ResolvedThemeMode, TerminalThemeValue, ThemeDefinition, ThemeMode, ThemeValue, ThemeVariant, ThemeVariantChoice } from '~/styles/themes'
 import { createEffect, createRoot, createSignal, on, onCleanup } from 'solid-js'
 import { DEFAULT_THEME_ID, isThemeId, MATCH_UI, resolveVariant, themeById, variantById } from '~/styles/themes'
-import { KEY_BROWSER_PREFS, loadBrowserPrefs, updateBrowserPref } from './browserStorage'
 
 /**
  * The live theme: which palette the app paints, and the DOM that carries it.
  *
- * ONE OWNER, WITH OR WITHOUT A PROVIDER. `PreferencesContext` resolves the
- * device tier over the account tier and pushes the answer here through
- * `applyTheme`; the desktop launcher, which renders outside every provider and
- * has no hub connection to hold an account tier, writes the device tier
- * directly through `writeDeviceTheme`. Both land on the same signals and the
- * same `leapmux:browser-prefs` field, so a theme picked on the launcher is
- * already the resolved value once the providers mount.
+ * IT PAINTS; IT DOES NOT STORE. `PreferencesContext` owns where a theme came
+ * from -- the device tier over the account tier -- and pushes the answer here
+ * through `applyTheme`. This module imports nothing from `~/lib/browserStorage`,
+ * and that is load-bearing rather than incidental: every stored preference is
+ * scoped to an account, this module is built at IMPORT time, and no account is
+ * known that early. A read here would throw before the first component renders
+ * and take every module that transitively imports this one down with it.
+ *
+ * So until an identity resolves, the app paints the default palette at the
+ * polarity the OS asks for. The `matchMedia` subscription below is what makes
+ * that answer live, with no provider and no stored value -- which is the whole
+ * of what the desktop launcher, `/login` and `/setup` show.
  *
  * This module used to be an effect in app.tsx plus a `window.__leapmux_setTheme`
  * global. The global existed only to reach across the provider boundary, and a
@@ -146,12 +150,10 @@ function prefersDark(): boolean {
   return darkQuery()?.matches ?? false
 }
 
-function storedTheme(): ThemeValue {
-  return parseThemeValue(loadBrowserPrefs().theme) ?? DEFAULT_THEME_VALUE
-}
-
 function createThemeStore() {
-  const [theme, setTheme] = createSignal<ThemeValue>(storedTheme())
+  // The default, never a stored value: see the module comment. `applyTheme`
+  // corrects this the moment `PreferencesContext` resolves an account.
+  const [theme, setTheme] = createSignal<ThemeValue>(DEFAULT_THEME_VALUE)
   const [systemDark, setSystemDark] = createSignal(prefersDark())
 
   const resolvedMode = (): ResolvedThemeMode => {
@@ -225,42 +227,21 @@ function createThemeStore() {
     // than restated. Three literals used to disagree here: this effect said
     // #ffffff, entry-server.tsx and manifest.webmanifest said #F7F5F2, and the
     // actual light --background was rgb(255 254 252).
-    const meta = document.querySelector('meta[name="theme-color"]')
-    if (meta)
-      meta.setAttribute('content', resolvedVariant().palette['--background'] ?? '')
-  })
-
-  // Follow theme changes made in other tabs.
-  //
-  // The event is only used to learn WHICH key changed; the value is read back
-  // through `loadBrowserPrefs`. Parsing `e.newValue` directly -- which this did
-  // -- reads the raw `{ v, e }` TTL envelope that `localStorageSet` writes, so
-  // `JSON.parse(e.newValue).theme` was always `undefined`, the comparison
-  // against an equally-undefined old value was never true, and cross-tab theme
-  // sync had silently done nothing: a second tab kept the old theme until it
-  // was reloaded.
-  //
-  // Only a DEVICE override is followed. `leapmux:browser-prefs` is one
-  // consolidated document holding every device preference, so this event fires
-  // for a diff view or an Enter-key mode written in another tab -- writes that
-  // say nothing about the theme. An account-tier theme leaves the `theme` field
-  // ABSENT from that document, so answering with `storedTheme()`'s
-  // `DEFAULT_THEME_VALUE` fallback would repaint an account palette to Default
-  // on every unrelated device write, and nothing would restore it:
-  // `PreferencesApplier` re-runs on `preferences.theme()`, which no storage
-  // event touches. The device tier is the only tier this document can speak
-  // for, so an absent field means "no opinion", not "the default".
-  if (typeof window !== 'undefined') {
-    const onStorage = (event: StorageEvent) => {
-      if (event.key !== KEY_BROWSER_PREFS)
-        return
-      const deviceTheme = parseThemeValue(loadBrowserPrefs().theme)
-      if (deviceTheme)
-        setTheme(deviceTheme)
+    //
+    // EVERY tag, and the `media` attribute comes OFF. `entry-server` ships three
+    // -- one per OS polarity behind a `media` query, plus a media-less fallback
+    // -- and a browser takes the FIRST whose media matches, so the app's answer
+    // has to replace all three or the OS keeps deciding. Writing only the first
+    // match left a light app on a dark OS showing the static dark colour in the
+    // address bar for the whole session, and any non-Default palette showing
+    // Default's background. The media pair is the pre-hydration answer; once
+    // this effect runs the app knows better than the OS does.
+    const background = resolvedVariant().palette['--background'] ?? ''
+    for (const meta of document.querySelectorAll('meta[name="theme-color"]')) {
+      meta.setAttribute('content', background)
+      meta.removeAttribute('media')
     }
-    window.addEventListener('storage', onStorage)
-    onCleanup(() => window.removeEventListener('storage', onStorage))
-  }
+  })
 
   return {
     /** The preference as chosen: `mode` may still be `'system'`. */
@@ -291,37 +272,14 @@ function createThemeStore() {
     applyTheme(value: ThemeValue): void {
       setTheme(parseThemeValue(value) ?? DEFAULT_THEME_VALUE)
     },
-
-    /**
-     * Write the DEVICE tier of the `theme` preference and paint the result.
-     *
-     * For the one surface that has no `PreferencesProvider` above it: the
-     * desktop launcher. Everywhere else goes through the provider, so that the
-     * dialog's scope chip and Reset keep describing the write that happened.
-     * Calling this under a provider would leave that provider's own device-tier
-     * signal stale.
-     *
-     * IT REPLACES, and takes a whole value to say so. It used to take a
-     * `Partial` and merge it over the current theme, which made the two halves
-     * of `useThemeChooser` disagree: the provider branch writes through
-     * `dualScalar`, which replaces, so the same `onChange` meant one thing with
-     * a provider mounted and another without. Nothing needed the merge -- the
-     * one caller always passed a whole `{ name, mode }` -- and a merge cannot
-     * express "clear the variant", because an absent key reads as "keep".
-     */
-    writeDeviceTheme(value: ThemeValue): void {
-      const next = parseThemeValue(value) ?? DEFAULT_THEME_VALUE
-      updateBrowserPref('theme', next)
-      setTheme(next)
-    },
   }
 }
 
 /**
  * Created in a root of its own: these effects outlive any component, and
  * without an owner Solid discards their `onCleanup` and leaks the `matchMedia`
- * and `storage` listeners on every hot reload.
+ * subscription on every hot reload.
  */
 export const themeStore = createRoot(createThemeStore)
 
-export const { applyTheme, writeDeviceTheme } = themeStore
+export const { applyTheme } = themeStore

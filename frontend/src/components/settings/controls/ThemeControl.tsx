@@ -4,8 +4,8 @@ import { useThemeChooser } from '~/components/common/useThemeChooser'
 import { themeStore } from '~/lib/themeStore'
 
 /**
- * The Appearance section's Theme row: the same `<ThemeChooser>` the launcher,
- * the setup page and the no-workspace empty state render.
+ * The Appearance section's Theme row: the same `<ThemeChooser>` the
+ * no-workspace empty state renders.
  *
  * A whole-setting custom editor, so it takes no props and binds itself -- the
  * shape every entry in CUSTOM_EDITORS has. `showLabel` is off because

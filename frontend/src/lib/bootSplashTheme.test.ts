@@ -2,13 +2,13 @@ import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { KEY_BROWSER_PREFS } from '~/lib/browserStorage'
 import {
   BOOT_SPLASH_FAIL_TIMEOUT_DETAIL,
   BOOT_SPLASH_FAIL_TIMEOUT_MS,
   BOOT_SPLASH_FAIL_TITLE,
   BOOT_SPLASH_GAP,
   BOOT_SPLASH_LABEL,
+  BOOT_SPLASH_LINE_HEIGHT,
   BOOT_SPLASH_RELOAD_LABEL,
   BOOT_SPLASH_SPACE_4,
   BOOT_SPLASH_STATIC_ID,
@@ -18,24 +18,8 @@ import {
   bootSplashDocumentCss,
   bootSplashLight,
   bootThemeScript,
-  parseBootPrefsThemeMode,
   removeStaticBootSplash,
-  resolveBootPolarity,
 } from './bootSplashTheme'
-
-describe('resolveBootPolarity', () => {
-  it('honours an explicit light or dark pin', () => {
-    expect(resolveBootPolarity('light', true)).toBe('light')
-    expect(resolveBootPolarity('dark', false)).toBe('dark')
-  })
-
-  it('follows the OS when mode is system or absent', () => {
-    expect(resolveBootPolarity('system', true)).toBe('dark')
-    expect(resolveBootPolarity('system', false)).toBe('light')
-    expect(resolveBootPolarity(undefined, true)).toBe('dark')
-    expect(resolveBootPolarity('nope', false)).toBe('light')
-  })
-})
 
 describe('boot splash palette', () => {
   it('uses Default theme backgrounds that disagree by polarity', () => {
@@ -44,36 +28,19 @@ describe('boot splash palette', () => {
   })
 })
 
-describe('parseBootPrefsThemeMode', () => {
-  const now = 1_700_000_000_000
-
-  it('defaults to system when raw is null or empty', () => {
-    expect(parseBootPrefsThemeMode(null, now)).toBe('system')
-    expect(parseBootPrefsThemeMode('', now)).toBe('system')
-  })
-
-  it('reads theme.mode from a valid TTL envelope', () => {
-    const raw = JSON.stringify({ v: { theme: { name: 'default', mode: 'dark' } }, e: now + 60_000 })
-    expect(parseBootPrefsThemeMode(raw, now)).toBe('dark')
-  })
-
-  it('ignores an expired envelope', () => {
-    const raw = JSON.stringify({ v: { theme: { mode: 'dark' } }, e: now - 1 })
-    expect(parseBootPrefsThemeMode(raw, now)).toBe('system')
-  })
-
-  it('ignores malformed JSON and a missing mode string', () => {
-    expect(parseBootPrefsThemeMode('{', now)).toBe('system')
-    expect(parseBootPrefsThemeMode(JSON.stringify({ v: {}, e: now + 1 }), now)).toBe('system')
-    expect(parseBootPrefsThemeMode(JSON.stringify({ v: { theme: { mode: 1 } }, e: now + 1 }), now)).toBe('system')
-  })
-})
-
 describe('bootSplashDocumentCss', () => {
   it('covers html/body/#app fill, safe-area body lock, and the shared gap token', () => {
     const css = bootSplashDocumentCss()
-    expect(css).toContain(`:root{--space-4:${BOOT_SPLASH_SPACE_4}}`)
+    // The gap token is seeded on the SPLASH, never on `:root`. This seed is
+    // unlayered and oat's `:root` sits in `@layer theme`, so a `:root` seed
+    // pins `--space-4` for the whole app, permanently, from a stylesheet that
+    // exists to paint one splash.
+    expect(css).toContain(`--space-4:${BOOT_SPLASH_SPACE_4}`)
+    expect(css).not.toContain(`:root{--space-4`)
     expect(css).toContain(`gap:${BOOT_SPLASH_GAP}`)
+    // Inherited properties the splash must state itself, or it reflows when
+    // oat's `body` rule arrives. See BOOT_SPLASH_LINE_HEIGHT.
+    expect(css).toContain(`line-height:${BOOT_SPLASH_LINE_HEIGHT}`)
     expect(css).toContain(bootSplashLight.background)
     expect(css).toContain(bootSplashDark.background)
     expect(css).toContain('html,body,#app{margin:0;height:100%;width:100%;overflow:hidden}')
@@ -92,6 +59,19 @@ describe('bootSplashDocumentCss', () => {
     expect(css).toContain('max-width:min(100%,20rem)')
     expect(css).toContain('.boot-splash-error pre{margin:0 auto')
     expect(css).not.toContain('gap:1rem')
+    // The pre-hydration polarity, as a RULE rather than an inline style, and
+    // scoped to the window before the app answers. `html[data-theme]` is
+    // (0,1,1), above `global.css.ts`'s unlayered `html { color-scheme: light }`
+    // at (0,0,1) -- dark form controls and scrollbars from first paint on a dark
+    // OS. `:not([data-ui-theme])` is what makes it YIELD: `themeStore` writes
+    // that attribute with the palette, and without the clause this rule would
+    // outrank `lightVariantSelector`'s `[data-ui-light="X"]` self match at
+    // (0,1,0) for the rest of the session.
+    expect(css).toContain('html[data-theme="light"]:not([data-ui-theme]){color-scheme:light}')
+    expect(css).toContain('html[data-theme="dark"]:not([data-ui-theme]){color-scheme:dark}')
+    // The clause is not optional: an unscoped rule is the bug above.
+    expect(css).not.toContain('html[data-theme="light"]{color-scheme')
+    expect(css).not.toContain('html[data-theme="dark"]{color-scheme')
   })
 })
 
@@ -100,7 +80,7 @@ describe('bootThemeScript', () => {
     document.documentElement.removeAttribute('data-theme')
     document.documentElement.style.colorScheme = ''
     document.documentElement.style.backgroundColor = ''
-    localStorage.removeItem(KEY_BROWSER_PREFS)
+    localStorage.removeItem('leapmux:browser-prefs')
     document.head.querySelectorAll('meta[name="theme-color"]').forEach(m => m.remove())
     vi.unstubAllGlobals()
   })
@@ -134,57 +114,61 @@ describe('bootThemeScript', () => {
     new Function(bootThemeScript())()
   }
 
-  function expectBackground(hex: string): void {
-    const probe = document.createElement('div')
-    probe.style.backgroundColor = hex
-    expect(document.documentElement.style.backgroundColor).toBe(probe.style.backgroundColor)
-  }
+  // IT READS NO STORAGE, and the spy is the assertion. Asserting only on the
+  // painted polarity would also pass for a script that read a key and found
+  // nothing -- and this script must not read at all: it is inlined into static
+  // HTML that runs before any module and before any identity, so there is no
+  // account whose theme it could legitimately read.
+  it('paints the OS polarity and reads no storage', () => {
+    installThemeColorMetas()
+    const getItem = vi.spyOn(Storage.prototype, 'getItem')
 
-  it('applies a dark device pin over a light OS and strips theme-color media', () => {
+    runBootScript(true)
+
+    expect(document.documentElement.getAttribute('data-theme')).toBe('dark')
+    expect(getItem).not.toHaveBeenCalled()
+    getItem.mockRestore()
+  })
+
+  it('paints light under a light OS', () => {
+    installThemeColorMetas()
+    runBootScript(false)
+    expect(document.documentElement.getAttribute('data-theme')).toBe('light')
+  })
+
+  // The loud failure if anyone re-adds the read: a document left by an earlier
+  // build, or by another account, must not reach the first paint.
+  it('ignores a stored theme document left behind by an earlier build', () => {
     installThemeColorMetas()
     localStorage.setItem(
-      KEY_BROWSER_PREFS,
+      'leapmux:browser-prefs',
       JSON.stringify({ v: { theme: { mode: 'dark' } }, e: Date.now() + 60_000 }),
     )
+
     runBootScript(false)
 
-    expect(document.documentElement.getAttribute('data-theme')).toBe('dark')
-    expectBackground(bootSplashDark.background)
-    const metas = [...document.querySelectorAll('meta[name="theme-color"]')]
-    expect(metas.length).toBeGreaterThan(0)
-    for (const meta of metas) {
-      expect(meta.getAttribute('content')).toBe(bootSplashDark.background)
-      expect(meta.hasAttribute('media')).toBe(false)
-    }
-  })
-
-  it('applies a light device pin over a dark OS and strips theme-color media', () => {
-    installThemeColorMetas()
-    localStorage.setItem(
-      KEY_BROWSER_PREFS,
-      JSON.stringify({ v: { theme: { mode: 'light' } }, e: Date.now() + 60_000 }),
-    )
-    runBootScript(true)
-
     expect(document.documentElement.getAttribute('data-theme')).toBe('light')
-    expectBackground(bootSplashLight.background)
-    const metas = [...document.querySelectorAll('meta[name="theme-color"]')]
-    expect(metas.length).toBeGreaterThan(0)
-    for (const meta of metas) {
-      expect(meta.getAttribute('content')).toBe(bootSplashLight.background)
-      expect(meta.hasAttribute('media')).toBe(false)
-    }
   })
 
-  it('keeps media theme-color metas under system mode', () => {
+  // The polarity is stated as a RULE, in `bootSplashDocumentCss`, never as an
+  // inline style here. An inline declaration outranks every author rule, so an
+  // inline `color-scheme` could not be overridden by the palette rule that
+  // carries the app's own polarity: a dark app under a light OS kept
+  // `color-scheme: light`, and `light-dark()` took the light branch inside a
+  // dark palette.
+  it('writes no inline style, so the palette rule can still win', () => {
     installThemeColorMetas()
-    localStorage.setItem(
-      KEY_BROWSER_PREFS,
-      JSON.stringify({ v: { theme: { mode: 'system' } }, e: Date.now() + 60_000 }),
-    )
     runBootScript(true)
 
-    expect(document.documentElement.getAttribute('data-theme')).toBe('dark')
+    expect(document.documentElement.style.colorScheme).toBe('')
+    expect(document.documentElement.style.backgroundColor).toBe('')
+  })
+
+  it('keeps the media theme-color metas and rewrites only the fallback', () => {
+    installThemeColorMetas()
+
+    runBootScript(true)
+
     const withMedia = document.querySelectorAll('meta[name="theme-color"][media]')
     expect(withMedia.length).toBe(2)
     expect(withMedia[0]!.getAttribute('content')).toBe(bootSplashLight.background)
@@ -192,85 +176,16 @@ describe('bootThemeScript', () => {
     const fallback = document.querySelector('meta[name="theme-color"]:not([media])')
     expect(fallback?.getAttribute('content')).toBe(bootSplashDark.background)
   })
-
-  /**
-   * The head script cannot import `parseBootPrefsThemeMode`. This matrix is
-   * the contract that keeps the inlined parse aligned with the TypeScript
-   * helper + `resolveBootPolarity`.
-   */
-  it('matches parseBootPrefsThemeMode + resolveBootPolarity for every envelope × OS case', () => {
-    const now = Date.now()
-    const cases: Array<{
-      label: string
-      raw: string | null
-      systemDark: boolean
-    }> = [
-      { label: 'null prefs, light OS', raw: null, systemDark: false },
-      { label: 'null prefs, dark OS', raw: null, systemDark: true },
-      {
-        label: 'dark pin, light OS',
-        raw: JSON.stringify({ v: { theme: { mode: 'dark' } }, e: now + 60_000 }),
-        systemDark: false,
-      },
-      {
-        label: 'light pin, dark OS',
-        raw: JSON.stringify({ v: { theme: { mode: 'light' } }, e: now + 60_000 }),
-        systemDark: true,
-      },
-      {
-        label: 'system mode, dark OS',
-        raw: JSON.stringify({ v: { theme: { mode: 'system' } }, e: now + 60_000 }),
-        systemDark: true,
-      },
-      {
-        label: 'system mode, light OS',
-        raw: JSON.stringify({ v: { theme: { mode: 'system' } }, e: now + 60_000 }),
-        systemDark: false,
-      },
-      {
-        label: 'expired dark pin, dark OS',
-        raw: JSON.stringify({ v: { theme: { mode: 'dark' } }, e: now - 1 }),
-        systemDark: true,
-      },
-      {
-        label: 'expired dark pin, light OS',
-        raw: JSON.stringify({ v: { theme: { mode: 'dark' } }, e: now - 1 }),
-        systemDark: false,
-      },
-      {
-        label: 'malformed JSON, dark OS',
-        raw: '{',
-        systemDark: true,
-      },
-      {
-        label: 'missing mode, light OS',
-        raw: JSON.stringify({ v: { theme: {} }, e: now + 60_000 }),
-        systemDark: false,
-      },
-    ]
-
-    for (const c of cases) {
-      document.documentElement.removeAttribute('data-theme')
-      document.documentElement.style.colorScheme = ''
-      document.documentElement.style.backgroundColor = ''
-      localStorage.removeItem(KEY_BROWSER_PREFS)
-      if (c.raw !== null)
-        localStorage.setItem(KEY_BROWSER_PREFS, c.raw)
-
-      const expected = resolveBootPolarity(
-        parseBootPrefsThemeMode(c.raw, now),
-        c.systemDark,
-      )
-      runBootScript(c.systemDark)
-
-      expect(
-        document.documentElement.getAttribute('data-theme'),
-        c.label,
-      ).toBe(expected)
-    }
-  })
 })
 
+// RESTORED. These three suites cover code that this change did not touch:
+// `bootFailureWatchdogScript` and `removeStaticBootSplash` still ship
+// unchanged, and `entry-server.tsx` / `entry-client.tsx` still call them. They
+// went out with the storage-reading tests around them, which left the whole
+// cold-start failure path -- the tombstone, the Reload button, the 45s timeout,
+// the observer teardown -- with no coverage at all. A watchdog that stopped
+// answering would leave a user on a slow connection reading "Loading LeapMux…"
+// for ever, with a green suite.
 describe('bootFailureWatchdogScript', () => {
   afterEach(() => {
     document.body.replaceChildren()
@@ -436,30 +351,56 @@ describe('removeStaticBootSplash', () => {
   })
 })
 
+// The static splash and the Solid one must stay one design. They are two
+// separate sources -- inline HTML in `entry-server.tsx` and a component -- and
+// the handoff between them is invisible only while they agree.
+//
+// The entry-server side is asserted in `entry-server.fonts.test.ts`; this is
+// the BootSplash side and the shared constants, which nothing else covers.
 describe('boot splash lockstep sources', () => {
   const here = dirname(fileURLToPath(import.meta.url))
 
-  it('keeps entry-server and BootSplash on the shared module; no twin stylesheet', () => {
-    const entry = readFileSync(resolve(here, '../entry-server.tsx'), 'utf8')
+  /** Value oat declares for a custom property, or a failure naming the token. */
+  function oatToken(css: string, name: string): string {
+    const match = new RegExp(`${name}\\s*:\\s*([^;}]+)`).exec(css)
+    expect(match, `oat no longer declares ${name}`).not.toBeNull()
+    return match![1]!.trim()
+  }
+
+  // The two values the splash states for itself before oat's stylesheet exists.
+  // Nothing else catches this drift. Both reach the splash by INHERITANCE from
+  // `body`, so a mismatch breaks no rule and fails no assertion elsewhere -- it
+  // reflows the splash part way through boot, which only a reader watching a
+  // cold start ever sees.
+  //
+  // `oat.min.css` is the exact artifact `src/app.tsx` imports, so this reads
+  // what ships rather than a source file the package may stop publishing.
+  it('keeps the splash literals in lockstep with the oat stylesheet it ships', () => {
+    const oat = readFileSync(resolve(here, '../../node_modules/@knadh/oat/oat.min.css'), 'utf8')
+
+    expect(oatToken(oat, '--space-4')).toBe(BOOT_SPLASH_SPACE_4)
+    expect(oatToken(oat, '--leading-normal')).toBe(BOOT_SPLASH_LINE_HEIGHT)
+    // The rule that makes line height an INHERITED answer rather than the
+    // splash's own. If oat stops stating it on `body`, the pinned literal
+    // compensates for nothing and this assertion reports that.
+    expect(oat).toContain('line-height:var(--leading-normal)')
+  })
+
+  it('keeps BootSplash on the shared module, with no twin stylesheet', () => {
     const splash = readFileSync(resolve(here, '../components/common/BootSplash.tsx'), 'utf8')
 
-    for (const src of [entry, splash]) {
-      expect(src).toContain('BOOT_SPLASH_LABEL')
-      expect(src).toContain('BOOT_SPLASH_TEST_ID')
-      expect(src).toContain('from \'~/lib/bootSplashTheme\'')
-    }
-    expect(entry).toContain('bootSplashDocumentCss')
-    expect(entry).toContain('bootThemeScript')
-    expect(entry).toContain('bootFailureWatchdogScript')
-    expect(entry).toContain('BOOT_SPLASH_STATIC_ID')
-    expect(entry).toContain('BootSplashIcon')
+    expect(splash).toContain('BOOT_SPLASH_LABEL')
+    expect(splash).toContain('BOOT_SPLASH_TEST_ID')
+    expect(splash).toContain('from \'~/lib/bootSplashTheme\'')
     expect(splash).toContain('data-boot-splash-icon')
     expect(splash).toContain('viewBox="0 0 64 64"')
     expect(splash).not.toContain('BootSplash.css')
+    // The static node owns the id; a second element carrying it would make
+    // `removeStaticBootSplash` delete the mounted splash instead.
     expect(splash).not.toMatch(/\bid=["']boot-splash["']/)
+    // Inline, never an external URL: the icon has to paint on a connection
+    // that has not delivered a second resource yet.
     expect(splash).not.toMatch(/src=["']\/icons\/leapmux-icon\.svg["']/)
-    expect(entry).not.toMatch(/\bsrc=\{?BOOT_SPLASH_ICON/)
-    expect(entry).not.toMatch(/<img[\s\S]*leapmux-icon\.svg/)
     expect(BOOT_SPLASH_TEST_ID).toBe('boot-splash')
     expect(BOOT_SPLASH_STATIC_ID).toBe(BOOT_SPLASH_TEST_ID)
     expect(BOOT_SPLASH_LABEL).toBe('Loading LeapMux…')

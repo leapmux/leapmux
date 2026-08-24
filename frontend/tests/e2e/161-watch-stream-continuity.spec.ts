@@ -32,7 +32,7 @@ const TOOL_USING_PROMPT = 'Run the command `pwd` and tell me the result.'
 
 test.describe('WatchEvents stream continuity', () => {
   test('tab and workspace switches revise interest without reopening the stream', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId } = leapmuxServer
+    const { hubUrl, adminToken, adminUserId, workerId } = leapmuxServer
     const ws1 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Watch Continuity A')
     const ws2 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Watch Continuity B')
     await openAgentViaAPI(hubUrl, adminToken, workerId, ws1)
@@ -45,7 +45,7 @@ test.describe('WatchEvents stream continuity', () => {
       await waitForWorkspaceReady(page)
 
       // Arm after first load so the init script + sound pref both stick across reload.
-      await armTurnEndSound(page, 'ding-dong')
+      await armTurnEndSound(page, adminUserId, 'ding-dong')
       await waitForWorkspaceReady(page)
 
       // First open after reload — baseline for "no further opens".
