@@ -1,5 +1,4 @@
-import { readdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { collectFiles } from '~/test-support/sourceTree'
 
 /**
  * Every `.css.ts` file under `dir`, recursively.
@@ -12,16 +11,11 @@ import { join } from 'node:path'
  * directory to skip, a second extension — would have moved one guard and left
  * the other scanning a different set.
  *
+ * The walk itself now lives in `~/test-support/sourceTree`, which the other
+ * repo guards share; this keeps the definition of a style file.
+ *
  * NOT a `.test.ts`, so vitest does not collect it as a suite of its own.
  */
 export function collectStyleFiles(dir: string): string[] {
-  const found: string[] = []
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const full = join(dir, entry.name)
-    if (entry.isDirectory())
-      found.push(...collectStyleFiles(full))
-    else if (entry.name.endsWith('.css.ts'))
-      found.push(full)
-  }
-  return found
+  return collectFiles(dir, { matches: name => name.endsWith('.css.ts') })
 }

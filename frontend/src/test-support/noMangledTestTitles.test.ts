@@ -1,7 +1,8 @@
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
+import { collectFiles } from '~/test-support/sourceTree'
 
 // Test-name guard: `test/prefer-lowercase-title` (from the antfu ESLint config)
 // rejects a suite or case title that starts with a capital, and its `--fix`
@@ -29,7 +30,6 @@ import { describe, expect, it } from 'vitest'
 
 const frontendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const SOURCE_ROOTS = ['src', 'tests']
-const SKIP_DIRS = new Set(['node_modules', '.output', '.vinxi', 'dist', 'test-results'])
 const TEST_FILE = /\.(?:test|spec)\.(?:ts|tsx)$/
 
 // A title whose first word is a genuinely camelCase identifier trips the same
@@ -149,21 +149,11 @@ export function findMangledTitles(source: string, path: string): MangledTitle[] 
   return found
 }
 
-function collectOffenders(dir: string, found: MangledTitle[]): void {
-  if (!existsSync(dir))
-    return
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (SKIP_DIRS.has(entry.name))
-      continue
-    const full = join(dir, entry.name)
-    if (entry.isDirectory()) {
-      collectOffenders(full, found)
-      continue
-    }
-    if (!TEST_FILE.test(entry.name))
-      continue
-    found.push(...findMangledTitles(readFileSync(full, 'utf8'), relative(frontendRoot, full)))
-  }
+/** Every unit test and e2e spec under the guarded roots, as an absolute path. */
+function collectTestFiles(): string[] {
+  return SOURCE_ROOTS.flatMap(root =>
+    collectFiles(join(frontendRoot, root), { matches: name => TEST_FILE.test(name) }),
+  )
 }
 
 // The historical offenders, exactly as they stood before the repair. They are
@@ -213,8 +203,8 @@ function callSite(fn: string, title: string): string {
 describe('test-title casing', () => {
   it('has no title that the lint autofix mangled, under src/ or tests/', () => {
     const offenders: MangledTitle[] = []
-    for (const root of SOURCE_ROOTS)
-      collectOffenders(join(frontendRoot, root), offenders)
+    for (const file of collectTestFiles())
+      offenders.push(...findMangledTitles(readFileSync(file, 'utf8'), relative(frontendRoot, file)))
 
     const detail = offenders.map(o => `${o.path}:${o.line}  ${JSON.stringify(o.title)}`).join('\n  ')
     expect(
@@ -228,6 +218,13 @@ describe('test-title casing', () => {
       + `genuinely camelCase identifier, add it to CAMEL_CASE_IDENTIFIERS in ${relative(frontendRoot, fileURLToPath(import.meta.url))} `
       + `with the evidence:\n  ${detail}`,
     ).toEqual([])
+  })
+
+  it('finds the files it is meant to be guarding', () => {
+    // Without this the case above passes vacuously the day a root moves or the
+    // extension list stops matching, which is exactly when it needs to fail.
+    expect(collectTestFiles().length, 'no test file found -- has the layout moved?')
+      .toBeGreaterThanOrEqual(100)
   })
 
   it('detects every title the autofix mangled before the repair', () => {

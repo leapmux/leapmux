@@ -1,9 +1,10 @@
-import { readdirSync, readFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
 import { installedCopies } from '~/test-support/installedCopies'
+import { collectFiles } from '~/test-support/sourceTree'
 
 // Guards the two rules `createStableContext` runs on, both of which were
 // documented in a comment and enforced by nothing.
@@ -28,19 +29,12 @@ const frontendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..'
 const srcRoot = join(frontendRoot, 'src')
 const helperPath = join(srcRoot, 'lib', 'createStableContext.ts')
 
-function collectSourceFiles(dir: string): string[] {
-  const found: string[] = []
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const full = join(dir, entry.name)
-    if (entry.isDirectory())
-      found.push(...collectSourceFiles(full))
-    else if (/\.tsx?$/.test(entry.name) && !/\.(?:test|spec)\.tsx?$/.test(entry.name))
-      found.push(full)
-  }
-  return found
-}
+const SOURCE_FILE = /\.tsx?$/
+const TEST_FILE = /\.(?:test|spec)\.tsx?$/
 
-const sourceFiles = collectSourceFiles(srcRoot)
+const sourceFiles = collectFiles(srcRoot, {
+  matches: name => SOURCE_FILE.test(name) && !TEST_FILE.test(name),
+})
 
 describe('createStableContext usage', () => {
   it('is the only way a context is created', () => {

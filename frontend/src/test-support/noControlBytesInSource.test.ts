@@ -1,7 +1,8 @@
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
+import { collectFiles } from '~/test-support/sourceTree'
 
 // Repo hygiene guard: a NUL byte (0x00) anywhere in a tracked source file makes
 // Git classify that file as BINARY. Once it does, `git diff` and `git show`
@@ -22,7 +23,6 @@ import { describe, expect, it } from 'vitest'
 
 const frontendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const SOURCE_ROOTS = ['src', 'tests']
-const SKIP_DIRS = new Set(['node_modules', '.output', '.vinxi', 'dist', 'test-results'])
 const SOURCE_FILE = /\.(?:ts|tsx|js|jsx|css|json|md)$/
 
 interface Offender {
@@ -30,35 +30,33 @@ interface Offender {
   offset: number
 }
 
-function collectOffenders(dir: string, found: Offender[]): void {
-  if (!existsSync(dir))
-    return
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (SKIP_DIRS.has(entry.name))
-      continue
-    const full = join(dir, entry.name)
-    if (entry.isDirectory()) {
-      collectOffenders(full, found)
-      continue
-    }
-    if (!SOURCE_FILE.test(entry.name))
-      continue
-    const offset = readFileSync(full).indexOf(0x00)
-    if (offset !== -1)
-      found.push({ path: relative(frontendRoot, full), offset })
-  }
+/** Every source file under the guarded roots, as an absolute path. */
+function collectSourceFiles(): string[] {
+  return SOURCE_ROOTS.flatMap(root =>
+    collectFiles(join(frontendRoot, root), { matches: name => SOURCE_FILE.test(name) }),
+  )
 }
 
 describe('source hygiene', () => {
   it('has no NUL bytes in tracked source (git treats such files as binary and hides their diffs)', () => {
     const offenders: Offender[] = []
-    for (const root of SOURCE_ROOTS)
-      collectOffenders(join(frontendRoot, root), offenders)
+    for (const file of collectSourceFiles()) {
+      const offset = readFileSync(file).indexOf(0x00)
+      if (offset !== -1)
+        offenders.push({ path: relative(frontendRoot, file), offset })
+    }
 
     const detail = offenders.map(o => `${o.path} (byte ${o.offset})`).join('\n  ')
     expect(
       offenders,
       `A NUL byte makes Git treat the file as binary, so its diffs, blame and line-level merges stop working and every future change ships unreviewable. Write the escape \`\\u0000\` instead of a literal NUL -- the two are identical at runtime:\n  ${detail}`,
     ).toEqual([])
+  })
+
+  it('finds the files it is meant to be guarding', () => {
+    // Without this the case above passes vacuously the day a root moves or the
+    // extension list stops matching, which is exactly when it needs to fail.
+    expect(collectSourceFiles().length, 'no source file found -- has the layout moved?')
+      .toBeGreaterThanOrEqual(100)
   })
 })

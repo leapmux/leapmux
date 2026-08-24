@@ -1,7 +1,8 @@
-import { readdirSync, readFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
+import { collectE2EFiles, e2eRoot } from '~/test-support/e2eFiles'
 
 // E2E guard: a page-rooted chat locator must be scoped to what the user can
 // SEE. ChatView keeps a hidden premeasure copy of every row whose height is
@@ -31,7 +32,6 @@ const CHAT_TEST_IDS = [
 ]
 
 const frontendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
-const e2eRoot = join(frontendRoot, 'tests', 'e2e')
 
 /** `page.locator('[data-testid="<chat id>"...]')` without a `:visible` filter. */
 const UNSCOPED = new RegExp(
@@ -39,22 +39,10 @@ const UNSCOPED = new RegExp(
   'g',
 )
 
-function collectSpecFiles(dir: string): string[] {
-  const found: string[] = []
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const full = join(dir, entry.name)
-    if (entry.isDirectory())
-      found.push(...collectSpecFiles(full))
-    else if (entry.name.endsWith('.ts'))
-      found.push(full)
-  }
-  return found
-}
-
 describe('e2e chat locators', () => {
   it('never roots an unscoped chat locator at the page', () => {
     const offenders: string[] = []
-    for (const file of collectSpecFiles(e2eRoot)) {
+    for (const file of collectE2EFiles()) {
       // ui.ts is where the scoped helpers are DEFINED, so it holds the only
       // legitimate occurrences of the raw selectors.
       if (relative(e2eRoot, file) === join('helpers', 'ui.ts'))
