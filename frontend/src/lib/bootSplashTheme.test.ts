@@ -19,6 +19,7 @@ import {
   bootSplashLight,
   bootThemeScript,
   parseBootPrefsThemeMode,
+  removeStaticBootSplash,
   resolveBootPolarity,
 } from './bootSplashTheme'
 
@@ -370,7 +371,8 @@ describe('bootFailureWatchdogScript', () => {
 
   it('does not treat a Solid BootSplash (testid only) as a failed static boot', () => {
     vi.useFakeTimers()
-    // Solid mount replaced #app: static id is gone, Suspense splash remains.
+    // Static id is gone (in production the entry removes it); the Suspense
+    // splash keeps only the testid.
     document.body.innerHTML = `<div id="app"><div data-testid="${BOOT_SPLASH_TEST_ID}" role="status"><p>${BOOT_SPLASH_LABEL}</p></div></div>`
     runWatchdog()
 
@@ -379,7 +381,7 @@ describe('bootFailureWatchdogScript', () => {
     expect(document.querySelector('[data-testid="boot-splash"]')).toBeInTheDocument()
   })
 
-  it('finishes when Solid mount removes the static splash before the timeout', async () => {
+  it('finishes when the static splash is removed before the timeout', async () => {
     vi.useFakeTimers()
     mountStaticSplash()
     runWatchdog()
@@ -410,6 +412,27 @@ describe('bootFailureWatchdogScript', () => {
 
     vi.advanceTimersByTime(BOOT_SPLASH_FAIL_TIMEOUT_MS + 1)
     expect(document.querySelector('[data-boot-failed]')).toBeNull()
+  })
+})
+
+describe('removeStaticBootSplash', () => {
+  afterEach(() => {
+    document.body.replaceChildren()
+  })
+
+  it('removes the static splash and leaves the mounted tree alone', () => {
+    document.body.innerHTML = `<div id="app"><div id="${BOOT_SPLASH_STATIC_ID}" data-testid="${BOOT_SPLASH_TEST_ID}"><p>${BOOT_SPLASH_LABEL}</p></div><div data-shell></div></div>`
+    removeStaticBootSplash()
+    expect(document.getElementById(BOOT_SPLASH_STATIC_ID)).toBeNull()
+    expect(document.querySelector('[data-testid="boot-splash"]')).toBeNull()
+    expect(document.querySelector('[data-shell]')).toBeInTheDocument()
+  })
+
+  it('is a no-op when the document shipped no static splash', () => {
+    // A document that never carried the static node must not throw.
+    document.body.innerHTML = `<div id="app"><div data-testid="${BOOT_SPLASH_TEST_ID}"><p>${BOOT_SPLASH_LABEL}</p></div></div>`
+    expect(() => removeStaticBootSplash()).not.toThrow()
+    expect(document.getElementById('app')!.childElementCount).toBe(1)
   })
 })
 

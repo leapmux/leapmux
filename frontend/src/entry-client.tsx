@@ -1,6 +1,7 @@
 // @refresh reload
 import { mount, StartClient } from '@solidjs/start/client'
 import { showWarnToast } from '~/components/common/Toast'
+import { removeStaticBootSplash } from '~/lib/bootSplashTheme'
 import { installIgnorableErrorSuppressor } from '~/lib/ignorableErrorEvents'
 import { installGlobalErrorSink } from '~/lib/installGlobalErrorSink'
 import { scheduleRenderPipelineWarmup } from '~/lib/renderPipelineWarmup'
@@ -37,6 +38,10 @@ export default function EntryClient(): null {
 }
 
 mount(() => <StartClient />, document.getElementById('app')!)
+
+// The SPA client mount leaves the static document splash in `#app` (see
+// removeStaticBootSplash for why); the entry removes it here, after mount.
+removeStaticBootSplash()
 
 // Warm the render workers (WASM engine, first grammar, remark processor) and
 // sweep the persisted render-artifact store once the browser is idle, so the

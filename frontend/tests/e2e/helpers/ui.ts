@@ -545,9 +545,10 @@ export async function waitForAgentIdle(page: Page, timeoutMs = 120_000) {
  * titlebar, so About and Preferences live under the tab bar's collapsed "+"
  * menu (`collapsed-new-tab-button`) instead. Only `AppShell` renders either,
  * and only behind `AuthGuard`, so this doubles as the marker that the
- * authenticated shell mounted — {@link loginViaUI} waits on it.
+ * authenticated shell mounted — {@link loginViaUI} waits on it, and the
+ * startup specs use it as the shared shell oracle.
  */
-function appMenuTrigger(page: Page): Locator {
+export function appMenuTrigger(page: Page): Locator {
   return page.getByTestId('app-menu-trigger').first().or(page.getByTestId('collapsed-new-tab-button')).first()
 }
 

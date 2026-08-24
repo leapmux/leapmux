@@ -31,12 +31,7 @@ import {
 } from './helpers/startupTiming'
 import { startTimingServer } from './helpers/timingFixture'
 import { COARSE_POINTER_METRICS } from './helpers/touch'
-import { loginViaToken } from './helpers/ui'
-
-/** Same shell oracle as loginViaUI: AppShell is up behind AuthGuard. */
-function shellTrigger(page: import('@playwright/test').Page) {
-  return page.getByTestId('app-menu-trigger').first().or(page.getByTestId('collapsed-new-tab-button').first())
-}
+import { appMenuTrigger, loginViaToken } from './helpers/ui'
 
 test.describe('mobile LTE cold-start timing', () => {
   test.describe.configure({ retries: 0 })
@@ -79,7 +74,7 @@ test.describe('mobile LTE cold-start timing', () => {
     // Cold authenticated boot: cookie already set, first document navigation.
     await page.goto('/', { waitUntil: 'commit' })
 
-    const shell = shellTrigger(page)
+    const shell = appMenuTrigger(page)
     await expect(shell).toBeVisible()
     sizeListener.markShellVisible()
 
