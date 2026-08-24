@@ -1,7 +1,8 @@
-import { readdirSync, readFileSync } from 'node:fs'
-import { dirname, join, relative, resolve } from 'node:path'
+import { readFileSync } from 'node:fs'
+import { dirname, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
+import { collectE2EFiles } from '~/test-support/e2eFiles'
 
 // E2E guard: read a chat row through `readAttached`, never through a bare
 // `locator.evaluate` / `locator.evaluateAll`.
@@ -53,22 +54,9 @@ const CHAT_LOCATOR_MARKERS = [
 const RACY_READ = String.raw`\.\s*evaluate(?:All)?\s*\(`
 
 const frontendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
-const e2eRoot = join(frontendRoot, 'tests', 'e2e')
 
 /** `const name = <expression>`, the only binding form the specs use for a locator. */
 const BINDING = /(?:const|let)\s+(\w+)\s*=\s*([^\n]*)/g
-
-function collectSpecFiles(dir: string): string[] {
-  const found: string[] = []
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const full = join(dir, entry.name)
-    if (entry.isDirectory())
-      found.push(...collectSpecFiles(full))
-    else if (entry.name.endsWith('.ts'))
-      found.push(full)
-  }
-  return found
-}
 
 /**
  * The names in `source` that hold a chat locator.
@@ -120,7 +108,7 @@ function racyChatReads(source: string): Array<{ index: number, text: string }> {
 describe('e2e chat row reads', () => {
   it('never reads a chat row through a two-round-trip evaluate', () => {
     const offenders = new Set<string>()
-    for (const file of collectSpecFiles(e2eRoot)) {
+    for (const file of collectE2EFiles()) {
       const source = readFileSync(file, 'utf-8')
       for (const { index, text } of racyChatReads(source)) {
         const line = source.slice(0, index).split('\n').length

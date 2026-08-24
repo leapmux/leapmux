@@ -1,7 +1,8 @@
-import { existsSync, readdirSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
+import { collectFiles } from '~/test-support/sourceTree'
 
 // Repo layout guard: unit tests are co-located next to the code they test
 // (`foo.ts` -> `foo.test.ts` in the same directory under `src/`). The old
@@ -17,28 +18,20 @@ import { describe, expect, it } from 'vitest'
 const frontendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const testsRoot = join(frontendRoot, 'tests')
 
-function collectUnitTestFiles(dir: string): string[] {
-  if (!existsSync(dir))
-    return []
-  const found: string[] = []
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const full = join(dir, entry.name)
-    if (entry.isDirectory()) {
-      // `tests/e2e/` is the one sanctioned home for tests outside `src/`.
-      if (relative(testsRoot, full) === 'e2e')
-        continue
-      found.push(...collectUnitTestFiles(full))
-    }
-    else if (/\.test\.(?:ts|tsx)$/.test(entry.name)) {
-      found.push(relative(frontendRoot, full))
-    }
-  }
-  return found
+const UNIT_TEST_FILE = /\.test\.(?:ts|tsx)$/
+
+/** Every unit test that strayed under `tests/`, as a repo-relative path. */
+function collectStrayUnitTests(): string[] {
+  return collectFiles(testsRoot, {
+    matches: name => UNIT_TEST_FILE.test(name),
+    // `tests/e2e/` is the one sanctioned home for tests outside `src/`.
+    alsoSkip: new Set(['e2e']),
+  }).map(file => relative(frontendRoot, file))
 }
 
 describe('unit-test co-location', () => {
   it('has no mirrored unit tests under tests/ (they must live beside the code in src/)', () => {
-    const stray = collectUnitTestFiles(testsRoot)
+    const stray = collectStrayUnitTests()
     expect(
       stray,
       `Unit tests must be co-located under src/ (foo.ts -> foo.test.ts). `

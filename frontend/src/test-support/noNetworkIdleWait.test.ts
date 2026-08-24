@@ -1,7 +1,9 @@
-import { readdirSync, readFileSync } from 'node:fs'
-import { dirname, join, relative, resolve } from 'node:path'
+import { readFileSync } from 'node:fs'
+import { dirname, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
+import { collectE2EFiles } from '~/test-support/e2eFiles'
+import { stripCommentLines } from '~/test-support/sourceScan'
 
 // E2E guard: no spec or helper may wait for `networkidle`.
 //
@@ -30,7 +32,6 @@ import { describe, expect, it } from 'vitest'
 // discouraged for exactly this class of reason.
 
 const frontendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
-const e2eRoot = join(frontendRoot, 'tests', 'e2e')
 
 /**
  * The string literal, in any quoting style. That covers
@@ -39,33 +40,15 @@ const e2eRoot = join(frontendRoot, 'tests', 'e2e')
  */
 const NETWORK_IDLE = /(['"`])networkidle\1/
 
-/**
- * A line whose first non-space characters open or continue a comment. The
- * ban has to be EXPLAINED somewhere, and the explanation has to name the
- * call, so a comment that quotes it is not an offence. A trailing comment on
- * a line of code still counts -- move the note above the line.
- */
-const COMMENT_LINE = /^\s*(?:\/\/|\/\*|\*)/
-
-function collectE2EFiles(dir: string): string[] {
-  const found: string[] = []
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const full = join(dir, entry.name)
-    if (entry.isDirectory())
-      found.push(...collectE2EFiles(full))
-    else if (entry.name.endsWith('.ts'))
-      found.push(full)
-  }
-  return found
-}
-
 describe('e2e load-state waits', () => {
   it('never waits for networkidle', () => {
     const offenders: string[] = []
-    for (const file of collectE2EFiles(e2eRoot)) {
-      const lines = readFileSync(file, 'utf-8').split('\n')
+    for (const file of collectE2EFiles()) {
+      // The ban has to be EXPLAINED somewhere, and the explanation names the
+      // call, so the comment lines go before the scan reads them.
+      const lines = stripCommentLines(readFileSync(file, 'utf-8')).split('\n')
       lines.forEach((text, index) => {
-        if (COMMENT_LINE.test(text) || !NETWORK_IDLE.test(text))
+        if (!NETWORK_IDLE.test(text))
           return
         offenders.push(`${relative(frontendRoot, file)}:${index + 1}  ${text.trim()}`)
       })
@@ -75,6 +58,9 @@ describe('e2e load-state waits', () => {
       'solver workers mid-fetch and those requests stay in-flight forever, so the wait burns the',
       'whole 300s test budget. Wait for a locator the app renders instead:',
     ].join(' ')
+    // The case above passes vacuously if the walk returns nothing, so
+    // `e2eFiles.test.ts` pins that it does not -- once, for the three guards
+    // that share it.
     expect(offenders, `${hint}\n  ${offenders.join('\n  ')}`).toEqual([])
   })
 })
