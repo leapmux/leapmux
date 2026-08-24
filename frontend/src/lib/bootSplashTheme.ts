@@ -1,7 +1,8 @@
 /**
- * Colours, copy, document CSS, and the blocking boot scripts for the zero-JS
- * splash. Shared by `entry-server.tsx` and `BootSplash` so the static HTML Go
- * serves and the Solid Suspense/AuthGuard chrome cannot drift.
+ * Colours, copy, document CSS, the blocking boot scripts, and the client-side
+ * removal of the static splash. Shared by `entry-server.tsx`,
+ * `entry-client.tsx`, and `BootSplash` so the static HTML Go serves and the
+ * Solid Suspense/AuthGuard chrome cannot drift.
  *
  * Palette comes from Default theme so the splash matches what `themeStore`
  * paints after hydration.
@@ -44,6 +45,29 @@ export const BOOT_SPLASH_TEST_ID = BOOT_SPLASH_DOM_KEY
  */
 export const BOOT_SPLASH_STATIC_ID = BOOT_SPLASH_DOM_KEY
 
+/**
+ * Remove the static document splash. The client entry calls this right after
+ * `mount()` returns. This doc is the canonical explanation of the handoff;
+ * the comments at the other sites point here.
+ *
+ * With `ssr: false`, the SPA mount is solid's plain `render()`. It appends
+ * into `#app` and removes no existing child. Without this call, the
+ * 100%-height splash keeps the booted app below the fold, and the watchdog
+ * fails the boot at 45s.
+ *
+ * The call runs AFTER mount on purpose. Mount is synchronous, so an entry
+ * graph that throws never reaches this call, and the watchdog still owns
+ * that failure class.
+ *
+ * A no-op when the document shipped no splash. In a hydrating build the node
+ * survives hydration — hydration claims only nodes that carry a hydration
+ * key, and the static splash carries none — so the call removes the node
+ * there too.
+ */
+export function removeStaticBootSplash(): void {
+  document.getElementById(BOOT_SPLASH_STATIC_ID)?.remove()
+}
+
 /** Visible label; keep the ellipsis character identical in both trees. */
 export const BOOT_SPLASH_LABEL = 'Loading LeapMux…'
 
@@ -68,8 +92,9 @@ export const BOOT_SPLASH_RELOAD_LABEL = 'Reload'
 
 /**
  * How long the static `#boot-splash` may remain before the watchdog treats
- * boot as failed. Solid mount removes that node; Suspense/AuthGuard splash
- * uses `data-testid` only, so a slow auth bootstrap does not trip this.
+ * boot as failed. The client entry removes that node right after `mount()`
+ * (see {@link removeStaticBootSplash}); Suspense/AuthGuard splash uses
+ * `data-testid` only, so a slow auth bootstrap does not trip this.
  *
  * Generous on purpose: mobile LTE cold start still finishes well under this,
  * and a tight budget would flash the failure panel on a working but slow path.
@@ -127,9 +152,9 @@ export function parseBootPrefsThemeMode(raw: string | null, nowMs: number): stri
 
 /**
  * Inline document CSS for the static splash, the Solid `BootSplash` (same
- * `data-testid`), and the html/body fill that covers the brief gap between
- * Solid `mount` clearing `#app` and the next splash paint. This is the only
- * splash stylesheet — do not reintroduce a vanilla-extract twin.
+ * `data-testid`), and the html/body fill that holds the splash geometry and
+ * polarity from first paint until the app stylesheet takes over. This is the
+ * only splash stylesheet — do not reintroduce a vanilla-extract twin.
  *
  * Body rules here match `~/styles/global.css.ts` (`position: fixed`, safe-area
  * padding, `#app` fill) so first paint already uses the geometry that lands
@@ -235,11 +260,11 @@ export function bootThemeScript(): string {
  * Only `<script>` load errors count. Favicon, manifest, and stylesheet `<link>`
  * failures must not tombstone the splash: they are common and non-fatal.
  *
- * Success signal: the static node `#boot-splash` is gone (Solid `mount`
- * replaces `#app`). A MutationObserver finishes the watchdog then (clears the
- * timer and removes the capture listener). The Suspense/AuthGuard `BootSplash`
- * keeps only `data-testid`, so a long auth bootstrap does not look like a
- * failed boot.
+ * Success signal: the static node `#boot-splash` is gone. The client entry
+ * removes it right after `mount()` (see {@link removeStaticBootSplash}). A
+ * MutationObserver finishes the watchdog then (clears the timer and removes
+ * the capture listener). The Suspense/AuthGuard `BootSplash` keeps only
+ * `data-testid`, so a long auth bootstrap does not look like a failed boot.
  */
 export function bootFailureWatchdogScript(): string {
   const id = BOOT_SPLASH_STATIC_ID

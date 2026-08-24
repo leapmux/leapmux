@@ -58,9 +58,9 @@ export default createHandler(() => (
           <meta name="apple-mobile-web-app-capable" content="yes" />
           <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
           {/*
-            Zero-JS splash polarity + html/body fill for the Solid mount gap.
-            `bootSplashDocumentCss` is the only splash stylesheet — Solid's
-            `BootSplash` matches via `[data-testid]`.
+            Zero-JS splash polarity + html/body fill until the app stylesheet
+            takes over. `bootSplashDocumentCss` is the only splash stylesheet
+            — Solid's `BootSplash` matches via `[data-testid]`.
           */}
           <style>{bootSplashDocumentCss()}</style>
           {/*
@@ -79,13 +79,14 @@ export default createHandler(() => (
         </head>
         <body>
           {/*
-            Static boot splash (no SSR): Go serves this HTML as-is. Solid's
-            client mount replaces `#app` contents. Copy comes from
-            `~/lib/bootSplashTheme` — same module as `BootSplash`.
+            Static boot splash (no SSR): Go serves this HTML as-is. The SPA
+            mount appends into `#app` and clears nothing, so the client entry
+            removes this node after mount — see `removeStaticBootSplash` in
+            `~/lib/bootSplashTheme` (same module as `BootSplash`).
 
             `id="boot-splash"` is the success signal for
-            `bootFailureWatchdogScript`: mount removes it. Solid's fallback
-            splash keeps only `data-testid`.
+            `bootFailureWatchdogScript`: the client entry removes it. Solid's
+            fallback splash keeps only `data-testid`.
           */}
           <div id="app">
             <div
