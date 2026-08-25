@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { collectE2EFiles } from '~/test-support/e2eFiles'
 import { collectFiles } from '~/test-support/sourceTree'
+import { isPlaywrightSpec, isUnitTest, siblingModulePath } from '~/test-support/testFileNaming'
 
 // Repo layout guard: the file EXTENSION decides which runner collects a test,
 // everywhere in the repo. `.spec.ts` is Playwright, `.test.ts` is vitest.
@@ -25,17 +26,14 @@ import { collectFiles } from '~/test-support/sourceTree'
 const frontendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const srcRoot = join(frontendRoot, 'src')
 
-const UNIT_TEST = /\.test\.tsx?$/
-const PLAYWRIGHT_SPEC = /\.spec\.tsx?$/
-
 /** Every co-located unit test under `tests/e2e/`, as an absolute path. */
 function collectE2EUnitTests(): string[] {
-  return collectE2EFiles().filter(file => UNIT_TEST.test(file))
+  return collectE2EFiles().filter(isUnitTest)
 }
 
 describe('test file naming', () => {
   it('keeps every .spec file under tests/e2e, where Playwright collects it', () => {
-    const strays = collectFiles(srcRoot, { matches: name => PLAYWRIGHT_SPEC.test(name) })
+    const strays = collectFiles(srcRoot, { matches: isPlaywrightSpec })
       .map(file => relative(frontendRoot, file))
 
     expect(
@@ -52,7 +50,7 @@ describe('test file naming', () => {
     // it, its Playwright fixtures would be undefined, and Playwright itself
     // would never run it.
     const orphans = collectE2EUnitTests()
-      .filter(file => !existsSync(file.replace(/\.test(\.tsx?)$/, '$1')))
+      .filter(file => !existsSync(siblingModulePath(file)))
       .map(file => relative(frontendRoot, file))
 
     expect(
@@ -93,8 +91,67 @@ describe('test file naming', () => {
   it('finds the files it judges, so no case above passes vacuously', () => {
     // Both walks return an empty array for a directory that moved, and an
     // empty array satisfies every emptiness assertion above.
-    expect(collectFiles(srcRoot, { matches: name => UNIT_TEST.test(name) }).length)
-      .toBeGreaterThan(100)
+    expect(collectFiles(srcRoot, { matches: isUnitTest }).length).toBeGreaterThan(100)
     expect(collectE2EUnitTests().length).toBeGreaterThanOrEqual(2)
+  })
+})
+
+// The predicates the guard above is built from, against paths rather than
+// against the tree. A predicate that answered "fine" for every input would
+// leave every case above asserting that an empty list is empty.
+describe('isUnitTest', () => {
+  it('accepts a .test.ts and a .test.tsx', () => {
+    expect(isUnitTest('helpers/mail.test.ts')).toBe(true)
+    expect(isUnitTest('components/Button.test.tsx')).toBe(true)
+  })
+
+  it('rejects the module under test and a near miss', () => {
+    expect(isUnitTest('helpers/mail.ts')).toBe(false)
+    expect(isUnitTest('helpers/testing.ts')).toBe(false)
+    expect(isUnitTest('helpers/mail.test.ts.bak')).toBe(false)
+  })
+
+  it('rejects a Playwright spec, so the two sets never overlap', () => {
+    expect(isUnitTest('001-auth.spec.ts')).toBe(false)
+  })
+})
+
+describe('isPlaywrightSpec', () => {
+  it('accepts a .spec.ts and a .spec.tsx', () => {
+    expect(isPlaywrightSpec('001-auth.spec.ts')).toBe(true)
+    expect(isPlaywrightSpec('001-auth.spec.tsx')).toBe(true)
+  })
+
+  it('rejects a unit test and a name that merely contains "spec"', () => {
+    expect(isPlaywrightSpec('helpers/mail.test.ts')).toBe(false)
+    expect(isPlaywrightSpec('lib/inspector.ts')).toBe(false)
+    expect(isPlaywrightSpec('lib/spec.ts')).toBe(false)
+  })
+})
+
+describe('siblingModulePath', () => {
+  it('drops the .test segment and keeps the extension', () => {
+    expect(siblingModulePath('tests/e2e/helpers/mail.test.ts'))
+      .toBe('tests/e2e/helpers/mail.ts')
+    expect(siblingModulePath('src/components/Button.test.tsx'))
+      .toBe('src/components/Button.tsx')
+  })
+
+  it('does not answer the path it was given for a unit test', () => {
+    // The silent-pass mode this whole module exists to close: an unchanged
+    // path exists on disk, so the co-location case would find every orphan
+    // "co-located" and could never fail again.
+    const test = 'tests/e2e/helpers/mail.test.ts'
+    expect(siblingModulePath(test)).not.toBe(test)
+  })
+
+  it('rewrites only the end of the path', () => {
+    // A directory that carries `.test.` in its name is not the test file.
+    expect(siblingModulePath('a/x.test.ts/mail.test.ts')).toBe('a/x.test.ts/mail.ts')
+  })
+
+  it('leaves a path that is not a unit test alone', () => {
+    expect(siblingModulePath('helpers/mail.ts')).toBe('helpers/mail.ts')
+    expect(siblingModulePath('001-auth.spec.ts')).toBe('001-auth.spec.ts')
   })
 })
