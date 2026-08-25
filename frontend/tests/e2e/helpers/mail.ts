@@ -108,17 +108,24 @@ export async function startCaptureSmtpServer(): Promise<CaptureSmtpServer> {
     // two (signup verification, then a reset) or delivery turns async.
     // Concurrent waits queue FIFO: each resolves with its own message.
     waitForMessage: (timeoutMs = 30_000) => new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        const idx = waiters.indexOf(resolve)
+      // The queue holds THIS wrapper, so the timeout path must remove the
+      // wrapper. `waiters.indexOf(resolve)` never matches, because `resolve`
+      // itself is never queued: the timed-out waiter then stays at the head
+      // of the FIFO, eats the next message, and hangs the live waiter behind
+      // it until that one times out too.
+      let timer: ReturnType<typeof setTimeout>
+      const deliver = (body: string) => {
+        clearTimeout(timer)
+        resolve(body)
+      }
+      timer = setTimeout(() => {
+        const idx = waiters.indexOf(deliver)
         if (idx !== -1)
           waiters.splice(idx, 1)
         reject(new Error(`timed out waiting for SMTP message after ${timeoutMs}ms`))
       }, timeoutMs)
       timers.push(timer)
-      waiters.push((body) => {
-        clearTimeout(timer)
-        resolve(body)
-      })
+      waiters.push(deliver)
     }),
   }
 }
@@ -144,10 +151,35 @@ export async function withCaptureSmtp(
   }
 }
 
-/** Pull the self-service password-reset token out of a captured reset email body. */
+/**
+ * The width of a reset token, from the hub's `id.Generate()` mint
+ * (`backend/internal/util/id/id.go`). Asserted below so a change to the
+ * mint fails here, at the extraction, rather than as an unexplained
+ * timeout on the reset page 120 seconds later.
+ */
+const PASSWORD_RESET_TOKEN_LENGTH = 48
+
+/**
+ * Pull the self-service password-reset token out of a captured reset email body.
+ *
+ * The token alphabet is ALPHANUMERIC (`A-Za-z0-9`), never hex. A hex-only
+ * character class fails in two different places depending on the token that
+ * the mint happens to produce: it captures a truncated prefix when the token
+ * starts with hex digits, and it matches nothing at all otherwise. The
+ * truncated prefix is the worse of the two, because the reset page then
+ * rejects the token and the failure surfaces as a missing button on the
+ * following page.
+ */
 export function extractPasswordResetToken(emailBody: string): string {
-  const match = emailBody.match(/\/reset-password\?token=([0-9a-f]+)/i)
+  const match = emailBody.match(/\/reset-password\?token=([A-Za-z0-9]+)/)
   if (!match?.[1])
-    throw new Error('password reset token not found in captured email')
-  return match[1]
+    throw new Error(`password reset token not found in captured email:\n${emailBody}`)
+  const token = match[1]
+  if (token.length !== PASSWORD_RESET_TOKEN_LENGTH) {
+    throw new Error(
+      `password reset token is ${token.length} characters, want ${PASSWORD_RESET_TOKEN_LENGTH}. `
+      + `The character class above does not cover the whole mint alphabet, so it stopped early. Token: ${token}`,
+    )
+  }
+  return token
 }
