@@ -3,7 +3,10 @@ import type { AuthState } from './AuthContext'
 import type { User } from '~/generated/leapmux/v1/auth_pb'
 import { Code, ConnectError } from '@connectrpc/connect'
 import { render, screen } from '@solidjs/testing-library'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { Show } from 'solid-js'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { hasStorageAccount, KEY_BROWSER_PREFS, resetStorageAccountForTests, setStorageAccount, storedKeyFor } from '~/lib/browserStorage'
+import { TEST_USER_ID } from '~/test-support/crdtBridge'
 
 import { AuthProvider, useAuth } from './AuthContext'
 
@@ -318,5 +321,73 @@ describe('authContext', () => {
     await new Promise(resolve => setTimeout(resolve, 0))
 
     expect(screen.getByTestId('authenticated')).toHaveTextContent('no')
+  })
+})
+
+// The storage namespace moves with the identity, and this provider is the one
+// writer of both. What matters is the ORDER: `AuthGuard`'s `Show` is a render
+// effect and runs ahead of a user effect in the same flush, so an effect-based
+// move would let `AppShell` mount and read the PREVIOUS account's keys.
+describe('authContext storage namespace', () => {
+  beforeEach(() => {
+    resetStorageAccountForTests()
+  })
+
+  afterEach(() => {
+    resetStorageAccountForTests()
+    setStorageAccount(TEST_USER_ID)
+  })
+
+  it('points storage at the account before anything can render for it', async () => {
+    mockGetCurrentUser.mockResolvedValue({ user: { id: 'alice', username: 'alice', isAdmin: false } })
+
+    // Read the namespace from a component the identity GATES -- the shape
+    // `AuthGuard` has. `Show` is a render effect, so this body runs ahead of
+    // every user effect in the flush that publishes the identity: it is the
+    // earliest moment any consumer exists, and the one an effect-based
+    // `setStorageAccount` would lose to.
+    let seenWhileRendering: string | null | undefined
+    function Guarded() {
+      seenWhileRendering = storedKeyFor(KEY_BROWSER_PREFS)
+      return null
+    }
+    function Gate() {
+      const auth = useAuth()
+      return <Show when={auth.isAuthenticated()}><Guarded /></Show>
+    }
+    render(() => <AuthProvider><Gate /></AuthProvider>)
+
+    await vi.waitFor(() => expect(seenWhileRendering).toBeDefined())
+    expect(seenWhileRendering).toBe('leapmux:u:alice:browser-prefs')
+  })
+
+  // Signing out tears down the authenticated tree, and the writes that teardown
+  // makes -- a draft flush, a layout snapshot -- belong to the account that is
+  // LEAVING. Clearing the namespace would make every one of them throw.
+  it('keeps the namespace after a sign-out', async () => {
+    mockGetCurrentUser.mockResolvedValue({ user: { id: 'alice', username: 'alice', isAdmin: false } })
+    const { auth } = renderWithAuthCapture()
+    await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
+
+    await auth().logout()
+
+    expect(hasStorageAccount()).toBe(true)
+    expect(storedKeyFor(KEY_BROWSER_PREFS)).toBe('leapmux:u:alice:browser-prefs')
+  })
+
+  // A User the app cannot key storage by is not an identity. Letting
+  // `setStorageAccount`'s refusal escape would land in `restoreSession`'s
+  // network catch and report a client-side data fault as "Could not reach the
+  // hub.", with a Retry that hits the identical throw every time.
+  it('treats a user with no id as signed out, not as a failed bootstrap', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    mockGetCurrentUser.mockResolvedValue({ user: { id: '', username: 'nobody', isAdmin: false } })
+    const { auth } = renderWithAuthCapture()
+
+    await vi.waitFor(() => expect(auth().loading()).toBe(false))
+    expect(auth().isAuthenticated()).toBe(false)
+    expect(auth().bootstrapError()).toBeNull()
+    expect(error).toHaveBeenCalled()
+    error.mockRestore()
   })
 })

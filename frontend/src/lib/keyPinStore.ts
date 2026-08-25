@@ -69,8 +69,10 @@ export interface KeyPinStoreOpts {
 }
 
 /**
- * Session-scoped TOFU pin store. Persistence is shared across tabs via
- * `leapmux:key-pins`; the rejected-worker set is per-instance.
+ * Session-scoped TOFU pin store. Persistence is shared across tabs via the
+ * `key-pins` key, which `browserStorage` scopes to the signed-in account, so
+ * two accounts on one browser pin independently. The rejected-worker set is
+ * per-instance.
  */
 export class KeyPinStore {
   private confirmKeyPin: KeyPinConfirmFn

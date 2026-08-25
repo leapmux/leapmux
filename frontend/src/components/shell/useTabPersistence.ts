@@ -14,14 +14,15 @@ import { activeTabKey, focusedTileKey, tileActiveTabsKey } from './tabPersistenc
  * The CRDT will never carry them — focus and active-tab are per-client by
  * design — so sessionStorage is the only carrier.
  *
- * Keys:
- *   - `leapmux:activeTab:${wsId}`      → the workspace's active tab key
- *   - `leapmux:tileActiveTabs:${wsId}` → per-tile active tab keys
- *   - `leapmux:focusedTile:${wsId}`    → `layoutStore.focusedTileId()`
+ * Keys, as `browserStorage` stores them — every one is scoped to the signed-in
+ * account:
+ *   - `leapmux:u:<userId>:activeTab:${wsId}`      → the workspace's active tab key
+ *   - `leapmux:u:<userId>:tileActiveTabs:${wsId}` → per-tile active tab keys
+ *   - `leapmux:u:<userId>:focusedTile:${wsId}`    → `layoutStore.focusedTileId()`
  *
  * WHICH workspace is active is deliberately not here: it is written by
- * `createWorkspaceSwitcher` at the moment of the switch, to localStorage and
- * keyed by user, because unlike these three it has to survive a tab close.
+ * `createWorkspaceSwitcher` at the moment of the switch, to localStorage,
+ * because unlike these three it has to survive a tab close.
  *
  * `hasWorkspace` gates every write until the CRDT bootstrap has delivered THIS
  * workspace. The gate matters because before it lands the projected tree is a
@@ -72,6 +73,14 @@ export interface UseTabPersistenceOpts {
 }
 
 /**
+ * How long a skipped write may leave a key un-refreshed.
+ *
+ * Shorter than the shortest TTL in `SESSION_KEY_SPECS` by a wide margin, so the
+ * sweep can never reach an entry this writer still believes is stored.
+ */
+const DEDUP_REFRESH_INTERVAL_MS = 60 * 60 * 1000
+
+/**
  * A sessionStorage writer that skips redundant work.
  *
  * The persistence effects re-fire whenever any tracked dependency changes, but
@@ -81,15 +90,29 @@ export interface UseTabPersistenceOpts {
  *
  * The cache lives inside the closure rather than being threaded through every
  * call as a trailing argument, so no call site can be handed the wrong one.
+ *
+ * IT DEDUPES THE PAYLOAD, NOT THE TTL. `sessionStorageSet` re-stamps the
+ * expiration on every write, so a key whose value never changes was never
+ * re-stamped, while the hourly sweep still measured it against the same 30-day
+ * TTL. A tab left open that long lost its stored tab, tile and focus state to
+ * the sweep with the cache still reporting them as written, so the effect never
+ * wrote them again and the next reload silently reopened on the default tab.
+ * A skip therefore expires: past `DEDUP_REFRESH_INTERVAL_MS` the write goes
+ * through for the stamp alone.
+ *
+ * Exported for its own test: the expiry is a property of this cache and of the
+ * clock, and reaching it through `useTabPersistence` would need a mounted tree
+ * held open across a simulated month.
  */
-function createDedupedSessionWriter() {
-  const lastWritten = new Map<string, string>()
+export function createDedupedSessionWriter() {
+  const lastWritten = new Map<string, { value: string, at: number }>()
   return {
     write(key: string, value: string) {
-      if (lastWritten.get(key) === value)
+      const previous = lastWritten.get(key)
+      if (previous?.value === value && Date.now() - previous.at < DEDUP_REFRESH_INTERVAL_MS)
         return
       sessionStorageSet(key, value)
-      lastWritten.set(key, value)
+      lastWritten.set(key, { value, at: Date.now() })
     },
     clear(key: string) {
       if (!lastWritten.has(key) && !sessionStorageHas(key))

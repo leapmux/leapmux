@@ -1,18 +1,17 @@
 /**
  * Unit tests for the E2E fixtures' server-output ring buffer.
  *
- * The module under test lives at `tests/e2e/helpers/serverOutput.ts`, not beside
- * this file, and it cannot carry its own `.test.ts`: `vitest.config.ts` excludes
- * `tests/e2e/**` so Playwright specs are never collected as unit tests, and that
- * exclusion covers the helpers too. A test placed there simply never runs.
- * `visibleChatLocators.test.ts` reaches across the same boundary for the same
- * reason.
+ * A `.test.ts` under `tests/e2e/` runs under vitest, not Playwright: it needs
+ * no browser and no hub, so it costs milliseconds here and belongs to
+ * `task test-frontend`. Both runner configs are pinned to that rule, and
+ * `src/test-support/testFileNaming.test.ts` fails the suite if this file is
+ * ever renamed to `.spec.ts`.
  */
 import type { ChildProcess } from 'node:child_process'
 import { Buffer } from 'node:buffer'
 import { EventEmitter } from 'node:events'
 import { describe, expect, it } from 'vitest'
-import { createServerOutput } from '../../tests/e2e/helpers/serverOutput'
+import { createServerOutput } from './serverOutput'
 
 /** A child process with just the surface `capture` touches. */
 function fakeProc(): ChildProcess & { write: (s: string) => void, close: () => void } {

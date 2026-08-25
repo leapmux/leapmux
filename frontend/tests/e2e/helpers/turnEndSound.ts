@@ -27,7 +27,7 @@ const QUIET_SETTLE_MS = 1000
  * Callers wait for their own readiness signal afterwards -- what "ready" means
  * differs between the workspace specs and the provider ones.
  */
-export async function armTurnEndSound(page: Page, sound: 'ding-dong' | 'none') {
+export async function armTurnEndSound(page: Page, userId: string, sound: 'ding-dong' | 'none') {
   await page.addInitScript(() => {
     (window as any).__audioPlayCalls = [] as string[]
     HTMLAudioElement.prototype.play = function () {
@@ -35,7 +35,7 @@ export async function armTurnEndSound(page: Page, sound: 'ding-dong' | 'none') {
       return Promise.resolve()
     }
   })
-  await setInitialBrowserPref(page, 'turnEndSound', sound)
+  await setInitialBrowserPref(page, userId, 'turnEndSound', sound)
   await page.reload()
 }
 

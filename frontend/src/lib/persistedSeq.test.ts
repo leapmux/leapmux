@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { KEY_CHANNEL_RELAY_SEQ, KEY_USER_EVENTS_RELAY_SEQ, localStorageGet, localStorageSet } from './browserStorage'
+import { KEY_CHANNEL_RELAY_SEQ, KEY_USER_EVENTS_RELAY_SEQ, localStorageGet, localStorageSet, storedKeyFor } from './browserStorage'
 import { createPersistedSeq } from './persistedSeq'
 
 // The seeding/clock-regression behavior is pinned through both consumers
@@ -207,8 +207,8 @@ describe('createPersistedSeq', () => {
     localStorageSet(KEY_CHANNEL_RELAY_SEQ, Number.NaN)
     // Sanity-check the arrival path the test depends on: JSON serialized NaN
     // to null, so the cell the allocator reads holds null, not NaN. (KEY_*
-    // already carries the `leapmux:` prefix, so read it verbatim.)
-    const raw = localStorage.getItem(KEY_CHANNEL_RELAY_SEQ)
+    // is a logical name, so the stored key has to be composed.)
+    const raw = localStorage.getItem(storedKeyFor(KEY_CHANNEL_RELAY_SEQ)!)
     expect(raw).toContain('"v":null')
     const next = createPersistedSeq(KEY_CHANNEL_RELAY_SEQ)
     const first = next()

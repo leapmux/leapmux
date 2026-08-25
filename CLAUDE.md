@@ -68,7 +68,8 @@ plugin behind an interface method.
 
 - Backend: `testify/assert`, `testify/require`.
 - Frontend: `vitest`. `describe` names must not be Title Case — start them lowercase (`describe('parses empty input')`). Naming one after the symbol under test keeps that symbol's own casing: `describe('createStableContext')`, `describe('channelManager openChannel')`. Never start a `describe` or `it` name with a word that must keep its capital, because the lint autofix lowercases the first letter alone and misspells it (`dEFAULT_MONO_FONT_FAMILY`). Lead with a lowercase phrase instead: `describe('default mono font stack (DEFAULT_MONO_FONT_FAMILY)')` (see `src/test-support/noMangledTestTitles.test.ts`, which fails the suite on a mangled title).
-- **Unit tests are co-located** with the code they test: `foo.ts` → `foo.test.ts` in the same directory. Do **not** add a second test file for a module under `tests/unit/` — that mirror has been retired (see `src/test-support/noMirroredUnitTests.test.ts`, which fails the suite if it comes back). Shared unit-test helpers live in `src/test-support/` (imported via `~/test-support/…`). Only Playwright **E2E** specs live outside `src/`, under `tests/e2e/`.
+- **Unit tests are co-located** with the code they test: `foo.ts` → `foo.test.ts` in the same directory. This holds under `tests/e2e/` too — an E2E helper carries its own `.test.ts` beside it (`helpers/mail.ts` → `helpers/mail.test.ts`). Do **not** add a second test file for a module under `tests/unit/` — that mirror has been retired (see `src/test-support/noMirroredUnitTests.test.ts`, which fails the suite if it comes back). Shared unit-test helpers live in `src/test-support/` (imported via `~/test-support/…`).
+- **The file extension picks the runner**, everywhere: `.spec.ts` is Playwright, `.test.ts` is vitest. So a `.test.ts` under `tests/e2e/helpers/` runs in `task test-frontend` — no browser, no hub, milliseconds — and never in the E2E suite. Both configs are pinned to this (`vitest.config.ts` excludes `tests/e2e/**/*.spec.ts` by name, not `tests/e2e/**`; `playwright.config.ts` sets `testMatch: '**/*.spec.ts'`), and `src/test-support/testFileNaming.test.ts` fails the suite when a file lands on the wrong side or a config stops enforcing its half. Do not widen the vitest exclude back to `tests/e2e/**`: with Playwright pinned to `.spec.ts`, a co-located test would then run under **neither** runner. Playwright's own default `testMatch` takes `*.test.ts` as well, which is why the pin is there — without it those tests run in a browser worker, where vitest's API does not exist.
 - E2E: do NOT pass per-call `{ timeout: … }` overrides to `expect`, `locator.waitFor`, etc. Playwright's global timeout (configured in `playwright.config.ts`) already applies; per-call overrides are redundant noise. If a specific assertion legitimately needs a longer-than-global timeout (e.g. waiting on a slow worker spawn), discuss it before silently adding one.
 - Unused imports cause lint failures (strict).
 - Test provider-specific logic in that provider's test file (e.g. Claude's `previewText` in `providers/claude/plugin.test.ts`), not in a shared module's test.
@@ -127,21 +128,28 @@ click inside does not dismiss it, and close from the item's own handler.
 
 ### Browser storage
 
-Never call `localStorage` or `sessionStorage` directly. Route every read, write, and delete through `~/lib/browserStorage` (`localStorageGet`/`localStorageSet`/`localStorageRemove` for localStorage; `sessionStorageGet`/`sessionStorageSet`/`sessionStorageHas`/`sessionStorageRemove` for sessionStorage).
+Never call `localStorage` or `sessionStorage` directly. Route every read, write, and delete through `~/lib/browserStorage` (`localStorageGet`/`localStorageSet`/`localStorageRemove` for localStorage; `sessionStorageGet`/`sessionStorageSet`/`sessionStorageHas`/`sessionStorageRemove` for sessionStorage). A test resets a store with `localStorageClearForTests` / `sessionStorageClearForTests`, not with `clear()`.
 
-Why: every `leapmux:`-prefixed key is swept on each page load by `runCleanup` in `~/lib/browserStorage`. Every value is wrapped as `{ v, e }` with an expiration timestamp; reads unwrap and refresh the timestamp on access, so a key stays alive as long as the app is touched within its TTL. The sweep deletes any `leapmux:`-family key whose wrapper is missing, malformed, or expired — a raw `setItem(...)` write survives the current page but is wiped on the next refresh.
+Callers pass a LOGICAL name (`'key-pins'`, `'worker-info:w-1'`). The module owns the physical layout and composes the whole stored key, so no call site builds one by hand.
 
-Four registries divide keys by storage and match-type:
+Why: every key is scoped to one account, and every value is wrapped as `{ v, e }` with an expiration timestamp. Reads unwrap the value and refresh the timestamp, so a key stays alive as long as the app is touched within its TTL. `runCleanup` sweeps both stores and deletes any `leapmux:`-family key that is unregistered, that carries a scope its registration does not allow, or whose wrapper is missing, malformed, or expired. It KEEPS another account's fresh key, which is the point of the scope. A raw `setItem(...)` write skips both the scope and the envelope, so a second account on the browser reads it and the next sweep deletes it.
 
-- `EXACT_KEY_TTLS` — localStorage, exact match. Long-lived singletons (prefs, key-pins).
-- `DYNAMIC_KEY_TTLS` — localStorage, prefix match. Templated per-feature keys.
-- `SESSION_EXACT_KEY_TTLS` — sessionStorage, exact match.
-- `SESSION_DYNAMIC_KEY_TTLS` — sessionStorage, prefix match.
+Two registries hold every key, by logical name:
+
+- `LOCAL_KEY_SPECS` — localStorage.
+- `SESSION_KEY_SPECS` — sessionStorage.
+
+Each entry states `match` (`exact` or `prefix`), `scope` and `ttlMs`. A `scope: 'account'` key is stored at `leapmux:u:<userId>:<name>`, and that is the answer for anything a user owns. A `scope: 'device'` key is stored at `leapmux:<name>`, for state that fences a resource shared by every account on the origin; the two relay sequence marks are the only entries today.
+
+`setStorageAccount(userId)` points the account namespace at the signed-in user, and `AuthContext` is its one caller. An account-scoped access before that call throws. A module that MIRRORS an account-scoped key in memory subscribes to `onStorageAccountChange` so the mirror moves with the namespace.
 
 Adding a new key:
 
-1. Add the constant (`KEY_*`) or prefix (`PREFIX_*`) to `browserStorage.ts` and register it in the right table with a TTL.
-2. Read/write through the helpers. They throw at write time if the key isn't registered, so a missed registration fails loudly instead of silently disappearing on the next reload.
+1. Add the constant (`KEY_*`) or the prefix (`PREFIX_*`) to `browserStorage.ts`.
+2. Register it in `LOCAL_KEY_SPECS` or `SESSION_KEY_SPECS` with a `match`, a `scope` and a TTL. `satisfies Record<string, KeySpec>` turns a missing `scope` into a compile error.
+3. Read and write through the helpers. They throw for an unregistered name, so a missed registration fails loudly instead of disappearing on the next sweep.
+
+Two guards enforce what the types cannot: `no-restricted-globals` in `eslint.config.ts` rejects any reference to the storage globals outside the gateway, and `src/test-support/storageKeysAreRegistered.test.ts` fails the suite for an exported key constant that neither table registers, and for a name registered in both.
 
 ## Git
 

@@ -45,17 +45,17 @@ test.describe('Turn End Sound Preferences', () => {
 
     // Click "Ding Dong"
     await dialog.getByRole('radio', { name: 'Ding Dong' }).click()
-    await expect.poll(() => getBrowserPref(page, 'turnEndSound')).toBe('ding-dong')
+    await expect.poll(() => getBrowserPref(page, leapmuxServer.adminUserId, 'turnEndSound')).toBe('ding-dong')
 
     // Click "None"
     await dialog.getByRole('radio', { name: 'None' }).click()
-    await expect.poll(() => getBrowserPref(page, 'turnEndSound')).toBe('none')
+    await expect.poll(() => getBrowserPref(page, leapmuxServer.adminUserId, 'turnEndSound')).toBe('none')
 
     // Back to the account tier: the chip's "Use account default" deletes the
     // stored override rather than writing an account-value copy of it.
     await turnEndSoundScope(page).click()
     await page.getByRole('menuitemradio', { name: 'Use account default' }).click()
-    await expect.poll(() => getBrowserPref(page, 'turnEndSound')).toBeNull()
+    await expect.poll(() => getBrowserPref(page, leapmuxServer.adminUserId, 'turnEndSound')).toBeNull()
   })
 
   test('should persist account-level turn end sound via API', async ({ page, leapmuxServer }) => {
@@ -90,9 +90,9 @@ test.describe('Turn End Sound Preferences', () => {
     await expect(none).toBeChecked()
   })
 
-  test('should play ding-dong sound when turn ends', async ({ page, authenticatedWorkspace }) => {
+  test('should play ding-dong sound when turn ends', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
     void authenticatedWorkspace // fixture trigger
-    await armTurnEndSound(page, 'ding-dong')
+    await armTurnEndSound(page, leapmuxServer.adminUserId, 'ding-dong')
     await waitForWorkspaceReady(page)
 
     await sendMessage(page, TOOL_USING_PROMPT)
@@ -100,9 +100,9 @@ test.describe('Turn End Sound Preferences', () => {
     await expectDoorbellCount(page, 1)
   })
 
-  test('should NOT play sound when turn end sound is none', async ({ page, authenticatedWorkspace }) => {
+  test('should NOT play sound when turn end sound is none', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
     void authenticatedWorkspace // fixture trigger
-    await armTurnEndSound(page, 'none')
+    await armTurnEndSound(page, leapmuxServer.adminUserId, 'none')
     await waitForWorkspaceReady(page)
 
     // The SAME tool-using prompt the positive test uses. An arithmetic
@@ -116,9 +116,9 @@ test.describe('Turn End Sound Preferences', () => {
     await expectDoorbellQuiet(page, 0)
   })
 
-  test('should NOT play sound when opening and closing Preferences dialog', async ({ page, authenticatedWorkspace }) => {
+  test('should NOT play sound when opening and closing Preferences dialog', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
     void authenticatedWorkspace // fixture trigger
-    await armTurnEndSound(page, 'ding-dong')
+    await armTurnEndSound(page, leapmuxServer.adminUserId, 'ding-dong')
     await waitForWorkspaceReady(page)
 
     await sendMessage(page, TOOL_USING_PROMPT)
@@ -132,9 +132,9 @@ test.describe('Turn End Sound Preferences', () => {
     await expectDoorbellQuiet(page, 1)
   })
 
-  test('should NOT play sound when closing an agent tab', async ({ page, authenticatedWorkspace }) => {
+  test('should NOT play sound when closing an agent tab', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
     void authenticatedWorkspace // fixture trigger
-    await armTurnEndSound(page, 'ding-dong')
+    await armTurnEndSound(page, leapmuxServer.adminUserId, 'ding-dong')
     await waitForWorkspaceReady(page)
 
     await sendMessage(page, TOOL_USING_PROMPT)
@@ -156,9 +156,9 @@ test.describe('Turn End Sound Preferences', () => {
     await expectDoorbellQuiet(page, 1)
   })
 
-  test('should NOT play sound when opening a new tab', async ({ page, authenticatedWorkspace }) => {
+  test('should NOT play sound when opening a new tab', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
     void authenticatedWorkspace // fixture trigger
-    await armTurnEndSound(page, 'ding-dong')
+    await armTurnEndSound(page, leapmuxServer.adminUserId, 'ding-dong')
     await waitForWorkspaceReady(page)
 
     await sendMessage(page, TOOL_USING_PROMPT)
@@ -171,9 +171,9 @@ test.describe('Turn End Sound Preferences', () => {
     await expectDoorbellQuiet(page, 1)
   })
 
-  test('should NOT play sound when switching between agent tabs', async ({ page, authenticatedWorkspace }) => {
+  test('should NOT play sound when switching between agent tabs', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
     void authenticatedWorkspace // fixture trigger
-    await armTurnEndSound(page, 'ding-dong')
+    await armTurnEndSound(page, leapmuxServer.adminUserId, 'ding-dong')
     await waitForWorkspaceReady(page)
 
     await sendMessage(page, TOOL_USING_PROMPT)
@@ -190,9 +190,9 @@ test.describe('Turn End Sound Preferences', () => {
     await expectDoorbellQuiet(page, 1)
   })
 
-  test('should play sound when a turn ends on a tab that is not visible', async ({ page, authenticatedWorkspace }) => {
+  test('should play sound when a turn ends on a tab that is not visible', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
     void authenticatedWorkspace
-    await armTurnEndSound(page, 'ding-dong')
+    await armTurnEndSound(page, leapmuxServer.adminUserId, 'ding-dong')
     await waitForWorkspaceReady(page)
 
     await openAgentViaUI(page)

@@ -70,7 +70,9 @@ The tri-switch picks **System** (follows your OS `prefers-color-scheme` and swit
 
 The palette and the mode are one setting, so one scope chip and one reset cover both. A dual-tier setting; the built-in default is **Default** at **System**.
 
-The same control appears outside the dialog, so a new user can set the look before anything else: on the desktop launcher, on the empty state that offers to create your first workspace, and on the first-run setup page. Each writes the same preference, so a choice made there is the one this dialog shows afterwards.
+The same control appears once outside the dialog, so a new user can set the look before anything else: on the empty state that offers to create your first workspace. It writes the same preference, so a choice made there is the one this dialog shows afterwards.
+
+The screens shown *before* you sign in carry no theme control: the desktop launcher, the sign-in page, and first-run setup. Your theme is stored per account, so there is nothing to read until LeapMux knows who you are. Those screens paint the **Default** palette and follow your system light/dark setting, and your own theme applies as soon as you are signed in.
 
 ### Terminal theme
 
@@ -78,7 +80,7 @@ The same two choices, for terminal tabs, plus one more palette: **Match UI**. Ch
 
 The palettes are the same ones the app offers. Each supplies its own sixteen ANSI colors, and the terminal's background, foreground, cursor and selection come from that same palette, so a terminal on a theme other than the app's is still coherent in itself. Where a palette's ANSI set belongs to another project, the entry names that project beside the palette, so the scheme you are already looking at stays findable under its own name.
 
-A dual-tier setting; the built-in default is **Match UI**. That default is why the theme picker on the launcher, the empty state and the setup page moves the terminal too — there is only one choice to make until you come here and detach it. See [Terminals](/docs/using/terminals/).
+A dual-tier setting; the built-in default is **Match UI**. That default is why the theme picker on the empty state moves the terminal too — there is only one choice to make until you come here and detach it. See [Terminals](/docs/using/terminals/).
 
 ### Syntax theme
 

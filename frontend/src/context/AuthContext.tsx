@@ -10,6 +10,7 @@ import { platformBridge } from '~/api/platformBridge'
 import { loadTimeouts, setOnAuthError } from '~/api/transport'
 import { channelManager } from '~/api/workerRpc'
 import { LoginRequestSchema } from '~/generated/leapmux/v1/auth_pb'
+import { setStorageAccount } from '~/lib/browserStorage'
 import { createStableContext } from '~/lib/createStableContext'
 import { formatErrorMessage } from '~/lib/errors'
 import { createLogger } from '~/lib/logger'
@@ -60,11 +61,44 @@ export interface AuthState {
 const AuthContext = createStableContext<AuthState>('context/AuthContext')
 
 export const AuthProvider: ParentComponent = (props) => {
-  const [user, setUser] = createSignal<User | null>(null)
+  const [user, setUserSignal] = createSignal<User | null>(null)
   const [loading, setLoading] = createSignal(true)
   const [error, setError] = createSignal<string | null>(null)
   const [bootstrapError, setBootstrapError] = createSignal<string | null>(null)
   const [verificationResendAvailableAt, setVerificationResendAvailableAt] = createSignal<Timestamp | undefined>()
+
+  /**
+   * The one writer of the identity, and the one place the storage namespace
+   * moves with it.
+   *
+   * `setStorageAccount` runs BEFORE the signal notifies, so nothing downstream
+   * can observe the new identity while storage still points at the old account.
+   * An effect would be too late: `AuthGuard`'s `Show` is a render effect, and a
+   * render effect runs ahead of a user effect in the same flush, so `AppShell`
+   * could mount and read the previous account's tab state.
+   *
+   * A null user does NOT clear the namespace -- see `setStorageAccount`. The
+   * writes a sign-out triggers on the way down belong to the account that is
+   * leaving.
+   *
+   * AN IDENTITY WITH NO ID IS NOT AN IDENTITY. `setStorageAccount` refuses an
+   * empty id, because there is no namespace to key by, and letting that throw
+   * escape would be the worst of the three outcomes: `restoreSession` catches
+   * it inside its network `try` and reports it as `bootstrapError`, so the user
+   * gets "Could not reach the hub." over a client-side data fault, with a Retry
+   * that hits the identical throw every time. Signed-out is the honest reading
+   * of a User the app cannot key anything by, and it routes to `/login` -- with
+   * the fault recorded, because a hub that answers this way has a real bug.
+   */
+  const setUser = (next: User | null) => {
+    if (next && !next.id) {
+      log.error('the hub returned a user with no id; treating the session as signed out', { user: next })
+      next = null
+    }
+    if (next)
+      setStorageAccount(next.id)
+    setUserSignal(next)
+  }
 
   /**
    * Drop every pooled E2EE channel on an identity change.

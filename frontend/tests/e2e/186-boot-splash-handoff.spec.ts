@@ -1,3 +1,15 @@
+import type { Page } from '@playwright/test'
+import { readFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import {
+  BOOT_SPLASH_ICON_HEIGHT,
+  BOOT_SPLASH_ICON_WIDTH,
+  BOOT_SPLASH_LABEL,
+  BOOT_SPLASH_STATIC_ID,
+  BOOT_SPLASH_TEST_ID,
+  bootSplashDocumentCss,
+} from '../../src/lib/bootSplashTheme'
 import { expect, test } from './fixtures'
 import { appMenuTrigger, loginViaToken } from './helpers/ui'
 
@@ -36,5 +48,126 @@ test.describe('static boot splash handoff', () => {
     // The shared shell oracle — the same locator `loginViaUI` waits on, in
     // whichever shell is mounted.
     await expect(appMenuTrigger(page)).toBeVisible()
+  })
+})
+
+/**
+ * The splash must not move while it is on screen.
+ *
+ * `bootSplashDocumentCss` paints the splash before the app stylesheet exists,
+ * so every property it leaves unstated is answered twice: by the UA first, and
+ * by oat second. An INHERITED property is the trap, because the splash
+ * stylesheet outranks nothing while it stays silent — it is unlayered, but an
+ * unlayered declaration only beats a layered one for a property it declares.
+ * `line-height` was unstated, so the paragraph inherited `normal` from `body`
+ * and then oat's `1.5`: the line box grew 4.8px, half of the new leading landed
+ * above the glyphs, and the centred column rose 2.4px part way through boot.
+ *
+ * The unit suite pins the literal against the oat stylesheet that ships
+ * (`src/lib/bootSplashTheme.test.ts`). Only a real layout engine can check the
+ * property those two agree about, which is that the geometry does not change.
+ *
+ * This spec needs no server: it renders the shipped stylesheet against the
+ * shipped markup and adds the shipped oat sheet, which is the whole transition.
+ */
+test.describe('boot splash layout across the app stylesheet', () => {
+  const here = dirname(fileURLToPath(import.meta.url))
+  const oatCss = readFileSync(resolve(here, '../../node_modules/@knadh/oat/oat.min.css'), 'utf8')
+
+  // Geometry only: a rect, not the artwork. `BootSplashIcon`'s paths are held
+  // against `public/icons/leapmux-icon.svg` in the unit suite.
+  const icon = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="${BOOT_SPLASH_ICON_WIDTH}" height="${BOOT_SPLASH_ICON_HEIGHT}" aria-hidden="true"><rect width="64" height="64" rx="14" fill="#0D9488" /></svg>`
+
+  // Both trees, because the two carry different selectors and different
+  // nesting: the static node matches on `#boot-splash` and wraps its children
+  // in `.boot-splash-loading`, and Solid's matches on `data-testid` alone.
+  // A rule that reaches only one of them is the drift this file exists to stop.
+  const TREES: Record<string, string> = {
+    static: `<div id="${BOOT_SPLASH_STATIC_ID}" data-testid="${BOOT_SPLASH_TEST_ID}" role="status">
+      <div class="boot-splash-loading">${icon}<p>${BOOT_SPLASH_LABEL}</p></div>
+      <div class="boot-splash-error" hidden>
+        <p data-boot-fail-title>Could not start LeapMux</p>
+        <pre data-boot-fail-detail>Failed to load</pre>
+        <button type="button" data-boot-reload>Reload</button>
+      </div>
+    </div>`,
+    solid: `<div data-testid="${BOOT_SPLASH_TEST_ID}" role="status">${icon}<p>${BOOT_SPLASH_LABEL}</p></div>`,
+  }
+
+  interface Geometry {
+    /** Icon bottom to text-box top: the flex gap, and what visibly grew. */
+    gap: number
+    /** Line box of the label. The inherited `line-height` moves this one. */
+    textHeight: number
+    /** Whole column, so a shift that cancels out in `gap` still shows. */
+    columnHeight: number
+  }
+
+  async function measure(page: Page, markup: string, withAppStylesheet: boolean): Promise<Geometry> {
+    await page.setContent(`<style>${bootSplashDocumentCss()}</style><div id="app">${markup}</div>`)
+    if (withAppStylesheet)
+      await page.addStyleTag({ content: oatCss })
+
+    return page.evaluate(() => {
+      const round = (n: number) => Math.round(n * 100) / 100
+      const splash = document.querySelector('[data-testid="boot-splash"]')!
+      const iconRect = splash.querySelector('svg')!.getBoundingClientRect()
+      const textRect = splash.querySelector('p')!.getBoundingClientRect()
+      return {
+        gap: round(textRect.top - iconRect.bottom),
+        textHeight: round(textRect.height),
+        columnHeight: round(textRect.bottom - iconRect.top),
+      }
+    })
+  }
+
+  for (const [name, markup] of Object.entries(TREES)) {
+    test(`the ${name} splash keeps its geometry when the app stylesheet lands`, async ({ page }) => {
+      const beforeAppCss = await measure(page, markup, false)
+      const afterAppCss = await measure(page, markup, true)
+
+      expect(afterAppCss).toEqual(beforeAppCss)
+
+      // Not a comparison of two identical wrong answers: the gap is the
+      // `--space-4` seed at the 16px root font size, whatever `system-ui`
+      // resolves to on the machine running this.
+      expect(beforeAppCss.gap).toBe(16)
+      expect(beforeAppCss.textHeight).toBeGreaterThan(0)
+    })
+  }
+
+  // The failure panel inherits the same answer. It is why `line-height` sits on
+  // the splash container and not on the `p` rule: `pre` sets its own `.85rem`
+  // and the Reload button takes `font:inherit`, so a rule that named only the
+  // paragraph would leave both to move when oat arrived.
+  test('the failure panel keeps its geometry when the app stylesheet lands', async ({ page }) => {
+    const failed = TREES.static!
+      .replace(`id="${BOOT_SPLASH_STATIC_ID}"`, `id="${BOOT_SPLASH_STATIC_ID}" data-boot-failed="true"`)
+      .replace(' hidden', '')
+
+    const read = () => page.evaluate(() => {
+      const round = (n: number) => Math.round(n * 100) / 100
+      const box = (el: Element) => {
+        const rect = el.getBoundingClientRect()
+        return { w: round(rect.width), h: round(rect.height) }
+      }
+      const panel = document.querySelector('.boot-splash-error')!
+      return {
+        panel: box(panel),
+        title: box(panel.querySelector('[data-boot-fail-title]')!),
+        // Oat's `pre` rule is the one that landed here: padding, a background,
+        // a radius and the mono family, none of which the splash declared.
+        detail: box(panel.querySelector('pre')!),
+        button: box(panel.querySelector('button')!),
+      }
+    })
+
+    await page.setContent(`<style>${bootSplashDocumentCss()}</style><div id="app">${failed}</div>`)
+    await expect(page.locator('.boot-splash-error')).toBeVisible()
+    const beforeAppCss = await read()
+
+    await page.addStyleTag({ content: oatCss })
+    expect(await read()).toEqual(beforeAppCss)
+    expect(beforeAppCss.detail.h).toBeGreaterThan(0)
   })
 })

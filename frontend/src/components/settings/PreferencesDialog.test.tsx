@@ -441,7 +441,7 @@ describe('preferencesDialog load failure', () => {
 
   // The context loads once, at PROVIDER mount. A load that failed with no
   // identity change behind it -- an unreachable hub, a timeout, a 500 -- has
-  // nothing else to retry it: `useReloadPreferencesOnIdentityChange` fires
+  // nothing else to retry it: `usePreferencesForIdentity` fires
   // on a sign-in, and this page never has one. Every account row's shape
   // comes off that reply, so the dialog asks again rather than staying short
   // of two whole groups for the session.

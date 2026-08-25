@@ -1,6 +1,6 @@
 import { createRoot } from 'solid-js'
 import { beforeEach, describe, expect, it } from 'vitest'
-import { localStorageGet, PREFIX_AGENT_SESSION } from '~/lib/browserStorage'
+import { localStorageGet, PREFIX_AGENT_SESSION, storedKeyFor } from '~/lib/browserStorage'
 import { compactionContextUsage, createAgentSessionStore } from './agentSession.store'
 
 // Isolate every test: unique-ID tests are unaffected (each does its own setup),
@@ -66,7 +66,7 @@ describe('createAgentSessionStore', () => {
     createRoot((dispose) => {
       const store = createAgentSessionStore()
       store.updateInfo('agent-1', { totalCostUsd: 1.5 })
-      const raw = localStorage.getItem('leapmux:agent-session:agent-1')
+      const raw = localStorage.getItem(storedKeyFor(`${PREFIX_AGENT_SESSION}agent-1`)!)
       expect(raw).not.toBeNull()
       const wrapped = JSON.parse(raw!)
       expect(wrapped.v.totalCostUsd).toBe(1.5)
@@ -78,7 +78,7 @@ describe('createAgentSessionStore', () => {
   it('should load from localStorage on first getInfo call', () => {
     // Pre-seed localStorage with wrapped format before creating the store
     const preseeded = { totalCostUsd: 3.0 }
-    localStorage.setItem('leapmux:agent-session:agent-1', JSON.stringify({ v: preseeded, e: Date.now() + 7 * 24 * 60 * 60 * 1000 }))
+    localStorage.setItem(storedKeyFor(`${PREFIX_AGENT_SESSION}agent-1`)!, JSON.stringify({ v: preseeded, e: Date.now() + 7 * 24 * 60 * 60 * 1000 }))
 
     createRoot((dispose) => {
       const store = createAgentSessionStore()
@@ -292,7 +292,7 @@ describe('agentSessionStore clearContextUsage', () => {
       expect(info.contextUsage).toBeUndefined()
       expect(info.totalCostUsd).toBeUndefined()
       // localStorage should also not contain contextUsage or totalCostUsd
-      const raw = localStorage.getItem('leapmux:agent-session:agent-1')
+      const raw = localStorage.getItem(storedKeyFor(`${PREFIX_AGENT_SESSION}agent-1`)!)
       const wrapped = JSON.parse(raw!)
       expect(wrapped.v.contextUsage).toBeUndefined()
       expect(wrapped.v.totalCostUsd).toBeUndefined()

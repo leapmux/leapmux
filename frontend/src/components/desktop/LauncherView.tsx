@@ -2,12 +2,9 @@ import type { Component } from 'solid-js'
 import { createSignal, onCleanup, onMount } from 'solid-js'
 import { getRuntimeState, platformBridge, restoreWindowGeometry } from '~/api/platformBridge'
 import { Spinner } from '~/components/common/Spinner'
-import { ThemeChooser } from '~/components/common/ThemeChooser'
-import { useThemeChooser } from '~/components/common/useThemeChooser'
 import { formatErrorMessage } from '~/lib/errors'
 import { createLogger } from '~/lib/logger'
 import { formatVersionLine } from '~/lib/systemInfo'
-import { themeStore } from '~/lib/themeStore'
 import { motion } from '~/styles/tokens'
 import * as styles from './LauncherView.css'
 
@@ -23,7 +20,6 @@ const httpSchemeRegex = /^https?:\/\//i
 export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
   const launchURL = new URL(window.location.href)
   const cleanupWarning = launchURL.searchParams.get('cleanup_error') ?? ''
-  const themeBinding = useThemeChooser()
   const [mode, setMode] = createSignal<'solo' | 'distributed'>('solo')
   const [hubUrl, setHubUrl] = createSignal('')
   const [loading, setLoading] = createSignal(false)
@@ -290,15 +286,6 @@ export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
           </div>
         </div>
       </div>
-
-      {/*
-        The theme picker, before the app has a session or a hub connection.
-        This view renders OUTSIDE every provider (see app.tsx), so the chooser
-        has no account tier here -- `useThemeChooser` writes the device tier of
-        the same `theme` preference, and the Preferences dialog shows that
-        choice once the app connects.
-      */}
-      <ThemeChooser value={themeBinding.value()} onChange={themeBinding.onChange} align="center" systemMode={themeStore.systemMode()} />
 
       <div class={styles.versionText}>
         {versionLine() || '\u00A0'}

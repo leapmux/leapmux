@@ -9,6 +9,7 @@
 import type { ChannelSocket, ChannelTransport, WorkerKeyBundle } from '../../../src/lib/channel'
 import { Buffer } from 'node:buffer'
 import { EncryptionMode } from '../../../src/generated/leapmux/v1/channel_pb'
+import { setStorageAccount } from '../../../src/lib/browserStorage'
 import { ChannelManager, KeyPinStore } from '../../../src/lib/channel'
 import { authedHeaders, getUserId } from './api'
 
@@ -105,6 +106,11 @@ class FetchChannelTransport implements ChannelTransport {
 /** Create a ChannelManager with a fetch-based transport for e2e tests. */
 export async function createTestChannelManager(hubUrl: string, cookie: string): Promise<ChannelManager> {
   const userId = await getUserId(hubUrl, cookie)
+  // This harness drives the app's own channel + key-pin code in NODE, where no
+  // AuthProvider ever runs. Every `leapmux:` key is scoped to an account and an
+  // access with none set throws, so the harness makes the same statement the
+  // app's auth context makes: these calls are this user's.
+  setStorageAccount(userId)
   // Use a longer RPC timeout for e2e tests since OpenAgent spawns a subprocess
   // that can take up to 30s to start, and the E2EE round-trip adds overhead.
   //

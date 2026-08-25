@@ -23,5 +23,11 @@
   // `include` -- so a root-level file that wants `~/...` has to be named here.
   // vitest.setup.ts runs before every test file, so a `~` import it could not
   // resolve fails the whole suite at load rather than one spec.
-  "include": ["src", "app.config.ts", "vitest.setup.ts"]
+  //
+  // The `tests/e2e` entry is the unit tests co-located with the E2E helpers,
+  // and nothing else under that tree: a `.test.ts` runs under vitest, so it
+  // is typed by the vitest project and reaches `~/...` like every other unit
+  // test. The Playwright specs beside it stay in tsconfig.e2e.json, which
+  // excludes this same pattern so no file belongs to both projects.
+  "include": ["src", "app.config.ts", "vitest.setup.ts", "tests/e2e/**/*.test.ts"]
 }

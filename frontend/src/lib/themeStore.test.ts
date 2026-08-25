@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { KEY_BROWSER_PREFS, loadBrowserPrefs, localStorageClearForTests, localStorageSet } from '~/lib/browserStorage'
+import { KEY_BROWSER_PREFS, localStorageClearForTests, localStorageSet } from '~/lib/browserStorage'
 import { applyTheme, DEFAULT_TERMINAL_THEME_VALUE, DEFAULT_THEME_VALUE, isThemeMode, parseTerminalThemeValue, parseThemeValue, themeStore } from '~/lib/themeStore'
 import { resolveVariant, themeById } from '~/styles/themes'
 
@@ -47,7 +47,10 @@ beforeEach(() => {
   root().removeAttribute('data-ui-theme')
   root().removeAttribute('data-ui-light')
   root().removeAttribute('data-ui-dark')
-  document.head.querySelector('meta[name="theme-color"]')?.remove()
+  // ALL of them. A case that installs the three tags `entry-server` ships would
+  // otherwise leave two behind for the next one, and a failed assertion leaves
+  // all three -- an order dependence that reads as an unrelated flake.
+  document.head.querySelectorAll('meta[name="theme-color"]').forEach(meta => meta.remove())
   applyTheme(DEFAULT_THEME_VALUE)
 })
 
@@ -242,105 +245,36 @@ describe('themeStore DOM application', () => {
     expect(() => applyTheme({ name: 'ayu', mode: 'dark' })).not.toThrow()
     expect(root().getAttribute('data-ui-theme')).toBe('ayu')
   })
-})
 
-describe('themeStore.writeDeviceTheme', () => {
-  it('persists the whole value to the shared browser-prefs document', () => {
-    themeStore.writeDeviceTheme({ name: 'solarized', mode: 'dark' })
-    expect(loadBrowserPrefs().theme).toEqual({ name: 'solarized', mode: 'dark' })
-    expect(themeStore.theme()).toEqual({ name: 'solarized', mode: 'dark' })
-  })
+  // `entry-server` ships THREE tags -- one per OS polarity behind a `media`
+  // query, plus a media-less fallback -- and a browser takes the first whose
+  // media matches. Writing only the first match left the app's colour on a tag
+  // the OS never selects: a light app on a dark OS kept the static dark
+  // background in the address bar for the whole session, and any non-Default
+  // palette showed Default's.
+  it('replaces every theme-color tag and strips the media the OS chose by', () => {
+    const shipped = [
+      { media: '(prefers-color-scheme: light)' },
+      { media: '(prefers-color-scheme: dark)' },
+      {},
+    ].map(({ media }) => {
+      const meta = document.createElement('meta')
+      meta.setAttribute('name', 'theme-color')
+      if (media)
+        meta.setAttribute('media', media)
+      document.head.append(meta)
+      return meta
+    })
 
-  // IT REPLACES, and the caller carries the half it did not touch. The merge
-  // this used to do made the two halves of `useThemeChooser` disagree: the
-  // provider branch writes through `dualScalar`, which replaces, so the same
-  // `onChange` meant one thing with a provider mounted and another without.
-  // `ThemeChooser.commit` already spreads the current value before it calls,
-  // which is why nothing needed the merge.
-  it('replaces the stored value rather than merging over it', () => {
-    themeStore.writeDeviceTheme({ name: 'everforest', mode: 'light' })
-    themeStore.writeDeviceTheme({ name: 'everforest', mode: 'dark' })
-    expect(loadBrowserPrefs().theme).toEqual({ name: 'everforest', mode: 'dark' })
-
-    // A whole value from a DIFFERENT palette carries both halves, so nothing
-    // of the previous one survives.
-    themeStore.writeDeviceTheme({ name: 'nord', mode: 'light' })
-    expect(loadBrowserPrefs().theme).toEqual({ name: 'nord', mode: 'light' })
-    expect(themeStore.theme()).toEqual({ name: 'nord', mode: 'light' })
-  })
-
-  // A variant pin is a field of the same document, so a replace must be able to
-  // CLEAR it. A merge could not: an absent key reads as "keep".
-  it('clears a variant pin the previous value carried', () => {
-    themeStore.writeDeviceTheme({ name: 'catppuccin', mode: 'dark', variant: { dark: 'catppuccin-macchiato' } })
-    expect(loadBrowserPrefs().theme).toMatchObject({ variant: { dark: 'catppuccin-macchiato' } })
-
-    themeStore.writeDeviceTheme({ name: 'catppuccin', mode: 'dark' })
-    expect(loadBrowserPrefs().theme).toEqual({ name: 'catppuccin', mode: 'dark' })
-  })
-
-  it('writes the same key any other device-tier write uses', () => {
-    // Not a launcher-specific key: the Preferences dialog reads this exact
-    // field, so a theme picked before connecting is the one it reports after.
-    themeStore.writeDeviceTheme({ name: 'one', mode: 'light' })
-    const stored = loadBrowserPrefs()
-    expect(Object.keys(stored)).toEqual(['theme'])
-    expect(stored.theme).toEqual({ name: 'one', mode: 'light' })
-  })
-
-  it('stores the default palette for a name it cannot resolve', () => {
-    themeStore.writeDeviceTheme({ name: 'not-a-theme', mode: 'dark' })
-    expect(loadBrowserPrefs().theme).toEqual({ name: 'default', mode: 'dark' })
-  })
-})
-
-describe('themeStore cross-tab sync', () => {
-  it('re-reads the stored value when another tab rewrites the prefs document', () => {
-    localStorageSet(KEY_BROWSER_PREFS, { theme: { name: 'tokyo-night', mode: 'dark' } })
-    window.dispatchEvent(new StorageEvent('storage', { key: KEY_BROWSER_PREFS }))
-    expect(themeStore.theme()).toEqual({ name: 'tokyo-night', mode: 'dark' })
-  })
-
-  it('ignores a storage event for an unrelated key', () => {
     applyTheme({ name: 'nord', mode: 'dark' })
-    localStorageSet(KEY_BROWSER_PREFS, { theme: { name: 'ayu', mode: 'light' } })
-    window.dispatchEvent(new StorageEvent('storage', { key: 'leapmux:something-else' }))
-    expect(themeStore.theme()).toEqual({ name: 'nord', mode: 'dark' })
-  })
 
-  it('leaves an ACCOUNT-tier theme alone when another tab writes an unrelated preference', () => {
-    // `leapmux:browser-prefs` is ONE document holding every device preference,
-    // so this event fires for a diff view or an Enter-key mode written in
-    // another tab. A user whose theme lives at account scope has no `theme`
-    // field in that document, and answering with the default repainted them
-    // from their palette to Default on any unrelated write -- with nothing to
-    // restore it, because PreferencesApplier re-runs on `preferences.theme()`,
-    // which no storage event touches.
-    applyTheme({ name: 'nord', mode: 'dark' })
-    localStorageSet(KEY_BROWSER_PREFS, { diffView: 'split' })
-    window.dispatchEvent(new StorageEvent('storage', { key: KEY_BROWSER_PREFS }))
-    expect(themeStore.theme()).toEqual({ name: 'nord', mode: 'dark' })
-  })
-
-  it('still follows a DEVICE override written by another tab', () => {
-    // The repair must not cost the sync it exists for: a device-tier theme
-    // written elsewhere still arrives.
-    applyTheme({ name: 'nord', mode: 'dark' })
-    localStorageSet(KEY_BROWSER_PREFS, { diffView: 'split', theme: { name: 'ayu', mode: 'light' } })
-    window.dispatchEvent(new StorageEvent('storage', { key: KEY_BROWSER_PREFS }))
-    expect(themeStore.theme()).toEqual({ name: 'ayu', mode: 'light' })
-  })
-
-  it('reads the value back through the store rather than off the event', () => {
-    // `newValue` carries the raw `{ v, e }` TTL envelope that localStorageSet
-    // writes, so parsing it directly reads `undefined` for every field. That
-    // bug made cross-tab theme sync silently do nothing.
-    localStorageSet(KEY_BROWSER_PREFS, { theme: { name: 'github', mode: 'light' } })
-    window.dispatchEvent(new StorageEvent('storage', {
-      key: KEY_BROWSER_PREFS,
-      newValue: JSON.stringify({ theme: { name: 'nord', mode: 'dark' } }),
-    }))
-    expect(themeStore.theme()).toEqual({ name: 'github', mode: 'light' })
+    const expected = resolveVariant(themeById('nord'), undefined, 'dark').palette['--background']
+    for (const meta of shipped) {
+      expect(meta.getAttribute('content')).toBe(expected)
+      // With `media` still on, the two pair tags would answer for the OS and
+      // the app's colour would only reach whichever one happened to match.
+      expect(meta.hasAttribute('media')).toBe(false)
+    }
   })
 })
 
@@ -400,5 +334,31 @@ describe('themeStore variant attributes', () => {
     const nord = themeById('nord')
     expect(root().getAttribute('data-ui-dark')).toBe(nord.defaults.dark)
     expect(root().getAttribute('data-ui-light')).toBe(nord.defaults.light)
+  })
+})
+
+// LAST in the file on purpose: `vi.resetModules()` builds a SECOND store root,
+// with its own matchMedia subscription and DOM effects, in the same jsdom
+// document. Nothing after it can trust the module-level `themeStore` that every
+// describe above drives.
+describe('themeStore seeding', () => {
+  it('starts at the default theme and reads no storage at import', async () => {
+    // A stored theme that the OLD module would have picked up. It is scoped to
+    // the suite's account, so it is genuinely readable -- the point is that the
+    // store does not look.
+    localStorageSet(KEY_BROWSER_PREFS, { theme: { name: 'nord', mode: 'dark' } })
+    const getItem = vi.spyOn(Storage.prototype, 'getItem')
+
+    vi.resetModules()
+    const fresh = await import('./themeStore')
+
+    // The spy is the real assertion. "Equals the default" would also hold for a
+    // module that read storage and happened to find nothing, and this module
+    // must not read at all: it is built at import time, before any account
+    // exists, so a read would throw and take the whole module graph with it.
+    expect(getItem).not.toHaveBeenCalled()
+    expect(fresh.themeStore.theme()).toEqual(fresh.DEFAULT_THEME_VALUE)
+
+    getItem.mockRestore()
   })
 })

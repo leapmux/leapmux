@@ -62,7 +62,19 @@ export default defineConfig({
     // one the code ships against.
     environment: 'jsdom',
     globals: true,
-    exclude: ['tests/e2e/**', 'node_modules/**'],
+    // The file EXTENSION decides the runner, everywhere in the repo: a
+    // `.spec.ts` belongs to Playwright and a `.test.ts` belongs to vitest.
+    // So this excludes the Playwright specs BY NAME. The previous pattern
+    // excluded `tests/e2e/**` wholesale, which also hid a unit test placed
+    // beside the helper it tests; Playwright's default `testMatch` takes
+    // `*.test.ts` too, so that test ran in a browser worker instead, where
+    // vitest's API does not exist.
+    //
+    // `playwright.config.ts` pins the mirror half of the rule. Widen this
+    // pattern back to the whole directory and the co-located tests run
+    // under NEITHER runner, because that pin keeps Playwright off them.
+    // `src/test-support/testFileNaming.test.ts` fails the suite for it.
+    exclude: ['tests/e2e/**/*.spec.ts', 'node_modules/**'],
     setupFiles: ['./vitest.setup.ts'],
   },
 })

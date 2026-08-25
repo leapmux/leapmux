@@ -7,8 +7,6 @@
  * Palette comes from Default theme so the splash matches what `themeStore`
  * paints after hydration.
  */
-import type { ThemeMode } from '~/styles/themes'
-import { KEY_BROWSER_PREFS } from '~/lib/browserStorage'
 import { paletteColorToHex, resolveVariant } from '~/styles/themes'
 import { defaultTheme } from '~/styles/themes/default'
 
@@ -76,13 +74,40 @@ export const BOOT_SPLASH_ICON_HEIGHT = 64
 
 /**
  * Spacing token for the splash column gap. Used in `bootSplashDocumentCss`.
- * That stylesheet also seeds `--space-4: 1rem` so the gap resolves before
- * oat's theme sheet loads.
+ * That stylesheet also seeds `--space-4: 1rem` on the splash itself, so the
+ * gap resolves before oat's theme sheet loads.
  */
 export const BOOT_SPLASH_GAP = 'var(--space-4)'
 
 /** Literal that matches oat's `--space-4` (see `@knadh/oat` `01-theme.css`). */
 export const BOOT_SPLASH_SPACE_4 = '1rem'
+
+/**
+ * Line height for every text node in the splash. A literal that matches oat's
+ * `--leading-normal`, stated on the splash itself.
+ *
+ * Oat states its line height on `body`, inside `@layer base`:
+ * `body,dialog,[popover]{...;line-height:var(--leading-normal)}`. So the splash
+ * `<p>` INHERITED `normal` until that sheet landed and `1.5` after it. At
+ * `.95rem` that grows the line box from 18px to 22.8px, and half of the new
+ * leading sits above the glyphs: the centered column rose 2.4px, so the space
+ * under the icon widened by 2.4px part way through boot.
+ *
+ * Being unlayered wins the splash stylesheet nothing here. An unlayered
+ * declaration outranks a layered one only for a property it actually declares,
+ * and this stylesheet declared no `line-height` at all -- neither on the splash
+ * nor on `body` -- so the value arrived purely by inheritance.
+ *
+ * Stated on the splash container, NOT seeded as `:root{--leading-normal:1.5}`
+ * the way `--space-4` is. That seed shape is unusable for a token the app also
+ * reads: the seed is unlayered and oat's `:root` sits in `@layer theme`, so it
+ * would pin `--leading-normal` for the WHOLE app, permanently, from a
+ * stylesheet that exists to paint one splash.
+ *
+ * Unitless on purpose. The failure panel's `<pre>` sets `.85rem`, and a length
+ * would give it the line box of the `.95rem` paragraph.
+ */
+export const BOOT_SPLASH_LINE_HEIGHT = '1.5'
 
 /** Title when the static splash gives up and shows the failure panel. */
 export const BOOT_SPLASH_FAIL_TITLE = 'Could not start LeapMux'
@@ -106,51 +131,6 @@ export const BOOT_SPLASH_FAIL_TIMEOUT_DETAIL
   = 'The app did not start in time. Check your network connection, then reload the page.'
 
 /**
- * Resolve splash polarity the same way `themeStore.resolvedMode` does for the
- * UI theme: an explicit light/dark pin wins; `system` (or anything else) follows
- * the OS.
- */
-export function resolveBootPolarity(
-  mode: ThemeMode | string | undefined,
-  systemDark: boolean,
-): 'light' | 'dark' {
-  if (mode === 'light' || mode === 'dark')
-    return mode
-  return systemDark ? 'dark' : 'light'
-}
-
-/**
- * Read `theme.mode` from a `leapmux:browser-prefs` TTL envelope (`{ v, e }`).
- * Returns `"system"` when the raw value is missing, expired, or malformed.
- *
- * The blocking head script cannot import this function; it inlines the same
- * checks. The matrix in `bootSplashTheme.test.ts` compares script outcomes to
- * `resolveBootPolarity(parseBootPrefsThemeMode(...), systemDark)` so the two
- * paths cannot drift silently.
- */
-export function parseBootPrefsThemeMode(raw: string | null, nowMs: number): string {
-  if (!raw)
-    return 'system'
-  try {
-    const wrap = JSON.parse(raw) as { e?: unknown, v?: { theme?: { mode?: unknown } } }
-    if (
-      wrap
-      && typeof wrap.e === 'number'
-      && wrap.e > nowMs
-      && wrap.v
-      && wrap.v.theme
-      && typeof wrap.v.theme.mode === 'string'
-    ) {
-      return wrap.v.theme.mode
-    }
-  }
-  catch {
-    // Malformed JSON → system.
-  }
-  return 'system'
-}
-
-/**
  * Inline document CSS for the static splash, the Solid `BootSplash` (same
  * `data-testid`), and the html/body fill that holds the splash geometry and
  * polarity from first paint until the app stylesheet takes over. This is the
@@ -161,12 +141,49 @@ export function parseBootPrefsThemeMode(raw: string | null, nowMs: number): stri
  * when the app stylesheet loads. Without that lockstep the flex-centered
  * splash jumped down when `padding-top: env(safe-area-inset-top)` arrived.
  *
+ * Being unlayered buys this stylesheet nothing on a property it does not
+ * DECLARE. An unlayered declaration outranks a layered one, so oat cannot take
+ * a property back — but silence is not a declaration, and oat then answers
+ * unopposed. Two shapes of that bug already landed here:
+ *
+ * - `line-height`, inherited. The splash took `normal` from `body` and then
+ *   oat's `1.5`, and the column moved mid-boot. See
+ *   {@link BOOT_SPLASH_LINE_HEIGHT}.
+ * - The failure panel's `<pre>`, direct. Oat's `@layer base` `pre` rule adds
+ *   `padding: var(--space-4)`, a `--faint` background, a radius and the mono
+ *   family, so the same panel measured 32px taller with oat than without.
+ *
+ * So state a value for every property the splash depends on, and NEUTRALIZE
+ * oat's element rules inside the splash (`margin:0`, `padding:0`,
+ * `font:inherit`) rather than restating what oat would have painted. Restating
+ * would copy palette tokens like `--faint` into this file, which is a second
+ * source for a colour the themes own. Where a literal must match oat,
+ * `bootSplashTheme.test.ts` reads oat's own stylesheet and compares.
+ *
  * Sizing is split on purpose:
  * - `#boot-splash` fills `#app` (`min-height: 100%`) and must not use
  *   `100dvh`, or safe-area padding on body re-centers it downward.
  * - `[data-testid]:not(#boot-splash)` (Solid Suspense/AuthGuard) also sets
  *   `min-height: 100dvh` so a missing definite-height ancestor cannot collapse
  *   it to content size. The `:not(#id)` keeps the static node on `%` only.
+ *
+ * It also owns `color-scheme` for the PRE-HYDRATION WINDOW ONLY, which is why
+ * `bootThemeScript` may not write one inline. Two properties make that exact:
+ *
+ * - `:not([data-ui-theme])` ENDS the window. `themeStore`'s DOM effect writes
+ *   `data-ui-theme` in the same step as `data-theme` and the two variant
+ *   attributes, and nothing else writes it, so this rule stops matching the
+ *   instant the app owns the answer. Without that clause it never yields:
+ *   `html[data-theme]` is (0,1,1) and `lightVariantSelector`'s self match is
+ *   `[data-ui-light="X"]` at (0,1,0), so the app's own light `color-scheme`
+ *   would be permanently shadowed -- agreeing today by coincidence, and wrong
+ *   the day a palette wants to say something else.
+ * - Inside the window it is (0,2,1), above `global.css.ts`'s unlayered
+ *   `html { color-scheme: light }` at (0,0,1), so form controls and scrollbars
+ *   are dark from first paint on a dark OS.
+ *
+ * A cascade layer cannot do this job: `global.css.ts` is unlayered, and an
+ * unlayered declaration wins over a layered one whatever the specificity.
  */
 export function bootSplashDocumentCss(): string {
   const lightBg = bootSplashLight.background
@@ -176,7 +193,6 @@ export function bootSplashDocumentCss(): string {
   const id = BOOT_SPLASH_STATIC_ID
   const testId = BOOT_SPLASH_TEST_ID
   return `
-:root{--space-4:${BOOT_SPLASH_SPACE_4}}
 html,body,#app{margin:0;height:100%;width:100%;overflow:hidden}
 html,body{background:${lightBg}}
 @media (prefers-color-scheme: dark){
@@ -184,14 +200,18 @@ html,body{background:${lightBg}}
 }
 html[data-theme="light"],html[data-theme="light"] body{background:${lightBg}}
 html[data-theme="dark"],html[data-theme="dark"] body{background:${darkBg}}
+html[data-theme="light"]:not([data-ui-theme]){color-scheme:light}
+html[data-theme="dark"]:not([data-ui-theme]){color-scheme:dark}
 body{
   position:fixed;top:0;left:0;width:100%;height:100dvh;
   padding-top:env(safe-area-inset-top,0px);box-sizing:border-box;
 }
 #${id},[data-testid="${testId}"]{
+  --space-4:${BOOT_SPLASH_SPACE_4};
   box-sizing:border-box;width:100%;height:100%;
   display:flex;align-items:center;justify-content:center;
   flex-direction:column;gap:${BOOT_SPLASH_GAP};font-family:system-ui,sans-serif;
+  line-height:${BOOT_SPLASH_LINE_HEIGHT};
   background:${lightBg};
   color:${lightFg};
 }
@@ -219,7 +239,7 @@ html[data-theme="dark"] #${id},html[data-theme="dark"] [data-testid="${testId}"]
 #${id} .boot-splash-error{display:none;max-width:24rem;padding:0 ${BOOT_SPLASH_SPACE_4};text-align:center}
 #${id}[data-boot-failed] .boot-splash-loading{display:none}
 #${id}[data-boot-failed] .boot-splash-error{display:flex}
-#${id} .boot-splash-error pre{margin:0 auto;width:max-content;max-width:min(100%,20rem);overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font-size:.85rem;text-align:left}
+#${id} .boot-splash-error pre{margin:0 auto;padding:0;background:none;border-radius:0;font-family:inherit;width:max-content;max-width:min(100%,20rem);overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font-size:.85rem;text-align:left}
 #${id} .boot-splash-error button{
   font:inherit;cursor:pointer;padding:.5rem 1rem;border-radius:.375rem;
   border:1px solid currentColor;background:transparent;color:inherit;
@@ -228,25 +248,30 @@ html[data-theme="dark"] #${id},html[data-theme="dark"] [data-testid="${testId}"]
 }
 
 /**
- * Blocking head script: paint `data-theme` and chrome `theme-color` from the
- * device tier before first paint. Cannot import `browserStorage` at runtime in
- * the browser document — the key and `{ v, e }` shape must stay aligned with
- * that module (see `KEY_BROWSER_PREFS` / `parseBootPrefsThemeMode`).
+ * Blocking head script: state the OS polarity on `<html>` before first paint.
  *
- * Prefs parse failures stay inside an inner try so a bad envelope still paints
- * `system` polarity (same as `parseBootPrefsThemeMode`), rather than leaving
- * `data-theme` unset.
+ * IT READS NO STORAGE. Every stored preference is scoped to an account, and
+ * this script is inlined into static HTML that runs before any module, before
+ * any request, and therefore before any identity — there is no account whose
+ * theme it could legitimately read. So the pre-auth answer is the OS answer,
+ * which is also what `themeStore` paints until preferences resolve.
  *
- * When the device tier pins light or dark, every `theme-color` meta is set to
- * that colour and its `media` attribute is removed so an OS preference cannot
- * override the pin. System mode keeps the dual media metas and only rewrites
- * the non-media fallback to the current OS answer.
+ * It writes only `data-theme`, and never an inline style. An inline declaration
+ * outranks every author rule, so an inline `color-scheme` here could not be
+ * overridden by the palette rule that carries the app's own polarity: a dark app
+ * under a light OS kept `color-scheme: light`, and `light-dark()` resolved to
+ * the light branch inside a dark palette. `bootSplashDocumentCss` states the
+ * same polarity as a RULE instead, which the palette can outrank.
+ *
+ * The `theme-color` metas need no pin branch any more. `entry-server` emits one
+ * per polarity behind a `media` query, so the OS picks between them without
+ * help; only the non-media fallback, for engines that ignore `media` here, is
+ * rewritten to the current answer.
  */
 export function bootThemeScript(): string {
   const lightBg = bootSplashLight.background
   const darkBg = bootSplashDark.background
-  const key = KEY_BROWSER_PREFS
-  return `(function(){var mode="system";try{var raw=localStorage.getItem(${JSON.stringify(key)});if(raw){var wrap=JSON.parse(raw);if(wrap&&typeof wrap.e==="number"&&wrap.e>Date.now()&&wrap.v&&wrap.v.theme&&typeof wrap.v.theme.mode==="string")mode=wrap.v.theme.mode;}}catch(e){}try{var dark=mode==="dark"||(mode!=="light"&&window.matchMedia("(prefers-color-scheme: dark)").matches);var root=document.documentElement;root.setAttribute("data-theme",dark?"dark":"light");root.style.colorScheme=dark?"dark":"light";root.style.backgroundColor=dark?${JSON.stringify(darkBg)}:${JSON.stringify(lightBg)};var color=dark?${JSON.stringify(darkBg)}:${JSON.stringify(lightBg)};var metas=document.querySelectorAll('meta[name="theme-color"]');var pinned=mode==="light"||mode==="dark";if(pinned){for(var i=0;i<metas.length;i++){metas[i].setAttribute("content",color);metas[i].removeAttribute("media");}}else{var fallback=document.querySelector('meta[name="theme-color"]:not([media])');if(fallback)fallback.setAttribute("content",color);}}catch(e){}})();`
+  return `(function(){try{var dark=window.matchMedia("(prefers-color-scheme: dark)").matches;document.documentElement.setAttribute("data-theme",dark?"dark":"light");var fallback=document.querySelector('meta[name="theme-color"]:not([media])');if(fallback)fallback.setAttribute("content",dark?${JSON.stringify(darkBg)}:${JSON.stringify(lightBg)});}catch(e){}})();`
 }
 
 /**

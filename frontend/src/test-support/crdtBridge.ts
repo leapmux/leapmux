@@ -10,6 +10,18 @@ import {
 import { HLCClock, PendingOpsManager, setCRDTBridge } from '~/lib/crdt'
 
 /**
+ * The identity the whole unit suite runs as, for both the CRDT bridge and the
+ * storage namespace (`vitest.setup.ts` signs in as this, and passes no `userId`
+ * to `installTestBridge` so that both halves take this one value).
+ *
+ * Alphanumeric on purpose, so that it reads in a stored key exactly as a real
+ * hub id does: ids are 48-character nanoids over `[A-Za-z0-9]`
+ * (`internal/util/id`), which `accountStorageKey`'s percent-encoding leaves
+ * byte-identical.
+ */
+export const TEST_USER_ID = 'usertest'
+
+/**
  * installTestBridge creates a PendingOpsManager + bridge wired into
  * the global `~/lib/crdt/bridge` singleton, and seeds the workspace
  * with a single LEAF root node so the projection-driven layout +
@@ -84,7 +96,7 @@ export function installTestBridge(opts?: {
   workspaceId?: string
   rootTileId?: string
 }): TestBridgeHandle {
-  const userId = opts?.userId ?? 'user-test'
+  const userId = opts?.userId ?? TEST_USER_ID
   const workspaceId = opts?.workspaceId ?? 'ws-test'
   const rootTileId = opts?.rootTileId ?? 'main-tile'
   const ownClient = 'test-client'

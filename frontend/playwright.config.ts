@@ -2,6 +2,14 @@ import { defineConfig, devices } from '@playwright/test'
 
 export default defineConfig({
   testDir: './tests/e2e',
+  // `.spec.ts` only. Playwright's default also collects `*.test.ts`, which
+  // would take the vitest unit tests co-located with the helpers under
+  // `helpers/` and run them here -- inside a browser worker, with a whole
+  // `leapmux dev` instance behind them -- instead of in the unit suite.
+  // `vitest.config.ts` pins the mirror half of the rule, and
+  // `src/test-support/testFileNaming.test.ts` fails the suite when a file
+  // lands on the wrong side.
+  testMatch: '**/*.spec.ts',
   globalSetup: './tests/e2e/global-setup.ts',
   globalTeardown: './tests/e2e/global-teardown.ts',
   // Each worker owns a whole `leapmux dev` instance (hub + worker + SQLite) and

@@ -219,9 +219,9 @@ First connection (trust on first use):
    └────────────┘                  └──────────────────┘
          │ pins K1
          ▼
-   ┌───────────────────────────┐
-   │ leapmux:key-pins = { K1 } │
-   └───────────────────────────┘
+   ┌───────────────────────────────────────┐
+   │ leapmux:u:<user-id>:key-pins = { K1 } │
+   └───────────────────────────────────────┘
 
 Later connection (key changed):
 
@@ -237,11 +237,13 @@ Later connection (key changed):
    └─────────────────────────────────────┘
 ```
 
-There are three independent pin stores, depending on *who* is connecting:
+There are three independent pin stores, depending on *who* is connecting. The
+browser store is per account: two people who sign in to LeapMux from the same
+browser pin workers independently, and neither sees the other's pins.
 
 | Client | Pin store | How to reset a pin |
 | --- | --- | --- |
-| **Your browser** (Frontend) | `localStorage` (`leapmux:key-pins`, kept ~1 year) | Accept the in-app *Worker public key changed* dialog, or clear the key from browser storage. |
+| **Your browser** (Frontend) | `localStorage` (`leapmux:u:<your-user-id>:key-pins`, kept ~1 year) | Accept the in-app *Worker public key changed* dialog, or clear the key from browser storage. |
 | **A Worker → a sibling Worker** (cross-worker channels) | `<data_dir>/cross_worker_pins.json` on the Worker | `leapmux worker cross-worker-pins remove --target-worker-id=<id>` |
 | **The `leapmux control` CLI** | `<config-dir>/<hub-host>/pins.json` | `leapmux control worker pins remove --worker-id=<id>` |
 

@@ -3,7 +3,7 @@ import { enterAndExitPlanMode } from './helpers/plan-mode'
 import { sendMessage, waitForControlBanner, waitForEditorDraft } from './helpers/ui'
 
 test.describe('Control Request Draft Persistence', () => {
-  test('ExitPlanMode draft survives page reload', async ({ page, authenticatedWorkspace }) => {
+  test('ExitPlanMode draft survives page reload', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
     // Enter plan mode, write a dummy plan, and exit.
     const banner = await enterAndExitPlanMode(page)
     await expect(banner.getByText('Plan Ready for Review')).toBeVisible()
@@ -14,7 +14,7 @@ test.describe('Control Request Draft Persistence', () => {
     await page.keyboard.type('draft rejection reason', { delay: 100 })
 
     // Wait for the debounced save to actually land, not for a fixed margin.
-    await waitForEditorDraft(page, 'draft rejection reason')
+    await waitForEditorDraft(page, leapmuxServer.adminUserId, 'draft rejection reason')
 
     // Reload the page.
     await page.reload()
@@ -28,7 +28,7 @@ test.describe('Control Request Draft Persistence', () => {
     await expect(restoredEditor).toContainText('draft rejection reason')
   })
 
-  test('AskUserQuestion custom text draft survives page reload', async ({ page, authenticatedWorkspace }) => {
+  test('AskUserQuestion custom text draft survives page reload', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
     // Trigger AskUserQuestion.
     await sendMessage(
       page,
@@ -44,7 +44,7 @@ test.describe('Control Request Draft Persistence', () => {
     await page.keyboard.type('my custom color answer', { delay: 100 })
 
     // Wait for the debounced save to actually land, not for a fixed margin.
-    await waitForEditorDraft(page, 'my custom color answer')
+    await waitForEditorDraft(page, leapmuxServer.adminUserId, 'my custom color answer')
 
     // Reload the page.
     await page.reload()
@@ -58,7 +58,7 @@ test.describe('Control Request Draft Persistence', () => {
     await expect(restoredEditor).toContainText('my custom color answer')
   })
 
-  test('control request draft is isolated from conversation draft', async ({ page, authenticatedWorkspace }) => {
+  test('control request draft is isolated from conversation draft', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
     // Type a conversation draft first.
     const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
@@ -66,7 +66,7 @@ test.describe('Control Request Draft Persistence', () => {
     await page.keyboard.type('conversation draft text', { delay: 100 })
 
     // Wait for the debounced save to actually land, not for a fixed margin.
-    await waitForEditorDraft(page, 'conversation draft text')
+    await waitForEditorDraft(page, leapmuxServer.adminUserId, 'conversation draft text')
 
     // Clear the editor and send a message to trigger AskUserQuestion.
     await page.keyboard.press('Meta+a')
@@ -89,7 +89,7 @@ test.describe('Control Request Draft Persistence', () => {
     await page.keyboard.type('control request draft text', { delay: 100 })
 
     // Wait for the debounced save to actually land, not for a fixed margin.
-    await waitForEditorDraft(page, 'control request draft text')
+    await waitForEditorDraft(page, leapmuxServer.adminUserId, 'control request draft text')
 
     // Reload the page.
     await page.reload()

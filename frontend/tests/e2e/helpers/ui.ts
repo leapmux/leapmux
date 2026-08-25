@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import process from 'node:process'
 
 import { expect } from '@playwright/test'
-import { EXACT_KEY_TTLS, KEY_BROWSER_PREFS, PREFIX_EDITOR_DRAFT } from '../../../src/lib/browserStorage'
+import { accountStorageKey, getTtlForKey, KEY_BROWSER_PREFS, PREFIX_EDITOR_DRAFT } from '../../../src/lib/browserStorage'
 
 /** Check if a locator is visible, returning false on timeout or error. */
 export async function isMaybeVisible(locator: Locator, timeout?: number): Promise<boolean> {
@@ -927,17 +927,21 @@ export async function screenshotIfEnabled(page: Page, name: string) {
  * entry the sweep would drop.
  */
 function browserPrefsTtlMs(): number {
-  const ttlMs = EXACT_KEY_TTLS.get(KEY_BROWSER_PREFS)
-  if (ttlMs === undefined)
-    throw new Error(`${KEY_BROWSER_PREFS} is missing from EXACT_KEY_TTLS`)
+  const ttlMs = getTtlForKey(KEY_BROWSER_PREFS)
+  if (ttlMs === null)
+    throw new Error(`${KEY_BROWSER_PREFS} is missing from LOCAL_KEY_SPECS`)
   return ttlMs
 }
 
 const BROWSER_PREFS_TTL_MS = browserPrefsTtlMs()
 
-/** Read a single field from the consolidated browser preferences in localStorage. */
-export async function getBrowserPref(page: Page, field: string): Promise<string | null> {
-  const value = await getBrowserPrefValue(page, field)
+/**
+ * Read a single field from the consolidated browser preferences in localStorage.
+ *
+ * Pass `leapmuxServer.adminUserId`. See `getBrowserPrefValue`.
+ */
+export async function getBrowserPref(page: Page, userId: string, field: string): Promise<string | null> {
+  const value = await getBrowserPrefValue(page, userId, field)
   return value === null ? null : String(value)
 }
 
@@ -947,22 +951,40 @@ export async function getBrowserPref(page: Page, field: string): Promise<string 
  * Beside `getBrowserPref`, which stringifies. Not every preference is a scalar:
  * `theme` is a `{ name, mode }` document, and `String()` renders it
  * "[object Object]", which compares equal to every other object-shaped value.
+ *
+ * It NAMES the account, like its writer sibling `setInitialBrowserPref`, and
+ * composes the key with the app's own `accountStorageKey`. Finding the key by
+ * scanning the page for one that looks scoped -- which this did -- reads back a
+ * DIFFERENT account's document as soon as two accounts have written on one
+ * browser, and there is no test-visible signal when it does.
  */
-export async function getBrowserPrefValue(page: Page, field: string): Promise<unknown> {
-  return page.evaluate(([key, f]) => {
-    const raw = localStorage.getItem(key)
+export async function getBrowserPrefValue(page: Page, userId: string, field: string): Promise<unknown> {
+  return page.evaluate(([storedKey, f]) => {
+    const raw = localStorage.getItem(storedKey)
     if (!raw)
       return null
-    const wrapper = JSON.parse(raw)
-    const prefs = wrapper?.v
-    if (prefs == null || typeof prefs !== 'object')
+    try {
+      // The `{ v, e }` TTL envelope, unwrapped exactly as the app's own reader
+      // does -- including its tolerance of a malformed one, so a hand-seeded or
+      // half-written entry fails the assertion rather than the harness.
+      const prefs = JSON.parse(raw)?.v
+      if (prefs == null || typeof prefs !== 'object')
+        return null
+      return prefs[f] !== undefined ? prefs[f] : null
+    }
+    catch {
       return null
-    return prefs[f] !== undefined ? prefs[f] : null
-  }, [KEY_BROWSER_PREFS, field] as const)
+    }
+  }, [accountStorageKey(userId, KEY_BROWSER_PREFS), field] as const)
 }
 
-/** Set a single field in the consolidated browser preferences via addInitScript. */
-export async function setInitialBrowserPref(page: Page, field: string, value: string) {
+/**
+ * Set a single field in the consolidated browser preferences via addInitScript.
+ *
+ * Pass `leapmuxServer.adminUserId`: it runs BEFORE the page signs in, so there
+ * is nothing in storage to find the key from.
+ */
+export async function setInitialBrowserPref(page: Page, userId: string, field: string, value: string) {
   await page.addInitScript(([key, f, v, ttlMs]) => {
     let prefs: Record<string, unknown> = {}
     const raw = localStorage.getItem(key)
@@ -978,7 +1000,7 @@ export async function setInitialBrowserPref(page: Page, field: string, value: st
     }
     prefs[f] = v
     localStorage.setItem(key, JSON.stringify({ v: prefs, e: Date.now() + ttlMs }))
-  }, [KEY_BROWSER_PREFS, field, value, BROWSER_PREFS_TTL_MS] as const)
+  }, [accountStorageKey(userId, KEY_BROWSER_PREFS), field, value, BROWSER_PREFS_TTL_MS] as const)
 }
 
 /** The hub's session cookie name, as `readSessionCookie` looks it up. */
@@ -1257,19 +1279,22 @@ export function treeRowNames(page: Page): Locator {
  * machine the debounce itself lands late, so the sleep expires first and the
  * reload races the write. Poll the state the reload depends on instead.
  */
-export async function waitForEditorDraft(page: Page, text: string) {
+export async function waitForEditorDraft(page: Page, userId: string, text: string) {
   await expect.poll(async () => page.evaluate(
     ([prefix, needle]) => {
       for (let i = 0; i < localStorage.length; i++) {
         const key = localStorage.key(i)
         // The stored value is the `{ v, e }` wrapper browserStorage writes, so
-        // the draft text sits inside its JSON.
+        // the draft text sits inside its JSON. The prefix is COMPOSED by the
+        // app's own `accountStorageKey`, which is why this is a `startsWith`
+        // and not a regex: splicing a key name into a regex source hands every
+        // metacharacter in it to the matcher.
         if (key?.startsWith(prefix) && (localStorage.getItem(key) ?? '').includes(needle))
           return true
       }
       return false
     },
-    [PREFIX_EDITOR_DRAFT, text] as const,
+    [accountStorageKey(userId, PREFIX_EDITOR_DRAFT), text] as const,
   ), `the editor draft "${text}" must be persisted before the reload`).toBe(true)
 }
 

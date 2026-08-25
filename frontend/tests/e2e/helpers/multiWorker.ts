@@ -34,7 +34,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import process from 'node:process'
-import { API_POLL_INTERVAL_MS, authedHeaders, signUpViaAPI, TEST_ADMIN_DISPLAY_NAME, TEST_ADMIN_PASSWORD, TEST_ADMIN_USERNAME } from './api'
+import { API_POLL_INTERVAL_MS, authedHeaders, getUserId, signUpViaAPI, TEST_ADMIN_DISPLAY_NAME, TEST_ADMIN_PASSWORD, TEST_ADMIN_USERNAME } from './api'
 import { stopProcesses } from './process'
 import { findFreePort, getGlobalState, waitForServer } from './server'
 
@@ -56,6 +56,11 @@ export interface MultiWorkerHarness {
   hubDataDir: string
   hubProc: ChildProcess
   adminToken: string
+  /**
+   * The admin's user id. Every browser-storage key is scoped to an account, so
+   * a spec that seeds a preference before the page signs in needs it up front.
+   */
+  adminUserId: string
   /** Workers in the order they were spawned. Always at least one. */
   workers: HarnessWorker[]
   /** Spawn an additional worker registered to the same hub. */
@@ -102,6 +107,7 @@ export async function startMultiWorkerHarness(count = 2): Promise<MultiWorkerHar
   // Bootstrap the admin user. signUpViaAPI returns the session
   // cookie, which is what authedHeaders expects.
   const adminToken = await signUpViaAPI(hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD, TEST_ADMIN_DISPLAY_NAME)
+  const adminUserId = await getUserId(hubUrl, adminToken)
 
   // Track every spawned process so cleanup catches partial-init
   // failures.
@@ -174,6 +180,7 @@ export async function startMultiWorkerHarness(count = 2): Promise<MultiWorkerHar
     hubDataDir,
     hubProc,
     adminToken,
+    adminUserId,
     workers,
     addWorker: spawnWorker,
     stop,

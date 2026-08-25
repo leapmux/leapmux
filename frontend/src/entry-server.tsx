@@ -47,9 +47,14 @@ export default createHandler(() => (
           <link rel="manifest" href="/manifest.webmanifest" />
           {/*
             Dual theme-color metas so the browser chrome matches OS polarity
-            before any JS runs. `bootThemeScript` strips `media` and rewrites
-            every tag when the device tier pins light or dark, so the pin
-            cannot lose to prefers-color-scheme.
+            before any JS runs. The OS picks between them on its own;
+            `bootThemeScript` only rewrites the third, media-less tag, for
+            engines that ignore `media` here. No pin can arrive this early --
+            a theme is stored per account, and no identity has resolved yet.
+
+            They answer only until the app does. `themeStore`'s DOM effect
+            rewrites all three from the resolved palette and strips `media`, so
+            the OS stops choosing the moment the app has a palette of its own.
           */}
           <meta name="theme-color" media="(prefers-color-scheme: light)" content={bootSplashLight.background} />
           <meta name="theme-color" media="(prefers-color-scheme: dark)" content={bootSplashDark.background} />
@@ -71,8 +76,11 @@ export default createHandler(() => (
             needs it — after the shell is up.
           */}
           {/*
-            Runs before first paint so a device-tier dark pin is not a light
-            flash. Logic lives in `bootThemeScript` / `parseBootPrefsThemeMode`.
+            Runs before first paint, so `data-theme` is set for the
+            `bootSplashDocumentCss` rules above rather than arriving with the
+            app bundle. It reads no storage: every stored theme is scoped to an
+            account, and this script runs before there is one. Logic lives in
+            `bootThemeScript`.
           */}
           <script>{bootThemeScript()}</script>
           {assets}

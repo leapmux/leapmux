@@ -7,5 +7,11 @@
   "compilerOptions": {
     "types": ["@playwright/test", "node"]
   },
-  "include": ["tests/e2e"]
+  "include": ["tests/e2e"],
+  // The unit tests co-located with the helpers run under vitest, not
+  // Playwright, so tsconfig.json owns them and they are excluded here. The
+  // split follows the same rule the two runners follow: `.spec.ts` is
+  // Playwright, `.test.ts` is vitest. Without this, a vitest test would be
+  // typed against Playwright's ambient set and would lose the `~` mapping.
+  "exclude": ["tests/e2e/**/*.test.ts"]
 }

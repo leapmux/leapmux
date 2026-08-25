@@ -1,8 +1,9 @@
 import { MemoryRouter, Route } from '@solidjs/router'
-import { fireEvent, render, screen, waitFor, within } from '@solidjs/testing-library'
+import { render, screen } from '@solidjs/testing-library'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { loadBrowserPrefs, localStorageClearForTests } from '~/lib/browserStorage'
+import { KEY_BROWSER_PREFS, localStorageClearForTests, localStorageGet, resetStorageAccountForTests, setStorageAccount } from '~/lib/browserStorage'
 import { applyTheme, DEFAULT_THEME_VALUE } from '~/lib/themeStore'
+import { TEST_USER_ID } from '~/test-support/crdtBridge'
 import { withPreferences } from '~/test-support/preferencesProvider'
 import { SetupPage } from './SetupPage'
 
@@ -67,44 +68,47 @@ afterEach(() => {
   applyTheme(DEFAULT_THEME_VALUE)
 })
 
-/** Pick a palette from the chooser's menu. It is a DropdownMenu, not a select. */
-function pickTheme(label: string) {
-  const popover = screen.getByTestId('theme-chooser-name-menu')
-  fireEvent.click(within(popover).getByRole('menuitemradio', { name: label, hidden: true }))
-}
-
 describe('the first-run setup page (SetupPage)', () => {
   it('welcomes the first administrator', async () => {
     renderSetup()
     expect(await screen.findByText('Welcome to LeapMux')).toBeInTheDocument()
   })
 
-  // The first screen a hub or dev-mode install ever shows, so the theme is
-  // offered here too -- before any account exists to hold an account tier.
-  it('offers the theme picker before the first account exists', async () => {
+  // No chooser here, and not merely because nobody put one on this page: a
+  // theme is stored per ACCOUNT, and this route exists precisely because no
+  // account exists yet. There is nothing a picker could write to.
+  it('offers no theme picker', async () => {
     renderSetup()
-    expect(await screen.findByTestId('theme-chooser')).toBeInTheDocument()
-    expect(screen.getByRole('radiogroup', { name: 'Theme mode' })).toBeInTheDocument()
+    await screen.findByText('Welcome to LeapMux')
+    expect(screen.queryByTestId('theme-chooser')).toBeNull()
+    expect(screen.queryByRole('radiogroup', { name: 'Theme mode' })).toBeNull()
   })
 
-  it('applies a chosen mode to the page at once', async () => {
+  it('paints the default palette, following the OS polarity', async () => {
     renderSetup()
-    fireEvent.click(await screen.findByRole('radio', { name: 'Dark' }))
-
-    await waitFor(() => expect(document.documentElement.getAttribute('data-theme')).toBe('dark'))
+    await screen.findByText('Welcome to LeapMux')
+    expect(document.documentElement.getAttribute('data-ui-theme')).toBe('default')
   })
 
-  it('writes the choice through the ordinary preference, not a page-local key', async () => {
-    // This route DOES sit inside PreferencesProvider, but with no session the
-    // account write fails and the device tier is what survives. Either way it
-    // is the same `theme` field the Preferences dialog reads.
-    renderSetup()
-    await screen.findByTestId('theme-chooser-name')
-    pickTheme('Gruvbox')
-
-    await waitFor(() => {
-      const stored = loadBrowserPrefs()
-      expect(Object.keys(stored).filter(k => k !== 'theme')).toEqual([])
-    })
+  // With NO ACCOUNT SET, which is the state this route actually renders in:
+  // it exists because no account exists yet. Every account-scoped read and
+  // write throws there, so a component that touched storage would take the
+  // render down rather than merely read the wrong thing.
+  //
+  // The suite signs itself in (see `vitest.setup.ts`), so the account has to be
+  // dropped here. Asserting "no key was written" under the suite's account
+  // would pass for free -- `beforeEach` clears the store -- and would still
+  // pass if this page read storage on every render.
+  it('renders with no account set, so it touches no account-scoped key', async () => {
+    resetStorageAccountForTests()
+    try {
+      renderSetup()
+      await screen.findByText('Welcome to LeapMux')
+      expect(document.documentElement.getAttribute('data-ui-theme')).toBe('default')
+    }
+    finally {
+      setStorageAccount(TEST_USER_ID)
+    }
+    expect(localStorageGet(KEY_BROWSER_PREFS)).toBeUndefined()
   })
 })

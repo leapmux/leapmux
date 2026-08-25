@@ -338,8 +338,8 @@ export function buildEditor(opts: EditorSetupOptions): Promise<Editor> {
  * rebuilt from the same two inputs this module already owns.
  *
  * WHY REBUILDING IS SAFE HERE. A syntax-theme change reaches the app from the
- * Preferences dialog, the launcher, the setup page or the no-workspace empty
- * state -- none of which coexists with an editable composer. The one path that
+ * Preferences dialog or the no-workspace empty state -- neither of which
+ * coexists with an editable composer. The one path that
  * can fire while the composer is focused is an OS `prefers-color-scheme` flip
  * (or a cross-tab write) while the syntax theme is PINNED with `mode: 'system'`,
  * because that collapses the pair to one half. `reconfigure` preserves the

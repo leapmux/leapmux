@@ -79,6 +79,13 @@ test.describe('Theme picker', () => {
     await openPreferencesDialog(page, 'appearance')
     const themeRow = page.locator('[data-setting-id="appearance.theme"]')
     await expect(themeRow.getByTestId('theme-chooser-name')).toHaveAttribute('data-value', 'gruvbox')
+
+    // ...and it survives a reload, which is the journey the deleted setup-page
+    // case used to cover. A better anchor than that one was: the empty state
+    // carries no device override, so the pick routes to the ACCOUNT tier and
+    // the reload proves the hub round-trip rather than a localStorage one.
+    await page.reload()
+    await expect(page.locator('html')).toHaveAttribute('data-ui-theme', 'gruvbox')
   })
 
   /**
@@ -165,8 +172,8 @@ test.describe('Theme picker', () => {
     const themeRow = dialog.locator('[data-setting-id="appearance.theme"]')
     const terminalRow = dialog.locator('[data-setting-id="appearance.terminalTheme"]')
 
-    // The sentinel is the shipped default, and it is what makes the launcher's
-    // and the setup page's single picker move the terminal too.
+    // The sentinel is the shipped default, and it is what makes the empty
+    // state's single picker move the terminal too.
     await resetToMatchUi(terminalRow)
     // One control says "follow the app", and it governs the mode pills, which
     // keep reporting the mode the app is on.
@@ -202,7 +209,7 @@ test.describe('Theme picker', () => {
     const chip = terminalRow.getByTestId('scope-chip-appearance.terminalTheme')
     await chip.click()
     await page.getByRole('menuitemradio', { name: 'Override on this device' }).click()
-    await expect.poll(() => getBrowserPrefValue(page, 'terminalTheme'))
+    await expect.poll(() => getBrowserPrefValue(page, leapmuxServer.adminUserId, 'terminalTheme'))
       .toEqual({ name: 'nord', mode: 'dark' })
   })
 
@@ -227,7 +234,7 @@ test.describe('Theme picker', () => {
     const chip = terminalRow.getByTestId('scope-chip-appearance.terminalTheme')
     await chip.click()
     await page.getByRole('menuitemradio', { name: 'Override on this device' }).click()
-    await expect.poll(() => getBrowserPrefValue(page, 'terminalTheme'))
+    await expect.poll(() => getBrowserPrefValue(page, leapmuxServer.adminUserId, 'terminalTheme'))
       .toEqual({ name: 'gruvbox', mode: 'dark' })
   })
 
@@ -259,7 +266,7 @@ test.describe('Theme picker', () => {
     const chip = syntaxRow.getByTestId('scope-chip-appearance.syntaxTheme')
     await chip.click()
     await page.getByRole('menuitemradio', { name: 'Override on this device' }).click()
-    await expect.poll(() => getBrowserPrefValue(page, 'syntaxTheme'))
+    await expect.poll(() => getBrowserPrefValue(page, leapmuxServer.adminUserId, 'syntaxTheme'))
       .toEqual({ name: 'nord', mode: 'light' })
   })
 
@@ -298,7 +305,7 @@ test.describe('Theme picker', () => {
     const chip = dialog.getByTestId('scope-chip-appearance.theme')
     await chip.click()
     await page.getByRole('menuitemradio', { name: 'Override on this device' }).click()
-    await expect.poll(() => getBrowserPrefValue(page, 'theme'))
+    await expect.poll(() => getBrowserPrefValue(page, leapmuxServer.adminUserId, 'theme'))
       .toEqual({ name: 'solarized', mode: 'dark' })
   })
 

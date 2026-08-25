@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { PREFIX_EDITOR_DRAFT } from '~/lib/browserStorage'
+import { PREFIX_EDITOR_DRAFT, storedKeyFor } from '~/lib/browserStorage'
 import { clearDraft, loadDraft, saveDraft } from './draftPersistence'
 
 const AGENT = 'agent-draft-1'
@@ -26,8 +26,8 @@ describe('draftPersistence', () => {
     saveDraft('agent-b', 'b-content', 2)
     expect(loadDraft('agent-a').content).toBe('a-content')
     expect(loadDraft('agent-b').content).toBe('b-content')
-    expect(localStorage.getItem(`${PREFIX_EDITOR_DRAFT}agent-a`)).not.toBeNull()
-    expect(localStorage.getItem(`${PREFIX_EDITOR_DRAFT}agent-b`)).not.toBeNull()
+    expect(localStorage.getItem(storedKeyFor(`${PREFIX_EDITOR_DRAFT}agent-a`)!)).not.toBeNull()
+    expect(localStorage.getItem(storedKeyFor(`${PREFIX_EDITOR_DRAFT}agent-b`)!)).not.toBeNull()
   })
 
   it('saving an empty string removes the stored draft', () => {
@@ -36,7 +36,7 @@ describe('draftPersistence', () => {
 
     saveDraft(AGENT, '', -1)
     expect(loadDraft(AGENT)).toEqual({ content: '', cursor: -1 })
-    expect(localStorage.getItem(`${PREFIX_EDITOR_DRAFT}${AGENT}`)).toBeNull()
+    expect(localStorage.getItem(storedKeyFor(`${PREFIX_EDITOR_DRAFT}${AGENT}`)!)).toBeNull()
   })
 
   it('clearDraft removes any persisted draft', () => {

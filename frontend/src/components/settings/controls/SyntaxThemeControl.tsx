@@ -12,7 +12,7 @@ import { themeStore } from '~/lib/themeStore'
  * light/dark mode swap in CSS; a syntax theme cannot, because Shiki bakes the
  * resolved colour into every token span at tokenize time. Changing this
  * re-highlights, which is why it defaults to following the app and why the
- * first-impression pickers do not offer it.
+ * empty state's single picker does not offer it.
  */
 export const SyntaxThemeControl: Component<Record<string, never>> = () => {
   const preferences = usePreferences()
