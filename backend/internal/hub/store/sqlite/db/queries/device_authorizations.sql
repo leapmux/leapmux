@@ -1,3 +1,8 @@
+-- Clock rule: expires_at columns are written by the hub process, so every
+-- comparison of them binds the hub's clock (sqlc.arg(now)), never the
+-- database clock. Timestamps that record when something happened keep the
+-- database clock.
+
 -- name: CreateDeviceAuthorization :exec
 INSERT INTO device_authorizations (
     device_code, user_code, device_name, interval_seconds, expires_at
@@ -21,12 +26,12 @@ SELECT * FROM device_authorizations WHERE user_code = ?;
 -- same canonical RHS layout.
 UPDATE device_authorizations
 SET approved = 1, user_id = ?
-WHERE device_code = ? AND consumed_at IS NULL AND expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
+WHERE device_code = ? AND consumed_at IS NULL AND expires_at > sqlc.arg(now);
 
 -- name: ApproveDeviceAuthorizationByUserCode :execresult
 UPDATE device_authorizations
 SET approved = 1, user_id = ?
-WHERE user_code = ? AND consumed_at IS NULL AND expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
+WHERE user_code = ? AND consumed_at IS NULL AND expires_at > sqlc.arg(now);
 
 -- name: DenyDeviceAuthorization :execresult
 UPDATE device_authorizations
@@ -37,7 +42,7 @@ WHERE device_code = ? AND consumed_at IS NULL;
 UPDATE device_authorizations
 SET consumed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE device_code = ? AND approved = 1 AND consumed_at IS NULL
-  AND expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
+  AND expires_at > sqlc.arg(now);
 
 -- name: TouchDeviceAuthorizationPoll :exec
 UPDATE device_authorizations
@@ -45,7 +50,7 @@ SET last_polled_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE device_code = ?;
 
 -- name: DeleteExpiredDeviceAuthorizations :execresult
--- Raw compare against a SQLiteTime cutoff (same canonical layout); see
+-- Raw compare against a SQLiteTime instant (same canonical layout); see
 -- DeleteExpiredDelegationTokensBefore for the pattern.
 DELETE FROM device_authorizations
-WHERE expires_at < sqlc.arg(cutoff);
+WHERE expires_at < sqlc.arg(now);

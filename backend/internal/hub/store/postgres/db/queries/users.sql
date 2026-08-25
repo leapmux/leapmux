@@ -147,9 +147,29 @@ SELECT count(*) FROM users WHERE deleted_at IS NULL;
 -- name: HasAnyUser :one
 SELECT EXISTS(SELECT 1 FROM users WHERE deleted_at IS NULL LIMIT 1);
 
--- name: SetPendingEmail :exec
-UPDATE users SET pending_email = $1, pending_email_token = $2, pending_email_expires_at = $3, pending_email_attempts = 0, updated_at = NOW()
-WHERE id = $4;
+-- name: SetPendingEmail :execresult
+-- Conditional mint: the write lands only when no previous code exists or
+-- the previous code's expiry is at or before cooldown_cutoff, so two
+-- concurrent resends for one account cannot both mint and both send (the
+-- loser matches no row), and RequestEmailChange cannot mint on every
+-- request. Its twin SetPendingPasswordReset carries the same predicate.
+-- The Go caller derives cooldown_cutoff from the resend cooldown; the
+-- comparison stays on the app clock, the clock that wrote the expiry.
+UPDATE users SET pending_email = sqlc.arg(pending_email), pending_email_token = sqlc.arg(pending_email_token), pending_email_expires_at = sqlc.narg(pending_email_expires_at), pending_email_attempts = 0, updated_at = NOW()
+WHERE id = sqlc.arg(id)
+  AND (pending_email_expires_at IS NULL
+       OR pending_email_expires_at <= sqlc.arg(cooldown_cutoff));
+
+-- name: ClearPendingEmailCode :exec
+-- ClearPendingEmailCode drops an undelivered code and KEEPS the pending
+-- address. An empty token is the "no live code, address still pending"
+-- state: ConsumeVerificationAttempt and ClearStalePendingEmails both
+-- filter pending_email_token != '', so neither acts on it, and the
+-- cooldown -- which reads the expiry -- does not apply, so the retry a
+-- failed send invites is never blocked. Unconditional on purpose: it
+-- undoes a mint that the relay refused.
+UPDATE users SET pending_email_token = '', pending_email_expires_at = NULL, pending_email_attempts = 0, updated_at = NOW()
+WHERE id = $1;
 
 -- name: ClearPendingEmail :exec
 UPDATE users SET pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, pending_email_attempts = 0, updated_at = NOW()
@@ -168,7 +188,7 @@ RETURNING id, updated_at;
 UPDATE users
 SET pending_email_attempts = pending_email_attempts + 1,
     pending_email_expires_at = CASE
-        WHEN pending_email_attempts + 1 > 5 THEN NOW()
+        WHEN pending_email_attempts + 1 > sqlc.arg(max_attempts) THEN sqlc.arg(now)
         ELSE pending_email_expires_at END,
     updated_at = NOW()
 WHERE id = $1 AND pending_email_token != ''
@@ -179,8 +199,15 @@ UPDATE users SET pending_email = '', pending_email_token = '', pending_email_exp
 WHERE pending_email = $1 AND id != $2;
 
 -- name: ClearStalePendingEmails :execresult
+-- The second arm reaps a codeless row: a send the relay refused leaves the
+-- ADDRESS with no token and no expiry (ClearPendingEmailCode), so the
+-- expiry compare can never see it and an abandoned address would otherwise
+-- outlive the database. updated_at is the only instant such a row carries,
+-- and ClearPendingEmailCode stamps it.
 UPDATE users SET pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, pending_email_attempts = 0, updated_at = NOW()
-WHERE pending_email_token != '' AND pending_email_expires_at IS NOT NULL AND pending_email_expires_at < $1;
+WHERE pending_email != ''
+  AND ((pending_email_token != '' AND pending_email_expires_at IS NOT NULL AND pending_email_expires_at < sqlc.arg(cutoff))
+    OR (pending_email_token = '' AND updated_at < sqlc.arg(codeless_cutoff)));
 
 -- name: BumpUserTokensRevokedAt :one
 -- The query itself has no deleted_at guard, so it would act on a
@@ -198,4 +225,58 @@ SET tokens_revoked_at = revocation_clock.now_at,
     updated_at = revocation_clock.now_at
 FROM (SELECT clock_timestamp() AS now_at) AS revocation_clock
 WHERE id = $1
+RETURNING id, tokens_revoked_at, auth_generation;
+
+-- name: SetPendingPasswordReset :execresult
+-- Conditional mint: the write lands only when no previous token exists or
+-- the previous token's expiry is at or before cooldown_cutoff, so two
+-- concurrent requests for one account cannot both mint and both send (the
+-- loser matches no row). The Go caller derives cooldown_cutoff from the
+-- resend cooldown; the comparison stays on the app clock, the same clock
+-- that wrote the expiry.
+UPDATE users
+SET pending_password_reset_token = sqlc.arg(pending_password_reset_token),
+    pending_password_reset_expires_at = sqlc.arg(pending_password_reset_expires_at),
+    pending_password_reset_attempts = 0,
+    updated_at = NOW()
+WHERE id = sqlc.arg(id)
+  AND (pending_password_reset_expires_at IS NULL
+       OR pending_password_reset_expires_at <= sqlc.arg(cooldown_cutoff));
+
+
+-- name: ClearPendingPasswordReset :exec
+UPDATE users
+SET pending_password_reset_token = '',
+    pending_password_reset_expires_at = NULL,
+    pending_password_reset_attempts = 0,
+    updated_at = NOW()
+WHERE id = $1;
+
+-- name: ConsumePasswordResetAttemptByToken :one
+-- Charges one attempt against the row that holds this exact token. Keying
+-- the charge by the token (not the user id) makes the find, the charge, and
+-- the ownership re-check one statement: a token cleared between a caller's
+-- read and this update simply matches no row.
+UPDATE users
+SET pending_password_reset_expires_at = CASE
+        WHEN pending_password_reset_attempts + 1 > sqlc.arg(max_attempts) THEN sqlc.arg(now)
+        ELSE pending_password_reset_expires_at END,
+    pending_password_reset_attempts = pending_password_reset_attempts + 1,
+    updated_at = NOW()
+WHERE pending_password_reset_token = sqlc.arg(token) AND pending_password_reset_token != ''
+  AND pending_password_reset_expires_at > sqlc.arg(now)
+  AND deleted_at IS NULL
+RETURNING *;
+
+-- name: CompletePasswordReset :one
+UPDATE users
+SET password_hash = sqlc.arg(password_hash),
+    password_set = TRUE,
+    pending_password_reset_token = '',
+    pending_password_reset_expires_at = NULL,
+    pending_password_reset_attempts = 0,
+    tokens_revoked_at = clock_timestamp(),
+    auth_generation = auth_generation + 1,
+    updated_at = NOW()
+WHERE id = sqlc.arg(id) AND pending_password_reset_token = sqlc.arg(pending_password_reset_token)
 RETURNING id, tokens_revoked_at, auth_generation;

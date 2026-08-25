@@ -1,3 +1,8 @@
+-- Clock rule: expires_at columns are written by the hub process, so every
+-- comparison of them binds the hub's clock (sqlc.arg(now)), never the
+-- database clock. Timestamps that record when something happened keep the
+-- database clock.
+
 -- name: CreateDelegationToken :exec
 INSERT INTO delegation_tokens (
     id, user_id, worker_id, agent_id, terminal_id,
@@ -79,7 +84,7 @@ LIMIT sqlc.arg('limit');
 SELECT * FROM delegation_tokens
 WHERE user_id = $1
   AND revoked_at IS NULL
-  AND expires_at > NOW()
+  AND expires_at > sqlc.arg(now)
 ORDER BY created_at DESC;
 
 -- name: RevokeDelegationTokensByUserFast :execrows

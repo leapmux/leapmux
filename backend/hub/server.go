@@ -444,9 +444,8 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// snapshot on every Send, so `admin settings set smtp ...` applies to
 	// the next email without a restart. With SMTP unconfigured it returns
 	// the loud, matchable ErrEmailDisabled rather than silently dropping
-	// mail. The write path's cross-validation keeps
-	// email_verification_required=true from pairing with an absent SMTP
-	// host; the read path degrades that combination to verification-off.
+	// mail. Email verification follows SMTP: EmailVerificationEffective is
+	// true only when SMTP is enabled (no separate toggle).
 	mailSender := mail.NewSettingsSender(setMgr)
 	// The renderer derives its base URL per render so a public_url change
 	// reaches the next email's links and footers without a restart.
@@ -581,7 +580,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// UserService drives credential-rotation paths (ChangePassword) through the
 	// shared lifecycle, whose RevokeUserPreservingSession hard-closes every
 	// channel a user owns alongside the delegation-token revocation.
-	userSvc := service.NewUserService(st, cfg, setMgr, lifecycle, mailSender, mailRenderer)
+	userSvc := service.NewUserService(st, cfg, setMgr, lifecycle, mailSender, mailRenderer, ks)
 	userPath, userHandler := leapmuxv1connect.NewUserServiceHandler(userSvc, connectOpts)
 	mux.Handle(userPath, userHandler)
 
@@ -604,9 +603,6 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	setMgr.Configure(
 		settings.WithEffective(settings.KeySignupEnabled.Name(), func(s *settings.Snapshot) (any, bool) {
 			return settings.SignupEnabledEffective(s, cfg.DevMode), true
-		}),
-		settings.WithEffective(settings.KeyEmailVerificationRequired.Name(), func(s *settings.Snapshot) (any, bool) {
-			return settings.EmailVerificationEffective(s), true
 		}),
 		settings.WithEffective(captcha.CaptchaSelectedKey.Name(), func(s *settings.Snapshot) (any, bool) {
 			// A selected provider that is not fully configured degrades at
@@ -639,7 +635,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	adminSettingsPath, adminSettingsHandler := leapmuxv1connect.NewAdminSettingsServiceHandler(adminSettingsSvc, connectOpts)
 	mux.Handle(adminSettingsPath, adminSettingsHandler)
 
-	adminUserSvc := service.NewAdminUserService(st, tokenValidator, lifecycle, workerEffects)
+	adminUserSvc := service.NewAdminUserService(st, tokenValidator, lifecycle, workerEffects, setMgr)
 	adminUserPath, adminUserHandler := leapmuxv1connect.NewAdminUserServiceHandler(adminUserSvc, connectOpts)
 	mux.Handle(adminUserPath, adminUserHandler)
 

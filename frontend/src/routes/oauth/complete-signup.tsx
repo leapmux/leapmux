@@ -11,6 +11,7 @@ import { useAuth } from '~/context/AuthContext'
 import { createCaptchaForm } from '~/lib/captchaForm'
 import { formatErrorMessage } from '~/lib/errors'
 import { setPageTitle } from '~/lib/pageTitle'
+import { isEmailEnabled } from '~/lib/systemInfo'
 import { sanitizeDisplayName, sanitizeSlug, validateReservedUsername } from '~/lib/validate'
 import { errorText, pageCard } from '~/styles/shared.css'
 
@@ -24,11 +25,17 @@ const OAuthCompleteSignupPage: Component = () => {
   const [displayName, setDisplayName] = createSignal('')
   const [email, setEmail] = createSignal('')
   const [providerName, setProviderName] = createSignal('')
+  // The provider's own claim, captured once at bootstrap. A supplied
+  // address is fixed; an absent one leaves the field to the user.
+  const [providerSuppliedEmail, setProviderSuppliedEmail] = createSignal(false)
   const [submitting, setSubmitting] = createSignal(false)
   const [error, setError] = createSignal<string | null>(null)
   const [loading, setLoading] = createSignal(true)
   const [tokenError, setTokenError] = createSignal<string | null>(null)
   const captcha = createCaptchaForm()
+  // The hub refuses an empty address whenever it can verify one, so the
+  // field is required in the same condition rather than failing at submit.
+  const emailRequired = () => isEmailEnabled()
 
   onMount(async () => {
     setPageTitle('Complete Sign Up')
@@ -41,6 +48,7 @@ const OAuthCompleteSignupPage: Component = () => {
       const resp = await authClient.getPendingOAuthSignup({ signupToken: signupToken() })
       setDisplayName(resp.displayName)
       setEmail(resp.email)
+      setProviderSuppliedEmail(resp.email !== '')
       setProviderName(resp.providerName)
     }
     catch {
@@ -77,6 +85,7 @@ const OAuthCompleteSignupPage: Component = () => {
         signupToken: signupToken(),
         username: slug,
         displayName: sanitizedDisplayName,
+        email: email().trim(),
         ...captcha.fields(),
       })
       auth.setAuth(resp.user!)
@@ -85,7 +94,9 @@ const OAuthCompleteSignupPage: Component = () => {
       // to /verify-email so they can paste the code (or click through).
       // The session was created server-side, so the authenticated
       // VerifyEmail RPC is reachable from there.
-      if (resp.verificationRequired) {
+      if (resp.emailVerification?.verificationRequired) {
+        if (resp.emailVerification.nextResendAvailableAt)
+          auth.setVerificationResendAvailableAt(resp.emailVerification.nextResendAvailableAt)
         navigate('/verify-email', { replace: true })
       }
       else {
@@ -133,16 +144,23 @@ const OAuthCompleteSignupPage: Component = () => {
                 onInput={e => setDisplayName(e.currentTarget.value)}
               />
             </label>
-            <Show when={email()}>
-              <label>
-                Email
-                <input
-                  type="email"
-                  value={email()}
-                  readOnly
-                />
-              </label>
-            </Show>
+            {/*
+              A provider-supplied address is fixed -- the hub validated it at
+              the callback and will not accept a substitute. When the provider
+              gave nothing, the field is the only way to supply one, and on a
+              hub that requires verification the sign-up cannot complete
+              without it.
+            */}
+            <label>
+              Email
+              <input
+                type="email"
+                value={email()}
+                onInput={e => setEmail(e.currentTarget.value)}
+                readOnly={providerSuppliedEmail()}
+                required={emailRequired()}
+              />
+            </label>
             <CaptchaSection action="complete_signup" captcha={captcha} />
             <Show when={error()}>
               <div class={errorText}>{error()}</div>

@@ -62,28 +62,37 @@ The form fields are the same as setup:
 | --- | --- |
 | **Username** | Required. Lowercase slug, 1–32 characters. See [Username rules](#username-rules). |
 | **Display Name** | Optional; falls back to your username if left blank. |
-| **Email** | Optional, unless your operator requires verification. |
+| **Email** | Required. |
 | **New Password** | 8–128 printable ASCII characters, spaces included. See [Password requirements](#password-requirements). |
 | **Confirm Password** | Must match. |
+| **Sign-up method** | **Password** (default) or **Passkey**. Passkey sign-up registers a WebAuthn credential instead of setting a password. |
 
-The submit button reads **Sign up** (and **Signing up...** while submitting). It stays disabled until you have entered a username and a valid, matching password. A footer link, **"Already have an account? Sign in"**, takes you to the login page.
+The submit button reads **Sign up** or **Sign up with passkey** (and **Signing up...** while submitting). It stays disabled until you enter a username, a valid email, and (for password sign-up) a valid, matching password. A footer link, **"Already have an account? Sign in"**, takes you to the login page.
 
-If your operator has configured OAuth/OIDC providers, a list of provider buttons appears above the form under the verb **"Sign up with"** (for example, **"Sign up with GitHub"**), followed by the divider **"or create an account with email"**. See [Signing in with OAuth / OIDC](#signing-in-with-oauth--oidc).
+If your operator configures OAuth/OIDC providers, a list of provider buttons appears above the form under the verb **"Sign up with"** (for example, **"Sign up with GitHub"**), followed by the divider **"or create an account with email"**. See [Signing in with OAuth / OIDC](#signing-in-with-oauth--oidc).
 
-What happens after you submit depends on whether email verification is required:
+What happens after you submit depends on whether the hub has SMTP configured (see [Email verification](#email-verification)):
 
-- **Verification not required:** you are signed in immediately and taken to `/`.
-- **Verification required:** LeapMux tells you to check your email, and routes you to the email-verification screen. A failed verification email does **not** undo your signup — your account exists and you can request a fresh code.
+- **SMTP not configured:** you are signed in immediately and taken to `/`. Your email is stored as unverified in the database; the runtime requirement stays off until SMTP is configured.
+- **SMTP configured:** LeapMux sends a verification email and routes you to the email-verification screen. Signup is **fail-closed**: if the verification email cannot be sent, the account is not created and you see an error (retry when mail works).
 
 > **Note:** The username `solo` is rejected in all signup paths, and `admin` is additionally reserved for public signup and OAuth completion (it is allowed only in `/setup`). Self-service signups are never administrators.
 
 ## Logging in
 
-Visit `/login`. The page is headed **"LeapMux"** and has two fields — **Username** and **Password**.
+Visit `/login`. The page is headed **"LeapMux"** and starts with a **Username** field.
 
-Click **Sign in** (**Signing in...** while it works). The button is disabled until both fields are filled.
+A **Sign-in method** chooser always offers **Password** and **Passkey** (LeapMux does not reveal which methods an account supports before you submit):
+
+| Method | What you do |
+| --- | --- |
+| **Password** | Fill **Password**, then click **Sign in**. |
+| **Passkey** | Click **Sign in with passkey** and complete the WebAuthn prompt in your browser or device. |
+
+Click **Sign in** or **Sign in with passkey** (**Signing in...** while it works). The button stays disabled until the username is filled and any captcha challenge is solved. An account that cannot use the method you picked returns a generic failure (same shape as a wrong password).
 
 - A **"Sign up"** link appears in the footer only when self-service signup is enabled.
+- **Forgot password?** appears under the password form when the hub has SMTP configured (see [Forgot password](#forgot-password)).
 - If OAuth providers are configured, their buttons appear above the form under the verb **"Sign in with"** with an **"or"** divider.
 - If you were redirected to login from a protected page, you are sent back there after signing in (LeapMux only honors a same-site relative path, as an open-redirect safeguard).
 
@@ -91,7 +100,9 @@ Click **Sign in** (**Signing in...** while it works). The button is disabled unt
 
 ## Email verification
 
-Email verification is optional and controlled by the operator's `email_verification_required` setting (off by default; enabling it requires an SMTP server to be configured). When it is on, you must verify your email before you can use most of LeapMux.
+Email verification is **automatic whenever the operator configures SMTP** on the hub (`host` and `from_address` both set). There is no separate `email_verification_required` toggle — configuring mail is what turns verification on. When SMTP is absent, sign-ups skip verification entirely.
+
+When verification applies, you must verify your email before you can use most of LeapMux.
 
 ### Verifying your email
 
@@ -120,11 +131,58 @@ The code alphabet deliberately omits look-alike characters (no `0`, `1`, `I`, `O
 
 > **Tip:** If you wait too long and your code expires, press **Resend code** to get a fresh one. The screen confirms that a fresh code went to your inbox.
 
-> **Warning:** While verification is required and you are an unverified non-admin user, you can only view your own account, log out, change/verify your email, and resend the code. LeapMux refuses every other action until you verify. Administrators are exempt.
+> **Warning:** While verification applies and you are an unverified non-admin user, you can only view your own account, log out, change/verify your email, and resend the code. LeapMux refuses every other action until you verify. Administrators are exempt.
+
+## Passkeys
+
+Passkeys are WebAuthn credentials stored by your browser or device. They let you sign in without typing a password, and you can register more than one (for example, a laptop and a phone).
+
+### Signing up with a passkey
+
+On the **Sign Up** page, choose **Passkey** under **Sign-up method**, fill in username, display name, and email, then click **Sign up with passkey**. Your browser prompts you to create the credential. The account has **no password** until you set one later from your profile.
+
+If SMTP is configured, passkey sign-up follows the same verification path as password sign-up: you land on **Verify your email** until the code is accepted.
+
+### Signing in with a passkey
+
+Enter your username on the login page, choose **Passkey** in the **Sign-in method** chooser, then click **Sign in with passkey** and approve the WebAuthn prompt.
+
+You can still choose **Password** when your account has a password, even if passkeys are also registered. An account that cannot use the method you picked returns a generic failure.
+
+### Managing passkeys in your profile
+
+Open **Preferences → Account** (or **Profile** from the app menu). The **Passkeys** section lists every credential, when it was last used, and actions to rename or remove one.
+
+| Action | What it requires |
+| --- | --- |
+| **Add passkey** | Your current password, if you have one. OAuth-only accounts (or accounts with a verified email) can add a first passkey with your session alone. Passkey-only accounts verify with an existing passkey first. |
+| **Rename passkey** | Same step-up as add/remove: password or passkey verification. |
+| **Remove passkey** | Your password, or passkey step-up when you have no password. Removing your **last** passkey requires setting a password first. |
+| **Disable passkey sign-in** | Removes **all** passkeys. Passkey-only accounts must set a password as part of this flow. |
+
+These sensitive changes use a **step-up** check: password confirmation when you have a password, or a fresh passkey authentication when you do not.
+
+> **Note:** A stolen session on an OAuth-only account can register a first passkey. Completing **Forgot password** (when SMTP is configured and your email is verified) clears every passkey. Prefer setting a password soon after OAuth signup if you want that break-glass path.
+
+## Forgot password
+
+When SMTP is configured, the login page shows **Forgot password?** under the password form. It is hidden for passkey-only sign-in (there is no password to reset on that path).
+
+1. Open **Forgot password?** or visit `/forgot-password`.
+2. Enter your **email or username**.
+3. Click **Send reset link**.
+
+If an account with that address exists and its email is verified (when verification applies), LeapMux emails a one-hour reset link. The response is always the same whether or not an account matched — this prevents username probing.
+
+4. Open the link (or paste the token from `/reset-password?token=…`) and choose a new password.
+
+Completing a self-service reset **clears every passkey** on the account, revokes other sessions, and revokes API/delegation tokens — the same break-glass posture as an admin password reset. Set a new passkey afterward if you still want passwordless sign-in.
+
+If you signed up with a passkey and never set a password, use **Disable passkey sign-in** in your profile to add a password instead of the forgot-password flow.
 
 ## Signing in with OAuth / OIDC
 
-If your operator has configured one or more external identity providers — GitHub, Google, Apple, or a generic OIDC provider — you can sign in or sign up with them instead of (or in addition to) a password. Configuring providers is an operator task; see [Authentication Providers](/docs/operating/authentication-providers/).
+If your operator configures one or more external identity providers — GitHub, Google, Apple, or a generic OIDC provider — you can sign in or sign up with them instead of (or in addition to) a password. Configuring providers is an operator task; see [Authentication Providers](/docs/operating/authentication-providers/).
 
 ### The flow
 
@@ -228,9 +286,14 @@ Open the **"Profile"** dialog from the app to manage your account. It has up to 
 
 ### Password
 
-- The button reads **Change Password** if you already have a password, or **Set Password** if your account is OAuth-only.
-- If you have a password, a **Current Password** field appears and is required. OAuth-only users can set a password without one.
+- The button reads **Change Password** if you already have a password, or **Set Password** if your account is OAuth-only or passkey-only.
+- If you have a password, a **Current Password** field appears and is required.
+- Passkey-only accounts (no password, but at least one passkey) must click **Verify with passkey** before **Set Password**. OAuth-only accounts with zero passkeys can set a first password without that step.
 - On success the dialog confirms that it changed the password, or that it set the first one.
+
+### Passkeys
+
+See [Passkeys](#passkeys) above for the full passkey management surface in this dialog.
 
 ### Linked Accounts
 
@@ -243,5 +306,5 @@ Open the **"Profile"** dialog from the app to manage your account. It has up to 
 
 - [Settings & Preferences](/docs/using/settings/) — the full Profile dialog and other preferences.
 - [Authentication Providers](/docs/operating/authentication-providers/) — configuring OAuth/OIDC as an operator.
-- [Running LeapMux](/docs/operating/running-leapmux/) and [Configuration](/docs/operating/configuration/) — choosing a run mode and the `signup_enabled` / `email_verification_required` settings.
+- [Running LeapMux](/docs/operating/running-leapmux/) and [Configuration](/docs/operating/configuration/) — choosing a run mode, the `signup_enabled` setting, and SMTP (which controls email verification and password reset).
 - [Security & Threat Model](/docs/operating/security/) — what authentication does and does not protect.

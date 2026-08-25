@@ -21,6 +21,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/usernames"
+	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/util/validate"
 	"github.com/leapmux/leapmux/util/version"
 )
@@ -111,9 +112,10 @@ func (s *AuthService) signupEnabled(ctx context.Context) bool {
 	return settings.SignupEnabledEffective(s.snap(ctx), s.cfg.DevMode)
 }
 
-// emailVerificationRequired reads the verification gate with its
-// degradation rule: requiring verification without SMTP cannot hold, so
-// it reads as off rather than locking every signup.
+// emailVerificationRequired reports whether the hub requires a verified
+// email before an account may act. Verification follows SMTP
+// (settings.EmailVerificationEffective): without a mail transport there is
+// no channel to verify through.
 func (s *AuthService) emailVerificationRequired(ctx context.Context) bool {
 	return settings.EmailVerificationEffective(s.snap(ctx))
 }
@@ -160,9 +162,9 @@ func (s *AuthService) Login(ctx context.Context, req *connect.Request[leapmuxv1.
 		return nil, err
 	}
 
-	resp := connect.NewResponse(&leapmuxv1.LoginResponse{
-		User: userToProto(user),
-	})
+	resp := connect.NewResponse(&leapmuxv1.LoginResponse{})
+	resp.Msg.User = userToProtoWithPasskeys(ctx, s.store, user)
+	resp.Msg.EmailVerification = emailVerificationToProto(s.loginVerificationOutcome(ctx, user))
 	s.setSessionCookie(ctx, resp.Header(), token, expiresAt)
 	return resp, nil
 }
@@ -216,8 +218,12 @@ func (s *AuthService) GetCurrentUser(ctx context.Context, req *connect.Request[l
 		}
 	}
 
+	userProto := userToProtoWithPasskeys(ctx, s.store, user)
+	userProto.OauthProviders = linkedProviders
 	return connect.NewResponse(&leapmuxv1.GetCurrentUserResponse{
-		User: userToProtoWithOAuth(user, linkedProviders),
+		User: userProto,
+		// Reported, never sent: this runs on every page load.
+		EmailVerification: emailVerificationToProto(s.verificationStatusFor(ctx, user)),
 	}), nil
 }
 
@@ -263,11 +269,10 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 	if err := CheckUsernameAvailable(ctx, s.store, username); err != nil {
 		return nil, AvailabilityConnectError(err)
 	}
-
-	email := req.Msg.GetEmail()
-	if err := validate.ValidateEmail(email); err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	if err := s.validateSignupEmail(ctx, req.Msg.GetEmail()); err != nil {
+		return nil, err
 	}
+	email := req.Msg.GetEmail()
 	hash, err := pwdhash.Hash(pw)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("hash password: %w", err))
@@ -277,47 +282,23 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 		return s.signUpSetupMode(ctx, username, displayName, email, hash)
 	}
 
-	if s.emailVerificationRequired(ctx) && email != "" {
-		// Email goes to pending_email; email column stays empty until verified.
-		if err := CheckEmailAvailable(ctx, s.store, email, ""); err != nil {
-			return nil, AvailabilityConnectError(err)
-		}
-
-		user, err := CreateUser(ctx, s.store, CreateUserParams{
-			Username:     username,
-			PasswordHash: hash,
-			DisplayName:  displayName,
-			Email:        "", // email goes to pending_email
-			PasswordSet:  true,
-			IsAdmin:      false,
+	if s.emailVerificationRequired(ctx) {
+		createdUser, storedCode, err := createUserInTx(ctx, s.store, createUserTxParams{
+			username:     username,
+			displayName:  displayName,
+			pendingEmail: email,
+			passwordHash: hash,
+			passwordSet:  true,
 		})
 		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, err)
+			return nil, mapSignupCommitError(err)
 		}
+		if err := s.deliverSignupVerification(ctx, createdUser.ID, email, storedCode); err != nil {
+			return nil, err
+		}
+		nextResend := nextResendAt(time.Now().UTC())
 
-		// Issue the verification email. Failure does NOT roll back the
-		// user: signup succeeds and the frontend surfaces a Resend prompt
-		// driven by verification_email_sent=false. The pending row stays
-		// in place so a future Resend can reuse the same address slot.
-		emailSent, err := issuePendingEmailVerification(ctx, s.store, s.mail, s.renderer, user.ID, email)
-		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, err)
-		}
-		if !emailSent {
-			slog.Warn("verification email send failed during signup",
-				"user_id", user.ID,
-			)
-		}
-
-		// Re-fetch so the User proto reflects the just-set pending fields.
-		updatedUser, err := s.store.Users().GetByID(ctx, user.ID)
-		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, err)
-		}
-
-		// Always create the session — without it, the user can't call the
-		// authenticated VerifyEmail RPC.
-		uid, mintErr := mintRowUserID(user.ID)
+		uid, mintErr := mintRowUserID(createdUser.ID)
 		if mintErr != nil {
 			return nil, mintErr
 		}
@@ -326,21 +307,20 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
 		}
 		resp := connect.NewResponse(&leapmuxv1.SignUpResponse{
-			User:                  userToProto(updatedUser),
-			VerificationRequired:  true,
-			VerificationEmailSent: emailSent,
+			// A password sign-up carries no passkeys yet.
+			User: userToProto(createdUser, 0),
+			EmailVerification: emailVerificationToProto(verificationOutcome{
+				Required:              true,
+				EmailSent:             true,
+				NextResendAvailableAt: &nextResend,
+			}),
 		})
 		s.setSessionCookie(ctx, resp.Header(), sessionID, sessionExpires)
+		s.hasAnyUser.Store(true)
 		return resp, nil
 	}
 
 	// No verification required — email goes directly to email column.
-	if email != "" {
-		if err := CheckEmailAvailable(ctx, s.store, email, ""); err != nil {
-			return nil, AvailabilityConnectError(err)
-		}
-	}
-
 	user, err := CreateUser(ctx, s.store, CreateUserParams{
 		Username:     username,
 		PasswordHash: hash,
@@ -376,13 +356,12 @@ func (s *AuthService) signUpSetupMode(ctx context.Context, username, displayName
 	}
 
 	user, err := CreateUser(ctx, s.store, CreateUserParams{
-		Username:      username,
-		PasswordHash:  passwordHash,
-		DisplayName:   displayName,
-		Email:         email,
-		EmailVerified: email != "",
-		PasswordSet:   true,
-		IsAdmin:       true,
+		Username:     username,
+		PasswordHash: passwordHash,
+		DisplayName:  displayName,
+		Email:        email,
+		PasswordSet:  true,
+		IsAdmin:      true,
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -404,7 +383,8 @@ func (s *AuthService) signUpResponse(ctx context.Context, user *store.User) (*co
 	}
 
 	resp := connect.NewResponse(&leapmuxv1.SignUpResponse{
-		User: userToProto(user),
+		// Both callers are password sign-ups: no passkeys yet.
+		User: userToProto(user, 0),
 	})
 	s.setSessionCookie(ctx, resp.Header(), sessionID, expiresAt)
 	return resp, nil
@@ -468,6 +448,7 @@ func (s *AuthService) GetSystemInfo(ctx context.Context, req *connect.Request[le
 		OauthEnabled:    len(providers) > 0,
 		WorkerHubUrl:    workerHubURL,
 		EmailEnabled:    settings.KeySMTP.Of(snap).Enabled(),
+		PasskeyEnabled:  s.passkeysAvailable(ctx),
 		CaptchaEnabled:  captchaEnabled,
 		AltchaAlgorithm: altchaAlgorithm,
 		CaptchaProvider: captchaProvider,
@@ -574,12 +555,8 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 	}
 	// OAuth completion is always treated as public signup — the first-admin
 	// flow lives at /setup, so both reserved rules apply.
-	if usernames.IsReservedForPublicSignup(username) {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("%q is a reserved username", username))
-	}
-
-	if err := CheckUsernameAvailable(ctx, s.store, username); err != nil {
-		return nil, AvailabilityConnectError(err)
+	if err := s.validatePublicSignupUsername(ctx, username); err != nil {
+		return nil, err
 	}
 
 	// Check that the OAuth link doesn't already exist (race protection).
@@ -596,7 +573,9 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 	}
 
 	// Use the email from the pending signup (provider-reported, already validated
-	// at callback time). The request's email field is ignored.
+	// at callback time). The request's email field is a FALLBACK only, read
+	// below when an untrusted provider supplied nothing; a provider-supplied
+	// address always wins, so the caller cannot substitute one.
 	email := pending.Email
 	rawDisplayName := req.Msg.GetDisplayName()
 	if rawDisplayName == "" {
@@ -618,66 +597,81 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 	var emailVerified bool
 	var pendingEmail string
 
-	if email != "" {
+	if trustEmail {
+		if email == "" {
+			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("trusted OAuth provider returned no email"))
+		}
 		if err := CheckEmailAvailable(ctx, s.store, email, ""); err != nil {
 			return nil, AvailabilityConnectError(err)
 		}
-
-		if trustEmail {
-			// Trusted OAuth email — goes directly to email column as verified.
-			userEmail = email
-			emailVerified = true
-		} else if s.emailVerificationRequired(ctx) {
-			// Untrusted + verification required — goes to pending_email.
+		userEmail = email
+		emailVerified = true
+	} else {
+		// Untrusted provider: the hub applies its own signup email policy
+		// (required + verified-available when SMTP is on, optional
+		// otherwise), exactly like local signup.
+		//
+		// A provider that omits the email claim leaves the caller to supply
+		// one. Without this the sign-up is a dead end whenever SMTP is on:
+		// validateSignupEmail refuses an empty address, and no other step in
+		// the flow can produce one, so the pending token expires and the
+		// account can never be created. The request field is only honored
+		// when the provider gave nothing -- a provider-supplied address
+		// still wins, so the caller cannot substitute one.
+		if email == "" {
+			email = req.Msg.GetEmail()
+		}
+		if err := s.validateSignupEmail(ctx, email); err != nil {
+			return nil, err
+		}
+		if s.emailVerificationRequired(ctx) {
 			pendingEmail = email
 		} else {
-			// Untrusted + verification not required — goes to email column unverified.
 			userEmail = email
 		}
 	}
 
-	user, err := CreateUser(ctx, s.store, CreateUserParams{
-		Username:      username,
-		PasswordHash:  pwdhash.PlaceholderHash,
-		DisplayName:   displayName,
-		Email:         userEmail,
-		EmailVerified: emailVerified,
-		PasswordSet:   false, // OAuth users don't have a real password
-		IsAdmin:       false,
+	linkUserID := id.Generate()
+	link := func(tx store.Store) error {
+		linkUID, mintErr := mintRowUserID(linkUserID)
+		if mintErr != nil {
+			return mintErr
+		}
+		if err := tx.OAuthUserLinks().Create(ctx, store.CreateOAuthUserLinkParams{
+			UserID:          linkUID,
+			ProviderID:      pending.ProviderID,
+			ProviderSubject: pending.ProviderSubject,
+		}); err != nil {
+			return fmt.Errorf("create user link: %w", err)
+		}
+		return nil
+	}
+
+	var user *store.User
+	emailSent := false
+	var storedCode string
+
+	var nextResend *time.Time
+	user, storedCode, err = createUserInTx(ctx, s.store, createUserTxParams{
+		userID:        linkUserID,
+		username:      username,
+		displayName:   displayName,
+		email:         userEmail,
+		emailVerified: emailVerified,
+		pendingEmail:  pendingEmail,
+		passwordHash:  pwdhash.PlaceholderHash,
+		extra:         link,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, mapSignupCommitError(err)
 	}
-
-	// Handle pending email if needed. Send failures during OAuth signup
-	// don't roll back: the OAuth-linked account exists, and the user can
-	// re-trigger verification via Resend later. emailSent flows back to
-	// the response so the frontend can surface a Resend prompt when the
-	// SMTP send failed but the row was written.
-	emailSent := false
 	if pendingEmail != "" {
-		sent, err := issuePendingEmailVerification(ctx, s.store, s.mail, s.renderer, user.ID, pendingEmail)
-		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, err)
+		if err := s.deliverSignupVerification(ctx, user.ID, pendingEmail, storedCode); err != nil {
+			return nil, err
 		}
-		emailSent = sent
-		if !sent {
-			slog.Warn("verification email send failed during oauth signup",
-				"user_id", user.ID,
-			)
-		}
-	}
-
-	linkUID, err := mintRowUserID(user.ID)
-	if err != nil {
-		return nil, err
-	}
-	if err := s.store.OAuthUserLinks().Create(ctx, store.CreateOAuthUserLinkParams{
-		UserID:          linkUID,
-		ProviderID:      pending.ProviderID,
-		ProviderSubject: pending.ProviderSubject,
-	}); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create user link: %w", err))
+		emailSent = true
+		next := nextResendAt(time.Now().UTC())
+		nextResend = &next
 	}
 
 	// Decrypt and re-store OAuth tokens with the real user ID as AAD.
@@ -689,16 +683,7 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 
 	_ = s.store.PendingOAuthSignups().Delete(ctx, signupToken)
 
-	// Re-fetch user only when pending email modified the user row.
 	finalUser := user
-	if pendingEmail != "" {
-		refetched, refetchErr := s.store.Users().GetByID(ctx, user.ID)
-		if refetchErr != nil {
-			return nil, connect.NewError(connect.CodeInternal, refetchErr)
-		}
-		finalUser = refetched
-	}
-
 	finalUID, mintErr := mintRowUserID(finalUser.ID)
 	if mintErr != nil {
 		return nil, mintErr
@@ -709,9 +694,13 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 	}
 
 	resp := connect.NewResponse(&leapmuxv1.CompleteOAuthSignupResponse{
-		User:                  userToProto(finalUser),
-		VerificationRequired:  pendingEmail != "",
-		VerificationEmailSent: emailSent,
+		// An OAuth sign-up carries no passkeys yet.
+		User: userToProto(finalUser, 0),
+		EmailVerification: emailVerificationToProto(verificationOutcome{
+			Required:              pendingEmail != "",
+			EmailSent:             emailSent,
+			NextResendAvailableAt: nextResend,
+		}),
 	})
 	s.setSessionCookie(ctx, resp.Header(), sessionID, expiresAt)
 	return resp, nil
@@ -749,7 +738,7 @@ func reencryptPendingTokens(ctx context.Context, ks *keystore.Keystore, st store
 	})
 }
 
-func userToProto(u *store.User) *leapmuxv1.User {
+func userToProto(u *store.User, passkeyCount int64) *leapmuxv1.User {
 	return &leapmuxv1.User{
 		Id:            u.ID,
 		Username:      u.Username,
@@ -759,11 +748,90 @@ func userToProto(u *store.User) *leapmuxv1.User {
 		EmailVerified: u.EmailVerified,
 		PendingEmail:  u.PendingEmail,
 		PasswordSet:   u.PasswordSet,
+		PasskeyCount:  int32(passkeyCount),
 	}
 }
 
-func userToProtoWithOAuth(u *store.User, oauthProviders []*leapmuxv1.LinkedOAuthProvider) *leapmuxv1.User {
-	p := userToProto(u)
-	p.OauthProviders = oauthProviders
-	return p
+// userToProtoWithPasskeys fills the passkey count best-effort. The count is
+// display data; a transient failure of this one query must not fail an RPC
+// whose main work already committed (a minted session, a rotated password).
+// The failure is logged and the count reports zero.
+func userToProtoWithPasskeys(ctx context.Context, st store.Store, u *store.User) *leapmuxv1.User {
+	count, err := st.PasskeyCredentials().CountByUser(ctx, u.ID)
+	if err != nil {
+		slog.WarnContext(ctx, "count passkeys for user proto", "user_id", u.ID, "err", err)
+		count = 0
+	}
+	return userToProto(u, count)
+}
+
+// mapSignupCommitError maps an account-creation failure onto a connect
+// code. A uniqueness conflict is AlreadyExists with a stable message: the
+// unique index, not the pre-checks, is the real guard against a race, and
+// a permanent conflict reported as a retryable fault with raw driver text
+// misleads both the client and the operator. Everything else is Internal.
+func mapSignupCommitError(err error) error {
+	if errors.Is(err, store.ErrConflict) {
+		return connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("username or email already taken"))
+	}
+	return connect.NewError(connect.CodeInternal, err)
+}
+
+// validatePublicSignupUsername enforces the public-signup username rules
+// (reserved names + availability) shared by the OAuth completion and both
+// passkey sign-up halves. The first-admin flow at /setup is not public
+// signup and keeps its own setup-mode rules.
+func (s *AuthService) validatePublicSignupUsername(ctx context.Context, username string) error {
+	if usernames.IsReservedForPublicSignup(username) {
+		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("%q is a reserved username", username))
+	}
+	if err := CheckUsernameAvailable(ctx, s.store, username); err != nil {
+		return AvailabilityConnectError(err)
+	}
+	return nil
+}
+
+// validateSignupEmail enforces the email policy shared by every sign-up
+// flavor: the address is required and verified-available when the hub
+// requires email verification, validated and availability-checked whenever
+// present otherwise. One spelling of the policy, so the password, OAuth,
+// and passkey flavors cannot drift.
+func (s *AuthService) validateSignupEmail(ctx context.Context, email string) error {
+	if email == "" {
+		if s.emailVerificationRequired(ctx) {
+			return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("email is required"))
+		}
+		return nil
+	}
+	if err := validate.ValidateEmail(email); err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	if err := CheckEmailAvailable(ctx, s.store, email, ""); err != nil {
+		return AvailabilityConnectError(err)
+	}
+	return nil
+}
+
+// deliverSignupVerification sends the verification email. A send failure
+// fails closed: the account cannot verify its email, so the just-created
+// account is rolled back and the caller sees a generic error. The transport
+// error stays in the server log — never in the anonymous client response.
+//
+// The rollback is a best-effort compensation in a SECOND transaction: a
+// process death between the create commit and this rollback leaves a
+// signed-up account whose code was never delivered. That account
+// self-recovers — its credential committed with it, Login and the passkey
+// finish are public, and ResendVerificationEmail is allowlisted for
+// unverified sessions — so the strand is limited to a double fault and
+// needs no outbox. A rollback that itself fails is logged, never surfaced.
+func (s *AuthService) deliverSignupVerification(ctx context.Context, userID, email, code string) error {
+	if err := s.mail.Send(ctx, s.renderer.VerificationEmail(email, code, pendingEmailExpiry)); err != nil {
+		slog.WarnContext(ctx, "verification email send failed; rolling back sign-up",
+			"user_id", userID, "err", err)
+		if rbErr := rollbackUnusableSignup(ctx, s.store, userID); rbErr != nil {
+			slog.ErrorContext(ctx, "sign-up rollback failed", "user_id", userID, "err", rbErr)
+		}
+		return connect.NewError(connect.CodeUnavailable, fmt.Errorf("sign-up failed: verification email could not be sent"))
+	}
+	return nil
 }

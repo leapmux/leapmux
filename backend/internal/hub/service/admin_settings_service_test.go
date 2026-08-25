@@ -186,14 +186,6 @@ func TestAdminSettingsService_ValuesDefaultAndCustomized(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 
-	// Cross-key refusal: requiring email verification without SMTP.
-	_, err = env.client.UpdateSetting(ctx, authedReq(&leapmuxv1.UpdateSettingRequest{
-		Key:         "email_verification_required",
-		PartialJson: "true",
-	}, env.token))
-	require.Error(t, err)
-	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
-
 	// Reset returns the default.
 	reset, err := env.client.ResetSetting(ctx, authedReq(&leapmuxv1.ResetSettingRequest{
 		Key: "session_duration_seconds",
@@ -369,9 +361,8 @@ func TestAdminSettingsService_SoloOmitsHiddenInSolo(t *testing.T) {
 		// No captcha to solve, and no second user to rate-limit.
 		"captcha.altcha", "captcha.enabled", "captcha.recaptcha_v3",
 		"captcha.selected", "captcha.turnstile",
-		// Sign-up is refused outright, so neither key does anything.
-		"email_verification_required",
 		"rate_limit.change-password",
+		"rate_limit.passkey-management",
 		// No cookie and no session exist on the synthetic-user path.
 		"secure_cookies", "session_duration_seconds",
 		"signup_enabled",

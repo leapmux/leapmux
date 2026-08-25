@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -487,7 +488,7 @@ func TestCompleteOAuthSignup_UsesConfiguredSessionDuration(t *testing.T) {
 	require.NoError(t, err)
 
 	sessionID := sessionFromCookie(t, resp.Header().Get("Set-Cookie"))
-	sess, err := st.Sessions().GetByID(context.Background(), sessionID)
+	sess, err := st.Sessions().GetByID(context.Background(), sessionID, time.Now().UTC())
 	require.NoError(t, err)
 	hubtestutil.AssertSessionLifetime(t, before, configured, sess.ExpiresAt)
 }
@@ -514,6 +515,57 @@ func TestCompleteOAuthSignup_UsesProviderEmail_IgnoresRequestEmail(t *testing.T)
 	user, err := st.Users().GetByID(context.Background(), resp.Msg.GetUser().GetId())
 	require.NoError(t, err)
 	assert.Equal(t, "provider@example.com", user.Email, "email must come from provider, not request")
+}
+
+// An UNTRUSTED provider that omits the email claim leaves the caller to
+// supply the address. Without the fallback the sign-up was a dead end
+// whenever verification was on: validateSignupEmail refuses an empty
+// address, no step in the flow could produce one, and the pending token
+// expired with the account never created.
+func TestCompleteOAuthSignup_UntrustedProviderWithNoEmail_UsesRequestEmail(t *testing.T) {
+	t.Parallel()
+
+	_, client, st, ks, _ := setupOAuthTestServerWithAuthService(t)
+	providerID := createTestProviderWithTrustEmail(t, st, ks, false)
+	signupToken := id.Generate()
+	insertPendingSignup(t, st, ks, providerID, signupToken, "", "No Email", "sub-noemail", time.Now().Add(5*time.Minute).UTC())
+
+	resp, err := client.CompleteOAuthSignup(context.Background(), connect.NewRequest(&leapmuxv1.CompleteOAuthSignupRequest{
+		SignupToken: signupToken,
+		Username:    "noemailuser",
+		Email:       "typed@example.com",
+	}))
+	require.NoError(t, err)
+
+	user, err := st.Users().GetByID(context.Background(), resp.Msg.GetUser().GetId())
+	require.NoError(t, err)
+	assert.Equal(t, "typed@example.com", user.Email,
+		"the caller supplies the address the provider withheld")
+	assert.False(t, user.EmailVerified, "an untrusted provider's address is never trusted-verified")
+}
+
+// The fallback must not become a substitution channel: a provider that DID
+// supply an address still wins, whatever the request says. This is the
+// untrusted twin of TestCompleteOAuthSignup_UsesProviderEmail_IgnoresRequestEmail.
+func TestCompleteOAuthSignup_UntrustedProviderEmailBeatsRequestEmail(t *testing.T) {
+	t.Parallel()
+
+	_, client, st, ks, _ := setupOAuthTestServerWithAuthService(t)
+	providerID := createTestProviderWithTrustEmail(t, st, ks, false)
+	signupToken := id.Generate()
+	insertPendingSignup(t, st, ks, providerID, signupToken, "provider@example.com", "Provider", "sub-untrusted", time.Now().Add(5*time.Minute).UTC())
+
+	resp, err := client.CompleteOAuthSignup(context.Background(), connect.NewRequest(&leapmuxv1.CompleteOAuthSignupRequest{
+		SignupToken: signupToken,
+		Username:    "untrusteduser",
+		Email:       "attacker@evil.com",
+	}))
+	require.NoError(t, err)
+
+	user, err := st.Users().GetByID(context.Background(), resp.Msg.GetUser().GetId())
+	require.NoError(t, err)
+	assert.Equal(t, "provider@example.com", user.Email,
+		"a provider-supplied address is not substitutable")
 }
 
 func TestCompleteOAuthSignup_DuplicateUsername(t *testing.T) {
@@ -574,7 +626,7 @@ func TestCompleteOAuthSignup_DuplicateEmail(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Provider has trust_email=0 and cfg.EmailVerificationRequired is false,
+	// Provider has trust_email=0 and SMTP verification is off,
 	// so email goes directly to the email column unverified. Duplicate check should fire.
 	_, err = client.CompleteOAuthSignup(context.Background(), connect.NewRequest(&leapmuxv1.CompleteOAuthSignupRequest{
 		SignupToken: signupToken,
@@ -583,6 +635,105 @@ func TestCompleteOAuthSignup_DuplicateEmail(t *testing.T) {
 	}))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeAlreadyExists, connect.CodeOf(err))
+}
+
+func TestCompleteOAuthSignup_TrustedProviderSetsEmailVerified(t *testing.T) {
+	t.Parallel()
+
+	_, client, st, ks, _ := setupOAuthTestServerWithAuthService(t)
+	providerID := createTestProvider(t, st, ks)
+	signupToken := id.Generate()
+
+	insertPendingSignup(t, st, ks, providerID, signupToken, "trusted@example.com", "Trusted", "sub-trusted", time.Now().Add(5*time.Minute).UTC())
+
+	resp, err := client.CompleteOAuthSignup(context.Background(), connect.NewRequest(&leapmuxv1.CompleteOAuthSignupRequest{
+		SignupToken: signupToken,
+		Username:    "trusteduser",
+	}))
+	require.NoError(t, err)
+
+	user, err := st.Users().GetByID(context.Background(), resp.Msg.GetUser().GetId())
+	require.NoError(t, err)
+	assert.Equal(t, "trusted@example.com", user.Email)
+	assert.True(t, user.EmailVerified)
+	assert.Empty(t, user.PendingEmail)
+}
+
+func TestCompleteOAuthSignup_UntrustedFailClosedWhenVerificationEmailFails(t *testing.T) {
+	t.Parallel()
+
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = st.Close() })
+	require.NoError(t, st.Migrator().Migrate(context.Background()))
+	hubtestutil.CreateTestAdmin(t, st)
+
+	key, err := keystore.GenerateKey()
+	require.NoError(t, err)
+	ks, err := keystore.New(map[uint32][32]byte{1: key})
+	require.NoError(t, err)
+
+	cfg := &config.Config{Listen: ":4327"}
+	set := servicetest.NewSettingsManager(t, st, ks)
+	enableSignup(t, set)
+	enableEmailVerification(t, set)
+
+	mux := http.NewServeMux()
+	oauthHandler := service.NewOAuthHandler(st, cfg, set, ks)
+	oauthHandler.RegisterRoutes(mux)
+
+	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
+	opts := connect.WithInterceptors(interceptor)
+	authDeps := servicetest.AuthServiceDeps(st, cfg, set, auth.NewCredentialLifecycleEffects(nil, nil, nil))
+	authDeps.Keystore = ks
+	authDeps.Mail = failingMailSender{err: errors.New("smtp down")}
+	authSvc := service.NewAuthService(authDeps)
+	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
+	mux.Handle(path, handler)
+
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	client := leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL)
+
+	providerID := createTestProviderWithTrustEmail(t, st, ks, false)
+	signupToken := id.Generate()
+	insertPendingSignup(t, st, ks, providerID, signupToken, "untrusted@example.com", "Untrusted", "sub-untrusted", time.Now().Add(5*time.Minute).UTC())
+
+	_, err = client.CompleteOAuthSignup(context.Background(), connect.NewRequest(&leapmuxv1.CompleteOAuthSignupRequest{
+		SignupToken: signupToken,
+		Username:    "untrusteduser",
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeUnavailable, connect.CodeOf(err))
+
+	_, err = st.Users().GetByUsername(context.Background(), "untrusteduser")
+	assert.ErrorIs(t, err, store.ErrNotFound)
+}
+
+func TestCompleteOAuthSignup_UntrustedWithSMTPOnUsesPendingEmail(t *testing.T) {
+	t.Parallel()
+
+	_, client, st, ks, set := setupOAuthTestServerWithAuthService(t)
+	enableEmailVerification(t, set)
+	providerID := createTestProviderWithTrustEmail(t, st, ks, false)
+	signupToken := id.Generate()
+
+	insertPendingSignup(t, st, ks, providerID, signupToken, "pending@example.com", "Pending", "sub-pending", time.Now().Add(5*time.Minute).UTC())
+
+	resp, err := client.CompleteOAuthSignup(context.Background(), connect.NewRequest(&leapmuxv1.CompleteOAuthSignupRequest{
+		SignupToken: signupToken,
+		Username:    "pendingoauth",
+	}))
+	require.NoError(t, err)
+	assert.True(t, resp.Msg.GetEmailVerification().GetVerificationRequired())
+	assert.True(t, resp.Msg.GetEmailVerification().GetVerificationEmailSent())
+
+	user, err := st.Users().GetByID(context.Background(), resp.Msg.GetUser().GetId())
+	require.NoError(t, err)
+	assert.Empty(t, user.Email)
+	assert.False(t, user.EmailVerified)
+	assert.Equal(t, "pending@example.com", user.PendingEmail)
+	assert.NotEmpty(t, user.PendingEmailToken)
 }
 
 func TestCompleteOAuthSignup_InvalidToken(t *testing.T) {

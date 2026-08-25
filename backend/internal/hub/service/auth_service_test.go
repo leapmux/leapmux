@@ -18,6 +18,7 @@ import (
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/config"
+	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/mail"
 
 	"github.com/leapmux/leapmux/internal/hub/password"
@@ -71,7 +72,7 @@ func TestLifecycleAwareServicesRequireEffects(t *testing.T) {
 		service.NewAuthService(service.AuthServiceDeps{Renderer: mail.Renderer{}})
 	})
 	assert.Panics(t, func() {
-		service.NewUserService(nil, nil, nil, nil, nil, mail.Renderer{})
+		service.NewUserService(nil, nil, nil, nil, nil, mail.Renderer{}, nil)
 	})
 	assert.Panics(t, func() {
 		service.NewWorkerDelegationHandler(nil, nil, nil)
@@ -156,6 +157,56 @@ func TestAuthService_GetCurrentUser(t *testing.T) {
 	resp, err := client.GetCurrentUser(context.Background(), req)
 	require.NoError(t, err)
 	assert.Equal(t, "admin", resp.Msg.GetUser().GetUsername())
+}
+
+// GetCurrentUser is the only response the /verify-email page's own
+// bootstrap reads, so it has to carry the resend cooldown: without it a
+// hard reload restarted the countdown at zero, the button re-enabled, and
+// the click got a ResourceExhausted with no timestamp to restart from.
+//
+// It must also REPORT and never SEND, because every page load calls it.
+func TestAuthService_GetCurrentUser_CarriesTheVerificationCooldown(t *testing.T) {
+	t.Parallel()
+
+	// An admin already exists, so this is a PUBLIC sign-up rather than the
+	// setup-mode first user (which is always an admin, and admins are
+	// exempt from verification).
+	client, st, _ := setupAuthTestServer(t, testConfig(), func(t *testing.T, set *settings.Manager) {
+		t.Helper()
+		seedSMTP(t, set)
+		enableSignup(t, set)
+	})
+
+	signUp, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+		Username: "pending", Password: "strongpass1", DisplayName: "Pending",
+		Email: "pending@example.test",
+	}))
+	require.NoError(t, err)
+	require.True(t, signUp.Msg.GetEmailVerification().GetVerificationRequired())
+	seeded := signUp.Msg.GetEmailVerification().GetNextResendAvailableAt()
+	require.NotNil(t, seeded, "sign-up hands out the first cooldown")
+
+	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
+	req.Header().Set("Cookie", auth.CookieName+"="+sessionFromCookie(t, signUp.Header().Get("Set-Cookie")))
+	resp, err := client.GetCurrentUser(context.Background(), req)
+	require.NoError(t, err)
+
+	status := resp.Msg.GetEmailVerification()
+	require.NotNil(t, status, "the bootstrap response must carry the status")
+	assert.True(t, status.GetVerificationRequired())
+	require.NotNil(t, status.GetNextResendAvailableAt(),
+		"a reload must resume the countdown the sign-up handed out")
+	assert.WithinDuration(t, seeded.AsTime(), status.GetNextResendAvailableAt().AsTime(), time.Second)
+
+	// Reporting, not sending: the pending code is untouched by the call.
+	before, err := st.Users().GetByUsername(context.Background(), "pending")
+	require.NoError(t, err)
+	_, err = client.GetCurrentUser(context.Background(), req)
+	require.NoError(t, err)
+	after, err := st.Users().GetByUsername(context.Background(), "pending")
+	require.NoError(t, err)
+	assert.Equal(t, before.PendingEmailToken, after.PendingEmailToken,
+		"a page load must not mint or re-send a verification code")
 }
 
 func TestAuthService_GetCurrentUser_NoToken(t *testing.T) {
@@ -245,7 +296,7 @@ func TestAuthService_SessionMintPathsUseConfiguredDuration(t *testing.T) {
 
 	assertExpiry := func(t *testing.T, st store.Store, sessionID string, before time.Time) {
 		t.Helper()
-		sess, err := st.Sessions().GetByID(context.Background(), sessionID)
+		sess, err := st.Sessions().GetByID(context.Background(), sessionID, time.Now().UTC())
 		require.NoError(t, err)
 		hubtestutil.AssertSessionLifetime(t, before, configured, sess.ExpiresAt)
 	}
@@ -254,7 +305,7 @@ func TestAuthService_SessionMintPathsUseConfiguredDuration(t *testing.T) {
 		t.Parallel()
 		before := time.Now()
 		resp, st, sessionID := signUp(t, enableSignup, "newuser")
-		require.False(t, resp.Msg.GetVerificationRequired(), "control: this is the plain branch")
+		require.False(t, resp.Msg.GetEmailVerification().GetVerificationRequired(), "control: this is the plain branch")
 		assertExpiry(t, st, sessionID, before)
 	})
 
@@ -267,7 +318,7 @@ func TestAuthService_SessionMintPathsUseConfiguredDuration(t *testing.T) {
 		}, "unverified")
 		// Without this the subtest would silently repeat the branch above, and
 		// the second CreateSession call site would go unexercised.
-		require.True(t, resp.Msg.GetVerificationRequired(), "this must take the verification branch")
+		require.True(t, resp.Msg.GetEmailVerification().GetVerificationRequired(), "this must take the verification branch")
 		assertExpiry(t, st, sessionID, before)
 	})
 
@@ -338,7 +389,7 @@ func TestAuthService_ChangePassword_WrongOldPassword(t *testing.T) {
 	mux := http.NewServeMux()
 	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
 	opts := connect.WithInterceptors(interceptor)
-	userSvc := service.NewUserService(st, testConfig(), set, auth.NewCredentialLifecycleEffects(nil, nil, nil), mail.NewStubSender(), mail.Renderer{})
+	userSvc := service.NewUserService(st, testConfig(), set, auth.NewCredentialLifecycleEffects(nil, nil, nil), mail.NewStubSender(), mail.Renderer{}, nil)
 	path, handler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
 	mux.Handle(path, handler)
 	server := httptest.NewServer(mux)
@@ -407,11 +458,12 @@ func TestPromotePendingEmail_ClearsCompetingPendingEmails(t *testing.T) {
 			IsAdmin:      false,
 		})
 		require.NoError(t, err)
-		err = st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
+		_, err = st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
 			PendingEmail:          "shared@example.com",
 			PendingEmailToken:     verifycode.Generate(),
 			PendingEmailExpiresAt: ptrTime(time.Now().Add(24 * time.Hour).UTC()),
 			ID:                    userID,
+			CooldownCutoff:        store.UnconditionalMintCutoff(),
 		})
 		require.NoError(t, err)
 	}
@@ -467,11 +519,12 @@ func TestSignUp_DirectEmail_ClearsCompetingPendingEmails(t *testing.T) {
 		IsAdmin:      false,
 	})
 	require.NoError(t, err)
-	err = st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
+	_, err = st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
 		PendingEmail:          "race@example.com",
 		PendingEmailToken:     verifycode.Generate(),
 		PendingEmailExpiresAt: ptrTime(time.Now().Add(24 * time.Hour).UTC()),
 		ID:                    userAID,
+		CooldownCutoff:        store.UnconditionalMintCutoff(),
 	})
 	require.NoError(t, err)
 
@@ -545,7 +598,7 @@ func setupVerificationGatingTestServer(t *testing.T, emailVerificationRequired b
 	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, Policy: servicetest.AuthPolicy(set)})
 	opts := connect.WithInterceptors(interceptor)
 
-	userSvc := service.NewUserService(st, testConfig(), set, auth.NewCredentialLifecycleEffects(nil, nil, nil), mail.NewStubSender(), mail.Renderer{})
+	userSvc := service.NewUserService(st, testConfig(), set, auth.NewCredentialLifecycleEffects(nil, nil, nil), mail.NewStubSender(), mail.Renderer{}, nil)
 	userPath, userHandler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
 	mux.Handle(userPath, userHandler)
 
@@ -640,7 +693,7 @@ func TestVerificationGating_ConfigOff_NotBlocked(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// --- SignUp with EmailVerificationRequired ---
+// --- SignUp with email verification (requires SMTP) ---
 
 func TestSignUp_VerificationRequired_EmailInPendingColumn(t *testing.T) {
 	t.Parallel()
@@ -660,8 +713,8 @@ func TestSignUp_VerificationRequired_EmailInPendingColumn(t *testing.T) {
 
 	// The response should indicate verification was required and that
 	// the (stub) email send succeeded.
-	assert.True(t, resp.Msg.GetVerificationRequired())
-	assert.True(t, resp.Msg.GetVerificationEmailSent())
+	assert.True(t, resp.Msg.GetEmailVerification().GetVerificationRequired())
+	assert.True(t, resp.Msg.GetEmailVerification().GetVerificationEmailSent())
 	assert.Equal(t, "verifyuser", resp.Msg.GetUser().GetUsername())
 
 	// Email stays in the pending column until the user submits the code.
@@ -679,14 +732,49 @@ func TestSignUp_VerificationRequired_EmailInPendingColumn(t *testing.T) {
 	assert.Contains(t, resp.Header().Get("Set-Cookie"), auth.CookieName+"=")
 }
 
-// --- VerifyEmail tests ---
+type failingMailSender struct{ err error }
 
-// VerifyEmail moved from AuthService to UserService and is now
-// authenticated. The exhaustive coverage lives in user_service_test.go;
-// keeping this file slim avoids accidental drift between two suites
-// testing the same handler.
+func (f failingMailSender) Send(context.Context, mail.Message) error { return f.err }
 
-// --- Verification gating: allowed methods ---
+func TestSignUp_FailClosedWhenVerificationEmailFails(t *testing.T) {
+	t.Parallel()
+
+	st := hubtestutil.OpenTestStore(t)
+	set := servicetest.NewSettingsManager(t, st, nil)
+	enableSignup(t, set)
+	enableEmailVerification(t, set)
+
+	mux := http.NewServeMux()
+	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
+	t.Cleanup(sc.Stop)
+	opts := connect.WithInterceptors(interceptor)
+	authSvc := service.NewAuthService(service.AuthServiceDeps{
+		Store:     st,
+		Config:    testConfig(),
+		Settings:  set,
+		Lifecycle: auth.NewCredentialLifecycleEffects(sc, nil, nil),
+		Mail:      failingMailSender{err: errors.New("smtp down")},
+		Renderer:  mail.Renderer{},
+	})
+	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
+	mux.Handle(path, handler)
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	client := leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL)
+	hubtestutil.CreateTestAdmin(t, st)
+
+	_, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+		Username:    "failclosed",
+		Password:    "password123",
+		DisplayName: "Fail Closed",
+		Email:       "failclosed@example.com",
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeUnavailable, connect.CodeOf(err))
+
+	_, err = st.Users().GetByUsername(context.Background(), "failclosed")
+	assert.ErrorIs(t, err, store.ErrNotFound)
+}
 
 func TestVerificationGating_LogoutAllowed(t *testing.T) {
 	t.Parallel()
@@ -902,13 +990,14 @@ func TestSetupSignUp_EmptyEmail(t *testing.T) {
 	user := resp.Msg.GetUser()
 	assert.True(t, user.GetIsAdmin())
 	assert.Empty(t, user.GetEmail())
-	assert.False(t, user.GetEmailVerified())
+	// Setup-mode admin is always treated as verified, even with no email.
+	assert.True(t, user.GetEmailVerified())
 
 	// Verify in DB.
 	dbUser, err := st.Users().GetByUsername(context.Background(), "myadmin")
 	require.NoError(t, err)
 	assert.True(t, dbUser.IsAdmin)
-	assert.False(t, dbUser.EmailVerified)
+	assert.True(t, dbUser.EmailVerified)
 }
 
 func TestSetupSignUp_GetSystemInfoReturnsSetupRequired(t *testing.T) {
@@ -1240,4 +1329,233 @@ func TestSignUp_RejectsAdminInPublicSignup(t *testing.T) {
 	}))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+}
+
+func TestSignUp_RequiresEmailWhenSMTPConfigured(t *testing.T) {
+	t.Parallel()
+
+	client, _, set := setupAuthTestServer(t, testConfig(), enableSignup)
+	enableEmailVerification(t, set)
+
+	_, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+		Username:    "noemail",
+		Password:    "password123",
+		DisplayName: "No Email",
+		Email:       "",
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), "email is required")
+}
+
+func TestSignUp_SMTPOff_StoresUnverifiedEmail(t *testing.T) {
+	t.Parallel()
+
+	client, st, _ := setupAuthTestServer(t, testConfig(), enableSignup)
+
+	resp, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+		Username:    "smtpoff",
+		Password:    "password123",
+		DisplayName: "SMTP Off",
+		Email:       "smtpoff@example.com",
+	}))
+	require.NoError(t, err)
+	assert.False(t, resp.Msg.GetEmailVerification().GetVerificationRequired())
+	assert.NotEmpty(t, resp.Header().Get("Set-Cookie"))
+
+	user, err := st.Users().GetByUsername(context.Background(), "smtpoff")
+	require.NoError(t, err)
+	assert.Equal(t, "smtpoff@example.com", user.Email)
+	assert.False(t, user.EmailVerified)
+	assert.Empty(t, user.PendingEmail)
+}
+
+func TestLogin_ReturnsVerificationFlagsWhenVerificationRequired(t *testing.T) {
+	t.Parallel()
+
+	client, st, set := setupAuthTestServer(t, testConfig(), enableSignup)
+	enableEmailVerification(t, set)
+
+	_, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+		Username:    "gateduser",
+		Password:    "password123",
+		DisplayName: "Gated",
+		Email:       "gated@example.com",
+	}))
+	require.NoError(t, err)
+
+	user, err := st.Users().GetByUsername(context.Background(), "gateduser")
+	require.NoError(t, err)
+	assert.False(t, user.EmailVerified)
+
+	loginResp, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
+		Username: "gateduser",
+		Password: "password123",
+	}))
+	require.NoError(t, err)
+	assert.True(t, loginResp.Msg.GetEmailVerification().GetVerificationRequired())
+	// Signup already issued pending_email; login surfaces cooldown without resending.
+	assert.False(t, loginResp.Msg.GetEmailVerification().GetVerificationEmailSent())
+	require.NotNil(t, loginResp.Msg.GetEmailVerification().GetNextResendAvailableAt())
+}
+
+func TestFinishPasskeySignUp_FailClosedWhenVerificationEmailFails(t *testing.T) {
+	t.Parallel()
+
+	env := setupPasskeyAuthTestServer(t, func(t *testing.T, set *settings.Manager) {
+		enableSignup(t, set)
+		enableEmailVerification(t, set)
+	}, failingMailSender{err: errors.New("smtp down")})
+
+	begin := beginPasskeySignUp(t, env.client, "pkfailclosed", "pkfailclosed@example.com")
+	ceremony := newPasskeyCeremony()
+	credentialJSON, err := ceremony.registrationResponse(begin.GetOptionsJson())
+	require.NoError(t, err)
+
+	failReq := connect.NewRequest(&leapmuxv1.FinishPasskeySignUpRequest{
+		SessionId:      begin.GetSessionId(),
+		CredentialJson: credentialJSON,
+	})
+	failReq.Header().Set("Origin", passkeyTestOrigin)
+	_, err = env.client.FinishPasskeySignUp(context.Background(), failReq)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeUnavailable, connect.CodeOf(err))
+
+	_, err = env.store.Users().GetByUsername(context.Background(), "pkfailclosed")
+	assert.ErrorIs(t, err, store.ErrNotFound)
+}
+
+func TestFinishPasskeyLogin_ReturnsVerificationFlagsWhenVerificationRequired(t *testing.T) {
+	t.Parallel()
+
+	env := setupPasskeyAuthTestServer(t, func(t *testing.T, set *settings.Manager) {
+		enableSignup(t, set)
+		enableEmailVerification(t, set)
+	}, nil)
+
+	begin := beginPasskeySignUp(t, env.client, "pkgated", "pkgated@example.com")
+	ceremony := newPasskeyCeremony()
+	credentialJSON, err := ceremony.registrationResponse(begin.GetOptionsJson())
+	require.NoError(t, err)
+	finishReq := connect.NewRequest(&leapmuxv1.FinishPasskeySignUpRequest{
+		SessionId:      begin.GetSessionId(),
+		CredentialJson: credentialJSON,
+	})
+	finishReq.Header().Set("Origin", passkeyTestOrigin)
+	signUpResp, err := env.client.FinishPasskeySignUp(context.Background(), finishReq)
+	require.NoError(t, err)
+	assert.True(t, signUpResp.Msg.GetEmailVerification().GetVerificationRequired())
+
+	user, err := env.store.Users().GetByUsername(context.Background(), "pkgated")
+	require.NoError(t, err)
+	assert.False(t, user.EmailVerified)
+
+	loginBegin := beginPasskeyLogin(t, env.client, "pkgated")
+	assertionJSON, err := ceremony.assertionResponse(loginBegin.GetOptionsJson())
+	require.NoError(t, err)
+	loginResp, err := finishPasskeyLogin(t, env.client, loginBegin.GetSessionId(), assertionJSON)
+	require.NoError(t, err)
+	assert.True(t, loginResp.Msg.GetEmailVerification().GetVerificationRequired())
+	assert.False(t, loginResp.Msg.GetEmailVerification().GetVerificationEmailSent())
+	require.NotNil(t, loginResp.Msg.GetEmailVerification().GetNextResendAvailableAt())
+}
+
+func TestBeginPasskeySignUp_RequiresEmailWhenSMTPConfigured(t *testing.T) {
+	t.Parallel()
+
+	st := hubtestutil.OpenTestStore(t)
+	set := servicetest.NewSettingsManager(t, st, nil)
+	enableSignup(t, set)
+	enableEmailVerification(t, set)
+	hubtestutil.CreateTestAdmin(t, st)
+
+	key, err := keystore.GenerateKey()
+	require.NoError(t, err)
+	ks, err := keystore.New(map[uint32][32]byte{1: key})
+	require.NoError(t, err)
+
+	mux := http.NewServeMux()
+	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
+	t.Cleanup(sc.Stop)
+	authSvc := service.NewAuthService(service.AuthServiceDeps{
+		Store:     st,
+		Config:    testConfig(),
+		Settings:  set,
+		Lifecycle: auth.NewCredentialLifecycleEffects(sc, nil, nil),
+		Mail:      mail.NewStubSender(),
+		Renderer:  mail.Renderer{},
+		Keystore:  ks,
+	})
+	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, connect.WithInterceptors(interceptor))
+	mux.Handle(path, handler)
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	client := leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL)
+
+	req := connect.NewRequest(&leapmuxv1.BeginPasskeySignUpRequest{
+		Username:    "nopkemail",
+		DisplayName: "No Email",
+		Email:       "",
+	})
+	req.Header().Set("Origin", "https://localhost")
+	_, err = client.BeginPasskeySignUp(context.Background(), req)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), "email is required")
+}
+
+func TestBeginPasskeyLogin_UnknownAndNoPasskeysShareError(t *testing.T) {
+	t.Parallel()
+
+	env := setupPasskeyAuthTestServer(t, enableSignup, nil)
+
+	unknownReq := connect.NewRequest(&leapmuxv1.BeginPasskeyLoginRequest{Username: "nobody"})
+	unknownReq.Header().Set("Origin", passkeyTestOrigin)
+	_, errUnknown := env.client.BeginPasskeyLogin(context.Background(), unknownReq)
+	require.Error(t, errUnknown)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(errUnknown))
+
+	_, err := env.client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+		Username:    "nopasskeys",
+		Password:    "password123",
+		DisplayName: "No Keys",
+		Email:       "nopasskeys@example.com",
+	}))
+	require.NoError(t, err)
+
+	noneReq := connect.NewRequest(&leapmuxv1.BeginPasskeyLoginRequest{Username: "nopasskeys"})
+	noneReq.Header().Set("Origin", passkeyTestOrigin)
+	_, errNone := env.client.BeginPasskeyLogin(context.Background(), noneReq)
+	require.Error(t, errNone)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(errNone))
+	assert.Equal(t, errUnknown.Error(), errNone.Error())
+}
+
+func TestFinishPasskeyLogin_FailedAssertionBurnsCeremony(t *testing.T) {
+	t.Parallel()
+
+	env := setupPasskeyAuthTestServer(t, enableSignup, nil)
+
+	begin := beginPasskeySignUp(t, env.client, "pkburn", "pkburn@example.com")
+	ceremony := newPasskeyCeremony()
+	credentialJSON, err := ceremony.registrationResponse(begin.GetOptionsJson())
+	require.NoError(t, err)
+	finishReq := connect.NewRequest(&leapmuxv1.FinishPasskeySignUpRequest{
+		SessionId:      begin.GetSessionId(),
+		CredentialJson: credentialJSON,
+	})
+	finishReq.Header().Set("Origin", passkeyTestOrigin)
+	_, err = env.client.FinishPasskeySignUp(context.Background(), finishReq)
+	require.NoError(t, err)
+
+	loginBegin := beginPasskeyLogin(t, env.client, "pkburn")
+	_, err = finishPasskeyLogin(t, env.client, loginBegin.GetSessionId(), "not-a-credential")
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+
+	assertionJSON, err := ceremony.assertionResponse(loginBegin.GetOptionsJson())
+	require.NoError(t, err)
+	_, err = finishPasskeyLogin(t, env.client, loginBegin.GetSessionId(), assertionJSON)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err), "failed Finish must consume the ceremony")
 }

@@ -1,3 +1,8 @@
+-- Clock rule: expires_at columns are written by the hub process, so every
+-- comparison of them binds the hub's clock (sqlc.arg(now)), never the
+-- database clock. Timestamps that record when something happened
+-- (created_at, updated_at, last_active_at) keep the database clock.
+
 -- name: CreateUserSession :exec
 INSERT INTO user_sessions (
     id, user_id, expires_at, user_agent, ip_address, auth_generation
@@ -13,8 +18,9 @@ INSERT INTO user_sessions (
 -- name: GetUserSessionByID :one
 -- expires_at is stored in the canonical strftime('%Y-%m-%dT%H:%M:%fZ') layout
 -- (CreateUserSession binds a SQLiteTime), so the liveness filter compares it raw
--- against the same layout -- millisecond-exact at the expiry boundary.
-SELECT * FROM user_sessions WHERE id = ? AND expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
+-- against a bound SQLiteTime (the same layout) -- millisecond-exact at the
+-- expiry boundary, and judged on the hub clock that wrote the expiry.
+SELECT * FROM user_sessions WHERE id = ? AND expires_at > sqlc.arg(now);
 
 -- name: DeleteUserSession :one
 DELETE FROM user_sessions WHERE id = ? RETURNING id, user_id;
@@ -24,7 +30,7 @@ SELECT u.id, u.username, u.is_admin, u.email_verified, u.email, s.created_at, s.
 FROM user_sessions s
 JOIN users u ON s.user_id = u.id
 WHERE s.id = ?
-  AND s.expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+  AND s.expires_at > sqlc.arg(now)
   AND u.deleted_at IS NULL
   AND s.auth_generation >= u.auth_generation;
 
@@ -46,8 +52,8 @@ WHERE user_sessions.id = sqlc.arg(session_id)
 -- SQLiteTime), so comparing it raw against the same canonical RHS is
 -- sargable for idx_user_sessions_expires_at_last_active (SEARCH expires_at<?,
 -- not a SCAN-with-residual under julianday()) -- the index was orphaned under
--- the julianday wrap. RHS is strftime('now'), evaluated once, no binding.
-DELETE FROM user_sessions WHERE expires_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
+-- the julianday wrap. RHS is a bound SQLiteTime in the same canonical layout.
+DELETE FROM user_sessions WHERE expires_at < sqlc.arg(now);
 
 -- name: DeleteUserSessionsByUser :exec
 DELETE FROM user_sessions WHERE user_id = ?;
@@ -57,7 +63,7 @@ DELETE FROM user_sessions WHERE user_id = ? AND id != ?;
 
 -- name: ListUserSessionsByUserID :many
 SELECT * FROM user_sessions
-WHERE user_id = sqlc.arg(user_id) AND expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+WHERE user_id = sqlc.arg(user_id) AND expires_at > sqlc.arg(now)
   AND (sqlc.narg(cursor_time) IS NULL
        OR last_active_at < sqlc.narg(cursor_time)
        OR (last_active_at = sqlc.narg(cursor_time) AND id < sqlc.narg(cursor_id)))
@@ -81,7 +87,7 @@ LIMIT sqlc.arg(limit);
 SELECT s.id, s.user_id, COALESCE(u.username, '') AS username, CAST(u.id IS NULL AS BOOLEAN) AS user_deleted, s.created_at, s.last_active_at, s.expires_at, s.ip_address, s.user_agent
 FROM user_sessions s
 LEFT JOIN users u ON s.user_id = u.id AND u.deleted_at IS NULL
-WHERE s.expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+WHERE s.expires_at > sqlc.arg(now)
   AND (sqlc.narg(cursor_time) IS NULL
        OR s.last_active_at < sqlc.narg(cursor_time)
        OR (s.last_active_at = sqlc.narg(cursor_time) AND s.id < sqlc.narg(cursor_id)))

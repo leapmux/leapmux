@@ -234,6 +234,170 @@ export async function enableSignupViaAPI(hubUrl: string, cookie: string): Promis
   }
 }
 
+export interface SmtpCaptureTarget {
+  host: string
+  port: number
+}
+
+/**
+ * Point the hub at a loopback capture SMTP relay. Verification gating follows
+ * SMTP once host and from_address are both present.
+ */
+export async function configureCaptureSmtpViaAPI(
+  hubUrl: string,
+  adminCookie: string,
+  relay: SmtpCaptureTarget,
+  fromAddress = 'hub@test.local',
+): Promise<void> {
+  const res = await fetch(`${hubUrl}/leapmux.v1.AdminSettingsService/UpdateSetting`, {
+    method: 'POST',
+    headers: authedHeaders(adminCookie),
+    body: JSON.stringify({
+      key: 'smtp',
+      partialJson: JSON.stringify({
+        host: relay.host,
+        port: relay.port,
+        from_address: fromAddress,
+        tls_mode: 'none',
+      }),
+    }),
+  })
+  if (!res.ok) {
+    throw new Error(`configureCaptureSmtpViaAPI failed: ${res.status} ${await res.text()}`)
+  }
+}
+
+/** Poll GetSystemInfo until emailEnabled reflects the staged SMTP block. */
+export async function waitForEmailEnabled(hubUrl: string, timeoutMs = 30_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const res = await fetch(`${hubUrl}/leapmux.v1.AuthService/GetSystemInfo`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    })
+    if (res.ok) {
+      const data = await res.json() as { emailEnabled?: boolean }
+      if (data.emailEnabled)
+        return
+    }
+    await new Promise(r => setTimeout(r, API_POLL_INTERVAL_MS))
+  }
+  throw new Error('waitForEmailEnabled: hub never reported emailEnabled=true')
+}
+
+export interface PasskeySummary {
+  id: string
+  friendlyName: string
+}
+
+/** List passkeys registered for the authenticated user. */
+export async function listPasskeysViaAPI(hubUrl: string, cookie: string): Promise<PasskeySummary[]> {
+  const res = await fetch(`${hubUrl}/leapmux.v1.UserService/ListPasskeys`, {
+    method: 'POST',
+    headers: authedHeaders(cookie),
+    body: JSON.stringify({}),
+  })
+  if (!res.ok) {
+    throw new Error(`listPasskeysViaAPI failed: ${res.status} ${await res.text()}`)
+  }
+  const data = await res.json() as { passkeys?: Array<{ id?: string, friendlyName?: string }> }
+  return (data.passkeys ?? []).map(pk => ({ id: pk.id ?? '', friendlyName: pk.friendlyName ?? '' }))
+}
+
+/** Delete one passkey with the account password. */
+export async function deletePasskeyViaAPI(
+  hubUrl: string,
+  cookie: string,
+  passkeyId: string,
+  currentPassword: string,
+): Promise<void> {
+  const res = await fetch(`${hubUrl}/leapmux.v1.UserService/DeletePasskey`, {
+    method: 'POST',
+    headers: authedHeaders(cookie),
+    body: JSON.stringify({ id: passkeyId, currentPassword }),
+  })
+  if (!res.ok) {
+    throw new Error(`deletePasskeyViaAPI failed: ${res.status} ${await res.text()}`)
+  }
+}
+
+/**
+ * Backdate a user's pending-email row so ResendVerificationEmail cooldown
+ * has elapsed (signup issues a code immediately; resend is blocked for 60s).
+ */
+export async function backdatePendingEmailIssuedAt(hubDataDir: string, username: string): Promise<void> {
+  const { execFile } = await import('node:child_process')
+  const { promisify } = await import('node:util')
+  const { join } = await import('node:path')
+  const execFileAsync = promisify(execFile)
+  const dbPath = join(hubDataDir, 'hub.db')
+  const escaped = username.replace(/'/g, `''`)
+  // pending_email_expires_at = issued_at + 30m; set issued ~2m ago.
+  // Retry on SQLITE_BUSY: the hub may hold a write lock briefly.
+  const sql = `UPDATE users SET pending_email_expires_at = datetime('now', '+28 minutes') WHERE username = '${escaped}' AND deleted_at IS NULL;`
+  let lastErr: unknown
+  for (let attempt = 0; attempt < 8; attempt++) {
+    try {
+      await execFileAsync('sqlite3', [dbPath, sql])
+      return
+    }
+    catch (err) {
+      lastErr = err
+      const msg = err instanceof Error ? err.message : String(err)
+      if (!/database is locked|SQLITE_BUSY/i.test(msg))
+        throw err
+      await new Promise(r => setTimeout(r, 50 * (attempt + 1)))
+    }
+  }
+  throw lastErr
+}
+
+export async function readPendingEmailToken(hubDataDir: string, username: string): Promise<string> {
+  const { execFile } = await import('node:child_process')
+  const { promisify } = await import('node:util')
+  const { join } = await import('node:path')
+  const execFileAsync = promisify(execFile)
+  const dbPath = join(hubDataDir, 'hub.db')
+  const escaped = username.replace(/'/g, `''`)
+  const { stdout } = await execFileAsync('sqlite3', [
+    dbPath,
+    `SELECT pending_email_token FROM users WHERE username = '${escaped}' AND deleted_at IS NULL;`,
+  ])
+  const token = stdout.trim()
+  if (!token)
+    throw new Error(`no pending_email_token for username ${username}`)
+  return token
+}
+
+/** Verify the session user's pending email with a code from the DB or inbox. */
+export async function verifyEmailViaAPI(hubUrl: string, cookie: string, verificationToken: string): Promise<void> {
+  const res = await fetch(`${hubUrl}/leapmux.v1.UserService/VerifyEmail`, {
+    method: 'POST',
+    headers: authedHeaders(cookie),
+    body: JSON.stringify({ verificationToken }),
+  })
+  if (!res.ok) {
+    throw new Error(`verifyEmailViaAPI failed: ${res.status} ${await res.text()}`)
+  }
+}
+
+/** Request a password-reset email via the public AuthService RPC. */
+export async function requestPasswordResetViaAPI(
+  hubUrl: string,
+  identifier: string,
+): Promise<void> {
+  const captcha = await solveCaptchaViaAPI(hubUrl)
+  const res = await fetch(`${hubUrl}/leapmux.v1.AuthService/RequestPasswordReset`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ identifier, captchaPayload: captcha.captchaPayload, honeypot: captcha.honeypot }),
+  })
+  if (!res.ok) {
+    throw new Error(`requestPasswordResetViaAPI failed: ${res.status} ${await res.text()}`)
+  }
+}
+
 /**
  * Mint a registration key as an authenticated user. Mirrors the
  * production UI flow: an admin (or any authorized user) calls
@@ -569,5 +733,40 @@ export async function deleteAllWorkspacesViaAPI(
   const workspaces = await listWorkspacesViaAPI(hubUrl, cookie)
   for (const ws of workspaces) {
     await deleteWorkspaceViaAPI(hubUrl, cookie, ws.id).catch(() => {})
+  }
+}
+
+/** Clear SMTP so EmailVerificationEffective turns off. */
+export async function clearSmtpViaAPI(hubUrl: string, adminCookie: string): Promise<void> {
+  const res = await fetch(`${hubUrl}/leapmux.v1.AdminSettingsService/ResetSetting`, {
+    method: 'POST',
+    headers: authedHeaders(adminCookie),
+    body: JSON.stringify({ key: 'smtp' }),
+  })
+  if (!res.ok) {
+    throw new Error(`clearSmtpViaAPI failed: ${res.status} ${await res.text()}`)
+  }
+}
+
+/** Point SMTP at an unreachable host so verification sends fail closed. */
+export async function configureBrokenSmtpViaAPI(
+  hubUrl: string,
+  adminCookie: string,
+): Promise<void> {
+  const res = await fetch(`${hubUrl}/leapmux.v1.AdminSettingsService/UpdateSetting`, {
+    method: 'POST',
+    headers: authedHeaders(adminCookie),
+    body: JSON.stringify({
+      key: 'smtp',
+      partialJson: JSON.stringify({
+        host: '127.0.0.1',
+        port: 1,
+        from_address: 'hub@test.local',
+        tls_mode: 'none',
+      }),
+    }),
+  })
+  if (!res.ok) {
+    throw new Error(`configureBrokenSmtpViaAPI failed: ${res.status} ${await res.text()}`)
   }
 }

@@ -45,6 +45,17 @@ type errTest string
 
 func (e errTest) Error() string { return string(e) }
 
+// newSettingsTestStore is the bare in-memory store the cross-key cases
+// build their own manager over, when the shared newTestManager registry is
+// not the one under test.
+func newSettingsTestStore(t *testing.T) store.Store {
+	t.Helper()
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = st.Close() })
+	return st
+}
+
 func newTestManager(t *testing.T) (*Manager, *Key[testValue]) {
 	t.Helper()
 	m, k, _ := newTestManagerWithStore(t)
@@ -66,8 +77,7 @@ func newTestManagerWithStore(t *testing.T) (*Manager, *Key[testValue], store.Sto
 	require.NoError(t, err)
 
 	k := testKey()
-	m := NewManager(st, ks, []Descriptor{k, KeySMTP, KeyEmailVerificationRequired},
-		WithCrossValidation(SMTPConfigured))
+	m := NewManager(st, ks, []Descriptor{k, KeySMTP})
 	require.NoError(t, m.Load(context.Background()))
 	return m, k, st
 }
@@ -121,17 +131,6 @@ func TestUpdateRejectsInvalidValues(t *testing.T) {
 	err := m.Update(ctx, k, json.RawMessage(`{"port":99999}`))
 	require.Error(t, err)
 	assert.Equal(t, 587, k.Of(m.Snapshot(ctx)).Port, "a rejected write changes nothing")
-}
-
-func TestCrossValidationRejectsImpossibleCombination(t *testing.T) {
-	m, _ := newTestManager(t)
-	ctx := context.Background()
-	err := m.Update(ctx, KeyEmailVerificationRequired, json.RawMessage(`true`))
-	require.Error(t, err, "verification without SMTP must be refused at write time")
-
-	// With SMTP staged first, the same write succeeds.
-	require.NoError(t, m.Update(ctx, KeySMTP, json.RawMessage(`{"host":"smtp.example.com","from_address":"hub@example.com","port":587,"tls_mode":"starttls"}`)))
-	require.NoError(t, m.Update(ctx, KeyEmailVerificationRequired, json.RawMessage(`true`)))
 }
 
 func TestSecretRoundTripAndRedaction(t *testing.T) {
@@ -345,37 +344,23 @@ func TestEmailVerificationEffectiveDegradesWithoutSMTP(t *testing.T) {
 	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
+
 	key, err := keystore.GenerateKey()
 	require.NoError(t, err)
 	ks, err := keystore.New(map[uint32][32]byte{1: key})
 	require.NoError(t, err)
 
-	now := time.Now()
-	m := NewManager(st, ks, []Descriptor{KeySMTP, KeyEmailVerificationRequired},
-		WithCrossValidation(SMTPConfigured), WithNow(func() time.Time { return now }))
+	m := NewManager(st, ks, []Descriptor{KeySMTP})
 	require.NoError(t, m.Load(context.Background()))
 	ctx := context.Background()
 
-	// Out of the box: verification off, SMTP off.
 	assert.False(t, EmailVerificationEffective(m.Snapshot(ctx)))
 
-	// Verification on with SMTP configured: the cross rule allowed the
-	// write, and the read agrees.
 	require.NoError(t, m.Update(ctx, KeySMTP, json.RawMessage(`{"host":"smtp.example.com","from_address":"hub@example.com","port":587,"tls_mode":"starttls"}`)))
-	require.NoError(t, m.Update(ctx, KeyEmailVerificationRequired, json.RawMessage(`true`)))
 	assert.True(t, EmailVerificationEffective(m.Snapshot(ctx)))
 
-	// SMTP removed behind the write path's back (direct SQL): the read
-	// degrades verification to off rather than locking every signup
-	// behind an email that can never be sent. The raw key still says
-	// true; only the effective view degrades.
-	require.NoError(t, st.Settings().Delete(ctx, KeySMTP.Name()))
-	now = now.Add(2 * cacheTTL) // let the cached snapshot expire
-	snap := m.Snapshot(ctx)
-	assert.True(t, KeyEmailVerificationRequired.Of(snap),
-		"the raw key still says true (only the write path was bypassed)")
-	assert.False(t, EmailVerificationEffective(snap),
-		"effective verification degrades once the SMTP removal is visible")
+	require.NoError(t, m.Reset(ctx, KeySMTP))
+	assert.False(t, EmailVerificationEffective(m.Snapshot(ctx)))
 }
 
 // upsertParams writes a row directly through the store, bypassing the
@@ -431,21 +416,12 @@ func TestUpdateRejectsUnknownFields(t *testing.T) {
 	assert.Equal(t, "smtp.example.com", k.Of(m.Snapshot(ctx)).Host, "a rejected write changes nothing")
 }
 
-// TestResetRunsCrossValidation pins that Reset cannot store the exact
-// combination the update path refuses: dropping the smtp row while
-// email_verification_required stays true must fail the same way
-// `settings set smtp '{"host":""}'` does.
-func TestResetRunsCrossValidation(t *testing.T) {
+// TestResetClearsSMTPRow pins that Reset removes a customized SMTP row and
+// returns the setting to its code default (verification gate off).
+func TestResetClearsSMTPRow(t *testing.T) {
 	m, _ := newTestManager(t)
 	ctx := context.Background()
 	require.NoError(t, m.Update(ctx, KeySMTP, json.RawMessage(`{"host":"smtp.example.com","from_address":"hub@example.com","port":587,"tls_mode":"starttls"}`)))
-	require.NoError(t, m.Update(ctx, KeyEmailVerificationRequired, json.RawMessage(`true`)))
-
-	err := m.Reset(ctx, KeySMTP)
-	require.ErrorContains(t, err, "email_verification_required=true needs the smtp host and from address")
-
-	// Lowering the requirement first makes the same reset succeed.
-	require.NoError(t, m.Update(ctx, KeyEmailVerificationRequired, json.RawMessage(`false`)))
 	require.NoError(t, m.Reset(ctx, KeySMTP))
 	assert.False(t, m.Snapshot(ctx).Customized(KeySMTP))
 }
@@ -725,16 +701,6 @@ func TestManagerWriteErrorsAreTyped(t *testing.T) {
 		var invalid *InvalidError
 		assert.ErrorAs(t, m.UpdateSecret(ctx, plain, json.RawMessage(`{"x":"y"}`)), &invalid)
 	})
-
-	// A cross-key rule refusal is equally the caller's to fix.
-	t.Run("a cross-key rule refusal", func(t *testing.T) {
-		var invalid *InvalidError
-		err := m.Update(ctx, KeyEmailVerificationRequired, json.RawMessage(`true`))
-		if err != nil {
-			assert.ErrorAs(t, err, &invalid,
-				"SMTPConfigured refuses verification without SMTP; that is caller input")
-		}
-	})
 }
 
 // TestUpdateManyLandsEveryKeyWithItsOwnDocument is the atomic verb's
@@ -834,23 +800,33 @@ func TestUpdateManyValidatesEveryKeyBeforeWritingAny(t *testing.T) {
 // whether the key HAS an encrypted half. The refusal belongs in the
 // manager, not in a handler, so every caller of the verb is covered.
 func TestUpdateManyRefusesASecretHalfForAKeyWithNoSecretFields(t *testing.T) {
-	m, _ := newTestManager(t)
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = st.Close() })
+
+	key, err := keystore.GenerateKey()
+	require.NoError(t, err)
+	ks, err := keystore.New(map[uint32][32]byte{1: key})
+	require.NoError(t, err)
+
+	m := NewManager(st, ks, []Descriptor{KeySignupEnabled, testKey()})
+	require.NoError(t, m.Load(context.Background()))
 	ctx := context.Background()
 	partial := json.RawMessage(`{"pass":"hunter2"}`)
 
-	err := m.UpdateMany(ctx, []KeyWrite{
-		{Desc: KeyEmailVerificationRequired, Secret: partial},
+	err = m.UpdateMany(ctx, []KeyWrite{
+		{Desc: KeySignupEnabled, Secret: partial},
 	})
 	require.Error(t, err)
 	var invalid *InvalidError
 	require.ErrorAs(t, err, &invalid, "a caller-supplied shape is InvalidArgument, not a store fault")
 
-	single := m.UpdateSecret(ctx, KeyEmailVerificationRequired, partial)
+	single := m.UpdateSecret(ctx, KeySignupEnabled, partial)
 	require.Error(t, single)
 	assert.Equal(t, single.Error(), err.Error(),
 		"the two verbs must refuse the same input with the same words")
 
-	assert.False(t, m.Snapshot(ctx).Customized(KeyEmailVerificationRequired),
+	assert.False(t, m.Snapshot(ctx).Customized(KeySignupEnabled),
 		"the refused write must store nothing")
 
 	// A key that DOES declare secret fields still takes the same document.
@@ -1729,9 +1705,7 @@ func TestARefusedWriteNeitherPublishesNorFiresSubscribers(t *testing.T) {
 	// it, and a cross-key rule over the whole candidate.
 	require.Error(t, m.UpdateMany(ctx, nil), "no writes given")
 	require.Error(t, m.Update(ctx, k, json.RawMessage(`{"port":99999}`)), "the key's validator refuses the value")
-	require.Error(t, m.Update(ctx, KeyEmailVerificationRequired, json.RawMessage(`true`)), "the cross-key rule refuses the combination")
 	require.Error(t, m.ResetMany(ctx, []Descriptor{NewKey[bool]("never.registered")}))
-	require.Error(t, m.SetValue(ctx, KeyEmailVerificationRequired, true), "the same cross-key refusal through the complete-value verb")
 
 	assert.Equal(t, before, m.currentEpoch(),
 		"a refused write must not reload and publish; it stored nothing")
@@ -1925,25 +1899,102 @@ func TestEveryWriteVerbRefusesAnUnregisteredKey(t *testing.T) {
 	assert.Equal(t, int64(9), b.Of(m.Snapshot(ctx)))
 }
 
-// TestSetIfAbsentRunsTheCrossKeyRules pins that the first-use provisioning
-// verb is not a way around the rules that span keys. It shares prepareRows
-// with every other write path; only its store call differs.
-func TestSetIfAbsentRunsTheCrossKeyRules(t *testing.T) {
-	m, _, st := newTestManagerWithStore(t)
+// TestSetIfAbsentSharesPrepareRowsWithOtherWrites pins that SetIfAbsent
+// goes through the same prepareRows path as Update (validation, registry
+// check). Email verification no longer has a cross-key rule -- it follows SMTP.
+func TestSetIfAbsentSharesPrepareRowsWithOtherWrites(t *testing.T) {
+	m, k := newTestManager(t)
 	ctx := context.Background()
+	require.NoError(t, k.SetIfAbsent(ctx, m, testValue{Port: 2525}))
+	assert.Equal(t, 2525, k.Of(m.Snapshot(ctx)).Port)
+}
 
-	err := KeyEmailVerificationRequired.SetIfAbsent(ctx, m, true)
-	require.ErrorContains(t, err, "email_verification_required=true needs the smtp host and from address")
-	var invalid *InvalidError
-	require.ErrorAs(t, err, &invalid, "a refused combination is the caller's to fix")
-	_, getErr := st.Settings().Get(ctx, KeyEmailVerificationRequired.Name())
-	assert.ErrorIs(t, getErr, store.ErrNotFound, "the refused insert stores nothing")
+// TestEveryWriteVerbRunsTheCrossKeyRules pins that a cross-key refusal
+// reaches EVERY write verb, and keeps its error class through each one's
+// wrap.
+//
+// The email-verification cross rule was deleted with its key, and the tests
+// that pinned this went with it -- leaving the machinery live
+// (prepareRows -> crossValidate for Update/UpdateMany/SetValue/SetIfAbsent,
+// ResetMany for Reset/ResetMany) with the only remaining coverage asserting
+// the rules run ZERO times. A regression that dropped crossValidate from a
+// single-key verb, or that lost *InvalidError through Reset's
+// fmt.Errorf wrap, then passed the whole suite. This is not about email
+// verification; it is about the verb surface the rule has to cover.
+func TestEveryWriteVerbRunsTheCrossKeyRules(t *testing.T) {
+	ctx := context.Background()
+	a := NewKey[int64]("cross.a")
+	b := NewKey[int64]("cross.b")
 
-	// With the relay staged first, the same first-use insert lands.
-	require.NoError(t, m.Update(ctx, KeySMTP, json.RawMessage(
-		`{"host":"smtp.example.com","from_address":"hub@example.com","port":587,"tls_mode":"starttls"}`)))
-	require.NoError(t, KeyEmailVerificationRequired.SetIfAbsent(ctx, m, true))
-	assert.True(t, KeyEmailVerificationRequired.Of(m.Snapshot(ctx)))
+	// The rule refuses any state in which both keys are customized.
+	refuse := func(s *Snapshot) error {
+		if s.Customized(a) && s.Customized(b) {
+			return fmt.Errorf("cross.a and cross.b cannot both be set")
+		}
+		return nil
+	}
+
+	for _, tc := range []struct {
+		name  string
+		write func(m *Manager) error
+	}{
+		{"Update", func(m *Manager) error { return m.Update(ctx, b, json.RawMessage(`2`)) }},
+		{"UpdateMany", func(m *Manager) error {
+			return m.UpdateMany(ctx, []KeyWrite{{Desc: b, Public: json.RawMessage(`2`)}})
+		}},
+		{"SetValue", func(m *Manager) error { return m.SetValue(ctx, b, int64(2)) }},
+		{"SetIfAbsent", func(m *Manager) error { return m.SetIfAbsent(ctx, b, int64(2)) }},
+	} {
+		t.Run(tc.name+" refuses", func(t *testing.T) {
+			st := newSettingsTestStore(t)
+			m := NewManager(st, nil, []Descriptor{a, b}, WithCrossValidation(refuse))
+			require.NoError(t, m.Load(ctx))
+			require.NoError(t, m.SetValue(ctx, a, int64(1)), "the first key alone is a legal state")
+			before := m.currentEpoch()
+
+			err := tc.write(m)
+			require.Error(t, err, "the verb must run the cross-key rules")
+			require.ErrorContains(t, err, "cannot both be set")
+			var invalid *InvalidError
+			assert.ErrorAs(t, err, &invalid, "a refused combination is the caller's mistake, not a fault")
+			assert.Equal(t, before, m.currentEpoch(), "a refused write must not publish")
+			assert.False(t, m.Snapshot(ctx).Customized(b), "and must not land in the store")
+		})
+	}
+
+	// Reset and ResetMany reach crossValidate through ResetMany, and Reset
+	// wraps the error -- the class has to survive that wrap.
+	for _, tc := range []struct {
+		name  string
+		write func(m *Manager) error
+	}{
+		{"Reset", func(m *Manager) error { return m.Reset(ctx, a) }},
+		{"ResetMany", func(m *Manager) error { return m.ResetMany(ctx, []Descriptor{a}) }},
+	} {
+		t.Run(tc.name+" refuses", func(t *testing.T) {
+			st := newSettingsTestStore(t)
+			// This rule refuses the state a reset PRODUCES, so the reset
+			// itself is what the rule has to see.
+			requireA := func(s *Snapshot) error {
+				if !s.Customized(a) {
+					return fmt.Errorf("cross.a must stay set")
+				}
+				return nil
+			}
+			m := NewManager(st, nil, []Descriptor{a, b}, WithCrossValidation(requireA))
+			require.NoError(t, m.Load(ctx))
+			require.NoError(t, m.SetValue(ctx, a, int64(1)))
+			before := m.currentEpoch()
+
+			err := tc.write(m)
+			require.Error(t, err, "the verb must run the cross-key rules")
+			require.ErrorContains(t, err, "must stay set")
+			var invalid *InvalidError
+			assert.ErrorAs(t, err, &invalid, "the error class must survive Reset's wrap")
+			assert.Equal(t, before, m.currentEpoch(), "a refused reset must not publish")
+			assert.True(t, m.Snapshot(ctx).Customized(a), "and must leave the row in place")
+		})
+	}
 }
 
 // TestUpdateSecretRefusalOrder pins the ORDER the secret verb's three
@@ -1959,7 +2010,7 @@ func TestUpdateSecretRefusalOrder(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("a key with no secret half, and no document", func(t *testing.T) {
-		err := m.UpdateSecret(ctx, KeyEmailVerificationRequired, nil)
+		err := m.UpdateSecret(ctx, KeySignupEnabled, nil)
 		require.ErrorContains(t, err, "has no secret fields")
 		assert.NotContains(t, err.Error(), "the partial document is required",
 			"the key's shape is answered before the document is examined")
@@ -1987,19 +2038,6 @@ func TestUpdateSecretRefusalOrder(t *testing.T) {
 func TestResetKeepsTheErrorClassThroughItsWrap(t *testing.T) {
 	m, _ := newTestManager(t)
 	ctx := context.Background()
-
-	t.Run("a cross-key refusal", func(t *testing.T) {
-		require.NoError(t, m.Update(ctx, KeySMTP, json.RawMessage(
-			`{"host":"smtp.example.com","from_address":"hub@example.com","port":587,"tls_mode":"starttls"}`)))
-		require.NoError(t, m.Update(ctx, KeyEmailVerificationRequired, json.RawMessage(`true`)))
-
-		err := m.Reset(ctx, KeySMTP)
-		var invalid *InvalidError
-		require.ErrorAs(t, err, &invalid, "the class survives the wrap")
-		assert.Contains(t, err.Error(), `reset setting "smtp"`, "and the wrap says which key")
-		assert.Contains(t, err.Error(), "email_verification_required=true needs the smtp host and from address",
-			"and the cross-key rule's own cause stays readable")
-	})
 
 	t.Run("an unregistered key", func(t *testing.T) {
 		err := m.Reset(ctx, NewKey[bool]("never.registered"))

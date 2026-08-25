@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
+	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
 	"github.com/leapmux/leapmux/internal/util/sqltime/pgtime"
 )
 
@@ -14,8 +15,8 @@ type cleanupStore struct {
 
 var _ store.CleanupStore = (*cleanupStore)(nil)
 
-func (s *cleanupStore) HardDeleteExpiredSessions(ctx context.Context) (int64, error) {
-	return rowsAffected(s.conn.q.DeleteExpiredUserSessions(ctx))
+func (s *cleanupStore) HardDeleteExpiredSessions(ctx context.Context, now time.Time) (int64, error) {
+	return rowsAffected(s.conn.q.DeleteExpiredUserSessions(ctx, pgtime.New(now)))
 }
 
 func (s *cleanupStore) HardDeleteWorkspacesBefore(ctx context.Context, cutoff time.Time) (int64, error) {
@@ -31,27 +32,34 @@ func (s *cleanupStore) HardDeleteExpiredRegistrationKeysBefore(ctx context.Conte
 }
 
 func (s *cleanupStore) ClearStalePendingEmails(ctx context.Context, cutoff time.Time) (int64, error) {
-	return rowsAffected(s.conn.q.ClearStalePendingEmails(ctx, pgtime.NullOf(cutoff)))
+	return rowsAffected(s.conn.q.ClearStalePendingEmails(ctx, gendb.ClearStalePendingEmailsParams{
+		Cutoff:         pgtime.NullOf(cutoff),
+		CodelessCutoff: pgtime.New(cutoff),
+	}))
 }
 
 func (s *cleanupStore) HardDeleteUsersBefore(ctx context.Context, cutoff time.Time) (int64, error) {
 	return rowsAffected(s.conn.q.HardDeleteUsersBefore(ctx, pgtime.NullOf(cutoff)))
 }
 
-func (s *cleanupStore) DeleteExpiredOAuthStates(ctx context.Context) (int64, error) {
-	return rowsAffected(s.conn.q.DeleteExpiredOAuthStates(ctx))
+func (s *cleanupStore) DeleteExpiredOAuthStates(ctx context.Context, now time.Time) (int64, error) {
+	return rowsAffected(s.conn.q.DeleteExpiredOAuthStates(ctx, pgtime.New(now)))
 }
 
-func (s *cleanupStore) DeleteExpiredPendingOAuthSignups(ctx context.Context) (int64, error) {
-	return rowsAffected(s.conn.q.DeleteExpiredPendingOAuthSignups(ctx))
+func (s *cleanupStore) DeleteExpiredPendingOAuthSignups(ctx context.Context, now time.Time) (int64, error) {
+	return rowsAffected(s.conn.q.DeleteExpiredPendingOAuthSignups(ctx, pgtime.New(now)))
 }
 
-func (s *cleanupStore) DeleteExpiredDeviceAuthorizations(ctx context.Context, cutoff time.Time) (int64, error) {
-	return s.conn.q.DeleteExpiredDeviceAuthorizations(ctx, pgtime.New(cutoff))
+func (s *cleanupStore) DeleteExpiredWebAuthnSessions(ctx context.Context, now time.Time) (int64, error) {
+	return rowsAffected(s.conn.q.DeleteExpiredWebAuthnSessions(ctx, pgtime.New(now)))
 }
 
-func (s *cleanupStore) DeleteExpiredCLIAuthorizationCodes(ctx context.Context, cutoff time.Time) (int64, error) {
-	return s.conn.q.DeleteExpiredCLIAuthorizationCodes(ctx, pgtime.New(cutoff))
+func (s *cleanupStore) DeleteExpiredDeviceAuthorizations(ctx context.Context, now time.Time) (int64, error) {
+	return s.conn.q.DeleteExpiredDeviceAuthorizations(ctx, pgtime.New(now))
+}
+
+func (s *cleanupStore) DeleteExpiredCLIAuthorizationCodes(ctx context.Context, now time.Time) (int64, error) {
+	return s.conn.q.DeleteExpiredCLIAuthorizationCodes(ctx, pgtime.New(now))
 }
 
 func (s *cleanupStore) DeleteRevokedAPITokensBefore(ctx context.Context, cutoff time.Time) (int64, error) {
@@ -62,8 +70,8 @@ func (s *cleanupStore) DeleteRevokedDelegationTokensBefore(ctx context.Context, 
 	return s.conn.q.DeleteRevokedDelegationTokensBefore(ctx, pgtime.NullOf(cutoff))
 }
 
-func (s *cleanupStore) DeleteExpiredDelegationTokensBefore(ctx context.Context, cutoff time.Time) (int64, error) {
-	return s.conn.q.DeleteExpiredDelegationTokensBefore(ctx, pgtime.New(cutoff))
+func (s *cleanupStore) DeleteExpiredDelegationTokensBefore(ctx context.Context, now time.Time) (int64, error) {
+	return s.conn.q.DeleteExpiredDelegationTokensBefore(ctx, pgtime.New(now))
 }
 
 func (s *cleanupStore) DeleteExpiredAltchaSalts(ctx context.Context) (int64, error) {

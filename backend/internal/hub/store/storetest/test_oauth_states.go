@@ -84,7 +84,7 @@ func (s *Suite) testOAuthStates(t *testing.T) {
 		require.NoError(t, err)
 
 		// Run cleanup via the Cleanup store.
-		_, err = st.Cleanup().DeleteExpiredOAuthStates(ctx)
+		_, err = st.Cleanup().DeleteExpiredOAuthStates(ctx, time.Now().UTC())
 		require.NoError(t, err)
 
 		// The expired state should be gone.

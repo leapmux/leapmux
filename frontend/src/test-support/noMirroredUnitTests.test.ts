@@ -25,7 +25,10 @@ function collectStrayUnitTests(): string[] {
   return collectFiles(testsRoot, {
     matches: name => UNIT_TEST_FILE.test(name),
     // `tests/e2e/` is the one sanctioned home for tests outside `src/`.
-    alsoSkip: new Set(['e2e']),
+    // An EXACT path, not a basename: a basename skip would also exempt
+    // `tests/unit/e2e/`, so the retired mirror this guard exists to keep
+    // out could return under one directory name.
+    skipPaths: new Set(['e2e']),
   }).map(file => relative(frontendRoot, file))
 }
 

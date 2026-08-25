@@ -20,6 +20,8 @@ const mockIsCaptchaEnabled = vi.fn<() => boolean>(() => false)
 const mockGetCaptchaProvider = vi.fn<() => number>(() => 1) // CaptchaProvider.ALTCHA
 vi.mock('~/lib/systemInfo', () => ({
   isSoloMode: () => false,
+  isEmailEnabled: () => false,
+  isPasskeyEnabled: () => false,
   loadSystemInfo: () => Promise.resolve(),
   isSignupEnabled: () => mockIsSignupEnabled(),
   loadOAuthProviders: () => mockLoadOAuthProviders(),
@@ -45,6 +47,7 @@ vi.mock('~/context/AuthContext', () => ({
     login: vi.fn(),
     logout: vi.fn(),
     setAuth: vi.fn(),
+    setVerificationResendAvailableAt: vi.fn(),
     isAuthenticated: () => false,
   }),
   AuthProvider: (props: { children: unknown }) => <>{props.children}</>,

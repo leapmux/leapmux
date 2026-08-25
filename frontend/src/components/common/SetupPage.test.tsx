@@ -22,6 +22,7 @@ vi.mock('~/api/clients', () => ({
 
 const mockIsSetupRequired = vi.fn<() => boolean>(() => true)
 vi.mock('~/lib/systemInfo', () => ({
+  isEmailEnabled: () => false,
   isSoloMode: () => false,
   isSetupRequired: () => mockIsSetupRequired(),
   loadSystemInfo: () => Promise.resolve(),

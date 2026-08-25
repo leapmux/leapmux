@@ -942,3 +942,95 @@ func TestRecoverRefusalWordingIsTheOneAnOperatorSees(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unknown recover db command: zzz")
 }
+
+func TestCLI_PasswordReset_DeletesPasskeys(t *testing.T) {
+	dir := setupTestDataDir(t)
+	user := createTestUser(t, dir, "pkuser")
+	ctx := context.Background()
+
+	st, err := storeopen.Open(ctx, recoverConfig(dir))
+	require.NoError(t, err)
+	pkID := id.Generate()
+	require.NoError(t, st.PasskeyCredentials().Create(ctx, store.CreatePasskeyCredentialParams{
+		ID: pkID, UserID: user.ID, CredentialID: []byte("cred-" + pkID),
+		PublicKey: []byte("pubkey"), SignCount: 0, Transports: "[]",
+		FriendlyName: "Phone", KeyVersion: 1, CreatedAt: time.Now().UTC(),
+	}))
+	require.NoError(t, st.Close())
+
+	require.NoError(t, runPasswordReset(testCmdCtx, []string{
+		"--id", user.ID,
+		"--password", "NewPassword2!",
+		"--data-dir", dir,
+	}))
+
+	st, err = storeopen.Open(ctx, recoverConfig(dir))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = st.Close() })
+	rows, err := st.PasskeyCredentials().ListByUser(ctx, user.ID)
+	require.NoError(t, err)
+	assert.Empty(t, rows)
+}
+
+func TestCLI_Reencrypt_MigratesPasskeyPublicKey(t *testing.T) {
+	dir := setupTestDataDir(t)
+	ctx := context.Background()
+	keyPath := filepath.Join(dir, "encryption.key")
+
+	ks, err := keystore.LoadFromFile(keyPath)
+	require.NoError(t, err)
+	st, err := storeopen.Open(ctx, recoverConfig(dir))
+	require.NoError(t, err)
+	user := storetest.SeedUser(t, st, "pkreenc")
+	pkID := id.Generate()
+	plain := []byte("cose-public-key-bytes")
+	enc, err := ks.Encrypt(plain, keystore.PasskeyPublicKeyAAD(pkID))
+	require.NoError(t, err)
+	require.NoError(t, st.PasskeyCredentials().Create(ctx, store.CreatePasskeyCredentialParams{
+		ID: pkID, UserID: user.ID, CredentialID: []byte("cred-" + pkID),
+		PublicKey: enc, SignCount: 0, Transports: "[]",
+		FriendlyName: "Key", KeyVersion: int64(ks.ActiveVersion()), CreatedAt: time.Now().UTC(),
+	}))
+	require.NoError(t, st.Close())
+
+	require.NoError(t, runRotateEncryptionKey(testCmdCtx, []string{"--data-dir", dir}))
+	require.NoError(t, runReencryptSecrets(testCmdCtx, []string{"--data-dir", dir}))
+
+	ks2, err := keystore.LoadFromFile(keyPath)
+	require.NoError(t, err)
+	assert.Equal(t, uint32(2), ks2.ActiveVersion())
+	st, err = storeopen.Open(ctx, recoverConfig(dir))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = st.Close() })
+	rows, err := st.PasskeyCredentials().ListByKeyVersion(ctx, 2)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	dec, err := ks2.Decrypt(rows[0].PublicKey, keystore.PasskeyPublicKeyAAD(pkID))
+	require.NoError(t, err)
+	assert.Equal(t, plain, dec)
+	old, err := st.PasskeyCredentials().ListByKeyVersion(ctx, 1)
+	require.NoError(t, err)
+	assert.Empty(t, old)
+}
+
+func TestCLI_RemoveEncryptionKey_RefusesWhenPasskeyReferenced(t *testing.T) {
+	dir := setupTestDataDir(t)
+	ctx := context.Background()
+
+	st, err := storeopen.Open(ctx, recoverConfig(dir))
+	require.NoError(t, err)
+	user := storetest.SeedUser(t, st, "pkref")
+	pkID := id.Generate()
+	require.NoError(t, st.PasskeyCredentials().Create(ctx, store.CreatePasskeyCredentialParams{
+		ID: pkID, UserID: user.ID, CredentialID: []byte("cred-" + pkID),
+		PublicKey: []byte("cipher"), SignCount: 0, Transports: "[]",
+		FriendlyName: "Key", KeyVersion: 1, CreatedAt: time.Now().UTC(),
+	}))
+	require.NoError(t, st.Close())
+
+	require.NoError(t, runRotateEncryptionKey(testCmdCtx, []string{"--data-dir", dir}))
+	err = runRemoveEncryptionKey(testCmdCtx, []string{"--version", "1", "--data-dir", dir})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "still encrypts")
+	assert.Contains(t, err.Error(), "passkey")
+}

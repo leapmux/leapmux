@@ -26,9 +26,43 @@ func (s *Suite) testCLIAuthorizations(t *testing.T) {
 		require.NoError(t, st.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
 			DeviceCode: deviceCode, UserCode: verifycode.Generate(), ExpiresAt: expiresAt,
 		}))
-		rows, err := st.DeviceAuthorizations().Approve(ctx, store.ApproveDeviceAuthorizationParams{DeviceCode: deviceCode, UserID: userid.MustNew(user.ID)})
+		rows, err := st.DeviceAuthorizations().Approve(ctx, store.ApproveDeviceAuthorizationParams{DeviceCode: deviceCode, UserID: userid.MustNew(user.ID)}, time.Now().UTC())
 		require.NoError(t, err)
 		assert.Equal(t, int64(1), rows)
+	})
+
+	// Both approve verbs judge grant liveness on the caller's clock. The
+	// omission that left this unbound was a silent always-true predicate on
+	// sqlite/postgres/mysql and a hard `Incorrect datetime value` on TiDB,
+	// so every CLI device authorization on a TiDB hub answered 500.
+	t.Run("device grant approval judges liveness on the caller clock", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "device-auth-clock-user")
+		deviceCode := id.Generate()
+		userCode := verifycode.Generate()
+		require.NoError(t, st.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
+			DeviceCode: deviceCode, UserCode: userCode, ExpiresAt: time.Now().Add(time.Hour),
+		}))
+		afterExpiry := time.Now().UTC().Add(48 * time.Hour)
+
+		rows, err := st.DeviceAuthorizations().Approve(ctx, store.ApproveDeviceAuthorizationParams{
+			DeviceCode: deviceCode, UserID: userid.MustNew(user.ID),
+		}, afterExpiry)
+		require.NoError(t, err)
+		assert.Zero(t, rows, "Approve must refuse a grant that is dead at the caller's clock")
+
+		rows, err = st.DeviceAuthorizations().ApproveByUserCode(ctx, store.ApproveDeviceAuthorizationByUserCodeParams{
+			UserCode: userCode, UserID: userid.MustNew(user.ID),
+		}, afterExpiry)
+		require.NoError(t, err)
+		assert.Zero(t, rows, "ApproveByUserCode must refuse a grant that is dead at the caller's clock")
+
+		// Control: the same row, at the caller's own clock.
+		rows, err = st.DeviceAuthorizations().ApproveByUserCode(ctx, store.ApproveDeviceAuthorizationByUserCodeParams{
+			UserCode: userCode, UserID: userid.MustNew(user.ID),
+		}, time.Now().UTC())
+		require.NoError(t, err)
+		assert.Equal(t, int64(1), rows, "control: the same grant approves at a live clock")
 	})
 
 	t.Run("expired approved device grant cannot be consumed", func(t *testing.T) {
@@ -41,12 +75,12 @@ func (s *Suite) testCLIAuthorizations(t *testing.T) {
 		}))
 		rows, err := st.DeviceAuthorizations().Approve(ctx, store.ApproveDeviceAuthorizationParams{
 			DeviceCode: deviceCode, UserID: userid.MustNew(user.ID),
-		})
+		}, time.Now().UTC())
 		require.NoError(t, err)
 		require.Equal(t, int64(1), rows)
 		time.Sleep(time.Until(expiresAt) + 100*time.Millisecond)
 
-		rows, err = st.DeviceAuthorizations().Consume(ctx, deviceCode)
+		rows, err = st.DeviceAuthorizations().Consume(ctx, deviceCode, time.Now().UTC())
 		require.NoError(t, err)
 		assert.Zero(t, rows)
 	})
@@ -71,11 +105,11 @@ func (s *Suite) testCLIAuthorizations(t *testing.T) {
 
 		_, err := st.DeviceAuthorizations().Approve(ctx, store.ApproveDeviceAuthorizationParams{
 			DeviceCode: deviceCode, UserID: userid.UserID{},
-		})
+		}, time.Now().UTC())
 		require.ErrorIs(t, err, store.ErrInvalidArgument)
 		_, err = st.DeviceAuthorizations().ApproveByUserCode(ctx, store.ApproveDeviceAuthorizationByUserCodeParams{
 			UserCode: userCode, UserID: userid.UserID{},
-		})
+		}, time.Now().UTC())
 		require.ErrorIs(t, err, store.ErrInvalidArgument)
 
 		// The row must be untouched -- still pending, still approvable.
@@ -86,7 +120,7 @@ func (s *Suite) testCLIAuthorizations(t *testing.T) {
 		// Control: the same row, approved by a real user.
 		rows, err := st.DeviceAuthorizations().ApproveByUserCode(ctx, store.ApproveDeviceAuthorizationByUserCodeParams{
 			UserCode: userCode, UserID: userid.MustNew(user.ID),
-		})
+		}, time.Now().UTC())
 		require.NoError(t, err)
 		assert.Equal(t, int64(1), rows, "control: a real user approves the same row")
 	})

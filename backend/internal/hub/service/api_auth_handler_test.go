@@ -1204,11 +1204,11 @@ func (s deviceAuthorizationOverride) TouchPoll(ctx context.Context, code string)
 	return s.DeviceAuthorizationStore.TouchPoll(ctx, code)
 }
 
-func (s deviceAuthorizationOverride) Consume(ctx context.Context, code string) (int64, error) {
+func (s deviceAuthorizationOverride) Consume(ctx context.Context, code string, now time.Time) (int64, error) {
 	if s.consume != nil {
 		return s.consume(ctx, code)
 	}
-	return s.DeviceAuthorizationStore.Consume(ctx, code)
+	return s.DeviceAuthorizationStore.Consume(ctx, code, now)
 }
 
 func (s userLookupFailStore) Users() store.UserStore { return s.users }
@@ -1303,7 +1303,7 @@ func TestAPIAuth_DeviceCode_UserLookupFailureLeavesGrantRetryable(t *testing.T) 
 	}))
 	rows, err := env.store.DeviceAuthorizations().Approve(context.Background(), store.ApproveDeviceAuthorizationParams{
 		DeviceCode: deviceCode, UserID: userid.MustNew(env.userID),
-	})
+	}, env.clock.now().UTC())
 	require.NoError(t, err)
 	require.Equal(t, int64(1), rows)
 
@@ -1390,7 +1390,7 @@ func TestAPIAuth_DeviceCode_ConsumeRequiresOneRow(t *testing.T) {
 	}))
 	rows, err := env.store.DeviceAuthorizations().Approve(context.Background(), store.ApproveDeviceAuthorizationParams{
 		DeviceCode: deviceCode, UserID: userid.MustNew(env.userID),
-	})
+	}, env.clock.now().UTC())
 	require.NoError(t, err)
 	require.Equal(t, int64(1), rows)
 	device := deviceAuthorizationOverride{DeviceAuthorizationStore: env.store.DeviceAuthorizations(), consume: func(context.Context, string) (int64, error) {
@@ -1428,7 +1428,7 @@ func TestAPIAuth_DeviceCode_ApprovedPollAdvancesThrottleDespiteIssuanceFailure(t
 	}))
 	rows, err := env.store.DeviceAuthorizations().Approve(context.Background(), store.ApproveDeviceAuthorizationParams{
 		DeviceCode: deviceCode, UserID: userid.MustNew(env.userID),
-	})
+	}, env.clock.now().UTC())
 	require.NoError(t, err)
 	require.Equal(t, int64(1), rows)
 
@@ -1890,7 +1890,7 @@ type blankGrantCodes struct {
 	row *store.CLIAuthorizationCode
 }
 
-func (s blankGrantCodes) GetActive(context.Context, string) (*store.CLIAuthorizationCode, error) {
+func (s blankGrantCodes) GetActive(context.Context, string, time.Time) (*store.CLIAuthorizationCode, error) {
 	return s.row, nil
 }
 

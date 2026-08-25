@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"connectrpc.com/connect"
@@ -191,6 +192,12 @@ func MustGetUser(ctx context.Context) (*UserInfo, error) {
 // lock anyone out.
 var ErrInvalidCurrentPassword = errors.New("current password is incorrect")
 
+// ErrInvalidReauthProof wraps passkey-management rejections caused by a
+// missing, expired, or invalid reauth proof (and failed FinishPasskeyReauth
+// assertions). The rate limiter keys on it the same way it keys on
+// ErrInvalidCurrentPassword.
+var ErrInvalidReauthProof = errors.New("invalid or expired reauth proof")
+
 // RevokeAllUserCredentials revokes every active api_tokens and
 // delegation_tokens row for userID and, via RevokeUserTokens, bumps
 // users.tokens_revoked_at AND users.auth_generation, emitting the durable
@@ -277,6 +284,13 @@ func Login(ctx context.Context, st store.Store, username, password string, lifet
 		return "", nil, zero, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid credentials"))
 	}
 
+	// Passkey-only / OAuth-only accounts store PlaceholderHash. Verify would
+	// return a parse error mapped to CodeInternal and leak that the username
+	// exists without a password. Treat "no password" like a wrong password.
+	if !user.PasswordSet {
+		return "", nil, zero, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid credentials"))
+	}
+
 	// Verify the password OUTSIDE the auth transaction. On the default
 	// SQLite backend RunInUserAuthTransaction promotes to a write
 	// transaction (LockUserAuthState), which serializes every other hub
@@ -302,6 +316,9 @@ func Login(ctx context.Context, st store.Store, username, password string, lifet
 		if lockedUser.Username != store.NormalizeUsername(username) {
 			return connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid credentials"))
 		}
+		if !lockedUser.PasswordSet {
+			return connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid credentials"))
+		}
 		match, verifyErr := matchPrelock, verifyErrPrelock
 		if lockedUser.PasswordHash != prelockHash {
 			// The hash changed under the lock (concurrent rotation), so the
@@ -309,7 +326,14 @@ func Login(ctx context.Context, st store.Store, username, password string, lifet
 			match, verifyErr = pwdhash.Verify(lockedUser.PasswordHash, password)
 		}
 		if verifyErr != nil {
-			return connect.NewError(connect.CodeInternal, fmt.Errorf("verify password: %w", verifyErr))
+			// Malformed hashes (including PlaceholderHash) must not become
+			// CodeInternal — that distinguishes "exists without password".
+			// Log the parse cause server-side: a corrupted stored hash is
+			// otherwise indistinguishable from a wrong password, with no
+			// operator signal at all.
+			slog.WarnContext(ctx, "stored password hash failed to parse",
+				"user_id", user.ID, "err", verifyErr)
+			return connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid credentials"))
 		}
 		if !match {
 			return connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid credentials"))
@@ -385,7 +409,7 @@ func CreateSession(ctx context.Context, st store.Store, userID userid.UserID, li
 // the token is invalid or expired. Uses a single joined query to avoid two
 // sequential DB round-trips.
 func ValidateToken(ctx context.Context, st store.Store, token string) (*UserInfo, error) {
-	row, err := st.Sessions().ValidateWithUser(ctx, token)
+	row, err := st.Sessions().ValidateWithUser(ctx, token, time.Now().UTC())
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid or expired token"))

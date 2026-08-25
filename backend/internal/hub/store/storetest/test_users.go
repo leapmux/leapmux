@@ -467,11 +467,12 @@ func (s *Suite) testUsers(t *testing.T) {
 
 		token := verifycode.Generate()
 		expires := time.Now().Add(1 * time.Hour)
-		err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
+		_, err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
 			ID:                    user.ID,
 			PendingEmail:          "new-pending@example.com",
 			PendingEmailToken:     token,
 			PendingEmailExpiresAt: &expires,
+			CooldownCutoff:        store.UnconditionalMintCutoff(),
 		})
 		require.NoError(t, err)
 
@@ -497,12 +498,14 @@ func (s *Suite) testUsers(t *testing.T) {
 		st := s.NewStore(t)
 		user := SeedUser(t, st, "concurrent-verification-attempts")
 		expires := time.Now().Add(time.Hour)
-		require.NoError(t, st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
+		minted, err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
 			ID:                    user.ID,
 			PendingEmail:          "new-concurrent@example.com",
 			PendingEmailToken:     verifycode.Generate(),
 			PendingEmailExpiresAt: &expires,
-		}))
+			CooldownCutoff:        store.UnconditionalMintCutoff(),
+		})
+		mustSetPendingEmail(t, minted, err)
 
 		const attemptCount = 24
 		start := make(chan struct{})
@@ -514,7 +517,7 @@ func (s *Suite) testUsers(t *testing.T) {
 		for range attemptCount {
 			go func() {
 				<-start
-				updated, err := st.Users().ConsumeVerificationAttempt(ctx, user.ID)
+				updated, err := st.Users().ConsumeVerificationAttempt(ctx, user.ID, time.Now().UTC(), 5)
 				if err != nil {
 					results <- attemptResult{err: err}
 					return
@@ -538,17 +541,148 @@ func (s *Suite) testUsers(t *testing.T) {
 		assert.Equal(t, want, got)
 	})
 
+	// The mint is conditional, exactly like its twin SetPendingPasswordReset.
+	// Without it, ResendVerificationEmail's cooldown was a Go read-then-check
+	// that two concurrent calls both passed, and RequestEmailChange had no
+	// check at all -- a logged-in user could send one message per request to
+	// any address they named.
+	t.Run("pending email mint refuses inside the cooldown window", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "pending-mint-user")
+
+		expires := time.Now().Add(30 * time.Minute).UTC()
+		minted, err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
+			ID:                    user.ID,
+			PendingEmail:          "first@example.com",
+			PendingEmailToken:     verifycode.Generate(),
+			PendingEmailExpiresAt: &expires,
+			CooldownCutoff:        time.Now().UTC(),
+		})
+		require.NoError(t, err)
+		require.True(t, minted, "no previous code exists, so any cutoff mints")
+
+		// The previous code expires in 30 minutes; a cutoff before that
+		// expiry means the cooldown has not elapsed. The mint must refuse
+		// and the FIRST code must survive, whatever address is asked for.
+		minted, err = st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
+			ID:                    user.ID,
+			PendingEmail:          "second@example.com",
+			PendingEmailToken:     verifycode.Generate(),
+			PendingEmailExpiresAt: &expires,
+			CooldownCutoff:        time.Now().UTC(),
+		})
+		require.NoError(t, err)
+		assert.False(t, minted)
+
+		after, err := st.Users().GetByID(ctx, user.ID)
+		require.NoError(t, err)
+		assert.Equal(t, "first@example.com", after.PendingEmail,
+			"a refused mint must leave the live code and its address untouched")
+
+		// A cutoff past the previous expiry means the cooldown elapsed.
+		minted, err = st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
+			ID:                    user.ID,
+			PendingEmail:          "third@example.com",
+			PendingEmailToken:     verifycode.Generate(),
+			PendingEmailExpiresAt: &expires,
+			CooldownCutoff:        expires.Add(time.Second),
+		})
+		require.NoError(t, err)
+		assert.True(t, minted)
+	})
+
+	// ClearPendingEmailCode is the failed-send path: it must drop the code
+	// and KEEP the address, because a verification-required sign-up stores
+	// the address only in pending_email.
+	t.Run("clearing the code keeps the pending address", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "clear-code-user")
+
+		expires := time.Now().Add(30 * time.Minute).UTC()
+		minted, err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
+			ID:                    user.ID,
+			PendingEmail:          "keep@example.com",
+			PendingEmailToken:     verifycode.Generate(),
+			PendingEmailExpiresAt: &expires,
+			CooldownCutoff:        store.UnconditionalMintCutoff(),
+		})
+		require.NoError(t, err)
+		require.True(t, minted)
+
+		require.NoError(t, st.Users().ClearPendingEmailCode(ctx, user.ID))
+
+		after, err := st.Users().GetByID(ctx, user.ID)
+		require.NoError(t, err)
+		assert.Equal(t, "keep@example.com", after.PendingEmail,
+			"the address is the only record of what the account is verifying")
+		assert.Empty(t, after.PendingEmailToken)
+		assert.Nil(t, after.PendingEmailExpiresAt)
+		assert.Zero(t, after.PendingEmailAttempts)
+
+		// A null expiry means no cooldown applies, so the retry the failed
+		// send invites is never blocked.
+		minted, err = st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
+			ID:                    user.ID,
+			PendingEmail:          "keep@example.com",
+			PendingEmailToken:     verifycode.Generate(),
+			PendingEmailExpiresAt: &expires,
+			CooldownCutoff:        time.Now().UTC(),
+		})
+		require.NoError(t, err)
+		assert.True(t, minted, "a cleared code must not leave the retry cooldown-blocked")
+	})
+
+	// The mirror of "attempt budget comes from the caller, not the SQL text"
+	// in test_password_reset.go. MySQL reads an already-updated column in a
+	// later SET clause, so an increment-first ordering makes the force-expiry
+	// CASE fire one charge early and MySQL gives one attempt fewer than
+	// sqlite and postgres. Only a boundary assertion catches that, and only
+	// on the mysql backend -- TiDB does not reproduce it.
+	t.Run("verification attempt budget comes from the caller, not the SQL text", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "verify-budget-user")
+		expires := time.Now().Add(24 * time.Hour)
+		minted, err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
+			ID:                    user.ID,
+			PendingEmail:          "budget@example.com",
+			PendingEmailToken:     verifycode.Generate(),
+			PendingEmailExpiresAt: &expires,
+			CooldownCutoff:        store.UnconditionalMintCutoff(),
+		})
+		mustSetPendingEmail(t, minted, err)
+
+		// A budget of 2 force-expires at the third charge (2 + 1 > 2 in the
+		// SQL CASE). Charges 1 and 2 must leave the expiry untouched: an
+		// off-by-one in the clause ordering shows up as charge 2 forcing it.
+		for i := 1; i <= 2; i++ {
+			updated, err := st.Users().ConsumeVerificationAttempt(ctx, user.ID, time.Now().UTC(), 2)
+			require.NoErrorf(t, err, "charge %d failed", i)
+			assert.Equal(t, int64(i), updated.PendingEmailAttempts)
+			require.NotNil(t, updated.PendingEmailExpiresAt, "charge %d must not clear the expiry", i)
+			assert.Truef(t, updated.PendingEmailExpiresAt.After(time.Now().UTC()),
+				"charge %d is inside the budget, so the code must stay live", i)
+		}
+
+		forced, err := st.Users().ConsumeVerificationAttempt(ctx, user.ID, time.Now().UTC(), 2)
+		require.NoError(t, err)
+		assert.Equal(t, int64(3), forced.PendingEmailAttempts)
+		require.NotNil(t, forced.PendingEmailExpiresAt)
+		assert.False(t, forced.PendingEmailExpiresAt.After(time.Now().UTC()),
+			"the charge past the budget must force-expire the code")
+	})
+
 	t.Run("clear pending email", func(t *testing.T) {
 		st := s.NewStore(t)
 		user := SeedUser(t, st, "clear-pending-user")
 
 		token := verifycode.Generate()
 		expires := time.Now().Add(1 * time.Hour)
-		err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
+		_, err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
 			ID:                    user.ID,
 			PendingEmail:          "pending@example.com",
 			PendingEmailToken:     token,
 			PendingEmailExpiresAt: &expires,
+			CooldownCutoff:        store.UnconditionalMintCutoff(),
 		})
 		require.NoError(t, err)
 
@@ -569,11 +703,12 @@ func (s *Suite) testUsers(t *testing.T) {
 		expires := time.Now().Add(1 * time.Hour)
 		// Both users request the same pending email.
 		for _, u := range []*store.User{user1, user2} {
-			err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
+			_, err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
 				ID:                    u.ID,
 				PendingEmail:          "contested@example.com",
 				PendingEmailToken:     verifycode.Generate(),
 				PendingEmailExpiresAt: &expires,
+				CooldownCutoff:        store.UnconditionalMintCutoff(),
 			})
 			require.NoError(t, err)
 		}
@@ -886,11 +1021,12 @@ func (s *Suite) testUsers(t *testing.T) {
 
 		// Set bob's pending email to alice's email.
 		expires := time.Now().Add(24 * time.Hour)
-		err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
+		_, err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
 			ID:                    bob.ID,
 			PendingEmail:          alice.Email,
 			PendingEmailToken:     verifycode.Generate(),
 			PendingEmailExpiresAt: &expires,
+			CooldownCutoff:        store.UnconditionalMintCutoff(),
 		})
 		require.NoError(t, err)
 
@@ -1167,11 +1303,12 @@ func (s *Suite) testUsers(t *testing.T) {
 		// Set bob's pending email to alice's email.
 		token := verifycode.Generate()
 		expires := time.Now().Add(24 * time.Hour)
-		err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
+		_, err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
 			ID:                    bob.ID,
 			PendingEmail:          alice.Email,
 			PendingEmailToken:     token,
 			PendingEmailExpiresAt: &expires,
+			CooldownCutoff:        store.UnconditionalMintCutoff(),
 		})
 		require.NoError(t, err)
 

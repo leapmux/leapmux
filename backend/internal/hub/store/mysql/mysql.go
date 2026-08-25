@@ -165,6 +165,12 @@ func (s *mysqlStore) OAuthUserLinks() store.OAuthUserLinkStore {
 func (s *mysqlStore) PendingOAuthSignups() store.PendingOAuthSignupStore {
 	return &pendingOAuthSignupStore{conn: s.conn}
 }
+func (s *mysqlStore) PasskeyCredentials() store.PasskeyCredentialStore {
+	return &passkeyCredentialStore{conn: s.conn}
+}
+func (s *mysqlStore) WebAuthnSessions() store.WebAuthnSessionStore {
+	return &webAuthnSessionStore{conn: s.conn}
+}
 func (s *mysqlStore) Settings() store.SettingsStore {
 	return &settingsStore{conn: s.conn}
 }

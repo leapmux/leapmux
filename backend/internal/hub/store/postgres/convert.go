@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgerrcode"
 	"github.com/jackc/pgx/v5"
@@ -141,15 +142,17 @@ func listWorkersAdminByUserAndStatusParams(status leapmuxv1.WorkerStatus, userID
 	})
 }
 
-func listAllActiveSessionsParams(cursor string, limit int64) (gendb.ListAllActiveSessionsParams, error) {
+func listAllActiveSessionsParams(cursor string, limit int64, now time.Time) (gendb.ListAllActiveSessionsParams, error) {
+	nt := pgtime.New(now)
 	return withCursor(cursor, limit, func(ct pgtime.NullTime, cid pgtype.Text, fl int32) gendb.ListAllActiveSessionsParams {
-		return gendb.ListAllActiveSessionsParams{CursorTime: ct, CursorID: cid, Limit: fl}
+		return gendb.ListAllActiveSessionsParams{Now: nt, CursorTime: ct, CursorID: cid, Limit: fl}
 	})
 }
 
-func listUserSessionsParams(userID, cursor string, limit int64) (gendb.ListUserSessionsByUserIDParams, error) {
+func listUserSessionsParams(userID, cursor string, limit int64, now time.Time) (gendb.ListUserSessionsByUserIDParams, error) {
+	nt := pgtime.New(now)
 	return withCursor(cursor, limit, func(ct pgtime.NullTime, cid pgtype.Text, fl int32) gendb.ListUserSessionsByUserIDParams {
-		return gendb.ListUserSessionsByUserIDParams{UserID: userID, CursorTime: ct, CursorID: cid, Limit: fl}
+		return gendb.ListUserSessionsByUserIDParams{UserID: userID, Now: nt, CursorTime: ct, CursorID: cid, Limit: fl}
 	})
 }
 

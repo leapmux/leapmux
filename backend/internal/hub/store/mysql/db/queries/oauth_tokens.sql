@@ -1,3 +1,7 @@
+-- Clock rule: token expiry is stored by the hub process, so the
+-- refresh-due comparison binds the hub's clock (sqlc.arg(refresh_due_at)),
+-- never the database clock.
+
 -- name: UpsertOAuthTokens :exec
 INSERT INTO oauth_tokens (user_id, provider_id, access_token, refresh_token, token_type, expires_at, key_version)
 VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -15,7 +19,7 @@ WHERE user_id = ? AND provider_id = ?;
 
 -- name: ListExpiringOAuthTokens :many
 SELECT * FROM oauth_tokens
-WHERE expires_at <= DATE_ADD(NOW(3), INTERVAL 5 MINUTE);
+WHERE expires_at <= sqlc.arg(refresh_due_at);
 
 -- name: DeleteOAuthTokensByProvider :exec
 DELETE FROM oauth_tokens WHERE provider_id = ?;

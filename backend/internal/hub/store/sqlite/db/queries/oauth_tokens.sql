@@ -1,3 +1,7 @@
+-- Clock rule: token expiry is stored by the hub process, so the
+-- refresh-due comparison binds the hub's clock (sqlc.arg(refresh_due_at)),
+-- never the database clock.
+
 -- name: UpsertOAuthTokens :exec
 -- expires_at is stored in the canonical layout (SQLiteTime binds it) so
 -- ListExpiringOAuthTokens can compare it raw -- sargable for
@@ -32,7 +36,7 @@ WHERE user_id = ? AND provider_id = ?;
 -- byte-exact and sargable -- idx_oauth_tokens_expires_at serves an
 -- upper-bounded SEARCH instead of a full scan under a datetime() wrap.
 SELECT * FROM oauth_tokens
-WHERE expires_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+5 minutes');
+WHERE expires_at <= sqlc.arg(refresh_due_at);
 
 -- name: DeleteOAuthTokensByProvider :exec
 DELETE FROM oauth_tokens WHERE provider_id = ?;

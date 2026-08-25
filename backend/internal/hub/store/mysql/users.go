@@ -21,24 +21,27 @@ var _ store.UserStore = (*userStore)(nil)
 
 func fromDBUser(u gendb.User) store.User {
 	return store.User{
-		ID:                    u.ID,
-		Username:              u.Username,
-		PasswordHash:          u.PasswordHash,
-		DisplayName:           u.DisplayName,
-		Email:                 u.Email,
-		EmailVerified:         u.EmailVerified,
-		PendingEmail:          u.PendingEmail,
-		PendingEmailToken:     u.PendingEmailToken,
-		PendingEmailExpiresAt: u.PendingEmailExpiresAt.Ptr(),
-		PendingEmailAttempts:  int64(u.PendingEmailAttempts),
-		PasswordSet:           u.PasswordSet,
-		IsAdmin:               u.IsAdmin,
-		Prefs:                 u.Prefs,
-		CreatedAt:             u.CreatedAt.Time,
-		UpdatedAt:             u.UpdatedAt.Time,
-		TokensRevokedAt:       u.TokensRevokedAt.Ptr(),
-		AuthGeneration:        u.AuthGeneration,
-		DeletedAt:             u.DeletedAt.Ptr(),
+		ID:                            u.ID,
+		Username:                      u.Username,
+		PasswordHash:                  u.PasswordHash,
+		DisplayName:                   u.DisplayName,
+		Email:                         u.Email,
+		EmailVerified:                 u.EmailVerified,
+		PendingEmail:                  u.PendingEmail,
+		PendingEmailToken:             u.PendingEmailToken,
+		PendingEmailExpiresAt:         u.PendingEmailExpiresAt.Ptr(),
+		PendingEmailAttempts:          int64(u.PendingEmailAttempts),
+		PendingPasswordResetToken:     u.PendingPasswordResetToken,
+		PendingPasswordResetExpiresAt: u.PendingPasswordResetExpiresAt.Ptr(),
+		PendingPasswordResetAttempts:  int64(u.PendingPasswordResetAttempts),
+		PasswordSet:                   u.PasswordSet,
+		IsAdmin:                       u.IsAdmin,
+		Prefs:                         u.Prefs,
+		CreatedAt:                     u.CreatedAt.Time,
+		UpdatedAt:                     u.UpdatedAt.Time,
+		TokensRevokedAt:               u.TokensRevokedAt.Ptr(),
+		AuthGeneration:                u.AuthGeneration,
+		DeletedAt:                     u.DeletedAt.Ptr(),
 	}
 }
 
@@ -126,10 +129,14 @@ func (s *userStore) ExistsByEmail(ctx context.Context, email, excludeUserID stri
 // ConsumeVerificationAttempt keeps MySQL's UPDATE and follow-up SELECT in one
 // transaction so the row lock protects the exact post-increment state returned
 // to this caller. PostgreSQL and SQLite use UPDATE ... RETURNING instead.
-func (s *userStore) ConsumeVerificationAttempt(ctx context.Context, id string) (*store.User, error) {
+func (s *userStore) ConsumeVerificationAttempt(ctx context.Context, id string, now time.Time, maxAttempts int64) (*store.User, error) {
 	var out *store.User
 	err := s.conn.withTransaction(ctx, func(conn *mysqlConn) error {
-		res, err := conn.q.ConsumeVerificationAttempt(ctx, id)
+		res, err := conn.q.ConsumeVerificationAttempt(ctx, gendb.ConsumeVerificationAttemptParams{
+			ID:          id,
+			Now:         sqltime.MySQLNullTimeOf(now),
+			MaxAttempts: int32(maxAttempts),
+		})
 		if err != nil {
 			return mapErr(err)
 		}
@@ -393,13 +400,24 @@ func (s *userStore) UpdatePrefs(ctx context.Context, p store.UpdateUserPrefsPara
 	}))
 }
 
-func (s *userStore) SetPendingEmail(ctx context.Context, p store.SetPendingEmailParams) error {
-	return mapErr(s.conn.q.SetPendingEmail(ctx, gendb.SetPendingEmailParams{
+func (s *userStore) SetPendingEmail(ctx context.Context, p store.SetPendingEmailParams) (bool, error) {
+	n, err := rowsAffected(s.conn.q.SetPendingEmail(ctx, gendb.SetPendingEmailParams{
 		PendingEmail:          store.NormalizeEmail(p.PendingEmail),
 		PendingEmailToken:     p.PendingEmailToken,
 		PendingEmailExpiresAt: sqltime.NewMySQLNullTime(p.PendingEmailExpiresAt),
 		ID:                    p.ID,
+		CooldownCutoff:        sqltime.MySQLNullTimeOf(p.CooldownCutoff),
 	}))
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// ClearPendingEmailCode drops an undelivered code and keeps the pending
+// address; see the query comment for why the address must survive.
+func (s *userStore) ClearPendingEmailCode(ctx context.Context, id string) error {
+	return mapErr(s.conn.q.ClearPendingEmailCode(ctx, id))
 }
 
 // PromotePendingEmail moves pending_email into email (email_verified=1). A row
@@ -440,6 +458,93 @@ func (s *userStore) ClearCompetingPendingEmails(ctx context.Context, p store.Cle
 
 func (s *userStore) Delete(ctx context.Context, id string) error {
 	return mapErr(s.conn.q.DeleteUser(ctx, id))
+}
+
+func (s *userStore) SetPendingPasswordReset(ctx context.Context, p store.SetPendingPasswordResetParams) (bool, error) {
+	n, err := rowsAffected(s.conn.q.SetPendingPasswordReset(ctx, gendb.SetPendingPasswordResetParams{
+		PendingPasswordResetToken:     p.PendingPasswordResetToken,
+		PendingPasswordResetExpiresAt: sqltime.MySQLNullTimeOf(p.PendingPasswordResetExpiresAt),
+		CooldownCutoff:                sqltime.MySQLNullTimeOf(p.CooldownCutoff),
+		ID:                            p.ID,
+	}))
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+func (s *userStore) ClearPendingPasswordReset(ctx context.Context, id string) error {
+	return mapErr(s.conn.q.ClearPendingPasswordReset(ctx, id))
+}
+
+// ConsumePasswordResetAttemptByToken keeps MySQL's UPDATE and follow-up SELECT
+// in one transaction so the row lock protects the exact post-increment state
+// returned to this caller. PostgreSQL and SQLite use UPDATE ... RETURNING
+// instead.
+func (s *userStore) ConsumePasswordResetAttemptByToken(ctx context.Context, tokenHash string, now time.Time, maxAttempts int64) (*store.User, error) {
+	var out *store.User
+	err := s.conn.withTransaction(ctx, func(conn *mysqlConn) error {
+		res, err := conn.q.ConsumePasswordResetAttemptByToken(ctx, gendb.ConsumePasswordResetAttemptByTokenParams{
+			PendingPasswordResetToken: tokenHash,
+			Now:                       sqltime.MySQLNullTimeOf(now),
+			MaxAttempts:               int32(maxAttempts),
+		})
+		if err != nil {
+			return mapErr(err)
+		}
+		rows, err := res.RowsAffected()
+		if err != nil {
+			return mapErr(err)
+		}
+		if rows == 0 {
+			return store.ErrNotFound
+		}
+		u, err := conn.q.GetUserAfterPasswordResetAttemptByToken(ctx, tokenHash)
+		if err != nil {
+			return mapErr(err)
+		}
+		converted := fromDBUser(u)
+		out = &converted
+		return nil
+	})
+	return out, err
+}
+
+func (s *userStore) CompletePasswordReset(ctx context.Context, p store.CompletePasswordResetParams) (*store.PasswordResetRevocation, error) {
+	var out *store.PasswordResetRevocation
+	err := s.conn.withTransaction(ctx, func(conn *mysqlConn) error {
+		row, err := conn.q.GetUserTokensRevocationForUpdate(ctx, p.ID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return store.ErrNotFound
+		}
+		if err != nil {
+			return mapErr(err)
+		}
+		updatedAt := row.NowAt.UTC()
+		revokedAt := updatedAt
+		nextGeneration := row.AuthGeneration + 1
+		n, err := rowsAffected(conn.q.CompletePasswordReset(ctx, gendb.CompletePasswordResetParams{
+			PasswordHash:              p.PasswordHash,
+			TokensRevokedAt:           sqltime.MySQLNullTimeOf(revokedAt),
+			AuthGeneration:            nextGeneration,
+			UpdatedAt:                 sqltime.NewMySQLTime(updatedAt),
+			ID:                        p.ID,
+			PendingPasswordResetToken: p.PendingPasswordResetToken,
+		}))
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return store.ErrNotFound
+		}
+		out = &store.PasswordResetRevocation{
+			UserID:          row.ID,
+			TokensRevokedAt: revokedAt,
+			AuthGeneration:  nextGeneration,
+		}
+		return nil
+	})
+	return out, err
 }
 
 func (s *userStore) RevokeUserTokens(ctx context.Context, userID userid.UserID) (int64, error) {

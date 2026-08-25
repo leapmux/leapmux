@@ -369,15 +369,6 @@ var (
 			Fields:       []Field{{Name: "", Label: "Open sign-up", Kind: FieldBool}},
 		})
 
-	KeyEmailVerificationRequired = NewKey[bool]("email_verification_required").
-					WithUI(UIMeta{
-			Category:     "signup",
-			Title:        "Require verified email",
-			Summary:      "require verified email before sign-in (needs smtp configured)",
-			HiddenInSolo: true,
-			Fields:       []Field{{Name: "", Label: "Require verified email", Kind: FieldBool}},
-		})
-
 	// Solo mints no session: the auth interceptor authenticates every
 	// procedure as the synthetic solo user and refreshes nothing, and the
 	// bootstrapped solo user has no password hash, so Login cannot
@@ -541,7 +532,6 @@ var (
 func CoreDescriptors() []Descriptor {
 	return []Descriptor{
 		KeySignupEnabled,
-		KeyEmailVerificationRequired,
 		KeyPublicURL,
 		KeySecureCookies,
 		KeySessionDurationSeconds,
@@ -553,25 +543,10 @@ func CoreDescriptors() []Descriptor {
 	}
 }
 
-// SMTPConfigured is the cross-key rule the old config enforced at
-// startup: requiring email verification without an SMTP relay would lock
-// every signup behind an email that can never be sent.
-func SMTPConfigured(s *Snapshot) error {
-	if !KeyEmailVerificationRequired.Of(s) {
-		return nil
-	}
-	if !KeySMTP.Of(s).Enabled() {
-		return fmt.Errorf("email_verification_required=true needs the smtp host and from address to be configured first")
-	}
-	return nil
-}
-
-// EmailVerificationEffective applies the SMTPConfigured rule at read
-// time: a state that somehow bypassed the write-path validation (direct
-// SQL) degrades to "verification off" rather than locking every signup
-// behind an email that can never be sent.
+// EmailVerificationEffective is true when SMTP is configured. The database
+// stores the true verification state; this gate controls runtime access.
 func EmailVerificationEffective(s *Snapshot) bool {
-	return KeyEmailVerificationRequired.Of(s) && KeySMTP.Of(s).Enabled()
+	return KeySMTP.Of(s).Enabled()
 }
 
 // SignupEnabledEffective applies the dev-mode default at read time: dev

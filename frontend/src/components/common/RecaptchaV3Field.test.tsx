@@ -1,6 +1,7 @@
 import type { CaptchaFieldHandle } from './CaptchaField'
 /// <reference types="vitest/globals" />
 import { render } from '@solidjs/testing-library'
+import { createSignal } from 'solid-js'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mockLoadSystemInfo, resetSystemInfoMock, setSystemInfoMock } from '~/test-support/systemInfoMock'
@@ -199,5 +200,47 @@ describe('recaptchaV3Field', () => {
     const callsAfterUnmount = execute.mock.calls.length
     vi.advanceTimersByTime(110_000)
     expect(execute.mock.calls.length).toBe(callsAfterUnmount)
+  })
+
+  // The action is a MOUNT-TIME constant here; CaptchaField's keyed Show is
+  // what re-arms on a change. An in-field effect would have to clear the
+  // previous token itself, and the one this file used to carry did not --
+  // it re-executed while the old token stayed armed. This test fails if it
+  // comes back.
+  it('binds the action at mount and does not track later changes', async () => {
+    const execute = installFakeGrecaptcha()
+    const [action, setAction] = createSignal('login')
+    render(() => (
+      <div><RecaptchaV3Field action={action()} onPayload={vi.fn()} /></div>
+    ))
+    await vi.waitFor(() => {
+      expect(execute).toHaveBeenCalledWith('site-key', { action: 'login' })
+    })
+    const callsAfterMount = execute.mock.calls.length
+
+    setAction('passkey_login')
+    await Promise.resolve()
+    expect(execute.mock.calls.length).toBe(callsAfterMount)
+    expect(execute).not.toHaveBeenCalledWith('site-key', { action: 'passkey_login' })
+  })
+
+  // The other half of the contract: the fresh instance a keyed remount
+  // creates executes under the new action.
+  it('executes a fresh mount under its own action', async () => {
+    const execute = installFakeGrecaptcha()
+    const first = render(() => (
+      <div><RecaptchaV3Field action="login" onPayload={vi.fn()} /></div>
+    ))
+    await vi.waitFor(() => {
+      expect(execute).toHaveBeenCalledWith('site-key', { action: 'login' })
+    })
+    first.unmount()
+
+    render(() => (
+      <div><RecaptchaV3Field action="passkey_login" onPayload={vi.fn()} /></div>
+    ))
+    await vi.waitFor(() => {
+      expect(execute).toHaveBeenCalledWith('site-key', { action: 'passkey_login' })
+    })
   })
 })

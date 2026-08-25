@@ -33,12 +33,15 @@ func TestSetPendingEmailStoresCanonicalFormat(t *testing.T) {
 	// sqltime.SQLiteTime/timefmt.Format truncate, so a ms-aligned instant
 	// isolates the layout assertion from that sub-ms rounding difference.
 	expiry := time.Now().UTC().Add(30 * time.Minute).Truncate(time.Millisecond)
-	require.NoError(t, st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
+	minted, err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
 		ID:                    user.ID,
 		PendingEmail:          "new@example.com",
 		PendingEmailToken:     "tok-1",
 		PendingEmailExpiresAt: &expiry,
-	}))
+		CooldownCutoff:        store.UnconditionalMintCutoff(),
+	})
+	require.NoError(t, err)
+	require.True(t, minted)
 
 	// Direct layout pin: the on-disk value must equal timefmt.Format(expiry)
 	// byte-for-byte. Comparing SQL-side (raw = CAST) avoids modernc's
@@ -68,17 +71,20 @@ func TestClearStalePendingEmailsSweepsLockoutRowSameDay(t *testing.T) {
 	user := storetest.SeedUser(t, st, "lockout-sweep-user")
 
 	expiry := time.Now().UTC().Add(24 * time.Hour)
-	require.NoError(t, st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
+	minted, err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
 		ID:                    user.ID,
 		PendingEmail:          "locked@example.com",
 		PendingEmailToken:     "tok-lock",
 		PendingEmailExpiresAt: &expiry,
-	}))
+		CooldownCutoff:        store.UnconditionalMintCutoff(),
+	})
+	require.NoError(t, err)
+	require.True(t, minted)
 
 	// Exceed the attempt budget so the lockout branch rewrites
 	// pending_email_expires_at to strftime('now').
 	for range 6 {
-		_, err := st.Users().ConsumeVerificationAttempt(ctx, user.ID)
+		_, err := st.Users().ConsumeVerificationAttempt(ctx, user.ID, time.Now().UTC(), 5)
 		require.NoError(t, err)
 	}
 

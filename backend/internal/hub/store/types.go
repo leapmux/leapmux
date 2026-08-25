@@ -56,24 +56,27 @@ func SearchLikePattern(query *string) *string {
 
 // User represents a user account.
 type User struct {
-	ID                    string
-	Username              string
-	PasswordHash          string
-	DisplayName           string
-	Email                 string
-	EmailVerified         bool
-	PendingEmail          string
-	PendingEmailToken     string
-	PendingEmailExpiresAt *time.Time
-	PendingEmailAttempts  int64
-	PasswordSet           bool
-	IsAdmin               bool
-	Prefs                 string
-	CreatedAt             time.Time
-	UpdatedAt             time.Time
-	TokensRevokedAt       *time.Time
-	AuthGeneration        int64
-	DeletedAt             *time.Time
+	ID                            string
+	Username                      string
+	PasswordHash                  string
+	DisplayName                   string
+	Email                         string
+	EmailVerified                 bool
+	PendingEmail                  string
+	PendingEmailToken             string
+	PendingEmailExpiresAt         *time.Time
+	PendingEmailAttempts          int64
+	PendingPasswordResetToken     string
+	PendingPasswordResetExpiresAt *time.Time
+	PendingPasswordResetAttempts  int64
+	PasswordSet                   bool
+	IsAdmin                       bool
+	Prefs                         string
+	CreatedAt                     time.Time
+	UpdatedAt                     time.Time
+	TokensRevokedAt               *time.Time
+	AuthGeneration                int64
+	DeletedAt                     *time.Time
 }
 
 // PageCursor returns the keyset position for user listings (ListAll/Search),
@@ -355,6 +358,36 @@ type OAuthState struct {
 	CreatedAt    time.Time
 }
 
+// PasskeyCredential stores one WebAuthn credential for a user. PublicKey is
+// keystore-encrypted at the service layer before persistence.
+type PasskeyCredential struct {
+	ID             string
+	UserID         string
+	CredentialID   []byte
+	PublicKey      []byte
+	SignCount      int64
+	AAGUID         []byte
+	BackupEligible bool
+	BackupState    bool
+	Transports     string
+	FriendlyName   string
+	KeyVersion     int64
+	CreatedAt      time.Time
+	LastUsedAt     *time.Time
+}
+
+// WebAuthnSession holds ephemeral ceremony state. SessionData is
+// keystore-encrypted at the service layer before persistence.
+type WebAuthnSession struct {
+	ID          string
+	Kind        string
+	UserID      string
+	PayloadJSON string
+	SessionData []byte
+	ExpiresAt   time.Time
+	CreatedAt   time.Time
+}
+
 // OAuthToken stores encrypted OAuth tokens for a user+provider pair.
 type OAuthToken struct {
 	UserID       string
@@ -493,11 +526,24 @@ type UpdateUserPrefsParams struct {
 	Prefs string
 }
 
+// UnconditionalMintCutoff always satisfies a conditional mint. Use it
+// where no previous code can exist (account creation) or where the caller
+// deliberately overwrites (a test seed). It says so at the call site
+// instead of leaving a zero cutoff to mean it by accident.
+func UnconditionalMintCutoff() time.Time {
+	return time.Now().UTC().Add(100 * 365 * 24 * time.Hour)
+}
+
 type SetPendingEmailParams struct {
 	ID                    string
 	PendingEmail          string
 	PendingEmailToken     string
 	PendingEmailExpiresAt *time.Time
+	// CooldownCutoff controls the conditional mint: the write lands only
+	// when no previous code exists or the previous code's expiry is at or
+	// before this instant. The caller derives it from the resend cooldown.
+	// Its twin is SetPendingPasswordResetParams.CooldownCutoff.
+	CooldownCutoff time.Time
 }
 
 type ClearCompetingPendingEmailsParams struct {
@@ -990,6 +1036,72 @@ type GetOAuthUserLinkParams struct {
 type DeleteOAuthUserLinkParams struct {
 	UserID     userid.UserID
 	ProviderID string
+}
+
+type CreatePasskeyCredentialParams struct {
+	ID             string
+	UserID         string
+	CredentialID   []byte
+	PublicKey      []byte
+	SignCount      int64
+	AAGUID         []byte
+	BackupEligible bool
+	BackupState    bool
+	Transports     string
+	FriendlyName   string
+	KeyVersion     int64
+	CreatedAt      time.Time
+	LastUsedAt     *time.Time
+}
+
+type UpdatePasskeySignCountParams struct {
+	CredentialID []byte
+	UserID       string
+	SignCount    int64
+	LastUsedAt   time.Time
+}
+
+type UpdatePasskeyPublicKeyParams struct {
+	ID         string
+	UserID     string
+	PublicKey  []byte
+	KeyVersion int64
+}
+
+type CreateWebAuthnSessionParams struct {
+	ID          string
+	Kind        string
+	UserID      string
+	PayloadJSON string
+	SessionData []byte
+	ExpiresAt   time.Time
+	CreatedAt   time.Time
+}
+
+type SetPendingPasswordResetParams struct {
+	ID                            string
+	PendingPasswordResetToken     string
+	PendingPasswordResetExpiresAt time.Time
+	// CooldownCutoff controls the conditional mint: the write lands only when
+	// no previous token exists or the previous token's expiry is at or
+	// before this cutoff, so two concurrent first requests cannot both
+	// mint and both send. The caller derives the cutoff from the resend
+	// cooldown.
+	CooldownCutoff time.Time
+}
+
+type CompletePasswordResetParams struct {
+	ID                        string
+	PasswordHash              string
+	PendingPasswordResetToken string
+}
+
+// PasswordResetRevocation is returned by CompletePasswordReset when the
+// user row was updated and tokens must be revoked cross-process.
+type PasswordResetRevocation struct {
+	UserID          string
+	TokensRevokedAt time.Time
+	AuthGeneration  int64
 }
 
 // --- API token types ---

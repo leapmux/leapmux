@@ -3,6 +3,7 @@ package mail
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/leapmux/leapmux/internal/util/verifycode"
 )
@@ -19,6 +20,9 @@ const footerSeparator = "-- \n"
 // verification link is built" — callers only know the code, not the URL
 // shape.
 const verifyEmailPath = "/verify-email?code="
+
+// resetPasswordPath is the frontend route for self-service password reset.
+const resetPasswordPath = "/reset-password?token="
 
 // Renderer builds the email Messages this package sends. It carries a
 // base-URL closure so render call sites only pass per-message data
@@ -51,11 +55,27 @@ func (r Renderer) footer() string {
 		"Please do not reply.\n"
 }
 
+// expiresIn renders a token lifetime as the prose the email bodies use.
+// The two production lifetimes keep their pinned English; any other
+// duration falls back to whole minutes so a future lifetime cannot render
+// empty. Callers pass the same constant that governs the real expiry, so
+// the sentence and the token cannot promise different lifetimes.
+func expiresIn(ttl time.Duration) string {
+	switch ttl {
+	case time.Hour:
+		return "one hour"
+	case 30 * time.Minute:
+		return "30 minutes"
+	default:
+		return fmt.Sprintf("%d minutes", int(ttl.Minutes()))
+	}
+}
+
 // VerificationEmail builds the email that delivers a verification code
 // to confirm a new or changed email address.
 //
 // Sent when:
-//   - Password sign-up with email when EmailVerificationRequired=true.
+//   - Password sign-up with email when SMTP verification is effective.
 //   - OAuth sign-up when the provider's email is untrusted.
 //   - User requests an email change.
 //   - User requests a resend of a previously-issued code.
@@ -75,7 +95,7 @@ func (r Renderer) footer() string {
 //
 //	    {link}
 //
-//	The code expires in 30 minutes.
+//	The code expires in {ttl}.
 //
 //	-- ␠
 //	This is an automated message from your LeapMux hub at {hubURL}.
@@ -83,7 +103,7 @@ func (r Renderer) footer() string {
 //
 // (The "␠" marker stands in for a literal trailing space on the "-- "
 // signature delimiter; see RFC 3676 §4.3.)
-func (r Renderer) VerificationEmail(to, storedCode string) Message {
+func (r Renderer) VerificationEmail(to, storedCode string, ttl time.Duration) Message {
 	display := verifycode.Format(storedCode)
 	link := r.hubURL() + verifyEmailPath + display
 	var body strings.Builder
@@ -91,7 +111,7 @@ func (r Renderer) VerificationEmail(to, storedCode string) Message {
 	body.WriteString(display)
 	body.WriteString("\n\nOr click the link below:\n\n    ")
 	body.WriteString(link)
-	body.WriteString("\n\nThe code expires in 30 minutes.\n\n")
+	body.WriteString("\n\nThe code expires in " + expiresIn(ttl) + ".\n\n")
 	body.WriteString(r.footer())
 	return Message{
 		To:      to,
@@ -138,6 +158,28 @@ func (r Renderer) RegistrationInstructions(to, command string) Message {
 	return Message{
 		To:      to,
 		Subject: "[LeapMux] Your worker registration command",
+		Body:    body,
+	}
+}
+
+// PasswordResetEmail builds the self-service password reset email.
+func (r Renderer) PasswordResetEmail(to, token string, ttl time.Duration) Message {
+	link := r.hubURL() + resetPasswordPath + token
+	// expiresIn is an ARGUMENT, never spliced into the format string: a
+	// concatenated value carries its own text into the verb list, so one
+	// stray %% in a future duration string would shift every verb after it
+	// and render "%!o(string=F)f an hour" into the delivered mail.
+	body := fmt.Sprintf(
+		"You requested a password reset for your LeapMux account.\n\n"+
+			"Click the link below to choose a new password:\n\n    %s\n\n"+
+			"The link expires in %s. If you did not request this, you can ignore this email.\n\n%s",
+		link,
+		expiresIn(ttl),
+		r.footer(),
+	)
+	return Message{
+		To:      to,
+		Subject: "[LeapMux] Reset your password",
 		Body:    body,
 	}
 }

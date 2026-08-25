@@ -16,9 +16,13 @@ import (
 // that make an unauthenticated caller run Argon2 or create users, so an
 // entry without a written reason is unaudited.
 var protectedProcedureRationale = map[string]string{
-	leapmuxv1connect.AuthServiceLoginProcedure:               "runs Argon2 verification for an anonymous caller",
-	leapmuxv1connect.AuthServiceSignUpProcedure:              "creates a user (Argon2 hash, optional SMTP) for an anonymous caller",
-	leapmuxv1connect.AuthServiceCompleteOAuthSignupProcedure: "consumes a single-use pending id and creates a user for an anonymous caller",
+	leapmuxv1connect.AuthServiceLoginProcedure:                 "runs Argon2 verification for an anonymous caller",
+	leapmuxv1connect.AuthServiceSignUpProcedure:                "creates a user (Argon2 hash, optional SMTP) for an anonymous caller",
+	leapmuxv1connect.AuthServiceCompleteOAuthSignupProcedure:   "consumes a single-use pending id and creates a user for an anonymous caller",
+	leapmuxv1connect.AuthServiceBeginPasskeyLoginProcedure:     "starts a passkey assertion ceremony for an anonymous caller",
+	leapmuxv1connect.AuthServiceBeginPasskeySignUpProcedure:    "starts a passkey registration ceremony for an anonymous caller",
+	leapmuxv1connect.AuthServiceRequestPasswordResetProcedure:  "issues a password-reset email for an anonymous caller",
+	leapmuxv1connect.AuthServiceCompletePasswordResetProcedure: "runs Argon2 and rotates credentials for an anonymous caller with a reset token",
 }
 
 // captchaExemptRationale records, for every OTHER public procedure, why it
@@ -32,6 +36,8 @@ var captchaExemptRationale = map[string]string{
 	leapmuxv1connect.AuthServiceGetOAuthProvidersProcedure:                  "cheap pre-login read",
 	leapmuxv1connect.AuthServiceGetPendingOAuthSignupProcedure:              "read keyed by a single-use pending id; no expensive action",
 	leapmuxv1connect.AuthServiceGetAltchaChallengeProcedure:                 "issues the ALTCHA challenges themselves; protecting it would be circular",
+	leapmuxv1connect.AuthServiceFinishPasskeyLoginProcedure:                 "consumes a short-lived ceremony session; expensive work is in Begin",
+	leapmuxv1connect.AuthServiceFinishPasskeySignUpProcedure:                "consumes a short-lived ceremony session; expensive work is in Begin",
 	leapmuxv1connect.WorkerConnectorServiceRegisterProcedure:                "caller is a worker process with a registration key, not a human form",
 	leapmuxv1connect.WorkerConnectorServiceConnectProcedure:                 "caller is a worker process with an auth_token, not a human form",
 	leapmuxv1connect.WorkerReconcilerServiceListOwnedTabsForWorkerProcedure: "caller is a worker process with an auth_token, not a human form",

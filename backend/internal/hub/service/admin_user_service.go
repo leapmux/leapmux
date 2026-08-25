@@ -12,6 +12,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/password"
+	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/usernames"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -27,6 +28,7 @@ import (
 // hub stopped) stay in `leapmux recover`.
 type AdminUserService struct {
 	store     store.Store
+	set       *settings.Manager
 	validator *auth.TokenValidator
 	// lifecycle tears down the in-process holders of a credential this
 	// service revokes. The durable revocation events reach every hub, but
@@ -39,8 +41,8 @@ type AdminUserService struct {
 	workerEffects *WorkerDeregisterEffects
 }
 
-func NewAdminUserService(st store.Store, validator *auth.TokenValidator, lifecycle *auth.CredentialLifecycleEffects, workerEffects *WorkerDeregisterEffects) *AdminUserService {
-	return &AdminUserService{store: st, validator: validator, lifecycle: lifecycle, workerEffects: workerEffects}
+func NewAdminUserService(st store.Store, validator *auth.TokenValidator, lifecycle *auth.CredentialLifecycleEffects, workerEffects *WorkerDeregisterEffects, set *settings.Manager) *AdminUserService {
+	return &AdminUserService{set: set, store: st, validator: validator, lifecycle: lifecycle, workerEffects: workerEffects}
 }
 
 // adminUserToProto maps a user row. Password material never crosses.
@@ -346,6 +348,15 @@ func (s *AdminUserService) CreateUser(ctx context.Context, req *connect.Request[
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
 	}
+	// When the hub requires verification, an email-less unverified
+	// non-admin account lands on /verify-email with no code that can ever
+	// arrive: the login flow flags it verification-required but there is
+	// nothing to verify. Admins and explicit email_verified=true requests
+	// pass; CreateUser forces the admin flag in the database regardless.
+	if email == "" && !msg.GetIsAdmin() && !msg.GetEmailVerified() &&
+		s.set != nil && settings.EmailVerificationEffective(s.set.Snapshot(ctx)) {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("email is required when the hub requires email verification"))
+	}
 
 	// Pre-check availability so a collision is reported as a collision;
 	// the unique index remains the real guard against the race.
@@ -360,6 +371,8 @@ func (s *AdminUserService) CreateUser(ctx context.Context, req *connect.Request[
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("hash password: %w", err))
 	}
+	// CreateUser forces EmailVerified for admins, so the single invariant
+	// site owns the rule.
 	user, err := CreateUser(ctx, s.store, CreateUserParams{
 		Username:      username,
 		PasswordHash:  hashed,
@@ -404,6 +417,23 @@ func (s *AdminUserService) UpdateUser(ctx context.Context, req *connect.Request[
 		if err := validate.ValidateEmail(msg.GetEmail()); err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
+	}
+	// Clearing the email must not mint the state CreateUser refuses: an
+	// email-less unverified account on a hub that requires verification
+	// lands on /verify-email with no code that can ever arrive.
+	if updateEmail && msg.GetEmail() == "" && !user.IsAdmin && !user.EmailVerified &&
+		s.set != nil && settings.EmailVerificationEffective(s.set.Snapshot(ctx)) {
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			errors.New("cannot clear the email of an unverified account while the hub requires email verification"))
+	}
+	// Admins are always email_verified=true in the database: CreateUser and
+	// SetUserAdmin force the flag, and the stored state is what keeps the
+	// runtime IsAdmin exemption (the auth interceptor's verification bypass)
+	// honest. The lowering verb therefore refuses for admin accounts;
+	// demotion (SetUserAdmin) is the path that reopens it.
+	if updateEmailVerified && !msg.GetEmailVerified() && user.IsAdmin {
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			errors.New("an administrator's email is always verified; demote the account first"))
 	}
 
 	err = s.store.RunInTransaction(ctx, func(tx store.Store) error {
@@ -499,6 +529,11 @@ func (s *AdminUserService) DeleteUser(ctx context.Context, req *connect.Request[
 		if _, _, committedGeneration, err = revokeEveryUserCredential(ctx, tx, delUID); err != nil {
 			return err
 		}
+		// Soft-delete does not CASCADE; clear passkey state now so
+		// credential_id uniqueness and encrypted material do not linger.
+		if err := RevokePasskeyAuthState(ctx, tx, user.ID); err != nil {
+			return err
+		}
 		if err := tx.Users().Delete(ctx, user.ID); err != nil {
 			return fmt.Errorf("delete user: %w", err)
 		}
@@ -568,11 +603,68 @@ func (s *AdminUserService) SetUserAdmin(ctx context.Context, req *connect.Reques
 				errors.New("this removes your own administrator access; pass force to confirm"))
 		}
 	}
-	if err := s.store.Users().UpdateAdmin(ctx, store.UpdateUserAdminParams{
-		IsAdmin: req.Msg.GetIsAdmin(),
-		ID:      user.ID,
+	// Both writes share one transaction: a failure between them must not
+	// leave an admin whose stored email_verified=false -- the exact row
+	// state UpdateUser refuses and CreateUser forbids.
+	if err := s.store.RunInTransaction(ctx, func(tx store.Store) error {
+		if err := tx.Users().UpdateAdmin(ctx, store.UpdateUserAdminParams{
+			IsAdmin: req.Msg.GetIsAdmin(),
+			ID:      user.ID,
+		}); err != nil {
+			return storeConnectError(err, "update admin flag")
+		}
+		// Admins are always email_verified=true in the database, regardless of
+		// SMTP. Promotion must set the flag so the stored state matches the
+		// runtime exemption (IsAdmin bypasses the gate either way).
+		if req.Msg.GetIsAdmin() && !user.EmailVerified {
+			if err := tx.Users().UpdateEmailVerified(ctx, store.UpdateUserEmailVerifiedParams{
+				EmailVerified: true,
+				ID:            user.ID,
+			}); err != nil {
+				return storeConnectError(err, "mark admin email verified")
+			}
+			return nil
+		}
+		// Demotion must repair the flag the admin invariant forced, or the
+		// promotion leaks a verified state the account never earned: the
+		// demoted row then passes the login verification gate, passes
+		// UpdateUser's clear-email guard, and satisfies the "no durable
+		// identity" refusal that protects a first passkey.
+		//
+		// An EMPTY email is the case this can decide. email_verified
+		// describes an address, so with no address there is nothing that
+		// could have been confirmed and the flag can only have come from the
+		// promotion above (or from createUserInTx forcing it for the /setup
+		// admin). A demoted account that HAS an address is left alone: the
+		// row records no pre-promotion value, so lowering it there would
+		// un-verify an address the user really did confirm.
+		if !req.Msg.GetIsAdmin() {
+			// Re-read INSIDE the transaction. `user` is the unlocked
+			// pre-transaction snapshot, and the decision turns on the very
+			// columns a concurrent VerifyEmail rewrites: promoting a pending
+			// address sets email and email_verified together, so deciding
+			// from the snapshot would clear a verification the user really
+			// completed between the read and this write.
+			locked, err := tx.Users().GetByID(ctx, user.ID)
+			if err != nil {
+				return storeConnectError(err, "re-read user for demotion")
+			}
+			if locked.EmailVerified && locked.Email == "" {
+				if err := tx.Users().UpdateEmailVerified(ctx, store.UpdateUserEmailVerifiedParams{
+					EmailVerified: false,
+					ID:            user.ID,
+				}); err != nil {
+					return storeConnectError(err, "clear unearned email verification")
+				}
+			}
+		}
+		return nil
 	}); err != nil {
-		return nil, storeConnectError(err, "update admin flag")
+		var connectErr *connect.Error
+		if errors.As(err, &connectErr) {
+			return nil, connectErr
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	updated, err := s.store.Users().GetByID(ctx, user.ID)
 	if err != nil {
@@ -624,6 +716,13 @@ func (s *AdminUserService) ResetPassword(ctx context.Context, req *connect.Reque
 		}); err != nil {
 			return fmt.Errorf("update password: %w", err)
 		}
+		// Admin password reset is break-glass: clear passkeys the same way
+		// self-service CompletePasswordReset does, so a lost-device recovery
+		// cannot leave orphan credentials, and a reset email requested
+		// before this emergency reset must not stay completable.
+		if err := RevokePasskeyAuthState(ctx, tx, user.ID); err != nil {
+			return err
+		}
 		// An administrator's reset rotates the user's auth basis globally.
 		// Every credential that predates the rotation must die, because
 		// whoever knew the old password is often the reason for the reset.
@@ -657,7 +756,7 @@ func (s *AdminUserService) ListUserSessions(ctx context.Context, req *connect.Re
 	page, err := s.store.Sessions().ListByUserID(ctx, store.ListUserSessionsParams{
 		UserID:     uid,
 		PageParams: AdminPageParams(req.Msg.GetCursor(), req.Msg.GetLimit()),
-	})
+	}, time.Now().UTC())
 	if err != nil {
 		return nil, storeConnectError(err, "list user sessions")
 	}
@@ -680,7 +779,7 @@ func (s *AdminUserService) ListUserSessions(ctx context.Context, req *connect.Re
 func (s *AdminUserService) ListSessions(ctx context.Context, req *connect.Request[leapmuxv1.ListSessionsRequest]) (*connect.Response[leapmuxv1.ListSessionsResponse], error) {
 	page, err := s.store.Sessions().ListAllActive(ctx, store.ListAllActiveSessionsParams{
 		PageParams: AdminPageParams(req.Msg.GetCursor(), req.Msg.GetLimit()),
-	})
+	}, time.Now().UTC())
 	if err != nil {
 		return nil, storeConnectError(err, "list sessions")
 	}
@@ -728,7 +827,7 @@ func (s *AdminUserService) RevokeUserSessions(ctx context.Context, req *connect.
 }
 
 func (s *AdminUserService) PurgeExpiredSessions(ctx context.Context, _ *connect.Request[leapmuxv1.PurgeExpiredSessionsRequest]) (*connect.Response[leapmuxv1.PurgeExpiredSessionsResponse], error) {
-	n, err := s.store.Cleanup().HardDeleteExpiredSessions(ctx)
+	n, err := s.store.Cleanup().HardDeleteExpiredSessions(ctx, time.Now().UTC())
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("purge expired sessions: %w", err))
 	}

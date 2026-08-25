@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"time"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
@@ -117,14 +118,17 @@ func (s *delegationTokenStore) ListAll(ctx context.Context, p store.ListAllDeleg
 	}
 }
 
-func (s *delegationTokenStore) ListActiveByUser(ctx context.Context, userID userid.UserID) ([]store.DelegationToken, error) {
+func (s *delegationTokenStore) ListActiveByUser(ctx context.Context, userID userid.UserID, now time.Time) ([]store.DelegationToken, error) {
 	owner, ok := userid.OwnerFilter(userID)
 	if !ok {
 		// An unminted caller owns nothing; binding "" would MATCH every
 		// blank-owner row rather than none. See userid.OwnerFilter.
 		return nil, nil
 	}
-	rows, err := s.conn.q.ListActiveDelegationTokensByUser(ctx, owner)
+	rows, err := s.conn.q.ListActiveDelegationTokensByUser(ctx, gendb.ListActiveDelegationTokensByUserParams{
+		UserID: owner,
+		Now:    pgtime.New(now),
+	})
 	if err != nil {
 		return nil, mapErr(err)
 	}

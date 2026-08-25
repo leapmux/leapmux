@@ -44,7 +44,7 @@ describe('e2e load-state waits', () => {
   it('never waits for networkidle', () => {
     const offenders: string[] = []
     for (const file of collectE2EFiles()) {
-      // The ban has to be EXPLAINED somewhere, and the explanation names the
+      // The ban has to be EXPLAINED somewhere, and the explanation identifies the
       // call, so the comment lines go before the scan reads them.
       const lines = stripCommentLines(readFileSync(file, 'utf-8')).split('\n')
       lines.forEach((text, index) => {

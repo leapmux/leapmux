@@ -67,7 +67,7 @@ func (h *APIAuthHandler) handleTokenAuthorizationCode(w http.ResponseWriter, r *
 		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "code and code_verifier are required")
 		return
 	}
-	row, err := h.store.CLIAuthorizationCodes().GetActive(r.Context(), code)
+	row, err := h.store.CLIAuthorizationCodes().GetActive(r.Context(), code, h.now().UTC())
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "code expired or already consumed")
@@ -98,7 +98,7 @@ func (h *APIAuthHandler) handleTokenAuthorizationCode(w http.ResponseWriter, r *
 		"code expired or already consumed",
 		"authorization code token issuance failed",
 		func(tx store.Store) error {
-			if _, err := tx.CLIAuthorizationCodes().Consume(r.Context(), code); err != nil {
+			if _, err := tx.CLIAuthorizationCodes().Consume(r.Context(), code, h.now().UTC()); err != nil {
 				if errors.Is(err, store.ErrNotFound) {
 					return errAuthorizationGrantUnavailable
 				}
@@ -194,7 +194,7 @@ func (h *APIAuthHandler) handleTokenDeviceCode(w http.ResponseWriter, r *http.Re
 			// Consume is the single-use consumption that must stay atomic
 			// with token creation, so it -- and only it -- remains in the
 			// transaction.
-			affected, err := tx.DeviceAuthorizations().Consume(r.Context(), deviceCode)
+			affected, err := tx.DeviceAuthorizations().Consume(r.Context(), deviceCode, h.now().UTC())
 			if err != nil {
 				return fmt.Errorf("consume device authorization: %w", err)
 			}

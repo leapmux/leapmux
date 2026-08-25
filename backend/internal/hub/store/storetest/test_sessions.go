@@ -20,7 +20,7 @@ func (s *Suite) testSessions(t *testing.T) {
 		user := SeedUser(t, st, "sess-user")
 		sess := SeedSession(t, st, user.ID)
 
-		found, err := st.Sessions().GetByID(ctx, sess.ID)
+		found, err := st.Sessions().GetByID(ctx, sess.ID, time.Now().UTC())
 		require.NoError(t, err)
 		assert.Equal(t, sess.ID, found.ID)
 		assert.Equal(t, user.ID, found.UserID)
@@ -32,8 +32,63 @@ func (s *Suite) testSessions(t *testing.T) {
 
 	t.Run("get by id not found", func(t *testing.T) {
 		st := s.NewStore(t)
-		_, err := st.Sessions().GetByID(ctx, "nonexistent")
+		_, err := st.Sessions().GetByID(ctx, "nonexistent", time.Now().UTC())
 		assert.ErrorIs(t, err, store.ErrNotFound)
+	})
+
+	t.Run("liveness follows the caller's clock, not the database clock", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "sess-clock-user")
+		sess := SeedSession(t, st, user.ID)
+
+		// The same row is live at now and dead two days later: the bound
+		// clock parameter decides, which is what keeps hub/database clock
+		// skew from shifting session TTLs.
+		found, err := st.Sessions().GetByID(ctx, sess.ID, time.Now().UTC())
+		require.NoError(t, err)
+		assert.Equal(t, sess.ID, found.ID)
+
+		_, err = st.Sessions().GetByID(ctx, sess.ID, time.Now().UTC().Add(48*time.Hour))
+		assert.ErrorIs(t, err, store.ErrNotFound, "a session past the caller's clock must not resolve")
+	})
+
+	// The three session reads and the touch all bind the caller's clock the
+	// same way GetByID does. Each one is asserted at a caller clock past the
+	// row's expiry, because the omission that made these predicates
+	// unconditional was invisible on sqlite/postgres/mysql (silently
+	// always-true) and a hard error only on TiDB.
+	t.Run("session listings and touch judge liveness on the caller clock", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "sess-clock-listing-user")
+		sess := SeedSession(t, st, user.ID)
+		afterExpiry := time.Now().UTC().Add(48 * time.Hour)
+
+		live, err := st.Sessions().ListAllActive(ctx, store.ListAllActiveSessionsParams{
+			PageParams: store.PageParams{Limit: 10},
+		}, time.Now().UTC())
+		require.NoError(t, err)
+		require.Len(t, live.Rows, 1, "control: the row is live at the caller's own clock")
+
+		dead, err := st.Sessions().ListAllActive(ctx, store.ListAllActiveSessionsParams{
+			PageParams: store.PageParams{Limit: 10},
+		}, afterExpiry)
+		require.NoError(t, err)
+		assert.Empty(t, dead.Rows, "ListAllActive must exclude a session past the caller's clock")
+
+		byUser, err := st.Sessions().ListByUserID(ctx, store.ListUserSessionsParams{
+			UserID:     userid.MustNew(user.ID),
+			PageParams: store.PageParams{Limit: 10},
+		}, afterExpiry)
+		require.NoError(t, err)
+		assert.Empty(t, byUser.Rows, "ListByUserID must exclude a session past the caller's clock")
+
+		n, err := st.Sessions().Touch(ctx, store.TouchSessionParams{
+			ID:           sess.ID,
+			ExpiresAt:    afterExpiry.Add(time.Hour),
+			LastActiveAt: afterExpiry,
+		}, afterExpiry)
+		require.NoError(t, err)
+		assert.Zero(t, n, "Touch must not revive a session that is dead at the caller's clock")
 	})
 
 	t.Run("touch", func(t *testing.T) {
@@ -49,11 +104,11 @@ func (s *Suite) testSessions(t *testing.T) {
 			ID:           sess.ID,
 			ExpiresAt:    newExpiry,
 			LastActiveAt: newActive,
-		})
+		}, time.Now().UTC())
 		require.NoError(t, err)
 		assert.Equal(t, int64(1), n, "a matched touch reports one updated row")
 
-		updated, err := st.Sessions().GetByID(ctx, sess.ID)
+		updated, err := st.Sessions().GetByID(ctx, sess.ID, time.Now().UTC())
 		require.NoError(t, err)
 		assert.WithinDuration(t, newExpiry, updated.ExpiresAt, time.Second)
 		// The SQL sets last_active_at to strftime('now'), not the passed value.
@@ -69,7 +124,7 @@ func (s *Suite) testSessions(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, int64(1), n)
 
-		_, err = st.Sessions().GetByID(ctx, sess.ID)
+		_, err = st.Sessions().GetByID(ctx, sess.ID, time.Now().UTC())
 		assert.ErrorIs(t, err, store.ErrNotFound)
 	})
 
@@ -160,7 +215,7 @@ func (s *Suite) testSessions(t *testing.T) {
 
 		sess := SeedSession(t, st, userID)
 
-		sw, err := st.Sessions().ValidateWithUser(ctx, sess.ID)
+		sw, err := st.Sessions().ValidateWithUser(ctx, sess.ID, time.Now().UTC())
 		require.NoError(t, err)
 		assert.Equal(t, userID, sw.UserID)
 		assert.Equal(t, "validate-user", sw.Username)
@@ -173,13 +228,13 @@ func (s *Suite) testSessions(t *testing.T) {
 		user := SeedUser(t, st, "generation-user")
 		sess := SeedSession(t, st, user.ID)
 
-		sw, err := st.Sessions().ValidateWithUser(ctx, sess.ID)
+		sw, err := st.Sessions().ValidateWithUser(ctx, sess.ID, time.Now().UTC())
 		require.NoError(t, err)
 		assert.Equal(t, int64(0), sw.AuthGeneration)
 
 		_, err = st.Users().RevokeUserTokens(ctx, userid.MustNew(user.ID))
 		require.NoError(t, err)
-		_, err = st.Sessions().ValidateWithUser(ctx, sess.ID)
+		_, err = st.Sessions().ValidateWithUser(ctx, sess.ID, time.Now().UTC())
 		assert.ErrorIs(t, err, store.ErrNotFound)
 
 		n, err := st.Sessions().RefreshAuthGeneration(ctx, store.RefreshSessionAuthGenerationParams{
@@ -189,14 +244,14 @@ func (s *Suite) testSessions(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, int64(1), n)
 
-		sw, err = st.Sessions().ValidateWithUser(ctx, sess.ID)
+		sw, err = st.Sessions().ValidateWithUser(ctx, sess.ID, time.Now().UTC())
 		require.NoError(t, err)
 		assert.Equal(t, int64(1), sw.AuthGeneration)
 	})
 
 	t.Run("validate with user not found", func(t *testing.T) {
 		st := s.NewStore(t)
-		_, err := st.Sessions().ValidateWithUser(ctx, "nonexistent")
+		_, err := st.Sessions().ValidateWithUser(ctx, "nonexistent", time.Now().UTC())
 		assert.ErrorIs(t, err, store.ErrNotFound)
 	})
 
@@ -214,7 +269,7 @@ func (s *Suite) testSessions(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		_, err = st.Sessions().GetByID(ctx, sessID)
+		_, err = st.Sessions().GetByID(ctx, sessID, time.Now().UTC())
 		assert.ErrorIs(t, err, store.ErrNotFound)
 	})
 
@@ -227,7 +282,7 @@ func (s *Suite) testSessions(t *testing.T) {
 
 		page, err := st.Sessions().ListAllActive(ctx, store.ListAllActiveSessionsParams{
 			PageParams: store.PageParams{Limit: 100},
-		})
+		}, time.Now().UTC())
 		require.NoError(t, err)
 		sessions := page.Rows
 		assert.GreaterOrEqual(t, len(sessions), 2)
@@ -255,7 +310,7 @@ func (s *Suite) testSessions(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		_, err = st.Sessions().ValidateWithUser(ctx, sessID)
+		_, err = st.Sessions().ValidateWithUser(ctx, sessID, time.Now().UTC())
 		assert.ErrorIs(t, err, store.ErrNotFound)
 	})
 
@@ -271,11 +326,11 @@ func (s *Suite) testSessions(t *testing.T) {
 			ID:           sess.ID,
 			ExpiresAt:    newExpiry,
 			LastActiveAt: futureActive,
-		})
+		}, time.Now().UTC())
 		require.NoError(t, err)
 		assert.Equal(t, int64(1), n, "the first (matching) touch updates one row")
 
-		after1, err := st.Sessions().GetByID(ctx, sess.ID)
+		after1, err := st.Sessions().GetByID(ctx, sess.ID, time.Now().UTC())
 		require.NoError(t, err)
 		assert.WithinDuration(t, newExpiry, after1.ExpiresAt, time.Second)
 
@@ -289,11 +344,11 @@ func (s *Suite) testSessions(t *testing.T) {
 			ID:           sess.ID,
 			ExpiresAt:    staleExpiry,
 			LastActiveAt: staleActive,
-		})
+		}, time.Now().UTC())
 		require.NoError(t, err)
 		assert.Equal(t, int64(0), n, "a stale (below-threshold) touch matches no row")
 
-		after2, err := st.Sessions().GetByID(ctx, sess.ID)
+		after2, err := st.Sessions().GetByID(ctx, sess.ID, time.Now().UTC())
 		require.NoError(t, err)
 		// ExpiresAt should NOT have changed to staleExpiry.
 		assert.WithinDuration(t, newExpiry, after2.ExpiresAt, time.Second)
@@ -321,11 +376,11 @@ func (s *Suite) testSessions(t *testing.T) {
 			ID:           sessID,
 			ExpiresAt:    time.Now().Add(48 * time.Hour),
 			LastActiveAt: time.Now().Add(time.Minute),
-		})
+		}, time.Now().UTC())
 		require.NoError(t, err)
 		assert.Equal(t, int64(0), n, "an expired session must match no row")
 
-		_, err = st.Sessions().ValidateWithUser(ctx, sessID)
+		_, err = st.Sessions().ValidateWithUser(ctx, sessID, time.Now().UTC())
 		assert.ErrorIs(t, err, store.ErrNotFound, "the session must still be dead after the touch")
 	})
 
@@ -338,7 +393,7 @@ func (s *Suite) testSessions(t *testing.T) {
 			ID:           "nonexistent-sess",
 			ExpiresAt:    time.Now().Add(24 * time.Hour),
 			LastActiveAt: time.Now(),
-		})
+		}, time.Now().UTC())
 		require.NoError(t, err)
 		assert.Equal(t, int64(0), n, "touching a missing session matches no row")
 	})
@@ -355,14 +410,14 @@ func (s *Suite) testSessions(t *testing.T) {
 				ID:           sess.ID,
 				ExpiresAt:    newExpiry,
 				LastActiveAt: time.Now().Add(1 * time.Minute),
-			})
+			}, time.Now().UTC())
 			require.NoError(t, err)
 			assert.Equal(t, int64(1), n, "the in-transaction touch updates one row before rollback")
 			return rollbackErr
 		})
 		require.ErrorIs(t, err, rollbackErr)
 
-		after, err := st.Sessions().GetByID(ctx, sess.ID)
+		after, err := st.Sessions().GetByID(ctx, sess.ID, time.Now().UTC())
 		require.NoError(t, err)
 		assert.WithinDuration(t, sess.ExpiresAt, after.ExpiresAt, time.Second)
 	})
@@ -389,7 +444,7 @@ func (s *Suite) testSessions(t *testing.T) {
 
 		page, err := st.Sessions().ListAllActive(ctx, store.ListAllActiveSessionsParams{
 			PageParams: store.PageParams{Limit: 100},
-		})
+		}, time.Now().UTC())
 		require.NoError(t, err)
 		require.NotNil(t, page.Rows)
 		assert.Empty(t, page.Rows)
@@ -415,7 +470,7 @@ func (s *Suite) testSessions(t *testing.T) {
 
 		page, err := st.Sessions().ListAllActive(ctx, store.ListAllActiveSessionsParams{
 			PageParams: store.PageParams{Limit: 100},
-		})
+		}, time.Now().UTC())
 		require.NoError(t, err)
 		// Only the valid session should appear.
 		require.Len(t, page.Rows, 1)
@@ -431,7 +486,7 @@ func (s *Suite) testSessions(t *testing.T) {
 
 		page, err := st.Sessions().ListAllActive(ctx, store.ListAllActiveSessionsParams{
 			PageParams: store.PageParams{Limit: 2},
-		})
+		}, time.Now().UTC())
 		require.NoError(t, err)
 		assert.Len(t, page.Rows, 2)
 	})
@@ -446,7 +501,7 @@ func (s *Suite) testSessions(t *testing.T) {
 		require.NoError(t, err)
 
 		// ValidateWithUser should return ErrNotFound for a deleted user's session.
-		_, err = st.Sessions().ValidateWithUser(ctx, sess.ID)
+		_, err = st.Sessions().ValidateWithUser(ctx, sess.ID, time.Now().UTC())
 		assert.ErrorIs(t, err, store.ErrNotFound)
 	})
 
@@ -462,7 +517,7 @@ func (s *Suite) testSessions(t *testing.T) {
 
 		page, err := st.Sessions().ListAllActive(ctx, store.ListAllActiveSessionsParams{
 			PageParams: store.PageParams{Limit: 100},
-		})
+		}, time.Now().UTC())
 		require.NoError(t, err)
 		// The soft-deleted user's still-live session must surface for operator audit
 		// (LEFT JOIN with u.deleted_at IS NULL in the join condition, NOT an INNER
@@ -521,14 +576,14 @@ func (s *Suite) testSessions(t *testing.T) {
 		// ListByUserID pages on (last_active_at DESC, id DESC) -- NOT
 		// created_at; a wrong PageCursor column or ORDER BY would misorder or
 		// drop rows across this boundary.
-		page, err := st.Sessions().ListByUserID(ctx, store.ListUserSessionsParams{UserID: userid.MustNew(user.ID), PageParams: store.PageParams{Limit: 2}})
+		page, err := st.Sessions().ListByUserID(ctx, store.ListUserSessionsParams{UserID: userid.MustNew(user.ID), PageParams: store.PageParams{Limit: 2}}, time.Now().UTC())
 		require.NoError(t, err)
 		require.Len(t, page.Rows, 2)
 		assert.Equal(t, s3.ID, page.Rows[0].ID)
 		assert.Equal(t, s2.ID, page.Rows[1].ID)
 		require.True(t, page.HasMore())
 
-		page, err = st.Sessions().ListByUserID(ctx, store.ListUserSessionsParams{UserID: userid.MustNew(user.ID), PageParams: store.PageParams{Cursor: page.NextCursor, Limit: 2}})
+		page, err = st.Sessions().ListByUserID(ctx, store.ListUserSessionsParams{UserID: userid.MustNew(user.ID), PageParams: store.PageParams{Cursor: page.NextCursor, Limit: 2}}, time.Now().UTC())
 		require.NoError(t, err)
 		require.Len(t, page.Rows, 1)
 		assert.Equal(t, s1.ID, page.Rows[0].ID)
@@ -559,7 +614,7 @@ func (s *Suite) testSessions(t *testing.T) {
 		// First page: newest first, so the last two seeds in reverse order.
 		res1, err := st.Sessions().ListAllActive(ctx, store.ListAllActiveSessionsParams{
 			PageParams: store.PageParams{Limit: 2},
-		})
+		}, time.Now().UTC())
 		require.NoError(t, err)
 		assert.True(t, res1.HasMore())
 		page1 := res1.Rows
@@ -571,7 +626,7 @@ func (s *Suite) testSessions(t *testing.T) {
 		cursor := store.EncodeCursor(page1[len(page1)-1].LastActiveAt, page1[len(page1)-1].ID)
 		res2, err := st.Sessions().ListAllActive(ctx, store.ListAllActiveSessionsParams{
 			PageParams: store.PageParams{Cursor: cursor, Limit: 2},
-		})
+		}, time.Now().UTC())
 		require.NoError(t, err)
 		page2 := res2.Rows
 		require.Len(t, page2, 1)
@@ -596,7 +651,7 @@ func (s *Suite) testSessions(t *testing.T) {
 		seen := pageThroughByOne(t, func(cursor string) (store.Page[store.ActiveSession], error) {
 			return st.Sessions().ListAllActive(ctx, store.ListAllActiveSessionsParams{
 				PageParams: store.PageParams{Cursor: cursor, Limit: 1},
-			})
+			}, time.Now().UTC())
 		})
 		assert.ElementsMatch(t, []string{older.ID, tiedA.ID, tiedB.ID}, seen,
 			"same-millisecond sessions must not be skipped across page boundaries")
@@ -635,7 +690,7 @@ func (s *Suite) testSessions(t *testing.T) {
 			t.Run(name, func(t *testing.T) {
 				_, err := st.Sessions().ListAllActive(ctx, store.ListAllActiveSessionsParams{
 					PageParams: store.PageParams{Cursor: bad, Limit: 10},
-				})
+				}, time.Now().UTC())
 				assert.ErrorIs(t, err, store.ErrInvalidCursor,
 					"cursor %q must surface as ErrInvalidCursor, not a generic store fault", bad)
 			})

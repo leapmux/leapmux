@@ -1,11 +1,12 @@
+import { Code, ConnectError } from '@connectrpc/connect'
 import { createMemoryHistory, MemoryRouter, Route } from '@solidjs/router'
 /// <reference types="vitest/globals" />
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { CaptchaProvider } from '~/generated/leapmux/v1/auth_pb'
-import { mockLoadOAuthProviders, resetSystemInfoMock, setSystemInfoMock } from '~/test-support/systemInfoMock'
+import { mockLoadOAuthProviders, mockLoadSystemInfo, resetSystemInfoMock, setSystemInfoMock } from '~/test-support/systemInfoMock'
 
 import { LoginPage } from './LoginPage'
 
@@ -60,6 +61,8 @@ vi.mock('~/components/common/CaptchaHoneypot', () => ({
 }))
 
 const mockLogin = vi.fn()
+const mockLoginWithPasskey = vi.fn()
+const mockSetVerificationResendAvailableAt = vi.fn()
 const mockUser = vi.fn<() => { id: string, username: string } | null>(() => null)
 // `loading` is a real signal so a test can hold the page in the pre-bootstrap
 // state and then release it, which is the whole shape of the race below.
@@ -70,8 +73,11 @@ vi.mock('~/context/AuthContext', () => ({
     loading: () => authLoading(),
     error: () => null,
     login: mockLogin,
+    loginWithPasskey: mockLoginWithPasskey,
     logout: vi.fn(),
     setAuth: vi.fn(),
+    setVerificationResendAvailableAt: mockSetVerificationResendAvailableAt,
+    verificationResendAvailableAt: () => undefined,
     isAuthenticated: () => false,
   }),
   AuthProvider: (props: { children: unknown }) => <>{props.children}</>,
@@ -84,6 +90,7 @@ function renderLoginPage(initialPath = '/login') {
     <MemoryRouter history={history}>
       <Route path="/login" component={LoginPage} />
       <Route path="/" component={() => <div data-testid="app-home" />} />
+      <Route path="/verify-email" component={() => <div data-testid="verify-email-page" />} />
       <Route path="/setup" component={() => <div data-testid="setup-page" />} />
     </MemoryRouter>
   ))
@@ -96,6 +103,8 @@ describe('loginPage', () => {
     setMockCaptchaPayload(null)
     mockCaptchaUnavailable = undefined
     setAuthLoading(false)
+    mockLogin.mockResolvedValue({ verificationRequired: false, verificationEmailSent: false })
+    mockLoginWithPasskey.mockResolvedValue({ verificationRequired: false, verificationEmailSent: false })
   })
 
   // These three pin the bootstrap race. The system-info getters are plain
@@ -389,7 +398,7 @@ describe('loginPage', () => {
   it('keeps button disabled after successful login', async () => {
     mockLogin.mockImplementation(() => {
       mockUser.mockReturnValue({ id: 'u1', username: 'alice' })
-      return Promise.resolve()
+      return Promise.resolve({ verificationRequired: false, verificationEmailSent: false })
     })
 
     renderLoginPage()
@@ -416,10 +425,41 @@ describe('loginPage', () => {
     expect(screen.queryByRole('button', { name: 'Sign in' })).not.toBeInTheDocument()
   })
 
+  it('re-enables the form when a login resolves without a user', async () => {
+    // A conforming server always populates user on success; a server
+    // regression or a response-shape change must not strand the form on a
+    // spinner with no error. The finally block re-enables submission.
+    mockLogin.mockImplementation(() => {
+      mockUser.mockReturnValue(null)
+      return Promise.resolve({ verificationRequired: false, verificationEmailSent: false })
+    })
+
+    renderLoginPage()
+
+    await vi.waitFor(() => {
+      expect(screen.getByLabelText('Username')).toBeInTheDocument()
+    })
+
+    fireEvent.input(screen.getByLabelText('Username'), { target: { value: 'alice' } })
+    fireEvent.input(screen.getByLabelText('Password'), { target: { value: 'secret' } })
+
+    const button = screen.getByRole('button', { name: 'Sign in' })
+    fireEvent.click(button)
+
+    await vi.waitFor(() => {
+      expect(mockLogin).toHaveBeenCalledOnce()
+    })
+    await new Promise(r => setTimeout(r, 0))
+
+    // The form recovers: the button is enabled and says 'Sign in' again.
+    const recovered = screen.getByRole('button', { name: 'Sign in' })
+    expect(recovered).toBeEnabled()
+  })
+
   it('redirects to / after successful login when no redirect param', async () => {
     mockLogin.mockImplementation(() => {
       mockUser.mockReturnValue({ id: 'u1', username: 'alice' })
-      return Promise.resolve()
+      return Promise.resolve({ verificationRequired: false, verificationEmailSent: false })
     })
 
     renderLoginPage()
@@ -434,5 +474,90 @@ describe('loginPage', () => {
 
     // Flat user-owned home is `/` (no org slug).
     expect(await screen.findByTestId('app-home')).toBeInTheDocument()
+  })
+
+  it('redirects to /verify-email when login reports verification required', async () => {
+    mockLogin.mockImplementation(() => {
+      mockUser.mockReturnValue({ id: 'u1', username: 'alice' })
+      return Promise.resolve({ verificationRequired: true, verificationEmailSent: true })
+    })
+
+    renderLoginPage()
+
+    await vi.waitFor(() => {
+      expect(screen.getByLabelText('Username')).toBeInTheDocument()
+    })
+
+    fireEvent.input(screen.getByLabelText('Username'), { target: { value: 'alice' } })
+    fireEvent.input(screen.getByLabelText('Password'), { target: { value: 'secret' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
+
+    expect(await screen.findByTestId('verify-email-page')).toBeInTheDocument()
+  })
+
+  it('always shows the password and passkey method chooser', async () => {
+    renderLoginPage()
+    await vi.waitFor(() => {
+      expect(screen.getByLabelText('Username')).toBeInTheDocument()
+    })
+    expect(screen.getByRole('radiogroup', { name: 'Sign-in method' })).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: 'Password' })).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: 'Passkey' })).toBeInTheDocument()
+  })
+
+  it('shows forgot password when email is enabled and password sign-in is selected', async () => {
+    setSystemInfoMock({ emailEnabled: true })
+    renderLoginPage()
+    await vi.waitFor(() => {
+      expect(screen.getByText('Forgot password?')).toBeInTheDocument()
+    })
+  })
+
+  it('switches captcha action when the passkey method is selected', async () => {
+    setSystemInfoMock({ captchaEnabled: true, captchaProvider: CaptchaProvider.TURNSTILE, captchaSiteKey: '1x00000000000000000000AA' })
+    renderLoginPage()
+    await vi.waitFor(() => {
+      expect(screen.getByTestId('captcha-field')).toHaveAttribute('data-action', 'login')
+    })
+    fireEvent.click(screen.getByRole('radio', { name: 'Passkey' }))
+    await vi.waitFor(() => {
+      expect(screen.getByTestId('captcha-field')).toHaveAttribute('data-action', 'passkey_login')
+    })
+  })
+
+  it('keeps Sign in disabled while a login is in flight', async () => {
+    let resolveLogin!: (value: { verificationRequired: boolean, verificationEmailSent: boolean }) => void
+    mockLogin.mockReturnValue(new Promise((resolve) => {
+      resolveLogin = resolve
+    }))
+    renderLoginPage()
+    await vi.waitFor(() => {
+      expect(screen.getByLabelText('Username')).toBeInTheDocument()
+    })
+    fireEvent.input(screen.getByLabelText('Username'), { target: { value: 'alice' } })
+    fireEvent.input(screen.getByLabelText('Password'), { target: { value: 'secret' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
+    expect(await screen.findByRole('button', { name: 'Signing in...' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Signing in...' }))
+    expect(mockLogin).toHaveBeenCalledOnce()
+    mockUser.mockReturnValue({ id: '1', username: 'alice' })
+    resolveLogin({ verificationRequired: false, verificationEmailSent: false })
+    expect(await screen.findByTestId('app-home')).toBeInTheDocument()
+  })
+
+  it('re-enables Sign in after a failed attempt and refreshes captcha info on PermissionDenied', async () => {
+    mockLogin.mockRejectedValue(new ConnectError('denied', Code.PermissionDenied))
+    renderLoginPage()
+    await vi.waitFor(() => {
+      expect(screen.getByLabelText('Username')).toBeInTheDocument()
+    })
+    fireEvent.input(screen.getByLabelText('Username'), { target: { value: 'alice' } })
+    fireEvent.input(screen.getByLabelText('Password'), { target: { value: 'secret' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
+    await vi.waitFor(() => {
+      expect(mockLogin).toHaveBeenCalledOnce()
+    })
+    expect(await screen.findByRole('button', { name: 'Sign in' })).toBeEnabled()
+    expect(mockLoadSystemInfo).toHaveBeenCalledWith(true)
   })
 })

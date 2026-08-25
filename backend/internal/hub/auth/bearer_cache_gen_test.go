@@ -37,7 +37,7 @@ type sessionValidationStore struct {
 	validate func(context.Context, string) (*store.SessionWithUser, error)
 }
 
-func (s sessionValidationStore) ValidateWithUser(ctx context.Context, sessionID string) (*store.SessionWithUser, error) {
+func (s sessionValidationStore) ValidateWithUser(ctx context.Context, sessionID string, now time.Time) (*store.SessionWithUser, error) {
 	return s.validate(ctx, sessionID)
 }
 
@@ -52,6 +52,9 @@ type touchRecordingSessionStore struct {
 	store.SessionStore
 	row     *store.SessionWithUser
 	touched store.TouchSessionParams
+	// touchedNow records the hub clock the interceptor passed, so a test can
+	// assert the liveness predicate is bound and not left at the zero time.
+	touchedNow time.Time
 	// touchMissed simulates the conditional UPDATE matching zero rows (the
 	// session was touched within the threshold). Default false = one row
 	// matched.
@@ -63,12 +66,13 @@ type touchRecordingSessionStore struct {
 	touchCalls int
 }
 
-func (s *touchRecordingSessionStore) ValidateWithUser(context.Context, string) (*store.SessionWithUser, error) {
+func (s *touchRecordingSessionStore) ValidateWithUser(context.Context, string, time.Time) (*store.SessionWithUser, error) {
 	return s.row, nil
 }
 
-func (s *touchRecordingSessionStore) Touch(_ context.Context, p store.TouchSessionParams) (int64, error) {
+func (s *touchRecordingSessionStore) Touch(_ context.Context, p store.TouchSessionParams, now time.Time) (int64, error) {
 	s.touched = p
+	s.touchedNow = now
 	s.touchCalls++
 	if s.touchErr != nil {
 		return 0, s.touchErr
@@ -159,7 +163,7 @@ type staticUserStore struct {
 
 func (s staticUserStore) GetByID(context.Context, string) (*store.User, error) { return s.row, nil }
 
-func (s validationErrorSessionStore) ValidateWithUser(context.Context, string) (*store.SessionWithUser, error) {
+func (s validationErrorSessionStore) ValidateWithUser(context.Context, string, time.Time) (*store.SessionWithUser, error) {
 	return nil, s.err
 }
 

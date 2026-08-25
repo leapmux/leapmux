@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
@@ -18,6 +19,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/service"
+	"github.com/leapmux/leapmux/internal/hub/servicetest"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
@@ -164,7 +166,7 @@ func setupAdminUserTest(t *testing.T) *adminUserEnv {
 	// delivered one).
 	revocations := &recordingCredentialCloser{}
 	lifecycle := auth.NewCredentialLifecycleEffects(contexts, revocations, nil)
-	path, handler := leapmuxv1connect.NewAdminUserServiceHandler(service.NewAdminUserService(st, tv, lifecycle, nil), opts)
+	path, handler := leapmuxv1connect.NewAdminUserServiceHandler(service.NewAdminUserService(st, tv, lifecycle, nil, nil), opts)
 	mux.Handle(path, handler)
 
 	server := httptest.NewUnstartedServer(mux)
@@ -296,7 +298,7 @@ func TestAdminUserService_DeleteUser_ForceAndCredentialRevocation(t *testing.T) 
 	sessions, err := env.st.Sessions().ListByUserID(ctx, store.ListUserSessionsParams{
 		UserID:     userid.MustNew(carolID),
 		PageParams: store.PageParams{Limit: 10},
-	})
+	}, time.Now().UTC())
 	require.NoError(t, err)
 	assert.Empty(t, sessions.Rows)
 
@@ -437,6 +439,106 @@ func TestAdminUserService_UpdateUser_EmailRules(t *testing.T) {
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 }
 
+// TestAdminUserService_CreateUserRequiresEmailWhenVerificationRequired pins
+// the funnel guard: on a hub that requires email verification, an email-less
+// non-admin account lands on /verify-email with no code that can ever
+// arrive (the login flow flags it verification-required, but there is
+// nothing to verify). Admins and explicitly-verified accounts are exempt.
+func TestAdminUserService_CreateUserRequiresEmailWhenVerificationRequired(t *testing.T) {
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = st.Close() })
+	require.NoError(t, st.Migrator().Migrate(context.Background()))
+
+	hash, err := password.Hash("adminpass123")
+	require.NoError(t, err)
+	_, err = service.CreateUser(context.Background(), st, service.CreateUserParams{
+		Username: "admin", PasswordHash: hash, DisplayName: "Admin", PasswordSet: true, IsAdmin: true,
+	})
+	require.NoError(t, err)
+	session, _, _, err := auth.Login(context.Background(), st, "admin", "adminpass123", auth.DefaultSessionDuration)
+	require.NoError(t, err)
+	tv, err := auth.NewTokenValidator(st, []byte("0123456789abcdef0123456789abcdef"))
+	require.NoError(t, err)
+
+	// The settings manager the service reads: SMTP on makes
+	// EmailVerificationEffective true.
+	set := servicetest.NewSettingsManager(t, st, nil)
+	seedSMTP(t, set)
+
+	mux := http.NewServeMux()
+	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, TokenValidator: tv})
+	t.Cleanup(contexts.Stop)
+	adminSvc := service.NewAdminUserService(st, tv, auth.NewCredentialLifecycleEffects(contexts, nil, nil), nil, set)
+	path, handler := leapmuxv1connect.NewAdminUserServiceHandler(adminSvc, connect.WithInterceptors(interceptor))
+	mux.Handle(path, handler)
+	server := httptest.NewUnstartedServer(mux)
+	server.EnableHTTP2 = true
+	server.StartTLS()
+	t.Cleanup(server.Close)
+	client := leapmuxv1connect.NewAdminUserServiceClient(server.Client(), server.URL, connect.WithGRPC())
+
+	// No email, not verified: refused.
+	_, err = client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
+		Username: "nou-email", Password: "password123",
+	}, session))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), "email is required")
+
+	// Explicitly verified without an email: allowed.
+	resp, err := client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
+		Username: "trusted", Password: "password123", EmailVerified: true,
+	}, session))
+	require.NoError(t, err)
+	assert.True(t, resp.Msg.GetUser().GetEmailVerified())
+
+	// Email present: allowed and lands unverified, as the caller stated.
+	resp, err = client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
+		Username: "withmail", Password: "password123", Email: "withmail@example.com",
+	}, session))
+	require.NoError(t, err)
+	assert.False(t, resp.Msg.GetUser().GetEmailVerified())
+}
+
+// TestAdminUserService_LoweringEmailVerifiedRefusesForAdmins pins the admin
+// arm of the lowering verb. Every path that grants is_admin forces
+// email_verified=true with it (CreateUser, SetUserAdmin, offline
+// bootstrap), so the stored flag matches the auth interceptor's runtime
+// IsAdmin exemption. UpdateUser's lowering verb is the one write that
+// could split them apart; it must refuse for admin targets, in both the
+// bare form and the paired {email, email_verified:false} form, and leave
+// the row untouched. Demotion (SetUserAdmin) is the documented path that
+// reopens the verb.
+func TestAdminUserService_LoweringEmailVerifiedRefusesForAdmins(t *testing.T) {
+	env := setupAdminUserTest(t)
+	ctx := context.Background()
+
+	// The acting administrator targets itself, bare form.
+	_, err := env.client.UpdateUser(ctx, authedReq(&leapmuxv1.UpdateUserRequest{
+		Username:      "admin",
+		EmailVerified: proto.Bool(false),
+	}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), "demote the account first")
+
+	// The paired form an earlier bug shipped ({email, email_verified:false}
+	// taking the unfenced arm) refuses the same way.
+	_, err = env.client.UpdateUser(ctx, authedReq(&leapmuxv1.UpdateUserRequest{
+		Username:      "admin",
+		Email:         proto.String("admin@example.com"),
+		EmailVerified: proto.Bool(false),
+	}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+
+	row, err := env.st.Users().GetByID(ctx, env.adminID)
+	require.NoError(t, err)
+	assert.True(t, row.IsAdmin, "the refusal must not demote")
+	assert.True(t, row.EmailVerified, "an administrator's email_verified must stay true")
+}
+
 // TestAdminUserService_SetUserAdmin_FencesADemotedUser pins the credential
 // fence, which is the whole point of the verb.
 //
@@ -479,6 +581,71 @@ func TestAdminUserService_SetUserAdmin_FencesADemotedUser(t *testing.T) {
 	assert.False(t, revoked.Msg.GetUser().GetIsAdmin())
 	assert.Greater(t, generation(), before,
 		"a demotion must bump auth_generation so admin-era sessions and tokens die")
+}
+
+// Promotion forces email_verified=true so the stored flag matches the
+// runtime IsAdmin exemption. Demotion has to repair that, or the account
+// keeps a verified state it never earned: the demoted row would then pass
+// the login verification gate, pass UpdateUser's clear-email guard, and
+// satisfy the "no durable identity" refusal that protects a first passkey.
+func TestAdminUserService_SetUserAdmin_DemotionClearsUnearnedVerification(t *testing.T) {
+	env := setupAdminUserTest(t)
+	ctx := context.Background()
+
+	created, err := env.client.CreateUser(ctx, authedReq(&leapmuxv1.CreateUserRequest{
+		Username: "noaddress", Password: "password123",
+	}, env.token))
+	require.NoError(t, err)
+	target := created.Msg.GetUser().GetId()
+
+	row, err := env.st.Users().GetByID(ctx, target)
+	require.NoError(t, err)
+	require.Empty(t, row.Email, "precondition: the account has no address to verify")
+	require.False(t, row.EmailVerified)
+
+	_, err = env.client.SetUserAdmin(ctx, authedReq(&leapmuxv1.SetUserAdminRequest{
+		Username: "noaddress", IsAdmin: true,
+	}, env.token))
+	require.NoError(t, err)
+	row, err = env.st.Users().GetByID(ctx, target)
+	require.NoError(t, err)
+	require.True(t, row.EmailVerified, "the admin invariant forces the flag")
+
+	_, err = env.client.SetUserAdmin(ctx, authedReq(&leapmuxv1.SetUserAdminRequest{
+		Username: "noaddress", IsAdmin: false,
+	}, env.token))
+	require.NoError(t, err)
+	row, err = env.st.Users().GetByID(ctx, target)
+	require.NoError(t, err)
+	assert.False(t, row.EmailVerified,
+		"with no address there is nothing that could have been confirmed")
+}
+
+// The other half of the rule: a demotion must NOT un-verify an address the
+// user really did confirm, because the row records no pre-promotion value.
+func TestAdminUserService_SetUserAdmin_DemotionKeepsAConfirmedAddress(t *testing.T) {
+	env := setupAdminUserTest(t)
+	ctx := context.Background()
+
+	created, err := env.client.CreateUser(ctx, authedReq(&leapmuxv1.CreateUserRequest{
+		Username: "hasaddress", Password: "password123", Email: "real@example.com",
+	}, env.token))
+	require.NoError(t, err)
+	target := created.Msg.GetUser().GetId()
+	require.NoError(t, env.st.Users().UpdateEmail(ctx, store.UpdateUserEmailParams{
+		ID: target, Email: "real@example.com", EmailVerified: true,
+	}))
+
+	for _, isAdmin := range []bool{true, false} {
+		_, err = env.client.SetUserAdmin(ctx, authedReq(&leapmuxv1.SetUserAdminRequest{
+			Username: "hasaddress", IsAdmin: isAdmin,
+		}, env.token))
+		require.NoError(t, err)
+	}
+
+	row, err := env.st.Users().GetByID(ctx, target)
+	require.NoError(t, err)
+	assert.True(t, row.EmailVerified, "a confirmed address survives a promote/demote round trip")
 }
 
 func ptr(s string) *string { return &s }
@@ -948,7 +1115,7 @@ func TestAdminUserService_ResetPassword_TearsDownEveryCredential(t *testing.T) {
 	sessions, err := env.st.Sessions().ListByUserID(ctx, store.ListUserSessionsParams{
 		UserID:     userid.MustNew(env.userID),
 		PageParams: store.PageParams{Limit: 10},
-	})
+	}, time.Now().UTC())
 	require.NoError(t, err)
 	assert.Empty(t, sessions.Rows, "every session of the user must be deleted")
 	_, err = auth.ValidateToken(ctx, env.st, env.session)
@@ -1057,7 +1224,7 @@ func TestAdminUserService_ResetPassword_SelfResetEndsTheActingSession(t *testing
 	sessions, err := env.st.Sessions().ListByUserID(ctx, store.ListUserSessionsParams{
 		UserID:     userid.MustNew(env.adminID),
 		PageParams: store.PageParams{Limit: 10},
-	})
+	}, time.Now().UTC())
 	require.NoError(t, err)
 	assert.Empty(t, sessions.Rows, "the caller's own session row is deleted too")
 
@@ -1113,4 +1280,61 @@ func TestAdminUserService_ResetPassword_SelfResetKillsTheActingAPIToken(t *testi
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err),
 		"the bearer that made the call stops authenticating at once")
+}
+
+func TestAdminUserService_SetUserAdmin_MarksEmailVerified(t *testing.T) {
+	env := setupAdminUserTest(t)
+	ctx := context.Background()
+
+	created, err := env.client.CreateUser(ctx, authedReq(&leapmuxv1.CreateUserRequest{
+		Username: "promotee", Password: "password123", DisplayName: "Promotee",
+		Email: "promotee@example.com", EmailVerified: false,
+	}, env.token))
+	require.NoError(t, err)
+	assert.False(t, created.Msg.GetUser().GetEmailVerified())
+
+	resp, err := env.client.SetUserAdmin(ctx, authedReq(&leapmuxv1.SetUserAdminRequest{
+		Id: created.Msg.GetUser().GetId(), IsAdmin: true,
+	}, env.token))
+	require.NoError(t, err)
+	assert.True(t, resp.Msg.GetUser().GetIsAdmin())
+	assert.True(t, resp.Msg.GetUser().GetEmailVerified())
+
+	row, err := env.st.Users().GetByID(ctx, created.Msg.GetUser().GetId())
+	require.NoError(t, err)
+	assert.True(t, row.EmailVerified)
+}
+
+func TestAdminUserService_CreateUser_AdminForcesEmailVerified(t *testing.T) {
+	env := setupAdminUserTest(t)
+	ctx := context.Background()
+
+	resp, err := env.client.CreateUser(ctx, authedReq(&leapmuxv1.CreateUserRequest{
+		Username: "newadmin", Password: "password123", DisplayName: "New Admin",
+		Email: "newadmin@example.com", EmailVerified: false, IsAdmin: true,
+	}, env.token))
+	require.NoError(t, err)
+	assert.True(t, resp.Msg.GetUser().GetIsAdmin())
+	assert.True(t, resp.Msg.GetUser().GetEmailVerified())
+}
+
+func TestAdminUserService_ResetPassword_DeletesPasskeys(t *testing.T) {
+	env := setupResetPasswordTest(t)
+	ctx := context.Background()
+
+	pkID := id.Generate()
+	require.NoError(t, env.st.PasskeyCredentials().Create(ctx, store.CreatePasskeyCredentialParams{
+		ID: pkID, UserID: env.userID, CredentialID: []byte("cred-" + pkID),
+		PublicKey: []byte("pubkey"), SignCount: 0, Transports: "[]",
+		FriendlyName: "Phone", KeyVersion: 1, CreatedAt: time.Now().UTC(),
+	}))
+
+	_, err := env.client.ResetPassword(ctx, authedReq(&leapmuxv1.ResetPasswordRequest{
+		Id: env.userID, Password: "brand-new-password",
+	}, env.token))
+	require.NoError(t, err)
+
+	rows, err := env.st.PasskeyCredentials().ListByUser(ctx, env.userID)
+	require.NoError(t, err)
+	assert.Empty(t, rows)
 }

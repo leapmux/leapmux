@@ -206,7 +206,6 @@ Changes fall into two classes, shown by `settings list`:
 | Setting key | Shape | Default | Class |
 | --- | --- | --- | --- |
 | `signup_enabled` | boolean | `false` | hot |
-| `email_verification_required` | boolean | `false` | hot (requires `smtp` first; the write is refused otherwise) |
 | `session_duration_seconds` | integer | `604800` (7d) | hot (minimum 300) |
 | `secure_cookies` | boolean | `false` | hot (changes the cookie name, so it signs everyone out) |
 | `public_url` | string | *(empty)* | hot (scheme+host only, no path) |
@@ -221,14 +220,18 @@ Solo mode omits the settings a single-user Hub has no use for, from `settings li
 
 | Omitted in solo | Because |
 | --- | --- |
-| `signup_enabled`, `email_verification_required` | Solo has no sign-up. |
+| `signup_enabled`, `smtp` | Solo has no sign-up and no outbound mail. |
 | `session_duration_seconds`, `secure_cookies` | Solo has no login, so there is no session and no cookie. |
 | `smtp` | Solo has nowhere to send mail. |
 | `captcha.*`, `rate_limit.*` | Solo enforces neither. |
 
 `public_url` stays: it sets the URL in the startup banner, and the `--hub` address you give a remote Worker.
 
-See [Accounts & Authentication](/docs/using/accounts/) for the sign-up/verification flows, and [Authentication Providers](/docs/operating/authentication-providers/) for OAuth/OIDC.
+See [Accounts & Authentication](/docs/using/accounts/) for sign-up, passkeys, verification, and password-reset flows, and [Authentication Providers](/docs/operating/authentication-providers/) for OAuth/OIDC.
+
+> **Note:** Email verification is not a separate setting. Once the `smtp` block is fully configured (`host` **and** `from_address`), the hub requires verification for new non-admin sign-ups and exposes forgot-password / worker registration email features. Removing or disabling SMTP turns verification off at runtime.
+>
+> **SMTP-enable transition:** users who signed up while SMTP was off keep `email_verified=false` in the database. When an operator later configures SMTP, those accounts are required to verify on the next request until they via `/verify-email` (ResendVerificationEmail issues a pending code against the stored primary email). No data migration is required. Admins stay exempt and are always stored as verified.
 
 ### Bot protection (captcha & rate limits)
 
@@ -602,7 +605,6 @@ leapmux control admin settings set secure_cookies true
 leapmux control admin settings set signup_enabled true
 leapmux control admin settings set smtp '{"host":"smtp.example.com","port":587,"username":"leapmux@example.com","from_address":"no-reply@example.com","tls_mode":"starttls"}'
 leapmux control admin settings set-secret smtp '{"password":"..."}'   # or read from your secret manager
-leapmux control admin settings set email_verification_required true   # requires the smtp key above
 leapmux control admin settings set session_duration_seconds 86400     # sign an idle user out after a day
 ```
 

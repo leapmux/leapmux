@@ -35,6 +35,10 @@ CREATE TABLE users (
     -- Counts attempts against the active pending_email_token. Reset to 0
     -- whenever a new token is issued; force-expires the token at >5.
     pending_email_attempts   INTEGER NOT NULL DEFAULT 0,
+    -- Password-reset break-glass: token stored hashed (SHA-256 hex).
+    pending_password_reset_token      VARCHAR(64) NOT NULL DEFAULT '',
+    pending_password_reset_expires_at DATETIME,
+    pending_password_reset_attempts   INTEGER NOT NULL DEFAULT 0,
     password_set             INTEGER NOT NULL DEFAULT 1,
     is_admin                 INTEGER NOT NULL DEFAULT 0,
     prefs          TEXT NOT NULL DEFAULT '{}',
@@ -60,8 +64,11 @@ CREATE INDEX idx_users_created_at ON users(created_at DESC, id DESC) WHERE delet
 -- Verification codes are looked up per-user (the session identifies who),
 -- so no global token index is needed. Index expiry instead, for cleanup.
 CREATE INDEX idx_users_pending_email_expires_at ON users(pending_email_expires_at) WHERE pending_email_expires_at IS NOT NULL;
+-- Password-reset tokens are looked up by hash on complete; index non-empty
+-- values so Completes do not scan the users table.
+CREATE INDEX IF NOT EXISTS idx_users_pending_password_reset_token ON users(pending_password_reset_token) WHERE pending_password_reset_token != '';
 -- GetFirstAdmin scans for the earliest non-deleted admin (bootstrap path).
--- Partial on (is_admin, deleted_at) keeps the index tiny; indexing on
+-- Partial on (is_admin, deleted_at) keeps the index tiny;
 -- created_at lets the ORDER BY + LIMIT 1 hit the first leaf directly.
 -- The predicate MUST be spelled `is_admin = 1` -- SQLite's partial-index
 -- matcher is syntactic, so a bare `is_admin` predicate never matches
@@ -567,12 +574,50 @@ CREATE TABLE pending_oauth_signups (
     created_at       DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 
+-- Passkey (WebAuthn) credentials for email-local accounts
+CREATE TABLE passkey_credentials (
+    id              TEXT PRIMARY KEY,
+    user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    credential_id   BLOB NOT NULL,   -- plaintext: login lookup + unique index
+    public_key      BLOB NOT NULL,   -- keystore-encrypted COSE public key, AAD: 'passkey_public_key:' || id
+    sign_count      BIGINT NOT NULL DEFAULT 0,
+    aaguid          BLOB,
+    backup_eligible INTEGER NOT NULL DEFAULT 0,
+    backup_state    INTEGER NOT NULL DEFAULT 0,
+    transports      TEXT NOT NULL DEFAULT '[]',
+    friendly_name   TEXT NOT NULL DEFAULT '',
+    key_version     INTEGER NOT NULL DEFAULT 1,
+    created_at      DATETIME NOT NULL,
+    last_used_at    DATETIME
+);
+CREATE UNIQUE INDEX idx_passkey_credentials_credential_id ON passkey_credentials(credential_id);
+CREATE INDEX idx_passkey_credentials_user_id ON passkey_credentials(user_id);
+CREATE INDEX idx_passkey_credentials_key_version ON passkey_credentials(key_version);
+
+-- Ephemeral WebAuthn ceremony state (signup, login, register, reauth)
+CREATE TABLE webauthn_sessions (
+    id           TEXT PRIMARY KEY,
+    kind         TEXT NOT NULL CHECK (kind IN (
+        'signup', 'login', 'register', 'reauth', 'reauth_proof'
+    )),
+    user_id      TEXT REFERENCES users(id) ON DELETE CASCADE,
+    payload_json TEXT NOT NULL DEFAULT '{}', -- '{}' or encrypted signup draft (base64), AAD: 'webauthn_payload:' || id
+    session_data BLOB NOT NULL,   -- keystore-encrypted, AAD: 'webauthn_session:' || id
+    expires_at   DATETIME NOT NULL,
+    created_at   DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX idx_webauthn_sessions_expires_at ON webauthn_sessions(expires_at);
+
+-- Ceremony begins delete prior rows per user and kind on every Begin*;
+-- without this index each begin full-scans the not-yet-swept rows.
+CREATE INDEX idx_webauthn_sessions_user_kind ON webauthn_sessions(user_id, kind);
+
 -- Instance-level hub settings: one row per setting key. `value` is a JSON
 -- document whose shape is defined by the owning package's typed key handle
 -- (internal/hub/settings); secret-bearing keys keep the secret half in the
 -- keystore-encrypted column (AAD bound to the key name). An absent row means
 -- the code default, so adding, removing, or reshaping a setting is a Go
--- change only — never a migration. This table is the single home for all
+-- change only -- never a migration. This table is the single home for all
 -- runtime-changeable configuration (auth policy, SMTP, timeouts, limits,
 -- captcha providers, rate-limit overrides).
 CREATE TABLE hub_settings (
@@ -604,6 +649,8 @@ DROP TABLE IF EXISTS revocation_events;
 DROP TABLE IF EXISTS revocation_event_sequence;
 DROP TABLE IF EXISTS pending_oauth_signups;
 DROP TABLE IF EXISTS altcha_used_salts;
+DROP TABLE IF EXISTS webauthn_sessions;
+DROP TABLE IF EXISTS passkey_credentials;
 DROP TABLE IF EXISTS hub_settings;
 DROP TABLE IF EXISTS oauth_states;
 DROP TABLE IF EXISTS oauth_tokens;

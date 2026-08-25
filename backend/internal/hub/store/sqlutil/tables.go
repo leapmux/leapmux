@@ -13,5 +13,6 @@ var SQLTruncateTableOrder = []string{
 	"workspace_section_items", "workspace_sections",
 	"delegation_tokens", "api_tokens",
 	"workspaces", "worker_notifications", "worker_registration_keys", "workers",
+	"passkey_credentials", "webauthn_sessions",
 	"user_sessions", "users",
 }

@@ -112,7 +112,7 @@ func (s *Suite) testPendingOAuthSignups(t *testing.T) {
 		require.NoError(t, err)
 
 		// Run cleanup.
-		_, err = st.Cleanup().DeleteExpiredPendingOAuthSignups(ctx)
+		_, err = st.Cleanup().DeleteExpiredPendingOAuthSignups(ctx, time.Now().UTC())
 		require.NoError(t, err)
 
 		// The expired signup should be gone.

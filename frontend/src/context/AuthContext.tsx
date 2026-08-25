@@ -1,5 +1,6 @@
+import type { Timestamp } from '@bufbuild/protobuf/wkt'
 import type { ParentComponent } from 'solid-js'
-import type { User } from '~/generated/leapmux/v1/auth_pb'
+import type { EmailVerificationStatus, User } from '~/generated/leapmux/v1/auth_pb'
 import type { CaptchaRequestFields } from '~/lib/captchaForm'
 import { create } from '@bufbuild/protobuf'
 import { Code, ConnectError } from '@connectrpc/connect'
@@ -13,13 +14,22 @@ import { createStableContext } from '~/lib/createStableContext'
 import { formatErrorMessage } from '~/lib/errors'
 import { createLogger } from '~/lib/logger'
 import { isSoloMode, loadSystemInfo } from '~/lib/systemInfo'
+import { passkeyErrorMessage, startAuthentication } from '~/lib/webauthn'
 
 const log = createLogger('auth')
+
+export interface AuthLoginResult {
+  verificationRequired: boolean
+  verificationEmailSent: boolean
+  nextResendAvailableAt?: Timestamp
+}
 
 export interface AuthState {
   user: () => User | null
   loading: () => boolean
   error: () => string | null
+  /** Cooldown timestamp seeded from login when verification is required. */
+  verificationResendAvailableAt: () => Timestamp | undefined
   /**
    * Set when bootstrap failed for a reason OTHER than "no session" -- i.e.
    * either `loadSystemInfo` could not reach the hub, or the session restore
@@ -38,7 +48,9 @@ export interface AuthState {
   bootstrapError: () => string | null
   /** Retry the bootstrap session-restore after a `bootstrapError`. */
   retryBootstrap: () => Promise<void>
-  login: (username: string, password: string, captcha?: CaptchaRequestFields) => Promise<void>
+  login: (username: string, password: string, captcha?: CaptchaRequestFields) => Promise<AuthLoginResult>
+  loginWithPasskey: (username: string, captcha?: CaptchaRequestFields) => Promise<AuthLoginResult>
+  setVerificationResendAvailableAt: (at?: Timestamp) => void
   logout: () => Promise<void>
   setAuth: (user: User) => void
   refreshUser: () => Promise<void>
@@ -52,6 +64,7 @@ export const AuthProvider: ParentComponent = (props) => {
   const [loading, setLoading] = createSignal(true)
   const [error, setError] = createSignal<string | null>(null)
   const [bootstrapError, setBootstrapError] = createSignal<string | null>(null)
+  const [verificationResendAvailableAt, setVerificationResendAvailableAt] = createSignal<Timestamp | undefined>()
 
   /**
    * Drop every pooled E2EE channel on an identity change.
@@ -93,10 +106,15 @@ export const AuthProvider: ParentComponent = (props) => {
       closePooledChannels()
   }, { defer: true }))
 
+  const clearAuthUser = () => {
+    setUser(null)
+    setVerificationResendAvailableAt(undefined)
+  }
+
   // Register auth error callback for auto-logout on 401.
   setOnAuthError(() => {
     if (!isSoloMode())
-      setUser(null)
+      clearAuthUser()
   })
 
   /**
@@ -113,11 +131,16 @@ export const AuthProvider: ParentComponent = (props) => {
     try {
       const resp = await authClient.getCurrentUser({})
       setUser(resp.user ?? null)
+      // GetCurrentUser is the only response the /verify-email page's own
+      // bootstrap reads. Seeding the cooldown from it is what lets a hard
+      // reload of that page resume the countdown instead of restarting at
+      // zero and letting the button hammer a ResourceExhausted refusal.
+      setVerificationResendAvailableAt(resp.emailVerification?.nextResendAvailableAt)
       loadTimeouts().catch(() => {})
     }
     catch (err) {
       if (err instanceof ConnectError && err.code === Code.Unauthenticated) {
-        setUser(null)
+        clearAuthUser()
       }
       else {
         const msg = formatErrorMessage(err)
@@ -164,20 +187,31 @@ export const AuthProvider: ParentComponent = (props) => {
     setLoading(false)
   }
 
-  const login = async (username: string, password: string, captcha?: CaptchaRequestFields) => {
+  const loginResultFromResponse = (status: EmailVerificationStatus | undefined): AuthLoginResult => ({
+    verificationRequired: status?.verificationRequired ?? false,
+    verificationEmailSent: status?.verificationEmailSent ?? false,
+    nextResendAvailableAt: status?.nextResendAvailableAt,
+  })
+
+  /**
+   * The state machine both sign-in paths share: clear the banner, hold
+   * `loading` for the whole attempt, adopt the returned user, and report
+   * the verification status.
+   *
+   * `login` and `loginWithPasskey` were byte-identical apart from the RPC
+   * in the middle and the fallback message, so a fix to the identity
+   * transition below had to be made twice. `fallback` is passed through
+   * `passkeyErrorMessage`, which returns null for a dismissed passkey
+   * prompt -- that is not a failure to report, so the banner stays empty.
+   */
+  const runSignIn = async (
+    fallback: string,
+    attempt: () => Promise<{ user?: User, emailVerification?: EmailVerificationStatus }>,
+  ): Promise<AuthLoginResult> => {
     setError(null)
     setLoading(true)
     try {
-      const req = create(LoginRequestSchema, {
-        username,
-        password,
-        // The honeypot rides on every attempt; the payload is empty until
-        // the widget verifies (the hub ignores it while captcha is
-        // disabled — see createCaptchaForm's requirement gate).
-        captchaPayload: captcha?.captchaPayload ?? '',
-        honeypot: captcha?.honeypot ?? '',
-      })
-      const resp = await authClient.login(req)
+      const resp = await attempt()
       // Logging in over a still-authenticated session (a bookmarked /login, a stale
       // tab) is an identity transition just like logout: setUser drives the eager
       // release of the previous user's pooled channels through the createEffect above,
@@ -185,10 +219,10 @@ export const AuthProvider: ParentComponent = (props) => {
       // one channel per request while the shared WebSocket stays held for the old user).
       setUser(resp.user ?? null)
       loadTimeouts().catch(() => {})
+      return loginResultFromResponse(resp.emailVerification)
     }
     catch (e) {
-      const msg = formatErrorMessage(e, 'Login failed')
-      setError(msg)
+      setError(passkeyErrorMessage(e, fallback) ?? '')
       // The login form's captcha.reset() (see createCaptchaForm) triggers
       // the system-info reload that converges a stale captcha snapshot
       // after a runtime enable/disable or provider switch.
@@ -198,6 +232,30 @@ export const AuthProvider: ParentComponent = (props) => {
       setLoading(false)
     }
   }
+
+  const login = (username: string, password: string, captcha?: CaptchaRequestFields): Promise<AuthLoginResult> =>
+    runSignIn('Login failed', () => authClient.login(create(LoginRequestSchema, {
+      username,
+      password,
+      // The honeypot rides on every attempt; the payload is empty until
+      // the widget verifies (the hub ignores it while captcha is
+      // disabled — see createCaptchaForm's requirement gate).
+      captchaPayload: captcha?.captchaPayload ?? '',
+      honeypot: captcha?.honeypot ?? '',
+    })))
+
+  const loginWithPasskey = (username: string, captcha?: CaptchaRequestFields): Promise<AuthLoginResult> =>
+    runSignIn('Passkey login failed', async () => {
+      const begin = await authClient.beginPasskeyLogin({
+        username,
+        captchaPayload: captcha?.captchaPayload ?? '',
+        honeypot: captcha?.honeypot ?? '',
+      })
+      return await authClient.finishPasskeyLogin({
+        sessionId: begin.sessionId,
+        credentialJson: await startAuthentication(begin.optionsJson),
+      })
+    })
 
   const logout = async () => {
     if (isSoloMode())
@@ -209,7 +267,7 @@ export const AuthProvider: ParentComponent = (props) => {
       // Ignore logout errors.
     }
     finally {
-      setUser(null)
+      clearAuthUser()
     }
   }
 
@@ -232,7 +290,10 @@ export const AuthProvider: ParentComponent = (props) => {
     user,
     loading,
     error,
+    verificationResendAvailableAt,
     login,
+    loginWithPasskey,
+    setVerificationResendAvailableAt,
     logout,
     setAuth,
     refreshUser,

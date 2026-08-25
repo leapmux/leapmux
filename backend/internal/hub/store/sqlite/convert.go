@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
@@ -155,15 +156,17 @@ func listWorkersAdminByUserAndStatusParams(status leapmuxv1.WorkerStatus, userID
 	})
 }
 
-func listAllActiveSessionsParams(cursor string, limit int64) (gendb.ListAllActiveSessionsParams, error) {
+func listAllActiveSessionsParams(cursor string, limit int64, now time.Time) (gendb.ListAllActiveSessionsParams, error) {
+	nt := sqltime.NewSQLiteTime(now)
 	return withCursor(cursor, limit, func(ct sqltime.SQLiteNullTime, cid sql.NullString, fl int64) gendb.ListAllActiveSessionsParams {
-		return gendb.ListAllActiveSessionsParams{CursorTime: ct, CursorID: cid, Limit: fl}
+		return gendb.ListAllActiveSessionsParams{Now: nt, CursorTime: ct, CursorID: cid, Limit: fl}
 	})
 }
 
-func listUserSessionsParams(userID, cursor string, limit int64) (gendb.ListUserSessionsByUserIDParams, error) {
+func listUserSessionsParams(userID, cursor string, limit int64, now time.Time) (gendb.ListUserSessionsByUserIDParams, error) {
+	nt := sqltime.NewSQLiteTime(now)
 	return withCursor(cursor, limit, func(ct sqltime.SQLiteNullTime, cid sql.NullString, fl int64) gendb.ListUserSessionsByUserIDParams {
-		return gendb.ListUserSessionsByUserIDParams{UserID: userID, CursorTime: ct, CursorID: cid, Limit: fl}
+		return gendb.ListUserSessionsByUserIDParams{UserID: userID, Now: nt, CursorTime: ct, CursorID: cid, Limit: fl}
 	})
 }
 

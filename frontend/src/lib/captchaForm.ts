@@ -81,7 +81,14 @@ export function createCaptchaForm(): CaptchaFormState {
       setStoodDown(false)
       setPayload(null)
       setHoneypot('')
-      field?.reset()
+      try {
+        field?.reset()
+      }
+      catch {
+        // A keyed remount (Password/Passkey) can leave the previous
+        // handle pointing at a widget that is already gone. Payload
+        // and honeypot are already cleared; the new field arms itself.
+      }
       // A captcha denial is also the signal that the captcha snapshot in
       // systemInfo is stale: the admin may have enabled or disabled
       // captcha, or switched providers, since the page loaded. The

@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/protobuf/reflect/protoregistry"
+
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -81,6 +83,45 @@ func changePasswordClient(t *testing.T, m *Manager, handlerErr error, authentica
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	return leapmuxv1connect.NewUserServiceClient(server.Client(), server.URL), &handlerCalls
+}
+
+func wrongReauthProofError() error {
+	return connect.NewError(connect.CodeUnauthenticated, auth.ErrInvalidReauthProof)
+}
+
+func renamePasskeyClient(t *testing.T, m *Manager, handlerErr error, authenticated bool) (leapmuxv1connect.UserServiceClient, *int) {
+	t.Helper()
+	handlerCalls := 0
+	handler := connect.NewUnaryHandler(
+		leapmuxv1connect.UserServiceRenamePasskeyProcedure,
+		func(ctx context.Context, req *connect.Request[leapmuxv1.RenamePasskeyRequest]) (*connect.Response[leapmuxv1.RenamePasskeyResponse], error) {
+			handlerCalls++
+			if handlerErr != nil {
+				return nil, handlerErr
+			}
+			return connect.NewResponse(&leapmuxv1.RenamePasskeyResponse{}), nil
+		},
+		connect.WithInterceptors(NewInterceptor(m)),
+	)
+	mux := http.NewServeMux()
+	mux.Handle(leapmuxv1connect.UserServiceRenamePasskeyProcedure, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if authenticated {
+			r = r.WithContext(auth.WithUser(r.Context(), &auth.UserInfo{ID: userid.MustNew("usr_test123")}))
+		}
+		handler.ServeHTTP(w, r)
+	}))
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	return leapmuxv1connect.NewUserServiceClient(server.Client(), server.URL), &handlerCalls
+}
+
+func tryRenamePasskey(t *testing.T, client leapmuxv1connect.UserServiceClient) error {
+	t.Helper()
+	_, err := client.RenamePasskey(context.Background(), connect.NewRequest(&leapmuxv1.RenamePasskeyRequest{
+		Id:           "pk-1",
+		FriendlyName: "Phone",
+	}))
+	return err
 }
 
 func tryChangePassword(t *testing.T, client leapmuxv1connect.UserServiceClient) error {
@@ -363,7 +404,7 @@ func TestPanickingHandlerReleasesReservation(t *testing.T) {
 }
 
 func TestKnownOperationsSortedAndEffectiveLimitsOverlay(t *testing.T) {
-	assert.Equal(t, []Operation{OpChangePassword}, KnownOperations())
+	assert.Equal(t, []Operation{OpChangePassword, OpPasskeyManagement}, KnownOperations())
 
 	// No row: defaults, enabled.
 	m := newTestManager(t, false)
@@ -456,10 +497,75 @@ func TestProcedureRoutingAndCatalogueAgree(t *testing.T) {
 	}
 }
 
+// TestChangePasswordCountsInvalidReauthProof pins that ChangePassword's
+// budget covers BOTH wrong-secret classes it can return: an invalid current
+// password and an invalid reauth proof (passkey-only accounts step up with a
+// proof). The proof class shipped unrouted once — unlimited retries while
+// the sibling passkey operations were capped.
+func TestChangePasswordCountsInvalidReauthProof(t *testing.T) {
+	m := newTestManager(t, false)
+	upsertLimit(t, m, OpChangePassword, true, 2, 900)
+
+	client, calls := changePasswordClient(t, m, wrongReauthProofError(), true)
+	for i := 0; i < 2; i++ {
+		assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(tryChangePassword(t, client)))
+	}
+	assert.Equal(t, 2, *calls)
+	assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(tryChangePassword(t, client)))
+	assert.Equal(t, 2, *calls, "denied attempt must not reach the handler")
+}
+
+// TestCredentialConsumingProceduresAreRouted walks the live user.proto
+// descriptor: every UserService method whose request carries a step-up
+// secret (current_password or reauth_proof) must have a procedureOperations
+// entry. The routing map is hand-maintained; a new credential-consuming RPC
+// that ships unrouted keeps unlimited retries while its siblings are
+// capped, and only a descriptor walk catches the forgotten direction.
+func TestCredentialConsumingProceduresAreRouted(t *testing.T) {
+	fd, err := protoregistry.GlobalFiles.FindFileByPath("leapmux/v1/user.proto")
+	require.NoError(t, err, "user.proto descriptor must be registered; import the generated pb package")
+	services := fd.Services()
+	require.Equal(t, 1, services.Len(), "expected exactly the UserService in user.proto")
+	methods := services.Get(0).Methods()
+	for i := 0; i < methods.Len(); i++ {
+		method := methods.Get(i)
+		consumesSecret := false
+		fields := method.Input().Fields()
+		for j := 0; j < fields.Len(); j++ {
+			name := string(fields.Get(j).Name())
+			if name == "current_password" || name == "reauth_proof" {
+				consumesSecret = true
+				break
+			}
+		}
+		if !consumesSecret {
+			continue
+		}
+		procedure := "/" + string(services.Get(0).FullName()) + "/" + string(method.Name())
+		_, routed := procedureOperations[procedure]
+		assert.Truef(t, routed,
+			"UserService.%s carries a step-up secret but has no procedureOperations entry; it ships with unlimited retries (procedure %q)",
+			method.Name(), procedure)
+	}
+}
+
 func TestValidateLimits(t *testing.T) {
 	assert.NoError(t, ValidateLimits(Limits{MaxAttempts: 5, WindowSeconds: 900}))
 	assert.Error(t, ValidateLimits(Limits{MaxAttempts: 0, WindowSeconds: 900}))
 	assert.Error(t, ValidateLimits(Limits{MaxAttempts: 5000, WindowSeconds: 900}))
 	assert.Error(t, ValidateLimits(Limits{MaxAttempts: 5, WindowSeconds: 30}))
 	assert.Error(t, ValidateLimits(Limits{MaxAttempts: 5, WindowSeconds: 100000}))
+}
+
+func TestPasskeyManagementCountsInvalidReauthProof(t *testing.T) {
+	m := newTestManager(t, false)
+	upsertLimit(t, m, OpPasskeyManagement, true, 2, 900)
+
+	client, calls := renamePasskeyClient(t, m, wrongReauthProofError(), true)
+	for i := 0; i < 2; i++ {
+		assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(tryRenamePasskey(t, client)))
+	}
+	assert.Equal(t, 2, *calls)
+	assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(tryRenamePasskey(t, client)))
+	assert.Equal(t, 2, *calls, "denied attempt must not reach the handler")
 }

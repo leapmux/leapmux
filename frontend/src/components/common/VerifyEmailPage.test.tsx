@@ -30,6 +30,7 @@ vi.mock('~/api/clients', () => ({
 
 const mockSetAuth = vi.fn()
 const mockUser = vi.fn<() => { username: string, emailVerified: boolean } | null>()
+const mockVerificationResendAvailableAt = vi.fn<() => { seconds: bigint, nanos: number } | undefined>()
 vi.mock('~/context/AuthContext', () => ({
   useAuth: () => ({
     user: () => mockUser(),
@@ -38,6 +39,8 @@ vi.mock('~/context/AuthContext', () => ({
     login: vi.fn(),
     logout: vi.fn(),
     setAuth: mockSetAuth,
+    verificationResendAvailableAt: () => mockVerificationResendAvailableAt(),
+    setVerificationResendAvailableAt: vi.fn(),
     isAuthenticated: () => mockUser() != null,
   }),
   AuthProvider: (props: { children: unknown }) => <>{props.children}</>,
@@ -172,6 +175,21 @@ describe('verifyEmailPage', () => {
       // it's shown rather than swallowed).
       expect(screen.getByText(/invalid or expired/i)).toBeInTheDocument()
     })
+  })
+
+  it('seeds resend cooldown from login verification timestamp', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
+    mockVerificationResendAvailableAt.mockReturnValue({
+      seconds: BigInt(Math.floor(Date.now() / 1000) + 42),
+      nanos: 0,
+    })
+
+    renderPage('/verify-email')
+
+    const resendButton = await screen.findByTestId('verify-email-resend')
+    expect(resendButton).toBeDisabled()
+    expect(resendButton).toHaveTextContent(/Resend code \(0:42\)/)
   })
 
   it('clicking Resend issues the RPC and shows a status line on success', async () => {

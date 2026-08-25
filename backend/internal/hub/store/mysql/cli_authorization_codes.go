@@ -2,6 +2,7 @@ package mysql
 
 import (
 	"context"
+	"time"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
@@ -34,8 +35,11 @@ func (s *cliAuthorizationCodeStore) Create(ctx context.Context, p store.CreateCL
 	}))
 }
 
-func (s *cliAuthorizationCodeStore) GetActive(ctx context.Context, code string) (*store.CLIAuthorizationCode, error) {
-	row, err := s.conn.q.GetActiveCLIAuthorizationCode(ctx, code)
+func (s *cliAuthorizationCodeStore) GetActive(ctx context.Context, code string, now time.Time) (*store.CLIAuthorizationCode, error) {
+	row, err := s.conn.q.GetActiveCLIAuthorizationCode(ctx, gendb.GetActiveCLIAuthorizationCodeParams{
+		Code: code,
+		Now:  sqltime.NewMySQLTime(now),
+	})
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -47,8 +51,11 @@ func (s *cliAuthorizationCodeStore) GetActive(ctx context.Context, code string) 
 // the row as consumed (returning rows-affected); if anything was affected,
 // re-read the row to return its contents. RETURNING is unavailable on
 // MySQL.
-func (s *cliAuthorizationCodeStore) Consume(ctx context.Context, code string) (*store.CLIAuthorizationCode, error) {
-	rows, err := rowsAffected(s.conn.q.ConsumeCLIAuthorizationCode(ctx, code))
+func (s *cliAuthorizationCodeStore) Consume(ctx context.Context, code string, now time.Time) (*store.CLIAuthorizationCode, error) {
+	rows, err := rowsAffected(s.conn.q.ConsumeCLIAuthorizationCode(ctx, gendb.ConsumeCLIAuthorizationCodeParams{
+		Code: code,
+		Now:  sqltime.NewMySQLTime(now),
+	}))
 	if err != nil {
 		return nil, err
 	}

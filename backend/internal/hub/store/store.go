@@ -33,6 +33,8 @@ type Store interface {
 	OAuthTokens() OAuthTokenStore
 	OAuthUserLinks() OAuthUserLinkStore
 	PendingOAuthSignups() PendingOAuthSignupStore
+	PasskeyCredentials() PasskeyCredentialStore
+	WebAuthnSessions() WebAuthnSessionStore
 	Settings() SettingsStore
 	AltchaSalts() AltchaSaltsStore
 	APITokens() APITokenStore
@@ -90,7 +92,7 @@ type UserStore interface {
 	// is no pending verification to charge — callers should map that
 	// to FailedPrecondition. The returned row is the source of truth
 	// for the constant-time code comparison that follows.
-	ConsumeVerificationAttempt(ctx context.Context, id string) (*User, error)
+	ConsumeVerificationAttempt(ctx context.Context, id string, now time.Time, maxAttempts int64) (*User, error)
 	GetPrefs(ctx context.Context, id string) (string, error)
 	// GetPrefsForUpdate reads the prefs blob locked against concurrent
 	// writers (SELECT ... FOR UPDATE, or the SQLite self-assign write that
@@ -109,10 +111,21 @@ type UserStore interface {
 	UpdateEmailVerified(ctx context.Context, p UpdateUserEmailVerifiedParams) error
 	UpdateAdmin(ctx context.Context, p UpdateUserAdminParams) error
 	UpdatePrefs(ctx context.Context, p UpdateUserPrefsParams) error
-	SetPendingEmail(ctx context.Context, p SetPendingEmailParams) error
+	// SetPendingEmail conditionally mints a verification code. It reports
+	// false when a previous code is still inside its resend cooldown, so
+	// the caller neither sends nor overwrites the live code.
+	SetPendingEmail(ctx context.Context, p SetPendingEmailParams) (bool, error)
 	PromotePendingEmail(ctx context.Context, id string) error
 	ClearPendingEmail(ctx context.Context, id string) error
+	// ClearPendingEmailCode drops an undelivered code and keeps the
+	// pending address, so a failed send does not lose the only record of
+	// what the account is verifying.
+	ClearPendingEmailCode(ctx context.Context, id string) error
 	ClearCompetingPendingEmails(ctx context.Context, p ClearCompetingPendingEmailsParams) error
+	SetPendingPasswordReset(ctx context.Context, p SetPendingPasswordResetParams) (bool, error)
+	ClearPendingPasswordReset(ctx context.Context, id string) error
+	ConsumePasswordResetAttemptByToken(ctx context.Context, tokenHash string, now time.Time, maxAttempts int64) (*User, error)
+	CompletePasswordReset(ctx context.Context, p CompletePasswordResetParams) (*PasswordResetRevocation, error)
 	// Delete soft-deletes the user.
 	Delete(ctx context.Context, id string) error
 	// RevokeUserTokens advances the user's tokens_revoked_at marker
@@ -134,13 +147,13 @@ type UserStore interface {
 
 type SessionStore interface {
 	Create(ctx context.Context, p CreateSessionParams) error
-	GetByID(ctx context.Context, id string) (*UserSession, error)
+	GetByID(ctx context.Context, id string, now time.Time) (*UserSession, error)
 	// Touch conditionally slides a session's expiry forward and returns the
 	// number of rows updated. The UPDATE is guarded by last_active_at so a
 	// recently-touched session matches zero rows; callers must gate any
 	// in-memory lifecycle extension on rowsAffected > 0 so cached deadlines
 	// never advance past the un-updated DB expiry.
-	Touch(ctx context.Context, p TouchSessionParams) (int64, error)
+	Touch(ctx context.Context, p TouchSessionParams, now time.Time) (int64, error)
 	Delete(ctx context.Context, id string) (int64, error)
 	DeleteByUser(ctx context.Context, userID userid.UserID) error
 	DeleteOthers(ctx context.Context, p DeleteOtherSessionsParams) error
@@ -148,9 +161,9 @@ type SessionStore interface {
 	// user's latest auth_generation after a password change. Other
 	// sessions remain deleted or stale.
 	RefreshAuthGeneration(ctx context.Context, p RefreshSessionAuthGenerationParams) (int64, error)
-	ListByUserID(ctx context.Context, p ListUserSessionsParams) (Page[UserSession], error)
-	ListAllActive(ctx context.Context, p ListAllActiveSessionsParams) (Page[ActiveSession], error)
-	ValidateWithUser(ctx context.Context, id string) (*SessionWithUser, error)
+	ListByUserID(ctx context.Context, p ListUserSessionsParams, now time.Time) (Page[UserSession], error)
+	ListAllActive(ctx context.Context, p ListAllActiveSessionsParams, now time.Time) (Page[ActiveSession], error)
+	ValidateWithUser(ctx context.Context, id string, now time.Time) (*SessionWithUser, error)
 }
 
 type WorkerStore interface {
@@ -416,7 +429,7 @@ type DelegationTokenStore interface {
 	// (LEFT JOIN users), replacing the admin CLI's per-user fanout. Keyset on
 	// created_at.
 	ListAll(ctx context.Context, p ListAllDelegationTokensParams) (Page[DelegationTokenWithOwner], error)
-	ListActiveByUser(ctx context.Context, userID userid.UserID) ([]DelegationToken, error)
+	ListActiveByUser(ctx context.Context, userID userid.UserID, now time.Time) ([]DelegationToken, error)
 	Touch(ctx context.Context, id string) error
 	Revoke(ctx context.Context, id string) (int64, error)
 	// RevokeByUser bulk-revokes every non-revoked delegation token for
@@ -527,18 +540,18 @@ type DeviceAuthorizationStore interface {
 	Create(ctx context.Context, p CreateDeviceAuthorizationParams) error
 	Get(ctx context.Context, deviceCode string) (*DeviceAuthorization, error)
 	GetByUserCode(ctx context.Context, userCode string) (*DeviceAuthorization, error)
-	Approve(ctx context.Context, p ApproveDeviceAuthorizationParams) (int64, error)
-	ApproveByUserCode(ctx context.Context, p ApproveDeviceAuthorizationByUserCodeParams) (int64, error)
+	Approve(ctx context.Context, p ApproveDeviceAuthorizationParams, now time.Time) (int64, error)
+	ApproveByUserCode(ctx context.Context, p ApproveDeviceAuthorizationByUserCodeParams, now time.Time) (int64, error)
 	Deny(ctx context.Context, deviceCode string) (int64, error)
-	Consume(ctx context.Context, deviceCode string) (int64, error)
+	Consume(ctx context.Context, deviceCode string, now time.Time) (int64, error)
 	TouchPoll(ctx context.Context, deviceCode string) error
 }
 
 // CLIAuthorizationCodeStore manages local-redirect one-shot codes.
 type CLIAuthorizationCodeStore interface {
 	Create(ctx context.Context, p CreateCLIAuthorizationCodeParams) error
-	GetActive(ctx context.Context, code string) (*CLIAuthorizationCode, error)
-	Consume(ctx context.Context, code string) (*CLIAuthorizationCode, error)
+	GetActive(ctx context.Context, code string, now time.Time) (*CLIAuthorizationCode, error)
+	Consume(ctx context.Context, code string, now time.Time) (*CLIAuthorizationCode, error)
 }
 
 type WorkspaceSectionStore interface {
@@ -582,7 +595,7 @@ type OAuthStateStore interface {
 type OAuthTokenStore interface {
 	Upsert(ctx context.Context, p UpsertOAuthTokensParams) error
 	Get(ctx context.Context, p GetOAuthTokensParams) (*OAuthToken, error)
-	ListExpiring(ctx context.Context) ([]OAuthToken, error)
+	ListExpiring(ctx context.Context, refreshDueAt time.Time) ([]OAuthToken, error)
 	ListByKeyVersion(ctx context.Context, keyVersion int64) ([]OAuthToken, error)
 	CountByKeyVersion(ctx context.Context, keyVersion int64) (int64, error)
 	DeleteByProvider(ctx context.Context, providerID string) error
@@ -607,6 +620,36 @@ type PendingOAuthSignupStore interface {
 	Create(ctx context.Context, p CreatePendingOAuthSignupParams) error
 	Get(ctx context.Context, token string) (*PendingOAuthSignup, error)
 	Delete(ctx context.Context, token string) error
+}
+
+type PasskeyCredentialStore interface {
+	Create(ctx context.Context, p CreatePasskeyCredentialParams) error
+	GetByID(ctx context.Context, id string) (*PasskeyCredential, error)
+	GetByCredentialID(ctx context.Context, credentialID []byte) (*PasskeyCredential, error)
+	ListByUser(ctx context.Context, userID string) ([]PasskeyCredential, error)
+	CountByUser(ctx context.Context, userID string) (int64, error)
+	UpdateSignCount(ctx context.Context, p UpdatePasskeySignCountParams) error
+	UpdateFriendlyName(ctx context.Context, id, userID, friendlyName string) error
+	UpdatePublicKey(ctx context.Context, p UpdatePasskeyPublicKeyParams) error
+	Delete(ctx context.Context, id, userID string) error
+	DeleteAllByUser(ctx context.Context, userID string) error
+	ListByKeyVersion(ctx context.Context, keyVersion int64) ([]PasskeyCredential, error)
+	CountByKeyVersion(ctx context.Context, keyVersion int64) (int64, error)
+}
+
+type WebAuthnSessionStore interface {
+	Create(ctx context.Context, p CreateWebAuthnSessionParams) error
+	Get(ctx context.Context, id string) (*WebAuthnSession, error)
+	Delete(ctx context.Context, id string) error
+	// ConsumeCeremony deletes one unexpired ceremony row of the given kind.
+	// Returns rows affected (0 when missing, wrong kind, expired, or already consumed).
+	ConsumeCeremony(ctx context.Context, id, kind string, now time.Time) (int64, error)
+	ConsumeProof(ctx context.Context, id, userID, kind string, now time.Time) (int64, error)
+	GetValidProof(ctx context.Context, id, userID, kind string, now time.Time) (*WebAuthnSession, error)
+	DeleteAllByUser(ctx context.Context, userID string) error
+	// DeleteByUserAndKind removes open ceremony rows for one user and kind
+	// (for example, replacing a prior reauth Begin).
+	DeleteByUserAndKind(ctx context.Context, userID, kind string) error
 }
 
 // SettingsStore manages the hub_settings table: one row per setting key,
@@ -670,7 +713,7 @@ type AltchaSaltsStore interface {
 // mechanisms but must implement all methods for consistent cross-backend
 // behavior.
 type CleanupStore interface {
-	HardDeleteExpiredSessions(ctx context.Context) (int64, error)
+	HardDeleteExpiredSessions(ctx context.Context, now time.Time) (int64, error)
 	HardDeleteWorkspacesBefore(ctx context.Context, cutoff time.Time) (int64, error)
 	HardDeleteWorkersBefore(ctx context.Context, cutoff time.Time) (int64, error)
 	HardDeleteExpiredRegistrationKeysBefore(ctx context.Context, cutoff time.Time) (int64, error)
@@ -693,13 +736,14 @@ type CleanupStore interface {
 	// pending_email_expires_at is older than cutoff. Frees up index slots
 	// and ensures stale codes don't leak into future lookups.
 	ClearStalePendingEmails(ctx context.Context, cutoff time.Time) (int64, error)
-	DeleteExpiredOAuthStates(ctx context.Context) (int64, error)
-	DeleteExpiredPendingOAuthSignups(ctx context.Context) (int64, error)
-	DeleteExpiredDeviceAuthorizations(ctx context.Context, cutoff time.Time) (int64, error)
-	DeleteExpiredCLIAuthorizationCodes(ctx context.Context, cutoff time.Time) (int64, error)
+	DeleteExpiredOAuthStates(ctx context.Context, now time.Time) (int64, error)
+	DeleteExpiredPendingOAuthSignups(ctx context.Context, now time.Time) (int64, error)
+	DeleteExpiredWebAuthnSessions(ctx context.Context, now time.Time) (int64, error)
+	DeleteExpiredDeviceAuthorizations(ctx context.Context, now time.Time) (int64, error)
+	DeleteExpiredCLIAuthorizationCodes(ctx context.Context, now time.Time) (int64, error)
 	DeleteRevokedAPITokensBefore(ctx context.Context, cutoff time.Time) (int64, error)
 	DeleteRevokedDelegationTokensBefore(ctx context.Context, cutoff time.Time) (int64, error)
-	DeleteExpiredDelegationTokensBefore(ctx context.Context, cutoff time.Time) (int64, error)
+	DeleteExpiredDelegationTokensBefore(ctx context.Context, now time.Time) (int64, error)
 	// DeleteExpiredAltchaSalts purges consumed ALTCHA salts whose
 	// challenge window passed; the salt can no longer verify after
 	// expiry, so the row only caps table growth until this sweep drops

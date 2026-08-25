@@ -22,6 +22,7 @@ LeapMux keeps three kinds of persistent state:
 | --- | --- | --- |
 | Accounts, workspaces, Workers, sessions, API tokens | Hub database (`hub.db` or your SQL backend) | No (but secrets within it are hashed or encrypted — see below) |
 | OAuth provider client secrets and per-user OAuth access/refresh tokens | Hub database | **Yes** — encrypted with the keystore key |
+| Passkey credential public keys and WebAuthn ceremony session data | Hub database | **Yes** — encrypted with the keystore key (AAD binds each row) |
 | API-token / delegation-token secrets | Hub database | No — stored as HMAC-SHA256 **hashes** (peppered), never as plaintext or reversible ciphertext |
 | Worker public keys (for the E2EE handshake) | Hub database | No — public material, stored in the clear |
 | Agent transcripts, terminal I/O, worktree/session state | Worker's local SQLite (`worker.db`) | No |
@@ -33,15 +34,20 @@ LeapMux keeps three kinds of persistent state:
 
 The keystore encrypts secrets with **XChaCha20-Poly1305** (a 256-bit key, 24-byte random nonce per ciphertext). Each ciphertext records which key version produced it, so the Hub can pick the right key to decrypt as long as that key version is still in the ring.
 
-Exactly three secret types are encrypted at rest in the Hub database:
+Exactly these secret types are encrypted at rest in the Hub database:
 
 - `oauth_providers.client_secret` — the OAuth provider's client secret.
 - `oauth_tokens.access_token` — a user's OAuth access token.
 - `oauth_tokens.refresh_token` — a user's OAuth refresh token.
+- `passkey_credentials.public_key` — the WebAuthn credential public key bytes.
+- `webauthn_sessions.session_data` — ephemeral ceremony state for sign-up, login, registration, and reauth.
+- `webauthn_sessions.payload_json` — passkey-signup draft (username, email, display name) while the ceremony is in flight. Other ceremony kinds store `{}`.
 
 (Short-lived pending-signup OAuth tokens are also encrypted while a signup is in flight.)
 
-The keystore loads its versioned key ring from `encryption.key` (highest version = active) and uses it to encrypt and decrypt exactly those three columns in the Hub database; everything else — accounts, workspaces, Workers, hashed API-token secrets, and Worker public keys — is stored without the key.
+Each passkey and WebAuthn session row uses its own row id as **additional authenticated data**, so ciphertext cannot be swapped between rows.
+
+The keystore loads its versioned key ring from `encryption.key` (highest version = active) and uses it to encrypt and decrypt those columns in the Hub database; everything else — accounts, workspaces, Workers, hashed API-token secrets, passkey metadata that is not the public key (friendly names, credential ids, sign counts), and Worker public keys for E2EE — is stored without the key.
 
 The key lives in a separate file from the database, so a copy of the database alone leaves the encrypted OAuth secrets readable only as ciphertext — which is why the two must be backed up together.
 
@@ -132,7 +138,7 @@ Follow these steps in order. The `remove` step is guarded — it refuses to dele
    # Re-encrypted 7 secrets to key version 2.
    ```
 
-   This walks every OAuth provider secret and OAuth token still encrypted under an older version, decrypts it, and rewrites it under the active version. Rows already at the active version are skipped.
+   This walks every OAuth provider secret, OAuth token, and passkey credential public key still encrypted under an older version, decrypts it, and rewrites it under the active version. Rows already at the active version are skipped.
 
 4. **(Optional) Remove the retired version** once nothing references it, then restart the Hub.
 
@@ -143,7 +149,7 @@ Follow these steps in order. The `remove` step is guarded — it refuses to dele
    sudo systemctl restart leapmux-hub
    ```
 
-> **Warning:** `remove` permanently destroys a key version, so any ciphertext still encrypted under it would become undecryptable. As a guardrail, `remove` opens the database and **refuses** to delete a version that still encrypts OAuth provider secrets or OAuth tokens — it reports what still references the version and tells you to run `reencrypt` first. It also refuses to delete the **active** version (`cannot remove active key version N`) and errors if the version is not in the ring (`keystore: key version N not in ring`). `--version` is required and must be `>= 1`. Transient `pending_oauth_signups` are intentionally outside the guard — they auto-expire, so a half-finished signup simply fails and the user retries.
+> **Warning:** `remove` permanently destroys a key version, so any ciphertext still encrypted under it would become undecryptable. As a guardrail, `remove` opens the database and **refuses** to delete a version that still encrypts OAuth provider secrets, OAuth tokens, or passkey credential public keys — it reports what still refers to the version and tells you to run `reencrypt` first. It also refuses to delete the **active** version (`cannot remove active key version N`) and fails if the version is not in the ring (`keystore: key version N not in ring`). `--version` is required and must be `>= 1`. Transient rows are intentionally outside the guard: `pending_oauth_signups` and `webauthn_sessions` auto-expire, so a half-finished OAuth signup or WebAuthn ceremony simply fails and the user retries. Passkey `public_key` rows are scanned; `webauthn_sessions.session_data` is encrypted but never reencrypted because sessions expire within minutes.
 
 ### Rotation and API tokens
 

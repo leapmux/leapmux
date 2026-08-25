@@ -3,9 +3,13 @@ import { createMemo, createSignal, For, onMount, Show } from 'solid-js'
 import { userClient } from '~/api/clients'
 import { passwordCanSubmit, PasswordFields } from '~/components/common/PasswordFields'
 import { UsernameField } from '~/components/common/UsernameField'
+import { PasskeysSettings } from '~/components/settings/PasskeysSettings'
+import { PasskeyStepUp } from '~/components/settings/PasskeyStepUp'
 import { useAuth } from '~/context/AuthContext'
 import { formatErrorMessage } from '~/lib/errors'
+import { isReauthProofRejected, obtainPasskeyReauthProof } from '~/lib/passkeyManagement'
 import { sanitizeDisplayName, sanitizeName, sanitizeSlug, validateEmail } from '~/lib/validate'
+import { passkeyErrorMessage } from '~/lib/webauthn'
 import { errorText, successText, warningText } from '~/styles/shared.css'
 import * as styles from './ProfileSettings.css'
 
@@ -26,6 +30,9 @@ export const ProfileSettings: Component = () => {
   const [confirmPassword, setConfirmPassword] = createSignal('')
   const [passwordSaving, setPasswordSaving] = createSignal(false)
   const [passwordMessage, setPasswordMessage] = createSignal<{ type: 'success' | 'error', text: string } | null>(null)
+  const [reauthProof, setReauthProof] = createSignal('')
+  const [reauthBusy, setReauthBusy] = createSignal(false)
+  const [livePasskeyCount, setLivePasskeyCount] = createSignal(auth.user()?.passkeyCount ?? 0)
 
   const [unlinkingProvider, setUnlinkingProvider] = createSignal<string | null>(null)
   const [unlinkMessage, setUnlinkMessage] = createSignal<{ type: 'success' | 'error', text: string } | null>(null)
@@ -127,6 +134,23 @@ export const ProfileSettings: Component = () => {
     }
   }
 
+  const handlePasswordReauth = async () => {
+    setReauthBusy(true)
+    setPasswordMessage(null)
+    try {
+      setReauthProof(await obtainPasskeyReauthProof())
+    }
+    catch (e) {
+      // A dismissed prompt is not a failure to report.
+      const text = passkeyErrorMessage(e, 'Passkey verification failed')
+      if (text)
+        setPasswordMessage({ type: 'error', text })
+    }
+    finally {
+      setReauthBusy(false)
+    }
+  }
+
   const handleChangePassword = async () => {
     if (!passwordCanSubmit(pwProps))
       return
@@ -136,14 +160,21 @@ export const ProfileSettings: Component = () => {
       await userClient.changePassword({
         currentPassword: currentPassword(),
         newPassword: newPassword(),
+        reauthProof: reauthProof(),
       })
       setPasswordMessage({ type: 'success', text: auth.user()?.passwordSet ? 'Password changed.' : 'Password set.' })
       setCurrentPassword('')
       setNewPassword('')
       setConfirmPassword('')
-      auth.refreshUser()
+      setReauthProof('')
+      await auth.refreshUser()
     }
     catch (e) {
+      // A consumed or expired proof must not stick around: every retry
+      // would resend the same dead proof. Drop it so the "Verify with
+      // passkey" control returns.
+      if (isReauthProofRejected(e))
+        setReauthProof('')
       setPasswordMessage({ type: 'error', text: formatErrorMessage(e, 'Failed to change password') })
     }
     finally {
@@ -240,15 +271,20 @@ export const ProfileSettings: Component = () => {
           setCurrentPassword={setCurrentPassword}
           labelClass={styles.fieldLabel}
         />
+        <Show when={!auth.user()?.passwordSet && livePasskeyCount() > 0}>
+          <PasskeyStepUp proof={reauthProof()} busy={passwordSaving() || reauthBusy()} onVerify={() => void handlePasswordReauth()} />
+        </Show>
         <Show when={passwordMessage()}>
           {msg => <div class={msg().type === 'success' ? successText : errorText}>{msg().text}</div>}
         </Show>
-        <button type="button" onClick={handleChangePassword} disabled={passwordSaving() || !passwordCanSubmit(pwProps)}>
+        <button type="button" onClick={handleChangePassword} disabled={passwordSaving() || !passwordCanSubmit(pwProps) || (!auth.user()?.passwordSet && livePasskeyCount() > 0 && !reauthProof())}>
           {passwordSaving()
             ? (auth.user()?.passwordSet ? 'Changing...' : 'Setting...')
             : (auth.user()?.passwordSet ? 'Change Password' : 'Set Password')}
         </button>
       </div>
+
+      <PasskeysSettings onPasskeysChange={setLivePasskeyCount} />
 
       <Show when={auth.user()?.oauthProviders && auth.user()!.oauthProviders.length > 0}>
         <h3 class={styles.sectionHeading}>Linked Accounts</h3>

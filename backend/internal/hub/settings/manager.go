@@ -712,9 +712,9 @@ func (m *Manager) requireRegistered(desc Descriptor) error {
 
 // Reset removes the key's row, returning it to its code default. The
 // cross-key rules run against the post-reset view first — the same
-// contract every write path holds — so a reset cannot store the exact
-// combination an update refuses (e.g. dropping the smtp row while
-// email_verification_required stays true).
+// contract every write path holds — so a reset cannot store a combination
+// an update refuses (for example, clearing a captcha provider secret while
+// that provider stays selected).
 func (m *Manager) Reset(ctx context.Context, desc Descriptor) error {
 	if err := m.ResetMany(ctx, []Descriptor{desc}); err != nil {
 		return fmt.Errorf("reset setting %q: %w", desc.Name(), err)

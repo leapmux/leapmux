@@ -317,13 +317,35 @@ func (h *OAuthHandler) loginOAuthUser(w http.ResponseWriter, r *http.Request, us
 
 // sanitizeRedirectURI ensures the redirect URI is a safe relative path.
 // Returns empty string for anything that could be an open redirect.
+//
+// This is the sink guard: the value it returns reaches a Location header
+// through http.Redirect, so it must refuse every spelling a BROWSER reads
+// as an authority, not just the ones Go's URL parser does. Two spellings
+// beyond the obvious "//host" get through an RFC 3986 parser:
+//
+//   - "/\host". A WHATWG parser treats a backslash as a slash for a
+//     special scheme, so it reads "host" as the authority. Go's net/url
+//     does not, so parsing the value and comparing origins ACCEPTS this
+//     one -- which is why the guard is an allowlist on the raw bytes.
+//   - "/<TAB>/host". url.Parse rejects the control byte, so http.Redirect
+//     skips its cleaning branch and writes the value verbatim; the
+//     browser then strips the tab and reads "//host". CR and LF do not
+//     work (net/http rewrites them to a space), but refusing every
+//     control byte costs nothing and removes the dependency on that
+//     detail.
+//
+// frontend/src/lib/safeRedirect.ts applies the same three rules.
 func sanitizeRedirectURI(uri string) string {
-	if uri == "" {
+	if uri == "" || uri[0] != '/' {
 		return ""
 	}
-	// Must start with "/" and must not start with "//" (protocol-relative URL).
-	if uri[0] != '/' || (len(uri) > 1 && uri[1] == '/') {
+	if len(uri) > 1 && (uri[1] == '/' || uri[1] == '\\') {
 		return ""
+	}
+	for i := 0; i < len(uri); i++ {
+		if uri[i] < 0x20 || uri[i] == 0x7f {
+			return ""
+		}
 	}
 	return uri
 }

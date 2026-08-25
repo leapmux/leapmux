@@ -31,6 +31,7 @@ export interface SystemInfoMockState {
   signupEnabled: boolean
   setupRequired: boolean
   emailEnabled: boolean
+  passkeyEnabled: boolean
   captchaEnabled: boolean
   captchaProvider: CaptchaProvider
   captchaSiteKey: string
@@ -44,6 +45,7 @@ const defaultState: SystemInfoMockState = {
   signupEnabled: false,
   setupRequired: false,
   emailEnabled: false,
+  passkeyEnabled: true,
   captchaEnabled: false,
   captchaProvider: CaptchaProvider.ALTCHA,
   captchaSiteKey: '',
@@ -63,6 +65,7 @@ export const systemInfoMock = {
   isSignupEnabled: () => state().signupEnabled,
   isSetupRequired: () => state().setupRequired,
   isEmailEnabled: () => state().emailEnabled,
+  isPasskeyEnabled: () => state().passkeyEnabled,
   isSystemInfoLoaded: () => state().loaded,
   isCaptchaEnabled: () => state().captchaEnabled,
   getCaptchaProvider: () => state().captchaProvider,

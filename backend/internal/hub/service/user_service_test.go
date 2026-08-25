@@ -3,6 +3,7 @@ package service_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -21,10 +22,13 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
+	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/mail"
+	hubwebauthn "github.com/leapmux/leapmux/internal/hub/webauthn"
 
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/servicetest"
+	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
@@ -54,7 +58,15 @@ func setupUserTest(t *testing.T) *userTestEnv {
 	mux := http.NewServeMux()
 	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
 	t.Cleanup(contexts.Stop)
-	userSvc := service.NewUserService(st, testConfig(), servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(contexts, nil, nil), mail.NewStubSender(), mail.Renderer{})
+	ksKey, kErr := keystore.GenerateKey()
+	require.NoError(t, kErr)
+	ks, kErr := keystore.New(map[uint32][32]byte{1: ksKey})
+	require.NoError(t, kErr)
+	set := servicetest.NewSettingsManager(t, st, nil)
+	// Passkeys need a hub URL; ListPasskeys reports availability through
+	// the same derivation the handlers use.
+	require.NoError(t, settings.KeyPublicURL.Set(context.Background(), set, "http://localhost:4327"))
+	userSvc := service.NewUserService(st, testConfig(), set, auth.NewCredentialLifecycleEffects(contexts, nil, nil), mail.NewStubSender(), mail.Renderer{}, ks)
 	opts := connect.WithInterceptors(interceptor)
 	path, handler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
 	mux.Handle(path, handler)
@@ -104,7 +116,7 @@ func setupOAuthUserTest(t *testing.T) *userTestEnv {
 	err = st.Migrator().Migrate(context.Background())
 	require.NoError(t, err)
 
-	userSvc := service.NewUserService(st, testConfig(), servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil), mail.NewStubSender(), mail.Renderer{})
+	userSvc := service.NewUserService(st, testConfig(), servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil), mail.NewStubSender(), mail.Renderer{}, nil)
 
 	mux := http.NewServeMux()
 	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
@@ -125,18 +137,20 @@ func setupOAuthUserTest(t *testing.T) *userTestEnv {
 	)
 
 	userID := id.Generate()
-	hash, _ := password.Hash("testpass")
 
 	_ = st.Users().Create(context.Background(), store.CreateUserParams{
-		ID:           userID,
-		Username:     "testuser",
-		PasswordHash: hash,
-		DisplayName:  "Test User",
-		PasswordSet:  false,
-		IsAdmin:      true,
+		ID:            userID,
+		Username:      "testuser",
+		PasswordHash:  password.PlaceholderHash,
+		DisplayName:   "Test User",
+		Email:         "testuser@example.com",
+		EmailVerified: true,
+		PasswordSet:   false,
+		IsAdmin:       true,
 	})
 
-	token, _, _, err := auth.Login(context.Background(), st, "testuser", "testpass", auth.DefaultSessionDuration)
+	// PasswordSet is false, so password Login refuses. Mint a session directly.
+	token, _, err := auth.CreateSession(context.Background(), st, userid.MustNew(userID), auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	return &userTestEnv{
@@ -600,6 +614,53 @@ func TestRequestEmailChange_NonAdmin_VerificationNotRequired_LandsUnverified(t *
 
 // --- RequestEmailChange: duplicate email rejected ---
 
+// RequestEmailChange had no cooldown at all: the address is
+// caller-supplied and nothing rate-limits the procedure, so a logged-in
+// user could send one verification message per request to any address
+// they named. The conditional mint is what closes that -- it refuses
+// while a previous code is live, whatever address the second request
+// asks for.
+func TestRequestEmailChange_CooldownRefusesASecondAddress(t *testing.T) {
+	t.Parallel()
+
+	client, st, _ := setupVerificationUserTestServer(t, true)
+
+	userID := id.Generate()
+	hash, _ := password.Hash("userpass")
+	require.NoError(t, st.Users().Create(context.Background(), store.CreateUserParams{
+		ID:           userID,
+		Username:     "flooduser",
+		PasswordHash: hash,
+		DisplayName:  "Flood User",
+		PasswordSet:  true,
+	}))
+	require.NoError(t, st.Users().UpdateEmail(context.Background(), store.UpdateUserEmailParams{
+		Email: "old@example.com", EmailVerified: true, ID: userID,
+	}))
+	userToken, _, _, err := auth.Login(context.Background(), st, "flooduser", "userpass", auth.DefaultSessionDuration)
+	require.NoError(t, err)
+
+	_, err = client.RequestEmailChange(context.Background(), authedReq(&leapmuxv1.RequestEmailChangeRequest{
+		NewEmail: "first@example.com",
+	}, userToken))
+	require.NoError(t, err)
+
+	// A DIFFERENT address on the second request: the old read-then-check
+	// would have minted and sent again, because it compared nothing.
+	_, err = client.RequestEmailChange(context.Background(), authedReq(&leapmuxv1.RequestEmailChangeRequest{
+		NewEmail: "victim@example.com",
+	}, userToken))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(err),
+		"a second address inside the cooldown must be refused, not sent")
+
+	// The first request's pending row is intact: the refusal changed nothing.
+	user, err := st.Users().GetByID(context.Background(), userID)
+	require.NoError(t, err)
+	assert.Equal(t, "first@example.com", user.PendingEmail,
+		"the refused mint must not overwrite the live code's address")
+}
+
 func TestRequestEmailChange_DuplicateEmail_Rejected(t *testing.T) {
 	t.Parallel()
 
@@ -634,8 +695,8 @@ func TestRequestEmailChange_DuplicateEmail_Rejected(t *testing.T) {
 // --- RequestEmailChange: config on, pending email ---
 
 // setupVerificationUserTestServer creates a test server with the given
-// EmailVerificationRequired setting and both UserService and AuthService
-// registered. The interceptor and the services read the gate from the
+// Email verification is controlled by SMTP (EmailVerificationEffective). Both UserService and AuthService
+// registered. The interceptor and the services read the rule from the
 // same settings. It returns a UserService client, st, and the admin token.
 func setupVerificationUserTestServer(t *testing.T, emailVerificationRequired bool) (leapmuxv1connect.UserServiceClient, store.Store, string) {
 	t.Helper()
@@ -659,7 +720,7 @@ func setupVerificationUserTestServer(t *testing.T, emailVerificationRequired boo
 	t.Cleanup(contexts.Stop)
 	opts := connect.WithInterceptors(interceptor)
 
-	userSvc := service.NewUserService(st, testConfig(), set, auth.NewCredentialLifecycleEffects(nil, nil, nil), mail.NewStubSender(), mail.Renderer{})
+	userSvc := service.NewUserService(st, testConfig(), set, auth.NewCredentialLifecycleEffects(nil, nil, nil), mail.NewStubSender(), mail.Renderer{}, nil)
 	userPath, userHandler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
 	mux.Handle(userPath, userHandler)
 
@@ -737,11 +798,12 @@ func TestVerifyEmail_Success(t *testing.T) {
 
 	// Seed pending_email + a 6-char verifycode-shaped token.
 	verifyToken := verifycode.Generate()
-	err := env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
+	_, err := env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
 		PendingEmail:          "verified@example.com",
 		PendingEmailToken:     verifyToken,
 		PendingEmailExpiresAt: ptrTime(time.Now().Add(1 * time.Hour).UTC()),
 		ID:                    env.userID,
+		CooldownCutoff:        store.UnconditionalMintCutoff(),
 	})
 	require.NoError(t, err)
 
@@ -772,11 +834,12 @@ func TestVerifyEmail_AcceptsLowercaseInput(t *testing.T) {
 	env := setupUserTest(t)
 
 	verifyToken := verifycode.Generate()
-	err := env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
+	_, err := env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
 		PendingEmail:          "lowercase@example.com",
 		PendingEmailToken:     verifyToken,
 		PendingEmailExpiresAt: ptrTime(time.Now().Add(1 * time.Hour).UTC()),
 		ID:                    env.userID,
+		CooldownCutoff:        store.UnconditionalMintCutoff(),
 	})
 	require.NoError(t, err)
 
@@ -811,11 +874,12 @@ func TestVerifyEmail_ExpiredOrMismatchSurfacesIdentically(t *testing.T) {
 	env := setupUserTest(t)
 
 	expiredToken := verifycode.Generate()
-	err := env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
+	_, err := env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
 		PendingEmail:          "expired@example.com",
 		PendingEmailToken:     expiredToken,
 		PendingEmailExpiresAt: ptrTime(time.Now().Add(-1 * time.Hour).UTC()),
 		ID:                    env.userID,
+		CooldownCutoff:        store.UnconditionalMintCutoff(),
 	})
 	require.NoError(t, err)
 
@@ -831,12 +895,15 @@ func TestVerifyEmail_ExpiredOrMismatchSurfacesIdentically(t *testing.T) {
 	for wrongToken == liveToken {
 		wrongToken = verifycode.Generate()
 	}
-	require.NoError(t, env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
+	minted, err := env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
 		PendingEmail:          "live@example.com",
 		PendingEmailToken:     liveToken,
 		PendingEmailExpiresAt: ptrTime(time.Now().Add(1 * time.Hour).UTC()),
 		ID:                    env.userID,
-	}))
+		CooldownCutoff:        store.UnconditionalMintCutoff(),
+	})
+	require.NoError(t, err)
+	require.True(t, minted)
 	_, mismatchErr := env.client.VerifyEmail(context.Background(), authedReq(&leapmuxv1.VerifyEmailRequest{
 		VerificationToken: verifycode.Format(wrongToken),
 	}, env.token))
@@ -854,11 +921,12 @@ func TestVerifyEmail_PendingEmailEmpty(t *testing.T) {
 	// Set a token but with empty pending_email — represents a "nothing
 	// to verify" precondition error, distinct from invalid/expired codes.
 	verifyToken := verifycode.Generate()
-	err := env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
+	_, err := env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
 		PendingEmail:          "",
 		PendingEmailToken:     verifyToken,
 		PendingEmailExpiresAt: ptrTime(time.Now().Add(1 * time.Hour).UTC()),
 		ID:                    env.userID,
+		CooldownCutoff:        store.UnconditionalMintCutoff(),
 	})
 	require.NoError(t, err)
 
@@ -875,12 +943,15 @@ func TestVerifyEmail_RateLimitForceExpires(t *testing.T) {
 	env := setupUserTest(t)
 
 	live := verifycode.Generate()
-	require.NoError(t, env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
+	minted, err := env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
 		PendingEmail:          "burned@example.com",
 		PendingEmailToken:     live,
 		PendingEmailExpiresAt: ptrTime(time.Now().Add(1 * time.Hour).UTC()),
 		ID:                    env.userID,
-	}))
+		CooldownCutoff:        store.UnconditionalMintCutoff(),
+	})
+	require.NoError(t, err)
+	require.True(t, minted)
 
 	// Five wrong attempts: each one should fail with NotFound but the
 	// row stays alive.
@@ -898,7 +969,7 @@ func TestVerifyEmail_RateLimitForceExpires(t *testing.T) {
 
 	// 6th attempt — even with the *correct* code — must fail with
 	// ResourceExhausted because the previous attempt force-expired the row.
-	_, err := env.client.VerifyEmail(context.Background(), authedReq(&leapmuxv1.VerifyEmailRequest{
+	_, err = env.client.VerifyEmail(context.Background(), authedReq(&leapmuxv1.VerifyEmailRequest{
 		VerificationToken: verifycode.Format(live),
 	}, env.token))
 	require.Error(t, err)
@@ -918,7 +989,7 @@ func setupResendUserTest(t *testing.T) (*userTestEnv, *recordingSender) {
 	require.NoError(t, st.Migrator().Migrate(context.Background()))
 
 	rec := &recordingSender{}
-	userSvc := service.NewUserService(st, testConfig(), servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil), rec, mail.Renderer{})
+	userSvc := service.NewUserService(st, testConfig(), servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil), rec, mail.Renderer{}, nil)
 
 	mux := http.NewServeMux()
 	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
@@ -974,12 +1045,15 @@ func TestResendVerificationEmail_RotatesCodeAndSends(t *testing.T) {
 	// the cooldown window has elapsed (TTL is 30min, cooldown 60s — set
 	// expires_at = now+25min so issued_at = now-5min).
 	originalCode := verifycode.Generate()
-	require.NoError(t, env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
+	minted, err := env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
 		ID:                    env.userID,
 		PendingEmail:          "u@example.com",
 		PendingEmailToken:     originalCode,
 		PendingEmailExpiresAt: ptrTime(time.Now().Add(25 * time.Minute).UTC()),
-	}))
+		CooldownCutoff:        store.UnconditionalMintCutoff(),
+	})
+	require.NoError(t, err)
+	require.True(t, minted)
 
 	resp, err := env.client.ResendVerificationEmail(context.Background(), authedReq(&leapmuxv1.ResendVerificationEmailRequest{}, env.token))
 	require.NoError(t, err)
@@ -1010,14 +1084,17 @@ func TestResendVerificationEmail_CooldownEnforced(t *testing.T) {
 	// (or hostile caller) can't flood the user's inbox.
 	env, _ := setupResendUserTest(t)
 
-	require.NoError(t, env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
+	minted, err := env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
 		ID:                    env.userID,
 		PendingEmail:          "u@example.com",
 		PendingEmailToken:     verifycode.Generate(),
 		PendingEmailExpiresAt: ptrTime(time.Now().Add(30 * time.Minute).UTC()),
-	}))
+		CooldownCutoff:        store.UnconditionalMintCutoff(),
+	})
+	require.NoError(t, err)
+	require.True(t, minted)
 
-	_, err := env.client.ResendVerificationEmail(context.Background(), authedReq(&leapmuxv1.ResendVerificationEmailRequest{}, env.token))
+	_, err = env.client.ResendVerificationEmail(context.Background(), authedReq(&leapmuxv1.ResendVerificationEmailRequest{}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(err))
 }
@@ -1028,11 +1105,12 @@ func TestVerifyEmail_EmailTakenSinceRequest(t *testing.T) {
 	env := setupUserTest(t)
 
 	verifyToken := verifycode.Generate()
-	err := env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
+	_, err := env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
 		PendingEmail:          "contested@example.com",
 		PendingEmailToken:     verifyToken,
 		PendingEmailExpiresAt: ptrTime(time.Now().Add(1 * time.Hour).UTC()),
 		ID:                    env.userID,
+		CooldownCutoff:        store.UnconditionalMintCutoff(),
 	})
 	require.NoError(t, err)
 
@@ -1071,11 +1149,12 @@ func TestVerifyEmail_CrossUser_NoOracle(t *testing.T) {
 	env := setupUserTest(t)
 
 	victimToken := verifycode.Generate()
-	err := env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
+	_, err := env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
 		PendingEmail:          "stolen@example.com",
 		PendingEmailToken:     victimToken,
 		PendingEmailExpiresAt: ptrTime(time.Now().Add(1 * time.Hour).UTC()),
 		ID:                    env.userID,
+		CooldownCutoff:        store.UnconditionalMintCutoff(),
 	})
 	require.NoError(t, err)
 
@@ -1094,12 +1173,15 @@ func TestVerifyEmail_CrossUser_NoOracle(t *testing.T) {
 		IsAdmin:      false,
 	})
 	attackerOwnToken := verifycode.Generate()
-	require.NoError(t, env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
+	minted, err := env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
 		PendingEmail:          "attacker@example.com",
 		PendingEmailToken:     attackerOwnToken,
 		PendingEmailExpiresAt: ptrTime(time.Now().Add(1 * time.Hour).UTC()),
 		ID:                    attackerID,
-	}))
+		CooldownCutoff:        store.UnconditionalMintCutoff(),
+	})
+	require.NoError(t, err)
+	require.True(t, minted)
 	attackerToken, _, _, err := auth.Login(context.Background(), env.store, "attacker", "testpass2", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
@@ -1198,7 +1280,7 @@ func TestChangePassword_ToleratesConcurrentActingSessionDeletion(t *testing.T) {
 	mux := http.NewServeMux()
 	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
 	t.Cleanup(contexts.Stop)
-	userSvc := service.NewUserService(hooked, testConfig(), servicetest.NewSettingsManager(t, hooked, nil), auth.NewCredentialLifecycleEffects(contexts, nil, nil), mail.NewStubSender(), mail.Renderer{})
+	userSvc := service.NewUserService(hooked, testConfig(), servicetest.NewSettingsManager(t, hooked, nil), auth.NewCredentialLifecycleEffects(contexts, nil, nil), mail.NewStubSender(), mail.Renderer{}, nil)
 	path, handler := leapmuxv1connect.NewUserServiceHandler(userSvc, connect.WithInterceptors(interceptor))
 	mux.Handle(path, handler)
 	server := httptest.NewUnstartedServer(mux)
@@ -1267,6 +1349,33 @@ func TestChangePassword_PasswordUser_RequiresCurrentPassword(t *testing.T) {
 	}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+}
+
+func TestChangePassword_PasskeyOnly_RequiresReauthProof(t *testing.T) {
+	t.Parallel()
+
+	env := setupOAuthUserTest(t)
+	seedPasskeyCredential(t, env.store, env.userID, "Phone")
+
+	_, err := env.client.ChangePassword(context.Background(), authedReq(&leapmuxv1.ChangePasswordRequest{
+		NewPassword: "newpass123",
+	}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+
+	proof := seedReauthProof(t, env.store, env.userID)
+	_, err = env.client.ChangePassword(context.Background(), authedReq(&leapmuxv1.ChangePasswordRequest{
+		NewPassword: "newpass123",
+		ReauthProof: proof,
+	}, env.token))
+	require.NoError(t, err)
+
+	user, err := env.store.Users().GetByID(context.Background(), env.userID)
+	require.NoError(t, err)
+	assert.True(t, user.PasswordSet)
+
+	_, _, _, err = auth.Login(context.Background(), env.store, "testuser", "newpass123", auth.DefaultSessionDuration)
+	require.NoError(t, err)
 }
 
 // --- UnlinkOAuthProvider tests ---
@@ -1377,4 +1486,672 @@ func TestUnlinkOAuthProvider_NotFound(t *testing.T) {
 	}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+}
+
+// --- Passkey management ---
+
+func seedPasskeyCredential(t *testing.T, st store.Store, userID, friendlyName string) string {
+	t.Helper()
+	pkID := id.Generate()
+	now := time.Now().UTC()
+	require.NoError(t, st.PasskeyCredentials().Create(context.Background(), store.CreatePasskeyCredentialParams{
+		ID:           pkID,
+		UserID:       userID,
+		CredentialID: []byte("cred-" + pkID),
+		PublicKey:    []byte("pubkey"),
+		SignCount:    0,
+		Transports:   "[]",
+		FriendlyName: friendlyName,
+		KeyVersion:   1,
+		CreatedAt:    now,
+	}))
+	return pkID
+}
+
+func seedReauthProof(t *testing.T, st store.Store, userID string) string {
+	t.Helper()
+	proofID := id.Generate()
+	now := time.Now().UTC()
+	require.NoError(t, st.WebAuthnSessions().Create(context.Background(), store.CreateWebAuthnSessionParams{
+		ID:          proofID,
+		Kind:        "reauth_proof",
+		UserID:      userID,
+		PayloadJSON: "{}",
+		SessionData: []byte("dummy"),
+		ExpiresAt:   now.Add(5 * time.Minute),
+		CreatedAt:   now,
+	}))
+	return proofID
+}
+
+func TestUserService_ListPasskeys(t *testing.T) {
+	t.Parallel()
+
+	env := setupUserTest(t)
+	seedPasskeyCredential(t, env.store, env.userID, "Laptop")
+	seedPasskeyCredential(t, env.store, env.userID, "Phone")
+
+	resp, err := env.client.ListPasskeys(context.Background(), authedReq(&leapmuxv1.ListPasskeysRequest{}, env.token))
+	require.NoError(t, err)
+	require.Len(t, resp.Msg.GetPasskeys(), 2)
+	names := map[string]struct{}{}
+	for _, pk := range resp.Msg.GetPasskeys() {
+		names[pk.GetFriendlyName()] = struct{}{}
+	}
+	assert.Contains(t, names, "Laptop")
+	assert.Contains(t, names, "Phone")
+}
+
+func TestUserService_RenamePasskey(t *testing.T) {
+	t.Parallel()
+
+	env := setupUserTest(t)
+	pkID := seedPasskeyCredential(t, env.store, env.userID, "Old Name")
+
+	resp, err := env.client.RenamePasskey(context.Background(), authedReq(&leapmuxv1.RenamePasskeyRequest{
+		Id:              pkID,
+		FriendlyName:    "New Name",
+		CurrentPassword: "testpass",
+	}, env.token))
+	require.NoError(t, err)
+	assert.Equal(t, "New Name", resp.Msg.GetPasskey().GetFriendlyName())
+
+	row, err := env.store.PasskeyCredentials().GetByID(context.Background(), pkID)
+	require.NoError(t, err)
+	assert.Equal(t, "New Name", row.FriendlyName)
+}
+
+func TestUserService_RenamePasskey_RequiresPassword(t *testing.T) {
+	t.Parallel()
+
+	env := setupUserTest(t)
+	pkID := seedPasskeyCredential(t, env.store, env.userID, "Old Name")
+
+	_, err := env.client.RenamePasskey(context.Background(), authedReq(&leapmuxv1.RenamePasskeyRequest{
+		Id:           pkID,
+		FriendlyName: "New Name",
+	}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+}
+
+func TestUserService_RenamePasskey_WithReauthProof(t *testing.T) {
+	t.Parallel()
+
+	env := setupOAuthUserTest(t)
+	pkID := seedPasskeyCredential(t, env.store, env.userID, "Old Name")
+	proof := seedReauthProof(t, env.store, env.userID)
+
+	resp, err := env.client.RenamePasskey(context.Background(), authedReq(&leapmuxv1.RenamePasskeyRequest{
+		Id:           pkID,
+		FriendlyName: "New Name",
+		ReauthProof:  proof,
+	}, env.token))
+	require.NoError(t, err)
+	assert.Equal(t, "New Name", resp.Msg.GetPasskey().GetFriendlyName())
+
+	_, err = env.store.WebAuthnSessions().Get(context.Background(), proof)
+	assert.ErrorIs(t, err, store.ErrNotFound)
+}
+
+func TestUserService_DeletePasskey_WithPassword(t *testing.T) {
+	t.Parallel()
+
+	env := setupUserTest(t)
+	pkID := seedPasskeyCredential(t, env.store, env.userID, "To Delete")
+
+	_, err := env.client.DeletePasskey(context.Background(), authedReq(&leapmuxv1.DeletePasskeyRequest{
+		Id:              pkID,
+		CurrentPassword: "testpass",
+	}, env.token))
+	require.NoError(t, err)
+
+	_, err = env.store.PasskeyCredentials().GetByID(context.Background(), pkID)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, store.ErrNotFound))
+}
+
+func TestUserService_DeletePasskey_WithReauthProof(t *testing.T) {
+	t.Parallel()
+
+	env := setupOAuthUserTest(t)
+	pk1 := seedPasskeyCredential(t, env.store, env.userID, "Keep")
+	pk2 := seedPasskeyCredential(t, env.store, env.userID, "Remove")
+	proof := seedReauthProof(t, env.store, env.userID)
+
+	_, err := env.client.DeletePasskey(context.Background(), authedReq(&leapmuxv1.DeletePasskeyRequest{
+		Id:          pk2,
+		ReauthProof: proof,
+	}, env.token))
+	require.NoError(t, err)
+
+	_, err = env.store.PasskeyCredentials().GetByID(context.Background(), pk2)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, store.ErrNotFound))
+
+	_, err = env.store.PasskeyCredentials().GetByID(context.Background(), pk1)
+	require.NoError(t, err)
+}
+
+func TestUserService_DeletePasskey_LastPasskeyRejected(t *testing.T) {
+	t.Parallel()
+
+	env := setupOAuthUserTest(t)
+	pkID := seedPasskeyCredential(t, env.store, env.userID, "Only One")
+	proof := seedReauthProof(t, env.store, env.userID)
+
+	_, err := env.client.DeletePasskey(context.Background(), authedReq(&leapmuxv1.DeletePasskeyRequest{
+		Id:          pkID,
+		ReauthProof: proof,
+	}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), "new_password")
+
+	_, err = env.store.PasskeyCredentials().GetByID(context.Background(), pkID)
+	require.NoError(t, err)
+
+	// Rejection must not consume the reauth proof.
+	_, err = env.store.WebAuthnSessions().Get(context.Background(), proof)
+	require.NoError(t, err)
+}
+
+func TestUserService_DeletePasskey_LastPasskeyWithNewPassword_Deactivates(t *testing.T) {
+	t.Parallel()
+
+	env := setupOAuthUserTest(t)
+	pkID := seedPasskeyCredential(t, env.store, env.userID, "Only One")
+	proof := seedReauthProof(t, env.store, env.userID)
+
+	otherSession, _, err := auth.CreateSession(context.Background(), env.store, userid.MustNew(env.userID), auth.DefaultSessionDuration)
+	require.NoError(t, err)
+
+	_, err = env.client.DeletePasskey(context.Background(), authedReq(&leapmuxv1.DeletePasskeyRequest{
+		Id:          pkID,
+		ReauthProof: proof,
+		NewPassword: "newpass123",
+	}, env.token))
+	require.NoError(t, err)
+
+	user, err := env.store.Users().GetByID(context.Background(), env.userID)
+	require.NoError(t, err)
+	assert.True(t, user.PasswordSet)
+
+	rows, err := env.store.PasskeyCredentials().ListByUser(context.Background(), env.userID)
+	require.NoError(t, err)
+	assert.Empty(t, rows)
+
+	_, _, _, err = auth.Login(context.Background(), env.store, "testuser", "newpass123", auth.DefaultSessionDuration)
+	require.NoError(t, err)
+
+	_, err = auth.ValidateToken(context.Background(), env.store, env.token)
+	assert.NoError(t, err, "acting session must survive")
+	_, err = auth.ValidateToken(context.Background(), env.store, otherSession)
+	assert.Error(t, err, "other sessions must be revoked after passkey-only deactivation")
+}
+
+func TestUserService_DeactivatePasskeyAuth_WithPassword(t *testing.T) {
+	t.Parallel()
+
+	env := setupUserTest(t)
+	seedPasskeyCredential(t, env.store, env.userID, "One")
+	seedPasskeyCredential(t, env.store, env.userID, "Two")
+
+	_, err := env.client.DeactivatePasskeyAuth(context.Background(), authedReq(&leapmuxv1.DeactivatePasskeyAuthRequest{
+		CurrentPassword: "testpass",
+	}, env.token))
+	require.NoError(t, err)
+
+	rows, err := env.store.PasskeyCredentials().ListByUser(context.Background(), env.userID)
+	require.NoError(t, err)
+	assert.Empty(t, rows)
+}
+
+func TestUserService_DeactivatePasskeyAuth_WithReauthAndNewPassword(t *testing.T) {
+	t.Parallel()
+
+	env := setupOAuthUserTest(t)
+	seedPasskeyCredential(t, env.store, env.userID, "Only")
+	proof := seedReauthProof(t, env.store, env.userID)
+
+	_, err := env.client.DeactivatePasskeyAuth(context.Background(), authedReq(&leapmuxv1.DeactivatePasskeyAuthRequest{
+		ReauthProof: proof,
+		NewPassword: "newpass123",
+	}, env.token))
+	require.NoError(t, err)
+
+	user, err := env.store.Users().GetByID(context.Background(), env.userID)
+	require.NoError(t, err)
+	assert.True(t, user.PasswordSet)
+
+	rows, err := env.store.PasskeyCredentials().ListByUser(context.Background(), env.userID)
+	require.NoError(t, err)
+	assert.Empty(t, rows)
+
+	_, _, _, err = auth.Login(context.Background(), env.store, "testuser", "newpass123", auth.DefaultSessionDuration)
+	require.NoError(t, err)
+}
+
+func TestUserService_DeactivatePasskeyAuth_InvalidatesOtherSessions(t *testing.T) {
+	t.Parallel()
+
+	env := setupOAuthUserTest(t)
+	seedPasskeyCredential(t, env.store, env.userID, "Only")
+	proof := seedReauthProof(t, env.store, env.userID)
+
+	otherSession, _, err := auth.CreateSession(context.Background(), env.store, userid.MustNew(env.userID), auth.DefaultSessionDuration)
+	require.NoError(t, err)
+
+	_, err = env.client.DeactivatePasskeyAuth(context.Background(), authedReq(&leapmuxv1.DeactivatePasskeyAuthRequest{
+		ReauthProof: proof,
+		NewPassword: "newpass123",
+	}, env.token))
+	require.NoError(t, err)
+
+	_, err = auth.ValidateToken(context.Background(), env.store, env.token)
+	assert.NoError(t, err, "acting session must survive")
+	_, err = auth.ValidateToken(context.Background(), env.store, otherSession)
+	assert.Error(t, err, "other sessions must be revoked")
+}
+
+func TestVerifyEmail_IncludesPasskeyCount(t *testing.T) {
+	t.Parallel()
+
+	env := setupUserTest(t)
+	seedPasskeyCredential(t, env.store, env.userID, "One")
+	seedPasskeyCredential(t, env.store, env.userID, "Two")
+
+	verifyToken := verifycode.Generate()
+	minted, err := env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
+		PendingEmail:          "counted@example.com",
+		PendingEmailToken:     verifyToken,
+		PendingEmailExpiresAt: ptrTime(time.Now().Add(1 * time.Hour).UTC()),
+		ID:                    env.userID,
+		CooldownCutoff:        store.UnconditionalMintCutoff(),
+	})
+	require.NoError(t, err)
+	require.True(t, minted)
+
+	resp, err := env.client.VerifyEmail(context.Background(), authedReq(&leapmuxv1.VerifyEmailRequest{
+		VerificationToken: verifycode.Format(verifyToken),
+	}, env.token))
+	require.NoError(t, err)
+	assert.Equal(t, int32(2), resp.Msg.GetUser().GetPasskeyCount())
+}
+
+func TestResendVerificationEmail_SMTPEnableTransition(t *testing.T) {
+	t.Parallel()
+
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = st.Close() })
+	require.NoError(t, st.Migrator().Migrate(context.Background()))
+
+	set := servicetest.NewSettingsManager(t, st, nil)
+	seedSMTP(t, set)
+
+	rec := &recordingSender{}
+	userSvc := service.NewUserService(st, testConfig(), set, auth.NewCredentialLifecycleEffects(nil, nil, nil), rec, mail.Renderer{}, nil)
+
+	mux := http.NewServeMux()
+	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
+	t.Cleanup(contexts.Stop)
+	path, handler := leapmuxv1connect.NewUserServiceHandler(userSvc, connect.WithInterceptors(interceptor))
+	mux.Handle(path, handler)
+
+	server := httptest.NewUnstartedServer(mux)
+	server.EnableHTTP2 = true
+	server.StartTLS()
+	t.Cleanup(server.Close)
+
+	client := leapmuxv1connect.NewUserServiceClient(server.Client(), server.URL, connect.WithGRPC())
+
+	userID := id.Generate()
+	hash, _ := password.Hash("testpass")
+	require.NoError(t, st.Users().Create(context.Background(), store.CreateUserParams{
+		ID: userID, Username: "smtpuser", PasswordHash: hash,
+		DisplayName: "SMTP User", PasswordSet: true,
+	}))
+	require.NoError(t, st.Users().UpdateEmail(context.Background(), store.UpdateUserEmailParams{
+		Email: "unverified@example.com", EmailVerified: false, ID: userID,
+	}))
+
+	token, _, _, err := auth.Login(context.Background(), st, "smtpuser", "testpass", auth.DefaultSessionDuration)
+	require.NoError(t, err)
+
+	resp, err := client.ResendVerificationEmail(context.Background(), authedReq(&leapmuxv1.ResendVerificationEmailRequest{}, token))
+	require.NoError(t, err)
+	assert.True(t, resp.Msg.GetEmailSent())
+	require.NotNil(t, resp.Msg.GetNextResendAvailableAt())
+
+	user, err := st.Users().GetByID(context.Background(), userID)
+	require.NoError(t, err)
+	assert.Equal(t, "unverified@example.com", user.PendingEmail)
+	assert.NotEmpty(t, user.PendingEmailToken)
+
+	last := rec.last()
+	require.NotNil(t, last)
+	assert.Equal(t, "unverified@example.com", last.To)
+}
+
+func TestResendVerificationEmail_NextResendAvailableAt(t *testing.T) {
+	t.Parallel()
+
+	env, _ := setupResendUserTest(t)
+
+	minted, err := env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
+		ID:                    env.userID,
+		PendingEmail:          "u@example.com",
+		PendingEmailToken:     verifycode.Generate(),
+		PendingEmailExpiresAt: ptrTime(time.Now().Add(25 * time.Minute).UTC()),
+		CooldownCutoff:        store.UnconditionalMintCutoff(),
+	})
+	require.NoError(t, err)
+	require.True(t, minted)
+
+	before := time.Now().UTC()
+	resp, err := env.client.ResendVerificationEmail(context.Background(), authedReq(&leapmuxv1.ResendVerificationEmailRequest{}, env.token))
+	require.NoError(t, err)
+
+	nextAt := resp.Msg.GetNextResendAvailableAt().AsTime()
+	assert.True(t, nextAt.After(before.Add(59*time.Second)))
+	assert.True(t, nextAt.Before(before.Add(61*time.Second)))
+}
+
+func TestBeginPasskeyRegistration_OAuthOnly_NoReauthRequired(t *testing.T) {
+	t.Parallel()
+
+	env := setupOAuthUserTest(t)
+
+	req := authedReq(&leapmuxv1.BeginPasskeyRegistrationRequest{}, env.token)
+	_, err := env.client.BeginPasskeyRegistration(context.Background(), req)
+	// Ceremony may fail for missing keystore/RP config; auth must not require reauth proof.
+	if err != nil {
+		assert.NotEqual(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+		assert.NotContains(t, err.Error(), "reauth proof required")
+		assert.NotContains(t, err.Error(), "verify your email")
+	}
+}
+
+func TestBeginPasskeyRegistration_UnverifiedShell_Rejected(t *testing.T) {
+	t.Parallel()
+
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = st.Close() })
+	require.NoError(t, st.Migrator().Migrate(context.Background()))
+
+	key, err := keystore.GenerateKey()
+	require.NoError(t, err)
+	ks, err := keystore.New(map[uint32][32]byte{1: key})
+	require.NoError(t, err)
+
+	userSvc := service.NewUserService(st, testConfig(), servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil), mail.NewStubSender(), mail.Renderer{}, ks)
+	mux := http.NewServeMux()
+	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
+	t.Cleanup(contexts.Stop)
+	path, handler := leapmuxv1connect.NewUserServiceHandler(userSvc, connect.WithInterceptors(interceptor))
+	mux.Handle(path, handler)
+	server := httptest.NewUnstartedServer(mux)
+	server.EnableHTTP2 = true
+	server.StartTLS()
+	t.Cleanup(server.Close)
+	client := leapmuxv1connect.NewUserServiceClient(server.Client(), server.URL, connect.WithGRPC())
+
+	userID := id.Generate()
+	require.NoError(t, st.Users().Create(context.Background(), store.CreateUserParams{
+		ID: userID, Username: "shell", PasswordHash: password.PlaceholderHash,
+		DisplayName: "Shell", EmailVerified: false, PasswordSet: false, IsAdmin: true,
+	}))
+	token, _, err := auth.CreateSession(context.Background(), st, userid.MustNew(userID), auth.DefaultSessionDuration)
+	require.NoError(t, err)
+
+	_, err = client.BeginPasskeyRegistration(context.Background(), authedReq(&leapmuxv1.BeginPasskeyRegistrationRequest{}, token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), "verify your email")
+}
+
+func TestFinishPasskeyRegistration_FailedCeremonyPreservesReauthProof(t *testing.T) {
+	t.Parallel()
+
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = st.Close() })
+	require.NoError(t, st.Migrator().Migrate(context.Background()))
+
+	key, err := keystore.GenerateKey()
+	require.NoError(t, err)
+	ks, err := keystore.New(map[uint32][32]byte{1: key})
+	require.NoError(t, err)
+
+	userSvc := service.NewUserService(st, testConfig(), servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil), mail.NewStubSender(), mail.Renderer{}, ks)
+	mux := http.NewServeMux()
+	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
+	t.Cleanup(contexts.Stop)
+	path, handler := leapmuxv1connect.NewUserServiceHandler(userSvc, connect.WithInterceptors(interceptor))
+	mux.Handle(path, handler)
+	server := httptest.NewUnstartedServer(mux)
+	server.EnableHTTP2 = true
+	server.StartTLS()
+	t.Cleanup(server.Close)
+	client := leapmuxv1connect.NewUserServiceClient(server.Client(), server.URL, connect.WithGRPC())
+
+	userID := id.Generate()
+	require.NoError(t, st.Users().Create(context.Background(), store.CreateUserParams{
+		ID: userID, Username: "pkonly", PasswordHash: password.PlaceholderHash,
+		DisplayName: "PK Only", PasswordSet: false, IsAdmin: true,
+	}))
+	seedPasskeyCredential(t, st, userID, "Phone")
+	proof := seedReauthProof(t, st, userID)
+	token, _, err := auth.CreateSession(context.Background(), st, userid.MustNew(userID), auth.DefaultSessionDuration)
+	require.NoError(t, err)
+
+	_, err = client.FinishPasskeyRegistration(context.Background(), authedReq(&leapmuxv1.FinishPasskeyRegistrationRequest{
+		SessionId:      "missing-session",
+		CredentialJson: "{}",
+		FriendlyName:   "New",
+		ReauthProof:    proof,
+	}, token))
+	require.Error(t, err)
+
+	_, getErr := st.WebAuthnSessions().Get(context.Background(), proof)
+	require.NoError(t, getErr, "failed Finish must not consume the reauth proof")
+}
+
+// TestFinishPasskeyReauth_MalformedCredentialIsUnauthenticated pins the
+// error CLASS of a rejected reauth ceremony. A malformed credential_json on
+// a live ceremony is the caller's fault, so it must surface as
+// CodeUnauthenticated (the rate limiter's proof-failure class) -- before the
+// shared validateAssertion pipeline existed, FinishReauth returned the raw
+// parse error and the service wrapper mapped it to CodeInternal.
+func TestFinishPasskeyReauth_MalformedCredentialIsUnauthenticated(t *testing.T) {
+	t.Parallel()
+
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = st.Close() })
+	require.NoError(t, st.Migrator().Migrate(context.Background()))
+
+	key, err := keystore.GenerateKey()
+	require.NoError(t, err)
+	ks, err := keystore.New(map[uint32][32]byte{1: key})
+	require.NoError(t, err)
+	wa, err := hubwebauthn.NewService(hubwebauthn.RPConfig{
+		RPID: "localhost", RPDisplayName: "LeapMux", RPOrigins: []string{"http://localhost:4327"},
+	}, st, ks)
+	require.NoError(t, err)
+
+	// The service derives its RP config from public_url (testConfig has no
+	// listen address), mirroring the ceremony-test harness.
+	set := servicetest.NewSettingsManager(t, st, nil)
+	require.NoError(t, settings.KeyPublicURL.Set(context.Background(), set, "http://localhost:4327"))
+	userSvc := service.NewUserService(st, testConfig(), set, auth.NewCredentialLifecycleEffects(nil, nil, nil), mail.NewStubSender(), mail.Renderer{}, ks)
+	mux := http.NewServeMux()
+	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
+	t.Cleanup(contexts.Stop)
+	path, handler := leapmuxv1connect.NewUserServiceHandler(userSvc, connect.WithInterceptors(interceptor))
+	mux.Handle(path, handler)
+	server := httptest.NewUnstartedServer(mux)
+	server.EnableHTTP2 = true
+	server.StartTLS()
+	t.Cleanup(server.Close)
+	client := leapmuxv1connect.NewUserServiceClient(server.Client(), server.URL, connect.WithGRPC())
+
+	userID := id.Generate()
+	require.NoError(t, st.Users().Create(context.Background(), store.CreateUserParams{
+		ID: userID, Username: "reauth-badjson", PasswordHash: password.PlaceholderHash,
+		DisplayName: "Reauth", PasswordSet: false, IsAdmin: true,
+	}))
+	credRow := id.Generate()
+	encPub, keyVersion, encErr := wa.EncryptPublicKey(credRow, []byte("pubkey"))
+	require.NoError(t, encErr)
+	require.NoError(t, st.PasskeyCredentials().Create(context.Background(), store.CreatePasskeyCredentialParams{
+		ID: credRow, UserID: userID, CredentialID: []byte("cred-reauth"), PublicKey: encPub,
+		Transports: "[]", FriendlyName: "Phone", KeyVersion: keyVersion, CreatedAt: time.Now().UTC(),
+	}))
+
+	// A LIVE reauth ceremony (BeginReauth writes the properly encrypted
+	// session row), so the failure lands on the parse arm, not the consume.
+	sessionID, _, _, err := wa.BeginReauth(context.Background(), userID, "")
+	require.NoError(t, err)
+	token, _, err := auth.CreateSession(context.Background(), st, userid.MustNew(userID), auth.DefaultSessionDuration)
+	require.NoError(t, err)
+
+	_, err = client.FinishPasskeyReauth(context.Background(), authedReq(&leapmuxv1.FinishPasskeyReauthRequest{
+		SessionId:      sessionID,
+		CredentialJson: "not-a-credential",
+	}, token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err),
+		"a rejected ceremony is the caller's proof failure, not a server error")
+}
+
+func TestBeginPasskeyRegistration_DoesNotConsumeReauthProof(t *testing.T) {
+	t.Parallel()
+
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = st.Close() })
+	require.NoError(t, st.Migrator().Migrate(context.Background()))
+
+	key, err := keystore.GenerateKey()
+	require.NoError(t, err)
+	ks, err := keystore.New(map[uint32][32]byte{1: key})
+	require.NoError(t, err)
+
+	userSvc := service.NewUserService(st, testConfig(), servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil), mail.NewStubSender(), mail.Renderer{}, ks)
+	mux := http.NewServeMux()
+	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
+	t.Cleanup(contexts.Stop)
+	path, handler := leapmuxv1connect.NewUserServiceHandler(userSvc, connect.WithInterceptors(interceptor))
+	mux.Handle(path, handler)
+	server := httptest.NewUnstartedServer(mux)
+	server.EnableHTTP2 = true
+	server.StartTLS()
+	t.Cleanup(server.Close)
+	client := leapmuxv1connect.NewUserServiceClient(server.Client(), server.URL, connect.WithGRPC())
+
+	userID := id.Generate()
+	require.NoError(t, st.Users().Create(context.Background(), store.CreateUserParams{
+		ID: userID, Username: "pkonly", PasswordHash: password.PlaceholderHash,
+		DisplayName: "PK Only", PasswordSet: false, IsAdmin: true,
+	}))
+	seedPasskeyCredential(t, st, userID, "Phone")
+	proof := seedReauthProof(t, st, userID)
+
+	token, _, err := auth.CreateSession(context.Background(), st, userid.MustNew(userID), auth.DefaultSessionDuration)
+	require.NoError(t, err)
+
+	req := authedReq(&leapmuxv1.BeginPasskeyRegistrationRequest{ReauthProof: proof}, token)
+	req.Header().Set("Origin", "https://localhost")
+	_, err = client.BeginPasskeyRegistration(context.Background(), req)
+	// Ceremony may fail for RP config, but auth must succeed without consuming the proof.
+	_, getErr := st.WebAuthnSessions().Get(context.Background(), proof)
+	require.NoError(t, getErr, "Begin must not consume the reauth proof (Finish does)")
+	_ = err
+}
+
+func TestDeletePasskey_ReauthProofReplayRejected(t *testing.T) {
+	t.Parallel()
+
+	env := setupOAuthUserTest(t)
+	_ = seedPasskeyCredential(t, env.store, env.userID, "KeepA")
+	pk1 := seedPasskeyCredential(t, env.store, env.userID, "KeepB")
+	pk2 := seedPasskeyCredential(t, env.store, env.userID, "Remove")
+	proof := seedReauthProof(t, env.store, env.userID)
+
+	_, err := env.client.DeletePasskey(context.Background(), authedReq(&leapmuxv1.DeletePasskeyRequest{
+		Id: pk2, ReauthProof: proof,
+	}, env.token))
+	require.NoError(t, err)
+
+	// Still more than one passkey left, so this hits auth (not last-passkey
+	// deactivation) and must reject the consumed proof.
+	_, err = env.client.DeletePasskey(context.Background(), authedReq(&leapmuxv1.DeletePasskeyRequest{
+		Id: pk1, ReauthProof: proof,
+	}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+
+	_, err = env.store.PasskeyCredentials().GetByID(context.Background(), pk1)
+	require.NoError(t, err, "replay must not delete the remaining passkey")
+}
+
+func TestListPasskeys_IncludesCredentialId(t *testing.T) {
+	t.Parallel()
+
+	env := setupUserTest(t)
+	pkID := seedPasskeyCredential(t, env.store, env.userID, "Laptop")
+
+	resp, err := env.client.ListPasskeys(context.Background(), authedReq(&leapmuxv1.ListPasskeysRequest{}, env.token))
+	require.NoError(t, err)
+	require.Len(t, resp.Msg.GetPasskeys(), 1)
+	assert.Equal(t, pkID, resp.Msg.GetPasskeys()[0].GetId())
+	assert.NotEmpty(t, resp.Msg.GetPasskeys()[0].GetCredentialId())
+}
+
+func TestUserService_ListAndRenamePasskeys_SoloRejected(t *testing.T) {
+	t.Parallel()
+
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = st.Close() })
+	require.NoError(t, st.Migrator().Migrate(context.Background()))
+
+	cfg := testConfig()
+	cfg.SoloMode = true
+	userSvc := service.NewUserService(st, cfg, servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil), mail.NewStubSender(), mail.Renderer{}, nil)
+	mux := http.NewServeMux()
+	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
+	t.Cleanup(contexts.Stop)
+	path, handler := leapmuxv1connect.NewUserServiceHandler(userSvc, connect.WithInterceptors(interceptor))
+	mux.Handle(path, handler)
+	server := httptest.NewUnstartedServer(mux)
+	server.EnableHTTP2 = true
+	server.StartTLS()
+	t.Cleanup(server.Close)
+	client := leapmuxv1connect.NewUserServiceClient(server.Client(), server.URL, connect.WithGRPC())
+
+	userID := id.Generate()
+	hash, err := password.Hash("testpass")
+	require.NoError(t, err)
+	require.NoError(t, st.Users().Create(context.Background(), store.CreateUserParams{
+		ID: userID, Username: "solouser", PasswordHash: hash, DisplayName: "Solo", PasswordSet: true, IsAdmin: true,
+	}))
+	token, _, err := auth.CreateSession(context.Background(), st, userid.MustNew(userID), auth.DefaultSessionDuration)
+	require.NoError(t, err)
+	pkID := seedPasskeyCredential(t, st, userID, "Laptop")
+
+	_, err = client.ListPasskeys(context.Background(), authedReq(&leapmuxv1.ListPasskeysRequest{}, token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), "solo mode")
+
+	_, err = client.RenamePasskey(context.Background(), authedReq(&leapmuxv1.RenamePasskeyRequest{
+		Id: pkID, FriendlyName: "Phone", CurrentPassword: "testpass",
+	}, token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), "solo mode")
 }
