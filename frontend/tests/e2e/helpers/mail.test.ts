@@ -1,21 +1,20 @@
 /**
  * Unit tests for the E2E capture SMTP server and its token extractor.
  *
- * The module under test lives at `tests/e2e/helpers/mail.ts`, not beside this
- * file, and it cannot carry its own `.test.ts`: `vitest.config.ts` excludes
- * `tests/e2e/**` so Playwright specs are never collected as unit tests, and
- * that exclusion covers the helpers too. A test placed there simply never
- * runs. `e2eServerOutput.test.ts` reaches across the same boundary for the
- * same reason.
+ * A `.test.ts` under `tests/e2e/` runs under vitest, not Playwright: it needs
+ * no browser and no hub, so it costs milliseconds here and belongs to
+ * `task test-frontend`. Both runner configs are pinned to that rule, and
+ * `src/test-support/testFileNaming.test.ts` fails the suite if this file is
+ * ever renamed to `.spec.ts`.
  *
  * Both defects these tests pin cost a spec author a 2.5-minute timeout on the
  * reset page rather than a message that named the cause, which is the reason
  * the helper is worth unit-testing at all.
  */
-import type { CaptureSmtpServer } from '../../tests/e2e/helpers/mail'
+import type { CaptureSmtpServer } from './mail'
 import { connect } from 'node:net'
 import { afterEach, describe, expect, it } from 'vitest'
-import { extractPasswordResetToken, startCaptureSmtpServer } from '../../tests/e2e/helpers/mail'
+import { extractPasswordResetToken, startCaptureSmtpServer } from './mail'
 
 /** The width of `id.Generate()`, which mints the emailed reset token. */
 const TOKEN_LENGTH = 48
