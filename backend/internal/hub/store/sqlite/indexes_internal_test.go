@@ -336,6 +336,22 @@ func TestRetentionAndBootstrapScansAreSargable(t *testing.T) {
 		}
 	}
 	assert.True(t, bounded, "the compaction subquery must be a bounded index search; plan: %v", compact)
+
+	// The revoked-session probe runs while the caller holds the user-auth row
+	// lock, on a table that retains every sign-out, api-token revoke,
+	// user_tokens fence and user_info event for the whole cleanup window. Its
+	// partial index writes an entry only for the rarest of those kinds, so the
+	// insert cost this was once left unindexed to avoid is close to zero.
+	revoked := explainPlan(t, db, loadQuerySQL(t, "revocation_events.sql", "SessionRevokedEventExists"))
+	var seeks bool
+	for _, d := range revoked {
+		assert.NotContains(t, d, "SCAN revocation_events",
+			"the revoked-session probe must not scan the retention window; plan: %v", revoked)
+		if strings.Contains(d, "INDEX idx_revocation_events_session_revoked") {
+			seeks = true
+		}
+	}
+	assert.True(t, seeks, "the revoked-session probe must seek its partial index; plan: %v", revoked)
 }
 
 // TestRevokedTokenSweepsAreSargable pins the query PLAN of the two hourly

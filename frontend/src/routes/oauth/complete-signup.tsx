@@ -11,6 +11,7 @@ import { useAuth } from '~/context/AuthContext'
 import { createCaptchaForm } from '~/lib/captchaForm'
 import { formatErrorMessage } from '~/lib/errors'
 import { setPageTitle } from '~/lib/pageTitle'
+import { stringParam } from '~/lib/searchParam'
 import { isEmailEnabled } from '~/lib/systemInfo'
 import { sanitizeDisplayName, sanitizeSlug, validateReservedUsername } from '~/lib/validate'
 import { errorText, pageCard } from '~/styles/shared.css'
@@ -19,7 +20,7 @@ const OAuthCompleteSignupPage: Component = () => {
   const navigate = useNavigate()
   const auth = useAuth()
   const [searchParams] = useSearchParams()
-  const signupToken = () => typeof searchParams.token === 'string' ? searchParams.token : ''
+  const signupToken = () => stringParam(searchParams.token) ?? ''
 
   const [username, setUsername] = createSignal('')
   const [displayName, setDisplayName] = createSignal('')

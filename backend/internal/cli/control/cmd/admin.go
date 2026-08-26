@@ -54,8 +54,37 @@ func requireAdminClient(hubFlag string) (*control.Client, error) {
 
 // adminRPCError maps a Connect error from an admin call onto the JSON
 // envelope, carrying the hub's message verbatim.
-func adminRPCError(code string, err error) error {
+//
+// One case gets more than the hub's message: a PermissionDenied answered to
+// a credential that was never granted the admin scope. The hub cannot phrase
+// that remedy well -- it sees a bearer, not a machine with a credential file
+// -- and "administrator privileges are required" on an account that IS an
+// administrator reads as a hub bug. The CLI knows which credential it holds,
+// so it says what to run.
+func adminRPCError(c *control.Client, code string, err error) error {
+	if connect.CodeOf(err) == connect.CodePermissionDenied {
+		if hint := adminScopeHint(c); hint != "" {
+			return control.EmitError(code, err.Error()+"; "+hint)
+		}
+	}
 	return control.EmitErrorWith(code, err)
+}
+
+// adminScopeHint returns the remedy line when this hub's stored credential
+// carries no admin scope, and "" otherwise.
+//
+// AdminScope on the file is ADVISORY (the hub owns the real answer), which
+// is exactly what makes it safe to read here: it only decides whether to add
+// a sentence to a refusal the hub already issued.
+func adminScopeHint(c *control.Client) string {
+	if c == nil || c.HubURL == "" {
+		return ""
+	}
+	creds, err := control.LoadCredentials(c.HubURL)
+	if err != nil || creds.AdminScope {
+		return ""
+	}
+	return "this CLI credential was not granted hub administration; run `leapmux control auth login --admin --hub " + c.HubURL + "`"
 }
 
 // requireFlag builds an adminVerbSpec.BeforeDial that refuses an empty
@@ -71,22 +100,22 @@ func requireFlag(value *string, name string) func(adminArgs) error {
 }
 
 // minListLimit is the smallest page a verb may ask for. The ceiling is
-// service.MaxAdminPageLimit — the same constant the hub caps at, so the
+// service.MaxPageLimit — the same constant the hub caps at, so the
 // range this check names is always the hub's own range.
 const minListLimit = 1
 
 // validateListLimit refuses a --limit outside the page bounds.
 //
-// The hub normalizes too (service.AdminPageParams: a non-positive limit
+// The hub normalizes too (service.NormalizePageParams: a non-positive limit
 // takes the default, an oversized one caps), which is what protects every
 // other client. This check exists for the ANSWER an operator gets: it runs
 // before the dial, so `--limit 0` identifies the flag and its range
 // instead of quietly returning a page of a size the operator did not ask
 // for.
 func validateListLimit(limit int64) error {
-	if limit < minListLimit || limit > service.MaxAdminPageLimit {
+	if limit < minListLimit || limit > service.MaxPageLimit {
 		return control.EmitError("invalid_request",
-			fmt.Sprintf("limit must be between %d and %d", minListLimit, service.MaxAdminPageLimit))
+			fmt.Sprintf("limit must be between %d and %d", minListLimit, service.MaxPageLimit))
 	}
 	return nil
 }
@@ -169,7 +198,7 @@ func RunAdminSettingsList(rawCtx any, args []string) error {
 		Run: func(c *control.Client, _ adminArgs) error {
 			resp, err := c.AdminSettingsService().ListSettings(context.Background(), connect.NewRequest(&leapmuxv1.ListSettingsRequest{}))
 			if err != nil {
-				return adminRPCError("rpc_failed", err)
+				return adminRPCError(c, "rpc_failed", err)
 			}
 			rows := make([]map[string]any, 0, len(resp.Msg.GetValues()))
 			byDescr := map[string]*leapmuxv1.SettingDescriptor{}
@@ -248,7 +277,7 @@ func RunAdminSettingsGet(rawCtx any, args []string) error {
 			key := a.Rest[0]
 			resp, err := c.AdminSettingsService().ListSettings(context.Background(), connect.NewRequest(&leapmuxv1.ListSettingsRequest{}))
 			if err != nil {
-				return adminRPCError("rpc_failed", err)
+				return adminRPCError(c, "rpc_failed", err)
 			}
 			for _, v := range resp.Msg.GetValues() {
 				if v.GetKey() != key {
@@ -334,7 +363,7 @@ func RunAdminSettingsSet(rawCtx any, args []string) error {
 				Key: a.Rest[0], PartialJson: string(value),
 			}))
 			if err != nil {
-				return adminRPCError("update_failed", err)
+				return adminRPCError(c, "update_failed", err)
 			}
 			out := settingValueJSON(resp.Msg.GetValue())
 			if resp.Msg.GetValue().GetEffectiveJson() != resp.Msg.GetValue().GetValueJson() {
@@ -380,7 +409,7 @@ func RunAdminSettingsSetSecret(rawCtx any, args []string) error {
 				Key: a.Rest[0], PartialJson: a.Rest[1],
 			}))
 			if err != nil {
-				return adminRPCError("update_failed", err)
+				return adminRPCError(c, "update_failed", err)
 			}
 			return control.EmitData(settingValueJSON(resp.Msg.GetValue()))
 		},
@@ -397,7 +426,7 @@ func RunAdminSettingsReset(rawCtx any, args []string) error {
 				Key: a.Rest[0],
 			}))
 			if err != nil {
-				return adminRPCError("reset_failed", err)
+				return adminRPCError(c, "reset_failed", err)
 			}
 			return control.EmitData(settingValueJSON(resp.Msg.GetValue()))
 		},

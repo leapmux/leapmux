@@ -53,13 +53,19 @@ describe('branchContextMenu', () => {
   describe('when the worker is offline', () => {
     const reason = 'Worker "mac-mini" is offline'
 
-    it('disables both items and titles them with the reason', async () => {
+    it('disables both items and describes them with the reason', async () => {
       const { trigger } = renderMenu(reason)
       await fireEvent.click(trigger)
       for (const label of ['Change branch...', 'Delete branch...']) {
         const item = screen.getByText(label)
         expect(item).toBeDisabled()
-        expect(item).toHaveAttribute('title', reason)
+        // Through the Tooltip's offscreen description, not `title`. A reason
+        // this long on `title` BECAME the item's accessible name, so a screen
+        // reader announced it in place of "Change branch...".
+        expect(item).not.toHaveAttribute('title')
+        const describedBy = item.getAttribute('aria-describedby')
+        expect(describedBy).toBeTruthy()
+        expect(document.getElementById(describedBy!)?.textContent).toBe(reason)
       }
     })
 

@@ -101,7 +101,11 @@ Use the `<Tooltip>` component (`~/components/common/Tooltip`) for hover text on 
 
 Pass `ariaLabel` when the control has no visible text, so the tooltip doubles as its accessible name.
 
-`title` remains correct in exactly one case: a **disabled** control. A disabled element receives no pointer events, so `<Tooltip>` never fires on it — `title` is the only text the user can get. That is why `BranchContextMenu`, the `[+]` menu's attach item, and the option-group items all put their disabled reason in `title`. Reaching for `title` on an ENABLED control is the mistake this rule exists to stop.
+**`title` on a DOM element is a lint error** (`no-restricted-syntax` in `eslint.config.ts`). There is no exception, including a **disabled** control: `<Tooltip>` covers that case. It gives its wrapper a real box and listens there — a disabled element dispatches no pointer event of its own — and it leaves an offscreen description in `aria-describedby` for as long as the control is disabled, which is the only route to a screen-reader user there (a disabled element takes no focus, so the tooltip can never open from the keyboard).
+
+Two things go wrong with a native `title`, and the second is silent. It renders the OS tooltip, which ignores the app's theme and typography, waits a browser-controlled delay, and never appears on touch. And on a control with no `aria-label`, a `title` long enough to state a reason **becomes the accessible name** — a screen reader then announces three sentences of remedy where "Add passkey" belongs, and every `getByRole(..., { name })` lookup stops matching.
+
+The lint rule matches a **lowercase** element name only, because `title` on a component is that component's own prop: `<Dialog title>` is a heading, `<IconButton title>` is a tooltip. A component that spreads its props onto a DOM node closes that hole in the type system instead, by omitting `title` from its prop type — `IconButton` and `ConfirmButton` both do, and a new one that spreads DOM props must.
 
 ### Dropdowns and one-of-N choices
 

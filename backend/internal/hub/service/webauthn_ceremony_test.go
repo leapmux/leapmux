@@ -65,7 +65,22 @@ type passkeyAuthTestEnv struct {
 	store  store.Store
 }
 
+// setupPasskeyAuthTestServer builds a passkey-capable auth server whose
+// database already holds the default admin, so a sign-up under it is an
+// ordinary public one.
 func setupPasskeyAuthTestServer(t *testing.T, seed authTestSeed, mailSender mail.Sender) passkeyAuthTestEnv {
+	t.Helper()
+
+	env := setupEmptyPasskeyAuthTestServer(t, seed, mailSender)
+	hubtestutil.CreateTestAdmin(t, env.store)
+	return env
+}
+
+// setupEmptyPasskeyAuthTestServer is the same server with an EMPTY database,
+// which is the state the first-administrator flow runs in. The admin fixture
+// is created afterwards by the wrapper above rather than here, so setup mode
+// is reachable without a second copy of this construction.
+func setupEmptyPasskeyAuthTestServer(t *testing.T, seed authTestSeed, mailSender mail.Sender) passkeyAuthTestEnv {
 	t.Helper()
 
 	st := hubtestutil.OpenTestStore(t)
@@ -79,7 +94,6 @@ func setupPasskeyAuthTestServer(t *testing.T, seed authTestSeed, mailSender mail
 	if seed != nil {
 		seed(t, set)
 	}
-	hubtestutil.CreateTestAdmin(t, st)
 
 	mux := http.NewServeMux()
 	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
@@ -110,17 +124,38 @@ func setupPasskeyAuthTestServer(t *testing.T, seed authTestSeed, mailSender mail
 	}
 }
 
-func beginPasskeySignUp(t *testing.T, client leapmuxv1connect.AuthServiceClient, username, email string) *leapmuxv1.BeginPasskeySignUpResponse {
-	t.Helper()
+// beginPasskeySignUpRequest builds the Begin request with the browser origin
+// the ceremony needs. Separate from beginPasskeySignUp so a test that expects
+// a REFUSAL can send the same request and read the error, rather than
+// re-spelling the header a helper already owns.
+func beginPasskeySignUpRequest(username, email string) *connect.Request[leapmuxv1.BeginPasskeySignUpRequest] {
 	req := connect.NewRequest(&leapmuxv1.BeginPasskeySignUpRequest{
 		Username:    username,
 		DisplayName: username,
 		Email:       email,
 	})
 	req.Header().Set("Origin", passkeyTestOrigin)
-	resp, err := client.BeginPasskeySignUp(context.Background(), req)
+	return req
+}
+
+func beginPasskeySignUp(t *testing.T, client leapmuxv1connect.AuthServiceClient, username, email string) *leapmuxv1.BeginPasskeySignUpResponse {
+	t.Helper()
+	resp, err := client.BeginPasskeySignUp(context.Background(), beginPasskeySignUpRequest(username, email))
 	require.NoError(t, err)
 	return resp.Msg
+}
+
+// finishPasskeySignUp completes the registration ceremony. It returns the
+// response and the error, like finishPasskeyLogin, because several callers
+// assert on a refusal at this leg.
+func finishPasskeySignUp(t *testing.T, client leapmuxv1connect.AuthServiceClient, sessionID, credentialJSON string) (*connect.Response[leapmuxv1.FinishPasskeySignUpResponse], error) {
+	t.Helper()
+	req := connect.NewRequest(&leapmuxv1.FinishPasskeySignUpRequest{
+		SessionId:      sessionID,
+		CredentialJson: credentialJSON,
+	})
+	req.Header().Set("Origin", passkeyTestOrigin)
+	return client.FinishPasskeySignUp(context.Background(), req)
 }
 
 func beginPasskeyLogin(t *testing.T, client leapmuxv1connect.AuthServiceClient, username string) *leapmuxv1.BeginPasskeyLoginResponse {

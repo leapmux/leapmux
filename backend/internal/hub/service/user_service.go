@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"time"
 
 	"connectrpc.com/connect"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -30,6 +29,10 @@ type UserService struct {
 	mail      mail.Sender
 	renderer  mail.Renderer
 	keystore  *keystore.Keystore
+
+	// The clock every instant on the elevation path comes from: the grant,
+	// the predicate, the slide, and the first-credential freshness rule.
+	clockSeam
 }
 
 // NewUserService creates a new UserService. renderer carries the hub's
@@ -44,8 +47,8 @@ func NewUserService(st store.Store, cfg *config.Config, set *settings.Manager, l
 }
 
 func (s *UserService) UpdateProfile(ctx context.Context, req *connect.Request[leapmuxv1.UpdateProfileRequest]) (*connect.Response[leapmuxv1.UpdateProfileResponse], error) {
-	if s.cfg.SoloMode {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("profile changes are not available in solo mode"))
+	if err := rejectSolo(s.cfg.SoloMode, "profile changes"); err != nil {
+		return nil, err
 	}
 	userInfo, err := auth.MustGetUser(ctx)
 	if err != nil {
@@ -119,8 +122,8 @@ func (s *UserService) UpdateProfile(ctx context.Context, req *connect.Request[le
 }
 
 func (s *UserService) RequestEmailChange(ctx context.Context, req *connect.Request[leapmuxv1.RequestEmailChangeRequest]) (*connect.Response[leapmuxv1.RequestEmailChangeResponse], error) {
-	if s.cfg.SoloMode {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("email changes are not available in solo mode"))
+	if err := rejectSolo(s.cfg.SoloMode, "email changes"); err != nil {
+		return nil, err
 	}
 	userInfo, err := auth.MustGetUser(ctx)
 	if err != nil {
@@ -133,6 +136,22 @@ func (s *UserService) RequestEmailChange(ctx context.Context, req *connect.Reque
 	}
 	if err := validate.ValidateEmail(newEmail); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
+	// The account email is a recovery identity: it receives the password-reset
+	// link. A stolen session that could move it can then confirm the new
+	// address itself -- ResendVerificationEmail and VerifyEmail are both
+	// allowlisted for an unverified user -- and owns the recovery channel
+	// permanently, past the cookie it started from. So a recently proven
+	// factor is required.
+	//
+	// The gate sits after the syntax checks and before the availability
+	// probe. A malformed address is the caller's own typing and reporting it
+	// early spares them a prompt they would answer for nothing; the
+	// availability probe answers a question about OTHER accounts, so it must
+	// not be reachable without the factor.
+	if err := requireElevation(userInfo, s.now()); err != nil {
+		return nil, err
 	}
 
 	user, err := s.store.Users().GetByID(ctx, userInfo.ID.String())
@@ -148,63 +167,88 @@ func (s *UserService) RequestEmailChange(ctx context.Context, req *connect.Reque
 		return nil, AvailabilityConnectError(err)
 	}
 
-	// Immediate change with no verification round-trip: an admin edit is
-	// trusted-verified, and a non-admin edit made when verification isn't
-	// required lands unverified (verified == userInfo.IsAdmin). Admin is checked
-	// first via the disjunct, so an admin under a verification-required
-	// deployment still gets a trusted immediate change. Both flush cached
-	// UserInfo (UserInfo.Email is cached) so the new value is observable on the
-	// very next request rather than after sessionCacheTTL.
-	if userInfo.IsAdmin || !settings.EmailVerificationEffective(s.set.Snapshot(ctx)) {
-		if err := SetEmailAndClearCompeting(ctx, s.store, user.ID, newEmail, userInfo.IsAdmin); err != nil {
-			return nil, connect.NewError(connect.CodeInternal, err)
+	// Immediate change with no verification round-trip. An administrator
+	// takes it under any configuration; everybody else takes it only where
+	// the hub cannot verify at all.
+	//
+	// The new address lands UNVERIFIED either way, and the false below is
+	// the whole point. email_verified records whether somebody confirmed
+	// THIS address, which nobody has, and raising it for an administrator
+	// is the force this change removed from every other site: it made an
+	// administrator's unconfirmed address a valid self-service
+	// password-reset target, because RequestPasswordReset reads the column
+	// and cannot take the sign-in exemption. The admin edit of ANOTHER
+	// user's address already lowers the flag (see resolveEmailVerified);
+	// this is the same rule on the self-service path.
+	//
+	// The re-read and the write run in ONE user-auth transaction, and only
+	// the write is inside it.
+	//
+	// The gate at the top of this handler answered from a CACHED UserInfo, so
+	// "elevated" could be true of a session an administrator already took
+	// away -- and the account email receives the password-reset link, so a
+	// change that lands on revoked authority hands the account away. Under
+	// the lock, every path that moves the credential epoch has to wait.
+	//
+	// The SEND stays outside. An SMTP exchange must never hold SQLite's
+	// single writer lock, which is the same trade auth.Login makes for
+	// Argon2, so only mintPendingEmailVerification is in the callback and
+	// deliverPendingEmailVerification runs after the commit.
+	verificationRequired := !userInfo.IsAdmin && settings.EmailVerificationEffective(s.set.Snapshot(ctx))
+	// A captured RESULT, which store.Store's contract permits: the callback
+	// may run more than once, and a re-run OVERWRITES this rather than adding
+	// to it, so the caller reads the attempt that committed.
+	var storedCode string
+	if err := s.store.RunInUserAuthTransaction(ctx, userInfo.ID, func(tx store.Store) error {
+		if err := refuseIfActingAuthorityMoved(ctx, tx, userInfo, s.now()); err != nil {
+			return err
 		}
+		if !verificationRequired {
+			if err := SetEmailAndClearCompeting(ctx, tx, user.ID, newEmail, false); err != nil {
+				return connect.NewError(connect.CodeInternal, err)
+			}
+			return nil
+		}
+		code, err := mintPendingEmailVerification(ctx, tx, user.ID, newEmail, s.now())
+		if err != nil {
+			// The conditional mint refuses inside the cooldown, which is the
+			// one thing that stops this RPC from being an open relay: the
+			// address is caller-supplied, so an unconditional mint sends a
+			// message per request to any address the caller names.
+			if errors.Is(err, ErrVerificationCooldown) {
+				return connect.NewError(connect.CodeResourceExhausted, err)
+			}
+			return connect.NewError(connect.CodeUnavailable, err)
+		}
+		storedCode = code
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+
+	// Both effects run AFTER the commit, because both accumulate and the
+	// callback may repeat. UserInfoInvalidated is what makes the new address
+	// observable on the very next request rather than after sessionCacheTTL,
+	// because UserInfo.Email is cached.
+	if !verificationRequired {
 		s.lifecycle.UserInfoInvalidated(user.ID)
+		slideElevation(ctx, s.store, userInfo, s.now())
 		return connect.NewResponse(&leapmuxv1.RequestEmailChangeResponse{
 			VerificationRequired: false,
 		}), nil
 	}
 
-	// Non-admin, verification required: set pending email and dispatch
-	// the verification mail. On send failure the helper drops the
-	// undelivered code and keeps the pending address, so Resend retries
-	// the same change.
-	if err := issuePendingEmailVerificationOrFail(ctx, s.store, s.mail, s.renderer, user.ID, newEmail); err != nil {
-		// The conditional mint refuses inside the cooldown, which is the
-		// one thing that stops this RPC from being an open relay: the
-		// address is caller-supplied, so an unconditional mint sends a
-		// message per request to any address the caller names.
-		if errors.Is(err, ErrVerificationCooldown) {
-			return nil, connect.NewError(connect.CodeResourceExhausted, err)
-		}
-		return nil, connect.NewError(connect.CodeUnavailable, err)
+	// On a send failure the helper drops the undelivered code and keeps the
+	// pending address, so Resend retries the same change.
+	if !deliverPendingEmailVerification(ctx, s.store, s.mail, s.renderer, user.ID, newEmail, storedCode) {
+		return nil, connect.NewError(connect.CodeUnavailable,
+			errors.New("send verification email failed"))
 	}
 
+	slideElevation(ctx, s.store, userInfo, s.now())
 	return connect.NewResponse(&leapmuxv1.RequestEmailChangeResponse{
 		VerificationRequired: true,
 	}), nil
-}
-
-// resendVerificationCooldown caps how often a user can ask the hub to
-// regenerate-and-resend their pending-email verification. Without this,
-// nothing stops a logged-in user from spamming their own (or someone
-// else's, via email-change) inbox. The cooldown is derived against the
-// previous code's expires_at — since the TTL is constant, "issued_at"
-// is just expires_at - pendingEmailExpiry.
-const resendVerificationCooldown = 60 * time.Second
-
-// issuedAtFromExpiry reconstructs when a pending token was issued from the
-// expiry it set and the constant TTL used to mint it. SetPendingEmail and
-// SetPendingPasswordReset store no issued-at, so every cooldown derivation
-// goes through here: one spelling of the expiry-minus-TTL trick, paired
-// with the cooldown constant below.
-func issuedAtFromExpiry(expiresAt time.Time, ttl time.Duration) time.Time {
-	return expiresAt.Add(-ttl)
-}
-
-// nextResendAt seeds the next-resend timestamp a successful send returns.
-func nextResendAt(issuedAt time.Time) time.Time {
-	return issuedAt.Add(resendVerificationCooldown)
 }
 
 // ResendVerificationEmail re-issues the verification mail for the
@@ -237,7 +281,7 @@ func (s *UserService) ResendVerificationEmail(ctx context.Context, _ *connect.Re
 	// issuePendingEmailVerification, not in a read-then-check here: two
 	// concurrent resends both passed a Go check and both sent.
 
-	sent, err := issuePendingEmailVerification(ctx, s.store, s.mail, s.renderer, full.ID, targetEmail)
+	sent, err := issuePendingEmailVerification(ctx, s.store, s.mail, s.renderer, full.ID, targetEmail, s.now())
 	if err != nil {
 		// A claimed address surfaces as AlreadyExists, not Internal: the
 		// user can act on "email already in use", and the transport error
@@ -249,7 +293,7 @@ func (s *UserService) ResendVerificationEmail(ctx context.Context, _ *connect.Re
 	// invites would contradict the response.
 	resp := &leapmuxv1.ResendVerificationEmailResponse{EmailSent: sent}
 	if sent {
-		resp.NextResendAvailableAt = timestamppb.New(nextResendAt(time.Now().UTC()))
+		resp.NextResendAvailableAt = timestamppb.New(nextResendAt(s.now().UTC()))
 	}
 	return connect.NewResponse(resp), nil
 }
@@ -283,8 +327,8 @@ func (s *UserService) VerifyEmail(ctx context.Context, req *connect.Request[leap
 }
 
 func (s *UserService) ChangePassword(ctx context.Context, req *connect.Request[leapmuxv1.ChangePasswordRequest]) (*connect.Response[leapmuxv1.ChangePasswordResponse], error) {
-	if s.cfg.SoloMode {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("password changes are not available in solo mode"))
+	if err := rejectSolo(s.cfg.SoloMode, "password changes"); err != nil {
+		return nil, err
 	}
 	userInfo, err := auth.MustGetUser(ctx)
 	if err != nil {
@@ -295,14 +339,14 @@ func (s *UserService) ChangePassword(ctx context.Context, req *connect.Request[l
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
-	// The step-up credential is verified, the new password hashed, and the
-	// write committed through runPasskeyManagementTx: admission runs outside
-	// the user-auth transaction (Argon2 must not hold the database writer
-	// lock), the locked row is re-checked before it writes, and the reauth
-	// proof is consumed inside the transaction after the write. An
-	// identity-less shell (no password, no passkeys, no verified email, no
-	// OAuth link) may not attach a first password with the session alone --
-	// the same rule the first-passkey path enforces.
+	// The new password is hashed and the write committed through
+	// runPasskeyManagementTx: the admission (an elevated session, or the
+	// first-credential rule on an account with nothing to elevate with) runs
+	// outside the user-auth transaction, and so does the Argon2 hash, which
+	// must not hold the database writer lock. An identity-less shell (no
+	// password, no passkeys, no verified email, no OAuth link) may not
+	// attach a first password with the session alone -- the same rule the
+	// first-passkey path enforces.
 	var hashed string
 	prepare := func(*store.User) error {
 		h, err := password.Hash(req.Msg.GetNewPassword())
@@ -312,49 +356,44 @@ func (s *UserService) ChangePassword(ctx context.Context, req *connect.Request[l
 		hashed = h
 		return nil
 	}
-	var committedAuthGeneration int64
-	if err := s.runPasskeyManagementTx(ctx, userInfo, req.Msg.GetCurrentPassword(), req.Msg.GetReauthProof(), prepare, func(tx store.Store, user *store.User) error {
+	// The revocation runs AFTER the commit, and runPasskeyManagementTx owns
+	// that ordering for all three mutations that need it. The acting session
+	// survives at the new generation, which
+	// revokeOtherCredentialsPreservingSession restamped inside the
+	// transaction, so the teardown of every older-generation lease and
+	// channel cannot reach the surviving session's own live connections.
+	//
+	// That restamp-before-revoke ordering is enforced only on the in-process
+	// path. The same-process revocation watcher independently replays the
+	// durable user_tokens event and also calls UserRevoked; that replay is
+	// gated on a publish sweep plus several DB round-trips, so it lands long
+	// after this synchronous restamp. If it ever won the race it would tear
+	// down the acting session's own connections -- but the session survives
+	// durably at the new generation, so the client reconnects with its
+	// still-valid cookie and rebuilds its context: a spurious transient
+	// disconnect, never a lost revocation or a forced logout.
+	if err := s.runPasskeyManagementTx(ctx, entryStepUp(userInfo), prepare, func(tx store.Store, user *store.User) (passkeyMutationResult, error) {
 		if err := tx.Users().UpdatePassword(ctx, store.UpdateUserPasswordParams{
 			PasswordHash: hashed,
 			ID:           user.ID,
 		}); err != nil {
-			return fmt.Errorf("update password: %w", err)
+			return passkeyMutationResult{}, fmt.Errorf("update password: %w", err)
 		}
 		gen, err := s.revokeOtherCredentialsPreservingSession(ctx, tx, user.ID, userInfo.Credential.SessionID())
 		if err != nil {
-			return err
+			return passkeyMutationResult{}, err
 		}
-		committedAuthGeneration = gen
-		return nil
+		return passkeyMutationResult{revokeOtherCredentials: true, authGeneration: gen}, nil
 	}); err != nil {
 		return nil, mapPasskeyConnectError(ctx, err)
 	}
-
-	// The acting session survives at the new generation
-	// (revokeOtherCredentialsPreservingSession restamped it inside the
-	// transaction), so re-stamp both its leases and its channels to that
-	// generation before the user-wide revocation below -- which cancels
-	// older-generation leases and closes older-generation channels -- would
-	// otherwise tear down the surviving session's own live WebSocket
-	// connections and channels.
-	//
-	// This restamp-before-revoke ordering is enforced only on the in-process
-	// path. The same-process revocation watcher independently replays the durable
-	// user_tokens event and also calls UserRevoked; that replay is gated on a
-	// publish sweep plus several DB round-trips, so it lands long after this
-	// synchronous restamp. If it ever won the race it would tear down the acting
-	// session's own connections -- but the session survives durably at the new
-	// generation, so the client reconnects with its still-valid cookie and
-	// rebuilds its context: a spurious transient disconnect, never a lost
-	// revocation or a forced logout.
-	s.lifecycle.RevokeUserPreservingSession(userInfo.ID.String(), userInfo.Credential.SessionID(), committedAuthGeneration)
 
 	return connect.NewResponse(&leapmuxv1.ChangePasswordResponse{}), nil
 }
 
 func (s *UserService) UnlinkOAuthProvider(ctx context.Context, req *connect.Request[leapmuxv1.UnlinkOAuthProviderRequest]) (*connect.Response[leapmuxv1.UnlinkOAuthProviderResponse], error) {
-	if s.cfg.SoloMode {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("not available in solo mode"))
+	if err := rejectSolo(s.cfg.SoloMode, "provider links"); err != nil {
+		return nil, err
 	}
 	userInfo, err := auth.MustGetUser(ctx)
 	if err != nil {
@@ -364,6 +403,16 @@ func (s *UserService) UnlinkOAuthProvider(ctx context.Context, req *connect.Requ
 	providerID := req.Msg.GetProviderId()
 	if providerID == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("provider_id is required"))
+	}
+
+	// Detaching a provider removes a login method, and for an OAuth-only
+	// account it removes the very factor that account elevates WITH. The
+	// last-login-method guard below stops the account from becoming
+	// unreachable, but it does not make this reversible: the owner cannot
+	// re-attach the link without signing in through it. So the factor is
+	// required first, exactly as it is for a password change.
+	if err := requireElevation(userInfo, s.now()); err != nil {
+		return nil, err
 	}
 
 	user, err := s.store.Users().GetByID(ctx, userInfo.ID.String())
@@ -388,31 +437,139 @@ func (s *UserService) UnlinkOAuthProvider(ctx context.Context, req *connect.Requ
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("no linked account for provider %q", providerID))
 	}
 
-	// Guard: cannot unlink the last provider when the user has no other
-	// login method. A passkey is a login method like a password, so it
-	// keeps the unlink allowed.
-	if len(links) <= 1 && !user.PasswordSet {
-		passkeys, err := s.store.PasskeyCredentials().CountByUser(ctx, user.ID)
-		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, err)
-		}
-		if passkeys == 0 {
-			return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("cannot unlink your only login method; set a password first"))
-		}
+	// The same rule the transaction below re-runs under the lock. Here it
+	// answers the ordinary caller early, from reads already in hand, rather
+	// than opening a transaction to refuse.
+	if err := assertRemovingTheLinkLeavesALoginMethod(ctx, s.store, user, links, providerID); err != nil {
+		return nil, err
 	}
 
-	unlinkUID, mintErr := mintRowUserID(user.ID)
+	rowUID, mintErr := mintRowUserID(user.ID)
 	if mintErr != nil {
 		return nil, mintErr
 	}
-	if err := s.store.OAuthUserLinks().Delete(ctx, store.DeleteOAuthUserLinkParams{
-		UserID:     unlinkUID,
-		ProviderID: providerID,
+	// The rule and the write run in ONE user-auth transaction, and the acting
+	// authority is re-read inside it.
+	//
+	// Two races close at once. The rule above reads its link list before the
+	// lock, so two concurrent requests each detaching one of the account's
+	// last two providers both passed it and the account was left with no
+	// login method at all. And the elevation that admitted this request was
+	// read from a cached UserInfo, so an administrator's revoke could be
+	// seconds old -- detaching a linked provider removes a recovery identity
+	// the owner cannot re-attach, which is why the window guards it.
+	if err := s.store.RunInUserAuthTransaction(ctx, userInfo.ID, func(tx store.Store) error {
+		// ONE read of the locked row, shared by both rules below. The actor
+		// and the owner are the same account here -- this RPC only ever
+		// detaches the caller's own link -- so a second read would fetch the
+		// same row while holding the writer lock.
+		lockedUser, err := tx.Users().GetByID(ctx, user.ID)
+		if err != nil {
+			return connect.NewError(connect.CodeInternal, err)
+		}
+		if err := refuseIfActingAuthorityMovedFrom(ctx, tx, lockedUser, userInfo, s.now()); err != nil {
+			return err
+		}
+		lockedLinks, err := tx.OAuthUserLinks().ListByUser(ctx, userInfo.ID)
+		if err != nil {
+			return connect.NewError(connect.CodeInternal, err)
+		}
+		if err := assertRemovingTheLinkLeavesALoginMethod(ctx, tx, lockedUser, lockedLinks, providerID); err != nil {
+			return err
+		}
+		if err := tx.OAuthUserLinks().Delete(ctx, store.DeleteOAuthUserLinkParams{
+			UserID:     rowUID,
+			ProviderID: providerID,
+		}); err != nil {
+			return connect.NewError(connect.CodeInternal, err)
+		}
+		return nil
 	}); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, err
 	}
 
+	slideElevation(ctx, s.store, userInfo, s.now())
 	return connect.NewResponse(&leapmuxv1.UnlinkOAuthProviderResponse{}), nil
+}
+
+// enabledProviderIDs reports which configured OAuth providers an
+// administrator currently has enabled.
+//
+// ListAll is acceptable here for the reason GetCurrentUser gives for its own
+// use of it: the number of configured providers is typically in the single
+// digits, and adding a GetByIDs method to every backend is not worth the
+// complexity.
+func enabledProviderIDs(ctx context.Context, st store.Store) (map[string]bool, error) {
+	rows, err := st.OAuthProviders().ListAll(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal,
+			fmt.Errorf("list the configured OAuth providers: %w", err))
+	}
+	enabled := make(map[string]bool, len(rows))
+	for _, row := range rows {
+		enabled[row.ID] = row.Enabled
+	}
+	return enabled, nil
+}
+
+// assertRemovingTheLinkLeavesALoginMethod refuses an unlink that would leave
+// the account with no way to sign in.
+//
+// A passkey is a login method like a password, so either one keeps the unlink
+// allowed, and so does a second linked provider.
+//
+// It counts what would REMAIN rather than how many links exist. The rule is
+// about the account AFTER the unlink, and "one link total" only happens to
+// mean the same thing while the request names a link the account holds --
+// which the locked re-run cannot assume, because the pre-lock check that
+// established it ran against an older list.
+//
+// A link whose provider an administrator DISABLED is not a login method, and
+// does not count. Nothing behind it works: loadEnabledProvider answers 403
+// "provider disabled" at the login leg, the re-authentication leg and the
+// callback alike. Counting it let an account with no password, no passkey and
+// two links -- one live, one disabled -- remove the live one and become
+// permanently unreachable, which is the exact outcome this refuses.
+//
+// It TAKES the link list rather than reading one, so the caller decides which
+// snapshot the rule runs against: the pre-lock peek answers an ordinary
+// refusal early, and the re-run inside the transaction is the one that
+// decides.
+func assertRemovingTheLinkLeavesALoginMethod(
+	ctx context.Context,
+	st store.Store,
+	user *store.User,
+	links []store.OAuthUserLink,
+	providerID string,
+) error {
+	if user.PasswordSet {
+		return nil
+	}
+	enabled, err := enabledProviderIDs(ctx, st)
+	if err != nil {
+		return err
+	}
+	remaining := 0
+	for _, link := range links {
+		if link.ProviderID != providerID && enabled[link.ProviderID] {
+			remaining++
+		}
+	}
+	if remaining > 0 {
+		return nil
+	}
+	passkeys, err := st.PasskeyCredentials().CountByUser(ctx, user.ID)
+	if err != nil {
+		return connect.NewError(connect.CodeInternal, err)
+	}
+	if passkeys > 0 {
+		return nil
+	}
+	return connect.NewError(connect.CodeFailedPrecondition,
+		// "unlink", the word the button, the RPC and the docs all use. One
+		// term per concept: a second word for this action would read as a
+		// second action.
+		fmt.Errorf("cannot unlink your only login method; set a password first"))
 }
 
 // userSettingValueToProto assembles one account setting's wire value from

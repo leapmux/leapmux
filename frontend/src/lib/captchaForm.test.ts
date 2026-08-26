@@ -113,3 +113,41 @@ describe('createCaptchaForm', () => {
     await Promise.resolve()
   })
 })
+
+// The hub decides captcha policy from its own configuration, so a browser
+// that reached it by an address the operator never published gets
+// "required" from the hub and "no secure context" from itself. Standing
+// down locally and submitting an empty payload turned that disagreement
+// into a permanent denial loop with nothing to act on.
+describe('a captcha this page cannot solve', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    resetSystemInfoMock()
+  })
+
+  it('blocks submission instead of sending a request the hub must deny', () => {
+    setSystemInfoMock({ captchaEnabled: true, captchaUnsolvableHere: true })
+    const captcha = createCaptchaForm()
+
+    expect(captcha.unsolvable()).toBe(true)
+    // No widget can mount here, so the field must NOT be required — the
+    // form shows the explanation and blocks instead.
+    expect(captcha.required()).toBe(false)
+    expect(captcha.blocksSubmit()).toBe(true)
+  })
+
+  it('stays out of the way when the page can solve the challenge', () => {
+    setSystemInfoMock({ captchaEnabled: true, captchaUnsolvableHere: false })
+    const captcha = createCaptchaForm()
+
+    expect(captcha.unsolvable()).toBe(false)
+    expect(captcha.required()).toBe(true)
+  })
+
+  it('never blocks while the hub did not answer yet', () => {
+    setSystemInfoMock({ loaded: false, captchaEnabled: true, captchaUnsolvableHere: true })
+    const captcha = createCaptchaForm()
+
+    expect(captcha.unsolvable()).toBe(false)
+  })
+})

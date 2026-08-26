@@ -62,11 +62,6 @@ var protectedProcedures = map[string]protectedProcedure{
 func NewInterceptor(m *Manager) connect.UnaryInterceptorFunc {
 	return func(next connect.UnaryFunc) connect.UnaryFunc {
 		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-			// Stash the browser page URL on every unary call so Describe /
-			// resolve (GetSystemInfo, GetAltchaChallenge, Login, …) can
-			// runtime-disable ALTCHA on insecure HTTP without a DB write.
-			ctx = withClientPageURL(ctx, clientPageURL(req.Header()))
-
 			proc, ok := protectedProcedures[req.Spec().Procedure]
 			if !ok {
 				return next(ctx, req)

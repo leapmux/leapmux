@@ -1,11 +1,10 @@
 package service
 
 import (
-	"fmt"
-	"html"
 	"net/http"
 	"net/url"
 
+	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
 )
@@ -18,21 +17,21 @@ import (
 //
 // In production this page should be templated; here we keep it inline to
 // avoid adding template files for a one-screen flow.
-func (h *APIAuthHandler) handleStart(w http.ResponseWriter, r *http.Request) {
+//
+// The page cannot run script: the enforced Content-Security-Policy has no
+// hash or nonce for it, which is why a passkey ceremony is impossible HERE
+// and the elevation gate bounces to the SPA's /elevate route instead.
+//
+// A GET is replayable from its own URL, so a caller that is not signed in or
+// not elevated is sent away and comes back to exactly this address.
+// consentLeg runs that gate before this leg does, and gateModeFor reads the
+// method to decide between the bounce and the refusal.
+func (h *APIAuthHandler) handleStart(w http.ResponseWriter, r *http.Request, user *auth.UserInfo) {
 	q := r.URL.Query()
 	redirectURI := q.Get("redirect_uri")
 	state := q.Get("state")
 	challenge := q.Get("code_challenge")
-	deviceName := q.Get("device_name")
-
-	user := h.requireSession(r)
-	if user == nil {
-		// Not logged in — bounce to the SPA login screen with a return
-		// param so the SPA can come back here after auth.
-		next := url.QueryEscape(r.URL.RequestURI())
-		http.Redirect(w, r, "/login?next="+next, http.StatusFound)
-		return
-	}
+	deviceName := normalizeDeviceName(q.Get("device_name"))
 
 	if redirectURI == "" || state == "" || challenge == "" {
 		http.Error(w, "redirect_uri, state, code_challenge are required", http.StatusBadRequest)
@@ -42,41 +41,41 @@ func (h *APIAuthHandler) handleStart(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "redirect_uri must be a loopback URL", http.StatusBadRequest)
 		return
 	}
+	// The scope is resolved AFTER the request shape, so a malformed consent
+	// URL answers about the malformed part rather than about the scope.
+	adminScope, ok := resolveAdminScope(w, requestsAdminScope(r), user)
+	if !ok {
+		return
+	}
 
-	page := fmt.Sprintf(`<!doctype html><html><body style="font-family:sans-serif;max-width:480px;margin:48px auto;">
-<h1>Authorize CLI access?</h1>
-<p>The leapmux control CLI on <strong>%s</strong> is requesting access to your account (<strong>%s</strong>).</p>
-<form method="POST" action="/auth/cli/authorize">
-  <input type="hidden" name="redirect_uri" value="%s"/>
-  <input type="hidden" name="state" value="%s"/>
-  <input type="hidden" name="code_challenge" value="%s"/>
-  <input type="hidden" name="device_name" value="%s"/>
-  <button type="submit" style="padding:10px 16px;font-size:14px;">Allow</button>
-</form>
-</body></html>`,
-		html.EscapeString(deviceName),
-		html.EscapeString(user.Username),
-		html.EscapeString(redirectURI),
-		html.EscapeString(state),
-		html.EscapeString(challenge),
-		html.EscapeString(deviceName),
-	)
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(page))
+	writePage(w, http.StatusOK, consentPageTmpl, consentPageData{
+		DeviceName:    deviceName,
+		Username:      user.Username,
+		RedirectURI:   redirectURI,
+		State:         state,
+		CodeChallenge: challenge,
+		AdminScope:    adminScope,
+	})
 }
 
 // handleAuthorize accepts the consent POST and redirects to the CLI's
 // loopback URL with a one-shot authorization code.
-func (h *APIAuthHandler) handleAuthorize(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	user := h.requireSession(r)
-	if user == nil {
-		http.Error(w, "not authenticated", http.StatusUnauthorized)
-		return
-	}
+//
+// The session alone does NOT admit this: what it mints outlives the session
+// by months, so requireElevatedSession demands a recently proven factor.
+// This leg REFUSES rather than bounces, and the gate derives that from the
+// method: the PKCE challenge, the state and the redirect URI arrive in the
+// form body, so a redirect would drop them and the user would return to a
+// consent page that forgot what it was consenting to. Cross-site forgery is not the exposure here either
+// way -- the session cookie is SameSite=Lax, so a cross-site POST carries no
+// cookie.
+//
+// consentLeg runs the method check and the gate BEFORE this leg, and before
+// ParseForm. The gate reads only the URL, the headers and the cookies, so
+// parsing first made the hub read and buffer an anonymous caller's body --
+// up to Go's 10 MB form limit -- to decide it had no session. Every
+// FormValue below still runs after the parse.
+func (h *APIAuthHandler) handleAuthorize(w http.ResponseWriter, r *http.Request, user *auth.UserInfo) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "bad form", http.StatusBadRequest)
 		return
@@ -84,18 +83,26 @@ func (h *APIAuthHandler) handleAuthorize(w http.ResponseWriter, r *http.Request)
 	redirectURI := r.FormValue("redirect_uri")
 	state := r.FormValue("state")
 	challenge := r.FormValue("code_challenge")
-	deviceName := r.FormValue("device_name")
+	deviceName := normalizeDeviceName(r.FormValue("device_name"))
 	if !isLoopbackURL(redirectURI) || state == "" || challenge == "" {
 		http.Error(w, "invalid request", http.StatusBadRequest)
 		return
 	}
+	adminScope, ok := resolveAdminScope(w, requestsAdminScope(r), user)
+	if !ok {
+		return
+	}
 
 	code := id.Generate()
+	// The scope binds HERE, on the grant row. /auth/cli/token reads it back
+	// from the row; if it read the exchange form instead, any holder of an
+	// authorization code could upgrade the grant to hub administration.
 	if err := h.store.CLIAuthorizationCodes().Create(r.Context(), store.CreateCLIAuthorizationCodeParams{
 		Code:          code,
 		UserID:        user.ID,
 		CodeChallenge: challenge,
 		DeviceName:    deviceName,
+		AdminScope:    adminScope,
 		ExpiresAt:     h.now().Add(CLIAuthCodeTTL),
 	}); err != nil {
 		writeInternalError(w, "authorization code creation failed", err)

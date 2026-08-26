@@ -201,6 +201,16 @@ func (f *fakeChannelHub) CloseChannel(
 	return connect.NewResponse(&leapmuxv1.CloseChannelResponse{}), nil
 }
 
+// bearerHeader reports what the client stamps on an outbound request, which
+// is the only thing a test needs to know about the credential and the only
+// thing a transport ever sees. The field itself is unexported, so the
+// refresh mutex cannot be bypassed.
+func bearerHeader(c *control.Client) string {
+	h := http.Header{}
+	c.ApplyAuth(h)
+	return h.Get("Authorization")
+}
+
 // startFakeChannelHub serves fakeChannelHub over httptest and returns a
 // hub-bound Client pointed at it with the given resolved user id.
 func startFakeChannelHub(t *testing.T, cliUserID, hubUserID string) *control.Client {
@@ -218,14 +228,20 @@ func startFakeChannelHub(t *testing.T, cliUserID, hubUserID string) *control.Cli
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	return &control.Client{
-		HubURL:     srv.URL,
-		Bearer:     "lmx_test_secret",
-		HTTPClient: srv.Client(),
-		WSClient:   srv.Client(),
-		Pins:       newPinsForTest(t),
-		UserID:     cliUserID,
-	}
+	// Through the real constructor over a seeded credential, rather than a
+	// struct literal: the bearer is unexported so the refresh mutex is the
+	// only way to touch it, and building the client the way production does
+	// also stops this helper from drifting past a field the constructor sets.
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+	require.NoError(t, control.SaveCredentials(srv.URL, control.CredentialFile{
+		HubURL: srv.URL, AccessToken: "lmx_test_secret", UserID: cliUserID,
+	}))
+	c, err := control.NewClient(srv.URL)
+	require.NoError(t, err)
+	c.HTTPClient = srv.Client()
+	c.WSClient = srv.Client()
+	c.Pins = newPinsForTest(t)
+	return c
 }
 
 // TestNewClientFromEnv_NoHubErrorMentionsControlCommand locks the
@@ -387,7 +403,7 @@ func TestNewClientOrAnonymous_ReportsACredentialFileItCannotParse(t *testing.T) 
 	require.NoError(t, os.Remove(path))
 	c, err := control.NewClientOrAnonymous(testHub)
 	require.NoError(t, err)
-	assert.Empty(t, c.Bearer, "no credential means no bearer, not a refusal")
+	assert.Empty(t, bearerHeader(c), "no credential means no bearer, not a refusal")
 	assert.Empty(t, c.Username)
 }
 
@@ -410,7 +426,7 @@ func TestNewClientAndNewClientOrAnonymous_BuildTheSameTransport(t *testing.T) {
 		assert.False(t, c.IsWorkerIPC(), "a hub URL is never the worker-IPC peer")
 		assert.NotNil(t, c.HTTPClient)
 	}
-	assert.Equal(t, "lmx_a_test", withCreds.Bearer)
+	assert.Equal(t, "Bearer lmx_a_test", bearerHeader(withCreds))
 	assert.Equal(t, "tester", withCreds.Username)
-	assert.Equal(t, "lmx_a_test", anonymous.Bearer, "a stored credential is used when one exists")
+	assert.Equal(t, "Bearer lmx_a_test", bearerHeader(anonymous), "a stored credential is used when one exists")
 }

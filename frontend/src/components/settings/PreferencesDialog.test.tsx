@@ -12,6 +12,7 @@ const listSettings = vi.hoisted(() => vi.fn().mockResolvedValue({ descriptors: [
 const updateSetting = vi.hoisted(() => vi.fn())
 const isAdmin = vi.hoisted(() => vi.fn(() => false))
 const solo = vi.hoisted(() => vi.fn(() => false))
+const elevationExpiresAt = vi.hoisted(() => vi.fn((): { seconds: bigint, nanos: number } | undefined => undefined))
 
 vi.mock('~/api/clients', () => ({
   userClient: { listUserSettings, updateUserSetting: vi.fn(), resetUserSetting: vi.fn() },
@@ -19,8 +20,17 @@ vi.mock('~/api/clients', () => ({
   authClient: {},
 }))
 
+// The elevation members are REAL here, not stubs: the panel renders the
+// verified-session state at the top of every group that holds an
+// elevation-guarded row, and `elevationExpiresAt` is what decides whether that
+// state exists. A test drives it through the hoisted mock.
 vi.mock('~/context/AuthContext', () => ({
-  useAuth: () => ({ user: () => ({ username: 'admin', isAdmin: isAdmin() }) }),
+  useAuth: () => ({
+    user: () => ({ username: 'admin', isAdmin: isAdmin() }),
+    elevationExpiresAt: () => elevationExpiresAt(),
+    setElevationExpiresAt: vi.fn(),
+    refreshUser: vi.fn().mockResolvedValue(undefined),
+  }),
 }))
 
 vi.mock('~/lib/systemInfo', async importOriginal => ({
@@ -51,6 +61,7 @@ beforeEach(() => {
   listSettings.mockResolvedValue({ descriptors: [], values: [] })
   isAdmin.mockReturnValue(false)
   solo.mockReturnValue(false)
+  elevationExpiresAt.mockReturnValue(undefined)
 })
 
 afterEach(() => {
@@ -266,7 +277,7 @@ describe('preferencesDialog solo mode', () => {
           fields: [{ name: '', label: 'Bot protection enabled', help: '', kind: 1, enumValues: [], unit: '', secret: false, placeholder: '' }],
         },
         {
-          key: 'rate_limit.change-password',
+          key: 'rate_limit.elevation',
           category: 'rate-limits',
           title: 'Rate limit',
           summary: '',
@@ -674,5 +685,93 @@ describe('a hub setting a read-time rule overrides', () => {
 
     expect(toggle.checked).toBe(true)
     expect(screen.queryByText(/Currently in effect/)).toBeNull()
+  })
+})
+
+/**
+ * Account LEADS the navigation.
+ *
+ * It is the group a user opens the dialog for deliberately -- a password, a
+ * passkey, an address -- where the rest are preferences they adjust while
+ * they are already here. Asserted as a POSITION rather than as "is present",
+ * because the group was always present; it simply sat eighth.
+ */
+describe('preferencesDialog section order', () => {
+  it('puts Account first under PREFERENCES', async () => {
+    renderDialog('appearance')
+    await waitFor(() => expect(screen.getByTestId('preferences-nav-appearance')).toBeTruthy())
+
+    const tabs = screen.getAllByRole('tab').map(el => el.getAttribute('data-testid'))
+    expect(tabs[0]).toBe('preferences-nav-account')
+    expect(tabs).toContain('preferences-nav-appearance')
+  })
+
+  // Opening with no category lands on the first VISIBLE group, which is now
+  // Account -- except in solo mode, where every account row is hidden and the
+  // fallback must move on rather than render an empty panel.
+  it('falls back past Account in solo mode', async () => {
+    solo.mockReturnValue(true)
+    renderDialog('account')
+    await waitFor(() => expect(screen.getByTestId('preferences-nav-appearance')).toBeTruthy())
+    expect(screen.queryByTestId('preferences-nav-account')).toBeNull()
+    expect(screen.getByTestId('preferences-nav-appearance')).toHaveAttribute('aria-selected', 'true')
+  })
+})
+
+/**
+ * The verified-session state, at the top of every group whose rows the hub
+ * refuses without a recently proven factor.
+ *
+ * It used to live inside ONE account editor, which put it half way down the
+ * Account panel under a Save button it had nothing to do with -- and left
+ * every ADMINISTRATION panel without it, although the same window governs
+ * every hub-settings write.
+ */
+describe('preferencesDialog verified-session state', () => {
+  const inTwoHours = () => ({ seconds: BigInt(Math.floor(Date.now() / 1000) + 7200), nanos: 0 })
+
+  function adminGeneralSettings() {
+    return {
+      descriptors: [{
+        key: 'session_duration_seconds',
+        category: 'general',
+        title: 'Session duration',
+        summary: '',
+        order: 10,
+        hiddenInSolo: false,
+        restart: false,
+        fields: [{ name: '', label: 'Session duration', help: '', kind: 2, enumValues: [], unit: 'seconds', secret: false, placeholder: '', min: 300n }],
+      }],
+      values: [],
+    }
+  }
+
+  it('shows it on an administration group while the session is verified', async () => {
+    isAdmin.mockReturnValue(true)
+    elevationExpiresAt.mockReturnValue(inTwoHours())
+    listSettings.mockResolvedValue(adminGeneralSettings())
+
+    renderDialog('admin-general')
+    await waitFor(() => expect(screen.getByTestId('elevation-status')).toBeTruthy())
+    expect(screen.getByTestId('elevation-drop')).toBeTruthy()
+  })
+
+  it('shows nothing on an administration group while the session is not', async () => {
+    isAdmin.mockReturnValue(true)
+    listSettings.mockResolvedValue(adminGeneralSettings())
+
+    renderDialog('admin-general')
+    await waitFor(() => expect(screen.getByText('Session duration')).toBeTruthy())
+    expect(screen.queryByTestId('elevation-status')).toBeNull()
+  })
+
+  // A browser preference is not elevation-guarded, so a verified session is
+  // not news there. Marking every group would make the state meaningless.
+  it('shows nothing on a group with no elevation-guarded row', async () => {
+    elevationExpiresAt.mockReturnValue(inTwoHours())
+
+    renderDialog('appearance')
+    await waitFor(() => expect(screen.getByTestId('preferences-nav-appearance')).toBeTruthy())
+    expect(screen.queryByTestId('elevation-status')).toBeNull()
   })
 })

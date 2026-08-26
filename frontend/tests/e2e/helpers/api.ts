@@ -305,21 +305,96 @@ export async function listPasskeysViaAPI(hubUrl: string, cookie: string): Promis
   return (data.passkeys ?? []).map(pk => ({ id: pk.id ?? '', friendlyName: pk.friendlyName ?? '' }))
 }
 
-/** Delete one passkey with the account password. */
+/**
+ * Elevate a session with its account password.
+ *
+ * Every sensitive UserService call needs this first: the step-up is a
+ * property of the SESSION now, not a secret carried on each request.
+ */
+export async function elevateSessionViaAPI(
+  hubUrl: string,
+  cookie: string,
+  currentPassword: string,
+): Promise<void> {
+  const res = await fetch(`${hubUrl}/leapmux.v1.UserService/ElevateSession`, {
+    method: 'POST',
+    headers: authedHeaders(cookie),
+    body: JSON.stringify({ currentPassword }),
+  })
+  if (!res.ok) {
+    throw new Error(`elevateSessionViaAPI failed: ${res.status} ${await res.text()}`)
+  }
+}
+
+/** Delete one passkey. The session must already be elevated. */
 export async function deletePasskeyViaAPI(
   hubUrl: string,
   cookie: string,
   passkeyId: string,
-  currentPassword: string,
 ): Promise<void> {
   const res = await fetch(`${hubUrl}/leapmux.v1.UserService/DeletePasskey`, {
     method: 'POST',
     headers: authedHeaders(cookie),
-    body: JSON.stringify({ id: passkeyId, currentPassword }),
+    body: JSON.stringify({ id: passkeyId }),
   })
   if (!res.ok) {
     throw new Error(`deletePasskeyViaAPI failed: ${res.status} ${await res.text()}`)
   }
+}
+
+/**
+ * The hub's marker on a refusal whose remedy is "prove a factor and retry".
+ *
+ * Asserting the STATUS alone cannot tell that refusal from the one the hub
+ * deliberately leaves unmarked -- the permanent "this credential can never
+ * elevate" answer a bearer gets. Both are FailedPrecondition, and only the
+ * marker says which, so only the marker distinguishes a retryable prompt
+ * from a dead end.
+ */
+export const ELEVATION_REQUIRED_HEADER = 'leapmux-elevation-required'
+
+/**
+ * Attempt a passkey delete and return the raw response, so a test can read
+ * the refusal's headers as well as its status.
+ */
+export async function deletePasskeyResponse(
+  hubUrl: string,
+  cookie: string,
+  passkeyId: string,
+): Promise<Response> {
+  return await fetch(`${hubUrl}/leapmux.v1.UserService/DeletePasskey`, {
+    method: 'POST',
+    headers: authedHeaders(cookie),
+    body: JSON.stringify({ id: passkeyId }),
+  })
+}
+
+/** The account's own CLI credentials. */
+export interface MyAPITokenSummary {
+  id: string
+  clientName: string
+  adminScope: boolean
+  current: boolean
+}
+
+export async function listMyAPITokensViaAPI(hubUrl: string, cookie: string): Promise<MyAPITokenSummary[]> {
+  const res = await fetch(`${hubUrl}/leapmux.v1.UserService/ListMyAPITokens`, {
+    method: 'POST',
+    headers: authedHeaders(cookie),
+    body: JSON.stringify({}),
+  })
+  if (!res.ok) {
+    throw new Error(`listMyAPITokensViaAPI failed: ${res.status} ${await res.text()}`)
+  }
+  const data = await res.json() as {
+    tokens?: Array<{ id?: string, clientName?: string, adminScope?: boolean, current?: boolean }>
+  }
+  return (data.tokens ?? []).map(t => ({
+    id: t.id ?? '',
+    clientName: t.clientName ?? '',
+    adminScope: t.adminScope === true,
+    current: t.current === true,
+  }))
 }
 
 /**

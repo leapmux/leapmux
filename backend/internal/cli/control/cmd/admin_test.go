@@ -120,7 +120,7 @@ func TestParseSettingValue(t *testing.T) {
 }
 
 func TestAdminRateLimitSet_RequiresAtLeastOneTuningFlag(t *testing.T) {
-	err := RunAdminRateLimitSet(nil, []string{"--operation", "change-password"})
+	err := RunAdminRateLimitSet(nil, []string{"--operation", "elevation"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "pass --max-attempts, --window, or both")
 }
@@ -130,8 +130,8 @@ func TestAdminRateLimitSet_RequiresAtLeastOneTuningFlag(t *testing.T) {
 // window cannot silently re-arm a limiter an operator turned off.
 func TestAdminRateLimitSet_AcceptsOneFlagAndNeverWritesEnabled(t *testing.T) {
 	for _, args := range [][]string{
-		{"--operation", "change-password", "--max-attempts", "5"},
-		{"--operation", "change-password", "--window", "900"},
+		{"--operation", "elevation", "--max-attempts", "5"},
+		{"--operation", "elevation", "--window", "900"},
 	} {
 		err := RunAdminRateLimitSet(nil, args)
 		require.Error(t, err, "no hub is reachable in a unit test")
@@ -144,7 +144,7 @@ func TestAdminRateLimitSet_RefusesUnknownOperation(t *testing.T) {
 	err := RunAdminRateLimitSet(nil, []string{"--operation", "chnage-password", "--max-attempts", "5"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `unknown operation "chnage-password"`)
-	assert.Contains(t, err.Error(), "change-password", "the message must list the known operations")
+	assert.Contains(t, err.Error(), "elevation", "the message must list the known operations")
 }
 
 // The hub decodes the value as JSON, so a bare `T`/`TRUE`/`False` must be
@@ -415,8 +415,8 @@ func TestSettingShapeFromDescriptor_KeepsTheSecretFieldsOutOfThePublicHalf(t *te
 func TestSettingDescriptionText_PointsAtTheVerbThatCanWriteTheKey(t *testing.T) {
 	assert.Equal(t, "the active captcha provider alias (prefer `leapmux control admin captcha ...`)",
 		settingDescriptionText(captcha.CaptchaSelectedKey.Name(), "the active captcha provider alias"))
-	assert.Equal(t, "rate limit for change-password (prefer `leapmux control admin rate-limit ...`)",
-		settingDescriptionText(ratelimit.SettingKeyPrefix+"change-password", "rate limit for change-password"))
+	assert.Equal(t, "rate limit for elevation (prefer `leapmux control admin rate-limit ...`)",
+		settingDescriptionText(ratelimit.SettingKeyPrefix+"elevation", "rate limit for elevation"))
 	assert.Equal(t, "the public origin", settingDescriptionText("public_url", "the public origin"),
 		"a key with no domain verb keeps the hub's own summary")
 }
@@ -723,7 +723,7 @@ func TestAdminRowMappers_CarryEveryFieldOfTheirProtoMessage(t *testing.T) {
 		{
 			name: "adminAPITokenJSON", msg: apiToken,
 			render: func() map[string]any { return adminAPITokenJSON(apiToken) },
-			keys:   merge(tokenFields(), identity("client_type", "client_name")),
+			keys:   merge(tokenFields(), identity("client_type", "client_name", "admin_scope")),
 		},
 		{
 			name: "adminDelegationTokenJSON", msg: delegation,

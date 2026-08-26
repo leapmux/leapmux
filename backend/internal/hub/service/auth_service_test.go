@@ -20,6 +20,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/mail"
+	huboauth "github.com/leapmux/leapmux/internal/hub/oauth"
 
 	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/service"
@@ -28,8 +29,10 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
+	"github.com/leapmux/leapmux/internal/hub/usernames"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/util/verifycode"
 )
 
@@ -157,6 +160,154 @@ func TestAuthService_GetCurrentUser(t *testing.T) {
 	resp, err := client.GetCurrentUser(context.Background(), req)
 	require.NoError(t, err)
 	assert.Equal(t, "admin", resp.Msg.GetUser().GetUsername())
+}
+
+// TestAuthService_GetCurrentUser_ReportsTheProviderArmForAPasswordAccount is
+// half of what lets the step-up screen offer exactly the arms the hub accepts.
+//
+// A provider may prove a step-up only for an account that holds no password
+// and no passkey. This account holds a password, so BOTH links report false --
+// including the OIDC one, which a client filtering on the provider's protocol
+// capability would have offered. That capability is gone from the wire for
+// exactly this reason: it never answered the question the form asks.
+func TestAuthService_GetCurrentUser_ReportsTheProviderArmForAPasswordAccount(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	client, st, _ := setupAuthTestServer(t, testConfig(), nil)
+
+	loginResp, err := client.Login(ctx, connect.NewRequest(&leapmuxv1.LoginRequest{
+		Username: "admin", Password: "admin123",
+	}))
+	require.NoError(t, err)
+	userID := loginResp.Msg.GetUser().GetId()
+
+	for _, p := range []struct{ id, providerType string }{
+		{"gh", huboauth.ProviderTypeGitHub},
+		{"okta", huboauth.ProviderTypeOIDC},
+	} {
+		require.NoError(t, st.OAuthProviders().Create(ctx, store.CreateOAuthProviderParams{
+			ID: p.id, ProviderType: p.providerType, Name: p.id, ClientID: "cid",
+			ClientSecret: []byte("secret"), Enabled: true,
+		}))
+		require.NoError(t, st.OAuthUserLinks().Create(ctx, store.CreateOAuthUserLinkParams{
+			UserID: userid.MustNew(userID), ProviderID: p.id, ProviderSubject: "sub-" + p.id,
+		}))
+	}
+
+	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
+	req.Header().Set("Cookie", auth.CookieName+"="+sessionFromCookie(t, loginResp.Header().Get("Set-Cookie")))
+	resp, err := client.GetCurrentUser(ctx, req)
+	require.NoError(t, err)
+
+	assert.False(t, resp.Msg.GetUser().GetMayElevateThroughAProvider(),
+		"a password account elevates with the password, never with a provider")
+	ids := []string{}
+	for _, p := range resp.Msg.GetUser().GetOauthProviders() {
+		ids = append(ids, p.GetId())
+		assert.Truef(t, p.GetEnabled(), "%s is an enabled provider", p.GetId())
+	}
+	assert.ElementsMatch(t, []string{"gh", "okta"}, ids,
+		"both links are reported whatever the account rule answers")
+}
+
+// TestAuthService_GetCurrentUser_ReportsTheProviderArm is the other side of
+// the same field: the hub DECIDES whether a provider may elevate, and the
+// step-up form filters on that answer alone.
+//
+// The rule reads the ACCOUNT and is not derivable from
+// requests_reauthentication. This account holds no password and no passkey,
+// so the provider IS its sign-in credential and the arm is available --
+// GitHub included, which proves no re-authentication at all. The form spelled
+// the rule out in TypeScript before this field existed, which made it a
+// second source of truth for an authorization decision the OAuth legs
+// enforce.
+func TestAuthService_GetCurrentUser_ReportsTheProviderArm(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	client, st, _ := setupAuthTestServer(t, testConfig(), nil)
+
+	// A passwordless account, built directly: Login needs a password, and a
+	// password is exactly the fact this case must not have.
+	userID := id.Generate()
+	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
+		ID: userID, Username: "oauthonly", PasswordHash: password.PlaceholderHash,
+		DisplayName: "OAuth Only", PasswordSet: false,
+	}))
+	sessionID := id.Generate()
+	require.NoError(t, st.Sessions().Create(ctx, store.CreateSessionParams{
+		ID: sessionID, UserID: userid.MustNew(userID),
+		ExpiresAt: time.Now().UTC().Add(time.Hour),
+	}))
+
+	for _, p := range []struct{ id, providerType string }{
+		{"gh", huboauth.ProviderTypeGitHub},
+		{"okta", huboauth.ProviderTypeOIDC},
+	} {
+		require.NoError(t, st.OAuthProviders().Create(ctx, store.CreateOAuthProviderParams{
+			ID: p.id, ProviderType: p.providerType, Name: p.id, ClientID: "cid",
+			ClientSecret: []byte("secret"), Enabled: true,
+		}))
+		require.NoError(t, st.OAuthUserLinks().Create(ctx, store.CreateOAuthUserLinkParams{
+			UserID: userid.MustNew(userID), ProviderID: p.id, ProviderSubject: "sub-" + p.id,
+		}))
+	}
+
+	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
+	req.Header().Set("Cookie", auth.CookieName+"="+sessionID)
+	resp, err := client.GetCurrentUser(ctx, req)
+	require.NoError(t, err)
+
+	assert.True(t, resp.Msg.GetUser().GetMayElevateThroughAProvider(),
+		"an account with no other factor elevates through any linked provider")
+	ids := []string{}
+	for _, p := range resp.Msg.GetUser().GetOauthProviders() {
+		ids = append(ids, p.GetId())
+	}
+	assert.ElementsMatch(t, []string{"gh", "okta"}, ids)
+}
+
+// A DISABLED provider's link is still reported, with enabled=false.
+//
+// The link survives an administrator disabling the provider, and this list is
+// the only feed for the Linked Accounts section -- so filtering the row out
+// left the owner holding a login method they could neither use nor remove,
+// while UnlinkOAuthProvider's own last-login-method guard still counted it.
+// The verification screen filters on the flag instead.
+func TestAuthService_GetCurrentUser_ReportsADisabledLinkAsDisabled(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	client, st, _ := setupAuthTestServer(t, testConfig(), nil)
+
+	userID := id.Generate()
+	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
+		ID: userID, Username: "haslink", PasswordHash: password.PlaceholderHash,
+		DisplayName: "Has Link", PasswordSet: true,
+	}))
+	sessionID := id.Generate()
+	require.NoError(t, st.Sessions().Create(ctx, store.CreateSessionParams{
+		ID: sessionID, UserID: userid.MustNew(userID),
+		ExpiresAt: time.Now().UTC().Add(time.Hour),
+	}))
+	require.NoError(t, st.OAuthProviders().Create(ctx, store.CreateOAuthProviderParams{
+		ID: "gh", ProviderType: huboauth.ProviderTypeGitHub, Name: "GitHub", ClientID: "cid",
+		ClientSecret: []byte("secret"), Enabled: false,
+	}))
+	require.NoError(t, st.OAuthUserLinks().Create(ctx, store.CreateOAuthUserLinkParams{
+		UserID: userid.MustNew(userID), ProviderID: "gh", ProviderSubject: "sub-gh",
+	}))
+
+	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
+	req.Header().Set("Cookie", auth.CookieName+"="+sessionID)
+	resp, err := client.GetCurrentUser(ctx, req)
+	require.NoError(t, err)
+
+	links := resp.Msg.GetUser().GetOauthProviders()
+	require.Len(t, links, 1, "the link must stay visible so the owner can detach it")
+	assert.Equal(t, "gh", links[0].GetId())
+	assert.False(t, links[0].GetEnabled(), "the screen that offers step-up arms filters on this")
 }
 
 // GetCurrentUser is the only response the /verify-email page's own
@@ -372,7 +523,12 @@ func TestAuthService_SignUp_DuplicateUsername(t *testing.T) {
 	assert.Equal(t, connect.CodeAlreadyExists, connect.CodeOf(err))
 }
 
-func TestAuthService_ChangePassword_WrongOldPassword(t *testing.T) {
+// TestAuthService_ChangePassword_NeedsElevatedSession pins the gate on the
+// cookie path end to end: a fresh sign-in is NOT enough to change the
+// password. The session must prove a factor first, and the refusal is
+// FailedPrecondition -- the frontend reads Unauthenticated as "signed out"
+// and would discard the session the user is about to elevate.
+func TestAuthService_ChangePassword_NeedsElevatedSession(t *testing.T) {
 	t.Parallel()
 
 	client, st, set := setupAuthTestServer(t, testConfig(), nil)
@@ -396,15 +552,15 @@ func TestAuthService_ChangePassword_WrongOldPassword(t *testing.T) {
 	t.Cleanup(server.Close)
 	userClient := leapmuxv1connect.NewUserServiceClient(server.Client(), server.URL)
 
-	// Try to change password with wrong old password.
-	req := connect.NewRequest(&leapmuxv1.ChangePasswordRequest{
-		CurrentPassword: "wrongpassword",
-		NewPassword:     "newpass123",
-	})
+	req := connect.NewRequest(&leapmuxv1.ChangePasswordRequest{NewPassword: "newpass123"})
 	req.Header().Set("Cookie", auth.CookieName+"="+token)
 	_, err = userClient.ChangePassword(context.Background(), req)
 	require.Error(t, err)
-	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+
+	// The password did not change: the old one still authenticates.
+	_, _, _, err = auth.Login(context.Background(), st, "admin", "admin123", auth.DefaultSessionDuration)
+	require.NoError(t, err, "a refused change must leave the password alone")
 }
 
 func TestSignUp_DuplicateEmail_Rejected(t *testing.T) {
@@ -960,7 +1116,10 @@ func TestSetupSignUp_CreatesAdminWithVerifiedEmail(t *testing.T) {
 	assert.Equal(t, "myadmin", user.GetUsername())
 	assert.True(t, user.GetIsAdmin())
 	assert.Equal(t, "admin@example.com", user.GetEmail())
-	assert.True(t, user.GetEmailVerified())
+	// NOT verified: nobody confirmed this address, and the operator typed it
+	// into a form. The administrator can still sign in, because the login
+	// gate takes its own exemption -- see auth.EmailVerificationSatisfied.
+	assert.False(t, user.GetEmailVerified())
 
 	// Session cookie should be set.
 	setCookie := resp.Header().Get("Set-Cookie")
@@ -971,7 +1130,9 @@ func TestSetupSignUp_CreatesAdminWithVerifiedEmail(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, dbUser.IsAdmin)
 	assert.Equal(t, "admin@example.com", dbUser.Email)
-	assert.True(t, dbUser.EmailVerified)
+	assert.False(t, dbUser.EmailVerified)
+	assert.True(t, auth.EmailVerificationSatisfied(true, dbUser.IsAdmin, dbUser.EmailVerified),
+		"an unconfirmed address must not lock the hub's first administrator out")
 }
 
 func TestSetupSignUp_EmptyEmail(t *testing.T) {
@@ -990,14 +1151,16 @@ func TestSetupSignUp_EmptyEmail(t *testing.T) {
 	user := resp.Msg.GetUser()
 	assert.True(t, user.GetIsAdmin())
 	assert.Empty(t, user.GetEmail())
-	// Setup-mode admin is always treated as verified, even with no email.
-	assert.True(t, user.GetEmailVerified())
+	// With no address at all there is nothing anybody could have confirmed,
+	// so the column says false. The setup-mode admin still signs in.
+	assert.False(t, user.GetEmailVerified())
 
 	// Verify in DB.
 	dbUser, err := st.Users().GetByUsername(context.Background(), "myadmin")
 	require.NoError(t, err)
 	assert.True(t, dbUser.IsAdmin)
-	assert.True(t, dbUser.EmailVerified)
+	assert.False(t, dbUser.EmailVerified)
+	assert.True(t, auth.EmailVerificationSatisfied(true, dbUser.IsAdmin, dbUser.EmailVerified))
 }
 
 func TestSetupSignUp_GetSystemInfoReturnsSetupRequired(t *testing.T) {
@@ -1114,7 +1277,9 @@ func TestSetupSignUp_WithSignupEnabled(t *testing.T) {
 
 	user := resp.Msg.GetUser()
 	assert.True(t, user.GetIsAdmin(), "first user should be admin even when signup is enabled")
-	assert.True(t, user.GetEmailVerified())
+	// Unconfirmed, like every other setup-mode address; the login gate is
+	// what keeps the administrator in.
+	assert.False(t, user.GetEmailVerified())
 
 	dbUser, err := st.Users().GetByUsername(context.Background(), "myadmin")
 	require.NoError(t, err)
@@ -1316,6 +1481,25 @@ func TestSignUp_AllowsAdminInSetupMode(t *testing.T) {
 	assert.True(t, resp.Msg.GetUser().GetIsAdmin())
 }
 
+// The other half of the setup exemption, and the half that matters for
+// safety: `admin` becomes claimable in setup mode, `solo` never does. A user
+// by that name in a non-solo database is auto-authenticated for every request
+// the day the same data-dir is opened in solo mode.
+func TestSignUp_RejectsSoloInSetupMode(t *testing.T) {
+	t.Parallel()
+
+	client, _, _ := setupEmptyAuthTestServer(t, testConfig(), nil)
+
+	_, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+		Username:    usernames.Solo,
+		Password:    "strongpass1",
+		DisplayName: "Not The Solo User",
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), "reserved username")
+}
+
 func TestSignUp_RejectsAdminInPublicSignup(t *testing.T) {
 	t.Parallel()
 
@@ -1412,12 +1596,7 @@ func TestFinishPasskeySignUp_FailClosedWhenVerificationEmailFails(t *testing.T) 
 	credentialJSON, err := ceremony.registrationResponse(begin.GetOptionsJson())
 	require.NoError(t, err)
 
-	failReq := connect.NewRequest(&leapmuxv1.FinishPasskeySignUpRequest{
-		SessionId:      begin.GetSessionId(),
-		CredentialJson: credentialJSON,
-	})
-	failReq.Header().Set("Origin", passkeyTestOrigin)
-	_, err = env.client.FinishPasskeySignUp(context.Background(), failReq)
+	_, err = finishPasskeySignUp(t, env.client, begin.GetSessionId(), credentialJSON)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnavailable, connect.CodeOf(err))
 
@@ -1437,12 +1616,7 @@ func TestFinishPasskeyLogin_ReturnsVerificationFlagsWhenVerificationRequired(t *
 	ceremony := newPasskeyCeremony()
 	credentialJSON, err := ceremony.registrationResponse(begin.GetOptionsJson())
 	require.NoError(t, err)
-	finishReq := connect.NewRequest(&leapmuxv1.FinishPasskeySignUpRequest{
-		SessionId:      begin.GetSessionId(),
-		CredentialJson: credentialJSON,
-	})
-	finishReq.Header().Set("Origin", passkeyTestOrigin)
-	signUpResp, err := env.client.FinishPasskeySignUp(context.Background(), finishReq)
+	signUpResp, err := finishPasskeySignUp(t, env.client, begin.GetSessionId(), credentialJSON)
 	require.NoError(t, err)
 	assert.True(t, signUpResp.Msg.GetEmailVerification().GetVerificationRequired())
 
@@ -1504,6 +1678,186 @@ func TestBeginPasskeySignUp_RequiresEmailWhenSMTPConfigured(t *testing.T) {
 	assert.Contains(t, err.Error(), "email is required")
 }
 
+// The first administrator registers with a passkey, exactly as they can with
+// a password. Signup stays DISABLED here (the default), which is the whole
+// point of the setup exemption: the setting is an administrator's decision,
+// and setup mode is the state in which no administrator exists to have made
+// it.
+func TestPasskeySignUp_SetupModeCreatesFirstAdmin(t *testing.T) {
+	t.Parallel()
+
+	env := setupEmptyPasskeyAuthTestServer(t, nil, nil)
+
+	infoResp, err := env.client.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
+	require.NoError(t, err)
+	require.True(t, infoResp.Msg.GetSetupRequired())
+
+	// `admin` is the conventional first-administrator name, and it is
+	// squat-protected everywhere else. Claiming it here proves the setup
+	// exemption reaches the passkey path's username rule too.
+	begin := beginPasskeySignUp(t, env.client, usernames.Admin, "first@example.com")
+	ceremony := newPasskeyCeremony()
+	credentialJSON, err := ceremony.registrationResponse(begin.GetOptionsJson())
+	require.NoError(t, err)
+
+	signUpResp, err := finishPasskeySignUp(t, env.client, begin.GetSessionId(), credentialJSON)
+	require.NoError(t, err)
+	assert.True(t, signUpResp.Msg.GetUser().GetIsAdmin())
+	assert.Equal(t, int32(1), signUpResp.Msg.GetUser().GetPasskeyCount())
+	assert.False(t, signUpResp.Msg.GetEmailVerification().GetVerificationRequired())
+
+	dbUser, err := env.store.Users().GetByUsername(context.Background(), usernames.Admin)
+	require.NoError(t, err)
+	assert.True(t, dbUser.IsAdmin)
+	// No password was chosen, so nothing may claim one was: the account signs
+	// in with its passkey until the owner adds a password from Preferences.
+	assert.False(t, dbUser.PasswordSet)
+
+	// Setup is over, so /setup is withdrawn.
+	infoResp, err = env.client.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
+	require.NoError(t, err)
+	assert.False(t, infoResp.Msg.GetSetupRequired())
+
+	// And the credential works: the account can sign back in with it.
+	loginBegin := beginPasskeyLogin(t, env.client, usernames.Admin)
+	assertionJSON, err := ceremony.assertionResponse(loginBegin.GetOptionsJson())
+	require.NoError(t, err)
+	loginResp, err := finishPasskeyLogin(t, env.client, loginBegin.GetSessionId(), assertionJSON)
+	require.NoError(t, err)
+	assert.Equal(t, usernames.Admin, loginResp.Msg.GetUser().GetUsername())
+}
+
+// An administrator never waits behind a pending verification row, so their
+// address lands in the email column unverified -- the same outcome
+// signUpSetupMode produces for a password sign-up, and the reason
+// FinishPasskeySignUp reads the STORED code rather than its own pre-call
+// intent.
+func TestFinishPasskeySignUp_SetupModePromotesEmailPastVerification(t *testing.T) {
+	t.Parallel()
+
+	env := setupEmptyPasskeyAuthTestServer(t, enableEmailVerification, nil)
+
+	begin := beginPasskeySignUp(t, env.client, "pksetupmail", "pksetupmail@example.com")
+	ceremony := newPasskeyCeremony()
+	credentialJSON, err := ceremony.registrationResponse(begin.GetOptionsJson())
+	require.NoError(t, err)
+
+	signUpResp, err := finishPasskeySignUp(t, env.client, begin.GetSessionId(), credentialJSON)
+	require.NoError(t, err)
+	assert.False(t, signUpResp.Msg.GetEmailVerification().GetVerificationRequired())
+
+	dbUser, err := env.store.Users().GetByUsername(context.Background(), "pksetupmail")
+	require.NoError(t, err)
+	assert.True(t, dbUser.IsAdmin)
+	assert.Equal(t, "pksetupmail@example.com", dbUser.Email)
+	assert.Empty(t, dbUser.PendingEmail)
+	// Nobody confirmed the address, and the column records only what somebody
+	// confirmed.
+	assert.False(t, dbUser.EmailVerified)
+}
+
+// Setup mode is re-read at Finish rather than carried over from Begin, and
+// this is the window that makes the difference: a second operator wins the
+// race to become the first administrator while the browser is still in the
+// ceremony. The ceremony that started in setup mode must land under PUBLIC
+// rules -- `admin` squat-protected, the signup setting binding -- or the race
+// loser walks past both.
+// Signup ENABLED, so the reserved-name rule is the one under test rather than
+// the signup setting: `admin` was claimable when the ceremony began and is
+// squat-protected by the time it ends.
+func TestFinishPasskeySignUp_SetupModeEndingMidCeremonyReservesAdmin(t *testing.T) {
+	t.Parallel()
+
+	env := setupEmptyPasskeyAuthTestServer(t, enableSignup, nil)
+
+	begin := beginPasskeySignUp(t, env.client, usernames.Admin, "race@example.com")
+	ceremony := newPasskeyCeremony()
+	credentialJSON, err := ceremony.registrationResponse(begin.GetOptionsJson())
+	require.NoError(t, err)
+
+	// The race: somebody else finishes setup first, under a different name so
+	// the refusal below is the reserved rule rather than a name collision.
+	hubtestutil.CreateTestUser(t, env.store, "winner", "password123")
+
+	_, err = finishPasskeySignUp(t, env.client, begin.GetSessionId(), credentialJSON)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), "reserved username")
+
+	_, err = env.store.Users().GetByUsername(context.Background(), usernames.Admin)
+	assert.ErrorIs(t, err, store.ErrNotFound)
+}
+
+// And the setting itself, which is the ordinary deployment: signup stays off,
+// so the ceremony that Begin admitted under the setup exemption is refused at
+// Finish the moment an administrator exists to have made that decision.
+func TestFinishPasskeySignUp_SetupModeEndingMidCeremonyHonorsSignupDisabled(t *testing.T) {
+	t.Parallel()
+
+	env := setupEmptyPasskeyAuthTestServer(t, nil, nil)
+
+	begin := beginPasskeySignUp(t, env.client, "racer", "racer@example.com")
+	ceremony := newPasskeyCeremony()
+	credentialJSON, err := ceremony.registrationResponse(begin.GetOptionsJson())
+	require.NoError(t, err)
+
+	hubtestutil.CreateTestUser(t, env.store, "winner", "password123")
+
+	_, err = finishPasskeySignUp(t, env.client, begin.GetSessionId(), credentialJSON)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), "sign-up is disabled")
+
+	_, err = env.store.Users().GetByUsername(context.Background(), "racer")
+	assert.ErrorIs(t, err, store.ErrNotFound)
+}
+
+// `solo` carries a hazard that belongs to the DATABASE rather than to the
+// flow that wrote the row: opening a non-solo data-dir in solo mode
+// auto-authenticates every request as that user. Setup mode exempts `admin`
+// and nothing else.
+func TestBeginPasskeySignUp_SetupModeStillRejectsSoloUsername(t *testing.T) {
+	t.Parallel()
+
+	env := setupEmptyPasskeyAuthTestServer(t, nil, nil)
+
+	_, err := env.client.BeginPasskeySignUp(context.Background(), beginPasskeySignUpRequest(usernames.Solo, ""))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), "reserved username")
+}
+
+// The polarity of the exemption, which a setup-mode-only test cannot pin: a
+// hub that already has an account is public signup, and there `admin` stays
+// squat-protected.
+func TestBeginPasskeySignUp_PublicModeRejectsAdminUsername(t *testing.T) {
+	t.Parallel()
+
+	// A non-admin fixture, so the refusal below is the reserved-name rule
+	// rather than the availability check on the seeded admin row.
+	env := setupEmptyPasskeyAuthTestServer(t, enableSignup, nil)
+	hubtestutil.CreateTestUser(t, env.store, "someone", "password123")
+
+	_, err := env.client.BeginPasskeySignUp(context.Background(), beginPasskeySignUpRequest(usernames.Admin, ""))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), "reserved username")
+}
+
+// Signup disabled is an administrator's decision, so it binds once one
+// exists. Without this the setup exemption would read as "passkey sign-up is
+// always open".
+func TestBeginPasskeySignUp_PublicModeRefusesWhenSignupDisabled(t *testing.T) {
+	t.Parallel()
+
+	env := setupPasskeyAuthTestServer(t, nil, nil)
+
+	_, err := env.client.BeginPasskeySignUp(context.Background(), beginPasskeySignUpRequest("latecomer", ""))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), "sign-up is disabled")
+}
+
 func TestBeginPasskeyLogin_UnknownAndNoPasskeysShareError(t *testing.T) {
 	t.Parallel()
 
@@ -1540,12 +1894,7 @@ func TestFinishPasskeyLogin_FailedAssertionBurnsCeremony(t *testing.T) {
 	ceremony := newPasskeyCeremony()
 	credentialJSON, err := ceremony.registrationResponse(begin.GetOptionsJson())
 	require.NoError(t, err)
-	finishReq := connect.NewRequest(&leapmuxv1.FinishPasskeySignUpRequest{
-		SessionId:      begin.GetSessionId(),
-		CredentialJson: credentialJSON,
-	})
-	finishReq.Header().Set("Origin", passkeyTestOrigin)
-	_, err = env.client.FinishPasskeySignUp(context.Background(), finishReq)
+	_, err = finishPasskeySignUp(t, env.client, begin.GetSessionId(), credentialJSON)
 	require.NoError(t, err)
 
 	loginBegin := beginPasskeyLogin(t, env.client, "pkburn")
@@ -1558,4 +1907,58 @@ func TestFinishPasskeyLogin_FailedAssertionBurnsCeremony(t *testing.T) {
 	_, err = finishPasskeyLogin(t, env.client, loginBegin.GetSessionId(), assertionJSON)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err), "failed Finish must consume the ceremony")
+}
+
+// TestAuthService_GetCurrentUser_MarksADisabledLinkedProvider pins BOTH
+// halves of the disabled-provider rule, which one flag cannot carry.
+//
+// The link survives an administrator disabling the provider, and nothing
+// behind it works: both OAuth legs answer 403 "provider disabled" from
+// loadEnabledProvider. So it must not be offered as a step-up arm -- for an
+// OAuth-only account that is the one arm it has, and the dead end is total.
+//
+// It must still be REPORTED, though, and omitting it was the defect that
+// hiding it introduced: this list is the only feed for the Linked Accounts
+// section, so an omitted link left the owner unable to detach it while
+// UnlinkOAuthProvider's own last-login-method guard still counted the row.
+// The flag says which, and the verification screen filters on it.
+func TestAuthService_GetCurrentUser_MarksADisabledLinkedProvider(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	client, st, _ := setupAuthTestServer(t, testConfig(), nil)
+
+	loginResp, err := client.Login(ctx, connect.NewRequest(&leapmuxv1.LoginRequest{
+		Username: "admin", Password: "admin123",
+	}))
+	require.NoError(t, err)
+	userID := loginResp.Msg.GetUser().GetId()
+
+	for _, p := range []struct {
+		id      string
+		enabled bool
+	}{
+		{"live", true},
+		{"dead", false},
+	} {
+		require.NoError(t, st.OAuthProviders().Create(ctx, store.CreateOAuthProviderParams{
+			ID: p.id, ProviderType: huboauth.ProviderTypeOIDC, Name: p.id, ClientID: "cid",
+			ClientSecret: []byte("secret"), Enabled: p.enabled,
+		}))
+		require.NoError(t, st.OAuthUserLinks().Create(ctx, store.CreateOAuthUserLinkParams{
+			UserID: userid.MustNew(userID), ProviderID: p.id, ProviderSubject: "sub-" + p.id,
+		}))
+	}
+
+	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
+	req.Header().Set("Cookie", auth.CookieName+"="+sessionFromCookie(t, loginResp.Header().Get("Set-Cookie")))
+	resp, err := client.GetCurrentUser(ctx, req)
+	require.NoError(t, err)
+
+	enabledByID := map[string]bool{}
+	for _, p := range resp.Msg.GetUser().GetOauthProviders() {
+		enabledByID[p.GetId()] = p.GetEnabled()
+	}
+	assert.Equal(t, map[string]bool{"live": true, "dead": false}, enabledByID,
+		"both links stay detachable, and the flag is what stops the disabled one being offered")
 }

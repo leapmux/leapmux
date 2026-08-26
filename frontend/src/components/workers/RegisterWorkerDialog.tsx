@@ -7,6 +7,7 @@ import { createMemo, createSignal, onCleanup, onMount, Show } from 'solid-js'
 import { workerClient } from '~/api/clients'
 import { Dialog } from '~/components/common/Dialog'
 import { Icon } from '~/components/common/Icon'
+import { Tooltip } from '~/components/common/Tooltip'
 import { useAuth } from '~/context/AuthContext'
 import { useCopyButton } from '~/hooks/useCopyButton'
 import { getWorkerHubUrl, isEmailEnabled, isSoloMode } from '~/lib/systemInfo'
@@ -160,19 +161,20 @@ export const RegisterWorkerDialog: Component<RegisterWorkerDialogProps> = (props
               permanently-disabled button would mislead users — drop it
               entirely. */}
           <Show when={!isSoloMode() && isEmailEnabled()}>
-            <button
-              type="button"
-              data-testid="email-registration-instructions"
-              disabled={!canEmail() || emailing() || emailSent()}
-              title={canEmail() ? 'Email this command to your verified address' : 'Verify your email to enable this'}
-              onClick={() => void handleSendEmail()}
-            >
-              <Icon icon={Mail} size="sm" />
-              {' '}
-              <Show when={emailSent()} fallback={emailing() ? 'Sending…' : 'Send email'}>
-                <span>{`Sent to ${auth.user()?.email ?? ''}`}</span>
-              </Show>
-            </button>
+            <Tooltip text={canEmail() ? 'Email this command to your verified address' : 'Verify your email to enable this'}>
+              <button
+                type="button"
+                data-testid="email-registration-instructions"
+                disabled={!canEmail() || emailing() || emailSent()}
+                onClick={() => void handleSendEmail()}
+              >
+                <Icon icon={Mail} size="sm" />
+                {' '}
+                <Show when={emailSent()} fallback={emailing() ? 'Sending…' : 'Send email'}>
+                  <span>{`Sent to ${auth.user()?.email ?? ''}`}</span>
+                </Show>
+              </button>
+            </Tooltip>
           </Show>
 
           <button

@@ -1,32 +1,13 @@
 package captcha
 
 import (
-	"context"
-	"net/http"
+	"net"
 	"net/url"
 	"strings"
+
+	"github.com/leapmux/leapmux/internal/hub/httpsec"
+	"github.com/leapmux/leapmux/internal/hub/settings"
 )
-
-// clientPageURLKey carries the browser page URL (Origin, else Referer
-// origin) on the request context so Describe / resolve / Verify can apply
-// the secure-context gate without changing every Manager method signature.
-type clientPageURLKey struct{}
-
-// withClientPageURL returns ctx carrying the client page URL. An empty
-// url is still stored so a missing-vs-empty distinction is unnecessary
-// downstream — the gate treats both as "unknown" and leaves the stored
-// enablement alone.
-func withClientPageURL(ctx context.Context, pageURL string) context.Context {
-	return context.WithValue(ctx, clientPageURLKey{}, pageURL)
-}
-
-// clientPageURLFromCtx returns the page URL stashed by the captcha
-// interceptor, or "" when the call did not pass through it (tests that
-// invoke Manager methods directly, non-HTTP callers).
-func clientPageURLFromCtx(ctx context.Context) string {
-	v, _ := ctx.Value(clientPageURLKey{}).(string)
-	return v
-}
 
 // providerRequiresSecureContext reports whether the provider's browser
 // widget needs a secure context (SubtleCrypto). Only ALTCHA does;
@@ -35,33 +16,11 @@ func providerRequiresSecureContext(p Provider) bool {
 	return p == ProviderAltcha
 }
 
-// clientPageURL extracts the browser page URL from request headers.
-// Prefer Origin (the precise page origin on Connect POSTs from the SPA);
-// fall back to the origin of Referer when Origin is absent. Empty when
-// neither yields a usable absolute URL — the secure-context gate then
-// leaves stored enablement alone (fail closed for non-browser callers).
-func clientPageURL(h http.Header) string {
-	if origin := strings.TrimSpace(h.Get("Origin")); origin != "" && origin != "null" {
-		if _, err := url.ParseRequestURI(origin); err == nil {
-			return origin
-		}
-	}
-	ref := strings.TrimSpace(h.Get("Referer"))
-	if ref == "" {
-		return ""
-	}
-	u, err := url.ParseRequestURI(ref)
-	if err != nil || u.Scheme == "" || u.Host == "" {
-		return ""
-	}
-	return u.Scheme + "://" + u.Host
-}
-
 // isSecureContextURL mirrors the browser's isSecureContext rules for
-// http(s) page URLs: https is always secure; http is secure only for
-// localhost, 127.0.0.1, ::1, and *.localhost. Anything else (LAN IPs,
-// bare hostnames over http, non-http schemes) is not a secure context —
-// ALTCHA's SubtleCrypto digest is unavailable there.
+// http(s) page URLs: https is always secure; http is secure only on a
+// loopback host. Anything else (LAN IPs, bare hostnames over http,
+// non-http schemes) is not a secure context — ALTCHA's SubtleCrypto digest
+// is unavailable there.
 func isSecureContextURL(raw string) bool {
 	u, err := url.ParseRequestURI(strings.TrimSpace(raw))
 	if err != nil || u.Host == "" {
@@ -71,26 +30,96 @@ func isSecureContextURL(raw string) bool {
 	case "https":
 		return true
 	case "http":
-		host := strings.ToLower(u.Hostname())
-		return host == "localhost" || host == "127.0.0.1" || host == "::1" || strings.HasSuffix(host, ".localhost")
+		return isSecureContextHost(u.Hostname())
 	default:
 		return false
 	}
 }
 
-// applySecureContextGate runtime-disables captcha when the selected
-// provider needs a secure context and the client page URL is known to be
-// insecure. The settings row is not written — captcha.enabled stays true
-// in the DB; only the effective Enabled flag flips for this request.
+// isSecureContextHost reports whether a plain-HTTP page on this host is
+// still a secure context.
 //
-// An empty clientPageURL leaves enablement alone (fail closed): non-browser
-// callers and tests that omit Origin keep the stored policy. External
-// providers are never gated — they work on plain HTTP.
-func applySecureContextGate(cfg Config, clientPageURL string) Config {
-	if !cfg.Enabled || !providerRequiresSecureContext(cfg.Provider) || clientPageURL == "" {
+// This is a WIDER set than httpsec.LoopbackHosts, and the difference is
+// deliberate. W3C Secure Contexts grants "Potentially Trustworthy" to the
+// whole 127.0.0.0/8 block and to ::1/128, so `127.0.0.2` counts although a
+// CLI redirect must not accept it. net.IP.IsLoopback answers exactly that
+// range, and it folds the IPv4-mapped spelling (::ffff:127.0.0.1) as well,
+// so no list of literals appears here at all.
+//
+// The same rules grant every *.localhost name, and a trailing root dot
+// (`localhost.`) is the same name to a browser.
+func isSecureContextHost(host string) bool {
+	h := strings.TrimSuffix(httpsec.NormalizeHost(host), ".")
+	if ip := net.ParseIP(h); ip != nil {
+		return ip.IsLoopback()
+	}
+	return h == "localhost" || strings.HasSuffix(h, ".localhost")
+}
+
+// altchaCanProtect reports whether ALTCHA is worth requiring on this hub.
+//
+// TWO questions, and the name states the conjunction because the gate's
+// decision IS the conjunction:
+//
+//   - Can a browser RUN the widget? ALTCHA's proof of work needs
+//     SubtleCrypto, which a page holds only in a secure context.
+//   - Is there anything to PROTECT? ALTCHA counters automated sign-up and
+//     sign-in abuse, which needs the hub to be reachable by somebody other
+//     than the operator's own machine. A hub published at a loopback
+//     address, or published nowhere at all, has no such audience.
+//
+// The answer comes from the hub's own configuration, and that is the point.
+// The gate this replaced read the request's Origin header, so any caller
+// could claim an insecure page and switch ALTCHA off for its own request --
+// a client-chosen switch on a server-side security decision, in front of the
+// only automation control Login, RequestPasswordReset and the passkey Begin
+// procedures have.
+//
+// There is no bind-address rung, and its absence is the rule rather than an
+// omission. Without public_url and without TLS the hub serves plain HTTP, so
+// a browser has a secure context ONLY at loopback -- and loopback is exactly
+// the case with no audience. So no bind address can make ALTCHA both usable
+// and useful, and the previous rung could only produce the wrong answer:
+// assuming a wildcard bind was loopback made ALTCHA REQUIRED for a LAN page
+// that could never solve it, and the remedy the form named (set public_url)
+// needed a credential the same block prevented.
+func altchaCanProtect(s *settings.Snapshot) bool {
+	if raw := settings.KeyPublicURL.Of(s); raw != "" {
+		return isSecureContextURL(raw) && !publishedAtLoopback(raw)
+	}
+	// No published address. TLS still settles it: a hub that terminates TLS
+	// serves every page in a secure context, and a hub with a certificate is
+	// a hub somebody reaches.
+	return settings.KeySecureCookies.Of(s)
+}
+
+// publishedAtLoopback reports whether public_url points at this machine.
+//
+// It reads the WIDER loopback set, the one a browser treats as potentially
+// trustworthy, because the question is what a browser can reach: an operator
+// who published http://127.0.0.2:4327 published no more of an audience than
+// one who published localhost.
+func publishedAtLoopback(raw string) bool {
+	u, err := url.ParseRequestURI(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" {
+		return false
+	}
+	return isSecureContextHost(u.Hostname())
+}
+
+// applySecureContextGate runtime-disables captcha when the selected provider
+// needs a secure context this hub cannot serve, or serves to nobody. The
+// settings row is not written -- captcha.enabled keeps its stored value in
+// the database; only the effective Enabled flag flips.
+//
+// applySecureContextGate never restricts an external provider: Turnstile and
+// reCAPTCHA v3 work on plain HTTP pages, and neither needs an audience to be
+// worth running.
+func applySecureContextGate(cfg Config, altchaProtects bool) Config {
+	if !cfg.Enabled || !providerRequiresSecureContext(cfg.Provider) {
 		return cfg
 	}
-	if !isSecureContextURL(clientPageURL) {
+	if !altchaProtects {
 		cfg.Enabled = false
 	}
 	return cfg

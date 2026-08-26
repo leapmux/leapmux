@@ -144,7 +144,11 @@ func (s *userStore) GetPrefs(ctx context.Context, id string) (string, error) {
 	return prefs, mapErr(err)
 }
 
+// See the mysql dialect's note on the same method.
 func (s *userStore) GetPrefsForUpdate(ctx context.Context, id string) (string, error) {
+	if !s.conn.inTx() {
+		return "", store.ErrInvalidArgument
+	}
 	prefs, err := s.conn.q.GetUserPrefsForUpdate(ctx, id)
 	return prefs, mapErr(err)
 }

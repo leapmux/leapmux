@@ -55,26 +55,26 @@ func wrongPasswordError() error {
 	return connect.NewError(connect.CodeUnauthenticated, auth.ErrInvalidCurrentPassword)
 }
 
-// changePasswordClient wires a one-procedure ChangePassword handler behind
+// elevateSessionClient wires a one-procedure ElevateSession handler behind
 // the rate-limit interceptor, with a fixed authenticated user injected by
 // the surrounding HTTP middleware (the auth interceptor's job in the real
 // chain). handlerCalled reports whether the protected handler ran.
-func changePasswordClient(t *testing.T, m *Manager, handlerErr error, authenticated bool) (leapmuxv1connect.UserServiceClient, *int) {
+func elevateSessionClient(t *testing.T, m *Manager, handlerErr error, authenticated bool) (leapmuxv1connect.UserServiceClient, *int) {
 	t.Helper()
 	handlerCalls := 0
 	handler := connect.NewUnaryHandler(
-		leapmuxv1connect.UserServiceChangePasswordProcedure,
-		func(ctx context.Context, req *connect.Request[leapmuxv1.ChangePasswordRequest]) (*connect.Response[leapmuxv1.ChangePasswordResponse], error) {
+		leapmuxv1connect.UserServiceElevateSessionProcedure,
+		func(ctx context.Context, req *connect.Request[leapmuxv1.ElevateSessionRequest]) (*connect.Response[leapmuxv1.ElevateSessionResponse], error) {
 			handlerCalls++
 			if handlerErr != nil {
 				return nil, handlerErr
 			}
-			return connect.NewResponse(&leapmuxv1.ChangePasswordResponse{}), nil
+			return connect.NewResponse(&leapmuxv1.ElevateSessionResponse{}), nil
 		},
 		connect.WithInterceptors(NewInterceptor(m)),
 	)
 	mux := http.NewServeMux()
-	mux.Handle(leapmuxv1connect.UserServiceChangePasswordProcedure, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mux.Handle(leapmuxv1connect.UserServiceElevateSessionProcedure, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if authenticated {
 			r = r.WithContext(auth.WithUser(r.Context(), &auth.UserInfo{ID: userid.MustNew("usr_test123")}))
 		}
@@ -85,26 +85,29 @@ func changePasswordClient(t *testing.T, m *Manager, handlerErr error, authentica
 	return leapmuxv1connect.NewUserServiceClient(server.Client(), server.URL), &handlerCalls
 }
 
-func wrongReauthProofError() error {
-	return connect.NewError(connect.CodeUnauthenticated, auth.ErrInvalidReauthProof)
+func rejectedAssertionError() error {
+	return connect.NewError(connect.CodeUnauthenticated, auth.ErrInvalidElevationAssertion)
 }
 
-func renamePasskeyClient(t *testing.T, m *Manager, handlerErr error, authenticated bool) (leapmuxv1connect.UserServiceClient, *int) {
+// finishPasskeyElevationClient is the passkey arm's twin of
+// elevateSessionClient. The two arms share ONE budget, which is what stops
+// an attacker doubling their attempts by alternating between them.
+func finishPasskeyElevationClient(t *testing.T, m *Manager, handlerErr error, authenticated bool) (leapmuxv1connect.UserServiceClient, *int) {
 	t.Helper()
 	handlerCalls := 0
 	handler := connect.NewUnaryHandler(
-		leapmuxv1connect.UserServiceRenamePasskeyProcedure,
-		func(ctx context.Context, req *connect.Request[leapmuxv1.RenamePasskeyRequest]) (*connect.Response[leapmuxv1.RenamePasskeyResponse], error) {
+		leapmuxv1connect.UserServiceFinishPasskeyElevationProcedure,
+		func(ctx context.Context, req *connect.Request[leapmuxv1.FinishPasskeyElevationRequest]) (*connect.Response[leapmuxv1.ElevateSessionResponse], error) {
 			handlerCalls++
 			if handlerErr != nil {
 				return nil, handlerErr
 			}
-			return connect.NewResponse(&leapmuxv1.RenamePasskeyResponse{}), nil
+			return connect.NewResponse(&leapmuxv1.ElevateSessionResponse{}), nil
 		},
 		connect.WithInterceptors(NewInterceptor(m)),
 	)
 	mux := http.NewServeMux()
-	mux.Handle(leapmuxv1connect.UserServiceRenamePasskeyProcedure, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mux.Handle(leapmuxv1connect.UserServiceFinishPasskeyElevationProcedure, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if authenticated {
 			r = r.WithContext(auth.WithUser(r.Context(), &auth.UserInfo{ID: userid.MustNew("usr_test123")}))
 		}
@@ -115,31 +118,30 @@ func renamePasskeyClient(t *testing.T, m *Manager, handlerErr error, authenticat
 	return leapmuxv1connect.NewUserServiceClient(server.Client(), server.URL), &handlerCalls
 }
 
-func tryRenamePasskey(t *testing.T, client leapmuxv1connect.UserServiceClient) error {
+func tryFinishPasskeyElevation(t *testing.T, client leapmuxv1connect.UserServiceClient) error {
 	t.Helper()
-	_, err := client.RenamePasskey(context.Background(), connect.NewRequest(&leapmuxv1.RenamePasskeyRequest{
-		Id:           "pk-1",
-		FriendlyName: "Phone",
+	_, err := client.FinishPasskeyElevation(context.Background(), connect.NewRequest(&leapmuxv1.FinishPasskeyElevationRequest{
+		SessionId:      "wa-1",
+		CredentialJson: "{}",
 	}))
 	return err
 }
 
-func tryChangePassword(t *testing.T, client leapmuxv1connect.UserServiceClient) error {
+func tryElevateSession(t *testing.T, client leapmuxv1connect.UserServiceClient) error {
 	t.Helper()
-	_, err := client.ChangePassword(context.Background(), connect.NewRequest(&leapmuxv1.ChangePasswordRequest{
+	_, err := client.ElevateSession(context.Background(), connect.NewRequest(&leapmuxv1.ElevateSessionRequest{
 		CurrentPassword: "wrong",
-		NewPassword:     "whatever1!",
 	}))
 	return err
 }
 
 func TestLimiterAllowsBudgetThenDeniesWithoutCallingHandler(t *testing.T) {
 	m := newTestManager(t, false)
-	upsertLimit(t, m, OpChangePassword, true, 3, 900)
+	upsertLimit(t, m, OpElevation, true, 3, 900)
 
-	client, calls := changePasswordClient(t, m, wrongPasswordError(), true)
+	client, calls := elevateSessionClient(t, m, wrongPasswordError(), true)
 	for i := 1; i <= 3; i++ {
-		err := tryChangePassword(t, client)
+		err := tryElevateSession(t, client)
 		require.Error(t, err, "attempt %d within budget", i)
 		assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err), "attempt %d ran the handler", i)
 	}
@@ -147,7 +149,7 @@ func TestLimiterAllowsBudgetThenDeniesWithoutCallingHandler(t *testing.T) {
 	// 4th attempt: denied before the handler — no more Argon2 spend. The
 	// retry window is measured on the manager's (here frozen) clock, so it
 	// reports the full 900s window, not the real wall clock's past-tense 1s.
-	err := tryChangePassword(t, client)
+	err := tryElevateSession(t, client)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "try again")
@@ -155,62 +157,73 @@ func TestLimiterAllowsBudgetThenDeniesWithoutCallingHandler(t *testing.T) {
 	assert.Equal(t, 3, *calls, "denied attempt must not reach the handler")
 }
 
-func TestLimiterCountsOnlyCurrentPasswordFailures(t *testing.T) {
+func TestLimiterCountsOnlyCredentialFailures(t *testing.T) {
 	m := newTestManager(t, false)
-	upsertLimit(t, m, OpChangePassword, true, 2, 900)
+	upsertLimit(t, m, OpElevation, true, 2, 900)
 
 	// Weak-new-password validation errors must not count.
-	weakClient, _ := changePasswordClient(t, m, connect.NewError(connect.CodeInvalidArgument, errors.New("password too weak")), true)
+	weakClient, _ := elevateSessionClient(t, m, connect.NewError(connect.CodeInvalidArgument, errors.New("password too weak")), true)
 	for i := 0; i < 5; i++ {
-		assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(tryChangePassword(t, weakClient)))
+		assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(tryElevateSession(t, weakClient)))
 	}
 	// Internal errors must not count.
-	internalClient, _ := changePasswordClient(t, m, connect.NewError(connect.CodeInternal, errors.New("db down")), true)
-	assert.Equal(t, connect.CodeInternal, connect.CodeOf(tryChangePassword(t, internalClient)))
+	internalClient, _ := elevateSessionClient(t, m, connect.NewError(connect.CodeInternal, errors.New("db down")), true)
+	assert.Equal(t, connect.CodeInternal, connect.CodeOf(tryElevateSession(t, internalClient)))
 
 	// Only genuine credential failures consume the budget.
-	wrongClient, _ := changePasswordClient(t, m, wrongPasswordError(), true)
+	wrongClient, _ := elevateSessionClient(t, m, wrongPasswordError(), true)
 	for i := 0; i < 2; i++ {
-		assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(tryChangePassword(t, wrongClient)))
+		assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(tryElevateSession(t, wrongClient)))
 	}
-	assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(tryChangePassword(t, wrongClient)))
+	assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(tryElevateSession(t, wrongClient)))
 }
 
 func TestLimiterSuccessResetsWindow(t *testing.T) {
 	m := newTestManager(t, false)
-	upsertLimit(t, m, OpChangePassword, true, 2, 900)
+	upsertLimit(t, m, OpElevation, true, 2, 900)
 
-	wrongClient, _ := changePasswordClient(t, m, wrongPasswordError(), true)
-	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(tryChangePassword(t, wrongClient)))
+	wrongClient, _ := elevateSessionClient(t, m, wrongPasswordError(), true)
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(tryElevateSession(t, wrongClient)))
 
 	// A success wipes the slate while budget remains; the full budget is
 	// available again afterwards.
-	okClient, _ := changePasswordClient(t, m, nil, true)
-	require.NoError(t, tryChangePassword(t, okClient))
+	okClient, _ := elevateSessionClient(t, m, nil, true)
+	require.NoError(t, tryElevateSession(t, okClient))
 	for i := 0; i < 2; i++ {
-		assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(tryChangePassword(t, wrongClient)))
+		assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(tryElevateSession(t, wrongClient)))
 	}
-	assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(tryChangePassword(t, wrongClient)))
+	assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(tryElevateSession(t, wrongClient)))
 }
 
 func TestLimiterWindowExpires(t *testing.T) {
 	m := newTestManager(t, false)
-	upsertLimit(t, m, OpChangePassword, true, 1, 900)
+	upsertLimit(t, m, OpElevation, true, 1, 900)
 
-	client, _ := changePasswordClient(t, m, wrongPasswordError(), true)
-	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(tryChangePassword(t, client)))
-	assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(tryChangePassword(t, client)))
+	client, _ := elevateSessionClient(t, m, wrongPasswordError(), true)
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(tryElevateSession(t, client)))
+	assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(tryElevateSession(t, client)))
 
 	// Advance past the window; the counter self-expires.
 	fakeNow = fakeNow.Add(901 * time.Second)
-	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(tryChangePassword(t, client)))
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(tryElevateSession(t, client)))
 }
 
+// elevateSpec is the routing entry ElevateSession carries: the password arm
+// PROVES the credential the failure window counts, so a success there
+// resets it. Tests that exercise the window itself use this one, because a
+// non-proving entry can never reset and would pin nothing.
+var elevateSpec = procedureSpec{op: OpElevation, provesCredential: true}
+
+// beginElevationSpec is the routing entry BeginPasskeyElevation carries. It
+// mints assertion options and verifies no secret, so it takes an in-flight
+// slot and must NEVER reset the failure window.
+var beginElevationSpec = procedureSpec{op: OpElevation}
+
 // recordCredentialFailure runs one admitted try through complete with a
-// countable failure, the equivalent of one rejected ChangePassword.
+// countable failure, the equivalent of one rejected ElevateSession.
 func recordCredentialFailure(t *testing.T, m *Manager, userID string) {
 	t.Helper()
-	a, allowed, _, err := m.allow(context.Background(), OpChangePassword, userID)
+	a, allowed, _, err := m.allow(context.Background(), elevateSpec, userID)
 	require.NoError(t, err)
 	require.True(t, allowed)
 	m.complete(a, wrongPasswordError())
@@ -221,7 +234,7 @@ func recordCredentialFailure(t *testing.T, m *Manager, userID string) {
 // in the map for the life of the process.
 func TestExpiredWindowEntryIsReclaimed(t *testing.T) {
 	m := newTestManager(t, false)
-	upsertLimit(t, m, OpChangePassword, true, 1, 900)
+	upsertLimit(t, m, OpElevation, true, 1, 900)
 
 	recordCredentialFailure(t, m, "usr_test123")
 	m.windowMu.Lock()
@@ -229,7 +242,7 @@ func TestExpiredWindowEntryIsReclaimed(t *testing.T) {
 	m.windowMu.Unlock()
 
 	fakeNow = fakeNow.Add(901 * time.Second)
-	_, _, _, err := m.allow(context.Background(), OpChangePassword, "usr_test123")
+	_, _, _, err := m.allow(context.Background(), elevateSpec, "usr_test123")
 	require.NoError(t, err)
 	m.windowMu.Lock()
 	assert.Empty(t, m.windows, "expired window entries must be deleted on observation")
@@ -242,7 +255,7 @@ func TestExpiredWindowEntryIsReclaimed(t *testing.T) {
 // lazy delete would ever reach.
 func TestExpiredWindowsAreSweptForAbsentUsers(t *testing.T) {
 	m := newTestManager(t, false)
-	upsertLimit(t, m, OpChangePassword, true, 1, 900)
+	upsertLimit(t, m, OpElevation, true, 1, 900)
 
 	recordCredentialFailure(t, m, "usr_gone")
 	recordCredentialFailure(t, m, "usr_back")
@@ -253,7 +266,7 @@ func TestExpiredWindowsAreSweptForAbsentUsers(t *testing.T) {
 	// Past the earliest window reset: any allow() now sweeps every
 	// expired entry, including usr_gone's, which never returns.
 	fakeNow = fakeNow.Add(901 * time.Second)
-	_, _, _, err := m.allow(context.Background(), OpChangePassword, "usr_back")
+	_, _, _, err := m.allow(context.Background(), elevateSpec, "usr_back")
 	require.NoError(t, err)
 	m.windowMu.Lock()
 	assert.Empty(t, m.windows, "the sweep must drop expired entries of users who never retry")
@@ -265,12 +278,12 @@ func TestExpiredWindowsAreSweptForAbsentUsers(t *testing.T) {
 // calls cannot all pass a failures-only check before any of them lands.
 func TestConcurrentBurstCannotExceedBudget(t *testing.T) {
 	m := newTestManager(t, false)
-	upsertLimit(t, m, OpChangePassword, true, 3, 900)
+	upsertLimit(t, m, OpElevation, true, 3, 900)
 
 	// Three concurrent in-flight attempts (allowed, not yet completed).
 	inFlight := make([]*attempt, 0, 3)
 	for i := 0; i < 3; i++ {
-		a, allowed, _, err := m.allow(context.Background(), OpChangePassword, "usr_test123")
+		a, allowed, _, err := m.allow(context.Background(), elevateSpec, "usr_test123")
 		require.NoError(t, err)
 		require.True(t, allowed, "attempt %d within budget", i+1)
 		inFlight = append(inFlight, a)
@@ -278,7 +291,7 @@ func TestConcurrentBurstCannotExceedBudget(t *testing.T) {
 	// The fourth concurrent attempt is denied even though zero failures
 	// have completed yet; the zero retry duration is the in-flight bound,
 	// not an open window.
-	_, allowed, _, err := m.allow(context.Background(), OpChangePassword, "usr_test123")
+	_, allowed, _, err := m.allow(context.Background(), elevateSpec, "usr_test123")
 	require.NoError(t, err)
 	assert.False(t, allowed, "an in-flight burst must not exceed the budget")
 
@@ -292,7 +305,7 @@ func TestConcurrentBurstCannotExceedBudget(t *testing.T) {
 	assert.Empty(t, m.inFlight, "completed attempts must release their reservations")
 	assert.Empty(t, m.windows, "non-countable errors must not open a failure window")
 	m.windowMu.Unlock()
-	_, allowed, _, err = m.allow(context.Background(), OpChangePassword, "usr_test123")
+	_, allowed, _, err = m.allow(context.Background(), elevateSpec, "usr_test123")
 	require.NoError(t, err)
 	assert.True(t, allowed, "released reservations restore the budget")
 }
@@ -304,18 +317,18 @@ func TestConcurrentBurstCannotExceedBudget(t *testing.T) {
 // only a failures-driven denial reports the window remainder.
 func TestInFlightDrivenDenialReportsZeroRetryAfter(t *testing.T) {
 	m := newTestManager(t, false)
-	upsertLimit(t, m, OpChangePassword, true, 3, 900)
+	upsertLimit(t, m, OpElevation, true, 3, 900)
 
 	recordCredentialFailure(t, m, "usr_test123")
 	recordCredentialFailure(t, m, "usr_test123")
 
 	// A third attempt is admitted and stays in flight: 2 failures + 1
 	// reservation fills the budget of 3.
-	a3, allowed, _, err := m.allow(context.Background(), OpChangePassword, "usr_test123")
+	a3, allowed, _, err := m.allow(context.Background(), elevateSpec, "usr_test123")
 	require.NoError(t, err)
 	require.True(t, allowed)
 
-	_, allowed, retryAfter, err := m.allow(context.Background(), OpChangePassword, "usr_test123")
+	_, allowed, retryAfter, err := m.allow(context.Background(), elevateSpec, "usr_test123")
 	require.NoError(t, err)
 	assert.False(t, allowed, "the in-flight reservation must close the budget")
 	assert.Zero(t, retryAfter, "an in-flight-driven denial owes no failure window")
@@ -323,7 +336,7 @@ func TestInFlightDrivenDenialReportsZeroRetryAfter(t *testing.T) {
 	// Once the failure lands, the denial is failures-driven and reports the
 	// window remainder measured on the frozen clock.
 	m.complete(a3, wrongPasswordError())
-	_, allowed, retryAfter, err = m.allow(context.Background(), OpChangePassword, "usr_test123")
+	_, allowed, retryAfter, err = m.allow(context.Background(), elevateSpec, "usr_test123")
 	require.NoError(t, err)
 	assert.False(t, allowed)
 	assert.Equal(t, 900*time.Second, retryAfter, "a failures-driven denial reports the window remainder")
@@ -335,22 +348,22 @@ func TestInFlightDrivenDenialReportsZeroRetryAfter(t *testing.T) {
 // attempt still holds.
 func TestUnreservedAttemptCompletionReleasesNothing(t *testing.T) {
 	m := newTestManager(t, false)
-	upsertLimit(t, m, OpChangePassword, true, 2, 900)
+	upsertLimit(t, m, OpElevation, true, 2, 900)
 
-	reserved, allowed, _, err := m.allow(context.Background(), OpChangePassword, "usr_test123")
+	reserved, allowed, _, err := m.allow(context.Background(), elevateSpec, "usr_test123")
 	require.NoError(t, err)
 	require.True(t, allowed)
 
 	// The policy flips to disabled mid-flight; the next attempt is admitted
 	// without a reservation.
-	upsertLimit(t, m, OpChangePassword, false, 2, 900)
-	unreserved, allowed, _, err := m.allow(context.Background(), OpChangePassword, "usr_test123")
+	upsertLimit(t, m, OpElevation, false, 2, 900)
+	unreserved, allowed, _, err := m.allow(context.Background(), elevateSpec, "usr_test123")
 	require.NoError(t, err)
 	require.True(t, allowed)
 
 	m.complete(unreserved, wrongPasswordError())
 	m.windowMu.Lock()
-	assert.EqualValues(t, 1, m.inFlight[windowKey{OpChangePassword, "usr_test123"}],
+	assert.EqualValues(t, 1, m.inFlight[windowKey{OpElevation, "usr_test123"}],
 		"an unreserved attempt's completion must not release another attempt's reservation")
 	m.windowMu.Unlock()
 
@@ -360,23 +373,153 @@ func TestUnreservedAttemptCompletionReleasesNothing(t *testing.T) {
 	m.windowMu.Unlock()
 }
 
+// TestNonProvingSuccessKeepsTheFailureWindow pins the guard that makes the
+// guess cap real.
+//
+// Every procedure the operation routes takes an in-flight slot, and most of
+// them verify no secret at all: BeginPasskeyElevation mints assertion
+// options, ChangePassword runs on an already elevated session. If a success
+// on one of those reset the window, an attacker holding a stolen session
+// cookie would clear their own failure count between guesses -- guess,
+// call Begin, guess again -- and the 5-per-window cap on the hub's only
+// credential-guess surface would be unlimited.
+func TestNonProvingSuccessKeepsTheFailureWindow(t *testing.T) {
+	m := newTestManager(t, false)
+	upsertLimit(t, m, OpElevation, true, 2, 900)
+
+	recordCredentialFailure(t, m, "usr_test123")
+
+	// A success on the Begin leg: admitted, completed with no error.
+	begin, allowed, _, err := m.allow(context.Background(), beginElevationSpec, "usr_test123")
+	require.NoError(t, err)
+	require.True(t, allowed)
+	m.complete(begin, nil)
+
+	m.windowMu.Lock()
+	w := m.windows[windowKey{OpElevation, "usr_test123"}]
+	require.NotNil(t, w, "a success that proves nothing must not delete the window")
+	assert.EqualValues(t, 1, w.failures, "the recorded failure must survive")
+	m.windowMu.Unlock()
+
+	// The budget of 2 is therefore spent by one more failure, not two.
+	recordCredentialFailure(t, m, "usr_test123")
+	_, allowed, _, err = m.allow(context.Background(), elevateSpec, "usr_test123")
+	require.NoError(t, err)
+	assert.False(t, allowed, "the cap must hold across a non-proving success")
+}
+
+// TestProvingSuccessResetsTheFailureWindow is the other half: a caller who
+// really presented the secret makes the accumulated failures noise, so the
+// window goes. Without this the guard above would be indistinguishable from
+// "never reset", and a user who mistypes twice and then answers correctly
+// would carry the failures for the rest of the window.
+func TestProvingSuccessResetsTheFailureWindow(t *testing.T) {
+	m := newTestManager(t, false)
+	upsertLimit(t, m, OpElevation, true, 2, 900)
+
+	recordCredentialFailure(t, m, "usr_test123")
+
+	proved, allowed, _, err := m.allow(context.Background(), elevateSpec, "usr_test123")
+	require.NoError(t, err)
+	require.True(t, allowed)
+	m.complete(proved, nil)
+
+	m.windowMu.Lock()
+	assert.Empty(t, m.windows, "a proven credential clears the accumulated failures")
+	m.windowMu.Unlock()
+}
+
+// TestEveryRoutedProcedureReservesASlot pins the OTHER budget the routing
+// carries. The failure window counts only a wrong secret, but every routed
+// procedure runs work that is expensive to repeat -- an Argon2 hash, or a
+// ceremony write that takes SQLite's single writer lock -- so each one must
+// take an in-flight slot. A procedure routed with provesCredential unset
+// still reserves; only the RESET is restricted.
+func TestEveryRoutedProcedureReservesASlot(t *testing.T) {
+	m := newTestManager(t, false)
+	upsertLimit(t, m, OpElevation, true, 2, 900)
+
+	first, allowed, _, err := m.allow(context.Background(), beginElevationSpec, "usr_test123")
+	require.NoError(t, err)
+	require.True(t, allowed)
+	second, allowed, _, err := m.allow(context.Background(), beginElevationSpec, "usr_test123")
+	require.NoError(t, err)
+	require.True(t, allowed)
+
+	_, allowed, _, err = m.allow(context.Background(), beginElevationSpec, "usr_test123")
+	require.NoError(t, err)
+	assert.False(t, allowed, "a non-proving procedure must still reserve against the budget")
+
+	m.complete(first, nil)
+	m.complete(second, nil)
+	m.windowMu.Lock()
+	assert.Empty(t, m.inFlight, "completed attempts release their reservations")
+	m.windowMu.Unlock()
+}
+
+// TestExpensiveMutationsAreRouted pins the set of procedures that must take
+// an in-flight slot, and which of them prove a credential.
+//
+// The map is the whole mechanism: a sensitive procedure that nobody routes
+// runs its Argon2 hash or its ceremony write with no per-user concurrency
+// cap at all, and that is invisible until somebody measures the hub under
+// load. Listing the set here makes a removal fail the suite.
+func TestExpensiveMutationsAreRouted(t *testing.T) {
+	proving := map[string]bool{
+		leapmuxv1connect.UserServiceElevateSessionProcedure:         true,
+		leapmuxv1connect.UserServiceFinishPasskeyElevationProcedure: true,
+		// Everything below runs on an already elevated session, or mints
+		// options, so none of them verifies a secret.
+		leapmuxv1connect.UserServiceBeginPasskeyElevationProcedure:     false,
+		leapmuxv1connect.UserServiceChangePasswordProcedure:            false,
+		leapmuxv1connect.UserServiceBeginPasskeyRegistrationProcedure:  false,
+		leapmuxv1connect.UserServiceFinishPasskeyRegistrationProcedure: false,
+		leapmuxv1connect.UserServiceRenamePasskeyProcedure:             false,
+		leapmuxv1connect.UserServiceDeletePasskeyProcedure:             false,
+		leapmuxv1connect.UserServiceDeactivatePasskeyAuthProcedure:     false,
+	}
+	assert.Len(t, procedureOperations, len(proving),
+		"a procedure added to or removed from the routing map must be reflected here")
+	for procedure, provesCredential := range proving {
+		spec, ok := procedureOperations[procedure]
+		require.True(t, ok, "%s must be routed, or its expensive work runs uncapped", procedure)
+		assert.Equal(t, OpElevation, spec.op, "%s", procedure)
+		assert.Equal(t, provesCredential, spec.provesCredential, "%s", procedure)
+	}
+
+	// The negative half, and it is the half OpElevation's doc has to keep
+	// true. Both of these are elevation-admitted mutations, so a reader who
+	// took "every mutation an elevation admits" at face value would look for
+	// them above -- and both are deliberately absent, because neither runs
+	// Argon2 or a ceremony write. RequestEmailChange is capped instead by
+	// the pending-email mint cooldown, in SQL, on the row.
+	for _, procedure := range []string{
+		leapmuxv1connect.UserServiceRequestEmailChangeProcedure,
+		leapmuxv1connect.UserServiceUnlinkOAuthProviderProcedure,
+	} {
+		_, routed := procedureOperations[procedure]
+		assert.Falsef(t, routed,
+			"%s is not expensive to repeat; routing it means OpElevation's doc must say so too", procedure)
+	}
+}
+
 // TestPanickingHandlerReleasesReservation pins the panic path: net/http
 // recovers a handler panic per connection, so the interceptor must close
 // the reservation on the unwind — a leaked slot would deny the user's
 // every later attempt until hub restart, because nothing sweeps inFlight.
 func TestPanickingHandlerReleasesReservation(t *testing.T) {
 	m := newTestManager(t, false)
-	upsertLimit(t, m, OpChangePassword, true, 1, 900)
+	upsertLimit(t, m, OpElevation, true, 1, 900)
 
 	handler := connect.NewUnaryHandler(
-		leapmuxv1connect.UserServiceChangePasswordProcedure,
-		func(ctx context.Context, req *connect.Request[leapmuxv1.ChangePasswordRequest]) (*connect.Response[leapmuxv1.ChangePasswordResponse], error) {
+		leapmuxv1connect.UserServiceElevateSessionProcedure,
+		func(ctx context.Context, req *connect.Request[leapmuxv1.ElevateSessionRequest]) (*connect.Response[leapmuxv1.ElevateSessionResponse], error) {
 			panic("boom")
 		},
 		connect.WithInterceptors(NewInterceptor(m)),
 	)
 	mux := http.NewServeMux()
-	mux.Handle(leapmuxv1connect.UserServiceChangePasswordProcedure, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mux.Handle(leapmuxv1connect.UserServiceElevateSessionProcedure, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r = r.WithContext(auth.WithUser(r.Context(), &auth.UserInfo{ID: userid.MustNew("usr_test123")}))
 		handler.ServeHTTP(w, r)
 	}))
@@ -384,11 +527,7 @@ func TestPanickingHandlerReleasesReservation(t *testing.T) {
 	t.Cleanup(server.Close)
 	client := leapmuxv1connect.NewUserServiceClient(server.Client(), server.URL)
 
-	_, err := client.ChangePassword(context.Background(), connect.NewRequest(&leapmuxv1.ChangePasswordRequest{
-		CurrentPassword: "wrong",
-		NewPassword:     "whatever1!",
-	}))
-	require.Error(t, err, "the aborted connection surfaces as an error to the client")
+	require.Error(t, tryElevateSession(t, client), "the aborted connection surfaces as an error to the client")
 
 	m.windowMu.Lock()
 	assert.Empty(t, m.inFlight, "a panicking handler must not leak its reservation")
@@ -397,18 +536,18 @@ func TestPanickingHandlerReleasesReservation(t *testing.T) {
 
 	// The budget is whole again: the next attempt reaches the handler
 	// instead of failing with ResourceExhausted.
-	wrongClient, calls := changePasswordClient(t, m, wrongPasswordError(), true)
-	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(tryChangePassword(t, wrongClient)),
+	wrongClient, calls := elevateSessionClient(t, m, wrongPasswordError(), true)
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(tryElevateSession(t, wrongClient)),
 		"the released reservation must re-open the budget")
 	assert.Equal(t, 1, *calls)
 }
 
 func TestKnownOperationsSortedAndEffectiveLimitsOverlay(t *testing.T) {
-	assert.Equal(t, []Operation{OpChangePassword, OpPasskeyManagement}, KnownOperations())
+	assert.Equal(t, []Operation{OpElevation}, KnownOperations())
 
 	// No row: defaults, enabled.
 	m := newTestManager(t, false)
-	key, ok := LimitKey(OpChangePassword)
+	key, ok := LimitKey(OpElevation)
 	require.True(t, ok)
 	v := key.Of(m.set.Snapshot(context.Background()))
 	assert.True(t, v.Enabled)
@@ -434,42 +573,42 @@ func TestKnownOperationsSortedAndEffectiveLimitsOverlay(t *testing.T) {
 
 func TestLimiterDisabledAndSoloBypass(t *testing.T) {
 	m := newTestManager(t, false)
-	upsertLimit(t, m, OpChangePassword, false, 1, 900)
-	client, _ := changePasswordClient(t, m, wrongPasswordError(), true)
+	upsertLimit(t, m, OpElevation, false, 1, 900)
+	client, _ := elevateSessionClient(t, m, wrongPasswordError(), true)
 	for i := 0; i < 10; i++ {
-		assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(tryChangePassword(t, client)))
+		assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(tryElevateSession(t, client)))
 	}
 
 	solo := newTestManager(t, true)
-	soloClient, _ := changePasswordClient(t, solo, wrongPasswordError(), true)
+	soloClient, _ := elevateSessionClient(t, solo, wrongPasswordError(), true)
 	for i := 0; i < 10; i++ {
-		assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(tryChangePassword(t, soloClient)))
+		assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(tryElevateSession(t, soloClient)))
 	}
 }
 
 func TestLimiterDefaultsApplyWithoutRow(t *testing.T) {
 	m := newTestManager(t, false)
-	limits, ok := DefaultLimits(OpChangePassword)
+	limits, ok := DefaultLimits(OpElevation)
 	require.True(t, ok)
 	assert.EqualValues(t, 5, limits.MaxAttempts)
 	assert.EqualValues(t, 900, limits.WindowSeconds)
 
-	client, _ := changePasswordClient(t, m, wrongPasswordError(), true)
+	client, _ := elevateSessionClient(t, m, wrongPasswordError(), true)
 	for i := 0; i < 5; i++ {
-		assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(tryChangePassword(t, client)))
+		assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(tryElevateSession(t, client)))
 	}
-	assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(tryChangePassword(t, client)))
+	assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(tryElevateSession(t, client)))
 }
 
 func TestLimiterUnauthenticatedCallsPassThrough(t *testing.T) {
 	m := newTestManager(t, false)
-	upsertLimit(t, m, OpChangePassword, true, 1, 900)
+	upsertLimit(t, m, OpElevation, true, 1, 900)
 
 	// No user in context: the limiter stands down (in the real chain the
 	// auth interceptor has already rejected the call).
-	client, _ := changePasswordClient(t, m, nil, false)
+	client, _ := elevateSessionClient(t, m, nil, false)
 	for i := 0; i < 3; i++ {
-		require.NoError(t, tryChangePassword(t, client))
+		require.NoError(t, tryElevateSession(t, client))
 	}
 }
 
@@ -480,14 +619,14 @@ func TestLimiterUnauthenticatedCallsPassThrough(t *testing.T) {
 // it to the admin CLI, which would configure a budget nothing enforces).
 func TestProcedureRoutingAndCatalogueAgree(t *testing.T) {
 	assert.NotEmpty(t, procedureOperations, "no procedures are routed; the tripwire is vacuous")
-	for proc, op := range procedureOperations {
-		assert.Containsf(t, defaults, op,
-			"procedure %q routes to operation %q with no defaults entry; every call would fail closed with CodeUnavailable", proc, op)
+	for proc, spec := range procedureOperations {
+		assert.Containsf(t, defaults, spec.op,
+			"procedure %q routes to operation %q with no defaults entry; every call would fail closed with CodeUnavailable", proc, spec.op)
 	}
 	for op := range defaults {
 		routed := false
-		for _, rop := range procedureOperations {
-			if rop == op {
+		for _, spec := range procedureOperations {
+			if spec.op == op {
 				routed = true
 				break
 			}
@@ -497,43 +636,62 @@ func TestProcedureRoutingAndCatalogueAgree(t *testing.T) {
 	}
 }
 
-// TestChangePasswordCountsInvalidReauthProof pins that ChangePassword's
-// budget covers BOTH wrong-secret classes it can return: an invalid current
-// password and an invalid reauth proof (passkey-only accounts step up with a
-// proof). The proof class shipped unrouted once — unlimited retries while
-// the sibling passkey operations were capped.
-func TestChangePasswordCountsInvalidReauthProof(t *testing.T) {
+// TestElevationBudgetIsSharedByBothFactorArms pins that the password arm and
+// the passkey arm spend ONE budget. Two budgets would let an attacker take
+// 2N guesses by alternating, which is the whole reason elevation is a single
+// operation rather than one per procedure.
+func TestElevationBudgetIsSharedByBothFactorArms(t *testing.T) {
 	m := newTestManager(t, false)
-	upsertLimit(t, m, OpChangePassword, true, 2, 900)
+	upsertLimit(t, m, OpElevation, true, 2, 900)
 
-	client, calls := changePasswordClient(t, m, wrongReauthProofError(), true)
-	for i := 0; i < 2; i++ {
-		assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(tryChangePassword(t, client)))
-	}
-	assert.Equal(t, 2, *calls)
-	assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(tryChangePassword(t, client)))
-	assert.Equal(t, 2, *calls, "denied attempt must not reach the handler")
+	passwordClient, passwordCalls := elevateSessionClient(t, m, wrongPasswordError(), true)
+	passkeyClient, passkeyCalls := finishPasskeyElevationClient(t, m, rejectedAssertionError(), true)
+
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(tryElevateSession(t, passwordClient)))
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(tryFinishPasskeyElevation(t, passkeyClient)))
+	assert.Equal(t, 1, *passwordCalls)
+	assert.Equal(t, 1, *passkeyCalls)
+
+	// The budget of 2 is spent -- by one attempt on EACH arm.
+	assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(tryElevateSession(t, passwordClient)))
+	assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(tryFinishPasskeyElevation(t, passkeyClient)))
+	assert.Equal(t, 1, *passwordCalls, "a denied attempt must not reach the handler")
+	assert.Equal(t, 1, *passkeyCalls, "a denied attempt must not reach the handler")
+}
+
+// credentialBearingFields lists every request field through which a user
+// presents something the hub VERIFIES: a password, or a WebAuthn assertion
+// or attestation. Each one is a guess an attacker can repeat, so a procedure
+// carrying one must be rate limited.
+//
+// credential_json is on the list because it is what a passkey ceremony
+// finishes with, and every passkey procedure carries it. Without that entry
+// the walk covers ElevateSession alone -- and it would say so silently,
+// because a shorter walk still passes.
+var credentialBearingFields = map[string]bool{
+	"current_password": true,
+	"credential_json":  true,
 }
 
 // TestCredentialConsumingProceduresAreRouted walks the live user.proto
-// descriptor: every UserService method whose request carries a step-up
-// secret (current_password or reauth_proof) must have a procedureOperations
-// entry. The routing map is hand-maintained; a new credential-consuming RPC
-// that ships unrouted keeps unlimited retries while its siblings are
-// capped, and only a descriptor walk catches the forgotten direction.
+// descriptor: every UserService method whose request carries something the
+// hub verifies must have a procedureOperations entry. The routing map is
+// hand-maintained; a new credential-consuming RPC that ships unrouted keeps
+// unlimited retries while its siblings are capped, and only a descriptor
+// walk catches the forgotten direction.
 func TestCredentialConsumingProceduresAreRouted(t *testing.T) {
 	fd, err := protoregistry.GlobalFiles.FindFileByPath("leapmux/v1/user.proto")
 	require.NoError(t, err, "user.proto descriptor must be registered; import the generated pb package")
 	services := fd.Services()
 	require.Equal(t, 1, services.Len(), "expected exactly the UserService in user.proto")
 	methods := services.Get(0).Methods()
+	covered := 0
 	for i := 0; i < methods.Len(); i++ {
 		method := methods.Get(i)
 		consumesSecret := false
 		fields := method.Input().Fields()
 		for j := 0; j < fields.Len(); j++ {
-			name := string(fields.Get(j).Name())
-			if name == "current_password" || name == "reauth_proof" {
+			if credentialBearingFields[string(fields.Get(j).Name())] {
 				consumesSecret = true
 				break
 			}
@@ -541,12 +699,17 @@ func TestCredentialConsumingProceduresAreRouted(t *testing.T) {
 		if !consumesSecret {
 			continue
 		}
+		covered++
 		procedure := "/" + string(services.Get(0).FullName()) + "/" + string(method.Name())
 		_, routed := procedureOperations[procedure]
 		assert.Truef(t, routed,
-			"UserService.%s carries a step-up secret but has no procedureOperations entry; it ships with unlimited retries (procedure %q)",
+			"UserService.%s carries a credential but has no procedureOperations entry; it ships with unlimited retries (procedure %q)",
 			method.Name(), procedure)
 	}
+	// Non-vacuity: a walk that matched nothing would pass while covering
+	// nothing, which is what a renamed field would silently produce.
+	assert.GreaterOrEqual(t, covered, 3,
+		"the walk found fewer credential-bearing procedures than exist; check credentialBearingFields against user.proto")
 }
 
 func TestValidateLimits(t *testing.T) {
@@ -557,15 +720,19 @@ func TestValidateLimits(t *testing.T) {
 	assert.Error(t, ValidateLimits(Limits{MaxAttempts: 5, WindowSeconds: 100000}))
 }
 
-func TestPasskeyManagementCountsInvalidReauthProof(t *testing.T) {
+// TestElevationRefusalDoesNotSpendTheBudget pins the polarity that matters
+// most after the step-up moved off the per-request secret: being UN-elevated
+// is a precondition failure, not a wrong guess. If it counted, a user whose
+// window simply lapsed would lock themselves out of the very prompt that
+// would fix it.
+func TestElevationRefusalDoesNotSpendTheBudget(t *testing.T) {
 	m := newTestManager(t, false)
-	upsertLimit(t, m, OpPasskeyManagement, true, 2, 900)
+	upsertLimit(t, m, OpElevation, true, 1, 900)
 
-	client, calls := renamePasskeyClient(t, m, wrongReauthProofError(), true)
-	for i := 0; i < 2; i++ {
-		assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(tryRenamePasskey(t, client)))
+	refusal := connect.NewError(connect.CodeFailedPrecondition, errors.New("this action needs a recent sign-in"))
+	client, calls := elevateSessionClient(t, m, refusal, true)
+	for i := 0; i < 5; i++ {
+		assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(tryElevateSession(t, client)))
 	}
-	assert.Equal(t, 2, *calls)
-	assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(tryRenamePasskey(t, client)))
-	assert.Equal(t, 2, *calls, "denied attempt must not reach the handler")
+	assert.Equal(t, 5, *calls, "every attempt must reach the handler; none counted against the budget")
 }

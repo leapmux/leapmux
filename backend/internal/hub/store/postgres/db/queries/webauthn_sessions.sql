@@ -21,18 +21,6 @@ SELECT * FROM webauthn_sessions WHERE id = $1;
 -- name: DeleteWebAuthnSession :exec
 DELETE FROM webauthn_sessions WHERE id = $1;
 
--- name: ConsumeWebAuthnProof :execresult
--- kind is a parameter so the Go constant (webauthn.KindReauthProof) stays
--- the single spelling of what identifies a proof row.
-DELETE FROM webauthn_sessions
-WHERE id = sqlc.arg(id) AND kind = sqlc.arg(kind) AND user_id = sqlc.arg(user_id) AND expires_at > sqlc.arg(now);
-
--- name: GetValidWebAuthnProof :one
--- Peek twin of ConsumeWebAuthnProof: the same validity predicate without
--- the delete, so an admission check and a consume cannot drift apart.
-SELECT * FROM webauthn_sessions
-WHERE id = sqlc.arg(id) AND kind = sqlc.arg(kind) AND user_id = sqlc.arg(user_id) AND expires_at > sqlc.arg(now);
-
 -- name: ConsumeWebAuthnCeremonySession :execresult
 DELETE FROM webauthn_sessions
 WHERE id = sqlc.arg(id) AND kind = sqlc.arg(kind) AND expires_at > sqlc.arg(now);

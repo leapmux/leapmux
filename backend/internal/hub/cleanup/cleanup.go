@@ -54,6 +54,15 @@ func run(ctx context.Context, st store.Store) {
 	// Hard-delete API tokens that have been revoked for longer than the
 	// retention window. Same pattern as workspaces/users.
 	cleanupStep("revoked API tokens", func() (int64, error) { return cs.DeleteRevokedAPITokensBefore(ctx, cutoff) })
+	// A live token whose access expiry passed AND whose refresh window closed
+	// can never authenticate or renew again, so the row only records history.
+	// BOTH legs, because bearer validation reads expires_at alone: an
+	// administrator can issue a credential with a year of access and ninety
+	// days of refresh, and sweeping on the refresh column alone would delete
+	// it while it still worked. It is swept on the SAME retention margin as
+	// the revoked rows, deliberately: a user whose CLI stopped working asks
+	// days later, and the row is what answers them.
+	cleanupStep("expired API tokens", func() (int64, error) { return cs.DeleteExpiredAPITokensBefore(ctx, cutoff) })
 	// Delegation tokens are short-lived and high-churn (one per agent
 	// spawn). Hard-delete revoked rows after the retention window so the
 	// table doesn't grow without bound.

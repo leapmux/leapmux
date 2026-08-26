@@ -19,7 +19,10 @@ func fromDBOAuthState(s gendb.OauthState) *store.OAuthState {
 		State:        s.State,
 		ProviderID:   s.ProviderID,
 		PkceVerifier: s.PkceVerifier,
+		NonceHash:    s.NonceHash,
 		RedirectURI:  s.RedirectUri,
+		Purpose:      s.Purpose,
+		SessionID:    s.SessionID,
 		ExpiresAt:    s.ExpiresAt.Time,
 		CreatedAt:    s.CreatedAt.Time,
 	}
@@ -30,7 +33,10 @@ func (s *oauthStateStore) Create(ctx context.Context, p store.CreateOAuthStatePa
 		State:        p.State,
 		ProviderID:   p.ProviderID,
 		PkceVerifier: p.PkceVerifier,
+		NonceHash:    p.NonceHash,
 		RedirectUri:  p.RedirectURI,
+		Purpose:      p.Purpose,
+		SessionID:    p.SessionID,
 		ExpiresAt:    sqltime.NewMySQLTime(p.ExpiresAt),
 	}))
 }

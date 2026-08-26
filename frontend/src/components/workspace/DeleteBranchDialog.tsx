@@ -7,6 +7,7 @@ import { ConfirmButton } from '~/components/common/ConfirmButton'
 import { labelRow } from '~/components/common/Dialog.css'
 import { Spinner } from '~/components/common/Spinner'
 import { showInfoToast, showWarnToast } from '~/components/common/Toast'
+import { Tooltip } from '~/components/common/Tooltip'
 import { WorkerDialogShell } from '~/components/shell/WorkerDialogShell'
 import { BranchSelect, partitionBranches } from '~/components/workspace/BranchSelect'
 import { resolveStampedBranch } from '~/components/workspace/branchStamp'
@@ -366,26 +367,26 @@ export const DeleteBranchDialog: Component<DeleteBranchDialogProps> = (props) =>
               in flight, and the two paths wait for different things: the
               worktree path checks whether git removes the worktree, the
               branch path runs the delete itself.
-              `title`, not <Tooltip>: a disabled control receives no pointer
-              events, which is the one case the project rule keeps `title`
-              for. The same text also renders in the body above.
-              NOTE: while `title` is set, it BECOMES the button's accessible
-              name, so a role+name locator addresses this button by the reason
-              rather than by "Delete branch". An aria-label would pin the name,
-              but ConfirmButton's label is state ("Confirm?" once armed) and
-              that state must stay in the accessible name. A disabled button
-              can never be armed, so the reason is the better name here. */}
-          <ConfirmButton
-            data-variant="danger"
-            disabled={!canSubmit()}
-            title={removalBlockedReason() || undefined}
-            onClick={handleDelete}
-          >
-            <Show when={submitting.loading()} fallback="Delete branch">
-              <Spinner />
-              {info()?.isWorktree ? 'Checking...' : 'Deleting...'}
-            </Show>
-          </ConfirmButton>
+
+              The blocked reason goes through <Tooltip>, which works on a
+              disabled control and leaves the button its own name. On `title`
+              the reason BECOMES that name, and this button's name is STATE
+              ("Confirm?" once armed) -- so the reason replaced the one thing
+              the name had to carry, and a role+name lookup for "Delete
+              branch" stopped matching. The same text also renders in the body
+              above, for anybody who never hovers. */}
+          <Tooltip text={removalBlockedReason() || undefined}>
+            <ConfirmButton
+              data-variant="danger"
+              disabled={!canSubmit()}
+              onClick={handleDelete}
+            >
+              <Show when={submitting.loading()} fallback="Delete branch">
+                <Spinner />
+                {info()?.isWorktree ? 'Checking...' : 'Deleting...'}
+              </Show>
+            </ConfirmButton>
+          </Tooltip>
         </>
       )}
     >

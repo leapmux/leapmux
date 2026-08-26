@@ -188,3 +188,9 @@ func (s *revocationEventStore) MaxPublishedSeq(ctx context.Context) (int64, erro
 	seq, err := s.conn.q.MaxPublishedRevocationEventSeq(ctx)
 	return seq, mapErr(err)
 }
+
+// SessionWasRevoked implements store.RevocationEventStore.
+func (s *revocationEventStore) SessionWasRevoked(ctx context.Context, sessionID string) (bool, error) {
+	revoked, err := s.conn.q.SessionRevokedEventExists(ctx, sessionID)
+	return revoked, mapErr(err)
+}

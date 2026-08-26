@@ -5,6 +5,7 @@ import { popoverCard } from '~/styles/popover.css'
 import { motion } from '~/styles/tokens'
 import { pointerEvent } from '~/test-support/pointer'
 import { DropdownMenu, DropdownMenuCheckableItem, DropdownMenuItemContent } from './DropdownMenu'
+import { Tooltip } from './Tooltip'
 
 // The jsdom popover stubs (showPopover/hidePopover/togglePopover plus the
 // `:popover-open` matches interceptor) come from vitest.setup.ts, which runs
@@ -659,7 +660,7 @@ describe('dropdownMenuCheckableItem', () => {
     expect(onSelect).toHaveBeenCalledTimes(1)
   })
 
-  it('does not call onSelect while disabled, and exposes the reason', () => {
+  it('does not call onSelect while disabled', () => {
     const onSelect = vi.fn()
     render(() => (
       <DropdownMenuCheckableItem
@@ -667,7 +668,6 @@ describe('dropdownMenuCheckableItem', () => {
         label="Opus"
         checked={false}
         disabled
-        title="This setting is controlled by the agent"
         onSelect={onSelect}
       />
     ))
@@ -681,8 +681,33 @@ describe('dropdownMenuCheckableItem', () => {
     // catches nothing. The paired "calls onSelect when activated" test above is
     // what gives this one its meaning.
     expect(item).toBeDisabled()
-    expect(item).toHaveAttribute('title', 'This setting is controlled by the agent')
     expect(onSelect).not.toHaveBeenCalled()
+  })
+
+  // The item states no reason of its own. It used to take a `title` and put it
+  // on the button, where a reason long enough to be worth reading BECAME the
+  // item's accessible name. The caller wraps the item in a <Tooltip>, which
+  // works on a disabled control and leaves the name alone -- see
+  // `settingsShared`, the one caller that has a reason to give.
+  it('keeps its own accessible name when a caller explains why it is disabled', () => {
+    render(() => (
+      <Tooltip text="This setting is controlled by the agent">
+        <DropdownMenuCheckableItem
+          kind="radio"
+          label="Opus"
+          checked={false}
+          disabled
+          onSelect={() => {}}
+        />
+      </Tooltip>
+    ))
+
+    const item = screen.getByRole('menuitemradio', { name: 'Opus' })
+    expect(item).not.toHaveAttribute('title')
+    const describedBy = item.getAttribute('aria-describedby')
+    expect(describedBy).toBeTruthy()
+    expect(document.getElementById(describedBy!)?.textContent)
+      .toBe('This setting is controlled by the agent')
   })
 
   it('keeps the indicator click-through so the whole row is one hit target', () => {

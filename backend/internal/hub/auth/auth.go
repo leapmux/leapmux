@@ -130,8 +130,19 @@ const userKey contextKey = iota
 // a leaked token cannot pivot off the worker it was issued on.
 //
 // AuthenticatedAt is the timestamp of the stored session or bearer row that
-// authenticated the request. It is retained for auditing and diagnostics;
-// user-wide revocation correctness is based on UserAuthGeneration.
+// authenticated the request. User-wide revocation correctness is based on
+// UserAuthGeneration, not on this field.
+//
+// It is also an authorization input, so it must stay the instant of the
+// authentication and must never track a slide. Every producer that specifies a
+// stored credential reads that row's created_at, and the session slide
+// rewrites last_active_at and expires_at alone. LoadSoloUser stamps the
+// process clock instead, which is safe only because it carries no
+// Credential and the admission below refuses on the credential kind first.
+// service.assertFirstCredentialAuthIsFresh refuses to attach an account's
+// FIRST password or passkey on a session older than a short window, and a
+// slid value would make a stolen cookie permanently fresh for that
+// admission.
 //
 // UserAuthGeneration is the user's persisted credential epoch observed by the
 // credential that authenticated this request. Long-lived channel registration
@@ -142,17 +153,32 @@ const userKey contextKey = iota
 // validation. OpenChannel rejects a request whose session, bearer, or user
 // identity was evicted after this generation, closing the race where a cache
 // hit happens just before the watcher evicts and sweeps current channels.
+//
+// Elevation is the credential's step-up state. A session cookie and a
+// command-line credential both carry one; a delegation bearer and a solo
+// request carry the zero value. Read it through Elevated(now) rather than
+// directly -- see Elevation on why the deadline stays raw here and the
+// predicate takes the current instant.
+//
+// CredentialAdminScope reports whether an API-token credential was minted
+// with hub administration. It lives on UserInfo rather than on
+// CredentialIdentity because that value is compared by value on the hot path
+// (channel and lease indexes key on it), and a second field would change
+// what "same credential" means there. Cookies carry no scope column and
+// leave it false; enforceAdmin admits a session on IsAdmin alone.
 type UserInfo struct {
-	ID                  userid.UserID
-	Username            string
-	IsAdmin             bool
-	Email               string
-	EmailVerified       bool
-	Credential          CredentialIdentity
-	AuthenticatedAt     time.Time
-	CredentialExpiresAt CredentialDeadline
-	UserAuthGeneration  int64
-	AuthGeneration      uint64
+	ID                   userid.UserID
+	Username             string
+	IsAdmin              bool
+	Email                string
+	EmailVerified        bool
+	Credential           CredentialIdentity
+	CredentialAdminScope bool
+	AuthenticatedAt      time.Time
+	CredentialExpiresAt  CredentialDeadline
+	Elevation            Elevation
+	UserAuthGeneration   int64
+	AuthGeneration       uint64
 }
 
 // CredentialCurrent reports whether the credential is still live at now. Nil-safe:
@@ -192,11 +218,11 @@ func MustGetUser(ctx context.Context) (*UserInfo, error) {
 // lock anyone out.
 var ErrInvalidCurrentPassword = errors.New("current password is incorrect")
 
-// ErrInvalidReauthProof wraps passkey-management rejections caused by a
-// missing, expired, or invalid reauth proof (and failed FinishPasskeyReauth
-// assertions). The rate limiter keys on it the same way it keys on
-// ErrInvalidCurrentPassword.
-var ErrInvalidReauthProof = errors.New("invalid or expired reauth proof")
+// ErrInvalidElevationAssertion wraps a failed passkey assertion on the
+// step-up path (FinishPasskeyElevation). The rate limiter keys on it the same
+// way it keys on ErrInvalidCurrentPassword, so the two factors a user can
+// present to elevate share one attempt budget.
+var ErrInvalidElevationAssertion = errors.New("passkey verification failed")
 
 // RevokeAllUserCredentials revokes every active api_tokens and
 // delegation_tokens row for userID and, via RevokeUserTokens, bumps
@@ -435,6 +461,10 @@ func ValidateToken(ctx context.Context, st store.Store, token string) (*UserInfo
 		EmailVerified:       row.EmailVerified,
 		AuthenticatedAt:     row.CreatedAt.UTC(),
 		CredentialExpiresAt: DeadlineAt(row.ExpiresAt.UTC()),
-		UserAuthGeneration:  row.AuthGeneration,
+		// The only producer that fills Elevation. Every other path leaves the
+		// zero value, so "only a session can be elevated" holds by
+		// construction rather than by a check somebody must remember.
+		Elevation:          NewElevation(row.ElevationProvenAt, row.ElevationExpiresAt),
+		UserAuthGeneration: row.AuthGeneration,
 	}, nil
 }

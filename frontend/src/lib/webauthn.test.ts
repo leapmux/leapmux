@@ -1,8 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { PasskeyBlocker } from '~/lib/systemInfo'
 
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   encodeWebAuthnUserId,
   isPasskeyCeremonyCancelled,
+  passkeyBlockerMessage,
   PasskeyCeremonyCancelledError,
   passkeyErrorMessage,
   signalAcceptedPasskeys,
@@ -132,5 +134,36 @@ describe('passkey ceremony error classification', () => {
 
   it('falls back when the failure carries no message', () => {
     expect(passkeyErrorMessage({}, 'Failed to add passkey')).toBe('Failed to add passkey')
+  })
+})
+
+/**
+ * One text for each blocker, and each one names the party that has to act.
+ *
+ * The three remedies go to three different people, so a shared or missing
+ * sentence is a defect the surfaces cannot catch: they render whatever this
+ * returns. The copy this map replaced named an administrator for every
+ * blocker, which is wrong advice for both that the browser raises.
+ */
+describe('passkeyBlockerMessage', () => {
+  const blockers: PasskeyBlocker[] = ['insecure-context', 'no-webauthn', 'origin-not-allowed']
+
+  it('gives each blocker its own non-empty sentence', () => {
+    const texts = blockers.map(passkeyBlockerMessage)
+    for (const text of texts)
+      expect(text.length).toBeGreaterThan(0)
+    expect(new Set(texts).size).toBe(blockers.length)
+  })
+
+  it('sends only the hub blocker to an administrator', () => {
+    expect(passkeyBlockerMessage('origin-not-allowed')).toMatch(/administrator/i)
+    expect(passkeyBlockerMessage('insecure-context')).not.toMatch(/administrator/i)
+    expect(passkeyBlockerMessage('no-webauthn')).not.toMatch(/administrator/i)
+  })
+
+  it('names the repair each party can make', () => {
+    expect(passkeyBlockerMessage('insecure-context')).toMatch(/HTTPS/)
+    expect(passkeyBlockerMessage('no-webauthn')).toMatch(/browser/i)
+    expect(passkeyBlockerMessage('origin-not-allowed')).toMatch(/address/i)
   })
 })

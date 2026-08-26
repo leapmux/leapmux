@@ -19,6 +19,7 @@ func fromDBCLIAuthorizationCode(c gendb.CliAuthorizationCode) store.CLIAuthoriza
 		UserID:        c.UserID,
 		CodeChallenge: c.CodeChallenge,
 		DeviceName:    c.DeviceName,
+		AdminScope:    c.AdminScope,
 		CreatedAt:     c.CreatedAt.Time,
 		ExpiresAt:     c.ExpiresAt.Time,
 		ConsumedAt:    c.ConsumedAt.Ptr(),
@@ -31,6 +32,7 @@ func (s *cliAuthorizationCodeStore) Create(ctx context.Context, p store.CreateCL
 		UserID:        p.UserID.String(),
 		CodeChallenge: p.CodeChallenge,
 		DeviceName:    p.DeviceName,
+		AdminScope:    p.AdminScope,
 		ExpiresAt:     sqltime.NewMySQLTime(p.ExpiresAt),
 	}))
 }

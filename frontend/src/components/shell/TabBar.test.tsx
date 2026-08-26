@@ -885,7 +885,11 @@ describe('tabBar mobile variant', () => {
     fireEvent.click(about)
     expect(setShowAboutDialog).toHaveBeenCalledWith(true)
     fireEvent.click(prefs)
-    expect(openPreferences).toHaveBeenCalledWith('appearance')
+    // No category: the entry points ask for the dialog, and the dialog's own
+    // default decides which section that lands on (DEFAULT_NAV_GROUP_ID).
+    // Spelling a section out here is how the menu and the section order came
+    // to disagree.
+    expect(openPreferences).toHaveBeenCalledWith()
   })
 
   it('hides Log out from the mobile App menu in solo mode', () => {

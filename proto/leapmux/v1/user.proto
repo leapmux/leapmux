@@ -24,9 +24,11 @@ service UserService {
   // a fresh 6-character code with a new 30-minute TTL replaces it. Use
   // this when the original mail was lost or never arrived.
   rpc ResendVerificationEmail(ResendVerificationEmailRequest) returns (ResendVerificationEmailResponse);
-  // Change the current user's password. When password_set is false
-  // (OAuth-only with no passkeys), current_password may be empty. When
-  // password_set is false but passkeys exist, reauth_proof is required.
+  // Change the current user's password. Requires an elevated session,
+  // except on an account that has neither a password nor a passkey -- that
+  // account has nothing to elevate WITH, so it falls to the
+  // first-credential rule instead (a recent sign-in plus a durable
+  // identity).
   rpc ChangePassword(ChangePasswordRequest) returns (ChangePasswordResponse);
   // Unlink an OAuth provider from the current user's account.
   rpc UnlinkOAuthProvider(UnlinkOAuthProviderRequest) returns (UnlinkOAuthProviderResponse);
@@ -43,15 +45,41 @@ service UserService {
   rpc ResetUserSetting(ResetUserSettingRequest) returns (ResetUserSettingResponse);
   // Get the current timeout configuration.
   rpc GetTimeouts(GetTimeoutsRequest) returns (GetTimeoutsResponse);
+  // Session elevation ("sudo mode"). One proven factor admits every
+  // sensitive action for a window, and each successful action slides that
+  // window forward, so an uninterrupted work session answers one prompt.
+  // A handler that needs elevation and does not have it answers
+  // FailedPrecondition -- never Unauthenticated, which the frontend reads
+  // as "signed out".
+  //
+  // ElevateSession proves a password. BeginPasskeyElevation /
+  // FinishPasskeyElevation prove a passkey; both arms answer with the SAME
+  // field, elevation_expires_at, so a client has one success path. (The
+  // two response messages are separate because a proto response type may
+  // serve only one RPC.) An
+  // OAuth-only account elevates through the OAuth re-authentication leg at
+  // /auth/oauth/<provider>/reauth, which is a browser redirect rather than
+  // an RPC.
+  rpc ElevateSession(ElevateSessionRequest) returns (ElevateSessionResponse);
+  rpc BeginPasskeyElevation(BeginPasskeyElevationRequest) returns (BeginPasskeyElevationResponse);
+  rpc FinishPasskeyElevation(FinishPasskeyElevationRequest) returns (FinishPasskeyElevationResponse);
+  // End the elevation immediately, without waiting for the window.
+  rpc DropElevation(DropElevationRequest) returns (DropElevationResponse);
   // Passkey management
   rpc BeginPasskeyRegistration(BeginPasskeyRegistrationRequest) returns (BeginPasskeyRegistrationResponse);
   rpc FinishPasskeyRegistration(FinishPasskeyRegistrationRequest) returns (FinishPasskeyRegistrationResponse);
-  rpc BeginPasskeyReauth(BeginPasskeyReauthRequest) returns (BeginPasskeyReauthResponse);
-  rpc FinishPasskeyReauth(FinishPasskeyReauthRequest) returns (FinishPasskeyReauthResponse);
   rpc ListPasskeys(ListPasskeysRequest) returns (ListPasskeysResponse);
   rpc RenamePasskey(RenamePasskeyRequest) returns (RenamePasskeyResponse);
   rpc DeletePasskey(DeletePasskeyRequest) returns (DeletePasskeyResponse);
   rpc DeactivatePasskeyAuth(DeactivatePasskeyAuthRequest) returns (DeactivatePasskeyAuthResponse);
+  // The caller's own CLI credentials, and self-service revocation.
+  //
+  // Neither requires an elevated session, deliberately. Listing returns metadata
+  // only, and revoking a credential can only REDUCE access -- demanding a
+  // fresh factor from somebody who believes a token is stolen is the wrong
+  // failure mode.
+  rpc ListMyAPITokens(ListMyAPITokensRequest) returns (ListMyAPITokensResponse);
+  rpc RevokeMyAPIToken(RevokeMyAPITokenRequest) returns (RevokeMyAPITokenResponse);
 }
 
 message UpdateProfileRequest {
@@ -94,11 +122,7 @@ message ResendVerificationEmailResponse {
 }
 
 message ChangePasswordRequest {
-  string current_password = 1;
-  string new_password = 2;
-  // Required when the account has no password yet but has passkeys
-  // (passkey-only). Consumed like other passkey management proofs.
-  string reauth_proof = 3;
+  string new_password = 1;
 }
 
 message ChangePasswordResponse {}
@@ -141,10 +165,7 @@ message GetTimeoutsResponse {
   int32 worktree_create_timeout_seconds = 3;
 }
 
-message BeginPasskeyRegistrationRequest {
-  string current_password = 1;
-  string reauth_proof = 2;
-}
+message BeginPasskeyRegistrationRequest {}
 
 message BeginPasskeyRegistrationResponse {
   string session_id = 1;
@@ -157,31 +178,49 @@ message FinishPasskeyRegistrationRequest {
   string session_id = 1;
   string credential_json = 2;
   string friendly_name = 3;
-  string current_password = 4;
-  string reauth_proof = 5;
 }
 
 message FinishPasskeyRegistrationResponse {
   PasskeyInfo passkey = 1;
 }
 
-message BeginPasskeyReauthRequest {}
+message ElevateSessionRequest {
+  string current_password = 1;
+}
 
-message BeginPasskeyReauthResponse {
+message ElevateSessionResponse {
+  // When the elevation lapses. Always set on success.
+  //
+  // A timestamp, not a boolean: a client that received "elevated: true"
+  // could not tell whether the window already closed, so it would either
+  // re-prompt on every render or let the user start an action the hub is
+  // about to refuse.
+  google.protobuf.Timestamp elevation_expires_at = 1;
+}
+
+message BeginPasskeyElevationRequest {}
+
+message BeginPasskeyElevationResponse {
   string session_id = 1;
   string options_json = 2;
   // Relying party ID for this ceremony's origin; echo it in Signal API calls.
   string rp_id = 3;
 }
 
-message FinishPasskeyReauthRequest {
+message FinishPasskeyElevationRequest {
   string session_id = 1;
   string credential_json = 2;
 }
 
-message FinishPasskeyReauthResponse {
-  string reauth_proof = 1;
+message FinishPasskeyElevationResponse {
+  // The same field ElevateSessionResponse carries, with the same meaning:
+  // one success shape for both factor arms.
+  google.protobuf.Timestamp elevation_expires_at = 1;
 }
+
+message DropElevationRequest {}
+
+message DropElevationResponse {}
 
 message ListPasskeysRequest {}
 
@@ -206,10 +245,6 @@ message PasskeyInfo {
 message RenamePasskeyRequest {
   string id = 1;
   string friendly_name = 2;
-  // Required when password_set is true.
-  string current_password = 3;
-  // Required when password_set is false (passkey step-up).
-  string reauth_proof = 4;
 }
 
 message RenamePasskeyResponse {
@@ -218,17 +253,53 @@ message RenamePasskeyResponse {
 
 message DeletePasskeyRequest {
   string id = 1;
-  string current_password = 2;
-  string reauth_proof = 3;
-  string new_password = 4;
+  // Required only when this is the account's last passkey and it has no
+  // password: removing it would otherwise leave no way to sign in.
+  string new_password = 2;
 }
 
 message DeletePasskeyResponse {}
 
 message DeactivatePasskeyAuthRequest {
-  string current_password = 1;
-  string reauth_proof = 2;
-  string new_password = 3;
+  // Required only on a passkey-only account; see DeletePasskeyRequest.
+  string new_password = 1;
 }
 
 message DeactivatePasskeyAuthResponse {}
+
+// MyAPIToken is one of the caller's own CLI credentials. It carries
+// metadata only -- no secret and no hash ever leaves the store layer.
+message MyAPIToken {
+  string id = 1;
+  string client_type = 2;
+  string client_name = 3;
+  google.protobuf.Timestamp created_at = 4;
+  google.protobuf.Timestamp last_used_at = 5;
+  // When the token stops being able to refresh itself, which is when the
+  // device must sign in again. The shorter access-token expiry is not
+  // reported: it renews itself and would read as "expiring today" on a
+  // credential with months left.
+  google.protobuf.Timestamp refresh_expires_at = 6;
+  // Whether this credential may administer the hub.
+  bool admin_scope = 7;
+  // True for the credential making THIS call, so a client can warn before
+  // the user revokes the device they are on. Always false when the caller
+  // is a browser session.
+  bool current = 8;
+}
+
+message ListMyAPITokensRequest {
+  int64 limit = 1;
+  string cursor = 2;
+}
+
+message ListMyAPITokensResponse {
+  repeated MyAPIToken tokens = 1;
+  string next_cursor = 2;
+}
+
+message RevokeMyAPITokenRequest {
+  string id = 1;
+}
+
+message RevokeMyAPITokenResponse {}

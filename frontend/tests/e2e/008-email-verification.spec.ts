@@ -11,7 +11,7 @@ import {
   waitForEmailEnabled,
 } from './helpers/api'
 import { withCaptureSmtp } from './helpers/mail'
-import { readSessionCookie, signUpViaUI, solveCaptchaViaUI } from './helpers/ui'
+import { loginViaToken, openAccountSettings, readSessionCookie, signUpViaUI, solveCaptchaViaUI } from './helpers/ui'
 
 function hubDataDir(dataDir: string): string {
   return join(dataDir, 'hub')
@@ -134,6 +134,47 @@ test.describe('Email verification', () => {
       await solveCaptchaViaUI(page)
       await page.getByRole('button', { name: 'Sign in' }).click()
       await expect(page).toHaveURL(/\/verify-email/)
+    })
+  })
+})
+
+/**
+ * The account panel points an unverified address at `/verify-email` with the
+ * router's own `<A>`, and that link renders only on a hub with SMTP
+ * configured and an address nobody confirmed.
+ *
+ * The app mounts its dialogs beside the route outlet. Mounted OUTSIDE the
+ * router they had no router context, so `<A>` threw and the whole app went to
+ * its error boundary the moment this row appeared -- with the Preferences
+ * dialog never opening and a flood of "email verification required" toasts as
+ * the only clue. Both halves are needed to reach it, which is why it sat
+ * unnoticed.
+ */
+test.describe('the account panel on an unverified address', () => {
+  test('offers verification without tearing the app down', async ({ page, leapmuxServer }) => {
+    await clearSmtpViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken)
+
+    // Signed up BEFORE SMTP: the account lands verified-by-absence, and the
+    // hub starts refusing it only once the relay is configured below.
+    const username = `acct-verify-${Date.now()}`
+    const cookie = await signUpViaAPI(
+      leapmuxServer.hubUrl,
+      username,
+      'password123',
+      'Account Verify',
+      `${username}@test.local`,
+    )
+
+    await withCaptureSmtp(leapmuxServer, async () => {
+      await loginViaToken(page, cookie)
+      await page.goto('/')
+      const prefs = await openAccountSettings(page)
+
+      await expect(prefs.getByRole('link', { name: 'Enter the code' })).toBeVisible()
+      await expect(prefs.getByRole('button', { name: 'Resend code' })).toBeVisible()
+      // The app's error boundary, which the crash rendered in place of
+      // everything else.
+      await expect(page.getByRole('heading', { name: 'Uncaught Error' })).toHaveCount(0)
     })
   })
 })

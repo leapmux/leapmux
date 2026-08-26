@@ -637,7 +637,11 @@ func (w *Watcher) applyEventUnlocked(event store.PublishedRevocationEvent) {
 // watcher never treats event application as fatal.
 func (w *Watcher) applyEvent(event store.PublishedRevocationEvent) {
 	switch event.Event.Kind {
-	case store.RevocationEventKindSession:
+	// A sign-out and an administrator's revoke END the session the same
+	// way, so both close its streams here. They differ only in the durable
+	// record they leave, which a step-up mutation reads under the user-auth
+	// lock; see store.RevocationEventKindSessionRevoked.
+	case store.RevocationEventKindSession, store.RevocationEventKindSessionRevoked:
 		w.applySessionEvent(event.Event)
 	case store.RevocationEventKindAPIToken:
 		w.applyTokenEvent(auth.BearerKindAPI, event.Event)

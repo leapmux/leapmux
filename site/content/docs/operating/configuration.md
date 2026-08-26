@@ -231,7 +231,7 @@ See [Accounts & Authentication](/docs/using/accounts/) for sign-up, passkeys, ve
 
 > **Note:** Email verification is not a separate setting. Once the `smtp` block is fully configured (`host` **and** `from_address`), the hub requires verification for new non-admin sign-ups and exposes forgot-password / worker registration email features. Removing or disabling SMTP turns verification off at runtime.
 >
-> **SMTP-enable transition:** users who signed up while SMTP was off keep `email_verified=false` in the database. When an operator later configures SMTP, those accounts are required to verify on the next request until they via `/verify-email` (ResendVerificationEmail issues a pending code against the stored primary email). No data migration is required. Admins stay exempt and are always stored as verified.
+> **SMTP-enable transition:** users who signed up while SMTP was off keep `email_verified=false` in the database. When an operator later configures SMTP, those accounts are required to verify on the next request until they do so via `/verify-email`. No data migration is required. Administrators stay exempt at the sign-in gate, but their address is stored unverified like anybody else's — the flag records only what somebody confirmed, and an unverified address still cannot receive a password-reset link.
 
 ### Bot protection (captcha & rate limits)
 
@@ -244,7 +244,7 @@ leapmux control admin captcha set --provider turnstile --site-key 0x4AAAA... --s
 leapmux control admin rate-limit list
 ```
 
-Out of the box, with no configuration at all: captcha is **enabled** with the built-in ALTCHA provider at `PBKDF2/SHA-256` cost `10000` (challenges expire after 20 minutes), and `change-password` is limited to 5 failed attempts per 15 minutes per user. Solo mode enforces neither.
+Out of the box, with no configuration at all: captcha is **enabled** with the built-in ALTCHA provider at `PBKDF2/SHA-256` cost `10000` (challenges expire after 20 minutes), and `elevation` — failed attempts to verify your identity for a sensitive account change, see [Session elevation](/docs/operating/security/#session-elevation) — is limited to 5 failed attempts per 15 minutes per user. Solo mode enforces neither, and ALTCHA runs only where a browser can solve it and somebody other than you can reach the Hub — see **When ALTCHA runs** below.
 
 Selecting Google reCAPTCHA v3 or Cloudflare Turnstile needs its site key and its secret, because the Hub refuses a selected provider whose key pair is incomplete. Pass both in the same `captcha set` invocation, as the example above does, or store them first and select the provider after. The Preferences dialog's Bot Protection panel shows every provider's key fields at all times for the same reason: an operator fills a provider in, then switches to it.
 
@@ -253,7 +253,19 @@ A few caveats before you change defaults:
 - **Captcha cost** is the per-derivation iteration count, and the browser performs ~256 derivations per solve — total work scales as ~256 × cost. Raising it multiplies bot cost and your users' wait time equally, so large values mostly punish humans. The challenge-issuing endpoint is itself unauthenticated and costs the Hub one HMAC per challenge (the solver does the expensive side), so issuance stays cheap even at high costs.
 - **External providers verify online and uncapped**: every login/signup attempt with a non-empty token makes one siteverify call to Google or Cloudflare with no per-client throttle, so scripted garbage tokens can spend the operator's siteverify quota. Disabling captcha removes that egress but leaves the unauthenticated procedures limited only by Argon2 cost and the honeypot. The built-in ALTCHA provider has no egress and self-throttles through the client-side proof-of-work.
 
-**ALTCHA needs a secure context** (HTTPS, or localhost / `127.0.0.1` / `*.localhost`): its solvers use WebCrypto (`SubtleCrypto`), which browsers withhold on plain HTTP from another machine. On such an origin the Hub runtime-disables ALTCHA automatically — `GetSystemInfo` reports captcha off, no challenge is issued, and Login/SignUp skip verification — without writing `captcha.enabled`. The stored setting stays on so switching to HTTPS (or to Turnstile / reCAPTCHA v3, which both work on plain HTTP) restores protection without an admin re-enable. The honeypot check still runs. Put TLS in front when you want ALTCHA on a non-localhost deployment.
+**When ALTCHA runs.** The Hub requires the built-in provider only where it can both work and matter. Two conditions, and both must hold:
+
+1. **A browser can run the widget.** ALTCHA's solver uses WebCrypto (`SubtleCrypto`), which browsers supply only in a secure context: HTTPS, or plain HTTP on localhost / `127.0.0.1` / `*.localhost`.
+2. **Somebody other than you can reach the Hub.** ALTCHA counters automated sign-up and sign-in abuse. A Hub published at a loopback address, or published nowhere at all, has no such audience, so the proof of work costs your own sign-in and buys nothing.
+
+The Hub checks both conditions against its own configuration, reading two settings in order:
+
+1. `public_url`, when set. This is the browser-facing URL you published, and the setting to use behind a TLS-terminating reverse proxy. ALTCHA runs when that URL is a secure context and its host is not loopback.
+2. `secure_cookies`, when `public_url` is unset. It means the Hub itself is served over HTTPS, and a Hub with a certificate is a Hub somebody reaches.
+
+With neither setting the Hub serves plain HTTP, so an **unpublished Hub runs no ALTCHA** — including the first-run setup form. When ALTCHA is off, no challenge is issued and sign-in and sign-up skip verification, but the Hub does not write `captcha.enabled`: the stored setting keeps its value, so publishing the Hub restores protection with no admin re-enable. The honeypot check still runs. The gate never restricts reCAPTCHA v3 or Turnstile, which both work on plain HTTP pages.
+
+**A Hub that browsers really reach by a LAN address or a hostname must set `public_url`** — to turn ALTCHA *on*. Set it to the URL your users type, and serve that URL over HTTPS. `public_url` is already what mail links, the CLI login endpoints, and passkey sign-in need on such a deployment. Publish a plain-HTTP LAN URL and the Hub keeps ALTCHA down by itself, because no browser there could solve a challenge.
 
 See [Captcha](/docs/operating/control-cli/#captcha) and [Rate limits](/docs/operating/control-cli/#rate-limits) in the Remote Control CLI chapter for the full flag reference.
 

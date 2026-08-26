@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from '@solidjs/testing-library'
+import { createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as gesture from './contextMenuGesture'
 import { dismissActiveTooltip, Tooltip } from './Tooltip'
@@ -352,5 +353,126 @@ describe('tooltip', () => {
 
     dismissActiveTooltip()
     expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+  })
+})
+
+/**
+ * A disabled control, which is the case `title` used to serve.
+ *
+ * A `title` long enough to state a reason BECOMES the control's accessible
+ * name, so a screen reader announced the remedy where the label belongs and
+ * every by-name lookup stopped matching. The tooltip has to cover the case
+ * itself, or the ban on `title` in `eslint.config.ts` takes away the only
+ * route these controls had.
+ */
+describe('tooltip on a disabled control', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    HTMLElement.prototype.showPopover = vi.fn()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  const wrapperOf = (el: Element): HTMLElement => el.parentElement!
+
+  /**
+   * Let the MutationObserver deliver.
+   *
+   * The initial state is read synchronously when the target resolves, so only
+   * a CHANGE lags -- by one microtask, which no pointer can beat.
+   */
+  const flushAttributeChange = () => Promise.resolve()
+
+  it('leaves the control its own accessible name', () => {
+    render(() => (
+      <Tooltip text="Open the hub over HTTPS to add a passkey.">
+        <button type="button" disabled>Add passkey</button>
+      </Tooltip>
+    ))
+
+    // The name is the LABEL. This is the whole defect: with the reason on
+    // `title`, this lookup found nothing and the name was the reason.
+    const button = screen.getByRole('button', { name: 'Add passkey' })
+    expect(button).not.toHaveAttribute('title')
+    expect(button).not.toHaveAttribute('aria-label')
+  })
+
+  // A disabled control takes no focus, so `focusin` never fires and the
+  // tooltip can only ever open under a pointer. The description is the only
+  // route a screen-reader user has, so it does not wait for the tooltip.
+  it('describes the control for as long as it is disabled', () => {
+    render(() => (
+      <Tooltip text="Open the hub over HTTPS to add a passkey.">
+        <button type="button" disabled>Add passkey</button>
+      </Tooltip>
+    ))
+
+    const button = screen.getByRole('button', { name: 'Add passkey' })
+    const describedBy = button.getAttribute('aria-describedby')
+    expect(describedBy).toBeTruthy()
+    const description = document.getElementById(describedBy!)
+    expect(description?.textContent).toBe('Open the hub over HTTPS to add a passkey.')
+  })
+
+  // The wrapper is `display: contents` everywhere else, which puts it outside
+  // the box tree and therefore outside the hit test -- so it would never see
+  // the pointer that the disabled child itself refuses.
+  it('gives the wrapper a box, and takes it back when the control is enabled', async () => {
+    const [disabled, setDisabled] = createSignal(true)
+    render(() => (
+      <Tooltip text="Busy">
+        <button type="button" disabled={disabled()}>Save</button>
+      </Tooltip>
+    ))
+
+    const button = screen.getByRole('button', { name: 'Save' })
+    expect(wrapperOf(button).style.display).toBe('inline-flex')
+
+    // Reactive, because `disabled` moves while the tooltip stays mounted: a
+    // button is disabled only while its request is in flight. A read at mount
+    // would leave the wrapper boxless for a control that became disabled a
+    // tick later.
+    setDisabled(false)
+    await flushAttributeChange()
+    expect(wrapperOf(button).style.display).toBe('contents')
+    expect(button).not.toHaveAttribute('aria-describedby')
+
+    setDisabled(true)
+    await flushAttributeChange()
+    expect(wrapperOf(button).style.display).toBe('inline-flex')
+    expect(button.getAttribute('aria-describedby')).toBeTruthy()
+  })
+
+  it('opens from the wrapper, which is what the pointer can reach', () => {
+    render(() => (
+      <Tooltip text="Open the hub over HTTPS to add a passkey.">
+        <button type="button" disabled>Add passkey</button>
+      </Tooltip>
+    ))
+
+    const wrapper = wrapperOf(screen.getByRole('button', { name: 'Add passkey' }))
+    fireEvent.mouseEnter(wrapper)
+    vi.advanceTimersByTime(700)
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('Open the hub over HTTPS')
+
+    fireEvent.mouseLeave(wrapper)
+    vi.advanceTimersByTime(100)
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+  })
+
+  // `aria-disabled` takes pointer events of its own, so it needs no wrapper
+  // box -- but it still reads as unavailable, so it is still owed the reason.
+  it('describes an aria-disabled control too', () => {
+    render(() => (
+      <Tooltip text="Not while the worktree is dirty.">
+        <button type="button" aria-disabled="true">Switch branch</button>
+      </Tooltip>
+    ))
+
+    const button = screen.getByRole('button', { name: 'Switch branch' })
+    expect(button.getAttribute('aria-describedby')).toBeTruthy()
   })
 })

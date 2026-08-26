@@ -23,6 +23,8 @@ func fromDBDeviceAuthorization(d gendb.DeviceAuthorization) store.DeviceAuthoriz
 		Approved:        int64(d.Approved),
 		LastPolledAt:    d.LastPolledAt.Ptr(),
 		IntervalSeconds: int64(d.IntervalSeconds),
+		AdminScope:      d.AdminScope,
+		ElevateTokenID:  d.ElevateTokenID.String,
 		CreatedAt:       d.CreatedAt.Time,
 		ExpiresAt:       d.ExpiresAt.Time,
 		ConsumedAt:      d.ConsumedAt.Ptr(),
@@ -36,6 +38,7 @@ func (s *deviceAuthorizationStore) Create(ctx context.Context, p store.CreateDev
 		DeviceName:      p.DeviceName,
 		IntervalSeconds: int32(p.IntervalSeconds),
 		ExpiresAt:       sqltime.NewMySQLTime(p.ExpiresAt),
+		ElevateTokenID:  sqlutil.NullNonEmpty(p.ElevateTokenID),
 	}))
 }
 
@@ -70,6 +73,7 @@ func (s *deviceAuthorizationStore) Approve(ctx context.Context, p store.ApproveD
 	return rowsAffected(s.conn.q.ApproveDeviceAuthorization(ctx, gendb.ApproveDeviceAuthorizationParams{
 		UserID:     sqlutil.NullUserID(p.UserID),
 		DeviceCode: p.DeviceCode,
+		AdminScope: p.AdminScope,
 		Now:        sqltime.NewMySQLTime(now),
 	}))
 }
@@ -85,9 +89,10 @@ func (s *deviceAuthorizationStore) ApproveByUserCode(ctx context.Context, p stor
 		return 0, store.ErrInvalidArgument
 	}
 	return rowsAffected(s.conn.q.ApproveDeviceAuthorizationByUserCode(ctx, gendb.ApproveDeviceAuthorizationByUserCodeParams{
-		UserID:   sqlutil.NullUserID(p.UserID),
-		UserCode: p.UserCode,
-		Now:      sqltime.NewMySQLTime(now),
+		UserID:     sqlutil.NullUserID(p.UserID),
+		UserCode:   p.UserCode,
+		AdminScope: p.AdminScope,
+		Now:        sqltime.NewMySQLTime(now),
 	}))
 }
 

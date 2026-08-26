@@ -251,8 +251,6 @@ export interface DropdownMenuCheckableItemProps {
   'label': string
   'checked': boolean
   'disabled'?: boolean
-  /** Hover text, typically the reason the item is disabled. */
-  'title'?: string
   'data-testid'?: string
   /**
    * Rendered inside the button, between the checked indicator and the label.
@@ -293,7 +291,6 @@ export function DropdownMenuCheckableItem(props: DropdownMenuCheckableItemProps)
       role={props.kind === 'checkbox' ? 'menuitemcheckbox' : 'menuitemradio'}
       aria-checked={props.checked}
       disabled={props.disabled}
-      title={props.title}
       data-testid={props['data-testid']}
       // The guard is unreachable while the button carries the native `disabled`
       // attribute above -- no engine dispatches a click on a disabled element,

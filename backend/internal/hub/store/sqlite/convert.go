@@ -176,6 +176,12 @@ func listAllAPITokensParams(clientType, cursor string, limit int64) (gendb.ListA
 	})
 }
 
+func listAPITokensByUserParams(userID, clientType, cursor string, limit int64) (gendb.ListAPITokensByUserParams, error) {
+	return withCursor(cursor, limit, func(ct sqltime.SQLiteNullTime, cid sql.NullString, fl int64) gendb.ListAPITokensByUserParams {
+		return gendb.ListAPITokensByUserParams{UserID: userID, ClientType: clientType, CursorTime: ct, CursorID: cid, Limit: fl}
+	})
+}
+
 func listAllAPITokensByUserParams(userID, clientType, cursor string, limit int64) (gendb.ListAllAPITokensByUserParams, error) {
 	return withCursor(cursor, limit, func(ct sqltime.SQLiteNullTime, cid sql.NullString, fl int64) gendb.ListAllAPITokensByUserParams {
 		return gendb.ListAllAPITokensByUserParams{UserID: userID, ClientType: clientType, CursorTime: ct, CursorID: cid, Limit: fl}

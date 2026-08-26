@@ -1,6 +1,6 @@
 import type { SettingValue } from '~/generated/leapmux/v1/settings_pb'
 import { createSignal } from 'solid-js'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createAdminSettingsStore } from './adminSettings.store'
 
@@ -8,10 +8,13 @@ const listSettings = vi.hoisted(() => vi.fn())
 const updateSetting = vi.hoisted(() => vi.fn())
 const updateSettingSecret = vi.hoisted(() => vi.fn())
 const resetSetting = vi.hoisted(() => vi.fn())
+const loadSystemInfo = vi.hoisted(() => vi.fn(() => Promise.resolve()))
 
 vi.mock('~/api/clients', () => ({
   adminSettingsClient: { listSettings, updateSetting, updateSettingSecret, resetSetting },
 }))
+
+vi.mock('~/lib/systemInfo', () => ({ loadSystemInfo }))
 
 function value(key: string, effectiveJson: string, customized = false): SettingValue {
   return { key, valueJson: effectiveJson, effectiveJson, customized, secretSet: {} } as unknown as SettingValue
@@ -111,5 +114,81 @@ describe('createAdminSettingsStore', () => {
     await store.load()
     expect(store.state.descriptors).toHaveLength(0)
     expect(store.values().size).toBe(0)
+  })
+})
+
+/**
+ * Half of what GetSystemInfo answers IS hub settings, and the page fetches it
+ * once at bootstrap. Without a refresh here every one of those flags stayed
+ * at the value the page loaded with: an administrator who published the hub's
+ * URL watched Add passkey stay disabled, on the screen that had just accepted
+ * the change, with no way to know why.
+ */
+describe('createAdminSettingsStore system-info convergence', () => {
+  beforeEach(() => {
+    loadSystemInfo.mockReset().mockResolvedValue(undefined)
+    updateSetting.mockReset()
+    updateSettingSecret.mockReset()
+    resetSetting.mockReset()
+  })
+
+  it('re-reads the system info after each accepted write', async () => {
+    const store = createAdminSettingsStore(() => true)
+
+    updateSetting.mockResolvedValue({ value: value('public_url', '"https://hub.example"', true) })
+    await store.update('public_url', '"https://hub.example"')
+    expect(loadSystemInfo).toHaveBeenCalledWith(true)
+
+    updateSettingSecret.mockResolvedValue({ value: value('smtp', '{"host":"mail"}', true) })
+    await store.updateSecret('smtp', '{"password":"hunter2"}')
+    expect(loadSystemInfo).toHaveBeenCalledTimes(2)
+
+    resetSetting.mockResolvedValue({ value: value('public_url', '""', false) })
+    await store.reset('public_url')
+    expect(loadSystemInfo).toHaveBeenCalledTimes(3)
+  })
+
+  // A refused write changed nothing on the hub, so there is nothing to
+  // converge on and the round trip is waste. Both refusals count: one the hub
+  // raised, and one the store's own admin guard raised before it asked.
+  it('does not re-read after a refused write', async () => {
+    const store = createAdminSettingsStore(() => true)
+    updateSetting.mockRejectedValue(new Error('validation failed'))
+
+    await expect(store.update('public_url', '"nonsense"')).rejects.toThrow('validation failed')
+    expect(updateSetting).toHaveBeenCalledTimes(1)
+    expect(loadSystemInfo).not.toHaveBeenCalled()
+  })
+
+  it('does not re-read for a write the admin guard refused', async () => {
+    const store = createAdminSettingsStore(() => false)
+
+    await expect(store.update('public_url', '"https://hub.example"')).rejects.toThrow(/administrator/)
+    expect(updateSetting).not.toHaveBeenCalled()
+    expect(loadSystemInfo).not.toHaveBeenCalled()
+  })
+
+  // The row must not wait on a second round trip to show the value the hub
+  // already accepted. A refresh that never settles must not hold the reply.
+  it('merges the reply without waiting for the refresh', async () => {
+    const store = createAdminSettingsStore(() => true)
+    loadSystemInfo.mockReturnValue(new Promise(() => {}))
+    updateSetting.mockResolvedValue({ value: value('public_url', '"https://hub.example"', true) })
+
+    await store.update('public_url', '"https://hub.example"')
+    expect(store.values().get('public_url')?.effectiveJson).toBe('"https://hub.example"')
+  })
+
+  // A failed refresh keeps the previous snapshot. It must not turn an
+  // accepted write into a reported failure, and it must not reach the console
+  // as an unhandled rejection.
+  it('keeps an accepted write accepted when the refresh fails', async () => {
+    const store = createAdminSettingsStore(() => true)
+    loadSystemInfo.mockRejectedValue(new Error('hub unreachable'))
+    updateSetting.mockResolvedValue({ value: value('public_url', '"https://hub.example"', true) })
+
+    await store.update('public_url', '"https://hub.example"')
+    expect(store.state.writeError).toBeNull()
+    expect(store.values().get('public_url')?.effectiveJson).toBe('"https://hub.example"')
   })
 })

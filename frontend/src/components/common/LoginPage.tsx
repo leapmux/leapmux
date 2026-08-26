@@ -9,10 +9,11 @@ import { OAuthProviderList } from '~/components/common/OAuthProviderList'
 import { PillGroup } from '~/components/common/PillGroup'
 import { Spinner } from '~/components/common/Spinner'
 import { useAuth } from '~/context/AuthContext'
-import { createAuthMethodSelection } from '~/lib/authMethodSelection'
+import { authMethodOptions, createAuthMethodSelection } from '~/lib/authMethodSelection'
 import { createCaptchaForm } from '~/lib/captchaForm'
-import { safeRedirect } from '~/lib/safeRedirect'
-import { isEmailEnabled, isPasskeyEnabled, isSetupRequired, isSignupEnabled, isSoloMode, loadOAuthProviders } from '~/lib/systemInfo'
+import { postAuthNavigate } from '~/lib/postAuthNavigate'
+import { stringParam } from '~/lib/searchParam'
+import { isEmailEnabled, isSignupEnabled, isSoloMode, loadOAuthProviders } from '~/lib/systemInfo'
 import { errorText, pageCard } from '~/styles/shared.css'
 import * as styles from './LoginPage.css'
 
@@ -31,19 +32,22 @@ export const LoginPage: Component = () => {
   let passwordRef!: HTMLInputElement
 
   // `/login` sits outside the `(app)` layout, so AuthGuard never sees a visit
-  // here. These two arms cover the visitor who lands on the login form directly
-  // (bookmark, typed URL, stale tab) on an instance that has no login to offer:
-  // solo mode, or a fresh install with no account yet.
+  // here. This arm covers the visitor who lands on the login form directly
+  // (bookmark, typed URL, stale tab) on a SOLO instance, which has no login to
+  // offer: the hub authenticates every request, so the form can only fail.
+  //
+  // The other instance with no login to offer -- one whose first-run setup is
+  // not complete -- is answered by `SetupGate` above the router outlet, for
+  // every address rather than only this one.
   //
   // Requires `auth.loading()`, and that gate is the whole point. Before
-  // the first system-info load the getters answer fabricated defaults
-  // (`soloMode = false`, `setupRequired = false`), not the hub's answers
-  // -- so reading them from `onMount`, as this used to, sampled the
-  // defaults on any load that won this race and then never looked again,
-  // because onMount runs once. A solo-mode visitor was left on a
-  // credential form that cannot succeed, which is exactly the dead end
-  // these arms exist to prevent. AuthGuard's copies of the same two
-  // calls are safe only because they sit behind this same gate.
+  // the first system-info load `isSoloMode()` answers a fabricated default
+  // (`false`), not the hub's answer -- so reading it from `onMount`, as this
+  // used to, sampled the default on any load that won this race and then
+  // never looked again, because onMount runs once. A solo-mode visitor was
+  // left on a credential form that cannot succeed, which is exactly the dead
+  // end this arm exists to prevent. AuthGuard's copy of the same call is safe
+  // only because it sits behind this same gate.
   //
   // createEffect, not onMount: it re-runs when `auth.loading()` flips, which is
   // the earliest moment the getters are answers rather than guesses.
@@ -69,10 +73,6 @@ export const LoginPage: Component = () => {
       navigate('/', { replace: true })
       return
     }
-    if (isSetupRequired()) {
-      navigate('/setup', { replace: true })
-      return
-    }
 
     // Focus the first empty input field (username if both empty).
     if (!usernameRef.value) {
@@ -91,8 +91,11 @@ export const LoginPage: Component = () => {
       navigate('/verify-email', { replace: true })
       return
     }
-    const redirect = safeRedirect(typeof searchParams.redirect === 'string' ? searchParams.redirect : undefined)
-    navigate(redirect ?? '/', { replace: true })
+    // Through postAuthNavigate, not navigate: a CLI login bounces here with
+    // `?redirect=/auth/cli/start...`, and that address belongs to the hub's
+    // mux. A client-side transition would render the SPA's 404 page while
+    // the CLI waits for a consent screen nobody ever sees.
+    postAuthNavigate(navigate, stringParam(searchParams.redirect), '/')
   }
 
   const handleSubmit = async (e: Event) => {
@@ -120,7 +123,7 @@ export const LoginPage: Component = () => {
   }
 
   const oauthLoginUrl = (provider: OAuthProviderInfo) => {
-    const redirect = typeof searchParams.redirect === 'string' ? searchParams.redirect : ''
+    const redirect = stringParam(searchParams.redirect) ?? ''
     const url = provider.loginUrl
     if (redirect) {
       return `${url}?redirect=${encodeURIComponent(redirect)}`
@@ -163,10 +166,7 @@ export const LoginPage: Component = () => {
           </label>
           <PillGroup
             label="Sign-in method"
-            options={[
-              { value: 'password' as const, label: 'Password' },
-              ...(isPasskeyEnabled() ? [{ value: 'passkey' as const, label: 'Passkey' }] : []),
-            ]}
+            options={authMethodOptions()}
             selected={v => effectiveMethod() === v}
             onSelect={methodSelection.select}
           />

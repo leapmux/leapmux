@@ -102,7 +102,7 @@ func RunAdminCaptchaShow(rawCtx any, args []string) error {
 		Run: func(c *control.Client, _ adminArgs) error {
 			resp, err := c.AdminSettingsService().ListSettings(context.Background(), connect.NewRequest(&leapmuxv1.ListSettingsRequest{}))
 			if err != nil {
-				return adminRPCError("rpc_failed", err)
+				return adminRPCError(c, "rpc_failed", err)
 			}
 			wanted := captchaSettingKeys()
 			values := map[string]any{}
@@ -293,7 +293,7 @@ func RunAdminCaptchaSet(rawCtx any, args []string) error {
 		Run: func(c *control.Client, a adminArgs) error {
 			state, err := readCaptchaState(c)
 			if err != nil {
-				return adminRPCError("rpc_failed", err)
+				return adminRPCError(c, "rpc_failed", err)
 			}
 			current := state.selected
 			target := current
@@ -421,12 +421,12 @@ func RunAdminCaptchaSet(rawCtx any, args []string) error {
 			var publicJSON, secretJSON json.RawMessage
 			if len(doc) > 0 {
 				if publicJSON, err = marshal(doc); err != nil {
-					return adminRPCError("captcha_set_failed", err)
+					return adminRPCError(c, "captcha_set_failed", err)
 				}
 			}
 			if len(secretDoc) > 0 {
 				if secretJSON, err = marshal(secretDoc); err != nil {
-					return adminRPCError("captcha_set_failed", err)
+					return adminRPCError(c, "captcha_set_failed", err)
 				}
 			}
 			addWrite(captcha.DescriptorFor(target).Name(), publicJSON, secretJSON)
@@ -439,11 +439,11 @@ func RunAdminCaptchaSet(rawCtx any, args []string) error {
 			if switching {
 				alias, err := marshal(captcha.ProviderAlias(target))
 				if err != nil {
-					return adminRPCError("captcha_set_failed", err)
+					return adminRPCError(c, "captcha_set_failed", err)
 				}
 				enabled, err := marshal(true)
 				if err != nil {
-					return adminRPCError("captcha_set_failed", err)
+					return adminRPCError(c, "captcha_set_failed", err)
 				}
 				addWrite(captcha.CaptchaSelectedKey.Name(), alias, nil)
 				addWrite(captcha.CaptchaEnabledKey.Name(), enabled, nil)
@@ -453,7 +453,7 @@ func RunAdminCaptchaSet(rawCtx any, args []string) error {
 			}
 			if _, err := c.AdminSettingsService().UpdateSettings(context.Background(),
 				connect.NewRequest(&leapmuxv1.UpdateSettingsRequest{Writes: writes})); err != nil {
-				return adminRPCError("captcha_set_failed", err)
+				return adminRPCError(c, "captcha_set_failed", err)
 			}
 			return control.EmitData(map[string]any{
 				"updated":   true,
@@ -469,7 +469,7 @@ func RunAdminCaptchaSetEnabled(rawCtx any, args []string, enabled bool) error {
 	return adminVerb(rawCtx, args, adminVerbSpec{
 		Run: func(c *control.Client, _ adminArgs) error {
 			if _, err := adminUpdateSettingScalar(c, captcha.CaptchaEnabledKey.Name(), enabled); err != nil {
-				return adminRPCError("captcha_set_failed", err)
+				return adminRPCError(c, "captcha_set_failed", err)
 			}
 			return control.EmitData(map[string]any{captcha.CaptchaEnabledKey.Name(): enabled})
 		},
@@ -506,7 +506,7 @@ func RunAdminCaptchaReset(rawCtx any, args []string) error {
 				// in the SAME request, so the state that rule sees is legal.
 				state, err := readCaptchaState(c)
 				if err != nil {
-					return adminRPCError("rpc_failed", err)
+					return adminRPCError(c, "rpc_failed", err)
 				}
 				if state.selected == *target && *target != captcha.ProviderAltcha {
 					keys = append([]string{captcha.CaptchaSelectedKey.Name()}, keys...)
@@ -521,7 +521,7 @@ func RunAdminCaptchaReset(rawCtx any, args []string) error {
 			resp, err := c.AdminSettingsService().ResetSettings(context.Background(),
 				connect.NewRequest(&leapmuxv1.ResetSettingsRequest{Keys: keys}))
 			if err != nil {
-				return adminRPCError("reset_failed", err)
+				return adminRPCError(c, "reset_failed", err)
 			}
 			reset := make([]string, 0, len(resp.Msg.GetValues()))
 			for _, v := range resp.Msg.GetValues() {
@@ -583,7 +583,7 @@ func RunAdminRateLimitList(rawCtx any, args []string) error {
 		Run: func(c *control.Client, _ adminArgs) error {
 			resp, err := c.AdminSettingsService().ListSettings(context.Background(), connect.NewRequest(&leapmuxv1.ListSettingsRequest{}))
 			if err != nil {
-				return adminRPCError("rpc_failed", err)
+				return adminRPCError(c, "rpc_failed", err)
 			}
 			rows := make([]map[string]any, 0)
 			for _, v := range resp.Msg.GetValues() {
@@ -601,7 +601,7 @@ func RunAdminRateLimitSet(rawCtx any, args []string) error {
 	var maxAttempts, window int64
 	return adminVerb(rawCtx, args, adminVerbSpec{
 		Flags: func(fs *flag.FlagSet) {
-			target.bind(fs, "operation to limit (change-password)")
+			target.bind(fs, "operation to limit (elevation)")
 			fs.Int64Var(&maxAttempts, "max-attempts", 0, "failed attempts allowed per window (1-1000); 0 restores the default")
 			fs.Int64Var(&window, "window", 0, "window seconds (60-86400); 0 restores the default")
 		},
@@ -633,7 +633,7 @@ func RunAdminRateLimitSet(rawCtx any, args []string) error {
 			}
 			value, err := adminUpdateSetting(c, target.Key, doc)
 			if err != nil {
-				return adminRPCError("rate_limit_set_failed", err)
+				return adminRPCError(c, "rate_limit_set_failed", err)
 			}
 			return control.EmitData(settingValueJSON(value))
 		},
@@ -644,13 +644,13 @@ func RunAdminRateLimitSetEnabled(rawCtx any, args []string, enabled bool) error 
 	var target rateLimitTarget
 	return adminVerb(rawCtx, args, adminVerbSpec{
 		Flags: func(fs *flag.FlagSet) {
-			target.bind(fs, "operation to limit (change-password)")
+			target.bind(fs, "operation to limit (elevation)")
 		},
 		BeforeDial: target.resolve,
 		Run: func(c *control.Client, _ adminArgs) error {
 			value, err := adminUpdateSetting(c, target.Key, map[string]any{"enabled": enabled})
 			if err != nil {
-				return adminRPCError("rate_limit_set_failed", err)
+				return adminRPCError(c, "rate_limit_set_failed", err)
 			}
 			return control.EmitData(settingValueJSON(value))
 		},
@@ -661,13 +661,13 @@ func RunAdminRateLimitReset(rawCtx any, args []string) error {
 	var target rateLimitTarget
 	return adminVerb(rawCtx, args, adminVerbSpec{
 		Flags: func(fs *flag.FlagSet) {
-			target.bind(fs, "operation to reset (change-password)")
+			target.bind(fs, "operation to reset (elevation)")
 		},
 		BeforeDial: target.resolve,
 		Run: func(c *control.Client, _ adminArgs) error {
 			resp, err := c.AdminSettingsService().ResetSetting(context.Background(), connect.NewRequest(&leapmuxv1.ResetSettingRequest{Key: target.Key}))
 			if err != nil {
-				return adminRPCError("reset_failed", err)
+				return adminRPCError(c, "reset_failed", err)
 			}
 			return control.EmitData(settingValueJSON(resp.Msg.GetValue()))
 		},

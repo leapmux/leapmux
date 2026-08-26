@@ -45,8 +45,58 @@ const (
 // AccessTokenTTL is the lifetime of a freshly minted CLI access token.
 const AccessTokenTTL = 1 * time.Hour
 
-// RefreshTokenTTL is the lifetime of a CLI refresh token.
+// RefreshTokenTTL is how far a refresh moves the refresh window forward.
 const RefreshTokenTTL = 90 * 24 * time.Hour
+
+// AbsoluteTokenLifetime caps a CLI credential's whole life, measured from
+// created_at rather than from the last rotation.
+//
+// Without it a refresh window that slides by RefreshTokenTTL on EVERY
+// rotation is unbounded: a CLI that refreshes weekly keeps one browser
+// consent alive for ever, and the consent is what the user actually gave.
+// The cap turns "90 days since you last used it" into "one year since you
+// authorized it", after which the device signs in again.
+//
+// Deliberately far longer than the refresh window, so it binds only on a
+// credential in continuous use for a year -- an idle one dies
+// on RefreshTokenTTL first.
+const AbsoluteTokenLifetime = 365 * 24 * time.Hour
+
+// RefreshWindowFor returns the refresh expiry to write for a token created at
+// createdAt, refreshing at now: the ordinary window, clipped to the absolute
+// lifetime. A non-positive result means the credential reached its ceiling and
+// must not refresh again.
+//
+// One function, so the mint and the rotation cannot disagree about when a
+// credential dies. A zero createdAt (a caller that did not load the row)
+// yields the ordinary window rather than an instantly-dead token: failing
+// closed here would revoke every live credential on a mapping slip, and the
+// mint path legitimately has no row yet.
+func RefreshWindowFor(createdAt, now time.Time) time.Duration {
+	window := RefreshTokenTTL
+	if createdAt.IsZero() {
+		return window
+	}
+	if remaining := createdAt.Add(AbsoluteTokenLifetime).Sub(now); remaining < window {
+		return remaining
+	}
+	return window
+}
+
+// AccessWindowFor returns the access-token lifetime to mint for a token
+// created at createdAt, at now: the ordinary hour, clipped to the same
+// absolute lifetime the refresh window respects.
+//
+// The clip is not decoration. validateRow reads expires_at ALONE, so the
+// access token is the only thing that decides whether a bearer still
+// authenticates -- and the last rotation before the ceiling wrote a full
+// AccessTokenTTL past it, so the credential kept working for up to an hour
+// after the hub answered its next refresh with "this credential reached its
+// maximum lifetime". Clipping here makes the ceiling a property of the
+// credential rather than of the refresh leg that happens to notice it.
+func AccessWindowFor(createdAt, now time.Time) time.Duration {
+	return min(AccessTokenTTL, RefreshWindowFor(createdAt, now))
+}
 
 // DelegationTokenTTL is the lifetime of a worker-minted delegation
 // token. Short by design: agents that outlive the TTL refresh.
@@ -308,6 +358,21 @@ type loadedBearer struct {
 	credential CredentialIdentity
 }
 
+// apiTokenExpired reports whether a CLI credential is dead at now, by either
+// of the two deadlines that bind it. See loadBearer.
+//
+// A nil expiresAt means a credential that never expires on its own; the
+// ceiling still applies to it. A zero createdAt means a row the caller did not
+// load a creation instant for, and the ceiling is skipped rather than treated
+// as "created at the epoch, therefore dead" -- failing closed on a mapping
+// slip would refuse every live credential at once.
+func apiTokenExpired(expiresAt *time.Time, createdAt, now time.Time) bool {
+	if expiresAt != nil && IsExpired(now, *expiresAt) {
+		return true
+	}
+	return !createdAt.IsZero() && IsExpired(now, createdAt.Add(AbsoluteTokenLifetime))
+}
+
 // loadBearer projects each persisted bearer type into explicit shared
 // validation data plus its post-validation touch operation.
 func (v *TokenValidator) loadBearer(ctx context.Context, kind BearerKind, tokenID string) (loadedBearer, error) {
@@ -322,14 +387,42 @@ func (v *TokenValidator) loadBearer(ctx context.Context, kind BearerKind, tokenI
 		}
 		return loadedBearer{
 			fields: validateRowFields{
-				Revoked:        api.RevokedAt != nil,
-				Expired:        api.ExpiresAt != nil && IsExpired(time.Now(), *api.ExpiresAt),
+				Revoked: api.RevokedAt != nil,
+				// TWO deadlines, and the credential is dead at whichever comes
+				// first: its own expires_at, and the ceiling
+				// AbsoluteTokenLifetime puts on created_at.
+				//
+				// The ceiling used to be arithmetic at the mint and the
+				// rotation alone -- AccessWindowFor and RefreshWindowFor -- so
+				// it held only for a credential whose windows those two
+				// functions wrote. A mint path that wrote its own expiry, and
+				// there is one on the admin surface, put a row past the
+				// ceiling that nothing afterwards re-read. Reading it HERE
+				// makes the ceiling a property of the credential at every
+				// validation rather than of the leg that happens to compute a
+				// window, so no present or future issuer can write past it.
+				//
+				// The arithmetic stays as well: the refresh leg must still
+				// answer "this credential reached its maximum lifetime" and
+				// revoke the row, which is a better answer than a silent
+				// expiry.
+				//
+				// This is the API-token branch alone. AbsoluteTokenLifetime is
+				// a rule about a CLI credential's consent, and a delegation
+				// token is minted by a worker for one spawn.
+				Expired:        apiTokenExpired(api.ExpiresAt, api.CreatedAt, time.Now()),
 				SecretHash:     api.SecretHash,
 				UserID:         api.UserID,
 				RowID:          api.ID,
 				CreatedAt:      api.CreatedAt,
 				ExpiresAt:      ptrconv.DerefTime(api.ExpiresAt),
 				AuthGeneration: api.AuthGeneration,
+				AdminScope:     api.AdminScope,
+				// Through NewElevation, which refuses half a stored pair --
+				// the same read the session path uses, so a repaired or
+				// restored row cannot admit a gated action on a factor that
+				// was never proven.
+				Elevation: NewElevation(api.ElevationProvenAt, api.ElevationExpiresAt),
 			},
 			touch:      func() { _ = v.store.APITokens().Touch(ctx, api.ID) },
 			credential: APICredential(tokenID),
@@ -386,14 +479,23 @@ func IsExpired(now, expiresAt time.Time) bool {
 // delegation_tokens). loadBearer projects the per-table row into this
 // shape so validateRow can stay table-agnostic.
 type validateRowFields struct {
-	Revoked        bool
-	Expired        bool
-	SecretHash     []byte
-	UserID         string
-	RowID          string
-	CreatedAt      time.Time
-	ExpiresAt      time.Time
+	Revoked    bool
+	Expired    bool
+	SecretHash []byte
+	UserID     string
+	RowID      string
+	CreatedAt  time.Time
+	ExpiresAt  time.Time
+	// AdminScope is the api_tokens opt-in that lets a bearer reach the
+	// Admin* procedures. A delegation token has no such column and leaves it
+	// false, which is the answer enforceAdmin needs anyway: a worker-minted
+	// bearer is refused every admin procedure before the scope is read.
+	AdminScope     bool
 	AuthGeneration int64
+	// Elevation is the api_tokens step-up window. A delegation row has no
+	// such pair and leaves it zero, which is the answer ElevationDeadline
+	// needs anyway: it refuses a delegation credential on the kind first.
+	Elevation Elevation
 }
 
 // validateRow runs the shared secret-match/revoked/expired/load-user path.
@@ -426,6 +528,8 @@ func (v *TokenValidator) validateRow(ctx context.Context, f validateRowFields, s
 	}
 	user.AuthenticatedAt = f.CreatedAt.UTC()
 	user.CredentialExpiresAt = DeadlineAt(f.ExpiresAt.UTC())
+	user.CredentialAdminScope = f.AdminScope
+	user.Elevation = f.Elevation
 	return user, nil
 }
 

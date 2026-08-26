@@ -49,12 +49,31 @@ type Store interface {
 
 	// RunInTransaction executes fn within a transaction. The provided
 	// Store is bound to the transaction.
+	//
+	// FN MAY RUN MORE THAN ONCE. A distributed backend resolves a
+	// write-write conflict by aborting one transaction with a retryable
+	// SQLSTATE and expects the client to run the whole unit of work again,
+	// so an implementation may do exactly that. Two rules follow, and they
+	// bind every caller:
+	//
+	//   - A result reported through a captured variable is FINE. A re-run
+	//     overwrites it, so the caller reads the successful attempt's value.
+	//   - State that ACCUMULATES is not: an append to a captured slice, a
+	//     counter, a send on a channel, a lifecycle effect, a metric. The
+	//     aborted attempt's contribution stays and the caller double-counts
+	//     it. Do that work AFTER the transaction returns, from the values
+	//     the callback assigned -- which is what every caller here does.
+	//
+	// A read the callback performs is repeated too, so a callback must not
+	// assume it observes the database only once.
 	RunInTransaction(ctx context.Context, fn func(tx Store) error) error
 
 	// RunInUserAuthTransaction executes fn in a transaction after locking the
 	// user's auth-state row. Credential creation, password rotation, and
 	// user-wide revocation must use this boundary so their commit order is the
 	// credential validity order. Nested calls reuse the current transaction.
+	//
+	// fn may run more than once, under the same rules RunInTransaction states.
 	RunInUserAuthTransaction(ctx context.Context, userID userid.UserID, fn func(tx Store) error) error
 
 	// Close releases any resources (connection pools, etc.).
@@ -154,7 +173,15 @@ type SessionStore interface {
 	// in-memory lifecycle extension on rowsAffected > 0 so cached deadlines
 	// never advance past the un-updated DB expiry.
 	Touch(ctx context.Context, p TouchSessionParams, now time.Time) (int64, error)
+	// Delete ends one session because its OWNER ended it -- Logout, or a
+	// sweep that a password rotation drives. It emits
+	// RevocationEventKindSession.
 	Delete(ctx context.Context, id string) (int64, error)
+	// Revoke ends one session because an ADMINISTRATOR took it away. It
+	// deletes the same row Delete does and emits
+	// RevocationEventKindSessionRevoked instead, which is the only durable
+	// record that separates the two -- see that constant.
+	Revoke(ctx context.Context, id string) (int64, error)
 	DeleteByUser(ctx context.Context, userID userid.UserID) error
 	DeleteOthers(ctx context.Context, p DeleteOtherSessionsParams) error
 	// RefreshAuthGeneration moves the kept current session onto the
@@ -164,6 +191,20 @@ type SessionStore interface {
 	ListByUserID(ctx context.Context, p ListUserSessionsParams, now time.Time) (Page[UserSession], error)
 	ListAllActive(ctx context.Context, p ListAllActiveSessionsParams, now time.Time) (Page[ActiveSession], error)
 	ValidateWithUser(ctx context.Context, id string, now time.Time) (*SessionWithUser, error)
+	// Elevate grants the session a fresh step-up window, replacing whatever
+	// window it held. It returns the number of rows updated: zero when the
+	// session is gone, expired, or owned by another user. It emits a
+	// user_info event so every hub drops the cached UserInfo and re-reads
+	// the new deadline without logging the user out.
+	Elevate(ctx context.Context, p ElevateSessionParams, now time.Time) (int64, error)
+	// SlideElevation extends a LIVE elevation and returns the rows updated.
+	// It deliberately emits no event: a cache still holding the shorter
+	// deadline fails closed, and it expires on its own within the cache TTL.
+	SlideElevation(ctx context.Context, p SlideSessionElevationParams, now time.Time) (int64, error)
+	// DropElevation ends the session's elevation now, and emits the same
+	// user_info event Elevate does -- here it must, because a cached longer
+	// deadline would fail OPEN.
+	DropElevation(ctx context.Context, p DropSessionElevationParams, now time.Time) (int64, error)
 }
 
 type WorkerStore interface {
@@ -401,7 +442,33 @@ type ListPendingLifecycleOutboxParams struct {
 type APITokenStore interface {
 	Create(ctx context.Context, p CreateAPITokenParams) error
 	GetByID(ctx context.Context, id string) (*APIToken, error)
-	ListByUser(ctx context.Context, p ListAPITokensByUserParams) ([]APIToken, error)
+	// Elevate grants the credential a fresh step-up window, replacing
+	// whatever it held, and emits a user_info event so another hub process
+	// re-reads the deadline. Returns the rows updated: 0 means the row is
+	// gone, revoked, expired, or owned by somebody else.
+	//
+	// A command-line credential can elevate AT ALL because the gate that
+	// protects hub settings, the user surface and the mint would otherwise
+	// admit it unconditionally -- it had no row to stamp, so possession of
+	// the credential file was the whole of the check. The factor is proven
+	// in a browser (the /auth/cli/elevate consent leg), which is the only
+	// place a person can answer a password or a passkey prompt.
+	//
+	// A DELEGATION token deliberately has no equivalent. It is minted by a
+	// worker for an agent that reads untrusted input, and there is nobody to
+	// prompt.
+	Elevate(ctx context.Context, p ElevateAPITokenParams, now time.Time) (int64, error)
+	// SlideElevation extends a LIVE elevation and returns the rows updated.
+	// The statement clamps the new deadline to elevation_proven_at +
+	// MaxTotal, so no caller can extend one past its cap. It emits no event:
+	// a stale SHORTER deadline fails closed.
+	SlideElevation(ctx context.Context, p SlideAPITokenElevationParams, now time.Time) (int64, error)
+	// DropElevation ends the credential's elevation now, and emits the same
+	// user_info event Elevate does -- here it must, because a cached longer
+	// deadline would otherwise keep granting.
+	DropElevation(ctx context.Context, p DropAPITokenElevationParams, now time.Time) (int64, error)
+	// ListByUser pages one user's own live tokens, keyset on created_at.
+	ListByUser(ctx context.Context, p ListAPITokensByUserParams) (Page[APIToken], error)
 	// ListAll pages every live api_token across users with the owner username
 	// (LEFT JOIN users), replacing the admin CLI's per-user fanout. Keyset on
 	// created_at.
@@ -411,6 +478,11 @@ type APITokenStore interface {
 	// cache-only rotation event when its compare-and-swap succeeds.
 	RotateRefresh(ctx context.Context, p RotateAPITokenRefreshParams) (int64, error)
 	Revoke(ctx context.Context, id string) (int64, error)
+	// RevokeOwned revokes one token only when userID owns it, with the owner
+	// equality inside the statement. Returns 0 when the row is missing,
+	// already revoked, or owned by somebody else -- the three cases a
+	// self-service caller must not be able to tell apart.
+	RevokeOwned(ctx context.Context, p RevokeOwnedAPITokenParams) (int64, error)
 	// RevokeByUser bulk-revokes every live api_tokens row for userID and
 	// returns the count of rows affected. Hooked from admin commands that
 	// kill the user's auth basis (delete, password reset,
@@ -448,7 +520,27 @@ type DelegationTokenStore interface {
 
 // Credential lifecycle event kinds persisted in revocation_events.kind.
 const (
-	RevocationEventKindSession          = "session"
+	// RevocationEventKindSession is a session that ENDED. The user signed
+	// out, or a password rotation swept the account. It closes the
+	// session's streams and drops its cached UserInfo.
+	RevocationEventKindSession = "session"
+	// RevocationEventKindSessionRevoked is a session an ADMINISTRATOR took
+	// away. It carries the same subject and the same consumer handling as
+	// RevocationEventKindSession -- the two differ only in what they say
+	// about WHO ended the session, and one reader needs that.
+	//
+	// A per-session revoke does not move the account's auth generation,
+	// deliberately: it must not sign the user's other sessions out. So the
+	// credential epoch cannot separate it from a plain sign-out, and the
+	// deleted row cannot either, because both paths delete the row. A
+	// step-up mutation that waits on the user-auth lock TOLERATES an absent
+	// acting session, or a legitimate sign-out in another tab would roll
+	// the change back -- and that tolerance covered the administrator's
+	// revoke as well, so a queued passkey deletion committed on the
+	// authority of a session the administrator had already taken away. This
+	// kind is the fact that separates the two. See
+	// recheckActingSessionUnderLock.
+	RevocationEventKindSessionRevoked   = "session_revoked"
 	RevocationEventKindAPIToken         = "api_token"
 	RevocationEventKindAPITokenRotation = "api_token_rotation"
 	RevocationEventKindDelegationToken  = "delegation_token"
@@ -533,6 +625,20 @@ type RevocationEventStore interface {
 	ReleaseHubRuntimeLease(ctx context.Context, holderID string) (int64, error)
 	ListPublishedAfter(ctx context.Context, afterSeq int64, limit int32) ([]PublishedRevocationEvent, error)
 	MaxPublishedSeq(ctx context.Context) (int64, error)
+	// SessionWasRevoked reports whether an administrator took the named
+	// session away, by looking for a RevocationEventKindSessionRevoked row.
+	// Pending and published events both count: the fact is the insert, and
+	// the sequence number only orders the broadcast.
+	//
+	// The read is by subject_id with no index behind it, and that is
+	// deliberate. Its ONE caller is the absent-acting-session arm of
+	// recheckActingSessionUnderLock, which a request reaches only when its
+	// own session row disappeared while it waited on the user-auth lock, so
+	// the scan is far rarer than the event inserts an index would slow
+	// down. The cleanup pass compacts published events on a seven-day
+	// retention, which is longer than any lock wait by many orders, so a
+	// revoke can never be compacted out from under a waiting request.
+	SessionWasRevoked(ctx context.Context, sessionID string) (bool, error)
 }
 
 // DeviceAuthorizationStore manages RFC 8628 device-code grants.
@@ -644,11 +750,9 @@ type WebAuthnSessionStore interface {
 	// ConsumeCeremony deletes one unexpired ceremony row of the given kind.
 	// Returns rows affected (0 when missing, wrong kind, expired, or already consumed).
 	ConsumeCeremony(ctx context.Context, id, kind string, now time.Time) (int64, error)
-	ConsumeProof(ctx context.Context, id, userID, kind string, now time.Time) (int64, error)
-	GetValidProof(ctx context.Context, id, userID, kind string, now time.Time) (*WebAuthnSession, error)
 	DeleteAllByUser(ctx context.Context, userID string) error
 	// DeleteByUserAndKind removes open ceremony rows for one user and kind
-	// (for example, replacing a prior reauth Begin).
+	// (for example, replacing a prior elevation Begin).
 	DeleteByUserAndKind(ctx context.Context, userID, kind string) error
 }
 
@@ -741,6 +845,20 @@ type CleanupStore interface {
 	DeleteExpiredWebAuthnSessions(ctx context.Context, now time.Time) (int64, error)
 	DeleteExpiredDeviceAuthorizations(ctx context.Context, now time.Time) (int64, error)
 	DeleteExpiredCLIAuthorizationCodes(ctx context.Context, now time.Time) (int64, error)
+	// DeleteExpiredAPITokensBefore hard-deletes a live api_tokens row only
+	// when BOTH of its legs closed before cutoff: the access expiry AND the
+	// refresh window. The caller sets cutoff behind now by a retention
+	// margin, so a user who asks why their CLI stopped working can still be
+	// shown the row.
+	//
+	// BOTH, because bearer validation reads expires_at alone: an
+	// administrator issues a token with a year of access and ninety days of
+	// refresh, and a sweep on the refresh column alone deleted that
+	// credential on day ninety-seven while it still authenticated. A NULL
+	// expires_at is a token that never expires and is never swept here; a
+	// NULL refresh_expires_at is a row with no refresh leg, which counts as
+	// a closed one.
+	DeleteExpiredAPITokensBefore(ctx context.Context, cutoff time.Time) (int64, error)
 	DeleteRevokedAPITokensBefore(ctx context.Context, cutoff time.Time) (int64, error)
 	DeleteRevokedDelegationTokensBefore(ctx context.Context, cutoff time.Time) (int64, error)
 	DeleteExpiredDelegationTokensBefore(ctx context.Context, now time.Time) (int64, error)

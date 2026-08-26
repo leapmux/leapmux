@@ -1,7 +1,7 @@
 import type { DevServerHandle } from './helpers/devServer'
 import { test as base, expect } from '@playwright/test'
 import { fetchAltchaChallenge } from './helpers/altcha'
-import { mintCLITokenForAdmin, runCLI } from './helpers/cli'
+import { mintCLITokenForAdmin, runCLI, setHubSetting } from './helpers/cli'
 import { startDevServer, stopDevServer } from './helpers/devServer'
 import { loginViaUI } from './helpers/ui'
 
@@ -50,6 +50,13 @@ async function setupServerWithAlgorithm(
     // hub; the offline captcha verb no longer exists.
     const cfg = await mintCLITokenForAdmin(server)
     cliConfigDir = cfg.path
+    // ALTCHA runs only where a browser can solve it AND there is somebody
+    // to protect, and the hub reads its own settings for both. A dev server
+    // publishes nothing and terminates no TLS, so it stands ALTCHA down --
+    // every assertion below would then pass against a hub that issues no
+    // challenge at all. Publish an HTTPS address, which is the shape an
+    // operator running ALTCHA is in.
+    await setHubSetting(cfg, 'public_url', 'https://hub.e2e.test')
     await runCLI(cfg, ['admin', 'captcha', 'set', ...args])
     await waitForChallengeAlgorithm(server.hubUrl, algorithm)
     await use(server)

@@ -148,6 +148,79 @@ func (s *Suite) testSessions(t *testing.T) {
 		assert.Equal(t, user.ID, events[0].Event.UserID)
 	})
 
+	t.Run("revoke publishes the administrator's own event kind", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "revoke-event-user")
+		sess := SeedSession(t, st, user.ID)
+
+		n, err := st.Sessions().Revoke(ctx, sess.ID)
+		require.NoError(t, err)
+		require.Equal(t, int64(1), n)
+
+		_, err = st.Sessions().GetByID(ctx, sess.ID, time.Now().UTC())
+		assert.ErrorIs(t, err, store.ErrNotFound, "revoke removes the same row delete does")
+
+		published, err := st.RevocationEvents().PublishPending(ctx, 10)
+		require.NoError(t, err)
+		require.Equal(t, int64(1), published)
+		events, err := st.RevocationEvents().ListPublishedAfter(ctx, 0, 10)
+		require.NoError(t, err)
+		require.Len(t, events, 1)
+		assert.Equal(t, store.RevocationEventKindSessionRevoked, events[0].Event.Kind)
+		assert.Equal(t, sess.ID, events[0].Event.SubjectID)
+		assert.Equal(t, user.ID, events[0].Event.UserID)
+	})
+
+	t.Run("revoke nonexistent returns zero", func(t *testing.T) {
+		st := s.NewStore(t)
+		n, err := st.Sessions().Revoke(ctx, "nonexistent")
+		require.NoError(t, err)
+		assert.Equal(t, int64(0), n)
+	})
+
+	// The whole point of the separate kind: a step-up mutation waiting on
+	// the user-auth lock finds no acting session row either way, so this
+	// read is what tells it which of the two happened.
+	t.Run("session was revoked separates a revoke from a sign-out", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "was-revoked-user")
+		revoked := SeedSession(t, st, user.ID)
+		signedOut := SeedSession(t, st, user.ID)
+		untouched := SeedSession(t, st, user.ID)
+
+		before, err := st.RevocationEvents().SessionWasRevoked(ctx, revoked.ID)
+		require.NoError(t, err)
+		assert.False(t, before, "no event exists until the revoke runs")
+
+		_, err = st.Sessions().Revoke(ctx, revoked.ID)
+		require.NoError(t, err)
+		_, err = st.Sessions().Delete(ctx, signedOut.ID)
+		require.NoError(t, err)
+
+		// PENDING events count: the insert is the fact, and the sequence
+		// number only orders the broadcast. A mutation racing the revoke
+		// reads this before the watcher publishes anything.
+		got, err := st.RevocationEvents().SessionWasRevoked(ctx, revoked.ID)
+		require.NoError(t, err)
+		assert.True(t, got, "an administrator's revoke leaves a durable record")
+
+		got, err = st.RevocationEvents().SessionWasRevoked(ctx, signedOut.ID)
+		require.NoError(t, err)
+		assert.False(t, got, "a sign-out deletes the same row and must stay tolerated")
+
+		got, err = st.RevocationEvents().SessionWasRevoked(ctx, untouched.ID)
+		require.NoError(t, err)
+		assert.False(t, got, "a live session was revoked by nobody")
+
+		// And it survives publication, because the read matches on kind and
+		// subject alone.
+		_, err = st.RevocationEvents().PublishPending(ctx, 10)
+		require.NoError(t, err)
+		got, err = st.RevocationEvents().SessionWasRevoked(ctx, revoked.ID)
+		require.NoError(t, err)
+		assert.True(t, got)
+	})
+
 	t.Run("delete nonexistent returns zero", func(t *testing.T) {
 		st := s.NewStore(t)
 		n, err := st.Sessions().Delete(ctx, "nonexistent")

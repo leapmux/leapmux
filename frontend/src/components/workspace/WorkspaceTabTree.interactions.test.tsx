@@ -98,6 +98,20 @@ function makeTab(type: TabType, id: string, title?: string): Tab {
   } as Tab
 }
 
+/**
+ * The reason a disabled control carries, read the way a screen reader gets it.
+ *
+ * <Tooltip> leaves an offscreen description in `aria-describedby` for as long
+ * as the control is disabled. It is NOT `title`: a reason long enough to be
+ * worth reading becomes the control's accessible name on `title`, which is why
+ * `title` on a DOM element is now a lint error.
+ */
+function reasonOf(el: Element): string {
+  const describedBy = el.getAttribute('aria-describedby')
+  expect(describedBy).toBeTruthy()
+  return document.getElementById(describedBy!)?.textContent ?? ''
+}
+
 describe('workspaceTabTree interactions', () => {
   it('clicking the close button closes without selecting the tab', async () => {
     const onTabClick = vi.fn()
@@ -346,8 +360,8 @@ describe('workspaceTabTree interactions', () => {
     const del = screen.getByText('Delete branch...') as HTMLButtonElement
     expect(change.disabled).toBe(true)
     expect(del.disabled).toBe(true)
-    expect(change.title).toContain('offline')
-    expect(del.title).toContain('offline')
+    expect(reasonOf(change)).toContain('offline')
+    expect(reasonOf(del)).toContain('offline')
 
     // And a click cannot get through to the dialog.
     await fireEvent.click(change)

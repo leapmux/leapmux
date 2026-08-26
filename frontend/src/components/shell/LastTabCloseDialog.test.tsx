@@ -93,6 +93,20 @@ function renderDialog(
   return { onDismiss, onStatusRefreshed }
 }
 
+/**
+ * The reason a disabled control carries, read the way a screen reader gets it.
+ *
+ * <Tooltip> leaves an offscreen description in `aria-describedby` for as long
+ * as the control is disabled. It is NOT `title`: a reason long enough to be
+ * worth reading becomes the control's accessible name on `title`, which is why
+ * `title` on a DOM element is now a lint error.
+ */
+function reasonOf(el: Element): string {
+  const describedBy = el.getAttribute('aria-describedby')
+  expect(describedBy).toBeTruthy()
+  return document.getElementById(describedBy!)?.textContent ?? ''
+}
+
 describe('lastTabCloseDialog', () => {
   it('renders the worktree variant with worktree path and Delete button', () => {
     renderDialog(makeState({
@@ -225,10 +239,14 @@ describe('lastTabCloseDialog', () => {
     }))
     const del = screen.getByRole('button', { name: 'Delete' }) as HTMLButtonElement
     expect(del.disabled).toBe(true)
-    // Visible, not in `title` alone: a greyed-out destructive option with
-    // no stated reason looks like a defect.
-    expect(screen.getByText(/held for review/)).toBeInTheDocument()
-    expect(del.title).toContain('held for review')
+    // Visible, not in the tooltip alone: a greyed-out destructive option with
+    // no stated reason looks like a defect. TWO nodes carry the sentence -- the
+    // visible one, and the Tooltip's offscreen description on the button -- so
+    // the visible one is identified by NOT being the description.
+    const descriptionId = del.getAttribute('aria-describedby')
+    const visible = screen.getAllByText(/held for review/).filter(el => el.id !== descriptionId)
+    expect(visible).toHaveLength(1)
+    expect(reasonOf(del)).toContain('held for review')
     // The tab is still closable — only the removal is refused.
     expect((screen.getByRole('button', { name: 'Close anyway' }) as HTMLButtonElement).disabled).toBe(false)
     expect((screen.getByRole('button', { name: 'Cancel' }) as HTMLButtonElement).disabled).toBe(false)
@@ -260,7 +278,7 @@ describe('lastTabCloseDialog', () => {
     }))
     const del = screen.getByRole('button', { name: 'Delete' }) as HTMLButtonElement
     expect(del.disabled).toBe(false)
-    expect(del.title).toBe('')
+    expect(del).not.toHaveAttribute('aria-describedby')
   })
 
   it('renders no removal warning on a non-worktree prompt', () => {

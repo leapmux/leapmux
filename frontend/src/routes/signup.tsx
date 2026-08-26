@@ -1,5 +1,6 @@
 import { useNavigate } from '@solidjs/router'
 import { createEffect, onMount } from 'solid-js'
+import { SignedOutOnly } from '~/components/common/SignedOutOnly'
 import { SignupPage } from '~/components/common/SignupPage'
 import { useAuth } from '~/context/AuthContext'
 import { setPageTitle } from '~/lib/pageTitle'
@@ -24,5 +25,9 @@ export default function SignupRoute() {
     }
   })
 
-  return <SignupPage />
+  return (
+    <SignedOutOnly>
+      <SignupPage />
+    </SignedOutOnly>
+  )
 }

@@ -136,7 +136,7 @@ type Key[T any] struct {
 }
 
 // NewKey declares a setting. The name is the hub_settings key and should
-// be dot-namespaced by domain ("smtp", "rate_limit.change-password",
+// be dot-namespaced by domain ("smtp", "rate_limit.elevation",
 // "captcha.altcha").
 func NewKey[T any](name string) *Key[T] {
 	k := &Key[T]{name: name}

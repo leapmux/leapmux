@@ -14,6 +14,11 @@ export interface NavGroup {
  * PREFERENCES, then admin categories under ADMINISTRATION.
  */
 export const NAV_GROUPS: readonly NavGroup[] = [
+  // Account LEADS the list. It is the group a user comes to the dialog for
+  // deliberately -- a password, a passkey, an address -- where the rest are
+  // preferences they adjust while they are already here, so burying it under
+  // seven of them put the errand behind the browsing.
+  { id: 'account', title: 'Account', category: 'account', admin: false },
   { id: 'appearance', title: 'Appearance', category: 'appearance', admin: false },
   { id: 'notifications', title: 'Notifications', category: 'notifications', admin: false },
   { id: 'chat', title: 'Chat & Composer', category: 'chat', admin: false },
@@ -21,7 +26,6 @@ export const NAV_GROUPS: readonly NavGroup[] = [
   { id: 'files', title: 'Files & Editors', category: 'files', admin: false },
   { id: 'shortcuts', title: 'Keyboard Shortcuts', category: 'shortcuts', admin: false },
   { id: 'advanced', title: 'Advanced', category: 'advanced', admin: false },
-  { id: 'account', title: 'Account', category: 'account', admin: false },
   { id: 'admin-general', title: 'General', category: 'general', admin: true },
   { id: 'admin-signup', title: 'Sign-up & Access', category: 'signup', admin: true },
   { id: 'admin-email', title: 'Email (SMTP)', category: 'email', admin: true },
@@ -30,3 +34,17 @@ export const NAV_GROUPS: readonly NavGroup[] = [
   { id: 'admin-limits', title: 'Limits & Timeouts', category: 'limits', admin: true },
   { id: 'admin-advanced', title: 'Advanced', category: 'advanced', admin: true },
 ]
+
+/**
+ * The section the dialog opens on when a caller asks for no particular one.
+ *
+ * DERIVED from the order rather than typed a second time: "Preferences opens
+ * on its first section" is one statement, so moving a section to the top
+ * moves the default with it. Every entry point used to spell 'appearance'
+ * out, which is how the list and the landing section came to disagree.
+ *
+ * A deployment that HIDES that section still lands somewhere: solo mode hides
+ * every Account row, and the dialog resolves a requested id against the
+ * visible groups (see `occupiedNavGroups`).
+ */
+export const DEFAULT_NAV_GROUP_ID: string = NAV_GROUPS[0]!.id

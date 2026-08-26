@@ -153,65 +153,6 @@ func (s *Suite) testPasskeys(t *testing.T) {
 		assert.ErrorIs(t, err, store.ErrNotFound)
 	})
 
-	t.Run("consume reauth proof is single use", func(t *testing.T) {
-		st := s.NewStore(t)
-		user := SeedUser(t, st, "wa-proof")
-		proofID := id.Generate()
-		now := time.Now().UTC()
-		require.NoError(t, st.WebAuthnSessions().Create(ctx, store.CreateWebAuthnSessionParams{
-			ID:          proofID,
-			Kind:        "reauth_proof",
-			UserID:      user.ID,
-			PayloadJSON: "{}",
-			SessionData: []byte("proof"),
-			ExpiresAt:   now.Add(2 * time.Minute),
-			CreatedAt:   now,
-		}))
-
-		n, err := st.WebAuthnSessions().ConsumeProof(ctx, proofID, user.ID, webauthn.KindReauthProof, time.Now().UTC())
-		require.NoError(t, err)
-		assert.EqualValues(t, 1, n)
-
-		n, err = st.WebAuthnSessions().ConsumeProof(ctx, proofID, user.ID, webauthn.KindReauthProof, time.Now().UTC())
-		require.NoError(t, err)
-		assert.EqualValues(t, 0, n, "replay must delete zero rows")
-	})
-
-	t.Run("consume reauth proof rejects wrong user or expired", func(t *testing.T) {
-		st := s.NewStore(t)
-		owner := SeedUser(t, st, "wa-proof-owner")
-		other := SeedUser(t, st, "wa-proof-other")
-		now := time.Now().UTC()
-
-		liveID := id.Generate()
-		require.NoError(t, st.WebAuthnSessions().Create(ctx, store.CreateWebAuthnSessionParams{
-			ID:          liveID,
-			Kind:        "reauth_proof",
-			UserID:      owner.ID,
-			PayloadJSON: "{}",
-			SessionData: []byte("proof"),
-			ExpiresAt:   now.Add(2 * time.Minute),
-			CreatedAt:   now,
-		}))
-		n, err := st.WebAuthnSessions().ConsumeProof(ctx, liveID, other.ID, webauthn.KindReauthProof, time.Now().UTC())
-		require.NoError(t, err)
-		assert.EqualValues(t, 0, n)
-
-		expiredID := id.Generate()
-		require.NoError(t, st.WebAuthnSessions().Create(ctx, store.CreateWebAuthnSessionParams{
-			ID:          expiredID,
-			Kind:        "reauth_proof",
-			UserID:      owner.ID,
-			PayloadJSON: "{}",
-			SessionData: []byte("proof"),
-			ExpiresAt:   now.Add(-time.Minute),
-			CreatedAt:   now.Add(-2 * time.Minute),
-		}))
-		n, err = st.WebAuthnSessions().ConsumeProof(ctx, expiredID, owner.ID, webauthn.KindReauthProof, time.Now().UTC())
-		require.NoError(t, err)
-		assert.EqualValues(t, 0, n)
-	})
-
 	t.Run("consume ceremony session is single use", func(t *testing.T) {
 		st := s.NewStore(t)
 		user := SeedUser(t, st, "wa-ceremony")
@@ -244,20 +185,20 @@ func (s *Suite) testPasskeys(t *testing.T) {
 		st := s.NewStore(t)
 		user := SeedUser(t, st, "wa-kind")
 		now := time.Now().UTC()
-		reauthID := id.Generate()
-		proofID := id.Generate()
+		elevationID := id.Generate()
+		loginID := id.Generate()
 		require.NoError(t, st.WebAuthnSessions().Create(ctx, store.CreateWebAuthnSessionParams{
-			ID: reauthID, Kind: "reauth", UserID: user.ID, PayloadJSON: "{}",
-			SessionData: []byte("reauth"), ExpiresAt: now.Add(time.Minute), CreatedAt: now,
+			ID: elevationID, Kind: webauthn.KindElevation, UserID: user.ID, PayloadJSON: "{}",
+			SessionData: []byte("elevation"), ExpiresAt: now.Add(time.Minute), CreatedAt: now,
 		}))
 		require.NoError(t, st.WebAuthnSessions().Create(ctx, store.CreateWebAuthnSessionParams{
-			ID: proofID, Kind: "reauth_proof", UserID: user.ID, PayloadJSON: "{}",
-			SessionData: []byte("proof"), ExpiresAt: now.Add(time.Minute), CreatedAt: now,
+			ID: loginID, Kind: webauthn.KindLogin, UserID: user.ID, PayloadJSON: "{}",
+			SessionData: []byte("login"), ExpiresAt: now.Add(time.Minute), CreatedAt: now,
 		}))
-		require.NoError(t, st.WebAuthnSessions().DeleteByUserAndKind(ctx, user.ID, "reauth"))
-		_, err := st.WebAuthnSessions().Get(ctx, reauthID)
+		require.NoError(t, st.WebAuthnSessions().DeleteByUserAndKind(ctx, user.ID, webauthn.KindElevation))
+		_, err := st.WebAuthnSessions().Get(ctx, elevationID)
 		assert.ErrorIs(t, err, store.ErrNotFound)
-		_, err = st.WebAuthnSessions().Get(ctx, proofID)
+		_, err = st.WebAuthnSessions().Get(ctx, loginID)
 		require.NoError(t, err)
 	})
 

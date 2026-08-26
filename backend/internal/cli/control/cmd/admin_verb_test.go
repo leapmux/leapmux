@@ -138,16 +138,16 @@ func adminLeaves() []adminLeaf {
 
 		{"RunAdminRateLimitList", "rate-limit list", func() error { return RunAdminRateLimitList(nil, nil) }},
 		{"RunAdminRateLimitSet", "rate-limit set", func() error {
-			return RunAdminRateLimitSet(nil, []string{"--operation", "change-password", "--max-attempts", "5"})
+			return RunAdminRateLimitSet(nil, []string{"--operation", "elevation", "--max-attempts", "5"})
 		}},
 		{"RunAdminRateLimitSetEnabled", "rate-limit enable", func() error {
-			return RunAdminRateLimitSetEnabled(nil, []string{"--operation", "change-password"}, true)
+			return RunAdminRateLimitSetEnabled(nil, []string{"--operation", "elevation"}, true)
 		}},
 		{"RunAdminRateLimitSetEnabled", "rate-limit disable", func() error {
-			return RunAdminRateLimitSetEnabled(nil, []string{"--operation", "change-password"}, false)
+			return RunAdminRateLimitSetEnabled(nil, []string{"--operation", "elevation"}, false)
 		}},
 		{"RunAdminRateLimitReset", "rate-limit reset", func() error {
-			return RunAdminRateLimitReset(nil, []string{"--operation", "change-password"})
+			return RunAdminRateLimitReset(nil, []string{"--operation", "elevation"})
 		}},
 	}
 }

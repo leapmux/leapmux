@@ -607,6 +607,45 @@ func TestApplyEventDispatchesUserInfo(t *testing.T) {
 	})
 }
 
+// recordingCloser records the sessions a teardown closed, so a test can
+// assert that applyEvent DISPATCHED rather than only that it did not panic.
+type recordingCloser struct{ sessions []string }
+
+func (c *recordingCloser) CloseChannelsBySession(sessionID string) int {
+	c.sessions = append(c.sessions, sessionID)
+	return 0
+}
+func (*recordingCloser) CloseChannelsByBearer(auth.BearerRef) int        { return 0 }
+func (*recordingCloser) CloseChannelsByUserRevocation(string, int64) int { return 0 }
+func (*recordingCloser) RestampSessionGeneration(string, int64)          {}
+
+// TestApplyEventClosesStreamsForBothSessionKinds pins that an
+// administrator's revoke tears a session down exactly as a sign-out does.
+//
+// The kinds differ only in what they RECORD, for the one reader that must
+// separate a revoke from a sign-out under the user-auth lock. Every consumer
+// downstream of the watcher must treat them alike, and dropping the new kind
+// from this case would silently leave a revoked session's streams open until
+// the next validate -- the unknown-kind arm logs and skips rather than
+// fencing, so nothing else would report it.
+func TestApplyEventClosesStreamsForBothSessionKinds(t *testing.T) {
+	for _, kind := range []string{
+		store.RevocationEventKindSession,
+		store.RevocationEventKindSessionRevoked,
+	} {
+		closer := &recordingCloser{}
+		w := &Watcher{lifecycle: auth.NewCredentialLifecycleEffects(nil, closer, nil)}
+		w.applyEvent(store.PublishedRevocationEvent{
+			Seq: 9,
+			Event: store.RevocationEvent{
+				ID: "event", Kind: kind, SubjectID: "session-1", UserID: "u",
+			},
+		})
+		assert.Equalf(t, []string{"session-1"}, closer.sessions,
+			"kind %q must close the session's streams", kind)
+	}
+}
+
 // panickingCloser stands in for a wedged teardown that panics inside
 // applyEvent's unlocked window.
 type panickingCloser struct{}

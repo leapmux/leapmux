@@ -47,6 +47,38 @@ export default antfu({
     'no-restricted-properties': ['error', { object: 'window', property: 'localStorage', message: 'Route browser storage through ~/lib/browserStorage.' }, { object: 'window', property: 'sessionStorage', message: 'Route browser storage through ~/lib/browserStorage.' }, { object: 'globalThis', property: 'localStorage', message: 'Route browser storage through ~/lib/browserStorage.' }, { object: 'globalThis', property: 'sessionStorage', message: 'Route browser storage through ~/lib/browserStorage.' }],
   },
 }, {
+  // `title` on a DOM element is banned. Use `<Tooltip>` (or a component that
+  // routes its own `title` prop through one, as `IconButton` does).
+  //
+  // Two reasons, and the second is the one that bites silently. A native
+  // `title` renders the OS tooltip, which ignores the app's theme and
+  // typography, waits a browser-controlled delay, and never appears on touch.
+  // And on a control with no `aria-label`, a `title` long enough to state a
+  // reason BECOMES the accessible name: a screen reader then announces three
+  // sentences of remedy where "Add passkey" belongs, and every by-name lookup
+  // stops matching. Nothing in the type system catches it, and it renders
+  // fine, so it survives review.
+  //
+  // The carve-out this replaced was "a DISABLED control may use `title`,
+  // because it takes no pointer events and `<Tooltip>` cannot fire on it".
+  // `<Tooltip>` covers that case now: it gives its wrapper a box, listens
+  // there, and leaves an offscreen description in `aria-describedby` for as
+  // long as the control is disabled.
+  //
+  // A LOWERCASE element name only. `title` on a component is that component's
+  // own prop -- `<Dialog title>` is a heading, `<IconButton title>` is a
+  // tooltip -- and the selector cannot know which. A component that SPREADS
+  // its props onto a DOM node closes that hole in the type system instead, by
+  // omitting `title` from its prop type; `IconButton` and `ConfirmButton` both
+  // do.
+  files: ['src/**/*.ts', 'src/**/*.tsx', 'tests/**/*.ts', 'tests/**/*.tsx'],
+  rules: {
+    'no-restricted-syntax': ['error', {
+      selector: 'JSXOpeningElement[name.type="JSXIdentifier"][name.name=/^[a-z]/] > JSXAttribute[name.name="title"]',
+      message: 'Do not put `title` on a DOM element: it renders the unthemed OS tooltip, and it silently becomes the element\'s accessible name. Wrap the element in <Tooltip text={...}> instead -- it works on a disabled control too.',
+    }],
+  },
+}, {
   // Playwright fixture parameters (e.g. `authenticatedWorkspace`) must be destructured
   // to activate the fixture, even when not directly referenced in the test body.
   files: ['tests/e2e/**/*.spec.ts'],

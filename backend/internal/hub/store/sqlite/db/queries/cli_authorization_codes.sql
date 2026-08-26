@@ -5,12 +5,13 @@
 
 -- name: CreateCLIAuthorizationCode :exec
 INSERT INTO cli_authorization_codes (
-    code, user_id, code_challenge, device_name, expires_at
+    code, user_id, code_challenge, device_name, admin_scope, expires_at
 ) VALUES (
     sqlc.arg(code),
     sqlc.arg(user_id),
     sqlc.arg(code_challenge),
     sqlc.arg(device_name),
+    sqlc.arg(admin_scope),
     sqlc.arg(expires_at)
 );
 

@@ -5,7 +5,8 @@ import { A, useNavigate, useSearchParams } from '@solidjs/router'
 import { createSignal, onMount, Show } from 'solid-js'
 import { OAuthProviderList } from '~/components/common/OAuthProviderList'
 import { useAuth } from '~/context/AuthContext'
-import { safeRedirect } from '~/lib/safeRedirect'
+import { postAuthNavigate } from '~/lib/postAuthNavigate'
+import { stringParam } from '~/lib/searchParam'
 import { isSignupEnabled, loadOAuthProviders } from '~/lib/systemInfo'
 import { pageCard } from '~/styles/shared.css'
 import * as styles from './LoginPage.css'
@@ -75,8 +76,7 @@ export const SignupPage: Component = () => {
                   }
                   // Same redirect contract as login (see safeRedirect):
                   // a safe in-app path wins, anything else goes home.
-                  const redirect = safeRedirect(typeof searchParams.redirect === 'string' ? searchParams.redirect : undefined)
-                  navigate(redirect ?? '/', { replace: true })
+                  postAuthNavigate(navigate, stringParam(searchParams.redirect), '/')
                 }}
               />
               <div class={styles.authFooter}>

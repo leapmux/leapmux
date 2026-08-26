@@ -329,6 +329,9 @@ message AdminAPIToken {
   google.protobuf.Timestamp last_used_at = 8;
   google.protobuf.Timestamp expires_at = 9;
   google.protobuf.Timestamp revoked_at = 10;
+  // Whether this credential may reach the Admin* procedures. An audit of
+  // "who can administer the hub" is unanswerable without it.
+  bool admin_scope = 11;
 }
 
 message ListAPITokensRequest {
@@ -356,6 +359,11 @@ message IssueAPITokenRequest {
   // from it.
   int64 ttl_seconds = 4;
   string username = 5;
+  // Grant this credential hub administration. Without it the token can do
+  // everything its owner can do EXCEPT reach an Admin* procedure, which is
+  // the right default for the headless service accounts this verb exists
+  // for. The owner must be an administrator; the hub refuses otherwise.
+  bool admin_scope = 6;
 }
 
 message IssueAPITokenResponse {

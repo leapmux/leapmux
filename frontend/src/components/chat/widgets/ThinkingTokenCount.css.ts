@@ -23,21 +23,6 @@ export const root = style({
   lineHeight: CELL,
 })
 
-// Screen-reader-only copy of the full "<n> tokens" text. The visual odometer is
-// aria-hidden (its DOM is a pile of 0-9 strips that read as gibberish), so this
-// carries the real value for assistive tech — and gives tests a stable hook.
-export const srOnly = style({
-  position: 'absolute',
-  width: '1px',
-  height: '1px',
-  padding: 0,
-  margin: '-1px',
-  border: 0,
-  overflow: 'hidden',
-  clipPath: 'inset(50%)',
-  whiteSpace: 'nowrap',
-})
-
 // numberBox sizes and baselines the number from an in-flow hidden ghost; the
 // rolling digits are painted by absolutely-positioned overlays on top of it, so
 // the overlays' clipped (baseline-less) columns never affect where the number

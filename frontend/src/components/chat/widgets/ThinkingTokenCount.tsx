@@ -2,6 +2,7 @@ import type { Component } from 'solid-js'
 import { createEffect, createMemo, For, Index, onCleanup, onMount, Show } from 'solid-js'
 import { createStore } from 'solid-js/store'
 import { prefersReducedMotion } from '~/lib/prefersReducedMotion'
+import { srOnly } from '~/styles/shared.css'
 import { formatTokenCount } from '../rendererUtils'
 import * as styles from './ThinkingTokenCount.css'
 
@@ -324,7 +325,10 @@ export const ThinkingTokenCount: Component<{ tokens: number }> = (props) => {
   return (
     <span classList={{ [styles.root]: true, [styles.starPower]: starPower() }}>
       {/* Real value for assistive tech and tests; the visual odometer is aria-hidden. */}
-      <span class={styles.srOnly}>{`${display()} ${unit()}`}</span>
+      {/* The real value for assistive tech, and a stable hook for a test.
+          The visual odometer beside it is aria-hidden: its DOM is a pile of
+          0-9 strips that reads as gibberish. */}
+      <span class={srOnly}>{`${display()} ${unit()}`}</span>
       <span class={styles.numberBox}>
         {/* In-flow, hidden: owns the number's width and baseline. */}
         <span class={styles.numberGhost} aria-hidden="true">{display()}</span>

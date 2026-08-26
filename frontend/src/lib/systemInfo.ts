@@ -149,13 +149,62 @@ export function isEmailEnabled(): boolean {
   return current().emailEnabled
 }
 
-// isPasskeyEnabled returns whether passkey ceremonies can run on this hub
-// (a keystore is configured and the hub has a usable browser origin).
-// Sign-in and sign-up gate the passkey option on this flag: every Begin
-// would answer FailedPrecondition without it, so showing the option would
-// mislead users the same way an email affordance without SMTP does.
-export function isPasskeyEnabled(): boolean {
-  return current().passkeyEnabled
+/** Why this page cannot run a passkey ceremony. See `passkeyBlocker`. */
+export type PasskeyBlocker = 'insecure-context' | 'no-webauthn' | 'origin-not-allowed'
+
+// browserRunsWebAuthn reports whether this browser exposes the WebAuthn API
+// on this page. A browser exposes it in a secure context only: HTTPS, or
+// plain HTTP at a loopback address.
+//
+// It is the SAME test @simplewebauthn/browser applies before it touches
+// navigator.credentials, and it must stay the same test. A surface that
+// offers a ceremony the library then refuses shows the library's own
+// message, "WebAuthn is not supported in this browser" -- which names the
+// wrong culprit nearly every time it appears. The browser supports
+// passkeys. The page is not secure, so the browser exposes nothing to call.
+//
+// The browser is the only authority on this, which is why the hub does not
+// answer it. A user agent can be configured to trust an extra origin
+// (Chromium's --unsafely-treat-insecure-origin-as-secure), and a hub that
+// inferred the answer from the request Origin would refuse a page whose
+// ceremonies work.
+function browserRunsWebAuthn(): boolean {
+  return typeof globalThis.PublicKeyCredential === 'function'
+}
+
+/**
+ * Why this page cannot run a passkey ceremony, or null when it can.
+ *
+ * TWO parties must agree, and each one answers for itself. The hub says
+ * whether it runs ceremonies for the origin this page is on -- that is what
+ * GetSystemInfo's `passkey_enabled` carries, per request origin. The browser
+ * says whether it exposes WebAuthn here at all. Either party alone lets a
+ * surface offer a passkey affordance that can only fail.
+ *
+ * The BROWSER's reason comes first, and the order is deliberate. Its reason
+ * is the more fundamental repair, and the hub's reason is wrong advice under
+ * it: an operator who published http://hub.example:4327 and opened exactly
+ * that address is told to "open the hub through its configured URL", which
+ * is what they already did.
+ *
+ * Every passkey affordance reads this, never the hub's half alone. That half
+ * is not exported, so the mistake cannot be made.
+ */
+export function passkeyBlocker(): PasskeyBlocker | null {
+  if (!browserRunsWebAuthn()) {
+    // An explicit false, the same rule the captcha gate and the clipboard
+    // hold: jsdom leaves isSecureContext undefined, and an unknown context
+    // must not be reported as an insecure one.
+    return typeof window !== 'undefined' && window.isSecureContext === false
+      ? 'insecure-context'
+      : 'no-webauthn'
+  }
+  return current().passkeyEnabled ? null : 'origin-not-allowed'
+}
+
+/** True when a passkey ceremony can run on this page. */
+export function passkeysUsableHere(): boolean {
+  return passkeyBlocker() === null
 }
 
 // isSystemInfoLoaded reports whether a system-info answer has arrived.
@@ -171,22 +220,42 @@ export function isSystemInfoLoaded(): boolean {
 // including the denial-driven refresh after an admin toggles captcha at
 // runtime.
 //
-// ALTCHA needs a browser secure context (SubtleCrypto). When the page is
-// plain HTTP on a non-localhost host, stand down locally even if the
-// snapshot still says enabled — matching the hub's Origin-based runtime
-// gate and avoiding a deadlocked form until the next system-info refresh.
-// Turnstile and reCAPTCHA v3 work on HTTP, so they are not gated here.
-// Require an explicit false: jsdom leaves isSecureContext undefined, and
-// treating that as insecure would stand down every unit-test ALTCHA form.
+// It reports the HUB's answer and nothing else. Whether THIS page can mount
+// a widget is a second, unrelated question, and folding it in here made the
+// name say one thing and the value mean another: a caller asking whether
+// captcha is enabled was told no while the hub was about to say yes.
+// isCaptchaUnsolvableHere below answers that second question, and
+// createCaptchaForm is the one place that combines them.
 export function isCaptchaEnabled(): boolean {
-  if (!current().captchaEnabled)
-    return false
-  if (current().captchaProvider === GenCaptchaProvider.ALTCHA
+  return current().captchaEnabled
+}
+
+// isCaptchaUnsolvableHere reports the one state the two gates can disagree
+// on: the hub requires ALTCHA, and THIS page is not a secure context, so
+// no widget can mount and nothing can solve the challenge.
+//
+// It exists because the disagreement is reachable and silent. The hub
+// decides from its own configuration (it must, or a request header could
+// switch the bot check off), and it requires ALTCHA only for a published
+// HTTPS address. So a browser that reaches the hub by SOME OTHER address —
+// the LAN IP behind the TLS-terminating proxy, say — gets "captcha
+// required" from the hub and "no secure context" from itself. Standing down locally and submitting an empty
+// payload turns that into a permanent, undiagnosable "verification failed"
+// loop: the hub denies, the form refreshes the snapshot, the hub answers
+// the same, forever.
+//
+// The forms therefore BLOCK on this and say why, which specifies the fix:
+// reach the hub at the published HTTPS address, or publish the address
+// users really type.
+// Require an explicit false: jsdom leaves isSecureContext undefined, and
+// treating that as insecure would BLOCK submission on every unit-test ALTCHA
+// form. (Under the predicate this replaced the same relaxation stood the form
+// down instead; the polarity inverted when the two questions split.)
+export function isCaptchaUnsolvableHere(): boolean {
+  return current().captchaEnabled
+    && current().captchaProvider === GenCaptchaProvider.ALTCHA
     && typeof window !== 'undefined'
-    && window.isSecureContext === false) {
-    return false
-  }
-  return true
+    && window.isSecureContext === false
 }
 
 // getCaptchaProvider returns the active captcha provider (the generated

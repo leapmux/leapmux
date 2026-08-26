@@ -1,6 +1,7 @@
 import type { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { first } from '~/lib/lexorank'
-import { ctxFromBridge, getCRDTBridge, newBatch, setTabPosition, setTabTileId, setTabWorkerId } from './index'
+import { ctxFromBridge, getCRDTBridge } from './bridge'
+import { newBatch, setTabPosition, setTabTileId, setTabWorkerId } from './ops'
 
 /**
  * Result of `seedTabIntoNewWorkspace`. `rootNodeId` is the new

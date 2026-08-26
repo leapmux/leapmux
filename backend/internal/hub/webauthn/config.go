@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/leapmux/leapmux/internal/hub/httpsec"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 )
 
@@ -90,12 +91,12 @@ func allowedOrigins(u *url.URL) []string {
 // the loopback spellings: a loopback bind, a wildcard bind, or an empty host.
 func servesLoopback(host string) bool {
 	h := normalizeHost(host)
-	return isLoopbackHost(h) || h == "0.0.0.0" || h == "::"
-}
-
-func isLoopbackHost(host string) bool {
-	h := normalizeHost(host)
-	return h == "localhost" || h == "127.0.0.1" || h == "::1"
+	// httpsec answers both halves, so this file spells neither the loopback
+	// list nor the wildcard pair itself -- that list exists because several
+	// packages need the same answer, and a comment claiming they agree is not
+	// a mechanism. IsWildcardHost also covers the spellings a literal pair
+	// misses ("[::0]", "0:0:0:0:0:0:0:0").
+	return httpsec.IsLoopbackHost(h) || httpsec.IsWildcardHost(h)
 }
 
 func rpIDForHost(host string) string {
@@ -103,7 +104,7 @@ func rpIDForHost(host string) string {
 }
 
 func normalizeHost(host string) string {
-	return strings.Trim(strings.ToLower(host), "[]")
+	return httpsec.NormalizeHost(host)
 }
 
 func originListed(origins []string, candidate string) bool {

@@ -53,7 +53,7 @@ export const UserMenuItems: Component = () => {
   return (
     <>
       <AppAboutMenuItem />
-      <button role="menuitem" onClick={() => openPreferences('appearance')}>
+      <button role="menuitem" onClick={() => openPreferences()}>
         <DropdownMenuItemContent label="Preferences..." shortcut={getShortcutHintsText('app.openPreferences')} />
       </button>
 

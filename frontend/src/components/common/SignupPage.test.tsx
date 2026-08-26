@@ -21,12 +21,15 @@ const mockGetCaptchaProvider = vi.fn<() => number>(() => 1) // CaptchaProvider.A
 vi.mock('~/lib/systemInfo', () => ({
   isSoloMode: () => false,
   isEmailEnabled: () => false,
-  isPasskeyEnabled: () => false,
+  // The hub serves no passkey ceremony at this origin, so the form offers no
+  // Passkey pill at all. `authMethodOptions` reads the blocker directly.
+  passkeyBlocker: () => 'origin-not-allowed',
   loadSystemInfo: () => Promise.resolve(),
   isSignupEnabled: () => mockIsSignupEnabled(),
   loadOAuthProviders: () => mockLoadOAuthProviders(),
   isSystemInfoLoaded: () => true,
   isCaptchaEnabled: () => mockIsCaptchaEnabled(),
+  isCaptchaUnsolvableHere: () => false,
   getAltchaAlgorithm: () => '',
   getCaptchaProvider: () => mockGetCaptchaProvider(),
   getCaptchaSiteKey: () => '',

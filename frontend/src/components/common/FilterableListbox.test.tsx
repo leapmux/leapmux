@@ -47,7 +47,7 @@ describe('filterableListbox', () => {
     // language picker has 235 tooltip-less rows, so this is the bulk of its cost).
     const withTip = screen.getByTestId('f-w').parentElement!
     expect(withTip.tagName).toBe('SPAN')
-    expect(withTip.getAttribute('style')).toContain('display:contents')
+    expect((withTip as HTMLElement).style.display).toBe('contents')
     expect(screen.getByTestId('f-wo').parentElement!.tagName).not.toBe('SPAN')
   })
 

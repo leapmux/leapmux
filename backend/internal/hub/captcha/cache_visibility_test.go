@@ -30,18 +30,28 @@ func TestResolveRefreshesAfterTTL(t *testing.T) {
 
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	const ttl = time.Second
-	set := settings.NewManager(st, ks, SettingsDescriptors(),
+	// The two CORE keys the secure-context gate reads are registered here
+	// too, and public_url is published below. Without both, this test ran
+	// its whole scenario against an ALTCHA-DISABLED manager and asserted
+	// only the algorithm, so it stayed green while covering a path it never
+	// meant to take.
+	descs := append(SettingsDescriptors(), settings.KeyPublicURL, settings.KeySecureCookies)
+	set := settings.NewManager(st, ks, descs,
 		settings.WithTTL(ttl), settings.WithNow(func() time.Time { return now }))
 	require.NoError(t, set.Load(ctx))
+	require.NoError(t, settings.KeyPublicURL.Set(ctx, set, testPublicURL))
 	m := NewManager(st, set, false)
+	require.True(t, m.Describe(ctx).Enabled, "precondition: this manager must have ALTCHA enabled")
 
-	_, err = m.AltchaChallengeJSON(ctx) // provisions + caches defaults
+	challengeJSON, err := m.AltchaChallengeJSON(ctx) // provisions + caches defaults
 	require.NoError(t, err)
+	require.NotEmpty(t, challengeJSON, "an enabled manager must issue a real challenge")
 	provisioned := AltchaKey.Of(set.Snapshot(ctx))
+	require.NotEmpty(t, provisioned.HMACKey, "provisioning must mint a signing key")
 
 	// A second manager (the admin CLI stand-in) swaps the settings. The
 	// settings-only update never touches the provisioned secret.
-	admin := settings.NewManager(st, ks, SettingsDescriptors())
+	admin := settings.NewManager(st, ks, descs)
 	require.NoError(t, admin.Load(ctx))
 	require.NoError(t, admin.Update(ctx, AltchaKey, json.RawMessage(cheapAltchaSettings)))
 

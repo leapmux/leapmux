@@ -9,6 +9,7 @@ import (
 
 	"github.com/leapmux/leapmux/channelwire"
 	"github.com/leapmux/leapmux/internal/hub/config"
+	"github.com/leapmux/leapmux/internal/hub/httpsec"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
 )
 
@@ -565,8 +566,29 @@ func SignupEnabledEffective(s *Snapshot, devMode bool) bool {
 // BaseURL derives the hub's public base URL: the configured public_url,
 // else scheme-from-secure_cookies plus the listen host. listen is the
 // process's bootstrap listen address, so it is a parameter rather than a
-// setting — it names the socket the OS handed this process, not a fact
+// setting -- it specifies the socket the OS handed this process, not a fact
 // about the hub instance.
+//
+// A WILDCARD bind answers on every address the machine holds, so no single
+// host derives from it and localhost is the one the hub's own links can
+// name. All three spellings resolve that way -- ":4327", "0.0.0.0:4327" and
+// "[::]:4327". Only ":4327" did before, and the other two produced
+// "http://0.0.0.0:4327": an address no browser can open, printed into every
+// verification and password-reset mail, into the device-code
+// verification_uri the CLI displays, and registered as the OAuth
+// redirect_uri. It is the same assumption the rest of the hub already makes
+// for a wildcard bind -- webauthn.servesLoopback accepts one as a loopback
+// deployment, and the captcha secure-context gate reads it the same way.
+//
+// An EMPTY listen is different and stays hostless. It means there is no TCP
+// listener at all (the desktop app reaches its hub over a local socket), so
+// there is no browser-reachable address to invent. RPConfigFromSettings
+// depends on that: an empty host is how passkeys report themselves cleanly
+// unavailable instead of running against a fabricated origin.
+//
+// A deployment that browsers really reach by a LAN address or a hostname
+// must set public_url. That is not an extra demand: without it, passkeys
+// already refuse every non-loopback origin.
 func BaseURL(s *Snapshot, listen string) string {
 	if u := KeyPublicURL.Of(s); u != "" {
 		return u
@@ -575,9 +597,33 @@ func BaseURL(s *Snapshot, listen string) string {
 	if KeySecureCookies.Of(s) {
 		scheme = "https"
 	}
-	host := listen
-	if strings.HasPrefix(host, ":") {
-		host = "localhost" + host
+	return scheme + "://" + browserHostForListen(listen)
+}
+
+// browserHostForListen is the authority a browser reaches this hub at,
+// derived from the bind address. A WILDCARD bind answers on every address
+// the machine holds, and localhost is the one the hub's own links can name.
+// httpsec.IsWildcardHost answers for every spelling of it, so "[::0]:4327"
+// and "0:0:0:0:0:0:0:0:4327" resolve the same way ":4327" does.
+//
+// An empty listen returns empty, which is not an oversight: it means no TCP
+// listener exists, and a caller that gets no host reports passkeys and mail
+// links as unavailable rather than pointing them somewhere invented. An
+// empty HOST with a port (":4327") is the wildcard, not the absent listener,
+// which is why the two are separate branches.
+func browserHostForListen(listen string) string {
+	host := strings.TrimSpace(listen)
+	if host == "" {
+		return ""
 	}
-	return scheme + "://" + host
+	// Split the port off so the wildcard host can be recognised. The split
+	// and the wildcard test both live in httpsec, which is the leaf the
+	// captcha gate and the passkey origin resolution reach for as well: one
+	// definition of "what host does this bind address mean to a browser",
+	// rather than three that agree only by comment.
+	hostPart, port := httpsec.SplitBindHostPort(host)
+	if hostPart == "" || httpsec.IsWildcardHost(hostPart) {
+		return "localhost" + port
+	}
+	return host
 }

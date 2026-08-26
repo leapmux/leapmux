@@ -54,6 +54,30 @@ test.describe('security headers', () => {
     expect(headers['referrer-policy']).toBe('same-origin')
   })
 
+  // /elevate is a step-up prompt that runs a WebAuthn ceremony, so a policy
+  // that reaches it without the derived script-src hash is not a weaker
+  // defence -- it is a blank page where a user has to prove who they are,
+  // and the CLI login it was bounced from waits for ever. It sits OUTSIDE
+  // the (app) group, so it is worth its own check rather than assuming the
+  // shell's coverage carries.
+  test('serves the same enforced CSP on the standalone /elevate route', async ({ page }) => {
+    const violations = collectCspViolations(page)
+    const response = await page.goto('/elevate?redirect=%2F')
+    expect(response).not.toBeNull()
+
+    const csp = response!.headers()['content-security-policy']
+    expect(csp, '/elevate must carry the same enforced CSP as the app document').toBeTruthy()
+    expect(csp).toContain('\'sha256-')
+    expect(response!.headers()['x-content-type-options']).toBe('nosniff')
+
+    // It is an SPA route, so the shell must actually boot here: a redirect
+    // to /login (no session) is the expected end state for an anonymous
+    // visitor, and either way the document ran its scripts to decide.
+    await expect.poll(() => new URL(page.url()).pathname).toMatch(/^\/(elevate|login)$/)
+    expect(violations, `the browser refused something the policy should allow:\n${violations.join('\n')}`)
+      .toEqual([])
+  })
+
   // The headers wrap the whole mux, not the frontend handler alone, so a
   // non-document response carries them too.
   test('serves the transport headers on a non-document route', async ({ page, leapmuxServer }) => {

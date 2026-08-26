@@ -15,9 +15,12 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/util/pkce"
 	"github.com/leapmux/leapmux/locallisten"
@@ -91,10 +94,13 @@ func TestPersistTokenResponse_WritesCredentials(t *testing.T) {
 			"access_token": "lmx_a_at_xyz",
 			"refresh_token": "lmx_a_rt_xyz",
 			"expires_in": 3600,
+			"refresh_expires_in": 7776000,
+			"token_id": "tok-1",
+			"admin_scope": true,
 			"user_id": "user-1",
 			"username": "alice"
 		}`)
-		err := persistTokenResponse("https://hub.example", body)
+		err := persistTokenResponse("https://hub.example", body, true)
 		require.NoError(t, err)
 	})
 
@@ -105,8 +111,137 @@ func TestPersistTokenResponse_WritesCredentials(t *testing.T) {
 	assert.Equal(t, "lmx_a_rt_xyz", loaded.RefreshToken)
 	assert.Equal(t, "user-1", loaded.UserID)
 	assert.Equal(t, "alice", loaded.Username)
+	assert.Equal(t, "tok-1", loaded.TokenID)
+	assert.True(t, loaded.AdminScope)
 	// expires_at = now + expires_in; allow 1m skew for slow CI.
 	assert.WithinDuration(t, time.Now().Add(time.Hour), loaded.ExpiresAt, time.Minute)
+	assert.WithinDuration(t, time.Now().Add(90*24*time.Hour), loaded.RefreshExpiresAt, time.Minute)
+}
+
+// TestPersistTokenResponse_WarnsWhenAdminScopeWasNotGranted pins the
+// device-code case the CLI cannot control: the browser decides the scope, so
+// a `--admin` login that comes back without it must SAY so. Letting the
+// first admin verb fail with a permission error that specifies nothing the user did.
+func TestPersistTokenResponse_WarnsWhenAdminScopeWasNotGranted(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", dir)
+	out := withCapturedStdout(t, func() {
+		body := strings.NewReader(`{
+			"access_token": "lmx_a_at_xyz",
+			"refresh_token": "lmx_a_rt_xyz",
+			"expires_in": 3600,
+			"admin_scope": false,
+			"user_id": "user-1",
+			"username": "alice"
+		}`)
+		require.NoError(t, persistTokenResponse("https://hub.example", body, true))
+	})
+
+	var env struct {
+		Data map[string]any `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(out, &env))
+	assert.Equal(t, false, env.Data["admin_scope"])
+	assert.Contains(t, env.Data["warning"], "--admin")
+
+	loaded, err := control.LoadCredentials("https://hub.example")
+	require.NoError(t, err)
+	assert.False(t, loaded.AdminScope, "the file must record what was GRANTED, not what was asked")
+}
+
+// TestPersistTokenResponse_RevokesTheCredentialItReplaces pins the
+// save-then-revoke ORDER. A crash between the two must leave the user
+// logged IN with one abandoned row, never logged out holding a file the hub
+// has already refused.
+func TestPersistTokenResponse_RevokesTheCredentialItReplaces(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", dir)
+
+	revoked := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/auth/cli/revoke", r.URL.Path)
+		require.NoError(t, r.ParseForm())
+		revoked <- r.FormValue("token")
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	require.NoError(t, control.SaveCredentials(srv.URL, control.CredentialFile{
+		HubURL:      srv.URL,
+		AccessToken: "lmx_a_old_secret",
+		UserID:      "user-1",
+		Username:    "alice",
+	}))
+
+	withCapturedStdout(t, func() {
+		body := strings.NewReader(`{
+			"access_token": "lmx_a_new_secret",
+			"refresh_token": "lmx_a_new_refresh",
+			"expires_in": 3600,
+			"user_id": "user-1",
+			"username": "alice"
+		}`)
+		require.NoError(t, persistTokenResponse(srv.URL, body, false))
+	})
+
+	select {
+	case token := <-revoked:
+		assert.Equal(t, "lmx_a_old_secret", token, "the OUTGOING credential must be the one revoked")
+	case <-time.After(5 * time.Second):
+		t.Fatal("the replaced credential was never revoked")
+	}
+
+	loaded, err := control.LoadCredentials(srv.URL)
+	require.NoError(t, err)
+	assert.Equal(t, "lmx_a_new_secret", loaded.AccessToken, "the new credential must survive the revoke")
+}
+
+// TestPersistTokenResponse_WarnsWhenTheOldCredentialSurvives pins the other
+// half of the retirement.
+//
+// The revoke is best-effort by design -- the new credential is already on
+// disk and the login succeeded -- but it must not be SILENT. revokeBearer
+// never read the status code, so a hub that refused the revoke produced a
+// clean result envelope while the old refresh secret stayed live for the
+// rest of its window, which is exactly what the retirement exists to stop.
+func TestPersistTokenResponse_WarnsWhenTheOldCredentialSurvives(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", dir)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/auth/cli/revoke", r.URL.Path)
+		// The hub refuses. A 2xx-only reader would call this success.
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+
+	require.NoError(t, control.SaveCredentials(srv.URL, control.CredentialFile{
+		HubURL:      srv.URL,
+		AccessToken: "lmx_a_old_secret",
+		UserID:      "user-1",
+		Username:    "alice",
+	}))
+
+	out := withCapturedStdout(t, func() {
+		body := strings.NewReader(`{
+			"access_token": "lmx_a_new_secret",
+			"refresh_token": "lmx_a_new_refresh",
+			"expires_in": 3600,
+			"user_id": "user-1",
+			"username": "alice"
+		}`)
+		require.NoError(t, persistTokenResponse(srv.URL, body, false))
+	})
+
+	assert.Contains(t, string(out), "could not be revoked",
+		"a retirement that did not happen must say so")
+	assert.Contains(t, string(out), "Preferences",
+		"the warning must state where the operator can finish the job")
+
+	// The login still succeeded: the new credential is on disk.
+	loaded, err := control.LoadCredentials(srv.URL)
+	require.NoError(t, err)
+	assert.Equal(t, "lmx_a_new_secret", loaded.AccessToken)
 }
 
 // TestPersistTokenResponse_RejectsMalformedJSON pins the failure path:
@@ -116,7 +251,7 @@ func TestPersistTokenResponse_RejectsMalformedJSON(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", dir)
 	out := withCapturedStdout(t, func() {
-		err := persistTokenResponse("https://hub.example", strings.NewReader(`{not json`))
+		err := persistTokenResponse("https://hub.example", strings.NewReader(`{not json`), false)
 		require.Error(t, err)
 		assert.True(t, control.IsEmitted(err))
 	})
@@ -616,4 +751,61 @@ func TestEmittedError_IsEmittedTrueOnEmitErrorReturn(t *testing.T) {
 	// CLI would silently swallow legitimate non-emitted failures.
 	assert.False(t, control.IsEmitted(fmt.Errorf("plain error")))
 	assert.False(t, control.IsEmitted(nil))
+}
+
+// TestRunAuthCredentials_ListsTheAccountCredentials pins the verb that makes
+// MyAPIToken.current reachable at all.
+//
+// `current` marks the row the REQUEST authenticated with, and the hub derives
+// it from the caller's own credential -- so a browser session, which is what
+// every other caller of ListMyAPITokens is, always reads false. This command
+// authenticates with the credential itself, which is the whole point.
+func TestRunAuthCredentials_ListsTheAccountCredentials(t *testing.T) {
+	// A REAL UserService handler, so the client's own codec and the wire
+	// shape are exercised rather than a hand-written JSON body the proto
+	// client would refuse.
+	mux := http.NewServeMux()
+	path, handler := leapmuxv1connect.NewUserServiceHandler(&stubMyTokensService{})
+	mux.Handle(path, handler)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+	require.NoError(t, control.SaveCredentials(srv.URL, control.CredentialFile{
+		HubURL: srv.URL, AccessToken: "lmx_a_test", RefreshToken: "lmx_r_test",
+		ExpiresAt: time.Now().Add(time.Hour), UserID: "u-1", Username: "alice",
+	}))
+
+	out := withCapturedStdout(t, func() {
+		require.NoError(t, RunAuthCredentials(fakeCmdCtx{}, []string{"--hub", srv.URL}))
+	})
+
+	var env struct {
+		Data []map[string]any `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(out, &env))
+	require.Len(t, env.Data, 2)
+	assert.Equal(t, "alice@laptop", env.Data[0]["client_name"])
+	assert.Equal(t, true, env.Data[0]["admin_scope"])
+	assert.Equal(t, true, env.Data[0]["current"], "the credential making the request must be marked")
+	assert.Equal(t, false, env.Data[1]["current"])
+	// An unset timestamp reads as null, not as the Unix epoch.
+	assert.Nil(t, env.Data[0]["last_used_at"])
+}
+
+// stubMyTokensService answers ListMyAPITokens and nothing else.
+type stubMyTokensService struct {
+	leapmuxv1connect.UnimplementedUserServiceHandler
+}
+
+func (s *stubMyTokensService) ListMyAPITokens(
+	_ context.Context,
+	_ *connect.Request[leapmuxv1.ListMyAPITokensRequest],
+) (*connect.Response[leapmuxv1.ListMyAPITokensResponse], error) {
+	return connect.NewResponse(&leapmuxv1.ListMyAPITokensResponse{
+		Tokens: []*leapmuxv1.MyAPIToken{
+			{Id: "tok-1", ClientType: "cli", ClientName: "alice@laptop", AdminScope: true, Current: true},
+			{Id: "tok-2", ClientType: "cli", ClientName: "ci"},
+		},
+	}), nil
 }

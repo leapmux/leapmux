@@ -79,17 +79,11 @@ func Open(ctx context.Context, cfg config.PostgresConfig) (store.Store, error) {
 		return nil, fmt.Errorf("migrate postgres: %w", err)
 	}
 
-	return &pgStore{
-		conn: &pgConn{
-			shared: &pgShared{
-				pool:        pool,
-				migrationDB: sqlDB,
-				migrator:    mig,
-			},
-			exec: pool,
-			q:    gendb.New(pool),
-		},
-	}, nil
+	return &pgStore{conn: newPoolConn(&pgShared{
+		pool:        pool,
+		migrationDB: sqlDB,
+		migrator:    mig,
+	}, pool)}, nil
 }
 
 // newFromPool wraps an existing pool (already migrated) into a Store.
@@ -98,17 +92,34 @@ func newFromPool(pool *pgxpool.Pool, migrationDB *sql.DB) (*pgStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("init postgres migrator: %w", err)
 	}
-	return &pgStore{
-		conn: &pgConn{
-			shared: &pgShared{
-				pool:        pool,
-				migrationDB: migrationDB,
-				migrator:    mig,
-			},
-			exec: pool,
-			q:    gendb.New(pool),
-		},
-	}, nil
+	return &pgStore{conn: newPoolConn(&pgShared{
+		pool:        pool,
+		migrationDB: migrationDB,
+		migrator:    mig,
+	}, pool)}, nil
+}
+
+// newPoolConn builds the NON-transactional conn, and it is the only way to
+// build one.
+//
+// Both entry points went through the same four-line literal, and the second
+// half of that literal is a security-relevant decision rather than plumbing:
+// the pool's Queries must carry conflictRetryDBTX, so a statement a
+// distributed backend aborts for a retryable conflict runs again instead of
+// reaching the caller as a failure it did not earn. Two copies of that
+// decision is one copy that can lose the wrapper with nothing to notice. See
+// conflict_retry.go.
+//
+// The pool arrives as an argument rather than through shared.pool so a test
+// can supply a stand-in and prove the wiring, not merely the wrapper.
+// withTransaction builds its own conn from q.WithTx, which deliberately
+// carries no retry.
+func newPoolConn(shared *pgShared, pool gendb.DBTX) *pgConn {
+	return &pgConn{
+		shared: shared,
+		exec:   pool,
+		q:      gendb.New(conflictRetryDBTX{inner: pool}),
+	}
 }
 
 func (s *pgStore) Users() store.UserStore       { return &userStore{conn: s.conn} }
@@ -175,6 +186,9 @@ func (s *pgStore) CLIAuthorizationCodes() store.CLIAuthorizationCodeStore {
 func (s *pgStore) Cleanup() store.CleanupStore { return &cleanupStore{conn: s.conn} }
 func (s *pgStore) Migrator() store.Migrator    { return s.conn.shared.migrator }
 
+// RunInTransaction runs fn in one transaction. fn may run MORE THAN ONCE when
+// the backend aborts the transaction for a retryable conflict; see
+// withTransaction and the contract on store.Store.
 func (s *pgStore) RunInTransaction(ctx context.Context, fn func(tx store.Store) error) error {
 	if s.conn.inTx() {
 		return fn(s)
@@ -204,10 +218,41 @@ func (c *pgConn) inTx() bool {
 	return ok
 }
 
+// withTransaction runs fn in one transaction, and runs the WHOLE transaction
+// again when the backend aborts it for a retryable conflict.
+//
+// The retry has to wrap the whole unit of work rather than the statement that
+// conflicted: the abort killed the transaction, so every later statement in it
+// answers "current transaction is aborted" and re-running one would rejoin a
+// dead transaction. That is why the statement-level wrapper covers the pool
+// alone -- see conflict_retry.go.
+//
+// So fn CAN RUN MORE THAN ONCE, and store.Store states that as the contract
+// its callers must meet. A caller that writes a result through a captured
+// variable is fine, because a re-run overwrites it. A caller that ACCUMULATES
+// into captured state -- appends to a slice, adds to a counter, sends on a
+// channel, calls a lifecycle effect -- is not, because the aborted attempt's
+// contribution stays. Every caller in this repository was read against that
+// rule before the retry was turned on; all of them assign.
+//
+// An abort can arrive from a statement inside fn or from Commit itself, and
+// both reach store.RetryOnConflict here. A conflict that fn converts into an error
+// type carrying no wrapped cause is the one shape this cannot see, and it
+// simply does not retry -- the caller gets the same answer it got before.
+//
+// An already-open transaction returns fn(c) untouched: the OUTERMOST call owns
+// the retry, and a nested one that retried would repeat part of a unit of work
+// somebody else is still assembling.
 func (c *pgConn) withTransaction(ctx context.Context, fn func(tx *pgConn) error) error {
 	if c.inTx() {
 		return fn(c)
 	}
+	return store.RetryOnConflict(ctx, isRetryableConflict, func() error { return c.runTransaction(ctx, fn) })
+}
+
+// runTransaction is one attempt: begin, run, commit, and roll back whatever
+// the attempt left behind.
+func (c *pgConn) runTransaction(ctx context.Context, fn func(tx *pgConn) error) error {
 	pgxTx, err := c.shared.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
@@ -217,7 +262,10 @@ func (c *pgConn) withTransaction(ctx context.Context, fn func(tx *pgConn) error)
 	txConn := &pgConn{
 		shared: c.shared,
 		exec:   pgxTx,
-		q:      c.q.WithTx(pgxTx),
+		// WithTx rebuilds Queries over the transaction, which deliberately
+		// drops the statement-level retry: inside a transaction the whole
+		// attempt is what repeats, and this function is what repeats it.
+		q: c.q.WithTx(pgxTx),
 	}
 	if err := fn(txConn); err != nil {
 		return err

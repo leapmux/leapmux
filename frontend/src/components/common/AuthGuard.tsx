@@ -4,7 +4,7 @@ import { createEffect, createMemo, Match, Switch } from 'solid-js'
 import { BootSplash } from '~/components/common/BootSplash'
 import { useAuth } from '~/context/AuthContext'
 import { assertNever } from '~/lib/assertNever'
-import { isSetupRequired, isSoloMode } from '~/lib/systemInfo'
+import { isSoloMode } from '~/lib/systemInfo'
 import { centeredFull } from '~/styles/shared.css'
 
 /**
@@ -32,14 +32,19 @@ type GuardState
  * which is the group's only route — decides "who may see this page" here and
  * nowhere else, so no guarded route needs a redirect effect of its own.
  *
- * `isSoloMode()` / `isSetupRequired()` derive from the systemInfo
- * snapshot signal: they are safe reads because `AuthProvider` awaits
- * `loadSystemInfo()` before it clears `loading()` — by the time `state`
- * is computed past its first line, both have their real values, and a
- * later forced refresh re-evaluates this memo reactively. And if that
- * load FAILED they never got real values at all, which is why the
- * `bootstrapError()` arm sits above every read of them: the panel is
- * shown instead of a decision made on fabricated defaults.
+ * It never sees a hub whose first-run setup is incomplete: `SetupGate` sits
+ * above the router outlet and refuses every address but `/setup` while the
+ * hub has no account, so an unauthenticated visitor reaching this memo is on
+ * a hub that has one. That rule lives there rather than here because four
+ * routes outside this guard need it too.
+ *
+ * `isSoloMode()` derives from the systemInfo snapshot signal: it is a safe
+ * read because `AuthProvider` awaits `loadSystemInfo()` before it clears
+ * `loading()` — by the time `state` is computed past its first line it has
+ * its real value, and a later forced refresh re-evaluates this memo
+ * reactively. And if that load FAILED it never got a real value at all,
+ * which is why the `bootstrapError()` arm sits above every read of it: the
+ * panel is shown instead of a decision made on fabricated defaults.
  */
 export const AuthGuard: ParentComponent = (props) => {
   const auth = useAuth()
@@ -78,14 +83,6 @@ export const AuthGuard: ParentComponent = (props) => {
         detail: 'This server runs in solo mode, where every request is authenticated, so there is no sign-in to fall back to. The hub may be misconfigured, or a proxy in front of it may be stripping credentials.',
       }
     }
-
-    // A fresh install has no account to sign in to yet. Send the visitor to
-    // first-admin setup directly -- `/login` would only turn around and do the
-    // same (it makes this call itself, for visitors who land there directly,
-    // since it is not behind this guard), leaving a `/` -> `/login` -> `/setup`
-    // bounce through a form nobody can pass.
-    if (isSetupRequired())
-      return { kind: 'redirect', to: '/setup' }
 
     const returnTo = location.pathname + location.search
     return { kind: 'redirect', to: `/login?redirect=${encodeURIComponent(returnTo)}` }

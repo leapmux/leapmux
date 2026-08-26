@@ -16,6 +16,15 @@ import (
 	"github.com/leapmux/leapmux/internal/util/sqltime/pgtime"
 )
 
+// nonEmpty presents an OPTIONAL string column to ptrToText: empty means "not
+// set", which is SQL NULL. It is the pgtype twin of sqlutil.NullNonEmpty.
+func nonEmpty(v string) *string {
+	if v == "" {
+		return nil
+	}
+	return &v
+}
+
 func ptrToText(s *string) pgtype.Text {
 	if s != nil {
 		return pgtype.Text{String: *s, Valid: true}
@@ -159,6 +168,12 @@ func listUserSessionsParams(userID, cursor string, limit int64, now time.Time) (
 func listAllAPITokensParams(clientType, cursor string, limit int64) (gendb.ListAllAPITokensParams, error) {
 	return withCursor(cursor, limit, func(ct pgtime.NullTime, cid pgtype.Text, fl int32) gendb.ListAllAPITokensParams {
 		return gendb.ListAllAPITokensParams{ClientType: clientType, CursorTime: ct, CursorID: cid, Limit: fl}
+	})
+}
+
+func listAPITokensByUserParams(userID, clientType, cursor string, limit int64) (gendb.ListAPITokensByUserParams, error) {
+	return withCursor(cursor, limit, func(ct pgtime.NullTime, cid pgtype.Text, fl int32) gendb.ListAPITokensByUserParams {
+		return gendb.ListAPITokensByUserParams{UserID: userID, ClientType: clientType, CursorTime: ct, CursorID: cid, Limit: fl}
 	})
 }
 

@@ -29,20 +29,21 @@ func IsReservedSystem(u string) bool {
 	return normalize(u) == Solo
 }
 
-// IsReservedPublic reports whether a username is reserved for anonymous,
-// post-setup signup paths (public SignUp, public OAuth completion). Covers
-// Admin. Setup-mode signup and the admin CLI accept the name because they do
-// not call this predicate.
-func IsReservedPublic(u string) bool {
-	return normalize(u) == Admin
-}
-
-// IsReservedForPublicSignup reports whether a username is reserved in any
-// anonymous signup context — both the system rule and the public rule apply.
-// Use this in paths that have no setup-mode exemption (e.g. OAuth completion,
-// post-setup SignUp). Equivalent to IsReservedSystem(u) || IsReservedPublic(u)
-// but normalizes the input once.
-func IsReservedForPublicSignup(u string) bool {
+// IsReservedForSignup reports whether a sign-up may not claim a username.
+//
+// setupMode says whether this sign-up creates the hub's FIRST account. Solo
+// is refused in every mode: a user by that name in a non-solo database would
+// be auto-authenticated for every request if the same data-dir were later
+// opened in solo mode (see auth/interceptor.go). Admin is squat-protected in
+// anonymous public signup and claimable by the first administrator, so the
+// setup flows accept it.
+//
+// ONE predicate for every sign-up flavor, because they all ask this question
+// and they must not answer it differently. Password sign-up spelled the two
+// rules inline while the passkey and OAuth paths shared a public-only
+// predicate, so the first administrator could claim `admin` with a password
+// and not with a passkey.
+func IsReservedForSignup(u string, setupMode bool) bool {
 	n := normalize(u)
-	return n == Solo || n == Admin
+	return n == Solo || (!setupMode && n == Admin)
 }

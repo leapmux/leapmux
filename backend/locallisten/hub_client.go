@@ -49,6 +49,29 @@ func LocalHTTPClient(hubURL string, timeout time.Duration) (*http.Client, string
 	}, LocalConnectURL, nil
 }
 
+// RESTClient returns the HTTP/1.1 client and base URL for a plain REST call
+// against hubURL: a socket-dialer client for a `unix:`/`npipe:` hub, a
+// timeout-capped client otherwise.
+//
+// It lives HERE because two packages need it and they cannot share it
+// between themselves: `control/cmd` imports `control`, so neither can hold
+// the helper for the other. This package is the leaf both already reach for,
+// which makes the "they cannot be shared" note in the callers obsolete
+// rather than true.
+//
+// The remote leg is a client with the SAME timeout, not http.DefaultClient.
+// The default client has no timeout at all, so the duration a caller passed
+// applied to a local hub and silently did not apply to a remote one -- a
+// remote hub that accepts a connection and never answers hung the command
+// for ever. Every caller makes short request-response calls; the device-code
+// flow polls with one short request per interval rather than holding a long
+// poll open.
+func RESTClient(hubURL string, timeout time.Duration) (*http.Client, string) {
+	return SelectClient(hubURL,
+		func() (*http.Client, string, error) { return LocalHTTPClient(hubURL, timeout) },
+		func() (*http.Client, string) { return &http.Client{Timeout: timeout}, hubURL })
+}
+
 // JoinPath joins a path onto a hub base URL, normalising any
 // trailing slash on the base. Callers compose endpoint URLs from a
 // user-supplied --hub flag whose value may or may not end in "/".

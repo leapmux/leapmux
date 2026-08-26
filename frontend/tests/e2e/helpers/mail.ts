@@ -1,6 +1,6 @@
 import type { Server, Socket } from 'node:net'
 import { createServer } from 'node:net'
-import { configureCaptureSmtpViaAPI, waitForEmailEnabled } from './api'
+import { clearSmtpViaAPI, configureCaptureSmtpViaAPI, waitForEmailEnabled } from './api'
 
 export interface CaptureSmtpServer {
   host: string
@@ -133,8 +133,17 @@ export async function startCaptureSmtpServer(): Promise<CaptureSmtpServer> {
 /**
  * Stage the hub with a capture SMTP server for one test body: start the
  * server, point the hub at it, wait for email to report enabled, run the
- * body, and stop the server. One helper, so a new required staging step
- * applies to every SMTP spec at once.
+ * body, then put the hub BACK and stop the server. One helper, so a new
+ * required staging step applies to every SMTP spec at once.
+ *
+ * The restore is not tidiness. `leapmuxServer` is a WORKER fixture, so every
+ * spec that worker runs shares one hub -- and SMTP left configured leaves
+ * `email_enabled` true against a relay that has already stopped. Every
+ * account created afterwards is then unverified and refused almost every
+ * procedure, so a later spec fails with a flood of
+ * "permission_denied: email verification required" and no clue where it came
+ * from. Which spec that hits depends on how Playwright packed the files onto
+ * workers, so it moves between runs.
  */
 export async function withCaptureSmtp(
   server: { hubUrl: string, adminToken: string },
@@ -147,6 +156,10 @@ export async function withCaptureSmtp(
     await body(smtp)
   }
   finally {
+    // Best effort, and in this order: the hub must stop pointing at the relay
+    // before the relay goes away. A failure here must not mask the body's own
+    // failure, which is the one a reader needs.
+    await clearSmtpViaAPI(server.hubUrl, server.adminToken).catch(() => {})
     await smtp.stop()
   }
 }

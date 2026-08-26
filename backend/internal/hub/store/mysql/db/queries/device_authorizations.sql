@@ -5,8 +5,8 @@
 
 -- name: CreateDeviceAuthorization :exec
 INSERT INTO device_authorizations (
-    device_code, user_code, device_name, interval_seconds, expires_at
-) VALUES (?, ?, ?, ?, ?);
+    device_code, user_code, device_name, interval_seconds, expires_at, elevate_token_id
+) VALUES (?, ?, ?, ?, ?, sqlc.narg(elevate_token_id));
 
 -- name: GetDeviceAuthorization :one
 SELECT * FROM device_authorizations WHERE device_code = ?;
@@ -15,14 +15,17 @@ SELECT * FROM device_authorizations WHERE device_code = ?;
 SELECT * FROM device_authorizations WHERE user_code = ?;
 
 -- name: ApproveDeviceAuthorization :execresult
+-- admin_scope is written at APPROVAL, because approval is where the human
+-- consents. The device that started the flow only asks for the scope; the
+-- browser decides it, and /auth/cli/token reads it back from this row.
 UPDATE device_authorizations
-SET approved = 1, user_id = ?
-WHERE device_code = ? AND consumed_at IS NULL AND expires_at > sqlc.arg(now);
+SET approved = 1, user_id = sqlc.arg(user_id), admin_scope = sqlc.arg(admin_scope)
+WHERE device_code = sqlc.arg(device_code) AND consumed_at IS NULL AND expires_at > sqlc.arg(now);
 
 -- name: ApproveDeviceAuthorizationByUserCode :execresult
 UPDATE device_authorizations
-SET approved = 1, user_id = ?
-WHERE user_code = ? AND consumed_at IS NULL AND expires_at > sqlc.arg(now);
+SET approved = 1, user_id = sqlc.arg(user_id), admin_scope = sqlc.arg(admin_scope)
+WHERE user_code = sqlc.arg(user_code) AND consumed_at IS NULL AND expires_at > sqlc.arg(now);
 
 -- name: DenyDeviceAuthorization :execresult
 UPDATE device_authorizations

@@ -49,7 +49,7 @@ func (a adminArgs) AnyPassed() bool {
 // and --cursor directly: the spec binds the pair AND checks the limit
 // before the dial, so the two cannot separate.
 //
-// The hub normalizes the page too (service.AdminPageParams), which is what
+// The hub normalizes the page too (service.NormalizePageParams), which is what
 // protects every other client. The check here is for the ANSWER an operator
 // gets: it runs before the dial, so `--limit 0` identifies the flag and its
 // range instead of quietly returning a page of a size nobody asked for.
@@ -62,7 +62,7 @@ type adminPageFlags struct {
 }
 
 func (p *adminPageFlags) bind(fs *flag.FlagSet) {
-	fs.Int64Var(&p.Limit, "limit", service.DefaultAdminPageLimit, "page size")
+	fs.Int64Var(&p.Limit, "limit", service.DefaultPageLimit, "page size")
 	fs.StringVar(&p.Cursor, "cursor", "", "pagination cursor from the previous page")
 }
 

@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
@@ -32,6 +33,9 @@ func fromDBAPIToken(t gendb.ApiToken) store.APIToken {
 		ExpiresAt:                t.ExpiresAt.Ptr(),
 		RefreshExpiresAt:         t.RefreshExpiresAt.Ptr(),
 		RevokedAt:                t.RevokedAt.Ptr(),
+		AdminScope:               t.AdminScope,
+		ElevationProvenAt:        t.ElevationProvenAt.Ptr(),
+		ElevationExpiresAt:       t.ElevationExpiresAt.Ptr(),
 	}
 }
 
@@ -46,6 +50,7 @@ func (s *apiTokenStore) Create(ctx context.Context, p store.CreateAPITokenParams
 			RefreshHash:      p.RefreshHash,
 			ExpiresAt:        sqltime.NewSQLiteNullTime(p.ExpiresAt),
 			RefreshExpiresAt: sqltime.NewSQLiteNullTime(p.RefreshExpiresAt),
+			AdminScope:       p.AdminScope,
 		}))
 	})
 }
@@ -59,21 +64,20 @@ func (s *apiTokenStore) GetByID(ctx context.Context, id string) (*store.APIToken
 	return &out, nil
 }
 
-func (s *apiTokenStore) ListByUser(ctx context.Context, p store.ListAPITokensByUserParams) ([]store.APIToken, error) {
+// ListByUser pages one user's OWN live tokens (the account settings device
+// list). Keyset on created_at, like every other listing in the hub.
+func (s *apiTokenStore) ListByUser(ctx context.Context, p store.ListAPITokensByUserParams) (store.Page[store.APIToken], error) {
 	owner, ok := userid.OwnerFilter(p.UserID)
 	if !ok {
 		// An unminted caller owns nothing; binding "" would MATCH every
 		// blank-owner row rather than none. See userid.OwnerFilter.
-		return nil, nil
+		return store.Page[store.APIToken]{}, nil
 	}
-	rows, err := s.conn.q.ListAPITokensByUser(ctx, gendb.ListAPITokensByUserParams{
-		UserID:     owner,
-		ClientType: p.ClientType,
-	})
-	if err != nil {
-		return nil, mapErr(err)
-	}
-	return store.MapSlice(rows, fromDBAPIToken), nil
+	return queryPage(ctx, p.Limit,
+		func() (gendb.ListAPITokensByUserParams, error) {
+			return listAPITokensByUserParams(owner, p.ClientType, p.Cursor, p.Limit)
+		},
+		s.conn.q.ListAPITokensByUser, fromDBAPIToken)
 }
 
 // apiTokenWithOwner assembles the JOINed listing row shared by the ListAll and
@@ -172,6 +176,19 @@ func (s *apiTokenStore) Revoke(ctx context.Context, id string) (int64, error) {
 	}, emitCredentialEvent)
 }
 
+func (s *apiTokenStore) RevokeOwned(ctx context.Context, p store.RevokeOwnedAPITokenParams) (int64, error) {
+	owner, ok := userid.OwnerFilter(p.UserID)
+	if !ok {
+		// An unminted caller owns nothing; binding "" would MATCH every
+		// blank-owner row rather than none. See userid.OwnerFilter.
+		return 0, store.ErrInvalidArgument
+	}
+	return store.RunCredentialMutation(ctx, s.conn.withTransaction, func(ctx context.Context, conn *sqliteConn) (*store.CredentialEvent, error) {
+		row, err := conn.q.RevokeOwnedAPIToken(ctx, gendb.RevokeOwnedAPITokenParams{ID: p.ID, UserID: owner})
+		return revokedCredentialEvent(row.ID, row.UserID, row.RevokedAt, store.RevocationEventKindAPIToken, err)
+	}, emitCredentialEvent)
+}
+
 func (s *apiTokenStore) RevokeByUser(ctx context.Context, userID userid.UserID) (int64, error) {
 	owner, ok := userid.OwnerFilter(userID)
 	if !ok {
@@ -181,4 +198,67 @@ func (s *apiTokenStore) RevokeByUser(ctx context.Context, userID userid.UserID) 
 		return 0, store.ErrInvalidArgument
 	}
 	return rowsAffected(s.conn.q.RevokeAPITokensByUserFast(ctx, owner))
+}
+
+// Elevate, SlideElevation and DropElevation are the only writers of
+// elevation_proven_at / elevation_expires_at on api_tokens. Elevate and
+// DropElevation emit a user_info event so a cross-process UserInfo cache
+// re-reads the deadline; the slide does not, because a stale SHORTER deadline
+// fails closed. The session store holds the same trio, for the same reasons.
+func (s *apiTokenStore) Elevate(ctx context.Context, p store.ElevateAPITokenParams, now time.Time) (int64, error) {
+	owner, ok := userid.OwnerFilter(p.UserID)
+	if !ok {
+		// An unminted caller owns nothing; binding "" would MATCH every
+		// blank-owner row rather than none. See userid.OwnerFilter.
+		return 0, store.ErrInvalidArgument
+	}
+	return store.RunCredentialMutation(ctx, s.conn.withTransaction, func(ctx context.Context, conn *sqliteConn) (*store.CredentialEvent, error) {
+		n, err := rowsAffected(conn.q.ElevateAPIToken(ctx, gendb.ElevateAPITokenParams{
+			ElevationProvenAt:  sqltime.SQLiteNullTimeOf(p.ElevationProvenAt),
+			ElevationExpiresAt: sqltime.SQLiteNullTimeOf(p.ElevationExpiresAt),
+			ID:                 p.TokenID,
+			UserID:             owner,
+			Now:                sqltime.SQLiteNullTimeOf(now),
+		}))
+		if err != nil || n == 0 {
+			return nil, err
+		}
+		return store.UserInfoEvent(owner, now.UTC()), nil
+	}, emitCredentialEvent)
+}
+
+func (s *apiTokenStore) SlideElevation(ctx context.Context, p store.SlideAPITokenElevationParams, now time.Time) (int64, error) {
+	owner, ok := userid.OwnerFilter(p.UserID)
+	if !ok {
+		return 0, store.ErrInvalidArgument
+	}
+	// WindowDeadline is an untyped sqlc parameter (it sits inside min(), which
+	// carries no column type), so the canonical layout is this bind's
+	// responsibility -- see the session store's SlideElevation for the whole
+	// note, and TestAllDatetimeColumnsStoreCanonicalLayout for the fixture
+	// that fails on a raw bind.
+	return rowsAffected(s.conn.q.SlideAPITokenElevation(ctx, gendb.SlideAPITokenElevationParams{
+		WindowDeadline: sqltime.NewSQLiteTime(p.WindowDeadline),
+		MaxTotalMicros: p.MaxTotal.Microseconds(),
+		ID:             p.TokenID,
+		UserID:         owner,
+		Now:            sqltime.SQLiteNullTimeOf(now),
+	}))
+}
+
+func (s *apiTokenStore) DropElevation(ctx context.Context, p store.DropAPITokenElevationParams, now time.Time) (int64, error) {
+	owner, ok := userid.OwnerFilter(p.UserID)
+	if !ok {
+		return 0, store.ErrInvalidArgument
+	}
+	return store.RunCredentialMutation(ctx, s.conn.withTransaction, func(ctx context.Context, conn *sqliteConn) (*store.CredentialEvent, error) {
+		n, err := rowsAffected(conn.q.DropAPITokenElevation(ctx, gendb.DropAPITokenElevationParams{
+			ID:     p.TokenID,
+			UserID: owner,
+		}))
+		if err != nil || n == 0 {
+			return nil, err
+		}
+		return store.UserInfoEvent(owner, now.UTC()), nil
+	}, emitCredentialEvent)
 }

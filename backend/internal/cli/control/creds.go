@@ -18,14 +18,26 @@ import (
 
 // CredentialFile is the per-hub credential payload stored under
 // ~/.config/leapmux/control/<hub-host>.json (mode 0600).
+//
+// TokenID and AdminScope are ADVISORY: they let the CLI say which row it
+// holds and what it was granted, without a round trip. The hub decides both
+// -- a hand-edited AdminScope grants nothing, because the scope lives in the
+// api_tokens row the bearer specifies.
 type CredentialFile struct {
 	HubURL       string    `json:"hub_url"`
 	HubID        string    `json:"hub_id"`
 	AccessToken  string    `json:"access_token"`
 	RefreshToken string    `json:"refresh_token"`
 	ExpiresAt    time.Time `json:"expires_at"`
-	UserID       string    `json:"user_id"`
-	Username     string    `json:"username"`
+	// RefreshExpiresAt is when the credential stops being able to renew
+	// itself, so `auth status` can say when this device must sign in again
+	// rather than only when the hour-long access token lapses. Zero on a
+	// credential written before the hub reported it.
+	RefreshExpiresAt time.Time `json:"refresh_expires_at,omitzero"`
+	UserID           string    `json:"user_id"`
+	Username         string    `json:"username"`
+	TokenID          string    `json:"token_id,omitempty"`
+	AdminScope       bool      `json:"admin_scope,omitempty"`
 }
 
 // HubHost extracts the hostname (or socket path) used for the on-disk

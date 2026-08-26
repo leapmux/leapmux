@@ -44,7 +44,7 @@ On success you are signed in and taken to the app home at `/`.
 A few things are special about this first account:
 
 - It is **always created as an administrator**.
-- Its email is **marked verified immediately**, even when email verification is otherwise required for everyone else.
+- Its email is **unverified**, like every other new address. That never blocks you, because administrators are exempt from the verification gate. It does mean **Forgot password** will not send a reset link to that address, so verify it from **Preferences → Account** once SMTP is configured. See [Email verification](#email-verification).
 - The username `admin` is **allowed** here (it is reserved in public signup and OAuth completion). The username `solo` is reserved everywhere and cannot be used.
 
 > **Note:** The `/setup` screen only appears while no users exist. Once the first admin is created, visiting `/setup` redirects you to the login page. Setup is also race-safe: if two people submit at once, only one wins and the other is told sign-up is disabled.
@@ -151,18 +151,29 @@ You can still choose **Password** when your account has a password, even if pass
 
 ### Managing passkeys in your profile
 
-Open **Preferences → Account** (or **Profile** from the app menu). The **Passkeys** section lists every credential, when it was last used, and actions to rename or remove one.
+Open **Preferences → Account** (or **Profile** from the app menu) — it is the first section, and the one the dialog opens on. The **Passkeys** row lists every credential, when it was last used, and actions to rename or remove one.
 
 | Action | What it requires |
 | --- | --- |
-| **Add passkey** | Your current password, if you have one. OAuth-only accounts (or accounts with a verified email) can add a first passkey with your session alone. Passkey-only accounts verify with an existing passkey first. |
-| **Rename passkey** | Same step-up as add/remove: password or passkey verification. |
-| **Remove passkey** | Your password, or passkey step-up when you have no password. Removing your **last** passkey requires setting a password first. |
+| **Add passkey** | A verified session (see below), a secure page, and a Hub that runs ceremonies at the address you opened it by (see the note below). |
+| **Rename passkey** | A verified session. |
+| **Remove passkey** | A verified session. Removing your **last** passkey requires setting a password at the same time. |
 | **Disable passkey sign-in** | Removes **all** passkeys. Passkey-only accounts must set a password as part of this flow. |
 
-These sensitive changes use a **step-up** check: password confirmation when you have a password, or a fresh passkey authentication when you do not.
+The first of these in a sitting opens a **Verify your identity** dialog. The passkey rows ask **at the click**, before their own dialog opens, so you answer one credential prompt at a time and never lose a half-filled form to a refusal. Enter your password or use a passkey, and the session stays verified for two hours — every further change lands without another prompt, and each one extends the two hours. While it lasts, the top of the Account section says so and offers **End now**. See [Session elevation](/docs/operating/security/#session-elevation) for the limits.
 
-> **Note:** A stolen session on an OAuth-only account can register a first passkey. Completing **Forgot password** (when SMTP is configured and your email is verified) clears every passkey. Prefer setting a password soon after OAuth signup if you want that break-glass path.
+The same dialog guards the rest of **Preferences → Account**: changing your password, changing your account email, and removing a linked provider. One answer covers them all for the next two hours, so a sitting that touches several settings asks once. Your **Profile** name and your **Command-line credentials** are the two rows it does not cover.
+
+> **Note:** Two parties decide whether a passkey ceremony can run on the page you are on, and each one can stop it. **Add passkey** is disabled with the reason on it whenever either does, and the login page offers no **Passkey** option.
+>
+> - **Your browser** runs a passkey only on a secure page: HTTPS, or a `localhost` address. On a plain-HTTP address it exposes no WebAuthn API at all, and no setting on the Hub changes that.
+> - **The Hub** accepts only the addresses it publishes. Reach the same Hub by another one — a LAN IP behind the reverse proxy, a tunnel host, a port `public_url` does not name — and every ceremony is refused. Open the Hub at its configured URL, or ask an administrator to publish the address you reach it by. An administrator who sets **Public base URL** in **Preferences → Administration → General** sees **Add passkey** follow the change at once, with no page reload.
+>
+> See [Passkey sign-in fails or the authenticator never appears](/docs/reference/troubleshooting/#passkey-sign-in-fails-or-the-authenticator-never-appears).
+
+> **Note:** An account with **neither a password nor a passkey** has nothing to verify with, so it takes a different rule: adding its **first** password or passkey needs a sign-in from the last five minutes. Sign out and back in through your provider if you have been signed in longer than that.
+
+> **Note:** An OAuth-only account has no password to reset, so **Forgot password** cannot recover it. Set a password soon after OAuth signup if you want that break-glass path; see [Forgot password](#forgot-password).
 
 ## Forgot password
 
@@ -175,6 +186,8 @@ When SMTP is configured, the login page shows **Forgot password?** under the pas
 If an account with that address exists and its email is verified (when verification applies), LeapMux emails a one-hour reset link. The response is always the same whether or not an account matched — this prevents username probing.
 
 4. Open the link (or paste the token from `/reset-password?token=…`) and choose a new password.
+
+If that browser is already signed in, the page says so and offers **Sign out and continue** rather than taking you to the app. The link is single-use, so it stays unspent until you actually choose a new password: sign out and the same address shows the form.
 
 Completing a self-service reset **clears every passkey** on the account, revokes other sessions, and revokes API/delegation tokens — the same break-glass posture as an admin password reset. Set a new passkey afterward if you still want passwordless sign-in.
 
@@ -270,7 +283,9 @@ When you log in, LeapMux issues a session and stores it in a secure, `HttpOnly` 
 
 ## Managing your profile
 
-Open the **"Profile"** dialog from the app to manage your account. It has up to four sections; the details of each field and persistence behavior live in [Settings & Preferences](/docs/using/settings/), so this is a summary.
+Open the **"Profile"** dialog from the app to manage your account. Preferences opens on **Account**, its first section, and each heading below is one row of it; the details of each field and persistence behavior live in [Settings & Preferences](/docs/using/settings/), so this is a summary.
+
+While the session is verified, a panel at the top of the section says so and offers **End now** — see [Session elevation](/docs/operating/security/#session-elevation).
 
 ### Profile
 
@@ -280,24 +295,34 @@ Open the **"Profile"** dialog from the app to manage your account. It has up to 
 
 ### Email
 
-- **Current Email** shows your address (or **"Not set"**) with a **(verified)** or **(unverified)** badge. A pending change shows the new address and asks you to verify it from your inbox.
-- Enter a new address in **New Email** and click **Change Email**.
+- **Current Email** shows your address (or **"Not set"**) with a **(verified)** or **(unverified)** badge. An unverified address has a **Resend code** button beside it; the code goes in at `/verify-email`. A pending change shows the new address and asks you to verify it from your inbox.
+- Enter a new address in **New Email** and click **Change Email**. This is one of the changes that needs a verified session — see [Session elevation](/docs/operating/security/#session-elevation).
 - If verification is required, LeapMux sends a verification email and tells you to check your inbox. You must verify the new address before it takes effect. Otherwise the dialog confirms the new address at once. Admins change email immediately.
+- Either way the new address starts out **unverified**, because nobody has confirmed it yet. Until you do, **Forgot password** cannot send a reset link to it.
 
 ### Password
 
 - The button reads **Change Password** if you already have a password, or **Set Password** if your account is OAuth-only or passkey-only.
-- If you have a password, a **Current Password** field appears and is required.
-- Passkey-only accounts (no password, but at least one passkey) must click **Verify with passkey** before **Set Password**. OAuth-only accounts with zero passkeys can set a first password without that step.
+- Changing your password needs a **verified session**: the first sensitive change in a sitting opens a **Verify your identity** dialog, and the next two hours are covered. You do not retype your current password into this form.
+- An account with no password and no passkey sets its first password without a prompt, but only within five minutes of signing in.
 - On success the dialog confirms that it changed the password, or that it set the first one.
 
 ### Passkeys
 
 See [Passkeys](#passkeys) above for the full passkey management surface in this dialog.
 
-### Linked Accounts
+### Command-line credentials
 
-- Shown only if you have linked OAuth providers. Each row lists the provider name and an **Unlink** button.
+Every device signed in with `leapmux control auth login` appears here, with the name it reported at consent time, when it was last used, and when it must sign in again. A credential granted hub administration says so.
+
+**Revoke** ends a credential immediately; that device must sign in again. Revoking is the one account change that needs no verification, so you can act the moment you suspect a device is lost. `leapmux control auth credentials` prints the same list from a terminal.
+
+See [Command-line credentials](/docs/operating/security/#command-line-credentials) for what a credential can do, how long it lives, and the email notice you get when one is issued.
+
+### Linked accounts
+
+- Lists the identity providers you sign in through, each with an **Unlink** button. An account that signs in through none says so.
+- Unlinking needs a **verified session**, like the other changes in this dialog — see [Session elevation](/docs/operating/security/#session-elevation).
 - LeapMux refuses to unlink your **only** login method when you have no password — set a password first. This keeps you from locking yourself out.
 
 > **Tip:** If you signed up via OAuth and want a fallback, set a password under **Password** before unlinking any provider.

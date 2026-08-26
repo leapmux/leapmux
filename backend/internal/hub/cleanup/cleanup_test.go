@@ -12,6 +12,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
 func setupTestStore(t *testing.T) store.TestableStore {
@@ -264,4 +265,78 @@ func TestRun_DeletesExpiredWebAuthnSessions(t *testing.T) {
 	require.ErrorIs(t, err, store.ErrNotFound)
 	_, err = st.WebAuthnSessions().Get(ctx, liveID)
 	require.NoError(t, err)
+}
+
+// TestRun_DeletesAPITokensPastBothDeadlines covers the sweep that the capped
+// credential lifetime needs. A live row that can no longer authenticate AND
+// can no longer renew never works again, so nothing removes it otherwise:
+// the revoked-row sweep skips it (revoked_at is NULL) and it accumulates for
+// the life of the hub.
+//
+// The negative cases are the whole point of the WHERE clause. A row inside
+// the retention margin stays, because a user whose CLI stopped working asks
+// days later and the row is what answers them. A row whose refresh window is
+// open stays. A row with a LIVE access expiry stays whatever its refresh
+// window says: bearer validation reads expires_at alone, so that credential
+// still works -- an administrator issues one with a year of access and
+// ninety days of refresh, and a sweep on the refresh column alone deleted it
+// on day ninety-seven. A row that never expires stays.
+func TestRun_DeletesAPITokensPastBothDeadlines(t *testing.T) {
+	st := setupTestStore(t)
+	ctx := context.Background()
+
+	userID := id.Generate()
+	hash, err := password.Hash("TestPassword1!")
+	require.NoError(t, err)
+	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
+		ID: userID, Username: "tokenuser",
+		PasswordHash: hash, DisplayName: "Token", PasswordSet: true,
+	}))
+	owner := userid.MustNew(userID)
+
+	now := time.Now().UTC()
+	at := func(d time.Duration) *time.Time { v := now.Add(d); return &v }
+	seed := func(name string, expiresAt, refreshExpiresAt *time.Time) string {
+		tokenID := id.Generate()
+		require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
+			ID: tokenID, UserID: owner, ClientType: "cli", ClientName: name,
+			SecretHash: []byte("s-" + tokenID), RefreshHash: []byte("r-" + tokenID),
+			ExpiresAt: expiresAt, RefreshExpiresAt: refreshExpiresAt,
+		}))
+		return tokenID
+	}
+
+	stale := at(-cleanupRetention - time.Hour)
+	// Both deadlines past the margin: swept.
+	swept := seed("swept", stale, stale)
+	// Both past, but the refresh window closed INSIDE the margin: kept, so
+	// the row can still explain the failure to its owner.
+	recent := seed("recent", stale, at(-time.Hour))
+	// The refresh window is still open: kept.
+	liveRefresh := seed("live-refresh", stale, at(24*time.Hour))
+	// The ACCESS token is still live, and its refresh window closed long
+	// ago. This is the admin-issued shape, and it must survive: the bearer
+	// still authenticates.
+	liveAccess := seed("live-access", at(300*24*time.Hour), stale)
+	// A row with no refresh leg but a live access expiry: kept.
+	noRefresh := seed("no-refresh", at(time.Hour), nil)
+	// A row that never expires: kept, whatever else is true of it.
+	neverExpires := seed("never-expires", nil, stale)
+
+	run(ctx, st)
+
+	_, err = st.APITokens().GetByID(ctx, swept)
+	require.ErrorIs(t, err, store.ErrNotFound, "a row past both deadlines and the margin must be swept")
+	for _, kept := range []struct {
+		id, why string
+	}{
+		{recent, "a row inside the retention margin must stay"},
+		{liveRefresh, "a row whose refresh window is open must stay"},
+		{liveAccess, "a row whose access token still authenticates must stay"},
+		{noRefresh, "a row with no refresh leg and a live access expiry must stay"},
+		{neverExpires, "a row with no access expiry must stay"},
+	} {
+		_, err = st.APITokens().GetByID(ctx, kept.id)
+		require.NoError(t, err, kept.why)
+	}
 }

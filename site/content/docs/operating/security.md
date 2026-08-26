@@ -210,27 +210,108 @@ The bundled Worker that solo and dev modes auto-register is created in-process a
 
 The **desktop app** avoids the exposure differently: it always starts its in-process Hub with the TCP listener disabled, reaching it over a local Unix socket (named pipe on Windows) instead. There is no `--no-tcp` flag or setting — it is how the desktop app is built, and `leapmux solo` on the command line does not do it. So the desktop app opens no loopback port for its Hub, and the non-loopback warning above cannot apply to it. Tunnels you create yourself still bind a loopback TCP port, by design.
 
-## Passkey step-up
+## Session elevation
 
-Passkey management — adding, removing, or disabling passkeys — is treated as a **privileged account change**, not a casual settings tweak. The hub enforces a step-up check before any of these mutations land:
+A sensitive account change needs a **recently proven factor**, not just a live session cookie. Proving one **elevates** the session for two hours. Every sensitive action then succeeds without another prompt, and each one slides the two hours forward. An elevation is capped at **eight hours** from the instant the factor was proven, whatever happens in between, so an all-day session ends the day un-elevated and a stolen cookie cannot keep sliding the window forward. [Accounts & Authentication](/docs/using/accounts/#managing-passkeys-in-your-profile) shows what this looks like in the browser; this section is the rule it implements.
 
-| Your account today | Step-up required |
+These actions require elevation:
+
+- Changing or setting your password.
+- Any passkey change: registering, renaming, removing, or disabling passkey sign-in.
+- Changing your account email.
+- Removing a linked OAuth provider.
+- Authorizing a command-line credential.
+- Changing any **Hub setting**, from the Preferences dialog or from `leapmux control admin settings`.
+
+Your account email and a linked provider are on that list because both are recovery identities: the address receives the password-reset link, and a provider is a login method. Whoever can move either one can come back later without the session they started from.
+
+An administrator's own surface takes the same rule wherever it creates a *new* way into an account: issuing a command-line credential, creating a user, granting administration, and resetting somebody's password. The last three refuse a command-line credential outright — each hands out authority the credential itself did not have, and the browser session that would have to verify it is the granting one. Issuing a credential is admitted from an **elevated** command-line credential, so a headless service account can still renew; see [Command-line credentials](#command-line-credentials).
+
+Hub settings are on the list for a reason of scale rather than of ownership: several of those keys *are* the controls this document describes — `signup_enabled`, the captcha configuration, the rate limits, SMTP, and the `public_url` that passkey sign-in derives its relying party from. A stolen administrator cookie that could turn those off would buy more than any single account change the window already guards.
+
+You elevate with whatever your account holds:
+
+| Your account today | How you elevate |
 | --- | --- |
-| Password set | Confirm your **current password**. |
-| Passkey-only (no password) | Authenticate with an **existing passkey** (a short-lived reauth proof). |
-| Removing your last passkey | Passkey step-up **and** setting a new password (you must retain *some* sign-in method). |
-| Disabling passkey sign-in entirely | Password confirmation, or passkey step-up plus setting a password when you have none. |
+| Password set | Enter your password. |
+| Passkey registered | Authenticate with an existing passkey. |
+| A linked provider only — no password, no passkey | Sign in again at that provider. |
+| No password, no passkey, no linked provider | You cannot elevate. Set a password first; see [The account with nothing to prove](#the-account-with-nothing-to-prove). |
+
+The provider row applies **only** to an account with no password and no passkey, where the provider *is* the sign-in credential. An account that holds either factor must present it, because "this browser can still reach the provider's session" is a weaker claim than the factor the account already has. The verification screen therefore does not offer a provider it would refuse.
+
+> **Note:** A provider elevation proves that the browser still holds a live provider session for the linked account. It does not prove that anybody re-entered a credential just now. LeapMux asks the provider for a fresh authentication, but no provider reports back reliably enough for the Hub to insist, and GitHub cannot be asked at all. For an account whose only credential is that provider this costs nothing, because whoever holds the provider session can sign in from scratch anyway. If you want a real second factor, give the account a password or a passkey.
+
+In the browser, an elevated session announces itself at the top of every Preferences section it covers — **Account** and every **Administration** section — with the deadline and an **End now** button.
+
+A **command-line credential** carries a window of its own, on the same two-hour and eight-hour terms. What it cannot do is verify itself from the terminal: the factor is proven in a browser, deliberately somewhere the credential file cannot reach, or a stolen file would hold everything the window exists to withhold. See [Verifying a command-line credential](#verifying-a-command-line-credential) below.
+
+Inside a LeapMux agent or terminal tab the question does not arise: a tab holds a delegation credential, which carries no elevation at all, and the Hub does not let one reach any of these procedures. To change a password, an email, a passkey, or a linked provider, use a browser.
+
+### Verifying a command-line credential
+
+The ceremony is the device-code ceremony: the CLI asks, the Hub returns an address and a short code, a person approves it in a browser, and the CLI's refused command runs. `leapmux control` does all of that for you — a refused command prints the address and waits.
+
+```
+$ leapmux control admin settings set public_url https://hub.example.com
+This command needs you to verify your identity.
+  1. Visit https://hub.example.com/auth/cli/activate
+  2. Enter the code: 4KTQ-9MB2
+Or open: https://hub.example.com/auth/cli/activate?user_code=4KTQ-9MB2
+```
+
+Three properties are worth stating:
+
+- **The credential cannot approve its own request.** The approval page accepts a browser session only, and that session must itself be elevated. A stolen credential file can start a ceremony and can never finish one.
+- **Approving grants a window, not a credential.** Nothing is minted, nothing on disk changes, and no "a CLI credential was issued" mail is sent. The window is the same two hours a browser session gets, every command that uses it slides it forward, and it is capped the same way.
+- **The browser can be on another machine.** This is the flow SSH sessions and containers already use to sign in, so a headless host verifies from a laptop.
+
+A fully unattended job cannot answer a prompt, and no design makes it able to. Give one a narrowly scoped, short-lived credential instead, and expect to re-verify when a person is present.
+
+### The account with nothing to prove
+
+An account with **neither a password nor a passkey** cannot elevate, so requiring elevation to attach its first credential would lock it out permanently. That account takes a different rule, checked first: setting the **first** password or passkey needs an authentication from the last **five minutes** and a durable identity (a verified email or a linked OAuth provider).
+
+A cookie captured earlier in the day therefore cannot attach a credential that outlives it, and the remedy is self-service: signing in again produces a new session.
+
+### What still needs more than elevation
+
+- **Removing your last passkey** also needs a new password: you must retain *some* sign-in method.
+- **Disabling passkey sign-in** on a passkey-only account also needs a new password, for the same reason.
 
 Self-service **password reset** and admin **reset-password** both **delete every passkey** on the account. That is deliberate: a password reset is break-glass recovery, and leaving old passkeys registered would let someone who still holds a device sign back in without knowing the new password.
 
-WebAuthn ceremony state (in-flight sign-up, login, and reauth handshakes) is encrypted at rest with the same keystore as passkey public keys; see [Encryption & Data](/docs/operating/encryption-and-data/).
+## Command-line credentials
+
+`leapmux control auth login` mints an API token: an access token that lives for an hour and renews itself, backed by a refresh token that lives 90 days. The credential is written to one file per Hub at mode `0600` — see [Credential file location](/docs/operating/control-cli/#credential-file-location) for where.
+
+These rules limit what that credential can do:
+
+- **Authorizing one needs an elevated session.** The consent page sends you through a verification prompt first, and consenting slides the window forward like every other sensitive action. This holds for the device-code flow too, where the verification happens in a browser on a *different* machine from the one being authorized — which is the point.
+- **Hub administration is opt-in per credential.** An ordinary CLI credential can do everything you can do *except* administer the Hub, even when your account is an administrator. `leapmux control auth login --admin` asks for the admin scope, the browser consent page states plainly what it grants, and only an administrator may grant it. So a stolen credential file from a routine login cannot manage users, workers, or settings.
+- **The lifetime is capped.** Each refresh moves the 90-day window forward, but never past **one year** from the day you authorized the credential. After that the device signs in again.
+- **Logging in again retires the old credential.** The previous token is revoked, so a re-login does not leave a live secret behind in your shell history or on the Hub.
+- **A credential issued by another credential does not renew, and expires no later than its issuer.** So a chain of self-issued credentials gets shorter each time and ends at the browser consent that started it, instead of restarting the one-year clock at every hop.
+- **A credential either renews or has a fixed lifetime, never both.** `leapmux control auth login` and the default `admin api-token issue` mint the renewing kind. `admin api-token issue --ttl <seconds>` mints a service credential that lives exactly that long and carries no refresh token; see [API tokens](/docs/operating/control-cli/#api-tokens).
+
+If SMTP is configured and your address is verified, LeapMux emails you whenever a command-line credential is issued for your account, saying which device asked and whether it was granted hub administration. That notice is how you learn about a credential you did not create.
+
+Review and revoke your credentials under **Preferences → Account → Command-line credentials**. Revoking deliberately does *not* require elevation: it only reduces access, and somebody who believes a credential is stolen should not have to find their password first.
+
+## OAuth flow binding
+
+Starting an OAuth login binds the flow to the browser that began it. The Hub sets a short-lived `HttpOnly` cookie holding a random nonce, and the callback completes only when that same browser presents it. Each flow gets its own cookie, so two sign-ins started in the same browser do not evict each other. The binding continues across the sign-up hand-off: when the callback finds no existing account, it sends the browser to a username page, and a second cookie ties that page to the same browser.
+
+Without the binding, the `state` parameter identifies a flow but not a browser. An attacker could start a login under their own identity, withhold the callback, and deliver the live URL to somebody else — signing that person into the **attacker's** account, where the victim's later work would land. The same trick against the sign-up hand-off would link a freshly created account to the attacker's identity.
+
+A callback the Hub refuses leaves the flow open, so the browser that started the login can still finish it. Otherwise anyone who learned a live `state` could end somebody else's sign-in with one request.
 
 ## At-rest encryption (separate from E2EE)
 
 Distinct from the channel E2EE above, the Hub encrypts a small set of stored secrets **at rest** using a versioned XChaCha20-Poly1305 key ring kept in an `encryption.key` file (mode `0600`, default `<DataDir>/encryption.key`, auto-generated on first run). Exactly these are encrypted:
 
 - OAuth provider client secrets and per-user OAuth access/refresh tokens (including pending-signup tokens).
-- **Passkey credential public keys** and **WebAuthn ceremony session payloads** (each row's ciphertext is bound to that row's id as additional authenticated data).
+- **Passkey credential public keys** and **WebAuthn ceremony session payloads** — the in-flight sign-up, login, and elevation handshakes (each row's ciphertext is bound to that row's id as additional authenticated data).
 
 If the Hub's database is exfiltrated without the key file, those fields stay unreadable.
 
@@ -263,5 +344,7 @@ The facts an operator looks up most often. The full crypto primitives are in the
 | Worker encryption mode flag | `--encryption-mode classic` \| `post-quantum` (default `post-quantum`) |
 | Solo mode default bind | `127.0.0.1:4327`, no authentication (local trust only) |
 | At-rest secret key file | `encryption.key` (mode `0600`, default `<DataDir>/encryption.key`) |
+| Session elevation window | 2 hours, extended by each sensitive action; 8 hours maximum from the proven factor |
+| CLI credential lifetime | Access token 1 hour (renewed for you) · refresh 90 days · 1 year absolute |
 
 See also: [Managing Workers](/docs/operating/managing-workers/) · [Encryption & Data](/docs/operating/encryption-and-data/) · [Authentication Providers](/docs/operating/authentication-providers/) · [Accounts & Authentication](/docs/using/accounts/) · [Running LeapMux](/docs/operating/running-leapmux/).

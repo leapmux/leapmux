@@ -20,6 +20,7 @@ func (s *Suite) testPendingOAuthSignups(t *testing.T) {
 		err := st.PendingOAuthSignups().Create(ctx, store.CreatePendingOAuthSignupParams{
 			Token:           token,
 			ProviderID:      provID,
+			NonceHash:       "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
 			ProviderSubject: "sub-signup",
 			Email:           "signup@example.com",
 			DisplayName:     "Signup User",
@@ -38,6 +39,11 @@ func (s *Suite) testPendingOAuthSignups(t *testing.T) {
 		assert.Equal(t, token, found.Token)
 		assert.Equal(t, provID, found.ProviderID)
 		assert.Equal(t, "sub-signup", found.ProviderSubject)
+		// The browser-binding hash must round-trip on every dialect:
+		// CompleteOAuthSignup refuses a row whose hash it cannot match, so a
+		// column that silently drops the value would refuse every OAuth
+		// sign-up.
+		assert.Equal(t, "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b", found.NonceHash)
 		assert.Equal(t, "signup@example.com", found.Email)
 		assert.Equal(t, "Signup User", found.DisplayName)
 		assert.Equal(t, []byte("at"), found.AccessToken)

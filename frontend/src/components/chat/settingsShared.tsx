@@ -56,16 +56,21 @@ export function OptionGroupMenuItems(props: OptionGroupMenuItemsProps): JSX.Elem
                 label={item().label}
                 checked={props.current === item().value}
                 disabled={props.disabled}
-                title={props.disabled ? props.disabledReason : undefined}
                 data-testid={`${props.testIdPrefix}-${item().value}`}
                 onSelect={() => props.onChange(item().value)}
               />
             )
+            // ONE text, and the reason the group is disabled outranks the
+            // option's own description: an option nobody can pick has nothing
+            // to say about itself that beats why. Two nested Tooltips would
+            // otherwise resolve the outer one's target to the inner one's
+            // wrapper rather than to the button.
+            const tip = () => (props.disabled ? props.disabledReason : item().tooltip)
             // Wrap only when there is tooltip text. A Tooltip mounts its own
             // wrapper and listeners even with nothing to show, and most option
             // values carry no description.
             return (
-              <Show when={item().tooltip} fallback={row()}>
+              <Show when={tip()} fallback={row()}>
                 {tip => <Tooltip text={tip()}>{row()}</Tooltip>}
               </Show>
             )

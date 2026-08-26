@@ -34,6 +34,7 @@ vi.mock('~/lib/systemInfo', () => ({
   isSystemInfoLoaded: () => true,
   isEmailEnabled: () => mockIsEmailEnabled(),
   isCaptchaEnabled: () => mockIsCaptchaEnabled(),
+  isCaptchaUnsolvableHere: () => false,
   getAltchaAlgorithm: () => '',
   getCaptchaProvider: () => mockGetCaptchaProvider(),
   getCaptchaSiteKey: () => '',

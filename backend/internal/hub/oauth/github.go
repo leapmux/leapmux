@@ -41,8 +41,23 @@ func NewGitHubProvider(clientID, clientSecret, redirectURL string, scopes []stri
 	}
 }
 
-func (p *GitHubProvider) AuthURL(state, codeChallenge string) string {
-	// GitHub does not support PKCE, but we include the state for CSRF protection.
+// AuthURL builds the GitHub authorization URL.
+//
+// GitHub does not support PKCE, so the state alone carries the CSRF
+// protection (the hub adds a browser-bound nonce cookie on top).
+//
+// ForceReauthentication emits prompt=select_account, which is the strongest
+// signal GitHub's authorize endpoint accepts. GitHub has NO equivalent of
+// OIDC's prompt=login: it will not re-ask for the password of an already
+// signed-in user. So a step-up through GitHub proves that the browser can
+// still reach a GitHub session for the linked account and that a human
+// clicked through the chooser -- not that they re-entered a credential.
+// operating/security.md states this limit; an operator who needs a real
+// second factor should require a password or a passkey on the account.
+func (p *GitHubProvider) AuthURL(state, codeChallenge string, opts AuthURLOptions) string {
+	if opts.ForceReauthentication {
+		return p.oauth2Config.AuthCodeURL(state, oauth2.SetAuthURLParam("prompt", "select_account"))
+	}
 	return p.oauth2Config.AuthCodeURL(state)
 }
 

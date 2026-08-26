@@ -19,14 +19,16 @@ var _ store.SessionStore = (*sessionStore)(nil)
 
 func fromDBSession(s gendb.UserSession) store.UserSession {
 	return store.UserSession{
-		ID:             s.ID,
-		UserID:         s.UserID,
-		ExpiresAt:      s.ExpiresAt.Time,
-		CreatedAt:      s.CreatedAt.Time,
-		LastActiveAt:   s.LastActiveAt.Time,
-		AuthGeneration: s.AuthGeneration,
-		UserAgent:      s.UserAgent,
-		IPAddress:      s.IpAddress,
+		ID:                 s.ID,
+		UserID:             s.UserID,
+		ExpiresAt:          s.ExpiresAt.Time,
+		CreatedAt:          s.CreatedAt.Time,
+		LastActiveAt:       s.LastActiveAt.Time,
+		AuthGeneration:     s.AuthGeneration,
+		ElevationProvenAt:  s.ElevationProvenAt.Ptr(),
+		ElevationExpiresAt: s.ElevationExpiresAt.Ptr(),
+		UserAgent:          s.UserAgent,
+		IPAddress:          s.IpAddress,
 	}
 }
 
@@ -79,6 +81,17 @@ func (s *sessionStore) Touch(ctx context.Context, p store.TouchSessionParams, no
 }
 
 func (s *sessionStore) Delete(ctx context.Context, id string) (int64, error) {
+	return s.deleteEmitting(ctx, id, store.RevocationEventKindSession)
+}
+
+func (s *sessionStore) Revoke(ctx context.Context, id string) (int64, error) {
+	return s.deleteEmitting(ctx, id, store.RevocationEventKindSessionRevoked)
+}
+
+// deleteEmitting removes one session row and records who ended it. The two
+// callers differ in the event kind ALONE, so the delete stays one
+// implementation and cannot drift between a sign-out and a revoke.
+func (s *sessionStore) deleteEmitting(ctx context.Context, id, kind string) (int64, error) {
 	return store.RunCredentialMutation(ctx, s.conn.withTransaction, func(ctx context.Context, conn *mysqlConn) (*store.CredentialEvent, error) {
 		row, err := conn.q.GetUserSessionForUpdate(ctx, id)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -94,7 +107,7 @@ func (s *sessionStore) Delete(ctx context.Context, id string) (int64, error) {
 		if n != 1 {
 			return nil, fmt.Errorf("delete session %q: deleted %d rows after locking row", id, n)
 		}
-		return &store.CredentialEvent{Kind: store.RevocationEventKindSession, SubjectID: row.ID, UserID: row.UserID, At: time.Now().UTC()}, nil
+		return &store.CredentialEvent{Kind: kind, SubjectID: row.ID, UserID: row.UserID, At: time.Now().UTC()}, nil
 	}, emitCredentialEvent)
 }
 
@@ -177,13 +190,74 @@ func (s *sessionStore) ValidateWithUser(ctx context.Context, id string, now time
 		return nil, mapErr(err)
 	}
 	return &store.SessionWithUser{
-		UserID:         row.ID,
-		Username:       row.Username,
-		IsAdmin:        row.IsAdmin,
-		EmailVerified:  row.EmailVerified,
-		Email:          row.Email,
-		CreatedAt:      row.CreatedAt.UTC(),
-		ExpiresAt:      row.ExpiresAt.UTC(),
-		AuthGeneration: row.AuthGeneration,
+		UserID:             row.ID,
+		Username:           row.Username,
+		IsAdmin:            row.IsAdmin,
+		EmailVerified:      row.EmailVerified,
+		Email:              row.Email,
+		CreatedAt:          row.CreatedAt.UTC(),
+		ExpiresAt:          row.ExpiresAt.UTC(),
+		AuthGeneration:     row.AuthGeneration,
+		ElevationProvenAt:  row.ElevationProvenAt.Ptr(),
+		ElevationExpiresAt: row.ElevationExpiresAt.Ptr(),
 	}, nil
+}
+
+// Elevate, SlideElevation and DropElevation are the only writers of
+// elevation_proven_at / elevation_expires_at. Elevate and DropElevation emit a user_info
+// event so a cross-process UserInfo cache re-reads the deadline; the slide
+// does not, because a stale SHORTER deadline fails closed.
+func (s *sessionStore) Elevate(ctx context.Context, p store.ElevateSessionParams, now time.Time) (int64, error) {
+	owner, ok := userid.OwnerFilter(p.UserID)
+	if !ok {
+		// An unminted caller owns nothing; binding "" would MATCH every
+		// blank-owner row rather than none. See userid.OwnerFilter.
+		return 0, store.ErrInvalidArgument
+	}
+	return store.RunCredentialMutation(ctx, s.conn.withTransaction, func(ctx context.Context, conn *mysqlConn) (*store.CredentialEvent, error) {
+		n, err := rowsAffected(conn.q.ElevateUserSession(ctx, gendb.ElevateUserSessionParams{
+			ElevationProvenAt:  sqltime.MySQLNullTimeOf(p.ElevationProvenAt),
+			ElevationExpiresAt: sqltime.MySQLNullTimeOf(p.ElevationExpiresAt),
+			ID:                 p.SessionID,
+			UserID:             owner,
+			Now:                sqltime.NewMySQLTime(now),
+		}))
+		if err != nil || n == 0 {
+			return nil, err
+		}
+		return store.UserInfoEvent(owner, now.UTC()), nil
+	}, emitCredentialEvent)
+}
+
+func (s *sessionStore) SlideElevation(ctx context.Context, p store.SlideSessionElevationParams, now time.Time) (int64, error) {
+	owner, ok := userid.OwnerFilter(p.UserID)
+	if !ok {
+		return 0, store.ErrInvalidArgument
+	}
+	// The cap is added in microseconds because DATETIME(3) keeps millisecond
+	// precision; a whole-second interval would quantize the ceiling.
+	return rowsAffected(s.conn.q.SlideUserSessionElevation(ctx, gendb.SlideUserSessionElevationParams{
+		WindowDeadline: sqltime.MySQLNullTimeOf(p.WindowDeadline),
+		MaxTotalMicros: p.MaxTotal.Microseconds(),
+		ID:             p.SessionID,
+		UserID:         owner,
+		Now:            sqltime.MySQLNullTimeOf(now),
+	}))
+}
+
+func (s *sessionStore) DropElevation(ctx context.Context, p store.DropSessionElevationParams, now time.Time) (int64, error) {
+	owner, ok := userid.OwnerFilter(p.UserID)
+	if !ok {
+		return 0, store.ErrInvalidArgument
+	}
+	return store.RunCredentialMutation(ctx, s.conn.withTransaction, func(ctx context.Context, conn *mysqlConn) (*store.CredentialEvent, error) {
+		n, err := rowsAffected(conn.q.DropUserSessionElevation(ctx, gendb.DropUserSessionElevationParams{
+			ID:     p.SessionID,
+			UserID: owner,
+		}))
+		if err != nil || n == 0 {
+			return nil, err
+		}
+		return store.UserInfoEvent(owner, now.UTC()), nil
+	}, emitCredentialEvent)
 }

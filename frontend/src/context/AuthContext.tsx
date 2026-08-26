@@ -1,6 +1,6 @@
 import type { Timestamp } from '@bufbuild/protobuf/wkt'
 import type { ParentComponent } from 'solid-js'
-import type { EmailVerificationStatus, User } from '~/generated/leapmux/v1/auth_pb'
+import type { EmailVerificationStatus, GetCurrentUserResponse, User } from '~/generated/leapmux/v1/auth_pb'
 import type { CaptchaRequestFields } from '~/lib/captchaForm'
 import { create } from '@bufbuild/protobuf'
 import { Code, ConnectError } from '@connectrpc/connect'
@@ -31,6 +31,18 @@ export interface AuthState {
   error: () => string | null
   /** Cooldown timestamp seeded from login when verification is required. */
   verificationResendAvailableAt: () => Timestamp | undefined
+  /**
+   * When the session's step-up elevation lapses; undefined when the session
+   * is not elevated.
+   *
+   * A timestamp, never a boolean, and never consulted to decide whether an
+   * action is ALLOWED: the hub decides that, and this value can be stale by
+   * a page's lifetime. It exists so a surface can show the state and so
+   * `/elevate` can leave immediately when it has nothing to ask for.
+   */
+  elevationExpiresAt: () => Timestamp | undefined
+  /** Adopt the deadline a step-up ceremony returned. */
+  setElevationExpiresAt: (until?: Timestamp) => void
   /**
    * Set when bootstrap failed for a reason OTHER than "no session" -- i.e.
    * either `loadSystemInfo` could not reach the hub, or the session restore
@@ -66,6 +78,11 @@ export const AuthProvider: ParentComponent = (props) => {
   const [error, setError] = createSignal<string | null>(null)
   const [bootstrapError, setBootstrapError] = createSignal<string | null>(null)
   const [verificationResendAvailableAt, setVerificationResendAvailableAt] = createSignal<Timestamp | undefined>()
+  const [elevationExpiresAt, setElevationExpiresAtSignal] = createSignal<Timestamp | undefined>()
+  // A setter, not the raw signal: Solid's setter treats a function argument
+  // as an updater, and a Timestamp is not one -- but keeping the wrapper
+  // means the context never exposes that distinction to a caller.
+  const setElevationExpiresAt = (until?: Timestamp) => setElevationExpiresAtSignal(until)
 
   /**
    * The one writer of the identity, and the one place the storage namespace
@@ -143,6 +160,43 @@ export const AuthProvider: ParentComponent = (props) => {
   const clearAuthUser = () => {
     setUser(null)
     setVerificationResendAvailableAt(undefined)
+    // The elevation belongs to the session that just ended. Leaving it would
+    // make /elevate bounce a signed-out visitor straight back out.
+    setElevationExpiresAt(undefined)
+  }
+
+  /**
+   * Adopt a `GetCurrentUser` response.
+   *
+   * ONE site, because the response carries three signals and two callers read
+   * it: `restoreSession` and `refreshUser`. They adopted different subsets by
+   * hand, so a refresh dropped the verification cooldown and left
+   * `/verify-email` counting from zero against a hub that had just minted a
+   * code. A fourth signal added to the response now lands in both paths.
+   */
+  const adoptCurrentUser = (resp: GetCurrentUserResponse) => {
+    setUser(resp.user ?? null)
+    setElevationExpiresAt(resp.elevationExpiresAt)
+    // The only response the /verify-email page's own bootstrap reads. Seeding
+    // the cooldown from it is what lets a hard reload of that page resume the
+    // countdown instead of restarting at zero and letting the button hammer a
+    // ResourceExhausted refusal.
+    setVerificationResendAvailableAt(resp.emailVerification?.nextResendAvailableAt)
+  }
+
+  /**
+   * Adopt an identity that a sign-in or a sign-up just established.
+   *
+   * The elevation is cleared, and that is the point: signing in over a
+   * still-authenticated session (a bookmarked `/login`, a stale tab) is an
+   * identity transition just like logout, so the previous user's deadline
+   * must not survive it. Left behind, `/elevate` reads a live window that
+   * belongs to nobody in this document, redirects without prompting, and the
+   * hub's consent gate then answers with a page that has no way forward.
+   */
+  const adoptSignedInUser = (u: User | null) => {
+    setUser(u)
+    setElevationExpiresAt(undefined)
   }
 
   // Register auth error callback for auto-logout on 401.
@@ -155,7 +209,8 @@ export const AuthProvider: ParentComponent = (props) => {
    * Restore the session from the cookie (both solo and multi-user modes).
    *
    * Unauthenticated is the ordinary "no session yet" answer and stays silent —
-   * the guard routes those to `/login` (or, on a fresh install, `/setup`).
+   * `AuthGuard` routes those to `/login`, and on a fresh install `SetupGate`
+   * answers first with `/setup`.
    * Any OTHER failure means the hub is unreachable or erroring, which no
    * amount of logging in fixes, so it is recorded and surfaced rather than
    * swallowed. The two were previously indistinguishable; see
@@ -163,13 +218,7 @@ export const AuthProvider: ParentComponent = (props) => {
    */
   const restoreSession = async () => {
     try {
-      const resp = await authClient.getCurrentUser({})
-      setUser(resp.user ?? null)
-      // GetCurrentUser is the only response the /verify-email page's own
-      // bootstrap reads. Seeding the cooldown from it is what lets a hard
-      // reload of that page resume the countdown instead of restarting at
-      // zero and letting the button hammer a ResourceExhausted refusal.
-      setVerificationResendAvailableAt(resp.emailVerification?.nextResendAvailableAt)
+      adoptCurrentUser(await authClient.getCurrentUser({}))
       loadTimeouts().catch(() => {})
     }
     catch (err) {
@@ -246,12 +295,13 @@ export const AuthProvider: ParentComponent = (props) => {
     setLoading(true)
     try {
       const resp = await attempt()
-      // Logging in over a still-authenticated session (a bookmarked /login, a stale
-      // tab) is an identity transition just like logout: setUser drives the eager
-      // release of the previous user's pooled channels through the createEffect above,
-      // rather than leaving them to the lazy per-request identity check (which evicts
-      // one channel per request while the shared WebSocket stays held for the old user).
-      setUser(resp.user ?? null)
+      // Through adoptSignedInUser: setUser drives the eager release of the
+      // previous user's pooled channels through the createEffect above,
+      // rather than leaving them to the lazy per-request identity check
+      // (which evicts one channel per request while the shared WebSocket
+      // stays held for the old user) -- and it clears the elevation the
+      // previous identity held.
+      adoptSignedInUser(resp.user ?? null)
       loadTimeouts().catch(() => {})
       return loginResultFromResponse(resp.emailVerification)
     }
@@ -306,14 +356,16 @@ export const AuthProvider: ParentComponent = (props) => {
   }
 
   const setAuth = (u: User) => {
-    setUser(u)
+    // The same identity transition runSignIn makes: /oauth/complete-signup
+    // and the verify-email page both land a NEW user in a document that may
+    // still hold the previous one's elevation.
+    adoptSignedInUser(u)
     setLoading(false)
   }
 
   const refreshUser = async () => {
     try {
-      const resp = await authClient.getCurrentUser({})
-      setUser(resp.user ?? null)
+      adoptCurrentUser(await authClient.getCurrentUser({}))
     }
     catch {
       // Ignore — user state unchanged.
@@ -325,6 +377,8 @@ export const AuthProvider: ParentComponent = (props) => {
     loading,
     error,
     verificationResendAvailableAt,
+    elevationExpiresAt,
+    setElevationExpiresAt,
     login,
     loginWithPasskey,
     setVerificationResendAvailableAt,

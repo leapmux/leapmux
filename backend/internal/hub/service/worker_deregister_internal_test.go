@@ -189,8 +189,10 @@ func TestDeleteUserTellsEveryWorkerToStop(t *testing.T) {
 
 	broadcaster := NewHubEventBroadcaster(channelmgr.New(0))
 	scopeCache := auth.NewDelegationScopeCache(st)
-	svc := NewAdminUserService(st, nil, nil,
-		NewWorkerDeregisterEffects(scopeCache, newTestNotifier(t, st), broadcaster), nil)
+	svc := NewAdminUserService(AdminUserServiceDeps{
+		Store:         st,
+		WorkerEffects: NewWorkerDeregisterEffects(scopeCache, newTestNotifier(t, st), broadcaster),
+	})
 
 	// One memoized delegation scope per worker, so the eviction arm is
 	// observable per worker too.
@@ -253,15 +255,17 @@ func TestDeleteUserCarriesOnWhenOneWorkerCannotBeTold(t *testing.T) {
 	// instant are ordered by their random ids -- so failing a worker chosen
 	// by name would leave the "carries on" property untested whenever that
 	// worker happened to come last.
-	order, err := NewAdminUserService(st, nil, nil, nil, nil).liveWorkerIDs(ctx, userid.MustNew(owner.ID))
+	order, err := NewAdminUserService(AdminUserServiceDeps{Store: st}).liveWorkerIDs(ctx, userid.MustNew(owner.ID))
 	require.NoError(t, err)
 	require.Len(t, order, 3)
 
 	// Only the NOTIFIER sees the failing store; the service keeps the real
 	// one, so the deletion itself commits normally.
 	failing := failingNotificationStore{Store: st, failWorkerID: order[0]}
-	svc := NewAdminUserService(st, nil, nil,
-		NewWorkerDeregisterEffects(nil, newTestNotifier(t, failing), nil), nil)
+	svc := NewAdminUserService(AdminUserServiceDeps{
+		Store:         st,
+		WorkerEffects: NewWorkerDeregisterEffects(nil, newTestNotifier(t, failing), nil),
+	})
 
 	logs := testutil.CaptureDefaultLogger(t)
 	_, err = svc.DeleteUser(ctx, connectRequestForTest(&leapmuxv1.DeleteUserRequest{Id: owner.ID}))
@@ -292,8 +296,8 @@ func TestDeleteUserTellsEveryWorkerPastTheFirstPage(t *testing.T) {
 
 	// One worker MORE than a page holds, so a single-page collect is short
 	// by exactly one rather than by nothing.
-	workerIDs := make([]string, 0, MaxAdminPageLimit+1)
-	for range MaxAdminPageLimit + 1 {
+	workerIDs := make([]string, 0, MaxPageLimit+1)
+	for range MaxPageLimit + 1 {
 		workerID := id.Generate()
 		require.NoError(t, st.Workers().Create(ctx, store.CreateWorkerParams{
 			ID:              workerID,
@@ -306,8 +310,10 @@ func TestDeleteUserTellsEveryWorkerPastTheFirstPage(t *testing.T) {
 		workerIDs = append(workerIDs, workerID)
 	}
 
-	svc := NewAdminUserService(st, nil, nil,
-		NewWorkerDeregisterEffects(nil, newTestNotifier(t, st), nil), nil)
+	svc := NewAdminUserService(AdminUserServiceDeps{
+		Store:         st,
+		WorkerEffects: NewWorkerDeregisterEffects(nil, newTestNotifier(t, st), nil),
+	})
 	_, err := svc.DeleteUser(ctx, connectRequestForTest(&leapmuxv1.DeleteUserRequest{Id: owner.ID}))
 	require.NoError(t, err)
 

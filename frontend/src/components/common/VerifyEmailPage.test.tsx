@@ -29,6 +29,10 @@ vi.mock('~/api/clients', () => ({
 }))
 
 const mockSetAuth = vi.fn()
+// Verifying an address is a REFRESH of the same identity, not a transition to
+// a new one, so the page re-reads the account rather than calling setAuth --
+// which clears the session's elevation deadline the hub never touched.
+const mockRefreshUser = vi.fn<() => Promise<void>>(async () => {})
 const mockUser = vi.fn<() => { username: string, emailVerified: boolean } | null>()
 const mockVerificationResendAvailableAt = vi.fn<() => { seconds: bigint, nanos: number } | undefined>()
 vi.mock('~/context/AuthContext', () => ({
@@ -39,6 +43,7 @@ vi.mock('~/context/AuthContext', () => ({
     login: vi.fn(),
     logout: vi.fn(),
     setAuth: mockSetAuth,
+    refreshUser: mockRefreshUser,
     verificationResendAvailableAt: () => mockVerificationResendAvailableAt(),
     setVerificationResendAvailableAt: vi.fn(),
     isAuthenticated: () => mockUser() != null,

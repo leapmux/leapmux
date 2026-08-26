@@ -1,15 +1,22 @@
-import { MemoryRouter, Route } from '@solidjs/router'
-import { render, screen } from '@solidjs/testing-library'
+import { createMemoryHistory, MemoryRouter, Route } from '@solidjs/router'
+import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { KEY_BROWSER_PREFS, localStorageClearForTests, localStorageGet, resetStorageAccountForTests, setStorageAccount } from '~/lib/browserStorage'
 import { applyTheme, DEFAULT_THEME_VALUE } from '~/lib/themeStore'
 import { TEST_USER_ID } from '~/test-support/crdtBridge'
 import { withPreferences } from '~/test-support/preferencesProvider'
+import { resetSystemInfoMock, setSystemInfoMock } from '~/test-support/systemInfoMock'
 import { SetupPage } from './SetupPage'
+
+const mockSignUp = vi.fn<(...args: unknown[]) => Promise<unknown>>()
+const mockBeginPasskeySignUp = vi.fn<(...args: unknown[]) => Promise<unknown>>()
+const mockFinishPasskeySignUp = vi.fn<(...args: unknown[]) => Promise<unknown>>()
 
 vi.mock('~/api/clients', () => ({
   authClient: {
-    signUp: vi.fn(),
+    signUp: (...args: unknown[]) => mockSignUp(...args),
+    beginPasskeySignUp: (...args: unknown[]) => mockBeginPasskeySignUp(...args),
+    finishPasskeySignUp: (...args: unknown[]) => mockFinishPasskeySignUp(...args),
     login: vi.fn(),
     logout: vi.fn(),
     getCurrentUser: vi.fn(),
@@ -21,20 +28,22 @@ vi.mock('~/api/clients', () => ({
   },
 }))
 
-const mockIsSetupRequired = vi.fn<() => boolean>(() => true)
-vi.mock('~/lib/systemInfo', () => ({
-  isEmailEnabled: () => false,
-  isSoloMode: () => false,
-  isSetupRequired: () => mockIsSetupRequired(),
-  loadSystemInfo: () => Promise.resolve(),
-  isSignupEnabled: () => true,
-  loadOAuthProviders: () => Promise.resolve([]),
-  isSystemInfoLoaded: () => true,
-  isCaptchaEnabled: () => false,
-  getAltchaAlgorithm: () => '',
-  getCaptchaProvider: () => 1,
-  getCaptchaSiteKey: () => '',
+// Only the browser ceremony is faked; passkeyErrorMessage stays real, so the
+// cancel-vs-failure rule under test is the one the component ships with.
+vi.mock('~/lib/webauthn', async importOriginal => ({
+  ...await importOriginal<typeof import('~/lib/webauthn')>(),
+  startRegistration: vi.fn().mockResolvedValue('{"id":"cred"}'),
 }))
+
+// The shared mock, so this page reads the same getters (passkeyBlocker,
+// isCaptchaEnabled) through the same reactive snapshot every other auth
+// surface does.
+vi.mock('~/lib/systemInfo', async () => {
+  const m = await import('~/test-support/systemInfoMock')
+  return m.systemInfoMock
+})
+
+const mockSetAuth = vi.fn()
 
 vi.mock('~/context/AuthContext', () => ({
   useAuth: () => ({
@@ -43,24 +52,37 @@ vi.mock('~/context/AuthContext', () => ({
     error: () => null,
     login: vi.fn(),
     logout: vi.fn(),
-    setAuth: vi.fn(),
+    setAuth: mockSetAuth,
     isAuthenticated: () => false,
   }),
   AuthProvider: (props: { children: unknown }) => <>{props.children}</>,
 }))
 
 function renderSetup() {
-  return render(() => (
-    <MemoryRouter>
+  const history = createMemoryHistory()
+  const navigations: string[] = []
+  history.listen(value => navigations.push(value))
+  const result = render(() => (
+    <MemoryRouter history={history}>
       <Route path="/" component={withPreferences(() => <SetupPage />)} />
+      <Route path="/home" component={() => <div data-testid="app-home" />} />
     </MemoryRouter>
   ))
+  return { ...result, navigations }
+}
+
+/** Fill the fields every sign-up method needs. */
+function fillCommonFields(username: string) {
+  fireEvent.input(screen.getByLabelText('Username'), { target: { value: username } })
+  fireEvent.input(screen.getByLabelText('Email'), { target: { value: `${username}@example.com` } })
 }
 
 beforeEach(() => {
+  vi.clearAllMocks()
   localStorageClearForTests()
+  resetSystemInfoMock()
   applyTheme(DEFAULT_THEME_VALUE)
-  mockIsSetupRequired.mockReturnValue(true)
+  setSystemInfoMock({ setupRequired: true })
 })
 
 afterEach(() => {
@@ -72,6 +94,19 @@ describe('the first-run setup page (SetupPage)', () => {
   it('welcomes the first administrator', async () => {
     renderSetup()
     expect(await screen.findByText('Welcome to LeapMux')).toBeInTheDocument()
+  })
+
+  // The page carries NO first-run check of its own any more. It used to read
+  // isSetupRequired() from onMount, before the system info had arrived, so a
+  // cold load answered the fabricated `false` and bounced a direct visit to
+  // /login and back. SetupGate owns both directions now, above the router
+  // outlet -- which is why the page renders here although the snapshot says
+  // the hub is already set up.
+  it('renders whatever the setup state says, leaving that decision to SetupGate', async () => {
+    setSystemInfoMock({ setupRequired: false })
+    const { navigations } = renderSetup()
+    expect(await screen.findByText('Welcome to LeapMux')).toBeInTheDocument()
+    expect(navigations).toEqual([])
   })
 
   // No chooser here, and not merely because nobody put one on this page: a
@@ -110,5 +145,55 @@ describe('the first-run setup page (SetupPage)', () => {
       setStorageAccount(TEST_USER_ID)
     }
     expect(localStorageGet(KEY_BROWSER_PREFS)).toBeUndefined()
+  })
+
+  // The first administrator picks a credential the same way anybody else
+  // does. The hub used to refuse a passkey during initial setup, so this page
+  // hid the pills; both halves went at once.
+  it('offers both sign-up methods', async () => {
+    renderSetup()
+    await screen.findByText('Welcome to LeapMux')
+    expect(screen.getByRole('radio', { name: 'Password' })).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: 'Passkey' })).toBeInTheDocument()
+  })
+
+  // `admin` is squat-protected in public signup and claimable here, so the
+  // passkey path has to accept it too -- the reserved rule is shared, and it
+  // took the setup exemption on the password path only.
+  it('registers the first administrator with a passkey', async () => {
+    mockBeginPasskeySignUp.mockResolvedValue({ sessionId: 's-1', optionsJson: '{}' })
+    mockFinishPasskeySignUp.mockResolvedValue({ user: { id: 'u-1', username: 'admin' } })
+
+    renderSetup()
+    await screen.findByText('Welcome to LeapMux')
+    fillCommonFields('admin')
+    fireEvent.click(screen.getByRole('radio', { name: 'Passkey' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Sign up with passkey' }))
+
+    await vi.waitFor(() => {
+      expect(mockFinishPasskeySignUp).toHaveBeenCalledWith({ sessionId: 's-1', credentialJson: '{"id":"cred"}' })
+    })
+    expect(mockBeginPasskeySignUp).toHaveBeenCalledWith(
+      expect.objectContaining({ username: 'admin', email: 'admin@example.com' }),
+    )
+    // The RPC creates the session, so the page adopts it and leaves.
+    expect(mockSetAuth).toHaveBeenCalledWith({ id: 'u-1', username: 'admin' })
+    expect(mockSignUp).not.toHaveBeenCalled()
+  })
+
+  it('still registers the first administrator with a password', async () => {
+    mockSignUp.mockResolvedValue({ user: { id: 'u-1', username: 'admin' } })
+
+    renderSetup()
+    await screen.findByText('Welcome to LeapMux')
+    fillCommonFields('admin')
+    fireEvent.input(screen.getByLabelText('New Password'), { target: { value: 'strongpass1' } })
+    fireEvent.input(screen.getByLabelText('Confirm Password'), { target: { value: 'strongpass1' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create account' }))
+
+    await vi.waitFor(() => {
+      expect(mockSetAuth).toHaveBeenCalledWith({ id: 'u-1', username: 'admin' })
+    })
+    expect(mockBeginPasskeySignUp).not.toHaveBeenCalled()
   })
 })

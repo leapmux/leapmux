@@ -5,8 +5,8 @@
 
 -- name: CreateCLIAuthorizationCode :exec
 INSERT INTO cli_authorization_codes (
-    code, user_id, code_challenge, device_name, expires_at
-) VALUES (?, ?, ?, ?, ?);
+    code, user_id, code_challenge, device_name, admin_scope, expires_at
+) VALUES (?, ?, ?, ?, ?, ?);
 
 -- name: GetActiveCLIAuthorizationCode :one
 SELECT * FROM cli_authorization_codes

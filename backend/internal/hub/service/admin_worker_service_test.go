@@ -250,7 +250,7 @@ func TestAdminWorkerService_ListWorkersCapsAnOversizedPageLimit(t *testing.T) {
 	ctx := context.Background()
 
 	owner := userid.MustNew(env.userID)
-	for range service.MaxAdminPageLimit + 1 {
+	for range service.MaxPageLimit + 1 {
 		require.NoError(t, env.st.Workers().Create(ctx, store.CreateWorkerParams{
 			ID:              id.Generate(),
 			AuthToken:       id.Generate(),
@@ -265,7 +265,7 @@ func TestAdminWorkerService_ListWorkersCapsAnOversizedPageLimit(t *testing.T) {
 		Limit: 100000,
 	}, env.token))
 	require.NoError(t, err)
-	assert.Len(t, page.Msg.GetWorkers(), service.MaxAdminPageLimit,
+	assert.Len(t, page.Msg.GetWorkers(), service.MaxPageLimit,
 		"an oversized limit is capped, not honoured")
 	require.NotEmpty(t, page.Msg.GetNextCursor(), "a capped page says where the next one starts")
 

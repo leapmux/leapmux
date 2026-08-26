@@ -28,6 +28,7 @@ import { join } from 'node:path'
 import process from 'node:process'
 import { promisify } from 'node:util'
 import { expect } from '@playwright/test'
+import { TEST_ADMIN_PASSWORD } from './api'
 import { getGlobalState } from './server'
 
 const execFileAsync = promisify(execFile)
@@ -90,6 +91,20 @@ export async function mintCLITokenForAdmin(source: CLITokenSource, options?: {
   const cookie = source.adminPassword && source.adminUsername
     ? await loginForMint(source.hubUrl, source.adminUsername, source.adminPassword)
     : source.adminToken
+  // Issuing an admin-scoped CLI credential is an elevated-only action, the
+  // same as every /auth/cli/* consent leg: it mints a bearer that outlives
+  // the browser session by a year. So the mint elevates first, exactly as a
+  // person at the verification screen does.
+  //
+  // BOTH branches, and that is the point: the fallback branch reuses a
+  // fixture cookie minted by sign-up, which is no more elevated than a fresh
+  // login. Elevating only the login branch left every dev-server spec
+  // failing in setup with a refusal that named no verb.
+  //
+  // The password defaults to the seeded admin's, because every E2E hub seeds
+  // that one account -- a source that carries its own credentials states
+  // them, and the rest share the fixture's.
+  await elevateForMint(source.hubUrl, cookie, source.adminPassword ?? TEST_ADMIN_PASSWORD)
 
   // Connect-JSON: the body is the message object directly (int64s as
   // strings), and the response JSON is the message object.
@@ -101,10 +116,18 @@ export async function mintCLITokenForAdmin(source: CLITokenSource, options?: {
       clientType: 'cli',
       clientName: `e2e-${Date.now()}`,
       ttlSeconds: '3600',
+      // The specs that drive `control admin ...` need it: an ordinary CLI
+      // credential is refused every Admin* procedure, even for an
+      // administrator. See operating/security.md on why that is the default.
+      adminScope: true,
     }),
   })
   if (!res.ok) {
-    throw new Error(`mintCLITokenForAdmin: IssueAPIToken ${res.status}`)
+    // The BODY, not the status alone. A Connect error carries its message
+    // there, and a bare "IssueAPIToken 400" says nothing about which of the
+    // several refusals fired -- which is exactly the diagnosis this helper's
+    // callers need, because they all fail in setup.
+    throw new Error(`mintCLITokenForAdmin: IssueAPIToken ${res.status}: ${await res.text()}`)
   }
   const minted = await res.json() as { accessToken?: string }
   const bearer = minted.accessToken
@@ -134,10 +157,33 @@ export async function mintCLITokenForAdmin(source: CLITokenSource, options?: {
     expires_at: new Date(Date.now() + 3_600_000).toISOString(),
     user_id: userID,
     username: 'admin',
+    admin_scope: true,
   }
   writeFileSync(credPath, JSON.stringify(cred, null, 2), { mode: 0o600 })
 
   return { path: configDir, hubURL, bearer, userID }
+}
+
+/**
+ * Prove a factor on the session the mint is about to use.
+ *
+ * Signing in is not enough: the hub refuses IssueAPIToken from a session that
+ * has not proven a factor recently, which is the same rule every
+ * `/auth/cli/*` consent leg applies. Elevating here is the honest fixture —
+ * it is the step the browser takes before the same screen appears.
+ *
+ * Re-elevating an already-elevated session is harmless: the grant replaces
+ * whatever window the session held.
+ */
+async function elevateForMint(hubUrl: string, cookie: string, password: string): Promise<void> {
+  const res = await fetch(`${hubUrl}/leapmux.v1.UserService/ElevateSession`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Cookie': cookie },
+    body: JSON.stringify({ currentPassword: password }),
+  })
+  if (!res.ok) {
+    throw new Error(`mintCLITokenForAdmin: ElevateSession ${res.status}: ${await res.text()}`)
+  }
 }
 
 /**
@@ -394,6 +440,19 @@ function withHubFlag(args: string[], hubURL: string): string[] {
   while (i < args.length && !args[i].startsWith('-'))
     i++
   return [...args.slice(0, i), '--hub', hubURL, ...args.slice(i)]
+}
+
+/**
+ * Write one hub setting through `control admin settings set`.
+ *
+ * `--hub` is spelled out here rather than left to withHubFlag. That helper
+ * inserts the flag before the FIRST token that starts with `-`, and this verb
+ * has none — so the flag landed after KEY and VALUE, where Go's flag parser
+ * has already stopped looking, and the CLI counted three positionals and
+ * printed its usage line.
+ */
+export async function setHubSetting(cfg: CLIConfigDir, key: string, value: string): Promise<void> {
+  await runCLI(cfg, ['admin', 'settings', 'set', '--hub', cfg.hubURL, key, value])
 }
 
 /**

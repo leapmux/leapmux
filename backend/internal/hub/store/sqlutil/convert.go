@@ -46,6 +46,16 @@ func RequireTime(value time.Time, valid bool, column string) (time.Time, error) 
 // `u.String() != ""` -- the raw emptiness comparison the type was introduced to
 // remove, and the one that would silently stop meaning "was this ever minted"
 // if UserID's internal representation ever changed.
+// NullNonEmpty maps an OPTIONAL string column: empty means "not set", which
+// is SQL NULL rather than the empty string. A column that distinguishes the
+// two would need a different helper; none here does.
+func NullNonEmpty(v string) sql.NullString {
+	if v == "" {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: v, Valid: true}
+}
+
 func NullUserID(u userid.UserID) sql.NullString {
 	if u.IsZero() {
 		return sql.NullString{}

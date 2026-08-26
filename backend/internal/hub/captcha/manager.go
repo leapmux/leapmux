@@ -88,6 +88,18 @@ func WithTurnstileEndpoint(endpoint string) Option {
 // In solo mode every check is a no-op: solo is a local, single-user
 // deployment with no attack surface.
 func NewManager(st store.Store, set *settings.Manager, soloMode bool, opts ...Option) *Manager {
+	// The gate reads two CORE settings keys, and they are its ONLY inputs.
+	// A manager that never registered them answers the DEFAULT for both --
+	// Key.Of resolves an unregistered key to its zero value with no error
+	// and no log -- which silently swallows a configured public_url and
+	// stands ALTCHA down.
+	// Refuse that wiring here, where the stack trace identifies the caller,
+	// rather than at a request that reports a captcha failure.
+	for _, key := range []string{settings.KeyPublicURL.Name(), settings.KeySecureCookies.Name()} {
+		if _, ok := set.Descriptor(key); !ok {
+			panic("captcha: settings manager does not register " + key + ", which the secure-context gate reads")
+		}
+	}
 	m := &Manager{
 		st:        st,
 		set:       set,
@@ -106,15 +118,16 @@ func NewManager(st store.Store, set *settings.Manager, soloMode bool, opts ...Op
 // write the store on a fresh install just to report defaults. It cannot
 // fail: the snapshot serves the last good state (or defaults) and
 // Effective degrades invalid settings to the built-in defaults, so the
-// caller has no error path to handle. When the request context carries a
-// non-secure client page URL and ALTCHA is selected, Enabled is false at
-// runtime only (the captcha.enabled settings row is not written).
+// caller has no error path to handle. When ALTCHA is selected and this
+// hub cannot serve a secure context, Enabled is false at runtime only:
+// the captcha.enabled settings row keeps its stored value.
 func (m *Manager) Describe(ctx context.Context) Config {
 	if m.solo {
 		return DisabledConfig()
 	}
-	cfg, _ := Effective(m.set.Snapshot(ctx))
-	return applySecureContextGate(cfg, clientPageURLFromCtx(ctx))
+	snap := m.set.Snapshot(ctx)
+	cfg, _ := Effective(snap)
+	return applySecureContextGate(cfg, altchaCanProtect(snap))
 }
 
 // ErrProviderNotAltcha is returned by AltchaChallengeJSON when another
@@ -145,13 +158,13 @@ func (m *Manager) AltchaChallengeJSON(ctx context.Context) (string, error) {
 	if res.cfg.Provider != ProviderAltcha {
 		return "", fmt.Errorf("%w (%s)", ErrProviderNotAltcha, ProviderAlias(res.cfg.Provider))
 	}
-	settings := res.cfg.Altcha
-	expires := time.Now().Add(time.Duration(settings.ChallengeExpirySeconds) * time.Second)
+	tuning := res.cfg.Altcha
+	expires := time.Now().Add(time.Duration(tuning.ChallengeExpirySeconds) * time.Second)
 	challenge, err := altcha.CreateChallenge(altcha.CreateChallengeOptions{
-		Algorithm:           settings.Algorithm,
-		Cost:                int(settings.Cost),
-		MemoryCost:          int(settings.MemoryCost),
-		Parallelism:         int(settings.Parallelism),
+		Algorithm:           tuning.Algorithm,
+		Cost:                int(tuning.Cost),
+		MemoryCost:          int(tuning.MemoryCost),
+		Parallelism:         int(tuning.Parallelism),
 		ExpiresAt:           &expires,
 		HMACSignatureSecret: string(res.secret),
 	})
@@ -323,17 +336,21 @@ func (m *Manager) countUnattributedDenial() {
 // decrypted secret, provisioning the default altcha row when altcha is
 // selected but has no stored secret (a fresh install, or a row deleted
 // outside the admin CLI). The secure-context gate runs after Effective so
-// ALTCHA on insecure HTTP stands down without a settings write.
+// a hub that cannot serve a secure context stands down without a settings
+// write.
 func (m *Manager) resolve(ctx context.Context) (*resolvedConfig, error) {
 	snap := m.set.Snapshot(ctx)
 	cfg, fallback := Effective(snap)
 	m.noteFallback(fallback)
-	cfg = applySecureContextGate(cfg, clientPageURLFromCtx(ctx))
+	// The gate runs at every return below, never here: it only flips
+	// Enabled, and neither branch that follows reads that flag, so gating
+	// once at the end covers both paths without computing the answer twice
+	// on the provisioning path.
 	if cfg.Provider != ProviderAltcha {
-		return m.resolveSecret(snap, cfg)
+		return m.resolveSecret(snap, m.gate(snap, cfg))
 	}
 	if snap.Customized(AltchaKey) && len(AltchaKey.Of(snap).HMACKey) > 0 {
-		return m.resolveSecret(snap, cfg)
+		return m.resolveSecret(snap, m.gate(snap, cfg))
 	}
 	// First-use self-heal: provision the altcha row's signing key (with the
 	// row itself, and its default settings, when neither exists) and
@@ -346,8 +363,13 @@ func (m *Manager) resolve(ctx context.Context) (*resolvedConfig, error) {
 	snap = m.set.Snapshot(ctx)
 	cfg, fallback = Effective(snap)
 	m.noteFallback(fallback)
-	cfg = applySecureContextGate(cfg, clientPageURLFromCtx(ctx))
-	return m.resolveSecret(snap, cfg)
+	return m.resolveSecret(snap, m.gate(snap, cfg))
+}
+
+// gate applies the secure-context stand-down for one snapshot, so resolve
+// states the rule once instead of at each of its three returns.
+func (m *Manager) gate(snap *settings.Snapshot, cfg Config) Config {
+	return applySecureContextGate(cfg, altchaCanProtect(snap))
 }
 
 // noteFallback reports the effective-config degrade state on transition:
@@ -447,29 +469,4 @@ func provisionAltchaRow(ctx context.Context, set *settings.Manager) error {
 		return fmt.Errorf("provision captcha config: %w", err)
 	}
 	return nil
-}
-
-// DescribeProvider returns one provider's effective settings from its own
-// key — not the selection. The admin CLI overlays flag edits onto this
-// base, so a switch back to a provider keeps that row's stored tuning
-// (only the selection changes), and a key the CLI has never written
-// reports that provider's defaults rather than altcha's.
-func DescribeProvider(s *settings.Snapshot, provider Provider) Config {
-	spec, ok := specFor(provider)
-	if !ok {
-		return DefaultConfig()
-	}
-	switch provider {
-	case ProviderAltcha:
-		row := AltchaKey.Of(s)
-		return Config{Provider: provider, Enabled: CaptchaEnabledKey.Of(s), Altcha: &row.AltchaSettings}
-	case ProviderRecaptchaV3:
-		row := RecaptchaV3Key.Of(s)
-		return Config{Provider: provider, Enabled: CaptchaEnabledKey.Of(s), RecaptchaV3: &RecaptchaV3Settings{SiteKey: row.SiteKey, MinScore: row.MinScore}}
-	case ProviderTurnstile:
-		row := TurnstileKey.Of(s)
-		return Config{Provider: provider, Enabled: CaptchaEnabledKey.Of(s), Turnstile: &TurnstileSettings{SiteKey: row.SiteKey}}
-	default:
-		return spec.defaults()
-	}
 }

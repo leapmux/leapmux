@@ -36,10 +36,25 @@ import (
 // with "http2: unsupported scheme" — the socket dial is wired into
 // the transport, so the host portion is just a placeholder.
 type Client struct {
-	HubURL     string
-	Bearer     string
-	HTTPClient *http.Client
-	WSClient   *http.Client // HTTP/1.1 client for /ws/channel upgrade
+	HubURL string
+	// bearer is the access token presented on every call.
+	//
+	// UNEXPORTED, and that is the mechanism rather than a style choice: a
+	// refresh replaces it mid-flight while a stream on another goroutine
+	// reads it, so every access must hold bearerMu. A comment asking callers
+	// to use currentBearer and setBearer is a rule somebody can forget; an
+	// unexported field is one the compiler keeps. Tests reach it through
+	// ApplyAuth, which is what a transport sees anyway.
+	bearer string
+	// accessExpiresAt is the stored expiry of the token in bearer, so the
+	// proactive freshness check can answer from memory. Zero means unknown
+	// -- a client built without credentials, or one whose credential file
+	// this client did not read yet -- and an unknown expiry falls through to
+	// the file.
+	accessExpiresAt time.Time
+	bearerMu        sync.RWMutex
+	HTTPClient      *http.Client
+	WSClient        *http.Client // HTTP/1.1 client for /ws/channel upgrade
 	// Pins is the per-hub TOFU pin store. Read it through pinStore, which
 	// opens it on first use; a test may set the field directly instead.
 	Pins       *PinStore
@@ -101,7 +116,8 @@ func newHubClient(hubURL string, creds *CredentialFile) (*Client, error) {
 		peer:       peerHub,
 	}
 	if creds != nil {
-		c.Bearer = creds.AccessToken
+		c.bearer = creds.AccessToken
+		c.accessExpiresAt = creds.ExpiresAt
 		c.UserID = creds.UserID
 		c.Username = creds.Username
 	}
@@ -192,7 +208,7 @@ func NewLocalClient(socketURL, token string) (*Client, error) {
 	}
 	return &Client{
 		HubURL:     socketURL,
-		Bearer:     token,
+		bearer:     token,
 		HTTPClient: httpClient,
 		connectURL: connectURL,
 		peer:       peerWorkerIPC,
@@ -215,14 +231,45 @@ func (c *Client) IsWorkerIPC() bool {
 // callers outside this package can apply the same auth shape to a
 // hand-constructed request (the same rationale as AuthInterceptor).
 func (c *Client) ApplyAuth(headers http.Header) {
-	if c.Bearer == "" {
+	bearer := c.currentBearer()
+	if bearer == "" {
 		return
 	}
 	if c.IsWorkerIPC() {
-		headers.Set("X-LeapMux-Token", c.Bearer)
+		headers.Set("X-LeapMux-Token", bearer)
 	} else {
-		headers.Set("Authorization", "Bearer "+c.Bearer)
+		headers.Set("Authorization", "Bearer "+bearer)
 	}
+}
+
+// currentBearer reads the access token under the lock a refresh writes it
+// under.
+func (c *Client) currentBearer() string {
+	c.bearerMu.RLock()
+	defer c.bearerMu.RUnlock()
+	return c.bearer
+}
+
+// setBearer adopts a rotated access token and its expiry. The two move
+// together, so the cached expiry can never describe a different token from
+// the one the header carries.
+func (c *Client) setBearer(bearer string, expiresAt time.Time) {
+	c.bearerMu.Lock()
+	defer c.bearerMu.Unlock()
+	c.bearer = bearer
+	c.accessExpiresAt = expiresAt
+}
+
+// bearerNeedsRenewal reports whether the proactive check must read the
+// credential file at all.
+//
+// An UNKNOWN expiry (the zero value) answers true, so a client that never
+// learned one still consults the file. That is what keeps this a pure
+// short-circuit: it can skip a read, never a renewal.
+func (c *Client) bearerNeedsRenewal() bool {
+	c.bearerMu.RLock()
+	defer c.bearerMu.RUnlock()
+	return c.accessExpiresAt.IsZero() || time.Until(c.accessExpiresAt) <= refreshSkew
 }
 
 // WorkspaceService returns a ConnectRPC client for the hub-side
@@ -346,8 +393,16 @@ func (c *Client) OpenUserEvents(ctx context.Context, workspaceIDs []string) (*Us
 	if locallisten.IsLocal(c.HubURL) {
 		return nil, errors.New("OpenUserEvents needs an http(s) hub origin; a unix:/npipe: hub URL cannot carry a WebSocket subscription")
 	}
+	// A long-lived subscription must not open on a token that is about to
+	// lapse: the WebSocket carries no retry, so it would simply close. The
+	// renewal and the read are ONE call, so a later caller cannot do the
+	// second without the first.
+	bearer, err := c.freshBearer(ctx)
+	if err != nil {
+		return nil, err
+	}
 	dialCtx, dialCancel := context.WithCancel(ctx)
-	ws, err := channelwire.OpenUserEventsWS(dialCtx, c.WSClient, c.HubURL, c.Bearer, workspaceIDs, nil, 0)
+	ws, err := channelwire.OpenUserEventsWS(dialCtx, c.WSClient, c.HubURL, bearer, workspaceIDs, nil, 0)
 	if err != nil {
 		dialCancel()
 		return nil, err
@@ -376,11 +431,17 @@ func (c *Client) OpenE2EEChannel(operationCtx, lifetimeCtx context.Context, work
 	if err != nil {
 		return nil, fmt.Errorf("open TOFU pin store: %w", err)
 	}
+	// Same reason as OpenUserEvents: a channel outlives one request, and the
+	// upgrade carries the bearer exactly once.
+	bearer, err := c.freshBearer(operationCtx)
+	if err != nil {
+		return nil, err
+	}
 	return tunnel.OpenChannel(operationCtx, c.HubURL, workerID, &tunnel.OpenChannelOptions{
 		HTTPClient:          c.HTTPClient,
 		WebSocketHTTPClient: c.WSClient,
 		LifetimeContext:     lifetimeCtx,
-		BearerToken:         c.Bearer,
+		BearerToken:         bearer,
 		// The CLI resolves workspaces/workers under c.UserID (see resolve.Resolver
 		// and cmd/workspace.go), so it DOES have an expectation: creds whose bearer
 		// and user_id have decoupled -- a rotated or reassigned token -- would have
@@ -390,6 +451,17 @@ func (c *Client) OpenE2EEChannel(operationCtx, lifetimeCtx context.Context, work
 		ExpectedUserID: c.UserID,
 		KeyPin:         pins,
 	})
+}
+
+// UserService returns a ConnectRPC client for the caller's OWN account
+// (its CLI credentials, and the passkey and password surface the browser
+// drives). Not an Admin* client: every procedure on it acts on the account
+// the bearer belongs to.
+func (c *Client) UserService() leapmuxv1connect.UserServiceClient {
+	return leapmuxv1connect.NewUserServiceClient(
+		c.HTTPClient, c.connectURL,
+		connect.WithInterceptors(c.AuthInterceptor()),
+	)
 }
 
 // AdminSettingsService returns a ConnectRPC client for the hub's
@@ -453,15 +525,75 @@ func (c *Client) AuthInterceptor() connect.Interceptor {
 // only acts as a client.
 type authInterceptor struct{ client *Client }
 
+// WrapUnary renews the credential before the call when it is close to
+// expiry, and retries EXACTLY ONCE after a refusal it can repair. There are
+// two such refusals, and they are repaired differently:
+//
+//   - Unauthenticated: the stored token is dead, so refresh it. The reactive
+//     retry exists because the proactive check reads a STORED expiry, which
+//     can be wrong: a clock that moved, a token another process rotated, a
+//     file written by an older build.
+//   - The MARKED FailedPrecondition: the credential is live but proved no
+//     factor recently, so run the browser step-up. This one blocks on a
+//     human, which is why it is keyed on the hub's marker and not on the
+//     code -- a FailedPrecondition also means half a dozen things a prompt
+//     cannot fix, and stopping a script to show a URL for one of those would
+//     be worse than reporting it.
+//
+// A unary call is safe to replay in both cases: the hub refused the first
+// one, so it acted on nothing.
+//
+// ONE retry, whichever repair ran. A second refusal is the truth -- the
+// factor was proven and the action is still refused -- and looping would ask
+// the user to verify the same credential for ever.
+//
+// A proactive-refresh failure is swallowed: the stored token may still work,
+// and the call that follows reports the truth. Turning a transient blip
+// during a renewal into a failed command would be worse than the renewal not
+// happening.
 func (a *authInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+		if err := a.client.EnsureFreshBearer(ctx); err != nil {
+			return nil, connect.NewError(connect.CodeUnauthenticated, err)
+		}
+		a.client.ApplyAuth(req.Header())
+		resp, err := next(ctx, req)
+		if err == nil {
+			return resp, err
+		}
+		if NeedsElevation(err) {
+			// The hub's own refusal is what the user must read when the
+			// step-up cannot run or the human declines it. Reporting the
+			// ceremony's failure instead would name the remedy as the
+			// problem.
+			if a.client.Elevate(ctx) != nil {
+				return resp, err
+			}
+			a.client.ApplyAuth(req.Header())
+			return next(ctx, req)
+		}
+		if connect.CodeOf(err) != connect.CodeUnauthenticated {
+			return resp, err
+		}
+		if !a.client.retryAfterUnauthenticated(ctx) {
+			return resp, err
+		}
 		a.client.ApplyAuth(req.Header())
 		return next(ctx, req)
 	}
 }
 
+// WrapStreamingClient renews before the stream opens and never retries.
+// A stream already begins delivering before an error can surface, so a
+// replay would hand the caller the opening messages twice.
+//
+// The renewal error is discarded here alone, and it has to be: a streaming
+// interceptor returns a StreamingClientConn and no error, so there is
+// nowhere to report it. The refusal surfaces on the first Send or Receive
+// instead.
 func (a *authInterceptor) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
 	return func(ctx context.Context, spec connect.Spec) connect.StreamingClientConn {
+		_ = a.client.EnsureFreshBearer(ctx)
 		conn := next(ctx, spec)
 		a.client.ApplyAuth(conn.RequestHeader())
 		return conn

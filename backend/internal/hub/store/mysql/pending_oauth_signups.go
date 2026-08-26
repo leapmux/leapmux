@@ -18,6 +18,7 @@ func fromDBPendingOAuthSignup(p gendb.PendingOauthSignup) *store.PendingOAuthSig
 	return &store.PendingOAuthSignup{
 		Token:           p.Token,
 		ProviderID:      p.ProviderID,
+		NonceHash:       p.NonceHash,
 		ProviderSubject: p.ProviderSubject,
 		Email:           p.Email,
 		DisplayName:     p.DisplayName,
@@ -36,6 +37,7 @@ func (s *pendingOAuthSignupStore) Create(ctx context.Context, p store.CreatePend
 	return mapErr(s.conn.q.CreatePendingOAuthSignup(ctx, gendb.CreatePendingOAuthSignupParams{
 		Token:           p.Token,
 		ProviderID:      p.ProviderID,
+		NonceHash:       p.NonceHash,
 		ProviderSubject: p.ProviderSubject,
 		Email:           store.NormalizeEmail(p.Email),
 		DisplayName:     p.DisplayName,

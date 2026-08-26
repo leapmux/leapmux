@@ -17,6 +17,20 @@ vi.mock('~/lib/systemInfo', () => ({
   isDesktopApp: () => false,
 }))
 
+// The panel renders the verified-session state at the top of an
+// elevation-guarded group, and that state reads the auth context. Driven per
+// test rather than stubbed to a constant, because "no window" and "a live
+// window" are the two things the slot has to tell apart.
+const elevationExpiresAt = vi.hoisted(() => vi.fn((): { seconds: bigint, nanos: number } | undefined => undefined))
+
+vi.mock('~/context/AuthContext', () => ({
+  useAuth: () => ({
+    elevationExpiresAt: () => elevationExpiresAt(),
+    setElevationExpiresAt: vi.fn(),
+    refreshUser: vi.fn().mockResolvedValue(undefined),
+  }),
+}))
+
 function field(overrides: Partial<SettingField> = {}): SettingField {
   return {
     name: '',
@@ -118,7 +132,7 @@ function registryFor(category: string): SettingRowModel[] {
 describe('settingsPanel string-list accessible names', () => {
   it('names the two font-stack add affordances apart', () => {
     render(withPreferences(() => (
-      <SettingsPanel rows={registryFor('appearance')} restartGroup={false} writeError={null} />
+      <SettingsPanel rows={registryFor('appearance')} restartGroup={false} elevationGroup={false} writeError={null} />
     )))
     expect(screen.getByRole('textbox', { name: 'Add UI font' })).toBeTruthy()
     expect(screen.getByRole('textbox', { name: 'Add monospace font' })).toBeTruthy()
@@ -135,6 +149,7 @@ describe('settingsPanel claimed proto keys', () => {
       <SettingsPanel
         rows={[...registryFor('appearance'), ...rowsFor(store, 'appearance')]}
         restartGroup={false}
+        elevationGroup={false}
         writeError={null}
       />
     )))
@@ -153,6 +168,7 @@ describe('settingsPanel claimed proto keys', () => {
       <SettingsPanel
         rows={[...registryFor('appearance'), ...rowsFor(store, 'appearance')]}
         restartGroup={false}
+        elevationGroup={false}
         writeError={null}
       />
     )))
@@ -169,6 +185,7 @@ describe('settingsPanel claimed proto keys', () => {
       <SettingsPanel
         rows={rowsFor(store, 'signup', false)}
         restartGroup={false}
+        elevationGroup={false}
         writeError={null}
       />
     ))
@@ -190,6 +207,7 @@ describe('settingsPanel claimed proto keys', () => {
       <SettingsPanel
         rows={rowsFor(store, 'advanced', false)}
         restartGroup={false}
+        elevationGroup={false}
         writeError={{ key: 'queue_budget', message: 'queue budget relay_bytes must be 0 (auto-size) or at least 4194304 bytes' }}
       />
     ))
@@ -209,6 +227,7 @@ describe('settingsPanel claimed proto keys', () => {
       <SettingsPanel
         rows={rowsFor(store, 'general', false)}
         restartGroup={false}
+        elevationGroup={false}
         writeError={{ key: 'session_duration_seconds', message: 'session duration must be at least 300s' }}
       />
     ))
@@ -234,6 +253,7 @@ describe('settingsPanel restart warning', () => {
       <SettingsPanel
         rows={rowsFor(store, 'general', false)}
         restartGroup={true}
+        elevationGroup={false}
         writeError={null}
       />
     ))
@@ -246,9 +266,62 @@ describe('settingsPanel restart warning', () => {
       <SettingsPanel
         rows={rowsFor(store, 'general', false)}
         restartGroup={false}
+        elevationGroup={false}
         writeError={null}
       />
     ))
     expect(screen.queryByRole('alert')).toBeNull()
+  })
+})
+
+/**
+ * The verified-session state belongs to the PANEL, not to one editor inside
+ * one group.
+ *
+ * It lived in an account editor, which put it half way down the Account panel
+ * and left every ADMINISTRATION panel without it -- although the same window
+ * governs every hub-settings write. The panel is the layer that knows which
+ * group is on screen.
+ */
+describe('settingsPanel verified-session state', () => {
+  const inTwoHours = () => ({ seconds: BigInt(Math.floor(Date.now() / 1000) + 7200), nanos: 0 })
+
+  afterEach(() => elevationExpiresAt.mockReturnValue(undefined))
+
+  it('shows it on an elevation group while the session is verified', () => {
+    elevationExpiresAt.mockReturnValue(inTwoHours())
+    render(() => (
+      <SettingsPanel rows={[]} restartGroup={false} elevationGroup={true} writeError={null} />
+    ))
+    expect(screen.getByTestId('elevation-status')).toBeTruthy()
+  })
+
+  it('shows nothing on an elevation group while the session is not verified', () => {
+    render(() => (
+      <SettingsPanel rows={[]} restartGroup={false} elevationGroup={true} writeError={null} />
+    ))
+    expect(screen.queryByTestId('elevation-status')).toBeNull()
+  })
+
+  it('shows nothing on a group that holds no elevation-guarded row', () => {
+    elevationExpiresAt.mockReturnValue(inTwoHours())
+    render(() => (
+      <SettingsPanel rows={[]} restartGroup={false} elevationGroup={false} writeError={null} />
+    ))
+    expect(screen.queryByTestId('elevation-status')).toBeNull()
+  })
+
+  // Both notes are about the group as a whole, and the verified state is the
+  // one that decides whether the rows below land without a prompt -- so it
+  // reads first.
+  it('puts it above the restart warning when a group carries both', () => {
+    elevationExpiresAt.mockReturnValue(inTwoHours())
+    const { container } = render(() => (
+      <SettingsPanel rows={[]} restartGroup={true} elevationGroup={true} writeError={null} />
+    ))
+    const alerts = [...container.querySelectorAll('[role="alert"]')]
+    expect(alerts).toHaveLength(2)
+    expect(alerts[0]!.textContent).toContain('This session is verified')
+    expect(alerts[1]!.textContent).toContain('after a hub restart')
   })
 })

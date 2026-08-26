@@ -10,6 +10,16 @@ import (
 // Each backend provides a NewStore function and calls Suite.Run.
 type Suite struct {
 	NewStore func(t *testing.T) store.TestableStore
+	// ConcurrentWriteTransactions reports whether this backend can hold two
+	// write transactions open at once. Every server backend can. SQLite
+	// cannot: it is an embedded, single-writer database, and a test that
+	// opens a second write transaction while the first is parked simply
+	// deadlocks -- there is no conflict to resolve because there is no
+	// concurrency to conflict.
+	//
+	// It is a capability rather than a backend name, so a new dialect states
+	// what it can do instead of being added to a list somewhere else.
+	ConcurrentWriteTransactions bool
 }
 
 // Run executes all conformance test groups.
@@ -17,6 +27,8 @@ func (s *Suite) Run(t *testing.T) {
 	t.Run("users", s.testUsers)
 	t.Run("user_prefs", s.testUserPrefs)
 	t.Run("sessions", s.testSessions)
+	t.Run("session_elevation", s.testSessionElevation)
+	t.Run("api_token_elevation", s.testAPITokenElevation)
 	t.Run("zero id mutations refused", s.testZeroIDMutationsRefused)
 	t.Run("workers", s.testWorkers)
 	t.Run("worker_notifications", s.testWorkerNotifications)

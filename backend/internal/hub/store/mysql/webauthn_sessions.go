@@ -73,37 +73,6 @@ func (s *webAuthnSessionStore) ConsumeCeremony(ctx context.Context, id, kind str
 	}))
 }
 
-func (s *webAuthnSessionStore) ConsumeProof(ctx context.Context, id, userID, kind string, now time.Time) (int64, error) {
-	owner, ok := userid.New(userID)
-	if !ok {
-		return 0, store.ErrInvalidArgument
-	}
-	return rowsAffected(s.conn.q.ConsumeWebAuthnProof(ctx, gendb.ConsumeWebAuthnProofParams{
-		ID:     id,
-		Kind:   kind,
-		UserID: sql.NullString{String: owner.String(), Valid: true},
-		Now:    sqltime.NewMySQLTime(now),
-	}))
-}
-
-func (s *webAuthnSessionStore) GetValidProof(ctx context.Context, id, userID, kind string, now time.Time) (*store.WebAuthnSession, error) {
-	owner, ok := userid.New(userID)
-	if !ok {
-		return nil, store.ErrInvalidArgument
-	}
-	row, err := s.conn.q.GetValidWebAuthnProof(ctx, gendb.GetValidWebAuthnProofParams{
-		ID:     id,
-		Kind:   kind,
-		UserID: sql.NullString{String: owner.String(), Valid: true},
-		Now:    sqltime.NewMySQLTime(now),
-	})
-	if err != nil {
-		return nil, mapErr(err)
-	}
-	out := fromDBWebAuthnSession(row)
-	return &out, nil
-}
-
 func (s *webAuthnSessionStore) DeleteAllByUser(ctx context.Context, userID string) error {
 	owner, ok := userid.New(userID)
 	if !ok {

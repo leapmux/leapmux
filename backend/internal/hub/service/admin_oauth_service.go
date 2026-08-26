@@ -21,10 +21,26 @@ import (
 type AdminOAuthService struct {
 	store store.Store
 	ks    *keystore.Keystore
+	// cache drops the built instances of a provider this service removes or
+	// disables. loadEnabledProvider refuses a deleted row with 404 and a
+	// disabled row with 403 BEFORE it rebuilds, so the login handler's own
+	// eviction can never reach such an entry -- and the entry holds the
+	// client secret the keystore decrypted. The dependency is an interface
+	// so the admin verbs need the eviction and not the login handler.
+	cache providerCacheInvalidator
 }
 
-func NewAdminOAuthService(st store.Store, ks *keystore.Keystore) *AdminOAuthService {
-	return &AdminOAuthService{store: st, ks: ks}
+// providerCacheInvalidator is the one thing the admin verbs need from the
+// OAuth login handler.
+type providerCacheInvalidator interface {
+	InvalidateProvider(providerID string)
+}
+
+func NewAdminOAuthService(st store.Store, ks *keystore.Keystore, cache providerCacheInvalidator) *AdminOAuthService {
+	if cache == nil {
+		panic("admin oauth service requires a provider cache invalidator")
+	}
+	return &AdminOAuthService{store: st, ks: ks, cache: cache}
 }
 
 func adminOAuthProviderToProto(p store.OAuthProviderSummary) *leapmuxv1.AdminOAuthProvider {
@@ -183,6 +199,7 @@ func (s *AdminOAuthService) RemoveOAuthProvider(ctx context.Context, req *connec
 	if err := s.store.OAuthProviders().Delete(ctx, req.Msg.GetId()); err != nil {
 		return nil, storeConnectError(err, "delete provider")
 	}
+	s.cache.InvalidateProvider(req.Msg.GetId())
 	return connect.NewResponse(&leapmuxv1.RemoveOAuthProviderResponse{LockedOutUsers: orphaned}), nil
 }
 
@@ -196,5 +213,8 @@ func (s *AdminOAuthService) SetOAuthProviderEnabled(ctx context.Context, req *co
 	}); err != nil {
 		return nil, storeConnectError(err, "update provider")
 	}
+	// Unconditional, for both directions. A re-enable then rebuilds once on
+	// the next request, and one rule reads better than two.
+	s.cache.InvalidateProvider(req.Msg.GetId())
 	return connect.NewResponse(&leapmuxv1.SetOAuthProviderEnabledResponse{}), nil
 }

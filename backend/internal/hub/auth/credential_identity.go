@@ -87,6 +87,35 @@ func (c CredentialIdentity) SessionID() string {
 	return ""
 }
 
+// APITokenID returns the api_tokens row ID, or an empty string for other
+// kinds -- a DELEGATION bearer included, which is the point of not reading
+// Bearer() here. Both bearer kinds share that accessor, and the two callers
+// of this one write the step-up window: a delegation token is minted by a
+// worker for an agent that reads untrusted input, so it must never carry one.
+func (c CredentialIdentity) APITokenID() string {
+	if c.kind == credentialAPI {
+		return c.id
+	}
+	return ""
+}
+
+// ElevatableRow returns the row a step-up window may be stamped on: a session
+// or a command-line credential, whichever this identity names.
+//
+// ONE answer for the three places that ask -- the admission, the slide, and
+// the grant -- so a credential kind cannot be elevatable to one of them and
+// not to another. The zero value (solo) and a delegation bearer report false.
+func (c CredentialIdentity) ElevatableRow() (sessionID, apiTokenID string, ok bool) {
+	switch c.kind {
+	case credentialSession:
+		return c.id, "", true
+	case credentialAPI:
+		return "", c.id, true
+	default:
+		return "", "", false
+	}
+}
+
 // BearerRef identifies a bearer token row (api_tokens or delegation_tokens) by
 // its table kind and primary key. It is the canonical reverse-index key shared
 // by the auth revocation ledger and the channel manager's bearer index, so the

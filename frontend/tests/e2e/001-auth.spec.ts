@@ -49,6 +49,44 @@ test.describe('Authentication', () => {
     await expect(page.getByText('LeapMux')).toBeVisible()
   })
 
+  // The credential pages are for a visitor who is NOT signed in, and until
+  // SignedOutOnly they had no gate at all: a signed-in user got the whole
+  // form on every one of them. /signup was the worst of the four -- it gates
+  // only on the hub's signup setting, so the user could create a SECOND
+  // account and the page then swapped their session to it without a word.
+  //
+  // In the real router, not only in the unit test: the gate depends on route
+  // wrappers, and a page that lost its wrapper would still pass every unit
+  // test of the component.
+  test('sends a signed-in user away from every credential page', async ({ page }) => {
+    await loginViaUI(page)
+    await expect(page).toHaveURL(APP_HOME_URL_RE)
+
+    for (const path of ['/login', '/signup', '/forgot-password', '/setup']) {
+      await page.goto(path)
+      await expect(page).toHaveURL(APP_HOME_URL_RE)
+      await expect(page.getByRole('button', { name: 'Sign in' })).toBeHidden()
+    }
+  })
+
+  // /reset-password is the one page that EXPLAINS instead of redirecting, and
+  // the reason is in its address: it carries a single-use token and no
+  // ?redirect=, so a silent bounce spends nothing, says nothing, and the
+  // `replace` takes the tokened address out of that tab's history as well.
+  test('explains rather than redirects on the reset-password page', async ({ page }) => {
+    await loginViaUI(page)
+    await expect(page).toHaveURL(APP_HOME_URL_RE)
+
+    await page.goto('/reset-password?token=not-a-real-token')
+    await expect(page.getByTestId('signed-out-only-explain')).toBeVisible()
+    await expect(page.getByTestId('signed-out-only-sign-out')).toBeVisible()
+
+    // Signing out re-renders the form at the SAME address, token intact.
+    await page.getByTestId('signed-out-only-sign-out').click()
+    await expect(page.getByTestId('signed-out-only-explain')).toBeHidden()
+    await expect(page).toHaveURL(/\/reset-password\?token=not-a-real-token$/)
+  })
+
   test('should redirect to original page after login', async ({ page }) => {
     // Navigate to a protected page while unauthenticated.
     //

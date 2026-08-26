@@ -161,7 +161,7 @@ export function useShortcuts(props: UseShortcutsProps): void {
   cmd('app.splitTileHorizontal', 'Split Tile Horizontally', () => withFocusedTile(() => splitFocusedTile('horizontal')), 'Layout')
   cmd('app.splitTileVertical', 'Split Tile Vertically', () => withFocusedTile(() => splitFocusedTile('vertical')), 'Layout')
   cmd('app.openPreferences', 'Open Preferences', () => {
-    openPreferences('appearance')
+    openPreferences()
   }, 'App')
 
   cmd('app.openInExternalEditor', 'Open in External Editor', async () => {

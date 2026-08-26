@@ -46,6 +46,20 @@ function renderPopover(opts: {
 // popover opens — and jsdom stubs the Popover API, so it never does. Role
 // queries therefore pass `hidden: true`; the roles themselves are the point of
 // the assertions.
+/**
+ * The reason a disabled control carries, read the way a screen reader gets it.
+ *
+ * <Tooltip> leaves an offscreen description in `aria-describedby` for as long
+ * as the control is disabled. It is NOT `title`: a reason long enough to be
+ * worth reading becomes the control's accessible name on `title`, which is why
+ * `title` on a DOM element is now a lint error.
+ */
+function reasonOf(el: Element): string {
+  const describedBy = el.getAttribute('aria-describedby')
+  expect(describedBy).toBeTruthy()
+  return document.getElementById(describedBy!)?.textContent ?? ''
+}
+
 describe('optionGroupPopover', () => {
   it('shows the resolved current option in the trigger view', () => {
     const { trigger } = renderPopover()
@@ -80,7 +94,7 @@ describe('optionGroupPopover', () => {
     expect(trigger).toHaveTextContent('(locked)')
     const item = screen.getByTestId('model-sonnet')
     expect(item).toBeDisabled()
-    expect(item).toHaveAttribute('title', 'This setting is controlled by the agent')
+    expect(reasonOf(item)).toBe('This setting is controlled by the agent')
     await fireEvent.click(item)
     expect(onChange).not.toHaveBeenCalled()
   })
@@ -94,7 +108,7 @@ describe('optionGroupPopover', () => {
     const { onChange } = renderPopover({ disabled: true })
     const item = screen.getByTestId('model-sonnet')
     expect(item).toBeDisabled()
-    expect(item).toHaveAttribute('title', 'This subagent doesn\'t accept messages.')
+    expect(reasonOf(item)).toBe('This subagent doesn\'t accept messages.')
     await fireEvent.click(item)
     expect(onChange).not.toHaveBeenCalled()
   })

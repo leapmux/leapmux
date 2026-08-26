@@ -35,7 +35,14 @@ test.describe('Preferences navigation', () => {
     await expect(dialog.getByText('Debug logging')).toBeVisible()
 
     // Arrow keys move through the tab list (roving tabindex contract).
+    // Advanced is the LAST user category -- Account leads the list now -- so
+    // the next tab is the first ADMINISTRATION one for this admin session.
     await page.keyboard.press('ArrowDown')
+    await expect(dialog.getByTestId('preferences-nav-admin-general')).toHaveAttribute('aria-selected', 'true')
+
+    // And Account leads: ArrowUp from Appearance wraps onto it.
+    await dialog.getByTestId('preferences-nav-appearance').click()
+    await page.keyboard.press('ArrowUp')
     await expect(dialog.getByTestId('preferences-nav-account')).toHaveAttribute('aria-selected', 'true')
   })
 
@@ -51,10 +58,24 @@ test.describe('Preferences navigation', () => {
     await dialog.getByTestId('preferences-nav-advanced').click()
     await expect(dialog.getByTestId('preferences-nav-advanced')).toHaveAttribute('aria-selected', 'true')
 
+    // The shortcut asks for the dialog with no section, which lands on the
+    // first one -- Account.
     const mod = process.platform === 'darwin' ? 'Meta' : 'Control'
     await page.keyboard.press(`${mod}+Comma`)
-    await expect(dialog.getByTestId('preferences-nav-appearance')).toHaveAttribute('aria-selected', 'true')
+    await expect(dialog.getByTestId('preferences-nav-account')).toHaveAttribute('aria-selected', 'true')
     await expect(dialog.getByTestId('preferences-nav-advanced')).toHaveAttribute('aria-selected', 'false')
+  })
+
+  // Every entry point asks for the dialog and nothing more, so the section it
+  // lands on is the dialog's own default: the first one in the list.
+  test('opens on Account', async ({ page, leapmuxServer }) => {
+    await loginViaToken(page, leapmuxServer.adminToken)
+    await page.goto('/')
+    await openPreferencesDialog(page)
+    const dialog = page.getByRole('dialog', { name: 'Preferences' })
+
+    await expect(dialog.getByTestId('preferences-nav-account')).toHaveAttribute('aria-selected', 'true')
+    await expect(dialog.locator('[data-setting-id="account.profile"]')).toBeVisible()
   })
 
   test('searching "volume" shows the two notifications rows with breadcrumbs', async ({ page, leapmuxServer }) => {

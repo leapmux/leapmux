@@ -705,10 +705,10 @@ func TestAdminRateLimitSet_SubstitutesTheCatalogueDefaultForAPassedZero(t *testi
 
 	withCapturedStdout(t, func() {
 		require.NoError(t, RunAdminRateLimitSet(fakeCmdCtx{},
-			[]string{"--hub", url, "--operation", "change-password", "--max-attempts", "0", "--window", "0"}))
+			[]string{"--hub", url, "--operation", "elevation", "--max-attempts", "0", "--window", "0"}))
 	})
 
-	def, ok := ratelimit.DefaultLimits(ratelimit.OpChangePassword)
+	def, ok := ratelimit.DefaultLimits(ratelimit.OpElevation)
 	require.True(t, ok)
 	updates := hub.takeUpdates()
 	require.Len(t, updates, 1)

@@ -1,7 +1,7 @@
 import type { CaptchaFieldHandle } from '~/components/common/CaptchaField'
 import { Code, ConnectError } from '@connectrpc/connect'
 import { createSignal } from 'solid-js'
-import { isCaptchaEnabled, isSystemInfoLoaded, refreshSnapshot } from './systemInfo'
+import { isCaptchaEnabled, isCaptchaUnsolvableHere, isSystemInfoLoaded, refreshSnapshot } from './systemInfo'
 
 export interface CaptchaRequestFields {
   captchaPayload: string
@@ -38,6 +38,11 @@ export interface CaptchaFormState {
    * since the page loaded.
    */
   reset: (err?: unknown) => void
+  /**
+   * True when the hub requires ALTCHA and this page cannot solve it. The
+   * form shows the explanation and blocks; see isCaptchaUnsolvableHere.
+   */
+  unsolvable: () => boolean
   /** Submit-button gate: blocks while a payload is required and missing. */
   blocksSubmit: () => boolean
   /** Request fields for Login/SignUp/CompleteOAuthSignup. */
@@ -59,11 +64,18 @@ export function createCaptchaForm(): CaptchaFormState {
   let field: CaptchaFieldHandle | undefined
 
   const pending = () => !isSystemInfoLoaded()
-  const required = () => !stoodDown() && isSystemInfoLoaded() && isCaptchaEnabled()
+  const unsolvable = () => isSystemInfoLoaded() && isCaptchaUnsolvableHere()
+  // `required` means "mount a widget and collect a payload", so an
+  // unsolvable page is NOT required: no widget can mount there. It blocks
+  // submission instead (see blocksSubmit), so the form never sends a request
+  // the hub is certain to deny. This is the ONE place the hub's answer and
+  // the page's ability are combined; isCaptchaEnabled reports the hub alone.
+  const required = () => !stoodDown() && isSystemInfoLoaded() && isCaptchaEnabled() && !unsolvable()
 
   return {
     pending,
     required,
+    unsolvable,
     payload,
     setPayload,
     honeypot,
@@ -103,7 +115,7 @@ export function createCaptchaForm(): CaptchaFormState {
         refreshSnapshot()
       }
     },
-    blocksSubmit: () => pending() || (required() && payload() === null),
+    blocksSubmit: () => pending() || unsolvable() || (required() && payload() === null),
     fields: () => ({ captchaPayload: payload() ?? '', honeypot: honeypot() }),
   }
 }

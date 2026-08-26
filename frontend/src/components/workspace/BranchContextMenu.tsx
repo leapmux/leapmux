@@ -2,6 +2,7 @@ import type { Component, JSX } from 'solid-js'
 import type { ContextMenuTargetProps, DropdownTriggerProps } from '~/components/common/DropdownMenu'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { rowContextMenuTrigger } from '~/components/common/moreHorizontalTrigger'
+import { Tooltip } from '~/components/common/Tooltip'
 import { dangerMenuItem } from '~/styles/shared.css'
 
 interface BranchContextMenuProps extends ContextMenuTargetProps {
@@ -47,23 +48,31 @@ export const BranchContextMenu: Component<BranchContextMenuProps> = props => (
     contextMenuFor={props.contextMenuFor}
     data-testid={props['data-testid']}
   >
-    <button
-      role="menuitem"
-      disabled={Boolean(props.disabledReason)}
-      title={props.disabledReason}
-      onClick={() => props.onChangeBranch()}
-    >
-      Change branch...
-    </button>
+    {/*
+      The reason goes through <Tooltip>, which works on a disabled control and
+      leaves the item its own name. A `title` this long BECOMES the accessible
+      name, so a screen reader announced the reason in place of "Change
+      branch...".
+    */}
+    <Tooltip text={props.disabledReason}>
+      <button
+        role="menuitem"
+        disabled={Boolean(props.disabledReason)}
+        onClick={() => props.onChangeBranch()}
+      >
+        Change branch...
+      </button>
+    </Tooltip>
     <hr />
-    <button
-      role="menuitem"
-      class={dangerMenuItem}
-      disabled={Boolean(props.disabledReason)}
-      title={props.disabledReason}
-      onClick={() => props.onDeleteBranch()}
-    >
-      Delete branch...
-    </button>
+    <Tooltip text={props.disabledReason}>
+      <button
+        role="menuitem"
+        class={dangerMenuItem}
+        disabled={Boolean(props.disabledReason)}
+        onClick={() => props.onDeleteBranch()}
+      >
+        Delete branch...
+      </button>
+    </Tooltip>
   </DropdownMenu>
 )

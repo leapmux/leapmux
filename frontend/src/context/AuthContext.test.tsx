@@ -1,6 +1,7 @@
 import type { AuthState } from './AuthContext'
 /// <reference types="vitest/globals" />
 import type { User } from '~/generated/leapmux/v1/auth_pb'
+import { timestampFromDate } from '@bufbuild/protobuf/wkt'
 import { Code, ConnectError } from '@connectrpc/connect'
 import { render, screen } from '@solidjs/testing-library'
 import { Show } from 'solid-js'
@@ -294,6 +295,49 @@ describe('authContext', () => {
     await vi.waitFor(() => expect(mockCloseAll).toHaveBeenCalledOnce())
     expect(mockResetTunnels).toHaveBeenCalledOnce()
     expect(screen.getByTestId('username')).toHaveTextContent('bob')
+  })
+
+  // The elevation belongs to the identity that proved a factor, so an
+  // identity SWAP must drop it -- the same rule logout already follows.
+  // Left behind, /elevate reads a live deadline that belongs to nobody in
+  // this document, redirects without prompting, and the hub's consent gate
+  // then answers with a page that has no way forward while the CLI waits.
+  it('drops the elevation when a setUser path swaps to a different identity', async () => {
+    const deadline = timestampFromDate(new Date(Date.now() + 2 * 60 * 60 * 1000))
+    mockGetCurrentUser.mockResolvedValue({
+      user: { id: 'u1', username: 'alice', isAdmin: false },
+      elevationExpiresAt: deadline,
+    })
+    const { auth } = renderWithAuthCapture()
+    await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
+    expect(auth().elevationExpiresAt()).toBe(deadline)
+
+    auth().setAuth({ id: 'u2', username: 'bob', isAdmin: false } as unknown as User)
+
+    await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('bob'))
+    expect(auth().elevationExpiresAt()).toBeUndefined()
+  })
+
+  // One adoption site, so a refresh cannot leave one signal stale while
+  // another moves. The verification cooldown was the one that drifted:
+  // refreshUser dropped it, and /verify-email then counted from zero against
+  // a hub that had just minted a code and would refuse the next resend.
+  it('adopts every signal on a refresh, not only the user', async () => {
+    const resend = timestampFromDate(new Date(Date.now() + 60 * 1000))
+    const deadline = timestampFromDate(new Date(Date.now() + 2 * 60 * 60 * 1000))
+    mockGetCurrentUser.mockResolvedValue({ user: { id: 'u1', username: 'alice', isAdmin: false } })
+    const { auth } = renderWithAuthCapture()
+    await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
+
+    mockGetCurrentUser.mockResolvedValue({
+      user: { id: 'u1', username: 'alice', isAdmin: false },
+      elevationExpiresAt: deadline,
+      emailVerification: { nextResendAvailableAt: resend },
+    })
+    await auth().refreshUser()
+
+    expect(auth().elevationExpiresAt()).toBe(deadline)
+    expect(auth().verificationResendAvailableAt()).toBe(resend)
   })
 
   it('does not drop pooled channels on the initial session restore', async () => {

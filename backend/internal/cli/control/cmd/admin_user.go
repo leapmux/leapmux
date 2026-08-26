@@ -44,7 +44,7 @@ func RunAdminUserList(rawCtx any, args []string) error {
 				Query: query, Limit: page.Limit, Cursor: page.Cursor,
 			}))
 			if err != nil {
-				return adminRPCError("rpc_failed", err)
+				return adminRPCError(c, "rpc_failed", err)
 			}
 			users := make([]map[string]any, 0, len(resp.Msg.GetUsers()))
 			for _, u := range resp.Msg.GetUsers() {
@@ -104,7 +104,7 @@ func RunAdminUserGet(rawCtx any, args []string) error {
 				Id: sel.ID, Username: sel.Username,
 			}))
 			if err != nil {
-				return adminRPCError("rpc_failed", err)
+				return adminRPCError(c, "rpc_failed", err)
 			}
 			return control.EmitData(adminUserJSON(resp.Msg.GetUser()))
 		},
@@ -148,7 +148,7 @@ func RunAdminUserCreate(rawCtx any, args []string) error {
 				Email: email, EmailVerified: emailVerified, IsAdmin: admin,
 			}))
 			if err != nil {
-				return adminRPCError("create_failed", err)
+				return adminRPCError(c, "create_failed", err)
 			}
 			return control.EmitData(adminUserJSON(resp.Msg.GetUser()))
 		},
@@ -200,7 +200,7 @@ func RunAdminUserUpdate(rawCtx any, args []string) error {
 		Run: func(c *control.Client, _ adminArgs) error {
 			resp, err := c.AdminUserService().UpdateUser(context.Background(), connect.NewRequest(req))
 			if err != nil {
-				return adminRPCError("update_failed", err)
+				return adminRPCError(c, "update_failed", err)
 			}
 			return control.EmitData(adminUserJSON(resp.Msg.GetUser()))
 		},
@@ -221,7 +221,7 @@ func RunAdminUserDelete(rawCtx any, args []string) error {
 			if _, err := c.AdminUserService().DeleteUser(context.Background(), connect.NewRequest(&leapmuxv1.DeleteUserRequest{
 				Id: sel.ID, Username: sel.Username, Force: force,
 			})); err != nil {
-				return adminRPCError("delete_failed", err)
+				return adminRPCError(c, "delete_failed", err)
 			}
 			return control.EmitData(map[string]any{"deleted": true})
 		},
@@ -248,7 +248,7 @@ func RunAdminUserSetAdmin(rawCtx any, args []string, admin bool) error {
 				Id: sel.ID, Username: sel.Username, IsAdmin: admin, Force: force,
 			}))
 			if err != nil {
-				return adminRPCError("update_failed", err)
+				return adminRPCError(c, "update_failed", err)
 			}
 			return control.EmitData(adminUserJSON(resp.Msg.GetUser()))
 		},
@@ -290,7 +290,7 @@ func RunAdminUserResetPassword(rawCtx any, args []string) error {
 				Id: sel.ID, Username: sel.Username, Password: pw,
 			}))
 			if err != nil {
-				return adminRPCError("reset_failed", err)
+				return adminRPCError(c, "reset_failed", err)
 			}
 			// The subject comes back from the hub, so the envelope carries
 			// both handles whichever one the operator addressed the user by.
@@ -317,7 +317,7 @@ func RunAdminUserListSessions(rawCtx any, args []string) error {
 				Id: sel.ID, Username: sel.Username, Limit: page.Limit, Cursor: page.Cursor,
 			}))
 			if err != nil {
-				return adminRPCError("rpc_failed", err)
+				return adminRPCError(c, "rpc_failed", err)
 			}
 			return control.EmitData(map[string]any{
 				"sessions":    adminSessionsJSON(resp.Msg.GetSessions()),
@@ -364,6 +364,10 @@ func adminAPITokenJSON(t *leapmuxv1.AdminAPIToken) map[string]any {
 		t.GetCreatedAt(), t.GetLastUsedAt(), t.GetExpiresAt(), t.GetRevokedAt())
 	row["client_type"] = t.GetClientType()
 	row["client_name"] = t.GetClientName()
+	// Always rendered, including false: "which credentials can administer
+	// the hub" is the question this listing exists to answer, and an omitted
+	// key reads as "unknown" rather than "no".
+	row["admin_scope"] = t.GetAdminScope()
 	return row
 }
 
@@ -411,7 +415,7 @@ func RunAdminSessionList(rawCtx any, args []string) error {
 				Limit: page.Limit, Cursor: page.Cursor,
 			}))
 			if err != nil {
-				return adminRPCError("rpc_failed", err)
+				return adminRPCError(c, "rpc_failed", err)
 			}
 			return control.EmitData(map[string]any{
 				"sessions":    adminSessionsJSON(resp.Msg.GetSessions()),
@@ -431,7 +435,7 @@ func RunAdminSessionRevoke(rawCtx any, args []string) error {
 		BeforeDial: requireFlag(&id, "id"),
 		Run: func(c *control.Client, _ adminArgs) error {
 			if _, err := c.AdminUserService().RevokeSession(context.Background(), connect.NewRequest(&leapmuxv1.RevokeSessionRequest{Id: id})); err != nil {
-				return adminRPCError("revoke_failed", err)
+				return adminRPCError(c, "revoke_failed", err)
 			}
 			return control.EmitData(map[string]any{"revoked": id})
 		},
@@ -449,7 +453,7 @@ func RunAdminSessionRevokeUser(rawCtx any, args []string) error {
 				Id: sel.ID, Username: sel.Username,
 			}))
 			if err != nil {
-				return adminRPCError("revoke_failed", err)
+				return adminRPCError(c, "revoke_failed", err)
 			}
 			return control.EmitData(map[string]any{
 				"api_tokens_revoked":        resp.Msg.GetApiTokensRevoked(),
@@ -465,7 +469,7 @@ func RunAdminSessionPurgeExpired(rawCtx any, args []string) error {
 		Run: func(c *control.Client, _ adminArgs) error {
 			resp, err := c.AdminUserService().PurgeExpiredSessions(context.Background(), connect.NewRequest(&leapmuxv1.PurgeExpiredSessionsRequest{}))
 			if err != nil {
-				return adminRPCError("purge_failed", err)
+				return adminRPCError(c, "purge_failed", err)
 			}
 			return control.EmitData(map[string]any{"purged": resp.Msg.GetPurged()})
 		},
@@ -491,7 +495,7 @@ func RunAdminAPITokenList(rawCtx any, args []string) error {
 				IncludeRevoked: includeRevoked, Limit: page.Limit, Cursor: page.Cursor,
 			}))
 			if err != nil {
-				return adminRPCError("rpc_failed", err)
+				return adminRPCError(c, "rpc_failed", err)
 			}
 			rows := make([]map[string]any, 0, len(resp.Msg.GetTokens()))
 			for _, t := range resp.Msg.GetTokens() {
@@ -508,6 +512,7 @@ func RunAdminAPITokenIssue(rawCtx any, args []string) error {
 	var sel userSelectorFlags
 	var clientType, clientName string
 	var ttlSeconds int64
+	var adminScope bool
 	return adminVerb(rawCtx, args, adminVerbSpec{
 		Flags: func(fs *flag.FlagSet) {
 			// The SAME selector the six sibling verbs take, spelled
@@ -518,7 +523,18 @@ func RunAdminAPITokenIssue(rawCtx any, args []string) error {
 			sel.bind(fs, "user-id", "username of the token owner")
 			fs.StringVar(&clientType, "client-type", "cli", "client type (cli|integration|...)")
 			fs.StringVar(&clientName, "client-name", "", "human-visible client name (required)")
-			fs.Int64Var(&ttlSeconds, "ttl", 0, "access-token TTL seconds (0 = default 1h)")
+			// The flag picks WHICH KIND of credential, and the help says so:
+			// zero mints the renewing one, and a positive value mints a
+			// fixed-lifetime service credential with no refresh token. The
+			// two do not combine -- a long TTL plus a refresh leg loses the
+			// TTL on the first rotation, because the row records an expiry
+			// and never the lifetime it was minted from.
+			fs.Int64Var(&ttlSeconds, "ttl", 0,
+				"fixed lifetime in seconds, with no refresh token (0 = the renewing credential: 1h access + refresh)")
+			// Off by default, like every other credential this hub mints: a
+			// service account that only needs to drive workspaces must not
+			// come out of this verb able to administer the hub.
+			fs.BoolVar(&adminScope, "admin", false, "grant hub administration (the owner must be an administrator)")
 		},
 		BeforeDial: func(a adminArgs) error {
 			if err := sel.resolve(a); err != nil {
@@ -531,15 +547,17 @@ func RunAdminAPITokenIssue(rawCtx any, args []string) error {
 		},
 		Run: func(c *control.Client, _ adminArgs) error {
 			resp, err := c.AdminUserService().IssueAPIToken(context.Background(), connect.NewRequest(&leapmuxv1.IssueAPITokenRequest{
-				UserId: sel.ID, Username: sel.Username, ClientType: clientType, ClientName: clientName, TtlSeconds: ttlSeconds,
+				UserId: sel.ID, Username: sel.Username, ClientType: clientType, ClientName: clientName,
+				TtlSeconds: ttlSeconds, AdminScope: adminScope,
 			}))
 			if err != nil {
-				return adminRPCError("issue_failed", err)
+				return adminRPCError(c, "issue_failed", err)
 			}
 			return control.EmitData(map[string]any{
 				"token_id":      resp.Msg.GetTokenId(),
 				"access_token":  resp.Msg.GetAccessToken(),
 				"refresh_token": resp.Msg.GetRefreshToken(),
+				"admin_scope":   adminScope,
 				"note":          "capture the tokens now; they cannot be retrieved later",
 			})
 		},
@@ -556,7 +574,7 @@ func RunAdminAPITokenRevoke(rawCtx any, args []string) error {
 		BeforeDial: requireFlag(&id, "id"),
 		Run: func(c *control.Client, _ adminArgs) error {
 			if _, err := c.AdminUserService().RevokeAPIToken(context.Background(), connect.NewRequest(&leapmuxv1.RevokeAPITokenRequest{Id: id})); err != nil {
-				return adminRPCError("revoke_failed", err)
+				return adminRPCError(c, "revoke_failed", err)
 			}
 			return control.EmitData(map[string]any{"revoked": id})
 		},
@@ -580,7 +598,7 @@ func RunAdminDelegationTokenList(rawCtx any, args []string) error {
 				UserId: userID, Username: username, IncludeRevoked: includeRevoked, Limit: page.Limit, Cursor: page.Cursor,
 			}))
 			if err != nil {
-				return adminRPCError("rpc_failed", err)
+				return adminRPCError(c, "rpc_failed", err)
 			}
 			rows := make([]map[string]any, 0, len(resp.Msg.GetTokens()))
 			for _, t := range resp.Msg.GetTokens() {
@@ -601,7 +619,7 @@ func RunAdminDelegationTokenRevoke(rawCtx any, args []string) error {
 		BeforeDial: requireFlag(&id, "id"),
 		Run: func(c *control.Client, _ adminArgs) error {
 			if _, err := c.AdminUserService().RevokeDelegationToken(context.Background(), connect.NewRequest(&leapmuxv1.AdminUserServiceRevokeDelegationTokenRequest{Id: id})); err != nil {
-				return adminRPCError("revoke_failed", err)
+				return adminRPCError(c, "revoke_failed", err)
 			}
 			return control.EmitData(map[string]any{"revoked": id})
 		},

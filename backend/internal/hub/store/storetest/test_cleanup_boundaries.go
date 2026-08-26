@@ -97,6 +97,63 @@ func (s *Suite) testCleanupBoundaries(t *testing.T) {
 		}
 	})
 
+	// A LIVE api_token that can no longer authenticate AND can no longer
+	// renew never works again, so the row only records history -- but a user
+	// asking days later why their CLI stopped working is exactly who the
+	// retention margin exists for. The sweep must therefore be strict at the
+	// cutoff, on BOTH deadlines.
+	t.Run("expired api-token sweep is strict at both deadlines", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "expired-token-user")
+		cutoff := boundaryCutoff()
+		open := cutoff.Add(time.Hour)
+
+		seed := func(name string, expiresAt, refreshExpiresAt *time.Time) string {
+			tokenID := id.Generate()
+			require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
+				ID: tokenID, UserID: userid.MustNew(user.ID), ClientType: "cli", ClientName: name,
+				SecretHash: []byte("secret"), ExpiresAt: expiresAt, RefreshExpiresAt: refreshExpiresAt,
+			}))
+			return tokenID
+		}
+
+		// Both deadlines sit EXACTLY on the cutoff, which the strict < must
+		// keep and one millisecond past must take.
+		expired := seed("dead", &cutoff, &cutoff)
+		// The refresh window is still open.
+		liveRefresh := seed("live-refresh", &cutoff, &open)
+		// The ACCESS token is still live. Bearer validation reads expires_at
+		// alone, so this credential still authenticates however long ago its
+		// refresh window closed -- the admin-issued shape.
+		liveAccess := seed("live-access", &open, &cutoff)
+		// No refresh leg at all: a closed leg, not an open one, so the access
+		// expiry alone decides. Here it is past, so the row goes with the
+		// second sweep below.
+		noRefresh := seed("no-refresh", &cutoff, nil)
+		// No access expiry at all: the row never stops authenticating, so it
+		// is never swept here.
+		neverExpires := seed("never-expires", nil, &cutoff)
+
+		deleted, err := st.Cleanup().DeleteExpiredAPITokensBefore(ctx, cutoff)
+		require.NoError(t, err)
+		assert.EqualValues(t, 0, deleted, "exact-cutoff rows must survive the strict <")
+
+		deleted, err = st.Cleanup().DeleteExpiredAPITokensBefore(ctx, cutoff.Add(time.Millisecond))
+		require.NoError(t, err)
+		assert.EqualValues(t, 2, deleted, "the two rows past both deadlines go, and only those")
+
+		for _, gone := range []string{expired, noRefresh} {
+			_, err = st.APITokens().GetByID(ctx, gone)
+			assert.ErrorIs(t, err, store.ErrNotFound)
+		}
+		_, err = st.APITokens().GetByID(ctx, liveRefresh)
+		assert.NoError(t, err, "a credential that can still refresh must survive")
+		_, err = st.APITokens().GetByID(ctx, liveAccess)
+		assert.NoError(t, err, "a credential whose access token still authenticates must survive")
+		_, err = st.APITokens().GetByID(ctx, neverExpires)
+		assert.NoError(t, err, "a NULL access expiry is not a past one")
+	})
+
 	t.Run("revoked token sweeps are strict at the stored revoke instant", func(t *testing.T) {
 		st := s.NewStore(t)
 		user := SeedUser(t, st, "boundary-user")

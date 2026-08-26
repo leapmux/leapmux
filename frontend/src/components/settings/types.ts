@@ -16,7 +16,19 @@ export type SettingScope = 'browser' | 'account' | 'dual' | 'hub'
  * component table stays exhaustive at compile time. One list serves both,
  * so a new editor cannot be recognised on the wire without a component.
  */
-export const CUSTOM_EDITOR_IDS = ['keybindings', 'account', 'keyPins', 'theme', 'terminalTheme', 'syntaxTheme'] as const
+export const CUSTOM_EDITOR_IDS = [
+  'keybindings',
+  'accountProfile',
+  'accountEmail',
+  'accountPassword',
+  'accountPasskeys',
+  'accountLinkedProviders',
+  'accountCliTokens',
+  'keyPins',
+  'theme',
+  'terminalTheme',
+  'syntaxTheme',
+] as const
 
 export type CustomEditorId = typeof CUSTOM_EDITOR_IDS[number]
 
@@ -53,6 +65,22 @@ export interface SettingDescriptor {
   scope: SettingScope
   control: SettingControl
   restart?: boolean
+  /**
+   * Whether the hub refuses this row's writes on a session that did not
+   * prove a factor recently.
+   *
+   * DECLARED per row, exactly as `restart` is, and read the same way: the
+   * dialog collects the groups that hold at least one such visible row, and
+   * the panel shows the verified-session state at the top of those groups.
+   *
+   * It never DECIDES anything. The hub refuses an un-elevated write on its
+   * own and the transport turns that refusal into a prompt and one retry, so
+   * a row that forgets this flag still behaves correctly — it simply says
+   * less. Two rows in the Account group genuinely do not need one (the
+   * profile name, and the command-line credentials), so this cannot be
+   * derived from the category.
+   */
+  needsElevation?: boolean
   hidden?: () => boolean
 }
 

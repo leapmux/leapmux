@@ -163,7 +163,20 @@ func (s *userStore) GetPrefs(ctx context.Context, id string) (string, error) {
 	return prefs, mapErr(err)
 }
 
+// A locking read outside a transaction is a caller mistake, not a query this
+// store can answer. SELECT ... FOR UPDATE takes a row lock that the enclosing
+// transaction holds; with no transaction the lock is taken and released at
+// once, so the caller reads a row it does not hold and every later write races
+// what it just read. On the mysql dialect the loss is additionally SILENT:
+// conflictRetryDBTX cannot wrap QueryRowContext, so a lock-wait timeout on a
+// bare single-row SELECT reaches the caller unretried.
+//
+// Every caller today goes through RunInTransaction, so this refuses nothing
+// that exists. It is here so that the next one fails loudly instead.
 func (s *userStore) GetPrefsForUpdate(ctx context.Context, id string) (string, error) {
+	if !s.conn.inTx() {
+		return "", store.ErrInvalidArgument
+	}
 	prefs, err := s.conn.q.GetUserPrefsForUpdate(ctx, id)
 	return prefs, mapErr(err)
 }

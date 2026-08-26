@@ -50,7 +50,7 @@ func (s *AdminWorkerService) ListWorkers(ctx context.Context, req *connect.Reque
 	}
 	params := store.ListWorkersAdminParams{
 		UserID:     userFilter,
-		PageParams: AdminPageParams(req.Msg.GetCursor(), req.Msg.GetLimit()),
+		PageParams: NormalizePageParams(req.Msg.GetCursor(), req.Msg.GetLimit()),
 	}
 	if st := req.Msg.GetStatus(); st != leapmuxv1.WorkerStatus_WORKER_STATUS_UNSPECIFIED {
 		params.Status = &st
@@ -115,7 +115,7 @@ func (s *AdminWorkerService) DeregisterWorker(ctx context.Context, req *connect.
 
 func (s *AdminWorkerService) ListRegistrationKeys(ctx context.Context, req *connect.Request[leapmuxv1.ListRegistrationKeysRequest]) (*connect.Response[leapmuxv1.ListRegistrationKeysResponse], error) {
 	page, err := s.store.RegistrationKeys().ListAdmin(ctx, store.ListRegistrationKeysAdminParams{
-		PageParams:     AdminPageParams(req.Msg.GetCursor(), req.Msg.GetLimit()),
+		PageParams:     NormalizePageParams(req.Msg.GetCursor(), req.Msg.GetLimit()),
 		IncludeExpired: req.Msg.GetIncludeExpired(),
 	})
 	if err != nil {

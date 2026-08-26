@@ -6,9 +6,11 @@ import { describe, expect, it, vi } from 'vitest'
 import { SettingFieldKind } from '~/generated/leapmux/v1/settings_pb'
 import { accountWireDescriptors } from '~/test-support/accountSchema'
 import { makeFakePrefs } from '~/test-support/preferencesFake'
+import { AccountEmail } from './account/AccountEmail'
+import { AccountPasskeys } from './account/AccountPasskeys'
+import { AccountProfile } from './account/AccountProfile'
 import { CUSTOM_EDITORS } from './controls/customEditors'
 import { NAV_GROUPS } from './navGroups'
-import { ProfileSettings } from './ProfileSettings'
 import { buildProtoRows, CATEGORY_IDS, conditionHolds, controlForField } from './protoRegistry'
 import { createBrowserRows } from './registry'
 import { browserSettings } from './registry/settings'
@@ -581,20 +583,21 @@ describe('custom editors', () => {
   })
 
   /**
-   * WHICH editor the account row opens, not merely that it opens one.
+   * WHICH editor each account row opens, not merely that it opens one.
    *
    * The two assertions above read `typeof … === 'function'` and a
-   * descriptor id, and every component satisfies both — so mapping
-   * `account` at any other editor passes them unchanged. The account row
-   * carries the profile sections (username, display name, email, password,
-   * linked accounts), and identity is what states that.
+   * descriptor id, and every component satisfies both — so mapping any
+   * account id at any other editor passes them unchanged. The Account group
+   * is six rows over six editors now, and transposing two of them is the
+   * mistake identity catches.
    *
-   * This file renders nothing, so it pins the mapping only. What those
-   * sections put on screen has no test anywhere; that belongs beside
-   * `ProfileSettings` itself.
+   * This file renders nothing, so it pins the mapping only. What each editor
+   * puts on screen is tested beside that editor.
    */
-  it('opens the profile sections for the account row', () => {
-    expect(CUSTOM_EDITORS.account).toBe(ProfileSettings)
+  it('opens the matching editor for each account row', () => {
+    expect(CUSTOM_EDITORS.accountProfile).toBe(AccountProfile)
+    expect(CUSTOM_EDITORS.accountEmail).toBe(AccountEmail)
+    expect(CUSTOM_EDITORS.accountPasskeys).toBe(AccountPasskeys)
   })
 
   // Every browser-tier custom row still needs its component; the type only

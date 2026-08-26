@@ -62,6 +62,10 @@ func (s *cleanupStore) DeleteExpiredCLIAuthorizationCodes(ctx context.Context, n
 	return s.conn.q.DeleteExpiredCLIAuthorizationCodes(ctx, pgtime.New(now))
 }
 
+func (s *cleanupStore) DeleteExpiredAPITokensBefore(ctx context.Context, cutoff time.Time) (int64, error) {
+	return s.conn.q.DeleteExpiredAPITokensBefore(ctx, pgtime.NullOf(cutoff))
+}
+
 func (s *cleanupStore) DeleteRevokedAPITokensBefore(ctx context.Context, cutoff time.Time) (int64, error) {
 	return s.conn.q.DeleteRevokedAPITokensBefore(ctx, pgtime.NullOf(cutoff))
 }

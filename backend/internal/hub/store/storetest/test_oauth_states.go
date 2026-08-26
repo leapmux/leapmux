@@ -20,6 +20,7 @@ func (s *Suite) testOAuthStates(t *testing.T) {
 			State:        state,
 			ProviderID:   prov.ID,
 			PkceVerifier: "verifier-abc",
+			NonceHash:    "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
 			RedirectURI:  "https://example.com/callback",
 			ExpiresAt:    time.Now().Add(10 * time.Minute),
 		})
@@ -31,6 +32,10 @@ func (s *Suite) testOAuthStates(t *testing.T) {
 		assert.Equal(t, prov.ID, found.ProviderID)
 		assert.Equal(t, "verifier-abc", found.PkceVerifier)
 		assert.Equal(t, "https://example.com/callback", found.RedirectURI)
+		// The browser-binding hash must round-trip on every dialect: the
+		// callback refuses a row whose hash it cannot match, so a column
+		// that silently drops the value would refuse every OAuth login.
+		assert.Equal(t, "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b", found.NonceHash)
 		assert.False(t, found.CreatedAt.IsZero())
 	})
 

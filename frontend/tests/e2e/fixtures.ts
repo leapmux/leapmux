@@ -12,6 +12,7 @@ import {
   cleanupWorkspaceViaAPI,
   createWorkspaceViaAPI,
   deleteWorkspaceViaAPI,
+  elevateSessionViaAPI,
   getUserId,
   getWorkerId,
   loginViaAPI,
@@ -133,6 +134,18 @@ export const test = base.extend<
       // The admin was bootstrapped offline above; log in over HTTP for the
       // session cookie the rest of the fixtures auth with.
       adminToken = await loginViaAPI(hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD)
+      // ELEVATED, once, exactly as an operator's browser session is.
+      //
+      // Every hub-settings write demands an elevated session, so a fixture
+      // cookie without one turns each `UpdateSetting` helper into a
+      // failed_precondition in setup -- and the specs that walk the admin
+      // panels would measure the gate instead of the panel.
+      //
+      // The specs that need an UN-elevated session already mint their own
+      // (006-passkey, 009-elevation, 143-cli-elevation all say so where they
+      // do it), for the same reason this is safe: a shared session that is
+      // reliably elevated is one less thing for them to depend on.
+      await elevateSessionViaAPI(hubUrl, adminToken, TEST_ADMIN_PASSWORD)
       adminUserId = await getUserId(hubUrl, adminToken)
       workerId = await getWorkerId(hubUrl, adminToken)
 

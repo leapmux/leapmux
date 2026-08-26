@@ -38,6 +38,27 @@ export function groupRowsByNav(
 }
 
 /**
+ * The nav ids whose group holds at least one row the predicate accepts.
+ *
+ * Two marks read the row set this way -- the restart badge and the
+ * verified-session state -- and both must answer from the SAME rows the panel
+ * renders. A group whose matching rows are all hidden holds none, so it is
+ * not marked; a group with no rows at all cannot hold one either, so
+ * occupancy is not re-tested here.
+ */
+export function navIdsWhere(
+  rowsByNav: ReadonlyMap<string, readonly SettingRowModel[]>,
+  matches: (row: SettingRowModel) => boolean,
+): Set<string> {
+  const ids = new Set<string>()
+  for (const [navId, rows] of rowsByNav) {
+    if (rows.some(matches))
+      ids.add(navId)
+  }
+  return ids
+}
+
+/**
  * Navigation groups that currently have at least one visible row.
  *
  * Admin groups whose every descriptor is hidden (captcha and rate-limits

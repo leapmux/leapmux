@@ -5,7 +5,9 @@ import { createEffect, createSignal, ErrorBoundary, getOwner, Match, onCleanup, 
 import { getRuntimeState, isTauriApp, platformBridge, refreshRuntimeState } from '~/api/platformBridge'
 import { channelManager } from '~/api/workerRpc'
 import { BootSplash } from '~/components/common/BootSplash'
+import { ElevationPromptHost } from '~/components/common/ElevationPromptHost'
 import { renderErrorFallback } from '~/components/common/ErrorFallback'
+import { SetupGate } from '~/components/common/SetupGate'
 import { LauncherView } from '~/components/desktop/LauncherView'
 import { AboutDialog } from '~/components/shell/AboutDialog'
 import { DesktopMinimalChrome, DesktopRouteChrome } from '~/components/shell/DesktopChrome'
@@ -203,7 +205,7 @@ export default function App() {
           .catch(err => log.warn(`onEvent(${event}) failed`, err))
       }
       registerListener('menu:show-about', () => setShowAboutDialog(true))
-      registerListener('menu:show-preferences', () => openPreferences('appearance'))
+      registerListener('menu:show-preferences', () => openPreferences())
 
       getRuntimeState()
         .then((state) => {
@@ -227,30 +229,71 @@ export default function App() {
                 <PreferencesProvider>
                   <PreferencesApplier>
                     <Router root={props => (
-                      <Suspense fallback={<BootSplash />}>
-                        <DesktopRouteChrome>
-                          {/*
-                            Scoped below AuthProvider and PreferencesProvider deliberately:
-                            a render fault in a route resets to a freshly-rendered route and
-                            leaves the session, preferences and pooled channels alone. The
-                            outer boundary would have torn all of them down and re-bootstrapped.
+                      <>
+                        <Suspense fallback={<BootSplash />}>
+                          <DesktopRouteChrome>
+                            {/*
+                              Scoped below AuthProvider and PreferencesProvider deliberately:
+                              a render fault in a route resets to a freshly-rendered route and
+                              leaves the session, preferences and pooled channels alone. The
+                              outer boundary would have torn all of them down and re-bootstrapped.
 
-                            Being INSIDE the Suspense above is what forces `ErrorFallback` to
-                            keep every suspending read out of its render: a suspended Suspense
-                            with no `fallback` renders nothing, so a fallback that read a
-                            pending resource would show a blank page instead of the error.
-                          */}
-                          <ErrorBoundary fallback={renderErrorFallback}>
-                            {props.children}
-                          </ErrorBoundary>
-                        </DesktopRouteChrome>
-                      </Suspense>
+                              Being INSIDE the Suspense above is what forces `ErrorFallback` to
+                              keep every suspending read out of its render: a suspended Suspense
+                              with no `fallback` renders nothing, so a fallback that read a
+                              pending resource would show a blank page instead of the error.
+                            */}
+                            <ErrorBoundary fallback={renderErrorFallback}>
+                              {/*
+                                Above the outlet, so a hub whose first-run setup is
+                                not complete answers EVERY address with /setup --
+                                the routes that exist today and the ones added
+                                later. See SetupGate for why the rule cannot live
+                                in the pages.
+                              */}
+                              <SetupGate>
+                                {props.children}
+                              </SetupGate>
+                            </ErrorBoundary>
+                          </DesktopRouteChrome>
+                        </Suspense>
+                        {/*
+                          The app-wide dialogs, INSIDE the router and beside the
+                          outlet rather than inside it.
+
+                          Inside, because a dialog may link to a route: the
+                          account panel points an unverified address at
+                          /verify-email, and `<A>` throws outright without a
+                          router context. Mounted outside the Router, that link
+                          took the whole app to the error boundary the moment
+                          the panel rendered it -- reachable only on a hub with
+                          SMTP configured and an unverified account, which is
+                          why it sat here unnoticed.
+
+                          BESIDE the outlet, not within it: they must not sit
+                          under the route's Suspense (a suspending navigation
+                          would replace an open prompt with the boot splash) nor
+                          under the route's ErrorBoundary. A navigation swaps
+                          `props.children` alone, so neither one remounts -- which
+                          is what `ElevationPromptHost` means by ONE registration.
+                        */}
+                        <UserMenuDialogs />
+                        {/*
+                          The step-up prompt the transport opens, mounted ONCE for
+                          the whole app. Here rather than in the panel that first
+                          needed it: the elevation interceptor refuses on an RPC
+                          from any surface, so a host inside one panel answers only
+                          that panel's refusals. Inside AuthProvider, because the
+                          form it renders reads the account to decide which factors
+                          to offer.
+                        */}
+                        <ElevationPromptHost />
+                      </>
                     )}
                     >
                       <FileRoutes />
                     </Router>
                   </PreferencesApplier>
-                  <UserMenuDialogs />
                 </PreferencesProvider>
               </AuthProvider>
             </DesktopFadeIn>

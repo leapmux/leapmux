@@ -2,6 +2,7 @@ import type { Component } from 'solid-js'
 import type { SettingRowModel } from './types'
 import { For, Show } from 'solid-js'
 import { Alert } from '~/components/common/Alert'
+import { ElevationStatus } from './ElevationStatus'
 import { SettingRow } from './SettingRow'
 import * as styles from './SettingsPanel.css'
 
@@ -22,6 +23,12 @@ export interface SettingsPanelProps {
    * panel cannot disagree.
    */
   restartGroup: boolean
+  /**
+   * Whether this group holds a row the hub refuses without a recently proven
+   * factor. Derived by the dialog from the same rows, by the same rule that
+   * derives `restartGroup`.
+   */
+  elevationGroup: boolean
   /** The owning store's most recent failed write, or null. */
   writeError: { key: string, message: string } | null
 }
@@ -54,6 +61,24 @@ export const SettingsPanel: Component<SettingsPanelProps> = (props) => {
 
   return (
     <div role="tabpanel" id="preferences-panel" class={styles.panel}>
+      {/*
+        The verification state sits ABOVE the rows it explains, in every group
+        that holds one the hub refuses without a proven factor -- the Account
+        group and every ADMINISTRATION group, since the hub gates every
+        settings write on the same window.
+
+        It lived inside ONE account editor before, which put it half way down
+        the Account panel under a Save button it had nothing to do with, and
+        left every admin panel without it although the same window governs
+        them. The panel is the layer that knows which group is on screen, so
+        the panel is where it belongs.
+
+        `ElevationStatus` renders nothing while the session is not verified,
+        so a group that needs one is not carrying an empty box.
+      */}
+      <Show when={props.elevationGroup}>
+        <ElevationStatus />
+      </Show>
       <Show when={props.restartGroup}>
         <Alert variant="warning">Changes in this group apply after a hub restart.</Alert>
       </Show>

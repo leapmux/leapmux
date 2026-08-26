@@ -1,7 +1,27 @@
 import type { JSXElement } from 'solid-js'
-import { createMemo, For, onCleanup } from 'solid-js'
+import { createMemo, For, onCleanup, Show } from 'solid-js'
 import { nextFilterTab } from './FilterTabBar'
 import * as styles from './PillGroup.css'
+import { Tooltip } from './Tooltip'
+
+/** One choice of a {@link PillGroup}. */
+export interface PillOptionSpec<T> {
+  value: T
+  label: JSXElement
+  /**
+   * Refuse THIS option, and say why.
+   *
+   * Shown-and-refused rather than removed, for an option the reader can get
+   * back: an option that vanishes leaves somebody who needs it with no way to
+   * learn that it exists or what would restore it. Remove an option instead
+   * when the deployment simply does not have it -- there the reason is not the
+   * reader's to act on, and a permanently dead pill is only noise.
+   *
+   * The reason reaches the reader through `<Tooltip>`, so it works on the
+   * disabled pill and does not become the pill's accessible name.
+   */
+  disabledReason?: string
+}
 
 /**
  * One pill, as a member of a one-of-N group (role=radio).
@@ -25,12 +45,20 @@ function PillOption(props: {
   roving: boolean
   /** Show the selection, refuse the click. See PillGroup. */
   disabled: boolean
+  /** Why THIS pill is refused, when it is refused on its own account. */
+  disabledReason?: string
   onClick: () => void
   ref?: (el: HTMLButtonElement) => void
   children: JSXElement
 }) {
-  return (
+  const pill = () => (
     <button
+      // A bare <button> inside a <form> defaults to type="submit", so every
+      // pill click SUBMITTED the form it sat in. On the login page that
+      // meant choosing "Passkey" started a sign-in with the username the
+      // user had just typed and nothing else -- the button went to
+      // "Signing in..." and stayed there. A pill selects; it never submits.
+      type="button"
       class={props.selected ? styles.pillOptionActive : styles.pillOption}
       role="radio"
       aria-checked={props.selected}
@@ -52,6 +80,14 @@ function PillOption(props: {
       {props.children}
     </button>
   )
+  // Wrapped only when there is something to say. A Tooltip mounts its own
+  // wrapper, listeners and attribute observer even with nothing to show, and
+  // most pills carry no reason at all.
+  return (
+    <Show when={props.disabledReason} fallback={pill()}>
+      {reason => <Tooltip text={reason()}>{pill()}</Tooltip>}
+    </Show>
+  )
 }
 
 /**
@@ -66,7 +102,7 @@ function PillOption(props: {
  */
 export function PillGroup<T>(props: {
   label: string
-  options: { value: T, label: JSXElement }[]
+  options: PillOptionSpec<T>[]
   selected: (value: T) => boolean
   onSelect: (value: T) => void
   /**
@@ -87,39 +123,57 @@ export function PillGroup<T>(props: {
   // same reason.
   const els = new Map<T, HTMLButtonElement>()
 
+  /** Refused, by the group's own flag or by the option's own reason. */
+  const refused = (opt: PillOptionSpec<T>) =>
+    props.disabled === true || opt.disabledReason !== undefined
+
+  /** The values a key can move to. A refused pill is not one of them. */
+  const reachable = createMemo(() => props.options.filter(o => !refused(o)).map(o => o.value))
+
   /**
    * The option that holds the group's single tab stop.
    *
-   * The selected one, or the FIRST when the group has no selection — a
-   * browser preference read back from storage can hold a value that matches
-   * no option, and a group that no key can reach is a group the user cannot
-   * change.
+   * The selected one, or the first REACHABLE one — a browser preference read
+   * back from storage can hold a value that matches no option, and a group
+   * that no key can reach is a group the user cannot change. A selection that
+   * is itself refused hands the tab stop on for the same reason: the APG
+   * radiogroup rule allows an unchecked radio to hold it, and a refused pill
+   * takes no tab stop at all (see `tabIndex` on PillOption).
+   *
+   * With EVERY option refused there is nothing to hand it to, so it stays on
+   * the selection (or the first pill) and `tabIndex` resolves it to -1.
    */
   const rovingIndex = createMemo(() => {
-    const i = props.options.findIndex(o => props.selected(o.value))
-    return i < 0 ? 0 : i
+    const selected = props.options.findIndex(o => props.selected(o.value))
+    if (selected >= 0 && !refused(props.options[selected]!))
+      return selected
+    const firstReachable = props.options.findIndex(o => !refused(o))
+    if (firstReachable >= 0)
+      return firstReachable
+    return selected < 0 ? 0 : selected
   })
 
-  const selectAt = (i: number) => {
-    const opt = props.options[i]
-    if (!opt || props.disabled)
+  const selectAt = (value: T | undefined) => {
+    const opt = props.options.find(o => o.value === value)
+    if (!opt || refused(opt))
       return
     props.onSelect(opt.value)
     els.get(opt.value)?.focus()
   }
   const onKeyDown = (e: KeyboardEvent) => {
-    if (props.disabled)
+    const values = reachable()
+    if (values.length === 0)
       return
-    const values = props.options.map(o => o.value)
     // The arrow origin is the pill that CARRIES the tab stop, which is
     // where focus sits. Deriving it from the selection instead passed
     // undefined for a group with none, and every arrow key then moved
     // relative to the first option whatever was focused.
-    const next = nextFilterTab(values, values[rovingIndex()], e.key)
+    const origin = props.options[rovingIndex()]?.value
+    const next = nextFilterTab(values, values.includes(origin!) ? origin : values[0], e.key)
     if (next === undefined)
       return
     e.preventDefault()
-    selectAt(values.indexOf(next))
+    selectAt(next)
   }
   return (
     <div class={styles.pillGroup} role="radiogroup" aria-label={props.label} onKeyDown={onKeyDown}>
@@ -128,8 +182,9 @@ export function PillGroup<T>(props: {
           <PillOption
             selected={props.selected(opt.value)}
             roving={i() === rovingIndex()}
-            disabled={props.disabled === true}
-            onClick={() => props.onSelect(opt.value)}
+            disabled={refused(opt)}
+            disabledReason={opt.disabledReason}
+            onClick={() => selectAt(opt.value)}
             ref={(el) => {
               els.set(opt.value, el)
               // Solid does not re-invoke a ref with null on disposal, so a

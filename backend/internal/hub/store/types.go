@@ -84,15 +84,22 @@ type User struct {
 func (u User) PageCursor() (time.Time, string) { return u.CreatedAt, u.ID }
 
 // UserSession represents an authenticated session.
+//
+// ElevationProvenAt and ElevationExpiresAt carry the session's step-up ("sudo mode")
+// state: the non-sliding instant a factor was proven, and the sliding
+// deadline. Both nil means the session was never elevated. See
+// auth.Elevation, which is the one place the pair is interpreted.
 type UserSession struct {
-	ID             string
-	UserID         string
-	ExpiresAt      time.Time
-	CreatedAt      time.Time
-	LastActiveAt   time.Time
-	AuthGeneration int64
-	UserAgent      string
-	IPAddress      string
+	ID                 string
+	UserID             string
+	ExpiresAt          time.Time
+	CreatedAt          time.Time
+	LastActiveAt       time.Time
+	AuthGeneration     int64
+	ElevationProvenAt  *time.Time
+	ElevationExpiresAt *time.Time
+	UserAgent          string
+	IPAddress          string
 }
 
 // PageCursor returns the keyset position for the per-user session listing
@@ -101,15 +108,21 @@ type UserSession struct {
 func (s UserSession) PageCursor() (time.Time, string) { return s.LastActiveAt, s.ID }
 
 // SessionWithUser is the result of ValidateSessionWithUser (JOIN).
+//
+// ElevationProvenAt / ElevationExpiresAt ride the hot auth path so a request can decide
+// step-up admission without a second query. See UserSession for the pair's
+// meaning.
 type SessionWithUser struct {
-	UserID         string
-	Username       string
-	IsAdmin        bool
-	EmailVerified  bool
-	Email          string
-	CreatedAt      time.Time
-	ExpiresAt      time.Time
-	AuthGeneration int64
+	UserID             string
+	Username           string
+	IsAdmin            bool
+	EmailVerified      bool
+	Email              string
+	CreatedAt          time.Time
+	ExpiresAt          time.Time
+	AuthGeneration     int64
+	ElevationProvenAt  *time.Time
+	ElevationExpiresAt *time.Time
 }
 
 // ActiveSession is a session with the owning username (for admin listing).
@@ -353,10 +366,32 @@ type OAuthState struct {
 	State        string
 	ProviderID   string
 	PkceVerifier string
-	RedirectURI  string
-	ExpiresAt    time.Time
-	CreatedAt    time.Time
+	// NonceHash is the SHA-256 hex of the nonce held in the browser's
+	// short-lived OAuth cookie. It binds this flow to the browser that
+	// started it, so an attacker cannot complete a (code, state) pair they
+	// captured in somebody else's browser. Empty means the hub minted no
+	// browser cookie for this row.
+	NonceHash   string
+	RedirectURI string
+	// Purpose is OAuthStatePurposeLogin or OAuthStatePurposeReauth. The
+	// callback branches on it: a reauth row elevates SessionID and must never
+	// create a session or link an identity.
+	Purpose string
+	// SessionID is the session a reauth row elevates. Empty for a login row.
+	SessionID string
+	ExpiresAt time.Time
+	CreatedAt time.Time
 }
+
+// OAuth state purposes. The value is persisted, so the strings are the wire
+// form and must stay stable.
+const (
+	// OAuthStatePurposeLogin starts a sign-in and may create a session.
+	OAuthStatePurposeLogin = "login"
+	// OAuthStatePurposeReauth proves the identity again for a session that is
+	// ALREADY signed in, to elevate it.
+	OAuthStatePurposeReauth = "reauth"
+)
 
 // PasskeyCredential stores one WebAuthn credential for a user. PublicKey is
 // keystore-encrypted at the service layer before persistence.
@@ -410,8 +445,14 @@ type OAuthUserLink struct {
 
 // PendingOAuthSignup represents a new user in the middle of OAuth signup.
 type PendingOAuthSignup struct {
-	Token           string
-	ProviderID      string
+	Token      string
+	ProviderID string
+	// NonceHash is the SHA-256 hex of the nonce in the browser's
+	// pending-signup cookie. It carries the OAuth flow's browser binding
+	// ACROSS the hand-off from the callback to CompleteOAuthSignup, which
+	// would otherwise create the account for whoever presents the token.
+	// Empty means the hub minted no browser cookie for this row.
+	NonceHash       string
 	ProviderSubject string
 	Email           string
 	DisplayName     string
@@ -570,6 +611,64 @@ type SearchUsersParams struct {
 
 type ListAllUsersParams struct {
 	PageParams // Keyset on (created_at DESC, id DESC).
+}
+
+// ElevateSessionParams grants a session a fresh elevation window. Both
+// instants come from the caller's clock, so a test that moves that clock
+// moves the whole window with it.
+type ElevateSessionParams struct {
+	SessionID          string
+	UserID             userid.UserID
+	ElevationProvenAt  time.Time
+	ElevationExpiresAt time.Time
+}
+
+// SlideSessionElevationParams extends a live elevation. WindowDeadline is the
+// deadline the caller WANTS; MaxTotal is the absolute ceiling measured from
+// the session's elevation_proven_at. The statement clamps the first by the second, so
+// a caller cannot extend an elevation past its cap however it is called.
+type SlideSessionElevationParams struct {
+	SessionID      string
+	UserID         userid.UserID
+	WindowDeadline time.Time
+	MaxTotal       time.Duration
+}
+
+// DropSessionElevationParams ends a session's elevation immediately.
+type DropSessionElevationParams struct {
+	SessionID string
+	UserID    userid.UserID
+}
+
+// The api_tokens half of the same three shapes. A command-line credential
+// elevates exactly as a session does -- see APITokenStore.Elevate for why it
+// must be able to at all -- so the parameters differ only in which row they
+// name.
+
+// ElevateAPITokenParams grants a command-line credential a fresh elevation
+// window. Both instants come from the caller's clock.
+type ElevateAPITokenParams struct {
+	TokenID            string
+	UserID             userid.UserID
+	ElevationProvenAt  time.Time
+	ElevationExpiresAt time.Time
+}
+
+// SlideAPITokenElevationParams extends a live elevation. WindowDeadline is the
+// deadline the caller WANTS; MaxTotal is the absolute ceiling measured from
+// the row's elevation_proven_at, applied in SQL.
+type SlideAPITokenElevationParams struct {
+	TokenID        string
+	UserID         userid.UserID
+	WindowDeadline time.Time
+	MaxTotal       time.Duration
+}
+
+// DropAPITokenElevationParams ends a command-line credential's elevation
+// immediately.
+type DropAPITokenElevationParams struct {
+	TokenID string
+	UserID  userid.UserID
 }
 
 type CreateSessionParams struct {
@@ -998,7 +1097,10 @@ type CreateOAuthStateParams struct {
 	State        string
 	ProviderID   string
 	PkceVerifier string
+	NonceHash    string
 	RedirectURI  string
+	Purpose      string
+	SessionID    string
 	ExpiresAt    time.Time
 }
 
@@ -1126,7 +1228,22 @@ type APIToken struct {
 	ExpiresAt                *time.Time
 	RefreshExpiresAt         *time.Time
 	RevokedAt                *time.Time
+	// AdminScope reports whether this token may reach the Admin* procedures.
+	// It is opt-in at mint time and cannot be widened later: a token without
+	// it authenticates as its (possibly administrator) owner and is still
+	// refused every admin procedure.
+	AdminScope bool
+	// The step-up window, the same pair a session row carries. Nil means the
+	// credential never proved a factor, and the two are written and cleared
+	// together -- read them through auth.NewElevation, which refuses half a
+	// pair.
+	ElevationProvenAt  *time.Time
+	ElevationExpiresAt *time.Time
 }
+
+// PageCursor returns the keyset position for the per-user api-token listing
+// (ListAPITokensByUser), which orders by (created_at DESC, id DESC).
+func (t APIToken) PageCursor() (time.Time, string) { return t.CreatedAt, t.ID }
 
 // APITokenWithOwner augments APIToken with the owner's username (LEFT JOINed
 // on users) for the admin listing. A soft-deleted owner surfaces as
@@ -1186,9 +1303,20 @@ type DeviceAuthorization struct {
 	Approved        int64 // 0 pending, 1 approved, 2 denied
 	LastPolledAt    *time.Time
 	IntervalSeconds int64
-	CreatedAt       time.Time
-	ExpiresAt       time.Time
-	ConsumedAt      *time.Time
+	// AdminScope is the scope the user granted at activation; see
+	// CLIAuthorizationCode.AdminScope.
+	AdminScope bool
+	CreatedAt  time.Time
+	ExpiresAt  time.Time
+	ConsumedAt *time.Time
+	// ElevateTokenID names the command-line credential this grant ELEVATES,
+	// when it elevates one rather than minting one. Empty for a login.
+	//
+	// The two flows share the row, and with it the TTL, the poll throttle,
+	// the expiry sweep and the activation page -- they differ only in what
+	// the approval DOES. A second table would have been a second copy of
+	// every one of those rules.
+	ElevateTokenID string
 }
 
 // CLIAuthorizationCode is a one-shot OAuth-style code for the CLI's
@@ -1198,9 +1326,13 @@ type CLIAuthorizationCode struct {
 	UserID        string
 	CodeChallenge string
 	DeviceName    string
-	CreatedAt     time.Time
-	ExpiresAt     time.Time
-	ConsumedAt    *time.Time
+	// AdminScope is the scope the user granted on the consent page. The token
+	// exchange reads it from HERE and never from its own form, so holding the
+	// code does not let a caller widen the grant.
+	AdminScope bool
+	CreatedAt  time.Time
+	ExpiresAt  time.Time
+	ConsumedAt *time.Time
 }
 
 type CreateAPITokenParams struct {
@@ -1212,6 +1344,9 @@ type CreateAPITokenParams struct {
 	RefreshHash      []byte
 	ExpiresAt        *time.Time
 	RefreshExpiresAt *time.Time
+	// AdminScope grants the token hub administration. It is decided at the
+	// consent that mints the token and never afterwards; see APIToken.
+	AdminScope bool
 }
 
 type RotateAPITokenRefreshParams struct {
@@ -1224,9 +1359,20 @@ type RotateAPITokenRefreshParams struct {
 	PreviousRefreshExpiresAt *time.Time
 }
 
+// ListAPITokensByUserParams pages one user's OWN live tokens (the account
+// settings device list), ordered by (created_at DESC, id DESC).
 type ListAPITokensByUserParams struct {
 	UserID     userid.UserID
 	ClientType string // empty = all
+	PageParams        // Keyset on (created_at DESC, id DESC).
+}
+
+// RevokeOwnedAPITokenParams revokes one of the caller's own tokens. The owner
+// is part of the statement, not a check the caller runs first, so a token id
+// belonging to somebody else matches no row.
+type RevokeOwnedAPITokenParams struct {
+	ID     string
+	UserID userid.UserID
 }
 
 // ListAllAPITokensParams pages the admin api-token listing (ListAllAPITokens),
@@ -1271,16 +1417,21 @@ type CreateDeviceAuthorizationParams struct {
 	DeviceName      string
 	IntervalSeconds int64
 	ExpiresAt       time.Time
+	// ElevateTokenID makes this an ELEVATION grant for that api_tokens row
+	// rather than a login. Empty mints a credential, as it always did.
+	ElevateTokenID string
 }
 
 type ApproveDeviceAuthorizationParams struct {
 	DeviceCode string
 	UserID     userid.UserID
+	AdminScope bool
 }
 
 type ApproveDeviceAuthorizationByUserCodeParams struct {
-	UserCode string
-	UserID   userid.UserID
+	UserCode   string
+	UserID     userid.UserID
+	AdminScope bool
 }
 
 type CreateCLIAuthorizationCodeParams struct {
@@ -1288,12 +1439,14 @@ type CreateCLIAuthorizationCodeParams struct {
 	UserID        userid.UserID
 	CodeChallenge string
 	DeviceName    string
+	AdminScope    bool
 	ExpiresAt     time.Time
 }
 
 type CreatePendingOAuthSignupParams struct {
 	Token           string
 	ProviderID      string
+	NonceHash       string
 	ProviderSubject string
 	Email           string
 	DisplayName     string

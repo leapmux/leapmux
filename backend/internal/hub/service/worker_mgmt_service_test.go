@@ -82,7 +82,7 @@ func seedWorkersForOwner(t *testing.T, st store.Store, owner userid.UserID, n in
 // This handler used a hand-rolled page default with NO ceiling, so
 // `page.limit = 100000` returned the caller's whole worker row set in one
 // response -- an unbounded read the caller chose the size of. Routing the
-// page through AdminPageParams caps it and hands back a cursor instead, so
+// page through NormalizePageParams caps it and hands back a cursor instead, so
 // the rest of the set costs another request.
 //
 // The owner is seeded with one worker MORE than the ceiling, so a missing
@@ -94,7 +94,7 @@ func TestListWorkers_CapsAnOversizedPageLimit(t *testing.T) {
 	st := testutil.OpenTestStore(t)
 	owner := storetest.SeedUser(t, st, "worker-owner")
 	ownerID := userid.MustNew(owner.ID)
-	seeded := seedWorkersForOwner(t, st, ownerID, service.MaxAdminPageLimit+1)
+	seeded := seedWorkersForOwner(t, st, ownerID, service.MaxPageLimit+1)
 
 	svc := service.NewWorkerManagementService(st, workermgr.New(service.NewWorkerReachAuthorizer(st)), nil, nil, mail.NewStubSender(), mail.Renderer{}, servicetest.NewSettingsManager(t, st, nil), nil)
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: ownerID})
@@ -103,7 +103,7 @@ func TestListWorkers_CapsAnOversizedPageLimit(t *testing.T) {
 		Page: &leapmuxv1.PageRequest{Limit: 100000},
 	}))
 	require.NoError(t, err)
-	assert.Len(t, resp.Msg.GetWorkers(), service.MaxAdminPageLimit,
+	assert.Len(t, resp.Msg.GetWorkers(), service.MaxPageLimit,
 		"an oversized limit is capped at the ceiling, not honoured")
 	assert.True(t, resp.Msg.GetPage().GetHasMore(), "the rows past the cap are still reachable")
 	require.NotEmpty(t, resp.Msg.GetPage().GetNextCursor(),

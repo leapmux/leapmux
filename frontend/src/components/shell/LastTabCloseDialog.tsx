@@ -6,6 +6,7 @@ import * as workerRpc from '~/api/workerRpc'
 import { ConfirmButton } from '~/components/common/ConfirmButton'
 import { Dialog } from '~/components/common/Dialog'
 import { showWarnToast } from '~/components/common/Toast'
+import { Tooltip } from '~/components/common/Tooltip'
 import { BranchStatusInfo, hasPushableWork } from '~/components/workspace/BranchStatusInfo'
 import { PushBranchButton } from '~/components/workspace/PushBranchButton'
 import { LastTabCloseTarget } from '~/generated/leapmux/v1/git_pb'
@@ -171,23 +172,23 @@ export const LastTabCloseDialog: Component<LastTabCloseDialogProps> = (props) =>
           {/* Disabled when git refuses the removal. "Close anyway" stays
               available, so the user still closes the tab -- only the
               removal is refused.
-              `title`, not <Tooltip>: a disabled control receives no pointer
-              events, which is the one case the project rule keeps `title`
-              for. The same text also renders in the body above.
-              NOTE: while `title` is set, it BECOMES the button's accessible
-              name, so a role+name locator addresses the button by the reason
-              rather than by "Delete". An aria-label would pin the name, but
-              ConfirmButton's label is state ("Confirm?" once armed) and that
-              state must stay in the accessible name. A disabled button can
-              never be armed, so the reason is the more useful name here. */}
-          <ConfirmButton
-            data-variant="danger"
-            disabled={Boolean(removalBlockedReason())}
-            title={removalBlockedReason() || undefined}
-            onClick={handleScheduleDelete}
-          >
-            Delete
-          </ConfirmButton>
+
+              The blocked reason goes through <Tooltip>, which works on a
+              disabled control and leaves the button its own name. On `title`
+              the reason BECOMES that name, and this button's name is STATE
+              ("Confirm?" once armed) -- so the reason replaced the one thing
+              the name had to carry, and a role+name lookup for "Delete"
+              stopped matching. The same text also renders in the body above,
+              for anybody who never hovers. */}
+          <Tooltip text={removalBlockedReason() || undefined}>
+            <ConfirmButton
+              data-variant="danger"
+              disabled={Boolean(removalBlockedReason())}
+              onClick={handleScheduleDelete}
+            >
+              Delete
+            </ConfirmButton>
+          </Tooltip>
         </Show>
         <ConfirmButton data-variant="danger" onClick={handleCloseAnyway}>
           Close anyway

@@ -1,6 +1,7 @@
 import type { DevServerHandle } from './helpers/devServer'
 import type { TlsProxyHandle } from './helpers/tlsProxy'
 import { test as base, expect } from '@playwright/test'
+import { mintCLITokenForAdmin, setHubSetting } from './helpers/cli'
 import { startDevServer, stopDevServer } from './helpers/devServer'
 import { startTlsProxy } from './helpers/tlsProxy'
 import { loginViaUI } from './helpers/ui'
@@ -9,18 +10,27 @@ import { loginViaUI } from './helpers/ui'
  * Pins ALTCHA behind an HTTPS reverse proxy while the Hub itself speaks
  * cleartext HTTP — the documented production shape (TLS terminator → Hub).
  *
- * The secure-context gate keys off the browser Origin / isSecureContext,
- * not the Hub↔proxy hop. Without this spec, a regression that gated on
- * X-Forwarded-Proto or the listen scheme would silently stand down ALTCHA
- * for every TLS-terminated deployment while unit tests (which stash Origin
- * directly) still passed.
+ * The gate reads the Hub's own settings, never the request, so `secure_cookies`
+ * is the fixture: it is what an operator behind a TLS terminator sets, and it
+ * is the rung that says "this Hub is served over HTTPS" without naming a host.
+ * Without this spec, a regression that read the LISTEN scheme instead would
+ * silently stand ALTCHA down for every TLS-terminated deployment while the
+ * unit tests still passed.
  */
 const test = base.extend<{ server: DevServerHandle, tlsProxy: TlsProxyHandle }>({
   // eslint-disable-next-line no-empty-pattern
   server: async ({}, use) => {
     const server = await startDevServer({ dataDirPrefix: 'leapmux-e2e-captcha-https-proxy' })
-    await use(server)
-    await stopDevServer(server)
+    let cliConfigDir: string | undefined
+    try {
+      const cfg = await mintCLITokenForAdmin(server)
+      cliConfigDir = cfg.path
+      await setHubSetting(cfg, 'secure_cookies', 'true')
+      await use(server)
+    }
+    finally {
+      await stopDevServer(server, cliConfigDir ? [cliConfigDir] : [])
+    }
   },
   tlsProxy: async ({ server }, use) => {
     // Hub stays on http://localhost:<port>; only the browser-facing URL is https.

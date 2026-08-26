@@ -33,6 +33,24 @@ import (
 
 func setupOAuthTestServer(t *testing.T) (*httptest.Server, store.Store, *keystore.Keystore) {
 	t.Helper()
+	server, st, ks, _ := setupOAuthTestServerWithSettings(t)
+	return server, st, ks
+}
+
+// setupOAuthTestServerWithSettings also hands back the settings manager, so
+// a test can put the hub in its production shape (secure cookies) before it
+// drives a flow.
+func setupOAuthTestServerWithSettings(t *testing.T) (*httptest.Server, store.Store, *keystore.Keystore, *settings.Manager) {
+	return setupOAuthTestServerWithListen(t, ":4327")
+}
+
+// setupOAuthTestServerWithListen varies the bind address, which is what
+// decides whether this hub can run a passkey ceremony at all: an empty
+// listen has no browser-reachable origin, so RPConfigFromSettings refuses
+// and passkeys are cleanly unavailable. The step-up leg's second tier reads
+// exactly that.
+func setupOAuthTestServerWithListen(t *testing.T, listen string) (*httptest.Server, store.Store, *keystore.Keystore, *settings.Manager) {
+	t.Helper()
 
 	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err)
@@ -49,12 +67,12 @@ func setupOAuthTestServer(t *testing.T) (*httptest.Server, store.Store, *keystor
 	require.NoError(t, err)
 
 	cfg := &config.Config{
-		Listen: ":4327",
+		Listen: listen,
 	}
 	set := servicetest.NewSettingsManager(t, st, ks)
 	enableSignup(t, set)
 
-	oauthHandler := service.NewOAuthHandler(st, cfg, set, ks)
+	oauthHandler := service.NewOAuthHandler(st, cfg, set, auth.NewCredentialLifecycleEffects(nil, nil, nil), ks)
 
 	mux := http.NewServeMux()
 	oauthHandler.RegisterRoutes(mux)
@@ -62,7 +80,7 @@ func setupOAuthTestServer(t *testing.T) (*httptest.Server, store.Store, *keystor
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	return server, st, ks
+	return server, st, ks, set
 }
 
 func createTestProvider(t *testing.T, st store.Store, ks *keystore.Keystore) string {
@@ -201,26 +219,71 @@ func TestOAuthCallback_MissingCodeOrState_Returns400(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, resp3.StatusCode)
 }
 
+// TestOAuthCallback_ExpiredState_Returns400 drives the callback with a
+// browser that DOES hold the flow's nonce, so the request reaches the
+// expiry check. The binding check runs first and answers 400 as well, so a
+// status assertion alone would pass without ever reaching this guard; the
+// body is what tells the two refusals apart.
 func TestOAuthCallback_ExpiredState_Returns400(t *testing.T) {
 	t.Parallel()
 
 	server, st, ks := setupOAuthTestServer(t)
 	providerID := createTestProvider(t, st, ks)
 
+	const nonce = "expired-flow-nonce"
 	// Create an already-expired state.
 	err := st.OAuthStates().Create(context.Background(), store.CreateOAuthStateParams{
 		State:        "expired-state",
 		ProviderID:   providerID,
 		PkceVerifier: "test-verifier",
+		NonceHash:    hashNonceForTest(nonce),
 		ExpiresAt:    time.Now().Add(-1 * time.Minute).UTC(),
 	})
 	require.NoError(t, err)
 
-	resp, err := http.Get(server.URL + "/auth/oauth/" + providerID + "/callback?code=test&state=expired-state")
+	req, err := http.NewRequest(http.MethodGet,
+		server.URL+"/auth/oauth/"+providerID+"/callback?code=test&state=expired-state", nil)
+	require.NoError(t, err)
+	req.AddCookie(auth.BuildOAuthNonceCookie("expired-state", nonce, time.Minute, false))
+
+	resp, err := noRedirectClient().Do(req)
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.Contains(t, readBody(t, resp), "state expired",
+		"the refusal must come from the expiry check, not from the binding check before it")
+}
+
+// TestOAuthCallback_StateProviderMismatch_Returns400 pins the guard that
+// stops a state minted for provider A from being redeemed at provider B's
+// callback. It sits behind the binding check, so the browser holds the
+// flow's nonce here too.
+func TestOAuthCallback_StateProviderMismatch_Returns400(t *testing.T) {
+	t.Parallel()
+
+	server, st, ks := setupOAuthTestServer(t)
+	providerID := createTestProvider(t, st, ks)
+
+	const nonce = "mismatch-flow-nonce"
+	state := seedOAuthState(t, st, providerID, hashNonceForTest(nonce))
+
+	// A SECOND provider's callback route. The mismatch check runs before
+	// the handler resolves the provider, so the row's own provider is what
+	// the guard compares against.
+	other := createTestProvider(t, st, ks)
+	require.NotEqual(t, providerID, other)
+	req, err := http.NewRequest(http.MethodGet,
+		server.URL+"/auth/oauth/"+other+"/callback?code=test&state="+state, nil)
+	require.NoError(t, err)
+	req.AddCookie(auth.BuildOAuthNonceCookie(state, nonce, time.Minute, false))
+
+	resp, err := noRedirectClient().Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.Contains(t, readBody(t, resp), "state/provider mismatch")
 }
 
 func TestGetOAuthProviders_ReturnsEnabledOnly(t *testing.T) {
@@ -335,7 +398,7 @@ func setupOAuthTestServerWithAuthService(t *testing.T) (
 	mux := http.NewServeMux()
 
 	// Register OAuth HTTP routes.
-	oauthHandler := service.NewOAuthHandler(st, cfg, set, ks)
+	oauthHandler := service.NewOAuthHandler(st, cfg, set, auth.NewCredentialLifecycleEffects(nil, nil, nil), ks)
 	oauthHandler.RegisterRoutes(mux)
 
 	// Register AuthService ConnectRPC routes.
@@ -354,6 +417,33 @@ func setupOAuthTestServerWithAuthService(t *testing.T) (
 	return server, client, st, ks, set
 }
 
+// testSignupNonce is the pending-signup nonce every seeded row is bound to.
+// The hub refuses a pending signup to a browser that did not start the OAuth
+// flow, so a test that drives GetPendingOAuthSignup or CompleteOAuthSignup
+// must present it.
+const testSignupNonce = "test-signup-nonce"
+
+// signupCookieHeader returns the Cookie header the browser that started the
+// flow would send for one signup token.
+func signupCookieHeader(token string) string {
+	c := auth.BuildOAuthSignupNonceCookie(token, testSignupNonce, time.Minute, false)
+	return c.Name + "=" + c.Value
+}
+
+// signupTokenCarrier is the field the two pending-signup requests share.
+type signupTokenCarrier interface{ GetSignupToken() string }
+
+// signupReq builds a request that carries the pending-signup cookie, taking
+// the token off the message so no call site can attach the wrong one.
+func signupReq[T any, PT interface {
+	*T
+	signupTokenCarrier
+}](msg PT) *connect.Request[T] {
+	req := connect.NewRequest((*T)(msg))
+	req.Header().Set("Cookie", signupCookieHeader(msg.GetSignupToken()))
+	return req
+}
+
 // insertPendingSignup creates a pending_oauth_signups row with encrypted tokens.
 func insertPendingSignup(t *testing.T, st store.Store, ks *keystore.Keystore, providerID, token, email, displayName, subject string, expiresAt time.Time) {
 	t.Helper()
@@ -365,6 +455,7 @@ func insertPendingSignup(t *testing.T, st store.Store, ks *keystore.Keystore, pr
 	err = st.PendingOAuthSignups().Create(context.Background(), store.CreatePendingOAuthSignupParams{
 		Token:           token,
 		ProviderID:      providerID,
+		NonceHash:       hashNonceForTest(testSignupNonce),
 		ProviderSubject: subject,
 		Email:           email,
 		DisplayName:     displayName,
@@ -389,7 +480,7 @@ func TestGetPendingOAuthSignup_Success(t *testing.T) {
 
 	insertPendingSignup(t, st, ks, providerID, signupToken, "alice@example.com", "Alice", "sub-123", time.Now().Add(5*time.Minute).UTC())
 
-	resp, err := client.GetPendingOAuthSignup(context.Background(), connect.NewRequest(&leapmuxv1.GetPendingOAuthSignupRequest{
+	resp, err := client.GetPendingOAuthSignup(context.Background(), signupReq(&leapmuxv1.GetPendingOAuthSignupRequest{
 		SignupToken: signupToken,
 	}))
 	require.NoError(t, err)
@@ -403,7 +494,7 @@ func TestGetPendingOAuthSignup_InvalidToken(t *testing.T) {
 
 	_, client, _, _, _ := setupOAuthTestServerWithAuthService(t)
 
-	_, err := client.GetPendingOAuthSignup(context.Background(), connect.NewRequest(&leapmuxv1.GetPendingOAuthSignupRequest{
+	_, err := client.GetPendingOAuthSignup(context.Background(), signupReq(&leapmuxv1.GetPendingOAuthSignupRequest{
 		SignupToken: "nonexistent-token",
 	}))
 	require.Error(t, err)
@@ -420,7 +511,7 @@ func TestGetPendingOAuthSignup_ExpiredToken(t *testing.T) {
 	// Insert an already-expired pending signup.
 	insertPendingSignup(t, st, ks, providerID, signupToken, "expired@example.com", "Expired", "sub-expired", time.Now().Add(-1*time.Minute).UTC())
 
-	_, err := client.GetPendingOAuthSignup(context.Background(), connect.NewRequest(&leapmuxv1.GetPendingOAuthSignupRequest{
+	_, err := client.GetPendingOAuthSignup(context.Background(), signupReq(&leapmuxv1.GetPendingOAuthSignupRequest{
 		SignupToken: signupToken,
 	}))
 	require.Error(t, err)
@@ -438,7 +529,7 @@ func TestCompleteOAuthSignup_Success(t *testing.T) {
 
 	insertPendingSignup(t, st, ks, providerID, signupToken, "bob@example.com", "Bob", "sub-bob", time.Now().Add(5*time.Minute).UTC())
 
-	resp, err := client.CompleteOAuthSignup(context.Background(), connect.NewRequest(&leapmuxv1.CompleteOAuthSignupRequest{
+	resp, err := client.CompleteOAuthSignup(context.Background(), signupReq(&leapmuxv1.CompleteOAuthSignupRequest{
 		SignupToken: signupToken,
 		Username:    "bobuser",
 		DisplayName: "Bob User",
@@ -480,7 +571,7 @@ func TestCompleteOAuthSignup_UsesConfiguredSessionDuration(t *testing.T) {
 	insertPendingSignup(t, st, ks, providerID, signupToken, "dana@example.com", "Dana", "sub-dana", time.Now().Add(5*time.Minute).UTC())
 
 	before := time.Now()
-	resp, err := client.CompleteOAuthSignup(context.Background(), connect.NewRequest(&leapmuxv1.CompleteOAuthSignupRequest{
+	resp, err := client.CompleteOAuthSignup(context.Background(), signupReq(&leapmuxv1.CompleteOAuthSignupRequest{
 		SignupToken: signupToken,
 		Username:    "danauser",
 		DisplayName: "Dana User",
@@ -504,7 +595,7 @@ func TestCompleteOAuthSignup_UsesProviderEmail_IgnoresRequestEmail(t *testing.T)
 	insertPendingSignup(t, st, ks, providerID, signupToken, "provider@example.com", "Provider", "sub-provider", time.Now().Add(5*time.Minute).UTC())
 
 	// Request tries to override with a different email — should be ignored.
-	resp, err := client.CompleteOAuthSignup(context.Background(), connect.NewRequest(&leapmuxv1.CompleteOAuthSignupRequest{
+	resp, err := client.CompleteOAuthSignup(context.Background(), signupReq(&leapmuxv1.CompleteOAuthSignupRequest{
 		SignupToken: signupToken,
 		Username:    "provideruser",
 		Email:       "attacker@evil.com",
@@ -530,7 +621,7 @@ func TestCompleteOAuthSignup_UntrustedProviderWithNoEmail_UsesRequestEmail(t *te
 	signupToken := id.Generate()
 	insertPendingSignup(t, st, ks, providerID, signupToken, "", "No Email", "sub-noemail", time.Now().Add(5*time.Minute).UTC())
 
-	resp, err := client.CompleteOAuthSignup(context.Background(), connect.NewRequest(&leapmuxv1.CompleteOAuthSignupRequest{
+	resp, err := client.CompleteOAuthSignup(context.Background(), signupReq(&leapmuxv1.CompleteOAuthSignupRequest{
 		SignupToken: signupToken,
 		Username:    "noemailuser",
 		Email:       "typed@example.com",
@@ -555,7 +646,7 @@ func TestCompleteOAuthSignup_UntrustedProviderEmailBeatsRequestEmail(t *testing.
 	signupToken := id.Generate()
 	insertPendingSignup(t, st, ks, providerID, signupToken, "provider@example.com", "Provider", "sub-untrusted", time.Now().Add(5*time.Minute).UTC())
 
-	resp, err := client.CompleteOAuthSignup(context.Background(), connect.NewRequest(&leapmuxv1.CompleteOAuthSignupRequest{
+	resp, err := client.CompleteOAuthSignup(context.Background(), signupReq(&leapmuxv1.CompleteOAuthSignupRequest{
 		SignupToken: signupToken,
 		Username:    "untrusteduser",
 		Email:       "attacker@evil.com",
@@ -591,7 +682,7 @@ func TestCompleteOAuthSignup_DuplicateUsername(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, err = client.CompleteOAuthSignup(context.Background(), connect.NewRequest(&leapmuxv1.CompleteOAuthSignupRequest{
+	_, err = client.CompleteOAuthSignup(context.Background(), signupReq(&leapmuxv1.CompleteOAuthSignupRequest{
 		SignupToken: signupToken,
 		Username:    "takenname",
 	}))
@@ -628,7 +719,7 @@ func TestCompleteOAuthSignup_DuplicateEmail(t *testing.T) {
 
 	// Provider has trust_email=0 and SMTP verification is off,
 	// so email goes directly to the email column unverified. Duplicate check should fire.
-	_, err = client.CompleteOAuthSignup(context.Background(), connect.NewRequest(&leapmuxv1.CompleteOAuthSignupRequest{
+	_, err = client.CompleteOAuthSignup(context.Background(), signupReq(&leapmuxv1.CompleteOAuthSignupRequest{
 		SignupToken: signupToken,
 		Username:    "newuniqueuser",
 		Email:       "taken@example.com",
@@ -646,7 +737,7 @@ func TestCompleteOAuthSignup_TrustedProviderSetsEmailVerified(t *testing.T) {
 
 	insertPendingSignup(t, st, ks, providerID, signupToken, "trusted@example.com", "Trusted", "sub-trusted", time.Now().Add(5*time.Minute).UTC())
 
-	resp, err := client.CompleteOAuthSignup(context.Background(), connect.NewRequest(&leapmuxv1.CompleteOAuthSignupRequest{
+	resp, err := client.CompleteOAuthSignup(context.Background(), signupReq(&leapmuxv1.CompleteOAuthSignupRequest{
 		SignupToken: signupToken,
 		Username:    "trusteduser",
 	}))
@@ -679,7 +770,7 @@ func TestCompleteOAuthSignup_UntrustedFailClosedWhenVerificationEmailFails(t *te
 	enableEmailVerification(t, set)
 
 	mux := http.NewServeMux()
-	oauthHandler := service.NewOAuthHandler(st, cfg, set, ks)
+	oauthHandler := service.NewOAuthHandler(st, cfg, set, auth.NewCredentialLifecycleEffects(nil, nil, nil), ks)
 	oauthHandler.RegisterRoutes(mux)
 
 	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
@@ -699,7 +790,7 @@ func TestCompleteOAuthSignup_UntrustedFailClosedWhenVerificationEmailFails(t *te
 	signupToken := id.Generate()
 	insertPendingSignup(t, st, ks, providerID, signupToken, "untrusted@example.com", "Untrusted", "sub-untrusted", time.Now().Add(5*time.Minute).UTC())
 
-	_, err = client.CompleteOAuthSignup(context.Background(), connect.NewRequest(&leapmuxv1.CompleteOAuthSignupRequest{
+	_, err = client.CompleteOAuthSignup(context.Background(), signupReq(&leapmuxv1.CompleteOAuthSignupRequest{
 		SignupToken: signupToken,
 		Username:    "untrusteduser",
 	}))
@@ -720,7 +811,7 @@ func TestCompleteOAuthSignup_UntrustedWithSMTPOnUsesPendingEmail(t *testing.T) {
 
 	insertPendingSignup(t, st, ks, providerID, signupToken, "pending@example.com", "Pending", "sub-pending", time.Now().Add(5*time.Minute).UTC())
 
-	resp, err := client.CompleteOAuthSignup(context.Background(), connect.NewRequest(&leapmuxv1.CompleteOAuthSignupRequest{
+	resp, err := client.CompleteOAuthSignup(context.Background(), signupReq(&leapmuxv1.CompleteOAuthSignupRequest{
 		SignupToken: signupToken,
 		Username:    "pendingoauth",
 	}))
@@ -741,7 +832,7 @@ func TestCompleteOAuthSignup_InvalidToken(t *testing.T) {
 
 	_, client, _, _, _ := setupOAuthTestServerWithAuthService(t)
 
-	_, err := client.CompleteOAuthSignup(context.Background(), connect.NewRequest(&leapmuxv1.CompleteOAuthSignupRequest{
+	_, err := client.CompleteOAuthSignup(context.Background(), signupReq(&leapmuxv1.CompleteOAuthSignupRequest{
 		SignupToken: "nonexistent-token",
 		Username:    "someuser",
 	}))
@@ -758,7 +849,7 @@ func TestCompleteOAuthSignup_InvalidUsername(t *testing.T) {
 
 	insertPendingSignup(t, st, ks, providerID, signupToken, "valid@example.com", "Valid", "sub-valid", time.Now().Add(5*time.Minute).UTC())
 
-	_, err := client.CompleteOAuthSignup(context.Background(), connect.NewRequest(&leapmuxv1.CompleteOAuthSignupRequest{
+	_, err := client.CompleteOAuthSignup(context.Background(), signupReq(&leapmuxv1.CompleteOAuthSignupRequest{
 		SignupToken: signupToken,
 		Username:    "", // empty username
 	}))
@@ -775,7 +866,7 @@ func TestCompleteOAuthSignup_RejectsSoloAlways(t *testing.T) {
 
 	insertPendingSignup(t, st, ks, providerID, signupToken, "new@example.com", "New", "sub-new", time.Now().Add(5*time.Minute).UTC())
 
-	_, err := client.CompleteOAuthSignup(context.Background(), connect.NewRequest(&leapmuxv1.CompleteOAuthSignupRequest{
+	_, err := client.CompleteOAuthSignup(context.Background(), signupReq(&leapmuxv1.CompleteOAuthSignupRequest{
 		SignupToken: signupToken,
 		Username:    "solo",
 	}))
@@ -795,7 +886,7 @@ func TestCompleteOAuthSignup_RejectsAdminInPublicSignup(t *testing.T) {
 	signupToken := id.Generate()
 	insertPendingSignup(t, st, ks, providerID, signupToken, "new@example.com", "New", "sub-new", time.Now().Add(5*time.Minute).UTC())
 
-	_, err := client.CompleteOAuthSignup(context.Background(), connect.NewRequest(&leapmuxv1.CompleteOAuthSignupRequest{
+	_, err := client.CompleteOAuthSignup(context.Background(), signupReq(&leapmuxv1.CompleteOAuthSignupRequest{
 		SignupToken: signupToken,
 		Username:    "admin",
 	}))
@@ -814,14 +905,14 @@ func TestCompleteOAuthSignup_TokenConsumedOnSuccess(t *testing.T) {
 	insertPendingSignup(t, st, ks, providerID, signupToken, "consume@example.com", "Consume", "sub-consume", time.Now().Add(5*time.Minute).UTC())
 
 	// First call succeeds.
-	_, err := client.CompleteOAuthSignup(context.Background(), connect.NewRequest(&leapmuxv1.CompleteOAuthSignupRequest{
+	_, err := client.CompleteOAuthSignup(context.Background(), signupReq(&leapmuxv1.CompleteOAuthSignupRequest{
 		SignupToken: signupToken,
 		Username:    "consumeuser",
 	}))
 	require.NoError(t, err)
 
 	// Second call with the same token fails.
-	_, err = client.CompleteOAuthSignup(context.Background(), connect.NewRequest(&leapmuxv1.CompleteOAuthSignupRequest{
+	_, err = client.CompleteOAuthSignup(context.Background(), signupReq(&leapmuxv1.CompleteOAuthSignupRequest{
 		SignupToken: signupToken,
 		Username:    "anotheruser",
 	}))
@@ -838,7 +929,7 @@ func TestCompleteOAuthSignup_ReencryptsTokensWithActiveKeyVersion(t *testing.T) 
 
 	insertPendingSignup(t, st, ks, providerID, signupToken, "keyver@example.com", "KeyVer", "sub-keyver", time.Now().Add(5*time.Minute).UTC())
 
-	resp, err := client.CompleteOAuthSignup(context.Background(), connect.NewRequest(&leapmuxv1.CompleteOAuthSignupRequest{
+	resp, err := client.CompleteOAuthSignup(context.Background(), signupReq(&leapmuxv1.CompleteOAuthSignupRequest{
 		SignupToken: signupToken,
 		Username:    "keyveruser",
 	}))
@@ -894,7 +985,7 @@ func TestOAuthCallback_NewUser_SignupDisabled(t *testing.T) {
 		Listen: ":4327",
 	}
 
-	oauthHandler := service.NewOAuthHandler(st, cfg, servicetest.NewSettingsManager(t, st, ks), ks)
+	oauthHandler := service.NewOAuthHandler(st, cfg, servicetest.NewSettingsManager(t, st, ks), auth.NewCredentialLifecycleEffects(nil, nil, nil), ks)
 	mux := http.NewServeMux()
 	oauthHandler.RegisterRoutes(mux)
 	server := httptest.NewServer(mux)
@@ -902,35 +993,48 @@ func TestOAuthCallback_NewUser_SignupDisabled(t *testing.T) {
 
 	providerID := createTestProvider(t, st, ks)
 
-	// Create a valid OAuth state for the callback.
+	// Create a valid OAuth state for the callback. The nonce hash and the
+	// cookie below carry the browser binding, without which the callback
+	// refuses before it resolves the provider at all.
+	const nonce = "signup-disabled-flow-nonce"
 	stateValue := id.Generate()
 	err = st.OAuthStates().Create(context.Background(), store.CreateOAuthStateParams{
 		State:        stateValue,
 		ProviderID:   providerID,
 		PkceVerifier: "test-verifier",
+		NonceHash:    hashNonceForTest(nonce),
 		ExpiresAt:    time.Now().Add(5 * time.Minute).UTC(),
 	})
 	require.NoError(t, err)
 
-	// The callback will attempt to exchange the code with GitHub, which will fail
-	// because we're using a real GitHub endpoint in tests. However, since there's no
-	// real token server, the exchange step itself will fail with a network error
-	// before reaching the signup-disabled check. So this test validates the full
-	// state validation path. The signup-disabled check is tested via the RPC path
-	// (GetPendingOAuthSignup / CompleteOAuthSignup flow) and by examining the handler
-	// code logic.
+	// The callback attempts to exchange the code with GitHub, which fails
+	// because there is no mock token server. The exchange fails with a
+	// network error before the signup-disabled check, so this test covers
+	// the full state validation path: the binding, the expiry, the
+	// provider match, and the state consumption. The signup-disabled check
+	// is covered through the RPC path (GetPendingOAuthSignup /
+	// CompleteOAuthSignup).
 
-	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
-		return http.ErrUseLastResponse
-	}}
+	req, err := http.NewRequest(http.MethodGet,
+		server.URL+"/auth/oauth/"+providerID+"/callback?code=test-code&state="+stateValue, nil)
+	require.NoError(t, err)
+	req.AddCookie(auth.BuildOAuthNonceCookie(stateValue, nonce, time.Minute, false))
 
-	resp, err := client.Get(server.URL + "/auth/oauth/" + providerID + "/callback?code=test-code&state=" + stateValue)
+	resp, err := noRedirectClient().Do(req)
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 
-	// The exchange will fail (no mock token server), returning 400.
-	// This validates the state is consumed and the provider is resolved correctly.
+	// The exchange fails (no mock token server), which answers 400.
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	body := readBody(t, resp)
+	assert.NotContains(t, body, "different browser",
+		"the browser holds the flow's nonce, so the binding check must pass")
+	assert.Contains(t, body, "OAuth exchange failed",
+		"the request must reach the exchange, which is what proves the state and provider resolved")
+
+	// The state row is consumed either way, so a refused pair cannot be retried.
+	_, err = st.OAuthStates().Get(context.Background(), stateValue)
+	assert.ErrorIs(t, err, store.ErrNotFound)
 }
 
 // TestAutoLinkByVerifiedEmail validates that the auto-link-by-email path

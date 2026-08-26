@@ -68,6 +68,19 @@ function renderForm() {
   ))
 }
 
+/**
+ * The reason a disabled control carries, read the way a screen reader gets it.
+ *
+ * <Tooltip> leaves an offscreen description in `aria-describedby` for as long
+ * as the control is disabled. It is NOT `title`: a reason long enough to be
+ * worth reading becomes the control's accessible name on `title`.
+ */
+function reasonOf(el: Element): string {
+  const describedBy = el.getAttribute('aria-describedby')
+  expect(describedBy).toBeTruthy()
+  return document.getElementById(describedBy!)?.textContent ?? ''
+}
+
 describe('signup form display-name mirror', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -131,10 +144,43 @@ describe('signup form passkey path', () => {
     expect(mockBeginPasskeySignUp).not.toHaveBeenCalled()
   })
 
+  // The other arm of the branch this form gates on, which nothing exercised.
+  // A page that cannot run a ceremony must not offer to sign somebody up with
+  // one, and the password arm has to survive -- it is the only way in.
+  //
+  // The HUB's refusal is a property of the deployment, so the option goes.
+  it('drops the passkey option when the hub does not serve this origin', () => {
+    setSystemInfoMock({ passkeyBlocker: 'origin-not-allowed' })
+    renderForm()
+    expect(screen.queryByRole('radio', { name: 'Passkey' })).not.toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: 'Password' })).toBeInTheDocument()
+    expect(screen.getByLabelText('New Password')).toBeInTheDocument()
+  })
+
+  // The BROWSER's refusal is something the reader can clear by moving, so the
+  // option stays and carries the reason.
+  it.each([
+    ['the page is not secure', 'insecure-context' as const, /secure page/i],
+    ['the browser has no WebAuthn', 'no-webauthn' as const, /does not support passkeys/i],
+  ])('keeps the passkey option and says why when %s', (_case, blocker, expected) => {
+    setSystemInfoMock({ passkeyBlocker: blocker })
+    renderForm()
+
+    const passkey = screen.getByRole('radio', { name: 'Passkey' })
+    expect(passkey).toBeDisabled()
+    expect(passkey).not.toHaveAttribute('title')
+    expect(reasonOf(passkey)).toMatch(expected)
+    expect(screen.getByLabelText('New Password')).toBeInTheDocument()
+  })
+
   it('hides password fields when passkey is selected', () => {
     renderForm()
+    // Present FIRST, then gone. The label reads "New Password", so the
+    // absence assertion this replaced queried a label that never existed --
+    // it passed whether the fields rendered or not.
+    expect(screen.getByLabelText('New Password')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('radio', { name: 'Passkey' }))
-    expect(screen.queryByLabelText('Password')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('New Password')).not.toBeInTheDocument()
     expect(screen.queryByLabelText('Confirm Password')).not.toBeInTheDocument()
   })
 

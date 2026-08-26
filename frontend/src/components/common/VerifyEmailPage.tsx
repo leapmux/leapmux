@@ -4,6 +4,7 @@ import { createEffect, createSignal, Show } from 'solid-js'
 import { userClient } from '~/api/clients'
 import { useAuth } from '~/context/AuthContext'
 import { formatErrorMessage } from '~/lib/errors'
+import { stringParam } from '~/lib/searchParam'
 import { useVerificationResend } from '~/lib/useVerificationResend'
 import { errorText, pageCard } from '~/styles/shared.css'
 import * as styles from './LoginPage.css'
@@ -39,7 +40,7 @@ export const VerifyEmailPage: Component = () => {
     setDecided(true)
     // Pull the URL code (used for both prefill and auto-submit). It may
     // arrive in display form ("XXX-XXX") or raw ("XXXXXX").
-    const urlCode = typeof searchParams.code === 'string' ? searchParams.code : ''
+    const urlCode = stringParam(searchParams.code) ?? ''
 
     if (!auth.user()) {
       // Not signed in. Send the user through login first, preserving the
@@ -66,10 +67,16 @@ export const VerifyEmailPage: Component = () => {
     setSubmitting(true)
     setError(null)
     try {
-      const resp = await userClient.verifyEmail({ verificationToken: normalized })
-      // Refresh auth so EmailVerified flips in the cached user.
-      if (resp.user)
-        auth.setAuth(resp.user)
+      await userClient.verifyEmail({ verificationToken: normalized })
+      // refreshUser, never setAuth: this is the SAME identity, so it is a
+      // refresh and not a transition. setAuth clears the elevation deadline —
+      // which is right when a sign-in lands a new user, and wrong here, where
+      // the hub touched no elevation column at all. Clearing it made
+      // Preferences report a verified session as unverified and hid the "End
+      // now" button while the window was still open, and sent a CLI consent
+      // bounce back through /elevate for a factor the hub would not have
+      // asked for.
+      await auth.refreshUser()
       navigate('/', { replace: true })
     }
     catch (e) {

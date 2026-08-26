@@ -5,13 +5,13 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"net/http"
 	"time"
 
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/store"
-	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/pkce"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
@@ -62,7 +62,6 @@ func (h *APIAuthHandler) handleToken(w http.ResponseWriter, r *http.Request) {
 func (h *APIAuthHandler) handleTokenAuthorizationCode(w http.ResponseWriter, r *http.Request) {
 	code := r.FormValue("code")
 	verifier := r.FormValue("code_verifier")
-	deviceName := r.FormValue("device_name")
 	if code == "" || verifier == "" {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "code and code_verifier are required")
 		return
@@ -81,9 +80,6 @@ func (h *APIAuthHandler) handleTokenAuthorizationCode(w http.ResponseWriter, r *
 		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "PKCE verification failed")
 		return
 	}
-	if deviceName == "" {
-		deviceName = row.DeviceName
-	}
 	// The grant row's user_id is a column, so a blank one is corrupt data, not a
 	// programmer error: it is refused as an unusable grant rather than panicked
 	// on. The device-code path has always had this guard (postTouchPollOAuthError
@@ -94,10 +90,20 @@ func (h *APIAuthHandler) handleTokenAuthorizationCode(w http.ResponseWriter, r *
 		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "code expired or already consumed")
 		return
 	}
-	h.issueTokenResponse(w, r, grantUID, deviceName,
-		"code expired or already consumed",
-		"authorization code token issuance failed",
-		func(tx store.Store) error {
+	// The device name comes from the GRANT row, and so does the scope --
+	// never from this request's form. Otherwise any holder of an
+	// authorization code could upgrade what the user consented to, or label
+	// the credential as the victim's own laptop in the list and in the
+	// issuance notice while the consent page showed something else. The
+	// device-code sibling below already reads the row alone.
+	h.issueTokenResponse(w, r, consentedGrant{
+		id:              code,
+		userID:          grantUID,
+		deviceName:      row.DeviceName,
+		adminScope:      row.AdminScope,
+		invalidGrantMsg: "code expired or already consumed",
+		internalMsg:     "authorization code token issuance failed",
+		consume: func(tx store.Store) error {
 			if _, err := tx.CLIAuthorizationCodes().Consume(r.Context(), code, h.now().UTC()); err != nil {
 				if errors.Is(err, store.ErrNotFound) {
 					return errAuthorizationGrantUnavailable
@@ -105,32 +111,56 @@ func (h *APIAuthHandler) handleTokenAuthorizationCode(w http.ResponseWriter, r *
 				return fmt.Errorf("consume authorization code: %w", err)
 			}
 			return nil
-		})
+		},
+	})
+}
+
+// consentedGrant is what a validated OAuth grant hands the mint: who
+// consented, what they consented TO, and the two refusals this exchange can
+// answer with.
+//
+// A struct rather than six positional arguments, because two of them are
+// adjacent same-typed message strings that a call site can transpose in
+// silence -- the caller would then answer "code expired" for an internal
+// failure and log the grant message for a live one. Naming them at the call
+// site makes that mistake visible, and a seventh fact about the consent is
+// added in one place.
+type consentedGrant struct {
+	// id is the grant row this mint redeems. It is what the mint reads as its
+	// AUTHORITY: /auth/cli/token carries no session at all, so the browser
+	// consent that produced this row is where the elevated session was
+	// required, and holding the row is the proof. See mintAuthority.
+	id         string
+	userID     userid.UserID
+	deviceName string
+	adminScope bool
+	// invalidGrantMsg answers a single-use grant that is already gone
+	// (errAuthorizationGrantUnavailable); internalMsg answers anything else.
+	invalidGrantMsg string
+	internalMsg     string
+	// consume spends the grant inside the mint's transaction.
+	consume func(tx store.Store) error
 }
 
 // issueTokenResponse mints a CLI API token for an already-validated OAuth grant
 // and writes the RFC 6749/8628 token response: the token JSON on success,
-// invalid_grant with invalidGrantMsg when the single-use consume closure reports
-// the grant is gone (errAuthorizationGrantUnavailable), or an internal error
-// (internalMsg) otherwise. The authorization_code and device_code handlers share
-// this issue-and-map tail so they cannot drift on the error codes they must both
-// emit.
-func (h *APIAuthHandler) issueTokenResponse(
-	w http.ResponseWriter,
-	r *http.Request,
-	userID userid.UserID,
-	deviceName, invalidGrantMsg, internalMsg string,
-	consume func(tx store.Store) error,
-) {
-	resp, err := h.issueAPIToken(r.Context(), userID, "cli", deviceName, consume)
+// invalid_grant when the single-use consume closure reports the grant is gone,
+// or an internal error otherwise. The authorization_code and device_code
+// handlers share this issue-and-map tail so they cannot drift on the error
+// codes they must both emit.
+func (h *APIAuthHandler) issueTokenResponse(w http.ResponseWriter, r *http.Request, grant consentedGrant) {
+	resp, user, err := h.issueAPIToken(r.Context(), grant)
 	if err != nil {
 		if errors.Is(err, errAuthorizationGrantUnavailable) {
-			writeOAuthError(w, http.StatusBadRequest, "invalid_grant", invalidGrantMsg)
+			writeOAuthError(w, http.StatusBadRequest, "invalid_grant", grant.invalidGrantMsg)
 		} else {
-			writeInternalError(w, internalMsg, err)
+			writeInternalError(w, grant.internalMsg, err)
 		}
 		return
 	}
+	// After the commit and before the response, so the notice cannot be the
+	// reason a minted token is never delivered. See notifyTokenIssued.
+	h.notifyTokenIssued(r.Context(), user, grant.deviceName, grant.adminScope)
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -158,16 +188,16 @@ func (h *APIAuthHandler) handleTokenDeviceCode(w http.ResponseWriter, r *http.Re
 	// failure rolls the transaction back. The grant stays retryable
 	// because only Consume, which remains inside the transaction, is
 	// single-use.
-	if code, desc, ok := h.preTouchPollOAuthError(row, h.now()); ok {
-		writeOAuthError(w, http.StatusBadRequest, code, desc)
+	if body, ok := h.preTouchPollOAuthError(row, h.now()); ok {
+		writeOAuthErrorBody(w, http.StatusBadRequest, body)
 		return
 	}
-	if code, desc, ok := h.postTouchPollOAuthError(row); ok {
+	if body, ok := h.postTouchPollOAuthError(row); ok {
 		if err := h.store.DeviceAuthorizations().TouchPoll(r.Context(), deviceCode); err != nil {
 			writeInternalError(w, "device authorization poll update failed", err)
 			return
 		}
-		writeOAuthError(w, http.StatusBadRequest, code, desc)
+		writeOAuthErrorBody(w, http.StatusBadRequest, body)
 		return
 	}
 	// Advance last_polled_at outside the issuance transaction so the
@@ -187,10 +217,32 @@ func (h *APIAuthHandler) handleTokenDeviceCode(w http.ResponseWriter, r *http.Re
 		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "device code expired or already consumed")
 		return
 	}
-	h.issueTokenResponse(w, r, pollUID, row.DeviceName,
-		"device_code expired or already consumed",
-		"device authorization token issuance failed",
-		func(tx store.Store) error {
+	// A STEP-UP grant mints nothing, and this branch is what makes that true.
+	// The approval already stamped the window on the credential the caller
+	// holds; issuing a token here would turn a request to verify an existing
+	// credential into a second credential, which is precisely the widening
+	// the step-up flow exists to avoid.
+	if row.ElevateTokenID != "" {
+		affected, err := h.store.DeviceAuthorizations().Consume(r.Context(), deviceCode, h.now().UTC())
+		if err != nil {
+			writeInternalError(w, "elevation grant consumption failed", err)
+			return
+		}
+		if affected != 1 {
+			writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "device_code expired or already consumed")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"elevated": true})
+		return
+	}
+	h.issueTokenResponse(w, r, consentedGrant{
+		id:              deviceCode,
+		userID:          pollUID,
+		deviceName:      row.DeviceName,
+		adminScope:      row.AdminScope,
+		invalidGrantMsg: "device_code expired or already consumed",
+		internalMsg:     "device authorization token issuance failed",
+		consume: func(tx store.Store) error {
 			// Consume is the single-use consumption that must stay atomic
 			// with token creation, so it -- and only it -- remains in the
 			// transaction.
@@ -202,39 +254,45 @@ func (h *APIAuthHandler) handleTokenDeviceCode(w http.ResponseWriter, r *http.Re
 				return errAuthorizationGrantUnavailable
 			}
 			return nil
-		})
+		},
+	})
 }
 
 // preTouchPollOAuthError returns the OAuth-error code + description
 // for the state guards that must short-circuit BEFORE TouchPoll runs:
 // already-consumed, expired, or rapid-poll throttle.
-func (h *APIAuthHandler) preTouchPollOAuthError(row *store.DeviceAuthorization, now time.Time) (string, string, bool) {
+func (h *APIAuthHandler) preTouchPollOAuthError(row *store.DeviceAuthorization, now time.Time) (oauthErrorResponse, bool) {
 	if row.ConsumedAt != nil {
-		return "invalid_grant", "device_code already used", true
+		return oauthErrorBody("invalid_grant", "device_code already used"), true
 	}
 	if auth.IsExpired(now, row.ExpiresAt) {
-		return "expired_token", "", true
+		return oauthErrorBody("expired_token", ""), true
 	}
 	if h.shouldThrottle(row, now) {
-		return "slow_down", "", true
+		return oauthErrorBody("slow_down", ""), true
 	}
-	return "", "", false
+	return oauthErrorResponse{}, false
 }
 
-// postTouchPollOAuthError returns the OAuth-error code + description for
-// approval-state guards whose responses must still update last_polled_at.
-// The caller performs that update before writing the returned OAuth error.
-func (h *APIAuthHandler) postTouchPollOAuthError(row *store.DeviceAuthorization) (string, string, bool) {
+// postTouchPollOAuthError returns the OAuth error body for approval-state
+// guards whose responses must still update last_polled_at. The caller
+// performs that update before writing the returned body.
+//
+// A BODY, not a (code, description) pair: the two are adjacent same-typed
+// strings that a call site can transpose in silence, which is the exact smell
+// consentedGrant above was introduced to remove. The type this returns is the
+// one the file already writes.
+func (h *APIAuthHandler) postTouchPollOAuthError(row *store.DeviceAuthorization) (oauthErrorResponse, bool) {
 	switch row.Approved {
 	case 0:
-		return "authorization_pending", "", true
+		return oauthErrorBody("authorization_pending", ""), true
 	case 2:
-		return "access_denied", "", true
+		return oauthErrorBody("access_denied", ""), true
 	}
 	if row.UserID == "" {
-		return "authorization_pending", "", true
+		return oauthErrorBody("authorization_pending", ""), true
 	}
-	return "", "", false
+	return oauthErrorResponse{}, false
 }
 
 func (h *APIAuthHandler) shouldThrottle(row *store.DeviceAuthorization, now time.Time) bool {
@@ -288,6 +346,15 @@ type apiTokenResponse struct {
 	TokenID      string `json:"token_id"`
 	UserID       string `json:"user_id,omitempty"`
 	Username     string `json:"username,omitempty"`
+	// AdminScope reports what the browser actually granted, which is not
+	// always what the CLI asked for: on the device-code flow the user ticks
+	// a checkbox, and they may not. The CLI says so rather than letting the
+	// first admin verb fail with nothing to point at.
+	AdminScope bool `json:"admin_scope"`
+	// RefreshExpiresIn is how long the credential can keep refreshing before
+	// the device must sign in again -- the absolute lifetime, not the access
+	// token's hour. The CLI stores it so `auth status` can report it.
+	RefreshExpiresIn int `json:"refresh_expires_in,omitempty"`
 }
 
 func refreshOAuthError(status int, code, description string) refreshResponse {
@@ -298,14 +365,25 @@ func refreshInternalError(err error) refreshResponse {
 	return refreshResponse{status: http.StatusInternalServerError, err: err}
 }
 
-func refreshTokenResponse(tokenID, accessBearer, refreshBearer string, expiresIn int) refreshResponse {
+// refreshTokenResponse builds the rotation payload.
+//
+// It reports refreshExpiresIn and adminScope, exactly as the minting
+// response does. Omitting them made the rotation answer look like a
+// credential with no absolute deadline and no scope: `refresh_expires_in`
+// carries omitempty, so the CLI never advanced the deadline it stores and
+// `auth status` printed a date further into the past on every rotation,
+// while `admin_scope` has no omitempty and answered a flat false for a
+// credential that really did carry the scope.
+func refreshTokenResponse(tokenID, accessBearer, refreshBearer string, expiresIn, refreshExpiresIn int, adminScope bool) refreshResponse {
 	return refreshResponse{
 		status: http.StatusOK,
 		body: apiTokenResponse{
-			AccessToken:  accessBearer,
-			RefreshToken: refreshBearer,
-			ExpiresIn:    expiresIn,
-			TokenID:      tokenID,
+			AccessToken:      accessBearer,
+			RefreshToken:     refreshBearer,
+			ExpiresIn:        expiresIn,
+			TokenID:          tokenID,
+			AdminScope:       adminScope,
+			RefreshExpiresIn: refreshExpiresIn,
 		},
 	}
 }
@@ -318,15 +396,27 @@ func remainingExpiresIn(expiresAt, now time.Time) int {
 	return int(math.Ceil(remaining.Seconds()))
 }
 
+// refreshRetryResponse re-emits the pair a racing rotation already wrote.
+//
+// Both deadlines come from the ROW, not from the freshly derived pair: the
+// winning rotation is what the row records, and this leg only reproduces
+// its answer. Reading the pair here would report a window the store never
+// stored.
 func (h *APIAuthHandler) refreshRetryResponse(row *store.APIToken, pair auth.MintedBearerPair) refreshResponse {
 	if row.ExpiresAt == nil {
 		return refreshInternalError(fmt.Errorf("API token %q has no access expiration", row.ID))
 	}
+	if row.RefreshExpiresAt == nil {
+		return refreshInternalError(fmt.Errorf("API token %q has no refresh expiration", row.ID))
+	}
+	now := h.now()
 	return refreshTokenResponse(
 		row.ID,
 		pair.AccessBearer,
 		pair.RefreshBearer,
-		remainingExpiresIn(*row.ExpiresAt, h.now()),
+		remainingExpiresIn(*row.ExpiresAt, now),
+		remainingExpiresIn(*row.RefreshExpiresAt, now),
+		row.AdminScope,
 	)
 }
 
@@ -380,13 +470,44 @@ func (h *APIAuthHandler) refresh(ctx context.Context, parsed parsedRefreshBearer
 	}
 
 	now := h.now()
+	// The refresh window is clipped to the credential's absolute lifetime,
+	// measured from created_at. Without the clip every rotation would push
+	// the window a full RefreshTokenTTL forward, so a CLI that refreshes
+	// weekly would keep ONE browser consent alive for ever -- and the CLI
+	// now does refresh, so the clip is what limits it.
+	refreshTTL := auth.RefreshWindowFor(row.CreatedAt, now)
+	if refreshTTL <= 0 {
+		// Revoke the ROW, not only the cache. Every other caller of
+		// BearerRevoked reaches it on a row the store already revoked --
+		// the validator revokes on a confirmed reuse, and a revoked or
+		// expired row is refused before it gets here. This leg is the one
+		// that decides a credential is dead by itself, so it must also
+		// record it: BearerRevoked evicts the cached credential and closes
+		// its channels, and leaves revoked_at NULL. Without the write the
+		// access token keeps authenticating until its own expiry, up to an
+		// hour after the hub told the CLI the credential was finished, and
+		// the row keeps listing as live in Preferences.
+		if _, err := h.store.APITokens().Revoke(ctx, row.ID); err != nil {
+			slog.ErrorContext(ctx, "could not revoke the credential that reached its maximum lifetime",
+				"token_id", row.ID, "err", err)
+		}
+		h.lifecycle.BearerRevoked(auth.BearerKindAPI, row.ID)
+		return refreshOAuthError(http.StatusUnauthorized, "invalid_grant",
+			"this credential reached its maximum lifetime; run `leapmux control auth login` again")
+	}
+	// Both windows are clipped to the SAME ceiling. Bearer validation reads
+	// expires_at alone, so an unclipped access token outlives the absolute
+	// lifetime this leg just enforced: the last rotation before the ceiling
+	// wrote a full hour past it, and the credential kept authenticating for
+	// that hour after the hub had already answered "this credential reached
+	// its maximum lifetime".
 	pair := h.validator.DeriveRefreshBearerPair(
 		auth.BearerKindAPI,
 		row.ID,
 		parsed.secretHash,
 		now,
-		auth.AccessTokenTTL,
-		auth.RefreshTokenTTL,
+		auth.AccessWindowFor(row.CreatedAt, now),
+		refreshTTL,
 	)
 
 	if retry {
@@ -422,11 +543,16 @@ func (h *APIAuthHandler) refresh(ctx context.Context, parsed parsedRefreshBearer
 	// the row remains valid (with more lifetime) under the newly derived secret.
 	h.lifecycle.BearerRotatedExtending(auth.BearerKindAPI, row.ID, pair.AccessExpiresAt)
 
+	// Both deadlines come from the pair, because RotateRefresh just wrote it:
+	// here the pair IS the row. now is the instant the pair was derived
+	// from, so the two reported windows and the stored ones agree exactly.
 	return refreshTokenResponse(
 		row.ID,
 		pair.AccessBearer,
 		pair.RefreshBearer,
-		remainingExpiresIn(pair.AccessExpiresAt, h.now()),
+		remainingExpiresIn(pair.AccessExpiresAt, now),
+		remainingExpiresIn(pair.RefreshExpiresAt, now),
+		row.AdminScope,
 	)
 }
 
@@ -439,13 +565,14 @@ func (h *APIAuthHandler) recoverRefreshCASMiss(ctx context.Context, parsed parse
 		h.lifecycle.BearerRevoked(auth.BearerKindAPI, row.ID)
 		return refreshOAuthError(http.StatusUnauthorized, "invalid_grant", "token revoked")
 	}
+	now := h.now()
 	pair := h.validator.DeriveRefreshBearerPair(
 		auth.BearerKindAPI,
 		row.ID,
 		parsed.secretHash,
-		h.now(),
-		auth.AccessTokenTTL,
-		auth.RefreshTokenTTL,
+		now,
+		auth.AccessWindowFor(row.CreatedAt, now),
+		auth.RefreshWindowFor(row.CreatedAt, now),
 	)
 	return h.refreshRetryResponse(row, pair)
 }
@@ -518,15 +645,26 @@ func (h *APIAuthHandler) handleRevoke(w http.ResponseWriter, r *http.Request) {
 
 func (h *APIAuthHandler) issueAPIToken(
 	ctx context.Context,
-	userID userid.UserID,
-	clientType, clientName string,
-	consumeGrant func(tx store.Store) error,
-) (*apiTokenResponse, error) {
-	tokenID := id.Generate()
-	pair := h.validator.MintBearerPair(auth.BearerKindAPI, tokenID, h.now(), auth.AccessTokenTTL, auth.RefreshTokenTTL)
+	grant consentedGrant,
+) (*apiTokenResponse, *store.User, error) {
+	userID := grant.userID
+	now := h.now()
+	// Rotating, always: a consent leg mints the credential a person will keep
+	// using, and the short access token plus a refresh leg is what limits a
+	// stolen credential file to one hour of use without the refresh secret.
+	minted, err := mintAPIToken(h.validator, mintedByConsentGrant(grant.id), now, apiTokenMint{
+		UserID:     userID,
+		ClientType: "cli",
+		ClientName: grant.deviceName,
+		AdminScope: grant.adminScope,
+		Rotating:   true,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
 	var user *store.User
-	err := h.store.RunInUserAuthTransaction(ctx, userID, func(tx store.Store) error {
-		if err := consumeGrant(tx); err != nil {
+	err = h.store.RunInUserAuthTransaction(ctx, userID, func(tx store.Store) error {
+		if err := grant.consume(tx); err != nil {
 			return err
 		}
 		var err error
@@ -534,29 +672,29 @@ func (h *APIAuthHandler) issueAPIToken(
 		if err != nil {
 			return fmt.Errorf("query token user: %w", err)
 		}
-		if err := tx.APITokens().Create(ctx, store.CreateAPITokenParams{
-			ID:               tokenID,
-			UserID:           userID,
-			ClientType:       clientType,
-			ClientName:       clientName,
-			SecretHash:       pair.AccessHash,
-			RefreshHash:      pair.RefreshHash,
-			ExpiresAt:        &pair.AccessExpiresAt,
-			RefreshExpiresAt: &pair.RefreshExpiresAt,
-		}); err != nil {
+		if err := tx.APITokens().Create(ctx, minted.Params); err != nil {
 			return fmt.Errorf("create api token: %w", err)
 		}
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	return &apiTokenResponse{
-		AccessToken:  pair.AccessBearer,
-		RefreshToken: pair.RefreshBearer,
-		ExpiresIn:    remainingExpiresIn(pair.AccessExpiresAt, h.now()),
-		TokenID:      tokenID,
-		UserID:       userID.String(),
-		Username:     user.Username,
-	}, nil
+		AccessToken:      minted.Pair.AccessBearer,
+		RefreshToken:     minted.RefreshBearer(),
+		ExpiresIn:        remainingExpiresIn(minted.Pair.AccessExpiresAt, h.now()),
+		RefreshExpiresIn: minted.RefreshExpiresIn(h.now()),
+		TokenID:          minted.TokenID,
+		UserID:           userID.String(),
+		Username:         user.Username,
+		AdminScope:       grant.adminScope,
+	}, user, nil
+}
+
+// notifyTokenIssued supplies this handler's mailer to the shared notice. See
+// notifyCredentialIssued, which both mint surfaces call.
+func (h *APIAuthHandler) notifyTokenIssued(ctx context.Context, user *store.User, deviceName string, adminScope bool) {
+	// The owner performed this consent in their own browser.
+	notifyCredentialIssued(ctx, h.mail, h.renderer, user, deviceName, adminScope, false)
 }

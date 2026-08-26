@@ -9,7 +9,7 @@ import { useViewportBelow } from '~/hooks/useViewportBelow'
 import { createAdminSettingsStore } from '~/stores/adminSettings.store'
 import { breakpoints } from '~/styles/tokens'
 import { NAV_GROUPS } from './navGroups'
-import { groupRowsByNav, occupiedNavGroups } from './navRows'
+import { groupRowsByNav, navIdsWhere, occupiedNavGroups } from './navRows'
 import * as styles from './PreferencesDialog.css'
 import { PreferencesNav } from './PreferencesNav'
 import { PreferencesSearch } from './PreferencesSearch'
@@ -19,7 +19,11 @@ import { breadcrumb, buildSearchIndex, matchSettings } from './search'
 import { SettingsPanel } from './SettingsPanel'
 
 interface PreferencesDialogProps {
-  /** The category id to open on (a NAV_GROUPS id; 'appearance' by convention). */
+  /**
+   * The category id to open on (a NAV_GROUPS id). An id whose group is hidden
+   * — Account in solo mode — falls back to the first visible one, so a caller
+   * never has to know which sections this deployment has.
+   */
   category: string
   /**
    * How many times a caller asked for this dialog. See `openPreferences`:
@@ -47,9 +51,9 @@ export const PreferencesDialog: Component<PreferencesDialogProps> = (props) => {
   const [selected, setSelected] = createSignal(untrack(() => props.category))
   // A deep link may re-fire while the dialog is open (the app menu, or the
   // shortcut, while it is visible); follow it. `openSeq` is tracked BESIDE
-  // the category because every entry point passes 'appearance': a repeat
-  // request writes the same string, which notifies nothing, so the category
-  // alone left the dialog on whatever section the user last picked.
+  // the category because every entry point asks for the same section: a
+  // repeat request writes the same string, which notifies nothing, so the
+  // category alone left the dialog on whatever section the user last picked.
   createEffect(on(
     () => [props.category, props.openSeq] as const,
     ([category]) => setSelected(category),
@@ -102,15 +106,21 @@ export const PreferencesDialog: Component<PreferencesDialogProps> = (props) => {
    * group whose restart rows are all hidden has nothing in it that needs a
    * restart, so marking it would be false. A group with no rows at all
    * cannot hold one, so the occupancy test is not repeated here.
+   *
+   * `elevationGroups` beneath answers the same question for the elevation
+   * window, from the same rows, through the same helper.
    */
-  const restartGroups = createMemo(() => {
-    const ids = new Set<string>()
-    for (const [navId, rows] of rowsByGroup()) {
-      if (rows.some(row => row.descriptor.restart))
-        ids.add(navId)
-    }
-    return ids
-  })
+  const restartGroups = createMemo(() => navIdsWhere(rowsByGroup(), row => row.descriptor.restart === true))
+
+  /**
+   * The nav ids whose group holds at least one VISIBLE row the hub refuses
+   * without a recently proven factor.
+   *
+   * The sibling of `restartGroups`, from the same rows and by the same rule,
+   * so the two marks cannot be derived differently. The panel shows the
+   * verified-session state at the top of these groups.
+   */
+  const elevationGroups = createMemo(() => navIdsWhere(rowsByGroup(), row => row.descriptor.needsElevation === true))
 
   /**
    * Both row sources join one search index, built from the SAME rows the
@@ -256,6 +266,7 @@ export const PreferencesDialog: Component<PreferencesDialogProps> = (props) => {
             <SettingsPanel
               rows={activeRows()}
               restartGroup={restartGroups().has(activeGroup()?.id ?? '')}
+              elevationGroup={elevationGroups().has(activeGroup()?.id ?? '')}
               writeError={activeGroup()?.admin ? adminStore.state.writeError : null}
             />
           </Show>

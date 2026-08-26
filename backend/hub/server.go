@@ -561,12 +561,19 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	mux.Handle("/ws/channel", channelRelay)
 
 	// OAuth HTTP endpoints.
-	oauthHandler := service.NewOAuthHandler(st, cfg, setMgr, ks)
+	oauthHandler := service.NewOAuthHandler(st, cfg, setMgr, lifecycle, ks)
 	oauthHandler.RegisterRoutes(mux)
 
 	// CLI auth HTTP endpoints (PKCE local-redirect + RFC 8628 device code).
-	apiAuthHandler := service.NewAPIAuthHandler(st, tokenValidator, lifecycle, func() string {
-		return settings.BaseURL(setMgr.Snapshot(context.Background()), cfg.Listen)
+	apiAuthHandler := service.NewAPIAuthHandler(service.APIAuthHandlerDeps{
+		Store:     st,
+		Validator: tokenValidator,
+		Lifecycle: lifecycle,
+		HubURL: func() string {
+			return settings.BaseURL(setMgr.Snapshot(context.Background()), cfg.Listen)
+		},
+		Mail:     mailSender,
+		Renderer: mailRenderer,
 	})
 	apiAuthHandler.RegisterRoutes(mux)
 
@@ -631,11 +638,19 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		// its own request handler.
 		settings.WithAfterReset(captcha.AltchaKey.Name(), captchaMgr.EnsureProvisioned),
 	)
-	adminSettingsSvc := service.NewAdminSettingsService(setMgr, cfg)
+	adminSettingsSvc := service.NewAdminSettingsService(setMgr, cfg, st)
 	adminSettingsPath, adminSettingsHandler := leapmuxv1connect.NewAdminSettingsServiceHandler(adminSettingsSvc, connectOpts)
 	mux.Handle(adminSettingsPath, adminSettingsHandler)
 
-	adminUserSvc := service.NewAdminUserService(st, tokenValidator, lifecycle, workerEffects, setMgr)
+	adminUserSvc := service.NewAdminUserService(service.AdminUserServiceDeps{
+		Store:         st,
+		Settings:      setMgr,
+		Validator:     tokenValidator,
+		Lifecycle:     lifecycle,
+		WorkerEffects: workerEffects,
+		Mail:          mailSender,
+		Renderer:      mailRenderer,
+	})
 	adminUserPath, adminUserHandler := leapmuxv1connect.NewAdminUserServiceHandler(adminUserSvc, connectOpts)
 	mux.Handle(adminUserPath, adminUserHandler)
 
@@ -643,7 +658,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	adminWorkerPath, adminWorkerHandler := leapmuxv1connect.NewAdminWorkerServiceHandler(adminWorkerSvc, connectOpts)
 	mux.Handle(adminWorkerPath, adminWorkerHandler)
 
-	adminOAuthSvc := service.NewAdminOAuthService(st, ks)
+	adminOAuthSvc := service.NewAdminOAuthService(st, ks, oauthHandler)
 	adminOAuthPath, adminOAuthHandler := leapmuxv1connect.NewAdminOAuthServiceHandler(adminOAuthSvc, connectOpts)
 	mux.Handle(adminOAuthPath, adminOAuthHandler)
 

@@ -38,6 +38,32 @@ describe('pillGroup', () => {
     expect(screen.getAllByRole('radio')).toHaveLength(3)
   })
 
+  it('selects without submitting the form it sits in', () => {
+    // A bare <button> inside a <form> defaults to type="submit". The pills
+    // shipped without an explicit type, so choosing "Passkey" on the login
+    // page SUBMITTED the login form with the username and nothing else: the
+    // submit button went to "Signing in..." and stayed there, and the E2E
+    // helper waited two minutes for a button that never re-enabled.
+    const onSelect = vi.fn()
+    const onSubmit = vi.fn((e: Event) => e.preventDefault())
+    render(() => (
+      <form onSubmit={onSubmit}>
+        <PillGroup
+          label="Theme"
+          options={options}
+          selected={v => v === null}
+          onSelect={onSelect}
+        />
+        <button type="submit">Go</button>
+      </form>
+    ))
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Dark' }))
+
+    expect(onSelect).toHaveBeenCalledWith('dark')
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
   it('marks exactly one option checked', () => {
     renderGroup('dark')
     expect(screen.getByRole('radio', { name: 'Dark' }).getAttribute('aria-checked')).toBe('true')
@@ -201,5 +227,71 @@ describe('pillGroup disabled', () => {
     for (const key of ['ArrowRight', 'ArrowLeft', 'Home', 'End'])
       fireEvent.keyDown(group, { key })
     expect(onSelect).not.toHaveBeenCalled()
+  })
+})
+
+/**
+ * ONE refused option, rather than the whole group.
+ *
+ * Shown-and-refused is for an option the reader can get back -- the Passkey
+ * pill on a page that is not secure. Hiding it leaves somebody whose only
+ * credential is a passkey at a dead end with nothing to read, so the pill
+ * stays and carries the reason.
+ */
+describe('pillGroup with one refused option', () => {
+  const reason = 'A browser runs a passkey only on a secure page.'
+
+  function renderGroup(current: string, onSelect = vi.fn()) {
+    render(() => (
+      <PillGroup
+        label="Sign-in method"
+        options={[
+          { value: 'password', label: 'Password' },
+          { value: 'passkey', label: 'Passkey', disabledReason: reason },
+        ]}
+        selected={v => v === current}
+        onSelect={onSelect}
+      />
+    ))
+    return onSelect
+  }
+
+  it('keeps the pill, its name, and the reason', () => {
+    renderGroup('password')
+    // The lookup itself is half of it: the reason must not become the name.
+    const passkey = screen.getByRole('radio', { name: 'Passkey' })
+    expect(passkey).toBeDisabled()
+    expect(passkey).not.toHaveAttribute('title')
+    const describedBy = passkey.getAttribute('aria-describedby')
+    expect(describedBy).toBeTruthy()
+    expect(document.getElementById(describedBy!)?.textContent).toBe(reason)
+  })
+
+  it('leaves the other pills live', () => {
+    const onSelect = renderGroup('passkey')
+    const password = screen.getByRole('radio', { name: 'Password' })
+    expect(password).toBeEnabled()
+    fireEvent.click(password)
+    expect(onSelect).toHaveBeenCalledWith('password')
+  })
+
+  // An arrow key that lands on a refused pill strands the group: the pill
+  // takes no tab stop, so focus goes nowhere and the next arrow moves relative
+  // to a value the user cannot reach.
+  it('skips the refused pill with the arrow keys', () => {
+    const onSelect = renderGroup('password')
+    fireEvent.keyDown(screen.getByRole('radiogroup', { name: 'Sign-in method' }), { key: 'ArrowRight' })
+    expect(onSelect).not.toHaveBeenCalledWith('passkey')
+  })
+
+  // The tab stop follows the SELECTION, and a selection that is itself refused
+  // has to hand it on -- a group with no tab stop is a group Tab cannot enter.
+  it('moves the tab stop off a refused selection', () => {
+    renderGroup('passkey')
+    expect(screen.getByRole('radio', { name: 'Password' })).toHaveAttribute('tabindex', '0')
+    expect(screen.getByRole('radio', { name: 'Passkey' })).toHaveAttribute('tabindex', '-1')
+    // Still CHECKED, because that is what the stored value says. The APG
+    // radiogroup rule allows an unchecked radio to hold the tab stop.
+    expect(screen.getByRole('radio', { name: 'Passkey' })).toHaveAttribute('aria-checked', 'true')
   })
 })

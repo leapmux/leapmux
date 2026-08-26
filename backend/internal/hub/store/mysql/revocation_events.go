@@ -155,6 +155,12 @@ func (s *revocationEventStore) MaxPublishedSeq(ctx context.Context) (int64, erro
 	return seq, mapErr(err)
 }
 
+// SessionWasRevoked implements store.RevocationEventStore.
+func (s *revocationEventStore) SessionWasRevoked(ctx context.Context, sessionID string) (bool, error) {
+	revoked, err := s.conn.q.SessionRevokedEventExists(ctx, sessionID)
+	return revoked, mapErr(err)
+}
+
 // mysqlRevocationNow reads the transaction's clock via SELECT NOW(3). The
 // result is already on the millisecond grid, so binding it back into
 // DATETIME(3) columns (revoked_at, tokens_revoked_at, updated_at) through the

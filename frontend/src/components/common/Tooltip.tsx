@@ -1,6 +1,7 @@
 import type { JSX } from 'solid-js'
 import { createEffect, createSignal, createUniqueId, getOwner, onCleanup, onMount, runWithOwner, Show } from 'solid-js'
 import { Portal } from 'solid-js/web'
+import { srOnly } from '~/styles/shared.css'
 import { holdIsOverMenu, touchReleaseOpensMenu } from './contextMenuGesture'
 import * as styles from './Tooltip.css'
 
@@ -60,6 +61,24 @@ type TooltipTarget = Element & {
   getAttribute: Element['getAttribute']
   setAttribute: Element['setAttribute']
   removeAttribute: Element['removeAttribute']
+}
+
+/**
+ * True when the browser will not dispatch a pointer event to this element.
+ *
+ * `:disabled` rather than the `disabled` property, so a control disabled by an
+ * enclosing `<fieldset>` counts as well. `aria-disabled` is the other half: it
+ * looks disabled and takes pointer events, so a tooltip on it needs no wrapper
+ * -- but the description below is still owed, because a screen reader reads it
+ * as unavailable and the reader deserves the reason either way.
+ */
+function targetRefusesPointerEvents(el: Element): boolean {
+  return el.matches(':disabled')
+}
+
+/** True when the element presents itself as unavailable, by either mechanism. */
+function targetIsDisabled(el: Element): boolean {
+  return targetRefusesPointerEvents(el) || el.getAttribute('aria-disabled') === 'true'
 }
 
 /** True if the element's computed overflow on either axis clips its content. */
@@ -148,6 +167,30 @@ function isTargetClipped(target: Element): boolean {
  *
  * This component solves the problem by rendering tooltip content into document.body
  * via a SolidJS Portal and positioning it with getBoundingClientRect().
+ *
+ * ## A DISABLED child
+ *
+ * It works on one, and that is the whole reason `title` is banned on a DOM
+ * element (see `no-restricted-syntax` in `eslint.config.ts`). A `title` long
+ * enough to state a reason BECOMES the control's accessible name, so a screen
+ * reader announces the remedy where the label belongs and every by-name lookup
+ * stops matching. Two mechanics carry the disabled case:
+ *
+ *   - The wrapper takes a real box and the hover listeners move onto it. A
+ *     disabled control dispatches no pointer event of its own, and the wrapper
+ *     is `display: contents` otherwise, which puts it outside the box tree and
+ *     therefore outside the hit test. The switch is reactive, because
+ *     `disabled` moves while the tooltip is mounted -- a button is disabled
+ *     while a request is in flight.
+ *   - An offscreen description sits beside the wrapper and stays in
+ *     `aria-describedby` for as long as the control is disabled. Nothing else
+ *     can reach a screen-reader user there: a disabled control takes no focus,
+ *     so `focusin` never fires and the tooltip can only ever open under a
+ *     pointer.
+ *
+ * The description is PLAIN TEXT, so it comes from `text`. A `content`-only
+ * tooltip on a disabled control has no description to give; pass `text`
+ * alongside it.
  */
 export function Tooltip(props: TooltipProps) {
   // Capture the reactive owner at setup. Tooltip's show/hide handlers run
@@ -162,7 +205,9 @@ export function Tooltip(props: TooltipProps) {
   let triggerWrapperEl: HTMLSpanElement | undefined
   let tooltipEl: HTMLDivElement | undefined
   const tooltipId = createUniqueId()
+  const descriptionId = `tooltip-desc-${tooltipId}`
   const [visible, setVisible] = createSignal(false)
+  const [disabledTarget, setDisabledTarget] = createSignal(false)
   const [pos, setPos] = createSignal({ top: 0, left: 0 })
   const [targetEl, setTargetEl] = createSignal<TooltipTarget | undefined>()
   let showTimer: ReturnType<typeof setTimeout> | undefined
@@ -187,6 +232,31 @@ export function Tooltip(props: TooltipProps) {
     showTimer = undefined
     hideTimer = undefined
   }
+
+  /**
+   * Follow the target's disabled state for as long as this tooltip lives.
+   *
+   * An observer rather than a one-time read at mount: `disabled` is reactive at
+   * nearly every call site -- a button is disabled while its request is in
+   * flight, and Preferences disables Add passkey the moment the hub's answer
+   * lands. A read at mount would leave the wrapper boxless for a control that
+   * became disabled a tick later, and the tooltip would then never open.
+   *
+   * The filter is what makes it cheap: an attribute observer with an explicit
+   * `attributeFilter` costs nothing while those attributes do not change.
+   */
+  createEffect(() => {
+    const target = targetEl()
+    if (!target) {
+      setDisabledTarget(false)
+      return
+    }
+    const sync = () => setDisabledTarget(targetIsDisabled(target))
+    sync()
+    const observer = new MutationObserver(sync)
+    observer.observe(target, { attributes: true, attributeFilter: ['disabled', 'aria-disabled'] })
+    onCleanup(() => observer.disconnect())
+  })
 
   const getTriggerRect = () => targetEl()?.getBoundingClientRect()
 
@@ -287,6 +357,12 @@ export function Tooltip(props: TooltipProps) {
     const target = targetEl()
     if (!target)
       return
+    // The element the listeners go on. It is the target itself in every
+    // ordinary case; for a control the browser refuses to dispatch to, it is
+    // the wrapper, which the effect below gives a box for exactly this reason.
+    // The RECT still comes from the target either way, so the tooltip points at
+    // the control rather than at the box around it.
+    const listenEl: Element = disabledTarget() && triggerWrapperEl ? triggerWrapperEl : target
 
     // Re-establish the Tooltip's reactive owner inside the event listener
     // callbacks. Without this, reading `props.content` (a lazy JSX getter)
@@ -318,18 +394,18 @@ export function Tooltip(props: TooltipProps) {
     // menu or state change. `click` fires for both mouse and keyboard.
     const handleDismiss = wrapInOwner(dismiss)
 
-    target.addEventListener('mouseenter', handleShow)
-    target.addEventListener('mouseleave', handleHide)
-    target.addEventListener('focusin', handleShow)
-    target.addEventListener('focusout', handleHide)
-    target.addEventListener('click', handleDismiss)
+    listenEl.addEventListener('mouseenter', handleShow)
+    listenEl.addEventListener('mouseleave', handleHide)
+    listenEl.addEventListener('focusin', handleShow)
+    listenEl.addEventListener('focusout', handleHide)
+    listenEl.addEventListener('click', handleDismiss)
 
     onCleanup(() => {
-      target.removeEventListener('mouseenter', handleShow)
-      target.removeEventListener('mouseleave', handleHide)
-      target.removeEventListener('focusin', handleShow)
-      target.removeEventListener('focusout', handleHide)
-      target.removeEventListener('click', handleDismiss)
+      listenEl.removeEventListener('mouseenter', handleShow)
+      listenEl.removeEventListener('mouseleave', handleHide)
+      listenEl.removeEventListener('focusin', handleShow)
+      listenEl.removeEventListener('focusout', handleHide)
+      listenEl.removeEventListener('click', handleDismiss)
     })
   })
 
@@ -345,9 +421,14 @@ export function Tooltip(props: TooltipProps) {
       .filter(id => id !== `tooltip-${tooltipId}`)
 
     createEffect(() => {
-      const nextIds = visible() && (props.text || props.content)
-        ? [...baseIds, `tooltip-${tooltipId}`]
-        : baseIds
+      const nextIds = [...baseIds]
+      // The offscreen description, for as long as the control is disabled. It
+      // is the only route to a screen-reader user there, so it does NOT wait
+      // for the tooltip to open -- nothing can open it without a pointer.
+      if (disabledTarget() && props.text)
+        nextIds.push(descriptionId)
+      if (visible() && (props.text || props.content))
+        nextIds.push(`tooltip-${tooltipId}`)
       if (nextIds.length > 0)
         target.setAttribute('aria-describedby', nextIds.join(' '))
       else
@@ -397,10 +478,18 @@ export function Tooltip(props: TooltipProps) {
         ref={(el) => {
           triggerWrapperEl = el
         }}
-        style={{ display: 'contents' }}
+        // `display: contents` everywhere it can be, so the wrapper adds no box
+        // to any layout that did not ask for one. A DISABLED child forces the
+        // exception: a boxless element is not in the hit test, so it would
+        // never see the pointer that the child itself refuses. `inline-flex`
+        // hugs the child and stays one item of whatever row it sits in.
+        style={{ display: disabledTarget() ? 'inline-flex' : 'contents' }}
       >
         {props.children}
       </span>
+      <Show when={disabledTarget() && props.text}>
+        <span id={descriptionId} class={srOnly}>{props.text}</span>
+      </Show>
       <Show when={visible() && (props.text || props.content)}>
         <Portal>
           <div

@@ -285,14 +285,14 @@ func (s *WorkerManagementService) ListWorkers(
 		return nil, err
 	}
 
-	// AdminPageParams, not a hand-rolled default: it applies the same page
+	// NormalizePageParams, not a hand-rolled default: it applies the same page
 	// default AND the same ceiling every other paginated handler uses. The
 	// hand-rolled form had no ceiling at all, so `page.limit = 100000`
 	// returned the caller's whole worker row set in one response.
 	reqPage := req.Msg.GetPage()
 	page, err := s.store.Workers().ListByUserID(ctx, store.ListWorkersByUserIDParams{
 		RegisteredBy: user.ID,
-		PageParams:   AdminPageParams(reqPage.GetCursor(), int64(reqPage.GetLimit())),
+		PageParams:   NormalizePageParams(reqPage.GetCursor(), int64(reqPage.GetLimit())),
 	})
 	if err != nil {
 		// A malformed or stale opaque cursor is bad client input, not a server

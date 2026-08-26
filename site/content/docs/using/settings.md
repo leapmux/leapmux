@@ -35,6 +35,7 @@ The categories:
 
 | Category | Covers |
 |---|---|
+| **Account** | Profile name, email, password, passkeys, linked accounts, command-line credentials. The section the dialog opens on, and hidden in solo mode. |
 | **Appearance** | Theme (palette + light/dark), terminal theme, syntax theme, diff view, UI fonts, monospace fonts. |
 | **Notifications** | Turn-end sound and volume, terminal OS notifications. |
 | **Chat & Composer** | Expand agent thoughts, show hidden messages, Enter key behavior, composer status bar. |
@@ -42,9 +43,8 @@ The categories:
 | **Files & Editors** | Preferred editor (desktop), reveal after download (desktop), hidden files in directory picker. |
 | **Keyboard Shortcuts** | The keybinding editor (see below). |
 | **Advanced** | Debug logging, trusted worker keys, reset all browser overrides. |
-| **Account** | Username, display name, email, password, linked OAuth accounts. Hidden in solo mode. |
 
-Administrators additionally see an **ADMINISTRATION** section in the navigation. These rows administer the hub itself, so the hub authenticates and validates every write. Most rows apply without a restart. The hub that serves the write applies the change at once, and another hub on the same database picks it up within ~30 seconds. The two rows in the ADMINISTRATION **Advanced** category are the exception; they apply only after a hub restart. Solo mode omits the categories a single-user hub has no use for:
+Administrators additionally see an **ADMINISTRATION** section in the navigation. These rows administer the hub itself, so the hub authenticates and validates every write — and every write needs a **verified session**, because several of these keys are the hub's own security controls. The first change in a sitting opens a **Verify your identity** dialog and then lands on its own; see [Session elevation](/docs/operating/security/#session-elevation). Most rows apply without a restart. The hub that serves the write applies the change at once, and another hub on the same database picks it up within ~30 seconds. The dialog re-reads the hub's own state after every accepted write, so a key that decides what the rest of the app offers converges immediately: publish the hub's URL and **Add passkey** in the **Account** section stops being disabled, with no page reload. The two rows in the ADMINISTRATION **Advanced** category are the exception; they apply only after a hub restart. Solo mode omits the categories a single-user hub has no use for:
 
 | Category | Covers | In solo mode |
 |---|---|---|
@@ -152,12 +152,16 @@ The **Keyboard Shortcuts** category is a table of every command with its default
 
 ## Account
 
-The Account category carries what the old Profile dialog managed. It is **not available in solo mode** (a solo deployment has one local identity). For the broader account lifecycle — sign-up, login, OAuth, email verification, sessions — see [Accounts & Authentication](/docs/using/accounts/).
+The Account category carries what the old Profile dialog managed, as one row per concern. It leads the navigation, and it is **not available in solo mode** (a solo deployment has one local identity). For the broader account lifecycle — sign-up, login, OAuth, email verification, sessions — see [Accounts & Authentication](/docs/using/accounts/).
 
-- **Username and display name** — a username is a lowercase slug, and `solo` is always reserved. A display name falls back to the username when empty.
+- **Profile** — your username and display name, saved together. A username is a lowercase slug, and `solo` is always reserved. A display name falls back to the username when empty.
 - **Email** — changing it may require verification (an operator-configured policy); a pending change shows a notice until confirmed.
 - **Password** — 8–128 printable ASCII characters, spaces included (see [Password requirements](/docs/using/accounts/#password-requirements)) with a live strength meter. Changing it signs out all your *other* sessions and revokes API/delegation tokens; your current session stays signed in. OAuth-only accounts can set a first password here.
-- **Linked accounts** — your linked OAuth/OIDC providers with **Unlink** buttons. You cannot unlink your only sign-in method without a password set.
+- **Passkeys** — the credentials registered to this account, with add, rename and remove. See [Managing passkeys in your profile](/docs/using/accounts/#managing-passkeys-in-your-profile).
+- **Linked accounts** — your linked OAuth/OIDC providers, each with an **Unlink** button. You cannot detach your only sign-in method without a password set.
+- **Command-line credentials** — every device signed in with `leapmux control auth login`, and **Revoke**.
+
+Four of those six rows need a **verified session**: email, password, passkeys, and linked accounts. Your profile name and your command-line credentials do not. While the session is verified, a panel at the top of the section says so and offers **End now**. Every **ADMINISTRATION** section takes the same rule and shows the same panel. See [Session elevation](/docs/operating/security/#session-elevation).
 
 ## How preferences persist
 

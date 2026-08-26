@@ -409,13 +409,19 @@ func TestFormActionAllowsTheCliLoopbackCallback(t *testing.T) {
 			// reports `http://[::1]:*` as an invalid source and ignores the
 			// entry. It is skipped HERE for the same reason the policy skips
 			// it, and the case below pins that it stays out.
+			// The SCHEME is derived too. A literal "http://" here was a
+			// fourth copy of the accepted set: isLoopbackURL accepts every
+			// scheme in httpsec.LoopbackSchemes, and a scheme the redirect
+			// accepts while the policy omits it is a CLI login that hangs.
 			for _, host := range httpsec.LoopbackHosts {
 				if strings.Contains(host, ":") {
 					continue
 				}
-				source := "http://" + host + ":*"
-				assert.Containsf(t, formAction, source,
-					"the CLI binds an ephemeral loopback port, so %q must be allowed", source)
+				for _, scheme := range httpsec.LoopbackSchemes {
+					source := scheme + "://" + host + ":*"
+					assert.Containsf(t, formAction, source,
+						"the CLI binds an ephemeral loopback port, so %q must be allowed", source)
+				}
 			}
 			// An entry the browser IGNORES is worse than none: it buys no
 			// permission and logs a console error on every page load, which is

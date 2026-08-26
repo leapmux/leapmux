@@ -10,18 +10,42 @@ import (
 )
 
 func (s *Suite) testUserPrefs(t *testing.T) {
+	// INSIDE a transaction, which is the only place this method answers.
+	// SELECT ... FOR UPDATE takes a row lock the enclosing transaction holds;
+	// with no transaction the lock is taken and released at once, so the
+	// caller reads a row it does not hold and every later write races what it
+	// just read. Every caller already went through RunInTransaction, and the
+	// store now refuses the shape that does not.
 	t.Run("GetPrefsForUpdate reads like GetPrefs; absent user is not found", func(t *testing.T) {
 		st := s.NewStore(t)
-
-		_, err := st.Users().GetPrefsForUpdate(ctx, "00000000000000000000000000")
-		assert.ErrorIs(t, err, store.ErrNotFound)
-
 		user := SeedUser(t, st, "prefs-for-update")
-		prefs, err := st.Users().GetPrefsForUpdate(ctx, user.ID)
-		require.NoError(t, err)
-		plain, err := st.Users().GetPrefs(ctx, user.ID)
-		require.NoError(t, err)
-		assert.Equal(t, plain, prefs)
+
+		require.NoError(t, st.RunInTransaction(ctx, func(tx store.Store) error {
+			_, err := tx.Users().GetPrefsForUpdate(ctx, "00000000000000000000000000")
+			assert.ErrorIs(t, err, store.ErrNotFound)
+
+			prefs, err := tx.Users().GetPrefsForUpdate(ctx, user.ID)
+			require.NoError(t, err)
+			plain, err := tx.Users().GetPrefs(ctx, user.ID)
+			require.NoError(t, err)
+			assert.Equal(t, plain, prefs)
+			return nil
+		}))
+	})
+
+	// And the refusal itself, in every dialect. A locking read on the pool is
+	// a caller mistake the store must not answer silently -- on the mysql
+	// dialect it is additionally unretryable, because conflictRetryDBTX
+	// cannot wrap QueryRowContext.
+	t.Run("a locking read outside a transaction is refused", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "prefs-no-tx")
+
+		_, err := st.Users().GetPrefsForUpdate(ctx, user.ID)
+		assert.ErrorIs(t, err, store.ErrInvalidArgument)
+
+		_, err = st.Settings().GetAllForUpdate(ctx)
+		assert.ErrorIs(t, err, store.ErrInvalidArgument)
 	})
 
 	t.Run("concurrent per-key updates both survive", func(t *testing.T) {

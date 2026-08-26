@@ -72,6 +72,15 @@ func TestAdminUserService_RevokeSessionClosesThatSessionsChannels(t *testing.T) 
 	}, time.Now().UTC())
 	require.NoError(t, err)
 	assert.Empty(t, sessions.Rows)
+
+	// The administrator's OWN event kind, not the sign-out one. A step-up
+	// mutation that queued on the user-auth lock reads exactly this to tell
+	// a revoke from a logout, and both paths delete the same row, so
+	// Sessions().Delete here would look identical and silently let that
+	// mutation commit. See store.RevocationEventKindSessionRevoked.
+	revoked, err := env.st.RevocationEvents().SessionWasRevoked(ctx, sessionID)
+	require.NoError(t, err)
+	assert.True(t, revoked, "an administrator's revoke must leave its own durable record")
 }
 
 // TestAdminUserService_RevokeSessionRefusalRunsNoEffect pins the other side
@@ -103,6 +112,7 @@ func TestAdminUserService_RevokeSessionRefusalRunsNoEffect(t *testing.T) {
 // leave the revoked one live in this hub's cache.
 func TestAdminUserService_RevokeAPITokenClosesThatBearer(t *testing.T) {
 	env := setupAdminUserTest(t)
+	env.elevateAdminSession(t)
 	ctx := context.Background()
 
 	userID := seedRevocableUser(t, env, "carol")

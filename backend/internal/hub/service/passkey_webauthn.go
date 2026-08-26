@@ -49,11 +49,31 @@ func (s *AuthService) webauthnService(ctx context.Context) (*hubwebauthn.Service
 	return newWebAuthnService(ctx, s.set, s.cfg, s.keystore, s.store)
 }
 
-// passkeysAvailable reports whether passkey ceremonies can run on this hub,
-// for the availability signal in GetSystemInfo.
-func (s *AuthService) passkeysAvailable(ctx context.Context) bool {
-	_, err := s.webauthnService(ctx)
-	return err == nil
+// passkeysRunnableForOrigin reports whether passkey ceremonies can run for a
+// browser at this origin. It feeds the passkey_enabled signal in
+// GetSystemInfo.
+//
+// TWO conditions, and the second is what a hub-wide answer could not carry.
+// The hub must be configured for passkeys (a keystore, and a usable hub URL),
+// and the request origin must be one the hub serves. A hub reached by an
+// address it does not publish runs no ceremony there: every Begin answers
+// ErrOriginNotAllowed. The hub-wide answer stayed true in that state, so the
+// sign-in form offered a Passkey option that could only fail, and the account
+// panel offered an Add passkey button that could only fail.
+//
+// Clients gate every passkey affordance on this ONE flag, so the flag must
+// answer the question those clients are really asking: can THIS page run a
+// ceremony?
+//
+// An empty origin keeps the hub-wide answer. A non-browser client sends no
+// Origin header and has no browser ceremony to mislead; RPConfig.RPIDForOrigin
+// states the same rule from its own side.
+//
+// "Runnable" rather than "available" throughout: the two words read as two
+// facts, and this is one.
+func (s *AuthService) passkeysRunnableForOrigin(ctx context.Context, origin string) bool {
+	wa, err := s.webauthnService(ctx)
+	return err == nil && wa.AllowsOrigin(origin)
 }
 
 // originFromRequest returns the browser origin of a Connect request. The
@@ -76,15 +96,15 @@ func originFromRequest[T any](req *connect.Request[T]) string {
 //
 // The class decides the CODE only. The rate-limit interceptor accounts on
 // the error SENTINEL (auth.ErrInvalidCurrentPassword and
-// auth.ErrInvalidReauthProof), never on the connect code, so nothing here
-// changes which attempts count against a budget.
+// auth.ErrInvalidElevationAssertion), never on the connect code, so nothing
+// here changes which attempts count against a budget.
 //
 // Each surface keeps its own message, log payload, and error wrap, because
 // those genuinely differ:
 // login answers a missing account and a passkey-less account identically
-// so the error is not an enumeration oracle, and reauth re-labels a
-// credential failure as auth.ErrInvalidReauthProof so the interceptor can
-// key on it.
+// so the error is not an enumeration oracle, and the elevation surface
+// re-labels a credential failure as auth.ErrInvalidElevationAssertion so the
+// interceptor can key on it.
 type webAuthnErrorClass int
 
 const (

@@ -326,7 +326,14 @@ describe('optionGroupMenuItems', () => {
     const items = screen.getAllByRole('menuitemradio')
     for (const item of items) {
       expect(item).toBeDisabled()
-      expect(item).toHaveAttribute('title', 'Controlled by the agent')
+      // Through the Tooltip's offscreen description, not `title`. On `title`
+      // the reason BECAME each item's accessible name, so a screen reader
+      // announced it in place of the option.
+      expect(item).not.toHaveAttribute('title')
+      const describedBy = item.getAttribute('aria-describedby')
+      expect(describedBy).toBeTruthy()
+      expect(document.getElementById(describedBy!)?.textContent)
+        .toBe('Controlled by the agent')
     }
 
     await fireEvent.click(items[1])
@@ -389,7 +396,7 @@ describe('optionGroupMenuItems', () => {
 
     const withTip = screen.getByTestId('effort-high').parentElement!
     expect(withTip.tagName).toBe('SPAN')
-    expect(withTip.getAttribute('style')).toContain('display:contents')
+    expect((withTip as HTMLElement).style.display).toBe('contents')
     expect(screen.getByTestId('effort-low').parentElement!.tagName).not.toBe('SPAN')
   })
 
@@ -419,7 +426,7 @@ describe('optionGroupMenuItems', () => {
     expect(readOnly).not.toHaveAttribute('title')
     const tip = readOnly.parentElement!
     expect(tip.tagName).toBe('SPAN')
-    expect(tip.getAttribute('style')).toContain('display:contents')
+    expect((tip as HTMLElement).style.display).toBe('contents')
   })
 
   it('falls back to the group label when the current value is not in the list', () => {
@@ -438,6 +445,6 @@ describe('optionGroupMenuItems', () => {
 
     const readOnly = screen.getByText('Model')
     expect(readOnly).not.toHaveAttribute('title')
-    expect(readOnly.parentElement!.getAttribute('style')).toContain('display:contents')
+    expect(readOnly.parentElement!.style.display).toBe('contents')
   })
 })

@@ -4,8 +4,11 @@
 -- database clock.
 
 -- name: CreateOAuthState :exec
-INSERT INTO oauth_states (state, provider_id, pkce_verifier, redirect_uri, expires_at)
-VALUES (?, ?, ?, ?, ?);
+-- purpose and session_id are written HERE, at the start of the flow, and the
+-- callback reads them back. A reauth leg that took either from the callback
+-- request could be aimed at a session of the caller's choosing.
+INSERT INTO oauth_states (state, provider_id, pkce_verifier, nonce_hash, redirect_uri, purpose, session_id, expires_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: GetOAuthState :one
 SELECT * FROM oauth_states WHERE state = ?;

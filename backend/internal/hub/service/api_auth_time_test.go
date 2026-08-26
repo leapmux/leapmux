@@ -16,10 +16,10 @@ func TestPreTouchPollOAuthError_ExpiresAtBoundary(t *testing.T) {
 	now := time.Date(2026, time.July, 10, 12, 0, 0, 0, time.UTC)
 	h := &APIAuthHandler{}
 
-	code, _, rejected := h.preTouchPollOAuthError(&store.DeviceAuthorization{ExpiresAt: now}, now)
+	body, rejected := h.preTouchPollOAuthError(&store.DeviceAuthorization{ExpiresAt: now}, now)
 
 	require.True(t, rejected)
-	assert.Equal(t, "expired_token", code)
+	assert.Equal(t, "expired_token", body.Error)
 }
 
 func TestPreTouchPollOAuthError_ThrottleUsesSuppliedNow(t *testing.T) {
@@ -34,10 +34,10 @@ func TestPreTouchPollOAuthError_ThrottleUsesSuppliedNow(t *testing.T) {
 		IntervalSeconds: 5,
 	}
 
-	code, _, rejected := h.preTouchPollOAuthError(row, now)
+	body, rejected := h.preTouchPollOAuthError(row, now)
 
 	require.True(t, rejected)
-	assert.Equal(t, "slow_down", code)
+	assert.Equal(t, "slow_down", body.Error)
 }
 
 // TestAPIAuthHandlerNow_DefaultsToTheWallClock pins the PRODUCTION arm of the
@@ -63,15 +63,15 @@ func TestAPIAuthHandlerNow_DefaultsToTheWallClock(t *testing.T) {
 // move with it disagree about the same request.
 func TestAPIAuthHandlerNow_UsesTheInjectedClock(t *testing.T) {
 	fixed := time.Date(2026, time.July, 10, 12, 0, 0, 0, time.UTC)
-	h := &APIAuthHandler{Now: func() time.Time { return fixed }}
+	h := &APIAuthHandler{clockSeam: clockSeam{Now: func() time.Time { return fixed }}}
 
 	assert.Equal(t, fixed, h.now())
 
 	// The seam reaches the decisions, not just the accessor: an expiry the
 	// injected clock has passed must read as expired even though the real
 	// clock is nowhere near it.
-	code, _, rejected := h.preTouchPollOAuthError(
+	body, rejected := h.preTouchPollOAuthError(
 		&store.DeviceAuthorization{ExpiresAt: fixed.Add(-time.Second)}, h.now())
 	require.True(t, rejected)
-	assert.Equal(t, "expired_token", code)
+	assert.Equal(t, "expired_token", body.Error)
 }

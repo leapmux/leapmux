@@ -1,11 +1,71 @@
 package testutil
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/leapmux/leapmux/internal/hub/auth"
+	"github.com/leapmux/leapmux/internal/hub/store"
+	"github.com/leapmux/leapmux/internal/util/userid"
 )
+
+// ElevateSession stamps a live step-up window on one session row, so a test
+// can reach a surface the elevation gate guards without running a ceremony.
+//
+// Through Sessions().Elevate, which is the statement production writes, so a
+// test cannot elevate a session into a shape the hub would never produce. It
+// asserts that exactly one row moved: a mistyped session id or the wrong
+// owner otherwise leaves the session un-elevated and the test then measures
+// the gate instead of the behavior behind it.
+func ElevateSession(t *testing.T, st store.Store, sessionID, userID string) {
+	t.Helper()
+
+	owner, ok := userid.New(userID)
+	require.True(t, ok, "a session owner id must be non-empty")
+
+	now := time.Now().UTC()
+	n, err := st.Sessions().Elevate(context.Background(), store.ElevateSessionParams{
+		SessionID:          sessionID,
+		UserID:             owner,
+		ElevationProvenAt:  now,
+		ElevationExpiresAt: now.Add(auth.ElevationWindow),
+	}, now)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, n, "the session must exist and belong to this user")
+}
+
+// ElevateAPIToken stamps a live step-up window on one command-line
+// credential, so a test can reach a gated surface without running the browser
+// ceremony. The api_tokens twin of ElevateSession, and it holds the same two
+// rules: it goes through the statement production writes, and it asserts that
+// exactly one row moved.
+//
+// Elevate BEFORE the credential authenticates anything. The production leg
+// evicts the cached UserInfo after it stamps the row (see
+// APIAuthHandler.elevateGrantedToken); this writes the row alone, so a
+// credential that already made a request in the same process keeps serving
+// the deadline it was cached with. A test that needs both arms mints two
+// credentials rather than reusing one.
+func ElevateAPIToken(t *testing.T, st store.Store, tokenID, userID string) {
+	t.Helper()
+
+	owner, ok := userid.New(userID)
+	require.True(t, ok, "a credential owner id must be non-empty")
+
+	now := time.Now().UTC()
+	n, err := st.APITokens().Elevate(context.Background(), store.ElevateAPITokenParams{
+		TokenID:            tokenID,
+		UserID:             owner,
+		ElevationProvenAt:  now,
+		ElevationExpiresAt: now.Add(auth.ElevationWindow),
+	}, now)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, n, "the credential must exist and belong to this user")
+}
 
 // AssertSessionLifetime pins the contract that both writers of a session expiry
 // keep -- CreateSession at the login and the interceptor at each slide.

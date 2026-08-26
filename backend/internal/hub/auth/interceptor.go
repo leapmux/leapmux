@@ -968,11 +968,29 @@ func (a *authInterceptor) currentPolicy() Policy {
 	return a.policy()
 }
 
+// EmailVerificationSatisfied reports whether a user may use the hub although
+// it requires a verified email address.
+//
+// This is the ONE place the administrator exemption is applied, and applying
+// it HERE rather than in the stored column is the whole point. email_verified
+// records whether somebody confirmed the address, which is a fact about the
+// address; "an administrator is never locked out of their own hub" is a fact
+// about the account. Writing the second into the first made an
+// administrator's unconfirmed address a valid self-service password-reset
+// target, because RequestPasswordReset reads the column and cannot take this
+// exemption -- the question it asks IS "did anybody confirm this address".
+//
+// Three gates share it: the interceptor's per-request check, and the two
+// login legs that decide whether to send the user to /verify-email.
+func EmailVerificationSatisfied(required, isAdmin, emailVerified bool) bool {
+	return !required || isAdmin || emailVerified
+}
+
 // enforceEmailVerification rejects a request from an unverified, non-admin user
 // unless the procedure is on the pre-verification allowlist. Shared by the
 // bearer and cookie auth paths so the gate cannot drift between them.
 func (a *authInterceptor) enforceEmailVerification(procedure string, userInfo *UserInfo, p Policy) error {
-	if !p.EmailVerificationRequired || userInfo.IsAdmin || userInfo.EmailVerified {
+	if EmailVerificationSatisfied(p.EmailVerificationRequired, userInfo.IsAdmin, userInfo.EmailVerified) {
 		return nil
 	}
 	if unverifiedAllowedProcedures[procedure] {
@@ -991,10 +1009,37 @@ func enforceAdmin(procedure string, userInfo *UserInfo) error {
 	// Deny by PREFIX, never by the map. See adminProcedurePrefix: the map
 	// is the rationale record, and a lookup miss there must not open a
 	// procedure that admin.proto declares.
-	if !strings.HasPrefix(procedure, adminProcedurePrefix) || userInfo.IsAdmin {
+	if !strings.HasPrefix(procedure, adminProcedurePrefix) {
 		return nil
 	}
-	return connect.NewError(connect.CodePermissionDenied, fmt.Errorf("administrator privileges are required"))
+	if !userInfo.IsAdmin {
+		return connect.NewError(connect.CodePermissionDenied, fmt.Errorf("administrator privileges are required"))
+	}
+	return enforceAdminScope(userInfo)
+}
+
+// enforceAdminScope refuses an administrator's API-token bearer that was not
+// minted with the admin scope.
+//
+// Administration is opt-in per credential, not implied by the account. A CLI
+// login mints a token that lives for months in a plaintext file; without the
+// scope, that file is a full hub-administration credential for every admin
+// who ever ran `leapmux control auth login`. With it, the ordinary login
+// mints a token that can do everything the user can do EXCEPT administer the
+// hub, and the administering token exists only when the user asked for it
+// and proved a factor to get it.
+//
+// A cookie carries no scope column and is admitted on IsAdmin alone: the web
+// admin UI is a session, and a session is already the thing an elevation
+// prompt can protect. A delegation bearer never reaches here -- the
+// interceptor refuses it before the admin gate.
+func enforceAdminScope(userInfo *UserInfo) error {
+	kind, _, isBearer := userInfo.Credential.Bearer()
+	if !isBearer || kind != BearerKindAPI || userInfo.CredentialAdminScope {
+		return nil
+	}
+	return connect.NewError(connect.CodePermissionDenied,
+		fmt.Errorf("this CLI credential was not granted hub administration; run `leapmux control auth login --admin` to mint one that was"))
 }
 
 // tryAuthenticateBearer attempts Bearer-token auth. Returns (info, true,

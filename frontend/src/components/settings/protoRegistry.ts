@@ -324,6 +324,18 @@ export function buildProtoRows(
           scope: 'hub',
           control,
           restart: desc.restart || undefined,
+          // EVERY hub row, unconditionally, because the hub gates every
+          // settings WRITE on an elevated session and not one key at a time:
+          // a hub setting is deployment-wide, and several of them are the
+          // hub's own security controls (sign-up, captcha, the rate limits,
+          // SMTP, and the public_url the passkey relying party derives from).
+          // See AdminSettingsService.requireElevatedWriter.
+          //
+          // Stated from the SCOPE rather than from a per-key wire flag for
+          // the same reason the hub states it once: a flag the hub would have
+          // to set on each descriptor is a flag a new key can be added
+          // without.
+          needsElevation: true,
           hidden: hideReasons.length === 0
             ? undefined
             : () => hideReasons.some(holds => holds()),

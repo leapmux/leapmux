@@ -89,16 +89,31 @@ func Open(cfg config.MySQLConfig) (store.Store, error) {
 		return nil, fmt.Errorf("migrate mysql: %w", err)
 	}
 
-	return &mysqlStore{
-		conn: &mysqlConn{
-			shared: &mysqlShared{
-				db:       sqlDB,
-				migrator: mig,
-			},
-			exec: sqlDB,
-			q:    gendb.New(sqlDB),
-		},
-	}, nil
+	return &mysqlStore{conn: newPoolConn(&mysqlShared{
+		db:       sqlDB,
+		migrator: mig,
+	}, sqlDB)}, nil
+}
+
+// newPoolConn builds the NON-transactional conn, and it is the only way to
+// build one.
+//
+// The pool's Queries must carry conflictRetryDBTX, so a statement the backend
+// aborts for a retryable conflict runs again instead of reaching the caller as
+// a failure it did not earn. That is a decision rather than plumbing, and a
+// second copy of it is one that can lose the wrapper with nothing to notice.
+// See conflict_retry.go.
+//
+// The pool arrives as an argument rather than through shared.db so a test can
+// supply a stand-in and prove the wiring, not merely the wrapper.
+// withTransaction builds its own conn from q.WithTx, which deliberately
+// carries no statement retry.
+func newPoolConn(shared *mysqlShared, db gendb.DBTX) *mysqlConn {
+	return &mysqlConn{
+		shared: shared,
+		exec:   db,
+		q:      gendb.New(conflictRetryDBTX{inner: db}),
+	}
 }
 
 func normalizeMySQLDSN(dsn string) (string, error) {
@@ -222,10 +237,31 @@ func (c *mysqlConn) inTx() bool {
 	return ok
 }
 
+// withTransaction runs fn in one transaction, and runs the WHOLE transaction
+// again when the backend aborts it for a retryable conflict.
+//
+// The retry wraps the unit of work rather than the statement that conflicted:
+// InnoDB rolls the whole transaction back when it picks a deadlock victim, so
+// re-running one statement would rejoin a transaction that no longer exists.
+// This is also what covers a single-row SELECT, which conflictRetryDBTX cannot
+// wrap -- see its type doc.
+//
+// So fn CAN RUN MORE THAN ONCE, and store.Store states that as the contract
+// its callers must meet: assigning a result through a captured variable is
+// fine, accumulating into one is not.
+//
+// An already-open transaction returns fn(c) untouched: the OUTERMOST call owns
+// the retry.
 func (c *mysqlConn) withTransaction(ctx context.Context, fn func(tx *mysqlConn) error) error {
 	if c.inTx() {
 		return fn(c)
 	}
+	return store.RetryOnConflict(ctx, isRetryableConflict, func() error { return c.runTransaction(ctx, fn) })
+}
+
+// runTransaction is one attempt: begin, run, commit, and roll back whatever
+// the attempt left behind.
+func (c *mysqlConn) runTransaction(ctx context.Context, fn func(tx *mysqlConn) error) error {
 	tx, err := c.shared.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
@@ -235,7 +271,10 @@ func (c *mysqlConn) withTransaction(ctx context.Context, fn func(tx *mysqlConn) 
 	txConn := &mysqlConn{
 		shared: c.shared,
 		exec:   tx,
-		q:      c.q.WithTx(tx),
+		// WithTx rebuilds Queries over the transaction, which deliberately
+		// drops the statement-level retry: inside a transaction the whole
+		// attempt is what repeats, and this function is what repeats it.
+		q: c.q.WithTx(tx),
 	}
 	if err := fn(txConn); err != nil {
 		return err

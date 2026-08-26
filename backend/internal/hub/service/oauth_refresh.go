@@ -30,7 +30,7 @@ func (h *OAuthHandler) StartTokenRefresh(ctx context.Context) {
 const oauthTokenRefreshLead = 5 * time.Minute
 
 func (h *OAuthHandler) refreshExpiringTokens(ctx context.Context) {
-	tokens, err := h.store.OAuthTokens().ListExpiring(ctx, time.Now().UTC().Add(oauthTokenRefreshLead))
+	tokens, err := h.store.OAuthTokens().ListExpiring(ctx, h.now().UTC().Add(oauthTokenRefreshLead))
 	if err != nil {
 		slog.Error("oauth refresh: list expiring tokens", "error", err)
 		return

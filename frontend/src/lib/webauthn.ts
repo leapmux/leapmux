@@ -1,3 +1,4 @@
+import type { PasskeyBlocker } from '~/lib/systemInfo'
 import {
   startAuthentication as browserStartAuthentication,
   startRegistration as browserStartRegistration,
@@ -53,6 +54,32 @@ export function passkeyErrorMessage(err: unknown, fallback: string): string | nu
   if (isPasskeyCeremonyCancelled(err))
     return null
   return formatErrorMessage(err, fallback)
+}
+
+/**
+ * Why a passkey surface is unavailable, in one sentence the reader can act
+ * on. `passkeyBlocker` decides the state; this states it.
+ *
+ * ONE text for each blocker, beside `passkeyErrorMessage`, because two
+ * surfaces already say it and they must say the same thing: the account
+ * panel disables Add passkey, and the step-up form explains a passkey-only
+ * account it cannot verify. Each sentence names the party that has to act,
+ * because the three remedies go to three different people -- the reader
+ * moves to a secure address, the reader changes browser, or an
+ * administrator publishes the address.
+ */
+export function passkeyBlockerMessage(blocker: PasskeyBlocker): string {
+  switch (blocker) {
+    case 'insecure-context':
+      return 'A browser runs a passkey only on a secure page. '
+        + 'Open the hub over HTTPS, or at a localhost address.'
+    case 'no-webauthn':
+      return 'This browser does not support passkeys. Use a browser with WebAuthn support.'
+    case 'origin-not-allowed':
+      return 'This hub does not run passkey ceremonies at this address. '
+        + 'Open the hub through its configured URL, or ask an administrator to publish '
+        + 'the address you reach it by.'
+  }
 }
 
 /**

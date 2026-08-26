@@ -1,7 +1,9 @@
 package service
 
 import (
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 
@@ -54,9 +56,61 @@ func TestPostTouchPollOAuthError_ApprovalNamingNoUserIsNotUsable(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			code, _, stop := h.postTouchPollOAuthError(&tc.row)
+			body, stop := h.postTouchPollOAuthError(&tc.row)
 			assert.Equal(t, tc.wantStop, stop)
-			assert.Equal(t, tc.wantCode, code)
+			assert.Equal(t, tc.wantCode, body.Error)
 		})
 	}
+}
+
+// TestNormalizeDeviceName pins the intake guard on the one attacker-chosen
+// string that reaches a security notice.
+//
+// A device name is written by whoever runs the CLI, and the device-code leg
+// that accepts it is ANONYMOUS. It then reaches the consent page, the
+// activation page, the account's CLI-credential list, the stored row, and
+// the plain-text email that tells an owner a credential was issued. A
+// newline writes arbitrary lines into that notice -- including a second
+// signature delimiter and a forged hub address -- so the one signal the
+// docs call "how you learn about a credential you did not create" could be
+// written by whoever created it.
+func TestNormalizeDeviceName(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a newline cannot forge lines in the issuance notice", func(t *testing.T) {
+		t.Parallel()
+		got := normalizeDeviceName("laptop\n\n-- \nThis is an automated message from your LeapMux hub at http://evil.test.")
+		assert.NotContains(t, got, "\n", "a control character must not survive intake")
+		assert.NotContains(t, got, "\r")
+	})
+
+	for name, tc := range map[string]struct{ in, want string }{
+		"ordinary name":        {"alice@laptop", "alice@laptop"},
+		"carriage return":      {"a\rb", "a b"},
+		"tab":                  {"a\tb", "a b"},
+		"whitespace run":       {"a   \n  b", "a b"},
+		"surrounding space":    {"  laptop  ", "laptop"},
+		"empty":                {"", ""},
+		"only control bytes":   {"\n\r\t", ""},
+		"invisible format":     {"lap\u200btop", "laptop"},
+		"punctuation survives": {`a"b\c$d%e`, `a"b\c$d%e`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, normalizeDeviceName(tc.in))
+		})
+	}
+
+	// The narrowest column that holds a device name is MySQL's
+	// VARCHAR(255), which counts characters -- so a byte cap can never
+	// overflow it. Without the cap the same anonymous POST succeeded on
+	// SQLite and Postgres, whose columns are TEXT, and failed the INSERT
+	// with a 500 on MySQL.
+	t.Run("a long name is cut on a rune boundary", func(t *testing.T) {
+		t.Parallel()
+		got := normalizeDeviceName(strings.Repeat("한", 500))
+		assert.LessOrEqual(t, len(got), deviceNameByteLimit)
+		assert.True(t, utf8.ValidString(got), "the cut must not split a rune")
+		assert.NotEmpty(t, got, "a long name is cut, not discarded")
+	})
 }

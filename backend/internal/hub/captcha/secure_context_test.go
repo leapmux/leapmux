@@ -2,10 +2,12 @@ package captcha
 
 import (
 	"context"
-	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/leapmux/leapmux/internal/hub/settings"
 )
 
 func TestIsSecureContextURL(t *testing.T) {
@@ -44,74 +46,124 @@ func TestIsSecureContextURL(t *testing.T) {
 	}
 }
 
-func TestClientPageURL(t *testing.T) {
-	t.Run("prefers Origin", func(t *testing.T) {
-		h := http.Header{}
-		h.Set("Origin", "http://192.168.1.5:8080")
-		h.Set("Referer", "https://ignored.example/path")
-		assert.Equal(t, "http://192.168.1.5:8080", clientPageURL(h))
+// TestIsSecureContextHost pins the set W3C Secure Contexts calls
+// potentially trustworthy, which is WIDER than httpsec.LoopbackHosts.
+func TestIsSecureContextHost(t *testing.T) {
+	t.Parallel()
+
+	for _, host := range []string{
+		"localhost", "LOCALHOST", "localhost.", "app.localhost", "app.localhost.",
+		"127.0.0.1", "127.0.0.2", "127.255.255.254", "::1", "[::1]",
+		"::ffff:127.0.0.1",
+	} {
+		assert.Truef(t, isSecureContextHost(host), "%q is potentially trustworthy", host)
+	}
+	for _, host := range []string{
+		"", "192.168.1.5", "10.0.0.1", "example.com", "notlocalhost",
+		"localhost.evil.test", "fe80::1", "0.0.0.0",
+	} {
+		assert.Falsef(t, isSecureContextHost(host), "%q is not potentially trustworthy", host)
+	}
+}
+
+func TestProviderRequiresSecureContext(t *testing.T) {
+	t.Parallel()
+
+	assert.True(t, providerRequiresSecureContext(ProviderAltcha))
+	assert.False(t, providerRequiresSecureContext(ProviderTurnstile))
+	assert.False(t, providerRequiresSecureContext(ProviderRecaptchaV3))
+}
+
+// TestPublishedAtLoopback pins the "is there an audience" half of the gate.
+//
+// It reads the WIDER loopback set on purpose, so 127.0.0.2 counts although
+// httpsec.LoopbackHosts refuses it for a CLI redirect: the question here is
+// what a browser can reach, not what a redirect may accept.
+func TestPublishedAtLoopback(t *testing.T) {
+	t.Parallel()
+
+	for _, raw := range []string{
+		"http://localhost", "http://localhost:4327", "https://localhost:4327",
+		"http://127.0.0.1:4327", "http://127.0.0.2:4327", "http://[::1]:4327",
+		"http://app.localhost:5173", "HTTP://LOCALHOST:4327",
+	} {
+		assert.Truef(t, publishedAtLoopback(raw), "%q publishes this machine only", raw)
+	}
+	for _, raw := range []string{
+		"https://hub.example.com", "http://192.168.1.5:8080", "http://10.0.0.1",
+		"", "not a url", "http://",
+	} {
+		assert.Falsef(t, publishedAtLoopback(raw), "%q is not a loopback publication", raw)
+	}
+}
+
+// TestAltchaCanProtectReadsOnlyHubConfig pins the two questions the gate
+// asks, and that neither of them is a request.
+func TestAltchaCanProtectReadsOnlyHubConfig(t *testing.T) {
+	ctx := context.Background()
+
+	// A real settings store per case: the gate reads a Snapshot, and
+	// building one any other way would test a fake.
+	snap := func(t *testing.T, publicURL string, secureCookies bool) *settings.Snapshot {
+		t.Helper()
+		e := newTestManagerPublishedAt(t, publicURL, false)
+		if secureCookies {
+			require.NoError(t, settings.KeySecureCookies.Set(ctx, e.set, true))
+		}
+		return e.set.Snapshot(ctx)
+	}
+
+	t.Run("public_url outranks TLS, in both directions", func(t *testing.T) {
+		assert.True(t, altchaCanProtect(snap(t, "https://hub.example.com", false)),
+			"a TLS-terminating proxy in front of a plain-HTTP LAN bind")
+		assert.False(t, altchaCanProtect(snap(t, "http://192.168.1.5:8080", true)),
+			"a published plain-HTTP LAN URL cannot run the widget, whatever secure_cookies says")
 	})
 
-	t.Run("falls back to Referer origin", func(t *testing.T) {
-		h := http.Header{}
-		h.Set("Referer", "http://192.168.1.5:8080/login?x=1")
-		assert.Equal(t, "http://192.168.1.5:8080", clientPageURL(h))
+	t.Run("a loopback publication has no audience to protect", func(t *testing.T) {
+		// The widget RUNS at either address. Neither one reaches past the
+		// operator's own machine, so requiring a proof of work there buys
+		// nothing and only makes the first-run form harder.
+		assert.False(t, altchaCanProtect(snap(t, "http://localhost:8080", false)))
+		assert.False(t, altchaCanProtect(snap(t, "https://127.0.0.1:8443", true)))
 	})
 
-	t.Run("ignores null Origin and uses Referer", func(t *testing.T) {
-		h := http.Header{}
-		h.Set("Origin", "null")
-		h.Set("Referer", "https://example.com/app")
-		assert.Equal(t, "https://example.com", clientPageURL(h))
-	})
-
-	t.Run("empty when neither is usable", func(t *testing.T) {
-		assert.Empty(t, clientPageURL(http.Header{}))
-		h := http.Header{}
-		h.Set("Origin", "not-a-url")
-		h.Set("Referer", "/relative")
-		assert.Empty(t, clientPageURL(h))
+	t.Run("with nothing published, TLS settles it", func(t *testing.T) {
+		assert.True(t, altchaCanProtect(snap(t, "", true)),
+			"a hub with a certificate is a hub somebody reaches")
+		// The case that made ALTCHA required on a page that could never
+		// solve it. A hub that publishes nothing and terminates no TLS
+		// serves plain HTTP, so the only browser with a secure context is
+		// one at loopback -- and that browser is the operator's own.
+		assert.False(t, altchaCanProtect(snap(t, "", false)))
 	})
 }
 
 func TestApplySecureContextGate(t *testing.T) {
-	altchaOn := Config{Provider: ProviderAltcha, Enabled: true}
-	turnstileOn := Config{Provider: ProviderTurnstile, Enabled: true}
-	altchaOff := Config{Provider: ProviderAltcha, Enabled: false}
+	t.Parallel()
 
-	t.Run("disables altcha on insecure HTTP", func(t *testing.T) {
-		got := applySecureContextGate(altchaOn, "http://192.168.1.5:8080")
+	altchaOn := Config{Enabled: true, Provider: ProviderAltcha}
+	altchaOff := Config{Enabled: false, Provider: ProviderAltcha}
+	turnstileOn := Config{Enabled: true, Provider: ProviderTurnstile}
+	recaptchaOn := Config{Enabled: true, Provider: ProviderRecaptchaV3}
+
+	t.Run("altcha stands down when it cannot run or has nobody to protect", func(t *testing.T) {
+		got := applySecureContextGate(altchaOn, false)
 		assert.False(t, got.Enabled)
-		assert.Equal(t, ProviderAltcha, got.Provider, "selection stays altcha for admin visibility")
+		assert.Equal(t, ProviderAltcha, got.Provider, "the gate flips Enabled only")
 	})
 
-	t.Run("keeps altcha on https and localhost http", func(t *testing.T) {
-		assert.True(t, applySecureContextGate(altchaOn, "https://example.com").Enabled)
-		assert.True(t, applySecureContextGate(altchaOn, "http://localhost:8080").Enabled)
-		assert.True(t, applySecureContextGate(altchaOn, "http://127.0.0.1").Enabled)
+	t.Run("altcha stays enabled on a published secure-context hub", func(t *testing.T) {
+		assert.True(t, applySecureContextGate(altchaOn, true).Enabled)
 	})
 
-	t.Run("never gates external providers", func(t *testing.T) {
-		assert.True(t, applySecureContextGate(turnstileOn, "http://192.168.1.5").Enabled)
-		recaptchaOn := Config{Provider: ProviderRecaptchaV3, Enabled: true}
-		assert.True(t, applySecureContextGate(recaptchaOn, "http://192.168.1.5").Enabled)
+	t.Run("the gate never restricts an external provider", func(t *testing.T) {
+		assert.True(t, applySecureContextGate(turnstileOn, false).Enabled)
+		assert.True(t, applySecureContextGate(recaptchaOn, false).Enabled)
 	})
 
-	t.Run("empty client URL leaves enablement alone", func(t *testing.T) {
-		assert.True(t, applySecureContextGate(altchaOn, "").Enabled)
-		assert.False(t, applySecureContextGate(altchaOff, "").Enabled)
-		assert.False(t, applySecureContextGate(altchaOff, "http://192.168.1.5").Enabled)
+	t.Run("a disabled config stays disabled", func(t *testing.T) {
+		assert.False(t, applySecureContextGate(altchaOff, true).Enabled)
+		assert.False(t, applySecureContextGate(altchaOff, false).Enabled)
 	})
-}
-
-func TestClientPageURLContextRoundTrip(t *testing.T) {
-	ctx := withClientPageURL(context.Background(), "http://192.168.1.5")
-	assert.Equal(t, "http://192.168.1.5", clientPageURLFromCtx(ctx))
-	assert.Empty(t, clientPageURLFromCtx(context.Background()))
-}
-
-func TestProviderRequiresSecureContext(t *testing.T) {
-	assert.True(t, providerRequiresSecureContext(ProviderAltcha))
-	assert.False(t, providerRequiresSecureContext(ProviderTurnstile))
-	assert.False(t, providerRequiresSecureContext(ProviderRecaptchaV3))
 }

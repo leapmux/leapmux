@@ -122,10 +122,15 @@ var cspDirectives = []string{
 
 // loopbackFormTargets are the redirect targets of the CLI consent form.
 //
-// DERIVED from httpsec.LoopbackHosts, which `isLoopbackURL` (hub/service) reads
-// as well, so the policy cannot state a different set from the one the redirect
-// accepts. The scheme is http because a loopback listener has no certificate,
-// and the port is a wildcard because the CLI binds an ephemeral one.
+// DERIVED from httpsec.LoopbackSchemes and httpsec.LoopbackHosts, which
+// `isLoopbackURL` (hub/service) reads as well, so the policy cannot state a
+// different set from the one the redirect accepts. The port is a wildcard
+// because the CLI binds an ephemeral one.
+//
+// Both schemes are stated. Today's CLI binds a plain-HTTP listener, but the
+// redirect rule accepts an https loopback callback from a hand-built client
+// as well, and a scheme the redirect accepts and the policy omits is the
+// outage this derivation exists to prevent.
 //
 // AN IPv6 LITERAL CANNOT BE STATED AT ALL, so `::1` is filtered out rather than
 // bracketed. CSP's `host-source` grammar has no production for one: Chromium
@@ -141,12 +146,14 @@ var cspDirectives = []string{
 // different questions, and this is the one place where what CSP can express is
 // narrower than what the redirect allows.
 var loopbackFormTargets = func() []string {
-	targets := make([]string, 0, len(httpsec.LoopbackHosts))
+	targets := make([]string, 0, len(httpsec.LoopbackHosts)*len(httpsec.LoopbackSchemes))
 	for _, host := range httpsec.LoopbackHosts {
 		if strings.Contains(host, ":") {
 			continue
 		}
-		targets = append(targets, "http://"+host+":*")
+		for _, scheme := range httpsec.LoopbackSchemes {
+			targets = append(targets, scheme+"://"+host+":*")
+		}
 	}
 	return targets
 }()

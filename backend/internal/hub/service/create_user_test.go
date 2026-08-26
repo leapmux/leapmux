@@ -218,7 +218,6 @@ func TestSetPendingEmailWithToken_RejectsAlreadyVerifiedEmail(t *testing.T) {
 
 	st := setupCreateUserTestDB(t)
 	ctx := context.Background()
-	sender := mail.NewStubSender()
 
 	// User A has verified email.
 	createSimpleUser(t, st, "user-a", "taken@example.com")
@@ -227,7 +226,7 @@ func TestSetPendingEmailWithToken_RejectsAlreadyVerifiedEmail(t *testing.T) {
 	userB := createSimpleUser(t, st, "user-b", "")
 
 	// User B tries to set pending_email to the already-verified address.
-	err := issuePendingEmailVerificationOrFail(ctx, st, sender, mail.Renderer{BaseURL: func() string { return "https://hub.example.test" }}, userB.ID, "taken@example.com")
+	_, err := mintPendingEmailVerification(ctx, st, userB.ID, "taken@example.com", time.Now())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "already in use")
 
@@ -246,8 +245,11 @@ func TestSetPendingEmailWithToken_StoresPendingForUnclaimedEmail(t *testing.T) {
 
 	user := createSimpleUser(t, st, "user-a", "")
 
-	err := issuePendingEmailVerificationOrFail(ctx, st, sender, mail.Renderer{BaseURL: func() string { return "https://hub.example.test" }}, user.ID, "free@example.com")
+	code, err := mintPendingEmailVerification(ctx, st, user.ID, "free@example.com", time.Now())
 	require.NoError(t, err)
+	require.True(t, deliverPendingEmailVerification(ctx, st, sender,
+		mail.Renderer{BaseURL: func() string { return "https://hub.example.test" }},
+		user.ID, "free@example.com", code))
 
 	// The row stays pending until the user submits a code via UserService.VerifyEmail.
 	updated, err := st.Users().GetByID(ctx, user.ID)
@@ -357,18 +359,25 @@ func TestCreateUserInTx_EnforcesTheAdminInvariants(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	// An admin is always email_verified in the database, whatever the
-	// caller passed: the stored flag is what keeps the auth interceptor's
-	// runtime IsAdmin exemption honest.
-	t.Run("an admin is always email_verified", func(t *testing.T) {
+	// An admin's email_verified is what the caller asked for, and NOT forced.
+	//
+	// The column records whether somebody confirmed the address, which is a
+	// fact about the address rather than a privilege of the account. Forcing
+	// it made an administrator's unconfirmed address a valid self-service
+	// password-reset target, because RequestPasswordReset reads the column
+	// and cannot take an admin exemption -- the question it asks IS "did
+	// anybody confirm this address". The login gate takes the exemption
+	// instead; see auth.EmailVerificationSatisfied.
+	t.Run("an admin's email_verified is not forced", func(t *testing.T) {
 		t.Parallel()
 		st := setupCreateUserTestDB(t)
 		user, code, err := createUserInTx(ctx, st, createUserTxParams{
-			username: "forced-admin", displayName: "Forced", isAdmin: true,
-			emailVerified: false, passwordHash: "hash", passwordSet: true,
+			username: "unforced-admin", displayName: "Unforced", isAdmin: true,
+			email: "admin@example.com", emailVerified: false,
+			passwordHash: "hash", passwordSet: true,
 		})
 		require.NoError(t, err)
-		assert.True(t, user.EmailVerified, "the caller's false must not survive")
+		assert.False(t, user.EmailVerified, "nobody confirmed this address, so the column says so")
 		assert.Empty(t, code, "no pending row, so no code")
 	})
 
@@ -386,8 +395,10 @@ func TestCreateUserInTx_EnforcesTheAdminInvariants(t *testing.T) {
 		})
 		require.NoError(t, err)
 		assert.Equal(t, "admin@example.com", user.Email)
-		assert.True(t, user.EmailVerified)
 		assert.Empty(t, user.PendingEmail, "there is nothing left to verify")
+		// The address moved, and nobody confirmed it: the column says so, and
+		// the login gate is what keeps the administrator signed in.
+		assert.False(t, user.EmailVerified)
 		// The returned code is what the caller keys its send on. An empty
 		// one means "no pending row was written", and the passkey first-user
 		// branch mailed a BLANK code -- and rolled the hub's only admin back

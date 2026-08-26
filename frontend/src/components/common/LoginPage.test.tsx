@@ -91,9 +91,21 @@ function renderLoginPage(initialPath = '/login') {
       <Route path="/login" component={LoginPage} />
       <Route path="/" component={() => <div data-testid="app-home" />} />
       <Route path="/verify-email" component={() => <div data-testid="verify-email-page" />} />
-      <Route path="/setup" component={() => <div data-testid="setup-page" />} />
     </MemoryRouter>
   ))
+}
+
+/**
+ * The reason a disabled control carries, read the way a screen reader gets it.
+ *
+ * <Tooltip> leaves an offscreen description in `aria-describedby` for as long
+ * as the control is disabled. It is NOT `title`: a reason long enough to be
+ * worth reading becomes the control's accessible name on `title`.
+ */
+function reasonOf(el: Element): string {
+  const describedBy = el.getAttribute('aria-describedby')
+  expect(describedBy).toBeTruthy()
+  return document.getElementById(describedBy!)?.textContent ?? ''
 }
 
 describe('loginPage', () => {
@@ -107,14 +119,15 @@ describe('loginPage', () => {
     mockLoginWithPasskey.mockResolvedValue({ verificationRequired: false, verificationEmailSent: false })
   })
 
-  // These three pin the bootstrap race. The system-info getters are plain
+  // These two pin the bootstrap race. The system-info getters are plain
   // module reads whose pre-fetch values are fabrications (soloMode = false,
-  // setupRequired = false), so sampling them before bootstrap resolves is
+  // signupEnabled = false), so sampling them before bootstrap resolves is
   // sampling a guess. This used to run in onMount, which fires once and never
   // re-checks: on any load that beat the RPC, a solo-mode visitor was stranded
   // on a credential form that cannot succeed, and the signup link was pinned
-  // off. The redirects must therefore wait for auth.loading() to clear and
-  // must still fire afterwards.
+  // off. The decision must therefore wait for auth.loading() to clear and must
+  // still happen afterwards.
+  //
   // Each of these models the getter faithfully: it answers the module's
   // fabricated default while bootstrap is in flight, and the truth afterwards.
   // Reading it early therefore yields the WRONG answer, not merely an early
@@ -133,17 +146,9 @@ describe('loginPage', () => {
     expect(await screen.findByTestId('app-home')).toBeInTheDocument()
   })
 
-  it('redirects to setup once bootstrap reports a fresh install', async () => {
-    setAuthLoading(true)
-
-    renderLoginPage()
-    expect(screen.queryByTestId('setup-page')).not.toBeInTheDocument()
-
-    setSystemInfoMock({ setupRequired: true })
-    setAuthLoading(false)
-
-    expect(await screen.findByTestId('setup-page')).toBeInTheDocument()
-  })
+  // The fresh-install redirect is NOT here any more: `SetupGate` answers it
+  // above the router outlet, for every address rather than only this one. See
+  // SetupGate.test.tsx.
 
   it('shows the signup link once bootstrap enables it', async () => {
     setSystemInfoMock({ signupEnabled: false })
@@ -495,7 +500,7 @@ describe('loginPage', () => {
     expect(await screen.findByTestId('verify-email-page')).toBeInTheDocument()
   })
 
-  it('always shows the password and passkey method chooser', async () => {
+  it('shows the password and passkey method chooser when a ceremony can run', async () => {
     renderLoginPage()
     await vi.waitFor(() => {
       expect(screen.getByLabelText('Username')).toBeInTheDocument()
@@ -503,6 +508,47 @@ describe('loginPage', () => {
     expect(screen.getByRole('radiogroup', { name: 'Sign-in method' })).toBeInTheDocument()
     expect(screen.getByRole('radio', { name: 'Password' })).toBeInTheDocument()
     expect(screen.getByRole('radio', { name: 'Passkey' })).toBeInTheDocument()
+  })
+
+  // The other arm of the same branch, which nothing exercised. An option that
+  // can only fail is worse than no option: it costs a click, a browser prompt,
+  // and a raw error.
+  //
+  // The HUB's refusal is a property of the deployment, identical for every
+  // visitor, so the option goes.
+  it('drops the passkey option when the hub does not serve this origin', async () => {
+    setSystemInfoMock({ passkeyBlocker: 'origin-not-allowed' })
+    renderLoginPage()
+    await vi.waitFor(() => {
+      expect(screen.getByLabelText('Username')).toBeInTheDocument()
+    })
+    expect(screen.queryByRole('radio', { name: 'Passkey' })).not.toBeInTheDocument()
+    // The password arm survives, which is the point: the form still signs
+    // somebody in rather than losing its chooser with the option.
+    expect(screen.getByRole('radio', { name: 'Password' })).toBeInTheDocument()
+    expect(screen.getByLabelText('Password')).toBeInTheDocument()
+  })
+
+  // The BROWSER's refusal is a property of where the reader is standing, and
+  // they can move. So the option STAYS and carries the reason: hiding it
+  // leaves somebody whose only credential is a passkey at a dead end with
+  // nothing to read.
+  it.each([
+    ['the page is not secure', 'insecure-context' as const, /secure page/i],
+    ['the browser has no WebAuthn', 'no-webauthn' as const, /does not support passkeys/i],
+  ])('keeps the passkey option and says why when %s', async (_case, blocker, expected) => {
+    setSystemInfoMock({ passkeyBlocker: blocker })
+    renderLoginPage()
+    await vi.waitFor(() => {
+      expect(screen.getByLabelText('Username')).toBeInTheDocument()
+    })
+
+    // The lookup itself is half the assertion: the pill keeps its own name.
+    const passkey = screen.getByRole('radio', { name: 'Passkey' })
+    expect(passkey).toBeDisabled()
+    expect(passkey).not.toHaveAttribute('title')
+    expect(reasonOf(passkey)).toMatch(expected)
+    expect(screen.getByLabelText('Password')).toBeInTheDocument()
   })
 
   it('shows forgot password when email is enabled and password sign-in is selected', async () => {

@@ -6,9 +6,9 @@ import { createSignal, Show } from 'solid-js'
 import { authClient } from '~/api/clients'
 import { CaptchaSection } from '~/components/common/CaptchaSection'
 import { PillGroup } from '~/components/common/PillGroup'
-import { createAuthMethodSelection } from '~/lib/authMethodSelection'
+import { authMethodOptions, createAuthMethodSelection } from '~/lib/authMethodSelection'
 import { createCaptchaForm } from '~/lib/captchaForm'
-import { isEmailEnabled, isPasskeyEnabled } from '~/lib/systemInfo'
+import { isEmailEnabled } from '~/lib/systemInfo'
 import { sanitizeDisplayName, sanitizeSlug, validateEmail, validateReservedUsername } from '~/lib/validate'
 import { passkeyErrorMessage, startRegistration } from '~/lib/webauthn'
 import { errorText } from '~/styles/shared.css'
@@ -37,11 +37,6 @@ interface SignupFormProps {
    * setup flow. Defaults to false for public signup paths.
    */
   allowAdminUsername?: boolean
-  /**
-   * When true, only password signup is offered (first-admin /setup). Passkey
-   * signup is refused by the server during initial setup.
-   */
-  passwordOnly?: boolean
   onSuccess: (resp: SignupResult) => void
 }
 
@@ -195,17 +190,19 @@ export const SignupForm: Component<SignupFormProps> = (props) => {
             placeholder={emailRequired() ? undefined : 'Optional: enables password reset'}
           />
         </label>
-        <Show when={!props.passwordOnly}>
-          <PillGroup
-            label="Sign-up method"
-            options={[
-              { value: 'password' as const, label: 'Password' },
-              ...(isPasskeyEnabled() ? [{ value: 'passkey' as const, label: 'Passkey' }] : []),
-            ]}
-            selected={v => effectiveMethod() === v}
-            onSelect={methodSelection.select}
-          />
-        </Show>
+        {/*
+          Offered on every sign-up surface, `/setup` included: the hub accepts
+          a passkey for the first administrator too, and creates that account
+          as an admin exactly as password sign-up does. What the pills show is
+          decided by `authMethodOptions`, which drops the passkey option on a
+          hub that runs no ceremonies at this origin.
+        */}
+        <PillGroup
+          label="Sign-up method"
+          options={authMethodOptions()}
+          selected={v => effectiveMethod() === v}
+          onSelect={methodSelection.select}
+        />
         <Show when={effectiveMethod() === 'password'}>
           <PasswordFields
             password={password}

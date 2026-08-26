@@ -18,13 +18,13 @@ import (
 )
 
 const (
-	sessionTTL = 5 * time.Minute
-	// reauthProofTTL must span the whole step-up window, not one ceremony:
-	// the proof is minted at FinishPasskeyReauth (browser prompt one) and is
-	// only consumed at the Finish of the management ceremony that follows
-	// (browser prompt two). Two interactive OS prompts plus both RPC legs
-	// routinely exceed two minutes.
-	reauthProofTTL = 10 * time.Minute
+	// CeremonyTTL is how long one WebAuthn ceremony stays valid, from the
+	// Begin that mints its session to the Finish that consumes it. It is
+	// exported because a step-up window outside this package must outlast a
+	// whole ceremony: a window shorter than one ceremony expires while a
+	// ceremony the hub still accepts is on screen, and the user answers the
+	// biometric prompt only to have the mutation refuse.
+	CeremonyTTL = 5 * time.Minute
 )
 
 // SignupDraft is stored in webauthn_sessions.payload_json during passkey signup.
@@ -41,7 +41,7 @@ type SignupDraft struct {
 }
 
 // ceremonyMeta is stored in webauthn_sessions.payload_json for the
-// login, register, and reauth kinds so Finish rebuilds the RP ID the
+// login, register, and elevation kinds so Finish rebuilds the RP ID the
 // ceremony started with.
 type ceremonyMeta struct {
 	RPID string `json:"rpId"`
@@ -60,19 +60,38 @@ func NewService(rp RPConfig, st store.Store, ks *keystore.Keystore) (*Service, e
 	if ks == nil {
 		return nil, fmt.Errorf("webauthn service requires keystore")
 	}
-	cfg := &gowebauthn.Config{
+	w, err := newGoWebAuthn(rp)
+	if err != nil {
+		return nil, fmt.Errorf("create webauthn: %w", err)
+	}
+	return &Service{w: w, rp: rp, store: st, ks: ks}, nil
+}
+
+// newGoWebAuthn builds a go-webauthn instance for one relying party. The
+// default instance and every per-ceremony instance are built here, so the
+// relying-party parameters have a single home: a parameter added for one is
+// added for both.
+//
+// It takes the RP ID from rp.RPID and nowhere else. A separate rpID
+// parameter beside a struct that already carries one lets a caller pass two
+// values that disagree, and the ceremony would then run under one while the
+// rest of the parameters described the other; ceremonyWebAuthn substitutes
+// the value on its own copy of rp instead.
+//
+// Building from the exported fields is also what keeps the library's own
+// validation running. gowebauthn.Config carries an unexported `validated`
+// flag that New() sets on success, and a struct copy carries that flag with
+// it -- so New() on a COPY short-circuits and never checks the RP ID the
+// copy substituted. A fresh literal leaves the flag false.
+func newGoWebAuthn(rp RPConfig) (*gowebauthn.WebAuthn, error) {
+	return gowebauthn.New(&gowebauthn.Config{
 		RPID:          rp.RPID,
 		RPDisplayName: rp.RPDisplayName,
 		RPOrigins:     rp.RPOrigins,
 		AuthenticatorSelection: protocol.AuthenticatorSelection{
 			UserVerification: protocol.VerificationRequired,
 		},
-	}
-	w, err := gowebauthn.New(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("create webauthn: %w", err)
-	}
-	return &Service{w: w, rp: rp, store: st, ks: ks}, nil
+	})
 }
 
 // ceremonyWebAuthn returns the go-webauthn instance for a ceremony RP ID.
@@ -84,9 +103,9 @@ func (s *Service) ceremonyWebAuthn(rpID string) (*gowebauthn.WebAuthn, error) {
 	if rpID == "" || rpID == s.rp.RPID {
 		return s.w, nil
 	}
-	cfg := *s.w.Config
-	cfg.RPID = rpID
-	w, err := gowebauthn.New(&cfg)
+	ceremonyRP := s.rp
+	ceremonyRP.RPID = rpID
+	w, err := newGoWebAuthn(ceremonyRP)
 	if err != nil {
 		return nil, fmt.Errorf("create webauthn for rp id %q: %w", rpID, err)
 	}
@@ -96,9 +115,13 @@ func (s *Service) ceremonyWebAuthn(rpID string) (*gowebauthn.WebAuthn, error) {
 // BeginSignUp starts a passkey-only signup ceremony. origin is the browser
 // origin of the request; it must be one the hub allows.
 func (s *Service) BeginSignUp(ctx context.Context, draft SignupDraft, origin string) (sessionID string, optionsJSON string, rpID string, err error) {
-	if draft.UserID == "" {
-		draft.UserID = id.Generate()
-	}
+	// The user id is allocated HERE, and a value the caller put in the draft
+	// is discarded. It becomes the WebAuthn user handle and then, at Finish,
+	// the users row primary key -- so a caller-chosen value chooses a new
+	// account's primary key. Overwriting unconditionally makes that mistake
+	// impossible instead of merely unmade: today's one caller leaves the
+	// field empty, and the next one cannot get it wrong.
+	draft.UserID = id.Generate()
 	draft.RPID, err = s.ceremonyRPIDForOrigin(origin)
 	if err != nil {
 		return "", "", "", err
@@ -136,7 +159,7 @@ func (s *Service) FinishLogin(ctx context.Context, sessionID, credentialJSON str
 	return s.validateAssertion(ctx, sessionID, KindLogin, "", credentialJSON)
 }
 
-// beginAssertion runs the shared begin flow for login and reauth: resolve
+// beginAssertion runs the shared begin flow for login and elevation: resolve
 // the ceremony RP ID from the request origin, refuse an account with no
 // passkeys, mint assertion options, and persist the per-user ceremony
 // session (persistSession replaces any prior open row of the same kind, so
@@ -172,7 +195,19 @@ func (s *Service) ceremonyRPIDForOrigin(origin string) (string, error) {
 	return rpID, nil
 }
 
-// validateAssertion runs the assertion pipeline shared by login and reauth:
+// AllowsOrigin reports whether a browser at this origin can run a ceremony
+// here. It applies exactly the test every Begin applies.
+//
+// It exists so a surface can answer the question BEFORE it offers a passkey
+// affordance. Every Begin already refuses an unserved origin, but a refusal
+// arrives after the user pressed a control the hub was never going to honor,
+// and the message it carries is the only thing that says why.
+func (s *Service) AllowsOrigin(origin string) bool {
+	_, allowed := s.rp.RPIDForOrigin(origin)
+	return allowed
+}
+
+// validateAssertion runs the assertion pipeline shared by login and elevation:
 // consume the ceremony session, bind the session's user (an empty
 // expectedUserID derives it from the session row; otherwise the session must
 // belong to that user), load the credential set with the ceremony's RP ID,
@@ -316,36 +351,21 @@ func (s *Service) VerifyRegistration(ctx context.Context, userID, sessionID, cre
 	return verifyAttestation(w, waUser, *sessionData, credentialJSON)
 }
 
-// BeginReauth starts a passkey assertion for step-up authentication.
-func (s *Service) BeginReauth(ctx context.Context, userID, origin string) (sessionID string, optionsJSON string, rpID string, err error) {
-	return s.beginAssertion(ctx, KindReauth, userID, origin)
+// BeginElevation starts a passkey assertion for step-up authentication.
+func (s *Service) BeginElevation(ctx context.Context, userID, origin string) (sessionID string, optionsJSON string, rpID string, err error) {
+	return s.beginAssertion(ctx, KindElevation, userID, origin)
 }
 
-// FinishReauth validates a passkey assertion and mints a single-use reauth proof.
-func (s *Service) FinishReauth(ctx context.Context, userID, sessionID, credentialJSON string) (string, error) {
-	if _, _, err := s.validateAssertion(ctx, sessionID, KindReauth, userID, credentialJSON); err != nil {
-		return "", err
-	}
-	now := time.Now().UTC()
-
-	proofID := id.Generate()
-	proofSession := &gowebauthn.SessionData{UserID: userIDBytes(userID)}
-	enc, err := s.encryptSessionData(proofID, proofSession)
-	if err != nil {
-		return "", err
-	}
-	if err := s.store.WebAuthnSessions().Create(ctx, store.CreateWebAuthnSessionParams{
-		ID:          proofID,
-		Kind:        KindReauthProof,
-		UserID:      userID,
-		PayloadJSON: "{}",
-		SessionData: enc,
-		ExpiresAt:   now.Add(reauthProofTTL),
-		CreatedAt:   now,
-	}); err != nil {
-		return "", err
-	}
-	return proofID, nil
+// FinishElevation validates the step-up assertion. It mints nothing: the
+// caller stamps the elevation onto the session row, which is the only place
+// the elevation state lives.
+//
+// A single-use proof returned from here would be a second home for that
+// state, with its own TTL, its own replay window and its own consume path,
+// and it would say no more than the session row says directly.
+func (s *Service) FinishElevation(ctx context.Context, userID, sessionID, credentialJSON string) error {
+	_, _, err := s.validateAssertion(ctx, sessionID, KindElevation, userID, credentialJSON)
+	return err
 }
 
 // StoreCredential encrypts and persists a passkey credential row through the
@@ -423,17 +443,19 @@ func verifyAttestation(w *gowebauthn.WebAuthn, waUser *user, sessionData gowebau
 }
 
 func (s *Service) persistSession(ctx context.Context, kind, userID, payload string, session *gowebauthn.SessionData, options any) (sessionID, optionsJSON string, err error) {
-	// Login, register, and reauth ceremonies are per-user. Replace any
-	// prior open row of the same kind so repeated Begin calls cannot
-	// accumulate encrypted sessions until TTL cleanup. Signup has no
-	// users FK yet (the account does not exist), so it cannot replace
-	// by user; captcha on BeginSignUp limits anonymous accumulation.
-	if userID != "" {
-		switch kind {
-		case KindLogin, KindRegister, KindReauth:
-			if err := s.store.WebAuthnSessions().DeleteByUserAndKind(ctx, userID, kind); err != nil {
-				return "", "", fmt.Errorf("clear prior %s ceremony: %w", kind, err)
-			}
+	// Every PER-USER ceremony replaces any prior open row of the same kind,
+	// so repeated Begin calls cannot accumulate encrypted sessions until TTL
+	// cleanup. The rule is stated as the property rather than as a list of
+	// today's kinds: a list is what the next per-user kind is forgotten from,
+	// and the accumulation it causes is invisible until the table grows.
+	//
+	// Signup is the one kind that cannot replace by user, because the account
+	// does not exist yet and there is no users FK to key on; captcha on
+	// BeginSignUp limits anonymous accumulation instead. A blank userID is
+	// the same condition seen from the caller's side.
+	if userID != "" && kind != KindSignup {
+		if err := s.store.WebAuthnSessions().DeleteByUserAndKind(ctx, userID, kind); err != nil {
+			return "", "", fmt.Errorf("clear prior %s ceremony: %w", kind, err)
 		}
 	}
 	sessionID = id.Generate()
@@ -456,7 +478,7 @@ func (s *Service) persistSession(ctx context.Context, kind, userID, payload stri
 		UserID:      userID,
 		PayloadJSON: payloadJSON,
 		SessionData: enc,
-		ExpiresAt:   now.Add(sessionTTL),
+		ExpiresAt:   now.Add(CeremonyTTL),
 		CreatedAt:   now,
 	}); err != nil {
 		return "", "", fmt.Errorf("store session: %w", err)

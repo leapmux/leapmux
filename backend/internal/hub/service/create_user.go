@@ -74,27 +74,29 @@ type createUserTxParams struct {
 //
 // Every account-creation invariant belongs HERE, not in one caller. A rule
 // that a caller applies is a rule the next flavor omits: the admin
-// email_verified force and the competing-pending-email clear both lived in
-// CreateUser, and the OAuth and passkey sign-ups that call this routine
+// pending-email promotion and the competing-pending-email clear both lived
+// in CreateUser, and the OAuth and passkey sign-ups that call this routine
 // directly went past both.
 func createUserInTx(ctx context.Context, st store.Store, opt createUserTxParams) (*store.User, string, error) {
-	// Admins are always email_verified=true in the database, whatever the
-	// caller passed: the stored flag is what keeps the auth interceptor's
-	// runtime IsAdmin exemption honest, and UpdateUser's lowering verb
-	// refuses for admin accounts on the same invariant.
+	// An admin never waits behind a pending verification row: the address
+	// moves to the email column instead, which is what /setup already does
+	// through signUpSetupMode. Nothing would ever prompt them to supply one,
+	// because loginVerificationOutcome short-circuits on IsAdmin.
 	//
-	// An admin also never waits behind a pending verification row. The
-	// address moves to the email column instead, which is what /setup
-	// already does through signUpSetupMode. Committing an admin with
-	// email='' and email_verified=1 would leave the hub's only
-	// administrator with no address to reset a password to, and
-	// loginVerificationOutcome short-circuits on IsAdmin, so nothing would
-	// ever prompt them to supply one.
-	if opt.isAdmin {
-		opt.emailVerified = true
-		if opt.email == "" && opt.pendingEmail != "" {
-			opt.email, opt.pendingEmail = opt.pendingEmail, ""
-		}
+	// email_verified is NOT forced here, and the difference matters. The
+	// column says whether somebody CONFIRMED this address, and that is a
+	// fact about the address rather than a privilege of the account. Forcing
+	// it made an administrator's unconfirmed address a valid self-service
+	// password-reset target, because RequestPasswordReset reads the column
+	// and has no admin exemption -- and it cannot have one, since the
+	// question it asks is exactly "has anybody confirmed this address".
+	//
+	// What the force protected is the LOGIN gate, and that gate derives the
+	// exemption for itself: the auth interceptor and both passkey login legs
+	// call auth.EmailVerificationSatisfied, so an administrator is never
+	// locked out by an unconfirmed address.
+	if opt.isAdmin && opt.email == "" && opt.pendingEmail != "" {
+		opt.email, opt.pendingEmail = opt.pendingEmail, ""
 	}
 
 	var user *store.User
@@ -171,8 +173,8 @@ func createUserInTx(ctx context.Context, st store.Store, opt createUserTxParams)
 // concurrent reads for one user each saw an empty list and each wrote a full
 // set, and the sidebar rendered two of every section.
 func CreateUser(ctx context.Context, st store.Store, p CreateUserParams) (*store.User, error) {
-	// The admin email_verified force and the competing-pending-email clear
-	// both live in createUserInTx, so every sign-up flavor gets them.
+	// The admin pending-email promotion and the competing-pending-email
+	// clear both live in createUserInTx, so every sign-up flavor gets them.
 	user, _, err := createUserInTx(ctx, st, createUserTxParams{
 		username:      p.Username,
 		displayName:   p.DisplayName,
@@ -393,26 +395,58 @@ func ClearCompetingPendingEmails(ctx context.Context, st store.Store, email, own
 // re-send to and the account permanently unverifiable. Email-change
 // callers that surface the failure to the user inline can use
 // issuePendingEmailVerificationOrFail instead.
-func issuePendingEmailVerification(ctx context.Context, st store.Store, sender mail.Sender, renderer mail.Renderer, userID, email string) (bool, error) {
-	if err := CheckEmailAvailable(ctx, st, email, userID); err != nil {
+func issuePendingEmailVerification(ctx context.Context, st store.Store, sender mail.Sender, renderer mail.Renderer, userID, email string, now time.Time) (bool, error) {
+	storedCode, err := mintPendingEmailVerification(ctx, st, userID, email, now)
+	if err != nil {
 		return false, err
 	}
+	return deliverPendingEmailVerification(ctx, st, sender, renderer, userID, email, storedCode), nil
+}
+
+// mintPendingEmailVerification performs the two STORE steps and nothing
+// else, and returns the code it minted.
+//
+// Split from the send so a caller that needs the mint INSIDE a transaction
+// can take one. RequestEmailChange does: it moves the account's recovery
+// address, so it must re-read the acting authority under the user-auth lock
+// -- and an SMTP exchange must never hold that lock, which on SQLite is the
+// single database writer (the same trade auth.Login makes for Argon2).
+//
+// ErrVerificationCooldown stays HERE, on the mint, because the conditional
+// write is what carries it. That refusal is the one thing that stops an
+// email-change RPC from being an open relay: the address is caller-supplied,
+// so an unconditional mint sends a message per request to any address the
+// caller names.
+func mintPendingEmailVerification(ctx context.Context, st store.Store, userID, email string, now time.Time) (string, error) {
+	if err := CheckEmailAvailable(ctx, st, email, userID); err != nil {
+		return "", err
+	}
 	storedCode := verifycode.Generate()
-	expiresAt := time.Now().Add(pendingEmailExpiry).UTC()
+	expiresAt := now.Add(pendingEmailExpiry).UTC()
 	minted, err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
 		ID:                    userID,
 		PendingEmail:          email,
 		PendingEmailToken:     storedCode,
 		PendingEmailExpiresAt: &expiresAt,
-		CooldownCutoff:        verificationMintCutoff(),
+		CooldownCutoff:        mintCutoff(now, pendingEmailExpiry),
 	})
 	if err != nil {
-		return false, fmt.Errorf("set pending email: %w", err)
+		return "", fmt.Errorf("set pending email: %w", err)
 	}
 	if !minted {
-		return false, ErrVerificationCooldown
+		return "", ErrVerificationCooldown
 	}
+	return storedCode, nil
+}
 
+// deliverPendingEmailVerification sends a minted code and reports whether the
+// relay took it. On a failed send it drops the undelivered CODE and KEEPS the
+// pending address; see clearUndeliveredVerificationCode.
+//
+// st is the plain store, never a transaction: this runs AFTER the mint
+// commits, so the repair is its own write on the failure path rather than a
+// rollback of a mint the caller may want to keep.
+func deliverPendingEmailVerification(ctx context.Context, st store.Store, sender mail.Sender, renderer mail.Renderer, userID, email, storedCode string) bool {
 	if err := sender.Send(ctx, renderer.VerificationEmail(email, storedCode, pendingEmailExpiry)); err != nil {
 		if clearErr := clearUndeliveredVerificationCode(ctx, st, userID); clearErr != nil {
 			slog.WarnContext(ctx, "clear undelivered verification code after failed send",
@@ -420,27 +454,15 @@ func issuePendingEmailVerification(ctx context.Context, st store.Store, sender m
 		}
 		slog.WarnContext(ctx, "verification email send failed; dropped the code and kept the pending address for retry",
 			"user_id", userID, "email", email, "err", err)
-		return false, nil
+		return false
 	}
-	return true, nil
+	return true
 }
 
 // ErrVerificationCooldown reports a conditional mint that the resend
 // cooldown refused. It is a sentinel, not a message match: the RPC layer
 // maps it to ResourceExhausted, and infrastructure failures stay Internal.
 var ErrVerificationCooldown = errors.New("a verification code was sent recently; wait before requesting another")
-
-// verificationMintCutoff is the instant a previous code must have expired
-// at or before for a fresh mint to land.
-//
-// The derivation: issued_at is the previous expiry minus the constant code
-// TTL, so "issued at least the cooldown ago" is "previous expiry at or
-// before now + (TTL - cooldown)". Both instants are on the app clock, the
-// clock that wrote the expiry. Its twin is the password-reset cutoff in
-// RequestPasswordReset.
-func verificationMintCutoff() time.Time {
-	return time.Now().UTC().Add(pendingEmailExpiry - resendVerificationCooldown)
-}
 
 // clearUndeliveredVerificationCode drops a code that the relay refused, and
 // KEEPS the address it was for.
@@ -458,20 +480,4 @@ func verificationMintCutoff() time.Time {
 // compare cannot see one.
 func clearUndeliveredVerificationCode(ctx context.Context, st store.Store, userID string) error {
 	return st.Users().ClearPendingEmailCode(ctx, userID)
-}
-
-// issuePendingEmailVerificationOrFail is like
-// issuePendingEmailVerification but returns an error on a failed send so
-// the email-change flow can surface the failure to the user inline. The
-// pending address survives either way, so Resend retries the change that
-// the relay refused instead of losing the requested target.
-func issuePendingEmailVerificationOrFail(ctx context.Context, st store.Store, sender mail.Sender, renderer mail.Renderer, userID, email string) error {
-	sent, err := issuePendingEmailVerification(ctx, st, sender, renderer, userID, email)
-	if err != nil {
-		return err
-	}
-	if !sent {
-		return fmt.Errorf("send verification email failed")
-	}
-	return nil
 }

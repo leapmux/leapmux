@@ -229,16 +229,17 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
       class={styles.plusPopover}
       data-testid="composer-plus-popover"
     >
-      <button
-        role="menuitem"
-        data-testid="composer-attach-file"
-        disabled={!props.canAttach || !!props.disabledReason}
-        title={attachDisabledReason()}
-        onClick={() => props.onAttachFile()}
-      >
-        <Icon icon={Paperclip} size="xs" />
-        Attach file…
-      </button>
+      <Tooltip text={attachDisabledReason()}>
+        <button
+          role="menuitem"
+          data-testid="composer-attach-file"
+          disabled={!props.canAttach || !!props.disabledReason}
+          onClick={() => props.onAttachFile()}
+        >
+          <Icon icon={Paperclip} size="xs" />
+          Attach file…
+        </button>
+      </Tooltip>
 
       <Show when={hasMiddleSection()}><hr /></Show>
 

@@ -13,6 +13,7 @@ import {
   cleanupWorkspaceViaAPI,
   createWorkspaceViaAPI,
   deleteWorkspaceViaAPI,
+  elevateSessionViaAPI,
   enableSignupViaAPI,
   listOnlineWorkerIDsViaAPI,
   loginViaAPI,
@@ -346,6 +347,12 @@ export const processTest = base.extend<
     // Create the admin. A hub with no users at all accepts one sign-up and
     // makes it an administrator, so this account needs no open-signup setting.
     const adminToken = await signUpViaAPI(hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD, TEST_ADMIN_DISPLAY_NAME)
+
+    // Every hub-settings write demands an elevated session, and the very next
+    // line is one. A sign-up mints a session no more elevated than a fresh
+    // login does, so this fixture elevates for the same reason
+    // `mintCLITokenForAdmin` does.
+    await elevateSessionViaAPI(hubUrl, adminToken, TEST_ADMIN_PASSWORD)
 
     // Every LATER sign-up does. This is a plain `leapmux hub`, not `leapmux
     // dev`, and `signup_enabled` resolves from its stored row with a closed

@@ -95,6 +95,11 @@ message GetCurrentUserResponse {
   // to restart from. Carrying it here makes the cooldown derivable at
   // every render instead of surviving exactly one navigation.
   EmailVerificationStatus email_verification = 2;
+  // When the session's step-up elevation lapses; unset when the session is
+  // not elevated. A timestamp rather than a boolean, for the reason
+  // ElevateSessionResponse.elevation_expires_at gives: a boolean decided at
+  // bootstrap is wrong for the rest of the page's life.
+  google.protobuf.Timestamp elevation_expires_at = 3;
 }
 
 message SignUpRequest {
@@ -125,11 +130,42 @@ message User {
   repeated LinkedOAuthProvider oauth_providers = 8;
   bool password_set = 9;
   int32 passkey_count = 10;
+  // Whether the hub accepts a step-up from one of this account's linked
+  // providers.
+  //
+  // ACCOUNT-level, and here rather than on each link, because the rule reads
+  // the account: a provider may prove a step-up exactly when the account
+  // holds no password and no passkey, so the provider is its sign-in
+  // credential. Reported per link, one boolean became N copies a client had
+  // to agree with itself about, and a test already pinned a mixture the hub
+  // cannot emit.
+  //
+  // The hub decides it because the hub ENFORCES it, at both legs of the OAuth
+  // re-authentication flow. A client that spelled the same rule out was a
+  // second source of truth for an authorization decision, and the two drifted
+  // apart at the first change to either side.
+  bool may_elevate_through_a_provider = 11;
 }
 
 message LinkedOAuthProvider {
   string id = 1;
   string name = 2;
+  reserved 4; // was: may_elevate (now User.may_elevate_through_a_provider)
+  // Whether an administrator has this provider enabled.
+  //
+  // A DISABLED provider's link is still reported, and that is the point. The
+  // link survives an administrator disabling the provider, and the owner must
+  // still be able to see it and detach it -- this list is the only feed for
+  // the Linked Accounts section, so filtering a disabled row out of it left
+  // an account holding a login method the user could neither use nor remove,
+  // while UnlinkOAuthProvider's own last-login-method guard still counted it.
+  //
+  // What a disabled link must NOT do is appear as a step-up arm: both OAuth
+  // legs answer "provider disabled" with a 403, so offering it sends the
+  // browser out of the app to a bare refusal. The verification screen
+  // therefore requires BOTH this flag and
+  // User.may_elevate_through_a_provider.
+  bool enabled = 3;
 }
 
 message GetSystemInfoRequest {}
@@ -187,11 +223,19 @@ message GetSystemInfoResponse {
   // empty for altcha. The frontend pairs it with captcha_provider to load
   // the right widget.
   string captcha_site_key = 15;
-  // True when passkey ceremonies can run on this hub: a keystore is
-  // configured and the hub has a usable browser origin (public_url or a
-  // TCP listener). Frontend gating: when false, the passkey sign-in and
-  // sign-up options are hidden — every Begin would answer
-  // FailedPrecondition, so showing them would mislead users.
+  // True when passkey ceremonies can run for THE BROWSER THAT ASKED: a
+  // keystore is configured, the hub has a usable browser origin (public_url
+  // or a TCP listener), and the request's Origin header names an origin the
+  // hub serves. A caller that sends no Origin header (a non-browser client)
+  // gets the hub-wide answer, because it has no browser ceremony to mislead.
+  //
+  // Frontend gating: when false, the passkey sign-in and sign-up options are
+  // hidden and Add passkey is disabled with the reason — every Begin would
+  // answer FailedPrecondition, so offering them would mislead users.
+  //
+  // The origin half matters on its own. A hub published at one address and
+  // reached at another (a LAN IP behind the reverse proxy, a tunnel host)
+  // is configured for passkeys and still runs none for that page.
   bool passkey_enabled = 16;
 }
 

@@ -94,13 +94,30 @@ func TestOIDC_AuthURL_IncludesStateAndChallenge(t *testing.T) {
 	p, err := NewOIDCProvider(context.Background(), srv.URL, "test-client", "test-secret", srv.URL+"/callback", []string{"openid", "profile", "email"})
 	require.NoError(t, err)
 
-	url := p.AuthURL("test-state", "test-challenge")
+	url := p.AuthURL("test-state", "test-challenge", AuthURLOptions{})
 
 	assert.Contains(t, url, "state=test-state")
 	assert.Contains(t, url, "code_challenge=")
 	assert.Contains(t, url, "code_challenge_method=S256")
 	assert.Contains(t, url, "scope=openid+profile+email")
 	assert.Contains(t, url, "client_id=test-client")
+	assert.NotContains(t, url, "prompt=", "an ordinary login must not force a re-prompt")
+}
+
+// TestOIDC_AuthURL_ForceReauthentication pins the step-up leg's parameter.
+// Without prompt=login the provider silently reuses its own session, the
+// browser returns in a fraction of a second, and the elevation the click was
+// supposed to prove proves nothing.
+func TestOIDC_AuthURL_ForceReauthentication(t *testing.T) {
+	srv, _ := mockOIDCServer(t)
+
+	p, err := NewOIDCProvider(context.Background(), srv.URL, "test-client", "test-secret", srv.URL+"/callback", nil)
+	require.NoError(t, err)
+
+	url := p.AuthURL("test-state", "test-challenge", AuthURLOptions{ForceReauthentication: true})
+
+	assert.Contains(t, url, "prompt=login")
+	assert.Contains(t, url, "code_challenge_method=S256", "the step-up leg keeps PKCE")
 }
 
 func TestOIDC_Exchange_Success(t *testing.T) {

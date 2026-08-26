@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -29,6 +30,7 @@ type adminOAuthEnv struct {
 	st     store.Store
 	ks     *keystore.Keystore
 	token  string
+	cache  *recordingProviderCache
 }
 
 func setupAdminOAuthTest(t *testing.T) *adminOAuthEnv {
@@ -58,7 +60,8 @@ func setupAdminOAuthTest(t *testing.T) *adminOAuthEnv {
 	mux := http.NewServeMux()
 	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
 	opts := connect.WithInterceptors(interceptor)
-	path, handler := leapmuxv1connect.NewAdminOAuthServiceHandler(service.NewAdminOAuthService(st, ks), opts)
+	cache := &recordingProviderCache{}
+	path, handler := leapmuxv1connect.NewAdminOAuthServiceHandler(service.NewAdminOAuthService(st, ks, cache), opts)
 	mux.Handle(path, handler)
 
 	server := httptest.NewUnstartedServer(mux)
@@ -71,6 +74,7 @@ func setupAdminOAuthTest(t *testing.T) *adminOAuthEnv {
 		st:     st,
 		ks:     ks,
 		token:  session,
+		cache:  cache,
 	}
 }
 
@@ -372,4 +376,60 @@ func TestAdminOAuthService_RemoveAllowedWhenNobodyIsOrphaned(t *testing.T) {
 		require.NoError(t, err)
 		assert.Zero(t, removed.Msg.GetLockedOutUsers(), "no force needed, and nothing was lost")
 	})
+}
+
+// recordingProviderCache stands in for the OAuth login handler's built-provider
+// cache. Removing or disabling a provider must drop its entries, because
+// loadEnabledProvider refuses such a row BEFORE it would rebuild -- so the
+// login handler's own eviction can never reach them, and the entry holds the
+// client secret the keystore decrypted.
+type recordingProviderCache struct {
+	mu          sync.Mutex
+	invalidated []string
+}
+
+func (c *recordingProviderCache) InvalidateProvider(providerID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.invalidated = append(c.invalidated, providerID)
+}
+
+func (c *recordingProviderCache) taken() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := append([]string(nil), c.invalidated...)
+	c.invalidated = nil
+	return out
+}
+
+// TestAdminOAuthService_EvictsTheProviderCache pins the call the admin verbs
+// owe the login handler.
+//
+// A removed or disabled provider can never be rebuilt -- loadEnabledProvider
+// refuses its row first -- so the login handler's own eviction cannot reach
+// the entry, and it holds the client secret the keystore decrypted.
+func TestAdminOAuthService_EvictsTheProviderCache(t *testing.T) {
+	env := setupAdminOAuthTest(t)
+	ctx := context.Background()
+
+	added, err := env.client.AddOAuthProvider(ctx, authedReq(&leapmuxv1.AddOAuthProviderRequest{
+		ProviderType: "github", ClientId: "gh-client", ClientSecret: "gh-secret",
+	}, env.token))
+	require.NoError(t, err)
+	id := added.Msg.GetProvider().GetId()
+	require.NotEmpty(t, id)
+	// An add rebuilds on demand, so only remove and disable are pinned here.
+	env.cache.taken()
+
+	_, err = env.client.SetOAuthProviderEnabled(ctx, authedReq(&leapmuxv1.SetOAuthProviderEnabledRequest{
+		Id: id, Enabled: false,
+	}, env.token))
+	require.NoError(t, err)
+	assert.Equal(t, []string{id}, env.cache.taken(), "a disabled provider's built instance must go")
+
+	_, err = env.client.RemoveOAuthProvider(ctx, authedReq(&leapmuxv1.RemoveOAuthProviderRequest{
+		Id: id,
+	}, env.token))
+	require.NoError(t, err)
+	assert.Equal(t, []string{id}, env.cache.taken(), "a removed provider's built instance must go")
 }

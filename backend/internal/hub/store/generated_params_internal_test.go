@@ -48,6 +48,15 @@ func TestGeneratedInterfaceParamsAreAllowlisted(t *testing.T) {
 			"Query":      "search LIKE narg OR-chain; fed a *string-derived pattern",
 			"ClientType": "narg OR-chain over a text column",
 			"TabType":    "narg OR-chain over a text column",
+			// The elevation slide's requested deadline sits inside min()
+			// in the SET clause, which carries no column type, and sqlc
+			// keeps that first inference even though the WHERE compares
+			// the same parameter against elevation_expires_at (the
+			// postgres and mysql twins ARE typed by that comparison). The
+			// bind site passes sqltime.NewSQLiteTime, and a raw time.Time
+			// there fails TestAllDatetimeColumnsStoreCanonicalLayout,
+			// whose elevation fixture writes this very column.
+			"WindowDeadline": "elevation-slide deadline inside min(); fed sqltime.SQLiteTime, guarded by the canonical-layout fixture",
 		},
 		mysqlGenPkg: {
 			"LeaseMillis": "arithmetic expression param; not a timestamp",

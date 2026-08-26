@@ -62,6 +62,15 @@ func (s *cleanupStore) DeleteExpiredCLIAuthorizationCodes(ctx context.Context, n
 	return rowsAffected(s.conn.q.DeleteExpiredCLIAuthorizationCodes(ctx, sqltime.NewMySQLTime(now)))
 }
 
+func (s *cleanupStore) DeleteExpiredAPITokensBefore(ctx context.Context, cutoff time.Time) (int64, error) {
+	// A params struct rather than a bare argument: the statement compares the
+	// cutoff against both deadlines, so sqlc binds the one named parameter
+	// twice.
+	return rowsAffected(s.conn.q.DeleteExpiredAPITokensBefore(ctx, gendb.DeleteExpiredAPITokensBeforeParams{
+		Cutoff: sqltime.MySQLNullTimeOf(cutoff),
+	}))
+}
+
 func (s *cleanupStore) DeleteRevokedAPITokensBefore(ctx context.Context, cutoff time.Time) (int64, error) {
 	return rowsAffected(s.conn.q.DeleteRevokedAPITokensBefore(ctx, sqltime.MySQLNullTimeOf(cutoff)))
 }

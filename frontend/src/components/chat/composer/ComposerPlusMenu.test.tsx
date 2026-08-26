@@ -172,6 +172,20 @@ describe('composerPlusMenu structure freeze', () => {
   })
 })
 
+/**
+ * The reason a disabled control carries, read the way a screen reader gets it.
+ *
+ * <Tooltip> leaves an offscreen description in `aria-describedby` for as long
+ * as the control is disabled. It is NOT `title`: a reason long enough to be
+ * worth reading becomes the control's accessible name on `title`, which is why
+ * `title` on a DOM element is now a lint error.
+ */
+function reasonOf(el: Element): string {
+  const describedBy = el.getAttribute('aria-describedby')
+  expect(describedBy).toBeTruthy()
+  return document.getElementById(describedBy!)?.textContent ?? ''
+}
+
 describe('composerPlusMenu', () => {
   it('lists the settings submenus in backend order', () => {
     renderMenu({
@@ -243,7 +257,7 @@ describe('composerPlusMenu', () => {
 
     const attach = screen.getByTestId('composer-attach-file')
     expect(attach).toBeDisabled()
-    expect(attach).toHaveAttribute('title', 'Attach is unavailable during a control request')
+    expect(reasonOf(attach)).toBe('Attach is unavailable during a control request')
   })
 
   it('disables attach and the settings submenus when the composer accepts no input', async () => {
@@ -265,8 +279,8 @@ describe('composerPlusMenu', () => {
     // "agent" in this menu.
     renderMenu({ disabledReason: 'This subagent doesn\'t accept messages.' })
 
-    expect(screen.getByTestId('composer-attach-file'))
-      .toHaveAttribute('title', 'This subagent doesn\'t accept messages.')
+    expect(reasonOf(screen.getByTestId('composer-attach-file')))
+      .toBe('This subagent doesn\'t accept messages.')
   })
 
   it('leaves attach live when no reason is given', () => {
@@ -278,7 +292,7 @@ describe('composerPlusMenu', () => {
 
     const attach = screen.getByTestId('composer-attach-file')
     expect(attach).toBeEnabled()
-    expect(attach).not.toHaveAttribute('title')
+    expect(attach).not.toHaveAttribute('aria-describedby')
   })
 
   it('prefers the disabled reason over the control-request reason', () => {
@@ -286,8 +300,8 @@ describe('composerPlusMenu', () => {
     // narrower "unavailable during a control request" would understate it.
     renderMenu({ canAttach: false, disabledReason: 'No input here.' })
 
-    expect(screen.getByTestId('composer-attach-file'))
-      .toHaveAttribute('title', 'No input here.')
+    expect(reasonOf(screen.getByTestId('composer-attach-file')))
+      .toBe('No input here.')
   })
 
   it('keeps the view toggles live on a disabled composer', async () => {

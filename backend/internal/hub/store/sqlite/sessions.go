@@ -19,14 +19,16 @@ var _ store.SessionStore = (*sessionStore)(nil)
 
 func fromDBSession(s gendb.UserSession) store.UserSession {
 	return store.UserSession{
-		ID:             s.ID,
-		UserID:         s.UserID,
-		ExpiresAt:      s.ExpiresAt.Time,
-		CreatedAt:      s.CreatedAt.Time,
-		LastActiveAt:   s.LastActiveAt.Time,
-		AuthGeneration: s.AuthGeneration,
-		UserAgent:      s.UserAgent,
-		IPAddress:      s.IpAddress,
+		ID:                 s.ID,
+		UserID:             s.UserID,
+		ExpiresAt:          s.ExpiresAt.Time,
+		CreatedAt:          s.CreatedAt.Time,
+		LastActiveAt:       s.LastActiveAt.Time,
+		AuthGeneration:     s.AuthGeneration,
+		ElevationProvenAt:  s.ElevationProvenAt.Ptr(),
+		ElevationExpiresAt: s.ElevationExpiresAt.Ptr(),
+		UserAgent:          s.UserAgent,
+		IPAddress:          s.IpAddress,
 	}
 }
 
@@ -94,6 +96,17 @@ func (s *sessionStore) Touch(ctx context.Context, p store.TouchSessionParams, no
 }
 
 func (s *sessionStore) Delete(ctx context.Context, id string) (int64, error) {
+	return s.deleteEmitting(ctx, id, store.RevocationEventKindSession)
+}
+
+func (s *sessionStore) Revoke(ctx context.Context, id string) (int64, error) {
+	return s.deleteEmitting(ctx, id, store.RevocationEventKindSessionRevoked)
+}
+
+// deleteEmitting removes one session row and records who ended it. The two
+// callers differ in the event kind ALONE, so the delete stays one
+// implementation and cannot drift between a sign-out and a revoke.
+func (s *sessionStore) deleteEmitting(ctx context.Context, id, kind string) (int64, error) {
 	return store.RunCredentialMutation(ctx, s.conn.withTransaction, func(ctx context.Context, conn *sqliteConn) (*store.CredentialEvent, error) {
 		row, err := conn.q.DeleteUserSession(ctx, id)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -102,7 +115,7 @@ func (s *sessionStore) Delete(ctx context.Context, id string) (int64, error) {
 		if err != nil {
 			return nil, mapErr(err)
 		}
-		return &store.CredentialEvent{Kind: store.RevocationEventKindSession, SubjectID: row.ID, UserID: row.UserID, At: time.Now().UTC()}, nil
+		return &store.CredentialEvent{Kind: kind, SubjectID: row.ID, UserID: row.UserID, At: time.Now().UTC()}, nil
 	}, emitCredentialEvent)
 }
 
@@ -177,13 +190,78 @@ func (s *sessionStore) ValidateWithUser(ctx context.Context, id string, now time
 		return nil, mapErr(err)
 	}
 	return &store.SessionWithUser{
-		UserID:         row.ID,
-		Username:       row.Username,
-		IsAdmin:        ptrconv.Int64ToBool(row.IsAdmin),
-		EmailVerified:  ptrconv.Int64ToBool(row.EmailVerified),
-		Email:          row.Email,
-		CreatedAt:      row.CreatedAt.UTC(),
-		ExpiresAt:      row.ExpiresAt.UTC(),
-		AuthGeneration: row.AuthGeneration,
+		UserID:             row.ID,
+		Username:           row.Username,
+		IsAdmin:            ptrconv.Int64ToBool(row.IsAdmin),
+		EmailVerified:      ptrconv.Int64ToBool(row.EmailVerified),
+		Email:              row.Email,
+		CreatedAt:          row.CreatedAt.UTC(),
+		ExpiresAt:          row.ExpiresAt.UTC(),
+		AuthGeneration:     row.AuthGeneration,
+		ElevationProvenAt:  row.ElevationProvenAt.Ptr(),
+		ElevationExpiresAt: row.ElevationExpiresAt.Ptr(),
 	}, nil
+}
+
+// Elevate, SlideElevation and DropElevation are the only writers of
+// elevation_proven_at / elevation_expires_at. Elevate and DropElevation emit a user_info
+// event so a cross-process UserInfo cache re-reads the deadline; the slide
+// does not, because a stale SHORTER deadline fails closed.
+func (s *sessionStore) Elevate(ctx context.Context, p store.ElevateSessionParams, now time.Time) (int64, error) {
+	owner, ok := userid.OwnerFilter(p.UserID)
+	if !ok {
+		// An unminted caller owns nothing; binding "" would MATCH every
+		// blank-owner row rather than none. See userid.OwnerFilter.
+		return 0, store.ErrInvalidArgument
+	}
+	return store.RunCredentialMutation(ctx, s.conn.withTransaction, func(ctx context.Context, conn *sqliteConn) (*store.CredentialEvent, error) {
+		n, err := rowsAffected(conn.q.ElevateUserSession(ctx, gendb.ElevateUserSessionParams{
+			ElevationProvenAt:  sqltime.SQLiteNullTimeOf(p.ElevationProvenAt),
+			ElevationExpiresAt: sqltime.SQLiteNullTimeOf(p.ElevationExpiresAt),
+			ID:                 p.SessionID,
+			UserID:             owner,
+			Now:                sqltime.NewSQLiteTime(now),
+		}))
+		if err != nil || n == 0 {
+			return nil, err
+		}
+		return store.UserInfoEvent(owner, now.UTC()), nil
+	}, emitCredentialEvent)
+}
+
+func (s *sessionStore) SlideElevation(ctx context.Context, p store.SlideSessionElevationParams, now time.Time) (int64, error) {
+	owner, ok := userid.OwnerFilter(p.UserID)
+	if !ok {
+		return 0, store.ErrInvalidArgument
+	}
+	// WindowDeadline is an untyped sqlc parameter (it sits inside min(), which
+	// carries no column type), so the canonical layout is this bind's
+	// responsibility: a raw time.Time would store modernc's driver layout and
+	// break every raw-string comparison on elevation_expires_at. See the
+	// ListAllActiveSessions comment in user_sessions.sql, and the fixture in
+	// TestAllDatetimeColumnsStoreCanonicalLayout that fails on a raw bind.
+	return rowsAffected(s.conn.q.SlideUserSessionElevation(ctx, gendb.SlideUserSessionElevationParams{
+		WindowDeadline: sqltime.NewSQLiteTime(p.WindowDeadline),
+		MaxTotalMicros: p.MaxTotal.Microseconds(),
+		ID:             p.SessionID,
+		UserID:         owner,
+		Now:            sqltime.SQLiteNullTimeOf(now),
+	}))
+}
+
+func (s *sessionStore) DropElevation(ctx context.Context, p store.DropSessionElevationParams, now time.Time) (int64, error) {
+	owner, ok := userid.OwnerFilter(p.UserID)
+	if !ok {
+		return 0, store.ErrInvalidArgument
+	}
+	return store.RunCredentialMutation(ctx, s.conn.withTransaction, func(ctx context.Context, conn *sqliteConn) (*store.CredentialEvent, error) {
+		n, err := rowsAffected(conn.q.DropUserSessionElevation(ctx, gendb.DropUserSessionElevationParams{
+			ID:     p.SessionID,
+			UserID: owner,
+		}))
+		if err != nil || n == 0 {
+			return nil, err
+		}
+		return store.UserInfoEvent(owner, now.UTC()), nil
+	}, emitCredentialEvent)
 }
