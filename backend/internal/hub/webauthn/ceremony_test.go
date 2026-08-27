@@ -60,8 +60,8 @@ func seedUser(t *testing.T, st store.Store) string {
 // enforced before the attestation.
 //
 // A real attestation needs a virtual authenticator, which this package has
-// no harness for; the full ceremony is covered end to end by the Playwright
-// spec. What is asserted here is what the split could have broken.
+// no harness for; the Playwright spec covers the full ceremony end to end.
+// This test asserts what the split could have broken.
 func TestVerifyRegistration_KeepsTheCeremonyGuards(t *testing.T) {
 	svc, st := newMigratedWebAuthnService(t)
 	owner := seedUser(t, st)
@@ -115,7 +115,7 @@ func TestStoreCredential_DefaultsTheFriendlyName(t *testing.T) {
 		CredentialID: []byte("credential-id-2"), PublicKey: []byte("public-key"),
 	}, "Work laptop")
 	require.NoError(t, err)
-	assert.Equal(t, "Work laptop", named.FriendlyName, "a supplied name is kept")
+	assert.Equal(t, "Work laptop", named.FriendlyName, "StoreCredential keeps a supplied name")
 }
 
 func TestBeginSignUp_AllocatesStableUserID(t *testing.T) {
@@ -159,16 +159,16 @@ func TestBeginSignUp_AllocatesStableUserID(t *testing.T) {
 	assert.Equal(t, draft.UserID, string(decoded))
 }
 
-func TestBeginReauth_RejectsEmptyCredentials(t *testing.T) {
+func TestBeginElevation_RejectsEmptyCredentials(t *testing.T) {
 	svc, st := newMigratedWebAuthnService(t)
 	userID := seedUser(t, st)
 
-	_, _, _, err := svc.BeginReauth(context.Background(), userID, "")
+	_, _, _, err := svc.BeginElevation(context.Background(), userID, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no passkeys registered")
 }
 
-func TestBeginReauth_ReplacesPriorCeremony(t *testing.T) {
+func TestBeginElevation_ReplacesPriorCeremony(t *testing.T) {
 	svc, st := newMigratedWebAuthnService(t)
 	userID := seedUser(t, st)
 
@@ -183,9 +183,9 @@ func TestBeginReauth_ReplacesPriorCeremony(t *testing.T) {
 		KeyVersion: version, CreatedAt: now,
 	}))
 
-	firstID, _, _, err := svc.BeginReauth(context.Background(), userID, "")
+	firstID, _, _, err := svc.BeginElevation(context.Background(), userID, "")
 	require.NoError(t, err)
-	secondID, _, _, err := svc.BeginReauth(context.Background(), userID, "")
+	secondID, _, _, err := svc.BeginElevation(context.Background(), userID, "")
 	require.NoError(t, err)
 	assert.NotEqual(t, firstID, secondID)
 
@@ -258,7 +258,7 @@ func TestBeginRegistration_PersistsEncryptedSession(t *testing.T) {
 	assert.NotContains(t, string(row.SessionData), `"challenge"`)
 }
 
-func TestBeginReauth_ConstrainsAllowCredentials(t *testing.T) {
+func TestBeginElevation_ConstrainsAllowCredentials(t *testing.T) {
 	svc, st := newMigratedWebAuthnService(t)
 	userID := seedUser(t, st)
 
@@ -279,7 +279,7 @@ func TestBeginReauth_ConstrainsAllowCredentials(t *testing.T) {
 		CreatedAt:    now,
 	}))
 
-	sessionID, optionsJSON, _, err := svc.BeginReauth(context.Background(), userID, "")
+	sessionID, optionsJSON, _, err := svc.BeginElevation(context.Background(), userID, "")
 	require.NoError(t, err)
 	assert.NotEmpty(t, sessionID)
 
@@ -292,7 +292,7 @@ func TestBeginReauth_ConstrainsAllowCredentials(t *testing.T) {
 	}
 	allow, ok := publicKey["allowCredentials"].([]any)
 	require.True(t, ok, "allowCredentials must be present: %s", optionsJSON)
-	require.Len(t, allow, 1, "reauth must constrain allowCredentials to the user's passkeys")
+	require.Len(t, allow, 1, "elevation must constrain allowCredentials to the user's passkeys")
 
 	entry, ok := allow[0].(map[string]any)
 	require.True(t, ok)
@@ -312,4 +312,42 @@ func TestRejectIfCloneWarning(t *testing.T) {
 	assert.ErrorIs(t, webauthn.RejectIfCloneWarning(&gowebauthn.Credential{
 		Authenticator: gowebauthn.Authenticator{CloneWarning: true},
 	}), webauthn.ErrCloneDetected)
+}
+
+// TestBeginSignUpAllocatesItsOwnUserID pins that a caller cannot choose a
+// new account's identifier.
+//
+// The value becomes the WebAuthn user handle and then, at Finish, the users
+// row primary key. A caller-supplied one would therefore choose the primary
+// key of an account that does not exist yet. Today's single caller leaves
+// the field empty, so the guard is about the next caller: overwriting makes
+// the mistake impossible instead of merely unmade.
+func TestBeginSignUpAllocatesItsOwnUserID(t *testing.T) {
+	t.Parallel()
+
+	svc, _ := newMigratedWebAuthnService(t)
+
+	const attackerChosen = "victim-user-id"
+	_, optionsJSON, _, err := svc.BeginSignUp(context.Background(), webauthn.SignupDraft{
+		UserID:      attackerChosen,
+		Username:    "newcomer",
+		Email:       "newcomer@example.com",
+		DisplayName: "Newcomer",
+	}, "http://localhost")
+	require.NoError(t, err)
+
+	var options struct {
+		PublicKey struct {
+			User struct {
+				ID string `json:"id"`
+			} `json:"user"`
+		} `json:"publicKey"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(optionsJSON), &options))
+
+	handle, err := base64.RawURLEncoding.DecodeString(options.PublicKey.User.ID)
+	require.NoError(t, err)
+	assert.NotEqual(t, attackerChosen, string(handle),
+		"BeginSignUp must discard a caller-supplied user id")
+	assert.NotEmpty(t, string(handle), "BeginSignUp must allocate one of its own")
 }

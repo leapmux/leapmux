@@ -7,6 +7,7 @@ import { createMemo, createSignal, onCleanup, onMount, Show } from 'solid-js'
 import { workerClient } from '~/api/clients'
 import { Dialog } from '~/components/common/Dialog'
 import { Icon } from '~/components/common/Icon'
+import { Tooltip } from '~/components/common/Tooltip'
 import { useAuth } from '~/context/AuthContext'
 import { useCopyButton } from '~/hooks/useCopyButton'
 import { getWorkerHubUrl, isEmailEnabled, isSoloMode } from '~/lib/systemInfo'
@@ -17,9 +18,9 @@ interface RegisterWorkerDialogProps {
   onClose: () => void
 }
 
-// Cadence (frontend, ms): how often we check whether the key is close
-// enough to expiry to be worth extending. The backend rejects extensions
-// while remaining > 2 minutes, so a 30-second tick gives us plenty of
+// Cadence (frontend, ms): how often this dialog checks whether the key is
+// close enough to expiry to be worth extending. The backend rejects
+// extensions while remaining > 2 minutes, so a 30-second tick gives plenty of
 // in-window attempts before the 5-minute TTL elapses.
 const EXTEND_TICK_MS = 30_000
 const EXTEND_THRESHOLD_MS = 2 * 60 * 1000
@@ -47,8 +48,8 @@ export const RegisterWorkerDialog: Component<RegisterWorkerDialogProps> = (props
 
   const canEmail = createMemo(() => Boolean(auth.user()?.emailVerified))
 
-  // Soft-delete the key on close. Errors are swallowed because the
-  // dialog is going away regardless — the key will expire on its own.
+  // Soft-delete the key on close. This discards the errors because the
+  // dialog closes regardless — the key expires on its own.
   onCleanup(() => {
     const k = registrationKey()
     if (k)
@@ -71,7 +72,7 @@ export const RegisterWorkerDialog: Component<RegisterWorkerDialogProps> = (props
   //
   // Auto-extension loop: only fires inside the last EXTEND_THRESHOLD_MS
   // before expiry. The backend's anti-spam guard refuses earlier calls,
-  // so the threshold check on the client just avoids burning RPCs. The
+  // so the threshold check on the client only avoids wasted RPCs. The
   // threshold is purposely smaller than the backend's anti-spam buffer
   // — staying inside a single tick avoids alignment edge cases.
   onMount(() => {
@@ -160,19 +161,20 @@ export const RegisterWorkerDialog: Component<RegisterWorkerDialogProps> = (props
               permanently-disabled button would mislead users — drop it
               entirely. */}
           <Show when={!isSoloMode() && isEmailEnabled()}>
-            <button
-              type="button"
-              data-testid="email-registration-instructions"
-              disabled={!canEmail() || emailing() || emailSent()}
-              title={canEmail() ? 'Email this command to your verified address' : 'Verify your email to enable this'}
-              onClick={() => void handleSendEmail()}
-            >
-              <Icon icon={Mail} size="sm" />
-              {' '}
-              <Show when={emailSent()} fallback={emailing() ? 'Sending…' : 'Send email'}>
-                <span>{`Sent to ${auth.user()?.email ?? ''}`}</span>
-              </Show>
-            </button>
+            <Tooltip text={canEmail() ? 'Email this command to your verified address' : 'Verify your email to enable this'}>
+              <button
+                type="button"
+                data-testid="email-registration-instructions"
+                disabled={!canEmail() || emailing() || emailSent()}
+                onClick={() => void handleSendEmail()}
+              >
+                <Icon icon={Mail} size="sm" />
+                {' '}
+                <Show when={emailSent()} fallback={emailing() ? 'Sending…' : 'Send email'}>
+                  <span>{`Sent to ${auth.user()?.email ?? ''}`}</span>
+                </Show>
+              </button>
+            </Tooltip>
           </Show>
 
           <button

@@ -1,7 +1,7 @@
 import type { SettingDescriptor, SettingRowModel } from './types'
 import { describe, expect, it } from 'vitest'
 import { NAV_GROUPS } from './navGroups'
-import { groupRowsByNav, occupiedNavGroups } from './navRows'
+import { groupRowsByNav, navIdsWhere, occupiedNavGroups } from './navRows'
 
 function descriptor(overrides: Partial<SettingDescriptor>): SettingDescriptor {
   return {
@@ -141,5 +141,61 @@ describe('occupiedNavGroups', () => {
       adminRows: [hubRow({ category: 'general' })],
     }))
     expect(groups.map(g => g.id)).toEqual(['appearance', 'advanced', 'admin-general'])
+  })
+})
+
+/**
+ * The one helper both group marks read: the restart badge, and the
+ * verified-session state at the top of a panel.
+ *
+ * Each of them used to walk the row map itself, which is how two marks
+ * derived from one row set come to disagree.
+ */
+describe('navIdsWhere', () => {
+  it('marks only the groups that hold a matching row', () => {
+    const ids = navIdsWhere(
+      group({
+        browserRows: [
+          row({ category: 'appearance', restart: true }),
+          row({ category: 'chat' }),
+        ],
+      }),
+      r => r.descriptor.restart === true,
+    )
+    expect([...ids]).toEqual(['appearance'])
+  })
+
+  it('answers the elevation question from the same rows', () => {
+    const ids = navIdsWhere(
+      group({
+        isAdmin: true,
+        browserRows: [
+          row({ category: 'account', needsElevation: true }),
+          row({ category: 'chat' }),
+        ],
+        adminRows: [hubRow({ category: 'general', needsElevation: true })],
+      }),
+      r => r.descriptor.needsElevation === true,
+    )
+    expect([...ids].sort()).toEqual(['account', 'admin-general'])
+  })
+
+  // A group whose only matching row is HIDDEN holds nothing that matches, so
+  // marking it would be false. `groupRowsByNav` already dropped it, which
+  // is why this helper needs no visibility rule of its own.
+  it('does not mark a group whose matching row is hidden', () => {
+    const ids = navIdsWhere(
+      group({ browserRows: [row({ category: 'appearance', restart: true, hidden: () => true })] }),
+      r => r.descriptor.restart === true,
+    )
+    expect([...ids]).toEqual([])
+  })
+
+  it('marks nothing when no row matches', () => {
+    const ids = navIdsWhere(
+      group({ browserRows: [row({ category: 'appearance' })] }),
+      r => r.descriptor.needsElevation === true,
+    )
+    expect(ids.size).toBe(0)
   })
 })

@@ -10,6 +10,23 @@ INSERT INTO revocation_events (
     sqlc.arg(user_auth_generation)
 );
 
+-- name: SessionRevokedEventExists :one
+-- Was this session taken away by an administrator, rather than signed out?
+-- The two paths delete the same row and leave the account's auth generation
+-- alone, so this event row is the only durable fact that separates them.
+-- Pending and published rows both count: the insert IS the fact.
+--
+-- Served by idx_revocation_events_session_revoked, which is PARTIAL on
+-- kind = 'session_revoked'. An insert of any OTHER kind writes no index entry
+-- at all -- which is every kind but the rarest -- so the write cost this was
+-- once left unindexed to avoid is close to zero. Without it this is a full
+-- scan of the retention window's events, and it runs while the caller holds
+-- the user-auth row lock.
+SELECT EXISTS(
+    SELECT 1 FROM revocation_events
+    WHERE subject_id = ? AND kind = 'session_revoked'
+);
+
 -- name: LockRevocationEventSequence :one
 UPDATE revocation_event_sequence
 SET last_seq = last_seq
@@ -75,9 +92,9 @@ DELETE FROM hub_runtime_lease WHERE singleton_id = 1 AND lease_expires_at <= str
 -- byte-exact at full millisecond precision --
 -- matching what postgres/mysql compact, with no strftime re-normalization per
 -- row. Unlike a function wrap on the column, this is sargable: the partial
--- idx_revocation_events_published(published_at, seq) serves an upper-bounded
--- SEARCH (the `ev.seq <= ...` term implies seq IS NOT NULL, satisfying the
--- partial predicate).
+-- idx_revocation_events_published(published_at, seq) serves a SEARCH with an
+-- upper limit (the `ev.seq <= ...` term implies seq IS NOT NULL, satisfying
+-- the partial predicate).
 DELETE FROM revocation_events
 WHERE id IN (
     SELECT ev.id

@@ -92,6 +92,36 @@ func TestSettingsReadTimeRulesAreRegistered(t *testing.T) {
 			"the rules are per key, not a blanket override")
 	})
 
+	// The stand-down: a captcha the operator ENABLED that this hub cannot
+	// enforce, because ALTCHA needs a secure browser context and this hub
+	// publishes no secure address. Both defaults produce that state, so the
+	// stored row looks right and nothing about it is.
+	//
+	// The rule is what keeps the administration surface from reporting
+	// "enabled" for a control that admits every request. It is registered at
+	// the hub's own wiring site, so only a test of that site can see it: the
+	// captcha package's own tests call captcha.EnabledEffective directly and
+	// pass whether the hub registers it or not.
+	t.Run("captcha.enabled reports what this hub enforces", func(t *testing.T) {
+		require.NoError(t, captcha.CaptchaEnabledKey.Set(ctx, set, true))
+		snap := set.Snapshot(ctx)
+		require.Equal(t, true, snap.ValueOf(captcha.CaptchaEnabledKey),
+			"the stored row must say enabled, or there is no gap to report")
+		require.Empty(t, settings.KeyPublicURL.Of(snap), "the fixture publishes no address")
+		require.False(t, settings.KeySecureCookies.Of(snap), "and terminates no TLS")
+
+		assert.Equal(t, false, set.Effective(snap, captcha.CaptchaEnabledKey),
+			"a hub that cannot serve a secure context enforces nothing, and must say so")
+
+		// The remedy repairs the report, so the rule follows the setting
+		// rather than answering false for ever.
+		require.NoError(t, settings.KeyPublicURL.Set(ctx, set, "https://hub.example.com"))
+		assert.Equal(t, true, set.Effective(set.Snapshot(ctx), captcha.CaptchaEnabledKey),
+			"an enforcing hub reports the stored value unchanged")
+		require.NoError(t, settings.KeyPublicURL.Set(ctx, set, ""))
+		require.NoError(t, captcha.CaptchaEnabledKey.Set(ctx, set, false))
+	})
+
 	// The two states below cannot be reached through the write path: the
 	// cross-key rules refuse them, which is exactly why a READ-time rule has
 	// to degrade them. Direct SQL plus a reload is how an operator reaches

@@ -18,6 +18,20 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+// An admin call reports the hub's refusal VERBATIM, through
+// control.EmitErrorWith, and adds nothing of its own.
+//
+// The CLI used to append a remedy of its own to any PermissionDenied when
+// the local credential file recorded no admin scope. The file cannot decide
+// that. The hub answers two different refusals here -- "administrator
+// privileges are required" for an account that is not an administrator, and
+// "this CLI credential was not granted hub administration; run `leapmux
+// control auth login --admin` to mint one that was" for an administrator
+// whose credential lacks the scope -- and each one already states its own
+// remedy. Appending to both told a non-administrator to run a login that the
+// hub refuses, and printed the same instruction twice on the refusal that
+// was genuine.
+
 // requireAdminClient is requireClient plus the admin exclusions: admin
 // commands NEVER use the worker-IPC transport. They talk to the hub
 // directly, because the worker's IPC bridge is a typing device, not a
@@ -32,7 +46,7 @@ func requireAdminClient(hubFlag string) (*control.Client, error) {
 	}
 	// An empty address is not a hub. Without this the credential lookup
 	// answers `hub url missing hostname` under the not_logged_in code,
-	// which names neither the flag nor the variable that supplies one.
+	// which states neither the flag nor the variable that supplies one.
 	if hubFlag == "" {
 		return nil, control.EmitError("invalid_request",
 			"no hub address; pass --hub <url> or set LEAPMUX_HUB. For a hub that needs a credential, run `leapmux control auth login --hub <url>` first.")
@@ -52,12 +66,6 @@ func requireAdminClient(hubFlag string) (*control.Client, error) {
 	return c, nil
 }
 
-// adminRPCError maps a Connect error from an admin call onto the JSON
-// envelope, carrying the hub's message verbatim.
-func adminRPCError(code string, err error) error {
-	return control.EmitErrorWith(code, err)
-}
-
 // requireFlag builds an adminVerbSpec.BeforeDial that refuses an empty
 // required flag, in one wording for every verb. It takes the address of
 // the flag variable, because the value arrives only at parse time.
@@ -71,22 +79,22 @@ func requireFlag(value *string, name string) func(adminArgs) error {
 }
 
 // minListLimit is the smallest page a verb may ask for. The ceiling is
-// service.MaxAdminPageLimit — the same constant the hub caps at, so the
-// range this check names is always the hub's own range.
+// service.MaxPageLimit — the same constant the hub caps at, so the
+// range this check states is always the hub's own range.
 const minListLimit = 1
 
-// validateListLimit refuses a --limit outside the page bounds.
+// validateListLimit refuses a --limit outside the page range.
 //
-// The hub normalizes too (service.AdminPageParams: a non-positive limit
+// The hub normalizes too (service.NormalizePageParams: a non-positive limit
 // takes the default, an oversized one caps), which is what protects every
 // other client. This check exists for the ANSWER an operator gets: it runs
 // before the dial, so `--limit 0` identifies the flag and its range
 // instead of quietly returning a page of a size the operator did not ask
 // for.
 func validateListLimit(limit int64) error {
-	if limit < minListLimit || limit > service.MaxAdminPageLimit {
+	if limit < minListLimit || limit > service.MaxPageLimit {
 		return control.EmitError("invalid_request",
-			fmt.Sprintf("limit must be between %d and %d", minListLimit, service.MaxAdminPageLimit))
+			fmt.Sprintf("limit must be between %d and %d", minListLimit, service.MaxPageLimit))
 	}
 	return nil
 }
@@ -169,7 +177,7 @@ func RunAdminSettingsList(rawCtx any, args []string) error {
 		Run: func(c *control.Client, _ adminArgs) error {
 			resp, err := c.AdminSettingsService().ListSettings(context.Background(), connect.NewRequest(&leapmuxv1.ListSettingsRequest{}))
 			if err != nil {
-				return adminRPCError("rpc_failed", err)
+				return control.EmitErrorWith("rpc_failed", err)
 			}
 			rows := make([]map[string]any, 0, len(resp.Msg.GetValues()))
 			byDescr := map[string]*leapmuxv1.SettingDescriptor{}
@@ -195,7 +203,7 @@ func RunAdminSettingsList(rawCtx any, args []string) error {
 // A boolean spelling that `strconv.ParseBool` accepts is NORMALIZED to the
 // JSON literal: `T`, `t`, `TRUE`, `True`, `False`, and the rest are not
 // valid JSON, so passing them through verbatim made the hub answer with a
-// decode error that named a line the operator never typed.
+// decode error that specified a line the operator never typed.
 //
 // The numeric test runs FIRST, and deliberately so. `ParseBool` also
 // accepts `1` and `0`, so testing it first turned `settings set
@@ -204,7 +212,7 @@ func RunAdminSettingsList(rawCtx any, args []string) error {
 func parseSettingValue(raw string) (json.RawMessage, error) {
 	if raw == "" {
 		// The empty string is a legal value for some keys (public_url
-		// accepts it), so the refusal names the two ways to reach it
+		// accepts it), so the refusal states the two ways to reach it
 		// rather than reading as "this key takes no empty value".
 		return nil, errors.New(
 			"value is required; pass '\"\"' to store the empty string, or run `settings reset KEY` to restore the default")
@@ -248,7 +256,7 @@ func RunAdminSettingsGet(rawCtx any, args []string) error {
 			key := a.Rest[0]
 			resp, err := c.AdminSettingsService().ListSettings(context.Background(), connect.NewRequest(&leapmuxv1.ListSettingsRequest{}))
 			if err != nil {
-				return adminRPCError("rpc_failed", err)
+				return control.EmitErrorWith("rpc_failed", err)
 			}
 			for _, v := range resp.Msg.GetValues() {
 				if v.GetKey() != key {
@@ -274,7 +282,7 @@ func RunAdminSettingsGet(rawCtx any, args []string) error {
 //
 // A scalar key's kind name comes from service.SettingFieldKindFromProto
 // and settings.FieldKind.String, which own the wire-to-schema table and
-// the spelling. Restating either had already cost a drift: this surface
+// the spelling. Restating either already cost a drift: this surface
 // printed "boolean" where the Go schema — and the golden account schema
 // that pins it — say "bool".
 //
@@ -334,7 +342,7 @@ func RunAdminSettingsSet(rawCtx any, args []string) error {
 				Key: a.Rest[0], PartialJson: string(value),
 			}))
 			if err != nil {
-				return adminRPCError("update_failed", err)
+				return control.EmitErrorWith("update_failed", err)
 			}
 			out := settingValueJSON(resp.Msg.GetValue())
 			if resp.Msg.GetValue().GetEffectiveJson() != resp.Msg.GetValue().GetValueJson() {
@@ -365,13 +373,13 @@ func RunAdminSettingsSetSecret(rawCtx any, args []string) error {
 			// merges NAMED fields, so a bare scalar, an array, or a lone
 			// quoted string can never be a legal partial here — and each of
 			// them is valid JSON, so a validity test alone let them dial the
-			// hub and come back as a decode error naming a Go type. This is
+			// hub and come back as a decode error that specifies a Go type. This is
 			// why the rule differs from parseSettingValue's, which accepts
 			// an array for an array-valued key.
 			raw := strings.TrimSpace(a.Rest[1])
 			if !strings.HasPrefix(raw, "{") || !json.Valid([]byte(raw)) {
 				return control.EmitError("invalid_request",
-					`VALUE must be a JSON document naming the secret fields, for example {"password":"..."}`)
+					`VALUE must be a JSON document that specifies the secret fields, for example {"password":"..."}`)
 			}
 			return nil
 		},
@@ -380,7 +388,7 @@ func RunAdminSettingsSetSecret(rawCtx any, args []string) error {
 				Key: a.Rest[0], PartialJson: a.Rest[1],
 			}))
 			if err != nil {
-				return adminRPCError("update_failed", err)
+				return control.EmitErrorWith("update_failed", err)
 			}
 			return control.EmitData(settingValueJSON(resp.Msg.GetValue()))
 		},
@@ -397,7 +405,7 @@ func RunAdminSettingsReset(rawCtx any, args []string) error {
 				Key: a.Rest[0],
 			}))
 			if err != nil {
-				return adminRPCError("reset_failed", err)
+				return control.EmitErrorWith("reset_failed", err)
 			}
 			return control.EmitData(settingValueJSON(resp.Msg.GetValue()))
 		},

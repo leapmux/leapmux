@@ -162,7 +162,7 @@ func (s *Suite) testCleanup(t *testing.T) {
 
 	// A send the relay refused leaves the ADDRESS with no token and no
 	// expiry, so the expiry compare can never see it. Without the second
-	// arm that row outlived the database: the sweep it is subject to
+	// branch that row outlived the database: the sweep it is subject to
 	// matched neither predicate, and an abandoned address stayed forever.
 	t.Run("clear stale pending emails reaps a codeless address", func(t *testing.T) {
 		st := s.NewStore(t)
@@ -242,14 +242,14 @@ func (s *Suite) testCleanup(t *testing.T) {
 		assert.ErrorIs(t, err, store.ErrNotFound)
 	})
 
-	t.Run("hard delete users waits for referencing workspaces and workers", func(t *testing.T) {
+	t.Run("hard delete users waits for the workspaces and workers that refer to them", func(t *testing.T) {
 		st := s.NewStore(t)
 		cutoff := time.Now().Add(-24 * time.Hour)
 		back := time.Now().Add(-48 * time.Hour)
 
-		// A soft-deleted user whose workspace has not yet been hard-deleted. Its
-		// workspaces.owner_user_id references the user with no ON DELETE, so hard
-		// deleting the user would abort on a foreign-key violation.
+		// A soft-deleted user whose workspace the sweep did not hard-delete yet.
+		// Its workspaces.owner_user_id refers to the user with no ON DELETE, so
+		// hard deleting the user would abort on a foreign-key violation.
 		wsUser := SeedUser(t, st, "user-with-straggler-ws")
 		wsID := SeedWorkspace(t, st, wsUser.ID, "Straggler WS")
 		_, err := st.Workspaces().SoftDelete(ctx, store.SoftDeleteWorkspaceParams{ID: wsID, OwnerUserID: userid.MustNew(wsUser.ID)})
@@ -257,7 +257,7 @@ func (s *Suite) testCleanup(t *testing.T) {
 		require.NoError(t, st.Users().Delete(ctx, wsUser.ID))
 		require.NoError(t, st.TestHelper().SetDeletedAt(ctx, store.EntityUsers, wsUser.ID, back))
 
-		// A soft-deleted user whose worker has not yet been hard-deleted.
+		// A soft-deleted user whose worker the sweep did not hard-delete yet.
 		// workers.registered_by is the symmetric no-ON-DELETE reference.
 		wkUser := SeedUser(t, st, "user-with-straggler-wk")
 		wk := SeedWorker(t, st, wkUser.ID)
@@ -272,7 +272,7 @@ func (s *Suite) testCleanup(t *testing.T) {
 
 		// Without the gate this aborts the whole batch on the FK violation (err != nil,
 		// 0 rows), so the FK-free user is never reaped despite being eligible. The gate
-		// skips the two referenced users and reaps only the clean one.
+		// skips the two users with live references and reaps only the clean one.
 		n, err := st.Cleanup().HardDeleteUsersBefore(ctx, cutoff)
 		require.NoError(t, err)
 		assert.Equal(t, int64(1), n, "one straggler reference must not poison the whole users batch")
@@ -280,11 +280,11 @@ func (s *Suite) testCleanup(t *testing.T) {
 		_, err = st.Users().GetByIDIncludeDeleted(ctx, cleanUser.ID)
 		assert.ErrorIs(t, err, store.ErrNotFound, "the FK-free user must be reaped")
 		_, err = st.Users().GetByIDIncludeDeleted(ctx, wsUser.ID)
-		require.NoError(t, err, "a user still referenced by a workspace must not be reaped yet")
+		require.NoError(t, err, "a user a workspace still refers to must not be reaped yet")
 		_, err = st.Users().GetByIDIncludeDeleted(ctx, wkUser.ID)
-		require.NoError(t, err, "a user still referenced by a worker must not be reaped yet")
+		require.NoError(t, err, "a user a worker still refers to must not be reaped yet")
 
-		// Once the referencing rows drain, the blocked users become reapable.
+		// Once the rows that refer to them drain, the blocked users become reapable.
 		require.NoError(t, st.TestHelper().SetDeletedAt(ctx, store.EntityWorkspaces, wsID, back))
 		_, err = st.Cleanup().HardDeleteWorkspacesBefore(ctx, cutoff)
 		require.NoError(t, err)
@@ -307,6 +307,7 @@ func (s *Suite) testCleanup(t *testing.T) {
 			ProviderID:   prov.ID,
 			PkceVerifier: "v",
 			RedirectURI:  "https://example.com/cb",
+			Purpose:      store.OAuthStatePurposeLogin,
 			ExpiresAt:    time.Now().Add(-1 * time.Hour),
 		})
 		require.NoError(t, err)
@@ -479,9 +480,9 @@ func (s *Suite) testCleanup(t *testing.T) {
 		st := s.NewStore(t)
 		user := SeedUser(t, st, "cleanup-user-cascade")
 
-		// Create a second user to own the workspace that will outlive the user
-		// being deleted (simulating the real cleanup order where workspaces are
-		// cleaned before users).
+		// Create a second user to own the workspace that will outlive the
+		// deleted user (simulating the real cleanup order where the loop cleans
+		// workspaces before users).
 		otherUser := SeedUser(t, st, "cleanup-other-user")
 		wsID := SeedWorkspace(t, st, otherUser.ID, "User WS")
 

@@ -2,16 +2,12 @@ package service
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	"connectrpc.com/connect"
-	"google.golang.org/protobuf/types/known/timestamppb"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
@@ -22,123 +18,6 @@ import (
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/util/validate"
 )
-
-const (
-	passwordResetExpiry = time.Hour
-	// passwordResetResendCooldown limits how often one account can mint a
-	// fresh reset token, mirroring the verification-email resend cooldown.
-	passwordResetResendCooldown = 60 * time.Second
-)
-
-// verificationOutcome carries the verification flags every login and
-// sign-up response reports. Not login-only: the four sign-up flavors and
-// the GetCurrentUser bootstrap build one too, and each used to hand-write
-// the proto literal instead.
-type verificationOutcome struct {
-	Required              bool
-	EmailSent             bool
-	NextResendAvailableAt *time.Time
-}
-
-// emailVerificationToProto maps a verification outcome onto the shared
-// response message. Every response that carries the status builds it here.
-func emailVerificationToProto(out verificationOutcome) *leapmuxv1.EmailVerificationStatus {
-	return &leapmuxv1.EmailVerificationStatus{
-		VerificationRequired:  out.Required,
-		VerificationEmailSent: out.EmailSent,
-		NextResendAvailableAt: protoTimestamp(out.NextResendAvailableAt),
-	}
-}
-
-// verificationStatusFor REPORTS the account's verification state without
-// sending anything. loginVerificationOutcome is the sending twin, and the
-// difference matters: this one serves GetCurrentUser, which every page load
-// calls, so issuing mail from it would send a message per reload.
-//
-// The cooldown it reports comes from the live pending row, so a hard reload
-// of /verify-email resumes the same countdown a login handed out instead of
-// starting at zero and letting the button hammer a refusal.
-func (s *AuthService) verificationStatusFor(ctx context.Context, user *store.User) verificationOutcome {
-	if !s.emailVerificationRequired(ctx) || user.IsAdmin || user.EmailVerified {
-		return verificationOutcome{}
-	}
-	out := verificationOutcome{Required: true}
-	if user.PendingEmail != "" && user.PendingEmailExpiresAt != nil {
-		next := nextResendAt(issuedAtFromExpiry(*user.PendingEmailExpiresAt, pendingEmailExpiry))
-		if time.Now().UTC().Before(next) {
-			out.NextResendAvailableAt = &next
-		}
-	}
-	return out
-}
-
-func (s *AuthService) loginVerificationOutcome(ctx context.Context, user *store.User) verificationOutcome {
-	if !s.emailVerificationRequired(ctx) || user.IsAdmin || user.EmailVerified {
-		return verificationOutcome{}
-	}
-	out := verificationOutcome{Required: true}
-	targetEmail := user.PendingEmail
-	if targetEmail == "" {
-		targetEmail = user.Email
-	}
-	if targetEmail == "" {
-		return out
-	}
-	if user.PendingEmail == "" {
-		sent, next, err := s.ensurePendingVerification(ctx, user.ID, targetEmail)
-		if err != nil {
-			slogWarnVerification(ctx, "ensure pending verification on login", user.ID, err)
-			return out
-		}
-		out.EmailSent = sent
-		out.NextResendAvailableAt = next
-		return out
-	}
-	if user.PendingEmailExpiresAt != nil {
-		next := nextResendAt(issuedAtFromExpiry(*user.PendingEmailExpiresAt, pendingEmailExpiry))
-		if time.Now().UTC().Before(next) {
-			out.NextResendAvailableAt = &next
-			return out
-		}
-	}
-	sent, err := issuePendingEmailVerification(ctx, s.store, s.mail, s.renderer, user.ID, user.PendingEmail)
-	if err != nil {
-		slogWarnVerification(ctx, "resend verification on login", user.ID, err)
-		return out
-	}
-	out.EmailSent = sent
-	if sent {
-		next := nextResendAt(time.Now().UTC())
-		out.NextResendAvailableAt = &next
-	}
-	return out
-}
-
-func (s *AuthService) ensurePendingVerification(ctx context.Context, userID, email string) (sent bool, nextResend *time.Time, err error) {
-	if err := CheckEmailAvailable(ctx, s.store, email, userID); err != nil {
-		return false, nil, err
-	}
-	sent, err = issuePendingEmailVerification(ctx, s.store, s.mail, s.renderer, userID, email)
-	if err != nil {
-		return false, nil, err
-	}
-	if sent {
-		next := nextResendAt(time.Now().UTC())
-		nextResend = &next
-	}
-	return sent, nextResend, nil
-}
-
-func slogWarnVerification(ctx context.Context, msg, userID string, err error) {
-	slog.WarnContext(ctx, msg, "user_id", userID, "err", err)
-}
-
-func protoTimestamp(t *time.Time) *timestamppb.Timestamp {
-	if t == nil {
-		return nil
-	}
-	return timestamppb.New(*t)
-}
 
 func (s *AuthService) BeginPasskeyLogin(ctx context.Context, req *connect.Request[leapmuxv1.BeginPasskeyLoginRequest]) (*connect.Response[leapmuxv1.BeginPasskeyLoginResponse], error) {
 	wa, err := s.webauthnService(ctx)
@@ -160,7 +39,7 @@ func (s *AuthService) BeginPasskeyLogin(ctx context.Context, req *connect.Reques
 	sessionID, optionsJSON, rpID, err := wa.BeginLogin(ctx, user.ID, originFromRequest(req))
 	if err != nil {
 		if classifyWebAuthnError(err) == webAuthnErrorUnavailable {
-			// An unserved origin names the remediation. Everything else in
+			// An unserved origin gives the remediation. Everything else in
 			// this class answers with the same code and message as the
 			// missing-user path, so the error is not an enumeration oracle.
 			if errors.Is(err, hubwebauthn.ErrOriginNotAllowed) {
@@ -190,9 +69,15 @@ func (s *AuthService) FinishPasskeyLogin(ctx context.Context, req *connect.Reque
 			// it server-side and report it as itself, so it never counts
 			// against the login rate-limit budget.
 			slog.WarnContext(ctx, "passkey clone warning during login")
-			return nil, connect.NewError(connect.CodeUnauthenticated, err)
+			return nil, credentialRejectedError(err)
 		case webAuthnErrorCredential:
-			return nil, connect.NewError(connect.CodeUnauthenticated, err)
+			// The marker for the same reason the management surface carries
+			// it: the rejected credential is the assertion the REQUEST
+			// carried. It changes nothing on this endpoint today -- a visitor
+			// at /login holds no session to end -- and it is here so the rule
+			// is "a rejected credential always says so" rather than "except
+			// on the endpoints nobody checked".
+			return nil, credentialRejectedError(err)
 		case webAuthnErrorUnavailable:
 			// Same code Begin answers for the same state. These sentinels
 			// describe the hub and the origin, not the account, so the
@@ -227,18 +112,21 @@ func (s *AuthService) FinishPasskeyLogin(ctx context.Context, req *connect.Reque
 }
 
 func (s *AuthService) BeginPasskeySignUp(ctx context.Context, req *connect.Request[leapmuxv1.BeginPasskeySignUpRequest]) (*connect.Response[leapmuxv1.BeginPasskeySignUpResponse], error) {
-	if s.cfg.SoloMode {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("sign-up is not available in solo mode"))
+	if err := rejectSolo(s.cfg.SoloMode, "sign-up"); err != nil {
+		return nil, err
 	}
 	hasUser, err := s.checkHasAnyUser(ctx)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	isSetupMode := !hasUser
-	if isSetupMode {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("passkey sign-up is not available during initial setup; use password sign-up"))
-	}
-	if !s.signupEnabled(ctx) {
+	// The signup setting is an administrator's decision, and setup mode is
+	// the state in which no administrator exists to have made it -- the same
+	// exemption password SignUp takes. Everything the first administrator
+	// needs is already here: FinishPasskeySignUp creates the first account as
+	// an admin and promotes its address into the email column, exactly like
+	// signUpSetupMode.
+	if !isSetupMode && !s.signupEnabled(ctx) {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("sign-up is disabled"))
 	}
 
@@ -250,7 +138,7 @@ func (s *AuthService) BeginPasskeySignUp(ctx context.Context, req *connect.Reque
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("display name: %w", err))
 	}
-	if err := s.validatePublicSignupUsername(ctx, username); err != nil {
+	if err := s.validateSignupUsername(ctx, username, isSetupMode); err != nil {
 		return nil, err
 	}
 	if err := s.validateSignupEmail(ctx, req.Msg.GetEmail()); err != nil {
@@ -292,11 +180,13 @@ func (s *AuthService) FinishPasskeySignUp(ctx context.Context, req *connect.Requ
 
 	// Re-check the controls at finish so an admin disable or a race on
 	// username/email between Begin and Finish cannot create an account past
-	// policy. Setup mode is re-checked too: Begin refuses it, but if every
-	// user vanished inside the ceremony window, this commit creates the
-	// hub's first account and it must be an admin, exactly like password
-	// sign-up -- otherwise /setup is withdrawn and the hub has no
-	// administrator.
+	// policy. This handler re-checks setup mode rather than carries it over
+	// from Begin, because the state can flip either way inside the ceremony
+	// window: a second operator can win the race to become the first
+	// administrator, and every user can vanish. This commit creates the hub's
+	// first account whenever it is still the first, and that account must be
+	// an admin, exactly like password sign-up -- otherwise the hub withdraws
+	// /setup and has no administrator.
 	hasUser, err := s.checkHasAnyUser(ctx)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("check users: %w", err))
@@ -305,7 +195,7 @@ func (s *AuthService) FinishPasskeySignUp(ctx context.Context, req *connect.Requ
 	if !isFirstUser && !s.signupEnabled(ctx) {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("sign-up is disabled"))
 	}
-	if err := s.validatePublicSignupUsername(ctx, draft.Username); err != nil {
+	if err := s.validateSignupUsername(ctx, draft.Username, isFirstUser); err != nil {
 		return nil, err
 	}
 	if err := s.validateSignupEmail(ctx, draft.Email); err != nil {
@@ -319,6 +209,7 @@ func (s *AuthService) FinishPasskeySignUp(ctx context.Context, req *connect.Requ
 		pendingEmail = draft.Email
 	}
 	createdUser, storedCode, err := createUserInTx(ctx, s.store, createUserTxParams{
+		now:          s.now,
 		userID:       draft.UserID,
 		username:     draft.Username,
 		displayName:  draft.DisplayName,
@@ -350,7 +241,7 @@ func (s *AuthService) FinishPasskeySignUp(ctx context.Context, req *connect.Requ
 			return nil, err
 		}
 		emailSent = true
-		next := nextResendAt(time.Now().UTC())
+		next := nextResendAt(s.now().UTC())
 		nextResend = &next
 	}
 
@@ -376,192 +267,19 @@ func (s *AuthService) FinishPasskeySignUp(ctx context.Context, req *connect.Requ
 	return resp, nil
 }
 
-func hashPasswordResetToken(token string) string {
-	sum := sha256.Sum256([]byte(token))
-	return hex.EncodeToString(sum[:])
-}
-
-// generatePasswordResetToken mints the emailed reset secret from the
-// shared id mint (crypto-rand backed, 48 chars over a 62-alphabet, ~285
-// bits), mirroring auth.MintAccessSecret and the session ids.
-func generatePasswordResetToken() string {
-	return id.Generate()
-}
-
-func (s *AuthService) RequestPasswordReset(ctx context.Context, req *connect.Request[leapmuxv1.RequestPasswordResetRequest]) (*connect.Response[leapmuxv1.RequestPasswordResetResponse], error) {
-	if s.cfg.SoloMode {
-		return connect.NewResponse(&leapmuxv1.RequestPasswordResetResponse{}), nil
-	}
-	identifier := req.Msg.GetIdentifier()
-	var user *store.User
-	var err error
-	if strings.Contains(identifier, "@") {
-		user, err = s.store.Users().GetByEmail(ctx, strings.TrimSpace(identifier))
-	} else {
-		username, slugErr := validate.SanitizeSlug("username", identifier)
-		if slugErr != nil {
-			return connect.NewResponse(&leapmuxv1.RequestPasswordResetResponse{}), nil
-		}
-		user, err = s.store.Users().GetByUsername(ctx, username)
-	}
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return connect.NewResponse(&leapmuxv1.RequestPasswordResetResponse{}), nil
-		}
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-	// Every miss path returns the same empty body as a hit. Timing is NOT
-	// equalized: the hit path performs a synchronous SMTP send whose dial
-	// dominates any padding, so a burn would be security theater. The real
-	// anti-enumeration controls are the captcha on this procedure, the
-	// uniform response body, and the per-account resend cooldown below.
-	targetEmail := user.Email
-	if targetEmail == "" {
-		return connect.NewResponse(&leapmuxv1.RequestPasswordResetResponse{}), nil
-	}
-	// No IsAdmin exemption here, unlike the auth interceptor's verification
-	// control: this predicate asks whether THIS address is trusted with a
-	// credential-bearing reset link, and the hub has never verified it. An
-	// unverified admin self-recovers via RequestEmailChange + VerifyEmail
-	// (both allowlisted for unverified users).
-	if !user.EmailVerified && s.emailVerificationRequired(ctx) {
-		return connect.NewResponse(&leapmuxv1.RequestPasswordResetResponse{}), nil
-	}
-	// Cooldown: a recent request keeps its link. Minting a fresh token on
-	// every request would flood the inbox and invalidate the link the
-	// previous email still carries. The mint below is conditional -- the
-	// write lands only when no previous token exists or the previous one
-	// was issued at least the cooldown ago -- so a double-submit race
-	// cannot mint and send twice and the first email's link stays valid.
-	// The cutoff derivation: issued_at = previous expiry minus the constant
-	// token TTL, so "issued at least cooldown ago" is "previous expiry at
-	// or before now + (TTL - cooldown)". Both timestamps are on the app
-	// clock, the clock that wrote the expiry.
-	cooldownCutoff := time.Now().UTC().Add(passwordResetExpiry - passwordResetResendCooldown)
-	rawToken := generatePasswordResetToken()
-	expiresAt := time.Now().Add(passwordResetExpiry).UTC()
-	minted, err := s.store.Users().SetPendingPasswordReset(ctx, store.SetPendingPasswordResetParams{
-		ID:                            user.ID,
-		PendingPasswordResetToken:     hashPasswordResetToken(rawToken),
-		PendingPasswordResetExpiresAt: expiresAt,
-		CooldownCutoff:                cooldownCutoff,
-	})
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-	if !minted {
-		// A concurrent or recent request holds a live token: keep it (its
-		// email is on the way or already delivered) and answer the same
-		// empty body as every other path.
-		return connect.NewResponse(&leapmuxv1.RequestPasswordResetResponse{}), nil
-	}
-	if err := s.mail.Send(ctx, s.renderer.PasswordResetEmail(targetEmail, rawToken, passwordResetExpiry)); err != nil {
-		// Report the clear separately from the send. A log line that claims
-		// "cleared pending token" while the clear itself failed sends the
-		// operator looking for the wrong cause of a token that is still
-		// live for the full reset TTL.
-		if clearErr := s.store.Users().ClearPendingPasswordReset(ctx, user.ID); clearErr != nil {
-			slog.WarnContext(ctx, "clear pending password reset after failed send",
-				"user_id", user.ID, "err", clearErr)
-		}
-		slog.WarnContext(ctx, "password reset email send failed; cleared pending token",
-			"user_id", user.ID, "err", err)
-		// Still return empty success so the response cannot enumerate accounts,
-		// but do not leave a live token after a failed send.
-		return connect.NewResponse(&leapmuxv1.RequestPasswordResetResponse{}), nil
-	}
-	return connect.NewResponse(&leapmuxv1.RequestPasswordResetResponse{}), nil
-}
-
-func (s *AuthService) CompletePasswordReset(ctx context.Context, req *connect.Request[leapmuxv1.CompletePasswordResetRequest]) (*connect.Response[leapmuxv1.CompletePasswordResetResponse], error) {
-	if s.cfg.SoloMode {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("password reset is not available in solo mode"))
-	}
-	token := req.Msg.GetToken()
-	if token == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("token is required"))
-	}
-	if err := validate.ValidatePassword(req.Msg.GetNewPassword()); err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
-	}
-	hashedToken := hashPasswordResetToken(token)
-
-	// Charge one attempt against the row that holds this exact token. The
-	// find, the charge, and the token re-check are one statement, so a token
-	// cleared by a concurrent reset cannot slip through as a 500.
-	charged, err := s.store.Users().ConsumePasswordResetAttemptByToken(ctx, hashedToken, time.Now().UTC(), maxPasswordResetAttempts)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("invalid or expired reset token"))
-		}
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-	// Attempt 6+ expires the token in SQL (sets expires_at = now). Refuse
-	// before Argon2 so the attempt budget is a hard cap, not soft.
-	if charged.PendingPasswordResetAttempts > maxPasswordResetAttempts {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("invalid or expired reset token"))
-	}
-	if charged.PendingPasswordResetExpiresAt != nil && time.Now().UTC().After(*charged.PendingPasswordResetExpiresAt) {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("reset token expired"))
-	}
-
-	hashed, err := pwdhash.Hash(req.Msg.GetNewPassword())
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-
-	user := charged
-	uid, mintErr := mintRowUserID(user.ID)
-	if mintErr != nil {
-		return nil, mintErr
-	}
-	var revoked *store.PasswordResetRevocation
-	if err := s.store.RunInUserAuthTransaction(ctx, uid, func(tx store.Store) error {
-		var completeErr error
-		revoked, completeErr = tx.Users().CompletePasswordReset(ctx, store.CompletePasswordResetParams{
-			ID:                        user.ID,
-			PasswordHash:              hashed,
-			PendingPasswordResetToken: hashedToken,
-		})
-		if completeErr != nil {
-			if errors.Is(completeErr, store.ErrNotFound) {
-				return connect.NewError(connect.CodeNotFound, fmt.Errorf("invalid or expired reset token"))
-			}
-			return completeErr
-		}
-		if err := RevokePasskeyAuthState(ctx, tx, user.ID); err != nil {
-			return err
-		}
-		if err := tx.Sessions().DeleteByUser(ctx, uid); err != nil {
-			return fmt.Errorf("delete sessions: %w", err)
-		}
-		if _, err := tx.APITokens().RevokeByUser(ctx, uid); err != nil {
-			return fmt.Errorf("revoke api tokens: %w", err)
-		}
-		if _, err := tx.DelegationTokens().RevokeByUser(ctx, uid); err != nil {
-			return fmt.Errorf("revoke delegation tokens: %w", err)
-		}
-		return nil
-	}); err != nil {
-		var connectErr *connect.Error
-		if errors.As(err, &connectErr) {
-			return nil, connectErr
-		}
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-	if revoked != nil {
-		s.lifecycle.UserRevoked(user.ID, revoked.AuthGeneration)
-	}
-	return connect.NewResponse(&leapmuxv1.CompletePasswordResetResponse{}), nil
-}
-
 // RevokePasskeyAuthState removes every passkey artifact a user owns: the
-// credential rows, their ceremony and proof sessions, and any pending
+// credential rows, their in-flight ceremony sessions, and any pending
 // password reset. The credential-rotation teardown paths (self-service
 // CompletePasswordReset, admin ResetPassword, admin DeleteUser, the
 // offline recover CLI, and signup rollback) share it, so the next
-// credential type is registered here once instead of remembered at each
+// credential type needs one registration here instead of one at each
 // rotation site.
+//
+// There is no separate step-up artifact to sweep. The single-use reauth
+// proof this replaced had its own webauthn_sessions kind; a session
+// ELEVATION is a pair of columns on user_sessions instead, and every caller
+// here deletes the account's session rows in the same transaction, so the
+// window dies with the row that carried it.
 func RevokePasskeyAuthState(ctx context.Context, tx store.Store, userID string) error {
 	if err := tx.PasskeyCredentials().DeleteAllByUser(ctx, userID); err != nil {
 		return fmt.Errorf("delete passkeys: %w", err)

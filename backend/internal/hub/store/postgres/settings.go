@@ -39,7 +39,11 @@ func (s *settingsStore) GetAll(ctx context.Context) ([]store.SettingRow, error) 
 	return store.MapSlice(rows, fromDBSetting), nil
 }
 
+// See store.ErrLockingReadOutsideTransaction for the rule and its reason.
 func (s *settingsStore) GetAllForUpdate(ctx context.Context) ([]store.SettingRow, error) {
+	if !s.conn.inTx() {
+		return nil, store.ErrLockingReadOutsideTransaction
+	}
 	rows, err := s.conn.q.GetAllSettingsForUpdate(ctx)
 	if err != nil {
 		return nil, mapErr(err)

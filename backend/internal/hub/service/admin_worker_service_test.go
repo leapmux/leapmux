@@ -134,9 +134,9 @@ func TestAdminWorkerService_DeregisterAndGet(t *testing.T) {
 
 // expiredRegistrationKeys is the backlog the drain case seeds. It is larger
 // than the purge query's own batch (LIMIT 1000 in every dialect), so the
-// handler MUST take more than one pass to clear it. A backlog that fits in
-// one batch is drained identically by a correct loop and by a loop that
-// stops after the first short page, so it cannot pin the drain at all.
+// handler MUST take more than one pass to clear it. A correct loop and a
+// loop that stops after the first short page drain a one-batch backlog
+// identically, so such a backlog cannot pin the drain at all.
 //
 // The number is coupled to that LIMIT, and it is the weaker half of the
 // coverage on purpose: it is what exercises the REAL query, while
@@ -202,8 +202,8 @@ func TestAdminWorkerService_PurgeExpiredRegistrationKeysDrainsEveryBatch(t *test
 // turned a real store fault into "no owner". A LIVE owner reads the same
 // under either implementation, so only a deleted one tells them apart.
 //
-// Both surfaces are asserted TOGETHER, because the value of one query is
-// that the single-row read and the listing cannot disagree.
+// This test asserts both surfaces TOGETHER, because the value of one query
+// is that the single-row read and the listing cannot disagree.
 func TestAdminWorkerService_GetWorkerReportsADeletedOwner(t *testing.T) {
 	env := setupAdminWorkerTest(t)
 	ctx := context.Background()
@@ -250,7 +250,7 @@ func TestAdminWorkerService_ListWorkersCapsAnOversizedPageLimit(t *testing.T) {
 	ctx := context.Background()
 
 	owner := userid.MustNew(env.userID)
-	for range service.MaxAdminPageLimit + 1 {
+	for range service.MaxPageLimit + 1 {
 		require.NoError(t, env.st.Workers().Create(ctx, store.CreateWorkerParams{
 			ID:              id.Generate(),
 			AuthToken:       id.Generate(),
@@ -265,7 +265,7 @@ func TestAdminWorkerService_ListWorkersCapsAnOversizedPageLimit(t *testing.T) {
 		Limit: 100000,
 	}, env.token))
 	require.NoError(t, err)
-	assert.Len(t, page.Msg.GetWorkers(), service.MaxAdminPageLimit,
+	assert.Len(t, page.Msg.GetWorkers(), service.MaxPageLimit,
 		"an oversized limit is capped, not honoured")
 	require.NotEmpty(t, page.Msg.GetNextCursor(), "a capped page says where the next one starts")
 

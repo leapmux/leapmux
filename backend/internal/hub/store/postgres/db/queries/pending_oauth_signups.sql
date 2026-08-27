@@ -4,8 +4,8 @@
 -- database clock.
 
 -- name: CreatePendingOAuthSignup :exec
-INSERT INTO pending_oauth_signups (token, provider_id, provider_subject, email, display_name, access_token, refresh_token, token_type, token_expires_at, key_version, redirect_uri, expires_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12);
+INSERT INTO pending_oauth_signups (token, provider_id, provider_subject, nonce_hash, email, display_name, access_token, refresh_token, token_type, token_expires_at, key_version, redirect_uri, expires_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13);
 
 -- name: GetPendingOAuthSignup :one
 SELECT * FROM pending_oauth_signups WHERE token = $1;

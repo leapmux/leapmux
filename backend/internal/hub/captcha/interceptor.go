@@ -62,11 +62,6 @@ var protectedProcedures = map[string]protectedProcedure{
 func NewInterceptor(m *Manager) connect.UnaryInterceptorFunc {
 	return func(next connect.UnaryFunc) connect.UnaryFunc {
 		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-			// Stash the browser page URL on every unary call so Describe /
-			// resolve (GetSystemInfo, GetAltchaChallenge, Login, …) can
-			// runtime-disable ALTCHA on insecure HTTP without a DB write.
-			ctx = withClientPageURL(ctx, clientPageURL(req.Header()))
-
 			proc, ok := protectedProcedures[req.Spec().Procedure]
 			if !ok {
 				return next(ctx, req)
@@ -75,8 +70,8 @@ func NewInterceptor(m *Manager) connect.UnaryInterceptorFunc {
 			msg, ok := req.Any().(captchaRequest)
 			if !ok {
 				// Every protected request type implements captchaRequest
-				// (the compile-time guards above); this arm is unreachable
-				// but must not panic if a future procedure slips a foreign
+				// (the compile-time guards above); this branch is unreachable
+				// but must not panic if a future procedure puts a foreign
 				// request type into the map.
 				return nil, connect.NewError(connect.CodePermissionDenied, ErrVerificationFailed)
 			}
@@ -95,7 +90,7 @@ func NewInterceptor(m *Manager) connect.UnaryInterceptorFunc {
 			// an Enabled pre-check would — without resolving the config a
 			// second time per protected request.
 			if err := m.Verify(ctx, proc.action, msg.GetCaptchaPayload()); err != nil {
-				// Uniform denial: the manager has already recorded the
+				// Uniform denial: the manager already recorded the
 				// outcome (passed/failed/replayed) under the selected
 				// provider's metric label; clients see only this error.
 				return nil, connect.NewError(connect.CodePermissionDenied, ErrVerificationFailed)

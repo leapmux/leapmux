@@ -23,18 +23,18 @@ test.describe('Authentication', () => {
     await solveCaptchaViaUI(page)
     await page.getByRole('button', { name: 'Sign in' }).click()
 
-    // Should remain on the login page with an error. The error message is
-    // asserted FIRST because it is the only assertion here that WAITS for the
-    // login attempt to resolve -- a `not.toHaveURL` placed before it passes on
-    // its first poll against the still-unchanged /login URL, whatever the hub
-    // answered.
+    // Should remain on the login page with an error. The test asserts the
+    // error message FIRST because it is the only assertion here that WAITS for
+    // the login attempt to resolve -- a `not.toHaveURL` placed before it passes
+    // on its first poll against the still-unchanged /login URL, whatever the
+    // hub answered.
     await expect(page.getByText(INVALID_CREDENTIALS_RE)).toBeVisible()
     await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible()
-    // Still on /login. Asserted POSITIVELY rather than as
+    // Still on /login. The test asserts this POSITIVELY rather than as
     // `not.toHaveURL(APP_HOME_URL_RE)`: `/login` does not end in `/`, so the
     // negative form passes on its first poll no matter what the hub answered,
-    // whether the wrong password was rejected or silently accepted -- the exact
-    // regression it exists to catch.
+    // whether the hub rejected the wrong password or silently accepted it --
+    // the exact regression it exists to catch.
     await expect(page).toHaveURL(/\/login(?:\?.*)?$/)
   })
 
@@ -47,6 +47,46 @@ test.describe('Authentication', () => {
     // Should return to login page
     await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible()
     await expect(page.getByText('LeapMux')).toBeVisible()
+  })
+
+  // The credential pages are for a visitor who is NOT signed in, and until
+  // SignedOutOnly they had no gate at all: a signed-in user got the whole
+  // form on every one of them. /signup was the worst of the four -- its only
+  // restriction was the hub's signup setting, so the user could create a
+  // SECOND account and the page then swapped their session to it with no
+  // message.
+  //
+  // In the real router, not only in the unit test: the gate depends on route
+  // wrappers, and a page that lost its wrapper would still pass every unit
+  // test of the component.
+  test('sends a signed-in user away from every credential page', async ({ page }) => {
+    await loginViaUI(page)
+    await expect(page).toHaveURL(APP_HOME_URL_RE)
+
+    for (const path of ['/login', '/signup', '/forgot-password', '/setup']) {
+      await page.goto(path)
+      await expect(page).toHaveURL(APP_HOME_URL_RE)
+      await expect(page.getByRole('button', { name: 'Sign in' })).toBeHidden()
+    }
+  })
+
+  // /reset-password is the one page that EXPLAINS instead of redirecting, and
+  // the reason is in its address: it carries a single-use token and no
+  // ?redirect=, so a silent bounce gains the visitor nothing, explains
+  // nothing, and the `replace` takes the tokened address out of that tab's
+  // history as well.
+  test('explains rather than redirects on the reset-password page', async ({ page }) => {
+    await loginViaUI(page)
+    await expect(page).toHaveURL(APP_HOME_URL_RE)
+
+    await page.goto('/reset-password?token=not-a-real-token')
+    await expect(page.getByTestId('signed-out-only-explain')).toBeVisible()
+    await expect(page.getByTestId('signed-out-only-sign-out')).toBeVisible()
+
+    // Signing out re-renders the form at the SAME address, token intact.
+    await page.getByTestId('signed-out-only-sign-out').click()
+    await expect(page.getByTestId('signed-out-only-explain')).toBeHidden()
+    await expect(page).toHaveURL(/\/reset-password\?token=not-a-real-token$/)
   })
 
   test('should redirect to original page after login', async ({ page }) => {

@@ -1,23 +1,23 @@
 import type { DevServerHandle } from './helpers/devServer'
 import { test as base, expect } from '@playwright/test'
 import { fetchAltchaChallenge } from './helpers/altcha'
-import { mintCLITokenForAdmin, runCLI } from './helpers/cli'
+import { mintCLITokenForAdmin, runCLI, setHubSetting } from './helpers/cli'
 import { startDevServer, stopDevServer } from './helpers/devServer'
 import { loginViaUI } from './helpers/ui'
 
 /**
  * Exercises the dynamically loaded WASM solvers for the memory-hard ALTCHA
- * algorithms: SCRYPT and ARGON2ID are NOT pre-registered by the altcha
- * widget build — the frontend must fetch the hub's advertised algorithm,
+ * algorithms: the altcha widget build does NOT pre-register SCRYPT and
+ * ARGON2ID — the frontend must fetch the hub's advertised algorithm,
  * lazily import the matching worker chunk, register it in the widget's
  * solver registry, and only then solve. A dedicated server per case keeps
  * the algorithm switch from leaking into the shared fixture's hub.
  *
  * The hub caches the captcha config for ~30s, and seeding the admin (via
- * the default algorithm) primes that cache, so the switch is only
- * confirmed once the challenge endpoint actually issues the target
- * algorithm — everything after that is guaranteed to exercise the WASM
- * worker path rather than a stale default challenge.
+ * the default algorithm) primes that cache, so this helper confirms the
+ * switch only once the challenge endpoint actually issues the target
+ * algorithm — everything after that certainly exercises the WASM worker
+ * path rather than a stale default challenge.
  */
 async function waitForChallengeAlgorithm(hubUrl: string, algorithm: string, timeoutMs = 90_000): Promise<void> {
   const deadline = Date.now() + timeoutMs
@@ -50,6 +50,13 @@ async function setupServerWithAlgorithm(
     // hub; the offline captcha verb no longer exists.
     const cfg = await mintCLITokenForAdmin(server)
     cliConfigDir = cfg.path
+    // ALTCHA runs only where a browser can solve it AND there is somebody
+    // to protect, and the hub reads its own settings for both. A dev server
+    // publishes nothing and terminates no TLS, so it deactivates ALTCHA --
+    // every assertion below would then pass against a hub that issues no
+    // challenge at all. Publish an HTTPS address, which is the configuration
+    // of an operator who runs ALTCHA.
+    await setHubSetting(cfg, 'public_url', 'https://hub.e2e.test')
     await runCLI(cfg, ['admin', 'captcha', 'set', ...args])
     await waitForChallengeAlgorithm(server.hubUrl, algorithm)
     await use(server)
@@ -88,7 +95,7 @@ for (const { algorithm, args } of cases) {
       await expect(page).toHaveURL(/\/$/)
     })
 
-    test(`the ${algorithm} solver is registered in the widget's algorithm registry`, async ({ page }) => {
+    test(`the widget's algorithm registry holds the ${algorithm} solver`, async ({ page }) => {
       await page.goto('/login')
       // The CaptchaField pre-warms the solver for the algorithm the hub
       // advertises; the registered factory must exist by the time the

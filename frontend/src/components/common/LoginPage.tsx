@@ -9,10 +9,11 @@ import { OAuthProviderList } from '~/components/common/OAuthProviderList'
 import { PillGroup } from '~/components/common/PillGroup'
 import { Spinner } from '~/components/common/Spinner'
 import { useAuth } from '~/context/AuthContext'
-import { createAuthMethodSelection } from '~/lib/authMethodSelection'
+import { authMethodOptions, createAuthMethodSelection } from '~/lib/authMethodSelection'
 import { createCaptchaForm } from '~/lib/captchaForm'
-import { safeRedirect } from '~/lib/safeRedirect'
-import { isEmailEnabled, isPasskeyEnabled, isSetupRequired, isSignupEnabled, isSoloMode, loadOAuthProviders } from '~/lib/systemInfo'
+import { postAuthNavigate } from '~/lib/postAuthNavigate'
+import { stringParam } from '~/lib/searchParam'
+import { isEmailEnabled, isSignupEnabled, loadOAuthProviders } from '~/lib/systemInfo'
 import { errorText, pageCard } from '~/styles/shared.css'
 import * as styles from './LoginPage.css'
 
@@ -30,20 +31,17 @@ export const LoginPage: Component = () => {
   let usernameRef!: HTMLInputElement
   let passwordRef!: HTMLInputElement
 
-  // `/login` sits outside the `(app)` layout, so AuthGuard never sees a visit
-  // here. These two arms cover the visitor who lands on the login form directly
-  // (bookmark, typed URL, stale tab) on an instance that has no login to offer:
-  // solo mode, or a fresh install with no account yet.
+  // Two guards ABOVE this page answer the two hubs with no login to offer. A solo
+  // hub authenticates every request, so `SignedOutOnly` sends that visitor to
+  // the app; a hub whose first-run setup is not complete has no account, so
+  // `SetupGate` sends them to `/setup`. Both guards cover every credential
+  // address rather than this one alone.
   //
-  // Requires `auth.loading()`, and that gate is the whole point. Before
-  // the first system-info load the getters answer fabricated defaults
-  // (`soloMode = false`, `setupRequired = false`), not the hub's answers
-  // -- so reading them from `onMount`, as this used to, sampled the
-  // defaults on any load that won this race and then never looked again,
-  // because onMount runs once. A solo-mode visitor was left on a
-  // credential form that cannot succeed, which is exactly the dead end
-  // these arms exist to prevent. AuthGuard's copies of the same two
-  // calls are safe only because they sit behind this same gate.
+  // What stays here is the page's own setup, and it still requires
+  // `auth.loading()`. Before the first system-info load the getters answer
+  // fabricated defaults -- `isSignupEnabled()` reads `false` -- so an
+  // `onMount` that sampled them on a load which won the race pinned the signup
+  // link off and never looked again.
   //
   // createEffect, not onMount: it re-runs when `auth.loading()` flips, which is
   // the earliest moment the getters are answers rather than guesses.
@@ -55,7 +53,7 @@ export const LoginPage: Component = () => {
   // providers) is a fire-and-forget continuation at the end, which needs no
   // tracking: it reads nothing reactive and only writes.
   //
-  // The captcha gate does NOT lean on `auth.loading()`: that signal flips on
+  // The captcha gate does NOT depend on `auth.loading()`: that signal flips on
   // every attempt, which would tear the widget down mid-session. It tracks the
   // system-info signal instead (see createCaptchaForm).
   let bootstrapped = false
@@ -65,15 +63,9 @@ export const LoginPage: Component = () => {
     }
     bootstrapped = true
 
-    if (isSoloMode()) {
-      navigate('/', { replace: true })
-      return
-    }
-    if (isSetupRequired()) {
-      navigate('/setup', { replace: true })
-      return
-    }
-
+    // The solo rule is NOT here. `SignedOutOnly` carries it for all five
+    // credential pages, so this page no longer keeps a copy that reached one.
+    //
     // Focus the first empty input field (username if both empty).
     if (!usernameRef.value) {
       usernameRef.focus()
@@ -91,8 +83,11 @@ export const LoginPage: Component = () => {
       navigate('/verify-email', { replace: true })
       return
     }
-    const redirect = safeRedirect(typeof searchParams.redirect === 'string' ? searchParams.redirect : undefined)
-    navigate(redirect ?? '/', { replace: true })
+    // Through postAuthNavigate, not navigate: a CLI login bounces here with
+    // `?redirect=/auth/cli/start...`, and that address belongs to the hub's
+    // mux. A client-side transition would render the SPA's 404 page while
+    // the CLI waits for a consent screen nobody ever sees.
+    postAuthNavigate(navigate, stringParam(searchParams.redirect), '/')
   }
 
   const handleSubmit = async (e: Event) => {
@@ -109,7 +104,7 @@ export const LoginPage: Component = () => {
       // error and no way to resubmit.
     }
     catch (err) {
-      // Error is captured by auth context. A rejected captcha (expired
+      // The auth context captures the error. A rejected captcha (expired
       // solve, replay) must not linger: force a fresh challenge. Pass
       // the error so PermissionDenied refreshes captcha system-info.
       captcha.reset(err)
@@ -120,7 +115,7 @@ export const LoginPage: Component = () => {
   }
 
   const oauthLoginUrl = (provider: OAuthProviderInfo) => {
-    const redirect = typeof searchParams.redirect === 'string' ? searchParams.redirect : ''
+    const redirect = stringParam(searchParams.redirect) ?? ''
     const url = provider.loginUrl
     if (redirect) {
       return `${url}?redirect=${encodeURIComponent(redirect)}`
@@ -163,10 +158,7 @@ export const LoginPage: Component = () => {
           </label>
           <PillGroup
             label="Sign-in method"
-            options={[
-              { value: 'password' as const, label: 'Password' },
-              ...(isPasskeyEnabled() ? [{ value: 'passkey' as const, label: 'Passkey' }] : []),
-            ]}
+            options={authMethodOptions()}
             selected={v => effectiveMethod() === v}
             onSelect={methodSelection.select}
           />

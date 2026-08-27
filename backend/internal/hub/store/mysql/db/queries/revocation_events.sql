@@ -6,6 +6,23 @@ INSERT INTO revocation_events (
 -- name: RevocationNow :one
 SELECT NOW(3);
 
+-- name: SessionRevokedEventExists :one
+-- Was this session taken away by an administrator, rather than signed out?
+-- The two paths delete the same row and leave the account's auth generation
+-- alone, so this event row is the only durable fact that separates them.
+-- Pending and published rows both count: the insert IS the fact.
+--
+-- Served by idx_revocation_events_session_revoked. MySQL has no partial
+-- index, so it leads with kind instead: the one kind this asks about occupies
+-- a contiguous range, and every event pays one entry. Without it this is a
+-- full scan of the retention window's events, and it runs while the caller
+-- holds the user-auth row lock. The same dialect split already applies to
+-- idx_revocation_events_pending.
+SELECT EXISTS(
+    SELECT 1 FROM revocation_events
+    WHERE subject_id = ? AND kind = 'session_revoked'
+);
+
 -- name: LockRevocationEventSequence :one
 SELECT last_seq FROM revocation_event_sequence
 WHERE id = 1

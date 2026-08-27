@@ -15,16 +15,42 @@ import (
 )
 
 // AdminOAuthService implements the leapmux.v1.AdminOAuthService ConnectRPC
-// handler. OAuth issuer validation stays conditional exactly as the CLI
+// handler.
+//
+// Every WRITE here runs under writeUnderElevation, the same gate every
+// hub-settings write takes. An identity provider row is hub configuration and
+// carries more than a settings key does: it installs a sign-in route for the
+// whole hub, and one with trust_email set links an incoming identity to any
+// account whose verified address it presents. Removing the last one locks out
+// every account that has no other login method. OAuth issuer validation stays conditional exactly as the CLI
 // verb had it: OIDC-typed providers validate their issuer by fetching its
 // discovery document; presets (github/google/apple) skip it.
 type AdminOAuthService struct {
 	store store.Store
 	ks    *keystore.Keystore
+	// cache drops the built instances of a provider this service removes or
+	// disables. loadEnabledProvider refuses a deleted row with 404 and a
+	// disabled row with 403 BEFORE it rebuilds, so the login handler's own
+	// eviction can never reach such an entry -- and the entry holds the
+	// client secret the keystore decrypted. The dependency is an interface
+	// so the admin verbs need the eviction and not the login handler.
+	cache providerCacheInvalidator
+	// clockSeam supplies the instant the elevation gate and its slide read.
+	// Nil means time.Now, so production wires nothing.
+	clockSeam
 }
 
-func NewAdminOAuthService(st store.Store, ks *keystore.Keystore) *AdminOAuthService {
-	return &AdminOAuthService{store: st, ks: ks}
+// providerCacheInvalidator is the one thing the admin verbs need from the
+// OAuth login handler.
+type providerCacheInvalidator interface {
+	InvalidateProvider(providerID string)
+}
+
+func NewAdminOAuthService(st store.Store, ks *keystore.Keystore, cache providerCacheInvalidator) *AdminOAuthService {
+	if cache == nil {
+		panic("admin oauth service requires a provider cache invalidator")
+	}
+	return &AdminOAuthService{store: st, ks: ks, cache: cache}
 }
 
 func adminOAuthProviderToProto(p store.OAuthProviderSummary) *leapmuxv1.AdminOAuthProvider {
@@ -104,18 +130,23 @@ func (s *AdminOAuthService) AddOAuthProvider(ctx context.Context, req *connect.R
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("encrypt client secret: %w", err))
 	}
-	if err := s.store.OAuthProviders().Create(ctx, store.CreateOAuthProviderParams{
-		ID:           providerID,
-		ProviderType: storedType,
-		Name:         displayName,
-		IssuerURL:    issuer,
-		ClientID:     msg.GetClientId(),
-		ClientSecret: encryptedSecret,
-		Scopes:       scopes,
-		TrustEmail:   *trustEmail,
-		Enabled:      true,
+	if err := writeUnderElevation(ctx, s.store, s.now, func() error {
+		if err := s.store.OAuthProviders().Create(ctx, store.CreateOAuthProviderParams{
+			ID:           providerID,
+			ProviderType: storedType,
+			Name:         displayName,
+			IssuerURL:    issuer,
+			ClientID:     msg.GetClientId(),
+			ClientSecret: encryptedSecret,
+			Scopes:       scopes,
+			TrustEmail:   *trustEmail,
+			Enabled:      true,
+		}); err != nil {
+			return storeConnectError(err, "create provider")
+		}
+		return nil
 	}); err != nil {
-		return nil, storeConnectError(err, "create provider")
+		return nil, err
 	}
 	created, err := s.store.OAuthProviders().GetByID(ctx, providerID)
 	if err != nil {
@@ -141,9 +172,9 @@ func (s *AdminOAuthService) ListOAuthProviders(ctx context.Context, _ *connect.R
 // requireOAuthProvider refuses an empty or unknown provider id.
 //
 // Both write verbs need it, for the same reason: their UPDATE and DELETE
-// match no row and report no error, so without the check an operator who
-// mistypes an id is told the login method is removed or disabled while it
-// stays enabled for every user.
+// match no row and report no error, so without the check the hub tells an
+// operator who mistypes an id that the login method is removed or disabled,
+// while it stays enabled for every user.
 func (s *AdminOAuthService) requireOAuthProvider(ctx context.Context, id string) error {
 	if err := requireField(id, "id"); err != nil {
 		return err
@@ -162,7 +193,7 @@ func (s *AdminOAuthService) requireOAuthProvider(ctx context.Context, id string)
 // back. The hub already refuses that outcome for one account
 // (UserService.UnlinkOAuthProvider) and puts the analogous loss behind
 // force (AdminUserService.DeleteUser), so this verb takes the same shape:
-// refuse with the count, and let force through.
+// refuse with the count, and admit the removal when the caller passes force.
 //
 // The count travels in the response either way. An operator who passes
 // force learns exactly how many accounts the removal locked out, and an
@@ -180,9 +211,15 @@ func (s *AdminOAuthService) RemoveOAuthProvider(ctx context.Context, req *connec
 			fmt.Errorf("%d user(s) have no other login method through provider %q; they will be locked out - set a password for them first, or pass force",
 				orphaned, req.Msg.GetId()))
 	}
-	if err := s.store.OAuthProviders().Delete(ctx, req.Msg.GetId()); err != nil {
-		return nil, storeConnectError(err, "delete provider")
+	if err := writeUnderElevation(ctx, s.store, s.now, func() error {
+		if err := s.store.OAuthProviders().Delete(ctx, req.Msg.GetId()); err != nil {
+			return storeConnectError(err, "delete provider")
+		}
+		return nil
+	}); err != nil {
+		return nil, err
 	}
+	s.cache.InvalidateProvider(req.Msg.GetId())
 	return connect.NewResponse(&leapmuxv1.RemoveOAuthProviderResponse{LockedOutUsers: orphaned}), nil
 }
 
@@ -190,11 +227,19 @@ func (s *AdminOAuthService) SetOAuthProviderEnabled(ctx context.Context, req *co
 	if err := s.requireOAuthProvider(ctx, req.Msg.GetId()); err != nil {
 		return nil, err
 	}
-	if err := s.store.OAuthProviders().UpdateEnabled(ctx, store.UpdateOAuthProviderEnabledParams{
-		Enabled: req.Msg.GetEnabled(),
-		ID:      req.Msg.GetId(),
+	if err := writeUnderElevation(ctx, s.store, s.now, func() error {
+		if err := s.store.OAuthProviders().UpdateEnabled(ctx, store.UpdateOAuthProviderEnabledParams{
+			Enabled: req.Msg.GetEnabled(),
+			ID:      req.Msg.GetId(),
+		}); err != nil {
+			return storeConnectError(err, "update provider")
+		}
+		return nil
 	}); err != nil {
-		return nil, storeConnectError(err, "update provider")
+		return nil, err
 	}
+	// Unconditional, for both directions. A re-enable then rebuilds once on
+	// the next request, and one rule reads better than two.
+	s.cache.InvalidateProvider(req.Msg.GetId())
 	return connect.NewResponse(&leapmuxv1.SetOAuthProviderEnabledResponse{}), nil
 }

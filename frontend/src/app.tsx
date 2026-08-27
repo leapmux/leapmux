@@ -5,12 +5,14 @@ import { createEffect, createSignal, ErrorBoundary, getOwner, Match, onCleanup, 
 import { getRuntimeState, isTauriApp, platformBridge, refreshRuntimeState } from '~/api/platformBridge'
 import { channelManager } from '~/api/workerRpc'
 import { BootSplash } from '~/components/common/BootSplash'
+import { ElevationPromptHost } from '~/components/common/ElevationPromptHost'
 import { renderErrorFallback } from '~/components/common/ErrorFallback'
+import { SetupGate } from '~/components/common/SetupGate'
 import { LauncherView } from '~/components/desktop/LauncherView'
 import { AboutDialog } from '~/components/shell/AboutDialog'
 import { DesktopMinimalChrome, DesktopRouteChrome } from '~/components/shell/DesktopChrome'
 import { UserMenuDialogs } from '~/components/shell/UserMenu'
-import { openPreferences, setShowAboutDialog, showAboutDialog } from '~/components/shell/UserMenuState'
+import { openPreferences, PreferencesAddress, setShowAboutDialog, showAboutDialog } from '~/components/shell/UserMenuState'
 import { AuthProvider } from '~/context/AuthContext'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
 import { useCoreShortcuts } from '~/hooks/useCoreShortcuts'
@@ -53,26 +55,27 @@ const PreferencesApplier: ParentComponent = (props) => {
   // value arriving from either tier repaints. Until this runs, ~/lib/themeStore
   // shows the default palette at the OS polarity: it reads no storage, because
   // every stored theme is scoped to an account and this component is the first
-  // point at which one is known.
+  // point at which the app knows one.
   createEffect(() => {
     applyTheme(preferences.theme())
   })
 
-  // The syntax theme, which cannot be applied in CSS: Shiki bakes the colours
+  // The syntax theme, which CSS cannot apply: Shiki embeds the colours
   // into each token, so a change loads the new TextMate themes, drops the caches
   // that hold tokenized output, and re-renders. `shikiHighlighter` is the
   // SYNCHRONOUS highlighter the store must register on before it switches --
   // synchronous call sites cannot await a theme load.
   //
-  // `data-code-variant` moves WITH the tokens, in this one effect. It used to be
-  // written from an effect of its own, synchronously, so the surface repainted
-  // to the new polarity while every already-rendered block still carried the old
+  // `data-code-variant` moves WITH the tokens, in this one effect. An effect of
+  // its own used to write it, synchronously, so the surface repainted to the
+  // new polarity while every already-rendered block still carried the old
   // theme's tokens -- dark on dark for the length of a chunk import, which is
-  // the exact contrast failure the `--code-*` publication exists to prevent. The
-  // repaint is not delayed in the case that has to stay fast: a UI polarity flip
-  // leaves the pair unchanged, so `setSyntaxTheme` early-returns and the write
-  // lands in a microtask, before paint. A failed import now leaves surface and
-  // tokens both on the previous theme, which is consistent, and it is logged.
+  // the exact contrast failure the `--code-*` publication exists to prevent.
+  // Nothing delays the repaint in the case that has to stay fast: a UI polarity
+  // flip leaves the pair unchanged, so `setSyntaxTheme` early-returns and the
+  // write lands in a microtask, before paint. A failed import now leaves surface
+  // and tokens both on the previous theme, which is consistent, and the catch
+  // handler logs it.
   //
   // `syntaxAttrGen` drops stale attribute writes when a later effect run wins
   // the race after the lazy `renderMarkdown` import — without it an older
@@ -85,7 +88,7 @@ const PreferencesApplier: ParentComponent = (props) => {
       themeStore.systemMode(),
     )
     // Read synchronously, so `resolvedMode()` stays a tracked dependency of this
-    // effect rather than being read inside the `.then`, where it would not be.
+    // effect. A read inside the `.then` does not track it.
     const variant = resolveSyntaxVariant(
       preferences.syntaxTheme(),
       preferences.theme(),
@@ -94,14 +97,14 @@ const PreferencesApplier: ParentComponent = (props) => {
     )
     const gen = ++syntaxAttrGen
     // `setSyntaxTheme` now REJECTS when a theme chunk fails to load, so the
-    // rejection is reported rather than dropped. Without a handler it reaches
-    // the global sink as "Something went wrong", which says nothing about the
-    // code surface that did not repaint.
+    // catch below reports the rejection rather than drops it. Without a handler
+    // it reaches the global sink as "Something went wrong", which says nothing
+    // about the code surface that did not repaint.
     //
     // `shikiHighlighter` is loaded LAZILY: a static import of `~/lib/renderMarkdown`
     // pulled the whole sync Shiki grammar set + worker client onto every cold
-    // boot's modulepreload list (~2 MB of critical-path JS on mobile). The
-    // highlighter is only needed once preferences resolve a syntax pair.
+    // boot's modulepreload list (~2 MB of critical-path JS on mobile). This
+    // effect needs the highlighter only after preferences resolve a syntax pair.
     void import('~/lib/renderMarkdown')
       .then(({ shikiHighlighter }) => setSyntaxTheme(pair, shikiHighlighter))
       .then(() => {
@@ -113,7 +116,7 @@ const PreferencesApplier: ParentComponent = (props) => {
           // value of a custom property and `--code-color-scheme` is one. It
           // decides whether a code block's field is a translucent tint (the two
           // polarities agree, so the field may belong to whatever hosts it) or
-          // an opaque mix (they differ, and the field has to carry the baked
+          // an opaque mix (they differ, and the field has to carry the embedded
           // tokens across the flip). Written HERE, in the same statement as the
           // variant, so the two cannot describe different themes for a frame.
           document.documentElement.setAttribute('data-code-polarity', variant.polarity)
@@ -135,7 +138,7 @@ const PreferencesApplier: ParentComponent = (props) => {
 
 /**
  * Wraps app content in desktop mode to prevent a brief flash of
- * BootSplash from AuthGuard while auth is resolving. Starts at
+ * BootSplash from AuthGuard while auth resolves. Starts at
  * opacity 0 and fades in after a short delay.
  */
 const DesktopFadeIn: ParentComponent = (props) => {
@@ -203,7 +206,7 @@ export default function App() {
           .catch(err => log.warn(`onEvent(${event}) failed`, err))
       }
       registerListener('menu:show-about', () => setShowAboutDialog(true))
-      registerListener('menu:show-preferences', () => openPreferences('appearance'))
+      registerListener('menu:show-preferences', () => openPreferences())
 
       getRuntimeState()
         .then((state) => {
@@ -214,10 +217,10 @@ export default function App() {
   })
 
   return (
-    // The outermost net. Anything it catches -- the providers, the launcher,
-    // the desktop chrome -- can only be retried by rebuilding all of them, so
-    // its reset does re-run the auth bootstrap. The boundary inside the router
-    // below exists so that a *route* fault never has to pay that price.
+    // The outermost error boundary. A retry of anything it catches -- the
+    // providers, the launcher, the desktop chrome -- must rebuild all of them,
+    // so its reset does re-run the auth bootstrap. The boundary inside the
+    // router below exists so that a *route* fault never forces that rebuild.
     <ErrorBoundary fallback={renderErrorFallback}>
       <div class={heightFull}>
         <Switch>
@@ -227,30 +230,82 @@ export default function App() {
                 <PreferencesProvider>
                   <PreferencesApplier>
                     <Router root={props => (
-                      <Suspense fallback={<BootSplash />}>
-                        <DesktopRouteChrome>
-                          {/*
-                            Scoped below AuthProvider and PreferencesProvider deliberately:
-                            a render fault in a route resets to a freshly-rendered route and
-                            leaves the session, preferences and pooled channels alone. The
-                            outer boundary would have torn all of them down and re-bootstrapped.
+                      <>
+                        <Suspense fallback={<BootSplash />}>
+                          <DesktopRouteChrome>
+                            {/*
+                              Scoped below AuthProvider and PreferencesProvider deliberately:
+                              a render fault in a route resets to a freshly-rendered route and
+                              leaves the session, preferences and pooled channels alone. The
+                              outer boundary would have torn all of them down and re-bootstrapped.
 
-                            Being INSIDE the Suspense above is what forces `ErrorFallback` to
-                            keep every suspending read out of its render: a suspended Suspense
-                            with no `fallback` renders nothing, so a fallback that read a
-                            pending resource would show a blank page instead of the error.
-                          */}
-                          <ErrorBoundary fallback={renderErrorFallback}>
-                            {props.children}
-                          </ErrorBoundary>
-                        </DesktopRouteChrome>
-                      </Suspense>
+                              Being INSIDE the Suspense above is what forces `ErrorFallback` to
+                              keep every suspending read out of its render: a suspended Suspense
+                              with no `fallback` renders nothing, so a fallback that read a
+                              pending resource would show a blank page instead of the error.
+                            */}
+                            <ErrorBoundary fallback={renderErrorFallback}>
+                              {/*
+                                Above the outlet, so a hub whose first-run setup is
+                                not complete answers EVERY address with /setup --
+                                the routes that exist today and the ones added
+                                later. See SetupGate for why the rule cannot live
+                                in the pages.
+                              */}
+                              <SetupGate>
+                                {props.children}
+                              </SetupGate>
+                            </ErrorBoundary>
+                          </DesktopRouteChrome>
+                        </Suspense>
+                        {/*
+                          The app-wide dialogs, INSIDE the router and beside the
+                          outlet rather than inside it.
+
+                          Inside, because a dialog may link to a route: the
+                          account panel points an unverified address at
+                          /verify-email, and `<A>` throws outright without a
+                          router context. Mounted outside the Router, that link
+                          took the whole app to the error boundary the moment
+                          the panel rendered it -- reachable only on a hub with
+                          SMTP configured and an unverified account, which is
+                          why it sat here unnoticed.
+
+                          BESIDE the outlet, not within it: they must not sit
+                          under the route's Suspense (a suspending navigation
+                          would replace an open prompt with the boot splash) nor
+                          under the route's ErrorBoundary. A navigation swaps
+                          `props.children` alone, so neither one remounts -- which
+                          is what `ElevationPromptHost` means by ONE registration.
+                        */}
+                        {/*
+                          Preferences reads its open state and its section
+                          from the ADDRESS, and this is what gives that state
+                          a router. It renders nothing.
+
+                          Here rather than in the shell: `openPreferences` is
+                          a module-level function, and one of its callers is
+                          the desktop menu item registered above, which runs
+                          outside every Router. See `PREFERENCES_PARAM`.
+                        */}
+                        <PreferencesAddress />
+                        <UserMenuDialogs />
+                        {/*
+                          The step-up prompt the transport opens, mounted ONCE for
+                          the whole app. Here rather than in the panel that first
+                          needed it: the elevation interceptor refuses on an RPC
+                          from any surface, so a host inside one panel answers only
+                          that panel's refusals. Inside AuthProvider, because the
+                          form it renders reads the account to decide which factors
+                          to offer.
+                        */}
+                        <ElevationPromptHost />
+                      </>
                     )}
                     >
                       <FileRoutes />
                     </Router>
                   </PreferencesApplier>
-                  <UserMenuDialogs />
                 </PreferencesProvider>
               </AuthProvider>
             </DesktopFadeIn>

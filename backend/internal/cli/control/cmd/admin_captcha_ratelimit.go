@@ -16,8 +16,8 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/ratelimit"
 )
 
-// The captcha and rate-limit verbs are client-side sugar over
-// AdminSettingsService: each composes the partial JSON documents for one
+// The captcha and rate-limit verbs are client-side convenience wrappers
+// over AdminSettingsService: each composes the partial JSON documents for one
 // or more settings keys. There are no dedicated server RPCs — the settings
 // surface IS the API, and these verbs exist so operators do not have to
 // hand-write the documents.
@@ -84,7 +84,7 @@ func defaultIfZero[T int64 | float64](passed, def T) T {
 	return passed
 }
 
-// captchaSettingKeys names every captcha settings key, taken from the same
+// captchaSettingKeys lists every captcha settings key, taken from the same
 // descriptor list that the hub registers. `captcha show` and `captcha
 // reset` both need the whole set, and deriving it here means a new captcha
 // key reaches both verbs without a second list to keep in step.
@@ -102,7 +102,7 @@ func RunAdminCaptchaShow(rawCtx any, args []string) error {
 		Run: func(c *control.Client, _ adminArgs) error {
 			resp, err := c.AdminSettingsService().ListSettings(context.Background(), connect.NewRequest(&leapmuxv1.ListSettingsRequest{}))
 			if err != nil {
-				return adminRPCError("rpc_failed", err)
+				return control.EmitErrorWith("rpc_failed", err)
 			}
 			wanted := captchaSettingKeys()
 			values := map[string]any{}
@@ -194,7 +194,7 @@ func readCaptchaState(c *control.Client) (captchaState, error) {
 			found = true
 			continue
 		}
-		// ANY stored secret field counts, because each provider names its
+		// ANY stored secret field counts, because each provider uses its
 		// own: ALTCHA signs with `hmac_key` and the external providers
 		// verify with `secret_key`. Asking for one field name reported
 		// ALTCHA as unconfigured whatever it held.
@@ -227,8 +227,8 @@ func readCaptchaState(c *control.Client) (captchaState, error) {
 }
 
 // RunAdminCaptchaSet implements `control admin captcha set`. The
-// provider selection and the enable switch ride the public half; each
-// provider's secret rides the secret half.
+// provider selection and the enable switch travel in the public half; each
+// provider's secret travels in the secret half.
 //
 // The provider's row, its secret, and the selection travel in ONE
 // UpdateSettings. The hub merges every key first and runs the cross-key
@@ -293,7 +293,7 @@ func RunAdminCaptchaSet(rawCtx any, args []string) error {
 		Run: func(c *control.Client, a adminArgs) error {
 			state, err := readCaptchaState(c)
 			if err != nil {
-				return adminRPCError("rpc_failed", err)
+				return control.EmitErrorWith("rpc_failed", err)
 			}
 			current := state.selected
 			target := current
@@ -313,7 +313,7 @@ func RunAdminCaptchaSet(rawCtx any, args []string) error {
 			// The stored row must already hold every half this invocation
 			// does not pass. The hub refuses the same state, but it answers
 			// with the KEY -- not with the flags the operator has to add --
-			// and only after the write has travelled. ALTCHA is exempt: its
+			// and only after the write travelled. ALTCHA is exempt: its
 			// row self-provisions on first use.
 			if target != captcha.ProviderAltcha {
 				row := captcha.DescriptorFor(target).Name()
@@ -333,8 +333,8 @@ func RunAdminCaptchaSet(rawCtx any, args []string) error {
 			}
 
 			// A tuning flag passed as 0 restores the default of the family
-			// this invocation LEAVES IN PLACE: the one --algorithm names
-			// when it is passed, and the stored one otherwise.
+			// this invocation LEAVES IN PLACE: the one --algorithm specifies
+			// when the operator passes it, and the stored one otherwise.
 			alg := state.altchaAlgorithm
 			if a.Passed("algorithm") {
 				alg = algorithm
@@ -355,8 +355,8 @@ func RunAdminCaptchaSet(rawCtx any, args []string) error {
 			// and stores them in one transaction.
 			//
 			// A sequence of single-key writes could not do this. Each write
-			// was validated against the state the previous one left, so the
-			// order had to be chosen to keep every intermediate state legal
+			// was validated against the state the previous one left, so somebody
+			// had to choose an order that kept every intermediate state legal
 			// — and a failure part-way left the hub in a state the command
 			// reported it never reached. Re-keying the SELECTED provider
 			// was the worst of it: a new site key could go live beside the
@@ -421,12 +421,12 @@ func RunAdminCaptchaSet(rawCtx any, args []string) error {
 			var publicJSON, secretJSON json.RawMessage
 			if len(doc) > 0 {
 				if publicJSON, err = marshal(doc); err != nil {
-					return adminRPCError("captcha_set_failed", err)
+					return control.EmitErrorWith("captcha_set_failed", err)
 				}
 			}
 			if len(secretDoc) > 0 {
 				if secretJSON, err = marshal(secretDoc); err != nil {
-					return adminRPCError("captcha_set_failed", err)
+					return control.EmitErrorWith("captcha_set_failed", err)
 				}
 			}
 			addWrite(captcha.DescriptorFor(target).Name(), publicJSON, secretJSON)
@@ -439,11 +439,11 @@ func RunAdminCaptchaSet(rawCtx any, args []string) error {
 			if switching {
 				alias, err := marshal(captcha.ProviderAlias(target))
 				if err != nil {
-					return adminRPCError("captcha_set_failed", err)
+					return control.EmitErrorWith("captcha_set_failed", err)
 				}
 				enabled, err := marshal(true)
 				if err != nil {
-					return adminRPCError("captcha_set_failed", err)
+					return control.EmitErrorWith("captcha_set_failed", err)
 				}
 				addWrite(captcha.CaptchaSelectedKey.Name(), alias, nil)
 				addWrite(captcha.CaptchaEnabledKey.Name(), enabled, nil)
@@ -453,7 +453,7 @@ func RunAdminCaptchaSet(rawCtx any, args []string) error {
 			}
 			if _, err := c.AdminSettingsService().UpdateSettings(context.Background(),
 				connect.NewRequest(&leapmuxv1.UpdateSettingsRequest{Writes: writes})); err != nil {
-				return adminRPCError("captcha_set_failed", err)
+				return control.EmitErrorWith("captcha_set_failed", err)
 			}
 			return control.EmitData(map[string]any{
 				"updated":   true,
@@ -469,7 +469,7 @@ func RunAdminCaptchaSetEnabled(rawCtx any, args []string, enabled bool) error {
 	return adminVerb(rawCtx, args, adminVerbSpec{
 		Run: func(c *control.Client, _ adminArgs) error {
 			if _, err := adminUpdateSettingScalar(c, captcha.CaptchaEnabledKey.Name(), enabled); err != nil {
-				return adminRPCError("captcha_set_failed", err)
+				return control.EmitErrorWith("captcha_set_failed", err)
 			}
 			return control.EmitData(map[string]any{captcha.CaptchaEnabledKey.Name(): enabled})
 		},
@@ -506,7 +506,7 @@ func RunAdminCaptchaReset(rawCtx any, args []string) error {
 				// in the SAME request, so the state that rule sees is legal.
 				state, err := readCaptchaState(c)
 				if err != nil {
-					return adminRPCError("rpc_failed", err)
+					return control.EmitErrorWith("rpc_failed", err)
 				}
 				if state.selected == *target && *target != captcha.ProviderAltcha {
 					keys = append([]string{captcha.CaptchaSelectedKey.Name()}, keys...)
@@ -517,11 +517,11 @@ func RunAdminCaptchaReset(rawCtx any, args []string) error {
 			// can make an intermediate state illegal and no refusal can
 			// leave part of the set already cleared. The loop this replaced
 			// destroyed the selection and two provider rows before
-			// answering that it had reset nothing.
+			// answering that it reset nothing.
 			resp, err := c.AdminSettingsService().ResetSettings(context.Background(),
 				connect.NewRequest(&leapmuxv1.ResetSettingsRequest{Keys: keys}))
 			if err != nil {
-				return adminRPCError("reset_failed", err)
+				return control.EmitErrorWith("reset_failed", err)
 			}
 			reset := make([]string, 0, len(resp.Msg.GetValues()))
 			for _, v := range resp.Msg.GetValues() {
@@ -583,7 +583,7 @@ func RunAdminRateLimitList(rawCtx any, args []string) error {
 		Run: func(c *control.Client, _ adminArgs) error {
 			resp, err := c.AdminSettingsService().ListSettings(context.Background(), connect.NewRequest(&leapmuxv1.ListSettingsRequest{}))
 			if err != nil {
-				return adminRPCError("rpc_failed", err)
+				return control.EmitErrorWith("rpc_failed", err)
 			}
 			rows := make([]map[string]any, 0)
 			for _, v := range resp.Msg.GetValues() {
@@ -601,7 +601,7 @@ func RunAdminRateLimitSet(rawCtx any, args []string) error {
 	var maxAttempts, window int64
 	return adminVerb(rawCtx, args, adminVerbSpec{
 		Flags: func(fs *flag.FlagSet) {
-			target.bind(fs, "operation to limit (change-password)")
+			target.bind(fs, "operation to limit (elevation)")
 			fs.Int64Var(&maxAttempts, "max-attempts", 0, "failed attempts allowed per window (1-1000); 0 restores the default")
 			fs.Int64Var(&window, "window", 0, "window seconds (60-86400); 0 restores the default")
 		},
@@ -633,7 +633,7 @@ func RunAdminRateLimitSet(rawCtx any, args []string) error {
 			}
 			value, err := adminUpdateSetting(c, target.Key, doc)
 			if err != nil {
-				return adminRPCError("rate_limit_set_failed", err)
+				return control.EmitErrorWith("rate_limit_set_failed", err)
 			}
 			return control.EmitData(settingValueJSON(value))
 		},
@@ -644,13 +644,13 @@ func RunAdminRateLimitSetEnabled(rawCtx any, args []string, enabled bool) error 
 	var target rateLimitTarget
 	return adminVerb(rawCtx, args, adminVerbSpec{
 		Flags: func(fs *flag.FlagSet) {
-			target.bind(fs, "operation to limit (change-password)")
+			target.bind(fs, "operation to limit (elevation)")
 		},
 		BeforeDial: target.resolve,
 		Run: func(c *control.Client, _ adminArgs) error {
 			value, err := adminUpdateSetting(c, target.Key, map[string]any{"enabled": enabled})
 			if err != nil {
-				return adminRPCError("rate_limit_set_failed", err)
+				return control.EmitErrorWith("rate_limit_set_failed", err)
 			}
 			return control.EmitData(settingValueJSON(value))
 		},
@@ -661,13 +661,13 @@ func RunAdminRateLimitReset(rawCtx any, args []string) error {
 	var target rateLimitTarget
 	return adminVerb(rawCtx, args, adminVerbSpec{
 		Flags: func(fs *flag.FlagSet) {
-			target.bind(fs, "operation to reset (change-password)")
+			target.bind(fs, "operation to reset (elevation)")
 		},
 		BeforeDial: target.resolve,
 		Run: func(c *control.Client, _ adminArgs) error {
 			resp, err := c.AdminSettingsService().ResetSetting(context.Background(), connect.NewRequest(&leapmuxv1.ResetSettingRequest{Key: target.Key}))
 			if err != nil {
-				return adminRPCError("reset_failed", err)
+				return control.EmitErrorWith("reset_failed", err)
 			}
 			return control.EmitData(settingValueJSON(resp.Msg.GetValue()))
 		},

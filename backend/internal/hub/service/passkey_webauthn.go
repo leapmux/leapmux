@@ -21,18 +21,35 @@ import (
 // Internal, FailedPrecondition, and silently empty lists.
 var ErrPasskeysUnavailable = errors.New("passkeys are not configured on this hub")
 
-// newWebAuthnService builds the per-request WebAuthn service shared by the
-// auth and user services. The RP config derives from the current settings
-// snapshot, so a public_url change applies without a restart. Both
-// configuration failures (no keystore, no hub URL) return
-// ErrPasskeysUnavailable wrapped with the remediation.
-func newWebAuthnService(ctx context.Context, set *settings.Manager, cfg *config.Config, ks *keystore.Keystore, st store.Store) (*hubwebauthn.Service, error) {
+// passkeyRPConfig resolves the relying-party parameters for this request, or
+// reports why the hub can run no ceremony at all. Both configuration failures
+// (no keystore, no hub URL) return ErrPasskeysUnavailable wrapped with the
+// remediation.
+//
+// It is separate from newWebAuthnService because one caller wants the ANSWER
+// and not the engine: passkeysRunnableForOrigin asks whether a browser at an
+// origin could run a ceremony, which RPConfig alone decides.
+//
+// The RP config derives from the current settings snapshot, so a public_url
+// change applies without a restart.
+func passkeyRPConfig(ctx context.Context, set *settings.Manager, cfg *config.Config, ks *keystore.Keystore) (hubwebauthn.RPConfig, error) {
 	if ks == nil {
-		return nil, fmt.Errorf("%w: passkey support is not configured", ErrPasskeysUnavailable)
+		return hubwebauthn.RPConfig{}, fmt.Errorf("%w: passkey support is not configured", ErrPasskeysUnavailable)
 	}
 	rp, err := hubwebauthn.RPConfigFromSettings(set.Snapshot(ctx), cfg.Listen)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %s", ErrPasskeysUnavailable, err.Error())
+		return hubwebauthn.RPConfig{}, fmt.Errorf("%w: %s", ErrPasskeysUnavailable, err.Error())
+	}
+	return rp, nil
+}
+
+// newWebAuthnService builds the per-request WebAuthn service shared by the
+// auth and user services. Call it when a CEREMONY runs; a caller that only
+// needs the relying-party answer takes passkeyRPConfig above.
+func newWebAuthnService(ctx context.Context, set *settings.Manager, cfg *config.Config, ks *keystore.Keystore, st store.Store) (*hubwebauthn.Service, error) {
+	rp, err := passkeyRPConfig(ctx, set, cfg, ks)
+	if err != nil {
+		return nil, err
 	}
 	return hubwebauthn.NewService(rp, st, ks)
 }
@@ -49,11 +66,41 @@ func (s *AuthService) webauthnService(ctx context.Context) (*hubwebauthn.Service
 	return newWebAuthnService(ctx, s.set, s.cfg, s.keystore, s.store)
 }
 
-// passkeysAvailable reports whether passkey ceremonies can run on this hub,
-// for the availability signal in GetSystemInfo.
-func (s *AuthService) passkeysAvailable(ctx context.Context) bool {
-	_, err := s.webauthnService(ctx)
-	return err == nil
+// passkeysRunnableForOrigin reports whether passkey ceremonies can run for a
+// browser at this origin. It feeds the passkey_enabled signal in
+// GetSystemInfo.
+//
+// TWO conditions, and the second is what a hub-wide answer could not carry.
+// The hub must be configured for passkeys (a keystore, and a usable hub URL),
+// and the request origin must be one the hub serves. A hub reached by an
+// address it does not publish runs no ceremony there: every Begin answers
+// ErrOriginNotAllowed. The hub-wide answer stayed true in that state, so the
+// sign-in form offered a Passkey option that could only fail, and the account
+// panel offered an Add passkey button that could only fail.
+//
+// Clients show every passkey affordance only when this ONE flag is true, so
+// the flag must answer the question those clients really ask: can THIS page
+// run a ceremony?
+//
+// An empty origin keeps the hub-wide answer. A non-browser client sends no
+// Origin header and has no browser ceremony to mislead; RPConfig.RPIDForOrigin
+// states the same rule from its own side.
+//
+// "Runnable" rather than "available" throughout: the two words read as two
+// facts, and this is one.
+//
+// It resolves the RP config and asks it directly. Through the ceremony
+// service, every call built a whole go-webauthn engine -- a settings
+// snapshot, an RP resolution and a gowebauthn.New -- to reach a method that
+// reads RPConfig.RPIDForOrigin and never touches the engine, and then
+// discarded it. GetSystemInfo calls this at every page load.
+func (s *AuthService) passkeysRunnableForOrigin(ctx context.Context, origin string) bool {
+	rp, err := passkeyRPConfig(ctx, s.set, s.cfg, s.keystore)
+	if err != nil {
+		return false
+	}
+	_, allowed := rp.RPIDForOrigin(origin)
+	return allowed
 }
 
 // originFromRequest returns the browser origin of a Connect request. The
@@ -71,20 +118,20 @@ func originFromRequest[T any](req *connect.Request[T]) string {
 // passkey-management surface had no classifier at all, so a cancelled
 // platform prompt (ErrAssertionRejected) and an unserved origin
 // (ErrOriginNotAllowed) both left FinishPasskeyRegistration as CodeInternal
-// -- a 500 for ordinary user input. A sentinel added to the webauthn
-// package is now classified on every surface at once.
+// -- a 500 for ordinary user input. Now one edit here classifies a new
+// webauthn sentinel on every surface at once.
 //
 // The class decides the CODE only. The rate-limit interceptor accounts on
 // the error SENTINEL (auth.ErrInvalidCurrentPassword and
-// auth.ErrInvalidReauthProof), never on the connect code, so nothing here
-// changes which attempts count against a budget.
+// auth.ErrInvalidElevationAssertion), never on the connect code, so nothing
+// here changes which attempts count against a budget.
 //
 // Each surface keeps its own message, log payload, and error wrap, because
 // those genuinely differ:
 // login answers a missing account and a passkey-less account identically
-// so the error is not an enumeration oracle, and reauth re-labels a
-// credential failure as auth.ErrInvalidReauthProof so the interceptor can
-// key on it.
+// so the error is not an enumeration oracle, and the elevation surface
+// re-labels a credential failure as auth.ErrInvalidElevationAssertion so the
+// interceptor can key on it.
 type webAuthnErrorClass int
 
 const (

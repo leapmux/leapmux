@@ -1,8 +1,9 @@
 // Package ratelimit provides per-user, per-operation fixed-window rate
 // limiting for authenticated procedures whose handlers are expensive to
-// retry (ChangePassword runs Argon2 per attempt). Operations and their
-// default limits are catalogued here; admins override them per operation
-// as rate_limit.<operation> settings keys via the admin CLI.
+// retry (elevation runs Argon2 or a WebAuthn verification per attempt).
+// Operations and their default limits are catalogued here; admins override
+// them per operation as rate_limit.<operation> settings keys via the admin
+// CLI.
 package ratelimit
 
 import (
@@ -32,13 +33,37 @@ const SettingKeyPrefix = "rate_limit."
 type Operation string
 
 const (
-	// OpChangePassword rate-limits UserService.ChangePassword per user.
-	OpChangePassword Operation = "change-password"
-	// OpPasskeyManagement rate-limits passkey management RPCs per user
-	// (Begin/Finish registration and reauth, rename, delete, deactivate).
-	// Same budget shape as ChangePassword: Argon2 verify on each failed
-	// current-password attempt; Begin/Finish also share the in-flight cap.
-	OpPasskeyManagement Operation = "passkey-management"
+	// OpElevation limits the per-user elevation surface of UserService:
+	// session elevation ("sudo mode") and the elevation-admitted mutations
+	// that are EXPENSIVE TO REPEAT.
+	//
+	// Two elevation-admitted mutations stay out, because neither is. Both
+	// RequestEmailChange and UnlinkOAuthProvider run no Argon2 hash and no
+	// ceremony write, and the pending-email mint already caps the first at
+	// one message per user per minute -- in SQL, on the row rather than on
+	// the requested address, so specifying a new address does not reset it.
+	// procedureOperations below lists what takes a slot, and
+	// TestExpensiveMutationsAreRouted pins that set exactly.
+	//
+	// One operation carries TWO budgets that the same numbers express, and
+	// the difference between them is why procedureSpec exists:
+	//
+	//   - The FAILURE window counts a wrong secret. Only ElevateSession and
+	//     FinishPasskeyElevation can produce one, because they are the only
+	//     two procedures that verify a secret the caller must know. The two
+	//     factors share the window, so an attacker cannot double their
+	//     attempts by alternating between the password path and the passkey
+	//     path.
+	//   - The IN-FLIGHT reservation caps concurrency. Every routed procedure
+	//     takes a slot, because each one runs work that is expensive to
+	//     repeat: an Argon2 hash (ElevateSession, ChangePassword, and the
+	//     replacement password that DeletePasskey and DeactivatePasskeyAuth
+	//     accept) or a ceremony write that takes SQLite's single writer lock
+	//     (every Begin leg).
+	//
+	// One operation rather than several, so the two budgets cannot drift
+	// apart and an operator has one number to set.
+	OpElevation Operation = "elevation"
 )
 
 // Limits is one operation's effective budget.
@@ -47,8 +72,9 @@ type Limits struct {
 	WindowSeconds int64
 }
 
-// ValidateLimits rejects budgets that could brick an account (absurdly
-// small windows or attempt counts far outside anything legitimate).
+// ValidateLimits rejects budgets that could make an account unusable
+// (absurdly small windows or attempt counts far outside anything
+// legitimate).
 func ValidateLimits(l Limits) error {
 	if l.MaxAttempts < 1 || l.MaxAttempts > 1000 {
 		return fmt.Errorf("max attempts must be between 1 and 1000 (got %d)", l.MaxAttempts)
@@ -84,19 +110,13 @@ type opSpec struct {
 // procedureOperations entry below is all it takes to protect a new
 // procedure — no schema change.
 var defaults = map[Operation]opSpec{
-	OpChangePassword: {
+	OpElevation: {
 		limits: Limits{MaxAttempts: 5, WindowSeconds: 900},
 		isCredentialFailure: func(err error) bool {
-			// ChangePassword also authenticates passkey-only accounts via a
-			// reauth proof; both wrong-secret classes count against the
-			// same budget.
-			return errors.Is(err, auth.ErrInvalidCurrentPassword) || errors.Is(err, auth.ErrInvalidReauthProof)
-		},
-	},
-	OpPasskeyManagement: {
-		limits: Limits{MaxAttempts: 5, WindowSeconds: 900},
-		isCredentialFailure: func(err error) bool {
-			return errors.Is(err, auth.ErrInvalidCurrentPassword) || errors.Is(err, auth.ErrInvalidReauthProof)
+			// The two factors a user may present to elevate share one
+			// budget, so an attacker cannot double their attempts by
+			// alternating between the password and the passkey path.
+			return errors.Is(err, auth.ErrInvalidCurrentPassword) || errors.Is(err, auth.ErrInvalidElevationAssertion)
 		},
 	},
 }
@@ -166,18 +186,49 @@ func KnownOperations() []Operation {
 	return ops
 }
 
+// procedureSpec routes one procedure to its operation and records whether a
+// SUCCESS there proves the credential the failure window counts.
+//
+// The distinction is the whole reason this is a struct and not a bare
+// Operation. complete() resets the window on a success, because a user who
+// proved the secret makes the accumulated failures irrelevant. That reasoning
+// holds only for a procedure that actually verifies the secret. A procedure
+// that verifies nothing and succeeds for anyone -- BeginPasskeyElevation
+// mints assertion options, ChangePassword runs on an already elevated
+// session -- would otherwise clear the attacker's own failure count on
+// demand, and the password-guess cap would be unlimited.
+type procedureSpec struct {
+	op Operation
+	// provesCredential is true only when a success means the caller
+	// presented the secret the operation's failure window counts.
+	provesCredential bool
+}
+
 // procedureOperations routes ConnectRPC procedures to their operations.
 // The interceptor must be registered AFTER the auth interceptor so the
 // authenticated user is already in the context.
-var procedureOperations = map[string]Operation{
-	leapmuxv1connect.UserServiceChangePasswordProcedure:            OpChangePassword,
-	leapmuxv1connect.UserServiceBeginPasskeyRegistrationProcedure:  OpPasskeyManagement,
-	leapmuxv1connect.UserServiceFinishPasskeyRegistrationProcedure: OpPasskeyManagement,
-	leapmuxv1connect.UserServiceBeginPasskeyReauthProcedure:        OpPasskeyManagement,
-	leapmuxv1connect.UserServiceFinishPasskeyReauthProcedure:       OpPasskeyManagement,
-	leapmuxv1connect.UserServiceRenamePasskeyProcedure:             OpPasskeyManagement,
-	leapmuxv1connect.UserServiceDeletePasskeyProcedure:             OpPasskeyManagement,
-	leapmuxv1connect.UserServiceDeactivatePasskeyAuthProcedure:     OpPasskeyManagement,
+//
+// Everything routed here takes an in-flight slot. Only the two paths that
+// verify a secret carry provesCredential; see procedureSpec.
+var procedureOperations = map[string]procedureSpec{
+	// The two factor paths. A wrong answer counts, and a right one clears.
+	leapmuxv1connect.UserServiceElevateSessionProcedure:         {op: OpElevation, provesCredential: true},
+	leapmuxv1connect.UserServiceFinishPasskeyElevationProcedure: {op: OpElevation, provesCredential: true},
+	// The Begin leg of the passkey path proves nothing: it mints assertion
+	// options for the caller's own session and succeeds for any account
+	// that holds a passkey. It is routed for the ceremony write it performs,
+	// never for the budget.
+	leapmuxv1connect.UserServiceBeginPasskeyElevationProcedure: {op: OpElevation},
+	// The mutations an elevation admits. None verifies a secret -- an
+	// un-elevated caller is refused with FailedPrecondition, which is not a
+	// guess -- so none counts and none clears. They are routed for the
+	// Argon2 hash and the ceremony write they run.
+	leapmuxv1connect.UserServiceChangePasswordProcedure:            {op: OpElevation},
+	leapmuxv1connect.UserServiceBeginPasskeyRegistrationProcedure:  {op: OpElevation},
+	leapmuxv1connect.UserServiceFinishPasskeyRegistrationProcedure: {op: OpElevation},
+	leapmuxv1connect.UserServiceRenamePasskeyProcedure:             {op: OpElevation},
+	leapmuxv1connect.UserServiceDeletePasskeyProcedure:             {op: OpElevation},
+	leapmuxv1connect.UserServiceDeactivatePasskeyAuthProcedure:     {op: OpElevation},
 }
 
 // effectiveLimit is the resolved per-operation policy.
@@ -199,14 +250,14 @@ type Manager struct {
 
 	windowMu sync.Mutex // guards windows, inFlight, and minResetAt
 	windows  map[windowKey]*windowState
-	// inFlight counts attempts allow() reserved but complete() has not
-	// closed yet, so a concurrent burst cannot slip past a failures-only
+	// inFlight counts attempts allow() reserved but complete() did not
+	// close yet, so a concurrent burst cannot evade a failures-only
 	// check (every burst member reads failures below max before any of
 	// them lands).
 	inFlight map[windowKey]int64
 	// minResetAt is the earliest resetAt among live windows (zero when
 	// unknown). It keeps the prune sweep off the hot path: the pass runs
-	// only when some window has actually expired, never on a timer.
+	// only when a window actually expired, never on a timer.
 	minResetAt time.Time
 }
 
@@ -226,7 +277,7 @@ type windowState struct {
 var errHandlerPanicked = errors.New("handler panicked")
 
 // NewManager creates a rate-limit manager over the shared settings
-// snapshot (its TTL is the admin-CLI propagation bound). Solo mode never
+// snapshot (its TTL is the admin-CLI propagation limit). Solo mode never
 // limits: it is a local single-user deployment whose only "attacker" is
 // the local user.
 func NewManager(set *settings.Manager, soloMode bool) *Manager {
@@ -248,6 +299,14 @@ type attempt struct {
 	userID    string
 	window    int64 // effective window seconds at admission
 	countable bool  // the effective policy had the limit enabled
+	// provesCredential carries the routed procedure's own answer to "does a
+	// success here mean the caller presented the secret". complete() resets
+	// the failure window only for those, so a procedure that verifies
+	// nothing cannot clear an attacker's accumulated failures. The attempt
+	// carries it rather than complete() reading it again, for the same
+	// reason window and countable do: the attempt records the policy that
+	// admitted it.
+	provesCredential bool
 	// reserved is true only when allow() counted this attempt against the
 	// in-flight budget. A denial, or an admission under a disabled policy,
 	// makes no reservation, so complete() on such an attempt releases
@@ -262,12 +321,19 @@ type attempt struct {
 // failures-only check. retryAfter is nonzero only on a denial that a
 // failure window drove; a denial driven by in-flight reservations clears
 // within one handler latency and reports zero.
-func (m *Manager) allow(ctx context.Context, op Operation, userID string) (*attempt, bool, time.Duration, error) {
+func (m *Manager) allow(ctx context.Context, spec procedureSpec, userID string) (*attempt, bool, time.Duration, error) {
+	op := spec.op
 	limit, err := m.resolve(ctx, op)
 	if err != nil {
 		return nil, false, 0, err
 	}
-	a := &attempt{op: op, userID: userID, window: limit.limits.WindowSeconds, countable: limit.enabled}
+	a := &attempt{
+		op:               op,
+		userID:           userID,
+		window:           limit.limits.WindowSeconds,
+		countable:        limit.enabled,
+		provesCredential: spec.provesCredential,
+	}
 	if !limit.enabled {
 		return a, true, 0, nil
 	}
@@ -284,24 +350,39 @@ func (m *Manager) allow(ctx context.Context, op Operation, userID string) (*atte
 		delete(m.windows, key)
 		w = nil
 	}
-	if w != nil && w.failures+m.inFlight[key] >= limit.limits.MaxAttempts {
-		if w.failures >= limit.limits.MaxAttempts {
-			// resetAt came from m.now(), so the retry duration must be
-			// measured against the same clock — time.Until would use the
-			// wall clock and diverge wherever now is injected (and in
-			// these tests, frozen).
-			return a, false, w.resetAt.Sub(now), nil
-		}
+	// Recorded failures deny only the procedures that VERIFY a secret.
+	//
+	// One operation covers every path that can present a wrong secret, so
+	// that an attacker cannot alternate between the password and the passkey
+	// to double its guess budget. But the same key also routes the seven
+	// mutations an elevation ADMITS, and those verify nothing: an
+	// un-elevated caller is refused with FailedPrecondition, which is not a
+	// guess. Denying them on the failure count handed an attacker the
+	// account owner's whole remedy surface -- five wrong passwords locked
+	// the owner out of passkey elevation, passkey management and the
+	// password change for the window, renewably. The seven already require
+	// an elevation the guesser does not hold, so admitting them widens
+	// nothing.
+	//
+	// The IN-FLIGHT reservation stays unconditional. Every routed procedure
+	// runs an Argon2 hash or a ceremony write, and that cost is what the
+	// concurrent cap protects, whatever the procedure proves.
+	var failures int64
+	if spec.provesCredential && w != nil {
+		failures = w.failures
+	}
+	if failures >= limit.limits.MaxAttempts {
+		// resetAt came from m.now(), so the retry duration must be
+		// measured against the same clock — time.Until would use the
+		// wall clock and diverge wherever now is injected (and in
+		// these tests, frozen).
+		return a, false, w.resetAt.Sub(now), nil
+	}
+	if failures+m.inFlight[key] >= limit.limits.MaxAttempts {
 		// The denial is driven by in-flight reservations, not recorded
 		// failures: the reservations land within one handler latency, so
 		// the zero retry duration renders as the one-second floor rather
 		// than a full window the user does not actually owe.
-		return a, false, 0, nil
-	}
-	if w == nil && m.inFlight[key] >= limit.limits.MaxAttempts {
-		// No failure window is open, but a concurrent burst holds the whole
-		// budget in flight. Deny so the burst cannot slip past a
-		// failures-only check.
 		return a, false, 0, nil
 	}
 	m.inFlight[key]++
@@ -310,11 +391,18 @@ func (m *Manager) allow(ctx context.Context, op Operation, userID string) (*atte
 }
 
 // complete closes the reservation allow() made and records the handler's
-// outcome: a success resets the window (the user just proved knowledge of
-// the credential, so accumulated failures were noise), a countable
-// credential failure extends it, and any other error keeps it untouched.
-// An attempt without a reservation (denied, or admitted under a disabled
-// policy) releases nothing.
+// outcome: a success on a procedure that PROVES the credential resets the
+// window (the user just showed they know the secret, so the accumulated
+// failures were irrelevant), a countable credential failure extends it, and any
+// other error keeps it untouched. An attempt without a reservation (denied,
+// or admitted under a disabled policy) releases nothing.
+//
+// The reset is restricted to a proving procedure, and the restriction is
+// the guard rather than a refinement. Every routed procedure takes a slot,
+// so most of them succeed without verifying anything: an unrestricted reset
+// would let a caller clear its own failure count by calling one of those
+// between guesses, and the cap on the hub's only credential-guess surface
+// would be unlimited. See procedureSpec.
 func (m *Manager) complete(a *attempt, handlerErr error) {
 	if a == nil || !a.reserved {
 		return
@@ -329,7 +417,9 @@ func (m *Manager) complete(a *attempt, handlerErr error) {
 		m.inFlight[key] = n - 1
 	}
 	if handlerErr == nil {
-		delete(m.windows, key)
+		if a.provesCredential {
+			delete(m.windows, key)
+		}
 		return
 	}
 	if !a.countable {
@@ -352,11 +442,11 @@ func (m *Manager) complete(a *attempt, handlerErr error) {
 	w.failures++
 }
 
-// pruneExpiredLocked drops windows whose reset has passed. The same-key
-// lazy delete in allow only fires when that user returns, so without this
-// sweep a user who fails once and never retries would occupy memory for
-// the life of the process. minResetAt keeps the pass off the hot path:
-// it runs only when some window has actually expired, and recomputes the
+// pruneExpiredLocked drops windows whose reset time is in the past. The
+// same-key lazy delete in allow only fires when that user returns, so
+// without this sweep a user who fails once and never retries would occupy
+// memory for the life of the process. minResetAt keeps the pass off the hot
+// path: it runs only when a window actually expired, and recomputes the
 // next expiry so the map holds nothing inert.
 func (m *Manager) pruneExpiredLocked(now time.Time) {
 	if !m.minResetAt.IsZero() && now.Before(m.minResetAt) {
@@ -398,7 +488,7 @@ func (m *Manager) resolve(ctx context.Context, op Operation) (effectiveLimit, er
 func NewInterceptor(m *Manager) connect.UnaryInterceptorFunc {
 	return func(next connect.UnaryFunc) connect.UnaryFunc {
 		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-			op, ok := procedureOperations[req.Spec().Procedure]
+			spec, ok := procedureOperations[req.Spec().Procedure]
 			if !ok {
 				return next(ctx, req)
 			}
@@ -411,7 +501,7 @@ func NewInterceptor(m *Manager) connect.UnaryInterceptorFunc {
 			}
 			userID := user.ID.String()
 
-			att, allowed, retryAfter, err := m.allow(ctx, op, userID)
+			att, allowed, retryAfter, err := m.allow(ctx, spec, userID)
 			if err != nil {
 				// Config unreachable: fail closed for safety, same as the
 				// captcha interceptor — but with an honest code, so

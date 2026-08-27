@@ -3,7 +3,17 @@ import { createEffect, createSignal, onCleanup, splitProps } from 'solid-js'
 
 const RESET_TIMEOUT_MS = 10_000
 
-interface ConfirmButtonProps extends Omit<JSX.ButtonHTMLAttributes<HTMLButtonElement>, 'onClick'> {
+/**
+ * This interface omits `title`, and the omission is the enforcement.
+ *
+ * Every prop here spreads onto a real `<button>`, so a `title` long enough to
+ * state a reason BECOMES the button's accessible name -- and this button's
+ * name is STATE ("Confirm?" once armed), which the reason would replace. Wrap
+ * the button in a `<Tooltip>` instead; it works on a disabled control and
+ * leaves the name alone. `IconButton` omits `title` for the same reason and
+ * routes its own `title` prop through `<Tooltip>`.
+ */
+interface ConfirmButtonProps extends Omit<JSX.ButtonHTMLAttributes<HTMLButtonElement>, 'onClick' | 'title'> {
   /** Label shown after the first click (armed state). Defaults to "Confirm?". */
   confirmLabel?: string
   /** Called only on the second (confirming) click. */
@@ -47,7 +57,7 @@ export const ConfirmButton: Component<ConfirmButtonProps> = (props) => {
   // Disarm when the button becomes disabled. `disabled` is reactive on some
   // callers -- LastTabCloseDialog flips it when a refreshed inspect reports the
   // worktree removal blocked -- and a disabled button that still reads
-  // "Confirm?" offers a confirmation for an action nobody can take. The armed
+  // "Confirm?" offers a confirmation for an action that nobody can take. The armed
   // label would otherwise sit there until the 10-second timer or a blur, and
   // neither fires for a control the pointer no longer reaches.
   createEffect(() => {

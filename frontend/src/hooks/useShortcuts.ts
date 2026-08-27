@@ -161,7 +161,7 @@ export function useShortcuts(props: UseShortcutsProps): void {
   cmd('app.splitTileHorizontal', 'Split Tile Horizontally', () => withFocusedTile(() => splitFocusedTile('horizontal')), 'Layout')
   cmd('app.splitTileVertical', 'Split Tile Vertically', () => withFocusedTile(() => splitFocusedTile('vertical')), 'Layout')
   cmd('app.openPreferences', 'Open Preferences', () => {
-    openPreferences('appearance')
+    openPreferences()
   }, 'App')
 
   cmd('app.openInExternalEditor', 'Open in External Editor', async () => {
@@ -169,7 +169,7 @@ export function useShortcuts(props: UseShortcutsProps): void {
     if (!dir)
       return
     // Solo-mode gate: in distributed mode the working dir lives on the worker
-    // machine, not the local filesystem we'd hand to the editor process.
+    // machine, not the local filesystem the app would hand to the editor process.
     const state = await getRuntimeState()
     if (!state.capabilities.localSolo)
       return
@@ -283,7 +283,7 @@ export function useShortcuts(props: UseShortcutsProps): void {
 
   onCleanup(() => {
     unbindAll('workspace')
-    // Per-command cleanups; resetCommands() would wipe core commands too.
+    // Per-command cleanups; resetCommands() would delete the core commands too.
     for (const cleanup of cleanups)
       cleanup()
     cancelAnimationFrame(dialogRafId)

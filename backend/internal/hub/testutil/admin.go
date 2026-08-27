@@ -14,6 +14,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/sections"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
+	"github.com/leapmux/leapmux/internal/hub/store/storetest"
 	"github.com/leapmux/leapmux/internal/hub/usernames"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
@@ -21,12 +22,23 @@ import (
 
 // OpenTestStore opens an in-memory SQLite store with migrations applied.
 // (sqlite.Open runs migrations automatically.)
+//
+// Every transaction callback runs TWICE, because store.Store's contract says
+// one may: the postgres and mysql dialects re-run the whole attempt when the
+// backend aborts it for a serialization conflict. SQLite never retries, so
+// without this the default test store exercised only the single-run path and
+// prose plus a one-time manual audit carried the rule. See
+// storetest.DoubleRunStore for what the rehearsal does and does not change.
+//
+// A test that this makes fail found a callback that ACCUMULATES rather
+// than assigns. That is a finding about the callback, never a reason to
+// unwrap the store here.
 func OpenTestStore(t *testing.T) store.Store {
 	t.Helper()
 	st, err := sqlite.OpenTestable(":memory:")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
-	return st
+	return storetest.NewDoubleRunStore(st)
 }
 
 // TestAdminUsername and TestAdminPassword are the credentials created by
@@ -77,8 +89,8 @@ func CreateTestAdmin(t *testing.T, st store.Store) {
 
 // seedDefaultSections gives a fixture user the same sidebar a real one gets.
 //
-// The default sections are written in the SAME transaction as the user row by
-// service.CreateUser, and nothing backfills them afterwards (ListSections is a
+// service.CreateUser writes the default sections in the SAME transaction as
+// the user row, and nothing backfills them afterwards (ListSections is a
 // pure read), so a fixture that creates its user through the store would have
 // an empty sidebar no production user ever has -- and any test that touched
 // sections would measure the fixture's gap instead of the code.

@@ -1,6 +1,9 @@
 package store
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 // Sentinel errors returned by Store implementations.
 var (
@@ -35,3 +38,27 @@ var (
 	// violation.
 	ErrInvalidArgument = errors.New("invalid argument")
 )
+
+// ErrLockingReadOutsideTransaction refuses a locking read that no transaction
+// encloses.
+//
+// SELECT ... FOR UPDATE takes a row lock that the enclosing transaction holds;
+// with no transaction the database takes and releases the lock at once, so the
+// caller reads a row it does not hold and every later write races what it just
+// read. On the mysql dialect the loss is additionally SILENT: conflictRetryDBTX
+// cannot wrap QueryRowContext, so a lock-wait timeout on a bare single-row
+// SELECT reaches the caller unretried.
+//
+// It is a caller mistake rather than a query the store can answer, so every
+// ...ForUpdate method on every dialect returns this before it reaches the
+// database. Every caller today goes through RunInTransaction, so the guard
+// refuses nothing that exists. It is here so that the next one fails loudly
+// instead.
+//
+// ONE sentinel, in the shared package, rather than the rule restated at each
+// of the six methods. It WRAPS ErrInvalidArgument, which is what the guards
+// returned before it and what the dialect-independent mapping still keys on,
+// so errors.Is answers for both; and a test can now pin THIS mistake rather
+// than "some invalid argument".
+var ErrLockingReadOutsideTransaction = fmt.Errorf(
+	"locking read outside a transaction: %w", ErrInvalidArgument)

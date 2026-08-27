@@ -39,12 +39,12 @@ func seedRevocableUser(t *testing.T, env *adminUserEnv, username string) string 
 }
 
 // TestAdminUserService_RevokeSessionClosesThatSessionsChannels pins the
-// in-process arm RevokeSession owes after its store delete.
+// in-process path RevokeSession owes after its store delete.
 //
 // The durable delete reaches every hub, but only on the revocation
 // watcher's next sweep, so without this effect the acting hub keeps serving
-// the revoked session for that whole interval. The arm is per-credential:
-// the SESSION arm, carrying the id the caller named, and neither of the
+// the revoked session for that whole interval. The path is per-credential:
+// the SESSION path, carrying the id the caller gave, and neither of the
 // other two.
 func TestAdminUserService_RevokeSessionClosesThatSessionsChannels(t *testing.T) {
 	env := setupAdminUserTest(t)
@@ -60,11 +60,11 @@ func TestAdminUserService_RevokeSessionClosesThatSessionsChannels(t *testing.T) 
 	require.NoError(t, err)
 
 	assert.Equal(t, []string{sessionID}, env.revocations.closedSessions(),
-		"the revoked session's channels are closed in process")
+		"the hub closes the revoked session's channels in process")
 	assert.Empty(t, env.revocations.closedBearers(), "a session revoke touches no bearer")
 	assert.Empty(t, env.revocations.recorded(), "a session revoke is not a user-wide revocation")
 
-	// The durable half, so the case still fails if the effect is delivered
+	// The durable half, so the case still fails if the effect runs
 	// for a row the store never deleted.
 	sessions, err := env.st.Sessions().ListByUserID(ctx, store.ListUserSessionsParams{
 		UserID:     userid.MustNew(userID),
@@ -72,6 +72,15 @@ func TestAdminUserService_RevokeSessionClosesThatSessionsChannels(t *testing.T) 
 	}, time.Now().UTC())
 	require.NoError(t, err)
 	assert.Empty(t, sessions.Rows)
+
+	// The administrator's OWN event kind, not the sign-out one. A step-up
+	// mutation that queued on the user-auth lock reads exactly this to
+	// distinguish a revoke from a logout, and both paths delete the same row, so
+	// Sessions().Delete here would look identical and silently let that
+	// mutation commit. See store.RevocationEventKindSessionRevoked.
+	revoked, err := env.st.RevocationEvents().SessionWasRevoked(ctx, sessionID)
+	require.NoError(t, err)
+	assert.True(t, revoked, "an administrator's revoke must leave its own durable record")
 }
 
 // TestAdminUserService_RevokeSessionRefusalRunsNoEffect pins the other side
@@ -95,7 +104,7 @@ func TestAdminUserService_RevokeSessionRefusalRunsNoEffect(t *testing.T) {
 	assert.Empty(t, env.revocations.closedSessions(), "a refused revoke closes nothing")
 }
 
-// TestAdminUserService_RevokeAPITokenClosesThatBearer pins the API arm.
+// TestAdminUserService_RevokeAPITokenClosesThatBearer pins the API path.
 //
 // The KIND is the half that a call can get wrong while still looking
 // delivered: the bearer ref is table-qualified, so an API revoke that
@@ -103,6 +112,7 @@ func TestAdminUserService_RevokeSessionRefusalRunsNoEffect(t *testing.T) {
 // leave the revoked one live in this hub's cache.
 func TestAdminUserService_RevokeAPITokenClosesThatBearer(t *testing.T) {
 	env := setupAdminUserTest(t)
+	env.elevateAdminSession(t)
 	ctx := context.Background()
 
 	userID := seedRevocableUser(t, env, "carol")
@@ -118,7 +128,7 @@ func TestAdminUserService_RevokeAPITokenClosesThatBearer(t *testing.T) {
 
 	assert.Equal(t, []auth.BearerRef{auth.NewBearerRef(auth.BearerKindAPI, issued.Msg.GetTokenId())},
 		env.revocations.closedBearers(),
-		"the API arm fires for the API row the caller named")
+		"the API path fires for the API row the caller gave")
 	assert.Empty(t, env.revocations.closedSessions(), "a bearer revoke touches no session")
 	assert.Empty(t, env.revocations.recorded(), "a bearer revoke is not a user-wide revocation")
 
@@ -132,7 +142,7 @@ func TestAdminUserService_RevokeAPITokenClosesThatBearer(t *testing.T) {
 }
 
 // TestAdminUserService_RevokeDelegationTokenClosesThatBearer pins the
-// delegation arm, and that it carries its OWN kind rather than the API kind
+// delegation path, and that it carries its OWN kind rather than the API kind
 // its sibling verb passes.
 func TestAdminUserService_RevokeDelegationTokenClosesThatBearer(t *testing.T) {
 	env := setupAdminUserTest(t)
@@ -157,7 +167,7 @@ func TestAdminUserService_RevokeDelegationTokenClosesThatBearer(t *testing.T) {
 
 	assert.Equal(t, []auth.BearerRef{auth.NewBearerRef(auth.BearerKindDelegation, tokenID)},
 		env.revocations.closedBearers(),
-		"the delegation arm fires with the delegation kind, not the API kind")
+		"the delegation path fires with the delegation kind, not the API kind")
 	assert.Empty(t, env.revocations.closedSessions())
 	assert.Empty(t, env.revocations.recorded())
 
@@ -172,7 +182,7 @@ func TestAdminUserService_RevokeDelegationTokenClosesThatBearer(t *testing.T) {
 }
 
 // TestAdminUserService_RevokeUserSessionsReportsTheCommittedGeneration pins
-// the user-wide arm of the OTHER verb that runs revokeEveryUserCredential.
+// the user-wide path of the OTHER verb that runs revokeEveryUserCredential.
 //
 // The epoch must be the one the transaction committed, read inside it. A
 // post-commit re-read looks identical on a quiet hub and drifts under a
@@ -223,8 +233,8 @@ func TestAdminUserService_RevokeUserSessionsReportsTheCommittedGeneration(t *tes
 		env.revocations.recorded())
 	assert.Empty(t, env.revocations.restampedSessions(),
 		"the administrator surface spares no session")
-	// The user-wide arm covers every credential at once, so neither
-	// per-credential arm runs beside it.
+	// The user-wide path covers every credential at once, so neither
+	// per-credential path runs beside it.
 	assert.Empty(t, env.revocations.closedSessions())
 	assert.Empty(t, env.revocations.closedBearers())
 }

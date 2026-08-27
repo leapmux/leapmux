@@ -7,9 +7,9 @@
 // The Manager caches a decoded Snapshot of every registered key with a
 // short TTL (mirroring the session and captcha caches), so admin CLI
 // writes propagate to a running hub within the TTL. Keys marked
-// PropagationRestart are consumed once at startup instead — pool floors
-// and protocol ceilings are computed from them before any request is
-// served, so a restart is the only safe way to apply them.
+// PropagationRestart are consumed once at startup instead — the hub
+// computes pool floors and protocol ceilings from them before it serves
+// any request, so a restart is the only safe way to apply them.
 package settings
 
 import (
@@ -40,10 +40,11 @@ const (
 	// unless its consumer cannot take a settings read; push is the
 	// exception, not a second default.
 	PropagationHot Propagation = iota
-	// PropagationRestart means the value is read once at startup; a
-	// change takes effect on the next restart. Used for values that feed
-	// startup-time arithmetic (queue pool floors, frame ceilings) where a
-	// mid-flight change could violate an invariant the pools rely on.
+	// PropagationRestart means the hub reads the value once at startup; a
+	// change takes effect on the next restart. It applies to values that
+	// feed startup-time arithmetic (queue pool floors, frame ceilings)
+	// where a mid-flight change could violate an invariant the pools rely
+	// on.
 	PropagationRestart
 )
 
@@ -80,9 +81,9 @@ type Descriptor interface {
 	// encrypted half (empty when the key carries no secret).
 	SecretFieldNames() []string
 	// Decode merges a stored row onto the key's default. Unmarshaling the
-	// halves over the default gives partial-row semantics for free: a
-	// field the stored document omits keeps the default, and the secret
-	// half fills exactly the fields it names.
+	// halves over the default gives partial-row semantics with no extra
+	// work: a field the stored document omits keeps the default, and the
+	// secret half fills exactly the fields it specifies.
 	Decode(row Row) (any, error)
 	// Validate checks a fully-merged value.
 	Validate(v any) error
@@ -136,7 +137,7 @@ type Key[T any] struct {
 }
 
 // NewKey declares a setting. The name is the hub_settings key and should
-// be dot-namespaced by domain ("smtp", "rate_limit.change-password",
+// be dot-namespaced by domain ("smtp", "rate_limit.elevation",
 // "captcha.altcha").
 func NewKey[T any](name string) *Key[T] {
 	k := &Key[T]{name: name}
@@ -160,7 +161,7 @@ func (k *Key[T]) setDefault(v T) {
 	b, err := json.Marshal(v)
 	if err != nil {
 		// A default that cannot marshal is a declaration bug, but it must
-		// not brick the key at init. Leave defJSON empty; defaultCopy then
+		// not make the key unusable at init. Leave defJSON empty; defaultCopy then
 		// falls back to isolate, which reports the same failure at a call
 		// site where the caller can see it.
 		k.defJSON = nil
@@ -283,7 +284,7 @@ func (k *Key[T]) UI() UIMeta { return k.ui.clone() }
 
 // Decode implements Descriptor: defaults first, then the public half, then
 // the secret half — each unmarshal only touches the fields its document
-// names, so a partial stored row keeps the defaults for the rest.
+// specifies, so a partial stored row keeps the defaults for the rest.
 func (k *Key[T]) Decode(row Row) (any, error) {
 	// Decode onto a COPY of the default, never onto the default itself:
 	// encoding/json reuses an existing slice's backing array, so decoding
@@ -329,8 +330,8 @@ func (k *Key[T]) Validate(v any) error {
 }
 
 // ApplyPartial implements Descriptor: the partial document's fields
-// overlay the current value's; omitted fields are untouched. Unknown
-// field names are refused — a partial document whose every field name
+// overlay the current value's, and omitted fields stay as they are. It
+// refuses unknown field names — a partial document whose every field name
 // misses (a one-character typo) would otherwise merge to the unchanged
 // value and report success while changing nothing.
 func (k *Key[T]) ApplyPartial(v any, partial json.RawMessage) (any, error) {

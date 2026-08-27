@@ -22,6 +22,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/usernames"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/util/validate"
 	"github.com/leapmux/leapmux/util/version"
 )
@@ -75,6 +76,11 @@ type AuthService struct {
 	renderer   mail.Renderer
 	captcha    CaptchaService
 	hasAnyUser atomic.Bool // one-way latch: once true, never re-queried
+
+	// The clock GetCurrentUser reports the elevation deadline against. It
+	// must be the same seam UserService grants on, or a test that advances
+	// one reads a deadline the other never wrote.
+	clockSeam
 }
 
 // NewAuthService creates a new AuthService. renderer carries the hub's
@@ -125,9 +131,9 @@ func (s *AuthService) baseURL(ctx context.Context) string {
 	return settings.BaseURL(s.snap(ctx), s.cfg.Listen)
 }
 
-// checkHasAnyUser returns true if at least one user exists. The result is
-// cached with a one-way latch: once true, the DB is never queried again
-// (users cannot be un-created).
+// checkHasAnyUser returns true if at least one user exists. A one-way latch
+// caches the result: once true, nothing queries the DB again (users cannot
+// be un-created).
 func (s *AuthService) checkHasAnyUser(ctx context.Context) (bool, error) {
 	if s.hasAnyUser.Load() {
 		return true, nil
@@ -150,8 +156,8 @@ func (s *AuthService) checkHasAnyUser(ctx context.Context) (bool, error) {
 //
 // Set, not Add: this cookie is the response's answer about the session, and it
 // replaces anything already written for that name. The interceptor's slide
-// refresh stands back from a response that already carries a session cookie,
-// which is what keeps these two writers from fighting.
+// refresh does not touch a response that already carries a session cookie,
+// which is what keeps these two writers from overwriting each other.
 func (s *AuthService) setSessionCookie(ctx context.Context, h http.Header, sessionID string, expiresAt time.Time) {
 	h.Set("Set-Cookie", auth.BuildSessionCookie(sessionID, expiresAt, s.secureCookies(ctx)).String())
 }
@@ -195,44 +201,128 @@ func (s *AuthService) GetCurrentUser(ctx context.Context, req *connect.Request[l
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	var linkedProviders []*leapmuxv1.LinkedOAuthProvider
-	links, _ := s.store.OAuthUserLinks().ListByUser(ctx, userInfo.ID)
-	if len(links) > 0 {
-		// ListAll is acceptable here: the number of configured OAuth
-		// providers is typically in the single digits, and adding a
-		// GetByIDs method to every backend is not worth the complexity.
-		providers, _ := s.store.OAuthProviders().ListAll(ctx)
-		providerNames := make(map[string]string, len(providers))
-		for _, p := range providers {
-			providerNames[p.ID] = p.Name
+	// ONE count, for the number this REPORTS and for the step-up option rule
+	// below. Best-effort for the same reason userToProtoWithPasskeys is:
+	// this runs at every page load, so a transient count failure must not
+	// fail a request whose real work is elsewhere.
+	//
+	// The two readers take the failure differently, and they must. The
+	// reported number degrades to zero, which is a stale count on a screen.
+	// The RULE takes no answer at all: a zero that a failed read produced is
+	// not a fact about the account, and feeding it to the predicate below
+	// reports a passkey-only account as "verify through your provider", which
+	// providerMayElevateAccount then re-reads from the store and refuses. The
+	// client would have hidden the option that works and offered the one that
+	// cannot.
+	passkeyCount, counted := countPasskeysBestEffort(ctx, s.store, user)
+	// The step-up option rule, from the ONE predicate that decides it. It
+	// reads the two facts already in hand rather than paying a second COUNT.
+	//
+	// An unread count fails CLOSED, so the screen offers no option rather
+	// than only a refused one. The user still reaches every factor the
+	// account really holds through the ordinary prompt, and the next page
+	// load answers the question properly.
+	elevatesOnlyThroughAProvider := counted && accountShapeElevatesOnlyThroughAProvider(user.PasswordSet, passkeyCount)
+
+	// The link read REPORTS its failure only for the account shape that has
+	// nothing else to fall back on, and degrades for every other.
+	//
+	// An empty list is indistinguishable from "this account has no linked
+	// provider". For an account that holds neither a password nor a passkey
+	// the provider IS its only step-up option, so the empty list becomes
+	// "this account has nothing to verify with yet" on the screen the
+	// command-line consent leg just bounced the user to -- a false and
+	// alarming answer to a transient read.
+	//
+	// Every other account keeps a factor it can present, so the same failure
+	// costs it a missing Linked Accounts section until the next page load. It
+	// must NOT cost it the whole session: this runs on every page load, and a
+	// non-Unauthenticated failure leaves the client on a bootstrap error with
+	// no way into the app -- for a query most accounts never have a row for.
+	// An account whose passkey count did not read is in that second group by
+	// construction, because the shape above is false for it -- so one failed
+	// COUNT cannot turn this page load into a fatal one.
+	linkedProviders, err := s.linkedProvidersFor(ctx, userInfo.ID)
+	if err != nil {
+		if elevatesOnlyThroughAProvider {
+			return nil, connect.NewError(connect.CodeInternal, err)
 		}
-		for _, link := range links {
-			name, ok := providerNames[link.ProviderID]
-			if !ok {
-				continue
-			}
-			linkedProviders = append(linkedProviders, &leapmuxv1.LinkedOAuthProvider{
-				Id:   link.ProviderID,
-				Name: name,
-			})
-		}
+		slog.WarnContext(ctx, "could not list the account's linked OAuth providers",
+			"user_id", user.ID, "err", err)
 	}
 
-	userProto := userToProtoWithPasskeys(ctx, s.store, user)
+	userProto := userToProto(user, passkeyCount)
 	userProto.OauthProviders = linkedProviders
+	userProto.MayElevateThroughAProvider = elevatesOnlyThroughAProvider
 	return connect.NewResponse(&leapmuxv1.GetCurrentUserResponse{
 		User: userProto,
 		// Reported, never sent: this runs on every page load.
 		EmailVerification: emailVerificationToProto(s.verificationStatusFor(ctx, user)),
+		// Evaluated at NOW, not when the UserInfo was cached, so a window
+		// that lapsed inside the auth cache's lifetime is reported as
+		// absent rather than as a deadline in the past.
+		ElevationExpiresAt: elevationExpiresAtProto(userInfo, s.now()),
 	}), nil
 }
 
+// linkedProvidersFor lists the account's OAuth links, each with whether an
+// administrator currently has that provider enabled.
+//
+// It REPORTS a failure rather than discarding it, and that is the difference
+// from the passkey count beside it. The count's zero costs a wasted round
+// trip; an empty provider list is indistinguishable from "this account has no
+// linked provider", and for an account that holds neither a password nor a
+// passkey that is the ONLY step-up option -- so a transient store failure
+// told the user their account had nothing to verify with at all, on the
+// screen the command-line consent leg just bounced them to. An error the
+// client retries is the honest answer.
+//
+// A disabled provider's link is INCLUDED. See LinkedOAuthProvider.enabled: the
+// owner must still be able to detach a link whose provider an administrator
+// turned off, and the verification screen filters on the flag instead.
+func (s *AuthService) linkedProvidersFor(ctx context.Context, userID userid.UserID) ([]*leapmuxv1.LinkedOAuthProvider, error) {
+	links, err := s.store.OAuthUserLinks().ListByUser(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("list the account's OAuth links: %w", err)
+	}
+	if len(links) == 0 {
+		return nil, nil
+	}
+	// ListAll is acceptable here: the number of configured OAuth providers is
+	// typically in the single digits, and adding a GetByIDs method to every
+	// backend is not worth the complexity.
+	providers, err := s.store.OAuthProviders().ListAll(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list the configured OAuth providers: %w", err)
+	}
+	rows := make(map[string]store.OAuthProviderSummary, len(providers))
+	for _, p := range providers {
+		rows[p.ID] = p
+	}
+	out := make([]*leapmuxv1.LinkedOAuthProvider, 0, len(links))
+	for _, link := range links {
+		row, ok := rows[link.ProviderID]
+		if !ok {
+			// An ABSENT row is different from a disabled one: the provider
+			// was removed, so there is no name to render and nothing the
+			// link can ever reach again.
+			continue
+		}
+		out = append(out, &leapmuxv1.LinkedOAuthProvider{
+			Id:      link.ProviderID,
+			Name:    row.Name,
+			Enabled: row.Enabled,
+		})
+	}
+	return out, nil
+}
+
 func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1.SignUpRequest]) (*connect.Response[leapmuxv1.SignUpResponse], error) {
-	if s.cfg.SoloMode {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("sign-up is not available in solo mode"))
+	if err := rejectSolo(s.cfg.SoloMode, "sign-up"); err != nil {
+		return nil, err
 	}
 
-	// The first user is always created as an admin, regardless of whether
+	// The hub always creates the first user as an admin, regardless of whether
 	// signup is enabled globally.
 	hasUser, err := s.checkHasAnyUser(ctx)
 	if err != nil {
@@ -247,14 +337,10 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
-	// `solo` is rejected in every mode: if a non-solo data-dir ever gets opened
-	// in solo mode, the interceptor auto-authenticates every request as that
-	// user. `admin` is allowed in setup mode so the first operator can
-	// legitimately claim it; in public signup it's squat-protected.
-	if usernames.IsReservedSystem(username) {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("%q is a reserved username", username))
-	}
-	if !isSetupMode && usernames.IsReservedPublic(username) {
+	// This check rejects `solo` in every mode, and `admin` only outside setup
+	// mode.
+	// usernames.IsReservedForSignup states both rules and their reasons.
+	if usernames.IsReservedForSignup(username, isSetupMode) {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("%q is a reserved username", username))
 	}
 	displayName, err := validate.SanitizeDisplayName(req.Msg.GetDisplayName(), username)
@@ -289,6 +375,7 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 			pendingEmail: email,
 			passwordHash: hash,
 			passwordSet:  true,
+			now:          s.now,
 		})
 		if err != nil {
 			return nil, mapSignupCommitError(err)
@@ -296,7 +383,7 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 		if err := s.deliverSignupVerification(ctx, createdUser.ID, email, storedCode); err != nil {
 			return nil, err
 		}
-		nextResend := nextResendAt(time.Now().UTC())
+		nextResend := nextResendAt(s.now().UTC())
 
 		uid, mintErr := mintRowUserID(createdUser.ID)
 		if mintErr != nil {
@@ -336,11 +423,16 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 	return s.signUpResponse(ctx, user)
 }
 
-// signUpSetupMode handles the initial admin account creation when no users
-// exist yet. The first user is always an admin with a verified email.
+// signUpSetupMode creates the initial admin account when no users exist yet.
+// The first user is always an administrator, and the address lands
+// UNVERIFIED: nobody confirmed it, and the column records only what somebody
+// confirmed. The login gate takes its own exemption through
+// auth.EmailVerificationFacts.Satisfied, so nothing blocks the administrator
+// -- but Forgot password stays closed for that address until they verify it
+// from Preferences, Account.
 func (s *AuthService) signUpSetupMode(ctx context.Context, username, displayName, email, passwordHash string) (*connect.Response[leapmuxv1.SignUpResponse], error) {
-	// Re-check to handle race condition where another request created a user
-	// between the initial check and now.
+	// Re-check to handle the race condition where another request created a
+	// user between the initial check and now.
 	hasUser, err := s.store.Users().HasAny(ctx)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("check users: %w", err))
@@ -405,7 +497,7 @@ func (s *AuthService) GetSystemInfo(ctx context.Context, req *connect.Request[le
 	// A captcha-config read failure reports captcha as ENABLED, matching
 	// the interceptor's fail-closed enforcement on the same store: the
 	// opposite polarity would unblock a payload-less submit that the hub
-	// then denies, dead-looping the form on a mislabeled error. The
+	// then denies, so the form would loop for ever on a mislabeled error. The
 	// provider is zero (UNSPECIFIED) on that degraded path — never a
 	// wrong concrete provider — and clients treat anything but a known
 	// enum as altcha. The rest of the system info stays usable, mirroring
@@ -424,7 +516,7 @@ func (s *AuthService) GetSystemInfo(ctx context.Context, req *connect.Request[le
 	//      / named-pipe address so workers can dial the hub locally.
 	//   3. Otherwise leave it empty — the frontend falls back to
 	//      window.location.origin, which already reflects whatever proxy or
-	//      hostname the user is connecting through.
+	//      hostname the user connects through.
 	var workerHubURL string
 	snap := s.snap(ctx)
 	switch {
@@ -448,7 +540,7 @@ func (s *AuthService) GetSystemInfo(ctx context.Context, req *connect.Request[le
 		OauthEnabled:    len(providers) > 0,
 		WorkerHubUrl:    workerHubURL,
 		EmailEnabled:    settings.KeySMTP.Of(snap).Enabled(),
-		PasskeyEnabled:  s.passkeysAvailable(ctx),
+		PasskeyEnabled:  s.passkeysRunnableForOrigin(ctx, originFromRequest(req)),
 		CaptchaEnabled:  captchaEnabled,
 		AltchaAlgorithm: altchaAlgorithm,
 		CaptchaProvider: captchaProvider,
@@ -505,7 +597,10 @@ func (s *AuthService) GetOAuthProviders(ctx context.Context, req *connect.Reques
 
 // loadPendingOAuthSignup fetches and validates a pending OAuth signup by token.
 // It returns a connect error on missing/expired tokens.
-func loadPendingOAuthSignup(ctx context.Context, st store.Store, token string) (*store.PendingOAuthSignup, error) {
+//
+// now is a parameter so both callers pass the service's clock seam rather
+// than this function reading a second wall clock beside it.
+func loadPendingOAuthSignup(ctx context.Context, st store.Store, token string, now time.Time) (*store.PendingOAuthSignup, error) {
 	if token == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("signup_token is required"))
 	}
@@ -516,16 +611,46 @@ func loadPendingOAuthSignup(ctx context.Context, st store.Store, token string) (
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	if auth.IsExpired(time.Now().UTC(), pending.ExpiresAt) {
+	if auth.IsExpired(now, pending.ExpiresAt) {
 		_ = st.PendingOAuthSignups().Delete(ctx, token)
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("signup token expired"))
 	}
 	return pending, nil
 }
 
+// errSignupStartedElsewhere refuses a pending signup to a browser that did
+// not start the OAuth flow.
+//
+// The signup token specifies a FLOW, not a browser: it travels in the URL the
+// callback redirects to, so whoever holds that URL could otherwise finish
+// the signup. An attacker who completes their OWN callback and hands the
+// resulting link to a victim would sign that victim into an account linked
+// to the ATTACKER's identity, which the attacker can return to at any time.
+// The pending-signup cookie is what specifies the browser. A row minted without
+// one is refused rather than admitted, for the same reason the callback
+// refuses a state row with no nonce.
+func errSignupStartedElsewhere() error {
+	return connect.NewError(connect.CodePermissionDenied,
+		fmt.Errorf("a different browser started this sign-up; start again from the sign-in page"))
+}
+
+// assertSignupBrowser checks the pending signup's browser binding.
+func (s *AuthService) assertSignupBrowser(ctx context.Context, header http.Header, pending *store.PendingOAuthSignup) error {
+	presented := auth.OAuthSignupNonceFromHeader(header.Get("Cookie"), pending.Token, s.secureCookies(ctx))
+	if !browserSecretMatches(pending.NonceHash, presented) {
+		return errSignupStartedElsewhere()
+	}
+	return nil
+}
+
 func (s *AuthService) GetPendingOAuthSignup(ctx context.Context, req *connect.Request[leapmuxv1.GetPendingOAuthSignupRequest]) (*connect.Response[leapmuxv1.GetPendingOAuthSignupResponse], error) {
-	pending, err := loadPendingOAuthSignup(ctx, s.store, req.Msg.GetSignupToken())
+	pending, err := loadPendingOAuthSignup(ctx, s.store, req.Msg.GetSignupToken(), s.now().UTC())
 	if err != nil {
+		return nil, err
+	}
+	// Refuse here as well as at Complete, so the wrong browser sees the
+	// refusal before it fills a username in rather than after.
+	if err := s.assertSignupBrowser(ctx, req.Header(), pending); err != nil {
 		return nil, err
 	}
 
@@ -544,8 +669,11 @@ func (s *AuthService) GetPendingOAuthSignup(ctx context.Context, req *connect.Re
 
 func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Request[leapmuxv1.CompleteOAuthSignupRequest]) (*connect.Response[leapmuxv1.CompleteOAuthSignupResponse], error) {
 	signupToken := req.Msg.GetSignupToken()
-	pending, err := loadPendingOAuthSignup(ctx, s.store, signupToken)
+	pending, err := loadPendingOAuthSignup(ctx, s.store, signupToken, s.now().UTC())
 	if err != nil {
+		return nil, err
+	}
+	if err := s.assertSignupBrowser(ctx, req.Header(), pending); err != nil {
 		return nil, err
 	}
 
@@ -553,9 +681,10 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
-	// OAuth completion is always treated as public signup — the first-admin
-	// flow lives at /setup, so both reserved rules apply.
-	if err := s.validatePublicSignupUsername(ctx, username); err != nil {
+	// OAuth completion is never setup mode: only an administrator can
+	// configure a provider, so an account already exists whenever a pending
+	// OAuth signup does. Both reserved rules therefore apply.
+	if err := s.validateSignupUsername(ctx, username, false); err != nil {
 		return nil, err
 	}
 
@@ -612,7 +741,7 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 		// otherwise), exactly like local signup.
 		//
 		// A provider that omits the email claim leaves the caller to supply
-		// one. Without this the sign-up is a dead end whenever SMTP is on:
+		// one. Without this the sign-up cannot complete whenever SMTP is on:
 		// validateSignupEmail refuses an empty address, and no other step in
 		// the flow can produce one, so the pending token expires and the
 		// account can never be created. The request field is only honored
@@ -661,6 +790,7 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 		pendingEmail:  pendingEmail,
 		passwordHash:  pwdhash.PlaceholderHash,
 		extra:         link,
+		now:           s.now,
 	})
 	if err != nil {
 		return nil, mapSignupCommitError(err)
@@ -670,7 +800,7 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 			return nil, err
 		}
 		emailSent = true
-		next := nextResendAt(time.Now().UTC())
+		next := nextResendAt(s.now().UTC())
 		nextResend = &next
 	}
 
@@ -703,6 +833,12 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 		}),
 	})
 	s.setSessionCookie(ctx, resp.Header(), sessionID, expiresAt)
+	// The pending row is consumed, so its browser binding has nothing left
+	// to bind. Add, never Set: setSessionCookie above owns the one
+	// Set-Cookie line for the session, and a Set here would delete it.
+	for _, c := range auth.ClearOAuthSignupNonceCookie(signupToken) {
+		resp.Header().Add("Set-Cookie", c.String())
+	}
 	return resp, nil
 }
 
@@ -755,14 +891,33 @@ func userToProto(u *store.User, passkeyCount int64) *leapmuxv1.User {
 // userToProtoWithPasskeys fills the passkey count best-effort. The count is
 // display data; a transient failure of this one query must not fail an RPC
 // whose main work already committed (a minted session, a rotated password).
-// The failure is logged and the count reports zero.
+// It logs the failure, and the count reports zero.
 func userToProtoWithPasskeys(ctx context.Context, st store.Store, u *store.User) *leapmuxv1.User {
+	count, _ := countPasskeysBestEffort(ctx, st, u)
+	return userToProto(u, count)
+}
+
+// countPasskeysBestEffort returns the account's passkey count, and whether
+// the query answered at all. A failure logs a warning and reports (0, false).
+//
+// It is separate from userToProtoWithPasskeys because GetCurrentUser needs
+// the same number TWICE -- once to report it, once for the step-up option
+// rule -- and running the COUNT again for the second reader is the kind of
+// drift a shared value removes.
+//
+// The second return value is what keeps the two readers honest. A count of
+// zero means one of two things, and only one of them is a fact about the
+// account: it holds no passkey, or nobody could ask. A display tolerates the
+// first reading of both; an authorization-shaped rule must not, so it reads
+// this flag and fails closed. The value was a bare int64, and the discarded
+// error reached the rule as a genuine zero.
+func countPasskeysBestEffort(ctx context.Context, st store.Store, u *store.User) (int64, bool) {
 	count, err := st.PasskeyCredentials().CountByUser(ctx, u.ID)
 	if err != nil {
 		slog.WarnContext(ctx, "count passkeys for user proto", "user_id", u.ID, "err", err)
-		count = 0
+		return 0, false
 	}
-	return userToProto(u, count)
+	return count, true
 }
 
 // mapSignupCommitError maps an account-creation failure onto a connect
@@ -777,12 +932,13 @@ func mapSignupCommitError(err error) error {
 	return connect.NewError(connect.CodeInternal, err)
 }
 
-// validatePublicSignupUsername enforces the public-signup username rules
-// (reserved names + availability) shared by the OAuth completion and both
-// passkey sign-up halves. The first-admin flow at /setup is not public
-// signup and keeps its own setup-mode rules.
-func (s *AuthService) validatePublicSignupUsername(ctx context.Context, username string) error {
-	if usernames.IsReservedForPublicSignup(username) {
+// validateSignupUsername enforces the username rules (reserved names plus
+// availability) shared by the OAuth completion and both passkey sign-up
+// halves. `setupMode` says whether this sign-up creates the hub's first
+// account, which is what decides if `admin` is claimable; see
+// usernames.IsReservedForSignup.
+func (s *AuthService) validateSignupUsername(ctx context.Context, username string, setupMode bool) error {
+	if usernames.IsReservedForSignup(username, setupMode) {
 		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("%q is a reserved username", username))
 	}
 	if err := CheckUsernameAvailable(ctx, s.store, username); err != nil {
@@ -813,16 +969,17 @@ func (s *AuthService) validateSignupEmail(ctx context.Context, email string) err
 }
 
 // deliverSignupVerification sends the verification email. A send failure
-// fails closed: the account cannot verify its email, so the just-created
-// account is rolled back and the caller sees a generic error. The transport
-// error stays in the server log — never in the anonymous client response.
+// fails closed: the account cannot verify its email, so this function rolls
+// the just-created account back and the caller sees a generic error. The
+// transport error stays in the server log — never in the anonymous client
+// response.
 //
 // The rollback is a best-effort compensation in a SECOND transaction: a
 // process death between the create commit and this rollback leaves a
 // signed-up account whose code was never delivered. That account
 // self-recovers — its credential committed with it, Login and the passkey
 // finish are public, and ResendVerificationEmail is allowlisted for
-// unverified sessions — so the strand is limited to a double fault and
+// unverified sessions — so only a double fault strands an account, and this
 // needs no outbox. A rollback that itself fails is logged, never surfaced.
 func (s *AuthService) deliverSignupVerification(ctx context.Context, userID, email, code string) error {
 	if err := s.mail.Send(ctx, s.renderer.VerificationEmail(email, code, pendingEmailExpiry)); err != nil {

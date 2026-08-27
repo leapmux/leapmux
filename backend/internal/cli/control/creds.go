@@ -18,14 +18,26 @@ import (
 
 // CredentialFile is the per-hub credential payload stored under
 // ~/.config/leapmux/control/<hub-host>.json (mode 0600).
+//
+// TokenID and AdminScope are ADVISORY: they let the CLI say which row it
+// holds and what it was granted, without a round trip. The hub decides both
+// -- a hand-edited AdminScope grants nothing, because the scope lives in the
+// api_tokens row the bearer specifies.
 type CredentialFile struct {
 	HubURL       string    `json:"hub_url"`
 	HubID        string    `json:"hub_id"`
 	AccessToken  string    `json:"access_token"`
 	RefreshToken string    `json:"refresh_token"`
 	ExpiresAt    time.Time `json:"expires_at"`
-	UserID       string    `json:"user_id"`
-	Username     string    `json:"username"`
+	// RefreshExpiresAt is when the credential stops being able to renew
+	// itself, so `auth status` can say when this device must sign in again
+	// rather than only when the hour-long access token lapses. Zero on a
+	// credential written before the hub reported it.
+	RefreshExpiresAt time.Time `json:"refresh_expires_at,omitzero"`
+	UserID           string    `json:"user_id"`
+	Username         string    `json:"username"`
+	TokenID          string    `json:"token_id,omitempty"`
+	AdminScope       bool      `json:"admin_scope,omitempty"`
 }
 
 // HubHost extracts the hostname (or socket path) used for the on-disk
@@ -81,7 +93,7 @@ func CredentialsPath(hubURL string) (string, error) {
 }
 
 // SaveCredentials writes the credentials for hubURL to disk with 0600
-// permissions. The directory is created if missing.
+// permissions. It creates the directory when the directory is missing.
 func SaveCredentials(hubURL string, creds CredentialFile) error {
 	path, err := CredentialsPath(hubURL)
 	if err != nil {
@@ -113,7 +125,7 @@ func LoadCredentials(hubURL string) (*CredentialFile, error) {
 	}
 	var c CredentialFile
 	if err := json.Unmarshal(data, &c); err != nil {
-		// Name the file. A caller that reports this message has no other
+		// State the file path. A caller that reports this message has no other
 		// way to say WHICH credential file the operator must repair or
 		// delete, because the path derives from the hub URL.
 		return nil, fmt.Errorf("parse credentials %s: %w", path, err)
@@ -122,6 +134,13 @@ func LoadCredentials(hubURL string) (*CredentialFile, error) {
 }
 
 // DeleteCredentials removes the credentials file for hubURL. Idempotent.
+//
+// It removes the temporary files of an interrupted write as well, and that
+// is not housekeeping: each one holds a complete access and refresh pair at
+// mode 0600, and nothing else ever shows it. ListCredentialFiles reads only
+// the ".json" suffix, so `auth list` cannot report one; and a logout that
+// left one behind told the user the credential was gone from this machine
+// while its secret stayed on the disk for the rest of its window.
 func DeleteCredentials(hubURL string) error {
 	path, err := CredentialsPath(hubURL)
 	if err != nil {
@@ -130,7 +149,7 @@ func DeleteCredentials(hubURL string) error {
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	return nil
+	return atomicfile.RemoveTempFiles(path)
 }
 
 // ListCredentialFiles returns every credential file in ConfigDir.
@@ -163,6 +182,6 @@ func ListCredentialFiles() ([]CredentialFile, error) {
 	return out, nil
 }
 
-// ErrNotLoggedIn is returned when no credential file exists for the
-// requested hub.
+// LoadCredentials returns ErrNotLoggedIn when no credential file exists for
+// the requested hub.
 var ErrNotLoggedIn = errors.New("not logged in to this hub; run `leapmux control auth login`")

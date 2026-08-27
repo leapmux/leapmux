@@ -45,35 +45,45 @@ func AuthenticateWorkerBearer(ctx context.Context, st store.Store, headerValue s
 //
 // Fields are intentionally optional: handlers that don't support
 // bearers (no `Validator`) or solo mode (no `SoloUser`) leave those
-// nil and the helper skips that rung. `Cookies` controls the
-// fallback set — most HTTP handlers pass a single secure-mode
-// mirroring their own configuration, but the api-auth endpoint
-// tries both modes so it works whether the session was issued under
-// TLS or plain HTTP.
+// nil and the helper skips that rung. `ReadCookie` turns the cookie
+// rung on, and `SecureCookies` states which spelling this hub writes.
 //
-// Store is required only when at least one entry in Cookies yields
-// a session id.
+// Store is required only when ReadCookie is set.
 type HTTPAuthOpts struct {
 	Store     store.Store
 	Validator *TokenValidator
 	SoloUser  *UserInfo
 	Contexts  *AuthContextRegistry
-	// Cookies lists the secure modes to try, in order. Empty means
-	// "no cookie fallback" (handlers that only accept bearer/solo).
-	Cookies []bool
+	// ReadCookie turns the session-cookie rung on. Handlers that accept
+	// only a bearer or the solo user leave it false.
+	ReadCookie bool
+	// SecureCookies states whether this hub writes the __Host- prefixed
+	// session cookie. It is the hub's OWN setting, never a guess from the
+	// request.
+	SecureCookies bool
 }
 
 // AuthenticateHTTP resolves the caller of `r` through the standard
 // hub auth ladder: solo override → leapmux bearer → session cookie.
 // Returns the resolved UserInfo or a descriptive error.
 //
-// Each rung is optional: nil SoloUser, nil Validator, or empty
-// Cookies cause that rung to no-op. Handlers that only support a
+// Each rung is optional: nil SoloUser, nil Validator, or a false
+// ReadCookie causes that rung to no-op. Handlers that only support a
 // subset of the rungs pass the subset they want — e.g. the
 // `/ws/userevents` and `/ws/channel` relays support all three;
-// the `/auth/cli/*` endpoints support only cookies (and try both
-// secure modes so a TLS-issued session still validates when the
-// browser falls back to plain HTTP and vice versa).
+// the `/auth/cli/*` endpoints support only cookies.
+//
+// The cookie rung is ASYMMETRIC, exactly as OAuthNonceFromRequest is,
+// and for the same reason. AuthenticateHTTP reads the __Host- spelling
+// first, and on a hub that writes it, it REFUSES the unprefixed name rather
+// than trying it as a fallback: any plain-HTTP page on the registrable domain can plant
+// `leapmux-session`, which is precisely what the __Host- prefix exists to
+// prevent. Trying the unprefixed name FIRST — which the two most
+// consequential HTTP surfaces did, the CLI consent legs and the leg that
+// grants an elevation — handed a planted cookie priority over the real
+// one. On a hub that does not write the prefixed spelling the fallback is
+// safe and stays, so a session issued under TLS still validates after the
+// operator turns the setting off.
 func AuthenticateHTTP(ctx context.Context, r *http.Request, opts HTTPAuthOpts) (*UserInfo, error) {
 	if opts.SoloUser != nil {
 		return opts.Contexts.CurrentSyntheticUser(opts.SoloUser), nil
@@ -90,19 +100,21 @@ func AuthenticateHTTP(ctx context.Context, r *http.Request, opts HTTPAuthOpts) (
 			return user, nil
 		}
 	}
-	for _, secure := range opts.Cookies {
-		token := SessionIDFromRequest(r, secure)
-		if token == "" {
-			continue
+	if opts.ReadCookie {
+		token := SessionIDFromRequest(r, true)
+		if token == "" && !opts.SecureCookies {
+			token = SessionIDFromRequest(r, false)
 		}
-		user, err := ValidateToken(ctx, opts.Store, token)
-		if err != nil {
-			if connect.CodeOf(err) == connect.CodeUnauthenticated {
-				return nil, fmt.Errorf("%w: invalid session", ErrHTTPUnauthenticated)
+		if token != "" {
+			user, err := ValidateToken(ctx, opts.Store, token)
+			if err != nil {
+				if connect.CodeOf(err) == connect.CodeUnauthenticated {
+					return nil, fmt.Errorf("%w: invalid session", ErrHTTPUnauthenticated)
+				}
+				return nil, err
 			}
-			return nil, err
+			return user, nil
 		}
-		return user, nil
 	}
 	return nil, fmt.Errorf("%w: no credentials", ErrHTTPUnauthenticated)
 }

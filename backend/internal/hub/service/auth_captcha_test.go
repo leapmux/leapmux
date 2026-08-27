@@ -39,6 +39,11 @@ func setupCaptchaAuthService(t *testing.T, solo bool) (leapmuxv1connect.AuthServ
 	ks, err := keystore.New(map[uint32][32]byte{1: key})
 	require.NoError(t, err)
 	set := servicetest.NewSettingsManager(t, st, ks)
+	// Publish an HTTPS host, because the secure-context gate reads hub
+	// settings alone: an unpublished plain-HTTP hub stands ALTCHA down, and
+	// every ALTCHA assertion below would then pass against a manager that
+	// issues no challenge at all.
+	require.NoError(t, settings.KeyPublicURL.Set(context.Background(), set, "https://hub.example.com"))
 	captchaMgr := captcha.NewManager(st, set, solo)
 
 	cfg := testConfig()

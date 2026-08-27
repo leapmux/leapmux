@@ -1,7 +1,7 @@
 package service
 
 // The two ceilings the administrator surface puts on ONE operation's row
-// set: the per-page limit AdminPageParams applies to every paginated
+// set: the per-page limit NormalizePageParams applies to every paginated
 // handler, and the pass ceiling the registration-key purge drain applies to
 // a backlog. They share a file because they answer one question -- how much
 // work a single request may ask the hub for.
@@ -26,7 +26,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 )
 
-// TestAdminPageParams pins the normalization every paginated admin handler
+// TestNormalizePageParams pins the normalization every paginated admin handler
 // shares. Nine call sites read it, and none of them re-checks its result.
 //
 // Both ends carry a defect the function exists to prevent. A non-positive
@@ -37,41 +37,41 @@ import (
 // hand-rolled form WorkerManagementService.ListWorkers used had no ceiling
 // at all, so `page.limit = 100000` returned the caller's whole worker row
 // set in one response.
-func TestAdminPageParams(t *testing.T) {
+func TestNormalizePageParams(t *testing.T) {
 	t.Parallel()
 
 	for name, tc := range map[string]struct {
 		limit int64
 		want  int64
 	}{
-		"omitted limit takes the default":  {limit: 0, want: DefaultAdminPageLimit},
-		"negative limit takes the default": {limit: -1, want: DefaultAdminPageLimit},
-		"the most negative limit does too": {limit: math.MinInt64, want: DefaultAdminPageLimit},
+		"omitted limit takes the default":  {limit: 0, want: DefaultPageLimit},
+		"negative limit takes the default": {limit: -1, want: DefaultPageLimit},
+		"the most negative limit does too": {limit: math.MinInt64, want: DefaultPageLimit},
 		"one row is a legal page":          {limit: 1, want: 1},
-		"a limit below the default stays":  {limit: DefaultAdminPageLimit - 1, want: DefaultAdminPageLimit - 1},
-		"the default itself stays":         {limit: DefaultAdminPageLimit, want: DefaultAdminPageLimit},
-		"the ceiling itself is allowed":    {limit: MaxAdminPageLimit, want: MaxAdminPageLimit},
-		"one past the ceiling is capped":   {limit: MaxAdminPageLimit + 1, want: MaxAdminPageLimit},
-		"the reported bug's limit":         {limit: 100000, want: MaxAdminPageLimit},
-		"the largest limit is capped":      {limit: math.MaxInt64, want: MaxAdminPageLimit},
+		"a limit below the default stays":  {limit: DefaultPageLimit - 1, want: DefaultPageLimit - 1},
+		"the default itself stays":         {limit: DefaultPageLimit, want: DefaultPageLimit},
+		"the ceiling itself is allowed":    {limit: MaxPageLimit, want: MaxPageLimit},
+		"one past the ceiling is capped":   {limit: MaxPageLimit + 1, want: MaxPageLimit},
+		"the reported bug's limit":         {limit: 100000, want: MaxPageLimit},
+		"the largest limit is capped":      {limit: math.MaxInt64, want: MaxPageLimit},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			assert.Equal(t, tc.want, AdminPageParams("", tc.limit).Limit)
+			assert.Equal(t, tc.want, NormalizePageParams("", tc.limit).Limit)
 		})
 	}
 
 	// The ceiling is the point of the function, so state the relation the
 	// table rests on rather than leaving it to the two literals.
-	assert.Less(t, int64(DefaultAdminPageLimit), int64(MaxAdminPageLimit),
+	assert.Less(t, int64(DefaultPageLimit), int64(MaxPageLimit),
 		"the default page must fit inside the ceiling")
 
-	// The cursor is carried through untouched at every limit: normalizing it
-	// is the store's job, and a handler that rewrote it would silently
-	// restart a listing from the first page.
-	assert.Equal(t, "opaque-cursor", AdminPageParams("opaque-cursor", 0).Cursor)
-	assert.Equal(t, "opaque-cursor", AdminPageParams("opaque-cursor", math.MaxInt64).Cursor)
-	assert.Empty(t, AdminPageParams("", 10).Cursor)
+	// NormalizePageParams carries the cursor through untouched at every limit:
+	// normalizing it is the store's job, and a handler that rewrote it would
+	// silently restart a listing from the first page.
+	assert.Equal(t, "opaque-cursor", NormalizePageParams("opaque-cursor", 0).Cursor)
+	assert.Equal(t, "opaque-cursor", NormalizePageParams("opaque-cursor", math.MaxInt64).Cursor)
+	assert.Empty(t, NormalizePageParams("", 10).Cursor)
 }
 
 // fakePurgeStore serves one fake CleanupStore and nothing else. The purge
@@ -188,9 +188,9 @@ func TestPurgeExpiredRegistrationKeysStopsAtTheRunawayCeiling(t *testing.T) {
 }
 
 // TestPurgeExpiredRegistrationKeysReportsAFailedPass pins the error path. A
-// store fault mid-drain must surface as Internal with the operation named,
-// not as a short success that reports the rows deleted so far and invites
-// the operator to believe the backlog is clear.
+// store fault mid-drain must surface as Internal with the operation in the
+// message, not as a short success that reports the rows deleted so far and
+// invites the operator to believe the backlog is clear.
 func TestPurgeExpiredRegistrationKeysReportsAFailedPass(t *testing.T) {
 	t.Parallel()
 

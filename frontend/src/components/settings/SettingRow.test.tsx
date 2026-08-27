@@ -1,9 +1,23 @@
 import type { SettingBinding, SettingDescriptor } from './types'
 import { cleanup, fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { installControllableIntersectionObserver, intersectionObservedCount, removeControllableIntersectionObserver, revealObservedElements } from '~/test-support/intersectionObserverStub'
 import { menuTriggerText, pickMenuOption } from '~/test-support/menu'
 import { formatEffectiveValue, SettingRow } from './SettingRow'
+
+// A stand-in for the custom editors, so the reveal cases below assert the
+// MOUNTING rule rather than any one editor's own provider requirements. No
+// other case in this file renders a `custom` control.
+const mountedCustomEditor = vi.fn()
+vi.mock('./controls/customEditors', () => ({
+  CUSTOM_EDITORS: {
+    keybindings: () => {
+      mountedCustomEditor()
+      return <div data-testid="custom-editor-stub" />
+    },
+  },
+}))
 
 function descriptor(overrides: Partial<SettingDescriptor> = {}): SettingDescriptor {
   return {
@@ -474,7 +488,7 @@ describe('settingRow scope chip', () => {
 })
 
 describe('settingRow write sequencing', () => {
-  // A superseded rejection must not state itself. The store and the account
+  // This row must not report a superseded rejection. The store and the account
   // path both already skip their own bookkeeping for one, but both still
   // reject — so without a row-level guard the row shows the value the LATER
   // write stored beside the reason the EARLIER one failed, permanently.
@@ -541,8 +555,9 @@ describe('settingRow write sequencing', () => {
     expect(input.value).toBe('https://other.example.com')
   })
 
-  // The pill branch re-derives every pill from `props.value`, so only the
-  // wide-enum `<select>` needs the repair.
+  // Both branches re-derive their selection from `props.value` -- the pills
+  // and the wide-enum menu alike -- so neither needs the repair a native
+  // `<select>` used to.
   it('keeps showing the stored option when a menu write is refused', async () => {
     const set = vi.fn(async () => {
       throw new Error('unknown TLS mode')
@@ -570,7 +585,7 @@ describe('settingRow write sequencing', () => {
 
   // The set path and the reset path share ONE counter, because they write
   // the same row: a Reset issued after a set supersedes it. Two counters
-  // (or one per operation kind) would let the set's rejection state itself
+  // (or one per operation kind) would let the row report the set's rejection
   // beside the value the reset restored.
   it('does not show a superseded write\'s error after a later reset', async () => {
     let rejectSet: (err: Error) => void = () => {}
@@ -598,7 +613,7 @@ describe('settingRow write sequencing', () => {
     rejectSet(new Error('the hub refused write one'))
     await new Promise(resolve => setTimeout(resolve, 0))
 
-    // The reset has NOT replied yet, so nothing could have cleared a
+    // The reset did NOT reply yet, so nothing could have cleared a
     // recorded error: the shared counter is the only reason there is none.
     expect(screen.queryByText('the hub refused write one')).toBeNull()
 
@@ -685,5 +700,66 @@ describe('formatEffectiveValue', () => {
   it('prints a string and a list as they are', () => {
     expect(formatEffectiveValue({ kind: 'text' }, 'mail.example.com')).toBe('mail.example.com')
     expect(formatEffectiveValue({ kind: 'stringList', addLabel: 'Add' }, ['Inter', 'Hack'])).toBe('Inter,Hack')
+  })
+})
+
+/**
+ * A `custom` editor waits for the row to come into view.
+ *
+ * It is a whole panel of its own, and several of them load on mount:
+ * AccountPasskeys issues ListPasskeys and AccountCLITokens runs a keyset loop
+ * over ListMyAPITokens. The Account group leads the navigation, so every
+ * Ctrl+, mounted both -- two list requests for a user who came for Appearance
+ * and clicks away -- and both of those rows sit below the visible area.
+ *
+ * The stub is required: jsdom implements no IntersectionObserver, and
+ * `createRevealed` reads a missing API as "already revealed", which is the
+ * behaviour before the latch existed. Without the stub this suite could never
+ * observe the deferred state.
+ */
+describe('settingRow custom editors', () => {
+  beforeAll(() => {
+    installControllableIntersectionObserver()
+  })
+
+  beforeEach(() => {
+    mountedCustomEditor.mockClear()
+  })
+
+  afterAll(() => {
+    removeControllableIntersectionObserver()
+  })
+
+  const customRow = () => descriptor({ id: 'user.theme', control: { kind: 'custom', id: 'keybindings' } })
+
+  it('does not mount the editor until the row is revealed', () => {
+    render(() => <SettingRow descriptor={customRow()} binding={binding()} />)
+    expect(screen.queryByTestId('custom-editor-stub')).toBeNull()
+    expect(mountedCustomEditor).not.toHaveBeenCalled()
+
+    revealObservedElements()
+    expect(screen.getByTestId('custom-editor-stub')).toBeInTheDocument()
+    expect(mountedCustomEditor).toHaveBeenCalledTimes(1)
+  })
+
+  it('observes a custom row, and only a custom row', () => {
+    render(() => <SettingRow descriptor={descriptor()} binding={binding()} />)
+    expect(intersectionObservedCount()).toBe(0)
+
+    render(() => <SettingRow descriptor={customRow()} binding={binding()} />)
+    expect(intersectionObservedCount()).toBe(1)
+  })
+
+  // The latch is one-way. Scrolling past a row and back must not re-run the
+  // load it triggered, and a revealed editor must not be torn down under the
+  // user's pointer.
+  it('keeps the editor once it is revealed', () => {
+    render(() => <SettingRow descriptor={customRow()} binding={binding()} />)
+    revealObservedElements()
+    expect(screen.getByTestId('custom-editor-stub')).toBeInTheDocument()
+    // The observer disconnected on the first hit, so nothing is left watching.
+    expect(intersectionObservedCount()).toBe(0)
+    expect(screen.getByTestId('custom-editor-stub')).toBeInTheDocument()
+    expect(mountedCustomEditor).toHaveBeenCalledTimes(1)
   })
 })

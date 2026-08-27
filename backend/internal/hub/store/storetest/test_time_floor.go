@@ -17,7 +17,7 @@ import (
 // ROUNDS sub-millisecond fractions to its column precision (MySQL/TiDB
 // DATETIME(3) round half up; SQLite's strftime '%f' does too before its
 // Go-side floor) would store the NEXT millisecond and fail the "never after
-// the bound" pin. The 999ns tail additionally exercises the nanosecond ->
+// the requested instant" pin. The 999ns tail additionally exercises the nanosecond ->
 // microsecond conversion on dialects that keep microsecond precision
 // (pgx floors it for Postgres-family timestamptz columns).
 const floorProbeResidue = 750*time.Microsecond + 999*time.Nanosecond
@@ -35,19 +35,20 @@ func floorProbeBase() time.Time {
 }
 
 // assertStoredInstant pins the round-trip contract for a Go-bound instant:
-// the stored value must land inside [bound floored to ms, bound]. "Never
-// after the bound" is the load-bearing half -- a stored deadline that
-// postdates the minted one overclaims remaining lifetime (a ceil-to-seconds
-// report gains a whole second, see the api-token refresh CAS test). "Never
-// below the ms floor" rejects coarser truncation (e.g. to whole seconds).
-func assertStoredInstant(t *testing.T, label string, bound, stored time.Time) {
+// the stored value must land inside [requested floored to ms, requested].
+// "Never after the requested instant" is the load-bearing half -- a stored
+// deadline that postdates the minted one overclaims remaining lifetime (a
+// ceil-to-seconds report gains a whole second, see the api-token refresh CAS
+// test). "Never below the ms floor" rejects coarser truncation (e.g. to whole
+// seconds).
+func assertStoredInstant(t *testing.T, label string, requested, stored time.Time) {
 	t.Helper()
-	floor := bound.Truncate(time.Millisecond)
-	assert.False(t, stored.After(bound),
-		"%s: stored %s postdates its bound %s -- the sub-ms fraction was rounded up",
-		label, stored.UTC().Format(time.RFC3339Nano), bound.UTC().Format(time.RFC3339Nano))
+	floor := requested.Truncate(time.Millisecond)
+	assert.False(t, stored.After(requested),
+		"%s: stored %s postdates the requested %s -- the sub-ms fraction was rounded up",
+		label, stored.UTC().Format(time.RFC3339Nano), requested.UTC().Format(time.RFC3339Nano))
 	assert.False(t, stored.Before(floor),
-		"%s: stored %s predates the bound's ms floor %s -- precision coarser than a millisecond",
+		"%s: stored %s predates the requested instant's ms floor %s -- precision coarser than a millisecond",
 		label, stored.UTC().Format(time.RFC3339Nano), floor.UTC().Format(time.RFC3339Nano))
 }
 
@@ -275,6 +276,7 @@ func (s *Suite) testTimeFloor(t *testing.T) {
 			State:        "floor-state",
 			ProviderID:   prov.ID,
 			PkceVerifier: "verifier",
+			Purpose:      store.OAuthStatePurposeLogin,
 			ExpiresAt:    expiresAt,
 		}))
 

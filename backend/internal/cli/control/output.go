@@ -15,18 +15,23 @@ import (
 // output. The non-zero exit code (returned via the error wrapping
 // EmitError emits) is the only signal a caller needs to distinguish
 // success from failure; mixing JSON across stdout and stderr would
-// force every consumer into `cmd 2>&1 | jq`-style hacks that
+// force every consumer into `cmd 2>&1 | jq`-style workarounds that
 // re-introduce the noise stderr was meant to filter out.
 //
-// Plain-prose interactive output from the auth flow is also routed
-// through Out; that's deliberate (a user reading the device-code
-// prompt is not piping the output into jq), and the few commands
-// that print prose live in `auth.go` and don't share their stdout
-// with a JSON envelope in the same invocation.
+// The `auth login` prompts print plain prose to Out, and that is
+// deliberate: a user who reads the device-code prompt does not pipe
+// the output into jq, and `auth login` writes ONE envelope, at the
+// end, after the prompt ends.
 //
-// Err is reserved for diagnostics that fall outside the JSON
-// contract: warnings, debug logs, or catastrophic errors raised
-// before the dispatcher reached an EmitError call site.
+// Err is reserved for everything outside the JSON contract:
+// warnings, debug logs, catastrophic errors raised before the
+// dispatcher reached an EmitError call site, and any prose that a
+// command can print BEFORE its own envelope. The browser step-up is
+// that last kind. It interrupts an ordinary verb -- any restricted
+// unary call opens it, from an interceptor -- so its four lines
+// would land in the same stdout stream as that verb's envelope, and
+// `leapmux control admin settings set … | jq` would fail to parse on
+// the first run after the elevation window lapsed.
 var (
 	Out io.Writer = os.Stdout
 	Err io.Writer = os.Stderr
@@ -47,7 +52,7 @@ func EmitData(v any) error {
 // fallback for failures that were already surfaced as a JSON
 // envelope here. Catastrophic errors that bypass EmitError (for
 // example, an init-time crash before any command runs) still get
-// the fallback so the user isn't left staring at a silent failure.
+// the fallback so the user does not face a silent failure.
 func EmitError(code, message string) error {
 	_ = writeJSON(Out, map[string]any{"error": map[string]string{"code": code, "message": message}})
 	return &emittedError{code: code, message: message}

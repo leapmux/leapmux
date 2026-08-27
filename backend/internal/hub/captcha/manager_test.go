@@ -37,7 +37,23 @@ type testEnv struct {
 	ks  *keystore.Keystore
 }
 
+// testPublicURL is the default published address for the test hub: an
+// HTTPS host that is not loopback, so altchaCanProtect answers yes on both
+// of its questions and ALTCHA stays enabled. A test that exercises the gate
+// itself publishes its own address.
+//
+// It is a published URL rather than a bind address because the gate reads
+// hub settings only. A test hub that publishes nothing gets a DISABLED
+// ALTCHA, which is the state cache_visibility_test spent a whole scenario
+// in before the tests registered the two CORE keys.
+const testPublicURL = "https://hub.example.com"
+
 func newTestManager(t *testing.T, solo bool, opts ...Option) *testEnv {
+	t.Helper()
+	return newTestManagerPublishedAt(t, testPublicURL, solo, opts...)
+}
+
+func newTestManagerPublishedAt(t *testing.T, publicURL string, solo bool, opts ...Option) *testEnv {
 	t.Helper()
 	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err)
@@ -46,16 +62,29 @@ func newTestManager(t *testing.T, solo bool, opts ...Option) *testEnv {
 	key := [32]byte{}
 	ks, err := keystore.New(map[uint32][32]byte{1: key})
 	require.NoError(t, err)
-	return newTestManagerOver(t, st, ks, solo, opts...)
+	return newTestManagerOver(t, st, ks, publicURL, solo, opts...)
+}
+
+// newSettingsManager builds the settings manager a captcha Manager needs.
+// The gate reads two CORE keys, so this helper registers them beside the
+// captcha ones -- a test configures the hub the way an operator does, and
+// NewManager refuses a manager that registers neither.
+func newSettingsManager(t *testing.T, st store.Store, ks *keystore.Keystore) *settings.Manager {
+	t.Helper()
+	set := settings.NewManager(st, ks, append(SettingsDescriptors(), settings.KeyPublicURL, settings.KeySecureCookies))
+	require.NoError(t, set.Load(context.Background()))
+	return set
 }
 
 // newTestManagerOver builds the env over a caller-supplied store (the
 // counting wrappers below) so settings writes and snapshot reads flow
 // through the same store the test observes.
-func newTestManagerOver(t *testing.T, st store.Store, ks *keystore.Keystore, solo bool, opts ...Option) *testEnv {
+func newTestManagerOver(t *testing.T, st store.Store, ks *keystore.Keystore, publicURL string, solo bool, opts ...Option) *testEnv {
 	t.Helper()
-	set := settings.NewManager(st, ks, SettingsDescriptors())
-	require.NoError(t, set.Load(context.Background()))
+	set := newSettingsManager(t, st, ks)
+	if publicURL != "" {
+		require.NoError(t, settings.KeyPublicURL.Set(context.Background(), set, publicURL))
+	}
 	return &testEnv{
 		m:   NewManager(st, set, solo, opts...),
 		set: set,
@@ -187,8 +216,8 @@ func TestManagerDefaultsAndProvisioning(t *testing.T) {
 
 func TestManagerChallengeVerifyRoundtrip(t *testing.T) {
 	e := newTestManager(t, false)
-	// Provision under the default (expensive-to-solve) config; the issued
-	// challenge is thrown away.
+	// Provision under the default (expensive-to-solve) config; the test
+	// throws the issued challenge away.
 	_, err := e.m.AltchaChallengeJSON(context.Background())
 	require.NoError(t, err)
 
@@ -242,26 +271,26 @@ func (s *countingSaltStore) AltchaSalts() store.AltchaSaltsStore {
 	return countingSaltAltchaSalts{AltchaSaltsStore: s.Store.AltchaSalts(), reads: &s.saltReads}
 }
 
-// TestGarbagePayloadsBuyNoSaltReads pins the cheapest-first ordering: a
-// decodable payload with a signature this hub never produced dies on the
+// TestGarbagePayloadsCauseNoSaltReads pins the cheapest-first ordering: a
+// decodable payload with a signature this hub never produced stops at the
 // CPU-only signature pre-check, so an unauthenticated garbage flood
 // cannot convert itself into salt-ledger reads. Only a hub-signed
 // payload reaches the ledger — and its replay pays one indexed read,
 // never the memory-hard derivation.
-func TestGarbagePayloadsBuyNoSaltReads(t *testing.T) {
+func TestGarbagePayloadsCauseNoSaltReads(t *testing.T) {
 	inner := newTestManager(t, false)
 	wrapped := &countingSaltStore{Store: inner.st}
-	e := newTestManagerOver(t, wrapped, inner.ks, false)
+	e := newTestManagerOver(t, wrapped, inner.ks, testPublicURL, false)
 	m := e.m
 	applyTestAltchaSettings(t, e, cheapAltchaSettings)
 
 	// A decodable, correctly-shaped payload whose signature no secret of
-	// this hub produced: the ledger must never hear about it.
+	// this hub produced: the ledger must never see it.
 	garbage := base64.StdEncoding.EncodeToString([]byte(
 		`{"challenge":{"parameters":{"algorithm":"SHA-1","nonce":"00","salt":"aabb","cost":100,"keyLength":8,"keyPrefix":"00"},"signature":"deadbeef"},"solution":{"counter":1,"derivedKey":"00"}}`))
 	err := m.Verify(context.Background(), "login", garbage)
 	assert.ErrorIs(t, err, ErrVerificationFailed)
-	assert.EqualValues(t, 0, wrapped.saltReads.Load(), "a signature-invalid payload must not buy a store read")
+	assert.EqualValues(t, 0, wrapped.saltReads.Load(), "a signature-invalid payload must not cause a store read")
 
 	// A solved, hub-signed payload reaches the ledger exactly once.
 	challengeJSON, err := m.AltchaChallengeJSON(context.Background())
@@ -270,7 +299,7 @@ func TestGarbagePayloadsBuyNoSaltReads(t *testing.T) {
 	require.NoError(t, m.Verify(context.Background(), "login", payload))
 	assert.EqualValues(t, 1, wrapped.saltReads.Load())
 
-	// Its replay is answered by the ledger — one more read, no derivation.
+	// The ledger answers its replay — one more read, no derivation.
 	err = m.Verify(context.Background(), "login", payload)
 	assert.ErrorIs(t, err, ErrVerificationFailed)
 	assert.EqualValues(t, 2, wrapped.saltReads.Load())
@@ -284,8 +313,7 @@ func TestManagerVerifyRejectsForeignSecret(t *testing.T) {
 	payload := solveChallenge(t, challengeJSON)
 
 	// Force re-provisioning with a different secret by resetting the row
-	// to its default; the challenge's signature was produced by the old
-	// secret.
+	// to its default; the old secret produced the challenge's signature.
 	require.NoError(t, e.set.Reset(context.Background(), AltchaKey))
 
 	_, err = e.m.AltchaChallengeJSON(context.Background()) // provisions a new secret
@@ -304,8 +332,8 @@ func TestManagerExpiry(t *testing.T) {
 
 	// Tamper the solved payload's expiry into the past. (The config cannot
 	// carry a sub-minute expiry anymore — Effective() validates it and
-	// falls back to defaults — so the expiry path is exercised on the
-	// payload, where the widget's clock actually applies it.)
+	// falls back to defaults — so this test exercises the expiry path on
+	// the payload, where the widget's clock actually applies it.)
 	var p altcha.Payload
 	raw, err := base64.StdEncoding.DecodeString(payload)
 	require.NoError(t, err)
@@ -335,51 +363,95 @@ func TestManagerDisabledAndSolo(t *testing.T) {
 	require.NoError(t, solo.m.Verify(context.Background(), "login", ""))
 }
 
-// TestManagerSecureContextGateRuntimeDisablesAltcha pins the HTTP
-// stand-down: when the browser page Origin is not a secure context and
-// ALTCHA is selected, Describe / Verify / challenge issuance treat
-// captcha as disabled without writing captcha.enabled. Turnstile on the
-// same Origin stays enforced; missing Origin fails closed (stored on).
-func TestManagerSecureContextGateRuntimeDisablesAltcha(t *testing.T) {
-	e := newTestManager(t, false)
-	applyTestAltchaSettings(t, e, cheapAltchaSettings)
+// TestManagerSecureContextGateFollowsHubConfig pins the stand-down and,
+// more importantly, WHERE the answer comes from.
+//
+// ALTCHA runs only where it can BOTH work and matter, and the gate reads
+// the hub's own configuration for both halves.
+// TestManagerSecureContextGateIgnoresRequestHeaders below pins the other
+// property: no request header can move it.
+func TestManagerSecureContextGateFollowsHubConfig(t *testing.T) {
 	ctx := context.Background()
 
-	assert.True(t, CaptchaEnabledKey.Of(e.set.Snapshot(ctx)),
-		"precondition: settings row stays enabled through the whole test")
+	t.Run("a published plain-http LAN url disables altcha", func(t *testing.T) {
+		e := newTestManagerPublishedAt(t, "http://192.168.1.5:8080", false)
+		applyTestAltchaSettings(t, e, cheapAltchaSettings)
 
-	insecure := withClientPageURL(ctx, "http://192.168.1.5:8080")
-	cfg := e.m.Describe(insecure)
-	assert.False(t, cfg.Enabled)
-	assert.Equal(t, ProviderAltcha, cfg.Provider)
-	assert.True(t, CaptchaEnabledKey.Of(e.set.Snapshot(ctx)),
-		"runtime gate must not write captcha.enabled")
+		cfg := e.m.Describe(ctx)
+		assert.False(t, cfg.Enabled)
+		assert.Equal(t, ProviderAltcha, cfg.Provider)
+		assert.True(t, CaptchaEnabledKey.Of(e.set.Snapshot(ctx)),
+			"the runtime gate must not write captcha.enabled")
 
-	require.NoError(t, e.m.Verify(insecure, "login", ""),
-		"empty payload must pass when ALTCHA is runtime-gated")
-	challengeJSON, err := e.m.AltchaChallengeJSON(insecure)
-	require.NoError(t, err)
-	assert.Empty(t, challengeJSON)
+		require.NoError(t, e.m.Verify(ctx, "login", ""),
+			"an empty payload passes while the gate holds ALTCHA down")
+		challengeJSON, err := e.m.AltchaChallengeJSON(ctx)
+		require.NoError(t, err)
+		assert.Empty(t, challengeJSON)
+	})
 
-	secureHTTPS := withClientPageURL(ctx, "https://example.com")
-	assert.True(t, e.m.Describe(secureHTTPS).Enabled)
-	secureLocal := withClientPageURL(ctx, "http://localhost:8080")
-	assert.True(t, e.m.Describe(secureLocal).Enabled)
+	t.Run("an unpublished hub with no TLS disables altcha", func(t *testing.T) {
+		// This is the first-run hub, and the case that deadlocked setup.
+		// It serves plain HTTP on whatever it bound, so the only browser
+		// with a secure context is one at loopback -- yet the gate used to
+		// read the DEFAULT ":4327" bind as loopback and require ALTCHA of
+		// every browser, including the LAN one that could never solve it.
+		// The remedy the form specified (set public_url) needed a credential
+		// the same block prevented.
+		e := newTestManagerPublishedAt(t, "", false)
+		applyTestAltchaSettings(t, e, cheapAltchaSettings)
+		assert.False(t, e.m.Describe(ctx).Enabled)
+	})
 
-	// Missing Origin: leave stored enablement alone (fail closed).
-	assert.True(t, e.m.Describe(ctx).Enabled)
-	require.Error(t, e.m.Verify(ctx, "login", ""))
+	t.Run("a loopback publication disables altcha", func(t *testing.T) {
+		// The widget RUNS here. It protects nobody: an operator who
+		// published localhost published no audience, so the proof of work
+		// only makes their own sign-in slower.
+		for _, publicURL := range []string{
+			"http://localhost:4327", "http://127.0.0.1:4327", "https://localhost:8443",
+		} {
+			e := newTestManagerPublishedAt(t, publicURL, false)
+			applyTestAltchaSettings(t, e, cheapAltchaSettings)
+			assert.Falsef(t, e.m.Describe(ctx).Enabled,
+				"public_url %q reaches this machine only", publicURL)
+		}
+	})
 
-	// External providers are never gated by the page scheme.
-	stub := newSiteverifyStub(t)
-	stub.body = `{"success":true,"action":"login"}`
-	ext := newTestManager(t, false, WithTurnstileEndpoint(stub.server.URL))
-	activateExternal(t, ext, ProviderTurnstile, `{"site_key":"1x00000000000000000000AA"}`, "secret-key")
-	insecureExt := withClientPageURL(ctx, "http://192.168.1.5:8080")
-	assert.True(t, ext.m.Describe(insecureExt).Enabled)
-	require.NoError(t, ext.m.Verify(insecureExt, "login", "token"))
-	require.Error(t, ext.m.Verify(insecureExt, "login", ""),
-		"Turnstile on plain HTTP still requires a token")
+	t.Run("secure cookies mean https, which keeps altcha", func(t *testing.T) {
+		e := newTestManagerPublishedAt(t, "", false)
+		applyTestAltchaSettings(t, e, cheapAltchaSettings)
+		require.NoError(t, settings.KeySecureCookies.Set(ctx, e.set, true))
+		assert.True(t, e.m.Describe(ctx).Enabled,
+			"every https page is a secure context, and a hub with a certificate is one somebody reaches")
+	})
+
+	t.Run("public_url outranks secure_cookies", func(t *testing.T) {
+		// The documented setting for a hub behind a TLS-terminating proxy:
+		// the bind is plain HTTP on a LAN address, and the browser still
+		// loads https.
+		e := newTestManagerPublishedAt(t, "https://hub.example.com", false)
+		applyTestAltchaSettings(t, e, cheapAltchaSettings)
+		assert.True(t, e.m.Describe(ctx).Enabled)
+
+		// And the reverse: a published plain-HTTP URL stands ALTCHA down
+		// although secure_cookies alone would keep it.
+		e2 := newTestManagerPublishedAt(t, "http://192.168.1.5:8080", false)
+		applyTestAltchaSettings(t, e2, cheapAltchaSettings)
+		require.NoError(t, settings.KeySecureCookies.Set(ctx, e2.set, true))
+		assert.False(t, e2.m.Describe(ctx).Enabled)
+	})
+
+	t.Run("the gate never restricts an external provider", func(t *testing.T) {
+		stub := newSiteverifyStub(t)
+		stub.body = `{"success":true,"action":"login"}`
+		ext := newTestManagerPublishedAt(t, "", false, WithTurnstileEndpoint(stub.server.URL))
+		activateExternal(t, ext, ProviderTurnstile, `{"site_key":"1x00000000000000000000AA"}`, "secret-key")
+
+		assert.True(t, ext.m.Describe(ctx).Enabled)
+		require.NoError(t, ext.m.Verify(ctx, "login", "token"))
+		require.Error(t, ext.m.Verify(ctx, "login", ""),
+			"Turnstile on plain HTTP still requires a token")
+	})
 }
 
 // TestEnsureProvisionedRefreshesDescribeCache pins the provisioning
@@ -397,7 +469,7 @@ func TestEnsureProvisionedRefreshesDescribeCache(t *testing.T) {
 }
 
 // TestTuningBeforeFirstUseGetsItsSigningKeyFilled pins the order a
-// tuning-only `captcha set` on a data dir the hub has never started on
+// tuning-only `captcha set` on a data dir the hub never started on
 // produces: a customized altcha row with NO signing key. Because the row
 // is customized, neither SetIfAbsent nor the customized-row fast path
 // would ever add one -- provisioning must notice the missing key, fill it
@@ -428,16 +500,16 @@ func TestTuningBeforeFirstUseGetsItsSigningKeyFilled(t *testing.T) {
 
 	// The resolve-path self-heal (no EnsureProvisioned call) covers the
 	// same state on a fresh manager over the same database.
-	e2 := newTestManagerOver(t, e.st, e.ks, false)
+	e2 := newTestManagerOver(t, e.st, e.ks, testPublicURL, false)
 	challengeJSON, err = e2.m.AltchaChallengeJSON(ctx)
 	require.NoError(t, err, "the first-use self-heal fills a keyless row too")
 	require.NoError(t, e2.m.Verify(ctx, "login", solveChallenge(t, challengeJSON)))
 }
 
 // TestReplayRejectedAcrossManagerInstances pins the store-backed
-// single-use enforcement: a payload consumed by one manager (one hub
-// instance, or the same hub after a restart) is rejected by another
-// manager over the same database.
+// single-use enforcement: another manager over the same database rejects
+// a payload that one manager (one hub instance, or the same hub after a
+// restart) already consumed.
 func TestReplayRejectedAcrossManagerInstances(t *testing.T) {
 	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err)
@@ -446,7 +518,7 @@ func TestReplayRejectedAcrossManagerInstances(t *testing.T) {
 	ks, err := keystore.New(map[uint32][32]byte{1: key})
 	require.NoError(t, err)
 
-	first := newTestManagerOver(t, st, ks, false)
+	first := newTestManagerOver(t, st, ks, testPublicURL, false)
 	_, err = first.m.AltchaChallengeJSON(context.Background()) // provisions
 	require.NoError(t, err)
 	applyTestAltchaSettings(t, first, cheapAltchaSettings)
@@ -457,7 +529,7 @@ func TestReplayRejectedAcrossManagerInstances(t *testing.T) {
 
 	// The second instance loads its own snapshot, resolving the row the
 	// first instance provisioned.
-	second := newTestManagerOver(t, st, ks, false)
+	second := newTestManagerOver(t, st, ks, testPublicURL, false)
 	err = second.m.Verify(context.Background(), "login", payload)
 	assert.ErrorIs(t, err, ErrVerificationFailed)
 }
@@ -527,8 +599,8 @@ func TestVerifyTurnstile(t *testing.T) {
 	assert.ErrorIs(t, e.m.Verify(context.Background(), "login", "tok"), ErrVerificationFailed)
 	assert.ErrorIs(t, e.m.Verify(context.Background(), "login", ""), ErrVerificationFailed)
 
-	// Transport faults fail closed: an unreachable provider must not
-	// become an open door.
+	// Transport faults fail closed: an unreachable provider must not admit
+	// every submission.
 	stub.status = http.StatusInternalServerError
 	assert.ErrorIs(t, e.m.Verify(context.Background(), "login", "tok"), ErrVerificationFailed)
 	stub.status = http.StatusOK
@@ -610,9 +682,9 @@ func TestSecretAADIsProviderScoped(t *testing.T) {
 	require.NoError(t, CaptchaSelectedKey.Set(ctx, e.set, ProviderAlias(ProviderAltcha)))
 
 	// Reload through a fresh manager: the pasted secret fails decryption
-	// and is never served — the manager self-heals a fresh key, so the
+	// and the manager never serves it — it self-heals a fresh key, so the
 	// wrong secret authenticates nothing and the submission fails closed.
-	tampered := newTestManagerOver(t, e.st, e.ks, false)
+	tampered := newTestManagerOver(t, e.st, e.ks, testPublicURL, false)
 	err = tampered.m.Verify(ctx, "login", "anything")
 	require.ErrorIs(t, err, ErrVerificationFailed)
 	healed := AltchaKey.Of(tampered.set.Snapshot(ctx))
@@ -736,7 +808,7 @@ func TestEffectiveFallsBackOnInvalidRow(t *testing.T) {
 	assert.Empty(t, reason)
 	assert.Equal(t, 0.7, recaptcha.RecaptchaV3.MinScore)
 
-	// A row whose document names no fields keeps the key's declared
+	// A row whose document specifies no fields keeps the key's declared
 	// defaults, the partial-row semantics the write path merges with.
 	partial, reason := Effective(rawSnapshot(t, map[string]string{
 		AltchaKey.Name(): `{}`,
@@ -798,8 +870,8 @@ func TestConfigValidate(t *testing.T) {
 	hugeT.Algorithm, hugeT.Cost, hugeT.MemoryCost, hugeT.Parallelism = "ARGON2ID", 65, 65536, 1
 	assert.Error(t, hugeT.Validate())
 
-	// Family-foreign parameters are rejected instead of silently
-	// reinterpreted: an ARGON2ID memory (KiB) carried into SCRYPT becomes
+	// The validator refuses family-foreign parameters instead of silently
+	// reinterpreting them: an ARGON2ID memory (KiB) carried into SCRYPT becomes
 	// the block multiplier r and multiplies the derivation memory.
 	foreign := base
 	foreign.Algorithm, foreign.MemoryCost = "PBKDF2/SHA-256", 65536
@@ -845,8 +917,8 @@ func TestConfigValidate(t *testing.T) {
 	_, err = DefaultAltchaSettingsFor("MD5")
 	assert.Error(t, err)
 
-	// The supported-algorithm list is derived from the KDF registry and
-	// sorted, so error text and CLI help cannot drift from it.
+	// The supported-algorithm list comes from the KDF registry, sorted, so
+	// error text and CLI help cannot drift from it.
 	assert.Equal(t, []string{
 		"ARGON2ID", "PBKDF2/SHA-256", "PBKDF2/SHA-384", "PBKDF2/SHA-512",
 		"SCRYPT", "SHA-256", "SHA-384", "SHA-512",
@@ -870,8 +942,8 @@ func TestConfigValidate(t *testing.T) {
 	assert.NoError(t, DefaultConfig().Validate())
 	missingSettings := Config{Provider: ProviderAltcha}
 	assert.Error(t, missingSettings.Validate())
-	// An enum value outside the known set (possible on an open proto3
-	// enum via direct SQL) is refused, and UNSPECIFIED never validates.
+	// The validator refuses an enum value outside the known set (possible
+	// on an open proto3 enum via direct SQL), and UNSPECIFIED never validates.
 	unknownProvider := Config{Provider: Provider(99)}
 	assert.Error(t, unknownProvider.Validate())
 	assert.Error(t, Config{Provider: leapmuxv1.CaptchaProvider_CAPTCHA_PROVIDER_UNSPECIFIED}.Validate())
@@ -979,11 +1051,16 @@ func (s *countingSettingsStore) Settings() store.SettingsStore {
 	return countingSettings{SettingsStore: s.Store.Settings(), loads: &s.loads}
 }
 
-// newColdManagerOver builds a captcha manager whose settings snapshot has
-// NOT been loaded yet, over a caller-supplied store.
+// newColdManagerOver builds a captcha manager whose settings snapshot is
+// NOT loaded yet, over a caller-supplied store.
 func newColdManagerOver(t *testing.T, st store.Store, ks *keystore.Keystore) *Manager {
 	t.Helper()
-	return NewManager(st, settings.NewManager(st, ks, SettingsDescriptors()), false)
+	// Through newSettingsManager, so the two CORE keys the gate reads are
+	// registered here too. NewManager panics without them. Both callers
+	// wrap a store that newTestManager already published testPublicURL
+	// into, so this manager reads an ALTCHA-enabled hub without writing
+	// the key again.
+	return NewManager(st, newSettingsManager(t, st, ks), false)
 }
 
 // TestResolveCoalescesConcurrentColdLoads pins the singleflight: a burst
@@ -1049,7 +1126,7 @@ func TestDescribeCoalescesConcurrentColdLoads(t *testing.T) {
 }
 
 // TestSiteverifyBreakerIgnoresCallerCancellation pins the fault
-// accounting: a call that ends because the CALLER went away (client
+// accounting: a call that ends because the CALLER is gone (client
 // disconnect, cancelled request) is neither a provider fault nor a
 // success, so any number of aborted requests must not open the circuit
 // against a healthy provider.
@@ -1059,7 +1136,7 @@ func TestSiteverifyBreakerIgnoresCallerCancellation(t *testing.T) {
 	e := newTestManager(t, false, WithTurnstileEndpoint(stub.server.URL))
 
 	// Drive the siteverify client directly: through Manager.Verify a
-	// cancelled context dies earlier, in the config resolve.
+	// cancelled context fails earlier, in the config resolve.
 	client := e.m.turnstile
 	for i := 0; i < siteverifyBreakerThreshold*3; i++ {
 		ctx, cancel := context.WithCancel(context.Background())
@@ -1078,8 +1155,8 @@ func TestSiteverifyBreakerIgnoresCallerCancellation(t *testing.T) {
 
 // TestSiteverifyBreakerHalfOpenAdmitsOneProbe pins the single-probe gate:
 // after the cooldown, exactly one caller dials the provider while every
-// concurrent caller still fails fast — an unbounded probe burst on a
-// recovering provider would re-trip the circuit and stretch the outage.
+// concurrent caller still fails fast — an unlimited probe burst on a
+// recovering provider would re-trip the circuit and lengthen the outage.
 func TestSiteverifyBreakerHalfOpenAdmitsOneProbe(t *testing.T) {
 	stub := newSiteverifyStub(t)
 	e := newTestManager(t, false, WithTurnstileEndpoint(stub.server.URL))

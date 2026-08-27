@@ -98,6 +98,20 @@ function makeTab(type: TabType, id: string, title?: string): Tab {
   } as Tab
 }
 
+/**
+ * The reason a disabled control carries, read the way a screen reader gets it.
+ *
+ * <Tooltip> leaves an offscreen description in `aria-describedby` for as long
+ * as the control is disabled. It is NOT `title`: a reason long enough to be
+ * worth reading becomes the control's accessible name on `title`, which is why
+ * `title` on a DOM element is now a lint error.
+ */
+function reasonOf(el: Element): string {
+  const describedBy = el.getAttribute('aria-describedby')
+  expect(describedBy).toBeTruthy()
+  return document.getElementById(describedBy!)?.textContent ?? ''
+}
+
 describe('workspaceTabTree interactions', () => {
   it('clicking the close button closes without selecting the tab', async () => {
     const onTabClick = vi.fn()
@@ -173,7 +187,7 @@ describe('workspaceTabTree interactions', () => {
     expect(screen.getByTestId('workspace-tab-close')).toBeInTheDocument()
   })
 
-  it('disables the close control while the tab is closing', () => {
+  it('disables the close control while a close is in flight', () => {
     render(() => (
       <WorkspaceTabTree
         repoGitStore={repoGitStore}
@@ -346,8 +360,8 @@ describe('workspaceTabTree interactions', () => {
     const del = screen.getByText('Delete branch...') as HTMLButtonElement
     expect(change.disabled).toBe(true)
     expect(del.disabled).toBe(true)
-    expect(change.title).toContain('offline')
-    expect(del.title).toContain('offline')
+    expect(reasonOf(change)).toContain('offline')
+    expect(reasonOf(del)).toContain('offline')
 
     // And a click cannot get through to the dialog.
     await fireEvent.click(change)
@@ -440,11 +454,11 @@ describe('workspaceTabTree interactions', () => {
   })
 
   /**
-   * Gating is per branch row, not per tree. One offline Worker must not disable
-   * the actions on a row hosted by a different, reachable one -- a real shape,
-   * since a workspace's tabs can be spread across machines.
+   * The restriction is per branch row, not per tree. One offline Worker must
+   * not disable the actions on a row hosted by a different, reachable one -- a
+   * real shape, since a workspace's tabs can be spread across machines.
    */
-  it('gates each branch row on its own worker', async () => {
+  it('restricts each branch row on its own worker', async () => {
     const offlineToplevel = '/home/user/Workspaces/other'
     seedRepo('w2', offlineToplevel, { branch: 'feature', originUrl: 'https://github.com/o/r.git' })
     const offlineTab = { ...gitTab('a2'), workerId: 'w2', gitToplevel: offlineToplevel } as Tab
@@ -466,7 +480,7 @@ describe('workspaceTabTree interactions', () => {
 
     // Identified by BRANCH LABEL, not by position, and asserted per row rather
     // than by counting. Counting "one disabled, one enabled" passes an INVERTED
-    // gate too, which is the whole property this test claims to check. The
+    // condition too, which is the whole property this test claims to check. The
     // earlier `items.find(...) ?? items[0]` fallback made it worse: a DOM change
     // that broke containment silently sampled the first row twice, and the
     // counts still held.
@@ -481,8 +495,8 @@ describe('workspaceTabTree interactions', () => {
 
     const entries = [...disabledByBranch.entries()]
     expect(entries).toHaveLength(2)
-    // w1 is online, w2 is not, so the row whose worktree path names "other"
-    // (the w2 tab) is the one that must be gated.
+    // w1 is online, w2 is not, so the row whose worktree path contains "other"
+    // (the w2 tab) is the one that must be disabled.
     const offlineRow = entries.find(([label]) => label.includes('other'))
     const onlineRow = entries.find(([label]) => !label.includes('other'))
     expect(offlineRow?.[1], 'the row on the OFFLINE worker must be disabled').toBe(true)
@@ -522,8 +536,8 @@ describe('workspaceTabTree interactions', () => {
   })
 
   it('hides the branch menu when only onChangeBranch is supplied', () => {
-    // BranchContextMenu renders both items unconditionally — gating the
-    // wrapper Show on `onChangeBranch && onDeleteBranch` is what makes
+    // BranchContextMenu renders both items unconditionally — a condition of
+    // `onChangeBranch && onDeleteBranch` on the wrapper Show is what makes
     // a partial-callback caller a no-show rather than a half-broken
     // menu where one item silently no-ops.
     render(() => (
@@ -713,8 +727,8 @@ describe('workspaceTabTree interactions', () => {
     // The "(no branch)" bucket has branchName=null. Both Change and
     // Delete actions would fail at the worker — InspectBranchDeletion
     // returns the short SHA as the branch label, then DeleteBranch
-    // tries `git branch -D <short-sha>` and git refuses. Gate the menu
-    // out so the user never sees an action that's guaranteed to error.
+    // tries `git branch -D <short-sha>` and git refuses. Hide the menu
+    // so the user never sees an action that is guaranteed to fail.
     const toplevel = '/home/user/Workspaces/r'
     seedRepo('w1', toplevel, { branch: '' })
     const detachedTab: Tab = {
@@ -964,8 +978,8 @@ describe('workspaceTabTree interactions', () => {
     // The unchanged branch row keeps its DOM identity.
     expect(featureAfter).toBe(featureBefore)
     // The affected branch row may keep its DOM identity too (its stable
-    // string key matched), but its stats memo will have re-run. We don't
-    // assert remount-vs-reuse here — only that the sibling stayed.
+    // string key matched), but its stats memo re-runs. This test does not
+    // assert remount-vs-reuse — only that the sibling stayed.
     expect(mainAfter).toBe(mainBefore)
 
     // The unaffected tab leaf (a2, in the feature branch) keeps its DOM
@@ -1032,8 +1046,8 @@ describe('workspaceTabTree interactions', () => {
   // ----- Fingerprint short-circuit ---------------------------------------
 
   /**
-   * The inner `tree()` memo is gated by a fingerprint over the tree-
-   * relevant tab fields. A WatchEvents push that mutates a non-tree
+   * A fingerprint over the tree-relevant tab fields controls the inner
+   * `tree()` memo. A WatchEvents push that mutates a non-tree
    * field (e.g. `title`) must NOT cause buildTree to rerun — verified
    * indirectly by keeping the rendered DOM nodes stable: Solid's `<For>`
    * keyed reconciliation preserves the same element when its parent
@@ -1178,7 +1192,7 @@ describe('workspaceTabTree interactions', () => {
    * stayed that way until an unrelated tab forced a rebuild.
    *
    * `gitTab` fixtures throughout: a tab with git fields is the case that goes
-   * wrong, because the fingerprint has already settled before hydration lands.
+   * wrong, because the fingerprint already settled before hydration lands.
    */
   describe('resolves each row against the live tab list', () => {
     seedRepo('w-1', '/repo', { branch: 'main', originUrl: 'https://github.com/o/r.git' })
@@ -1255,9 +1269,9 @@ describe('workspaceTabTree interactions', () => {
     })
 
     /**
-     * The row must update IN PLACE. Remounting would be a second bug wearing
-     * the fix's clothes: the leaf can hold the inline rename `<input>`, and a
-     * fresh element drops the focus and the text the user is typing.
+     * The row must update IN PLACE. Remounting would be a second bug that
+     * looks like the fix: the leaf can hold the inline rename `<input>`, and a
+     * fresh element drops the focus and the text that the user types.
      */
     it('updates the row without remounting it', () => {
       const setTabs = renderTabs([bareAgent])
@@ -1269,7 +1283,7 @@ describe('workspaceTabTree interactions', () => {
     })
 
     /**
-     * The cached bucket can name a tab the live list has already dropped — a
+     * The cached bucket can hold a tab that the live list already dropped — a
      * close is a metadata-invisible change until the next rebuild. The row must
      * disappear rather than read through `undefined`.
      */

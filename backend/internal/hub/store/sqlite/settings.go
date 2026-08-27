@@ -36,7 +36,11 @@ func (s *settingsStore) GetAll(ctx context.Context) ([]store.SettingRow, error) 
 // before it reads, because SQLite has no SELECT FOR UPDATE. The two
 // statements are one unit only inside the caller's transaction, which the
 // settings write path always holds.
+// See store.ErrLockingReadOutsideTransaction for the rule and its reason.
 func (s *settingsStore) GetAllForUpdate(ctx context.Context) ([]store.SettingRow, error) {
+	if !s.conn.inTx() {
+		return nil, store.ErrLockingReadOutsideTransaction
+	}
 	if err := s.conn.q.LockAllSettings(ctx); err != nil {
 		return nil, mapErr(err)
 	}

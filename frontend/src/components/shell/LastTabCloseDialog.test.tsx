@@ -93,6 +93,20 @@ function renderDialog(
   return { onDismiss, onStatusRefreshed }
 }
 
+/**
+ * The reason a disabled control carries, read the way a screen reader gets it.
+ *
+ * <Tooltip> leaves an offscreen description in `aria-describedby` for as long
+ * as the control is disabled. It is NOT `title`: a reason long enough to be
+ * worth reading becomes the control's accessible name on `title`, which is why
+ * `title` on a DOM element is now a lint error.
+ */
+function reasonOf(el: Element): string {
+  const describedBy = el.getAttribute('aria-describedby')
+  expect(describedBy).toBeTruthy()
+  return document.getElementById(describedBy!)?.textContent ?? ''
+}
+
 describe('lastTabCloseDialog', () => {
   it('renders the worktree variant with worktree path and Delete button', () => {
     renderDialog(makeState({
@@ -100,7 +114,7 @@ describe('lastTabCloseDialog', () => {
       worktreePath: '/tmp/wt',
       branchName: 'wt-branch',
     }))
-    expect(screen.getByText(/closing the last tab for worktree/)).toBeInTheDocument()
+    expect(screen.getByText(/closes the last tab for worktree/)).toBeInTheDocument()
     // The path appears twice: once in the header sentence and once in
     // BranchStatusInfo's "Worktree:" line.
     expect(screen.getAllByText('/tmp/wt').length).toBeGreaterThanOrEqual(1)
@@ -116,13 +130,13 @@ describe('lastTabCloseDialog', () => {
       worktreePath: '/tmp/wt',
       branchName: 'wt-branch',
     }))
-    const intro = screen.getByText(/closing the last tab for worktree/).closest('p')
+    const intro = screen.getByText(/closes the last tab for worktree/).closest('p')
     expect(intro).not.toBeNull()
     const code = intro!.querySelector('code')
     expect(code?.textContent).toBe('/tmp/wt')
     // The branch-variant copy must be absent — the Show fallback only
     // renders for the non-worktree target.
-    expect(screen.queryByText(/closing the last non-worktree tab for branch/)).toBeNull()
+    expect(screen.queryByText(/closes the last non-worktree tab for branch/)).toBeNull()
   })
 
   it('renders the branch variant without a Delete button', () => {
@@ -131,7 +145,7 @@ describe('lastTabCloseDialog', () => {
       hasUncommittedChanges: true,
       diffAdded: 3,
     }))
-    expect(screen.getByText(/closing the last non-worktree tab for branch/)).toBeInTheDocument()
+    expect(screen.getByText(/closes the last non-worktree tab for branch/)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument()
   })
 
@@ -141,11 +155,11 @@ describe('lastTabCloseDialog', () => {
       branchName: 'release/v1',
       worktreePath: '',
     }))
-    const intro = screen.getByText(/closing the last non-worktree tab for branch/).closest('p')
+    const intro = screen.getByText(/closes the last non-worktree tab for branch/).closest('p')
     expect(intro).not.toBeNull()
     const code = intro!.querySelector('code')
     expect(code?.textContent).toBe('release/v1')
-    expect(screen.queryByText(/closing the last tab for worktree/)).toBeNull()
+    expect(screen.queryByText(/closes the last tab for worktree/)).toBeNull()
   })
 
   it('renders BranchStatusInfo with agentCount=1 when tabType is AGENT', () => {
@@ -225,10 +239,19 @@ describe('lastTabCloseDialog', () => {
     }))
     const del = screen.getByRole('button', { name: 'Delete' }) as HTMLButtonElement
     expect(del.disabled).toBe(true)
-    // Visible, not in `title` alone: a greyed-out destructive option with
+    // Visible, not in the tooltip alone: a greyed-out destructive option with
     // no stated reason looks like a defect.
-    expect(screen.getByText(/held for review/)).toBeInTheDocument()
-    expect(del.title).toContain('held for review')
+    //
+    // ONE node carries the sentence, and it is the one the button points at.
+    // It used to be two -- the visible reason, plus an offscreen copy the
+    // Tooltip rendered for aria-describedby -- so a screen reader announced
+    // the reason and then announced it again, and every locator that matched
+    // on the TEXT resolved to two elements. The dialog now passes its own
+    // element's id as `describedBy`, so the tooltip renders no copy.
+    const carrying = screen.getAllByText(/held for review/)
+    expect(carrying).toHaveLength(1)
+    expect(carrying[0]!.id).toBe(del.getAttribute('aria-describedby'))
+    expect(reasonOf(del)).toContain('held for review')
     // The tab is still closable — only the removal is refused.
     expect((screen.getByRole('button', { name: 'Close anyway' }) as HTMLButtonElement).disabled).toBe(false)
     expect((screen.getByRole('button', { name: 'Cancel' }) as HTMLButtonElement).disabled).toBe(false)
@@ -260,7 +283,7 @@ describe('lastTabCloseDialog', () => {
     }))
     const del = screen.getByRole('button', { name: 'Delete' }) as HTMLButtonElement
     expect(del.disabled).toBe(false)
-    expect(del.title).toBe('')
+    expect(del).not.toHaveAttribute('aria-describedby')
   })
 
   it('renders no removal warning on a non-worktree prompt', () => {
@@ -279,7 +302,7 @@ describe('lastTabCloseDialog', () => {
   it('disarms an armed Delete when the removal becomes blocked', () => {
     // `disabled` is reactive here: a post-push refresh re-runs the inspect,
     // and the worktree can be locked by then. A disabled button that still
-    // reads "Confirm?" offers a confirmation for an action nobody can take,
+    // reads "Confirm?" offers a confirmation for an action that nobody can take,
     // and neither the 10-second timer nor a blur clears it -- the pointer no
     // longer reaches the control.
     const [state, setState] = createSignal(makeState({
@@ -303,7 +326,7 @@ describe('lastTabCloseDialog', () => {
     expect(screen.queryByRole('button', { name: 'Confirm?' })).not.toBeInTheDocument()
   })
 
-  it('states that the removal check was skipped', () => {
+  it('states that the worker skipped the removal check', () => {
     // An empty reason is also what a clean worktree sends, so a skipped
     // check and an accepted removal look identical without this. The worker
     // sets error_hint when a probe it needed did not answer.
@@ -367,7 +390,7 @@ describe('lastTabCloseDialog', () => {
     // Pins the remoteBranchMissing trigger of hasPushableWork in isolation:
     // upstream is configured (e.g. tracking origin/<name>) but origin
     // doesn't actually have the ref yet — a pre-push state where the
-    // upstream metadata exists but no commits have been pushed.
+    // upstream metadata exists but nobody pushed a commit yet.
     renderDialog(makeState({
       canPush: true,
       upstreamExists: true,
@@ -393,7 +416,7 @@ describe('lastTabCloseDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Push' }))
     await waitFor(() => {
       // The worker always re-probes pushStatus to avoid acting on a stale
-      // snapshot, so no hint rides the request -- and the push names the DIR
+      // snapshot, so no hint rides the request -- and the push specifies the DIR
       // the worker itself resolved and echoed back on this very inspect
       // response, not a tab id it would have to resolve again.
       expect(workerRpc.pushBranch).toHaveBeenCalledWith('w7', { workingDir: '/repo' })
@@ -433,7 +456,7 @@ describe('lastTabCloseDialog', () => {
     // inside useDialogSubmit.run, so any rejection would route into the
     // submit's onError → showWarnToast('Failed to push branch') even
     // though the push itself succeeded, and the success toast (queued
-    // AFTER the await) would never fire. The fix swallows the inspect
+    // AFTER the await) would never fire. The fix discards the inspect
     // rejection so the user-visible signal matches the actual outcome
     // (push succeeded; refresh failed silently).
     const { showInfoToast, showWarnToast } = await import('~/components/common/Toast')
@@ -453,8 +476,8 @@ describe('lastTabCloseDialog', () => {
     // The push succeeded, but the re-probe hit a degraded state (worktree
     // vanished mid-push, transient git failure) — inspect returns a
     // response (not a rejection) with shouldPrompt=false + errorHint. The
-    // dialog stays open showing the pre-push state, but the post-push
-    // safety check was skipped, so the user must be warned (mirrors
+    // dialog stays open showing the pre-push state, but it skipped the
+    // post-push safety check, so it must warn the user (mirrors
     // useTabOperations.handleTabClose's error_hint handling). The parent
     // is still notified so it can merge the refreshed (degraded) status.
     const { showWarnToast } = await import('~/components/common/Toast')

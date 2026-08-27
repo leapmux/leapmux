@@ -19,6 +19,24 @@ type CredentialEvent struct {
 	UserAuthGeneration int64
 }
 
+// UserInfoEvent builds the durable event that tells every hub to re-read a
+// user WITHOUT signing them out. A session elevation grants and drops one.
+//
+// It lives beside RunCredentialMutation because the shape is an invariant
+// rather than four fields a caller fills in: a user_info event's subject IS
+// the user, so SubjectID and UserID are the same value, and it carries no
+// auth generation. Six dialect call sites retyped that literal, across three
+// stores whose Postgres and MySQL suites run only under `-tags integration`
+// with Docker -- which is exactly where a per-dialect typo stays invisible.
+func UserInfoEvent(userID string, at time.Time) *CredentialEvent {
+	return &CredentialEvent{
+		Kind:      RevocationEventKindUserInfo,
+		SubjectID: userID,
+		UserID:    userID,
+		At:        at,
+	}
+}
+
 // RunCredentialMutation keeps the credential row change and lifecycle event
 // in one transaction. A nil event represents a compare-and-swap miss or an
 // already-revoked credential and returns zero affected rows.
@@ -30,6 +48,11 @@ func RunCredentialMutation[C any](
 ) (int64, error) {
 	var affected int64
 	err := inTransaction(ctx, func(conn C) error {
+		// Reset first. RunInTransaction may run this callback more than once,
+		// because a retryable conflict aborts an attempt and the store runs it
+		// again. An attempt that set affected = 1 and then lost its commit must
+		// not report that row to an attempt that changed nothing.
+		affected = 0
 		event, err := mutate(ctx, conn)
 		if err != nil || event == nil {
 			return err

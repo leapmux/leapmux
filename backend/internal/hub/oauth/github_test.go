@@ -15,11 +15,25 @@ import (
 func TestGitHub_AuthURL_IncludesStateAndScopes(t *testing.T) {
 	p := NewGitHubProvider("gh-client-id", "gh-secret", "http://localhost/callback", []string{"read:user", "user:email"})
 
-	url := p.AuthURL("test-state", "unused-challenge")
+	url := p.AuthURL("test-state", "unused-challenge", AuthURLOptions{})
 
 	assert.Contains(t, url, "state=test-state")
 	assert.Contains(t, url, "client_id=gh-client-id")
 	assert.Contains(t, url, "scope=read")
+	assert.NotContains(t, url, "prompt=", "an ordinary login must not force a re-prompt")
+}
+
+// TestGitHub_AuthURL_ForceReauthentication pins the step-up leg's parameter.
+// GitHub has no equivalent of OIDC's prompt=login, so select_account is the
+// strongest signal its authorize endpoint accepts; see AuthURL's own comment
+// for what that does and does not prove.
+func TestGitHub_AuthURL_ForceReauthentication(t *testing.T) {
+	p := NewGitHubProvider("gh-client-id", "gh-secret", "http://localhost/callback", nil)
+
+	url := p.AuthURL("test-state", "unused-challenge", AuthURLOptions{ForceReauthentication: true})
+
+	assert.Contains(t, url, "prompt=select_account")
+	assert.Contains(t, url, "state=test-state")
 }
 
 // mockGitHubAPI creates a test server that handles /user and /user/emails.

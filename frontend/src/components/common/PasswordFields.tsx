@@ -3,7 +3,7 @@ import { Show } from 'solid-js'
 import { validatePassword } from '~/lib/validate'
 import * as styles from './PasswordFields.css'
 
-interface PasswordFieldsBase {
+interface PasswordFieldsProps {
   password: () => string
   setPassword: (v: string) => void
   confirmPassword: () => string
@@ -11,38 +11,19 @@ interface PasswordFieldsBase {
   labelClass?: string
 }
 
-type PasswordFieldsProps = PasswordFieldsBase & (
-  | { showCurrentPassword?: false }
-  | { showCurrentPassword: boolean, currentPassword: () => string, setCurrentPassword: (v: string) => void }
-)
-
 /**
  * Shared password + confirm password fields with live inline validation.
- * Use `error()` and `canSubmit()` from the returned helpers to wire up
- * the parent form's submit button.
+ * Call the exported `passwordError` and `passwordCanSubmit` helpers to
+ * control the parent form's submit button.
+ *
+ * There is no "current password" field, and adding one would ask for a
+ * secret that nothing verifies. Session elevation is the step-up for a
+ * password change: the user proves the factor once, in the elevation prompt,
+ * and it admits every sensitive action for a window.
  */
 export const PasswordFields: Component<PasswordFieldsProps> = (props) => {
-  // When showCurrentPassword is true, the discriminated union guarantees
-  // currentPassword and setCurrentPassword are present.
-  const curPw = () => props.showCurrentPassword ? props.currentPassword() : ''
-  const setCurPw = (v: string) => {
-    if (props.showCurrentPassword)
-      props.setCurrentPassword(v)
-  }
-
   return (
     <>
-      <Show when={props.showCurrentPassword}>
-        <label class={props.labelClass}>
-          Current Password
-          <input
-            type="password"
-            value={curPw()}
-            onInput={e => setCurPw(e.currentTarget.value)}
-            autocomplete="current-password"
-          />
-        </label>
-      </Show>
       <label class={props.labelClass}>
         New Password
         <input
@@ -132,7 +113,7 @@ function passwordStrength(pw: string): StrengthResult {
 /* eslint-disable solid/reactivity -- These helpers read reactive accessors and are designed to be called within tracked scopes (JSX, createMemo, createEffect). */
 
 /** Reactive validation error for password fields. */
-export function passwordError(props: Pick<PasswordFieldsBase, 'password' | 'confirmPassword'>): string | null {
+export function passwordError(props: Pick<PasswordFieldsProps, 'password' | 'confirmPassword'>): string | null {
   const pw = props.password()
   if (!pw)
     return null
@@ -145,9 +126,7 @@ export function passwordError(props: Pick<PasswordFieldsBase, 'password' | 'conf
 }
 
 /** Whether the password fields are valid and ready to submit. */
-export function passwordCanSubmit(props: Pick<PasswordFieldsBase, 'password' | 'confirmPassword'> & { showCurrentPassword?: boolean, currentPassword?: () => string }): boolean {
-  if (props.showCurrentPassword && props.currentPassword && props.currentPassword() === '')
-    return false
+export function passwordCanSubmit(props: Pick<PasswordFieldsProps, 'password' | 'confirmPassword'>): boolean {
   return props.password() !== '' && props.confirmPassword() !== '' && !passwordError(props)
 }
 

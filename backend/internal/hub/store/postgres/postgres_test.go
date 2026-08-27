@@ -64,6 +64,7 @@ func TestPostgresStore(t *testing.T) {
 	require.NoError(t, err)
 
 	suite := &storetest.Suite{
+		ConcurrentWriteTransactions: true,
 		NewStore: func(t *testing.T) store.TestableStore {
 			t.Helper()
 			// Re-migrate first in case a migrator test rolled back the schema.
@@ -144,7 +145,7 @@ func TestPostgresBinaryCollationLive(t *testing.T) {
 			"%s.%s must carry an explicit COLLATE \"C\" so the cursor id tiebreak and FK joins compare byte-wise on every deployment", table, column)
 	}
 	require.NoError(t, rows.Err())
-	// The migration declares 74 COLLATE "C" columns; a collapse of this count
+	// The migration declares 81 COLLATE "C" columns; a collapse of this count
 	// means the name heuristic (or the schema) broke, not that fewer pins are
 	// needed.
 	assert.Greater(t, checked, 40, "expected many id/FK TEXT columns; the name heuristic may have broken (got %d)", checked)

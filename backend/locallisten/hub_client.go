@@ -37,7 +37,7 @@ func LocalH2CClient(hubURL string, timeout time.Duration) (*http.Client, string,
 //
 // timeout caps individual requests (0 = no timeout). The HTTP/1.1
 // transport is appropriate for plain REST endpoints and for
-// WebSocket upgrade (which doesn't ride on HTTP/2 streams).
+// WebSocket upgrade (which does not use HTTP/2 streams).
 func LocalHTTPClient(hubURL string, timeout time.Duration) (*http.Client, string, error) {
 	dial, err := Dialer(hubURL)
 	if err != nil {
@@ -47,6 +47,29 @@ func LocalHTTPClient(hubURL string, timeout time.Duration) (*http.Client, string
 		Transport: &http.Transport{DialContext: HTTPDialContext(dial)},
 		Timeout:   timeout,
 	}, LocalConnectURL, nil
+}
+
+// RESTClient returns the HTTP/1.1 client and base URL for a plain REST call
+// against hubURL: a socket-dialer client for a `unix:`/`npipe:` hub, a
+// timeout-capped client otherwise.
+//
+// It lives HERE because two packages need it and they cannot share it
+// between themselves: `control/cmd` imports `control`, so neither can hold
+// the helper for the other. This package is the leaf that both already
+// import, which makes the "they cannot be shared" note in the callers
+// obsolete rather than true.
+//
+// The remote leg is a client with the SAME timeout, not http.DefaultClient.
+// The default client has no timeout at all, so the duration a caller passed
+// applied to a local hub and silently did not apply to a remote one -- a
+// remote hub that accepts a connection and never answers hung the command
+// for ever. Every caller makes short request-response calls; the device-code
+// flow polls with one short request per interval rather than holding a long
+// poll open.
+func RESTClient(hubURL string, timeout time.Duration) (*http.Client, string) {
+	return SelectClient(hubURL,
+		func() (*http.Client, string, error) { return LocalHTTPClient(hubURL, timeout) },
+		func() (*http.Client, string) { return &http.Client{Timeout: timeout}, hubURL })
 }
 
 // JoinPath joins a path onto a hub base URL, normalising any
@@ -61,8 +84,8 @@ func JoinPath(hubURL, path string) string {
 // succeeds, returns its (client, base) pair (base is the placeholder
 // URL the local transport dials internally); otherwise falls through
 // to `remoteBuild` which returns the verbatim-URL pair. Centralises
-// the if-IsLocal/try-local/fallback dance every per-transport factory
-// across worker/hub/delegation had open-coded.
+// the if-IsLocal/try-local/fallback sequence that every per-transport
+// factory across worker/hub/delegation open-coded.
 func SelectClient(
 	hubURL string,
 	localBuild func() (*http.Client, string, error),

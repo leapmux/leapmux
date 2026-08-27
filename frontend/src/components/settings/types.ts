@@ -16,7 +16,19 @@ export type SettingScope = 'browser' | 'account' | 'dual' | 'hub'
  * component table stays exhaustive at compile time. One list serves both,
  * so a new editor cannot be recognised on the wire without a component.
  */
-export const CUSTOM_EDITOR_IDS = ['keybindings', 'account', 'keyPins', 'theme', 'terminalTheme', 'syntaxTheme'] as const
+export const CUSTOM_EDITOR_IDS = [
+  'keybindings',
+  'accountProfile',
+  'accountEmail',
+  'accountPassword',
+  'accountPasskeys',
+  'accountLinkedProviders',
+  'accountCliTokens',
+  'keyPins',
+  'theme',
+  'terminalTheme',
+  'syntaxTheme',
+] as const
 
 export type CustomEditorId = typeof CUSTOM_EDITOR_IDS[number]
 
@@ -53,6 +65,23 @@ export interface SettingDescriptor {
   scope: SettingScope
   control: SettingControl
   restart?: boolean
+  /**
+   * Whether the hub refuses this row's writes on a session that did not
+   * prove a factor recently.
+   *
+   * READ THROUGH `descriptorNeedsElevation`, never directly: `scope: 'hub'`
+   * already answers yes for every hub row, so this flag carries the ACCOUNT
+   * rows alone. Setting it on a hub descriptor as well restated a fact the
+   * scope beside it already gave.
+   *
+   * It never DECIDES anything. The hub refuses an un-elevated write on its own
+   * and the transport turns that refusal into a prompt and one retry, so a row
+   * that forgets this flag still behaves correctly — it simply says less. Two
+   * rows in the Account group genuinely do not need one (the profile name, and
+   * the command-line credentials), so this cannot be derived from the category
+   * either.
+   */
+  needsElevation?: boolean
   hidden?: () => boolean
 }
 
@@ -66,6 +95,23 @@ export interface SettingDescriptor {
  */
 export function descriptorVisible(d: SettingDescriptor): boolean {
   return !(d.hidden?.() ?? false)
+}
+
+/**
+ * Whether the hub refuses this row's writes on an un-elevated session.
+ *
+ * The SCOPE answers it for every hub row, because the hub requires the same
+ * window for every settings write rather than for one key at a time -- see
+ * AdminSettingsService.requireElevatedWriter. So a hub descriptor no longer
+ * carries the flag, and a hub key added later gets the answer from its scope.
+ *
+ * The explicit flag stays as the other case, because four ACCOUNT rows need it
+ * and their scope cannot say so: the password, the passkeys, the email address
+ * and the linked providers are refused, while the profile name and the
+ * command-line credentials are not.
+ */
+export function descriptorNeedsElevation(d: SettingDescriptor): boolean {
+  return d.scope === 'hub' || d.needsElevation === true
 }
 
 export interface SettingBinding {
@@ -108,7 +154,7 @@ export interface SettingBinding {
  *
  * `SettingBinding` makes them optional because one shape serves four
  * scopes, and a browser-only row has no account tier to address while a
- * hub row has no device tier. Naming the dual shape apart means a dual
+ * hub row has no device tier. A separate type for the dual shape means a dual
  * factory that drops `clearOverride` or `customized` fails to compile,
  * rather than rendering a scope chip whose action does nothing.
  */

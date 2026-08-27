@@ -1,7 +1,7 @@
 import type { CaptchaFieldHandle } from '~/components/common/CaptchaField'
 import { Code, ConnectError } from '@connectrpc/connect'
 import { createSignal } from 'solid-js'
-import { isCaptchaEnabled, isSystemInfoLoaded, refreshSnapshot } from './systemInfo'
+import { isCaptchaEnabled, isCaptchaUnsolvableHere, isSystemInfoLoaded, refreshSnapshot } from './systemInfo'
 
 export interface CaptchaRequestFields {
   captchaPayload: string
@@ -20,7 +20,7 @@ export interface CaptchaFormState {
   /** The solved payload; null until the widget verifies. */
   payload: () => string | null
   setPayload: (payload: string | null) => void
-  /** The honeypot value; it rides on every protected request. */
+  /** The honeypot value; the form sends it on every protected request. */
   honeypot: () => string
   setHoneypot: (value: string) => void
   /** Wire the CaptchaField's imperative ref here. */
@@ -38,6 +38,11 @@ export interface CaptchaFormState {
    * since the page loaded.
    */
   reset: (err?: unknown) => void
+  /**
+   * True when the hub requires ALTCHA and this page cannot solve it. The
+   * form shows the explanation and blocks; see isCaptchaUnsolvableHere.
+   */
+  unsolvable: () => boolean
   /** Submit-button gate: blocks while a payload is required and missing. */
   blocksSubmit: () => boolean
   /** Request fields for Login/SignUp/CompleteOAuthSignup. */
@@ -48,7 +53,7 @@ export interface CaptchaFormState {
  * createCaptchaForm owns the captcha lifecycle one protected form needs:
  * the payload and honeypot state, the reactive requirement gate, the
  * fail-closed bootstrap window, and the reset path. The three credential
- * forms consume this instead of re-wiring the same six pieces — they had
+ * forms consume this instead of re-wiring the same six pieces — they
  * already drifted on the bootstrap gate, which hid the widget on direct
  * page loads.
  */
@@ -59,11 +64,18 @@ export function createCaptchaForm(): CaptchaFormState {
   let field: CaptchaFieldHandle | undefined
 
   const pending = () => !isSystemInfoLoaded()
-  const required = () => !stoodDown() && isSystemInfoLoaded() && isCaptchaEnabled()
+  const unsolvable = () => isSystemInfoLoaded() && isCaptchaUnsolvableHere()
+  // `required` means "mount a widget and collect a payload", so an
+  // unsolvable page is NOT required: no widget can mount there. It blocks
+  // submission instead (see blocksSubmit), so the form never sends a request
+  // the hub is certain to deny. This is the ONE place that combines the hub's
+  // answer and the page's ability; isCaptchaEnabled reports the hub alone.
+  const required = () => !stoodDown() && isSystemInfoLoaded() && isCaptchaEnabled() && !unsolvable()
 
   return {
     pending,
     required,
+    unsolvable,
     payload,
     setPayload,
     honeypot,
@@ -77,7 +89,7 @@ export function createCaptchaForm(): CaptchaFormState {
     reset: (err?: unknown) => {
       // A rejected attempt must not linger: the consumed payload and a
       // honeypot value an autofill heuristic dropped into the hidden
-      // input both poison the retry identically.
+      // input both make the retry fail identically.
       setStoodDown(false)
       setPayload(null)
       setHoneypot('')
@@ -103,7 +115,7 @@ export function createCaptchaForm(): CaptchaFormState {
         refreshSnapshot()
       }
     },
-    blocksSubmit: () => pending() || (required() && payload() === null),
+    blocksSubmit: () => pending() || unsolvable() || (required() && payload() === null),
     fields: () => ({ captchaPayload: payload() ?? '', honeypot: honeypot() }),
   }
 }

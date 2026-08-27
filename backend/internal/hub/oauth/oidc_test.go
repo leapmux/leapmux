@@ -94,13 +94,30 @@ func TestOIDC_AuthURL_IncludesStateAndChallenge(t *testing.T) {
 	p, err := NewOIDCProvider(context.Background(), srv.URL, "test-client", "test-secret", srv.URL+"/callback", []string{"openid", "profile", "email"})
 	require.NoError(t, err)
 
-	url := p.AuthURL("test-state", "test-challenge")
+	url := p.AuthURL("test-state", "test-challenge", AuthURLOptions{})
 
 	assert.Contains(t, url, "state=test-state")
 	assert.Contains(t, url, "code_challenge=")
 	assert.Contains(t, url, "code_challenge_method=S256")
 	assert.Contains(t, url, "scope=openid+profile+email")
 	assert.Contains(t, url, "client_id=test-client")
+	assert.NotContains(t, url, "prompt=", "an ordinary login must not force a re-prompt")
+}
+
+// TestOIDC_AuthURL_ForceReauthentication pins the step-up leg's parameter.
+// Without prompt=login the provider silently reuses its own session, the
+// browser returns in a fraction of a second, and the elevation the click
+// should prove proves nothing.
+func TestOIDC_AuthURL_ForceReauthentication(t *testing.T) {
+	srv, _ := mockOIDCServer(t)
+
+	p, err := NewOIDCProvider(context.Background(), srv.URL, "test-client", "test-secret", srv.URL+"/callback", nil)
+	require.NoError(t, err)
+
+	url := p.AuthURL("test-state", "test-challenge", AuthURLOptions{ForceReauthentication: true})
+
+	assert.Contains(t, url, "prompt=login")
+	assert.Contains(t, url, "code_challenge_method=S256", "the step-up leg keeps PKCE")
 }
 
 func TestOIDC_Exchange_Success(t *testing.T) {
@@ -324,9 +341,9 @@ func TestOIDC_Exchange_InvalidIDTokenSignature(t *testing.T) {
 	assert.Error(t, err, "token signed with wrong key should fail verification")
 }
 
-// The Hub bounds the token exchange with a context deadline (see
+// The Hub limits the token exchange with a context deadline (see
 // service.OAuthHandler's callback), because golang.org/x/oauth2 otherwise runs
-// it on http.DefaultClient, which has no timeout. That bound is only worth
+// it on http.DefaultClient, which has no timeout. That limit is only worth
 // anything if Exchange actually honours the context: an identity provider that
 // accepts the connection and never answers must fail here rather than park the
 // callback handler, which net/http counts as an ACTIVE request and which would
@@ -335,33 +352,33 @@ func TestOIDC_Exchange_HonoursContextDeadline(t *testing.T) {
 	srv, _ := mockOIDCServer(t)
 
 	// Discovery has to succeed, so build the provider against the healthy
-	// server first and wedge only the token endpoint it will call next.
+	// server first and block only the token endpoint it calls next.
 	p, err := NewOIDCProvider(context.Background(), srv.URL, "test-client", "test-secret", srv.URL+"/callback",
 		[]string{"openid", "profile", "email"})
 	require.NoError(t, err)
 
-	// Never answers, but always unwinds: the client giving up on a keep-alive
+	// Never answers, but always unwinds: a client that abandons a keep-alive
 	// connection does not necessarily cancel the server's request context, and
-	// httptest's Close blocks until every handler has returned -- so a handler
+	// httptest's Close blocks until every handler returns -- so a handler
 	// parked forever would hang the cleanup rather than the assertion. The
 	// ceiling is far above the 200ms deadline under test.
-	wedged := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+	stalled := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
 		case <-time.After(2 * time.Second):
 		}
 	}))
-	t.Cleanup(wedged.Close)
-	p.oauth2Config.Endpoint.TokenURL = wedged.URL + "/token"
+	t.Cleanup(stalled.Close)
+	p.oauth2Config.Endpoint.TokenURL = stalled.URL + "/token"
 
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
-	// Exchange must give up on the caller's 200ms deadline; without that the
+	// Exchange must stop at the caller's 200ms deadline; without that the
 	// callback handler holds the shutdown drain open against a token endpoint
-	// that never answers. Asserted as a completion against a generous guard
-	// rather than a 5s budget: the endpoint here NEVER responds, so the failing
-	// case is a hang, and a guard reports that directly.
+	// that never answers. This test asserts a completion against a generous
+	// guard rather than a 5s budget: the endpoint here NEVER responds, so the
+	// failing case is a hang, and a guard reports that directly.
 	exchanged := make(chan error, 1)
 	go func() {
 		_, _, exErr := p.Exchange(ctx, "any-code", "any-verifier")
@@ -371,6 +388,6 @@ func TestOIDC_Exchange_HonoursContextDeadline(t *testing.T) {
 	case err = <-exchanged:
 		require.Error(t, err, "a token endpoint that never answers must surface as an error, not a hang")
 	case <-time.After(30 * time.Second):
-		t.Fatal("Exchange ignored the caller's deadline and hung on the wedged token endpoint")
+		t.Fatal("Exchange ignored the caller's deadline and hung on the stalled token endpoint")
 	}
 }

@@ -30,8 +30,8 @@ import (
 // The test also asserts non-vacuity: every discovered DATETIME column --
 // NOT NULL and nullable alike -- must hold at least one non-null value by the
 // end of the fixtures, so no column's layout contract passes merely because
-// nothing was ever stored in it. A new DATETIME column therefore fails this
-// test until a fixture write for it is added here.
+// no write ever stored a value in it. A new DATETIME column therefore fails
+// this test until somebody adds a fixture write for it here.
 func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	ctx := context.Background()
 	testable, err := OpenTestable(":memory:")
@@ -106,6 +106,7 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 		State:        "canon-state",
 		ProviderID:   provider.ID,
 		PkceVerifier: "verifier",
+		Purpose:      store.OAuthStatePurposeLogin,
 		ExpiresAt:    future,
 	}))
 
@@ -214,7 +215,28 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 
 	// user_sessions: expires_at is Go-bound by Create; created_at and
 	// last_active_at fill via their column DEFAULTs.
-	storetest.SeedSession(t, st, user.ID)
+	session := storetest.SeedSession(t, st, user.ID)
+
+	// user_sessions.elevation_proven_at / elevation_expires_at. Both are
+	// NULLABLE, so without a fixture their layout check would pass
+	// vacuously -- and the slide binds its deadline through an UNTYPED sqlc
+	// parameter (see the allowlist entry for WindowDeadline), so this
+	// fixture is the guard that a raw time.Time bind cannot ship.
+	elevatedCount, err := st.Sessions().Elevate(ctx, store.ElevateSessionParams{
+		SessionID:          session.ID,
+		UserID:             userid.MustNew(user.ID),
+		ElevationProvenAt:  now,
+		ElevationExpiresAt: now.Add(2 * time.Hour),
+	}, now)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, elevatedCount)
+	slid, err := st.Sessions().SlideElevation(ctx, store.SlideSessionElevationParams{
+		SessionID:      session.ID,
+		UserID:         userid.MustNew(user.ID),
+		WindowDeadline: now.Add(3 * time.Hour),
+	}, now)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, slid, "the slide must move the deadline, so its bind is exercised")
 
 	// worker_registration_keys: created_at DEFAULT + Go-bound expires_at.
 	storetest.SeedRegistrationKey(t, st, user.ID, future)
@@ -323,7 +345,7 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	webauthnSessionID := id.Generate()
 	require.NoError(t, st.WebAuthnSessions().Create(ctx, store.CreateWebAuthnSessionParams{
 		ID:          webauthnSessionID,
-		Kind:        "reauth",
+		Kind:        "elevation",
 		UserID:      user.ID,
 		PayloadJSON: "{}",
 		SessionData: []byte("canon-session"),
@@ -336,6 +358,27 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 
 	// api_tokens.last_used_at via Touch.
 	require.NoError(t, st.APITokens().Touch(ctx, rotatedID))
+
+	// api_tokens.elevation_proven_at / elevation_expires_at. Both are
+	// NULLABLE, so without a fixture their layout check would pass vacuously
+	// -- and the slide binds its deadline through an UNTYPED sqlc parameter,
+	// exactly as the session slide does, so this fixture is the guard that a
+	// raw time.Time bind cannot ship.
+	tokenElevated, err := st.APITokens().Elevate(ctx, store.ElevateAPITokenParams{
+		TokenID:            rotatedID,
+		UserID:             userid.MustNew(user.ID),
+		ElevationProvenAt:  now,
+		ElevationExpiresAt: now.Add(2 * time.Hour),
+	}, now)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, tokenElevated)
+	tokenSlid, err := st.APITokens().SlideElevation(ctx, store.SlideAPITokenElevationParams{
+		TokenID:        rotatedID,
+		UserID:         userid.MustNew(user.ID),
+		WindowDeadline: now.Add(3 * time.Hour),
+	}, now)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, tokenSlid, "the slide must move the deadline, so its bind is exercised")
 
 	// delegation_tokens: last_used_at via Touch, revoked_at via Revoke.
 	require.NoError(t, st.DelegationTokens().Touch(ctx, delegationID))
@@ -376,8 +419,8 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	require.NoError(t, CheckCanonicalTimestamps(ctx, testable))
 
 	// Non-vacuity: a column with zero non-null rows passes the layout probe
-	// without ever being exercised, so a raw time.Time bind on that write path
-	// would ship unnoticed. Every discovered column must hold at least one
+	// although no fixture exercises it, so a raw time.Time bind on that write
+	// path would ship unnoticed. Every discovered column must hold at least one
 	// value by the end of the fixture writes above. This assertion lives here
 	// rather than in CheckCanonicalTimestamps because no single storetest
 	// subtest writes every table -- only this test's fixtures do.

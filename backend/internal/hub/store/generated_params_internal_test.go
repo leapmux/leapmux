@@ -48,6 +48,15 @@ func TestGeneratedInterfaceParamsAreAllowlisted(t *testing.T) {
 			"Query":      "search LIKE narg OR-chain; fed a *string-derived pattern",
 			"ClientType": "narg OR-chain over a text column",
 			"TabType":    "narg OR-chain over a text column",
+			// The elevation slide's requested deadline sits inside min()
+			// in the SET clause, which carries no column type, and sqlc
+			// keeps that first inference even though the WHERE compares
+			// the same parameter against elevation_expires_at (the
+			// postgres and mysql twins ARE typed by that comparison). The
+			// bind site passes sqltime.NewSQLiteTime, and a raw time.Time
+			// there fails TestAllDatetimeColumnsStoreCanonicalLayout,
+			// whose elevation fixture writes this very column.
+			"WindowDeadline": "elevation-slide deadline inside min(); fed sqltime.SQLiteTime, guarded by the canonical-layout fixture",
 		},
 		mysqlGenPkg: {
 			"LeaseMillis": "arithmetic expression param; not a timestamp",
@@ -264,8 +273,8 @@ var rawBindMethods = map[string]bool{
 }
 
 // flagRawTime records a violation when the expression's static type is one of
-// the raw-time shapes (see rawTimeTypeName); sink names where the value was
-// headed, and the position key dedupes the Tests:true double type-check.
+// the raw-time shapes (see rawTimeTypeName); sink identifies where the value
+// was headed, and the position key dedupes the Tests:true double type-check.
 func flagRawTime(pkg *packages.Package, violations map[string]string, value ast.Expr, sink string) {
 	badType, ok := rawTimeTypeName(pkg.TypesInfo.TypeOf(value))
 	if !ok {
@@ -317,8 +326,8 @@ func structUnder(t types.Type) *types.Struct {
 // literalField resolves which struct field the i-th composite-literal element
 // fills -- keyed literals via the type-checker's field object for the key,
 // positional literals via field order -- and returns it with the value
-// expression being bound. Returns nils for elements that resolve to no field
-// (which the type checker rejects anyway).
+// expression that the literal binds. Returns nils for elements that resolve
+// to no field (which the type checker rejects anyway).
 func literalField(info *types.Info, st *types.Struct, i int, elt ast.Expr) (*types.Var, ast.Expr) {
 	if kv, ok := elt.(*ast.KeyValueExpr); ok {
 		key, ok := kv.Key.(*ast.Ident)

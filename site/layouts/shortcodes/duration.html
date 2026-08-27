@@ -1,0 +1,22 @@
+{{- /*
+  duration renders one fixed duration of the authentication model from
+  site.Params.durations, so that every page states it from one source.
+
+      {{< duration elevation-window >}}          -> two hours
+      {{< duration elevation-window digits >}}   -> 2 hours
+
+  The first argument is the duration name and the second is the form
+  (`words`, the default, or `digits`). An unknown name or form stops the
+  build, so a typo cannot render an empty sentence.
+*/ -}}
+{{- $name := .Get 0 -}}
+{{- $form := or (.Get 1) "words" -}}
+{{- with index site.Params.durations $name -}}
+  {{- with index . $form -}}
+    {{- . -}}
+  {{- else -}}
+    {{- errorf "duration: no %q form for duration %q (%s)" $form $name $.Position -}}
+  {{- end -}}
+{{- else -}}
+  {{- errorf "duration: unknown duration %q (%s)" $name $.Position -}}
+{{- end -}}

@@ -50,7 +50,7 @@ func (s *AdminWorkerService) ListWorkers(ctx context.Context, req *connect.Reque
 	}
 	params := store.ListWorkersAdminParams{
 		UserID:     userFilter,
-		PageParams: AdminPageParams(req.Msg.GetCursor(), req.Msg.GetLimit()),
+		PageParams: NormalizePageParams(req.Msg.GetCursor(), req.Msg.GetLimit()),
 	}
 	if st := req.Msg.GetStatus(); st != leapmuxv1.WorkerStatus_WORKER_STATUS_UNSPECIFIED {
 		params.Status = &st
@@ -87,8 +87,8 @@ func (s *AdminWorkerService) DeregisterWorker(ctx context.Context, req *connect.
 	if err := requireField(req.Msg.GetId(), "id"); err != nil {
 		return nil, err
 	}
-	// Read the row FIRST: the workers-changed notification is addressed to
-	// the worker's OWNER, and after the status flip the id is still
+	// Read the row FIRST: the workers-changed notification goes to the
+	// worker's OWNER, and after the status flip the id is still
 	// resolvable but the intent is no longer obvious to a later reader.
 	w, err := s.store.Workers().GetAdmin(ctx, req.Msg.GetId())
 	if err != nil {
@@ -115,7 +115,7 @@ func (s *AdminWorkerService) DeregisterWorker(ctx context.Context, req *connect.
 
 func (s *AdminWorkerService) ListRegistrationKeys(ctx context.Context, req *connect.Request[leapmuxv1.ListRegistrationKeysRequest]) (*connect.Response[leapmuxv1.ListRegistrationKeysResponse], error) {
 	page, err := s.store.RegistrationKeys().ListAdmin(ctx, store.ListRegistrationKeysAdminParams{
-		PageParams:     AdminPageParams(req.Msg.GetCursor(), req.Msg.GetLimit()),
+		PageParams:     NormalizePageParams(req.Msg.GetCursor(), req.Msg.GetLimit()),
 		IncludeExpired: req.Msg.GetIncludeExpired(),
 	})
 	if err != nil {

@@ -64,8 +64,8 @@ func TestValidateSMTPAlwaysChecksTLSMode(t *testing.T) {
 // order — host, then port, then from address.
 //
 // Requiring a from address whenever a host is set refused the FIRST of
-// those writes, with an error naming a field on a different row and no
-// way for the operator to reach it. Enabled() is what keeps the pair
+// those writes, with an error that specifies a field on a different row
+// and no way for the operator to reach it. Enabled() is what keeps the pair
 // coherent instead: it stays false until both fields are stored, so no
 // consumer can dial a half-staged relay.
 func TestSMTPConfiguresOneFieldAtATime(t *testing.T) {
@@ -120,8 +120,8 @@ func TestValidateSMTPStagingRules(t *testing.T) {
 	assert.True(t, both.Enabled())
 }
 
-// TestEmailVerificationEffectiveFollowsSMTP pins that verification gating
-// tracks SMTP.Enabled() only.
+// TestEmailVerificationEffectiveFollowsSMTP pins that the verification
+// requirement tracks SMTP.Enabled() only.
 func TestEmailVerificationEffectiveFollowsSMTP(t *testing.T) {
 	m, _, _ := newTestManagerWithStore(t)
 	ctx := context.Background()
@@ -157,7 +157,7 @@ func TestValidateSMTPPlainAuthLocalhost(t *testing.T) {
 }
 
 // TestValidateQueueBudgetPerClassFloor pins the per-class floor the old
-// config validator enforced and the settings rewrite had dropped: an
+// config validator enforced and the settings rewrite dropped: an
 // explicit budget below the class minimum builds a degenerate pool (or
 // refuses to build at all — sendq.NewPool panics when its floor exceeds
 // the capacity), so the write path refuses it with the same number the
@@ -226,7 +226,7 @@ func TestValidateMaxMessageSizeDelegates(t *testing.T) {
 // TestTimeoutsRefuseAValueTheWireCannotCarry pins the ceiling that makes
 // UserService.GetTimeouts safe. Without it a stored int64 wrapped on the
 // int32 narrowing and handed the client an arbitrary — often negative —
-// timeout, which every request budget is computed from.
+// timeout, which every request budget derives from.
 func TestTimeoutsRefuseAValueTheWireCannotCarry(t *testing.T) {
 	over := TimeoutsValue{
 		APITimeoutSeconds:          MaxTimeoutSeconds + 1,
@@ -319,16 +319,16 @@ func TestSessionDurationStaysInsideTheDeclaredRange(t *testing.T) {
 	assert.Equal(t, time.Duration(MaxSessionDurationSeconds)*time.Second, got)
 }
 
-// TestValidateQueueBudgetNamesTheSameFieldOnEveryRun pins the ordered
+// TestValidateQueueBudgetReportsTheSameFieldOnEveryRun pins the ordered
 // walk. The loop returns on the FIRST failure, and Go randomizes map
 // iteration, so a document with two bad budgets used to report a different
 // field on each run -- an operator correcting the reported field then hit
 // the other one, in an order nobody could reproduce.
-func TestValidateQueueBudgetNamesTheSameFieldOnEveryRun(t *testing.T) {
+func TestValidateQueueBudgetReportsTheSameFieldOnEveryRun(t *testing.T) {
 	bad := QueueBudgetValue{RelayBytes: -1, WorkerBytes: -1, UserEventsBytes: -1}
 	first := validateQueueBudget(bad)
 	require.Error(t, first)
-	assert.Contains(t, first.Error(), "relay_bytes", "the first declared field is the one reported")
+	assert.Contains(t, first.Error(), "relay_bytes", "the loop reports the first declared field")
 	for range 50 {
 		assert.Equal(t, first.Error(), validateQueueBudget(bad).Error(),
 			"the reported field must not depend on map iteration order")
@@ -347,4 +347,57 @@ func TestEnumAllowedIsTheOneAllowedSetForTLSMode(t *testing.T) {
 	assert.False(t, EnumAllowed(tlsModeEnumValues, "startls"))
 	assert.False(t, EnumAllowed(tlsModeEnumValues, ""))
 	assert.Error(t, validateSMTP(SMTPValue{TLSMode: "startls"}))
+}
+
+// TestBaseURLResolvesAWildcardBindToLoopback pins the address the hub prints
+// into every mail link, into the device-code verification_uri the CLI shows,
+// and registers as the OAuth redirect_uri.
+//
+// A wildcard bind specifies no host, so nothing can send a browser to it. Only
+// the ":port" spelling resolved; "0.0.0.0:4327" and "[::]:4327" passed
+// through and produced "http://0.0.0.0:4327", which every one of those
+// readers then printed. The rest of the hub already treats a wildcard bind
+// as a loopback deployment -- webauthn.servesLoopback accepts one, and the
+// captcha secure-context gate reads it the same way.
+func TestBaseURLResolvesAWildcardBindToLoopback(t *testing.T) {
+	t.Parallel()
+
+	m := NewManager(nil, nil, []Descriptor{KeyPublicURL, KeySecureCookies})
+	plain := m.buildSnapshotWith(nil, nil)
+
+	for name, tc := range map[string]struct{ listen, want string }{
+		"port only":     {":4327", "http://localhost:4327"},
+		"ipv4 wildcard": {"0.0.0.0:4327", "http://localhost:4327"},
+		"ipv6 wildcard": {"[::]:4327", "http://localhost:4327"},
+		// The CLASS, not the two spellings anybody writes. A literal pair
+		// read these as real hosts and printed http://[::0]:4327 into every
+		// verification mail; httpsec.IsWildcardHost answers for all of them.
+		"ipv6 wildcard zero":    {"[::0]:4327", "http://localhost:4327"},
+		"ipv6 wildcard spelled": {"[0:0:0:0:0:0:0:0]:4327", "http://localhost:4327"},
+		// No TCP listener at all: hostless on purpose, so
+		// RPConfigFromSettings reports passkeys unavailable rather than
+		// running a ceremony against an origin the hub invented.
+		"empty":             {"", "http://"},
+		"explicit loopback": {"127.0.0.1:4327", "http://127.0.0.1:4327"},
+		"explicit host":     {"hub.example.com:4327", "http://hub.example.com:4327"},
+		"host with no port": {"hub.example.com", "http://hub.example.com"},
+		"ipv6 literal":      {"[::1]:4327", "http://[::1]:4327"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, BaseURL(plain, tc.listen))
+		})
+	}
+
+	// public_url still wins outright, and secure_cookies still picks the
+	// scheme: the wildcard rule is the last resort, not a new first rung.
+	published := m.buildSnapshotWith([]store.SettingRow{{
+		Key: KeyPublicURL.Name(), Value: ptrconv.Ptr(`"https://hub.example.com"`),
+	}}, nil)
+	assert.Equal(t, "https://hub.example.com", BaseURL(published, "0.0.0.0:4327"))
+
+	secure := m.buildSnapshotWith([]store.SettingRow{{
+		Key: KeySecureCookies.Name(), Value: ptrconv.Ptr("true"),
+	}}, nil)
+	assert.Equal(t, "https://localhost:4327", BaseURL(secure, "0.0.0.0:4327"))
 }

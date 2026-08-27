@@ -5,6 +5,7 @@ import { createMemo, createSignal, Show } from 'solid-js'
 import { ConfirmButton } from '~/components/common/ConfirmButton'
 import { DropdownMenu, DropdownMenuCheckableItem } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
+import { createRevealed } from '~/hooks/createRevealed'
 import { createKeyedSeq } from '~/lib/keyedSeq'
 import { errorText } from '~/styles/shared.css'
 import { CUSTOM_EDITORS } from './controls/customEditors'
@@ -63,7 +64,7 @@ export function formatEffectiveValue(control: SettingControl, value: unknown): s
       const raw = String(value)
       return control.options.find(o => o.value === raw)?.label ?? raw
     }
-    // Both numeric arms test the UNIT and never the value, so an enforced
+    // Both numeric cases test the UNIT and never the value, so an enforced
     // 0 keeps its unit: a queue budget of 0 auto-sizes, and the byte count
     // the hub settled on is the whole point of the note. Most number keys
     // declare no unit, and those must gain no separator.
@@ -95,6 +96,9 @@ export const SettingRow: Component<SettingRowProps> = (props) => {
   const [writeError, setWriteError] = createSignal<string | null>(null)
   let chipRef: HTMLButtonElement | undefined
 
+  /** Defers the `custom` editor below; see the `custom` case of `control`. */
+  const reveal = createRevealed()
+
   // The row shows TWO facts, and the split is deliberate. The CONTROL
   // carries the configured value, because the control is what the admin
   // edits and an edit changes exactly that value. This note carries what
@@ -122,7 +126,7 @@ export const SettingRow: Component<SettingRowProps> = (props) => {
   /**
    * The newest write this row issued.
    *
-   * A superseded write's rejection must not state itself. Both write paths
+   * This row must not report a superseded write's rejection. Both write paths
    * beneath already skip their own bookkeeping for one — the store leaves
    * its `writeError` alone, and the account path leaves the value alone —
    * but both still reject, so without this guard the row would show the
@@ -145,7 +149,7 @@ export const SettingRow: Component<SettingRowProps> = (props) => {
    * binding accepted it, false when it refused.
    *
    * The promise never rejects. A control that holds the typed text in the
-   * DOM (the text input, the native select) must put the stored value back
+   * DOM (the text input) must put the stored value back
    * when a write is refused, and it can only know to do that from the
    * return value — Solid assigns `value` only when the tracked expression
    * CHANGES, and a refused write leaves `props.value` exactly as it was.
@@ -240,7 +244,20 @@ export const SettingRow: Component<SettingRowProps> = (props) => {
         )
       case 'custom': {
         const Editor = CUSTOM_EDITORS[c.id]
-        return Editor ? <Editor /> : null
+        if (!Editor)
+          return null
+        // DEFERRED until the row comes into view. A custom editor is a whole
+        // panel of its own, and several load on mount: AccountPasskeys issues
+        // ListPasskeys and AccountCLITokens runs a keyset loop over
+        // ListMyAPITokens. The Account group leads the navigation, so every
+        // Ctrl+, mounted both -- two list requests for a user who came for
+        // Appearance and clicks away -- and both of those rows sit below the
+        // visible area.
+        return (
+          <Show when={reveal.revealed()}>
+            <Editor />
+          </Show>
+        )
       }
       case 'action':
         return (
@@ -307,7 +324,16 @@ export const SettingRow: Component<SettingRowProps> = (props) => {
   }
 
   return (
-    <div class={styles.row} data-setting-id={d().id}>
+    <div
+      class={styles.row}
+      data-setting-id={d().id}
+      ref={(el) => {
+        // Only a `custom` row defers anything, so only a `custom` row pays for
+        // an observer. Every other control is already in the markup.
+        if (d().control.kind === 'custom')
+          reveal.observe(el)
+      }}
+    >
       <div class={styles.headerRow}>
         <span class={styles.label}>{d().label}</span>
         {scopeNote()}

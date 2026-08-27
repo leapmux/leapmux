@@ -25,10 +25,10 @@ const (
 	// RegistrationKeyTTL is the lifetime granted to a freshly minted (or
 	// extended) registration key.
 	RegistrationKeyTTL = 5 * time.Minute
-	// RegistrationKeyExtendBuffer is the leave-window before expiry within
-	// which Extend is allowed. We refuse extensions when more than this
-	// much time remains so a runaway frontend can't keep a key alive
-	// forever.
+	// RegistrationKeyExtendBuffer is the window before expiry within
+	// which a caller may extend a key. The hub refuses an extension when more
+	// than this much time remains so a runaway frontend cannot keep a key
+	// alive forever.
 	RegistrationKeyExtendBuffer = 2 * time.Minute
 )
 
@@ -52,8 +52,8 @@ type WorkerManagementService struct {
 //
 // The four collaborators every handler ANSWERS from are required, and a nil
 // one panics here rather than on a request. st backs every handler; mgr
-// supplies the per-row online bit ListWorkers and GetWorker report; set gates
-// EmailRegistrationInstructions on whether SMTP is configured
+// supplies the per-row online bit ListWorkers and GetWorker report; set
+// restricts EmailRegistrationInstructions to a hub with SMTP configured
 // (defense-in-depth -- the frontend already hides the button); sender
 // delivers the mail that gate admits. None of the four has a meaningful
 // absent form: a nil mgr would report every worker offline and a nil set
@@ -66,11 +66,11 @@ type WorkerManagementService struct {
 // through WorkerDeregisterEffects (a test that exercises the store half
 // alone passes nil) -- the same rule auth.CredentialLifecycleEffects holds.
 // renderer is a value type; it carries the hub URL used in the registration
-// email's footer. scopeCache may be nil (tests); a private cache is
-// constructed then, so the effects always hold one -- production passes the
+// email's footer. scopeCache may be nil (tests); the constructor builds a
+// private cache then, so the effects always hold one -- production passes the
 // instance shared with CRDTService so the eviction reaches the cache
-// SubmitOps resolves through, and the containment action is immediate rather
-// than lagged by the cache TTL.
+// SubmitOps resolves through, and the containment takes effect immediately
+// rather than after the cache TTL.
 func NewWorkerManagementService(st store.Store, mgr *workermgr.Manager, b *HubEventBroadcaster, n *notifier.Notifier, sender mail.Sender, renderer mail.Renderer, set *settings.Manager, scopeCache *auth.DelegationScopeCache) *WorkerManagementService {
 	if st == nil {
 		panic("service: NewWorkerManagementService requires a store")
@@ -132,10 +132,10 @@ func (s *WorkerManagementService) ExtendRegistrationKey(
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("registration_key is required"))
 	}
 
-	// SELECT gives us the row needed for the anti-spam buffer check and
+	// The SELECT reads the row the anti-spam buffer check needs and
 	// surfaces cross-user access as NotFound (matching the oracle
-	// convention used elsewhere). Ownership and liveness are enforced
-	// atomically by the UPDATE.
+	// convention used elsewhere). The UPDATE enforces ownership and
+	// liveness atomically.
 	row, err := s.getOwnedKey(ctx, keyID, user.ID)
 	if err != nil {
 		return nil, err
@@ -146,8 +146,8 @@ func (s *WorkerManagementService) ExtendRegistrationKey(
 	// The frontend dialog only attempts an extension within the last ~2
 	// minutes anyway; this guard makes it safe even if a bug or hostile
 	// caller calls Extend in a tight loop. A dead row trivially passes
-	// this check (negative remaining < buffer) and is rejected by the
-	// UPDATE's expires_at > now guard below.
+	// this check (negative remaining < buffer), and the UPDATE's
+	// expires_at > now guard below rejects it.
 	if row.ExpiresAt.Sub(now) >= RegistrationKeyExtendBuffer {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("extension not allowed yet"))
 	}
@@ -162,11 +162,11 @@ func (s *WorkerManagementService) ExtendRegistrationKey(
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("extend registration key: %w", err))
 	}
 	// 0 rows means the row was already dead (soft-deleted or expired)
-	// when we ran the UPDATE — either it was already past its TTL, or a
-	// concurrent Consume burned it between our SELECT and UPDATE. Either
-	// way, the caller must mint a fresh key.
+	// when the UPDATE ran — either it was already past its TTL, or a
+	// concurrent Consume consumed it between the SELECT and the UPDATE.
+	// Either way, the caller must mint a fresh key.
 	if rows == 0 {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("registration key has expired"))
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("the registration key expired"))
 	}
 
 	return connect.NewResponse(&leapmuxv1.ExtendRegistrationKeyResponse{
@@ -191,8 +191,8 @@ func (s *WorkerManagementService) DeleteRegistrationKey(
 	// One conditional UPDATE: ownership lives in the WHERE clause, so a
 	// missing key and someone-else's key both surface as 0 rows-affected
 	// and map to NotFound (same oracle convention as GetOwned).
-	// Idempotent on already-consumed rows — the dialog's onCleanup is
-	// free to fire after a successful registration.
+	// Idempotent on already-consumed rows — the dialog's onCleanup may run
+	// after a successful registration.
 	rows, err := s.store.RegistrationKeys().SoftDelete(ctx, store.SoftDeleteRegistrationKeyParams{
 		ID:        keyID,
 		CreatedBy: user.ID,
@@ -225,18 +225,18 @@ func (s *WorkerManagementService) EmailRegistrationInstructions(
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("command is required"))
 	}
 
-	// All recipient details ride on the cached UserInfo, so this whole
+	// All recipient details come from the cached UserInfo, so this whole
 	// handler is one query (the getOwnedKey SELECT). Worst-case
 	// staleness is sessionCacheTTL — see UserInfo's doc comment.
 	if !user.EmailVerified || user.Email == "" {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("verified email address required to email instructions"))
 	}
 
-	// Defense in depth: reject if SMTP isn't configured. The frontend
+	// Defense in depth: reject if SMTP is not configured. The frontend
 	// hides this button when GetSystemInfo reports email_enabled=false,
-	// but a direct RPC client could still hit us. Returning an explicit
-	// FailedPrecondition is friendlier than the disabledSender's
-	// ErrEmailDisabled bubbling up as a generic Unavailable.
+	// but a direct RPC client could still call this handler. An explicit
+	// FailedPrecondition is clearer than the disabledSender's
+	// ErrEmailDisabled, which surfaces as a generic Unavailable.
 	if !settings.KeySMTP.Of(s.set.Snapshot(ctx)).Enabled() {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("hub is not configured to send email"))
 	}
@@ -248,7 +248,7 @@ func (s *WorkerManagementService) EmailRegistrationInstructions(
 		return nil, err
 	}
 	if !time.Now().UTC().Before(row.ExpiresAt) {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("registration key has expired"))
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("the registration key expired"))
 	}
 
 	if err := s.mail.Send(ctx, s.renderer.RegistrationInstructions(user.Email, command)); err != nil {
@@ -259,8 +259,8 @@ func (s *WorkerManagementService) EmailRegistrationInstructions(
 }
 
 // getOwnedKey thinly wraps RegistrationKeys().GetOwned with the
-// service's standard error mapping. Ownership is enforced inside the
-// SQL WHERE clause -- plus the store's zero-id refusal, since a blank
+// service's standard error mapping. The SQL WHERE clause enforces
+// ownership -- plus the store's zero-id refusal, since a blank
 // created_by parameter would MATCH a blank column rather than fail to:
 // "missing" and "not yours" both surface as NotFound, matching the
 // convention used elsewhere (Workers().GetOwned) and avoiding an oracle
@@ -285,14 +285,14 @@ func (s *WorkerManagementService) ListWorkers(
 		return nil, err
 	}
 
-	// AdminPageParams, not a hand-rolled default: it applies the same page
+	// NormalizePageParams, not a hand-written default: it applies the same page
 	// default AND the same ceiling every other paginated handler uses. The
-	// hand-rolled form had no ceiling at all, so `page.limit = 100000`
+	// hand-written form had no ceiling at all, so `page.limit = 100000`
 	// returned the caller's whole worker row set in one response.
 	reqPage := req.Msg.GetPage()
 	page, err := s.store.Workers().ListByUserID(ctx, store.ListWorkersByUserIDParams{
 		RegisteredBy: user.ID,
-		PageParams:   AdminPageParams(reqPage.GetCursor(), int64(reqPage.GetLimit())),
+		PageParams:   NormalizePageParams(reqPage.GetCursor(), int64(reqPage.GetLimit())),
 	})
 	if err != nil {
 		// A malformed or stale opaque cursor is bad client input, not a server
@@ -391,9 +391,9 @@ func (s *WorkerManagementService) DeregisterWorker(
 }
 
 // workerToProto converts a store.Worker into the wire-side Worker
-// message. Workers are owned by a single user, and every
-// Workers().Get* / ListByUserID call upstream is already filtered by
-// the caller's user_id, so the owner is implied by the query and
+// message. A single user owns each worker, and every
+// Workers().Get* / ListByUserID call upstream already filters on
+// the caller's user_id, so the query implies the owner and
 // needs no per-worker round-trip.
 func (s *WorkerManagementService) workerToProto(b *store.Worker) *leapmuxv1.Worker {
 	lastSeen := ""

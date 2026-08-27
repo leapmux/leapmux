@@ -31,9 +31,10 @@ const resetPasswordPath = "/reset-password?token="
 // Renderer{} is valid (empty base URL); tests that don't inspect URLs in
 // the rendered output use it directly.
 type Renderer struct {
-	// BaseURL returns the absolute base URL the hub exposes. Used in two
-	// places: the absolute /verify-email link in the verification email
-	// body, and the auto-message footer in every email's body.
+	// BaseURL returns the absolute base URL the hub exposes. The renderer
+	// uses it in two places: the absolute /verify-email link in the
+	// verification email body, and the auto-message footer in every email's
+	// body.
 	BaseURL func() string
 }
 
@@ -180,6 +181,66 @@ func (r Renderer) PasswordResetEmail(to, token string, ttl time.Duration) Messag
 	return Message{
 		To:      to,
 		Subject: "[LeapMux] Reset your password",
+		Body:    body,
+	}
+}
+
+// CLICredentialIssuedEmail tells the account owner that a `leapmux control
+// auth login` minted a credential on their account.
+//
+// It is the only signal that does not require the user to open Preferences
+// and look, which is what makes it worth sending: a credential minted from a
+// replayed browser session is otherwise silent until somebody uses it. The message
+// specifies the device the CLI reported and says what to do about it.
+//
+// adminScope changes the body because the two credentials are not the same
+// thing: one acts as the user, the other administers the hub.
+//
+// byAdministrator changes it for a more important reason. TWO surfaces mint
+// this credential: a browser consent the recipient performed, and an
+// administrator's `api-token issue` for somebody else's account. "If this was
+// you, nothing more is needed" is correct for the first surface and misleading
+// for the second -- the recipient did nothing, the device name is
+// administrator-chosen, and the sentence invites them to conclude they
+// authorized it. The notice exists because this is the surface a stolen
+// administrator cookie reaches, so it must not read as a receipt.
+func (r Renderer) CLICredentialIssuedEmail(to, deviceName string, adminScope, byAdministrator bool) Message {
+	if deviceName == "" {
+		deviceName = "an unnamed device"
+	}
+	scopeLine := "It can do anything you can do in LeapMux.\n"
+	if adminScope {
+		scopeLine = "It was also granted HUB ADMINISTRATION: it can manage every user, worker, and setting.\n"
+	}
+	opening := "A command-line credential was issued for your LeapMux account.\n"
+	action := "If this was you, nothing more is needed. If it was not, sign in and\n" +
+		"revoke it under Preferences, Account, Command-line credentials:\n"
+	subject := "[LeapMux] A command-line credential was issued"
+	if byAdministrator {
+		opening = "An ADMINISTRATOR issued a command-line credential for your LeapMux\n" +
+			"account. You did not authorize this yourself.\n"
+		action = "If you did not expect it, revoke it and ask your administrator. Sign in\n" +
+			"and open Preferences, Account, Command-line credentials:\n"
+		subject = "[LeapMux] An administrator issued a command-line credential for you"
+	}
+	if adminScope {
+		subject = "[LeapMux] An ADMIN command-line credential was issued"
+		if byAdministrator {
+			subject = "[LeapMux] An administrator issued an ADMIN command-line credential for you"
+		}
+	}
+	body := fmt.Sprintf(
+		"%s\n    Device: %s\n\n%s\n%s\n    %s\n\n%s",
+		opening,
+		deviceName,
+		scopeLine,
+		action,
+		r.hubURL(),
+		r.footer(),
+	)
+	return Message{
+		To:      to,
+		Subject: subject,
 		Body:    body,
 	}
 }

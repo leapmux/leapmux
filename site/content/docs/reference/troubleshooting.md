@@ -7,7 +7,7 @@ weight: 2
 
 This chapter is a problem-to-fix reference. Each entry gives the **symptom** you see, the **likely cause**, and the **fix** with the real flags and settings. Entries are grouped by area. Use your browser's find (Ctrl/Cmd+F) to jump to a symptom.
 
-> **Tip:** Most "nothing works" problems trace back to one of three things: the Worker isn't online, you're bound to the wrong listen address, or first-run setup wasn't completed. Start there.
+> **Tip:** Most "nothing works" problems trace back to one of three things: the Worker isn't online, you're bound to the wrong listen address, or nobody completed first-run setup. Start there.
 
 ## Workers won't connect or stay offline
 
@@ -47,7 +47,7 @@ Mint a brand-new key from the **Register worker** dialog and run the Worker with
 The Worker prints an error and exits. The error says that the Worker is already registered, and it tells you to remove `--registration-key` or to wipe the local state.
 
 **Cause**
-This Worker already has saved credentials in `state.json`, and you passed `--registration-key` again. This guard exists so you don't burn a fresh key on a machine that's already configured.
+This Worker already has saved credentials in `state.json`, and you passed `--registration-key` again. This guard exists so you do not waste a fresh key on a machine that's already configured.
 
 **Fix**
 Just run `leapmux worker --hub <url>` with **no** `--registration-key` — it reconnects with its saved credentials. If you genuinely want a clean re-registration, deregister the Worker first (sidebar **Workers** row > **Deregister...**, or `leapmux control admin worker deregister --id <id>`), delete the Worker's `state.json` from its data dir, then register again with a new key.
@@ -87,7 +87,7 @@ LeapMux remembers each Worker's public key on first connection (trust-on-first-u
 ### The browser shows the "Worker public key changed" dialog
 
 **Symptom**
-A dialog titled **"Worker public key changed"** appears, stating the public key for the Worker has changed since the last connection, and showing an **Expected:** and **Actual:** 4-word fingerprint. The agent/terminal won't open until you choose.
+A dialog titled **"Worker public key changed"** appears, stating that the Worker's public key differs from the one at the last connection, and showing an **Expected:** and **Actual:** 4-word fingerprint. The agent/terminal won't open until you choose.
 
 **Cause**
 The Worker's remembered key no longer matches the key the Worker is now presenting. Legitimate causes: the Worker's `state.json` was deleted/recreated (which regenerates its keypair), the data dir moved, or you reinstalled. The malicious cause this protects against: someone substituted a different Worker.
@@ -119,7 +119,7 @@ leapmux control worker pins list                       # see all pinned workers
 leapmux control worker pins remove --worker-id <id>    # clear one pin
 ```
 
-For a Worker's cross-worker pins (runs entirely against local files — no Worker process needs to be running):
+For a Worker's cross-worker pins (runs entirely against local files — no Worker process needs to run):
 
 ```bash
 leapmux worker cross-worker-pins list                              # see all pins (JSON)
@@ -251,9 +251,11 @@ Choosing **Passkey** on the login or signup form does nothing useful, the browse
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Browser never opens a passkey prompt | The page origin does not match the Hub's relying-party ID | Set `public_url` to the exact origin users open in the browser (`leapmux control admin settings set public_url https://hub.example.com`). Localhost and `127.0.0.1` are different RPIDs. |
+| The **Passkey** option is still on the login page but **disabled**, and its reason identifies an insecure page; **Add passkey** carries the same reason | The page is plain HTTP away from `localhost`, so the browser exposes no WebAuthn API at all | Serve the Hub over HTTPS, or open it at a `localhost` address. This is the browser's rule, not the Hub's: no value of `public_url` changes it. A Hub published at a plain-HTTP LAN address hits exactly this, and the ceremony used to fail with the browser's own "WebAuthn is not supported in this browser". |
+| The login page offers **no Passkey option at all**, and **Add passkey** is disabled with a reason that identifies the address | The page origin is not one the Hub serves, so no ceremony can run there. The forms drop the option rather than disabling it, because this refusal is the same for every visitor | Set `public_url` to the exact origin users open in the browser (`leapmux control admin settings set public_url https://hub.example.com`), or open the Hub at the address it already publishes. Localhost and `127.0.0.1` are different RPIDs, and so are two ports of one host. The Hub reports this per request, so the affordances state the reason instead of failing after the click. A change made in **Preferences → Administration** reaches the affordance at once; you need no page reload. |
+| The **Passkey** option is disabled and its reason identifies the browser | This browser has no WebAuthn support at all, whatever the page is served over | Use a browser that supports passkeys. This is the browser's rule too, so no Hub setting changes it. The option stays visible and disabled, exactly as the insecure-page case does. |
 | "origin header is required" / ceremony fails immediately | The browser request omitted `Origin` | Use a normal browser navigation to the Hub UI; do not strip `Origin` in a reverse proxy for `/leapmux.v1.*` RPCs. |
-| Passkey-only account cannot add another passkey | Step-up reauth proof was already consumed | Complete passkey reauth again, then finish registration in the same flow. Do not reuse an old proof. |
+| A passkey-only account cannot verify its identity for any account change | The page cannot run a passkey ceremony at all | The **Verify your identity** form states which reason applies and what to do. Fix that one: serve the Hub over HTTPS, or set `public_url` as in the rows above. An account with a passkey and no password has no other way to verify: elevation does not fall back to a linked provider. See [Session elevation](/docs/operating/security/#session-elevation). |
 | Passkey login works but app access is blocked | SMTP is configured and the email is still unverified | Complete `/verify-email` (or use **Resend code**). Passkey login does not skip email verification. |
 | After password reset, passkey login fails | Expected: reset clears all passkeys | Sign in with the new password, then add passkeys again under **Profile → Passkeys**. |
 
@@ -280,7 +282,7 @@ OAuth buttons don't appear on the login page, or clicking one ends in an error. 
 | Symptom | Cause | Fix |
 |---|---|---|
 | No OAuth buttons at all | No enabled OAuth provider configured | Add one with `leapmux control admin oauth-provider add` (see [Authentication Providers](/docs/operating/authentication-providers/)). |
-| The error says the provider returned no email address | The provider config is missing the email scope | Ensure the `email`/`user:email` scope is granted; reconfigure the provider's `--scopes`. |
+| The error says the provider returned no email address | The provider config does not have the email scope | Grant the `email`/`user:email` scope; reconfigure the provider's `--scopes`. |
 | Stuck on "Complete Sign Up" then rejected | New OAuth user but sign-up is disabled | `leapmux control admin settings set signup_enabled true`, or link the OAuth identity to an existing account by signing in and verifying the matching email. |
 | The **Complete Sign Up** page says the signup link is invalid or expired | The pending OAuth signup expired or the `?token=` link was reused | Start the OAuth sign-in over from the login page (see note below). |
 | OAuth user logs in but can't unlink | It's their only login method | Set a password first in the **Profile** dialog, then unlink. |
@@ -307,13 +309,13 @@ Install the agent's own CLI on the **Worker** machine (not where the browser run
 ### The agent fails to start
 
 **Symptom**
-The chat pane shows a centered error. Its title names the provider that failed to start, and the pane carries an error message from the Worker.
+The chat pane shows a centered error. Its title identifies the provider that failed to start, and the pane carries an error message from the Worker.
 
 **Cause**
 The agent subprocess couldn't be launched or didn't complete its startup handshake. Common reasons: the CLI binary isn't actually runnable on the Worker (wrong version, broken install, missing auth), the working directory is invalid, or startup exceeded the timeout (`--agent-startup-timeout`, default **5m**).
 
 **Fix**
-- Read the error text shown in the pane — it comes straight from the Worker and usually names the cause.
+- Read the error text shown in the pane — it comes straight from the Worker and usually identifies the cause.
 - On the Worker, run the agent's CLI directly (e.g. `claude --version`) to confirm it works and is authenticated.
 - If startup is legitimately slow, raise the timeout: `leapmux worker --agent-startup-timeout 10m` (or the equivalent key in config). This flag exists on the Worker and on `hub`/`solo`/`dev` modes. See [Configuration](/docs/operating/configuration/).
 - Reopen the agent once the underlying CLI issue is fixed.

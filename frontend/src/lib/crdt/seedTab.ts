@@ -1,11 +1,12 @@
 import type { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { first } from '~/lib/lexorank'
-import { ctxFromBridge, getCRDTBridge, newBatch, setTabPosition, setTabTileId, setTabWorkerId } from './index'
+import { ctxFromBridge, getCRDTBridge } from './bridge'
+import { newBatch, setTabPosition, setTabTileId, setTabWorkerId } from './ops'
 
 /**
  * Result of `seedTabIntoNewWorkspace`. `rootNodeId` is the new
  * workspace's seed-root LEAF the seed batch placed the tab under;
- * it is retained for callers that need to know where the seed landed.
+ * the result keeps it for callers that need to know where the seed landed.
  * The projection now supplies both fields to every consumer, so
  * `NewWorkspaceDialog` — the only production caller — discards the
  * result; the agent metadata it holds from the OpenAgent response is
@@ -39,8 +40,8 @@ export interface SeedTabResult {
  * `useUserEvents` when the hub's `WorkspaceCreated` broadcast lands,
  * then enqueues the seed batch via the bridge. If the workspace is
  * already in the speculative state when called (the event fired
- * before the caller reached us), it proceeds immediately. The
- * `timeoutMs` cap bounds the worst-case wait when the outbox drain
+ * before the caller reached this function), it proceeds immediately.
+ * The `timeoutMs` cap limits the worst-case wait when the outbox drain
  * is unusually slow.
  *
  * Returns `{ rootNodeId, position }` when the seed batch was enqueued;
@@ -110,9 +111,9 @@ function awaitWorkspaceRoot(
       if (detail.rootNodeId)
         finish(detail.rootNodeId)
     }
-    // Register the listener BEFORE reading speculative state so we
-    // can't miss an event that fires between the two — eliminates the
-    // need for the prior "late re-check" branch.
+    // Register the listener BEFORE reading speculative state so this
+    // function cannot miss an event that fires between the two — it
+    // eliminates the need for the prior "late re-check" branch.
     window.addEventListener('leapmux:workspace-created', handler)
     timer = setTimeout(finish, timeoutMs, null)
     const current = bridge.speculativeState()?.workspaces[workspaceId]?.rootNodeId

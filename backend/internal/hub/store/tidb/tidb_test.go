@@ -52,10 +52,11 @@ func TestTiDBStore(t *testing.T) {
 	_, err = rootDB.ExecContext(ctx, "SET GLOBAL tidb_enable_check_constraint = ON")
 	require.NoError(t, err)
 
-	// Assert it actually took. The variable is silently accepted on versions
-	// that do not support it, so without this the storetest suite would run
-	// green against a backend enforcing none of the schema's CHECK constraints
-	// -- which is exactly the state this whole block exists to leave behind.
+	// Assert that it took effect. TiDB silently accepts the variable on
+	// versions that do not support it, so without this the storetest suite
+	// would pass against a backend that enforces none of the schema's CHECK
+	// constraints -- which is exactly the state this whole block exists to
+	// leave behind.
 	// A blank users.id, a non-positive op_count, and the singleton-row guards
 	// all rest on it.
 	var checkEnabled string
@@ -74,6 +75,7 @@ func TestTiDBStore(t *testing.T) {
 	require.NoError(t, err)
 
 	suite := &storetest.Suite{
+		ConcurrentWriteTransactions: true,
 		NewStore: func(t *testing.T) store.TestableStore {
 			t.Helper()
 			// Re-migrate first in case a migrator test rolled back the schema.

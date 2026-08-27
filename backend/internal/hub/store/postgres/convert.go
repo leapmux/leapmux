@@ -23,6 +23,18 @@ func ptrToText(s *string) pgtype.Text {
 	return pgtype.Text{}
 }
 
+// textNonEmpty maps an OPTIONAL string column: empty means "not set", which is
+// SQL NULL rather than the empty string. It is the pgtype twin of
+// sqlutil.NullNonEmpty, and it is ONE call for the same reason that one is --
+// the sqlite and mysql dialects write sqlutil.NullNonEmpty(x), so this dialect
+// writes textNonEmpty(x) and not a pair of nested conversions.
+func textNonEmpty(v string) pgtype.Text {
+	if v == "" {
+		return pgtype.Text{}
+	}
+	return pgtype.Text{String: v, Valid: true}
+}
+
 // decodeCursorParams decodes the composite list cursor into the two nullable sqlc
 // parameters the keyset queries bind: the cursor timestamp and the id
 // tiebreaker. An empty cursor (first page) returns the zero values so the
@@ -55,7 +67,7 @@ func decodeCursorParams(cursor string) (pgtime.NullTime, pgtype.Text, error) {
 // error short-circuit + store.FetchLimit (with the int32 cast the Postgres
 // LIMIT column requires) here means a change to the cursor decode, the clamp
 // rule, or the probe-row accounting edits ONE site per dialect instead of
-// being copy-pasted across every list builder.
+// a copy in every list builder.
 func withCursor[T any](cursor string, limit int64, fill func(cursorTime pgtime.NullTime, cursorID pgtype.Text, fetchLimit int32) T) (T, error) {
 	cursorTime, cursorID, err := decodeCursorParams(cursor)
 	if err != nil {
@@ -159,6 +171,12 @@ func listUserSessionsParams(userID, cursor string, limit int64, now time.Time) (
 func listAllAPITokensParams(clientType, cursor string, limit int64) (gendb.ListAllAPITokensParams, error) {
 	return withCursor(cursor, limit, func(ct pgtime.NullTime, cid pgtype.Text, fl int32) gendb.ListAllAPITokensParams {
 		return gendb.ListAllAPITokensParams{ClientType: clientType, CursorTime: ct, CursorID: cid, Limit: fl}
+	})
+}
+
+func listAPITokensByUserParams(userID, clientType, cursor string, limit int64) (gendb.ListAPITokensByUserParams, error) {
+	return withCursor(cursor, limit, func(ct pgtime.NullTime, cid pgtype.Text, fl int32) gendb.ListAPITokensByUserParams {
+		return gendb.ListAPITokensByUserParams{UserID: userID, ClientType: clientType, CursorTime: ct, CursorID: cid, Limit: fl}
 	})
 }
 

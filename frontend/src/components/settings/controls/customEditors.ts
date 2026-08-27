@@ -1,5 +1,10 @@
 import type { CustomEditorComponent, CustomEditorId } from '../types'
-import { ProfileSettings } from '../ProfileSettings'
+import { AccountCLITokens } from '../account/AccountCLITokens'
+import { AccountEmail } from '../account/AccountEmail'
+import { AccountLinkedProviders } from '../account/AccountLinkedProviders'
+import { AccountPasskeys } from '../account/AccountPasskeys'
+import { AccountPassword } from '../account/AccountPassword'
+import { AccountProfile } from '../account/AccountProfile'
 import { KeybindingsControl } from './KeybindingsControl'
 import { KeyPinsControl } from './KeyPinsControl'
 import { SyntaxThemeControl } from './SyntaxThemeControl'
@@ -13,12 +18,31 @@ import { ThemeControl } from './ThemeControl'
  */
 export const CUSTOM_EDITORS: Record<CustomEditorId, CustomEditorComponent> = {
   keybindings: KeybindingsControl,
-  /**
-   * The account rows: the existing ProfileSettings sections (username,
-   * display name, email, password, linked accounts), unchanged. Hidden in
-   * solo mode by its registry entry's `hidden`.
+  /*
+   * The ACCOUNT editors, one per row.
+   *
+   * They were one editor holding every account concern, with its own <h3>
+   * headings inside a row whose label said something else — three label
+   * styles on one panel, and "Command-line credentials" printed twice in two
+   * of them. Each concern is now a row of its own, so the panel has ONE
+   * vocabulary: the row supplies the label, the help and the separator, and
+   * the editor supplies the control.
+   *
+   * Every one of them is hidden in solo mode by its registry entry's
+   * `hidden`.
    */
-  account: ProfileSettings,
+  accountProfile: AccountProfile,
+  accountEmail: AccountEmail,
+  accountPassword: AccountPassword,
+  accountPasskeys: AccountPasskeys,
+  accountLinkedProviders: AccountLinkedProviders,
+  /**
+   * The account's command-line credentials, with self-service revocation.
+   * It is the panel the credential-issued notice email links to, and the one
+   * account row that needs NO elevated session: listing carries metadata only,
+   * and revoking can only reduce access.
+   */
+  accountCliTokens: AccountCLITokens,
   keyPins: KeyPinsControl,
   /**
    * The palette drop-down and the light/dark tri-switch, as one control.

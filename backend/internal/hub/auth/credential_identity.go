@@ -8,7 +8,7 @@ import "fmt"
 type CredentialIdentity struct {
 	kind credentialKind
 	id   string
-	// workerID is the worker that MINTED a delegation token. It bounds where the
+	// workerID is the worker that MINTED a delegation token. It limits where the
 	// token may be used (see ChannelService.verifyDelegationWorkerScope); empty
 	// for every other kind.
 	workerID string
@@ -40,7 +40,7 @@ func APICredential(tokenID string) CredentialIdentity {
 
 // DelegationCredential identifies a delegation_tokens row minted by workerID.
 //
-// The minting worker is the credential's ONLY bound, and it is part of the
+// The minting worker is the credential's ONLY limit, and it is part of the
 // credential because it answers a question user-scoping cannot: WHICH MACHINE
 // may this bearer be aimed at. A worker mints a token carrying the identity of
 // the user its tab was spawned for; without the minter recorded here, a leaked
@@ -53,7 +53,7 @@ func APICredential(tokenID string) CredentialIdentity {
 // mean a code path dropped it. Rejecting it here fails at the bug. WorkerScopeID's
 // fail-closed contract below stays as defence in depth for a credential built some
 // other way -- but a constructor that validates one of its two required fields
-// leaves the security-relevant one to be caught as a runtime denial that reads
+// leaves the security-relevant one to appear as a runtime denial that reads
 // exactly like a genuine cross-tenant refusal.
 func DelegationCredential(tokenID, workerID string) CredentialIdentity {
 	if tokenID == "" || workerID == "" {
@@ -87,6 +87,42 @@ func (c CredentialIdentity) SessionID() string {
 	return ""
 }
 
+// APITokenID returns the api_tokens row ID, or an empty string for other
+// kinds -- a DELEGATION bearer included, which is the point of not reading
+// Bearer() here. Both bearer kinds share that accessor, and the two callers of
+// this one are the step-up window writer (api_auth_elevate.go) and the
+// "current" mark on the CLI-credential listing (my_api_tokens_service.go): a
+// worker mints a delegation token for an agent that reads untrusted
+// input, so it must never carry a window and must never mark a row as the
+// caller's own.
+//
+// ElevatableRow below answers the same question for both elevatable kinds at
+// once, and every rule that must treat a session and a command-line
+// credential alike reads that instead.
+func (c CredentialIdentity) APITokenID() string {
+	if c.kind == credentialAPI {
+		return c.id
+	}
+	return ""
+}
+
+// ElevatableRow returns the row a step-up window may be stamped on: a session
+// or a command-line credential, whichever this identity specifies.
+//
+// ONE answer for the three places that ask -- the admission, the slide, and
+// the grant -- so a credential kind cannot be elevatable to one of them and
+// not to another. The zero value (solo) and a delegation bearer report false.
+func (c CredentialIdentity) ElevatableRow() (sessionID, apiTokenID string, ok bool) {
+	switch c.kind {
+	case credentialSession:
+		return c.id, "", true
+	case credentialAPI:
+		return "", c.id, true
+	default:
+		return "", "", false
+	}
+}
+
 // BearerRef identifies a bearer token row (api_tokens or delegation_tokens) by
 // its table kind and primary key. It is the canonical reverse-index key shared
 // by the auth revocation ledger and the channel manager's bearer index, so the
@@ -103,7 +139,7 @@ func NewBearerRef(kind BearerKind, tokenID string) BearerRef {
 	return BearerRef{kind: kind, tokenID: tokenID}
 }
 
-// IsValid reports whether this reference names a well-formed bearer row: a valid
+// IsValid reports whether this reference identifies a well-formed bearer row: a valid
 // table kind and a non-empty token id. The zero BearerRef is invalid, so bearer
 // lifecycle methods reject it the same way they rejected an empty token id before
 // the key was made a single typed value.
@@ -112,8 +148,8 @@ func (r BearerRef) IsValid() bool {
 }
 
 // Kind returns the bearer table kind this reference points at. Read-only:
-// construction still goes only through NewBearerRef / CredentialIdentity, so the
-// "both sides key a bearer identically" guarantee is preserved; the accessors
+// construction still goes only through NewBearerRef / CredentialIdentity, so this
+// type preserves the "both sides key a bearer identically" guarantee; the accessors
 // exist for observability (logging, tests), not to re-derive the pair.
 func (r BearerRef) Kind() BearerKind { return r.kind }
 
@@ -154,14 +190,14 @@ func (c CredentialIdentity) Matches(other CredentialIdentity) bool {
 	return c == other
 }
 
-// MatchesSession reports whether this identity names sessionID.
+// MatchesSession reports whether this identity identifies sessionID.
 func (c CredentialIdentity) MatchesSession(sessionID string) bool {
 	return sessionID != "" && c.kind == credentialSession && c.id == sessionID
 }
 
 // PrincipalKey returns a stable CRDT actor key for this credential. Both
 // bearer kinds share one key format sourced from Bearer(), so a new bearer
-// kind needs no new arm here.
+// kind needs no new branch here.
 func (c CredentialIdentity) PrincipalKey() string {
 	if c.kind == credentialSession {
 		return "session:" + c.id

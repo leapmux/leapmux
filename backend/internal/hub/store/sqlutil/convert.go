@@ -41,8 +41,8 @@ func RequireTime(value time.Time, valid bool, column string) (time.Time, error) 
 // NullUserID maps a user id to its nullable-TEXT representation: a zero
 // (never-minted) id becomes SQL NULL, and only a minted one becomes a value.
 //
-// It exists so the "is this id set?" question is asked ONCE, through
-// userid.UserID's own IsZero, instead of being re-derived per call site as
+// It exists so one place asks the "is this id set?" question, through
+// userid.UserID's own IsZero, instead of each call site re-deriving it as
 // `u.String() != ""` -- the raw emptiness comparison the type was introduced to
 // remove, and the one that would silently stop meaning "was this ever minted"
 // if UserID's internal representation ever changed.
@@ -51,4 +51,14 @@ func NullUserID(u userid.UserID) sql.NullString {
 		return sql.NullString{}
 	}
 	return sql.NullString{String: u.String(), Valid: true}
+}
+
+// NullNonEmpty maps an OPTIONAL string column: empty means "not set", which
+// is SQL NULL rather than the empty string. A column that distinguishes the
+// two would need a different helper; none here does.
+func NullNonEmpty(v string) sql.NullString {
+	if v == "" {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: v, Valid: true}
 }

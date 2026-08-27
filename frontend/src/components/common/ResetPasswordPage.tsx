@@ -6,6 +6,7 @@ import { CaptchaSection } from '~/components/common/CaptchaSection'
 import { Spinner } from '~/components/common/Spinner'
 import { createCaptchaForm } from '~/lib/captchaForm'
 import { formatErrorMessage } from '~/lib/errors'
+import { stringParam } from '~/lib/searchParam'
 import { errorText, pageCard } from '~/styles/shared.css'
 import * as styles from './LoginPage.css'
 import { passwordCanSubmit, PasswordFields } from './PasswordFields'
@@ -19,7 +20,7 @@ export const ResetPasswordPage: Component = () => {
   const [error, setError] = createSignal<string | null>(null)
   const captcha = createCaptchaForm()
 
-  const token = () => typeof searchParams.token === 'string' ? searchParams.token : ''
+  const token = () => stringParam(searchParams.token) ?? ''
 
   const pwProps = { password, confirmPassword }
 

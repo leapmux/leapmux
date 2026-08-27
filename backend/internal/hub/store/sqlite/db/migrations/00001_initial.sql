@@ -5,9 +5,9 @@
 -- owner-keyed row hangs off. store.CreateUserParams.Validate refuses a blank id
 -- at the Go API, but that closes only the store as a route to the shape; raw SQL
 -- (an operator repair script, a restored file, a seed) could still land one, and
--- from there every REFERENCES users(id) below would happily point at it. The
--- CHECK is what makes the blank-owner family unrepresentable rather than merely
--- unreachable through one API.
+-- from there every REFERENCES users(id) below would point at it without
+-- complaint. The CHECK is what makes the blank-owner family unrepresentable
+-- rather than merely unreachable through one API.
 --
 -- NOTE: enforced on SQLite, PostgreSQL, CockroachDB and YugabyteDB. TiDB parses
 -- and IGNORES CHECK constraints unless tidb_enable_check_constraint is ON --
@@ -83,8 +83,25 @@ CREATE TABLE user_sessions (
     created_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     last_active_at  DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     auth_generation BIGINT NOT NULL DEFAULT 0,
+    -- Sudo-mode elevation, written only by the elevate RPCs and the OAuth
+    -- re-authentication leg. elevation_proven_at is the instant the step-up factor
+    -- was proven and never moves; elevation_expires_at is the sliding deadline. A
+    -- NULL in either column means the session was never elevated.
+    --
+    -- Two columns, not one. A single sliding column cannot carry an absolute
+    -- cap, so a user who acts every two hours would hold the privilege for
+    -- ever. elevation_proven_at anchors that cap, and the slide statement clamps
+    -- elevation_expires_at to elevation_proven_at + the maximum total window.
+    elevation_proven_at     DATETIME,
+    elevation_expires_at  DATETIME,
     user_agent      TEXT NOT NULL DEFAULT '',
-    ip_address      TEXT NOT NULL DEFAULT ''
+    ip_address      TEXT NOT NULL DEFAULT '',
+    -- Both or neither, enforced HERE rather than re-checked at every read.
+    -- Half a pair is not a state the rest of the hub should have to consider:
+    -- a deadline with no anchor is one the slide statement cannot clamp,
+    -- because it has nothing to measure the absolute cap from. Same shape as
+    -- the (seq, published_at) pair in revocation_events below.
+    CHECK ((elevation_proven_at IS NULL) = (elevation_expires_at IS NULL))
 );
 -- Serves the plain user_id lookups (prefix) AND the per-user keyset listing
 -- ListUserSessionsByUserID (user_id =, ORDER BY last_active_at DESC, id DESC),
@@ -167,7 +184,7 @@ CREATE INDEX idx_worker_notifications_worker_status ON worker_notifications(work
 -- the WorkerConnectorService.Register RPC; the hub atomically consumes
 -- the row and creates a workers row in one transaction.
 --
--- Soft-delete is implemented by setting expires_at to a past instant.
+-- The store implements soft-delete by setting expires_at to a past instant.
 -- The cleanup loop hard-deletes rows whose expires_at is older than the
 -- retention cutoff.
 CREATE TABLE worker_registration_keys (
@@ -196,11 +213,11 @@ CREATE INDEX idx_workspace_sections_user_id ON workspace_sections(user_id);
 -- SECTION_TYPE_WORKSPACES_CUSTOM, which a user may hold any number of, so the
 -- uniqueness applies to every OTHER type only.
 --
--- Structural, not procedural: the defaults are written in the same transaction
--- as the user row and nothing backfills them, so a second signup path that
--- forgot to seed -- or a read path that seeded on the fly, which is what this
--- replaced -- used to produce a sidebar with two of every pane, indistinguishable
--- from one another.
+-- Structural, not procedural: CreateUser writes the defaults in the same
+-- transaction as the user row and nothing backfills them, so a second signup
+-- path that forgot to seed -- or a read path that seeded during the read, which
+-- is what this replaced -- used to produce a sidebar with two of every pane,
+-- indistinguishable from one another.
 CREATE UNIQUE INDEX idx_workspace_sections_user_default_type
     ON workspace_sections(user_id, section_type) WHERE section_type <> 1;
 
@@ -272,7 +289,7 @@ CREATE TABLE user_state (
     -- physical_ms/logical over batch_payload: written from the same struct in
     -- the same statement and rebuildable from the payload alone.
     --
-    -- It is the only safe upper bound on op-batch deletion. Bootstrap rebuilds
+    -- It is the only safe upper limit on op-batch deletion. Bootstrap rebuilds
     -- a user as state_payload + every batch ABOVE this watermark, so a batch at
     -- or below it is absorbed and a batch above it is the sole surviving copy
     -- of those ops. The cross-user retention sweep joins on it for that reason.
@@ -368,7 +385,7 @@ CREATE INDEX idx_lifecycle_outbox_pending ON lifecycle_outbox(user_id, id) WHERE
 -- based on durable sequence numbers rather than wall-clock timestamps.
 CREATE TABLE revocation_events (
     id         TEXT PRIMARY KEY,
-    kind       TEXT NOT NULL CHECK (kind IN ('session', 'api_token', 'api_token_rotation', 'delegation_token', 'user_tokens', 'user_info')),
+    kind       TEXT NOT NULL CHECK (kind IN ('session', 'session_revoked', 'api_token', 'api_token_rotation', 'delegation_token', 'user_tokens', 'user_info')),
     subject_id TEXT NOT NULL,
     user_id    TEXT NOT NULL,
     revoked_at DATETIME NOT NULL,
@@ -380,6 +397,7 @@ CREATE TABLE revocation_events (
 );
 CREATE INDEX idx_revocation_events_pending ON revocation_events(created_at, id) WHERE seq IS NULL;
 CREATE INDEX idx_revocation_events_published ON revocation_events(published_at, seq) WHERE seq IS NOT NULL;
+CREATE INDEX idx_revocation_events_session_revoked ON revocation_events(subject_id) WHERE kind = 'session_revoked';
 
 CREATE TABLE revocation_event_sequence (
     id       INTEGER PRIMARY KEY CHECK (id = 1),
@@ -420,7 +438,26 @@ CREATE TABLE api_tokens (
     last_rotated_at               DATETIME,
     expires_at                    DATETIME,
     refresh_expires_at            DATETIME,
-    revoked_at                    DATETIME
+    revoked_at                    DATETIME,
+    -- admin_scope is opt-in hub administration, chosen at consent time
+    -- (`leapmux control auth login --admin`) and refused unless the session
+    -- that consents is elevated. A CLI token without it authenticates as an
+    -- administrator but is refused on every Admin* procedure, so a stolen
+    -- credential file cannot administer the hub.
+    admin_scope                   BOOLEAN NOT NULL DEFAULT FALSE,
+    -- Elevation ("sudo mode") for a command-line credential, the same pair
+    -- user_sessions carries and enforced by the same rule. A CLI token proves
+    -- a factor through the browser step-up leg (/auth/cli/elevate), and every
+    -- restricted action slides elevation_expires_at forward, clamped to
+    -- elevation_proven_at + the maximum total window.
+    --
+    -- Without it a stolen credential file administered the hub outright: the
+    -- gate that protects the settings, the user surface and the mint admitted
+    -- any bearer, because a bearer had no row to stamp. It has one now, so
+    -- possession of the file is no longer sufficient on its own.
+    elevation_proven_at           DATETIME,
+    elevation_expires_at          DATETIME,
+    CHECK ((elevation_proven_at IS NULL) = (elevation_expires_at IS NULL))
 );
 -- user_id only: the client_type filters are the optional OR-form and never
 -- seek; the remaining job is the user_id seek for the ByUserIncludingRevoked
@@ -437,11 +474,18 @@ CREATE INDEX idx_api_tokens_created_at ON api_tokens(created_at DESC, id DESC) W
 -- idx_api_tokens_user plus a TEMP B-TREE sort. Mirrors
 -- idx_workers_registered_by_created.
 CREATE INDEX idx_api_tokens_user_created ON api_tokens(user_id, created_at DESC, id DESC) WHERE revoked_at IS NULL;
+-- Serves the DeleteExpiredAPITokensBefore sweep of live-but-dead rows: seek
+-- the tokens whose access expiry passed instead of scanning every live one.
+-- expires_at is the driving column because the sweep's refresh term is an OR
+-- with IS NULL, which no index can seek. Mirrors
+-- idx_delegation_tokens_expires_at, partial on revoked_at IS NULL to match
+-- the sweep's own filter.
+CREATE INDEX idx_api_tokens_expires_at ON api_tokens(expires_at) WHERE revoked_at IS NULL;
 
 -- Ephemeral, high-churn delegation tokens minted by workers when a
 -- spawned agent (or opt-in terminal) calls into the hub or a sibling
 -- worker on behalf of the spawning user. Scope is (user_id, worker_id):
--- the user the bearer acts as, bounded to the machines the MINTING worker
+-- the user the bearer acts as, restricted to the machines the MINTING worker
 -- may reach (see auth.DelegationWorkerScope). issued_for_tab_id is
 -- provenance only.
 --
@@ -490,7 +534,22 @@ CREATE TABLE device_authorizations (
     interval_seconds      INTEGER NOT NULL DEFAULT 5,
     created_at            DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     expires_at            DATETIME NOT NULL,
-    consumed_at           DATETIME
+    consumed_at           DATETIME,
+    -- The admin scope the user granted at activation. It binds HERE, at the
+    -- consent, and the exchange reads it back: taken from the exchange form
+    -- instead, any holder of a device code could upgrade the grant.
+    admin_scope           BOOLEAN NOT NULL DEFAULT FALSE,
+    -- The command-line credential this grant ELEVATES, when it elevates one
+    -- rather than minting one. NULL for a login: those two flows differ only
+    -- in what the approval does, so they share the row, the TTL, the poll
+    -- throttle, the expiry sweep and the activation page.
+    --
+    -- No foreign key, deliberately: the row outlives nothing here, and a
+    -- revoked or deleted credential must make the approval a no-op rather
+    -- than fail the insert. The approval re-reads api_tokens under the
+    -- approving user's own id, so a grant that specifies a row somebody else
+    -- owns elevates nothing.
+    elevate_token_id      TEXT
 );
 CREATE INDEX idx_device_authorizations_expires_at ON device_authorizations(expires_at);
 
@@ -503,7 +562,9 @@ CREATE TABLE cli_authorization_codes (
     device_name           TEXT NOT NULL DEFAULT '',
     created_at            DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     expires_at            DATETIME NOT NULL,
-    consumed_at           DATETIME
+    consumed_at           DATETIME,
+    -- See device_authorizations.admin_scope: the scope binds at consent.
+    admin_scope           BOOLEAN NOT NULL DEFAULT FALSE
 );
 CREATE INDEX idx_cli_authorization_codes_expires_at ON cli_authorization_codes(expires_at);
 
@@ -552,7 +613,18 @@ CREATE TABLE oauth_states (
     state           TEXT PRIMARY KEY,
     provider_id     TEXT NOT NULL REFERENCES oauth_providers(id),
     pkce_verifier   TEXT NOT NULL,
+    nonce_hash      TEXT NOT NULL DEFAULT '',
     redirect_uri    TEXT NOT NULL DEFAULT '',
+    -- 'login' starts a sign-in; 'reauth' proves the identity again for an
+    -- ALREADY signed-in session, to elevate it. The callback branches on
+    -- this: a reauth state must never create a session or link an identity.
+    -- The CHECK is the enforcement, not the DEFAULT. Go's zero value for the
+    -- column is "", never 'login', so an explicit insert never reaches the
+    -- DEFAULT, and the callback treats every value that is not 'reauth' as a
+    -- login -- which may create a session or link an identity.
+    purpose         TEXT NOT NULL DEFAULT 'login' CHECK (purpose IN ('login', 'reauth')),
+    -- The session the reauth leg elevates on success. Empty for 'login'.
+    session_id      TEXT NOT NULL DEFAULT '',
     expires_at      DATETIME NOT NULL,
     created_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
@@ -562,6 +634,7 @@ CREATE TABLE pending_oauth_signups (
     token            TEXT PRIMARY KEY,
     provider_id      TEXT NOT NULL REFERENCES oauth_providers(id),
     provider_subject TEXT NOT NULL,
+    nonce_hash       TEXT NOT NULL DEFAULT '',
     email            TEXT NOT NULL DEFAULT '',
     display_name     TEXT NOT NULL DEFAULT '',
     access_token     BLOB NOT NULL,
@@ -594,11 +667,11 @@ CREATE UNIQUE INDEX idx_passkey_credentials_credential_id ON passkey_credentials
 CREATE INDEX idx_passkey_credentials_user_id ON passkey_credentials(user_id);
 CREATE INDEX idx_passkey_credentials_key_version ON passkey_credentials(key_version);
 
--- Ephemeral WebAuthn ceremony state (signup, login, register, reauth)
+-- Ephemeral WebAuthn ceremony state (signup, login, register, elevation)
 CREATE TABLE webauthn_sessions (
     id           TEXT PRIMARY KEY,
     kind         TEXT NOT NULL CHECK (kind IN (
-        'signup', 'login', 'register', 'reauth', 'reauth_proof'
+        'signup', 'login', 'register', 'elevation'
     )),
     user_id      TEXT REFERENCES users(id) ON DELETE CASCADE,
     payload_json TEXT NOT NULL DEFAULT '{}', -- '{}' or encrypted signup draft (base64), AAD: 'webauthn_payload:' || id

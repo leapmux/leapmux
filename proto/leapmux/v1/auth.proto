@@ -60,15 +60,15 @@ message EmailVerificationStatus {
   // True when the hub requires this account to verify an email address
   // before it is fully active.
   bool verification_required = 1;
-  // True when the verification email was dispatched. Sign-up is
-  // fail-closed: when verification is required and mail cannot be sent,
-  // the RPC fails and no account remains. On resend paths, false means
-  // the send failed and the frontend should surface a "couldn't send,
-  // try again" message; the pending row was cleared, so an immediate
-  // retry is allowed.
+  // True when the hub sent the verification email. Sign-up is
+  // fail-closed: when verification is required and the hub cannot send
+  // mail, the RPC fails and no account remains. On resend paths, false
+  // means the send failed and the frontend should surface a "couldn't
+  // send, try again" message; the hub cleared the pending row, so the
+  // client may retry immediately.
   bool verification_email_sent = 2;
-  // Earliest time the client may request another verification email. Set
-  // only after a successful send.
+  // Earliest time the client may request another verification email. The
+  // hub sets it only after a successful send.
   google.protobuf.Timestamp next_resend_available_at = 3;
 }
 
@@ -95,6 +95,11 @@ message GetCurrentUserResponse {
   // to restart from. Carrying it here makes the cooldown derivable at
   // every render instead of surviving exactly one navigation.
   EmailVerificationStatus email_verification = 2;
+  // When the session's step-up elevation lapses; unset when the session is
+  // not elevated. A timestamp rather than a boolean, for the reason
+  // ElevateSessionResponse.elevation_expires_at gives: a boolean decided at
+  // bootstrap is wrong for the rest of the page's life.
+  google.protobuf.Timestamp elevation_expires_at = 3;
 }
 
 message SignUpRequest {
@@ -125,11 +130,42 @@ message User {
   repeated LinkedOAuthProvider oauth_providers = 8;
   bool password_set = 9;
   int32 passkey_count = 10;
+  // Whether the hub accepts a step-up from one of this account's linked
+  // providers.
+  //
+  // ACCOUNT-level, and here rather than on each link, because the rule reads
+  // the account: a provider may prove a step-up exactly when the account
+  // holds no password and no passkey, so the provider is its sign-in
+  // credential. Reported per link, one boolean became N copies a client had
+  // to agree with itself about, and a test already pinned a mixture the hub
+  // cannot emit.
+  //
+  // The hub decides it because the hub ENFORCES it, at both legs of the OAuth
+  // re-authentication flow. A client that spelled the same rule out was a
+  // second source of truth for an authorization decision, and the two drifted
+  // apart at the first change to either side.
+  bool may_elevate_through_a_provider = 11;
 }
 
 message LinkedOAuthProvider {
   string id = 1;
   string name = 2;
+  // Whether an administrator enables this provider.
+  //
+  // The hub still reports a DISABLED provider's link, and that is the
+  // point. The link survives an administrator who disables the provider,
+  // and the owner must still be able to see it and detach it -- this list
+  // is the only feed for the Linked Accounts section, so filtering a
+  // disabled row out of it left an account holding a login method the user
+  // could neither use nor remove, while UnlinkOAuthProvider's own
+  // last-login-method guard still counted it.
+  //
+  // A disabled link must NOT appear as a step-up option: both OAuth legs
+  // answer "provider disabled" with a 403, so offering it sends the
+  // browser out of the app to a bare refusal. The verification screen
+  // therefore requires BOTH this flag and
+  // User.may_elevate_through_a_provider.
+  bool enabled = 3;
 }
 
 message GetSystemInfoRequest {}
@@ -158,18 +194,18 @@ message GetSystemInfoResponse {
   bool oauth_enabled = 7; // true if at least one OAuth provider is configured and enabled
   bool setup_required = 8; // true when no users exist (first-time setup needed)
   string branch = 9; // Optional git ref (branch or tag) injected at build time; empty for detached HEAD
-  // URL the `leapmux worker --hub <url>` command should target. Populated
-  // when the hub has either an explicit public_url setting configured
-  // (e.g. behind a reverse proxy) or no TCP listener at all (desktop
-  // app's local-only mode, where the browser origin is `tauri://localhost`
-  // and the only viable URL is the unix-socket / named-pipe address).
-  // Empty otherwise — the caller should fall back to
-  // window.location.origin, which already reflects whatever proxy or
-  // hostname the user is connecting through.
+  // URL the `leapmux worker --hub <url>` command should target. The hub
+  // populates it in two cases: an explicit public_url setting exists (e.g.
+  // behind a reverse proxy), or the hub has no TCP listener at all
+  // (desktop app's local-only mode, where the browser origin is
+  // `tauri://localhost` and the only viable URL is the unix-socket /
+  // named-pipe address). Empty otherwise — the caller should fall back
+  // to window.location.origin, which already reflects whatever proxy or
+  // hostname the user connects through.
   string worker_hub_url = 10;
   // True when the hub has SMTP configured (the smtp setting's host
-  // non-empty). Frontend gating: when false, the "Send email" affordance on the
-  // worker registration dialog is hidden — calling
+  // non-empty). Frontend restriction: when false, the frontend hides the
+  // "Send email" affordance on the worker registration dialog — calling
   // EmailRegistrationInstructions on a hub without SMTP returns
   // FailedPrecondition, so showing the button would mislead users.
   bool email_enabled = 11;
@@ -187,11 +223,21 @@ message GetSystemInfoResponse {
   // empty for altcha. The frontend pairs it with captcha_provider to load
   // the right widget.
   string captcha_site_key = 15;
-  // True when passkey ceremonies can run on this hub: a keystore is
-  // configured and the hub has a usable browser origin (public_url or a
-  // TCP listener). Frontend gating: when false, the passkey sign-in and
-  // sign-up options are hidden — every Begin would answer
-  // FailedPrecondition, so showing them would mislead users.
+  // True when passkey ceremonies can run for THE BROWSER THAT ASKED: a
+  // keystore is configured, the hub has a usable browser origin (public_url
+  // or a TCP listener), and the request's Origin header identifies an
+  // origin the hub serves. A caller that sends no Origin header (a
+  // non-browser client) gets the hub-wide answer, because it has no browser
+  // ceremony to mislead.
+  //
+  // Frontend restriction: when false, the frontend hides the passkey
+  // sign-in and sign-up options and disables Add passkey with the reason —
+  // every Begin would answer FailedPrecondition, so offering them would
+  // mislead users.
+  //
+  // The origin half matters on its own. A hub published at one address and
+  // reached at another (a LAN IP behind the reverse proxy, a tunnel host)
+  // is configured for passkeys and still runs none for that page.
   bool passkey_enabled = 16;
 }
 

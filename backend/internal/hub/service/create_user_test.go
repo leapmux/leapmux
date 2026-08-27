@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -100,9 +101,9 @@ func TestCreateUser_SeedsTheDefaultSections(t *testing.T) {
 
 // failingSectionsStore fails every WorkspaceSections().Create, leaving every
 // other operation to the real store. It exists to fail INSIDE the transaction
-// but AFTER the user row is written, which is the only shape that exercises the
-// rollback: a duplicate username aborts at the first statement, so nothing has
-// been written for the transaction to undo.
+// but AFTER the user row exists, which is the only shape that exercises the
+// rollback: a duplicate username aborts at the first statement, so no write
+// remains for the transaction to undo.
 type failingSectionsStore struct {
 	store.Store
 }
@@ -218,7 +219,6 @@ func TestSetPendingEmailWithToken_RejectsAlreadyVerifiedEmail(t *testing.T) {
 
 	st := setupCreateUserTestDB(t)
 	ctx := context.Background()
-	sender := mail.NewStubSender()
 
 	// User A has verified email.
 	createSimpleUser(t, st, "user-a", "taken@example.com")
@@ -227,11 +227,11 @@ func TestSetPendingEmailWithToken_RejectsAlreadyVerifiedEmail(t *testing.T) {
 	userB := createSimpleUser(t, st, "user-b", "")
 
 	// User B tries to set pending_email to the already-verified address.
-	err := issuePendingEmailVerificationOrFail(ctx, st, sender, mail.Renderer{BaseURL: func() string { return "https://hub.example.test" }}, userB.ID, "taken@example.com")
+	_, err := mintPendingEmailVerification(ctx, st, userB.ID, "taken@example.com", time.Now())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "already in use")
 
-	// Verify user B's pending_email was NOT set.
+	// Verify that the mint did NOT set user B's pending_email.
 	updated, err := st.Users().GetByID(ctx, userB.ID)
 	require.NoError(t, err)
 	assert.Empty(t, updated.PendingEmail)
@@ -246,8 +246,11 @@ func TestSetPendingEmailWithToken_StoresPendingForUnclaimedEmail(t *testing.T) {
 
 	user := createSimpleUser(t, st, "user-a", "")
 
-	err := issuePendingEmailVerificationOrFail(ctx, st, sender, mail.Renderer{BaseURL: func() string { return "https://hub.example.test" }}, user.ID, "free@example.com")
+	code, err := mintPendingEmailVerification(ctx, st, user.ID, "free@example.com", time.Now())
 	require.NoError(t, err)
+	require.True(t, deliverPendingEmailVerification(ctx, st, sender,
+		mail.Renderer{BaseURL: func() string { return "https://hub.example.test" }},
+		user.ID, "free@example.com", code))
 
 	// The row stays pending until the user submits a code via UserService.VerifyEmail.
 	updated, err := st.Users().GetByID(ctx, user.ID)
@@ -287,7 +290,7 @@ func TestCreateUser_ClearsCompetingPendingEmails(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// User A's pending_email should be cleared.
+	// CreateUser should clear user A's pending_email.
 	updatedA, err := st.Users().GetByID(ctx, userA.ID)
 	require.NoError(t, err)
 	assert.Empty(t, updatedA.PendingEmail)
@@ -322,7 +325,7 @@ func TestSetEmailAndClearCompeting(t *testing.T) {
 	assert.Equal(t, "target@example.com", updatedB.Email)
 	assert.True(t, updatedB.EmailVerified)
 
-	// User A's pending_email should be cleared.
+	// SetEmailAndClearCompeting should clear user A's pending_email.
 	updatedA, err := st.Users().GetByID(ctx, userA.ID)
 	require.NoError(t, err)
 	assert.Empty(t, updatedA.PendingEmail)
@@ -350,6 +353,70 @@ func mustTime(t *testing.T) time.Time {
 	return time.Now().Add(24 * time.Hour).UTC()
 }
 
+// TestCreateUserInTx_MintsThePendingExpiryFromTheCallerSeam pins the deadline
+// against the caller's clock rather than the wall clock.
+//
+// Every instant a service mints comes from its seam (see clockSeam), and this
+// one did not. The resend cooldown is DERIVED from this expiry
+// (issuedAtFromExpiry), so a test that moved the seam moved the cooldown and
+// left the expiry it reads behind, and the two disagreed by exactly the
+// offset the test applied.
+func TestCreateUserInTx_MintsThePendingExpiryFromTheCallerSeam(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	st := setupCreateUserTestDB(t)
+	fixed := time.Date(2031, 3, 4, 5, 6, 7, 0, time.UTC)
+
+	user, code, err := createUserInTx(ctx, st, createUserTxParams{
+		username: "seamed", displayName: "Seamed",
+		pendingEmail: "seamed@example.com", passwordHash: "hash", passwordSet: true,
+		now: func() time.Time { return fixed },
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, code)
+	require.NotNil(t, user.PendingEmailExpiresAt)
+	assert.True(t, fixed.Add(pendingEmailExpiry).Equal(user.PendingEmailExpiresAt.UTC()),
+		"the deadline must come from the caller's clock, not the wall clock")
+
+	// And the derived cooldown lands on the same clock, which is the whole
+	// point of one seam: the two are read together on the /verify-email page.
+	assert.True(t, fixed.Equal(issuedAtFromExpiry(*user.PendingEmailExpiresAt, pendingEmailExpiry).UTC()))
+}
+
+// TestVerifyPendingEmailToken_ReadsTheCallerSeam pins the other half. The
+// expiry comparison and the attempt charge both read the instant the caller
+// passes, so a test expires a code by moving one value instead of waiting
+// half an hour.
+func TestVerifyPendingEmailToken_ReadsTheCallerSeam(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	st := setupCreateUserTestDB(t)
+	issuedAt := time.Now().UTC()
+
+	user, code, err := createUserInTx(ctx, st, createUserTxParams{
+		username: "expiring", displayName: "Expiring",
+		pendingEmail: "expiring@example.com", passwordHash: "hash", passwordSet: true,
+		now: func() time.Time { return issuedAt },
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, code)
+
+	// PAST the deadline by the caller's clock, and inside it by the wall
+	// clock. Only the seam separates the two answers.
+	_, err = verifyPendingEmailToken(ctx, st, user.ID, code, issuedAt.Add(pendingEmailExpiry+time.Minute))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err),
+		"an expired code and a wrong code answer alike, so neither is an oracle")
+
+	// The same code, inside the window, still verifies.
+	promoted, err := verifyPendingEmailToken(ctx, st, user.ID, code, issuedAt.Add(time.Minute))
+	require.NoError(t, err)
+	assert.Equal(t, "expiring@example.com", promoted.Email)
+	assert.True(t, promoted.EmailVerified)
+}
+
 // Every account-creation invariant lives in createUserInTx, so every
 // sign-up flavor gets it. These pin the two that used to sit in CreateUser
 // alone, which the OAuth and passkey flavors called past.
@@ -357,18 +424,25 @@ func TestCreateUserInTx_EnforcesTheAdminInvariants(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	// An admin is always email_verified in the database, whatever the
-	// caller passed: the stored flag is what keeps the auth interceptor's
-	// runtime IsAdmin exemption honest.
-	t.Run("an admin is always email_verified", func(t *testing.T) {
+	// An admin's email_verified is what the caller asked for, and NOT forced.
+	//
+	// The column records whether somebody confirmed the address, which is a
+	// fact about the address rather than a privilege of the account. Forcing
+	// it made an administrator's unconfirmed address a valid self-service
+	// password-reset target, because RequestPasswordReset reads the column
+	// and cannot take an admin exemption -- the question it asks IS "did
+	// anybody confirm this address". The login gate takes the exemption
+	// instead; see auth.EmailVerificationFacts.Satisfied.
+	t.Run("an admin's email_verified is not forced", func(t *testing.T) {
 		t.Parallel()
 		st := setupCreateUserTestDB(t)
 		user, code, err := createUserInTx(ctx, st, createUserTxParams{
-			username: "forced-admin", displayName: "Forced", isAdmin: true,
-			emailVerified: false, passwordHash: "hash", passwordSet: true,
+			username: "unforced-admin", displayName: "Unforced", isAdmin: true,
+			email: "admin@example.com", emailVerified: false,
+			passwordHash: "hash", passwordSet: true,
 		})
 		require.NoError(t, err)
-		assert.True(t, user.EmailVerified, "the caller's false must not survive")
+		assert.False(t, user.EmailVerified, "nobody confirmed this address, so the column says so")
 		assert.Empty(t, code, "no pending row, so no code")
 	})
 
@@ -386,8 +460,10 @@ func TestCreateUserInTx_EnforcesTheAdminInvariants(t *testing.T) {
 		})
 		require.NoError(t, err)
 		assert.Equal(t, "admin@example.com", user.Email)
-		assert.True(t, user.EmailVerified)
 		assert.Empty(t, user.PendingEmail, "there is nothing left to verify")
+		// The address moved, and nobody confirmed it: the column says so, and
+		// the login gate is what keeps the administrator signed in.
+		assert.False(t, user.EmailVerified)
 		// The returned code is what the caller keys its send on. An empty
 		// one means "no pending row was written", and the passkey first-user
 		// branch mailed a BLANK code -- and rolled the hub's only admin back
@@ -413,7 +489,7 @@ func TestCreateUserInTx_EnforcesTheAdminInvariants(t *testing.T) {
 	})
 
 	// The claim clears every other account's pending target for the same
-	// address, inside the same transaction. Without it the loser is pinned
+	// address, inside the same transaction. Without it the loser stays
 	// on /verify-email with a dead row for an address it can never take.
 	t.Run("claiming an address clears a competing pending row", func(t *testing.T) {
 		t.Parallel()

@@ -46,6 +46,20 @@ function renderPopover(opts: {
 // popover opens — and jsdom stubs the Popover API, so it never does. Role
 // queries therefore pass `hidden: true`; the roles themselves are the point of
 // the assertions.
+/**
+ * The reason a disabled control carries, read the way a screen reader gets it.
+ *
+ * <Tooltip> leaves an offscreen description in `aria-describedby` for as long
+ * as the control is disabled. It is NOT `title`: a reason long enough to be
+ * worth reading becomes the control's accessible name on `title`, which is why
+ * `title` on a DOM element is now a lint error.
+ */
+function reasonOf(el: Element): string {
+  const describedBy = el.getAttribute('aria-describedby')
+  expect(describedBy).toBeTruthy()
+  return document.getElementById(describedBy!)?.textContent ?? ''
+}
+
 describe('optionGroupPopover', () => {
   it('shows the resolved current option in the trigger view', () => {
     const { trigger } = renderPopover()
@@ -80,7 +94,7 @@ describe('optionGroupPopover', () => {
     expect(trigger).toHaveTextContent('(locked)')
     const item = screen.getByTestId('model-sonnet')
     expect(item).toBeDisabled()
-    expect(item).toHaveAttribute('title', 'This setting is controlled by the agent')
+    expect(reasonOf(item)).toBe('This setting is controlled by the agent')
     await fireEvent.click(item)
     expect(onChange).not.toHaveBeenCalled()
   })
@@ -94,7 +108,7 @@ describe('optionGroupPopover', () => {
     const { onChange } = renderPopover({ disabled: true })
     const item = screen.getByTestId('model-sonnet')
     expect(item).toBeDisabled()
-    expect(item).toHaveAttribute('title', 'This subagent doesn\'t accept messages.')
+    expect(reasonOf(item)).toBe('This subagent doesn\'t accept messages.')
     await fireEvent.click(item)
     expect(onChange).not.toHaveBeenCalled()
   })
@@ -162,7 +176,7 @@ describe('optionGroupPopover', () => {
     // A push can change the SET of options, not only their objects: the worker
     // inserts the CLI's resolved model at its canonical slot, and the live CLI
     // catalog replaces the static fallback wholesale shortly after an agent
-    // starts. An insert ABOVE the row the user is aiming at slides that row down
+    // starts. An insert ABOVE the row that the user aims at slides that row down
     // by its own height between the hit test and the click, and the option that
     // took its place is what gets applied -- a click on "Opus (1M context)"
     // launched Fable 5, the row directly above it.
@@ -249,7 +263,7 @@ describe('optionGroupPopover', () => {
 
   it('fills an empty list that opened before its catalog arrived', async () => {
     // The freeze holds a list STILL; it must not hold a list EMPTY. A group whose
-    // options have not landed yet has nothing to keep in place, and freezing on
+    // options did not land yet has nothing to keep in place, and freezing on
     // the empty list would leave the menu blank until the user closed it again.
     const [groups, setGroups] = createSignal([group({ options: [] })])
     render(() => (
@@ -273,7 +287,7 @@ describe('optionGroupPopover', () => {
 
   it('keeps the trigger label live while the list is frozen', async () => {
     // Only the MENU freezes. The chip is what the user reads to see which model
-    // is running, so a settled value that arrives while the menu is open has to
+    // the agent runs, so a settled value that arrives while the menu is open has to
     // reach it -- freezing the label would leave the chip contradicting the
     // agent for as long as the menu stayed open.
     const [groups, setGroups] = createSignal([

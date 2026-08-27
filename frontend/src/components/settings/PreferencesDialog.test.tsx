@@ -12,6 +12,7 @@ const listSettings = vi.hoisted(() => vi.fn().mockResolvedValue({ descriptors: [
 const updateSetting = vi.hoisted(() => vi.fn())
 const isAdmin = vi.hoisted(() => vi.fn(() => false))
 const solo = vi.hoisted(() => vi.fn(() => false))
+const elevationExpiresAt = vi.hoisted(() => vi.fn((): { seconds: bigint, nanos: number } | undefined => undefined))
 
 vi.mock('~/api/clients', () => ({
   userClient: { listUserSettings, updateUserSetting: vi.fn(), resetUserSetting: vi.fn() },
@@ -19,8 +20,17 @@ vi.mock('~/api/clients', () => ({
   authClient: {},
 }))
 
+// The elevation members are REAL here, not stubs: the panel renders the
+// verified-session state at the top of every group that holds an
+// elevation-guarded row, and `elevationExpiresAt` is what decides whether that
+// state exists. A test drives it through the hoisted mock.
 vi.mock('~/context/AuthContext', () => ({
-  useAuth: () => ({ user: () => ({ username: 'admin', isAdmin: isAdmin() }) }),
+  useAuth: () => ({
+    user: () => ({ username: 'admin', isAdmin: isAdmin() }),
+    elevationExpiresAt: () => elevationExpiresAt(),
+    dropElevation: vi.fn().mockResolvedValue(undefined),
+    refreshUser: vi.fn().mockResolvedValue(undefined),
+  }),
 }))
 
 vi.mock('~/lib/systemInfo', async importOriginal => ({
@@ -32,7 +42,7 @@ vi.mock('~/lib/systemInfo', async importOriginal => ({
 function renderDialog(category = 'appearance') {
   return render(() => (
     <PreferencesProvider>
-      <PreferencesDialog category={category} openSeq={0} onClose={() => {}} />
+      <PreferencesDialog category={category} onCategory={() => {}} onClose={() => {}} />
     </PreferencesProvider>
   ))
 }
@@ -43,7 +53,7 @@ beforeEach(() => {
   // number, rather than the running total of every test before it.
   vi.clearAllMocks()
   // Every account row takes its SHAPE from this reply: the hub declares
-  // each key's category, control kind, enum values and bounds, and the
+  // each key's category, control kind, enum values and limits, and the
   // registry joins only the text a user reads onto it. A dialog that wants
   // Theme, the font stacks or the keyboard-shortcuts editor therefore needs
   // the real schema here.
@@ -51,13 +61,14 @@ beforeEach(() => {
   listSettings.mockResolvedValue({ descriptors: [], values: [] })
   isAdmin.mockReturnValue(false)
   solo.mockReturnValue(false)
+  elevationExpiresAt.mockReturnValue(undefined)
 })
 
 afterEach(() => {
   cleanup()
 })
 
-describe('preferencesDialog admin gating', () => {
+describe('preferencesDialog admin restriction', () => {
   it('shows the administration groups only to admins', async () => {
     isAdmin.mockReturnValue(true)
     listSettings.mockResolvedValue({
@@ -148,7 +159,7 @@ describe('preferencesDialog admin gating', () => {
   // restart-class row marks both whichever source it came from. Both used to
   // read `group.admin ? adminRows() : []`, so a USER-scope restart row got
   // neither -- the badge in the list and the warning in the panel agreed
-  // only because they were equally blind.
+  // only because neither one could see it.
   it('marks a USER group whose row the hub declares restart-class', async () => {
     listUserSettings.mockResolvedValue({
       descriptors: accountWireDescriptors().map(d => (d.key === 'theme' ? { ...d, restart: true } : d)),
@@ -183,27 +194,50 @@ describe('preferencesDialog admin gating', () => {
 })
 
 describe('preferencesDialog deep link', () => {
-  // Every entry point (the app menu, $mod+, and the user menu) passes the
-  // same category, and a signal notifies only on a CHANGE — so asking for
-  // Preferences again while it sat on another section wrote the same string
-  // and moved nothing. The request COUNT is what changes on a repeat.
-  it('returns to the requested section when Preferences is asked for again', async () => {
-    const [seq, setSeq] = createSignal(0)
+  // The category lives in the ADDRESS, so the dialog holds no copy of it: it
+  // shows what the prop says and reports every pick. A private copy needed a
+  // request counter beside the category, because a caller that asked for the
+  // section already open wrote the same string and moved nothing.
+  it('reports a picked section instead of selecting it itself', async () => {
+    const picks: string[] = []
+    const [category, setCategory] = createSignal('appearance')
     render(() => (
       <PreferencesProvider>
-        <PreferencesDialog category="appearance" openSeq={seq()} onClose={() => {}} />
+        <PreferencesDialog category={category()} onCategory={id => picks.push(id)} onClose={() => {}} />
       </PreferencesProvider>
     ))
     await waitFor(() => expect(screen.getByTestId('preferences-nav-appearance')).toBeTruthy())
 
     fireEvent.click(screen.getByTestId('preferences-nav-notifications'))
+
+    await waitFor(() => expect(picks).toEqual(['notifications']))
+    // Nothing moved on the click alone: the address is what moves it.
+    expect(screen.getByTestId('preferences-nav-appearance').getAttribute('aria-selected')).toBe('true')
+
+    setCategory('notifications')
     await waitFor(() =>
       expect(screen.getByTestId('preferences-nav-notifications').getAttribute('aria-selected')).toBe('true'))
+    expect(screen.getByTestId('preferences-nav-appearance').getAttribute('aria-selected')).toBe('false')
+  })
 
-    setSeq(n => n + 1)
-    await waitFor(() =>
-      expect(screen.getByTestId('preferences-nav-appearance').getAttribute('aria-selected')).toBe('true'))
-    expect(screen.getByTestId('preferences-nav-notifications').getAttribute('aria-selected')).toBe('false')
+  // A search result reports the same way, so a jump from the results list is
+  // an address change like any other.
+  it('reports the category a search result jumps to', async () => {
+    const picks: string[] = []
+    render(() => (
+      <PreferencesProvider>
+        <PreferencesDialog category="appearance" onCategory={id => picks.push(id)} onClose={() => {}} />
+      </PreferencesProvider>
+    ))
+    await waitFor(() => expect(screen.getByTestId('preferences-nav-appearance')).toBeTruthy())
+    const search = screen.getByTestId('preferences-search') as HTMLInputElement
+    fireEvent.input(search, { target: { value: 'volume' } })
+    await waitFor(() => expect(screen.getByTestId('preferences-search-results')).toBeTruthy())
+
+    fireEvent.click(screen.getByRole('button', { name: /Turn-end volume/ }))
+
+    await waitFor(() => expect(picks).toEqual(['notifications']))
+    await waitFor(() => expect(search.value).toBe(''))
   })
 
   // The dialog unmounts on close, so an unpaired media-query listener
@@ -266,7 +300,7 @@ describe('preferencesDialog solo mode', () => {
           fields: [{ name: '', label: 'Bot protection enabled', help: '', kind: 1, enumValues: [], unit: '', secret: false, placeholder: '' }],
         },
         {
-          key: 'rate_limit.change-password',
+          key: 'rate_limit.elevation',
           category: 'rate-limits',
           title: 'Rate limit',
           summary: '',
@@ -343,7 +377,7 @@ describe('preferencesDialog search', () => {
     const onClose = vi.fn()
     render(() => (
       <PreferencesProvider>
-        <PreferencesDialog category="appearance" openSeq={0} onClose={onClose} />
+        <PreferencesDialog category="appearance" onCategory={() => {}} onClose={onClose} />
       </PreferencesProvider>
     ))
     await waitFor(() => expect(screen.getByTestId('preferences-nav-appearance')).toBeTruthy())
@@ -353,7 +387,7 @@ describe('preferencesDialog search', () => {
 
     fireEvent.keyDown(search, { key: 'Escape' })
     await waitFor(() => expect(search.value).toBe(''))
-    // Navigation is back; the dialog was not asked to close.
+    // Navigation is back; nothing asked the dialog to close.
     await waitFor(() => expect(screen.getByTestId('preferences-nav-appearance')).toBeTruthy())
     expect(onClose).not.toHaveBeenCalled()
   })
@@ -365,19 +399,6 @@ describe('preferencesDialog search', () => {
     fireEvent.input(search, { target: { value: 'xyzzy-no-such-setting' } })
     await waitFor(() => expect(screen.getByText(/No settings match/)).toBeTruthy())
     expect(screen.getByText(/xyzzy-no-such-setting/)).toBeTruthy()
-  })
-
-  it('selects the matching category and clears the query when a result is clicked', async () => {
-    renderDialog('appearance')
-    await waitFor(() => expect(screen.getByTestId('preferences-nav-appearance')).toBeTruthy())
-    const search = screen.getByTestId('preferences-search') as HTMLInputElement
-    fireEvent.input(search, { target: { value: 'volume' } })
-    await waitFor(() => expect(screen.getByTestId('preferences-search-results')).toBeTruthy())
-
-    fireEvent.click(screen.getByRole('button', { name: /Turn-end volume/ }))
-    await waitFor(() => expect(search.value).toBe(''))
-    await waitFor(() => expect(screen.getByTestId('preferences-nav-notifications')).toBeTruthy())
-    expect(screen.getByTestId('preferences-nav-notifications').getAttribute('aria-selected')).toBe('true')
   })
 })
 
@@ -451,7 +472,7 @@ describe('preferencesDialog load failure', () => {
     render(() => (
       <PreferencesProvider>
         <Show when={open()}>
-          <PreferencesDialog category="appearance" openSeq={0} onClose={() => {}} />
+          <PreferencesDialog category="appearance" onCategory={() => {}} onClose={() => {}} />
         </Show>
       </PreferencesProvider>
     ))
@@ -472,7 +493,7 @@ describe('preferencesDialog load failure', () => {
     render(() => (
       <PreferencesProvider>
         <Show when={open()}>
-          <PreferencesDialog category="appearance" openSeq={0} onClose={() => {}} />
+          <PreferencesDialog category="appearance" onCategory={() => {}} onClose={() => {}} />
         </Show>
       </PreferencesProvider>
     ))
@@ -550,7 +571,7 @@ describe('a failed account-settings load', () => {
   // than asking again, so it can never fail — which left a failed load
   // completely silent: every row rendered its built-in default, and the
   // first change the user made overwrote their real stored value.
-  it('is stated in the dialog', async () => {
+  it('appears in the dialog', async () => {
     listUserSettings.mockRejectedValue(new Error('network is unreachable'))
     renderDialog()
 
@@ -674,5 +695,93 @@ describe('a hub setting a read-time rule overrides', () => {
 
     expect(toggle.checked).toBe(true)
     expect(screen.queryByText(/Currently in effect/)).toBeNull()
+  })
+})
+
+/**
+ * Account LEADS the navigation.
+ *
+ * It is the group a user opens the dialog for deliberately -- a password, a
+ * passkey, an address -- where the rest are preferences they adjust while
+ * they are already here. Asserted as a POSITION rather than as "is present",
+ * because the group was always present; it simply sat eighth.
+ */
+describe('preferencesDialog section order', () => {
+  it('puts Account first under PREFERENCES', async () => {
+    renderDialog('appearance')
+    await waitFor(() => expect(screen.getByTestId('preferences-nav-appearance')).toBeTruthy())
+
+    const tabs = screen.getAllByRole('tab').map(el => el.getAttribute('data-testid'))
+    expect(tabs[0]).toBe('preferences-nav-account')
+    expect(tabs).toContain('preferences-nav-appearance')
+  })
+
+  // Opening with no category lands on the first VISIBLE group, which is now
+  // Account -- except in solo mode, where every account row is hidden and the
+  // fallback must move on rather than render an empty panel.
+  it('falls back past Account in solo mode', async () => {
+    solo.mockReturnValue(true)
+    renderDialog('account')
+    await waitFor(() => expect(screen.getByTestId('preferences-nav-appearance')).toBeTruthy())
+    expect(screen.queryByTestId('preferences-nav-account')).toBeNull()
+    expect(screen.getByTestId('preferences-nav-appearance')).toHaveAttribute('aria-selected', 'true')
+  })
+})
+
+/**
+ * The verified-session state, at the top of every group whose rows the hub
+ * refuses without a recently proven factor.
+ *
+ * It used to live inside ONE account editor, which put it half way down the
+ * Account panel under a Save button it had nothing to do with -- and left
+ * every ADMINISTRATION panel without it, although the same window governs
+ * every hub-settings write.
+ */
+describe('preferencesDialog verified-session state', () => {
+  const inTwoHours = () => ({ seconds: BigInt(Math.floor(Date.now() / 1000) + 7200), nanos: 0 })
+
+  function adminGeneralSettings() {
+    return {
+      descriptors: [{
+        key: 'session_duration_seconds',
+        category: 'general',
+        title: 'Session duration',
+        summary: '',
+        order: 10,
+        hiddenInSolo: false,
+        restart: false,
+        fields: [{ name: '', label: 'Session duration', help: '', kind: 2, enumValues: [], unit: 'seconds', secret: false, placeholder: '', min: 300n }],
+      }],
+      values: [],
+    }
+  }
+
+  it('shows it on an administration group while the session is verified', async () => {
+    isAdmin.mockReturnValue(true)
+    elevationExpiresAt.mockReturnValue(inTwoHours())
+    listSettings.mockResolvedValue(adminGeneralSettings())
+
+    renderDialog('admin-general')
+    await waitFor(() => expect(screen.getByTestId('elevation-status')).toBeTruthy())
+    expect(screen.getByTestId('elevation-drop')).toBeTruthy()
+  })
+
+  it('shows nothing on an administration group while the session is not', async () => {
+    isAdmin.mockReturnValue(true)
+    listSettings.mockResolvedValue(adminGeneralSettings())
+
+    renderDialog('admin-general')
+    await waitFor(() => expect(screen.getByText('Session duration')).toBeTruthy())
+    expect(screen.queryByTestId('elevation-status')).toBeNull()
+  })
+
+  // A browser preference is not elevation-guarded, so a verified session is
+  // not news there. Marking every group would make the state meaningless.
+  it('shows nothing on a group with no elevation-guarded row', async () => {
+    elevationExpiresAt.mockReturnValue(inTwoHours())
+
+    renderDialog('appearance')
+    await waitFor(() => expect(screen.getByTestId('preferences-nav-appearance')).toBeTruthy())
+    expect(screen.queryByTestId('elevation-status')).toBeNull()
   })
 })

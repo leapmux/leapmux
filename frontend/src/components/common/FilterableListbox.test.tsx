@@ -42,12 +42,12 @@ describe('filterableListbox', () => {
       onSelect: () => {},
     }))
 
-    // Tooltip wraps its child in a display:contents span. A tooltip-less row is
-    // rendered directly into the listbox -- no idle Tooltip instance per row (the
+    // Tooltip wraps its child in a display:contents span. The listbox renders a
+    // tooltip-less row directly -- no idle Tooltip instance per row (the
     // language picker has 235 tooltip-less rows, so this is the bulk of its cost).
     const withTip = screen.getByTestId('f-w').parentElement!
     expect(withTip.tagName).toBe('SPAN')
-    expect(withTip.getAttribute('style')).toContain('display:contents')
+    expect((withTip as HTMLElement).style.display).toBe('contents')
     expect(screen.getByTestId('f-wo').parentElement!.tagName).not.toBe('SPAN')
   })
 
@@ -136,7 +136,7 @@ describe('filterableListbox', () => {
 
   it('clears the filter text when resetKey changes', async () => {
     // A popover keeps its children mounted across a close, so without this the
-    // narrowed list the user left behind is still applied on the next open --
+    // next open still applies the narrowed list that the user left behind --
     // and the option they came back for is missing.
     const [resetKey, setResetKey] = createSignal(0)
     render(() => FilterableListbox({
@@ -161,7 +161,7 @@ describe('filterableListbox', () => {
   it('opens on the SELECTED row rather than the top one', async () => {
     // This list is the only place a large group shows which value is active, so
     // opening at the top hides the answer whenever the selection is below the
-    // fold. It also stops Enter on a fresh open from silently switching the
+    // visible area. It also stops Enter on a fresh open from silently switching the
     // setting to the first option.
     const [resetKey, setResetKey] = createSignal(0)
     const onSelect = vi.fn()

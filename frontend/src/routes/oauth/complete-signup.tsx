@@ -11,6 +11,7 @@ import { useAuth } from '~/context/AuthContext'
 import { createCaptchaForm } from '~/lib/captchaForm'
 import { formatErrorMessage } from '~/lib/errors'
 import { setPageTitle } from '~/lib/pageTitle'
+import { stringParam } from '~/lib/searchParam'
 import { isEmailEnabled } from '~/lib/systemInfo'
 import { sanitizeDisplayName, sanitizeSlug, validateReservedUsername } from '~/lib/validate'
 import { errorText, pageCard } from '~/styles/shared.css'
@@ -19,7 +20,7 @@ const OAuthCompleteSignupPage: Component = () => {
   const navigate = useNavigate()
   const auth = useAuth()
   const [searchParams] = useSearchParams()
-  const signupToken = () => typeof searchParams.token === 'string' ? searchParams.token : ''
+  const signupToken = () => stringParam(searchParams.token) ?? ''
 
   const [username, setUsername] = createSignal('')
   const [displayName, setDisplayName] = createSignal('')
@@ -52,7 +53,7 @@ const OAuthCompleteSignupPage: Component = () => {
       setProviderName(resp.providerName)
     }
     catch {
-      setTokenError('This signup link is invalid or has expired.')
+      setTokenError('This signup link is invalid or expired.')
     }
     finally {
       setLoading(false)
@@ -91,8 +92,8 @@ const OAuthCompleteSignupPage: Component = () => {
       auth.setAuth(resp.user!)
       // OAuth signup mirrors the SignUp flow: when the provider returned
       // an unverified email and verification is enabled, send the user
-      // to /verify-email so they can paste the code (or click through).
-      // The session was created server-side, so the authenticated
+      // to /verify-email so they can paste the code (or click the emailed
+      // link). The hub created the session, so the authenticated
       // VerifyEmail RPC is reachable from there.
       if (resp.emailVerification?.verificationRequired) {
         if (resp.emailVerification.nextResendAvailableAt)

@@ -60,6 +60,7 @@ func TestYugabyteDBStore(t *testing.T) {
 	require.NoError(t, err)
 
 	suite := &storetest.Suite{
+		ConcurrentWriteTransactions: true,
 		NewStore: func(t *testing.T) store.TestableStore {
 			t.Helper()
 			// Re-migrate first in case a migrator test rolled back the schema.

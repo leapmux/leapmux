@@ -172,6 +172,20 @@ describe('composerPlusMenu structure freeze', () => {
   })
 })
 
+/**
+ * The reason a disabled control carries, read the way a screen reader gets it.
+ *
+ * <Tooltip> leaves an offscreen description in `aria-describedby` for as long
+ * as the control is disabled. It is NOT `title`: a reason long enough to be
+ * worth reading becomes the control's accessible name on `title`, which is why
+ * `title` on a DOM element is now a lint error.
+ */
+function reasonOf(el: Element): string {
+  const describedBy = el.getAttribute('aria-describedby')
+  expect(describedBy).toBeTruthy()
+  return document.getElementById(describedBy!)?.textContent ?? ''
+}
+
 describe('composerPlusMenu', () => {
   it('lists the settings submenus in backend order', () => {
     renderMenu({
@@ -243,7 +257,7 @@ describe('composerPlusMenu', () => {
 
     const attach = screen.getByTestId('composer-attach-file')
     expect(attach).toBeDisabled()
-    expect(attach).toHaveAttribute('title', 'Attach is unavailable during a control request')
+    expect(reasonOf(attach)).toBe('Attach is unavailable during a control request')
   })
 
   it('disables attach and the settings submenus when the composer accepts no input', async () => {
@@ -265,8 +279,8 @@ describe('composerPlusMenu', () => {
     // "agent" in this menu.
     renderMenu({ disabledReason: 'This subagent doesn\'t accept messages.' })
 
-    expect(screen.getByTestId('composer-attach-file'))
-      .toHaveAttribute('title', 'This subagent doesn\'t accept messages.')
+    expect(reasonOf(screen.getByTestId('composer-attach-file')))
+      .toBe('This subagent doesn\'t accept messages.')
   })
 
   it('leaves attach live when no reason is given', () => {
@@ -278,7 +292,7 @@ describe('composerPlusMenu', () => {
 
     const attach = screen.getByTestId('composer-attach-file')
     expect(attach).toBeEnabled()
-    expect(attach).not.toHaveAttribute('title')
+    expect(attach).not.toHaveAttribute('aria-describedby')
   })
 
   it('prefers the disabled reason over the control-request reason', () => {
@@ -286,8 +300,8 @@ describe('composerPlusMenu', () => {
     // narrower "unavailable during a control request" would understate it.
     renderMenu({ canAttach: false, disabledReason: 'No input here.' })
 
-    expect(screen.getByTestId('composer-attach-file'))
-      .toHaveAttribute('title', 'No input here.')
+    expect(reasonOf(screen.getByTestId('composer-attach-file')))
+      .toBe('No input here.')
   })
 
   it('keeps the view toggles live on a disabled composer', async () => {
@@ -340,8 +354,8 @@ describe('composerPlusMenu', () => {
   })
 
   it('marks an in-flight settings change on the trigger, and only while it is in flight', () => {
-    // Every settings surface flips its label optimistically the moment a value
-    // is picked, so without this marker a pending change is indistinguishable
+    // Every settings surface flips its label optimistically the moment the user
+    // picks a value, so without this marker a pending change is indistinguishable
     // from an applied one and the user picks again. It rides THIS button
     // because it is the only settings surface that is always present -- the
     // status bar is a preference this menu can switch off.
@@ -407,7 +421,7 @@ describe('composerPlusMenu', () => {
 
     // The case the two above miss: a fresh tab before its first status push has
     // NOTHING between the attach item and the view toggles, so both fencing
-    // rules used to render back to back.
+    // rules used to render one directly after the other.
     cleanup()
     const bare = renderMenu()
     expect(countAdjacentRules(bare.container)).toBe(0)
@@ -421,7 +435,7 @@ describe('composerPlusMenu', () => {
     // The trigger stays ENABLED — the two items inside it are what the guard
     // disables — and carries the reason through Tooltip, which renders its text
     // lazily on hover and so is not assertable here. The contract this test
-    // names is the two items.
+    // specifies is the two items.
     expect(screen.getByRole('menuitem', { name: /Change branch/, hidden: true })).toBeDisabled()
     expect(screen.getByRole('menuitem', { name: /Delete branch/, hidden: true })).toBeDisabled()
     expect(onChangeBranch).not.toHaveBeenCalled()

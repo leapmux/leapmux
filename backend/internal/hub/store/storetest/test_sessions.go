@@ -97,7 +97,7 @@ func (s *Suite) testSessions(t *testing.T) {
 		sess := SeedSession(t, st, user.ID)
 
 		newExpiry := time.Now().Add(48 * time.Hour)
-		// LastActiveAt is used as a gate in the WHERE clause (last_active_at < ?),
+		// The WHERE clause uses LastActiveAt as a gate (last_active_at < ?),
 		// so use a future time to ensure the condition matches.
 		newActive := time.Now().Add(1 * time.Minute)
 		n, err := st.Sessions().Touch(ctx, store.TouchSessionParams{
@@ -146,6 +146,79 @@ func (s *Suite) testSessions(t *testing.T) {
 		assert.Equal(t, store.RevocationEventKindSession, events[0].Event.Kind)
 		assert.Equal(t, sess.ID, events[0].Event.SubjectID)
 		assert.Equal(t, user.ID, events[0].Event.UserID)
+	})
+
+	t.Run("revoke publishes the administrator's own event kind", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "revoke-event-user")
+		sess := SeedSession(t, st, user.ID)
+
+		n, err := st.Sessions().Revoke(ctx, sess.ID)
+		require.NoError(t, err)
+		require.Equal(t, int64(1), n)
+
+		_, err = st.Sessions().GetByID(ctx, sess.ID, time.Now().UTC())
+		assert.ErrorIs(t, err, store.ErrNotFound, "revoke removes the same row delete does")
+
+		published, err := st.RevocationEvents().PublishPending(ctx, 10)
+		require.NoError(t, err)
+		require.Equal(t, int64(1), published)
+		events, err := st.RevocationEvents().ListPublishedAfter(ctx, 0, 10)
+		require.NoError(t, err)
+		require.Len(t, events, 1)
+		assert.Equal(t, store.RevocationEventKindSessionRevoked, events[0].Event.Kind)
+		assert.Equal(t, sess.ID, events[0].Event.SubjectID)
+		assert.Equal(t, user.ID, events[0].Event.UserID)
+	})
+
+	t.Run("revoke nonexistent returns zero", func(t *testing.T) {
+		st := s.NewStore(t)
+		n, err := st.Sessions().Revoke(ctx, "nonexistent")
+		require.NoError(t, err)
+		assert.Equal(t, int64(0), n)
+	})
+
+	// The whole point of the separate kind: a step-up mutation waiting on
+	// the user-auth lock finds no acting session row either way, so this
+	// read is what tells it which of the two happened.
+	t.Run("session was revoked separates a revoke from a sign-out", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "was-revoked-user")
+		revoked := SeedSession(t, st, user.ID)
+		signedOut := SeedSession(t, st, user.ID)
+		untouched := SeedSession(t, st, user.ID)
+
+		before, err := st.RevocationEvents().SessionWasRevoked(ctx, revoked.ID)
+		require.NoError(t, err)
+		assert.False(t, before, "no event exists until the revoke runs")
+
+		_, err = st.Sessions().Revoke(ctx, revoked.ID)
+		require.NoError(t, err)
+		_, err = st.Sessions().Delete(ctx, signedOut.ID)
+		require.NoError(t, err)
+
+		// PENDING events count: the insert is the fact, and the sequence
+		// number only orders the broadcast. A mutation racing the revoke
+		// reads this before the watcher publishes anything.
+		got, err := st.RevocationEvents().SessionWasRevoked(ctx, revoked.ID)
+		require.NoError(t, err)
+		assert.True(t, got, "an administrator's revoke leaves a durable record")
+
+		got, err = st.RevocationEvents().SessionWasRevoked(ctx, signedOut.ID)
+		require.NoError(t, err)
+		assert.False(t, got, "a sign-out deletes the same row and must stay tolerated")
+
+		got, err = st.RevocationEvents().SessionWasRevoked(ctx, untouched.ID)
+		require.NoError(t, err)
+		assert.False(t, got, "nobody revoked the live session")
+
+		// And it survives publication, because the read matches on kind and
+		// subject alone.
+		_, err = st.RevocationEvents().PublishPending(ctx, 10)
+		require.NoError(t, err)
+		got, err = st.RevocationEvents().SessionWasRevoked(ctx, revoked.ID)
+		require.NoError(t, err)
+		assert.True(t, got)
 	})
 
 	t.Run("delete nonexistent returns zero", func(t *testing.T) {
@@ -600,10 +673,10 @@ func (s *Suite) testSessions(t *testing.T) {
 		//
 		// This used to sleep 1.1s between seeds so the wall clock would
 		// separate them -- 2.2s of dead time, paid once per SQL dialect the
-		// suite runs against. Naming the timestamps is both instant and
+		// suite runs against. An explicit timestamp is both instant and
 		// stricter: the expected page contents become exact instead of
 		// "whatever order the clock happened to produce", which is why the
-		// assertions below can now name the rows.
+		// assertions below can now identify the rows.
 		base := time.Now().UTC().Truncate(time.Millisecond)
 		sessions := make([]*store.UserSession, 3)
 		for i := range sessions {
@@ -728,10 +801,10 @@ func (s *Suite) testZeroIDMutationsRefused(t *testing.T) {
 	require.ErrorIs(t, err, store.ErrInvalidArgument)
 
 	// Scoped: one row, or one user's rows within a narrower scope. These used
-	// to return nil -- reporting that a mutation the store refused had
-	// SUCCEEDED. ChangePassword is the sharpest case: it calls DeleteOthers and
-	// answers 200, so a nil here told the user every other device had been
-	// signed out while every session stayed live.
+	// to return nil -- reporting that a mutation the store refused SUCCEEDED.
+	// ChangePassword is the sharpest case: it calls DeleteOthers and answers
+	// 200, so a nil here told the user the hub signed every other device out
+	// while every session stayed live.
 	require.ErrorIs(t, st.Sessions().DeleteOthers(ctx, store.DeleteOtherSessionsParams{
 		UserID: userid.UserID{}, KeepID: "keep",
 	}), store.ErrInvalidArgument)
@@ -754,14 +827,14 @@ func (s *Suite) testZeroIDMutationsRefused(t *testing.T) {
 	// Control: each still works for a real user, so the refusals above are
 	// about the id rather than the operation being broken. Without a control a
 	// refusal assertion passes for any reason at all, including the method
-	// having become unconditionally broken.
+	// becoming unconditionally broken.
 	require.NoError(t, st.Sessions().DeleteByUser(ctx, ownerID))
 	n, err := st.Users().RevokeUserTokens(ctx, ownerID)
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), n, "control: a real user's tokens revoke")
 
-	// The scoped mutations address no row for this fixture, but a real id must
-	// reach the query rather than being refused before it.
+	// The scoped mutations address no row for this fixture, but the store must
+	// let a real id reach the query instead of refusing it first.
 	require.NoError(t, st.Sessions().DeleteOthers(ctx, store.DeleteOtherSessionsParams{
 		UserID: ownerID, KeepID: "keep",
 	}), "control: a real caller reaches the query")

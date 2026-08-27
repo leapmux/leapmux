@@ -11,10 +11,10 @@ import { createTestChannelManager } from './e2e-channel'
  *
  * Each tick is a real HTTP round trip to the hub (plus, for the agent-list
  * helpers, an E2EE callWorker on top), landing on the same instance whose
- * latency the wait is measuring. What these wait on -- `git worktree add`, a
+ * latency the wait measures. What these wait on -- `git worktree add`, a
  * CLI spawn, a second worker process handshaking -- settles on a second scale,
  * so a 25ms tick was ~40x oversampling: a single 30s wait could fire ~2400
- * requests into the process it was waiting for. 150ms keeps the latency win
+ * requests into the process it waited for. 150ms keeps the latency win
  * (the flat sleeps this replaced cost 200-500ms each) at a fraction of the
  * request volume.
  */
@@ -240,8 +240,8 @@ export interface SmtpCaptureTarget {
 }
 
 /**
- * Point the hub at a loopback capture SMTP relay. Verification gating follows
- * SMTP once host and from_address are both present.
+ * Point the hub at a loopback capture SMTP relay. The hub requires email
+ * verification as soon as host and from_address are both present.
  */
 export async function configureCaptureSmtpViaAPI(
   hubUrl: string,
@@ -305,17 +305,37 @@ export async function listPasskeysViaAPI(hubUrl: string, cookie: string): Promis
   return (data.passkeys ?? []).map(pk => ({ id: pk.id ?? '', friendlyName: pk.friendlyName ?? '' }))
 }
 
-/** Delete one passkey with the account password. */
+/**
+ * Elevate a session with its account password.
+ *
+ * Every sensitive UserService call needs this first: the step-up is a
+ * property of the SESSION now, not a secret carried on each request.
+ */
+export async function elevateSessionViaAPI(
+  hubUrl: string,
+  cookie: string,
+  currentPassword: string,
+): Promise<void> {
+  const res = await fetch(`${hubUrl}/leapmux.v1.UserService/ElevateSession`, {
+    method: 'POST',
+    headers: authedHeaders(cookie),
+    body: JSON.stringify({ currentPassword }),
+  })
+  if (!res.ok) {
+    throw new Error(`elevateSessionViaAPI failed: ${res.status} ${await res.text()}`)
+  }
+}
+
+/** Delete one passkey. The session must already be elevated. */
 export async function deletePasskeyViaAPI(
   hubUrl: string,
   cookie: string,
   passkeyId: string,
-  currentPassword: string,
 ): Promise<void> {
   const res = await fetch(`${hubUrl}/leapmux.v1.UserService/DeletePasskey`, {
     method: 'POST',
     headers: authedHeaders(cookie),
-    body: JSON.stringify({ id: passkeyId, currentPassword }),
+    body: JSON.stringify({ id: passkeyId }),
   })
   if (!res.ok) {
     throw new Error(`deletePasskeyViaAPI failed: ${res.status} ${await res.text()}`)
@@ -323,8 +343,64 @@ export async function deletePasskeyViaAPI(
 }
 
 /**
- * Backdate a user's pending-email row so ResendVerificationEmail cooldown
- * has elapsed (signup issues a code immediately; resend is blocked for 60s).
+ * The hub's marker on a refusal whose remedy is "prove a factor and retry".
+ *
+ * Asserting the STATUS alone cannot tell that refusal from the one the hub
+ * deliberately leaves unmarked -- the permanent "this credential can never
+ * elevate" answer a bearer gets. Both are FailedPrecondition, and only the
+ * marker says which, so only the marker distinguishes a retryable prompt
+ * from a permanent refusal.
+ */
+export const ELEVATION_REQUIRED_HEADER = 'leapmux-elevation-required'
+
+/**
+ * Attempt a passkey delete and return the raw response, so a test can read
+ * the refusal's headers as well as its status.
+ */
+export async function deletePasskeyResponse(
+  hubUrl: string,
+  cookie: string,
+  passkeyId: string,
+): Promise<Response> {
+  return await fetch(`${hubUrl}/leapmux.v1.UserService/DeletePasskey`, {
+    method: 'POST',
+    headers: authedHeaders(cookie),
+    body: JSON.stringify({ id: passkeyId }),
+  })
+}
+
+/** The account's own CLI credentials. */
+export interface MyAPITokenSummary {
+  id: string
+  clientName: string
+  adminScope: boolean
+  current: boolean
+}
+
+export async function listMyAPITokensViaAPI(hubUrl: string, cookie: string): Promise<MyAPITokenSummary[]> {
+  const res = await fetch(`${hubUrl}/leapmux.v1.UserService/ListMyAPITokens`, {
+    method: 'POST',
+    headers: authedHeaders(cookie),
+    body: JSON.stringify({}),
+  })
+  if (!res.ok) {
+    throw new Error(`listMyAPITokensViaAPI failed: ${res.status} ${await res.text()}`)
+  }
+  const data = await res.json() as {
+    tokens?: Array<{ id?: string, clientName?: string, adminScope?: boolean, current?: boolean }>
+  }
+  return (data.tokens ?? []).map(t => ({
+    id: t.id ?? '',
+    clientName: t.clientName ?? '',
+    adminScope: t.adminScope === true,
+    current: t.current === true,
+  }))
+}
+
+/**
+ * Backdate a user's pending-email row so the ResendVerificationEmail
+ * cooldown already ended (signup issues a code immediately; the hub blocks a
+ * resend for 60s).
  */
 export async function backdatePendingEmailIssuedAt(hubDataDir: string, username: string): Promise<void> {
   const { execFile } = await import('node:child_process')
@@ -423,8 +499,8 @@ export async function mintRegistrationKeyViaAPI(
 }
 
 /**
- * Poll `ListWorkers` until a worker that was NOT in `before` shows
- * up online and return its ID. Mirrors `multiWorker.waitForNewOnlineWorker`.
+ * Poll `ListWorkers` until a worker that was NOT in `before` appears
+ * online, and return its ID. Mirrors `multiWorker.waitForNewOnlineWorker`.
  */
 export async function waitForNewOnlineWorkerViaAPI(
   hubUrl: string,
@@ -504,8 +580,8 @@ export async function openAgentViaAPI(
   const channel = await getTestChannel(hubUrl, cookie)
 
   // No workspace announcement. A channel carries no workspace set at all, so a
-  // workspace created after the cached ChannelManager handshook needs nothing
-  // done to it before a worker RPC on its tabs will be served.
+  // workspace created after the cached ChannelManager handshook needs no extra
+  // step before the worker serves an RPC on its tabs.
   const resp = await channel.callWorker(
     workerId,
     'OpenAgent',
@@ -516,7 +592,7 @@ export async function openAgentViaAPI(
       workingDir: workingDir ?? '',
       ...(options?.title ? { title: options.title } : {}),
       // The proto carries model under the `options` map, not a top-level `model`
-      // field; spreading `{ model }` would be silently dropped by create(), opening
+      // field; create() would silently drop a spread `{ model }`, opening
       // the agent at the provider default instead of the requested model.
       ...(options?.model ? { options: { model: options.model } } : {}),
       ...(options?.agentProvider ? { agentProvider: options.agentProvider } : {}),
@@ -536,9 +612,9 @@ export async function openAgentViaAPI(
   // SetTabRegister(tile_id=root_node_id) + position + worker_id.
   //
   // The seed uses the SHARED `UserEventsSubscription` opened by
-  // `createWorkspaceViaAPI` BEFORE the workspace existed. That
-  // subscription's state is populated by the hub's broadcast of the
-  // seed `SetWorkspaceRootNode` op (or the `WorkspaceCreated` event),
+  // `createWorkspaceViaAPI` BEFORE the workspace existed. The hub's
+  // broadcast of the seed `SetWorkspaceRootNode` op (or the
+  // `WorkspaceCreated` event) populates that subscription's state,
   // exactly like the browser's long-lived `/ws/userevents`. A
   // workspace where the hub failed to deliver those events surfaces
   // here as an `awaitRootNodeId` timeout — same diagnostic the user
@@ -571,7 +647,7 @@ export async function openAgentViaAPI(
  * seed-ops broadcast (and its filter-expansion contract) is on the
  * critical path of the test. Opening the subscription AFTER the
  * create would re-bootstrap from the materialized state and mask
- * regressions where the seed ops are dropped for existing
+ * regressions where the hub drops the seed ops for existing
  * subscribers.
  */
 export async function createWorkspaceViaAPI(
@@ -580,7 +656,7 @@ export async function createWorkspaceViaAPI(
   title: string,
 ): Promise<string> {
   // Establish the subscription FIRST so the hub's broadcast of the
-  // lifecycle-create's seed batch lands on it. Awaiting the open
+  // lifecycle-create's seed batch reaches it. Awaiting the open
   // here guarantees the WebSocket is in the manager's subscriber set
   // by the time the CreateWorkspace RPC reaches the lifecycle
   // outbox.
@@ -608,14 +684,15 @@ export async function createWorkspaceViaAPI(
  * worker-side half of a workspace delete.
  *
  * The browser app's delete flow is two steps: the hub soft-deletes the workspace
- * (returning worker IDs), then the frontend fans out a `CleanupWorkspace` E2EE RPC
+ * (returning worker IDs), then the frontend sends a `CleanupWorkspace` E2EE RPC
  * to each worker (useWorkspaceOperations.deleteWorkspace), which stops the agent
  * subprocesses. `deleteWorkspaceViaAPI` only does the hub half, so without this the
- * worker keeps every test's Claude CLI subprocess alive; across a suite they pile up
- * (observed peak ~17 concurrent) and starve local resources, which makes the live
- * frontend janky enough to flake settings-menu interactions. Run this at teardown to
- * mirror what the real client does. Best-effort; reuses the cached test channel,
- * which already has the workspace in its accessible set from openAgentViaAPI.
+ * worker keeps every test's Claude CLI subprocess alive; across a suite they
+ * accumulate (observed peak ~17 concurrent) and exhaust local resources, which makes
+ * the live frontend slow enough to make settings-menu interactions flaky. Run this
+ * at teardown to mirror what the real client does. Best-effort; reuses the cached
+ * test channel, which already has the workspace in its accessible set from
+ * openAgentViaAPI.
  */
 export async function cleanupWorkspaceViaAPI(
   hubUrl: string,
@@ -640,16 +717,17 @@ export async function cleanupWorkspaceViaAPI(
 
 /**
  * The tabs the hub lists for a workspace, as (tab_type, tab_id, worker_id).
- * Used by cleanupWorkspaceViaAPI, which has to name them explicitly.
+ * cleanupWorkspaceViaAPI reads it, because that helper has to identify the
+ * tabs explicitly.
  *
  * `tab_type` arrives as the enum NAME, not its number: this is Connect's JSON
  * codec (protojson), which serializes enums as `"TAB_TYPE_AGENT"`. Reading it
  * as a number yielded a string that then failed to encode into
  * `CleanupWorkspaceRequest`, so every teardown asked the worker to close
- * TAB_TYPE_UNSPECIFIED tabs, the worker's switch fell to `default:`, and
- * nothing was closed — leaving every spec's agent subprocess alive on the
- * shared worker. Mapped back to the numeric enum here so the caller can build
- * a real request.
+ * TAB_TYPE_UNSPECIFIED tabs, the worker's switch fell to `default:`, and the
+ * worker closed nothing — leaving every spec's agent subprocess alive on the
+ * shared worker. This helper maps it back to the numeric enum so the caller
+ * can build a real request.
  *
  * A failed read THROWS rather than degrading to an empty list. An empty list is
  * a valid request meaning "close nothing", so swallowing the error would make

@@ -49,8 +49,8 @@ export const emptyState = style({
 })
 
 /**
- * A label that stays on ONE line: the overflow is clipped at the right edge and
- * marked with an ellipsis.
+ * A label that stays on ONE line: the browser clips the overflow at the right
+ * edge and marks it with an ellipsis.
  *
  * `min-width: 0` is what lets a flex item shrink below the width of its own
  * text. Without it the item keeps its content width, the row grows instead, and
@@ -153,3 +153,41 @@ export const heightFull = style({
  * `~/styles/popover.css.ts`.
  */
 export const pageCard = style(['card', { width: '480px' }])
+
+/**
+ * Painted nowhere, still in the document and still reachable by anything that
+ * reads the page.
+ *
+ * NOT `display: none` and NOT `visibility: hidden`. Both take the element out
+ * of the layout entirely, and everything that walks the RENDERED page then
+ * stops seeing it. Three callers depend on exactly that difference:
+ *
+ *   - The `autocomplete="username"` hint a re-authentication form owes a
+ *     password manager, so it knows which saved credential to fill (see
+ *     `ElevateForm`). A manager that walks the rendered fields skips a field
+ *     with no box.
+ *   - The description a `<Tooltip>` leaves beside a DISABLED control. A
+ *     disabled element dispatches no pointer event and takes no focus, so the
+ *     tooltip itself can never open there, and this is what a screen reader
+ *     reads instead.
+ *   - The plain-text copy of a widget whose visual DOM reads as meaningless
+ *     text -- the thinking odometer's stack of 0-9 strips.
+ *
+ * `position: absolute` keeps it out of flow, so it is not a flex or grid item
+ * and cannot open a gap in the row it sits in.
+ *
+ * Whether a screen reader announces it is the CALLER's to decide. A field
+ * nobody types into adds `aria-hidden`; a description that exists FOR a
+ * screen reader must not.
+ */
+export const srOnly = style({
+  position: 'absolute',
+  width: '1px',
+  height: '1px',
+  padding: 0,
+  margin: '-1px',
+  overflow: 'hidden',
+  clipPath: 'inset(50%)',
+  whiteSpace: 'nowrap',
+  border: 0,
+})

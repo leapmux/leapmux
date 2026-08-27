@@ -42,24 +42,30 @@ describe('branchContextMenu', () => {
     expect(onChange).not.toHaveBeenCalled()
   })
 
-  // Offline gating. Both items stay VISIBLE and disabled rather than
+  // The offline restriction. Both items stay VISIBLE and disabled rather than
   // disappearing, because a row that silently loses its menu reads as a bug while
-  // a dimmed item with a title says which machine to bring back.
+  // a dimmed item that states a reason says which machine to bring back.
   //
   // Native `disabled` is deliberate: the dimming and not-allowed cursor come from
   // oat's global `:disabled` rule, which every other menu in the app relies on.
-  // The cost is that a disabled button leaves the focus order, so the title is
-  // mouse-only -- see the note on disabledReason.
+  // The cost is that a disabled button leaves the focus order, so the tooltip
+  // opens only under a pointer -- see the note on disabledReason.
   describe('when the worker is offline', () => {
     const reason = 'Worker "mac-mini" is offline'
 
-    it('disables both items and titles them with the reason', async () => {
+    it('disables both items and describes them with the reason', async () => {
       const { trigger } = renderMenu(reason)
       await fireEvent.click(trigger)
       for (const label of ['Change branch...', 'Delete branch...']) {
         const item = screen.getByText(label)
         expect(item).toBeDisabled()
-        expect(item).toHaveAttribute('title', reason)
+        // Through the Tooltip's offscreen description, not `title`. A reason
+        // this long on `title` BECAME the item's accessible name, so a screen
+        // reader announced it in place of "Change branch...".
+        expect(item).not.toHaveAttribute('title')
+        const describedBy = item.getAttribute('aria-describedby')
+        expect(describedBy).toBeTruthy()
+        expect(document.getElementById(describedBy!)?.textContent).toBe(reason)
       }
     })
 

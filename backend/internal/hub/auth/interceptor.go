@@ -36,8 +36,8 @@ import (
 // The credential differs by entry, so do not assume one mechanism: Register
 // consumes a registration KEY, Connect resolves a worker auth_token directly
 // through Workers().GetByAuthToken, and ListOwnedTabsForWorker goes through
-// AuthenticateWorkerBearer. The rationale map in the package's test names the
-// mechanism per entry, which is the check that keeps this list honest.
+// AuthenticateWorkerBearer. The rationale map in the package's test specifies
+// the mechanism per entry, which is the check that keeps this list honest.
 //
 // Procedure names come from the generated `leapmuxv1connect` constants
 // so a rename in the proto definition turns a typo here into a build
@@ -178,12 +178,26 @@ var adminProcedures = map[string]bool{
 // users may call before their email is verified. The verify endpoint
 // itself must be in this list — otherwise an unverified user couldn't
 // complete verification.
+//
+// The list must be CLOSED under the preconditions of its own members. A
+// procedure admitted here can still be refused by another rung, and the
+// procedure that clears THAT refusal has to be admitted too. The three
+// elevation procedures are here for exactly that reason: RequestEmailChange
+// requires an elevated credential, no sign-in grants one, and an unverified
+// account reaches nothing else. Without them a user who mistypes their
+// address at sign-up is refused the change AND refused the elevation the
+// change needs, so the account is unusable until an administrator repairs
+// it. The three verify a factor rather than spend one, so admitting them
+// before verification widens nothing.
 var unverifiedAllowedProcedures = map[string]bool{
 	leapmuxv1connect.AuthServiceGetCurrentUserProcedure:          true,
 	leapmuxv1connect.AuthServiceLogoutProcedure:                  true,
 	leapmuxv1connect.UserServiceRequestEmailChangeProcedure:      true,
 	leapmuxv1connect.UserServiceVerifyEmailProcedure:             true,
 	leapmuxv1connect.UserServiceResendVerificationEmailProcedure: true,
+	leapmuxv1connect.UserServiceElevateSessionProcedure:          true,
+	leapmuxv1connect.UserServiceBeginPasskeyElevationProcedure:   true,
+	leapmuxv1connect.UserServiceFinishPasskeyElevationProcedure:  true,
 }
 
 // sessionCacheTTL controls how long a validated session is cached in memory.
@@ -236,7 +250,7 @@ type authState struct {
 	// session touch does not hold the auth lock across the channel-manager lock.
 	channelRescheduler atomic.Pointer[ChannelExpiryRescheduler]
 
-	// maxConnectionsPerUser bounds the long-lived connections one user may hold
+	// maxConnectionsPerUser limits the long-lived connections one user may hold
 	// at once; zero is unlimited. Atomic rather than revocationMu-guarded because
 	// it is written once at startup and read on every registration -- taking the
 	// lock to read a constant would put startup configuration on the hot path.
@@ -331,8 +345,8 @@ type InterceptorOptions struct {
 // and attaches user info to the context. Public procedures (login, worker
 // registration) are exempt from auth checks.
 //
-// The returned AuthContextRegistry can be used to evict entries from the in-memory
-// touch throttle (e.g. on logout). Call AuthContextRegistry.Stop to terminate
+// Callers use the returned AuthContextRegistry to evict entries from the
+// in-memory touch throttle (e.g. on logout). Call AuthContextRegistry.Stop to terminate
 // the background sweep goroutine.
 func NewInterceptor(opts InterceptorOptions) (connect.Interceptor, *AuthContextRegistry) {
 	st := opts.Store
@@ -553,8 +567,8 @@ func (c *AuthContextRegistry) evictSessionsByUserID(userID string) {
 
 // RevokeUserAuthContextAtGeneration rejects and cancels only auth contexts
 // older than the persisted user credential generation. A zero generation is
-// retained for revocation callers that intentionally invalidate every current
-// credential for the user.
+// stays supported for revocation callers that intentionally invalidate every
+// current credential for the user.
 // The userID == "" guard is NOT redundant with userid.UserID's fail-closed
 // comparisons, and must not be deleted as though it were. Matches is tuned for
 // GRANT semantics -- false means "not authorized" -- but on this eviction path
@@ -673,9 +687,9 @@ func (c *AuthContextRegistry) evictBearersByUserGeneration(userID string, userAu
 	})
 }
 
-// IsAuthContextCurrent reports whether the concrete session, bearer, and user
-// that authenticated a request have been revoked since that request was
-// validated. It is deliberately identity-scoped; a revocation for another user
+// IsAuthContextCurrent reports whether nothing revoked the concrete session,
+// bearer, or user that authenticated a request since the validation of that
+// request. It is deliberately identity-scoped; a revocation for another user
 // must not reject an unrelated in-flight channel open.
 func (c *AuthContextRegistry) IsAuthContextCurrent(user *UserInfo) bool {
 	if c == nil || c.state == nil || user == nil {
@@ -689,8 +703,8 @@ func (c *AuthContextRegistry) IsAuthContextCurrent(user *UserInfo) bool {
 // CurrentCredentialExpiry returns the most recent expiry this process knows for
 // the credential that authenticated user. For a cookie session it reads the
 // shared session-cache entry -- which a concurrent slide advances by storing a
-// fresh cached row -- so a slide that landed after the caller captured
-// user.CredentialExpiresAt is reflected. It falls back to the caller's captured
+// fresh cached row -- so it reads a slide that landed after the caller
+// captured user.CredentialExpiresAt. It falls back to the caller's captured
 // deadline when the session is not cached, and for non-session credentials
 // (bearers), whose cache entry is evicted rather than updated on rotation.
 //
@@ -721,7 +735,7 @@ func (c *AuthContextRegistry) CurrentCredentialExpiry(ctx context.Context, user 
 	}
 	// Session cache hit: return the deadline recorded on the cached row, which a
 	// slide advances by storing a fresh copy. Take the more permissive of it and the
-	// connect-time value -- the same Later() the bearer arm, the DB-fallback arm below, and the
+	// connect-time value -- the same Later() the bearer path, the DB-fallback path below, and the
 	// lock-held twin currentCredentialExpiryLocked all use -- so the invariant
 	// "never armed earlier than any deadline known for the credential" holds even
 	// if the cached row is ever repopulated below the caller's captured deadline.
@@ -768,7 +782,7 @@ func (c *AuthContextRegistry) cachedSessionExpiry(sessionID string) (CredentialD
 // channel opening in the validate->index window is armed at the extended
 // deadline (read via CurrentCredentialExpiry) rather than the stale
 // connect-time one. Idempotent and monotonic: an already-recorded deadline is
-// only replaced by a more permissive one. A NeverExpires newExpiry supersedes any
+// replaced only by a more permissive one. A NeverExpires newExpiry supersedes any
 // finite recorded deadline.
 //
 // The load-merge-store runs as a compare-and-swap loop so the monotonic
@@ -851,8 +865,8 @@ func (a *authInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 			// A failed call has no response to hang a header on, but a
 			// connect.Error carries its own metadata, and connect-go merges that
 			// into the response header before it writes the status. Without this
-			// arm a client whose calls keep failing -- a permission denial, a
-			// validation error, a procedure that is briefly unwell -- slides the
+			// branch a client whose calls keep failing -- a permission denial, a
+			// validation error, a procedure that fails briefly -- slides the
 			// row on every request and is still signed out at the login deadline,
 			// because the throttle gives the cookie no other request to ride.
 			return nil, refresh.applyToError(err, p.SecureCookies)
@@ -888,8 +902,8 @@ func (a *authInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc
 
 // authenticate validates the session and attaches user info to the context.
 // Public procedures pass through with optional solo-mode user. Authenticated
-// requests are checked for email verification when required. Bearer tokens
-// (Authorization: Bearer lmx_...) are accepted alongside the cookie path.
+// It checks an authenticated request for email verification when required, and
+// accepts bearer tokens (Authorization: Bearer lmx_...) alongside the cookie path.
 //
 // The second result is the session slide that this request caused, which the
 // caller writes to the response as a refreshed cookie. It is the zero value on
@@ -972,7 +986,7 @@ func (a *authInterceptor) currentPolicy() Policy {
 // unless the procedure is on the pre-verification allowlist. Shared by the
 // bearer and cookie auth paths so the gate cannot drift between them.
 func (a *authInterceptor) enforceEmailVerification(procedure string, userInfo *UserInfo, p Policy) error {
-	if !p.EmailVerificationRequired || userInfo.IsAdmin || userInfo.EmailVerified {
+	if userInfo.EmailVerificationFacts().Satisfied(p.EmailVerificationRequired) {
 		return nil
 	}
 	if unverifiedAllowedProcedures[procedure] {
@@ -984,17 +998,44 @@ func (a *authInterceptor) enforceEmailVerification(procedure string, userInfo *U
 // enforceAdmin rejects a non-admin caller from an admin procedure, in the
 // shape of enforceEmailVerification so the two gates read as one family.
 // The unauthenticated case never reaches here: both callers sit behind a
-// user-resolving arm. An unverified admin passes by design — admins are
+// user-resolving branch. An unverified admin passes by design — admins are
 // exempt from the email gate, and an admin who cannot receive mail must
 // still be able to configure SMTP.
 func enforceAdmin(procedure string, userInfo *UserInfo) error {
 	// Deny by PREFIX, never by the map. See adminProcedurePrefix: the map
 	// is the rationale record, and a lookup miss there must not open a
 	// procedure that admin.proto declares.
-	if !strings.HasPrefix(procedure, adminProcedurePrefix) || userInfo.IsAdmin {
+	if !strings.HasPrefix(procedure, adminProcedurePrefix) {
 		return nil
 	}
-	return connect.NewError(connect.CodePermissionDenied, fmt.Errorf("administrator privileges are required"))
+	if !userInfo.IsAdmin {
+		return connect.NewError(connect.CodePermissionDenied, fmt.Errorf("administrator privileges are required"))
+	}
+	return enforceAdminScope(userInfo)
+}
+
+// enforceAdminScope refuses an administrator's API-token bearer that was not
+// minted with the admin scope.
+//
+// Administration is opt-in per credential, not implied by the account. A CLI
+// login mints a token that lives for months in a plaintext file; without the
+// scope, that file is a full hub-administration credential for every admin
+// who ever ran `leapmux control auth login`. With it, the ordinary login
+// mints a token that can do everything the user can do EXCEPT administer the
+// hub, and the administering token exists only when the user asked for it
+// and proved a factor to get it.
+//
+// A cookie carries no scope column and is admitted on IsAdmin alone: the web
+// admin UI is a session, and a session is already the thing an elevation
+// prompt can protect. A delegation bearer never reaches here -- the
+// interceptor refuses it before the admin gate.
+func enforceAdminScope(userInfo *UserInfo) error {
+	kind, _, isBearer := userInfo.Credential.Bearer()
+	if !isBearer || kind != BearerKindAPI || userInfo.CredentialAdminScope {
+		return nil
+	}
+	return connect.NewError(connect.CodePermissionDenied,
+		fmt.Errorf("this CLI credential was not granted hub administration; run `leapmux control auth login --admin` to mint one that was"))
 }
 
 // tryAuthenticateBearer attempts Bearer-token auth. Returns (info, true,
@@ -1112,7 +1153,7 @@ func (k bearerCacheKeyParts) bearerRef() BearerRef {
 }
 
 // cacheEntryFresh reports whether cs is still inside its cache window: the TTL
-// has not elapsed AND the credential's own validity is still current. The
+// did not elapse AND the credential's own validity is still current. The
 // per-credential revocation / invalidation checks are kind-specific and stay
 // with each caller; sharing this prefix keeps the bearer and session hot paths
 // from disagreeing on what "within the cache window" means.
@@ -1140,7 +1181,7 @@ func (a *authInterceptor) bearerCacheFresh(key bearerCacheKeyParts, cs cachedSes
 }
 
 // validateTokenCached returns cached UserInfo if the session was validated
-// within sessionCacheTTL AND no revocation has occurred since; otherwise
+// within sessionCacheTTL AND no revocation occurred since; otherwise
 // queries the DB and caches the result.
 func (a *authInterceptor) validateTokenCached(ctx context.Context, token string) (*UserInfo, error) {
 	if v, ok := a.state.sessions.Load(token); ok {
@@ -1228,7 +1269,7 @@ func (a *authInterceptor) slideDuration(p Policy) time.Duration {
 // Returns the new expiry, or the zero time when nothing slid. The caller
 // re-issues the session cookie with that expiry. The cookie carries its own
 // Expires attribute, so a browser drops it at the deadline that the last
-// Set-Cookie named; without the re-issue the slide extends a row that the
+// Set-Cookie specified; without the re-issue the slide extends a row that the
 // browser stops sending a cookie for, and the user is signed out
 // one session duration after the login however active they were.
 func (a *authInterceptor) touchSession(ctx context.Context, sessionID string, user *UserInfo, p Policy) time.Time {
@@ -1243,7 +1284,7 @@ func (a *authInterceptor) touchSession(ctx context.Context, sessionID string, us
 	// Record the attempt before the UPDATE runs, and whatever the UPDATE
 	// answers: lastTouch is the per-process DB rate-limiter. A zero-row match
 	// means the session was already touched within the threshold, and an error
-	// means the store is unwell -- in both cases the next request must wait
+	// means the store failed -- in both cases the next request must wait
 	// rather than retry at once, which a store that keeps failing would turn
 	// into one UPDATE for every authenticated request.
 	a.state.lastTouch.Store(sessionID, now)
@@ -1275,7 +1316,7 @@ func (a *authInterceptor) touchSession(ctx context.Context, sessionID string, us
 		return time.Time{}
 	}
 	// The slid DB expiry is authoritative and finite; carry it as a deadline for
-	// the in-memory credential / lease / channel arms.
+	// the in-memory credential / lease / channel paths.
 	newDeadline := DeadlineAt(newExpiry)
 	if user != nil {
 		user.CredentialExpiresAt = newDeadline
@@ -1304,14 +1345,14 @@ func (a *authInterceptor) touchSession(ctx context.Context, sessionID string, us
 const touchSweepInterval = 10 * time.Minute
 
 // sweepCachesOnce removes stale entries from the lastTouch, session, and bearer
-// caches and from the revocation/invalidation mark maps. Touch entries older
-// than touchThreshold are removed because the throttle is the only thing that
+// caches and from the revocation/invalidation mark maps. It removes touch
+// entries older than touchThreshold because the throttle is the only thing that
 // reads them, and it treats an entry older than one window as absent: the
 // deletion changes no decision, and holding the entry for the session's whole
 // life retains one map entry per session that the process ever authenticated.
-// Session and bearer cache entries older than sessionCacheTTL are removed to
-// avoid unbounded growth, and revocation/invalidation marks older than
-// slideDuration are swept under revocationMu -- those must outlive the request
+// It removes session and bearer cache entries older than sessionCacheTTL to
+// avoid unlimited growth, and it sweeps revocation/invalidation marks older
+// than slideDuration under revocationMu -- those must outlive the request
 // snapshots that they invalidate, which is the session's life and not the
 // throttle window.
 //
@@ -1329,7 +1370,7 @@ func (a *authInterceptor) sweepCachesOnce() {
 		}
 		return true
 	})
-	// Drop recorded bearer extensions whose deadline has passed. A zero
+	// Drop recorded bearer extensions whose deadline is in the past. A zero
 	// (never-expires) entry is retained until the bearer is evicted; it cannot be
 	// aged out by time. bearerExpiries is not guarded by revocationMu, so this
 	// sweeps outside the lock -- and must CompareAndDelete (not Delete) the exact
@@ -1351,7 +1392,7 @@ func (a *authInterceptor) sweepCachesOnce() {
 	// cachedAt off a value observed during a sync.Map.Range is race-free: a
 	// cachedSession is always replaced wholesale (touchSession stores a fresh copy,
 	// never mutates one in place), so the snapshot is immutable. The delete itself
-	// must run under the lock, so it is deferred to the locked phase: deleteStale*
+	// must run under the lock, so the locked phase runs it: deleteStale*
 	// unlinks the reverse index via unindexSyncMap, whose nested empty-bucket
 	// cleanup is not safe concurrently with a registration's indexSyncMap writes.
 	// The CAS inside deleteStale* makes a concurrent refresh between this scan and

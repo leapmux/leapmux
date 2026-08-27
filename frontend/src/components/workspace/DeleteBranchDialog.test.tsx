@@ -91,6 +91,20 @@ async function clickDelete() {
   fireEvent.click(screen.getByRole('button', { name: 'Confirm?' }))
 }
 
+/**
+ * The reason a disabled control carries, read the way a screen reader gets it.
+ *
+ * <Tooltip> leaves an offscreen description in `aria-describedby` for as long
+ * as the control is disabled. It is NOT `title`: a reason long enough to be
+ * worth reading becomes the control's accessible name on `title`, which is why
+ * `title` on a DOM element is now a lint error.
+ */
+function reasonOf(el: Element): string {
+  const describedBy = el.getAttribute('aria-describedby')
+  expect(describedBy).toBeTruthy()
+  return document.getElementById(describedBy!)?.textContent ?? ''
+}
+
 describe('deleteBranchDialog', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -248,8 +262,8 @@ describe('deleteBranchDialog', () => {
 
     const del = screen.getByRole('button', { name: 'Delete branch' }) as HTMLButtonElement
     expect(del.disabled).toBe(true)
-    expect(del.title).toContain('held for review')
-    // Visible text, not the `title` alone: a greyed-out destructive option
+    expect(reasonOf(del)).toContain('held for review')
+    // Visible text, not the tooltip alone: a greyed-out destructive option
     // with no stated reason looks like a defect.
     expect(screen.getAllByText(/held for review/).length).toBeGreaterThan(0)
     // Nothing was armed, so nothing reached the confirm-time re-check either.
@@ -416,7 +430,7 @@ describe('deleteBranchDialog', () => {
     // down the subtree that owns this dialog in AppShellDialogs. A parent
     // callback that runs after the close can read disposed state, and Solid
     // answers such a read with a thrown string. The close ran first, so it
-    // swallowed the sidebar stamp and the git-status refresh. The deleted
+    // discarded the sidebar stamp and the git-status refresh. The deleted
     // branch's label stayed on screen until a reload.
     //
     // The dialog's own try/catch — not this order — is what keeps a
@@ -722,13 +736,13 @@ describe('deleteBranchDialog', () => {
   })
 
   it('pushes from the group\'s dir whatever kinds of tab it holds', async () => {
-    // No anchor tab, and so no kind preference to get wrong. The push names a
-    // DIRECTORY, which every tab in a branch group shares by construction and
-    // which is client-side metadata on the joined tab -- so it needs no
-    // worker-side row. Anchoring on a tab used to mean a FILE tab could be
-    // chosen whose `worker_file_tabs` row a peer's close had hard-deleted, and
-    // the push failed with "file tab path not found" while a healthy terminal
-    // sat beside it.
+    // No anchor tab, and so no kind preference to get wrong. The push
+    // specifies a DIRECTORY, which every tab in a branch group shares by
+    // construction and which is client-side metadata on the joined tab -- so
+    // it needs no worker-side row. Anchoring on a tab used to mean a FILE tab
+    // could be chosen whose `worker_file_tabs` row a peer's close hard-deleted,
+    // and the push failed with "file tab path not found" while a healthy
+    // terminal sat beside it.
     const inspectResp = makeInspectResp({ canPush: true, unpushedCommitCount: 1 })
     vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(inspectResp)
     renderDialog({ tabs: [makeFileTab('f1'), makeTerminalTab('t1')] })
@@ -755,7 +769,7 @@ describe('deleteBranchDialog', () => {
     expect(vi.mocked(workerRpc.pushBranch).mock.calls[0][1]).toEqual({ workingDir: '/repo' })
   })
 
-  it('hides the push button when no tab in the group names a directory', async () => {
+  it('hides the push button when no tab in the group holds a directory', async () => {
     // The edge the Show gate covers: a branch row whose tabs all closed while
     // the dialog was open has no dir to push from, and a button that sends an
     // empty one is worse than no button.
@@ -812,7 +826,7 @@ describe('deleteBranchDialog', () => {
   })
 
   it('disables Cancel while DeleteBranch is in flight', async () => {
-    // The Dialog `busy` flag gates Escape, the backdrop click, and the X
+    // The Dialog `busy` flag covers Escape, the backdrop click, and the X
     // button, but it never reaches a custom footer button. Without an
     // explicit `disabled` the user can dismiss the dialog mid-delete: the
     // RPC keeps running, and a failure then calls setError on a disposed

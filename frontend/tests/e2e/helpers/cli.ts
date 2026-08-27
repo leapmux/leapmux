@@ -1,8 +1,8 @@
 /**
  * CLI runner helpers for `leapmux control` end-to-end tests.
  *
- * The leapmux binary is built once per Playwright run by global-setup
- * (`task build-backend`) and lives at the repo root. The same binary
+ * Global setup builds the leapmux binary once per Playwright run
+ * (`task build-backend`), and it lives at the repo root. The same binary
  * serves the `control` and `recover` commands; tests invoke it
  * as a child process and parse its JSON-on-stdout contract.
  *
@@ -28,6 +28,7 @@ import { join } from 'node:path'
 import process from 'node:process'
 import { promisify } from 'node:util'
 import { expect } from '@playwright/test'
+import { TEST_ADMIN_PASSWORD } from './api'
 import { getGlobalState } from './server'
 
 const execFileAsync = promisify(execFile)
@@ -90,6 +91,20 @@ export async function mintCLITokenForAdmin(source: CLITokenSource, options?: {
   const cookie = source.adminPassword && source.adminUsername
     ? await loginForMint(source.hubUrl, source.adminUsername, source.adminPassword)
     : source.adminToken
+  // Issuing an admin-scoped CLI credential is an elevated-only action, the
+  // same as every /auth/cli/* consent leg: it mints a bearer that outlives
+  // the browser session by a year. So the mint elevates first, exactly as a
+  // person at the verification screen does.
+  //
+  // BOTH branches, and that is the point: the fallback branch reuses a
+  // fixture cookie minted by sign-up, which is no more elevated than a fresh
+  // login. Elevating only the login branch left every dev-server spec
+  // failing in setup with a refusal that specified no verb.
+  //
+  // The password defaults to the seeded admin's, because every E2E hub seeds
+  // that one account -- a source that carries its own credentials states
+  // them, and the rest share the fixture's.
+  await elevateForMint(source.hubUrl, cookie, source.adminPassword ?? TEST_ADMIN_PASSWORD)
 
   // Connect-JSON: the body is the message object directly (int64s as
   // strings), and the response JSON is the message object.
@@ -101,10 +116,18 @@ export async function mintCLITokenForAdmin(source: CLITokenSource, options?: {
       clientType: 'cli',
       clientName: `e2e-${Date.now()}`,
       ttlSeconds: '3600',
+      // The specs that drive `control admin ...` need it: the hub refuses an
+      // ordinary CLI credential every Admin* procedure, even for an
+      // administrator. See operating/security.md on why that is the default.
+      adminScope: true,
     }),
   })
   if (!res.ok) {
-    throw new Error(`mintCLITokenForAdmin: IssueAPIToken ${res.status}`)
+    // The BODY, not the status alone. A Connect error carries its message
+    // there, and a bare "IssueAPIToken 400" says nothing about which of the
+    // several refusals fired -- which is exactly the diagnosis this helper's
+    // callers need, because they all fail in setup.
+    throw new Error(`mintCLITokenForAdmin: IssueAPIToken ${res.status}: ${await res.text()}`)
   }
   const minted = await res.json() as { accessToken?: string }
   const bearer = minted.accessToken
@@ -123,7 +146,7 @@ export async function mintCLITokenForAdmin(source: CLITokenSource, options?: {
 
   // The CLI keys the credential file by HubHost(hubURL); replicate
   // that here. For http(s) URLs the host is `<host>_<port>`; for
-  // unix:/npipe: sockets the URL is flattened.
+  // unix:/npipe: sockets the helper flattens the URL.
   const hubHost = hubHostForURL(hubURL)
   const credPath = join(configDir, `${hubHost}.json`)
   const cred = {
@@ -134,10 +157,87 @@ export async function mintCLITokenForAdmin(source: CLITokenSource, options?: {
     expires_at: new Date(Date.now() + 3_600_000).toISOString(),
     user_id: userID,
     username: 'admin',
+    admin_scope: true,
   }
   writeFileSync(credPath, JSON.stringify(cred, null, 2), { mode: 0o600 })
 
+  // The CREDENTIAL needs its own window, not just the session that minted it.
+  //
+  // Every hub-settings write and several admin verbs run under the elevation
+  // gate, and the gate reads the ACTING credential -- so a bearer minted by an
+  // elevated session is still un-elevated, and `admin settings set` answers
+  // "this action needs a recent sign-in". A CLI cannot clear that on its own
+  // here: the hub's remedy is a browser ceremony, and an E2E worker has no
+  // person at a keyboard.
+  await elevateMintedCredential(source.hubUrl, bearer, cookie)
+
   return { path: configDir, hubURL, bearer, userID }
+}
+
+/**
+ * Run the browser step-up ceremony for a freshly minted CLI credential.
+ *
+ * The REAL leg, end to end, because a fixture that stamped the row directly
+ * would let the ceremony rot: the CLI posts
+ * `/auth/cli/elevate-authorization` for a user code, and the person approves
+ * that code at `/auth/cli/activate` from an already elevated browser session.
+ * This does both halves with `fetch`, which is what a person does with a
+ * browser.
+ *
+ * The approving session must itself be elevated, which is why the caller
+ * elevates it before the mint and this reuses that cookie.
+ */
+async function elevateMintedCredential(hubUrl: string, bearer: string, cookie: string): Promise<void> {
+  const started = await fetch(`${hubUrl}/auth/cli/elevate-authorization`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Authorization': `Bearer ${bearer}`,
+    },
+    body: new URLSearchParams({ device_name: 'e2e-fixture' }).toString(),
+  })
+  if (!started.ok) {
+    throw new Error(`mintCLITokenForAdmin: elevate-authorization ${started.status}: ${await started.text()}`)
+  }
+  const grant = await started.json() as { user_code?: string }
+  if (!grant.user_code) {
+    throw new Error('mintCLITokenForAdmin: elevate-authorization returned no user_code')
+  }
+
+  const approved = await fetch(`${hubUrl}/auth/cli/activate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Cookie': cookie },
+    body: new URLSearchParams({ user_code: grant.user_code }).toString(),
+    redirect: 'manual',
+  })
+  // The page answers 200 with the "verified" body. Anything else means the
+  // approval did not land, and the credential then fails every gated verb
+  // with a refusal that names a browser the spec does not have.
+  if (approved.status !== 200) {
+    throw new Error(`mintCLITokenForAdmin: activate ${approved.status}: ${await approved.text()}`)
+  }
+}
+
+/**
+ * Prove a factor on the session the mint is about to use.
+ *
+ * Signing in is not enough: the hub refuses IssueAPIToken from a session that
+ * did not prove a factor recently, which is the same rule every
+ * `/auth/cli/*` consent leg applies. Elevating here is the honest fixture —
+ * it is the step the browser takes before the same screen appears.
+ *
+ * Re-elevating an already-elevated session is harmless: the grant replaces
+ * whatever window the session held.
+ */
+async function elevateForMint(hubUrl: string, cookie: string, password: string): Promise<void> {
+  const res = await fetch(`${hubUrl}/leapmux.v1.UserService/ElevateSession`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Cookie': cookie },
+    body: JSON.stringify({ currentPassword: password }),
+  })
+  if (!res.ok) {
+    throw new Error(`mintCLITokenForAdmin: ElevateSession ${res.status}: ${await res.text()}`)
+  }
 }
 
 /**
@@ -169,12 +269,12 @@ async function loginForMint(hubUrl: string, username: string, password: string):
 /**
  * Run `leapmux control …` against the cfg dir's hub.
  *
- * Returns the parsed JSON `data` payload from stdout. CLI errors are
- * thrown as `CLIError` carrying the upstream `code` and `message` so
- * test assertions can match on either (e.g.
+ * Returns the parsed JSON `data` payload from stdout. This helper throws a
+ * CLI error as a `CLIError` that carries the upstream `code` and `message`,
+ * so test assertions can match on either (e.g.
  * `await expect(...).rejects.toMatchObject({ code: 'out_of_date' })`).
  *
- * The `LEAPMUX_CONTROL_*` env vars are scrubbed (except
+ * This helper also scrubs the `LEAPMUX_CONTROL_*` env vars (except
  * `LEAPMUX_CONTROL_CONFIG_DIR`) so a test running on a laptop that
  * happens to have an active worker shell can't pollute the harness's
  * auth context.
@@ -227,8 +327,8 @@ export async function runCLI(cfg: CLIConfigDir, args: string[], options?: {
 /**
  * Spawn a long-running CLI subcommand (e.g. `events`,
  * `agent messages --follow`) and return the child process plus an
- * async iterator over JSON-line events. The caller is responsible for
- * killing the process when done.
+ * async iterator over JSON-line events. The caller must kill the process
+ * when it finishes.
  */
 export function streamCLI(cfg: CLIConfigDir, args: string[]): {
   child: ChildProcess
@@ -282,8 +382,8 @@ export async function cliAgentOpen(cli: CLIConfigDir, params: {
   provider?: string
 }): Promise<string> {
   // Dev-mode workers register every provider they detect on PATH, so
-  // the CLI rejects `tab open` with `ambiguous_provider` unless one is
-  // specified. Default to Claude Code (matches `LEAPMUX_CLAUDE_DEFAULT_MODEL`
+  // the CLI rejects `tab open` with `ambiguous_provider` unless the caller
+  // specifies one. Default to Claude Code (matches `LEAPMUX_CLAUDE_DEFAULT_MODEL`
   // in the dev fixture) so existing call sites keep working.
   const provider = params.provider ?? 'claude'
   const data = await runCLI(cli, [
@@ -306,9 +406,9 @@ export async function cliAgentOpen(cli: CLIConfigDir, params: {
 
 /**
  * Wait for `count` agent tabs to render. Dev mode boots the worker
- * subprocess lazily so the first render after seeding can take a beat
- * longer than the default action timeout; 60s matches the budget the
- * control-CLI specs use for their worker-spawn / broadcast assertions.
+ * subprocess lazily, so the first render after seeding can take a little
+ * longer than an ordinary action; the global expect timeout in
+ * `playwright.config.ts` covers it.
  */
 export async function waitForAgentTabs(page: Page, count: number) {
   await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]'))
@@ -327,9 +427,9 @@ export class CLIError extends Error {
 // ──────────────────────────────────────────────
 
 /**
- * Resolve the admin user's ID by hitting the hub's GetCurrentUser
- * endpoint with the seeded admin cookie. This is one fetch in setup
- * land and avoids re-implementing the admin-bootstrap query.
+ * Resolve the admin user's ID by calling the hub's GetCurrentUser
+ * endpoint with the seeded admin cookie. This is one fetch during setup,
+ * and it avoids re-implementing the admin-bootstrap query.
  */
 async function fetchAdminUserID(source: CLITokenSource): Promise<string> {
   const res = await fetch(`${source.hubUrl}/leapmux.v1.AuthService/GetCurrentUser`, {
@@ -394,6 +494,19 @@ function withHubFlag(args: string[], hubURL: string): string[] {
   while (i < args.length && !args[i].startsWith('-'))
     i++
   return [...args.slice(0, i), '--hub', hubURL, ...args.slice(i)]
+}
+
+/**
+ * Write one hub setting through `control admin settings set`.
+ *
+ * This helper spells `--hub` out rather than leaving it to withHubFlag. That
+ * helper inserts the flag before the FIRST token that starts with `-`, and
+ * this verb has none — so the flag arrived after KEY and VALUE, where Go's flag
+ * parser already stopped looking, and the CLI counted three positionals and
+ * printed its usage line.
+ */
+export async function setHubSetting(cfg: CLIConfigDir, key: string, value: string): Promise<void> {
+  await runCLI(cfg, ['admin', 'settings', 'set', '--hub', cfg.hubURL, key, value])
 }
 
 /**

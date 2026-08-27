@@ -1,5 +1,5 @@
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { assistantBubbles, firstAssistantBubble, loginViaToken, loginViaUI, openWorkspace, userBubbles, visibleOnly } from './helpers/ui'
+import { appMenuTrigger, assistantBubbles, firstAssistantBubble, loginViaToken, openWorkspace, userBubbles, visibleOnly } from './helpers/ui'
 import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
 test.describe('Message Delivery Error', () => {
@@ -102,11 +102,12 @@ test.describe('Message Delivery Error', () => {
       // survive the page refresh.
       await restartWorker(separateHubWorker)
 
-      // Reload the page
+      // Reload the page. The session cookie survives it, so the app comes
+      // back signed in and there is nothing to log in to: SignedOutOnly sends
+      // a signed-in visitor away from /login, so a loginViaUI here waits for a
+      // form that the app is redirecting away from.
       await page.reload()
-
-      // Login again
-      await loginViaUI(page)
+      await appMenuTrigger(page).waitFor({ state: 'visible' })
 
       // Navigate to the workspace (should be in sidebar)
       await page.getByText('Persist Error Test').click()

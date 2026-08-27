@@ -65,7 +65,7 @@ func decodeCursorParams(cursor string) (cursorTime sqltime.SQLiteNullTime, curso
 // the dialect-specific sqlc params struct. Centralizing decodeCursorParams + the
 // error short-circuit + store.FetchLimit here means a change to the cursor
 // decode, the clamp rule, or the probe-row accounting edits ONE site per
-// dialect instead of being copy-pasted across every list builder -- the prior
+// dialect instead of a copy in every list builder -- the prior
 // shape let ListRegistrationKeysAdmin silently bypass ClampListLimit until this
 // commit's pagination rebuild caught it.
 func withCursor[T any](cursor string, limit int64, fill func(cursorTime sqltime.SQLiteNullTime, cursorID sql.NullString, fetchLimit int64) T) (T, error) {
@@ -173,6 +173,12 @@ func listUserSessionsParams(userID, cursor string, limit int64, now time.Time) (
 func listAllAPITokensParams(clientType, cursor string, limit int64) (gendb.ListAllAPITokensParams, error) {
 	return withCursor(cursor, limit, func(ct sqltime.SQLiteNullTime, cid sql.NullString, fl int64) gendb.ListAllAPITokensParams {
 		return gendb.ListAllAPITokensParams{ClientType: clientType, CursorTime: ct, CursorID: cid, Limit: fl}
+	})
+}
+
+func listAPITokensByUserParams(userID, clientType, cursor string, limit int64) (gendb.ListAPITokensByUserParams, error) {
+	return withCursor(cursor, limit, func(ct sqltime.SQLiteNullTime, cid sql.NullString, fl int64) gendb.ListAPITokensByUserParams {
+		return gendb.ListAPITokensByUserParams{UserID: userID, ClientType: clientType, CursorTime: ct, CursorID: cid, Limit: fl}
 	})
 }
 

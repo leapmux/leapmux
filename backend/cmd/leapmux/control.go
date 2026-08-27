@@ -38,6 +38,7 @@ var controlTree = cmdGroup{
 				{Name: "logout", Summary: "Revoke + remove local credentials", Run: controlRun(cmdcontrol.RunAuthLogout)},
 				{Name: "list", Summary: "List configured hubs", Run: controlRun(cmdcontrol.RunAuthList)},
 				{Name: "status", Summary: "Show user, expiry, scope for the active hub", Run: controlRun(cmdcontrol.RunAuthStatus)},
+				{Name: "credentials", Summary: "List this account's command-line credentials on the hub", Run: controlRun(cmdcontrol.RunAuthCredentials)},
 			},
 		},
 		{
@@ -152,7 +153,7 @@ var controlTree = cmdGroup{
 			},
 		},
 		{
-			// The online, authenticated face of hub administration — the
+			// The online, authenticated surface of hub administration — the
 			// successor of the removed offline admin tree. These leaves
 			// call the Admin*Service RPCs directly (never the worker-IPC
 			// bridge); the break-glass offline subset lives in `leapmux

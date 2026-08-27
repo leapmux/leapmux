@@ -8,15 +8,15 @@ import { descriptorVisible } from './types'
  * ONE statement of the membership rule, for every consumer: the panel, the
  * navigation's occupancy test, the restart badge and warning, and the
  * search index. Each of them re-derived it — pick the source from
- * `group.admin`, match the category, then read `hidden` — so the rule was
- * stated five times and could only be corrected in all five at once.
+ * `group.admin`, match the category, then read `hidden` — so five places
+ * stated the rule, and a correction had to touch all five at once.
  *
  * A user group draws on the browser REGISTRY alone, and an admin group on
  * the hub's rows alone. A non-admin session gets no admin rows at all, so
  * an ADMINISTRATION group is empty rather than hidden by a second rule.
  *
  * Every group gets an entry, empty ones included, so a caller can address
- * a group it has not yet tested for occupancy.
+ * a group that it did not test for occupancy yet.
  */
 export function groupRowsByNav(
   groups: readonly NavGroup[],
@@ -35,6 +35,27 @@ export function groupRowsByNav(
       row.descriptor.category === group.category && descriptorVisible(row.descriptor)))
   }
   return byNav
+}
+
+/**
+ * The nav ids whose group holds at least one row the predicate accepts.
+ *
+ * Two marks read the row set this way -- the restart badge and the
+ * verified-session state -- and both must answer from the SAME rows the panel
+ * renders. A group whose matching rows are all hidden holds none, so it is
+ * not marked; a group with no rows at all cannot hold one either, so this
+ * function does not re-test occupancy.
+ */
+export function navIdsWhere(
+  rowsByNav: ReadonlyMap<string, readonly SettingRowModel[]>,
+  matches: (row: SettingRowModel) => boolean,
+): Set<string> {
+  const ids = new Set<string>()
+  for (const [navId, rows] of rowsByNav) {
+    if (rows.some(matches))
+      ids.add(navId)
+  }
+  return ids
 }
 
 /**

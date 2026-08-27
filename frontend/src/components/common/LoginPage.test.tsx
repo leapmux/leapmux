@@ -30,7 +30,7 @@ vi.mock('~/lib/systemInfo', async () => {
 
 // The fake widget holds its payload in a signal the test controls, so a
 // test can keep the form unsolved (button disabled) and release it. The
-// unavailable callback is captured so a test can simulate the hub
+// mock captures the unavailable callback so a test can simulate the hub
 // answering "no challenge" (captcha disabled at runtime).
 const [mockCaptchaPayload, setMockCaptchaPayload] = createSignal<string | null>(null)
 let mockCaptchaUnavailable: (() => void) | undefined
@@ -91,9 +91,21 @@ function renderLoginPage(initialPath = '/login') {
       <Route path="/login" component={LoginPage} />
       <Route path="/" component={() => <div data-testid="app-home" />} />
       <Route path="/verify-email" component={() => <div data-testid="verify-email-page" />} />
-      <Route path="/setup" component={() => <div data-testid="setup-page" />} />
     </MemoryRouter>
   ))
+}
+
+/**
+ * The reason a disabled control carries, read the way a screen reader gets it.
+ *
+ * <Tooltip> leaves an offscreen description in `aria-describedby` for as long
+ * as the control is disabled. It is NOT `title`: a reason long enough to be
+ * worth reading becomes the control's accessible name on `title`.
+ */
+function reasonOf(el: Element): string {
+  const describedBy = el.getAttribute('aria-describedby')
+  expect(describedBy).toBeTruthy()
+  return document.getElementById(describedBy!)?.textContent ?? ''
 }
 
 describe('loginPage', () => {
@@ -107,43 +119,22 @@ describe('loginPage', () => {
     mockLoginWithPasskey.mockResolvedValue({ verificationRequired: false, verificationEmailSent: false })
   })
 
-  // These three pin the bootstrap race. The system-info getters are plain
-  // module reads whose pre-fetch values are fabrications (soloMode = false,
-  // setupRequired = false), so sampling them before bootstrap resolves is
-  // sampling a guess. This used to run in onMount, which fires once and never
-  // re-checks: on any load that beat the RPC, a solo-mode visitor was stranded
-  // on a credential form that cannot succeed, and the signup link was pinned
-  // off. The redirects must therefore wait for auth.loading() to clear and
-  // must still fire afterwards.
-  // Each of these models the getter faithfully: it answers the module's
-  // fabricated default while bootstrap is in flight, and the truth afterwards.
-  // Reading it early therefore yields the WRONG answer, not merely an early
-  // one -- which is what made the onMount version fail silently and forever.
-  it('waits for bootstrap before deciding, then redirects a solo hub', async () => {
-    setAuthLoading(true)
-
-    renderLoginPage()
-
-    // Bootstrap is still in flight, so nothing has been decided yet.
-    expect(screen.queryByTestId('app-home')).not.toBeInTheDocument()
-
-    setSystemInfoMock({ soloMode: true })
-    setAuthLoading(false)
-
-    expect(await screen.findByTestId('app-home')).toBeInTheDocument()
-  })
-
-  it('redirects to setup once bootstrap reports a fresh install', async () => {
-    setAuthLoading(true)
-
-    renderLoginPage()
-    expect(screen.queryByTestId('setup-page')).not.toBeInTheDocument()
-
-    setSystemInfoMock({ setupRequired: true })
-    setAuthLoading(false)
-
-    expect(await screen.findByTestId('setup-page')).toBeInTheDocument()
-  })
+  // This pins the bootstrap race. The system-info getters are plain module
+  // reads whose pre-fetch values are fabrications (signupEnabled = false), so
+  // sampling them before bootstrap resolves is sampling a guess. It used to
+  // run in onMount, which fires once and never re-checks, so on any load that
+  // finished before the RPC the signup link stayed off permanently. The decision must
+  // therefore wait for auth.loading() to clear and must still happen
+  // afterwards.
+  //
+  // It models the getter faithfully: the module's fabricated default while
+  // bootstrap is in flight, and the truth afterwards. Reading it early
+  // therefore yields the WRONG answer, not merely an early one -- which is
+  // what made the onMount version fail silently and forever.
+  //
+  // Two redirects are NOT here any more. `SetupGate` answers the fresh install
+  // above the router outlet, and `SignedOutOnly` answers the solo hub for all
+  // five credential pages. See SetupGate.test.tsx and SignedOutOnly.test.tsx.
 
   it('shows the signup link once bootstrap enables it', async () => {
     setSystemInfoMock({ signupEnabled: false })
@@ -322,7 +313,7 @@ describe('loginPage', () => {
     })
   })
 
-  it('keeps Sign in disabled while bootstrap has not answered the captcha question', async () => {
+  it('keeps Sign in disabled until bootstrap answers the captcha question', async () => {
     // Fail closed: submitting against an unknown captcha policy would send
     // an empty payload the hub denies, so the button waits for the answer.
     setSystemInfoMock({ loaded: false, captchaEnabled: false })
@@ -347,7 +338,7 @@ describe('loginPage', () => {
   it('passes the login action to the captcha field under an external provider', async () => {
     // The dispatcher test covers provider switching; this pins the page's
     // half of the contract — with Turnstile selected (site key present),
-    // the field it renders is told which procedure the token is for. A
+    // the page tells the field which procedure the token is for. A
     // wrong action would make the hub's siteverify action check deny every
     // login token even though the widget solved fine.
     setSystemInfoMock({ captchaEnabled: true, captchaProvider: CaptchaProvider.TURNSTILE, captchaSiteKey: '1x00000000000000000000AA' })
@@ -386,7 +377,7 @@ describe('loginPage', () => {
     })
     fireEvent.input(screen.getByLabelText('Username'), { target: { value: 'alice' } })
     fireEvent.input(screen.getByLabelText('Password'), { target: { value: 'secret' } })
-    // An autofill heuristic dropping a value into the hidden input must
+    // A value that an autofill heuristic drops into the hidden input must
     // reach the request — the server checks it even with captcha off.
     fireEvent.input(screen.getByTestId('captcha-honeypot'), { target: { value: 'http://spam.example' } })
     fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
@@ -495,7 +486,7 @@ describe('loginPage', () => {
     expect(await screen.findByTestId('verify-email-page')).toBeInTheDocument()
   })
 
-  it('always shows the password and passkey method chooser', async () => {
+  it('shows the password and passkey method chooser when a ceremony can run', async () => {
     renderLoginPage()
     await vi.waitFor(() => {
       expect(screen.getByLabelText('Username')).toBeInTheDocument()
@@ -503,6 +494,47 @@ describe('loginPage', () => {
     expect(screen.getByRole('radiogroup', { name: 'Sign-in method' })).toBeInTheDocument()
     expect(screen.getByRole('radio', { name: 'Password' })).toBeInTheDocument()
     expect(screen.getByRole('radio', { name: 'Passkey' })).toBeInTheDocument()
+  })
+
+  // The other branch of the same condition, which nothing exercised. An option that
+  // can only fail is worse than no option: it costs a click, a browser prompt,
+  // and a raw error.
+  //
+  // The HUB's refusal is a property of the deployment, identical for every
+  // visitor, so the option goes.
+  it('drops the passkey option when the hub does not serve this origin', async () => {
+    setSystemInfoMock({ passkeyBlocker: 'origin-not-allowed' })
+    renderLoginPage()
+    await vi.waitFor(() => {
+      expect(screen.getByLabelText('Username')).toBeInTheDocument()
+    })
+    expect(screen.queryByRole('radio', { name: 'Passkey' })).not.toBeInTheDocument()
+    // The password option survives, which is the point: the form still signs
+    // somebody in rather than losing its chooser with the option.
+    expect(screen.getByRole('radio', { name: 'Password' })).toBeInTheDocument()
+    expect(screen.getByLabelText('Password')).toBeInTheDocument()
+  })
+
+  // The BROWSER's refusal is a property of where the reader is, and
+  // they can move. So the option STAYS and carries the reason: hiding it
+  // leaves somebody whose only credential is a passkey at a dead end with
+  // nothing to read.
+  it.each([
+    ['the page is not secure', 'insecure-context' as const, /secure page/i],
+    ['the browser has no WebAuthn', 'no-webauthn' as const, /does not support passkeys/i],
+  ])('keeps the passkey option and says why when %s', async (_case, blocker, expected) => {
+    setSystemInfoMock({ passkeyBlocker: blocker })
+    renderLoginPage()
+    await vi.waitFor(() => {
+      expect(screen.getByLabelText('Username')).toBeInTheDocument()
+    })
+
+    // The lookup itself is half the assertion: the pill keeps its own name.
+    const passkey = screen.getByRole('radio', { name: 'Passkey' })
+    expect(passkey).toBeDisabled()
+    expect(passkey).not.toHaveAttribute('title')
+    expect(reasonOf(passkey)).toMatch(expected)
+    expect(screen.getByLabelText('Password')).toBeInTheDocument()
   })
 
   it('shows forgot password when email is enabled and password sign-in is selected', async () => {

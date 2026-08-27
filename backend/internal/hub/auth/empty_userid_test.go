@@ -38,6 +38,7 @@ var zeroUserIDDenyFuncs = []string{
 	"CheckDelegationWorkerScope",
 	"(*DelegationScopeCache).Resolve",
 	"RevokeAllUserCredentials",
+	"RevokeUserCredentialsExceptAPIToken",
 }
 
 // TestZeroUserIDDenies exercises the deny-closed contract for every entry in
@@ -168,6 +169,22 @@ func TestZeroUserIDDenies(t *testing.T) {
 				// Control: a real user's revocation succeeds, so the refusal
 				// above is about the id and not about revocation never working.
 				_, _, err = auth.RevokeAllUserCredentials(ctx, st, ownerID)
+				require.NoError(t, err, "control: a real user's credentials revoke")
+			case "RevokeUserCredentialsExceptAPIToken":
+				// The same polarity, and the exclusion must not weaken it: a
+				// zero id refuses whether or not the caller names a row to
+				// keep. This is the variant the self-service password change
+				// binds, so a silent no-op here would leave every credential
+				// of the account live after a change the user made to end
+				// them.
+				api, deleg, err := auth.RevokeUserCredentialsExceptAPIToken(ctx, st, zero, "keep")
+				require.Error(t, err, "a zero UserID must not report a successful revocation")
+				assert.Zero(t, api)
+				assert.Zero(t, deleg)
+
+				// Control: a real user's revocation succeeds with an exclusion
+				// that matches no row of theirs.
+				_, _, err = auth.RevokeUserCredentialsExceptAPIToken(ctx, st, ownerID, "keep")
 				require.NoError(t, err, "control: a real user's credentials revoke")
 			case "ResolveDelegationWorkerScope":
 				// `user.ID.Matches(minter.RegisteredBy)` decides whether a

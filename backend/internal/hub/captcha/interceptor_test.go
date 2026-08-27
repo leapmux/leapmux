@@ -162,35 +162,70 @@ func TestInterceptorPassesThroughWhenDisabled(t *testing.T) {
 	assert.True(t, *soloCalled)
 }
 
-// TestInterceptorRuntimeDisablesAltchaOnInsecureOrigin pins the
-// Origin-driven stand-down through the interceptor: a payload-less Login
-// from an insecure HTTP Origin passes for ALTCHA, while the same request
-// without Origin (or with a secure Origin) still requires a token. The
-// honeypot keeps running either way.
-func TestInterceptorRuntimeDisablesAltchaOnInsecureOrigin(t *testing.T) {
-	e := newTestManager(t, false)
+// TestInterceptorIgnoresOriginForTheSecureContextGate is the security
+// half of the secure-context rule, and the reason the gate stopped reading
+// the request.
+//
+// The gate used to take its answer from the Origin header, so any caller
+// could send "Origin: http://a" and switch ALTCHA off for its own request
+// -- in front of Login, RequestPasswordReset and both passkey Begin
+// procedures, which have no other automation control. The hub now decides
+// from its own configuration, so a forged header changes nothing.
+func TestInterceptorIgnoresOriginForTheSecureContextGate(t *testing.T) {
+	// A published HTTPS hub: ALTCHA is enforced here, and no header may
+	// say otherwise.
+	e := newTestManagerPublishedAt(t, testPublicURL, false)
 	freshVerifiedPayload(t, e) // provision + cheap settings; settings stay enabled
 	client, called := newLoginClient(t, NewInterceptor(e.m))
 
-	insecureReq := connect.NewRequest(&leapmuxv1.LoginRequest{})
-	insecureReq.Header().Set("Origin", "http://192.168.1.5:8080")
-	_, err := client.Login(context.Background(), insecureReq)
+	for _, origin := range []string{
+		"http://a",
+		"http://192.168.1.5:8080",
+		"http://evil.test",
+		"null",
+	} {
+		*called = false
+		req := connect.NewRequest(&leapmuxv1.LoginRequest{})
+		req.Header().Set("Origin", origin)
+		// Referer is the other half of the old header pair, so forge both.
+		req.Header().Set("Referer", "http://192.168.1.5:8080/login")
+		_, err := client.Login(context.Background(), req)
+		require.Errorf(t, err, "Origin %q must not disable the captcha", origin)
+		assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+		assert.Falsef(t, *called,
+			"Origin %q reached the Argon2 handler with no captcha token", origin)
+	}
+
+	// A real token still passes, so the check refuses the forgery rather
+	// than refusing everything.
+	*called = false
+	payload := freshVerifiedPayload(t, e)
+	okReq := connect.NewRequest(&leapmuxv1.LoginRequest{CaptchaPayload: payload})
+	okReq.Header().Set("Origin", "http://a")
+	_, err := client.Login(context.Background(), okReq)
+	require.NoError(t, err)
+	assert.True(t, *called)
+}
+
+// TestInterceptorStandsDownWhenTheHubCannotServeASecureContext pins the
+// usability half: on a hub that cannot offer a solvable ALTCHA challenge,
+// a payload-less Login passes. The honeypot keeps running either way.
+func TestInterceptorStandsDownWhenTheHubCannotServeASecureContext(t *testing.T) {
+	e := newTestManagerPublishedAt(t, "http://192.168.1.5:8080", false)
+	// Provision the ALTCHA row and its cheap tuning WITHOUT minting a
+	// challenge: this hub stands ALTCHA down, so AltchaChallengeJSON
+	// correctly returns nothing and there is no challenge to solve.
+	applyTestAltchaSettings(t, e, cheapAltchaSettings)
+	client, called := newLoginClient(t, NewInterceptor(e.m))
+
+	_, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{}))
 	require.NoError(t, err)
 	assert.True(t, *called)
 	assert.True(t, CaptchaEnabledKey.Of(e.set.Snapshot(context.Background())),
-		"interceptor must not persist captcha.enabled=false")
-
-	*called = false
-	secureReq := connect.NewRequest(&leapmuxv1.LoginRequest{})
-	secureReq.Header().Set("Origin", "https://example.com")
-	_, err = client.Login(context.Background(), secureReq)
-	require.Error(t, err)
-	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
-	assert.False(t, *called)
+		"the interceptor must not persist captcha.enabled=false")
 
 	*called = false
 	honeypotReq := connect.NewRequest(&leapmuxv1.LoginRequest{Honeypot: "http://spam.example"})
-	honeypotReq.Header().Set("Origin", "http://192.168.1.5:8080")
 	_, err = client.Login(context.Background(), honeypotReq)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))

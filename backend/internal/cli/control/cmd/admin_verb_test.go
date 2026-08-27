@@ -26,8 +26,8 @@ const workerIPCSock = "unix:/tmp/agent.sock"
 // its own validation. The transport is then the only thing left to refuse
 // it.
 type adminLeaf struct {
-	// fn is the exported entry point, so the coverage check below can name
-	// a verb that nobody added here.
+	// fn is the exported entry point, so the coverage check below can
+	// identify a verb that nobody added here.
 	fn string
 	// name is the command path, for the subtest name.
 	name string
@@ -138,16 +138,16 @@ func adminLeaves() []adminLeaf {
 
 		{"RunAdminRateLimitList", "rate-limit list", func() error { return RunAdminRateLimitList(nil, nil) }},
 		{"RunAdminRateLimitSet", "rate-limit set", func() error {
-			return RunAdminRateLimitSet(nil, []string{"--operation", "change-password", "--max-attempts", "5"})
+			return RunAdminRateLimitSet(nil, []string{"--operation", "elevation", "--max-attempts", "5"})
 		}},
 		{"RunAdminRateLimitSetEnabled", "rate-limit enable", func() error {
-			return RunAdminRateLimitSetEnabled(nil, []string{"--operation", "change-password"}, true)
+			return RunAdminRateLimitSetEnabled(nil, []string{"--operation", "elevation"}, true)
 		}},
 		{"RunAdminRateLimitSetEnabled", "rate-limit disable", func() error {
-			return RunAdminRateLimitSetEnabled(nil, []string{"--operation", "change-password"}, false)
+			return RunAdminRateLimitSetEnabled(nil, []string{"--operation", "elevation"}, false)
 		}},
 		{"RunAdminRateLimitReset", "rate-limit reset", func() error {
-			return RunAdminRateLimitReset(nil, []string{"--operation", "change-password"})
+			return RunAdminRateLimitReset(nil, []string{"--operation", "elevation"})
 		}},
 	}
 }

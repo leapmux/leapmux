@@ -132,6 +132,11 @@ func (s *userStore) ExistsByEmail(ctx context.Context, email, excludeUserID stri
 func (s *userStore) ConsumeVerificationAttempt(ctx context.Context, id string, now time.Time, maxAttempts int64) (*store.User, error) {
 	var out *store.User
 	err := s.conn.withTransaction(ctx, func(conn *mysqlConn) error {
+		// Reset first: withTransaction repeats the whole callback after a
+		// retryable conflict, and every path below the read can leave before
+		// the assignment. A stale row from a rolled-back attempt must not
+		// reach the caller. See the contract on store.Store.
+		out = nil
 		res, err := conn.q.ConsumeVerificationAttempt(ctx, gendb.ConsumeVerificationAttemptParams{
 			ID:          id,
 			Now:         sqltime.MySQLNullTimeOf(now),
@@ -163,7 +168,11 @@ func (s *userStore) GetPrefs(ctx context.Context, id string) (string, error) {
 	return prefs, mapErr(err)
 }
 
+// See store.ErrLockingReadOutsideTransaction for the rule and its reason.
 func (s *userStore) GetPrefsForUpdate(ctx context.Context, id string) (string, error) {
+	if !s.conn.inTx() {
+		return "", store.ErrLockingReadOutsideTransaction
+	}
 	prefs, err := s.conn.q.GetUserPrefsForUpdate(ctx, id)
 	return prefs, mapErr(err)
 }
@@ -209,8 +218,8 @@ func loadUserInfoCacheFields(ctx context.Context, conn *mysqlConn, id string) (s
 
 // runUserInfoMutation wires the shared RunUserInfoMutation to this dialect's
 // projection read, locked clock reading, and user_info event insert, so the
-// durable cache-invalidation is derived from the before/after cached-field
-// projection rather than a hand-computed flag. Soft path only (nil fence):
+// before/after cached-field projection derives the durable cache-invalidation
+// rather than a hand-computed flag. Soft path only (nil fence):
 // grants and non-gate changes stay on user_info. MySQL has no RETURNING, so it
 // locks the row FOR UPDATE to fix a single clock reading (shared by the UPDATE
 // and the emitted event) before running update; a missing id is a no-op. update
@@ -484,6 +493,10 @@ func (s *userStore) ClearPendingPasswordReset(ctx context.Context, id string) er
 func (s *userStore) ConsumePasswordResetAttemptByToken(ctx context.Context, tokenHash string, now time.Time, maxAttempts int64) (*store.User, error) {
 	var out *store.User
 	err := s.conn.withTransaction(ctx, func(conn *mysqlConn) error {
+		// Reset first: a retried attempt that fails after an earlier attempt
+		// filled this variable would otherwise report a row the backend
+		// rolled back. See ConsumeVerificationAttempt.
+		out = nil
 		res, err := conn.q.ConsumePasswordResetAttemptByToken(ctx, gendb.ConsumePasswordResetAttemptByTokenParams{
 			PendingPasswordResetToken: tokenHash,
 			Now:                       sqltime.MySQLNullTimeOf(now),
@@ -513,6 +526,10 @@ func (s *userStore) ConsumePasswordResetAttemptByToken(ctx context.Context, toke
 func (s *userStore) CompletePasswordReset(ctx context.Context, p store.CompletePasswordResetParams) (*store.PasswordResetRevocation, error) {
 	var out *store.PasswordResetRevocation
 	err := s.conn.withTransaction(ctx, func(conn *mysqlConn) error {
+		// Reset first: a retried attempt that fails must not report the
+		// revocation an earlier, rolled-back attempt computed. The caller
+		// tears down live streams from this value.
+		out = nil
 		row, err := conn.q.GetUserTokensRevocationForUpdate(ctx, p.ID)
 		if errors.Is(err, sql.ErrNoRows) {
 			return store.ErrNotFound
@@ -550,9 +567,9 @@ func (s *userStore) CompletePasswordReset(ctx context.Context, p store.CompleteP
 func (s *userStore) RevokeUserTokens(ctx context.Context, userID userid.UserID) (int64, error) {
 	owner, ok := userid.OwnerFilter(userID)
 	if !ok {
-		// An unminted caller names no user, so a bulk mutation must refuse
-		// rather than address every blank-owner row -- or report success
-		// having changed nothing. See userid.OwnerFilter.
+		// An unminted caller specifies no user, so a bulk mutation must refuse
+		// rather than address every blank-owner row -- or report success when
+		// it changed nothing. See userid.OwnerFilter.
 		return 0, store.ErrInvalidArgument
 	}
 	return store.RunCredentialMutation(ctx, s.conn.withTransaction, func(ctx context.Context, conn *mysqlConn) (*store.CredentialEvent, error) {

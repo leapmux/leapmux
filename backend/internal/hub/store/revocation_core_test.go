@@ -215,3 +215,97 @@ func TestRevocationCoreRejectsInvalidLeaseBeforeDatabaseWork(t *testing.T) {
 	assert.Equal(t, int64(1), conn.pending, "invalid reacquire must not open a write transaction")
 	assert.Zero(t, conn.transactions)
 }
+
+// retryingOps wraps a RevocationCoreOps with an InTransaction that runs the
+// callback TWICE, exactly as the postgres and mysql dialects do when the
+// backend aborts the first attempt for a retryable conflict. The first attempt
+// runs to the end and then "loses its commit"; the second one fails early, so
+// any value only the first attempt assigned is still in the captured variable.
+func retryingOps(ops RevocationCoreOps[*revocationCoreTestConn], conn *revocationCoreTestConn, attempts *int) RevocationCoreOps[*revocationCoreTestConn] {
+	ops.InTransaction = func(_ context.Context, fn func(*revocationCoreTestConn) error) error {
+		*attempts++
+		before := *conn
+		if err := fn(conn); err != nil {
+			*conn = before
+			return err
+		}
+		// The first attempt committed nothing: roll it back and run again.
+		*conn = before
+		*attempts++
+		if err := fn(conn); err != nil {
+			*conn = before
+			return err
+		}
+		return nil
+	}
+	return ops
+}
+
+// TestRevocationCoreCompactReportsNothingWhenTheRetryFails pins the retry
+// contract on CompactPublished: a callback that may run twice must OVERWRITE
+// the count it reports, so a failed second attempt cannot report the rows
+// the first, rolled-back attempt deleted.
+func TestRevocationCoreCompactReportsNothingWhenTheRetryFails(t *testing.T) {
+	conn := &revocationCoreTestConn{}
+	attempts := 0
+	boom := errors.New("lease delete aborted")
+	ops := RevocationCoreOps[*revocationCoreTestConn]{
+		DeleteExpiredLease: func(_ context.Context, c *revocationCoreTestConn) error {
+			c.leaseDeletes++
+			// The attempt counter lives outside the conn, which the harness
+			// rolls back between attempts, so only the SECOND attempt fails.
+			if attempts > 1 {
+				return boom
+			}
+			return nil
+		},
+		CompactPublished: func(_ context.Context, c *revocationCoreTestConn, _ time.Time) (int64, error) {
+			c.compactions++
+			return 7, nil
+		},
+	}
+	core := NewRevocationCore(conn, retryingOps(ops, conn, &attempts))
+
+	deleted, err := core.CompactPublished(context.Background(), time.Now())
+	require.ErrorIs(t, err, boom)
+	assert.Equal(t, 2, attempts, "the harness must have run the callback twice")
+	assert.Zero(t, deleted,
+		"a failed retry must report 0, not the rows the rolled-back attempt deleted")
+}
+
+// TestRevocationCoreAcquireReportsNoFenceWhenTheRetryFails is the same rule on
+// the lease cursor. The fence decides which revocation events a fresh Hub
+// replays, so a value from a rolled-back attempt would skip events.
+func TestRevocationCoreAcquireReportsNoFenceWhenTheRetryFails(t *testing.T) {
+	conn := &revocationCoreTestConn{sequence: 12}
+	attempts := 0
+	boom := errors.New("sequence lock aborted")
+	ops := RevocationCoreOps[*revocationCoreTestConn]{
+		LockSequence: func(_ context.Context, c *revocationCoreTestConn) (int64, error) {
+			// Only the SECOND attempt fails; see the note in the compact twin.
+			if attempts > 1 {
+				return 0, boom
+			}
+			return c.sequence, nil
+		},
+		PublishRows:        func(context.Context, *revocationCoreTestConn, int32, int64) (int64, error) { return 0, nil },
+		SetSequence:        func(context.Context, *revocationCoreTestConn, int64) error { return nil },
+		DeleteExpiredLease: func(context.Context, *revocationCoreTestConn) error { return nil },
+		InsertLease: func(_ context.Context, c *revocationCoreTestConn, lease RevocationLease) error {
+			c.lease = lease
+			c.leasePresent = true
+			return nil
+		},
+	}
+	core := NewRevocationCore(conn, retryingOps(ops, conn, &attempts))
+
+	fence, err := core.AcquireHubRuntimeLease(context.Background(), AcquireHubRuntimeLeaseParams{
+		HolderID:      "hub-1",
+		PublishLimit:  10,
+		LeaseDuration: time.Minute,
+	})
+	require.ErrorIs(t, err, boom)
+	assert.Equal(t, 2, attempts, "the harness must have run the callback twice")
+	assert.Zero(t, fence,
+		"a failed retry must report no fence, not the cursor the rolled-back attempt computed")
+}

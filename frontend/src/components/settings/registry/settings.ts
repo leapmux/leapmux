@@ -3,7 +3,7 @@ import type { PreferencesState } from '~/context/PreferencesContext'
 import { createLogger } from '~/lib/logger'
 import { isDesktopApp, isSoloMode } from '~/lib/systemInfo'
 import { themeLabel, THEMES } from '~/styles/themes'
-import { browserToggle, dualFontHalf, dualScalar } from './bindings'
+import { browserToggle, CUSTOM_EDITOR_OWNS_ITS_VALUE, dualFontHalf, dualScalar } from './bindings'
 import { requestTerminalOsNotifications } from './terminalNotifications'
 
 const log = createLogger('settingsRegistry')
@@ -62,11 +62,23 @@ export interface BrowserOnlySettingDecl extends SettingDeclBase {
   control: SettingControl
   restart?: boolean
   /**
+   * Whether the hub refuses this row's writes on a session that did not
+   * prove a factor recently. See `SettingDescriptor.needsElevation`; the
+   * value passes straight through to the descriptor.
+   *
+   * An ACCOUNT-backed entry states none of the descriptor's shape, so it
+   * cannot declare this either — the hub's own descriptor would have to
+   * carry it. No account KEY is elevation-guarded today, so nothing is
+   * missing; the custom account editors below are, and they are
+   * browser-only entries.
+   */
+  needsElevation?: boolean
+  /**
    * Return this entry's browser tier to its sentinel default.
    *
    * BROWSER-ONLY entries declare it. A `dual` entry does NOT: its binding
    * already builds exactly this action as `clearOverride`, and the two
-   * copies had already drifted into a pair that reset one font tier twice
+   * copies already drifted into a pair that reset one font tier twice
    * and could reset the other never. `buildBrowserReset` takes the dual
    * action from the binding.
    */
@@ -79,7 +91,7 @@ export interface BrowserOnlySettingDecl extends SettingDeclBase {
  * The hub ships a full descriptor for every account key on
  * `ListUserSettings`, so this entry states none of the value's shape — not
  * the category, not the control kind, not the enum values, not the numeric
- * bounds. `createBrowserRows` reads all of that off the wire and joins it
+ * limits. `createBrowserRows` reads all of that off the wire and joins it
  * to this declaration on `protoKey` + `protoField`. Restating that shape
  * here made a second source of truth that one golden file alone pinned to
  * Go, and a client which offers a value the hub's validator refuses stores
@@ -104,7 +116,7 @@ export interface AccountSettingDecl extends SettingDeclBase {
    * a reader has to split: a settings key may itself contain a dot
    * (`captcha.altcha` on the hub scope), so splitting on the first one is
    * a rule that holds only until it does not. An absent `protoField`
-   * addresses the key's scalar, which the wire names `''`.
+   * addresses the key's scalar, which the wire identifies as `''`.
    */
   protoKey: string
   protoField?: string
@@ -456,10 +468,7 @@ export const browserSettings: BrowserSettingDecl[] = [
     // The key-pin store is trust state, not a preference override: the
     // "reset all browser overrides" row deliberately leaves it alone, so this
     // entry declares no resetBrowser.
-    bind: () => ({
-      value: () => null,
-      set: () => {},
-    }),
+    bind: () => CUSTOM_EDITOR_OWNS_ITS_VALUE,
   },
   {
     id: 'advanced.resetBrowserOverrides',
@@ -485,19 +494,99 @@ export const browserSettings: BrowserSettingDecl[] = [
   },
 
   // --- Account ---
+  //
+  // ONE ROW PER CONCERN, each with its own custom editor. They were a single
+  // "Account" row whose editor drew its own <h3> headings inside it, so the
+  // panel carried three label styles at once and printed "Command-line
+  // credentials" twice — once as the row's label and once as a heading inside
+  // it. A row per concern gives the panel the same vocabulary as every other
+  // group: the row supplies the label, the help and the separator.
+  //
+  // `needsElevation` is declared per row and not per group, because the group
+  // is genuinely mixed: a name is not a credential and moves no recovery
+  // identity, and revoking a command-line credential can only REDUCE access
+  // (demanding a fresh factor from somebody who believes one is stolen is the
+  // wrong failure mode). The other four move a durable identity, and the hub
+  // refuses each without a recently proven factor.
+  //
+  // Every one of them is hidden in solo mode: solo authenticates every request
+  // as the local user, so there is no account to administer and no CLI
+  // credential to mint.
   {
     id: 'account.profile',
     category: 'account',
-    label: 'Account',
-    help: 'Username, display name, email, password and linked accounts.',
+    label: 'Profile',
+    help: 'The username other people address you by, and the name the app shows.',
+    keywords: ['username', 'display name', 'profile', 'name'],
     scope: 'account',
-    control: { kind: 'custom', id: 'account' },
+    control: { kind: 'custom', id: 'accountProfile' },
     sentinel: 'nullable',
     hidden: () => isSoloMode(),
-    bind: () => ({
-      value: () => null,
-      set: () => {},
-    }),
+    bind: () => CUSTOM_EDITOR_OWNS_ITS_VALUE,
+  },
+  {
+    id: 'account.email',
+    category: 'account',
+    label: 'Email',
+    help: 'The address that receives the password-reset link, and how to change it.',
+    keywords: ['email', 'address', 'verify', 'recovery'],
+    scope: 'account',
+    control: { kind: 'custom', id: 'accountEmail' },
+    sentinel: 'nullable',
+    needsElevation: true,
+    hidden: () => isSoloMode(),
+    bind: () => CUSTOM_EDITOR_OWNS_ITS_VALUE,
+  },
+  {
+    id: 'account.password',
+    category: 'account',
+    label: 'Password',
+    help: 'Set or change the password you sign in with.',
+    keywords: ['password', 'credential', 'sign in'],
+    scope: 'account',
+    control: { kind: 'custom', id: 'accountPassword' },
+    sentinel: 'nullable',
+    needsElevation: true,
+    hidden: () => isSoloMode(),
+    bind: () => CUSTOM_EDITOR_OWNS_ITS_VALUE,
+  },
+  {
+    id: 'account.passkeys',
+    category: 'account',
+    label: 'Passkeys',
+    help: 'The passkeys registered to this account, and how to add or remove one.',
+    keywords: ['passkey', 'webauthn', 'security key', 'fido'],
+    scope: 'account',
+    control: { kind: 'custom', id: 'accountPasskeys' },
+    sentinel: 'nullable',
+    needsElevation: true,
+    hidden: () => isSoloMode(),
+    bind: () => CUSTOM_EDITOR_OWNS_ITS_VALUE,
+  },
+  {
+    id: 'account.linkedProviders',
+    category: 'account',
+    label: 'Linked accounts',
+    help: 'The identity providers you sign in through, and how to detach one.',
+    keywords: ['oauth', 'provider', 'github', 'link', 'unlink', 'sso'],
+    scope: 'account',
+    control: { kind: 'custom', id: 'accountLinkedProviders' },
+    sentinel: 'nullable',
+    needsElevation: true,
+    hidden: () => isSoloMode(),
+    bind: () => CUSTOM_EDITOR_OWNS_ITS_VALUE,
+  },
+  {
+    id: 'account.cliTokens',
+    category: 'account',
+    label: 'Command-line credentials',
+    help: 'Devices signed in with the control CLI, and how to revoke one.',
+    keywords: ['cli', 'token', 'device', 'revoke', 'api'],
+    scope: 'account',
+    control: { kind: 'custom', id: 'accountCliTokens' },
+    sentinel: 'nullable',
+    hidden: () => isSoloMode(),
+    bind: () => CUSTOM_EDITOR_OWNS_ITS_VALUE,
   },
 ]
 
@@ -523,7 +612,7 @@ export interface BrowserResetAction {
  *
  * A DUAL entry's action comes from its own binding's `clearOverride`, not
  * from a second copy on the entry. That is the same operation, and the
- * copies had drifted. It also makes the action ONE PER KEY rather than one
+ * copies drifted. It also makes the action ONE PER KEY rather than one
  * per row: a font tier renders its toggle and its stack as two rows over
  * one override document, so a per-row list cleared `ui_fonts` twice and
  * misstated what it does.

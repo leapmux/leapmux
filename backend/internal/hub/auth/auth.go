@@ -51,8 +51,8 @@ const MinSessionDuration = touchSlideDivisor * sessionCacheTTL
 // the floor, so a change to either cannot leave the check behind. The caller
 // adds the name of the setting.
 //
-// There is no upper bound: a long session is a policy an operator may hold, and
-// the slide makes it an idle timeout rather than an unbounded credential.
+// There is no upper limit: a long session is a policy an operator may hold, and
+// the slide makes it an idle timeout rather than an unlimited credential.
 func ValidateSessionDuration(d time.Duration) error {
 	switch {
 	case d < 0:
@@ -114,24 +114,35 @@ const userKey contextKey = iota
 
 // UserInfo contains the authenticated user's information.
 //
-// Email and EmailVerified are loaded by ValidateToken from a JOIN on
-// users; they're cached for sessionCacheTTL alongside the rest. Mutating
+// ValidateToken loads Email and EmailVerified from a JOIN on users; the
+// cache holds them for sessionCacheTTL alongside the rest. Mutating
 // either column on `users` (verify, change, admin reset) requires evicting the
 // user's cached authentication contexts — see AuthContextRegistry.EvictByUserID.
 // That is deliberately separate from credential revocation, which uses
 // AuthContextRegistry.RevokeUserAuthContextAtGeneration.
 //
-// Credential.WorkerScopeID is set only when the request was authenticated
-// by a delegation_tokens row (as opposed to a session cookie or an
-// api_tokens bearer). It names the worker that MINTED the token, which is the
+// Credential.WorkerScopeID carries a value only when a delegation_tokens row
+// authenticated the request (as opposed to a session cookie or an
+// api_tokens bearer). It identifies the worker that MINTED the token, which is the
 // one axis a delegation bearer is narrowed on: downstream authorization
 // (ChannelService.verifyDelegationWorkerScope, crdt's worker-scoped auth
 // checker) refuses a bearer aimed at a different machine of the same user, so
 // a leaked token cannot pivot off the worker it was issued on.
 //
 // AuthenticatedAt is the timestamp of the stored session or bearer row that
-// authenticated the request. It is retained for auditing and diagnostics;
-// user-wide revocation correctness is based on UserAuthGeneration.
+// authenticated the request. User-wide revocation correctness rests on
+// UserAuthGeneration, not on this field.
+//
+// It is also an authorization input, so it must stay the instant of the
+// authentication and must never track a slide. Every producer that specifies a
+// stored credential reads that row's created_at, and the session slide
+// rewrites last_active_at and expires_at alone. LoadSoloUser stamps the
+// process clock instead, which is safe only because it carries no
+// Credential and the admission below refuses on the credential kind first.
+// service.assertFirstCredentialAuthIsFresh refuses to attach an account's
+// FIRST password or passkey on a session older than a short window, and a
+// slid value would make a stolen cookie permanently fresh for that
+// admission.
 //
 // UserAuthGeneration is the user's persisted credential epoch observed by the
 // credential that authenticated this request. Long-lived channel registration
@@ -142,17 +153,49 @@ const userKey contextKey = iota
 // validation. OpenChannel rejects a request whose session, bearer, or user
 // identity was evicted after this generation, closing the race where a cache
 // hit happens just before the watcher evicts and sweeps current channels.
+//
+// Elevation is the credential's step-up state. A session cookie and a
+// command-line credential both carry one; a delegation bearer and a solo
+// request carry the zero value. Read it through Elevated(now) rather than
+// directly -- see Elevation on why the deadline stays raw here and the
+// predicate takes the current instant.
+//
+// CredentialAdminScope reports whether an API-token credential was minted
+// with hub administration. It lives on UserInfo rather than on
+// CredentialIdentity because that value is compared by value on the hot path
+// (channel and lease indexes key on it), and a second field would change
+// what "same credential" means there. Cookies carry no scope column and
+// leave it false; enforceAdmin admits a session on IsAdmin alone.
 type UserInfo struct {
-	ID                  userid.UserID
-	Username            string
-	IsAdmin             bool
-	Email               string
-	EmailVerified       bool
-	Credential          CredentialIdentity
-	AuthenticatedAt     time.Time
-	CredentialExpiresAt CredentialDeadline
-	UserAuthGeneration  int64
-	AuthGeneration      uint64
+	ID                   userid.UserID
+	Username             string
+	IsAdmin              bool
+	Email                string
+	EmailVerified        bool
+	Credential           CredentialIdentity
+	CredentialAdminScope bool
+	AuthenticatedAt      time.Time
+	CredentialExpiresAt  CredentialDeadline
+	Elevation            Elevation
+	UserAuthGeneration   int64
+	AuthGeneration       uint64
+	// Solo marks solo mode's synthetic user. LoadSoloUser is the only
+	// producer; every authenticated path leaves it false.
+	Solo bool
+}
+
+// SoloAuthenticated reports whether this is solo mode's synthetic user.
+//
+// Solo mode authenticates every request as one bootstrapped account with no
+// session row and no credential row, so the questions the credential-shaped
+// rules ask have no answer for it. The elevation rule is the one that matters:
+// there is no sign-in, so there is no ceremony to prove a factor with, and a
+// gate that demanded one would refuse the whole hub-administration surface for
+// ever. The predicate lives here, on the identity itself, so a rule states its
+// solo answer once rather than each gate testing a credential kind that solo
+// mode never fills.
+func (u *UserInfo) SoloAuthenticated() bool {
+	return u != nil && u.Solo
 }
 
 // CredentialCurrent reports whether the credential is still live at now. Nil-safe:
@@ -185,25 +228,29 @@ func MustGetUser(ctx context.Context) (*UserInfo, error) {
 	return u, nil
 }
 
-// ErrInvalidCurrentPassword wraps every ChangePassword rejection caused by a
-// wrong current password. The rate limiter keys on it via errors.Is so that
-// only genuine credential failures count toward a user's attempt budget —
-// weak-new-password validation and transient internal errors must never
-// lock anyone out.
+// ErrInvalidCurrentPassword wraps a rejected password on the ELEVATION path.
+// verifyElevationPassword is its sole producer, for ElevateSession: an
+// account with no password, and a password that does not match, both report
+// it. ChangePassword raised it too until the elevation window replaced its
+// current-password check -- that verb now presents no secret of its own.
+//
+// The rate limiter keys on it via errors.Is so that only genuine credential
+// failures count toward a user's attempt budget -- weak-new-password
+// validation and transient internal errors must never lock anyone out.
 var ErrInvalidCurrentPassword = errors.New("current password is incorrect")
 
-// ErrInvalidReauthProof wraps passkey-management rejections caused by a
-// missing, expired, or invalid reauth proof (and failed FinishPasskeyReauth
-// assertions). The rate limiter keys on it the same way it keys on
-// ErrInvalidCurrentPassword.
-var ErrInvalidReauthProof = errors.New("invalid or expired reauth proof")
+// ErrInvalidElevationAssertion wraps a failed passkey assertion on the
+// step-up path (FinishPasskeyElevation). The rate limiter keys on it the same
+// way it keys on ErrInvalidCurrentPassword, so the two factors a user can
+// present to elevate share one attempt budget.
+var ErrInvalidElevationAssertion = errors.New("passkey verification failed")
 
 // RevokeAllUserCredentials revokes every active api_tokens and
 // delegation_tokens row for userID and, via RevokeUserTokens, bumps
 // users.tokens_revoked_at AND users.auth_generation, emitting the durable
 // user_tokens revocation event that carries the new generation to other Hub
 // processes (the backbone of cross-process teardown). Returns (apiCount,
-// delegationCount) so admin handlers can report what was killed.
+// delegationCount) so admin handlers can report what it revoked.
 //
 // Caller-side concerns:
 //   - The bearer cache lives in the running hub process; admin CLI
@@ -216,11 +263,52 @@ var ErrInvalidReauthProof = errors.New("invalid or expired reauth proof")
 // Returns the first store error and leaves later steps unrun, so a
 // failed api-token revoke aborts before the delegation-token revoke
 // or the watermark bump.
+//
+// "All" is the whole of the promise: this spares NOTHING, and an
+// administrator's ResetPassword and DeleteUser depend on that.
+// RevokeUserCredentialsExceptAPIToken below is the one variant that keeps a
+// row, and only the self-service step-up path calls it.
 func RevokeAllUserCredentials(ctx context.Context, st store.Store, userID userid.UserID) (int64, int64, error) {
+	return RevokeUserCredentialsExceptAPIToken(ctx, st, userID, "")
+}
+
+// RevokeUserCredentialsExceptAPIToken is the same revocation, minus ONE
+// command-line credential.
+//
+// The self-service step-up path is its only caller, and it needs the
+// exclusion for the same reason Sessions().DeleteOthers takes KeepID. A user
+// who changes their password from a browser keeps the session that asked; a
+// user who changes it from the command line must keep the credential that
+// asked. Without the exclusion that credential destroyed itself as a side
+// effect of its own success: the change committed, and every later call
+// answered Unauthenticated with the credential file still on disk.
+//
+// The exclusion is narrow on purpose. It spares ONE api_tokens row. Every
+// delegation token still dies -- a worker mints those for an agent, and no
+// agent is the person who changed the password -- and the account's
+// credential epoch still moves, which is what ends every session and every
+// cached authentication context.
+//
+// keepAPITokenID EMPTY revokes every row, which is what an administrator's
+// ResetPassword and DeleteUser need: RevokeAllUserCredentials above is the
+// name for that intent, and no caller of it changed.
+//
+// The kept row needs one more write that this does NOT do: the epoch bump
+// leaves its api_tokens.auth_generation behind users.auth_generation, and
+// TokenValidator refuses a row in that state. The caller pairs this with
+// APITokens().RefreshAuthGeneration, exactly as the session path pairs the
+// delete with Sessions().RefreshAuthGeneration. It stays the caller's write
+// because the caller is the one place that knows WHICH row it kept.
+func RevokeUserCredentialsExceptAPIToken(
+	ctx context.Context, st store.Store, userID userid.UserID, keepAPITokenID string,
+) (int64, int64, error) {
 	var apiCount, delegationCount int64
 	err := st.RunInUserAuthTransaction(ctx, userID, func(tx store.Store) error {
 		var err error
-		apiCount, err = tx.APITokens().RevokeByUser(ctx, userID)
+		apiCount, err = tx.APITokens().RevokeOthers(ctx, store.RevokeOtherAPITokensParams{
+			UserID: userID,
+			KeepID: keepAPITokenID,
+		})
 		if err != nil {
 			return fmt.Errorf("revoke api tokens: %w", err)
 		}
@@ -238,17 +326,17 @@ func RevokeAllUserCredentials(ctx context.Context, st store.Store, userID userid
 
 // LoadSoloUser looks up the bootstrapped solo user and maps it into a
 // UserInfo suitable for synthetic authentication in solo mode. Returns
-// store.ErrNotFound if the solo user has not been created yet.
+// store.ErrNotFound when nothing created the solo user yet.
 func LoadSoloUser(ctx context.Context, st store.Store) (*UserInfo, error) {
 	user, err := st.Users().GetByUsername(ctx, usernames.Solo)
 	if err != nil {
 		return nil, err
 	}
-	// A blank users.id is corrupt data, not a programmer error, so it is refused
-	// rather than panicked on: MustNew's contract is "the caller already knows
-	// this is non-empty", which holds for a literal but not for a column. The
-	// row is rejected the same way a missing one is -- an identity we cannot
-	// name cannot authenticate anything.
+	// A blank users.id is corrupt data, not a programmer error, so LoadSoloUser
+	// refuses it rather than panicking on it: MustNew's contract is "the caller
+	// already knows this is non-empty", which holds for a literal but not for a
+	// column. LoadSoloUser rejects the row the same way it rejects a missing one
+	// -- an identity the hub cannot resolve cannot authenticate anything.
 	id, ok := userid.New(user.ID)
 	if !ok {
 		return nil, fmt.Errorf("solo user row has a blank id")
@@ -259,6 +347,7 @@ func LoadSoloUser(ctx context.Context, st store.Store) (*UserInfo, error) {
 		IsAdmin:            user.IsAdmin,
 		AuthenticatedAt:    time.Now().UTC(),
 		UserAuthGeneration: user.AuthGeneration,
+		Solo:               true,
 	}, nil
 }
 
@@ -435,6 +524,14 @@ func ValidateToken(ctx context.Context, st store.Store, token string) (*UserInfo
 		EmailVerified:       row.EmailVerified,
 		AuthenticatedAt:     row.CreatedAt.UTC(),
 		CredentialExpiresAt: DeadlineAt(row.ExpiresAt.UTC()),
-		UserAuthGeneration:  row.AuthGeneration,
+		// One of the TWO producers that fill Elevation. The other is
+		// loadBearer's api_tokens branch, because a command-line credential
+		// proves its factor in a browser and carries a window of its own.
+		// Every other path leaves the zero value, so a delegation bearer and
+		// solo mode read as un-elevated by construction rather than by a
+		// check somebody must remember. CredentialIdentity.ElevatableRow is
+		// the statement of which credentials may carry a window at all.
+		Elevation:          NewElevation(row.ElevationProvenAt, row.ElevationExpiresAt),
+		UserAuthGeneration: row.AuthGeneration,
 	}, nil
 }

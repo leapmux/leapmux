@@ -25,11 +25,9 @@ vi.mock('~/context/AuthContext', () => ({
 }))
 
 const mockIsSoloMode = vi.fn<() => boolean>(() => false)
-const mockIsSetupRequired = vi.fn<() => boolean>(() => false)
 
 vi.mock('~/lib/systemInfo', () => ({
   isSoloMode: () => mockIsSoloMode(),
-  isSetupRequired: () => mockIsSetupRequired(),
   isSystemInfoLoaded: () => true,
   isCaptchaEnabled: () => false,
 }))
@@ -38,10 +36,10 @@ vi.mock('~/lib/systemInfo', () => ({
  * Renders AuthGuard inside a REAL router so the redirects it performs are
  * observable, and records every navigation it causes.
  *
- * `/login` and `/setup` are unguarded stubs, mirroring the real route tree
- * where only the `(app)` layout sits behind the guard — so a redirect chain
- * that bounces through `/login` shows up as an extra `navigations` entry
- * instead of being invisible behind a single final URL.
+ * `/login` is an unguarded stub, mirroring the real route tree where only the
+ * `(app)` layout sits behind the guard — so a redirect chain that bounces
+ * through `/login` appears as an extra `navigations` entry rather than staying
+ * invisible behind a single final URL.
  */
 function renderGuard(options: { path?: string } = {}) {
   const history = createMemoryHistory()
@@ -64,7 +62,6 @@ function renderGuard(options: { path?: string } = {}) {
     <MemoryRouter history={history}>
       <Route path="/" component={Guarded} />
       <Route path="/login" component={() => <div data-testid="login-stub" />} />
-      <Route path="/setup" component={() => <div data-testid="setup-stub" />} />
     </MemoryRouter>
   ))
 
@@ -74,7 +71,6 @@ function renderGuard(options: { path?: string } = {}) {
 describe('authGuard', () => {
   beforeEach(() => {
     mockIsSoloMode.mockReturnValue(false)
-    mockIsSetupRequired.mockReturnValue(false)
     mockBootstrapError.mockReturnValue(null)
     mockRetryBootstrap.mockClear()
   })
@@ -90,7 +86,7 @@ describe('authGuard', () => {
     expect(navigations).toEqual([])
   })
 
-  it('shows loading while auth is loading', () => {
+  it('shows the boot splash while auth loads', () => {
     mockUser.mockReturnValue(null)
     mockLoading.mockReturnValue(true)
     mockIsAuthenticated.mockReturnValue(false)
@@ -130,38 +126,16 @@ describe('authGuard', () => {
     expect(navigations).toEqual(['/login?redirect=%2F%3FnewWorkspace%3Dtrue'])
   })
 
-  it('sends an unauthenticated visitor straight to /setup when setup is required', async () => {
-    mockUser.mockReturnValue(null)
-    mockLoading.mockReturnValue(false)
-    mockIsAuthenticated.mockReturnValue(false)
-    mockIsSetupRequired.mockReturnValue(true)
-
-    const { navigations } = renderGuard()
-
-    expect(await screen.findByTestId('setup-stub')).toBeInTheDocument()
-    // Exactly one hop: no `/login` bounce on a fresh install.
-    expect(navigations).toEqual(['/setup'])
-  })
-
-  it('sends a query-bearing guarded path straight to /setup when setup is required', async () => {
-    mockUser.mockReturnValue(null)
-    mockLoading.mockReturnValue(false)
-    mockIsAuthenticated.mockReturnValue(false)
-    mockIsSetupRequired.mockReturnValue(true)
-
-    const { navigations } = renderGuard({ path: '/?newWorkspace=true' })
-
-    expect(await screen.findByTestId('setup-stub')).toBeInTheDocument()
-    // Still exactly one hop, and the query is dropped on purpose: a fresh
-    // install has no workspace to create one next to.
-    expect(navigations).toEqual(['/setup'])
-  })
+  // The first-run rule is NOT here any more. `SetupGate` owns it above the
+  // router outlet, so this guard never sees a hub without an account, and
+  // `SetupGate.test.tsx` covers the redirect for every address rather than
+  // only the two guarded ones.
 
   // Solo mode has no login form, so a redirect is the wrong answer here — but
   // so was the loading fallback this used to land on. `restoreSession` records
   // NO bootstrapError for an Unauthenticated reply (it is the ordinary "no
   // session yet" answer everywhere else), so solo + unauthenticated fell
-  // through every arm and spun forever with nothing to click. In solo mode the
+  // through every branch and spun forever with nothing to click. In solo mode the
   // hub authenticates every request, so that reply is a transport or config
   // failure and has to be reported like any other.
   it('reports rather than spins when a solo hub answers with no session', async () => {
@@ -192,12 +166,12 @@ describe('authGuard', () => {
   })
 
   // A failed bootstrap (hub unreachable / erroring) is NOT a missing session.
-  // It used to be swallowed into an empty catch, so it was indistinguishable
-  // from "not logged in": in solo mode -- where there is no login to fall back
-  // to -- the guard showed its loading fallback forever, and if loadSystemInfo
-  // had also failed, isSoloMode() defaults to false and the visitor was sent to
-  // a login form no credentials could satisfy. Both were unrecoverable and
-  // silent. The guard must report it and offer a way out instead.
+  // An empty catch used to discard it, so it was indistinguishable from "not
+  // logged in": in solo mode -- where there is no login to fall back to -- the
+  // guard showed its loading fallback forever, and if loadSystemInfo also
+  // failed, isSoloMode() defaults to false and the guard sent the visitor to a
+  // login form that no credentials could satisfy. Both were unrecoverable and
+  // silent. The guard must report it and offer a way to recover instead.
   it('reports a failed bootstrap instead of redirecting or spinning', async () => {
     mockLoading.mockReturnValue(false)
     mockUser.mockReturnValue(null)

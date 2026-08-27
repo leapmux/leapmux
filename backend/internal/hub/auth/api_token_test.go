@@ -124,16 +124,16 @@ func TestTokenValidator_RejectsMalformedBearer(t *testing.T) {
 
 // TestTokenValidator_RejectsUnknownKindWithoutDBLookup pins one of the
 // plan's correctness invariants: a bearer with an unrecognised kind
-// char (anything other than 'a' / 'd') is rejected by parseBearer
-// before any DB query runs. The plan's bearer-format optimization
+// char (anything other than 'a' / 'd') never reaches a DB query,
+// because parseBearer rejects it first. The plan's bearer-format optimization
 // hinges on this: "Unknown kinds are rejected without a DB round-trip
 // at all" (plan line 851).
 //
-// The check is done via a no-op store wrapper that fails any call —
-// so a single hit while validating an unknown-kind bearer would fail
-// the test loudly.
+// This test checks that with a no-op store wrapper that fails any call
+// — so a single hit while validating an unknown-kind bearer fails the
+// test loudly.
 func TestTokenValidator_RejectsUnknownKindWithoutDBLookup(t *testing.T) {
-	st := newTestStore(t) // a real store, but we'll never let it be hit
+	st := newTestStore(t) // a real store, but no call may reach it
 	v, err := auth.NewTokenValidator(st, []byte("0123456789abcdef0123456789abcdef"))
 	require.NoError(t, err)
 
@@ -186,6 +186,54 @@ func TestTokenValidator_AcceptsValidAPIBearer(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, info.AuthenticatedAt.Equal(token.CreatedAt.UTC()),
 		"API bearer auth basis should use the DB token creation timestamp")
+}
+
+// TestTokenValidator_ReadsItsClockSeam pins the deadline every bearer
+// validation compares against.
+//
+// The validator carried no clock, so it read the wall clock while the
+// services around it read their own seam. A test could move a session's
+// window and could not move a command-line credential's expiry at all, which
+// left the one credential lifetime the hub cannot fake in a test.
+func TestTokenValidator_ReadsItsClockSeam(t *testing.T) {
+	st := newTestStore(t)
+	userID := seedUser(t, st)
+	v, err := auth.NewTokenValidator(st, []byte("0123456789abcdef0123456789abcdef"))
+	require.NoError(t, err)
+
+	tokenID := id.Generate()
+	secret := auth.MintAccessSecret()
+	expiresAt := time.Now().UTC().Add(time.Hour)
+	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		ID:         tokenID,
+		UserID:     userid.MustNew(userID),
+		ClientType: "cli",
+		ClientName: "test",
+		SecretHash: v.HashSecret(secret),
+		ExpiresAt:  &expiresAt,
+	}))
+	bearer := auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)
+
+	_, err = v.ValidateBearer(context.Background(), bearer)
+	require.NoError(t, err, "the credential is live at the real instant")
+
+	// The SAME row, read at an instant past its expiry. Nothing but the seam
+	// moved, so a validator that still read the wall clock would answer the
+	// same way twice.
+	expired, err := auth.NewTokenValidator(st, []byte("0123456789abcdef0123456789abcdef"))
+	require.NoError(t, err)
+	expired.Now = func() time.Time { return expiresAt.Add(time.Minute) }
+	_, err = expired.ValidateBearer(context.Background(), bearer)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, auth.ErrTokenExpired)
+
+	// And the CEILING, which no expiry column carries: a credential cannot
+	// outlive the consent that authorized it, whatever its own expiry says.
+	past, err := auth.NewTokenValidator(st, []byte("0123456789abcdef0123456789abcdef"))
+	require.NoError(t, err)
+	past.Now = func() time.Time { return time.Now().UTC().Add(auth.AbsoluteTokenLifetime + time.Hour) }
+	_, err = past.ValidateBearer(context.Background(), bearer)
+	require.Error(t, err)
 }
 
 func TestTokenValidator_RejectsRevoked(t *testing.T) {
@@ -558,8 +606,8 @@ func TestValidateAPIRefresh_GraceWindowReturnsRetry(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Presenting the previous (rotated-out) refresh within the grace
-	// window should be treated as a benign retry, not a compromise.
+	// ValidateAPIRefresh should treat the previous (rotated-out) refresh
+	// within the grace window as a benign retry, not a compromise.
 	row, retry, err := v.ValidateAPIRefresh(context.Background(), auth.FormatBearer(auth.BearerKindAPI, tokenID, prevSecret))
 	require.NoError(t, err)
 	assert.True(t, retry, "previous-hash within grace window must mark caller for retry")
@@ -599,8 +647,8 @@ func TestValidateAPIRefresh_ReuseAfterGraceRevokes(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Reusing the rotated refresh after the grace window expired must
-	// be treated as compromise: revoke the row and return ErrRefreshReused.
+	// ValidateAPIRefresh must treat a reuse of the rotated refresh after the
+	// grace window as a compromise: revoke the row and return ErrRefreshReused.
 	_, _, err = v.ValidateAPIRefresh(context.Background(), auth.FormatBearer(auth.BearerKindAPI, tokenID, prevSecret))
 	require.ErrorIs(t, err, auth.ErrRefreshReused)
 

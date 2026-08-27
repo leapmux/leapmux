@@ -1,3 +1,5 @@
+import process from 'node:process'
+
 import { defineConfig, devices } from '@playwright/test'
 
 export default defineConfig({
@@ -140,7 +142,20 @@ export default defineConfig({
   // green suite), so it has to be excluded or fixed first or it will show up
   // as scheduling noise on whichever side it lands.
   fullyParallel: false,
-  workers: 8,
+  // Six, and E2E_WORKERS overrides it for one run without editing this file.
+  //
+  // Read the table above with its dates in mind: the 2, 4 and 6 rows are all
+  // PRE-fix, and only the 8 row was measured again afterwards. So the table
+  // does NOT say that 6 costs failures today -- it says nobody has measured 6
+  // since the defects were corrected. What it does bound is the wall-clock
+  // cost, at roughly a quarter more than 8.
+  //
+  // What the table DOES establish is the direction to read a failure from:
+  // walking 2 -> 8 did not change the failure COUNT before the fixes, and
+  // every failure traced to a real defect in the app or in the spec. So a
+  // lower count is a debugging tool, never a fix. A spec that passes at 2 and
+  // fails at 8 has an open window, and the window is the bug.
+  workers: Number(process.env.E2E_WORKERS) || 6,
   // No retries, and that is the policy rather than the default. Every failure
   // this suite has produced under load traced to a real defect -- a worktree
   // force-removed behind the user's back, a disconnect notice dropped by an

@@ -1,5 +1,23 @@
 import antfu from '@antfu/eslint-config'
 
+/**
+ * The selectors that antfu's TypeScript config puts in `no-restricted-syntax`.
+ *
+ * ESLint REPLACES the options of a rule; it never merges them. A later config
+ * object that sets `no-restricted-syntax` for `src/**` therefore deletes these
+ * two selectors in exactly the tree that ships. Each block below that sets the
+ * rule must spread this constant first.
+ *
+ * `src/test-support/restrictedSyntaxKeepsBaseRules.test.ts` resolves the real
+ * config for a `src/` file and fails the suite if a selector disappears.
+ *
+ * - `TSEnumDeclaration[const=true]`: a `const enum` disappears at compile time,
+ *   so Vite's per-file transform cannot inline its members.
+ * - `TSExportAssignment`: `export =` is a CommonJS form that an ES module
+ *   cannot import.
+ */
+const ANTFU_RESTRICTED_SYNTAX = ['TSEnumDeclaration[const=true]', 'TSExportAssignment'] as const
+
 export default antfu({
   stylistic: {
     indent: 2,
@@ -11,13 +29,13 @@ export default antfu({
   // Treat `useDialogSubmit`'s returned helpers as reactive entry points.
   // `run` and `formHandler` invoke their callback synchronously inside an
   // event-handler call stack, so a body that captures reactive props is
-  // safe — the captures are read before any subsequent prop update. The
+  // safe — the body reads the captures before any subsequent prop update. The
   // plugin already auto-detects `create*` / `use*` names; this option
   // extends that allowlist to the helpers returned from useDialogSubmit.
   //
   // The `files` filter mirrors antfu's solid config (JSX/TSX only) so we
-  // don't widen the rule's surface area to `.ts` files where it wasn't
-  // previously running.
+  // don't widen the rule's surface area to `.ts` files where it did not run
+  // before.
   files: ['**/*.jsx', '**/*.tsx'],
   rules: {
     'solid/reactivity': ['warn', {
@@ -34,7 +52,7 @@ export default antfu({
   // At the AST level rather than by text, because the class is "a reference to
   // the global", not one spelling of it: `localStorage['k'] = v` and
   // `const s = sessionStorage` write the same broken entry.
-  // `src/test-support/storageKeysAreRegistered.test.ts` is the backstop, and it
+  // `src/test-support/storageKeysAreRegistered.test.ts` is the guard, and it
   // also holds the two registry rules that have no lint equivalent.
   //
   // Tests and E2E specs are exempt. A unit test drives the gateway's own
@@ -47,8 +65,40 @@ export default antfu({
     'no-restricted-properties': ['error', { object: 'window', property: 'localStorage', message: 'Route browser storage through ~/lib/browserStorage.' }, { object: 'window', property: 'sessionStorage', message: 'Route browser storage through ~/lib/browserStorage.' }, { object: 'globalThis', property: 'localStorage', message: 'Route browser storage through ~/lib/browserStorage.' }, { object: 'globalThis', property: 'sessionStorage', message: 'Route browser storage through ~/lib/browserStorage.' }],
   },
 }, {
+  // `title` on a DOM element is banned. Use `<Tooltip>` (or a component that
+  // routes its own `title` prop through one, as `IconButton` does).
+  //
+  // Two reasons, and the second one causes harm with no visible sign. A native
+  // `title` renders the OS tooltip, which ignores the app's theme and
+  // typography, waits a browser-controlled delay, and never appears on touch.
+  // And on a control with no `aria-label`, a `title` long enough to state a
+  // reason BECOMES the accessible name: a screen reader then announces three
+  // sentences of remedy where "Add passkey" belongs, and every by-name lookup
+  // stops matching. Nothing in the type system catches it, and it renders
+  // fine, so it survives review.
+  //
+  // The carve-out this replaced was "a DISABLED control may use `title`,
+  // because it takes no pointer events and `<Tooltip>` cannot fire on it".
+  // `<Tooltip>` covers that case now: it gives its wrapper a box, listens
+  // there, and leaves an offscreen description in `aria-describedby` for as
+  // long as the control is disabled.
+  //
+  // A LOWERCASE element name only. `title` on a component is that component's
+  // own prop -- `<Dialog title>` is a heading, `<IconButton title>` is a
+  // tooltip -- and the selector cannot know which. A component that SPREADS
+  // its props onto a DOM node closes that hole in the type system instead, by
+  // omitting `title` from its prop type; `IconButton` and `ConfirmButton` both
+  // do.
+  files: ['src/**/*.ts', 'src/**/*.tsx', 'tests/**/*.ts', 'tests/**/*.tsx'],
+  rules: {
+    'no-restricted-syntax': ['error', ...ANTFU_RESTRICTED_SYNTAX, {
+      selector: 'JSXOpeningElement[name.type="JSXIdentifier"][name.name=/^[a-z]/] > JSXAttribute[name.name="title"]',
+      message: 'Do not put `title` on a DOM element: it renders the unthemed OS tooltip, and it silently becomes the element\'s accessible name. Wrap the element in <Tooltip text={...}> instead -- it works on a disabled control too.',
+    }],
+  },
+}, {
   // Playwright fixture parameters (e.g. `authenticatedWorkspace`) must be destructured
-  // to activate the fixture, even when not directly referenced in the test body.
+  // to activate the fixture, even when the test body does not use them directly.
   files: ['tests/e2e/**/*.spec.ts'],
   rules: {
     'unused-imports/no-unused-vars': ['error', {

@@ -62,6 +62,10 @@ func (s *cleanupStore) DeleteExpiredCLIAuthorizationCodes(ctx context.Context, n
 	return rowsAffected(s.conn.q.DeleteExpiredCLIAuthorizationCodes(ctx, sqltime.NewSQLiteTime(now)))
 }
 
+func (s *cleanupStore) DeleteExpiredAPITokensBefore(ctx context.Context, cutoff time.Time) (int64, error) {
+	return rowsAffected(s.conn.q.DeleteExpiredAPITokensBefore(ctx, sqltime.SQLiteNullTimeOf(cutoff)))
+}
+
 func (s *cleanupStore) DeleteRevokedAPITokensBefore(ctx context.Context, cutoff time.Time) (int64, error) {
 	return rowsAffected(s.conn.q.DeleteRevokedAPITokensBefore(ctx, sqltime.SQLiteNullTimeOf(cutoff)))
 }

@@ -4,11 +4,12 @@
 -- database clock.
 
 -- name: CreatePendingOAuthSignup :exec
-INSERT INTO pending_oauth_signups (token, provider_id, provider_subject, email, display_name, access_token, refresh_token, token_type, token_expires_at, key_version, redirect_uri, expires_at)
+INSERT INTO pending_oauth_signups (token, provider_id, provider_subject, nonce_hash, email, display_name, access_token, refresh_token, token_type, token_expires_at, key_version, redirect_uri, expires_at)
 VALUES (
     sqlc.arg(token),
     sqlc.arg(provider_id),
     sqlc.arg(provider_subject),
+    sqlc.arg(nonce_hash),
     sqlc.arg(email),
     sqlc.arg(display_name),
     sqlc.arg(access_token),

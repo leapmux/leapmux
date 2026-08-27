@@ -43,6 +43,13 @@ func (r *recordingMailSender) Send(_ context.Context, msg mail.Message) error {
 }
 
 func setupPasswordResetAuthService(t *testing.T, sender mail.Sender) (leapmuxv1connect.AuthServiceClient, store.Store) {
+	client, st, _ := setupPasswordResetAuthServiceWithClock(t, sender)
+	return client, st
+}
+
+// setupPasswordResetAuthServiceWithClock is the same harness, plus the
+// service value itself, so a test can move its clock seam.
+func setupPasswordResetAuthServiceWithClock(t *testing.T, sender mail.Sender) (leapmuxv1connect.AuthServiceClient, store.Store, *service.AuthService) {
 	t.Helper()
 
 	st := hubtestutil.OpenTestStore(t)
@@ -67,7 +74,7 @@ func setupPasswordResetAuthService(t *testing.T, sender mail.Sender) (leapmuxv1c
 	t.Cleanup(server.Close)
 
 	client := leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL)
-	return client, st
+	return client, st, authSvc
 }
 
 func extractPasswordResetToken(body string) string {
@@ -346,10 +353,10 @@ func TestCompletePasswordReset_AttemptLimitBlocksBeforeArgon2(t *testing.T) {
 	// API access secrets.
 	assert.Regexp(t, "^[A-Za-z0-9]{48}$", token)
 
-	// Burn the 5 soft attempts with a wrong password that still matches the
+	// Use up the 5 soft attempts with a wrong password that still matches the
 	// token row (Consume increments). Use the real token so lookup succeeds;
-	// CompletePasswordReset validates password strength before hashing, so a
-	// valid new password is required. We force attempts via the store API.
+	// CompletePasswordReset validates password strength before hashing, so the
+	// call needs a valid new password. We force attempts via the store API.
 	for i := 0; i < 5; i++ {
 		_, err = st.Users().ConsumePasswordResetAttemptByToken(context.Background(), tokenHashForTest(token), time.Now().UTC(), 5)
 		require.NoError(t, err)
@@ -519,4 +526,101 @@ func setupPasswordResetAuthServiceConfigured(t *testing.T, sender mail.Sender, c
 
 	client := leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL)
 	return client, set, st
+}
+
+// TestRequestPasswordReset_AdminUnconfirmedAddressGetsNoLink is the recovery
+// route this change closes.
+//
+// A reset link is a credential, and the Hub only sends one to an address it
+// has evidence for. email_verified IS that evidence, and the hub used to
+// force it true for every administrator -- so an administrator moved to a
+// brand-new address kept a live self-service reset route to whatever address
+// the request carried, on the highest-privilege accounts on the hub. The
+// flag now records only what somebody confirmed, and the administrator
+// exemption lives at the login gate where it belongs.
+func TestRequestPasswordReset_AdminUnconfirmedAddressGetsNoLink(t *testing.T) {
+	t.Parallel()
+
+	// SMTP configured, so the hub REQUIRES verification -- which is the
+	// deployment where a reset link is a credential and the flag decides
+	// whether the hub has evidence for the address.
+	sender := &recordingMailSender{}
+	client, _, st := setupPasswordResetAuthServiceConfigured(t, sender, seedSMTP)
+	ctx := context.Background()
+
+	hash, err := password.Hash("oldpass123")
+	require.NoError(t, err)
+
+	// An administrator whose address nobody confirmed.
+	unconfirmed := id.Generate()
+	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
+		ID: unconfirmed, Username: "unconfirmedadmin", PasswordHash: hash,
+		DisplayName: "Unconfirmed", Email: "unconfirmed@example.com",
+		EmailVerified: false, PasswordSet: true, IsAdmin: true,
+	}))
+
+	_, err = client.RequestPasswordReset(ctx, connect.NewRequest(&leapmuxv1.RequestPasswordResetRequest{
+		Identifier: "unconfirmed@example.com",
+	}))
+	require.NoError(t, err, "the response is uniform; only the mail differs")
+	assert.Empty(t, sender.msgs, "no link to an address the hub never confirmed, administrator or not")
+
+	row, err := st.Users().GetByID(ctx, unconfirmed)
+	require.NoError(t, err)
+	assert.Empty(t, row.PendingPasswordResetToken, "and no token was minted")
+
+	// An administrator who really did confirm their address still gets one:
+	// the rule is about the ADDRESS, not about the privilege.
+	confirmed := id.Generate()
+	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
+		ID: confirmed, Username: "confirmedadmin", PasswordHash: hash,
+		DisplayName: "Confirmed", Email: "confirmed@example.com",
+		EmailVerified: true, PasswordSet: true, IsAdmin: true,
+	}))
+
+	_, err = client.RequestPasswordReset(ctx, connect.NewRequest(&leapmuxv1.RequestPasswordResetRequest{
+		Identifier: "confirmed@example.com",
+	}))
+	require.NoError(t, err)
+	require.Len(t, sender.msgs, 1)
+	assert.Equal(t, "confirmed@example.com", sender.msgs[0].To)
+}
+
+// TestRequestPasswordReset_UsesTheServiceClock pins that the reset expiry
+// comes from the service's own seam and not from the wall clock.
+//
+// clockSeam's rule is the whole type, not the elevation path inside it. This
+// handler read the wall clock twice, two lines apart, under a comment
+// insisting "Both timestamps are on the app clock, the clock that wrote the
+// expiry" -- so a test that moved the clock moved neither, and the cooldown
+// cutoff and the expiry could answer two different instants inside one
+// request.
+func TestRequestPasswordReset_UsesTheServiceClock(t *testing.T) {
+	t.Parallel()
+
+	sender := &recordingMailSender{}
+	client, st, authSvc := setupPasswordResetAuthServiceWithClock(t, sender)
+
+	fixed := time.Now().UTC().Add(72 * time.Hour).Truncate(time.Second)
+	authSvc.Now = func() time.Time { return fixed }
+
+	userID := id.Generate()
+	hash, err := password.Hash("oldpass123")
+	require.NoError(t, err)
+	require.NoError(t, st.Users().Create(context.Background(), store.CreateUserParams{
+		ID: userID, Username: "clocked", PasswordHash: hash, DisplayName: "Clocked",
+		Email: "clocked@example.com", EmailVerified: true, PasswordSet: true,
+	}))
+
+	_, err = client.RequestPasswordReset(context.Background(), connect.NewRequest(&leapmuxv1.RequestPasswordResetRequest{
+		Identifier: "clocked@example.com",
+	}))
+	require.NoError(t, err)
+	require.Len(t, sender.msgs, 1)
+
+	row, err := st.Users().GetByID(context.Background(), userID)
+	require.NoError(t, err)
+	require.NotNil(t, row.PendingPasswordResetExpiresAt)
+	assert.WithinDuration(t, fixed.Add(time.Hour), *row.PendingPasswordResetExpiresAt, time.Minute,
+		"the expiry must be measured from the service's clock, not the wall clock")
 }

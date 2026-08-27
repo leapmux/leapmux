@@ -23,6 +23,8 @@ func fromDBDeviceAuthorization(d gendb.DeviceAuthorization) store.DeviceAuthoriz
 		Approved:        d.Approved,
 		LastPolledAt:    d.LastPolledAt.Ptr(),
 		IntervalSeconds: d.IntervalSeconds,
+		AdminScope:      d.AdminScope,
+		ElevateTokenID:  d.ElevateTokenID.String,
 		CreatedAt:       d.CreatedAt.Time,
 		ExpiresAt:       d.ExpiresAt.Time,
 		ConsumedAt:      d.ConsumedAt.Ptr(),
@@ -36,6 +38,7 @@ func (s *deviceAuthorizationStore) Create(ctx context.Context, p store.CreateDev
 		DeviceName:      p.DeviceName,
 		IntervalSeconds: p.IntervalSeconds,
 		ExpiresAt:       sqltime.NewSQLiteTime(p.ExpiresAt),
+		ElevateTokenID:  sqlutil.NullNonEmpty(p.ElevateTokenID),
 	}))
 }
 
@@ -58,8 +61,8 @@ func (s *deviceAuthorizationStore) GetByUserCode(ctx context.Context, userCode s
 }
 
 func (s *deviceAuthorizationStore) Approve(ctx context.Context, p store.ApproveDeviceAuthorizationParams, now time.Time) (int64, error) {
-	// An approval names WHO approved. A zero id would be written as SQL NULL
-	// while the UPDATE still matched the row, so the store would report one
+	// An approval identifies WHO approved. The store would write a zero id as
+	// SQL NULL while the UPDATE still matched the row, so it would report one
 	// row affected, the browser would say "device authorized", and the CLI
 	// would then poll authorization_pending forever against a row whose
 	// user_id is blank -- told the opposite of what happened. NULL is the
@@ -70,13 +73,14 @@ func (s *deviceAuthorizationStore) Approve(ctx context.Context, p store.ApproveD
 	return rowsAffected(s.conn.q.ApproveDeviceAuthorization(ctx, gendb.ApproveDeviceAuthorizationParams{
 		UserID:     sqlutil.NullUserID(p.UserID),
 		DeviceCode: p.DeviceCode,
+		AdminScope: p.AdminScope,
 		Now:        sqltime.NewSQLiteTime(now),
 	}))
 }
 
 func (s *deviceAuthorizationStore) ApproveByUserCode(ctx context.Context, p store.ApproveDeviceAuthorizationByUserCodeParams, now time.Time) (int64, error) {
-	// An approval names WHO approved. A zero id would be written as SQL NULL
-	// while the UPDATE still matched the row, so the store would report one
+	// An approval identifies WHO approved. The store would write a zero id as
+	// SQL NULL while the UPDATE still matched the row, so it would report one
 	// row affected, the browser would say "device authorized", and the CLI
 	// would then poll authorization_pending forever against a row whose
 	// user_id is blank -- told the opposite of what happened. NULL is the
@@ -85,9 +89,10 @@ func (s *deviceAuthorizationStore) ApproveByUserCode(ctx context.Context, p stor
 		return 0, store.ErrInvalidArgument
 	}
 	return rowsAffected(s.conn.q.ApproveDeviceAuthorizationByUserCode(ctx, gendb.ApproveDeviceAuthorizationByUserCodeParams{
-		UserID:   sqlutil.NullUserID(p.UserID),
-		UserCode: p.UserCode,
-		Now:      sqltime.NewSQLiteTime(now),
+		UserID:     sqlutil.NullUserID(p.UserID),
+		UserCode:   p.UserCode,
+		AdminScope: p.AdminScope,
+		Now:        sqltime.NewSQLiteTime(now),
 	}))
 }
 

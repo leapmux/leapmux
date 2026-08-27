@@ -2,7 +2,7 @@ import type { Component } from 'solid-js'
 import { Show } from 'solid-js'
 import { PreferencesDialog } from '~/components/settings/PreferencesDialog'
 import { useAuth } from '~/context/AuthContext'
-import { closePreferences, preferencesOpenSeq, showPreferencesDialog } from './UserMenuState'
+import { closePreferences, openPreferences, showPreferencesDialog } from './UserMenuState'
 
 /**
  * Renders dialogs triggered from the menu. Mount once in a stable parent so
@@ -23,7 +23,10 @@ export const UserMenuDialogs: Component = () => {
   return (
     <Show when={auth.isAuthenticated() && showPreferencesDialog()}>
       {category => (
-        <PreferencesDialog category={category()} openSeq={preferencesOpenSeq()} onClose={closePreferences} />
+        // `openPreferences` is also the dialog's own section navigation:
+        // "put Preferences on this category". The dialog is already open, so
+        // it replaces the address rather than pushing a second entry.
+        <PreferencesDialog category={category()} onCategory={openPreferences} onClose={closePreferences} />
       )}
     </Show>
   )

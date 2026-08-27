@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import process from 'node:process'
 
 import { solveCaptchaViaAPI } from './altcha'
+import { elevateSessionViaAPI } from './api'
 import { loginViaToken, readSessionCookie } from './ui'
 
 const SIMPLEWEBAUTHN_BUNDLE = readFileSync(
@@ -192,26 +193,58 @@ export async function loginWithPasskeyViaAPIInBrowser(
   return readSessionCookie(page, 'FinishPasskeyLogin')
 }
 
-/** Register an additional passkey for the authenticated session inside `page`. */
+/**
+ * Elevate the session inside `page` with a passkey ceremony.
+ *
+ * This is the option a passkey-only account uses: it holds no password, so
+ * the assertion IS the factor. Virtual authenticator must already be enabled.
+ */
+export async function elevateWithPasskeyViaAPIInBrowser(
+  page: Page,
+  hubUrl: string,
+  cookie: string,
+): Promise<void> {
+  await loginViaToken(page, cookie)
+  await page.goto(`${hubUrl}/`)
+  await runCeremonyInPage(page, hubUrl, {
+    beginProcedure: 'UserService/BeginPasskeyElevation',
+    beginBody: {},
+    ceremonyMethod: 'startAuthentication',
+    finishProcedure: 'UserService/FinishPasskeyElevation',
+  })
+}
+
+/**
+ * Register an additional passkey for the authenticated session inside `page`.
+ *
+ * This helper elevates the session FIRST, because passkey management now
+ * needs a proven factor rather than a secret on each request. With a
+ * password, the password option; without one, the passkey option.
+ */
 export async function addPasskeyViaAPIInBrowser(
   page: Page,
   hubUrl: string,
   cookie: string,
   currentPassword = '',
 ): Promise<void> {
+  if (currentPassword)
+    await elevateSessionViaAPI(hubUrl, cookie, currentPassword)
+  else
+    await elevateWithPasskeyViaAPIInBrowser(page, hubUrl, cookie)
   await loginViaToken(page, cookie)
   await page.goto(`${hubUrl}/`)
   await runCeremonyInPage(page, hubUrl, {
     beginProcedure: 'UserService/BeginPasskeyRegistration',
-    beginBody: { currentPassword, reauthProof: '' },
+    beginBody: {},
     ceremonyMethod: 'startRegistration',
     finishProcedure: 'UserService/FinishPasskeyRegistration',
-    finishExtra: { friendlyName: 'E2E Passkey', currentPassword, reauthProof: '' },
+    finishExtra: { friendlyName: 'E2E Passkey' },
   })
 }
 
 /**
- * Deactivate all passkeys on a passkey-only account: reauth ceremony + new password.
+ * Deactivate all passkeys on a passkey-only account: elevate with a passkey,
+ * then set the replacement password the account must retain.
  * Virtual authenticator must already be enabled on `page`.
  */
 export async function deactivatePasskeyAuthViaAPIInBrowser(
@@ -220,19 +253,8 @@ export async function deactivatePasskeyAuthViaAPIInBrowser(
   cookie: string,
   newPassword: string,
 ): Promise<void> {
-  await loginViaToken(page, cookie)
-  await page.goto(`${hubUrl}/`)
-  const finish = await runCeremonyInPage(page, hubUrl, {
-    beginProcedure: 'UserService/BeginPasskeyReauth',
-    beginBody: {},
-    ceremonyMethod: 'startAuthentication',
-    finishProcedure: 'UserService/FinishPasskeyReauth',
-  })
-  const reauthProof = finish.reauthProof
-  if (typeof reauthProof !== 'string' || !reauthProof)
-    throw new Error('FinishPasskeyReauth returned no reauthProof')
+  await elevateWithPasskeyViaAPIInBrowser(page, hubUrl, cookie)
   await postConnectInPage(page, hubUrl, 'UserService/DeactivatePasskeyAuth', {
-    reauthProof,
     newPassword,
   })
 }

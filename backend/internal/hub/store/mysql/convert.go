@@ -72,8 +72,8 @@ func decodeCursorParams(cursor string) (sqltime.MySQLNullTime, sql.NullString, e
 // the dialect-specific sqlc params struct. Centralizing decodeCursorParams + the
 // error short-circuit + store.FetchLimit (with the int32 cast the MySQL LIMIT
 // column requires) here means a change to the cursor decode, the clamp rule, or
-// the probe-row accounting edits ONE site instead of being copy-pasted across
-// every list builder.
+// the probe-row accounting edits ONE site instead of a copy in every list
+// builder.
 func withCursor[T any](cursor string, limit int64, fill func(cursorTime sqltime.MySQLNullTime, cursorID sql.NullString, fetchLimit int32) T) (T, error) {
 	cursorTime, cursorID, err := decodeCursorParams(cursor)
 	if err != nil {
@@ -173,6 +173,12 @@ func listUserSessionsParams(userID, cursor string, limit int64, now time.Time) (
 func listAllAPITokensParams(clientType, cursor string, limit int64) (gendb.ListAllAPITokensParams, error) {
 	return withCursor(cursor, limit, func(ct sqltime.MySQLNullTime, cid sql.NullString, fl int32) gendb.ListAllAPITokensParams {
 		return gendb.ListAllAPITokensParams{ClientType: clientType, CursorTime: ct, CursorID: cid, Limit: fl}
+	})
+}
+
+func listAPITokensByUserParams(userID, clientType, cursor string, limit int64) (gendb.ListAPITokensByUserParams, error) {
+	return withCursor(cursor, limit, func(ct sqltime.MySQLNullTime, cid sql.NullString, fl int32) gendb.ListAPITokensByUserParams {
+		return gendb.ListAPITokensByUserParams{UserID: userID, ClientType: clientType, CursorTime: ct, CursorID: cid, Limit: fl}
 	})
 }
 

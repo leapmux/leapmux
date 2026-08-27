@@ -23,7 +23,7 @@ vi.mock('~/api/clients', () => ({
   },
 }))
 
-// Partial mock: only the ceremony is faked. passkeyErrorMessage is the real
+// Partial mock: this file fakes only the ceremony. passkeyErrorMessage is the real
 // classifier, so these tests exercise the same cancel-vs-failure rule the
 // component ships with.
 vi.mock('~/lib/webauthn', async importOriginal => ({
@@ -68,6 +68,19 @@ function renderForm() {
   ))
 }
 
+/**
+ * The reason a disabled control carries, read the way a screen reader gets it.
+ *
+ * <Tooltip> leaves an offscreen description in `aria-describedby` for as long
+ * as the control is disabled. It is NOT `title`: a reason long enough to be
+ * worth reading becomes the control's accessible name on `title`.
+ */
+function reasonOf(el: Element): string {
+  const describedBy = el.getAttribute('aria-describedby')
+  expect(describedBy).toBeTruthy()
+  return document.getElementById(describedBy!)?.textContent ?? ''
+}
+
 describe('signup form display-name mirror', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -76,32 +89,32 @@ describe('signup form display-name mirror', () => {
     mockSignUp.mockResolvedValue({})
   })
 
-  it('mirrors the username into the display name as it is typed', () => {
+  it('mirrors the username into the display name as the user types', () => {
     renderForm()
 
     fireEvent.input(usernameInput(), { target: { value: 'alice' } })
     expect(displayNameInput().value).toBe('alice')
 
-    // Keeps up with edits to the username, raw casing included: the slug is
+    // Follows edits to the username, raw casing included: the slug is
     // lowercased at submit, but the display name keeps what the user typed.
     fireEvent.input(usernameInput(), { target: { value: 'Alice-dev' } })
     expect(displayNameInput().value).toBe('Alice-dev')
   })
 
-  it('stops mirroring once the display name is edited directly', () => {
+  it('stops mirroring once the user edits the display name directly', () => {
     renderForm()
 
     fireEvent.input(usernameInput(), { target: { value: 'alice' } })
     fireEvent.input(displayNameInput(), { target: { value: 'Alice Smith' } })
     expect(displayNameInput().value).toBe('Alice Smith')
 
-    // Later username typing must not clobber the user's own name.
+    // Later username typing must not overwrite the user's own name.
     fireEvent.input(usernameInput(), { target: { value: 'bob' } })
     expect(usernameInput().value).toBe('bob')
     expect(displayNameInput().value).toBe('Alice Smith')
   })
 
-  it('does not re-arm the mirror after the display name is cleared', () => {
+  it('does not re-arm the mirror after the user clears the display name', () => {
     renderForm()
 
     fireEvent.input(usernameInput(), { target: { value: 'alice' } })
@@ -131,14 +144,48 @@ describe('signup form passkey path', () => {
     expect(mockBeginPasskeySignUp).not.toHaveBeenCalled()
   })
 
-  it('hides password fields when passkey is selected', () => {
+  // The other branch of the condition that this form tests, which nothing
+  // exercised. A page that cannot run a ceremony must not offer to sign
+  // somebody up with one, and the password option has to survive -- it is the
+  // only remaining way to sign up.
+  //
+  // The HUB's refusal is a property of the deployment, so the option goes.
+  it('drops the passkey option when the hub does not serve this origin', () => {
+    setSystemInfoMock({ passkeyBlocker: 'origin-not-allowed' })
     renderForm()
+    expect(screen.queryByRole('radio', { name: 'Passkey' })).not.toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: 'Password' })).toBeInTheDocument()
+    expect(screen.getByLabelText('New Password')).toBeInTheDocument()
+  })
+
+  // The BROWSER's refusal is something the reader can clear by moving, so the
+  // option stays and carries the reason.
+  it.each([
+    ['the page is not secure', 'insecure-context' as const, /secure page/i],
+    ['the browser has no WebAuthn', 'no-webauthn' as const, /does not support passkeys/i],
+  ])('keeps the passkey option and says why when %s', (_case, blocker, expected) => {
+    setSystemInfoMock({ passkeyBlocker: blocker })
+    renderForm()
+
+    const passkey = screen.getByRole('radio', { name: 'Passkey' })
+    expect(passkey).toBeDisabled()
+    expect(passkey).not.toHaveAttribute('title')
+    expect(reasonOf(passkey)).toMatch(expected)
+    expect(screen.getByLabelText('New Password')).toBeInTheDocument()
+  })
+
+  it('hides the password fields when the user selects passkey', () => {
+    renderForm()
+    // Present FIRST, then gone. The label reads "New Password", so the
+    // absence assertion this replaced queried a label that never existed --
+    // it passed whether the fields rendered or not.
+    expect(screen.getByLabelText('New Password')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('radio', { name: 'Passkey' }))
-    expect(screen.queryByLabelText('Password')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('New Password')).not.toBeInTheDocument()
     expect(screen.queryByLabelText('Confirm Password')).not.toBeInTheDocument()
   })
 
-  it('switches captcha action when the passkey method is selected', async () => {
+  it('switches the captcha action when the user selects the passkey method', async () => {
     setSystemInfoMock({ captchaEnabled: true, captchaProvider: CaptchaProvider.TURNSTILE, captchaSiteKey: '1x00000000000000000000AA' })
     renderForm()
     await vi.waitFor(() => {

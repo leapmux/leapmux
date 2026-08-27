@@ -1,4 +1,5 @@
 /// <reference types="vitest/globals" />
+import type { PasskeyBlocker } from '~/lib/systemInfo'
 import { createSignal } from 'solid-js'
 import { vi } from 'vitest'
 
@@ -25,14 +26,28 @@ import { CaptchaProvider } from '~/generated/leapmux/v1/auth_pb'
  */
 
 export interface SystemInfoMockState {
-  /** Answers `isSystemInfoLoaded`; flip to false to test bootstrap gating. */
+  /** Answers `isSystemInfoLoaded`; flip to false to test the fail-closed bootstrap window. */
   loaded: boolean
   soloMode: boolean
   signupEnabled: boolean
   setupRequired: boolean
   emailEnabled: boolean
-  passkeyEnabled: boolean
+  /**
+   * Answers `passkeyBlocker`: why this page cannot run a passkey ceremony,
+   * or null when it can. Driven directly rather than derived from the hub
+   * flag and `globalThis.PublicKeyCredential`, so a test states the
+   * condition it means -- and so it can state a BROWSER condition (an
+   * insecure page) that jsdom cannot produce.
+   */
+  passkeyBlocker: PasskeyBlocker | null
   captchaEnabled: boolean
+  /**
+   * Answers `isCaptchaUnsolvableHere`: the hub requires ALTCHA and this
+   * page is not a secure context, so no widget can mount. Driven directly
+   * rather than derived from `window.isSecureContext`, so a test states
+   * the condition it means instead of the two facts that produce it.
+   */
+  captchaUnsolvableHere: boolean
   captchaProvider: CaptchaProvider
   captchaSiteKey: string
   altchaAlgorithm: string
@@ -45,8 +60,9 @@ const defaultState: SystemInfoMockState = {
   signupEnabled: false,
   setupRequired: false,
   emailEnabled: false,
-  passkeyEnabled: true,
+  passkeyBlocker: null,
   captchaEnabled: false,
+  captchaUnsolvableHere: false,
   captchaProvider: CaptchaProvider.ALTCHA,
   captchaSiteKey: '',
   altchaAlgorithm: '',
@@ -65,9 +81,11 @@ export const systemInfoMock = {
   isSignupEnabled: () => state().signupEnabled,
   isSetupRequired: () => state().setupRequired,
   isEmailEnabled: () => state().emailEnabled,
-  isPasskeyEnabled: () => state().passkeyEnabled,
+  passkeyBlocker: () => state().passkeyBlocker,
+  passkeysUsableHere: () => state().passkeyBlocker === null,
   isSystemInfoLoaded: () => state().loaded,
   isCaptchaEnabled: () => state().captchaEnabled,
+  isCaptchaUnsolvableHere: () => state().captchaUnsolvableHere,
   getCaptchaProvider: () => state().captchaProvider,
   getCaptchaSiteKey: () => state().captchaSiteKey,
   getAltchaAlgorithm: () => state().altchaAlgorithm,

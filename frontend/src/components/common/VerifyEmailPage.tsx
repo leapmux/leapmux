@@ -4,15 +4,17 @@ import { createEffect, createSignal, Show } from 'solid-js'
 import { userClient } from '~/api/clients'
 import { useAuth } from '~/context/AuthContext'
 import { formatErrorMessage } from '~/lib/errors'
+import { stringParam } from '~/lib/searchParam'
 import { useVerificationResend } from '~/lib/useVerificationResend'
 import { errorText, pageCard } from '~/styles/shared.css'
 import * as styles from './LoginPage.css'
 
-// normalizeCode strips formatting noise (whitespace, hyphens) and
+// normalizeCode strips the formatting characters (whitespace, hyphens) and
 // uppercases the result. It does NOT validate the alphabet — the
 // backend's `verifycode.Normalize` is the source of truth for charset
 // rules and rejects bad input with InvalidArgument. Forking the charset
-// list across the FE/BE boundary would just create two places to update.
+// list across the frontend/backend boundary would only create two places to
+// update.
 function normalizeCode(input: string): string {
   return input.replace(/[\s-]/g, '').toUpperCase()
 }
@@ -30,7 +32,7 @@ export const VerifyEmailPage: Component = () => {
 
   const [decided, setDecided] = createSignal(false)
   createEffect(() => {
-    // Wait out the auth bootstrap before deciding "not signed in": on a
+    // Wait for the auth bootstrap before deciding "not signed in": on a
     // fresh load the session cookie is often still restoring, and reading
     // auth.user() too early bounces a valid session to the login form
     // (LoginPage guards the same race with auth.loading()).
@@ -39,7 +41,7 @@ export const VerifyEmailPage: Component = () => {
     setDecided(true)
     // Pull the URL code (used for both prefill and auto-submit). It may
     // arrive in display form ("XXX-XXX") or raw ("XXXXXX").
-    const urlCode = typeof searchParams.code === 'string' ? searchParams.code : ''
+    const urlCode = stringParam(searchParams.code) ?? ''
 
     if (!auth.user()) {
       // Not signed in. Send the user through login first, preserving the
@@ -67,9 +69,26 @@ export const VerifyEmailPage: Component = () => {
     setError(null)
     try {
       const resp = await userClient.verifyEmail({ verificationToken: normalized })
-      // Refresh auth so EmailVerified flips in the cached user.
+      // The RESPONSE is the authoritative account, so adopt it first. A second
+      // round trip can fail, and `refreshUser` discards its own failure, so a
+      // page that read the account only through the refresh navigates home with
+      // `emailVerified` still false for an address the hub just verified.
+      // Preferences then renders "unverified / Verify", and
+      // RegisterWorkerDialog keeps its email control disabled.
+      //
+      // adoptSameIdentityUser, never setAuth: this is the SAME identity, so it
+      // is a refresh and not a transition. setAuth clears the elevation
+      // deadline -- which is right when a sign-in lands a new user, and wrong
+      // here, where the hub touched no elevation column at all. Clearing it
+      // made Preferences report a verified session as unverified and hid the
+      // "End now" button while the window was still open, and sent a CLI
+      // consent bounce back through /elevate for a factor the hub would not
+      // have asked for.
       if (resp.user)
-        auth.setAuth(resp.user)
+        auth.adoptSameIdentityUser(resp.user)
+      // The refresh stays for the two signals the response does NOT carry: the
+      // resend cooldown and the elevation deadline.
+      await auth.refreshUser()
       navigate('/', { replace: true })
     }
     catch (e) {

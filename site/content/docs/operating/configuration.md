@@ -7,7 +7,7 @@ weight: 2
 
 This chapter is the complete reference for configuring the LeapMux **Hub** and **Worker** services: how settings are layered and resolved, where config files live, every config key with its default and meaning, the supported storage backends, listen-address formats, encryption mode, and the timeout/limit knobs.
 
-If you are looking for *how to launch* each mode (solo, hub, worker, dev) and what each is for, see [Running LeapMux](/docs/operating/running-leapmux/). For key management, encryption at rest, and database operations, see [Encryption & Data](/docs/operating/encryption-and-data/).
+For *how to launch* each mode (solo, hub, worker, dev) and what each is for, see [Running LeapMux](/docs/operating/running-leapmux/). For key management, encryption at rest, and database operations, see [Encryption & Data](/docs/operating/encryption-and-data/).
 
 > **Note:** Everything here applies to the long-running daemons. `solo` and `dev` modes reuse the Hub's configuration loader with a restricted flag set; the differences are called out where relevant. The desktop app, the `leapmux control` CLI, and the `leapmux recover` CLI are configured separately — see [Running LeapMux](/docs/operating/running-leapmux/), [Remote Control CLI](/docs/operating/control-cli/), and [Recovery](/docs/operating/recover/).
 
@@ -121,7 +121,7 @@ Parts combine, in any order: `1h30m`, `1w2d`, `2d12h`.
 
 The same spellings work everywhere a key can be set: the config file, the environment variable, and the CLI flag. `0` means "use the default" for the Worker timeouts, and "leave the database driver's own default alone" for the pool settings.
 
-A value that cannot be read, or one past roughly 292 years (the largest duration LeapMux can represent), fails at startup naming the key, rather than silently becoming a duration nobody meant.
+A value that cannot be read, or one past roughly 292 years (the largest duration LeapMux can represent), fails at startup with a message that specifies the key, rather than silently becoming a duration nobody meant.
 
 ```yaml
 # worker.yaml — the Worker's timeouts (Hub pool settings take the
@@ -200,7 +200,7 @@ A value is a JSON document; fields it omits keep their current (or default) valu
 
 Changes fall into two classes, shown by `settings list`:
 
-- **hot** — a running Hub applies the new value within ~30 seconds (this is also the convergence bound between Hub instances sharing one database).
+- **hot** — a running Hub applies the new value within ~30 seconds (this is also the convergence limit between Hub instances that share one database).
 - **restart** — the value feeds startup-time arithmetic (queue pool floors, frame ceilings), so it is read once at boot; a change reports that it applies after a hub restart.
 
 | Setting key | Shape | Default | Class |
@@ -231,7 +231,7 @@ See [Accounts & Authentication](/docs/using/accounts/) for sign-up, passkeys, ve
 
 > **Note:** Email verification is not a separate setting. Once the `smtp` block is fully configured (`host` **and** `from_address`), the hub requires verification for new non-admin sign-ups and exposes forgot-password / worker registration email features. Removing or disabling SMTP turns verification off at runtime.
 >
-> **SMTP-enable transition:** users who signed up while SMTP was off keep `email_verified=false` in the database. When an operator later configures SMTP, those accounts are required to verify on the next request until they via `/verify-email` (ResendVerificationEmail issues a pending code against the stored primary email). No data migration is required. Admins stay exempt and are always stored as verified.
+> **SMTP-enable transition:** users who signed up while SMTP was off keep `email_verified=false` in the database. When an operator later configures SMTP, the Hub requires those accounts to verify on the next request until they do so via `/verify-email`. You need no data migration. Administrators stay exempt at the sign-in gate, but their address is stored unverified like anybody else's — the flag records only what somebody confirmed, and an unverified address still cannot receive a password-reset link.
 
 ### Bot protection (captcha & rate limits)
 
@@ -244,7 +244,7 @@ leapmux control admin captcha set --provider turnstile --site-key 0x4AAAA... --s
 leapmux control admin rate-limit list
 ```
 
-Out of the box, with no configuration at all: captcha is **enabled** with the built-in ALTCHA provider at `PBKDF2/SHA-256` cost `10000` (challenges expire after 20 minutes), and `change-password` is limited to 5 failed attempts per 15 minutes per user. Solo mode enforces neither.
+With no configuration at all: captcha is **enabled** with the built-in ALTCHA provider at `PBKDF2/SHA-256` cost `10000` (challenges expire after 20 minutes), and `elevation` — failed attempts to verify your identity for a sensitive account change, see [Session elevation](/docs/operating/security/#session-elevation) — is limited to 5 failed attempts per 15 minutes per user. Solo mode enforces neither, and ALTCHA runs only where a browser can solve it and somebody other than you can reach the Hub — see **When ALTCHA runs** below.
 
 Selecting Google reCAPTCHA v3 or Cloudflare Turnstile needs its site key and its secret, because the Hub refuses a selected provider whose key pair is incomplete. Pass both in the same `captcha set` invocation, as the example above does, or store them first and select the provider after. The Preferences dialog's Bot Protection panel shows every provider's key fields at all times for the same reason: an operator fills a provider in, then switches to it.
 
@@ -253,7 +253,27 @@ A few caveats before you change defaults:
 - **Captcha cost** is the per-derivation iteration count, and the browser performs ~256 derivations per solve — total work scales as ~256 × cost. Raising it multiplies bot cost and your users' wait time equally, so large values mostly punish humans. The challenge-issuing endpoint is itself unauthenticated and costs the Hub one HMAC per challenge (the solver does the expensive side), so issuance stays cheap even at high costs.
 - **External providers verify online and uncapped**: every login/signup attempt with a non-empty token makes one siteverify call to Google or Cloudflare with no per-client throttle, so scripted garbage tokens can spend the operator's siteverify quota. Disabling captcha removes that egress but leaves the unauthenticated procedures limited only by Argon2 cost and the honeypot. The built-in ALTCHA provider has no egress and self-throttles through the client-side proof-of-work.
 
-**ALTCHA needs a secure context** (HTTPS, or localhost / `127.0.0.1` / `*.localhost`): its solvers use WebCrypto (`SubtleCrypto`), which browsers withhold on plain HTTP from another machine. On such an origin the Hub runtime-disables ALTCHA automatically — `GetSystemInfo` reports captcha off, no challenge is issued, and Login/SignUp skip verification — without writing `captcha.enabled`. The stored setting stays on so switching to HTTPS (or to Turnstile / reCAPTCHA v3, which both work on plain HTTP) restores protection without an admin re-enable. The honeypot check still runs. Put TLS in front when you want ALTCHA on a non-localhost deployment.
+**When ALTCHA runs.** The Hub requires the built-in provider only where it can both work and matter. Two conditions, and both must hold:
+
+1. **A browser can run the widget.** ALTCHA's solver uses WebCrypto (`SubtleCrypto`), which browsers supply only in a secure context: HTTPS, or plain HTTP on localhost / `127.0.0.1` / `*.localhost`.
+2. **Somebody other than you can reach the Hub.** ALTCHA counters automated sign-up and sign-in abuse. A Hub published at a loopback address, or published nowhere at all, has no such audience, so the proof of work costs your own sign-in and buys nothing.
+
+The Hub checks both conditions against its own configuration, reading two settings in order:
+
+1. `public_url`, when set. This is the browser-facing URL you published, and the setting to use behind a TLS-terminating reverse proxy. ALTCHA runs when that URL is a secure context and its host is not loopback.
+2. `secure_cookies`, when `public_url` is unset. It means the Hub itself is served over HTTPS, and a Hub with a certificate is a Hub somebody reaches.
+
+With neither setting the Hub serves plain HTTP, so an **unpublished Hub runs no ALTCHA** — including the first-run setup form. When ALTCHA is off, the Hub issues no challenge, and sign-in and sign-up skip verification, but the Hub does not write `captcha.enabled`: the stored setting keeps its value, so publishing the Hub restores protection with no admin re-enable. The honeypot check still runs. The gate never restricts reCAPTCHA v3 or Turnstile, which both work on plain HTTP pages.
+
+**Set `public_url` on a Hub that browsers really reach by a LAN address or a hostname.** It is a recommendation, not a requirement, and rung 2 above says why: a Hub with `secure_cookies` set and no `public_url` already runs ALTCHA. What `public_url` adds is the deployment where the Hub itself speaks plain HTTP behind a TLS-terminating reverse proxy — there `secure_cookies` describes the Hub's own listener rather than the browser's page, and the published URL is the only setting that states what the browser sees. Set it to the URL your users type, and serve that URL over HTTPS. `public_url` is already what mail links, the CLI login endpoints, and passkey sign-in need on such a deployment. Publish a plain-HTTP LAN URL and the Hub keeps ALTCHA down by itself, because no browser there could solve a challenge.
+
+**How you find out that the Hub disabled ALTCHA.** The Hub disables it silently to the browser — a message there would tell a bot which control is off — so it reports the change to its own log instead. When the stored `captcha.enabled` is `true` and the gate disables the widget, the Hub logs once at `WARN`:
+
+```text
+WARN captcha is enabled in the settings but verifies nothing reason="the selected provider needs a secure browser context, and this hub publishes no secure address" remedy="set public_url to the https address that your users type"
+```
+
+It logs on the transition, not per request, so a busy Hub prints one line rather than one per sign-in. Set `public_url` (or `secure_cookies`) and the Hub logs `captcha enforcement restored: this hub publishes a secure browser address` at `INFO`. So a Hub whose settings read `captcha.enabled = true` while the browser shows no widget has one place to look for the reason.
 
 See [Captcha](/docs/operating/control-cli/#captcha) and [Rate limits](/docs/operating/control-cli/#rate-limits) in the Remote Control CLI chapter for the full flag reference.
 
@@ -271,7 +291,7 @@ Separate budgets make the blast radius structural rather than a matter of which 
 
 Left at `0` (the default), each budget is a share of the memory the process may use — four thirty-seconds for channel relays, two for Workers, two for user events, together a quarter — never below what one largest frame of its kind needs, and never above 8 GiB. Channel relays get the largest share because they carry the bulk direction: terminal output is one frame per PTY read, where a Worker stream carries keystrokes, RPCs and control frames.
 
-User events gets an equal share to Workers despite carrying the least traffic, because throughput is not what limits it. Its ongoing frames are the smallest in the Hub and are held once however many tabs are waiting on them, but the frame that *opens* a connection carries an account's whole visible state and is unique to that tab — so a Hub restart, when every tab reconnects at once, is the case that sizes this budget rather than the traffic that follows. The memory figure comes from the first of these that applies:
+User events gets an equal share to Workers despite carrying the least traffic, because throughput is not what limits it. Its ongoing frames are the smallest in the Hub and are held once however many tabs wait on them, but the frame that *opens* a connection carries an account's whole visible state and is unique to that tab — so a Hub restart, when every tab reconnects at once, is the case that sizes this budget rather than the traffic that follows. The memory figure comes from the first of these that applies:
 
 1. `GOMEMLIMIT`, when set. Setting it is the most direct way to state the budget, and it is what the Go runtime holds the heap to anyway.
 2. The cgroup memory limit, on Linux. This is what makes the default correct in a container, where the machine's physical memory is the host's and can be two orders of magnitude larger than what the container may use. The Hub resolves its own cgroup and takes the tightest limit on the chain up to the root, so a limit set on a parent — a `systemd` unit's `MemoryMax=`, say — binds as it should rather than being missed.
@@ -292,9 +312,9 @@ Every budget also has to be able to hold one largest frame of its kind, and enou
 
 Note that `max_message_size_bytes` does **not** move any of these minimums. That key limits the reassembled application message the two endpoints rebuild; the Hub is a relay on that path and never holds one, so its queues only ever carry individual encrypted chunks.
 
-**How a budget is shared.** A connection's share is not a fixed slice. Each one may queue up to whatever is still free, so a single backed-up connection on an otherwise-idle Hub can use up to half the budget, while many backed-up connections settle at an even split with a reserve still held back for connections that have not arrived yet. Each connection is also guaranteed a small working set of its own, so a connection whose queue is near empty keeps being served while others are backed up.
+**How a budget is shared.** A connection's share is not a fixed slice. Each one may queue up to whatever is still free, so a single backed-up connection on an otherwise-idle Hub can use up to half the budget, while many backed-up connections settle at an even split with a reserve still held back for connections that did not arrive yet. The Hub also guarantees each connection a small working set of its own, so it keeps serving a connection whose queue is near empty while others are backed up.
 
-Frames that the Hub sends to several connections at once — a user-event broadcast reaches every tab the user has open — are held once and counted once, however many queues are waiting to send them. `leapmux_sendq_pool_used_bytes` is therefore memory the process is really holding, not a sum inflated by fan-out.
+Frames that the Hub sends to several connections at once — a user-event broadcast reaches every tab the user has open — are held once and counted once, however many queues wait to send them. `leapmux_sendq_pool_used_bytes` is therefore memory that the process really holds, not a sum inflated by fan-out.
 
 **When a budget runs out**, what happens depends on what the cheapest recovery is:
 
@@ -302,7 +322,7 @@ Frames that the Hub sends to several connections at once — a user-event broadc
 - For user events the subscriber that cannot fit a frame drops it and resynchronises, rather than taking a peer down: its own recovery is already the cheapest outcome available. Those drops are counted by `leapmux_userevents_frames_dropped_total`.
 - A user-event **connect** that arrives when the budget cannot hold its opening frame is closed with a retry-later status rather than served. The frame that opens such a connection carries the account's whole visible state, so a reconnect storm is exactly when the Hub would otherwise hold one per tab at once; the browser retries, and the connect succeeds as soon as there is room.
 
-**What the numbers do and do not bound.** They bound queued frames, and — for user events — the opening frame of each connection while it is being written. What they do not cover is the moment that frame is being *built*, before there is a size to charge: tabs reconnecting together really do build their snapshots at the same time, so a reconnect storm on large accounts peaks above the budget for as long as that takes.
+**What the numbers do and do not limit.** They limit queued frames, and — for user events — the opening frame of each connection while the Hub writes it. What they do not cover is the moment when the Hub *builds* that frame, before there is a size to charge: tabs that reconnect together really do build their snapshots at the same time, so a reconnect storm on large accounts peaks above the budget for as long as that takes.
 
 **A frame does not cost its wire size.** How much it costs differs by pool, so sizing a budget from observed network traffic will under-provision it:
 
@@ -314,7 +334,7 @@ Frames that the Hub sends to several connections at once — a user-event broadc
 
 User events are charged double because the queue holds the decoded message tree alongside the bytes to be written, and both are live until the frame is sent. `leapmux_sendq_pool_used_bytes` reports what is charged, which is what the process is really holding — so it is the figure to size against, and it will read about twice the traffic you can see on the wire for that pool.
 
-Resident memory can exceed a budget, and by how much depends on the connection count. Up to roughly one connection per megabyte of budget, the overshoot is bounded and twice the sum is a fair provisioning figure. Past that the per-connection guaranteed working set stops shrinking, and the promised floors alone grow with the number of connections — a Hub can then hold several times a budget without any single connection misbehaving. `leapmux_sendq_pool_overcommits_total` counts exactly that: it increments whenever a working set was granted that the budget had no room for, so sustained growth means the deployment has more connections of that kind than its budget can honour, and the fix is to raise the budget (or run more Hubs), not to wait for a reclaim that will not come.
+Resident memory can exceed a budget, and by how much depends on the connection count. Up to roughly one connection per megabyte of budget, the overshoot stays limited and twice the sum is a fair provisioning figure. Past that the per-connection guaranteed working set stops shrinking, and the promised floors alone grow with the number of connections — a Hub can then hold several times a budget without any single connection misbehaving. `leapmux_sendq_pool_overcommits_total` counts exactly that: it increments whenever the Hub granted a working set that the budget had no room for, so sustained growth means the deployment has more connections of that kind than its budget can honour, and the fix is to raise the budget (or run more Hubs), not to wait for a reclaim that will not come.
 
 What keeps that from growing without limit is [`max_connections_per_user`](#connections-per-user): the count these budgets are exposed to is at most your user count times that cap, rather than whatever a client decides to open.
 
@@ -323,7 +343,7 @@ What keeps that from growing without limit is [`max_connections_per_user`](#conn
 | Metric | Meaning |
 | --- | --- |
 | `leapmux_sendq_pool_capacity_bytes` | The resolved budget. |
-| `leapmux_sendq_pool_used_bytes` | Currently queued. Sustained occupancy near capacity means the Hub is shedding connections to stay inside it. |
+| `leapmux_sendq_pool_used_bytes` | Currently queued. Sustained occupancy near capacity means the Hub sheds connections to stay inside it. |
 | `leapmux_sendq_pool_members` | Connections drawing from the budget. |
 | `leapmux_sendq_pool_evictions_total` | Connections disconnected to reclaim memory. |
 | `leapmux_sendq_pool_overcommits_total` | Times a guaranteed working set was granted without room for it. Sustained growth means the budget is too small for its connection count — raise it. |
@@ -335,7 +355,7 @@ And, unlabelled by pool:
 | --- | --- |
 | `leapmux_connections_refused_total{reason="too_many_connections"}` | Connections refused because a user was at [`max_connections_per_user`](#connections-per-user). Steady growth is either a client leaking sockets or a cap below the way your users actually work. |
 | `leapmux_connections_refused_total{reason="credential"}` | Connections refused because the credential expired or was revoked between authenticating and being served. |
-| `leapmux_userevents_frames_dropped_total{phase,bound}` | User-event frames a subscriber could not take. `bound="frames"` means the client was too far behind; `bound="bytes"` means the shared budget was full at that moment, which is the deployment's to fix; `bound="capacity"` means the frame was larger than the whole budget, which no occupancy would have admitted — only raising the budget clears it. `phase="park"` costs a snapshot instead of a delta, `phase="live"` costs a reconnect, and `phase="bootstrap"` refused the connect — with `bound="bytes"` the client retries, with `bound="capacity"` it is told to stop. |
+| `leapmux_userevents_frames_dropped_total{phase,bound}` | User-event frames a subscriber could not take. `bound="frames"` means the client was too far behind; `bound="bytes"` means the shared budget was full at that moment, which is the deployment's to fix; `bound="capacity"` means the frame was larger than the whole budget, which no occupancy would have admitted — only raising the budget clears it. `phase="park"` costs a snapshot instead of a delta, `phase="live"` costs a reconnect, and `phase="bootstrap"` refused the connect — with `bound="bytes"` the client retries, with `bound="capacity"` the Hub tells it to stop. |
 
 ### Solo and dev extras (worker-scoped)
 
@@ -351,9 +371,9 @@ And, unlabelled by pool:
 
 ### Connections per user
 
-`max_connections_per_user` bounds how many long-lived connections one account may hold at once. It is a guard against a client that has started leaking sockets, and against one account crowding out the rest — not a quota anyone should meet in normal use.
+`max_connections_per_user` limits how many long-lived connections one account may hold at once. It is a guard against a client that leaks sockets, and against one account that crowds out the rest — not a quota anyone should meet in normal use.
 
-It exists because the queue budgets above cannot bound themselves. Those are shared by *class* of connection, and each connection in a class is guaranteed a small working set it cannot be refused. Guarantee that to an unlimited number of connections and the total grows without limit, however carefully the budget was sized. This is the number that stops it.
+It exists because the queue budgets above cannot limit themselves. Those are shared by *class* of connection, and each connection in a class is guaranteed a small working set it cannot be refused. Guarantee that to an unlimited number of connections and the total grows without limit, however carefully you size the budget. This is the number that stops it.
 
 **It counts sockets, not tabs, and an active browser tab holds two** — one for live updates, and one more once it opens its first terminal or agent. Everything authenticated as the same account draws on the one allowance: browser tabs, the desktop app, and any `leapmux control` CLI session. At the default of `32` that is roughly sixteen active tabs alongside a CLI session or two.
 
@@ -361,27 +381,27 @@ It exists because the queue budgets above cannot bound themselves. Those are sha
 
 > **Note:** in solo and desktop mode *everything* authenticates as the single local user, so all of the above shares one allowance. It is generous enough that this is unlikely to bite, but it is the first key to raise if it does — and because it is the mode where it binds soonest, `solo` and `dev` document it in `leapmux control admin settings list`. The queue budgets size themselves from the machine; `settings set queue_budget '{"relay_bytes":...}'` covers the rare case that is wrong.
 
-When a user is at the limit the **newest** connection is refused and everything already open keeps working. Nothing is evicted: the alternative moves the failure to a window the user is not looking at, and a connection dropped to make room for a new one would be dropped again on the next reconnect. In the browser the refused tab says so and stops retrying — for either socket, so opening a terminal while at the limit explains itself rather than failing as a generic connection error. Closing another tab and reloading is all that is needed. Set the key to `0` to turn the cap off entirely.
+When a user is at the limit the Hub refuses the **newest** connection and everything already open keeps working. The Hub evicts nothing: the alternative moves the failure to a window that the user does not look at, and a connection dropped to make room for a new one would be dropped again on the next reconnect. In the browser the refused tab says so and stops retrying — for either socket, so opening a terminal while at the limit explains itself rather than failing as a generic connection error. You only need to close another tab and reload. Set the key to `0` to turn the cap off entirely.
 
-Refusals are counted in `leapmux_connections_refused_total{reason="too_many_connections"}` and logged with the user id and the limit, so a client that is leaking connections is distinguishable from a cap set too low for the way your users actually work.
+The Hub counts refusals in `leapmux_connections_refused_total{reason="too_many_connections"}` and logs them with the user id and the limit, so you can tell a client that leaks connections from a cap set too low for the way your users actually work.
 
 ### Workers per user
 
-`max_workers_per_user` is the same bound for the third pool. A Worker's Connect stream draws on the Worker queue budget and is guaranteed the same working set the Hub may not reclaim — but it is not a *lease*, so the connection cap above does not see it, and registration keys carry no quota of their own. Without this key, one account could register Workers until the Worker pool had promised more guaranteed memory than it has.
+`max_workers_per_user` is the same limit for the third pool. A Worker's Connect stream draws on the Worker queue budget and is guaranteed the same working set the Hub may not reclaim — but it is not a *lease*, so the connection cap above does not see it, and registration keys carry no quota of their own. Without this key, one account could register Workers until the Worker pool promised more guaranteed memory than it has.
 
 The limit applies twice, to two different populations, because neither one alone is the number that matters. **Registering** a Worker past the limit is refused, which is where an operator gets an error they can act on. **Connecting** past it is refused as well, which is where the pool member is actually created.
 
-Both are needed because a registered Worker and a live pool member are not the same thing. The registration count sees only *active* Workers, while a Connect stream is served for any Worker that has not been deleted — including one that is deregistering, which keeps its stream because that stream is how the Hub tells it to stop. Counting registrations alone, an account could cycle register and deregister to accumulate pool members without ever exceeding the limit.
+Both are needed because a registered Worker and a live pool member are not the same thing. The registration count sees only *active* Workers, while the Hub serves a Connect stream for any Worker that nobody deleted yet — including one that deregisters, which keeps its stream because that stream is how the Hub tells it to stop. Counting registrations alone, an account could cycle register and deregister to accumulate pool members without ever exceeding the limit.
 
-Either refusal returns a `resource_exhausted` error naming the key, is counted in `leapmux_worker_admissions_refused_total` (labelled `stage="register"` or `stage="connect"`), and is logged with the owner and the limit. The default of `64` is far past what an account plausibly runs; it exists so the pool whose eviction costs the most — dropping a Worker takes every user's channels on that machine — cannot be oversubscribed.
+Either refusal returns a `resource_exhausted` error that specifies the key. The Hub counts it in `leapmux_worker_admissions_refused_total` (labelled `stage="register"` or `stage="connect"`) and logs it with the owner and the limit. The default of `64` is far past what an account plausibly runs; it exists so the pool whose eviction costs the most — dropping a Worker takes every user's channels on that machine — cannot be oversubscribed.
 
 ### Idle connections
 
-Both long-lived sockets are probed every 30 seconds. Every other bound on them fires on a *write*, so a peer that stops receiving without sending a close frame — a suspended laptop, a dropped mobile link, a middlebox that forgot the flow — would otherwise hold its connections until the operating system's own keepalive gave up, which is on the order of ten minutes and behind some proxies is never. Those connections count against `max_connections_per_user` for the whole time, and closing a tab does not release a socket that is already gone.
+Both long-lived sockets are probed every 30 seconds. Every other limit on them fires on a *write*, so a peer that stops receiving without sending a close frame — a suspended laptop, a dropped mobile link, a middlebox that forgot the flow — would otherwise hold its connections until the operating system's own keepalive gave up, which is on the order of ten minutes and behind some proxies is never. Those connections count against `max_connections_per_user` for the whole time, and closing a tab does not release a socket that is already gone.
 
-Probes only ever *establish* liveness; they cannot be used to fake it. Each one carries an identifier the Hub is waiting for, and a reply that does not match an outstanding probe is ignored — so a client cannot keep a dead connection alive by replaying or pre-sending acknowledgements.
+Probes only ever *establish* liveness; they cannot be used to fake it. Each one carries an identifier that the Hub waits for, and the Hub ignores a reply that does not match an outstanding probe — so a client cannot keep a dead connection alive by replaying or pre-sending acknowledgements.
 
-The reverse direction is bounded too. A WebSocket peer may send its own pings, and the answer is a frame the Hub has to write, so an unbounded ping rate would be a cheap way to make the Hub do expensive work on the same lock its real traffic needs. Inbound control frames are therefore rate-limited per connection — two per second sustained, with a burst allowance far above anything a working client produces — and a connection that keeps flooding past that is closed. Nothing an ordinary client does comes close: a browser answers one probe every thirty seconds.
+The reverse direction has a limit too. A WebSocket peer may send its own pings, and the answer is a frame the Hub has to write, so an unlimited ping rate would be a cheap way to make the Hub do expensive work on the same lock its real traffic needs. The Hub therefore rate-limits inbound control frames per connection — two per second sustained, with a burst allowance far above anything a working client produces — and closes a connection that continues to flood past that. Nothing an ordinary client does comes close: a browser answers one probe every thirty seconds.
 
 ### When one account's state outgrows the budget
 
@@ -391,7 +411,7 @@ Raising the `userevents_bytes` field of `queue_budget` is the fix. It is worth d
 
 ### Keys with no CLI flag
 
-`encryption_key_path` (env `LEAPMUX_HUB_ENCRYPTION_KEY_PATH`, default `{data_dir}/encryption.key`) can only be set through the YAML file or an env var — there is no command-line flag. It names the encryption key ring file the Hub needs before it can read the encrypted halves of its settings rows.
+`encryption_key_path` (env `LEAPMUX_HUB_ENCRYPTION_KEY_PATH`, default `{data_dir}/encryption.key`) can only be set through the YAML file or an env var — there is no command-line flag. It specifies the encryption key ring file that the Hub needs before it can read the encrypted halves of its settings rows.
 
 See [Encryption & Data](/docs/operating/encryption-and-data/) for the encryption key ring, rotation, and what is encrypted at rest.
 
@@ -478,7 +498,7 @@ An unknown type is rejected at startup with `unsupported storage.type: "<type>" 
 
 ### SQLite (default)
 
-SQLite is the zero-configuration default; it needs nothing beyond an optional path and tuning. Connections are opened with WAL journaling, a 60-second busy timeout, and foreign keys enabled, and the DB file is set to mode `0600`. Expect `hub.db-wal` and `hub.db-shm` sidecar files while the Hub is running.
+SQLite is the zero-configuration default; it needs nothing beyond an optional path and tuning. LeapMux opens connections with WAL journaling, a 60-second busy timeout, and foreign keys enabled, and sets the DB file to mode `0600`. Expect `hub.db-wal` and `hub.db-shm` sidecar files while the Hub runs.
 
 | Config key | Default | Meaning |
 | --- | --- | --- |

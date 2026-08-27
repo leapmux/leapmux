@@ -244,7 +244,7 @@ leapmux control auth login --hub https://hub.example.com   # authorize first
 | Group | Commands |
 |-------|----------|
 | *(top level)* | `whoami`, `version` |
-| `auth` | `login`, `logout`, `list`, `status` |
+| `auth` | `login` (add `--admin` for hub administration), `logout`, `list`, `status`, `credentials` — `list` reads this machine's credential files, `credentials` asks the Hub what the whole account holds |
 | `admin` | subgroups `settings`, `user`, `session`, `worker` (with `reg-key`), `oauth-provider`, `captcha`, `rate-limit`, `api-token`, `delegation-token` — the online hub administration surface (requires an admin login; never available over the worker-IPC transport) |
 | `workspace` | `list`, `get`, `create`, `rename`, `delete` |
 | `tab` | `list`, `get`, `open`, `close`, `rename`, `move` |
@@ -302,7 +302,7 @@ The `LEAPMUX_CONTROL_*` variables (the `_SOCK` / `_TOKEN` / `_*_ID` / `_TAB_*` f
 
 ## Config and data locations
 
-Each mode reads an optional YAML config named after the mode, and stores data, under its own directory. A missing config file is silently skipped.
+Each mode reads an optional YAML config named after the mode, and stores data, under its own directory. LeapMux skips a missing config file without a message.
 
 | Mode | Config file | Default data dir |
 |------|-------------|------------------|

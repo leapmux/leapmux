@@ -1,6 +1,6 @@
 import type { Component } from 'solid-js'
 import type { SearchEntry } from './search'
-import { createEffect, createMemo, createSignal, For, on, onMount, Show, untrack } from 'solid-js'
+import { createMemo, createSignal, For, onMount, Show } from 'solid-js'
 import { Alert } from '~/components/common/Alert'
 import { Dialog } from '~/components/common/Dialog'
 import { useAuth } from '~/context/AuthContext'
@@ -9,7 +9,7 @@ import { useViewportBelow } from '~/hooks/useViewportBelow'
 import { createAdminSettingsStore } from '~/stores/adminSettings.store'
 import { breakpoints } from '~/styles/tokens'
 import { NAV_GROUPS } from './navGroups'
-import { groupRowsByNav, occupiedNavGroups } from './navRows'
+import { groupRowsByNav, navIdsWhere, occupiedNavGroups } from './navRows'
 import * as styles from './PreferencesDialog.css'
 import { PreferencesNav } from './PreferencesNav'
 import { PreferencesSearch } from './PreferencesSearch'
@@ -17,15 +17,28 @@ import { buildProtoRows } from './protoRegistry'
 import { createBrowserRows } from './registry'
 import { breadcrumb, buildSearchIndex, matchSettings } from './search'
 import { SettingsPanel } from './SettingsPanel'
+import { descriptorNeedsElevation } from './types'
 
 interface PreferencesDialogProps {
-  /** The category id to open on (a NAV_GROUPS id; 'appearance' by convention). */
+  /**
+   * The category id to show (a NAV_GROUPS id). An id whose group is hidden
+   * — Account in solo mode — falls back to the first visible one, so a caller
+   * never has to know which sections this deployment has.
+   */
   category: string
   /**
-   * How many times a caller asked for this dialog. See `openPreferences`:
-   * the count changes on every request, where the category does not.
+   * Report a category the user picked, from the navigation or from a search
+   * result.
+   *
+   * The dialog REPORTS the pick rather than keeping it. The category lives in
+   * the address (see `PREFERENCES_PARAM` in `~/components/shell/UserMenuState`),
+   * and a copy held here would disagree with it: the OAuth step-up leg returns
+   * the browser to the address, and a copied link opens what the address
+   * specifies. A private copy also needed a request counter beside `category`,
+   * because a caller that asked for the open dialog's own section wrote the
+   * same string and moved nothing.
    */
-  openSeq: number
+  onCategory: (category: string) => void
   onClose: () => void
 }
 
@@ -40,20 +53,9 @@ export const PreferencesDialog: Component<PreferencesDialogProps> = (props) => {
   // A MEMO, not a one-time call: an account-backed entry takes its shape
   // from the hub's descriptor, so the row set changes once, when the reply
   // lands. Inside one build, descriptor and binding come from the same
-  // call, so a visibility rule that reads a preference is resolved against
-  // the context that the binding writes to.
+  // call, so a visibility rule that reads a preference resolves against the
+  // context that the binding writes to.
   const browserRows = createMemo(() => createBrowserRows(prefs, prefs.accountDescriptors()))
-
-  const [selected, setSelected] = createSignal(untrack(() => props.category))
-  // A deep link may re-fire while the dialog is open (the app menu, or the
-  // shortcut, while it is visible); follow it. `openSeq` is tracked BESIDE
-  // the category because every entry point passes 'appearance': a repeat
-  // request writes the same string, which notifies nothing, so the category
-  // alone left the dialog on whatever section the user last picked.
-  createEffect(on(
-    () => [props.category, props.openSeq] as const,
-    ([category]) => setSelected(category),
-  ))
 
   // `buildProtoRows` serves the HUB scope alone. An ACCOUNT key's row also
   // starts from a wire descriptor, but its binding is the preferences
@@ -86,7 +88,7 @@ export const PreferencesDialog: Component<PreferencesDialogProps> = (props) => {
 
   const visibleGroups = createMemo(() => occupiedNavGroups(NAV_GROUPS, rowsByGroup()))
   const activeGroup = createMemo(() =>
-    visibleGroups().find(g => g.id === selected()) ?? visibleGroups()[0],
+    visibleGroups().find(g => g.id === props.category) ?? visibleGroups()[0],
   )
 
   /** Visible rows for the active group, the ONE row set the panel renders. */
@@ -98,19 +100,25 @@ export const PreferencesDialog: Component<PreferencesDialogProps> = (props) => {
   /**
    * The nav ids whose group holds at least one VISIBLE restart-class row.
    *
-   * Derived from the same rows the panel's own warning is derived from: a
-   * group whose restart rows are all hidden has nothing in it that needs a
-   * restart, so marking it would be false. A group with no rows at all
-   * cannot hold one, so the occupancy test is not repeated here.
+   * Derived from the same rows as the panel's own warning: a group whose
+   * restart rows are all hidden has nothing in it that needs a restart, so
+   * marking it would be false. A group with no rows at all cannot hold one,
+   * so this does not repeat the occupancy test.
+   *
+   * `elevationGroups` beneath answers the same question for the elevation
+   * window, from the same rows, through the same helper.
    */
-  const restartGroups = createMemo(() => {
-    const ids = new Set<string>()
-    for (const [navId, rows] of rowsByGroup()) {
-      if (rows.some(row => row.descriptor.restart))
-        ids.add(navId)
-    }
-    return ids
-  })
+  const restartGroups = createMemo(() => navIdsWhere(rowsByGroup(), row => row.descriptor.restart === true))
+
+  /**
+   * The nav ids whose group holds at least one VISIBLE row the hub refuses
+   * without a recently proven factor.
+   *
+   * The sibling of `restartGroups`, from the same rows and by the same rule,
+   * so the two marks cannot be derived differently. The panel shows the
+   * verified-session state at the top of these groups.
+   */
+  const elevationGroups = createMemo(() => navIdsWhere(rowsByGroup(), row => descriptorNeedsElevation(row.descriptor)))
 
   /**
    * Both row sources join one search index, built from the SAME rows the
@@ -153,7 +161,7 @@ export const PreferencesDialog: Component<PreferencesDialogProps> = (props) => {
     // Every OTHER failure has none. An unreachable hub, a timeout, or a 500
     // leaves the account rows absent for the rest of the session, because
     // the identity never changes and nothing else asks again. Opening this
-    // dialog is where those rows are wanted, so it is where the retry
+    // dialog is where those rows matter, so it is where the retry
     // belongs — without it the dialog stays short of the Appearance and
     // Keyboard Shortcuts groups until the user reloads the page.
     //
@@ -181,7 +189,7 @@ export const PreferencesDialog: Component<PreferencesDialogProps> = (props) => {
               <PreferencesNav
                 groups={visibleGroups()}
                 active={group()}
-                onSelect={setSelected}
+                onSelect={props.onCategory}
                 restartGroups={restartGroups}
                 compact={narrow()}
               />
@@ -191,7 +199,7 @@ export const PreferencesDialog: Component<PreferencesDialogProps> = (props) => {
         <div class={styles.panelColumn}>
           {/*
             The two scopes state their failures APART, because the rows each
-            one loses differ and a merged banner could name only one of
+            one loses differ and a merged banner could specify only one of
             them. Both are silent otherwise, and indistinguishable from a
             legitimate absence: a failed `ListSettings` leaves zero admin
             descriptors, `occupiedNavGroups` drops every ADMINISTRATION
@@ -229,7 +237,7 @@ export const PreferencesDialog: Component<PreferencesDialogProps> = (props) => {
                             type="button"
                             class={styles.searchResultButton}
                             onClick={() => {
-                              setSelected(entry.navId)
+                              props.onCategory(entry.navId)
                               setQuery('')
                             }}
                           >
@@ -256,6 +264,7 @@ export const PreferencesDialog: Component<PreferencesDialogProps> = (props) => {
             <SettingsPanel
               rows={activeRows()}
               restartGroup={restartGroups().has(activeGroup()?.id ?? '')}
+              elevationGroup={elevationGroups().has(activeGroup()?.id ?? '')}
               writeError={activeGroup()?.admin ? adminStore.state.writeError : null}
             />
           </Show>

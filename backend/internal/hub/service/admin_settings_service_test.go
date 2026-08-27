@@ -37,10 +37,55 @@ type adminSettingsEnv struct {
 	client leapmuxv1connect.AdminSettingsServiceClient
 	st     store.Store
 	token  string
+	// adminID is the account behind `token`, so a test that needs a second
+	// session (or that wants to re-elevate one) does not have to look it up.
+	adminID string
+	// svc is the mounted service, for the one test that has to move its clock:
+	// the elevation cap is measured from the stored anchor, and a case about
+	// the ceiling cannot wait seven hours for the wall clock to reach it.
+	svc *service.AdminSettingsService
+	// set is the settings manager the service writes through, so a test can
+	// read a written value back at its source rather than through the
+	// listing RPC.
+	set *settings.Manager
+	// userClient mounts AdminUserService on the same mux, for the ONE thing
+	// the settings tests need from it: minting the admin-scoped bearer that
+	// `leapmux control admin settings ...` authenticates with. That bearer
+	// takes the same elevation rule a session does, so that path needs a real
+	// credential rather than a hand-written api_tokens row.
+	userClient leapmuxv1connect.AdminUserServiceClient
+}
+
+// adminBearer mints an admin-scoped command-line credential for this
+// environment's administrator, through the RPC the CLI itself uses. It
+// returns the token id beside the secret, because a credential now carries an
+// elevation window and a test that needs one has to identify the row.
+func (e *adminSettingsEnv) adminBearer(t *testing.T) (bearer, tokenID string) {
+	t.Helper()
+	issued, err := e.userClient.IssueAPIToken(context.Background(), authedReq(&leapmuxv1.IssueAPITokenRequest{
+		UserId: e.adminID, ClientName: "admin-cli", ClientType: "cli", AdminScope: true,
+	}, e.token))
+	require.NoError(t, err)
+	return issued.Msg.GetAccessToken(), issued.Msg.GetTokenId()
+}
+
+// elevatedAdminBearer is the same credential with a proven factor on it, which
+// is what every restricted write now needs from a command-line caller.
+func (e *adminSettingsEnv) elevatedAdminBearer(t *testing.T) string {
+	t.Helper()
+	bearer, tokenID := e.adminBearer(t)
+	hubtestutil.ElevateAPIToken(t, e.st, tokenID, e.adminID)
+	return bearer
 }
 
 func setupAdminSettingsTest(t *testing.T, cfg *config.Config) *adminSettingsEnv {
 	return setupAdminSettingsEnv(t, cfg)
+}
+
+// setupAdminSettingsTestUnelevated is the same harness with the session left
+// un-elevated, for the tests that assert the write gate itself.
+func setupAdminSettingsTestUnelevated(t *testing.T, cfg *config.Config) *adminSettingsEnv {
+	return setupAdminSettingsEnvRaw(t, cfg)
 }
 
 // setupAdminSettingsTestWithProvisioner registers the ALTCHA post-reset step
@@ -58,7 +103,22 @@ func setupAdminSettingsTestWithQueueBudget(t *testing.T, cfg *config.Config, que
 		}))
 }
 
+// setupAdminSettingsEnv is the DEFAULT fixture, and its session is elevated.
+//
+// Every write verb on this service requires an elevated session, because a
+// hub setting is deployment-wide and several of these keys are the hub's own
+// security controls. Almost every test here exercises what a verb DOES rather
+// than whether the gate is there, so supplying the elevation is what keeps
+// those tests about their own subject.
+// setupAdminSettingsTestUnelevated is for the cases that assert the gate.
 func setupAdminSettingsEnv(t *testing.T, cfg *config.Config, opts ...settings.Option) *adminSettingsEnv {
+	t.Helper()
+	env := setupAdminSettingsEnvRaw(t, cfg, opts...)
+	hubtestutil.ElevateSession(t, env.st, env.token, env.adminID)
+	return env
+}
+
+func setupAdminSettingsEnvRaw(t *testing.T, cfg *config.Config, opts ...settings.Option) *adminSettingsEnv {
 	t.Helper()
 
 	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
@@ -78,8 +138,10 @@ func setupAdminSettingsEnv(t *testing.T, cfg *config.Config, opts ...settings.Op
 		IsAdmin:      true,
 	})
 	require.NoError(t, err)
-	_ = admin
 	token, _, _, err := auth.Login(context.Background(), st, "admin", "adminpass123", auth.DefaultSessionDuration)
+	require.NoError(t, err)
+
+	tv, err := auth.NewTokenValidator(st, []byte("0123456789abcdef0123456789abcdef"))
 	require.NoError(t, err)
 
 	ks, err := keystore.LoadOrGenerate(filepath.Join(t.TempDir(), "encryption.key"))
@@ -88,11 +150,21 @@ func setupAdminSettingsEnv(t *testing.T, cfg *config.Config, opts ...settings.Op
 	require.NoError(t, setMgr.Load(context.Background()))
 
 	mux := http.NewServeMux()
-	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
-	connectOpts := connect.WithInterceptors(interceptor)
-	adminSvc := service.NewAdminSettingsService(setMgr, cfg)
+	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, TokenValidator: tv})
+	// The slide reporter rides beside the auth interceptor, exactly as the hub
+	// mounts it. Every write verb here slides the elevation window, and the
+	// deadline it produced reaches a client only through this rung -- so a
+	// harness without it would pass whether the report worked or not.
+	connectOpts := connect.WithInterceptors(interceptor, service.NewElevationSlideInterceptor())
+	adminSvc := service.NewAdminSettingsService(setMgr, cfg, st)
 	path, handler := leapmuxv1connect.NewAdminSettingsServiceHandler(adminSvc, connectOpts)
 	mux.Handle(path, handler)
+	userPath, userHandler := leapmuxv1connect.NewAdminUserServiceHandler(service.NewAdminUserService(service.AdminUserServiceDeps{
+		Store:     st,
+		Validator: tv,
+		Lifecycle: auth.NewCredentialLifecycleEffects(contexts, nil, nil),
+	}), connectOpts)
+	mux.Handle(userPath, userHandler)
 
 	server := httptest.NewUnstartedServer(mux)
 	server.EnableHTTP2 = true
@@ -100,9 +172,13 @@ func setupAdminSettingsEnv(t *testing.T, cfg *config.Config, opts ...settings.Op
 	t.Cleanup(server.Close)
 
 	return &adminSettingsEnv{
-		client: leapmuxv1connect.NewAdminSettingsServiceClient(server.Client(), server.URL, connect.WithGRPC()),
-		st:     st,
-		token:  token,
+		client:     leapmuxv1connect.NewAdminSettingsServiceClient(server.Client(), server.URL, connect.WithGRPC()),
+		st:         st,
+		token:      token,
+		adminID:    admin.ID,
+		set:        setMgr,
+		svc:        adminSvc,
+		userClient: leapmuxv1connect.NewAdminUserServiceClient(server.Client(), server.URL, connect.WithGRPC()),
 	}
 }
 
@@ -121,7 +197,7 @@ func TestAdminSettingsService_ListDescriptorsComplete(t *testing.T) {
 	}
 	// The three declaration domains are all present: hub-core, captcha,
 	// rate-limit.
-	for _, want := range []string{"smtp", "signup_enabled", "captcha.altcha", "rate_limit.change-password", "max_message_size_bytes"} {
+	for _, want := range []string{"smtp", "signup_enabled", "captcha.altcha", "rate_limit.elevation", "max_message_size_bytes"} {
 		assert.Contains(t, keys, want)
 	}
 
@@ -340,8 +416,8 @@ func flattenKeys(byCategory map[string][]string) map[string]bool {
 	return out
 }
 
-// The hidden set is asserted EXACTLY, in both directions, against the
-// same registry listed in hub mode. A one-directional test (each
+// This test asserts the hidden set EXACTLY, in both directions, against
+// the same registry listed in hub mode. A one-directional test (each
 // expected key is absent) passes just as well when solo hides half the
 // surface, and hiding a key that solo still reads makes it
 // unadministrable in the dialog AND in `leapmux control admin settings`.
@@ -361,8 +437,7 @@ func TestAdminSettingsService_SoloOmitsHiddenInSolo(t *testing.T) {
 		// No captcha to solve, and no second user to rate-limit.
 		"captcha.altcha", "captcha.enabled", "captcha.recaptcha_v3",
 		"captcha.selected", "captcha.turnstile",
-		"rate_limit.change-password",
-		"rate_limit.passkey-management",
+		"rate_limit.elevation",
 		// No cookie and no session exist on the synthetic-user path.
 		"secure_cookies", "session_duration_seconds",
 		"signup_enabled",
@@ -454,7 +529,7 @@ func TestAdminSettingsService_QueueBudgetEffectiveFallsBackToStored(t *testing.T
 }
 
 // Resetting captcha.altcha removes the signing key every outstanding
-// challenge is signed with. The hub re-provisions inside the reset, so the
+// challenge carries. The hub re-provisions inside the reset, so the
 // next unauthenticated login does not have to write settings from its own
 // request handler.
 func TestAdminSettingsService_ResetAltchaReprovisions(t *testing.T) {
@@ -495,7 +570,7 @@ func TestAdminSettingsService_ResetAltchaReportsProvisionFailure(t *testing.T) {
 // value_json made every field of every key read as customized on a virgin
 // hub, because the defaults are non-zero and Decode merges them in -- so
 // the dialog offered a destructive "reset all of timeouts" on ten rows
-// nobody had touched.
+// nobody touched.
 func TestAdminSettingsService_ValueJsonIsTheStoredHalfOnly(t *testing.T) {
 	env := setupAdminSettingsTest(t, &config.Config{})
 	ctx := context.Background()
@@ -628,9 +703,9 @@ func TestAdminSettingsService_UpdateSettingSecretRequiresASecretField(t *testing
 }
 
 // TestAdminSettingsService_ResetSettingsIsOneTransaction pins the batched
-// reset. A per-key loop reached a cross-key refusal AFTER it had already
-// destroyed the earlier keys, so the operator was told the reset failed
-// while the selection and two provider rows were gone.
+// reset. A per-key loop reached a cross-key refusal AFTER it already
+// destroyed the earlier keys, so the hub told the operator that the reset
+// failed while the selection and two provider rows were gone.
 func TestAdminSettingsService_ResetSettingsIsOneTransaction(t *testing.T) {
 	env := setupAdminSettingsTest(t, &config.Config{})
 	ctx := context.Background()
@@ -644,8 +719,8 @@ func TestAdminSettingsService_ResetSettingsIsOneTransaction(t *testing.T) {
 	}, env.token))
 	require.NoError(t, err)
 
-	// Clearing the provider rows while the selection stands is refused, and
-	// BOTH rows survive.
+	// The hub refuses to clear the provider rows while the selection stands,
+	// and BOTH rows survive.
 	_, err = env.client.ResetSettings(ctx, authedReq(&leapmuxv1.ResetSettingsRequest{
 		Keys: []string{captcha.TurnstileKey.Name(), captcha.RecaptchaV3Key.Name()},
 	}, env.token))
@@ -724,8 +799,8 @@ func TestAdminSettingsService_UpdateSettingsArgumentChecks(t *testing.T) {
 	assert.False(t, settingValueByKey(t, env, noSecrets).GetCustomized(),
 		"the refused write must store nothing")
 
-	// A write that carries neither half, and one whose document cannot
-	// change anything, are refused by the same shared rule.
+	// The same shared rule refuses a write that carries neither half, and one
+	// whose document cannot change anything.
 	for _, tc := range []struct {
 		name  string
 		write *leapmuxv1.SettingWrite
@@ -791,7 +866,7 @@ func TestAdminSettingsService_EffectiveRedactsTheRulesOwnValue(t *testing.T) {
 }
 
 // TestAdminSettingsService_EffectiveOfAWrongTypedRuleValue pins the
-// fallback arm of the redaction: a value that does not decode into a JSON
+// fallback branch of the redaction: a value that does not decode into a JSON
 // object at all.
 //
 // A read-time rule returns `any`, so a wiring mistake can hand a
@@ -823,8 +898,9 @@ func TestAdminSettingsService_EffectiveOfAWrongTypedRuleValue(t *testing.T) {
 //
 // The step is the KEY's, so which verb cleared the row cannot change whether
 // it runs: resetting captcha.altcha inside a batch removes the same signing
-// key every outstanding challenge carries. Only the single-key verb was
-// covered, so deleting the batch verb's runAfterReset call passed the suite.
+// key every outstanding challenge carries. The tests covered only the
+// single-key verb, so deleting the batch verb's runAfterReset call passed
+// the suite.
 func TestAdminSettingsService_ResetSettingsRunsEachKeysAfterResetStep(t *testing.T) {
 	var calls int
 	env := setupAdminSettingsTestWithProvisioner(t, &config.Config{},

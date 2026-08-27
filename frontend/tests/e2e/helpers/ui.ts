@@ -580,9 +580,17 @@ async function openAppMenu(page: Page) {
  * dialog's own default category.
  */
 export async function openPreferencesDialog(page: Page, category?: string) {
-  await openAppMenu(page)
-  await page.getByRole('menuitem', { name: 'Preferences' }).click()
   const dialog = page.getByRole('dialog', { name: 'Preferences' })
+  // IDEMPOTENT, because the dialog is addressable now: its open state and its
+  // category live in the `?prefs=` search parameter, so a reload while it is
+  // open brings it straight back. A spec that reloads and then calls this
+  // again would otherwise reach for an app-menu trigger that sits UNDER a
+  // modal dialog, and wait out the action timeout on an element the browser
+  // has made inert.
+  if (!(await dialog.isVisible())) {
+    await openAppMenu(page)
+    await page.getByRole('menuitem', { name: 'Preferences' }).click()
+  }
   await expect(dialog).toBeVisible()
   if (category) {
     const item = dialog.getByTestId(`preferences-nav-${category}`)

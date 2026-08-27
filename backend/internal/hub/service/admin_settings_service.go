@@ -9,6 +9,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/settings"
+	"github.com/leapmux/leapmux/internal/hub/store"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -23,10 +24,21 @@ type AdminSettingsService struct {
 	// per-key read-time rules are NOT here -- they belong to their keys, on
 	// the manager (settings.WithEffective).
 	cfg *config.Config
+	// store carries the elevation slide alone. Every write here is a
+	// sensitive action, and the hub's standing rule is that a sensitive
+	// action slides the window that admitted it; a restricted verb that does
+	// not slide is a verb the window does not count as use. The settings rows
+	// themselves are the manager's, not this service's.
+	store store.Store
+
+	// The clock this service reads. It compares the same elevation window
+	// AdminUserService and UserService compare, so the three must answer one
+	// instant or a test that moves the clock moves part of the surface.
+	clockSeam
 }
 
-func NewAdminSettingsService(set *settings.Manager, cfg *config.Config) *AdminSettingsService {
-	return &AdminSettingsService{set: set, cfg: cfg}
+func NewAdminSettingsService(set *settings.Manager, cfg *config.Config, st store.Store) *AdminSettingsService {
+	return &AdminSettingsService{set: set, cfg: cfg, store: st}
 }
 
 // settingValueToProto assembles one hub setting's wire value from the
@@ -115,10 +127,11 @@ func (s *AdminSettingsService) descriptorFor(key string) (settings.Descriptor, e
 	if !ok {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("unknown setting key "+key))
 	}
-	// The SAME test ListSettings applies. HiddenInSolo is documented as
-	// taking the key out of the whole administration surface, but only the
-	// listing enforced it, so a key an operator could not read was one the
-	// operator could still write -- and eleven keys are hidden in solo.
+	// The SAME test ListSettings applies. The doc comment on HiddenInSolo
+	// says that it takes the key out of the whole administration surface, but
+	// only the listing enforced it, so a key an operator could not read was
+	// one the operator could still write -- and eleven keys are hidden in
+	// solo.
 	if s.hidden(desc) {
 		return nil, connect.NewError(connect.CodeInvalidArgument,
 			errors.New("setting key "+key+" is not administrable in solo mode"))
@@ -133,6 +146,15 @@ func (s *AdminSettingsService) hidden(desc settings.Descriptor) bool {
 	return desc.UI().HiddenInSolo && s.cfg.SoloMode
 }
 
+// writeUnderElevation admits a write to the hub's configuration, runs it, and
+// records that the window was used.
+//
+// It delegates to the free function of the same name, which states the rule.
+// The method exists so the settings handlers read as they did.
+func (s *AdminSettingsService) writeUnderElevation(ctx context.Context, write func() error) error {
+	return writeUnderElevation(ctx, s.store, s.now, write)
+}
+
 // UpdateSetting merges a partial document onto one key's public half.
 // UpdateSettingSecret does NOT route through it: the two write different
 // halves of the row, so they call different Manager verbs. What they DO
@@ -143,14 +165,19 @@ func (s *AdminSettingsService) UpdateSetting(ctx context.Context, req *connect.R
 	if err != nil {
 		return nil, err
 	}
-	if err := s.set.Update(ctx, desc, json.RawMessage(req.Msg.GetPartialJson())); err != nil {
-		return nil, settingWriteConnectError(err)
+	if err := s.writeUnderElevation(ctx, func() error {
+		if err := s.set.Update(ctx, desc, json.RawMessage(req.Msg.GetPartialJson())); err != nil {
+			return settingWriteConnectError(err)
+		}
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 	return connect.NewResponse(&leapmuxv1.UpdateSettingResponse{
 		Value: s.settingValueToProto(s.set.Snapshot(ctx), desc),
-		// The write is stored, but a restart-class key keeps its previous
-		// value in this process until it restarts. Report that here rather
-		// than leave the caller to look the descriptor up again.
+		// The manager stores the write, but a restart-class key keeps its
+		// previous value in this process until it restarts. Report that here
+		// rather than leave the caller to look the descriptor up again.
 		Restart: desc.Propagation() == settings.PropagationRestart,
 	}), nil
 }
@@ -160,8 +187,13 @@ func (s *AdminSettingsService) UpdateSettingSecret(ctx context.Context, req *con
 	if err != nil {
 		return nil, err
 	}
-	if err := s.set.UpdateSecret(ctx, desc, json.RawMessage(req.Msg.GetPartialJson())); err != nil {
-		return nil, settingWriteConnectError(err)
+	if err := s.writeUnderElevation(ctx, func() error {
+		if err := s.set.UpdateSecret(ctx, desc, json.RawMessage(req.Msg.GetPartialJson())); err != nil {
+			return settingWriteConnectError(err)
+		}
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 	return connect.NewResponse(&leapmuxv1.UpdateSettingSecretResponse{
 		Value: s.settingValueToProto(s.set.Snapshot(ctx), desc),
@@ -191,8 +223,13 @@ func (s *AdminSettingsService) UpdateSettings(ctx context.Context, req *connect.
 			Secret: json.RawMessage(w.GetSecretPartialJson()),
 		})
 	}
-	if err := s.set.UpdateMany(ctx, writes); err != nil {
-		return nil, settingWriteConnectError(err)
+	if err := s.writeUnderElevation(ctx, func() error {
+		if err := s.set.UpdateMany(ctx, writes); err != nil {
+			return settingWriteConnectError(err)
+		}
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 	// One snapshot for the whole reply: every value the caller listed comes
 	// from the same post-write view, so two keys of one transaction cannot
@@ -210,10 +247,14 @@ func (s *AdminSettingsService) ResetSetting(ctx context.Context, req *connect.Re
 	if err != nil {
 		return nil, err
 	}
-	if err := s.set.Reset(ctx, desc); err != nil {
-		return nil, settingWriteConnectError(err)
-	}
-	if err := s.runAfterReset(ctx, []settings.Descriptor{desc}); err != nil {
+	// The post-reset step is PART of the write: a reset is not complete until
+	// it ran, so a failure there must not count as use of the window either.
+	if err := s.writeUnderElevation(ctx, func() error {
+		if err := s.set.Reset(ctx, desc); err != nil {
+			return settingWriteConnectError(err)
+		}
+		return s.runAfterReset(ctx, []settings.Descriptor{desc})
+	}); err != nil {
 		return nil, err
 	}
 	return connect.NewResponse(&leapmuxv1.ResetSettingResponse{
@@ -235,10 +276,12 @@ func (s *AdminSettingsService) ResetSettings(ctx context.Context, req *connect.R
 		}
 		descs = append(descs, desc)
 	}
-	if err := s.set.ResetMany(ctx, descs); err != nil {
-		return nil, settingWriteConnectError(err)
-	}
-	if err := s.runAfterReset(ctx, descs); err != nil {
+	if err := s.writeUnderElevation(ctx, func() error {
+		if err := s.set.ResetMany(ctx, descs); err != nil {
+			return settingWriteConnectError(err)
+		}
+		return s.runAfterReset(ctx, descs)
+	}); err != nil {
 		return nil, err
 	}
 	// One snapshot for the whole reply, so two keys of one transaction
@@ -273,7 +316,7 @@ func (s *AdminSettingsService) runAfterReset(ctx context.Context, descs []settin
 }
 
 // settingWriteConnectError maps the manager's real error modes onto
-// Connect codes, because the admin surface surfaces them verbatim:
+// Connect codes, because the admin surface shows them verbatim:
 // a validation or unknown-field refusal is the caller's to fix
 // (InvalidArgument); a secret the keystore cannot decrypt must stop the
 // write rather than destroy it (FailedPrecondition, message passed

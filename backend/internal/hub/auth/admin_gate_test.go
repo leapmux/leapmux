@@ -55,7 +55,7 @@ func setupAdminGateServer(t *testing.T) *adminGateFixture {
 	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(authSvc, interceptors)
 	mux.Handle(authPath, authHandler)
 
-	adminSvc := service.NewAdminSettingsService(servicetest.NewSettingsManager(t, st, nil), &config.Config{})
+	adminSvc := service.NewAdminSettingsService(servicetest.NewSettingsManager(t, st, nil), &config.Config{}, st)
 	adminPath, adminHandler := leapmuxv1connect.NewAdminSettingsServiceHandler(adminSvc, interceptors)
 	mux.Handle(adminPath, adminHandler)
 
@@ -117,9 +117,49 @@ func TestAdminGate_Unauthenticated(t *testing.T) {
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
 
-func TestAdminGate_AdminBearerAllowed(t *testing.T) {
+// TestAdminGate_AdminBearerNeedsTheAdminScope is the point of the scope:
+// being an administrator is not enough for a CLI credential. A routine
+// `auth login` mints a token that can do everything its owner can do EXCEPT
+// administer the hub, so the credential file it leaves on disk for months is
+// not a hub-administration credential.
+func TestAdminGate_AdminBearerNeedsTheAdminScope(t *testing.T) {
 	f := setupAdminGateServer(t)
 	owner, ownerOK := userid.New(f.adminUserID)
+	require.True(t, ownerOK)
+
+	mint := func(adminScope bool) string {
+		tokenID := id.Generate()
+		secret := auth.MintAccessSecret()
+		require.NoError(t, f.st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+			ID:         tokenID,
+			UserID:     owner,
+			ClientType: "cli",
+			ClientName: "test",
+			SecretHash: f.tv.HashSecret(secret),
+			AdminScope: adminScope,
+		}))
+		return auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)
+	}
+
+	unscoped := connect.NewRequest(&leapmuxv1.ListSettingsRequest{})
+	unscoped.Header().Set("Authorization", "Bearer "+mint(false))
+	_, err := f.adminClient.ListSettings(context.Background(), unscoped)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), "--admin", "the refusal must specify the remedy")
+
+	scoped := connect.NewRequest(&leapmuxv1.ListSettingsRequest{})
+	scoped.Header().Set("Authorization", "Bearer "+mint(true))
+	_, err = f.adminClient.ListSettings(context.Background(), scoped)
+	require.NoError(t, err)
+}
+
+// TestAdminGate_NonAdminAdminScopedBearerStillDenied pins the ORDER of the
+// two checks: the scope widens what a credential may do, it never grants
+// administration to an account that does not have it.
+func TestAdminGate_NonAdminAdminScopedBearerStillDenied(t *testing.T) {
+	f := setupAdminGateServer(t)
+	owner, ownerOK := userid.New(f.plainUserID)
 	require.True(t, ownerOK)
 
 	tokenID := id.Generate()
@@ -130,12 +170,15 @@ func TestAdminGate_AdminBearerAllowed(t *testing.T) {
 		ClientType: "cli",
 		ClientName: "test",
 		SecretHash: f.tv.HashSecret(secret),
+		AdminScope: true,
 	}))
 
 	req := connect.NewRequest(&leapmuxv1.ListSettingsRequest{})
 	req.Header().Set("Authorization", "Bearer "+auth.FormatBearer(auth.BearerKindAPI, tokenID, secret))
 	_, err := f.adminClient.ListSettings(context.Background(), req)
-	require.NoError(t, err)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), "administrator privileges are required")
 }
 
 func TestAdminGate_DelegationBearerOfAdminRefused(t *testing.T) {
@@ -187,7 +230,7 @@ func TestAdminGate_SoloModeAutoAdmin(t *testing.T) {
 	mux := http.NewServeMux()
 	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, SoloUser: soloUser})
 	interceptors := connect.WithInterceptors(interceptor)
-	adminSvc := service.NewAdminSettingsService(servicetest.NewSettingsManager(t, st, nil), &config.Config{SoloMode: true})
+	adminSvc := service.NewAdminSettingsService(servicetest.NewSettingsManager(t, st, nil), &config.Config{SoloMode: true}, st)
 	adminPath, adminHandler := leapmuxv1connect.NewAdminSettingsServiceHandler(adminSvc, interceptors)
 	mux.Handle(adminPath, adminHandler)
 
@@ -207,7 +250,7 @@ func TestAdminGate_SoloModeAutoAdmin(t *testing.T) {
 	// solo listing drops them rather than flagging them.
 	for _, d := range resp.Msg.GetDescriptors() {
 		assert.False(t, d.GetHiddenInSolo(), "solo listing must omit hidden-in-solo keys, not flag them: %s", d.GetKey())
-		if d.GetKey() == "captcha.enabled" || d.GetKey() == "rate_limit.change-password" {
+		if d.GetKey() == "captcha.enabled" || d.GetKey() == "rate_limit.elevation" {
 			t.Fatalf("solo listing must omit %s entirely", d.GetKey())
 		}
 	}

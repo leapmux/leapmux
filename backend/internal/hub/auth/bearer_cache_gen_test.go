@@ -60,7 +60,7 @@ type touchRecordingSessionStore struct {
 	// matched.
 	touchMissed bool
 	// touchErr simulates a store that cannot answer, and touchCalls counts how
-	// often the UPDATE was attempted -- which is what tells a retry storm apart
+	// often the UPDATE was attempted -- which is what tells a retry burst apart
 	// from a throttled request.
 	touchErr   error
 	touchCalls int
@@ -209,8 +209,8 @@ func TestValidateTokenCachedUnindexesStaleSessionWhenRevalidationFails(t *testin
 }
 
 // TestSweepCachesOnce_EvictsStaleRetainsFresh exercises the lock-free-scan +
-// locked-delete sweep end to end: entries past sessionCacheTTL are evicted from
-// both the primary cache and every reverse index, while fresh entries are kept.
+// locked-delete sweep end to end: the sweep evicts entries past sessionCacheTTL
+// from both the primary cache and every reverse index, and keeps fresh entries.
 func TestSweepCachesOnce_EvictsStaleRetainsFresh(t *testing.T) {
 	now := time.Now()
 	stale := now.Add(-2 * sessionCacheTTL)
@@ -633,8 +633,8 @@ func TestAuthenticateHTTPPreservesInternalSessionValidationError(t *testing.T) {
 	req.AddCookie(BuildSessionCookie("session", time.Now().Add(time.Hour), false))
 
 	_, err := AuthenticateHTTP(context.Background(), req, HTTPAuthOpts{
-		Store:   validationErrorStore{err: validationErr},
-		Cookies: []bool{false},
+		Store:      validationErrorStore{err: validationErr},
+		ReadCookie: true,
 	})
 	require.Error(t, err)
 	assert.ErrorIs(t, err, validationErr)
@@ -794,10 +794,10 @@ func TestUserRevocationCacheEvictionIsGenerationSelective(t *testing.T) {
 // Matches is tuned for GRANT semantics: false means "not authorized", which is
 // safe on an authorization path. On this EVICTION path false means "do not
 // revoke", so a blank id reaching the comparisons would skip every cached
-// session, bearer, and lease -- an operator's containment action reporting
-// success having evicted nothing. Nothing about userid.UserID prevents that;
+// session, bearer, and lease -- an operator's containment action that reports
+// success and evicts nothing. Nothing about userid.UserID prevents that;
 // only the `userID == ""` guard does, and until this test existed deleting it
-// as "redundant with userid.UserID" left the entire suite green.
+// as "redundant with userid.UserID" left the entire suite passing.
 //
 // The generation is the observable: without the guard the call still bumps it
 // and records a junk revocation mark under the empty key, which invalidates
@@ -1017,7 +1017,7 @@ func TestAuthContextRegistry_CurrentCredentialExpiryReadsSlidSessionDeadline(t *
 // deadline and the caller's captured deadline: if the cached row is ever
 // repopulated below the connect-time value (a stale/raced cache write), the
 // channel must be armed at the caller's later deadline, not torn down early at
-// the smaller cached one. This mirrors the Later() the bearer arm, the DB
+// the smaller cached one. This mirrors the Later() the bearer path, the DB
 // fallback, and the lock-held twin currentCredentialExpiryLocked all use.
 func TestAuthContextRegistry_CurrentCredentialExpiryCacheHitNeverShrinksBelowConnectTime(t *testing.T) {
 	reg := &AuthContextRegistry{state: &authState{}}
@@ -1116,8 +1116,8 @@ func TestAuthContextRegistry_CurrentCredentialExpiryReadsRotatedBearerDeadline(t
 // not only when callers happen to be serialized by the DB rotation CAS. The
 // load-merge-store runs as a compare-and-swap loop, so a racing writer's
 // less-permissive deadline can never clobber a more-permissive one recorded in
-// the gap. Hammer many goroutines recording a spread of deadlines for one ref
-// and assert the most-permissive (latest) wins. Run under -race.
+// the gap. Run many goroutines that record a spread of deadlines for one ref,
+// and assert that the most-permissive (latest) one wins. Run under -race.
 func TestAuthContextRegistry_RecordBearerExpiryMonotonicUnderConcurrency(t *testing.T) {
 	reg := &AuthContextRegistry{state: &authState{}}
 	ref := NewBearerRef(BearerKindAPI, "tok-concurrent")
@@ -1142,8 +1142,9 @@ func TestAuthContextRegistry_RecordBearerExpiryMonotonicUnderConcurrency(t *test
 		"the most-permissive deadline must survive concurrent records")
 }
 
-// The periodic sweep drops recorded bearer extensions whose deadline has passed
-// but retains a never-expires (zero) entry, which cannot be aged out by time.
+// The periodic sweep drops recorded bearer extensions whose deadline is in the
+// past, but retains a never-expires (zero) entry, which cannot be aged out by
+// time.
 func TestAuthInterceptor_SweepsExpiredBearerExpiries(t *testing.T) {
 	a := &authInterceptor{state: &authState{}}
 	reg := &AuthContextRegistry{state: a.state}
@@ -1270,7 +1271,7 @@ func TestStaleCredentialCacheSweepSerializesWithValidation(t *testing.T) {
 //
 // It exists because that sibling's protection did not extend one function over:
 // deleting EvictByUserID's `userID == ""` prologue left the ENTIRE backend suite
-// green, while the identical deletion on RevokeUserAuthContextAtGeneration
+// passing, while the identical deletion on RevokeUserAuthContextAtGeneration
 // failed immediately. That is precisely the regression class the
 // identityComparisonSites table calls out, reproduced in the one eviction
 // entrypoint neither net could see -- EvictByUserID takes a bare `userID

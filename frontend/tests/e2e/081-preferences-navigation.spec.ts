@@ -35,13 +35,22 @@ test.describe('Preferences navigation', () => {
     await expect(dialog.getByText('Debug logging')).toBeVisible()
 
     // Arrow keys move through the tab list (roving tabindex contract).
+    // Advanced is the LAST user category -- Account leads the list now -- so
+    // the next tab is the first ADMINISTRATION one for this admin session.
     await page.keyboard.press('ArrowDown')
+    await expect(dialog.getByTestId('preferences-nav-admin-general')).toHaveAttribute('aria-selected', 'true')
+
+    // And Account leads: ArrowUp from Appearance wraps onto it.
+    await dialog.getByTestId('preferences-nav-appearance').click()
+    await page.keyboard.press('ArrowUp')
     await expect(dialog.getByTestId('preferences-nav-account')).toHaveAttribute('aria-selected', 'true')
   })
 
-  // Every entry point asks for the same category, and the open state is one
-  // signal -- so a repeat request wrote the same value, notified nothing, and
-  // left the dialog on whatever section the user had walked to.
+  // Every entry point asks for the same category, and the open state is the
+  // ADDRESS now -- so a repeat request replaces the `?prefs=` value, and the
+  // dialog follows it back to the requested section rather than staying on
+  // whatever section the user walked to. It used to be a private signal, where
+  // a repeat wrote the same value and notified nothing.
   test('returns to the requested section when asked for again while open', async ({ page, leapmuxServer }) => {
     await loginViaToken(page, leapmuxServer.adminToken)
     await page.goto('/')
@@ -51,10 +60,24 @@ test.describe('Preferences navigation', () => {
     await dialog.getByTestId('preferences-nav-advanced').click()
     await expect(dialog.getByTestId('preferences-nav-advanced')).toHaveAttribute('aria-selected', 'true')
 
+    // The shortcut asks for the dialog with no section, which selects the
+    // first one -- Account.
     const mod = process.platform === 'darwin' ? 'Meta' : 'Control'
     await page.keyboard.press(`${mod}+Comma`)
-    await expect(dialog.getByTestId('preferences-nav-appearance')).toHaveAttribute('aria-selected', 'true')
+    await expect(dialog.getByTestId('preferences-nav-account')).toHaveAttribute('aria-selected', 'true')
     await expect(dialog.getByTestId('preferences-nav-advanced')).toHaveAttribute('aria-selected', 'false')
+  })
+
+  // Every entry point asks for the dialog and nothing more, so the section it
+  // selects is the dialog's own default: the first one in the list.
+  test('opens on Account', async ({ page, leapmuxServer }) => {
+    await loginViaToken(page, leapmuxServer.adminToken)
+    await page.goto('/')
+    await openPreferencesDialog(page)
+    const dialog = page.getByRole('dialog', { name: 'Preferences' })
+
+    await expect(dialog.getByTestId('preferences-nav-account')).toHaveAttribute('aria-selected', 'true')
+    await expect(dialog.locator('[data-setting-id="account.profile"]')).toBeVisible()
   })
 
   test('searching "volume" shows the two notifications rows with breadcrumbs', async ({ page, leapmuxServer }) => {
@@ -66,7 +89,7 @@ test.describe('Preferences navigation', () => {
     const search = dialog.getByTestId('preferences-search')
     await search.fill('volume')
 
-    // Navigation hides while searching; the results panel takes over.
+    // The navigation hides during a search; the results panel replaces it.
     await expect(dialog.getByTestId('preferences-nav-appearance')).not.toBeVisible()
     await expect(dialog.getByTestId('preferences-search-results')).toBeVisible()
 
@@ -99,11 +122,12 @@ test.describe('Preferences navigation', () => {
     await search.press('Escape')
     await expect(search).toHaveValue('')
     // Outlast `Dialog`'s exit animation before reading the dialog: it defers
-    // the unmount, so a check here also passes on a dialog that IS closing.
+    // the unmount, so a check here also passes on a dialog whose exit
+    // animation still runs.
     await page.waitForTimeout(motion.fast * 3)
     await expect(dialog, 'Escape closed the dialog instead of clearing the search').toBeVisible()
 
-    // An empty query holds nothing back, so the same key now reaches the dialog.
+    // An empty query blocks nothing, so the same key now reaches the dialog.
     await search.press('Escape')
     await expect(dialog).toBeHidden()
   })
