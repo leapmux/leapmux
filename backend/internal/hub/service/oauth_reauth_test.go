@@ -25,7 +25,7 @@ import (
 // provider is the only thing that can confirm the person is still there.
 // The leg therefore ELEVATES a session that already exists -- it must never
 // create a session, an account, or an identity link, because each of those
-// is a credential change wearing the clothes of a verification.
+// is a credential change disguised as a verification.
 
 // reauthSession creates a user with a linked OAuth identity and a live
 // session, and returns the session cookie plus the ids.
@@ -73,7 +73,7 @@ func countSessions(t *testing.T, st store.Store, userID string) int {
 }
 
 // beginReauth walks the start leg and returns the state, the nonce cookie,
-// and the authorization URL the browser was sent to.
+// and the authorization URL the leg sent the browser to.
 func beginReauth(t *testing.T, server *httptest.Server, providerID string, cookie *http.Cookie, redirect string) (state string, nonce *http.Cookie, authURL *url.URL) {
 	t.Helper()
 	target := server.URL + "/auth/oauth/" + providerID + "/reauth"
@@ -107,7 +107,7 @@ func beginReauth(t *testing.T, server *httptest.Server, providerID string, cooki
 // verify -- and whoever else held a copy of that cookie then passed every
 // gate the window protects, the command-line credential mint included.
 //
-// The three allowed shapes are pinned beside it, because a guard that also
+// This pins the three allowed shapes beside it, because a guard that also
 // refuses the app's own link is an outage rather than a fix.
 func TestOAuthReauth_RefusesACrossSiteNavigation(t *testing.T) {
 	t.Parallel()
@@ -183,7 +183,7 @@ func TestOAuthReauth_RecordsThePurposeAndTheSessionAndForcesAPrompt(t *testing.T
 	require.NotNil(t, nonce, "the reauth leg must bind the flow to this browser, exactly as login does")
 
 	// Without prompt=login the provider silently reuses its own session, the
-	// browser bounces back in a fraction of a second, and the click proves
+	// browser returns in a fraction of a second, and the click proves
 	// nothing at all.
 	assert.Equal(t, "login", authURL.Query().Get("prompt"))
 
@@ -191,7 +191,7 @@ func TestOAuthReauth_RecordsThePurposeAndTheSessionAndForcesAPrompt(t *testing.T
 	require.NoError(t, err)
 	assert.Equal(t, store.OAuthStatePurposeReauth, row.Purpose)
 	assert.Equal(t, sessionID, row.SessionID,
-		"the state specifies the session it will elevate, so the callback cannot be aimed elsewhere")
+		"the state specifies the session it will elevate, so the callback cannot point elsewhere")
 	assert.Equal(t, "/auth/cli/start?state=s", row.RedirectURI)
 }
 
@@ -243,8 +243,8 @@ func TestOAuthReauth_ElevatesTheSessionAndCreatesNothing(t *testing.T) {
 	require.NotNil(t, row.ElevationExpiresAt)
 	assert.True(t, row.ElevationExpiresAt.After(time.Now().UTC()))
 
-	// ...and NOTHING was created. No second session (a Set-Cookie here would
-	// be a silent session swap), and no extra identity link.
+	// ...and the leg created NOTHING. No second session (a Set-Cookie here
+	// would be a silent session swap), and no extra identity link.
 	assert.Equal(t, sessionsBefore, countSessions(t, st, userID), "a step-up must not create a session")
 	for _, c := range resp.Cookies() {
 		assert.NotEqual(t, auth.CookieName, c.Name, "a step-up must not issue a session cookie")
@@ -254,7 +254,7 @@ func TestOAuthReauth_ElevatesTheSessionAndCreatesNothing(t *testing.T) {
 	assert.Len(t, links, 1, "a step-up must not attach an identity")
 }
 
-// TestOAuthReauth_RefusesAnIdentityTheUserDoesNotHold is the load-bearing
+// TestOAuthReauth_RefusesAnIdentityTheUserDoesNotHold is the central
 // check. A different account's identity, or an unlinked one, proves nothing
 // about who is at the keyboard of THIS session -- and linking it here would
 // turn a verification into a credential change.
@@ -309,7 +309,7 @@ func TestOAuthReauth_RefusesAnUnlinkedIdentity(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, row.ElevationExpiresAt)
 
-	// And no account was created for the stranger's identity.
+	// And the hub created no account for the stranger's identity.
 	links, err := st.OAuthUserLinks().ListByUser(ctx, userid.MustNew(userID))
 	require.NoError(t, err)
 	assert.Empty(t, links)
@@ -317,7 +317,7 @@ func TestOAuthReauth_RefusesAnUnlinkedIdentity(t *testing.T) {
 
 // TestOAuthReauth_RefusesWithoutTheBrowserBinding pins that the reauth leg
 // keeps the same nonce guard as login. Without it a state that anybody could
-// redeem would hand an attacker's completed provider flow the VICTIM's
+// redeem would give an attacker's completed provider flow the VICTIM's
 // elevation, because the row specifies the session to stamp.
 func TestOAuthReauth_RefusesWithoutTheBrowserBinding(t *testing.T) {
 	t.Parallel()
@@ -350,16 +350,16 @@ func TestOAuthReauth_RefusesWithoutTheBrowserBinding(t *testing.T) {
 
 // The account-shape rule.
 //
-// The provider arm is legal only for an account that holds NEITHER a
+// The provider path is legal only for an account that holds NEITHER a
 // password NOR a passkey, because for that account the provider IS the
 // sign-in credential and the elevation is exactly as strong as the sign-in
 // it stands on. On an account that holds a password it is a DOWNGRADE:
-// "the browser can still reach the provider session" would buy the same
+// "the browser can still reach the provider session" would gain the same
 // two-hour window as knowing the password, and on GitHub -- which cannot
-// force a re-authentication -- it would buy it with one click and no
+// force a re-authentication -- it would gain it with one click and no
 // credential at all.
 //
-// The rule is checked at BOTH legs, and the two tests below are why: the
+// The hub checks the rule at BOTH legs, and the two tests below are why: the
 // start leg keeps the browser from ever leaving, and the callback leg is
 // where the grant happens.
 
@@ -404,25 +404,25 @@ func TestOAuthReauth_RefusesAnAccountThatHoldsAPasskey(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 
 	assert.Equal(t, http.StatusForbidden, resp.StatusCode,
-		"a passkey is a factor the account can present, so the provider arm is a downgrade")
+		"a passkey is a factor the account can present, so the provider path is a downgrade")
 	assert.Contains(t, readBody(t, resp), "password or a passkey")
 }
 
-// A passkey the hub CANNOT run still refuses the arm, and that is the cut
-// rather than an oversight.
+// A passkey the hub CANNOT run still refuses the path, and that is the
+// deliberate decision rather than an oversight.
 //
-// There used to be a second tier here: an account whose only factor was a
-// passkey this hub could not run was bridged by a provider that fills
-// auth_time. It is gone. A hub that cannot run a ceremony has one cause --
+// There used to be a second tier here: a provider that fills auth_time
+// bridged an account whose only factor was a passkey this hub could not
+// run. It is gone. A hub that cannot run a ceremony has one cause --
 // no usable browser origin, because public_url is unset and nothing is
 // listening -- so the tier existed only to rescue users from an
 // administrator's misconfiguration whose real remedy is to restore the
 // address. Refusing outright is stricter and simpler: the account waits for
-// the hub to be repaired rather than elevating on a weaker claim than the
-// passkey it holds.
+// an administrator to repair the hub rather than elevating on a weaker claim
+// than the passkey it holds.
 //
-// Both providers are covered, because the rule no longer asks which one:
-// the OIDC provider that used to qualify is refused exactly like GitHub.
+// This covers both providers, because the rule no longer asks which one:
+// this refuses the OIDC provider that used to qualify exactly like GitHub.
 func TestOAuthReauth_RefusesAPasskeyEvenOnAHubThatCannotRunOne(t *testing.T) {
 	t.Parallel()
 
@@ -460,9 +460,9 @@ func TestOAuthReauth_RefusesAPasskeyEvenOnAHubThatCannotRunOne(t *testing.T) {
 	}
 }
 
-// A PASSWORD disqualifies the arm whatever the provider proves and whatever
+// A PASSWORD disqualifies the path whatever the provider proves and whatever
 // the hub can run. It is the one shape where the account chose a secret, and
-// the arm would let somebody past it without knowing it.
+// the path would let somebody past it without knowing it.
 func TestOAuthReauth_RefusesAPasswordEvenOnAHubThatCannotRunPasskeys(t *testing.T) {
 	t.Parallel()
 
@@ -488,7 +488,7 @@ func TestOAuthReauth_RefusesAPasswordEvenOnAHubThatCannotRunPasskeys(t *testing.
 // grant leg checks the shape AGAIN. The state row lives for oauthStateExpiry,
 // and the first-credential rule lets an account with nothing attach a
 // password in another tab inside that window -- so a row minted while the
-// account held nothing would otherwise buy provider-strength elevation for
+// account held nothing would otherwise gain provider-strength elevation for
 // an account that now holds a password.
 func TestOAuthReauth_RefusesAPasswordThatArrivedBeforeTheCallback(t *testing.T) {
 	t.Parallel()
@@ -532,13 +532,13 @@ func countOAuthStates(t *testing.T, st store.Store) int {
 // two shapes a provider can answer in.
 //
 // It used to demand a fresh auth_time from any provider whose TYPE was oidc,
-// which made a dead end: Google documents that it does not re-authenticate on
-// request and gates auth_time behind a console opt-in, and Microsoft Entra
-// carries it as an optional claim the app registration must ask for. A
-// sole-credential account on either got a 403 on the only arm its step-up
-// screen offered, every time.
+// which left those accounts with no way through: Google documents that it
+// does not re-authenticate on request and requires a console opt-in for
+// auth_time, and Microsoft Entra carries it as an optional claim the app
+// registration must ask for. A sole-credential account on either got a 403
+// on the only option its step-up screen offered, every time.
 //
-// The exposure that buys is stated plainly in operating/security.md: the arm
+// operating/security.md states the resulting exposure plainly: the path
 // proves "this browser still holds a live provider session for the linked
 // account", not "the provider re-authenticated this person just now". For an
 // account whose only credential IS that provider, somebody holding both
@@ -590,14 +590,14 @@ func TestOAuthReauth_GrantsOnAStaleAuthTime(t *testing.T) {
 	assert.NotNil(t, row.ElevationExpiresAt)
 }
 
-// The request must still CARRY max_age, and that is now the ONLY thing with
-// teeth in this flow.
+// The request must still CARRY max_age, and that is now the ONLY parameter
+// a provider must obey in this flow.
 //
 // prompt=login is a SHOULD, so a provider that ignores it answers exactly
 // like one that honoured it. max_age states a number the same section
 // obliges a conforming provider to enforce at ITS end. The hub reads nothing
 // back -- so if this parameter goes, the re-authentication becomes a request
-// nobody is bound by, and no other test would notice.
+// no provider must obey, and no other test would notice.
 func TestOAuthReauth_AsksForAMaximumAuthenticationAge(t *testing.T) {
 	t.Parallel()
 
@@ -615,7 +615,7 @@ func TestOAuthReauth_AsksForAMaximumAuthenticationAge(t *testing.T) {
 	assert.EqualValues(t, 300, huboauth.ReauthMaxAge.Seconds(),
 		"the wire value comes from the exported constant, not a literal")
 	// No `claims` parameter: it asked for auth_time as an Essential Claim,
-	// and nothing reads auth_time any more. Sending it would be dead weight
-	// that some providers reject.
+	// and nothing reads auth_time any more. Sending it would add a useless
+	// parameter that some providers reject.
 	assert.Empty(t, authURL.Query().Get("claims"))
 }

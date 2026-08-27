@@ -28,7 +28,7 @@ vi.mock('~/api/clients', () => ({
   },
 }))
 
-// Only the browser ceremony is faked; passkeyErrorMessage stays real, so the
+// This file fakes only the browser ceremony; passkeyErrorMessage stays real, so the
 // cancel-vs-failure rule under test is the one the component ships with.
 vi.mock('~/lib/webauthn', async importOriginal => ({
   ...await importOriginal<typeof import('~/lib/webauthn')>(),
@@ -97,7 +97,7 @@ describe('the first-run setup page (SetupPage)', () => {
   })
 
   // The page carries NO first-run check of its own any more. It used to read
-  // isSetupRequired() from onMount, before the system info had arrived, so a
+  // isSetupRequired() from onMount, before the system info arrived, so a
   // cold load answered the fabricated `false` and bounced a direct visit to
   // /login and back. SetupGate owns both directions now, above the router
   // outlet -- which is why the page renders here although the snapshot says
@@ -130,8 +130,8 @@ describe('the first-run setup page (SetupPage)', () => {
   // write throws there, so a component that touched storage would take the
   // render down rather than merely read the wrong thing.
   //
-  // The suite signs itself in (see `vitest.setup.ts`), so the account has to be
-  // dropped here. Asserting "no key was written" under the suite's account
+  // The suite signs itself in (see `vitest.setup.ts`), so this test drops the
+  // account here. Asserting "no key was written" under the suite's account
   // would pass for free -- `beforeEach` clears the store -- and would still
   // pass if this page read storage on every render.
   it('renders with no account set, so it touches no account-scoped key', async () => {

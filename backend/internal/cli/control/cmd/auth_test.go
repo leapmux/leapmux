@@ -22,6 +22,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli/control"
+	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/util/pkce"
 	"github.com/leapmux/leapmux/locallisten"
 	"github.com/leapmux/leapmux/locallisten/locallistentest"
@@ -53,38 +54,8 @@ func TestPKCEChallenge_DifferentVerifiersDiffer(t *testing.T) {
 	assert.NotEqual(t, a, b)
 }
 
-// TestDefaultDeviceName_FallsBackToHostnameOnEmptyUser exercises the
-// fallback when neither USER nor USERNAME is set (containers, minimal
-// CI runners). The result should still be informative — never empty.
-func TestDefaultDeviceName_FallsBackToHostnameOnEmptyUser(t *testing.T) {
-	t.Setenv("USER", "")
-	t.Setenv("USERNAME", "")
-	got := defaultDeviceName()
-	assert.NotEmpty(t, got)
-	assert.NotContains(t, got, "@", "no user → hostname-only, not user@host")
-}
-
-// TestDefaultDeviceName_PrefersUSEROverUSERNAME documents the
-// POSIX-first lookup order: USER wins on Linux/macOS; USERNAME is the
-// Windows-side fallback.
-func TestDefaultDeviceName_PrefersUSEROverUSERNAME(t *testing.T) {
-	t.Setenv("USER", "alice")
-	t.Setenv("USERNAME", "bob")
-	got := defaultDeviceName()
-	assert.True(t, strings.HasPrefix(got, "alice@"), "USER should win, got %q", got)
-}
-
-// TestDefaultDeviceName_FallsBackToUSERNAME covers the Windows path
-// where only USERNAME is populated.
-func TestDefaultDeviceName_FallsBackToUSERNAME(t *testing.T) {
-	t.Setenv("USER", "")
-	t.Setenv("USERNAME", "winuser")
-	got := defaultDeviceName()
-	assert.True(t, strings.HasPrefix(got, "winuser@"))
-}
-
 // TestPersistTokenResponse_WritesCredentials covers the happy-path of
-// the token-exchange persistence step: a valid hub response is decoded
+// the token-exchange persistence step: the CLI decodes a valid hub response
 // into a CredentialFile on disk under the test's isolated config dir.
 func TestPersistTokenResponse_WritesCredentials(t *testing.T) {
 	dir := t.TempDir()
@@ -120,8 +91,9 @@ func TestPersistTokenResponse_WritesCredentials(t *testing.T) {
 
 // TestPersistTokenResponse_WarnsWhenAdminScopeWasNotGranted pins the
 // device-code case the CLI cannot control: the browser decides the scope, so
-// a `--admin` login that comes back without it must SAY so. Letting the
-// first admin verb fail with a permission error that specifies nothing the user did.
+// a `--admin` login that comes back without it must SAY so, rather than let
+// the first admin verb fail with a permission error that specifies nothing
+// the user did.
 func TestPersistTokenResponse_WarnsWhenAdminScopeWasNotGranted(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", dir)
@@ -152,7 +124,7 @@ func TestPersistTokenResponse_WarnsWhenAdminScopeWasNotGranted(t *testing.T) {
 // TestPersistTokenResponse_RevokesTheCredentialItReplaces pins the
 // save-then-revoke ORDER. A crash between the two must leave the user
 // logged IN with one abandoned row, never logged out holding a file the hub
-// has already refused.
+// already refused.
 func TestPersistTokenResponse_RevokesTheCredentialItReplaces(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", dir)
@@ -246,7 +218,7 @@ func TestPersistTokenResponse_WarnsWhenTheOldCredentialSurvives(t *testing.T) {
 
 // TestPersistTokenResponse_RejectsMalformedJSON pins the failure path:
 // a hub returning HTML or partial JSON should produce an error envelope
-// rather than crash, and no credential file should be written.
+// rather than crash, and the CLI should write no credential file.
 func TestPersistTokenResponse_RejectsMalformedJSON(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", dir)
@@ -314,6 +286,71 @@ func TestRunAuthLogout_RevokesAndRemovesCreds(t *testing.T) {
 	assert.Equal(t, srv.URL, env.Data["hub_url"])
 }
 
+// TestRunAuthLogout_SucceedsWhenTheRowIsAlreadyGone is the credential that
+// nobody used for months.
+//
+// The hub hard-deletes an api_tokens row once both of its deadlines close,
+// and it answers a bearer whose row it cannot find with 401. Reporting that
+// as a failed revoke told the user to finish the job under Preferences,
+// Account, Command-line credentials -- where the row is already gone, so
+// there is nothing to act on and the warning can only worry them.
+func TestRunAuthLogout_SucceedsWhenTheRowIsAlreadyGone(t *testing.T) {
+	for name, status := range map[string]int{
+		"the hub hard-deleted the row": http.StatusUnauthorized,
+		"a proxy answers not found":    http.StatusNotFound,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				require.Equal(t, "/auth/cli/revoke", r.URL.Path)
+				w.WriteHeader(status)
+			}))
+			t.Cleanup(srv.Close)
+
+			require.NoError(t, control.SaveCredentials(srv.URL, control.CredentialFile{
+				HubURL:      srv.URL,
+				AccessToken: "lmx_a_at_stale",
+				ExpiresAt:   time.Now().Add(-time.Hour),
+			}))
+
+			out := withCapturedStdout(t, func() {
+				require.NoError(t, RunAuthLogout(fakeCmdCtx{}, []string{"--hub", srv.URL}))
+			})
+
+			var env struct {
+				Data map[string]string `json:"data"`
+			}
+			require.NoError(t, json.Unmarshal(out, &env))
+			assert.NotContains(t, env.Data, "warning",
+				"a row that is already gone is a revoke that already happened")
+
+			_, err := control.LoadCredentials(srv.URL)
+			assert.ErrorIs(t, err, control.ErrNotLoggedIn)
+		})
+	}
+}
+
+// TestRunAuthLogout_WarnsWhenTheHubRefusesTheRevoke keeps the other
+// polarity: a refusal the operator CAN act on must still be reported, so the
+// credential does not stay live behind a clean result.
+func TestRunAuthLogout_WarnsWhenTheHubRefusesTheRevoke(t *testing.T) {
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+
+	require.NoError(t, control.SaveCredentials(srv.URL, control.CredentialFile{
+		HubURL: srv.URL, AccessToken: "lmx_a_at_live", ExpiresAt: time.Now().Add(time.Hour),
+	}))
+
+	out := withCapturedStdout(t, func() {
+		require.NoError(t, RunAuthLogout(fakeCmdCtx{}, []string{"--hub", srv.URL}))
+	})
+	assert.Contains(t, string(out), "could not be revoked")
+	assert.Contains(t, string(out), "Preferences")
+}
+
 // TestRunAuthLogout_ToleratesMissingCreds covers the safe-to-rerun
 // case: no credential file means there's nothing to revoke locally,
 // but the command should still exit cleanly with a JSON envelope so
@@ -337,8 +374,8 @@ func TestRunAuthLogout_ToleratesMissingCreds(t *testing.T) {
 }
 
 // TestRunAuthLogout_RequiresHub guards the early-validation path: no
-// --hub means no server-side revoke is even possible, so we surface
-// invalid_request instead of silently no-op'ing.
+// --hub means no server-side revoke is even possible, so the CLI surfaces
+// invalid_request instead of silently doing nothing.
 func TestRunAuthLogout_RequiresHub(t *testing.T) {
 	t.Setenv("LEAPMUX_HUB", "") // Block env-var fallback so the flag is actually missing.
 	out := withCapturedStdout(t, func() {
@@ -453,7 +490,7 @@ func TestRunAuthList_PrintsAllConfiguredHubs(t *testing.T) {
 }
 
 // TestRunAuthList_ToleratesMissingConfigDir covers the first-run
-// case where the config directory hasn't been created yet. The
+// case where nothing created the config directory yet. The
 // command should print an empty list, not error out — scripts using
 // it as a presence check shouldn't have to set up the directory
 // themselves.
@@ -649,7 +686,7 @@ func TestRunAuthLogin_DeviceCodeFlowDialsSocketHub(t *testing.T) {
 
 // TestRunAuthLogin_LocalRedirectRefusesSocketURL pins the other socket
 // login hole: PKCE needs a browser-reachable hub origin, so a unix:/npipe:
-// --hub without --device-code must refuse by naming the working flag
+// --hub without --device-code must refuse by stating the working flag
 // rather than failing later with a scheme error.
 func TestRunAuthLogin_LocalRedirectRefusesSocketURL(t *testing.T) {
 	sockURL := locallistentest.UniqueListenURL(t, "cli-pkce")
@@ -793,19 +830,60 @@ func TestRunAuthCredentials_ListsTheAccountCredentials(t *testing.T) {
 	assert.Nil(t, env.Data[0]["last_used_at"])
 }
 
-// stubMyTokensService answers ListMyAPITokens and nothing else.
+// stubMyTokensService answers ListMyAPITokens and nothing else, recording
+// the page limit each request asked for.
 type stubMyTokensService struct {
 	leapmuxv1connect.UnimplementedUserServiceHandler
+	mu     sync.Mutex
+	limits []int64
 }
 
 func (s *stubMyTokensService) ListMyAPITokens(
 	_ context.Context,
-	_ *connect.Request[leapmuxv1.ListMyAPITokensRequest],
+	req *connect.Request[leapmuxv1.ListMyAPITokensRequest],
 ) (*connect.Response[leapmuxv1.ListMyAPITokensResponse], error) {
+	s.mu.Lock()
+	s.limits = append(s.limits, req.Msg.GetLimit())
+	s.mu.Unlock()
 	return connect.NewResponse(&leapmuxv1.ListMyAPITokensResponse{
 		Tokens: []*leapmuxv1.MyAPIToken{
 			{Id: "tok-1", ClientType: "cli", ClientName: "alice@laptop", AdminScope: true, Current: true},
 			{Id: "tok-2", ClientType: "cli", ClientName: "ci"},
 		},
 	}), nil
+}
+
+func (s *stubMyTokensService) requestedLimits() []int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]int64(nil), s.limits...)
+}
+
+// TestRunAuthCredentials_AsksForTheHubsMaximumPage pins the page size to the
+// hub's OWN constant rather than a number restated here.
+//
+// An omitted limit resolves to service.DefaultPageLimit, so the listing loop
+// would take ten times the requests and cover a tenth of what its own limit
+// claims; a hand-copied 500 answers correctly only until the hub changes it.
+func TestRunAuthCredentials_AsksForTheHubsMaximumPage(t *testing.T) {
+	stub := &stubMyTokensService{}
+	mux := http.NewServeMux()
+	path, handler := leapmuxv1connect.NewUserServiceHandler(stub)
+	mux.Handle(path, handler)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+	require.NoError(t, control.SaveCredentials(srv.URL, control.CredentialFile{
+		HubURL: srv.URL, AccessToken: "lmx_a_test", RefreshToken: "lmx_r_test",
+		ExpiresAt: time.Now().Add(time.Hour), UserID: "u-1", Username: "alice",
+	}))
+
+	withCapturedStdout(t, func() {
+		require.NoError(t, RunAuthCredentials(fakeCmdCtx{}, []string{"--hub", srv.URL}))
+	})
+
+	limits := stub.requestedLimits()
+	require.NotEmpty(t, limits)
+	assert.Equal(t, int64(service.MaxPageLimit), limits[0])
 }

@@ -42,14 +42,14 @@ describe('branchContextMenu', () => {
     expect(onChange).not.toHaveBeenCalled()
   })
 
-  // Offline gating. Both items stay VISIBLE and disabled rather than
+  // The offline restriction. Both items stay VISIBLE and disabled rather than
   // disappearing, because a row that silently loses its menu reads as a bug while
-  // a dimmed item with a title says which machine to bring back.
+  // a dimmed item that states a reason says which machine to bring back.
   //
   // Native `disabled` is deliberate: the dimming and not-allowed cursor come from
   // oat's global `:disabled` rule, which every other menu in the app relies on.
-  // The cost is that a disabled button leaves the focus order, so the title is
-  // mouse-only -- see the note on disabledReason.
+  // The cost is that a disabled button leaves the focus order, so the tooltip
+  // opens only under a pointer -- see the note on disabledReason.
   describe('when the worker is offline', () => {
     const reason = 'Worker "mac-mini" is offline'
 

@@ -132,6 +132,144 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 		assert.Zero(t, published, "fast bulk revoke must not emit per-token events")
 	})
 
+	t.Run("bulk revoke with an exclusion keeps the acting credential", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "user")
+		acting := seedAPIToken(t, st, user.ID)
+		firstOther := seedAPIToken(t, st, user.ID)
+		secondOther := seedAPIToken(t, st, user.ID)
+		stranger := SeedUser(t, st, "stranger")
+		strangerToken := seedAPIToken(t, st, stranger.ID)
+
+		n, err := st.APITokens().RevokeOthers(ctx, store.RevokeOtherAPITokensParams{
+			UserID: userid.MustNew(user.ID),
+			KeepID: acting,
+		})
+		require.NoError(t, err)
+		assert.Equal(t, int64(2), n, "the two other live tokens of this account are revoked")
+
+		assertAPITokenRevoked(t, st, acting, false)
+		assertAPITokenRevoked(t, st, firstOther, true)
+		assertAPITokenRevoked(t, st, secondOther, true)
+		assertAPITokenRevoked(t, st, strangerToken, false)
+
+		// The exclusion path takes the same fast statement, so it emits no
+		// per-token events either; the caller's user-wide generation event
+		// carries the signal.
+		published, err := st.RevocationEvents().PublishPending(ctx, 10)
+		require.NoError(t, err)
+		assert.Zero(t, published, "the exclusion path must not emit per-token events")
+	})
+
+	t.Run("bulk revoke with an empty exclusion revokes every row", func(t *testing.T) {
+		// The behaviour every administrator path depends on: a reset and an
+		// account delete keep nothing. RevokeByUser binds this shape.
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "user")
+		first := seedAPIToken(t, st, user.ID)
+		second := seedAPIToken(t, st, user.ID)
+
+		n, err := st.APITokens().RevokeOthers(ctx, store.RevokeOtherAPITokensParams{
+			UserID: userid.MustNew(user.ID),
+		})
+		require.NoError(t, err)
+		assert.Equal(t, int64(2), n, "an empty exclusion keeps nothing")
+		assertAPITokenRevoked(t, st, first, true)
+		assertAPITokenRevoked(t, st, second, true)
+	})
+
+	t.Run("bulk revoke with an exclusion refuses a zero user id", func(t *testing.T) {
+		// An unminted caller owns nothing, and a bulk revoke that reported
+		// success while it addressed no row is the shape a revocation must
+		// never have.
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "user")
+		token := seedAPIToken(t, st, user.ID)
+
+		_, err := st.APITokens().RevokeOthers(ctx, store.RevokeOtherAPITokensParams{
+			UserID: userid.UserID{},
+			KeepID: "keep",
+		})
+		require.ErrorIs(t, err, store.ErrInvalidArgument)
+		assertAPITokenRevoked(t, st, token, false)
+	})
+
+	t.Run("api token auth generation restamp moves the kept credential forward", func(t *testing.T) {
+		// The other half of "preserve this credential". Bearer validation
+		// refuses a row behind users.auth_generation whether or not
+		// revoked_at is set, so an exclusion without a restamp keeps a row
+		// that still reads as revoked.
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "user")
+		owner := userid.MustNew(user.ID)
+		acting := seedAPIToken(t, st, user.ID)
+
+		before, err := st.APITokens().GetByID(ctx, acting)
+		require.NoError(t, err)
+
+		bumped, err := st.Users().RevokeUserTokens(ctx, owner)
+		require.NoError(t, err)
+		require.Equal(t, int64(1), bumped)
+		updatedUser, err := st.Users().GetByID(ctx, user.ID)
+		require.NoError(t, err)
+		require.Greater(t, updatedUser.AuthGeneration, before.AuthGeneration,
+			"the epoch bump must leave the token row behind, or this case proves nothing")
+
+		n, err := st.APITokens().RefreshAuthGeneration(ctx, store.RefreshAPITokenAuthGenerationParams{
+			TokenID: acting,
+			UserID:  owner,
+		})
+		require.NoError(t, err)
+		assert.Equal(t, int64(1), n)
+
+		after, err := st.APITokens().GetByID(ctx, acting)
+		require.NoError(t, err)
+		assert.Equal(t, updatedUser.AuthGeneration, after.AuthGeneration,
+			"the kept credential now sits at the account's new epoch")
+	})
+
+	t.Run("api token auth generation restamp addresses no other row", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "user")
+		owner := userid.MustNew(user.ID)
+		revoked := seedAPIToken(t, st, user.ID)
+		_, err := st.APITokens().Revoke(ctx, revoked)
+		require.NoError(t, err)
+		stranger := SeedUser(t, st, "stranger")
+		strangerToken := seedAPIToken(t, st, stranger.ID)
+
+		// A REVOKED row: the restamp keeps a live credential live, and must
+		// never move a dead one onto the new epoch.
+		n, err := st.APITokens().RefreshAuthGeneration(ctx, store.RefreshAPITokenAuthGenerationParams{
+			TokenID: revoked, UserID: owner,
+		})
+		require.NoError(t, err)
+		assert.Zero(t, n, "a revoked row is not restamped")
+
+		// Somebody else's row: the owner equality is in the statement.
+		n, err = st.APITokens().RefreshAuthGeneration(ctx, store.RefreshAPITokenAuthGenerationParams{
+			TokenID: strangerToken, UserID: owner,
+		})
+		require.NoError(t, err)
+		assert.Zero(t, n, "another account's row is not restamped")
+
+		// A row that no longer exists.
+		n, err = st.APITokens().RefreshAuthGeneration(ctx, store.RefreshAPITokenAuthGenerationParams{
+			TokenID: id.Generate(), UserID: owner,
+		})
+		require.NoError(t, err)
+		assert.Zero(t, n, "a missing row is not restamped")
+
+		// An unminted caller, which reports zero rather than an error --
+		// the session twin answers the same way, and the caller treats
+		// "nothing to restamp" as tolerable.
+		n, err = st.APITokens().RefreshAuthGeneration(ctx, store.RefreshAPITokenAuthGenerationParams{
+			TokenID: strangerToken, UserID: userid.UserID{},
+		})
+		require.NoError(t, err)
+		assert.Zero(t, n, "a zero user id addresses no row")
+	})
+
 	t.Run("user-wide bulk revoke emits only the generation event", func(t *testing.T) {
 		st := s.NewStore(t)
 		user := SeedUser(t, st, "user")
@@ -901,6 +1039,20 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 		require.NoError(t, err)
 		require.Empty(t, events)
 	})
+}
+
+// assertAPITokenRevoked reads one api_tokens row and asserts whether it
+// carries a revoked_at. A helper because the exclusion cases assert the state
+// of four rows each, and a bare GetByID pair at every site buries the claim.
+func assertAPITokenRevoked(t *testing.T, st store.Store, tokenID string, revoked bool) {
+	t.Helper()
+	row, err := st.APITokens().GetByID(ctx, tokenID)
+	require.NoError(t, err)
+	if revoked {
+		assert.NotNil(t, row.RevokedAt, "token %s must be revoked", tokenID)
+		return
+	}
+	assert.Nil(t, row.RevokedAt, "token %s must survive", tokenID)
 }
 
 func seedAPIToken(t *testing.T, st store.Store, userID string) string {

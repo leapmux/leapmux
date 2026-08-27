@@ -17,7 +17,7 @@ import (
 // tripwire in user_procedures_internal_test.go cannot reach an Admin*
 // procedure, and the consent legs are mux routes rather than Connect
 // procedures -- so the omission the gate exists to prevent was possible at
-// exactly the place it mattered, and it had already happened once.
+// exactly the place it mattered, and it already happened once.
 func TestMintAuthority(t *testing.T) {
 	t.Parallel()
 

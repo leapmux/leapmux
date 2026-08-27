@@ -144,10 +144,10 @@ func (s *userStore) GetPrefs(ctx context.Context, id string) (string, error) {
 	return prefs, mapErr(err)
 }
 
-// See the mysql dialect's note on the same method.
+// See store.ErrLockingReadOutsideTransaction for the rule and its reason.
 func (s *userStore) GetPrefsForUpdate(ctx context.Context, id string) (string, error) {
 	if !s.conn.inTx() {
-		return "", store.ErrInvalidArgument
+		return "", store.ErrLockingReadOutsideTransaction
 	}
 	prefs, err := s.conn.q.GetUserPrefsForUpdate(ctx, id)
 	return prefs, mapErr(err)
@@ -195,8 +195,8 @@ func loadUserInfoCacheFields(ctx context.Context, conn *pgConn, id string) (stor
 
 // runUserInfoMutation wires the shared RunUserInfoMutation to this dialect's
 // projection read and user_info event insert, so each Update* method supplies
-// only its UPDATE and the durable cache-invalidation is derived from the
-// before/after projection rather than a hand-computed flag. Soft path only
+// only its UPDATE, and the before/after projection derives the durable
+// cache-invalidation rather than a hand-computed flag. Soft path only
 // (nil fence): grants and non-gate changes stay on user_info.
 func (s *userStore) runUserInfoMutation(ctx context.Context, id string, mutate func(ctx context.Context, conn *pgConn) (userID string, updatedAt time.Time, ok bool, err error)) error {
 	return s.runCachedUserMutation(ctx, id, mutate, nil)
@@ -461,9 +461,9 @@ func (s *userStore) CompletePasswordReset(ctx context.Context, p store.CompleteP
 func (s *userStore) RevokeUserTokens(ctx context.Context, userID userid.UserID) (int64, error) {
 	owner, ok := userid.OwnerFilter(userID)
 	if !ok {
-		// An unminted caller names no user, so a bulk mutation must refuse
-		// rather than address every blank-owner row -- or report success
-		// having changed nothing. See userid.OwnerFilter.
+		// An unminted caller specifies no user, so a bulk mutation must refuse
+		// rather than address every blank-owner row -- or report success when
+		// it changed nothing. See userid.OwnerFilter.
 		return 0, store.ErrInvalidArgument
 	}
 	return store.RunCredentialMutation(ctx, s.conn.withTransaction, func(ctx context.Context, conn *pgConn) (*store.CredentialEvent, error) {

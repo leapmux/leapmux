@@ -13,8 +13,8 @@ import (
 // CockroachDB, and the mysql dialect against MySQL and TiDB. A distributed
 // backend resolves a write-write conflict by aborting one of the transactions
 // with a retryable error, and every one of them documents that the
-// application retries it -- there is no server-side wait that makes the error
-// go away. PostgreSQL itself raises the same two SQLSTATEs: 40001 under
+// application retries it -- no server-side wait removes the error.
+// PostgreSQL itself raises the same two SQLSTATEs: 40001 under
 // REPEATABLE READ or SERIALIZABLE, and 40P01 whenever two transactions take
 // row locks in opposite orders.
 //
@@ -34,7 +34,8 @@ const (
 	// serves nobody.
 	ConflictRetryLimit = 5
 	// ConflictRetryBaseDelay doubles per attempt and carries full jitter, so
-	// a burst of aborted writers spreads out instead of re-colliding in step.
+	// a burst of aborted writers spreads out instead of colliding again at
+	// the same instant.
 	// The worst wait before the last attempt is about 80 ms.
 	//
 	// Exported because each dialect's own wrapper test asserts that a
@@ -52,10 +53,11 @@ const (
 // the shared part is the policy, and the driver-specific part is one
 // predicate.
 //
-// It returns the DATABASE error rather than the context error when the wait
-// is cut short, because the database error is what the caller has to act on:
-// a cancelled retry sleep means the request went away, and reporting
-// "context canceled" would hide which statement conflicted.
+// It returns the DATABASE error rather than the context error when a
+// cancellation ends the wait early, because the database error is what the
+// caller has to act on: a cancelled retry sleep means the caller abandoned
+// the request, and reporting "context canceled" would hide which statement
+// conflicted.
 func RetryOnConflict(ctx context.Context, isRetryable func(error) bool, run func() error) error {
 	var err error
 	for attempt := range ConflictRetryLimit {
@@ -70,7 +72,7 @@ func RetryOnConflict(ctx context.Context, isRetryable func(error) bool, run func
 	return err
 }
 
-// sleepBeforeConflictRetry waits out one backoff step and reports whether it
+// sleepBeforeConflictRetry waits one backoff step and reports whether it
 // finished. Full jitter over an exponential window: two writers that collide
 // must not wake together and collide again.
 func sleepBeforeConflictRetry(ctx context.Context, attempt int) bool {

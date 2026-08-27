@@ -12,14 +12,6 @@ import { warningText } from '~/styles/shared.css'
 import * as styles from './credentialList.css'
 
 /**
- * The account's command-line credentials, and self-service revocation.
- *
- * Neither listing nor revoking requires an elevated session. Listing carries metadata
- * only, and revoking can only REDUCE access -- demanding a fresh factor from
- * somebody who believes a credential is stolen is the wrong failure mode,
- * and the delay is the attacker's gain.
- */
-/**
  * The hub's maximum page. Asked for explicitly, because an omitted limit
  * resolves to the hub's default of fifty: the loop below then took ten times
  * the round trips and covered a tenth of what MAX_PAGES claims.
@@ -35,6 +27,14 @@ const PAGE_SIZE = 500
  */
 const MAX_PAGES = 500
 
+/**
+ * The account's command-line credentials, and self-service revocation.
+ *
+ * Neither listing nor revoking requires an elevated session. Listing carries
+ * metadata only, and revoking can only REDUCE access -- a demand for a fresh
+ * factor from somebody who believes a credential is stolen is the wrong
+ * failure mode, and the delay is the attacker's gain.
+ */
 export const AccountCLITokens: Component = () => {
   const [tokens, setTokens] = createSignal<MyAPIToken[]>([])
   const [loading, setLoading] = createSignal(true)
@@ -58,8 +58,8 @@ export const AccountCLITokens: Component = () => {
    *
    * The loop does NOT trust the cursor to end it. A client loop whose only
    * exit is a value the server chooses is a hang the server can cause, so it
-   * also stops when the cursor fails to advance and when it has read
-   * MAX_PAGES. Both limits are far above any real account.
+   * also stops when the cursor fails to advance and when it read MAX_PAGES.
+   * Both limits are far above any real account.
    */
   const refresh = async () => {
     setLoading(true)
@@ -120,6 +120,12 @@ export const AccountCLITokens: Component = () => {
       parts.push(`Added ${timestampDate(token.createdAt).toLocaleString()}`)
     if (token.refreshExpiresAt)
       parts.push(`Signs in again ${timestampDate(token.refreshExpiresAt).toLocaleDateString()}`)
+    // The fixed-lifetime kind carries no refresh deadline, so its whole life
+    // is reported instead. The hub sets exactly one of the two, so a row with
+    // neither is a credential that never expires rather than one whose
+    // deadline this panel could not read.
+    else if (token.expiresAt)
+      parts.push(`Expires ${timestampDate(token.expiresAt).toLocaleDateString()}`)
     return parts.join(' · ')
   }
 
@@ -143,13 +149,14 @@ export const AccountCLITokens: Component = () => {
                     <span class={warningText}>(hub administration)</span>
                   </Show>
                   {/*
-                    MyAPIToken.current is deliberately NOT rendered here. The
-                    hub derives it from the credential that made the call, and
-                    a browser session is never one of the api_tokens rows this
-                    list holds -- so it is false for every row on this page,
-                    always. `leapmux control auth credentials` is the caller
-                    that can see it, and it prints it. A branch that cannot
-                    render is a promise to the next reader that it can.
+                    This list deliberately does NOT render
+                    MyAPIToken.current. The hub derives it from the credential
+                    that made the call, and a browser session is never one of
+                    the api_tokens rows this list holds -- so it is false for
+                    every row on this page, always. `leapmux control auth
+                    credentials` is the caller that can see it, and it prints
+                    it. A branch that cannot render is a promise to the next
+                    reader that it can.
                   */}
                 </span>
                 <span class={styles.credentialMeta}>{describe(token)}</span>
@@ -185,7 +192,7 @@ export const AccountCLITokens: Component = () => {
               {' '}
               will stop working immediately and must sign in again.
             </p>
-            {/* See the list row above on why `current` is not rendered here. */}
+            {/* See the list row above on why this does not render `current`. */}
           </ConfirmDialog>
         )}
       </Show>

@@ -1,10 +1,11 @@
+import type { Timestamp } from '@bufbuild/protobuf/wkt'
 import type { Component } from 'solid-js'
 import { timestampDate } from '@bufbuild/protobuf/wkt'
 import { createEffect, createSignal, Show } from 'solid-js'
 import { Alert } from '~/components/common/Alert'
 import { useAuth } from '~/context/AuthContext'
 import { createSharedTicker } from '~/lib/createSharedTicker'
-import { dropElevation, isElevationCurrent } from '~/lib/elevation'
+import { isElevationCurrent } from '~/lib/elevation'
 import { formatErrorMessage } from '~/lib/errors'
 import { errorText } from '~/styles/shared.css'
 import * as styles from './ElevationStatus.css'
@@ -31,8 +32,8 @@ const elevationTick = createSharedTicker(ELEVATION_TICK_MS)
  * refuses an un-elevated action on its own -- so a stale value can only
  * render a row a moment too long, never admit a change.
  *
- * The control exists because the window is otherwise only endable by waiting
- * two hours. Somebody stepping away from a shared machine has a reason to
+ * The control exists because the window otherwise ends only after two hours.
+ * Somebody stepping away from a shared machine has a reason to
  * end it now, and revoking a privilege is the one action that never needs a
  * privilege.
  */
@@ -42,8 +43,9 @@ export const ElevationStatus: Component = () => {
   const [message, setMessage] = createSignal('')
 
   // The deadline passes on its own, and nothing writes the signal when it
-  // does: a slide deliberately emits no user_info event, so the client's
-  // copy stops changing. Without a tick, `new Date()` inside
+  // does. A slide moves the mirror FORWARD -- the hub reports the new deadline
+  // on the response to the action that slid it -- but no write at all marks
+  // the moment a window ENDS. Without a tick, `new Date()` inside
   // isElevationCurrent is read once and never again, and the row keeps
   // saying "verified until 14:30" with a live "End now" button hours later
   // -- on the one screen the docs point somebody at when they step away
@@ -58,32 +60,48 @@ export const ElevationStatus: Component = () => {
   }
 
   /**
-   * The deadline this row already re-read once, at its lapse.
+   * The mirrored deadline this row already confirmed, or NONE.
    *
    * A plain reference rather than a signal: it must not be reactive, or
-   * writing it would re-run the effect that wrote it. Keying on the DEADLINE
-   * means a newly adopted one re-arms the check, and a hub that answers with
-   * no later deadline does not loop, because the same value lapses only once.
+   * writing it would re-run the effect that wrote it. Keying on the MIRRORED
+   * VALUE means a newly adopted deadline re-arms the check, and a hub that
+   * answers with nothing later does not loop, because the same value confirms
+   * only once.
    */
-  let confirmedLapseOf: string | null = null
+  const NO_DEADLINE = 'none'
+  let confirmedMirrorOf: string | null = null
+  const mirrorKey = (deadline: Timestamp | undefined) =>
+    deadline ? `${deadline.seconds}.${deadline.nanos}` : NO_DEADLINE
 
   /**
-   * Re-read the account ONCE when the mirrored deadline lapses.
+   * Re-read the account ONCE for a mirrored value this row cannot trust.
    *
-   * The mirror goes stale EARLY, and only in that direction. The hub SLIDES
-   * the window forward on every gated action and deliberately emits no
-   * user_info event for it, so a client that adopted a deadline of 12:00 and
-   * then renamed a passkey at 11:55 keeps 12:00 while the hub holds 13:55.
-   * At 12:00 this row would unmount, and with it the "End now" button — the
-   * only client of DropElevation, and the control the docs point at for "I
-   * am stepping away from a shared machine" — while every sensitive action
-   * still landed with no prompt.
+   * TWO states qualify, and the second one is the state a fresh tab starts in.
    *
-   * Re-reading HERE rather than at each gated call site is what makes it hold
-   * for the call sites that do not refresh today and for the ones nobody has
-   * written yet: three of them refresh the account for their own reasons, and
-   * AccountPasskeys' rename deliberately does not, because a rename changes
-   * nothing else. One request per lapse is the whole cost.
+   * A LAPSED deadline. The mirror goes stale EARLY, and only in that
+   * direction. The hub SLIDES the window forward on every sensitive action,
+   * and it reports the new deadline to the DOCUMENT THAT ACTED alone -- see
+   * `elevationDeadlineInterceptor`. The elevation belongs to the session row,
+   * which every tab of the browser shares, so a passkey renamed at 11:55 in
+   * ANOTHER tab leaves this one holding 12:00 while the hub holds 13:55. At
+   * 12:00 this row would unmount, and with it the "End now" button -- the only
+   * client of DropElevation, and the control the docs point at for "I am
+   * stepping away from a shared machine" -- while every sensitive action still
+   * landed with no prompt.
+   *
+   * NO deadline at all. The elevation belongs to the SESSION row, one per
+   * cookie, shared by every tab of the browser, and the frontend subscribes to
+   * no user_info event. So a tab that loaded before the user elevated in
+   * ANOTHER tab holds `undefined` for the life of the page: this row renders
+   * nothing, and neither the "This session is verified" sentence nor the
+   * End-now button appears while the session IS verified.
+   *
+   * Re-reading HERE rather than at each call site that requires elevation is
+   * what makes it hold for the call sites that do not refresh today and for the
+   * ones nobody wrote yet: three of them refresh the account for their own
+   * reasons, and AccountPasskeys' rename deliberately does not, because a
+   * rename changes nothing else. One request for each distinct mirrored value
+   * is the whole cost.
    *
    * In an EFFECT, not in the predicate above: the predicate runs inside
    * Show's memo, and a signal write from there is a write during a
@@ -92,12 +110,12 @@ export const ElevationStatus: Component = () => {
   createEffect(() => {
     const deadline = until()
     elevationTick.tick()
-    if (!deadline || isElevationCurrent(deadline))
+    if (deadline && isElevationCurrent(deadline))
       return
-    const key = `${deadline.seconds}.${deadline.nanos}`
-    if (confirmedLapseOf === key)
+    const key = mirrorKey(deadline)
+    if (confirmedMirrorOf === key)
       return
-    confirmedLapseOf = key
+    confirmedMirrorOf = key
     void auth.refreshUser()
   })
 
@@ -106,11 +124,9 @@ export const ElevationStatus: Component = () => {
     setMessage('')
     void (async () => {
       try {
-        await dropElevation()
-        // Adopt the new state locally rather than re-reading the account:
-        // the hub just told us the window is gone, and the drop is the one
-        // change that must never be reported as still live.
-        auth.setElevationExpiresAt(undefined)
+        // The context runs the request and clears the mirror, so nothing here
+        // writes elevation state that the hub owns.
+        await auth.dropElevation()
       }
       catch (e) {
         setMessage(formatErrorMessage(e, 'Could not end the verification'))
@@ -125,7 +141,7 @@ export const ElevationStatus: Component = () => {
     <Show when={elevated()}>
       {/*
         The SAME Alert the panel's restart warning uses, and for the same
-        reason: both are one sentence about the group the reader is looking at,
+        reason: both are one sentence about the group that the reader sees,
         and two boxes drawn two ways read as two kinds of thing. This one is
         not a warning, so it keeps the default (informational) variant.
       */}
@@ -146,7 +162,7 @@ export const ElevationStatus: Component = () => {
                 nanos, so this row could render an instant up to a second
                 earlier than the one isElevationCurrent -- which does use
                 timestampDate -- compares against, and the panel would say a
-                window had ended while the same component still treated it as
+                window ended while the same component still treated it as
                 live.
               */}
               <Show when={until()}>
@@ -167,8 +183,8 @@ export const ElevationStatus: Component = () => {
           {/*
             No `role="alert"` of its own: the Alert around it already IS one,
             and a live region inside a live region announces twice. The
-            failure is still announced, because adding content to an open
-            `role="alert"` box re-announces the box.
+            screen reader still announces the failure, because adding content
+            to an open `role="alert"` box re-announces the box.
           */}
           <Show when={message()}>
             <div class={errorText}>{message()}</div>

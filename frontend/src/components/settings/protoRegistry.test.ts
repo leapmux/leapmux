@@ -90,8 +90,8 @@ function source(values = new Map<string, SettingValue>()): ProtoSettingsSource {
 /**
  * `controlForField` returns undefined for a field this client cannot render.
  * Every case below expects a control, so assert that here instead of
- * spreading `!` across the file: a regression to undefined then names the
- * line that lost it.
+ * spreading `!` across the file: a regression to undefined then identifies
+ * the line that lost it.
  */
 function mustControl(...args: Parameters<typeof controlForField>): SettingControl {
   const control = controlForField(...args)
@@ -113,12 +113,12 @@ describe('controlForField', () => {
       .toMatchObject({ kind: 'number', min: 300, max: 604800, step: 1, unit: 'seconds' })
   })
 
-  // A proto int64 bound decodes as a bigint, and `Number` on one past
+  // A proto int64 limit decodes as a bigint, and `Number` on one past
   // 2^53-1 rounds SILENTLY: the control would then accept a value the hub
   // refuses, or refuse one it accepts. The clamp keeps the number control
   // inside the range JavaScript can represent exactly, and the hub's own
-  // int64 bound is what actually decides the write.
-  it('clamps an int bound that JavaScript cannot represent exactly', () => {
+  // int64 limit is what actually decides the write.
+  it('clamps an int limit that JavaScript cannot represent exactly', () => {
     const huge = BigInt(Number.MAX_SAFE_INTEGER) + 1000n
     expect(controlForField(field({ kind: SettingFieldKind.INT, unit: 'bytes', min: -huge, max: huge })))
       .toMatchObject({ kind: 'number', min: Number.MIN_SAFE_INTEGER, max: Number.MAX_SAFE_INTEGER })
@@ -135,9 +135,9 @@ describe('controlForField', () => {
       .toMatchObject({ min: 0, max: 3600 })
   })
 
-  // The percent arm reads the same clamped bounds, so an unrepresentable
+  // The percent case reads the same clamped limits, so an unrepresentable
   // one must not reach the slider either.
-  it('clamps an unrepresentable bound on the percent slider too', () => {
+  it('clamps an unrepresentable limit on the percent slider too', () => {
     expect(controlForField(field({
       kind: SettingFieldKind.INT,
       unit: '%',
@@ -287,7 +287,7 @@ describe('buildProtoRows', () => {
   })
 
   // Every captcha key declares BOTH: HiddenInSolo on the descriptor and
-  // dependsOn on its fields. A chain of ternaries let the solo arm win, so
+  // dependsOn on its fields. A chain of ternaries let the solo branch win, so
   // on a non-solo hub (where isSoloMode() is false) the dependsOn rule never
   // ran and every inactive provider's fields stayed on screen.
   it('applies dependsOn to a hiddenInSolo descriptor, not one rule or the other', () => {
@@ -457,7 +457,7 @@ describe('buildProtoRows', () => {
     })], source(scalar))
     expect(row.binding.effective?.()).toBe(true)
 
-    // Per field, and on a field the stored row never named: email
+    // Per field, and on a field the stored row never listed: email
     // verification defaults to on, and the hub drops it while no SMTP relay
     // is configured. The sibling the rule leaves alone keeps its silence.
     const object = new Map([['signup', value('signup', '{"enabled":true,"verify_email":false}', {
@@ -623,7 +623,7 @@ describe('buildProtoRows per-field customized and reset', () => {
     ],
   })
 
-  it('marks only the fields the stored document names', () => {
+  it('marks only the fields the stored document lists', () => {
     const values = new Map([['smtp', value(
       'smtp',
       '{"host":"mail.example.com","port":587}',
@@ -657,7 +657,7 @@ describe('buildProtoRows per-field customized and reset', () => {
 describe('controlForField secret handling', () => {
   it('renders a secret field as a secret control whatever its kind', () => {
     // The ALTCHA signing key is declared BYTES + secret. Testing
-    // field.secret inside the STRING arm alone rendered it as a text box
+    // field.secret inside the STRING case alone rendered it as a text box
     // showing the literal "<redacted>" placeholder.
     const bytesSecret = field({ name: 'hmac_key', kind: SettingFieldKind.BYTES, secret: true })
     const control = mustControl(bytesSecret, () => value('captcha.altcha', '{}', { secretSet: { hmac_key: true } }))

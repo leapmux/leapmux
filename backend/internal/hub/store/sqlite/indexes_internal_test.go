@@ -256,8 +256,8 @@ func TestPaginatedListingsRideTheirKeysetIndexes(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.query, func(t *testing.T) {
 			details := explainPlan(t, db, loadQuerySQL(t, tc.file, tc.query))
-			// "USING INDEX" or "USING COVERING INDEX"; the LEFT JOIN users leg
-			// contributes its own row, so match any row.
+			// "USING INDEX" or "USING COVERING INDEX"; the LEFT JOIN users
+			// branch contributes its own row, so match any row.
 			assert.Condition(t, func() bool {
 				for _, d := range details {
 					if strings.Contains(d, "INDEX "+tc.index) {
@@ -304,12 +304,12 @@ func explainPlan(t *testing.T, db *sql.DB, sqlText string) []string {
 //     rewriting the migration's `WHERE is_admin = 1` back to bare
 //     `WHERE is_admin` silently orphans the index and this fails.
 //   - ListExpiringOAuthTokens and DeleteExpiredDelegationTokensBefore must
-//     seek their expires_at indexes with an upper bound -- the former
+//     seek their expires_at indexes with an upper limit -- the former
 //     regressed to a full scan under its old datetime() wrap.
-//   - The revocation-events compaction subquery must be a BOUNDED search.
-//     Both sqlite_autoindex(seq) and idx_revocation_events_published are
-//     eligible now that published_at compares raw (sargable); which wins is
-//     a stats-dependent cost choice, so only boundedness is pinned.
+//   - The revocation-events compaction subquery must SEEK an index rather
+//     than scan. Both sqlite_autoindex(seq) and idx_revocation_events_published
+//     are eligible now that published_at compares raw (sargable); which wins
+//     is a stats-dependent cost choice, so only the seek is pinned.
 func TestRetentionAndBootstrapScansAreSargable(t *testing.T) {
 	_, db := newSessionTestStore(t)
 
@@ -320,22 +320,22 @@ func TestRetentionAndBootstrapScansAreSargable(t *testing.T) {
 	oauth := explainPlan(t, db, loadQuerySQL(t, "oauth_tokens.sql", "ListExpiringOAuthTokens"))
 	assert.Contains(t, oauth[0], "INDEX idx_oauth_tokens_expires_at", "plan: %v", oauth)
 	assert.Contains(t, oauth[0], "expires_at<",
-		"the expiring-token scan must carry its upper bound into the seek; plan: %v", oauth)
+		"the expiring-token scan must carry its upper limit into the seek; plan: %v", oauth)
 
 	expiry := explainPlan(t, db, loadQuerySQL(t, "delegation_tokens.sql", "DeleteExpiredDelegationTokensBefore"))
 	assert.Contains(t, expiry[0], "INDEX idx_delegation_tokens_expires_at", "plan: %v", expiry)
 	assert.Contains(t, expiry[0], "expires_at<", "plan: %v", expiry)
 
 	compact := explainPlan(t, db, loadQuerySQL(t, "revocation_events.sql", "DeleteCompactablePublishedRevocationEvents"))
-	var bounded bool
+	var compactSeeks bool
 	for _, d := range compact {
 		require.NotContains(t, d, "SCAN ev",
 			"the compaction subquery must not full-scan published events; plan: %v", compact)
 		if strings.Contains(d, "SEARCH ev USING") {
-			bounded = true
+			compactSeeks = true
 		}
 	}
-	assert.True(t, bounded, "the compaction subquery must be a bounded index search; plan: %v", compact)
+	assert.True(t, compactSeeks, "the compaction subquery must seek an index; plan: %v", compact)
 
 	// The revoked-session probe runs while the caller holds the user-auth row
 	// lock, on a table that retains every sign-out, api-token revoke,
@@ -357,9 +357,9 @@ func TestRetentionAndBootstrapScansAreSargable(t *testing.T) {
 // TestRevokedTokenSweepsAreSargable pins the query PLAN of the two hourly
 // revoked-token retention sweeps: the raw-string `revoked_at < ?` compare
 // (bound a canonical-layout SQLiteNullTime cutoff) must seek
-// idx_*_revoked_at with an UPPER bound, touching only the cutoff-eligible
+// idx_*_revoked_at with an UPPER limit, touching only the cutoff-eligible
 // rows. The prior `datetime(revoked_at) < datetime(?)` shape wrapped the
-// indexed column in a function, so the planner emitted a lower-bound-only
+// indexed column in a function, so the planner emitted a lower-limit-only
 // SEARCH (`revoked_at>?` -- the partial index's IS NOT NULL floor) and
 // evaluated datetime() per revoked row on every sweep; the regression is
 // plan-level only (deleted rows stay identical), so it needs an EXPLAIN
@@ -388,6 +388,6 @@ func TestRevokedTokenSweepsAreSargable(t *testing.T) {
 		assert.Contains(t, details[0], "INDEX "+tc.index,
 			"%s sweep must seek its partial revoked_at index", tc.table)
 		assert.Contains(t, details[0], "revoked_at<",
-			"%s sweep must carry the UPPER bound into the index seek (the datetime() wrap loses it and scans every revoked row)", tc.table)
+			"%s sweep must carry the UPPER limit into the index seek (the datetime() wrap loses it and scans every revoked row)", tc.table)
 	}
 }

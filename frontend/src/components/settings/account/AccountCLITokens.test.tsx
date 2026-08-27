@@ -106,8 +106,8 @@ describe('accountCLITokens', () => {
   })
 
   it('keeps the row when the revoke fails', async () => {
-    // The hub's own message is shown verbatim (formatErrorMessage prefers
-    // it over the fallback), so this asserts on what the user actually sees.
+    // The page shows the hub's own message verbatim (formatErrorMessage
+    // prefers it over the fallback), so this asserts on what the user sees.
     mockRevoke.mockRejectedValue(new Error('the hub refused'))
     render(() => <AccountCLITokens />)
     expect(await screen.findByText('alice@laptop')).toBeInTheDocument()
@@ -136,7 +136,7 @@ describe('accountCLITokens', () => {
     expect(await screen.findByText('alice@desktop')).toBeInTheDocument()
     expect(screen.getByText('alice@laptop')).toBeInTheDocument()
     // The limit is asked for, not left to the hub's default of fifty: the
-    // page bound below is sized on the maximum, and an omitted limit made
+    // page-count limit below is sized on the maximum, and an omitted limit made
     // the loop cover a tenth of what it claims at ten times the cost.
     expect(mockList).toHaveBeenNthCalledWith(1, { cursor: '', limit: 500n })
     expect(mockList).toHaveBeenNthCalledWith(2, { cursor: 'page-2', limit: 500n })
@@ -164,5 +164,81 @@ describe('accountCLITokens', () => {
 
     expect(await screen.findByText('the hub is unreachable')).toBeInTheDocument()
     expect(screen.queryByText(/No command-line credentials/)).not.toBeInTheDocument()
+  })
+})
+
+/**
+ * The deadline each row reports.
+ *
+ * The hub sets exactly ONE of the two fields, and the two kinds are exclusive.
+ * A renewing credential carries `refresh_expires_at` and answers "when do I
+ * sign in again"; a credential minted with an explicit lifetime carries
+ * `expires_at` and answers "when do I stop working". Before the second case
+ * had a line of its own, a one-year service credential and one that never
+ * expires read exactly alike on this page.
+ */
+describe('accountCLITokens deadlines', () => {
+  const renewing = timestampFromDate(new Date('2026-04-01T00:00:00Z'))
+  const fixed = timestampFromDate(new Date('2027-02-15T00:00:00Z'))
+
+  /** The whole meta line of one row, as the reader sees it. */
+  async function metaOf(tokenId: string): Promise<string> {
+    const row = await screen.findByTestId(`cli-token-${tokenId}`)
+    return row.textContent ?? ''
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockRevoke.mockResolvedValue({})
+  })
+
+  it('reports when a renewing credential signs in again', async () => {
+    mockList.mockResolvedValue({ tokens: [{ ...laptop, refreshExpiresAt: renewing }] })
+    render(() => <AccountCLITokens />)
+
+    const meta = await metaOf('tok-1')
+    expect(meta).toContain(`Signs in again ${new Date('2026-04-01T00:00:00Z').toLocaleDateString()}`)
+    expect(meta).not.toContain('Expires')
+  })
+
+  // The kind that carries no refresh deadline: `admin api-token issue --ttl`.
+  // Its whole life is the only deadline it has, so the row states that instead.
+  it('reports when a fixed-lifetime credential stops working', async () => {
+    mockList.mockResolvedValue({
+      tokens: [{ ...laptop, refreshExpiresAt: undefined, expiresAt: fixed }],
+    })
+    render(() => <AccountCLITokens />)
+
+    const meta = await metaOf('tok-1')
+    expect(meta).toContain(`Expires ${new Date('2027-02-15T00:00:00Z').toLocaleDateString()}`)
+    expect(meta).not.toContain('Signs in again')
+  })
+
+  // Both fields present is a response the hub does not produce. The renewing
+  // deadline wins, because an access expiry that moves at every rotation reads
+  // as "expiring today" on a credential with months left.
+  it('states one deadline, never two', async () => {
+    mockList.mockResolvedValue({
+      tokens: [{ ...laptop, refreshExpiresAt: renewing, expiresAt: fixed }],
+    })
+    render(() => <AccountCLITokens />)
+
+    const meta = await metaOf('tok-1')
+    expect(meta).toContain('Signs in again')
+    expect(meta).not.toContain('Expires')
+  })
+
+  // Neither field is a credential that never expires, so the row states no
+  // deadline at all rather than an empty or a fabricated one.
+  it('states no deadline for a credential that never expires', async () => {
+    mockList.mockResolvedValue({
+      tokens: [{ ...laptop, refreshExpiresAt: undefined, expiresAt: undefined }],
+    })
+    render(() => <AccountCLITokens />)
+
+    const meta = await metaOf('tok-1')
+    expect(meta).toContain('Added')
+    expect(meta).not.toContain('Expires')
+    expect(meta).not.toContain('Signs in again')
   })
 })

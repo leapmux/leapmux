@@ -22,23 +22,23 @@ import (
 // through this one function rather than through a per-caller copy of the
 // same two lines.
 //
-// Every call site calls THIS function. Two one-line renames stood in front
-// of it for a while, which made one concept read as three and stretched the
-// third name past what it described.
+// Every call site calls THIS function. Two one-line renames wrapped it for
+// a while, which made one concept read as three and stretched the third
+// name past what it described.
 func hashBrowserSecret(secret string) string {
 	sum := sha256.Sum256([]byte(secret))
 	return hex.EncodeToString(sum[:])
 }
 
 // browserSecretMatches reports whether the secret a browser presented is the
-// one a stored hash was minted from.
+// one the hub minted a stored hash from.
 //
 // It carries BOTH halves of the rule, and the first is the one worth having
 // in a single place: an EMPTY stored hash never matches. A row minted
 // without a browser cookie cannot be completed at all, so failing closed is
 // what makes the binding a property of every row rather than of the rows
-// somebody remembered to check. Written out at each call site, that guard is
-// one `||` away from being lost on one path and kept on the other.
+// somebody remembered to check. If each call site writes that guard out, a
+// single `||` loses it on one path and keeps it on the other.
 //
 // The comparison is constant time. The values are hex digests rather than
 // secrets, so the timing tells an attacker little -- but the two call sites

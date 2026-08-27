@@ -2,7 +2,7 @@ import { Code, ConnectError } from '@connectrpc/connect'
 import { fireEvent, render, screen, within } from '@solidjs/testing-library'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { setElevationPrompter } from '~/lib/elevationPrompt'
+import { promptForElevation, setElevationPrompter } from '~/lib/elevationPrompt'
 import { resetSystemInfoMock, setSystemInfoMock } from '~/test-support/systemInfoMock'
 import { AccountPasskeys } from './AccountPasskeys'
 
@@ -31,30 +31,25 @@ vi.mock('~/api/clients', () => ({
   },
 }))
 
-// A LIVE window by default, because that is the state every case below is
-// about: what the dialogs do once the factor is proven. The verify-first
-// cases at the bottom drive it to undefined and assert the prompt.
-const mockElevationExpiresAt = vi.fn<() => { seconds: bigint, nanos: number } | undefined>(() => undefined)
-
+// No elevation member: this panel reads NO deadline. It attempts every
+// mutation, and the hub, the transport and `ElevationPromptHost` between them
+// supply the refusal, the prompt and the retry.
 vi.mock('~/context/AuthContext', () => ({
   useAuth: () => ({
     user: () => mockUser(),
     refreshUser: mockRefreshUser,
-    elevationExpiresAt: () => mockElevationExpiresAt(),
   }),
 }))
-
-const inTwoHours = () => ({ seconds: BigInt(Math.floor(Date.now() / 1000) + 7200), nanos: 0 })
 
 vi.mock('~/lib/systemInfo', async () => {
   const m = await import('~/test-support/systemInfoMock')
   return m.systemInfoMock
 })
 
-// The ceremony and the Signal API are stubbed; `passkeyBlockerMessage` is
-// NOT. It is a pure map from a blocker to the sentence the panel shows, so
-// the real one is what makes the assertions below read the text a user
-// reads.
+// This file stubs the ceremony and the Signal API; it does NOT stub
+// `passkeyBlockerMessage`. It is a pure map from a blocker to the sentence the
+// panel shows, so the real one is what makes the assertions below read the
+// text a user reads.
 vi.mock('~/lib/webauthn', async importOriginal => ({
   ...await importOriginal<typeof import('~/lib/webauthn')>(),
   startRegistration: (...args: unknown[]) => mockStartRegistration(...args),
@@ -118,7 +113,6 @@ describe('accountPasskeys', () => {
     vi.clearAllMocks()
     resetSystemInfoMock()
     setElevationPrompter(null)
-    mockElevationExpiresAt.mockReturnValue(inTwoHours())
     mockRefreshUser.mockResolvedValue(undefined)
     mockUser.mockReturnValue(passwordUser)
     mockListPasskeys.mockResolvedValue({
@@ -300,6 +294,25 @@ describe('accountPasskeys', () => {
     })
   })
 
+  // EVERY successful Finish, whether or not it echoed a row. The success
+  // message is unconditional, and the cached count is what ElevateForm reads to
+  // decide whether to offer the passkey factor -- so a refresh that sat inside
+  // `if (finish.passkey)` left an account one passkey short of its own truth
+  // and hid a factor it holds.
+  it('re-reads the cached account when the Finish echoes no passkey', async () => {
+    mockFinishPasskeyRegistration.mockResolvedValue({})
+
+    render(() => <AccountPasskeys />)
+    expect(await screen.findByText('Laptop')).toBeInTheDocument()
+    expect(mockRefreshUser).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add passkey' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue' }))
+
+    expect(await screen.findByText('Passkey added.')).toBeInTheDocument()
+    expect(mockRefreshUser).toHaveBeenCalledTimes(1)
+  })
+
   it('does not re-read the cached account after a rename', async () => {
     render(() => <AccountPasskeys />)
     expect(await screen.findByText('Laptop')).toBeInTheDocument()
@@ -316,13 +329,6 @@ describe('accountPasskeys', () => {
 })
 
 /**
- * A ceremony runs against the ORIGIN the browser is on, and the hub accepts
- * only the origins it publishes. Reach the same hub by another address and
- * every Begin answers "origin is not allowed for passkey ceremonies" -- which
- * used to arrive AFTER the click, worded for a server log, and (once the
- * session was already elevated) as the only thing the dialog ever said.
- */
-/**
  * The reason a disabled control carries, read the way a screen reader gets it.
  *
  * <Tooltip> leaves an offscreen description in `aria-describedby` for as long
@@ -335,12 +341,18 @@ function reasonOf(el: Element): string {
   return document.getElementById(describedBy!)?.textContent ?? ''
 }
 
+/**
+ * A ceremony runs against the ORIGIN the browser is on, and the hub accepts
+ * only the origins it publishes. Reach the same hub by another address and
+ * every Begin answers "origin is not allowed for passkey ceremonies" -- which
+ * used to arrive AFTER the click, worded for a server log, and (once the
+ * session was already elevated) as the only thing the dialog ever said.
+ */
 describe('accountPasskeys on a page that cannot run a ceremony', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     resetSystemInfoMock()
     setElevationPrompter(null)
-    mockElevationExpiresAt.mockReturnValue(inTwoHours())
     mockRefreshUser.mockResolvedValue(undefined)
     mockUser.mockReturnValue(passwordUser)
     mockListPasskeys.mockResolvedValue({ passkeys: [], rpId: 'localhost' })
@@ -383,7 +395,7 @@ describe('accountPasskeys on a page that cannot run a ceremony', () => {
   it('leaves Add passkey working on an origin the hub serves', async () => {
     render(() => <AccountPasskeys />)
 
-    // The listing gates the button too, so wait for it before reading the
+    // The listing disables the button too, so wait for it before reading the
     // origin's own answer -- otherwise this passes on the loading state.
     expect(await screen.findByText('No passkeys registered yet.')).toBeInTheDocument()
     const add = screen.getByRole('button', { name: 'Add passkey' })
@@ -398,12 +410,12 @@ describe('accountPasskeys on a page that cannot run a ceremony', () => {
    * A hub reached at its own published plain-HTTP address answers
    * passkey_enabled = true, so the panel used to enable Add passkey and the
    * ceremony died inside @simplewebauthn/browser with "WebAuthn is not
-   * supported in this browser" -- which names the browser, when the browser
-   * is fine and the PAGE is not secure. The remedy must not name an
+   * supported in this browser" -- which specifies the browser, when the
+   * browser is fine and the PAGE is not secure. The remedy must not specify an
    * administrator either: no address anybody publishes makes a plain-HTTP
    * page secure.
    */
-  it('names the insecure page, not the browser and not the hub', async () => {
+  it('specifies the insecure page, not the browser and not the hub', async () => {
     setSystemInfoMock({ passkeyBlocker: 'insecure-context' })
     render(() => <AccountPasskeys />)
 
@@ -416,7 +428,7 @@ describe('accountPasskeys on a page that cannot run a ceremony', () => {
     expect(alert.textContent).not.toMatch(/administrator/i)
   })
 
-  it('names the browser when the page is secure and WebAuthn is absent', async () => {
+  it('specifies the browser when the page is secure and WebAuthn is absent', async () => {
     setSystemInfoMock({ passkeyBlocker: 'no-webauthn' })
     render(() => <AccountPasskeys />)
 
@@ -443,16 +455,17 @@ describe('accountPasskeys on a page that cannot run a ceremony', () => {
 })
 
 /**
- * Verify FIRST, then open the dialog.
+ * The dialogs open on the CLICK. Nothing here verifies anything first.
  *
- * Every dialog here opens over the Preferences dialog, so a refusal raised
- * from inside one stacks a third modal on the browser's top layer -- and for
- * the add ceremony it arrives after the user already named the passkey, with
- * the authenticator prompt still to come. Asking at the click puts the two
- * credential prompts in the order a person expects, and leaves nothing
- * half-started when they decline.
+ * Attempt-then-prompt, the same as every other surface. This panel used to
+ * pre-empt the modal stack per click -- it read the mirrored elevation
+ * deadline and opened the step-up prompt BEFORE its own dialog, so a refusal
+ * raised from inside one would not land as a third modal. That decided no
+ * authorization (the transport's interceptor runs on the request either way),
+ * and it left the next dialog with a restricted call to copy the same
+ * reasoning. `ElevationPromptHost` owns the stack now.
  */
-describe('accountPasskeys verifies before it opens a dialog', () => {
+describe('accountPasskeys opens its dialogs on the click', () => {
   beforeEach(() => {
     HTMLDialogElement.prototype.showModal = vi.fn(function (this: HTMLDialogElement) {
       this.open = true
@@ -462,7 +475,6 @@ describe('accountPasskeys verifies before it opens a dialog', () => {
     })
     vi.clearAllMocks()
     resetSystemInfoMock()
-    mockElevationExpiresAt.mockReturnValue(undefined)
     mockRefreshUser.mockResolvedValue(undefined)
     mockUser.mockReturnValue(passwordUser)
     mockListPasskeys.mockResolvedValue({
@@ -480,64 +492,9 @@ describe('accountPasskeys verifies before it opens a dialog', () => {
 
   afterEach(() => setElevationPrompter(null))
 
-  it('prompts on the click and opens the add dialog once a factor is proven', async () => {
+  it('opens the add dialog without verifying anything first', async () => {
     const prompt = vi.fn(async () => true)
     setElevationPrompter(prompt)
-
-    render(() => <AccountPasskeys />)
-    expect(await screen.findByText('Laptop')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Add passkey' }))
-
-    await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(1))
-    expect(await screen.findByRole('dialog', { name: 'Add passkey' })).toBeInTheDocument()
-    // The ceremony has not started: the prompt came BEFORE it, so no
-    // authenticator was asked and no ceremony session was minted.
-    expect(mockBeginPasskeyRegistration).not.toHaveBeenCalled()
-  })
-
-  it('opens nothing when the prompt is dismissed', async () => {
-    setElevationPrompter(async () => false)
-
-    render(() => <AccountPasskeys />)
-    expect(await screen.findByText('Laptop')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Add passkey' }))
-
-    await vi.waitFor(() => {
-      expect(screen.queryByRole('dialog', { name: 'Add passkey' })).not.toBeInTheDocument()
-    })
-    expect(mockBeginPasskeyRegistration).not.toHaveBeenCalled()
-  })
-
-  it('asks before the remove and the disable dialogs too', async () => {
-    const prompt = vi.fn(async () => true)
-    setElevationPrompter(prompt)
-
-    render(() => <AccountPasskeys />)
-    expect(await screen.findByText('Laptop')).toBeInTheDocument()
-
-    fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
-    await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(1))
-    expect(await screen.findByRole('dialog', { name: 'Remove passkey' })).toBeInTheDocument()
-  })
-
-  // With no prompter mounted nothing can verify anything, so the surface must
-  // behave as it did before the prompt existed: open, act, and let the hub's
-  // own refusal reach the user.
-  it('opens anyway when nothing can prompt', async () => {
-    render(() => <AccountPasskeys />)
-    expect(await screen.findByText('Laptop')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Add passkey' }))
-
-    expect(await screen.findByRole('dialog', { name: 'Add passkey' })).toBeInTheDocument()
-  })
-
-  // The mirrored deadline can be stale LONG -- the hub dropped the window in
-  // another tab. Nothing here is load-bearing for authorization: the dialog
-  // opens, the hub refuses the ceremony, and the transport prompts as before.
-  it('does not prompt while the mirrored window is still live', async () => {
-    const prompt = vi.fn(async () => true)
-    setElevationPrompter(prompt)
-    mockElevationExpiresAt.mockReturnValue(inTwoHours())
 
     render(() => <AccountPasskeys />)
     expect(await screen.findByText('Laptop')).toBeInTheDocument()
@@ -545,5 +502,49 @@ describe('accountPasskeys verifies before it opens a dialog', () => {
 
     expect(await screen.findByRole('dialog', { name: 'Add passkey' })).toBeInTheDocument()
     expect(prompt).not.toHaveBeenCalled()
+    // The ceremony starts on Continue, so the click that opens the dialog
+    // asks the hub for nothing.
+    expect(mockBeginPasskeyRegistration).not.toHaveBeenCalled()
+  })
+
+  it('opens the remove and the disable dialogs on the click too', async () => {
+    const prompt = vi.fn(async () => true)
+    setElevationPrompter(prompt)
+
+    render(() => <AccountPasskeys />)
+    expect(await screen.findByText('Laptop')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
+    expect(await screen.findByRole('dialog', { name: 'Remove passkey' })).toBeInTheDocument()
+
+    fireEvent.click(within(screen.getByRole('dialog', { name: 'Remove passkey' })).getByRole('button', { name: /close/i }))
+    await vi.waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'Remove passkey' })).not.toBeInTheDocument())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Disable passkey sign-in' }))
+    expect(await screen.findByRole('dialog', { name: 'Disable passkey sign-in' })).toBeInTheDocument()
+
+    expect(prompt).not.toHaveBeenCalled()
+  })
+
+  // The ONE thing this panel still reads from the prompt. One prompt serves
+  // the whole app, so a second action started underneath it would queue behind
+  // the same dialog.
+  it('disables its controls while a prompt is open, and enables them again', async () => {
+    let release!: (proven: boolean) => void
+    setElevationPrompter(() => new Promise<boolean>((done) => {
+      release = done
+    }))
+
+    render(() => <AccountPasskeys />)
+    expect(await screen.findByText('Laptop')).toBeInTheDocument()
+    const add = screen.getByRole('button', { name: 'Add passkey' })
+    expect(add).not.toBeDisabled()
+
+    void promptForElevation()
+    await vi.waitFor(() => expect(add).toBeDisabled())
+
+    release(false)
+    await vi.waitFor(() => expect(add).not.toBeDisabled())
   })
 })

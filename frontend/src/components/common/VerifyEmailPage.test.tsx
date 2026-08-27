@@ -8,9 +8,9 @@ import { VerifyEmailPage } from './VerifyEmailPage'
 // Mocks ----------------------------------------------------------------
 
 // connect-rpc surfaces server-side connect.NewError(...) as an Error
-// whose message starts with "<code_text>:". Our spec doesn't import the
-// SDK's ConnectError directly because that would require a heavier
-// fixture setup; reproducing the message-shape is sufficient for the
+// whose message starts with "<code_text>:". This spec does not import the
+// SDK's ConnectError directly, because that needs a heavier fixture
+// setup; a reproduction of the message shape is sufficient for the
 // banner-rendering assertions.
 class FakeConnectError extends Error {
   constructor(code: string, msg: string) {
@@ -30,8 +30,10 @@ vi.mock('~/api/clients', () => ({
 
 const mockSetAuth = vi.fn()
 // Verifying an address is a REFRESH of the same identity, not a transition to
-// a new one, so the page re-reads the account rather than calling setAuth --
-// which clears the session's elevation deadline the hub never touched.
+// a new one, so the page adopts the response through adoptSameIdentityUser
+// rather than setAuth -- which clears the session's elevation deadline the hub
+// never touched.
+const mockAdoptSameIdentityUser = vi.fn()
 const mockRefreshUser = vi.fn<() => Promise<void>>(async () => {})
 const mockUser = vi.fn<() => { username: string, emailVerified: boolean } | null>()
 const mockVerificationResendAvailableAt = vi.fn<() => { seconds: bigint, nanos: number } | undefined>()
@@ -43,6 +45,7 @@ vi.mock('~/context/AuthContext', () => ({
     login: vi.fn(),
     logout: vi.fn(),
     setAuth: mockSetAuth,
+    adoptSameIdentityUser: mockAdoptSameIdentityUser,
     refreshUser: mockRefreshUser,
     verificationResendAvailableAt: () => mockVerificationResendAvailableAt(),
     setVerificationResendAvailableAt: vi.fn(),
@@ -92,8 +95,8 @@ describe('verifyEmailPage', () => {
 
     renderPage('/verify-email?code=AB2-CDE')
 
-    // Without a session the page must navigate away — we confirm by
-    // landing on the /login route. Preserving the code in `redirect`
+    // Without a session the page must navigate away — this test confirms
+    // it by landing on the /login route. Preserving the code in `redirect`
     // means the verification can resume after sign-in without the user
     // having to click the email link again. (Use the no-ambiguous
     // charset for the code so the surrounding tests are consistent.)
@@ -129,6 +132,64 @@ describe('verifyEmailPage', () => {
     expect(await screen.findByTestId('app-home')).toBeInTheDocument()
   })
 
+  // The RESPONSE is the authoritative account. The page used to discard it and
+  // re-read through refreshUser, whose only failure path is an empty catch, and
+  // then navigate home regardless: a blip on that second round trip left
+  // `emailVerified` false for an address that the hub just verified, so
+  // Preferences still rendered "unverified / Verify" and RegisterWorkerDialog
+  // kept its email control disabled.
+  it('adopts the verified account from the response itself', async () => {
+    const verified = { username: 'alice', emailVerified: true }
+    mockVerify.mockResolvedValueOnce({ user: verified })
+
+    renderPage('/verify-email?code=AB2-CDE')
+
+    await waitFor(() => {
+      expect(mockAdoptSameIdentityUser).toHaveBeenCalledWith(verified)
+    })
+    // adoptSameIdentityUser, never setAuth: the identity did not change, and
+    // setAuth clears an elevation window the hub never touched.
+    expect(mockSetAuth).not.toHaveBeenCalled()
+  })
+
+  it('still lands home when the follow-up refresh fails', async () => {
+    const verified = { username: 'alice', emailVerified: true }
+    mockVerify.mockResolvedValueOnce({ user: verified })
+    // refreshUser discards its own failure, which is why the response has to
+    // carry the account: the page navigates home either way.
+    mockRefreshUser.mockImplementationOnce(async () => {})
+
+    renderPage('/verify-email?code=AB2-CDE')
+
+    expect(await screen.findByTestId('app-home')).toBeInTheDocument()
+    expect(mockAdoptSameIdentityUser).toHaveBeenCalledWith(verified)
+  })
+
+  // The refresh STAYS: the response carries the user and nothing else, while
+  // the resend cooldown and the elevation deadline come from GetCurrentUser.
+  it('keeps the account re-read for the signals the response does not carry', async () => {
+    mockVerify.mockResolvedValueOnce({ user: { username: 'alice', emailVerified: true } })
+
+    renderPage('/verify-email?code=AB2-CDE')
+
+    await waitFor(() => {
+      expect(mockRefreshUser).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  // A hub that answers without one leaves the cached account alone rather than
+  // adopting a null user, which would sign the browser out of a session the
+  // verification did not touch.
+  it('adopts nothing when the response carries no user', async () => {
+    mockVerify.mockResolvedValueOnce({})
+
+    renderPage('/verify-email?code=AB2-CDE')
+
+    expect(await screen.findByTestId('app-home')).toBeInTheDocument()
+    expect(mockAdoptSameIdentityUser).not.toHaveBeenCalled()
+    expect(mockRefreshUser).toHaveBeenCalledTimes(1)
+  })
+
   it('manually-typed codes accept hyphen and lowercase, then normalize', async () => {
     mockVerify.mockResolvedValueOnce({
       user: { username: 'alice', emailVerified: true },
@@ -146,10 +207,10 @@ describe('verifyEmailPage', () => {
   })
 
   it('forwards malformed codes to the backend and surfaces its error', async () => {
-    // Charset validation is intentionally backend-only — duplicating
-    // the alphabet on the FE would mean two places to update. The page
-    // strips noise (whitespace/hyphens, uppercases) and lets the server
-    // be the source of truth for what's valid.
+    // Charset validation is intentionally backend-only — a copy of the
+    // alphabet in the frontend would mean two places to update. The page
+    // strips the formatting characters (whitespace/hyphens), uppercases the
+    // rest, and lets the server be the source of truth for what is valid.
     mockVerify.mockRejectedValueOnce(new FakeConnectError('invalid_argument', 'invalid verification code'))
 
     renderPage('/verify-email')
@@ -159,7 +220,7 @@ describe('verifyEmailPage', () => {
     fireEvent.click(screen.getByTestId('verify-email-submit'))
 
     await waitFor(() => {
-      // Submitted *as typed* (sans hyphens), uppercased — backend rejects.
+      // Submitted *as typed* (without hyphens), uppercased — backend rejects.
       expect(mockVerify).toHaveBeenCalledWith({ verificationToken: 'O0O0O0' })
     })
     expect(await screen.findByText(/invalid verification code/i)).toBeInTheDocument()
@@ -176,8 +237,8 @@ describe('verifyEmailPage', () => {
 
     await waitFor(() => {
       // The error banner should reflect the server message verbatim
-      // (exact wording is the server's choice; we just need to ensure
-      // it's shown rather than swallowed).
+      // (the exact wording is the server's choice; this test only confirms
+      // that the page shows it rather than discarding it).
       expect(screen.getByText(/invalid or expired/i)).toBeInTheDocument()
     })
   })

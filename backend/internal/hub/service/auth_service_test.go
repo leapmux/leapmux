@@ -162,15 +162,16 @@ func TestAuthService_GetCurrentUser(t *testing.T) {
 	assert.Equal(t, "admin", resp.Msg.GetUser().GetUsername())
 }
 
-// TestAuthService_GetCurrentUser_ReportsTheProviderArmForAPasswordAccount is
-// half of what lets the step-up screen offer exactly the arms the hub accepts.
+// TestAuthService_GetCurrentUser_ReportsTheProviderOptionForAPasswordAccount is
+// half of what lets the step-up screen offer exactly the options the hub
+// accepts.
 //
 // A provider may prove a step-up only for an account that holds no password
 // and no passkey. This account holds a password, so BOTH links report false --
 // including the OIDC one, which a client filtering on the provider's protocol
 // capability would have offered. That capability is gone from the wire for
 // exactly this reason: it never answered the question the form asks.
-func TestAuthService_GetCurrentUser_ReportsTheProviderArmForAPasswordAccount(t *testing.T) {
+func TestAuthService_GetCurrentUser_ReportsTheProviderOptionForAPasswordAccount(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -211,18 +212,18 @@ func TestAuthService_GetCurrentUser_ReportsTheProviderArmForAPasswordAccount(t *
 		"both links are reported whatever the account rule answers")
 }
 
-// TestAuthService_GetCurrentUser_ReportsTheProviderArm is the other side of
+// TestAuthService_GetCurrentUser_ReportsTheProviderOption is the other side of
 // the same field: the hub DECIDES whether a provider may elevate, and the
 // step-up form filters on that answer alone.
 //
 // The rule reads the ACCOUNT and is not derivable from
 // requests_reauthentication. This account holds no password and no passkey,
-// so the provider IS its sign-in credential and the arm is available --
+// so the provider IS its sign-in credential and the option is available --
 // GitHub included, which proves no re-authentication at all. The form spelled
 // the rule out in TypeScript before this field existed, which made it a
 // second source of truth for an authorization decision the OAuth legs
 // enforce.
-func TestAuthService_GetCurrentUser_ReportsTheProviderArm(t *testing.T) {
+func TestAuthService_GetCurrentUser_ReportsTheProviderOption(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -268,7 +269,86 @@ func TestAuthService_GetCurrentUser_ReportsTheProviderArm(t *testing.T) {
 	assert.ElementsMatch(t, []string{"gh", "okta"}, ids)
 }
 
-// A DISABLED provider's link is still reported, with enabled=false.
+// countByUserFails makes the passkey COUNT and the OAuth LINK read both fail,
+// which is the state that turned one transient query into a wrong
+// authorization answer and a dead page load.
+type countByUserFails struct{ store.Store }
+
+func (s countByUserFails) PasskeyCredentials() store.PasskeyCredentialStore {
+	return failingPasskeyCounts{PasskeyCredentialStore: s.Store.PasskeyCredentials()}
+}
+
+func (s countByUserFails) OAuthUserLinks() store.OAuthUserLinkStore {
+	return failingLinkList{OAuthUserLinkStore: s.Store.OAuthUserLinks()}
+}
+
+type failingPasskeyCounts struct{ store.PasskeyCredentialStore }
+
+func (failingPasskeyCounts) CountByUser(context.Context, string) (int64, error) {
+	return 0, errors.New("passkey count unavailable")
+}
+
+type failingLinkList struct{ store.OAuthUserLinkStore }
+
+func (failingLinkList) ListByUser(context.Context, userid.UserID) ([]store.OAuthUserLink, error) {
+	return nil, errors.New("link list unavailable")
+}
+
+// TestAuthService_GetCurrentUser_DoesNotDeriveTheProviderOptionFromAFailedCount
+// pins the direction a discarded count must fail in.
+//
+// The count is best-effort, because this runs at every page load. Its zero is
+// tolerable as a DISPLAYED number and intolerable as an authorization input:
+// on a passkey-only account the zero says "no password and no passkey", which
+// reports the provider option as the only one -- and providerMayElevateAccount
+// re-reads the same facts from the store and refuses it. The client then hides
+// the option that works and offers the one that cannot.
+//
+// The same zero made the page load FATAL. The link read reports its failure
+// only for the account shape that has nothing else to fall back on, and the
+// zero put every account into that shape, so one transient query left the
+// client on a bootstrap error with no way into the app.
+func TestAuthService_GetCurrentUser_DoesNotDeriveTheProviderOptionFromAFailedCount(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	st := hubtestutil.OpenTestStore(t)
+	set := servicetest.NewSettingsManager(t, st, nil)
+
+	// A PASSKEY-ONLY account: no password, one passkey. Read properly it
+	// elevates with the passkey and not through a provider.
+	userID := id.Generate()
+	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
+		ID: userID, Username: "passkeyonly", PasswordHash: password.PlaceholderHash,
+		DisplayName: "Passkey Only", PasswordSet: false,
+	}))
+	require.NoError(t, st.PasskeyCredentials().Create(ctx, store.CreatePasskeyCredentialParams{
+		ID: id.Generate(), UserID: userID, CredentialID: []byte("cred"), PublicKey: []byte("pub"),
+		Transports: "[]", FriendlyName: "Laptop", KeyVersion: 1, CreatedAt: time.Now().UTC(),
+	}))
+	sessionID := id.Generate()
+	require.NoError(t, st.Sessions().Create(ctx, store.CreateSessionParams{
+		ID: sessionID, UserID: userid.MustNew(userID),
+		ExpiresAt: time.Now().UTC().Add(time.Hour),
+	}))
+
+	svc := service.NewAuthService(servicetest.AuthServiceDeps(
+		countByUserFails{Store: st}, testConfig(), set,
+		auth.NewCredentialLifecycleEffects(nil, nil, nil)))
+	acting := auth.WithUser(ctx, &auth.UserInfo{
+		ID:         userid.MustNew(userID),
+		Credential: auth.SessionCredential(sessionID),
+	})
+
+	resp, err := svc.GetCurrentUser(acting, connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{}))
+	require.NoError(t, err, "a page load must survive a transient read of a list most accounts have no row in")
+	assert.False(t, resp.Msg.GetUser().GetMayElevateThroughAProvider(),
+		"an unread count must not report an option the OAuth legs would refuse")
+	assert.EqualValues(t, 0, resp.Msg.GetUser().GetPasskeyCount(),
+		"the DISPLAYED number still degrades to zero")
+}
+
+// The hub still reports a DISABLED provider's link, with enabled=false.
 //
 // The link survives an administrator disabling the provider, and this list is
 // the only feed for the Linked Accounts section -- so filtering the row out
@@ -307,7 +387,7 @@ func TestAuthService_GetCurrentUser_ReportsADisabledLinkAsDisabled(t *testing.T)
 	links := resp.Msg.GetUser().GetOauthProviders()
 	require.Len(t, links, 1, "the link must stay visible so the owner can detach it")
 	assert.Equal(t, "gh", links[0].GetId())
-	assert.False(t, links[0].GetEnabled(), "the screen that offers step-up arms filters on this")
+	assert.False(t, links[0].GetEnabled(), "the screen that offers step-up options filters on this")
 }
 
 // GetCurrentUser is the only response the /verify-email page's own
@@ -349,7 +429,7 @@ func TestAuthService_GetCurrentUser_CarriesTheVerificationCooldown(t *testing.T)
 		"a reload must resume the countdown the sign-up handed out")
 	assert.WithinDuration(t, seeded.AsTime(), status.GetNextResendAvailableAt().AsTime(), time.Second)
 
-	// Reporting, not sending: the pending code is untouched by the call.
+	// Reporting, not sending: the call does not touch the pending code.
 	before, err := st.Users().GetByUsername(context.Background(), "pending")
 	require.NoError(t, err)
 	_, err = client.GetCurrentUser(context.Background(), req)
@@ -408,7 +488,7 @@ func TestAuthService_SignUp_WhenEnabled(t *testing.T) {
 		Email:       "new@example.com",
 	}))
 	require.NoError(t, err)
-	// Token assertion replaced by Set-Cookie check above
+	// The Set-Cookie check above replaces the token assertion.
 	assert.Equal(t, "newuser", resp.Msg.GetUser().GetUsername())
 	assert.Equal(t, "New User", resp.Msg.GetUser().GetDisplayName())
 
@@ -422,7 +502,8 @@ func TestAuthService_SignUp_WhenEnabled(t *testing.T) {
 // login. Each one calls CreateSession separately, so one left on the default is
 // a silent split: those users get the built-in lifetime and nothing reports it.
 // The verification-required branch mints its own session (the user needs one to
-// call VerifyEmail), which is why it is exercised apart from the plain sign-up.
+// call VerifyEmail), which is why this test exercises it apart from the plain
+// sign-up.
 func TestAuthService_SessionMintPathsUseConfiguredDuration(t *testing.T) {
 	t.Parallel()
 
@@ -725,11 +806,11 @@ func TestSignUp_EmptyEmail_AllowedMultiple(t *testing.T) {
 	assert.Equal(t, "emptyemail2", resp2.Msg.GetUser().GetUsername())
 }
 
-// setupVerificationGatingTestServer creates a test server with both
-// UserService and AuthService, with the verification gate armed as
-// specified (both the services and the interceptor read it from the same
+// setupEmailVerificationTestServer creates a test server with both
+// UserService and AuthService, with the verification gate armed as the
+// caller asks (both the services and the interceptor read it from the same
 // settings).
-func setupVerificationGatingTestServer(t *testing.T, emailVerificationRequired bool) (
+func setupEmailVerificationTestServer(t *testing.T, emailVerificationRequired bool) (
 	leapmuxv1connect.UserServiceClient,
 	leapmuxv1connect.AuthServiceClient,
 	store.Store,
@@ -751,14 +832,21 @@ func setupVerificationGatingTestServer(t *testing.T, emailVerificationRequired b
 	}
 
 	mux := http.NewServeMux()
-	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, Policy: servicetest.AuthPolicy(set)})
+	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, Policy: servicetest.AuthPolicy(set)})
 	opts := connect.WithInterceptors(interceptor)
 
-	userSvc := service.NewUserService(st, testConfig(), set, auth.NewCredentialLifecycleEffects(nil, nil, nil), mail.NewStubSender(), mail.Renderer{}, nil)
+	// The registry the interceptor caches into, wired into the lifecycle
+	// effects exactly as the hub wires it. A nil registry drops
+	// UserInfoInvalidated, so a grant that must reach the very next request
+	// -- an elevation is one -- would be invisible until the cache lapsed,
+	// and the fixture would refuse a call the hub admits.
+	lifecycle := auth.NewCredentialLifecycleEffects(contexts, nil, nil)
+
+	userSvc := service.NewUserService(st, testConfig(), set, lifecycle, mail.NewStubSender(), mail.Renderer{}, nil)
 	userPath, userHandler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
 	mux.Handle(userPath, userHandler)
 
-	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, testConfig(), set, auth.NewCredentialLifecycleEffects(nil, nil, nil)))
+	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, testConfig(), set, lifecycle))
 	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
 	mux.Handle(authPath, authHandler)
 
@@ -770,10 +858,10 @@ func setupVerificationGatingTestServer(t *testing.T, emailVerificationRequired b
 	return userClient, authClient, st
 }
 
-func TestVerificationGating_UnverifiedBlocked(t *testing.T) {
+func TestEmailVerificationRule_UnverifiedBlocked(t *testing.T) {
 	t.Parallel()
 
-	userClient, _, st := setupVerificationGatingTestServer(t, true)
+	userClient, _, st := setupEmailVerificationTestServer(t, true)
 
 	// Create a user with email_verified=0 directly via DB.
 	userID := id.Generate()
@@ -792,7 +880,7 @@ func TestVerificationGating_UnverifiedBlocked(t *testing.T) {
 	token, _, _, err := auth.Login(context.Background(), st, "unverified", "testpass", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
-	// Try UpdateProfile — should be blocked by verification gating.
+	// Try UpdateProfile — the verification restriction must block it.
 	_, err = userClient.UpdateProfile(context.Background(), authedReq(&leapmuxv1.UpdateProfileRequest{
 		Username:    "unverified",
 		DisplayName: "Updated",
@@ -801,10 +889,10 @@ func TestVerificationGating_UnverifiedBlocked(t *testing.T) {
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 }
 
-func TestVerificationGating_AdminExempt(t *testing.T) {
+func TestEmailVerificationRule_AdminExempt(t *testing.T) {
 	t.Parallel()
 
-	userClient, _, st := setupVerificationGatingTestServer(t, true)
+	userClient, _, st := setupEmailVerificationTestServer(t, true)
 
 	// The bootstrap admin has email_verified=0 by default (no email set).
 	// Verify the admin can still call protected RPCs.
@@ -819,10 +907,10 @@ func TestVerificationGating_AdminExempt(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestVerificationGating_ConfigOff_NotBlocked(t *testing.T) {
+func TestEmailVerificationRule_ConfigOff_NotBlocked(t *testing.T) {
 	t.Parallel()
 
-	userClient, _, st := setupVerificationGatingTestServer(t, false)
+	userClient, _, st := setupEmailVerificationTestServer(t, false)
 
 	// Create an unverified user.
 	userID := id.Generate()
@@ -836,12 +924,13 @@ func TestVerificationGating_ConfigOff_NotBlocked(t *testing.T) {
 		PasswordSet:  true,
 		IsAdmin:      false,
 	})
-	// email_verified defaults to 0 — but gating is OFF.
+	// email_verified defaults to 0 — but the restriction is OFF.
 
 	token, _, _, err := auth.Login(context.Background(), st, "nogate", "testpass", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
-	// Unverified user should be able to call UpdateProfile when gating is off.
+	// Unverified user should be able to call UpdateProfile when the restriction
+	// is off.
 	_, err = userClient.UpdateProfile(context.Background(), authedReq(&leapmuxv1.UpdateProfileRequest{
 		Username:    "nogate",
 		DisplayName: "Updated",
@@ -932,10 +1021,10 @@ func TestSignUp_FailClosedWhenVerificationEmailFails(t *testing.T) {
 	assert.ErrorIs(t, err, store.ErrNotFound)
 }
 
-func TestVerificationGating_LogoutAllowed(t *testing.T) {
+func TestEmailVerificationRule_LogoutAllowed(t *testing.T) {
 	t.Parallel()
 
-	_, authClient, st := setupVerificationGatingTestServer(t, true)
+	_, authClient, st := setupEmailVerificationTestServer(t, true)
 
 	// Create an unverified user.
 	userID := id.Generate()
@@ -963,10 +1052,10 @@ func TestVerificationGating_LogoutAllowed(t *testing.T) {
 	assert.Contains(t, logoutCookie, "Max-Age=0")
 }
 
-func TestVerificationGating_RequestEmailChangeAllowed(t *testing.T) {
+func TestEmailVerificationRule_RequestEmailChangeAllowed(t *testing.T) {
 	t.Parallel()
 
-	userClient, _, st := setupVerificationGatingTestServer(t, true)
+	userClient, _, st := setupEmailVerificationTestServer(t, true)
 
 	// Create an unverified user.
 	userID := id.Generate()
@@ -986,15 +1075,16 @@ func TestVerificationGating_RequestEmailChangeAllowed(t *testing.T) {
 	require.NoError(t, err)
 
 	// RequestEmailChange should be allowed for unverified users
-	// (it should not return PermissionDenied from the gating interceptor).
+	// (it should not return PermissionDenied from the verification
+	// interceptor).
 	_, err = userClient.RequestEmailChange(context.Background(), authedReq(&leapmuxv1.RequestEmailChangeRequest{
 		NewEmail: "newemail@example.com",
 	}, token))
 	// The RPC may succeed or fail for business logic reasons, but should NOT
-	// be blocked by the verification gating interceptor (no PermissionDenied).
+	// be blocked by the verification interceptor (no PermissionDenied).
 	if err != nil {
 		assert.NotEqual(t, connect.CodePermissionDenied, connect.CodeOf(err),
-			"RequestEmailChange should not be blocked by verification gating")
+			"RequestEmailChange should not be blocked by the verification restriction")
 	}
 }
 
@@ -1101,7 +1191,7 @@ func TestAuthService_LogoutDeleteFailureReturnsInternal(t *testing.T) {
 func TestSetupSignUp_CreatesAdminWithVerifiedEmail(t *testing.T) {
 	t.Parallel()
 
-	// Signup disabled, but no users exist — setup mode should kick in.
+	// Signup disabled, but no users exist — setup mode should apply.
 	client, st, _ := setupEmptyAuthTestServer(t, testConfig(), nil)
 
 	resp, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
@@ -1118,7 +1208,7 @@ func TestSetupSignUp_CreatesAdminWithVerifiedEmail(t *testing.T) {
 	assert.Equal(t, "admin@example.com", user.GetEmail())
 	// NOT verified: nobody confirmed this address, and the operator typed it
 	// into a form. The administrator can still sign in, because the login
-	// gate takes its own exemption -- see auth.EmailVerificationSatisfied.
+	// gate takes its own exemption -- see auth.EmailVerificationFacts.Satisfied.
 	assert.False(t, user.GetEmailVerified())
 
 	// Session cookie should be set.
@@ -1131,7 +1221,7 @@ func TestSetupSignUp_CreatesAdminWithVerifiedEmail(t *testing.T) {
 	assert.True(t, dbUser.IsAdmin)
 	assert.Equal(t, "admin@example.com", dbUser.Email)
 	assert.False(t, dbUser.EmailVerified)
-	assert.True(t, auth.EmailVerificationSatisfied(true, dbUser.IsAdmin, dbUser.EmailVerified),
+	assert.True(t, auth.EmailVerificationFactsFromUser(dbUser).Satisfied(true),
 		"an unconfirmed address must not lock the hub's first administrator out")
 }
 
@@ -1160,7 +1250,7 @@ func TestSetupSignUp_EmptyEmail(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, dbUser.IsAdmin)
 	assert.False(t, dbUser.EmailVerified)
-	assert.True(t, auth.EmailVerificationSatisfied(true, dbUser.IsAdmin, dbUser.EmailVerified))
+	assert.True(t, auth.EmailVerificationFactsFromUser(dbUser).Satisfied(true))
 }
 
 func TestSetupSignUp_GetSystemInfoReturnsSetupRequired(t *testing.T) {
@@ -1483,8 +1573,8 @@ func TestSignUp_AllowsAdminInSetupMode(t *testing.T) {
 
 // The other half of the setup exemption, and the half that matters for
 // safety: `admin` becomes claimable in setup mode, `solo` never does. A user
-// by that name in a non-solo database is auto-authenticated for every request
-// the day the same data-dir is opened in solo mode.
+// The hub auto-authenticates a user by that name in a non-solo database for
+// every request, from the day somebody opens the same data-dir in solo mode.
 func TestSignUp_RejectsSoloInSetupMode(t *testing.T) {
 	t.Parallel()
 
@@ -1709,11 +1799,12 @@ func TestPasskeySignUp_SetupModeCreatesFirstAdmin(t *testing.T) {
 	dbUser, err := env.store.Users().GetByUsername(context.Background(), usernames.Admin)
 	require.NoError(t, err)
 	assert.True(t, dbUser.IsAdmin)
-	// No password was chosen, so nothing may claim one was: the account signs
-	// in with its passkey until the owner adds a password from Preferences.
+	// Nobody chose a password, so nothing may claim somebody did: the account
+	// signs in with its passkey until the owner adds a password from
+	// Preferences.
 	assert.False(t, dbUser.PasswordSet)
 
-	// Setup is over, so /setup is withdrawn.
+	// Setup is over, so the hub withdraws /setup.
 	infoResp, err = env.client.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
 	require.NoError(t, err)
 	assert.False(t, infoResp.Msg.GetSetupRequired())
@@ -1756,12 +1847,12 @@ func TestFinishPasskeySignUp_SetupModePromotesEmailPastVerification(t *testing.T
 	assert.False(t, dbUser.EmailVerified)
 }
 
-// Setup mode is re-read at Finish rather than carried over from Begin, and
-// this is the window that makes the difference: a second operator wins the
-// race to become the first administrator while the browser is still in the
-// ceremony. The ceremony that started in setup mode must land under PUBLIC
-// rules -- `admin` squat-protected, the signup setting binding -- or the race
-// loser walks past both.
+// FinishPasskeySignUp re-reads setup mode rather than carries it over from
+// Begin, and this is the window that makes the difference: a second operator
+// wins the race to become the first administrator while the browser is still
+// in the ceremony. The ceremony that started in setup mode must land under
+// PUBLIC rules -- `admin` squat-protected, the signup setting binding -- or
+// the race loser bypasses both.
 // Signup ENABLED, so the reserved-name rule is the one under test rather than
 // the signup setting: `admin` was claimable when the ceremony began and is
 // squat-protected by the time it ends.
@@ -1885,7 +1976,7 @@ func TestBeginPasskeyLogin_UnknownAndNoPasskeysShareError(t *testing.T) {
 	assert.Equal(t, errUnknown.Error(), errNone.Error())
 }
 
-func TestFinishPasskeyLogin_FailedAssertionBurnsCeremony(t *testing.T) {
+func TestFinishPasskeyLogin_FailedAssertionConsumesCeremony(t *testing.T) {
 	t.Parallel()
 
 	env := setupPasskeyAuthTestServer(t, enableSignup, nil)
@@ -1914,8 +2005,9 @@ func TestFinishPasskeyLogin_FailedAssertionBurnsCeremony(t *testing.T) {
 //
 // The link survives an administrator disabling the provider, and nothing
 // behind it works: both OAuth legs answer 403 "provider disabled" from
-// loadEnabledProvider. So it must not be offered as a step-up arm -- for an
-// OAuth-only account that is the one arm it has, and the dead end is total.
+// loadEnabledProvider. So it must not be offered as a step-up option -- for
+// an OAuth-only account that is the one option it has, so that account has no
+// way to verify at all.
 //
 // It must still be REPORTED, though, and omitting it was the defect that
 // hiding it introduced: this list is the only feed for the Linked Accounts
@@ -1961,4 +2053,76 @@ func TestAuthService_GetCurrentUser_MarksADisabledLinkedProvider(t *testing.T) {
 	}
 	assert.Equal(t, map[string]bool{"live": true, "dead": false}, enabledByID,
 		"both links stay detachable, and the flag is what stops the disabled one being offered")
+}
+
+// TestEmailVerificationRule_MistypedAddressRecoversThroughElevation is the
+// whole recovery path for the account shape that used to have no way out.
+//
+// The unverified allowlist must be CLOSED under the preconditions of its own
+// members. RequestEmailChange was on it, and the address is a recovery
+// identity, so the handler demands an elevated credential -- and the three
+// elevation procedures were NOT on the allowlist. A user who mistyped their
+// address at sign-up was therefore refused the change AND refused the
+// elevation that change needs, so the account stayed unusable until an
+// administrator repaired it.
+//
+// The three verify a factor rather than spend one, so admitting them before
+// verification widens nothing. This walks the whole route, because each rung
+// refuses for a different reason and only the last one proves the route is
+// open end to end.
+func TestEmailVerificationRule_MistypedAddressRecoversThroughElevation(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	userClient, _, st := setupEmailVerificationTestServer(t, true)
+
+	// The account the mistyped address produced: unverified, on a hub that
+	// requires verification, with mail going to an address nobody holds.
+	userID := id.Generate()
+	hash, err := password.Hash("testpass")
+	require.NoError(t, err)
+	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
+		ID:           userID,
+		Username:     "mistyped",
+		PasswordHash: hash,
+		DisplayName:  "Mistyped",
+		Email:        "mistpyed@example.com",
+		PasswordSet:  true,
+	}))
+	token, _, _, err := auth.Login(ctx, st, "mistyped", "testpass", auth.DefaultSessionDuration)
+	require.NoError(t, err)
+
+	// Rung one: the email gate admits the change, and the elevation gate
+	// refuses it. The refusal must be the one a step-up prompt can clear --
+	// PermissionDenied here would mean the allowlist dropped the procedure.
+	_, err = userClient.RequestEmailChange(ctx, authedReq(&leapmuxv1.RequestEmailChangeRequest{
+		NewEmail: "mistyped@example.com",
+	}, token))
+	require.Error(t, err)
+	require.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err),
+		"an unverified account must reach the elevation gate, not the email gate")
+	var connectErr *connect.Error
+	require.ErrorAs(t, err, &connectErr)
+	assert.Equal(t, "1", connectErr.Meta().Get(service.ElevationRequiredHeader))
+
+	// Rung two: the elevation itself. This is the procedure the allowlist
+	// used to refuse, and its refusal was PermissionDenied from the email
+	// gate -- a remedy the user could not act on.
+	_, err = userClient.ElevateSession(ctx, authedReq(&leapmuxv1.ElevateSessionRequest{
+		CurrentPassword: "testpass",
+	}, token))
+	require.NoError(t, err, "an unverified user must be able to prove the factor their remedy needs")
+
+	// Rung three: the change lands. The corrected address goes to
+	// pending_email, because the hub verifies it before it becomes the
+	// account's own.
+	_, err = userClient.RequestEmailChange(ctx, authedReq(&leapmuxv1.RequestEmailChangeRequest{
+		NewEmail: "mistyped@example.com",
+	}, token))
+	require.NoError(t, err)
+
+	user, err := st.Users().GetByID(ctx, userID)
+	require.NoError(t, err)
+	assert.Equal(t, "mistyped@example.com", user.PendingEmail,
+		"the corrected address must be waiting for its confirmation")
 }

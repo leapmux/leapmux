@@ -1,6 +1,10 @@
 package auth
 
-import "time"
+import (
+	"time"
+
+	"github.com/leapmux/leapmux/internal/hub/store"
+)
 
 // ElevationWindow is how long one proven step-up factor admits sensitive
 // actions ("sudo mode"). Every sensitive action slides it forward, so an
@@ -18,9 +22,15 @@ const ElevationWindow = 2 * time.Hour
 // The cap is what stops a sliding window from becoming a permanent
 // privilege: without it a user (or a stolen cookie acting for them) who
 // performs one sensitive action every two hours stays elevated for ever.
-// Eight hours is a working day, so the ceiling is reached by a genuine
-// all-day session and not by anything shorter.
-const ElevationMaxTotal = 8 * time.Hour
+// Eight hours is a working day, so a genuine all-day session reaches the
+// ceiling and nothing shorter does.
+//
+// An ALIAS of the store's constant, never a second copy. The store is what
+// enforces the cap -- the slide statement clamps against the stored anchor in
+// SQL, and the grant clamps before it writes -- and it cannot import this
+// package, because this package imports it. Two independent 8-hour literals
+// would let the value Go reports and the value SQL enforces drift apart.
+const ElevationMaxTotal = store.ElevationMaxTotal
 
 // Elevation is a session's step-up state: the sliding deadline, and nothing
 // else. The zero value means "never elevated", which is why there is no
@@ -28,15 +38,15 @@ const ElevationMaxTotal = 8 * time.Hour
 // question the type answers already accounts for it.
 //
 // The deadline is carried RAW, and the predicate takes now at the point of
-// use. A precomputed boolean would be decided when the UserInfo was CACHED,
-// so a cache entry minted just before the deadline would keep granting for
+// use. A precomputed boolean would take its value when the cache stored the
+// UserInfo, so a cache entry minted just before the deadline would keep granting for
 // the rest of its life. Taking now here means a stale entry can only prompt
 // slightly early -- it can never grant falsely.
 //
 // The anchor instant is not a FIELD here. elevation_proven_at is what the
-// absolute cap is measured from, and that cap is applied in SQL by the slide
-// statement, against the stored column, so nothing in Go compares it. It is
-// still READ, at construction, for the both-or-neither guard below.
+// absolute cap is measured from, and the slide statement applies that cap in
+// SQL, against the stored column, so nothing in Go compares it. NewElevation
+// still READS it, at construction, for the both-or-neither guard below.
 type Elevation struct {
 	ExpiresAt time.Time
 }
@@ -56,7 +66,7 @@ type Elevation struct {
 // SYSTEM_VARIABLES_ADMIN leaves enforcement off in silence.
 //
 // A lone elevation_expires_at would then admit a sensitive action on a row
-// whose factor was never proven, and no Go path could see that it was reading
+// whose factor was never proven, and no Go path could see that it read
 // half a pair. The slide statement's own "elevation_proven_at IS NOT NULL"
 // already refuses to EXTEND such a row; this is the same rule on the read that
 // grants.
@@ -77,7 +87,7 @@ func NewElevation(provenAt, expiresAt *time.Time) Elevation {
 func (e Elevation) IsZero() bool { return e.ExpiresAt.IsZero() }
 
 // IsCurrent reports whether the elevation still admits a sensitive action at
-// now. The upper bound is exclusive, matching IsExpired: a credential is
+// now. The upper limit is exclusive, matching IsExpired: a credential is
 // invalid AT the recorded instant, not one clock tick afterward.
 func (e Elevation) IsCurrent(now time.Time) bool {
 	return !e.IsZero() && now.Before(e.ExpiresAt)
@@ -122,7 +132,8 @@ func (u *UserInfo) ElevationDeadline(now time.Time) (time.Time, bool) {
 }
 
 // Elevated reports whether this request may perform a sensitive action. It
-// is ElevationDeadline without the instant, for the callers that only gate.
+// is ElevationDeadline without the instant, for the callers that only need
+// the yes-or-no answer.
 func (u *UserInfo) Elevated(now time.Time) bool {
 	_, ok := u.ElevationDeadline(now)
 	return ok

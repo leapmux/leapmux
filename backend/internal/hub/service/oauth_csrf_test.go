@@ -34,7 +34,7 @@ import (
 // The state alone identifies a flow, not a browser: it travels in the
 // callback URL, so anyone who holds that URL can complete the flow. An
 // attacker starts a login with their OWN identity, withholds the callback
-// hop, and hands the live (code, state) pair to a victim -- whose browser
+// hop, and gives the live (code, state) pair to a victim -- whose browser
 // then receives a session cookie for the ATTACKER's account and whose work
 // lands in it. The nonce cookie is what makes the row redeemable only by
 // the browser that started the flow (RFC 6749 section 10.12).
@@ -55,8 +55,8 @@ func noRedirectClient() *http.Client {
 	}}
 }
 
-// readBody returns the response body so a test can tell the binding
-// refusal apart from the exchange failure. Both answer 400, so a status
+// readBody returns the response body so a test can distinguish the binding
+// refusal from the exchange failure. Both answer 400, so a status
 // assertion alone would pass against the unguarded handler too.
 func readBody(t *testing.T, resp *http.Response) string {
 	t.Helper()
@@ -66,8 +66,8 @@ func readBody(t *testing.T, resp *http.Response) string {
 }
 
 // oauthNonceCookie finds one flow's binding cookie on a response. The name
-// is derived from the state, so it is built the same way the hub builds it
-// rather than matched on a prefix -- a prefix match would also catch the
+// derives from the state, so this builds it the same way the hub does
+// rather than matching a prefix -- a prefix match would also catch the
 // pending-signup cookie, whose family name starts with the same bytes.
 func oauthNonceCookie(t *testing.T, resp *http.Response, state string) *http.Cookie {
 	t.Helper()
@@ -103,6 +103,7 @@ func seedOAuthState(t *testing.T, st store.Store, providerID, nonceHash string) 
 		ProviderID:   providerID,
 		PkceVerifier: "verifier",
 		NonceHash:    nonceHash,
+		Purpose:      store.OAuthStatePurposeLogin,
 		ExpiresAt:    time.Now().Add(5 * time.Minute).UTC(),
 	}))
 	return state
@@ -131,7 +132,7 @@ func TestOAuthLogin_SetsNonceCookieAndStoresOnlyItsHash(t *testing.T) {
 	assert.Equal(t, http.SameSiteLaxMode, cookie.SameSite)
 	assert.Equal(t, "/", cookie.Path)
 
-	// Only the hash is persisted. A read of oauth_states must not yield a
+	// The row stores only the hash. A read of oauth_states must not yield a
 	// value that completes somebody's in-flight login.
 	row, err := st.OAuthStates().Get(context.Background(), state)
 	require.NoError(t, err)
@@ -240,7 +241,7 @@ func TestOAuthCallback_MatchingNoncePassesTheGuard(t *testing.T) {
 	assert.Contains(t, readBody(t, resp), "OAuth exchange failed",
 		"the browser that started the flow must pass the binding check and reach the exchange")
 
-	// And the callback clears the nonce on the way out: it is single-use, so
+	// And the callback clears the nonce before it returns: it is single-use, so
 	// one left in the browser would be replayed against the next flow.
 	cleared := oauthNonceCookie(t, resp, state)
 	require.NotNil(t, cleared, "the callback must clear the nonce cookie")
@@ -252,7 +253,7 @@ func TestOAuthCallback_MatchingNoncePassesTheGuard(t *testing.T) {
 // hub gives the nonce cookie a name per flow.
 //
 // With one shared cookie name the second login overwrote the first one's
-// nonce, so completing the older tab failed with a refusal aimed at an
+// nonce, so completing the older tab failed with a refusal meant for an
 // attacker and shown to a user who did nothing wrong. Two browser tabs is
 // an ordinary thing to do.
 func TestOAuthCallback_ConcurrentFlowsDoNotEvictEachOther(t *testing.T) {
@@ -292,8 +293,8 @@ func TestOAuthCallback_ConcurrentFlowsDoNotEvictEachOther(t *testing.T) {
 	assert.Contains(t, readBody(t, resp), "OAuth exchange failed",
 		"a second login in the same browser must not break the first")
 
-	// Only the used flow's cookie is cleared; the other stays live so its
-	// own tab can still finish.
+	// The callback clears only the used flow's cookie; the other stays live so
+	// its own tab can still finish.
 	var clearedNames []string
 	for _, c := range resp.Cookies() {
 		if c.MaxAge < 0 {
@@ -309,10 +310,10 @@ func TestOAuthCallback_ConcurrentFlowsDoNotEvictEachOther(t *testing.T) {
 //
 // Every other test here leaves secure_cookies off, so they exercise the
 // plain "leapmux-oauth-<state>" name only. With it on, the cookie takes the
-// __Host- prefix, and __Host- is honoured by a browser only when the cookie
-// also carries Path=/ and no Domain. A cookie that broke either rule would
-// be dropped, and the callback would then refuse every legitimate login --
-// a failure no insecure-mode test can see.
+// __Host- prefix, and a browser honours __Host- only when the cookie
+// also carries Path=/ and no Domain. The browser would drop a cookie that
+// broke either rule, and the callback would then refuse every legitimate
+// login -- a failure no insecure-mode test can see.
 func TestOAuthFlowBindingUnderSecureCookies(t *testing.T) {
 	t.Parallel()
 
@@ -346,7 +347,7 @@ func TestOAuthFlowBindingUnderSecureCookies(t *testing.T) {
 	assert.Contains(t, readBody(t, resp), "OAuth exchange failed",
 		"the matching cookie must pass the guard and reach the exchange")
 
-	// And a browser holding only the INSECURE spelling is refused, so the
+	// And the hub refuses a browser holding only the INSECURE spelling, so the
 	// two names cannot be confused for one another.
 	state2 := seedOAuthState(t, st, providerID, hashNonceForTest("n2"))
 	req2, err := http.NewRequest(http.MethodGet, server.URL+"/auth/oauth/"+providerID+"/callback?code=c&state="+state2, nil)
@@ -410,7 +411,7 @@ func createTestOIDCProviderWithStub(t *testing.T, st store.Store, ks *keystore.K
 // The pending-signup binding.
 //
 // The state nonce protects the callback, but the NEW-ACCOUNT branch then
-// hands the browser a signup token in a URL. Without a second binding the
+// gives the browser a signup token in a URL. Without a second binding the
 // token specifies a flow and not a browser, so an attacker who completes their
 // OWN callback can deliver that link to a victim: the victim picks a
 // username, and the hub creates an account linked to the ATTACKER's OAuth
@@ -466,7 +467,7 @@ func TestCompleteOAuthSignup_WithoutBindingCookie_Refuses(t *testing.T) {
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "different browser")
 
-	// No account was created, and the pending row survives for the browser
+	// The hub created no account, and the pending row survives for the browser
 	// that really started the flow.
 	_, err = st.Users().GetByUsername(ctx, "victim")
 	assert.ErrorIs(t, err, store.ErrNotFound)
@@ -474,8 +475,8 @@ func TestCompleteOAuthSignup_WithoutBindingCookie_Refuses(t *testing.T) {
 	assert.NoError(t, err, "a refused signup must not consume somebody else's pending row")
 }
 
-// TestCompleteOAuthSignup_WrongBindingCookie_Refuses pins that any nonce
-// will not do: the cookie must be the one this flow minted.
+// TestCompleteOAuthSignup_WrongBindingCookie_Refuses pins that any nonce is
+// not enough: the cookie must be the one this flow minted.
 func TestCompleteOAuthSignup_WrongBindingCookie_Refuses(t *testing.T) {
 	t.Parallel()
 
@@ -584,10 +585,9 @@ func TestOAuthCallback_NewUserBindsThePendingSignup(t *testing.T) {
 func createTestOIDCProviderWithStubClaims(t *testing.T, st store.Store, ks *keystore.Keystore, email, subject string) string {
 	t.Helper()
 	// A conforming provider re-authenticates when asked, so the default stub
-	// reports an auth_time of NOW. The re-authentication leg refuses a
-	// provider that claims to verify and then reports nothing, which is the
-	// whole point of the check -- see createTestOIDCProviderWithAuthTime for
-	// the tests that drive the other answers.
+	// reports an auth_time of NOW. The hub reads nothing back about auth_time
+	// (see oauth/oidc.go) -- see createTestOIDCProviderWithAuthTime for the
+	// tests that drive the other answers.
 	return createTestOIDCProviderWithAuthTime(t, st, ks, email, subject, func() any { return time.Now().Unix() })
 }
 

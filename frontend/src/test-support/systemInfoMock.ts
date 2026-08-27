@@ -26,7 +26,7 @@ import { CaptchaProvider } from '~/generated/leapmux/v1/auth_pb'
  */
 
 export interface SystemInfoMockState {
-  /** Answers `isSystemInfoLoaded`; flip to false to test bootstrap gating. */
+  /** Answers `isSystemInfoLoaded`; flip to false to test the fail-closed bootstrap window. */
   loaded: boolean
   soloMode: boolean
   signupEnabled: boolean

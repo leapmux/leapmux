@@ -416,7 +416,7 @@ describe('optionGroupMenuItems', () => {
 
     // No filter input; a read-only span that shows the selection. Showing only the
     // group label ("Model") would leave the user no way to see which model the
-    // agent is running, since the list itself is not offered.
+    // agent runs, since the list itself is not offered.
     expect(screen.queryByTestId('model-filter')).toBeNull()
     const readOnly = screen.getByText('Model 3')
     expect(readOnly.tagName).toBe('SPAN')

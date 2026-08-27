@@ -53,7 +53,7 @@ const OAuthCompleteSignupPage: Component = () => {
       setProviderName(resp.providerName)
     }
     catch {
-      setTokenError('This signup link is invalid or has expired.')
+      setTokenError('This signup link is invalid or expired.')
     }
     finally {
       setLoading(false)
@@ -92,8 +92,8 @@ const OAuthCompleteSignupPage: Component = () => {
       auth.setAuth(resp.user!)
       // OAuth signup mirrors the SignUp flow: when the provider returned
       // an unverified email and verification is enabled, send the user
-      // to /verify-email so they can paste the code (or click through).
-      // The session was created server-side, so the authenticated
+      // to /verify-email so they can paste the code (or click the emailed
+      // link). The hub created the session, so the authenticated
       // VerifyEmail RPC is reachable from there.
       if (resp.emailVerification?.verificationRequired) {
         if (resp.emailVerification.nextResendAvailableAt)

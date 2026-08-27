@@ -4,6 +4,12 @@ import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { SignedOutOnly } from '~/components/common/SignedOutOnly'
+import { resetSystemInfoMock, setSystemInfoMock } from '~/test-support/systemInfoMock'
+
+vi.mock('~/lib/systemInfo', async () => {
+  const m = await import('~/test-support/systemInfoMock')
+  return m.systemInfoMock
+})
 
 // A REAL signal behind the mock, because two cases turn on reactivity: the
 // gate must answer a bootstrap that resolves, and must NOT answer a sign-in
@@ -44,8 +50,8 @@ vi.mock('~/lib/postAuthNavigate', async (importOriginal) => {
   const actual = await importOriginal<typeof import('~/lib/postAuthNavigate')>()
   return {
     ...actual,
-    // The full-document branch cannot run in jsdom, so the module's own
-    // assign is replaced. Everything else — safeRedirect, the server-route
+    // The full-document branch cannot run in jsdom, so this mock replaces the
+    // module's own assign. Everything else — safeRedirect, the server-route
     // test — stays real, because those are the parts a wrong target reaches.
     postAuthNavigate: (navigate: Navigator, target: string | undefined, fallback: string) => {
       if (target && actual.isServerRoute(target)) {
@@ -68,7 +74,7 @@ function renderGate(path = '/login', whenSignedIn?: 'redirect' | 'explain') {
   const navigations: string[] = []
   history.listen(value => navigations.push(value))
 
-  const Gated = () => (
+  const Restricted = () => (
     <SignedOutOnly whenSignedIn={whenSignedIn}>
       <div data-testid="credential-form" />
     </SignedOutOnly>
@@ -76,11 +82,15 @@ function renderGate(path = '/login', whenSignedIn?: 'redirect' | 'explain') {
 
   const result = render(() => (
     <MemoryRouter history={history}>
-      <Route path="/login" component={Gated} />
-      <Route path="/signup" component={Gated} />
-      <Route path="/reset-password" component={Gated} />
+      <Route path="/login" component={Restricted} />
+      <Route path="/signup" component={Restricted} />
+      <Route path="/forgot-password" component={Restricted} />
+      <Route path="/reset-password" component={Restricted} />
       <Route path="/" component={() => <div data-testid="app-stub" />} />
-      <Route path="/workspaces/1" component={() => <div data-testid="workspace-stub" />} />
+      {/* A REAL in-app address, because `postAuthNavigate` decides the branch
+          from the SPA's own route table -- an invented path takes the
+          full-document branch, exactly as it would in the browser. */}
+      <Route path="/verify-email" component={() => <div data-testid="verify-stub" />} />
     </MemoryRouter>
   ))
   return { ...result, navigations }
@@ -90,6 +100,7 @@ describe('signedOutOnly', () => {
   beforeEach(() => {
     mockUser.mockReturnValue(null)
     mockLoading.mockReturnValue(false)
+    resetSystemInfoMock()
     assign.mockClear()
     mockLogout.mockClear()
   })
@@ -99,9 +110,10 @@ describe('signedOutOnly', () => {
   // becoming set put a second navigator on that one state change. Solid
   // flushes this effect before the page's own call, so the page usually wins
   // by navigating last -- but a `?redirect=` that points at a hub route takes
-  // postAuthNavigate's full-document branch, and a document that is already
-  // leaving cannot be called back: a CLI sign-in on a hub that requires email
-  // verification left for /auth/cli/start with the emailed code never shown.
+  // postAuthNavigate's full-document branch, and a document that already
+  // started to leave cannot be called back: a CLI sign-in on a hub that
+  // requires email verification left for /auth/cli/start with the emailed code
+  // never shown.
   it('ignores a sign-in performed ON the page', async () => {
     mockUser.mockReturnValue(null)
     const { navigations } = renderGate('/login?redirect=%2Fauth%2Fcli%2Fstart')
@@ -123,6 +135,20 @@ describe('signedOutOnly', () => {
     await vi.waitFor(() => {
       expect(assign).toHaveBeenCalledWith('/auth/cli/start')
     })
+  })
+
+  // ONCE. The effect reads the latch and then writes it, and a user effect
+  // runs inside `runUpdates`, so the self-write re-queues the effect rather
+  // than being dropped. The second run then found the latch already set,
+  // skipped the write, and fell straight through to the navigation. On a hub
+  // target that is two full-document loads of a single-use consent address.
+  it('issues the post-authentication navigation once', async () => {
+    mockUser.mockReturnValue({ id: 'u-1' })
+    renderGate('/login?redirect=%2Fauth%2Fcli%2Fstart')
+    await vi.waitFor(() => {
+      expect(assign).toHaveBeenCalledWith('/auth/cli/start')
+    })
+    expect(assign).toHaveBeenCalledTimes(1)
   })
 
   // /reset-password carries a SINGLE-USE token and no ?redirect=, so the
@@ -176,10 +202,10 @@ describe('signedOutOnly', () => {
     })
   })
 
-  // Not decoration: /signup gated only on the hub's signup setting, so a
-  // signed-in user could create a second account and the page then swapped
-  // their session to it without a word.
-  it('gates every credential page, not only login', async () => {
+  // Not decoration: /signup restricted access on the hub's signup setting
+  // alone, so a signed-in user could create a second account and the page then
+  // swapped their session to it without a word.
+  it('restricts every credential page, not only login', async () => {
     mockUser.mockReturnValue({ id: 'u-1' })
     const { navigations } = renderGate('/signup')
     await vi.waitFor(() => {
@@ -188,8 +214,8 @@ describe('signedOutOnly', () => {
   })
 
   // The form must be GONE in the same frame the redirect starts, or a user
-  // can still type a password or spend a reset token into a page that is on
-  // its way out.
+  // can still type a password or spend a reset token into a page that the app
+  // is about to remove.
   it('renders nothing for a signed-in visitor', () => {
     mockUser.mockReturnValue({ id: 'u-1' })
     renderGate()
@@ -198,9 +224,9 @@ describe('signedOutOnly', () => {
 
   it('honors an in-app redirect target', async () => {
     mockUser.mockReturnValue({ id: 'u-1' })
-    const { navigations } = renderGate('/login?redirect=%2Fworkspaces%2F1')
+    const { navigations } = renderGate('/login?redirect=%2Fverify-email')
     await vi.waitFor(() => {
-      expect(navigations).toEqual(['/workspaces/1'])
+      expect(navigations).toEqual(['/verify-email'])
     })
   })
 
@@ -213,6 +239,52 @@ describe('signedOutOnly', () => {
     await vi.waitFor(() => {
       expect(assign).toHaveBeenCalledWith('/auth/cli/start?admin=1')
     })
+  })
+
+  // A SOLO hub answers every request as the synthetic solo user, so no
+  // credential page can succeed on it. Each page used to spell the rule out,
+  // and it reached two of the five: /forgot-password, /reset-password and
+  // /setup each served a form the hub has no endpoint for.
+  it('sends a solo-hub visitor to the app, from every credential page', async () => {
+    setSystemInfoMock({ soloMode: true })
+    mockUser.mockReturnValue({ id: 'solo' })
+    const { navigations } = renderGate('/forgot-password')
+    await vi.waitFor(() => {
+      expect(navigations).toEqual(['/'])
+    })
+  })
+
+  // The decision waits for the bootstrap, and that gate is the whole point:
+  // before the first system-info load `isSoloMode()` answers a fabricated
+  // `false`. Sampling it early gives the WRONG answer rather than an early
+  // one, and an onMount that sampled it never looked again.
+  it('waits for the bootstrap before it answers a solo hub', async () => {
+    mockLoading.mockReturnValue(true)
+    const { navigations } = renderGate('/login')
+    expect(screen.getByTestId('credential-form')).toBeInTheDocument()
+    expect(navigations).toEqual([])
+
+    setSystemInfoMock({ soloMode: true })
+    mockUser.mockReturnValue({ id: 'solo' })
+    mockLoading.mockReturnValue(false)
+
+    await vi.waitFor(() => {
+      expect(navigations).toEqual(['/'])
+    })
+  })
+
+  // The solo rule OUTRANKS `whenSignedIn`. Offering to sign out is the wrong
+  // answer on a hub where signing out is impossible, and there is no password
+  // to reset either.
+  it('redirects rather than explains on a solo hub', async () => {
+    setSystemInfoMock({ soloMode: true })
+    mockUser.mockReturnValue({ id: 'solo', username: 'solo' })
+    const { navigations } = renderGate('/reset-password?token=abc', 'explain')
+
+    await vi.waitFor(() => {
+      expect(navigations).toEqual(['/'])
+    })
+    expect(screen.queryByTestId('signed-out-only-explain')).not.toBeInTheDocument()
   })
 
   // safeRedirect is the guard, and it lives in postAuthNavigate rather than

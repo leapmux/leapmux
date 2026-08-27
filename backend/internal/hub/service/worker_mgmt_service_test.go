@@ -79,13 +79,13 @@ func seedWorkersForOwner(t *testing.T, st store.Store, owner userid.UserID, n in
 // TestListWorkers_CapsAnOversizedPageLimit pins the ceiling at the surface
 // the defect was found on.
 //
-// This handler used a hand-rolled page default with NO ceiling, so
+// This handler used a hand-written page default with NO ceiling, so
 // `page.limit = 100000` returned the caller's whole worker row set in one
-// response -- an unbounded read the caller chose the size of. Routing the
-// page through NormalizePageParams caps it and hands back a cursor instead, so
+// response -- an uncapped read the caller chose the size of. Routing the
+// page through NormalizePageParams caps it and returns a cursor instead, so
 // the rest of the set costs another request.
 //
-// The owner is seeded with one worker MORE than the ceiling, so a missing
+// The test seeds the owner with one worker MORE than the ceiling, so a missing
 // cap is visible as an over-long page rather than as a full one that merely
 // happens to fit.
 func TestListWorkers_CapsAnOversizedPageLimit(t *testing.T) {
@@ -110,7 +110,7 @@ func TestListWorkers_CapsAnOversizedPageLimit(t *testing.T) {
 		"a capped page must say where the next one starts")
 
 	// The cap must not LOSE rows: the cursor reaches the remainder, and the
-	// two pages together are exactly what was seeded.
+	// two pages together are exactly what the test seeded.
 	next, err := svc.ListWorkers(ctx, connect.NewRequest(&leapmuxv1.ListWorkersRequest{
 		Page: &leapmuxv1.PageRequest{Limit: 100000, Cursor: resp.Msg.GetPage().GetNextCursor()},
 	}))
@@ -132,7 +132,7 @@ func TestListWorkers_CapsAnOversizedPageLimit(t *testing.T) {
 // TestListWorkers_OmittedLimitReturnsRows pins the other end of the same
 // normalization. store.ClampListLimit preserves a limit of 0 and the keyset
 // query reads 0 as "return no rows", so a caller that simply omits `page`
-// -- the proto3 default -- would get an empty page it cannot tell apart
+// -- the proto3 default -- would get an empty page it cannot distinguish
 // from an empty worker list.
 func TestListWorkers_OmittedLimitReturnsRows(t *testing.T) {
 	t.Parallel()
@@ -151,11 +151,11 @@ func TestListWorkers_OmittedLimitReturnsRows(t *testing.T) {
 	assert.False(t, resp.Msg.GetPage().GetHasMore())
 }
 
-// TestNewWorkerManagementServiceRefusesAMissingCollaborator pins WHERE a
-// wiring omission is answered: at construction, not on a request.
+// TestNewWorkerManagementServiceRefusesAMissingCollaborator pins WHERE the
+// hub answers a wiring omission: at construction, not on a request.
 //
 // Each of the four is reachable from a request path, and each nil used to
-// take that path down with a nil pointer dereference or a wrong answer.
+// break that path with a nil pointer dereference or a wrong answer.
 // A nil store, a nil worker registry (workerToProto asks it for every row's
 // online bit, so ListWorkers and GetWorker panic on the FIRST row they
 // return), a nil settings manager (EmailRegistrationInstructions reads the
@@ -172,7 +172,7 @@ func TestNewWorkerManagementServiceRefusesAMissingCollaborator(t *testing.T) {
 	sender := mail.NewStubSender()
 
 	// want is the EXACT panic message, so each case pins WHICH collaborator
-	// the constructor named rather than only that some panic happened.
+	// the constructor identifies rather than only that some panic happened.
 	for name, tc := range map[string]struct {
 		build func()
 		want  string
@@ -202,5 +202,5 @@ func TestNewWorkerManagementServiceRefusesAMissingCollaborator(t *testing.T) {
 	// which the constructor replaces with a private one.
 	assert.NotPanics(t, func() {
 		service.NewWorkerManagementService(st, mgr, nil, nil, sender, mail.Renderer{}, set, nil)
-	}, "a nil broadcaster, notifier and scope cache are all supported")
+	}, "the constructor supports a nil broadcaster, notifier and scope cache")
 }

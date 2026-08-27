@@ -17,8 +17,9 @@ function reply(socket: Socket, code: number, message: string) {
 /**
  * Start a minimal loopback SMTP server that accepts one message at a time.
  *
- * The hub is pointed at this relay with `tls_mode: "none"` so E2E tests can
- * capture verification and password-reset emails without external infra.
+ * The caller points the hub at this relay with `tls_mode: "none"`, so E2E
+ * tests can capture verification and password-reset emails without external
+ * infrastructure.
  */
 export async function startCaptureSmtpServer(): Promise<CaptureSmtpServer> {
   const messages: string[] = []
@@ -104,14 +105,14 @@ export async function startCaptureSmtpServer(): Promise<CaptureSmtpServer> {
     }),
     // waitForMessage resolves with the NEXT message that arrives after the
     // call — never an already-buffered one. A helper that returns
-    // `messages.at(-1)` hands back the wrong email the moment a spec sends
+    // `messages.at(-1)` gives the wrong email the moment a spec sends
     // two (signup verification, then a reset) or delivery turns async.
     // Concurrent waits queue FIFO: each resolves with its own message.
     waitForMessage: (timeoutMs = 30_000) => new Promise((resolve, reject) => {
       // The queue holds THIS wrapper, so the timeout path must remove the
       // wrapper. `waiters.indexOf(resolve)` never matches, because `resolve`
       // itself is never queued: the timed-out waiter then stays at the head
-      // of the FIFO, eats the next message, and hangs the live waiter behind
+      // of the FIFO, consumes the next message, and hangs the live waiter behind
       // it until that one times out too.
       let timer: ReturnType<typeof setTimeout>
       const deliver = (body: string) => {
@@ -138,9 +139,9 @@ export async function startCaptureSmtpServer(): Promise<CaptureSmtpServer> {
  *
  * The restore is not tidiness. `leapmuxServer` is a WORKER fixture, so every
  * spec that worker runs shares one hub -- and SMTP left configured leaves
- * `email_enabled` true against a relay that has already stopped. Every
- * account created afterwards is then unverified and refused almost every
- * procedure, so a later spec fails with a flood of
+ * `email_enabled` true against a relay that already stopped. Every account
+ * that a spec creates afterwards is then unverified, and the hub refuses it
+ * almost every procedure, so a later spec fails with a rapid series of
  * "permission_denied: email verification required" and no clue where it came
  * from. Which spec that hits depends on how Playwright packed the files onto
  * workers, so it moves between runs.
@@ -166,9 +167,9 @@ export async function withCaptureSmtp(
 
 /**
  * The width of a reset token, from the hub's `id.Generate()` mint
- * (`backend/internal/util/id/id.go`). Asserted below so a change to the
- * mint fails here, at the extraction, rather than as an unexplained
- * timeout on the reset page 120 seconds later.
+ * (`backend/internal/util/id/id.go`). This module asserts it below, so a
+ * change to the mint fails here, at the extraction, rather than as an
+ * unexplained timeout on the reset page 120 seconds later.
  */
 const PASSWORD_RESET_TOKEN_LENGTH = 48
 

@@ -105,7 +105,7 @@ func TestConflictRetryDBTXRetriesTheWrappedShapes(t *testing.T) {
 		assert.Equal(t, 1, inner.calls)
 	})
 
-	t.Run("the attempt count is bounded and the conflict still reaches the caller", func(t *testing.T) {
+	t.Run("the attempt count is capped and the conflict still reaches the caller", func(t *testing.T) {
 		errs := make([]error, store.ConflictRetryLimit+3)
 		for i := range errs {
 			errs[i] = abortErr(mysqlErrLockDeadlock)
@@ -170,4 +170,21 @@ func TestPoolConnRetriesThroughItsQueries(t *testing.T) {
 	require.NoError(t, conn.q.SetRevocationEventSequence(context.Background(), 1))
 	assert.Equal(t, 2, pool.calls,
 		"the pool's Queries must carry conflictRetryDBTX; without it the abort reaches the caller")
+}
+
+// TestPoolConnRetriesThroughItsRawExec is the other half of the wiring. The
+// workspace tab index composes its bulk statements by hand and runs them
+// through conn.exec, never through the generated Queries, so an unwrapped exec
+// leaves those writes without the retry every other write has.
+func TestPoolConnRetriesThroughItsRawExec(t *testing.T) {
+	t.Parallel()
+
+	pool := &scriptedDBTX{errs: []error{abortErr(mysqlErrLockDeadlock)}}
+	conn := newPoolConn(&mysqlShared{}, pool)
+
+	require.False(t, conn.inTx(), "a pool-backed conn is not a transaction")
+	_, err := conn.exec.ExecContext(context.Background(), "DELETE FROM workspace_tab_owned WHERE user_id = ?", "u1")
+	require.NoError(t, err)
+	assert.Equal(t, 2, pool.calls,
+		"the pool's raw exec must carry conflictRetryDBTX; the bulk tab-index writes go through it")
 }

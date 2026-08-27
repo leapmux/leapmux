@@ -77,7 +77,8 @@ func TestSessionIDFromHeader_SecureCookie(t *testing.T) {
 func TestBuildOAuthNonceCookie_Insecure(t *testing.T) {
 	c := auth.BuildOAuthNonceCookie("state-abc", "nonce-xyz", 5*time.Minute, false)
 
-	// The state is HASHED into the name, never concatenated raw. A cookie
+	// flowCookieName HASHES the state into the name, never concatenates it
+	// raw. A cookie
 	// name must be an RFC 7230 token, and Go answers an invalid name by
 	// writing no Set-Cookie header at all -- silently, so every later login
 	// would fail with a refusal that accuses the user's browser.
@@ -103,9 +104,9 @@ func TestBuildOAuthNonceCookie_Secure(t *testing.T) {
 		"the __Host- prefix is what stops a subdomain from shadowing this cookie")
 	assert.True(t, c.Secure)
 	assert.True(t, c.HttpOnly)
-	// __Host- is only honoured with Path=/ and no Domain. A cookie that
-	// breaks either rule is dropped by the browser, and the callback then
-	// refuses every legitimate login.
+	// __Host- is only honoured with Path=/ and no Domain. The browser drops
+	// a cookie that breaks either rule, and the callback then refuses every
+	// legitimate login.
 	assert.Equal(t, "/", c.Path)
 	assert.Empty(t, c.Domain)
 }
@@ -147,12 +148,13 @@ func TestCookieMaxAgeNeverWritesZero(t *testing.T) {
 }
 
 // TestOAuthNonceFromRequestAcceptsTheSecureSpelling pins the asymmetric
-// fallback. secure_cookies is read when the login leg writes the cookie and
-// again when the callback reads it, so an operator who turns it OFF inside
+// fallback. The hub reads secure_cookies when the login leg writes the cookie
+// and again when the callback reads it, so an operator who turns it OFF inside
 // the window would otherwise turn every in-flight login into a security
 // accusation. Only an https origin can set a __Host- cookie, so reading it
-// on a plain-HTTP hub grants an attacker nothing. The reverse is refused,
-// because any plain-HTTP page on the domain can plant the unprefixed name.
+// on a plain-HTTP hub grants an attacker nothing. The reader refuses the
+// reverse, because any plain-HTTP page on the domain can plant the unprefixed
+// name.
 func TestOAuthNonceFromRequestAcceptsTheSecureSpelling(t *testing.T) {
 	secureSet := auth.BuildOAuthNonceCookie("state-abc", "nonce-xyz", time.Minute, true)
 	r := &http.Request{Header: http.Header{}}

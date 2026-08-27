@@ -27,9 +27,10 @@ const (
 	CeremonyTTL = 5 * time.Minute
 )
 
-// SignupDraft is stored in webauthn_sessions.payload_json during passkey signup.
-// UserID is allocated at BeginSignUp and reused as the WebAuthn user handle and
-// the users row primary key, so assertion userHandle matches on later logins.
+// The service stores SignupDraft in webauthn_sessions.payload_json during
+// passkey signup. BeginSignUp allocates UserID and reuses it as the WebAuthn
+// user handle and the users row primary key, so assertion userHandle matches
+// on later logins.
 type SignupDraft struct {
 	UserID      string `json:"userId"`
 	Username    string `json:"username"`
@@ -40,9 +41,9 @@ type SignupDraft struct {
 	RPID string `json:"rpId,omitempty"`
 }
 
-// ceremonyMeta is stored in webauthn_sessions.payload_json for the
-// login, register, and elevation kinds so Finish rebuilds the RP ID the
-// ceremony started with.
+// The service stores ceremonyMeta in webauthn_sessions.payload_json for
+// the login, register, and elevation kinds so Finish rebuilds the RP ID
+// the ceremony started with.
 type ceremonyMeta struct {
 	RPID string `json:"rpId"`
 }
@@ -115,8 +116,8 @@ func (s *Service) ceremonyWebAuthn(rpID string) (*gowebauthn.WebAuthn, error) {
 // BeginSignUp starts a passkey-only signup ceremony. origin is the browser
 // origin of the request; it must be one the hub allows.
 func (s *Service) BeginSignUp(ctx context.Context, draft SignupDraft, origin string) (sessionID string, optionsJSON string, rpID string, err error) {
-	// The user id is allocated HERE, and a value the caller put in the draft
-	// is discarded. It becomes the WebAuthn user handle and then, at Finish,
+	// BeginSignUp allocates the user id HERE, and discards a value the caller
+	// put in the draft. It becomes the WebAuthn user handle and then, at Finish,
 	// the users row primary key -- so a caller-chosen value chooses a new
 	// account's primary key. Overwriting unconditionally makes that mistake
 	// impossible instead of merely unmade: today's one caller leaves the
@@ -195,25 +196,22 @@ func (s *Service) ceremonyRPIDForOrigin(origin string) (string, error) {
 	return rpID, nil
 }
 
-// AllowsOrigin reports whether a browser at this origin can run a ceremony
-// here. It applies exactly the test every Begin applies.
-//
-// It exists so a surface can answer the question BEFORE it offers a passkey
-// affordance. Every Begin already refuses an unserved origin, but a refusal
-// arrives after the user pressed a control the hub was never going to honor,
-// and the message it carries is the only thing that says why.
-func (s *Service) AllowsOrigin(origin string) bool {
-	_, allowed := s.rp.RPIDForOrigin(origin)
-	return allowed
-}
-
 // validateAssertion runs the assertion pipeline shared by login and elevation:
 // consume the ceremony session, bind the session's user (an empty
 // expectedUserID derives it from the session row; otherwise the session must
 // belong to that user), load the credential set with the ceremony's RP ID,
 // parse and validate the assertion, reject clone warnings, and persist the
-// sign count. Kind-specific concerns (signup drafts, proof minting) stay
-// with the callers.
+// sign count.
+//
+// TWO callers, and each keeps what belongs to its own kind. FinishLogin takes
+// the user this returns, and its own caller mints the session. FinishElevation
+// mints nothing at all -- the elevation lives on the credential row, which the
+// service layer stamps -- so it discards both return values.
+//
+// A REGISTRATION ceremony never reaches here. It presents an attestation
+// rather than an assertion, so both of its legs -- FinishSignUp, which also
+// carries the signup draft, and VerifyRegistration -- run verifyAttestation
+// instead.
 func (s *Service) validateAssertion(ctx context.Context, sessionID, wantKind, expectedUserID, credentialJSON string) (*store.User, int64, error) {
 	row, sessionData, err := s.consumeCeremonySession(ctx, sessionID, wantKind)
 	if err != nil {
@@ -445,9 +443,10 @@ func verifyAttestation(w *gowebauthn.WebAuthn, waUser *user, sessionData gowebau
 func (s *Service) persistSession(ctx context.Context, kind, userID, payload string, session *gowebauthn.SessionData, options any) (sessionID, optionsJSON string, err error) {
 	// Every PER-USER ceremony replaces any prior open row of the same kind,
 	// so repeated Begin calls cannot accumulate encrypted sessions until TTL
-	// cleanup. The rule is stated as the property rather than as a list of
-	// today's kinds: a list is what the next per-user kind is forgotten from,
-	// and the accumulation it causes is invisible until the table grows.
+	// cleanup. This comment gives the rule as the property rather than as a
+	// list of today's kinds: a list is easy to forget when somebody adds the
+	// next per-user kind, and the accumulation that follows is invisible until
+	// the table grows.
 	//
 	// Signup is the one kind that cannot replace by user, because the account
 	// does not exist yet and there is no users FK to key on; captcha on
@@ -616,7 +615,7 @@ func (s *Service) DecryptPayloadJSON(sessionID, stored string) (string, error) {
 	return s.decryptPayloadJSON(sessionID, stored)
 }
 
-// ErrCloneDetected is returned when the authenticator sign count indicates a
+// ErrCloneDetected reports an authenticator sign count that indicates a
 // possible cloned credential (WebAuthn CloneWarning).
 var ErrCloneDetected = errors.New("authenticator sign count indicates a possible clone")
 
@@ -633,8 +632,8 @@ var ErrAssertionRejected = errors.New("passkey assertion rejected")
 var ErrNoPasskeys = errors.New("no passkeys registered")
 
 // ErrOriginNotAllowed reports a browser origin the hub does not serve. The
-// ceremony is refused at Begin instead of failing at Finish, after the user
-// already completed an interactive prompt.
+// hub refuses the ceremony at Begin instead of failing at Finish, after the
+// user already completed an interactive prompt.
 var ErrOriginNotAllowed = errors.New("origin is not allowed for passkey ceremonies")
 
 // RejectIfCloneWarning refuses an assertion when go-webauthn flagged a
@@ -651,17 +650,17 @@ func RejectIfCloneWarning(cred *gowebauthn.Credential) error {
 // monotonic conditional update keyed by the credential id the assertion
 // carried: the store advances the row only when the assertion count is
 // strictly greater (a zero assertion pairs with a stored zero — an
-// authenticator that never maintained a counter). Ceremony sessions are
-// already consumed before this runs, so a valid strictly-greater assertion
-// must never fail on a concurrent advance; the monotonic predicate cannot
-// lose that race, and no retry loop is needed.
+// authenticator that never maintained a counter). The caller already
+// consumed the ceremony session before this runs, so a valid strictly-greater
+// assertion must never fail on a concurrent advance; the monotonic predicate
+// cannot lose that race, and this function needs no retry loop.
 //
 // WebAuthn clone detection: when both the stored count and the assertion
 // count are greater than zero, the assertion must be strictly greater.
 // An equality or a regression matches no row (0 rows -> ErrNotFound), and
-// the re-read below reports it as a clone. A drop to zero from a positive
-// stored count is already rejected before this runs
-// (RejectIfCloneWarning), per the WebAuthn clone-detection rule.
+// the re-read below reports it as a clone. RejectIfCloneWarning already
+// refuses a drop to zero from a positive stored count before this runs,
+// per the WebAuthn clone-detection rule.
 func (s *Service) applySignCountUpdate(ctx context.Context, credentialID []byte, userID string, newSignCount int64, lastUsedAt time.Time) error {
 	err := s.store.PasskeyCredentials().UpdateSignCount(ctx, store.UpdatePasskeySignCountParams{
 		CredentialID: credentialID,

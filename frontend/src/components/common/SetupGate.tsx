@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from '@solidjs/router'
 import { createEffect, createMemo, Show } from 'solid-js'
 import { BootSplash } from '~/components/common/BootSplash'
 import { useAuth } from '~/context/AuthContext'
+import { shallowEqual } from '~/lib/shallowEqual'
 import { isSetupRequired, isSystemInfoLoaded } from '~/lib/systemInfo'
 
 /** The one address a hub without an account can serve. */
@@ -10,6 +11,18 @@ const SETUP_PATH = '/setup'
 
 /** Where a visitor goes when the hub is set up and they asked for `/setup`. */
 const AFTER_SETUP_PATH = '/login'
+
+/**
+ * What the gate decided to do with one visit.
+ *
+ * `wait` is neither of the other two: the route must not render, and there is
+ * nowhere to send the visitor yet. It holds `/setup` behind the splash until
+ * the hub answers.
+ */
+type SetupDecision
+  = | { kind: 'render' }
+    | { kind: 'wait' }
+    | { kind: 'redirect', to: string }
 
 /**
  * `path` with any trailing slash removed, so one address is one string.
@@ -36,31 +49,43 @@ function withoutTrailingSlash(path: string): string {
  * `/elevate` need a session nobody can hold. Only `/setup` does anything.
  *
  * It is mounted ONCE, around the router outlet in `~/app.tsx`, and that
- * placement is the point. The rule used to be spelled per page -- AuthGuard,
+ * placement is the point. Each page used to spell the rule out -- AuthGuard,
  * LoginPage and ElevatePage each carried a copy, and the four pages that
  * needed it most carried none -- so which addresses were covered depended on
  * who remembered. Above the outlet, a route added later is covered on the day
  * it is added rather than on the day somebody notices.
  *
- * Three states decide NOTHING, and each for its own reason:
+ * THREE outcomes, not two: render the route, redirect, or WAIT behind the
+ * splash. The third exists for `/setup` alone, and the reason is what that one
+ * page renders while nobody knows the answer.
  *
- *   - The bootstrap is in flight. Children render meanwhile, so the common
- *     visitor is not held behind a splash to answer a question that concerns
- *     one installation once. This is the same trade `SignedOutOnly` makes.
- *   - The system info never arrived (the hub is unreachable). The getters
- *     answer fabricated defaults there, `setupRequired = false` among them,
- *     so deciding on them would bounce the operator off `/setup` -- the one
- *     page they need -- and onto a login form that cannot work either.
- *     AuthGuard renders the real diagnosis for `/`.
- *   - Somebody is signed in. A session PROVES an account exists, so a
- *     snapshot that still says `setupRequired` is stale rather than
- *     informative. This is what carries the new administrator home: `/setup`
- *     adopts the session and navigates to `/` while its forced re-fetch of
- *     the system info is still in flight.
+ * Two states leave the answer unknown -- the bootstrap is in flight, and the
+ * system info never arrived because the hub is unreachable. In both, the
+ * getters answer fabricated defaults, `setupRequired = false` among them.
+ *
+ * On the four credential pages the unknown answer costs nothing, so they
+ * render. The common visitor there is signed out on a hub that is set up, and
+ * holding the form behind a splash would delay every sign-in to answer a
+ * question that concerns one installation once. This is the same trade
+ * `SignedOutOnly` makes.
+ *
+ * On `/setup` it costs a wrong account. That page paints "Welcome to LeapMux
+ * -- Create the first administrator account" over a live sign-up form, and a
+ * submit inside that window creates an ORDINARY account under a heading that
+ * promised an administrator. So `/setup` waits, and it waits indefinitely
+ * while the hub is unreachable. That is deliberate: `AuthGuard` renders the
+ * real diagnosis for `/`, and a splash the operator can leave is better than a
+ * form that answers them with the wrong kind of account.
+ *
+ * One state decides to RENDER whatever the snapshot says: somebody is signed
+ * in. A session PROVES an account exists, so a snapshot that still says
+ * `setupRequired` is stale rather than informative. This is what carries the
+ * new administrator home: `/setup` adopts the session and navigates to `/`
+ * while its forced re-fetch of the system info is still in flight.
  *
  * Every page below this gate carries a navigation of its own -- AuthGuard
- * sends an unauthenticated visitor to `/login`, LoginPage sends a solo one to
- * `/` -- and they all fire on the same signal this memo reads. Two
+ * sends an unauthenticated visitor to `/login`, SignedOutOnly sends a solo one
+ * to `/` -- and they all fire on the same signal this memo reads. Two
  * independent layers keep that from becoming a race:
  *
  *   - The `Show` below is a render effect, so a decision to redirect tears
@@ -68,7 +93,7 @@ function withoutTrailingSlash(path: string): string {
  *     effect whose owner is already disposed. The page's navigation is not
  *     ordered after the gate's; it does not happen.
  *   - Anything that still reaches the router -- a navigation from a timer, a
- *     socket callback, the address bar -- is answered again, because this
+ *     socket callback, the address bar -- meets this decision again, because it
  *     refuses EVERY address but `/setup` while an account is missing. The
  *     state is a fixed point, so the worst such a navigator costs is one
  *     extra replaced entry, never a page that stays.
@@ -78,27 +103,37 @@ export const SetupGate: ParentComponent = (props) => {
   const location = useLocation()
   const navigate = useNavigate()
 
-  /** Where this visitor must go instead, or null when the route may render. */
-  const redirectTo = createMemo<string | null>(() => {
-    if (auth.loading() || !isSystemInfoLoaded() || auth.isAuthenticated())
-      return null
+  /**
+   * What to do with this visit.
+   *
+   * COMPARED BY VALUE. The memo builds a fresh object on every recompute, and
+   * `createMemo` compares with `===` by default, so every recompute would
+   * notify the effect below and navigate again to an address the browser is
+   * already going to.
+   */
+  const decision = createMemo<SetupDecision>(() => {
     const onSetupPage = withoutTrailingSlash(location.pathname) === SETUP_PATH
+    // A session outranks the snapshot: it proves an account exists.
+    if (auth.isAuthenticated())
+      return { kind: 'render' }
+    if (auth.loading() || !isSystemInfoLoaded())
+      return onSetupPage ? { kind: 'wait' } : { kind: 'render' }
     if (isSetupRequired())
-      return onSetupPage ? null : SETUP_PATH
-    return onSetupPage ? AFTER_SETUP_PATH : null
-  })
+      return onSetupPage ? { kind: 'render' } : { kind: 'redirect', to: SETUP_PATH }
+    return onSetupPage ? { kind: 'redirect', to: AFTER_SETUP_PATH } : { kind: 'render' }
+  }, { kind: 'render' }, { equals: shallowEqual })
 
   createEffect(() => {
-    const target = redirectTo()
-    if (target !== null)
-      navigate(target, { replace: true })
+    const current = decision()
+    if (current.kind === 'redirect')
+      navigate(current.to, { replace: true })
   })
 
-  // The route is hidden for the frame between the decision and the landing,
-  // for the reason SignedOutOnly states: a form that is on its way out can
-  // still take a password.
+  // This hides the route for the frame between the decision and the landing,
+  // for the reason SignedOutOnly states: a form that the app is about to
+  // remove can still take a password.
   return (
-    <Show when={redirectTo() === null} fallback={<BootSplash />}>
+    <Show when={decision().kind === 'render'} fallback={<BootSplash />}>
       {props.children}
     </Show>
   )

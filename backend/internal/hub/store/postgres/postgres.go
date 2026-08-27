@@ -104,21 +104,30 @@ func newFromPool(pool *pgxpool.Pool, migrationDB *sql.DB) (*pgStore, error) {
 //
 // Both entry points went through the same four-line literal, and the second
 // half of that literal is a security-relevant decision rather than plumbing:
-// the pool's Queries must carry conflictRetryDBTX, so a statement a
-// distributed backend aborts for a retryable conflict runs again instead of
-// reaching the caller as a failure it did not earn. Two copies of that
-// decision is one copy that can lose the wrapper with nothing to notice. See
-// conflict_retry.go.
+// BOTH fields must carry conflictRetryDBTX, so a statement a distributed
+// backend aborts for a retryable conflict runs again instead of reaching the
+// caller as a failure it did not earn. Two copies of that decision is one copy
+// that can lose the wrapper with nothing to notice. See conflict_retry.go.
+//
+// exec is the RAW-SQL path, and it carries the wrapper for the same reason q
+// does. This dialect routes its bulk tab-index writes through sqlc arrays, so
+// exec reaches only the publish statement today -- the mysql twin is where a
+// raw pool actually loses the retry. Both are wrapped, so the rule is one rule
+// rather than a per-dialect judgement.
+//
+// Inside a transaction runTransaction installs the raw pgx.Tx in exec and
+// rebuilds q through WithTx, so neither field retries there and nothing runs
+// twice inside a dead transaction. inTx() still reads correctly, because a
+// wrapped POOL is not a pgx.Tx either way.
 //
 // The pool arrives as an argument rather than through shared.pool so a test
 // can supply a stand-in and prove the wiring, not merely the wrapper.
-// withTransaction builds its own conn from q.WithTx, which deliberately
-// carries no retry.
 func newPoolConn(shared *pgShared, pool gendb.DBTX) *pgConn {
+	retrying := conflictRetryDBTX{inner: pool}
 	return &pgConn{
 		shared: shared,
-		exec:   pool,
-		q:      gendb.New(conflictRetryDBTX{inner: pool}),
+		exec:   retrying,
+		q:      gendb.New(retrying),
 	}
 }
 

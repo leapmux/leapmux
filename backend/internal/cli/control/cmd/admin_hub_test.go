@@ -337,8 +337,8 @@ func envelopeError(t *testing.T, out []byte) map[string]string {
 	var env struct {
 		Error map[string]string `json:"error"`
 	}
-	// Decoding the WHOLE buffer also pins that exactly one envelope was
-	// written: a second concatenated object fails here.
+	// Decoding the WHOLE buffer also pins that the verb wrote exactly one
+	// envelope: a second concatenated object fails here.
 	require.NoError(t, json.Unmarshal(out, &env), "stdout: %s", out)
 	require.NotEmpty(t, env.Error, "the verb reported no error")
 	return env.Error
@@ -432,7 +432,7 @@ func TestAdminSettingsList_DescribesAKeyWithItsDomainVerb(t *testing.T) {
 // `captcha set` must refuse a provider whose stored row lacks a half that
 // this invocation does not supply. The hub refuses the same state through
 // its cross-key rule, but it answers with the settings KEY rather than with
-// the flags to add, and only after the write has travelled.
+// the flags to add, and only after the write travelled.
 func TestAdminCaptchaSet_RefusesAProviderWithNoStoredCredentials(t *testing.T) {
 	hub := &fakeAdminHub{values: captchaHubValues("altcha", `{"algorithm":"PBKDF2/SHA-256"}`,
 		settingValue(captcha.TurnstileKey.Name(), "{}", nil))}
@@ -449,7 +449,7 @@ func TestAdminCaptchaSet_RefusesAProviderWithNoStoredCredentials(t *testing.T) {
 	assert.Empty(t, hub.takeUpdatesMany(), "the refusal must come before the write, not from the hub")
 }
 
-// The refusal names only the half that is MISSING: a stored site key beside
+// The refusal states only the half that is MISSING: a stored site key beside
 // a passed secret is a complete row.
 func TestAdminCaptchaSet_NamesOnlyTheMissingHalf(t *testing.T) {
 	hub := &fakeAdminHub{values: captchaHubValues("altcha", "{}",
@@ -482,7 +482,7 @@ func TestAdminCaptchaSet_ActivatesAProviderWhoseRowIsComplete(t *testing.T) {
 }
 
 // readCaptchaState must ask whether ANY secret field is stored, because
-// each provider names its own: ALTCHA signs with `hmac_key` and the
+// each provider uses its own: ALTCHA signs with `hmac_key` and the
 // external providers verify with `secret_key`. Reading one hardcoded name
 // reported ALTCHA as unconfigured whatever it held.
 func TestReadCaptchaState_ReportsEachProvidersOwnSecretField(t *testing.T) {
@@ -532,8 +532,8 @@ func TestAdminCaptchaSet_TakesTheFamilyFromThePassedAlgorithm(t *testing.T) {
 	assert.EqualValues(t, family.MemoryCost, doc["memory_cost"])
 }
 
-// A non-zero value is stored verbatim, or the substitution would overwrite
-// every tuning an operator makes.
+// The CLI stores a non-zero value verbatim, or the substitution would
+// overwrite every tuning an operator makes.
 func TestAdminCaptchaSet_KeepsANonZeroTuningValue(t *testing.T) {
 	hub := &fakeAdminHub{values: captchaHubValues("altcha", `{"algorithm":"SCRYPT"}`)}
 	url := startAdminHub(t, hub)
@@ -568,7 +568,7 @@ func TestAdminCaptchaSet_ExpiresPassedAsZeroRestoresTheFixedDefault(t *testing.T
 	assert.EqualValues(t, fixed, doc["challenge_expiry_seconds"], "0 restores the default; it is never stored")
 }
 
-// The other half: a non-zero expiry is stored verbatim, or the
+// The other half: the CLI stores a non-zero expiry verbatim, or the
 // substitution would overwrite every expiry an operator sets.
 func TestAdminCaptchaSet_KeepsANonZeroExpires(t *testing.T) {
 	require.NotEqualValues(t, 3600, captcha.DefaultAltchaSettings().ChallengeExpirySeconds,
@@ -896,7 +896,7 @@ func TestAdminAPITokenIssue_AddressesTheOwnerByUsername(t *testing.T) {
 // An admin verb never touches a TOFU pin, so a pins.json that cannot be
 // parsed must not refuse one. Opening the store in the constructor made a
 // corrupt file break every verb, and report it under the not_logged_in
-// code, which names neither the file nor the cause.
+// code, which states neither the file nor the cause.
 func TestAdminVerb_RunsWithACorruptPinsFile(t *testing.T) {
 	hub := &fakeAdminHub{}
 	url := startAdminHub(t, hub)

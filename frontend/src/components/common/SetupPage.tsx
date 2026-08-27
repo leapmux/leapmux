@@ -14,15 +14,15 @@ import { SignupForm } from './SignupForm'
  * this hub is `SetupGate`'s decision, made above the router outlet in both
  * directions — it sends a visitor here while no account exists, and away to
  * `/login` once one does. The check used to sit in an `onMount` here, where it
- * read `isSetupRequired()` before the system info had arrived: on a cold load
+ * read `isSetupRequired()` before the system info arrived: on a cold load
  * that answered the fabricated `false`, so a direct visit to `/setup` bounced
  * to `/login` and back again.
  *
  * The administrator chooses a password or a passkey, the same two methods
  * `/signup` offers. A passkey-only first administrator has no password to
  * lose, and can add one later from Preferences → Account; if they lose the
- * passkey instead, the offline `leapmux recover-user` command is the way back
- * in.
+ * passkey instead, the offline `leapmux recover-user` command is the way to
+ * recover access.
  */
 export const SetupPage: Component = () => {
   const navigate = useNavigate()
@@ -37,12 +37,12 @@ export const SetupPage: Component = () => {
           submittingLabel="Creating account..."
           errorPrefix="Setup failed"
           allowAdminUsername
-          header={<p>Create the first administrator account to get started.</p>}
+          header={<p>Create the first administrator account.</p>}
           onSuccess={(resp) => {
             // Fire-and-forget refresh of `setupRequired`: the account now
             // exists, so a stale `true` here only means a later /setup visit
             // redirects once it re-reads. Nothing on this path may block or
-            // fail on it, hence the swallowed rejection.
+            // fail on it, so this discards the rejection.
             //
             // Nothing races it either. `setAuth` below runs first and
             // synchronously, and SetupGate lets an authenticated visitor

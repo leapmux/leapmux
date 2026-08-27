@@ -65,7 +65,7 @@ func decodeCursorParams(cursor string) (cursorTime sqltime.SQLiteNullTime, curso
 // the dialect-specific sqlc params struct. Centralizing decodeCursorParams + the
 // error short-circuit + store.FetchLimit here means a change to the cursor
 // decode, the clamp rule, or the probe-row accounting edits ONE site per
-// dialect instead of being copy-pasted across every list builder -- the prior
+// dialect instead of a copy in every list builder -- the prior
 // shape let ListRegistrationKeysAdmin silently bypass ClampListLimit until this
 // commit's pagination rebuild caught it.
 func withCursor[T any](cursor string, limit int64, fill func(cursorTime sqltime.SQLiteNullTime, cursorID sql.NullString, fetchLimit int64) T) (T, error) {

@@ -5,8 +5,8 @@
  * browser to `/elevate?redirect=/auth/cli/start...`, and `/auth/cli/start`
  * is a Go mux route, not an entry in this application's route table -- so a
  * client-side `navigate()` back to it renders the SPA's 404 page while the
- * CLI sits waiting for a consent screen nobody ever sees. Only a real
- * browser walking the whole round trip shows that.
+ * CLI waits for a consent screen nobody ever sees. Only a real browser that
+ * walks the whole round trip shows that.
  */
 
 import { expect, test } from './fixtures'
@@ -43,8 +43,8 @@ test.describe('CLI consent needs an elevated session', () => {
 
     await page.goto(startURL(leapmuxServer.hubUrl))
 
-    // Layer one: the un-elevated session is sent to the SPA prompt, with
-    // the consent URL as the return address.
+    // Layer one: the hub sends the un-elevated session to the SPA prompt,
+    // with the consent URL as the return address.
     await expect(page).toHaveURL(/\/elevate\?redirect=/)
     await expect(page.getByTestId('elevate-card')).toBeVisible()
 
@@ -84,7 +84,7 @@ test.describe('CLI consent needs an elevated session', () => {
 
   test('refuses the consent POST rather than redirecting it', async ({ page, leapmuxServer }) => {
     // The POST carries the PKCE challenge in its BODY, so a redirect would
-    // destroy the flow irrecoverably. It is refused instead.
+    // destroy the flow irrecoverably. The hub refuses it instead.
     const cookie = await freshAdminSession(leapmuxServer.hubUrl)
     const res = await page.request.post(`${leapmuxServer.hubUrl}/auth/cli/authorize`, {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Cookie': cookie },

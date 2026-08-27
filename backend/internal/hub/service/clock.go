@@ -4,8 +4,8 @@ import "time"
 
 // clockSeam is the one notion of "now" a service reads.
 //
-// It is embedded rather than repeated, because the elevation surface spans
-// five types -- UserService grants and slides the window, APIAuthHandler
+// Five types embed it rather than repeat it, because the elevation surface
+// spans them all -- UserService grants and slides the window, APIAuthHandler
 // restricts the CLI consent legs by it, OAuthHandler grants through its
 // re-authentication leg, AdminUserService mints the same credential the
 // consent legs do, and AuthService REPORTS the deadline to the client -- and

@@ -151,7 +151,7 @@ test.describe('Passkey authentication', () => {
     expect(refusal.headers.get(ELEVATION_REQUIRED_HEADER)).toBe('1')
     expect(await listPasskeysViaAPI(leapmuxServer.hubUrl, cookie)).toHaveLength(before.length)
 
-    // Elevated, the same call lands.
+    // With the session elevated, the same call succeeds.
     await elevateSessionViaAPI(leapmuxServer.hubUrl, freshCookie, password)
     await deletePasskeyViaAPI(leapmuxServer.hubUrl, freshCookie, before[0]!.id)
     expect(await listPasskeysViaAPI(leapmuxServer.hubUrl, cookie)).toHaveLength(before.length - 1)
@@ -179,9 +179,9 @@ test.describe('Passkey authentication', () => {
     // A FRESH admin session, never the worker-scoped `adminToken`.
     //
     // An elevation lasts two hours and that shared cookie outlives this file,
-    // so a test that reuses it both depends on nobody having elevated it
-    // earlier and leaves it elevated -- with a new passkey on the account --
-    // for every spec that runs after. 009-elevation.spec.ts and
+    // so a test that reuses it depends on the fact that no earlier test
+    // elevated it, and it leaves the cookie elevated -- with a new passkey on
+    // the account -- for every spec that runs after. 009-elevation.spec.ts and
     // 143-cli-elevation.spec.ts both mint their own for the same reason.
     const cookie = await loginViaAPI(leapmuxServer.hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD)
     await loginViaToken(page, cookie)
@@ -190,25 +190,37 @@ test.describe('Passkey authentication', () => {
 
     const prefs = await openAccountSettings(page)
 
-    // The prompt comes FIRST, on the click, and the add dialog opens only
-    // after the factor is proven: the two credential prompts then arrive in
-    // the order a person expects, and neither modal sits under the other.
+    // The dialog opens on the click, and the prompt arrives when the hub
+    // REFUSES the action behind it -- attempt, then prove, then retry.
+    //
+    // The panel used to pre-empt: it read the elevation itself and opened the
+    // prompt before its own dialog, so no modal ever sat under another. That
+    // was a per-surface opt-in around the transport's own mechanism, and the
+    // next dialog to raise a restricted call had to copy its reasoning. The
+    // prompt host owns the stacking now, so the pre-emption is gone and the
+    // ordering guarantee moved into the layer that can hold it for every
+    // surface.
     await prefs.getByRole('button', { name: 'Add passkey' }).click()
+    const addDialog = page.getByRole('dialog', { name: 'Add passkey' })
+    await expect(addDialog).toBeVisible()
+    // The add dialog carries NO secret: the step-up belongs to the session.
+    await expect(addDialog.getByLabel('Current password')).toHaveCount(0)
+    await addDialog.getByRole('button', { name: 'Continue' }).click()
+
+    // ONE prompt, on top, and the dialog beneath is inert for as long as it is
+    // up -- which is what lets the two credential prompts arrive in the order a
+    // person expects without either surface opting in.
     const verifyDialog = page.getByRole('dialog', { name: 'Verify your identity' })
     await expect(verifyDialog).toBeVisible()
-    await expect(page.getByRole('dialog', { name: 'Add passkey' })).toHaveCount(0)
+    await expect(page.getByRole('dialog', { name: 'Verify your identity' })).toHaveCount(1)
+    await expect(addDialog).toHaveAttribute('inert', '')
     await verifyDialog.getByTestId('elevate-password').fill(TEST_ADMIN_PASSWORD)
     await verifyDialog.getByTestId('elevate-password-submit').click()
 
-    // The add dialog carries NO secret: the step-up belongs to the session.
-    const addDialog = page.getByRole('dialog', { name: 'Add passkey' })
-    await expect(addDialog).toBeVisible()
-    await expect(addDialog.getByLabel('Current password')).toHaveCount(0)
-    await expect(addDialog.getByRole('button', { name: 'Continue' })).toBeEnabled()
-    await addDialog.getByRole('button', { name: 'Continue' }).click()
-
-    // The registration ran with no second prompt.
+    // The refused action is retried for the caller, so the registration runs
+    // with no second prompt and no second click.
     await expect(prefs.getByText('Passkey added.')).toBeVisible()
+    await expect(page.getByRole('dialog', { name: 'Verify your identity' })).toHaveCount(0)
 
     // A SECOND sensitive action in the same window: no second prompt.
     await prefs.getByRole('button', { name: 'Rename' }).first().click()

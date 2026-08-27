@@ -153,7 +153,7 @@ var controlTree = cmdGroup{
 			},
 		},
 		{
-			// The online, authenticated face of hub administration — the
+			// The online, authenticated surface of hub administration — the
 			// successor of the removed offline admin tree. These leaves
 			// call the Admin*Service RPCs directly (never the worker-IPC
 			// bridge); the break-glass offline subset lives in `leapmux

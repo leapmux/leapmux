@@ -60,8 +60,8 @@ func seedUser(t *testing.T, st store.Store) string {
 // enforced before the attestation.
 //
 // A real attestation needs a virtual authenticator, which this package has
-// no harness for; the full ceremony is covered end to end by the Playwright
-// spec. What is asserted here is what the split could have broken.
+// no harness for; the Playwright spec covers the full ceremony end to end.
+// This test asserts what the split could have broken.
 func TestVerifyRegistration_KeepsTheCeremonyGuards(t *testing.T) {
 	svc, st := newMigratedWebAuthnService(t)
 	owner := seedUser(t, st)
@@ -115,7 +115,7 @@ func TestStoreCredential_DefaultsTheFriendlyName(t *testing.T) {
 		CredentialID: []byte("credential-id-2"), PublicKey: []byte("public-key"),
 	}, "Work laptop")
 	require.NoError(t, err)
-	assert.Equal(t, "Work laptop", named.FriendlyName, "a supplied name is kept")
+	assert.Equal(t, "Work laptop", named.FriendlyName, "StoreCredential keeps a supplied name")
 }
 
 func TestBeginSignUp_AllocatesStableUserID(t *testing.T) {

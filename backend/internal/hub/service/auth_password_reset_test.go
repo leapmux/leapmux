@@ -353,10 +353,10 @@ func TestCompletePasswordReset_AttemptLimitBlocksBeforeArgon2(t *testing.T) {
 	// API access secrets.
 	assert.Regexp(t, "^[A-Za-z0-9]{48}$", token)
 
-	// Burn the 5 soft attempts with a wrong password that still matches the
+	// Use up the 5 soft attempts with a wrong password that still matches the
 	// token row (Consume increments). Use the real token so lookup succeeds;
-	// CompletePasswordReset validates password strength before hashing, so a
-	// valid new password is required. We force attempts via the store API.
+	// CompletePasswordReset validates password strength before hashing, so the
+	// call needs a valid new password. We force attempts via the store API.
 	for i := 0; i < 5; i++ {
 		_, err = st.Users().ConsumePasswordResetAttemptByToken(context.Background(), tokenHashForTest(token), time.Now().UTC(), 5)
 		require.NoError(t, err)
@@ -532,12 +532,12 @@ func setupPasswordResetAuthServiceConfigured(t *testing.T, sender mail.Sender, c
 // route this change closes.
 //
 // A reset link is a credential, and the Hub only sends one to an address it
-// has evidence for. email_verified IS that evidence, and it used to be
-// forced true for every administrator -- so an administrator moved to a
-// brand-new address kept a live self-service reset route to whatever was
-// typed, on the highest-privilege accounts on the hub. The flag now records
-// only what somebody confirmed, and the administrator exemption lives at the
-// login gate where it belongs.
+// has evidence for. email_verified IS that evidence, and the hub used to
+// force it true for every administrator -- so an administrator moved to a
+// brand-new address kept a live self-service reset route to whatever address
+// the request carried, on the highest-privilege accounts on the hub. The
+// flag now records only what somebody confirmed, and the administrator
+// exemption lives at the login gate where it belongs.
 func TestRequestPasswordReset_AdminUnconfirmedAddressGetsNoLink(t *testing.T) {
 	t.Parallel()
 

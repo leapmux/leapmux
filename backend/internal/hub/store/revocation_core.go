@@ -27,6 +27,13 @@ type RevocationLease struct {
 // RevocationCoreOps keeps SQL execution and error mapping in each dialect
 // while making sequencing and lease transaction boundaries shared behavior.
 type RevocationCoreOps[C any] struct {
+	// InTransaction runs one unit of work in a transaction, and MAY RUN THE
+	// CALLBACK MORE THAN ONCE: the postgres and mysql dialects repeat the
+	// whole transaction when the backend aborts it for a retryable conflict
+	// (see store.RetryOnConflict). So every callback below must OVERWRITE the
+	// captured variable it reports through, on every path that leaves the
+	// callback -- a value that only one attempt assigns survives an attempt
+	// that rolled back and reports work the database never kept.
 	InTransaction func(context.Context, func(C) error) error
 	// HasPending is a cheap, transaction-free probe for unpublished events. It
 	// lets PublishPending skip the write transaction on an idle Hub.
@@ -101,6 +108,11 @@ func (c RevocationCore[C]) publishPending(ctx context.Context, conn C, limit int
 func (c RevocationCore[C]) CompactPublished(ctx context.Context, cutoff time.Time) (int64, error) {
 	var deleted int64
 	err := c.ops.InTransaction(ctx, func(conn C) error {
+		// Reset first: this callback may run again after a retryable
+		// conflict, and DeleteExpiredLease can leave before the assignment
+		// below. Without the reset a later failed attempt would report the
+		// row count of an attempt the backend rolled back.
+		deleted = 0
 		if err := c.ops.DeleteExpiredLease(ctx, conn); err != nil {
 			return err
 		}
@@ -124,6 +136,11 @@ func (c RevocationCore[C]) AcquireHubRuntimeLease(
 	}
 	var fence int64
 	err = c.ops.InTransaction(ctx, func(conn C) error {
+		// Reset first, for the same reason CompactPublished does: a retried
+		// attempt whose publishPending fails would otherwise return the
+		// cursor an earlier, rolled-back attempt computed. That value fences
+		// the revocation stream, so a stale one skips events.
+		fence = 0
 		_, nextSeq, err := c.publishPending(ctx, conn, p.PublishLimit)
 		if err != nil {
 			return err
@@ -146,11 +163,11 @@ func (c RevocationCore[C]) AcquireHubRuntimeLease(
 //
 // It differs from AcquireHubRuntimeLease in the two ways that make it safe to
 // call from a Hub that is already serving. It preserves the caller's cursor
-// rather than fencing to the head of the stream, so every revocation published
-// during the stall is still replayed -- a startup fence is only correct because
-// a fresh process holds no cached credential to evict. And it removes ONLY the
-// caller's own row (live or expired), so any other holder's row makes the
-// INSERT conflict and reports ErrHubAlreadyRunning. That second Hub may have
+// rather than fencing to the head of the stream, so the caller still replays
+// every revocation published during the stall -- a startup fence is only
+// correct because a fresh process holds no cached credential to evict. And it
+// removes ONLY the caller's own row (live or expired), so any other holder's
+// row makes the INSERT conflict and reports ErrHubAlreadyRunning. That second Hub may have
 // consumed and compacted past this cursor, which no reacquisition can undo, so
 // the caller must fence itself instead.
 //

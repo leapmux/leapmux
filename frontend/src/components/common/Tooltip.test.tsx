@@ -248,7 +248,7 @@ describe('tooltip', () => {
 
   /**
    * Touch pointers get no tooltip. A tap once opened it — with no hover
-   * delay — but the tooltip covered the very element the user had just
+   * delay — but the tooltip covered the very element that the user just
    * pressed, so a tap must leave it closed. A tap synthesizes `mouseenter`
    * before `click`; the `click` dismissal clears that pending hover timer,
    * so nothing appears later either.
@@ -417,6 +417,31 @@ describe('tooltip on a disabled control', () => {
     expect(description?.textContent).toBe('Open the hub over HTTPS to add a passkey.')
   })
 
+  // A dialog that greys out a destructive action states WHY in its body, and
+  // wraps the control so a reader who hovers learns it too. Without
+  // `describedBy` the same sentence reaches the accessibility tree twice, and
+  // any locator that matches on the text resolves to two elements.
+  it('points at the caller element and renders no copy of its own', () => {
+    const reason = 'This worktree is locked (held by the e2e test).'
+    render(() => (
+      <div>
+        <div id="visible-reason">{reason}</div>
+        <Tooltip text={reason} describedBy="visible-reason">
+          <button type="button" disabled>Delete</button>
+        </Tooltip>
+      </div>
+    ))
+
+    const button = screen.getByRole('button', { name: 'Delete' })
+    expect(button.getAttribute('aria-describedby')).toBe('visible-reason')
+
+    // ONE node carries the sentence: the one the caller already renders.
+    const carrying = Array.from(document.querySelectorAll('*'))
+      .filter(el => el.children.length === 0 && el.textContent === reason)
+    expect(carrying).toHaveLength(1)
+    expect(carrying[0]!.id).toBe('visible-reason')
+  })
+
   // The wrapper is `display: contents` everywhere else, which puts it outside
   // the box tree and therefore outside the hit test -- so it would never see
   // the pointer that the disabled child itself refuses.
@@ -464,7 +489,8 @@ describe('tooltip on a disabled control', () => {
   })
 
   // `aria-disabled` takes pointer events of its own, so it needs no wrapper
-  // box -- but it still reads as unavailable, so it is still owed the reason.
+  // box -- but it still reads as unavailable, so the component still owes it
+  // the reason.
   it('describes an aria-disabled control too', () => {
     render(() => (
       <Tooltip text="Not while the worktree is dirty.">
@@ -474,5 +500,115 @@ describe('tooltip on a disabled control', () => {
 
     const button = screen.getByRole('button', { name: 'Switch branch' })
     expect(button.getAttribute('aria-describedby')).toBeTruthy()
+  })
+
+  // And it gets NO box. The wider predicate drove the wrapper too, so an
+  // `aria-disabled` control -- which dispatches its own pointer events and
+  // needs no wrapper at all -- put an inert inline-flex box into whatever row
+  // it sat in.
+  it('leaves an aria-disabled control boxless', () => {
+    render(() => (
+      <Tooltip text="Not while the worktree is dirty.">
+        <button type="button" aria-disabled="true">Switch branch</button>
+      </Tooltip>
+    ))
+
+    const button = screen.getByRole('button', { name: 'Switch branch' })
+    expect(wrapperOf(button).style.display).toBe('contents')
+  })
+
+  // An EMPTY tooltip has nothing a hover could open, so a disabled control
+  // under one needs no box either. Two dialog footers ship exactly this shape:
+  // a ConfirmButton wrapped in `<Tooltip text={reason() || undefined}>`, where
+  // the button is also disabled for unrelated reasons -- an in-flight submit,
+  // a repository state that is still loading. Without this the footer's flex
+  // row gains an inert box at rest and again for the whole submit.
+  it('leaves the wrapper boxless when there is nothing to show', async () => {
+    const [reason, setReason] = createSignal<string | undefined>(undefined)
+    render(() => (
+      <Tooltip text={reason()}>
+        <button type="button" disabled>Delete</button>
+      </Tooltip>
+    ))
+
+    const button = screen.getByRole('button', { name: 'Delete' })
+    expect(wrapperOf(button).style.display).toBe('contents')
+    expect(button).not.toHaveAttribute('aria-describedby')
+
+    // And it takes the box the moment there IS something to show.
+    setReason('This branch is checked out.')
+    await flushAttributeChange()
+    expect(wrapperOf(button).style.display).toBe('inline-flex')
+    expect(button.getAttribute('aria-describedby')).toBeTruthy()
+  })
+
+  // Per INSTANCE, and the instance count is not limited by the call sites:
+  // ClippedText, RelativeTime and IconButton each render a Tooltip
+  // unconditionally, so a busy chat screen holds hundreds and a virtualized
+  // list allocates and disconnects one for each recycled row on the scroll
+  // path.
+  it('installs no MutationObserver when there is nothing to show', () => {
+    const RealObserver = globalThis.MutationObserver
+    const constructed = vi.fn()
+    class CountingObserver extends RealObserver {
+      constructor(callback: MutationCallback) {
+        super(callback)
+        constructed()
+      }
+    }
+    vi.stubGlobal('MutationObserver', CountingObserver)
+    try {
+      render(() => (
+        <Tooltip>
+          <button type="button" disabled>Delete</button>
+        </Tooltip>
+      ))
+      expect(constructed).not.toHaveBeenCalled()
+
+      render(() => (
+        <Tooltip text="This branch is checked out.">
+          <button type="button" disabled>Remove</button>
+        </Tooltip>
+      ))
+      expect(constructed).toHaveBeenCalledTimes(1)
+    }
+    finally {
+      vi.stubGlobal('MutationObserver', RealObserver)
+    }
+  })
+
+  // The listeners sit on the wrapper AND on the target at once, so a disabled
+  // flip cannot re-host them. Choosing one host made the disabled state a
+  // dependency of that effect: a flip while the pointer already rested on the
+  // control moved the listeners with no new `mouseenter` behind them, and that
+  // hover's tooltip never opened.
+  it('still opens from the target while the control is enabled', () => {
+    render(() => (
+      <Tooltip text="Save the draft.">
+        <button type="button">Save</button>
+      </Tooltip>
+    ))
+
+    const button = screen.getByRole('button', { name: 'Save' })
+    fireEvent.mouseEnter(button)
+    vi.advanceTimersByTime(700)
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('Save the draft.')
+  })
+
+  it('opens from the wrapper after the control becomes disabled under the pointer', async () => {
+    const [disabled, setDisabled] = createSignal(false)
+    render(() => (
+      <Tooltip text="Saving...">
+        <button type="button" disabled={disabled()}>Save</button>
+      </Tooltip>
+    ))
+
+    const button = screen.getByRole('button', { name: 'Save' })
+    setDisabled(true)
+    await flushAttributeChange()
+
+    fireEvent.mouseEnter(wrapperOf(button))
+    vi.advanceTimersByTime(700)
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('Saving...')
   })
 })

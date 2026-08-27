@@ -37,7 +37,7 @@ export interface PillOptionSpec<T> {
  * Not exported: a pill outside a PillGroup has no radiogroup to belong to, and
  * a lone role=radio is worse than a plain button. A genuine two-state control
  * is a different widget — a button with `aria-pressed`, which announces that
- * un-pressing is available. Do not reach for this one there.
+ * un-pressing is available. Do not use this one there.
  */
 function PillOption(props: {
   selected: boolean
@@ -109,7 +109,7 @@ export function PillGroup<T>(props: {
    * Show the current selection and refuse to change it.
    *
    * For a group another control governs -- the theme chooser's mode pills while
-   * "Match UI theme" is on. The pills stay VISIBLE rather than being removed,
+   * "Match UI theme" is on. The pills stay VISIBLE rather than disappearing,
    * because what they display is the answer the governing control produced, and
    * a user who cannot see it cannot tell what turning the switch off would give
    * them.

@@ -68,7 +68,7 @@ describe('createCaptchaForm', () => {
     captcha.reset()
 
     expect(captcha.payload()).toBeNull()
-    // A honeypot an autofill heuristic filled must not poison the retry.
+    // A honeypot an autofill heuristic filled must not make the retry fail.
     expect(captcha.honeypot()).toBe('')
     expect(captcha.fields()).toEqual({ captchaPayload: '', honeypot: '' })
     expect(fieldReset).toHaveBeenCalledOnce()
@@ -136,7 +136,7 @@ describe('a captcha this page cannot solve', () => {
     expect(captcha.blocksSubmit()).toBe(true)
   })
 
-  it('stays out of the way when the page can solve the challenge', () => {
+  it('does not block when the page can solve the challenge', () => {
     setSystemInfoMock({ captchaEnabled: true, captchaUnsolvableHere: false })
     const captcha = createCaptchaForm()
 

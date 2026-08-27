@@ -17,7 +17,7 @@ interface CaptchaSectionProps {
 /**
  * The honeypot + captcha-field wiring every protected form renders. One
  * component keeps the honeypot/requirement-gate contract identical across
- * the login, signup, and complete-signup forms — they had already drifted
+ * the login, signup, and complete-signup forms — they already drifted
  * on this wiring once before.
  */
 export const CaptchaSection: Component<CaptchaSectionProps> = (props) => {

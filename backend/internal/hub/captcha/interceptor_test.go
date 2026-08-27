@@ -196,8 +196,8 @@ func TestInterceptorIgnoresOriginForTheSecureContextGate(t *testing.T) {
 			"Origin %q reached the Argon2 handler with no captcha token", origin)
 	}
 
-	// A real token still passes, so the check refuses the forgery and
-	// not simply refusing everything.
+	// A real token still passes, so the check refuses the forgery rather
+	// than refusing everything.
 	*called = false
 	payload := freshVerifiedPayload(t, e)
 	okReq := connect.NewRequest(&leapmuxv1.LoginRequest{CaptchaPayload: payload})

@@ -23,7 +23,7 @@ vi.mock('~/api/clients', () => ({
 const mockIsCaptchaEnabled = vi.fn<() => boolean>(() => false)
 const mockGetCaptchaProvider = vi.fn<() => number>(() => 1) // CaptchaProvider.ALTCHA
 // The hub requires an address exactly when it can verify one, so the
-// field's required-ness follows this.
+// field follows the same rule.
 const mockIsEmailEnabled = vi.fn(() => false)
 
 vi.mock('~/lib/systemInfo', () => ({
@@ -40,8 +40,8 @@ vi.mock('~/lib/systemInfo', () => ({
   getCaptchaSiteKey: () => '',
 }))
 
-// The stub surfaces the action the form binds, so this page's half of the
-// action contract is pinned (the hub siteverify check enforces the same
+// The stub surfaces the action the form binds, so this test pins this page's
+// half of the action contract (the hub siteverify check enforces the same
 // string server-side).
 vi.mock('~/components/common/CaptchaField', () => ({
   CaptchaField: (props: { action: string }) => <div data-testid="captcha-field" data-action={props.action} />,
@@ -113,7 +113,7 @@ describe('signup completion page (OAuthCompleteSignupPage)', () => {
     renderPage()
 
     await vi.waitFor(() => {
-      expect(screen.getByText('This signup link is invalid or has expired.')).toBeInTheDocument()
+      expect(screen.getByText('This signup link is invalid or expired.')).toBeInTheDocument()
     })
   })
 
@@ -145,7 +145,8 @@ describe('signup completion page (OAuthCompleteSignupPage)', () => {
         username: 'testuser',
         displayName: 'Test User',
         // The hub reads this only when the provider supplied nothing; a
-        // provider-supplied address always wins, so echoing it back is safe.
+        // provider-supplied address always takes precedence, so echoing it
+        // back is safe.
         email: 'test@example.com',
         captchaPayload: '',
         honeypot: '',

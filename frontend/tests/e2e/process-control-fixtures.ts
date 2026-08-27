@@ -31,9 +31,9 @@ import { getRecordedToasts, installToastRecorder } from './helpers/toast'
 import { loginViaToken, openWorkspace } from './helpers/ui'
 
 // Per-fixture PID registry written under `<dataDir>/pids.json`. The
-// global-teardown sweep picks this up so any process that survived a
-// crash (timeout, ungraceful worker shutdown, restart that throws
-// before mutableState catches up) is reaped before the Playwright run
+// global-teardown sweep reads this file and reaps any process that
+// survived a crash (timeout, ungraceful worker shutdown, restart that
+// throws before the code updates mutableState) before the Playwright run
 // exits. We append rather than overwrite so a sequence of restart
 // calls leaves a full history; the teardown loops over `pids` and
 // silently ignores already-dead entries.
@@ -175,8 +175,8 @@ export async function restartWorker(serverInfo: SeparateServerInfo) {
     env: { ...process.env, LEAPMUX_CLAUDE_DEFAULT_MODEL: 'sonnet', LEAPMUX_CLAUDE_DEFAULT_EFFORT: 'low', LEAPMUX_WORKER_NAME: 'test-worker' },
   })
   workerProc.unref()
-  // Track immediately so a crash before state update still gets cleaned
-  // up by the fixture teardown / global-teardown sweep.
+  // Track immediately so the fixture teardown / global-teardown sweep still
+  // cleans up after a crash that precedes the state update.
   trackSpawnedPid(serverInfo.dataDir, workerProc.pid!)
   // The REPLACEMENT worker feeds the same buffer, so a test that restarts one
   // gets both halves of its own window rather than losing everything the new
@@ -201,7 +201,7 @@ export async function restartWorker(serverInfo: SeparateServerInfo) {
     })
   }
   catch (err) {
-    // The new worker didn't come up in time; kill it so it doesn't leak.
+    // The new worker did not start in time; kill it so it doesn't leak.
     // Without this, mutableState still points at the previous (already
     // stopped) PID and the fixture teardown sees no surviving process,
     // leaving the just-spawned one orphaned for the OS.
@@ -254,8 +254,8 @@ export async function restartHub(serverInfo: SeparateServerInfo) {
     env: { ...process.env, LEAPMUX_CLAUDE_DEFAULT_MODEL: 'sonnet', LEAPMUX_CLAUDE_DEFAULT_EFFORT: 'low' },
   })
   hubProc.unref()
-  // Track immediately so a crash before state update still gets cleaned
-  // up by the fixture teardown / global-teardown sweep.
+  // Track immediately so the fixture teardown / global-teardown sweep still
+  // cleans up after a crash that precedes the state update.
   trackSpawnedPid(serverInfo.dataDir, hubProc.pid!)
   // Capture rather than `resume()`: both drain the stream, and only one of them
   // keeps what a hub that fails its health check below just said.
@@ -363,8 +363,8 @@ export const processTest = base.extend<
     await enableSignupViaAPI(hubUrl, adminToken)
 
     // Mint a registration key (new flow: admin creates key, hands it to
-    // worker via --registration-key). The old self-serve token flow
-    // (worker prints token, admin approves) was removed in #216.
+    // worker via --registration-key). PR #216 removed the old self-serve
+    // token flow (worker prints token, admin approves).
     const registrationKey = await mintRegistrationKeyViaAPI(hubUrl, adminToken)
 
     // Snapshot online workers BEFORE spawning so we can identify the
@@ -392,8 +392,9 @@ export const processTest = base.extend<
     output.capture(workerProc, 'worker')
 
     // Both waits run OUTSIDE any test, so a failure has no test to attach the
-    // tail to -- it is printed instead. Without it a worker that refused its
-    // registration key reports as a bare "Timed out waiting for worker".
+    // tail to -- `reportStartupFailure` prints it instead. Without it a worker
+    // that refused its registration key reports as a bare "Timed out waiting
+    // for worker".
     const workerId = await waitForNewOnlineWorkerViaAPI(hubUrl, adminToken, beforeIds)
       .catch(err => reportStartupFailure(output, 'worker registration', err))
     console.log(`[e2e] Worker connected: ${workerId}`)
@@ -493,10 +494,10 @@ export const processTest = base.extend<
     // so their errors are otherwise invisible and a worker-side failure
     // surfaces only as a timeout on an unrelated locator.
     //
-    // Attached as a FILE, not a body: the list reporter truncates an inline
-    // attachment to its first line, which is the startup banner and nothing
-    // else. A path lands the whole tail under test-results/ where it can
-    // actually be read.
+    // The fixture attaches it as a FILE, not as a body: the list reporter
+    // truncates an inline attachment to its first line, which is the startup
+    // banner and nothing else. A path puts the whole tail under test-results/,
+    // where a reader can actually open it.
     if (testInfo.status !== testInfo.expectedStatus) {
       const logPath = testInfo.outputPath('server-log.txt')
       writeFileSync(logPath, separateHubWorker.output.since(serverMark))
@@ -518,8 +519,9 @@ export const processTest = base.extend<
     // Stop the workspace's agents on the worker BEFORE the hub soft-delete -- the
     // same cascade the browser app runs (deleteWorkspaceViaAPI only does the hub
     // half). Without it the worker keeps every test's Claude CLI subprocess alive;
-    // these accumulate on the shared separateHubWorker across the suite and starve
-    // resources, flaking later settings-menu interactions. Best effort.
+    // these accumulate on the shared separateHubWorker across the suite and
+    // exhaust resources, which makes later settings-menu interactions flaky.
+    // Best effort.
     try {
       await cleanupWorkspaceViaAPI(hubUrl, adminToken, workerId, workspaceId)
     }

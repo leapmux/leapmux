@@ -81,10 +81,10 @@ func (h *APIAuthHandler) handleTokenAuthorizationCode(w http.ResponseWriter, r *
 		return
 	}
 	// The grant row's user_id is a column, so a blank one is corrupt data, not a
-	// programmer error: it is refused as an unusable grant rather than panicked
-	// on. The device-code path has always had this guard (postTouchPollOAuthError
-	// answers authorization_pending); this path did not, so a blank
-	// cli_authorization_codes.user_id reached the mint.
+	// programmer error: the handler refuses it as an unusable grant rather than
+	// panics on it. The device-code path always had this guard
+	// (postTouchPollOAuthError answers authorization_pending); this path did
+	// not, so a blank cli_authorization_codes.user_id reached the mint.
 	grantUID, mintOK := userid.New(row.UserID)
 	if !mintOK {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "code expired or already consumed")
@@ -122,9 +122,9 @@ func (h *APIAuthHandler) handleTokenAuthorizationCode(w http.ResponseWriter, r *
 // A struct rather than six positional arguments, because two of them are
 // adjacent same-typed message strings that a call site can transpose in
 // silence -- the caller would then answer "code expired" for an internal
-// failure and log the grant message for a live one. Naming them at the call
-// site makes that mistake visible, and a seventh fact about the consent is
-// added in one place.
+// failure and log the grant message for a live one. Writing their names at
+// the call site makes that mistake visible, and a seventh fact about the
+// consent is added in one place.
 type consentedGrant struct {
 	// id is the grant row this mint redeems. It is what the mint reads as its
 	// AUTHORITY: /auth/cli/token carries no session at all, so the browser
@@ -180,7 +180,7 @@ func (h *APIAuthHandler) handleTokenDeviceCode(w http.ResponseWriter, r *http.Re
 		return
 	}
 	// Throttle / expiry / already-consumed run before TouchPoll so a
-	// fast-polling client gets `slow_down` rather than burning the
+	// fast-polling client gets `slow_down` rather than consuming the
 	// interval window. Pending and denied polls touch immediately. An
 	// approved poll also touches immediately -- before, and outside, the
 	// issuance transaction -- so last_polled_at advances (keeping the
@@ -202,8 +202,8 @@ func (h *APIAuthHandler) handleTokenDeviceCode(w http.ResponseWriter, r *http.Re
 	}
 	// Advance last_polled_at outside the issuance transaction so the
 	// throttle anchor moves forward even if issuance later fails and
-	// rolls back -- otherwise a client hammering an approved-but-
-	// transiently-failing grant would never get slow_down. Touch errors
+	// rolls back -- otherwise a client that polls an approved-but-
+	// transiently-failing grant rapidly would never get slow_down. Touch errors
 	// are internal, matching the pending/denied path above.
 	if err := h.store.DeviceAuthorizations().TouchPoll(r.Context(), deviceCode); err != nil {
 		writeInternalError(w, "device authorization poll update failed", err)
@@ -222,7 +222,26 @@ func (h *APIAuthHandler) handleTokenDeviceCode(w http.ResponseWriter, r *http.Re
 	// holds; issuing a token here would turn a request to verify an existing
 	// credential into a second credential, which is precisely the widening
 	// the step-up flow exists to avoid.
-	if row.ElevateTokenID != "" {
+	if isElevationGrant(row) {
+		// The approval FLAG is not the answer, so this reads the credential
+		// itself. An approval whose elevation never committed leaves the row
+		// approved with no window; answering "elevated" there tells the CLI
+		// to retry a command the hub refuses again, with no error the user
+		// can act on. The check runs before Consume, so a grant that cannot
+		// report success is not spent reporting it.
+		current, err := h.credentialElevationIsCurrent(r.Context(), row.ElevateTokenID)
+		if err != nil {
+			writeInternalError(w, "elevation credential lookup failed", err)
+			return
+		}
+		if !current {
+			// Not errElevationGrantUnavailable's own text. That sentence says
+			// the credential is GONE, and the more common case here is a
+			// credential that is present with no window on it.
+			writeOAuthError(w, http.StatusBadRequest, "invalid_grant",
+				"that command-line credential is not verified; start the verification again")
+			return
+		}
 		affected, err := h.store.DeviceAuthorizations().Consume(r.Context(), deviceCode, h.now().UTC())
 		if err != nil {
 			writeInternalError(w, "elevation grant consumption failed", err)
@@ -280,7 +299,7 @@ func (h *APIAuthHandler) preTouchPollOAuthError(row *store.DeviceAuthorization, 
 //
 // A BODY, not a (code, description) pair: the two are adjacent same-typed
 // strings that a call site can transpose in silence, which is the exact smell
-// consentedGrant above was introduced to remove. The type this returns is the
+// consentedGrant above exists to remove. The type this returns is the
 // one the file already writes.
 func (h *APIAuthHandler) postTouchPollOAuthError(row *store.DeviceAuthorization) (oauthErrorResponse, bool) {
 	switch row.Approved {
@@ -448,8 +467,6 @@ func (h *APIAuthHandler) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, http.StatusUnauthorized, "invalid_grant", "")
 		return
 	}
-	flightCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), RefreshWorkTimeout)
-	defer cancel()
 	// Blocking Do (not DoChan + ctx select) is deliberate: a refresh rotates the
 	// token single-use, so once the flight starts, every caller -- including one
 	// whose client disconnected -- must run to completion and receive the same
@@ -457,7 +474,14 @@ func (h *APIAuthHandler) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	// replacement. flightCtx (WithoutCancel) already decouples the work from the
 	// leader's request cancellation. This is why it differs from the read-only
 	// bearer-validation singleflight, which is safe to abandon on disconnect.
+	//
+	// This code builds the context and its timer INSIDE the closure, because
+	// only the leader's closure runs. Built outside, every follower allocated
+	// a context and armed a timer that nothing ever read. oauth_handler.go's
+	// providerFlight.Do already builds its deadline this way.
 	result, _, _ := h.refreshFlight.Do(parsed.flightKey(), func() (any, error) {
+		flightCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), RefreshWorkTimeout)
+		defer cancel()
 		return h.refresh(flightCtx, parsed), nil
 	})
 	writeRefreshResponse(w, result.(refreshResponse))
@@ -470,7 +494,7 @@ func (h *APIAuthHandler) refresh(ctx context.Context, parsed parsedRefreshBearer
 	}
 
 	now := h.now()
-	// The refresh window is clipped to the credential's absolute lifetime,
+	// This leg clips the refresh window to the credential's absolute lifetime,
 	// measured from created_at. Without the clip every rotation would push
 	// the window a full RefreshTokenTTL forward, so a CLI that refreshes
 	// weekly would keep ONE browser consent alive for ever -- and the CLI
@@ -495,12 +519,12 @@ func (h *APIAuthHandler) refresh(ctx context.Context, parsed parsedRefreshBearer
 		return refreshOAuthError(http.StatusUnauthorized, "invalid_grant",
 			"this credential reached its maximum lifetime; run `leapmux control auth login` again")
 	}
-	// Both windows are clipped to the SAME ceiling. Bearer validation reads
+	// This leg clips both windows to the SAME ceiling. Bearer validation reads
 	// expires_at alone, so an unclipped access token outlives the absolute
 	// lifetime this leg just enforced: the last rotation before the ceiling
 	// wrote a full hour past it, and the credential kept authenticating for
-	// that hour after the hub had already answered "this credential reached
-	// its maximum lifetime".
+	// that hour after the hub already answered "this credential reached its
+	// maximum lifetime".
 	pair := h.validator.DeriveRefreshBearerPair(
 		auth.BearerKindAPI,
 		row.ID,
@@ -518,8 +542,8 @@ func (h *APIAuthHandler) refresh(ctx context.Context, parsed parsedRefreshBearer
 	// on the existing row. The access secret_hash + expires_at must
 	// also advance, otherwise the bearer we hand back (`row.ID` +
 	// newAccess) won't validate against `row.SecretHash`, which still
-	// hashes the rotated-out access secret. The previous refresh
-	// hash and its grace window get preserved so a racing retry can
+	// hashes the rotated-out access secret. The rotation preserves the
+	// previous refresh hash and its grace window so a racing retry can
 	// deterministically derive and re-emit this same pair on any Hub.
 	prevHash := row.RefreshHash
 	prevExp := now.Add(auth.RefreshReuseGrace)
@@ -581,7 +605,7 @@ func (h *APIAuthHandler) refreshValidationError(tokenID string, err error) refre
 	switch {
 	case errors.Is(err, auth.ErrRefreshReused):
 		// Refuse to hand out the derived pair after a confirmed
-		// reuse — the validator has already revoked the row.
+		// reuse — the validator already revoked the row.
 		h.lifecycle.BearerRevoked(auth.BearerKindAPI, tokenID)
 		return refreshOAuthError(http.StatusUnauthorized, "invalid_grant", "refresh reuse detected; token revoked")
 	case errors.Is(err, auth.ErrTokenRevoked), errors.Is(err, auth.ErrTokenExpired):
@@ -616,7 +640,7 @@ func (h *APIAuthHandler) handleRevoke(w http.ResponseWriter, r *http.Request) {
 	// session by posting `lmx_a<victim_id>_anything`. Already-revoked
 	// / already-expired rows still match the secret and proceed
 	// (idempotent re-revoke is a 200 OK), so a client retrying after
-	// a network blip doesn't need to handle 401.
+	// a brief network failure doesn't need to handle 401.
 	kind, tokenID, err := h.validator.VerifyBearerSecret(r.Context(), bearer)
 	if err != nil {
 		if errors.Is(err, auth.ErrInvalidToken) {

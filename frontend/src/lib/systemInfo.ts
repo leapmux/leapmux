@@ -33,7 +33,7 @@ interface SystemInfoSnapshot {
 
 // The pre-fetch answers: every value is the safest "feature off" guess,
 // so a consumer that reads before the first load fails closed rather
-// than flashing an affordance the hub may not back.
+// than flashing an affordance the hub may not support.
 const DEFAULTS: SystemInfoSnapshot = {
   soloMode: false,
   signupEnabled: false,
@@ -65,13 +65,13 @@ function current(): SystemInfoSnapshot {
 
 // loadSystemInfo fetches the hub's system info and caches it (unless `force`).
 //
-// A failure REJECTS rather than being swallowed. The defaults above
+// A failure REJECTS; this function never discards it. The defaults above
 // (notably `soloMode = false`) are fabrications until a call succeeds, and a
-// caller that cannot tell "the hub said non-solo" from "we never asked" makes
-// unrecoverable decisions on them: on a solo hub the app would render a "Log
-// out" button whose one click sends the user to a login form no credentials
-// can satisfy. The snapshot still lands only on success, so a failed load
-// is retried by the next unforced call.
+// caller that cannot tell "the hub said non-solo" from "nobody asked yet"
+// makes unrecoverable decisions on them: on a solo hub the app would render a
+// "Log out" button whose one click sends the user to a login form no
+// credentials can satisfy. The snapshot still lands only on success, so the
+// next unforced call retries a failed load.
 //
 // `force` re-fetches and rewrites the snapshot, so a caller that suspects its
 // view is stale (a login denied as "captcha verification failed" after
@@ -141,10 +141,10 @@ export function isSetupRequired(): boolean {
 }
 
 // isEmailEnabled returns whether the hub has SMTP configured. Components
-// gate optional email affordances (e.g. the "Send email" button on the
-// worker registration dialog) on this flag — the corresponding RPC
-// returns FailedPrecondition without SMTP, so showing a button that
-// can't possibly work would mislead users.
+// show optional email affordances (e.g. the "Send email" button on the
+// worker registration dialog) only when this flag is true — the
+// corresponding RPC returns FailedPrecondition without SMTP, so showing a
+// button that can't possibly work would mislead users.
 export function isEmailEnabled(): boolean {
   return current().emailEnabled
 }
@@ -159,12 +159,12 @@ export type PasskeyBlocker = 'insecure-context' | 'no-webauthn' | 'origin-not-al
 // It is the SAME test @simplewebauthn/browser applies before it touches
 // navigator.credentials, and it must stay the same test. A surface that
 // offers a ceremony the library then refuses shows the library's own
-// message, "WebAuthn is not supported in this browser" -- which names the
-// wrong culprit nearly every time it appears. The browser supports
+// message, "WebAuthn is not supported in this browser" -- which identifies
+// the wrong cause nearly every time it appears. The browser supports
 // passkeys. The page is not secure, so the browser exposes nothing to call.
 //
 // The browser is the only authority on this, which is why the hub does not
-// answer it. A user agent can be configured to trust an extra origin
+// answer it. A user can configure a user agent to trust an extra origin
 // (Chromium's --unsafely-treat-insecure-origin-as-secure), and a hub that
 // inferred the answer from the request Origin would refuse a page whose
 // ceremonies work.
@@ -184,8 +184,8 @@ function browserRunsWebAuthn(): boolean {
  * The BROWSER's reason comes first, and the order is deliberate. Its reason
  * is the more fundamental repair, and the hub's reason is wrong advice under
  * it: an operator who published http://hub.example:4327 and opened exactly
- * that address is told to "open the hub through its configured URL", which
- * is what they already did.
+ * that address reads "open the hub through its configured URL", which is
+ * what they already did.
  *
  * Every passkey affordance reads this, never the hub's half alone. That half
  * is not exported, so the mistake cannot be made.
@@ -207,7 +207,7 @@ export function passkeysUsableHere(): boolean {
   return passkeyBlocker() === null
 }
 
-// isSystemInfoLoaded reports whether a system-info answer has arrived.
+// isSystemInfoLoaded reports whether a system-info answer arrived.
 // Read any other getter only after this flips, or you read the fabricated
 // pre-fetch default.
 export function isSystemInfoLoaded(): boolean {
@@ -222,8 +222,8 @@ export function isSystemInfoLoaded(): boolean {
 //
 // It reports the HUB's answer and nothing else. Whether THIS page can mount
 // a widget is a second, unrelated question, and folding it in here made the
-// name say one thing and the value mean another: a caller asking whether
-// captcha is enabled was told no while the hub was about to say yes.
+// name say one thing and the value mean another: a caller that asked whether
+// captcha is enabled read no while the hub was about to say yes.
 // isCaptchaUnsolvableHere below answers that second question, and
 // createCaptchaForm is the one place that combines them.
 export function isCaptchaEnabled(): boolean {
@@ -253,9 +253,24 @@ export function isCaptchaEnabled(): boolean {
 // down instead; the polarity inverted when the two questions split.)
 export function isCaptchaUnsolvableHere(): boolean {
   return current().captchaEnabled
-    && current().captchaProvider === GenCaptchaProvider.ALTCHA
+    && captchaProviderNeedsSecureContext(current().captchaProvider)
     && typeof window !== 'undefined'
     && window.isSecureContext === false
+}
+
+// captchaProviderNeedsSecureContext reports whether this provider's widget
+// needs a secure context to mount. Only ALTCHA does: its proof of work calls
+// SubtleCrypto, which a page holds only in a secure context. Turnstile and
+// reCAPTCHA v3 both run on a plain-HTTP page.
+//
+// A NAMED predicate rather than a comparison spelled at the one call site,
+// because the backend spells the same rule the same way -- see
+// providerRequiresSecureContext in internal/hub/captcha/secure_context.go, the
+// gate that stands ALTCHA down on a hub that cannot serve one. The two sides
+// then read alike, and a fourth provider gets one entry here instead of a
+// silent `false` in front of a widget that cannot mount.
+export function captchaProviderNeedsSecureContext(provider: CaptchaProvider): boolean {
+  return provider === GenCaptchaProvider.ALTCHA
 }
 
 // getCaptchaProvider returns the active captcha provider (the generated
@@ -287,7 +302,7 @@ export function getAltchaAlgorithm(): string {
 // where the browser origin resolves to `tauri://localhost` and the only
 // viable URL is the unix-socket / named-pipe address). Empty otherwise — the
 // caller should fall back to `window.location.origin`, which already reflects
-// the public-facing URL the user is connecting through.
+// the public-facing URL the user connects through.
 export function getWorkerHubUrl(): string {
   return current().workerHubUrl
 }
@@ -347,7 +362,7 @@ export function formatBuildTime(iso: string): string {
 
 // Canonical single-line identity string, matching backend/util/version.Format:
 //   '0.0.1-dev · 9c81b87 · feature/foo · Thu, 4/23/2026, 11:45:00 PM KST'
-// Branch is shown verbatim when present and non-main. Detached HEAD
+// This function shows the branch verbatim when present and non-main. Detached HEAD
 // (tag / ad-hoc checkouts) and 'main' both render as empty so the
 // banner stays clean; the '-dev' suffix on version is what
 // distinguishes a dev build from a release.

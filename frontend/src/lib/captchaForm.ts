@@ -20,7 +20,7 @@ export interface CaptchaFormState {
   /** The solved payload; null until the widget verifies. */
   payload: () => string | null
   setPayload: (payload: string | null) => void
-  /** The honeypot value; it rides on every protected request. */
+  /** The honeypot value; the form sends it on every protected request. */
   honeypot: () => string
   setHoneypot: (value: string) => void
   /** Wire the CaptchaField's imperative ref here. */
@@ -53,7 +53,7 @@ export interface CaptchaFormState {
  * createCaptchaForm owns the captcha lifecycle one protected form needs:
  * the payload and honeypot state, the reactive requirement gate, the
  * fail-closed bootstrap window, and the reset path. The three credential
- * forms consume this instead of re-wiring the same six pieces — they had
+ * forms consume this instead of re-wiring the same six pieces — they
  * already drifted on the bootstrap gate, which hid the widget on direct
  * page loads.
  */
@@ -68,8 +68,8 @@ export function createCaptchaForm(): CaptchaFormState {
   // `required` means "mount a widget and collect a payload", so an
   // unsolvable page is NOT required: no widget can mount there. It blocks
   // submission instead (see blocksSubmit), so the form never sends a request
-  // the hub is certain to deny. This is the ONE place the hub's answer and
-  // the page's ability are combined; isCaptchaEnabled reports the hub alone.
+  // the hub is certain to deny. This is the ONE place that combines the hub's
+  // answer and the page's ability; isCaptchaEnabled reports the hub alone.
   const required = () => !stoodDown() && isSystemInfoLoaded() && isCaptchaEnabled() && !unsolvable()
 
   return {
@@ -89,7 +89,7 @@ export function createCaptchaForm(): CaptchaFormState {
     reset: (err?: unknown) => {
       // A rejected attempt must not linger: the consumed payload and a
       // honeypot value an autofill heuristic dropped into the hidden
-      // input both poison the retry identically.
+      // input both make the retry fail identically.
       setStoodDown(false)
       setPayload(null)
       setHoneypot('')

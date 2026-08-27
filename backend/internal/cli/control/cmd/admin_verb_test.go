@@ -26,8 +26,8 @@ const workerIPCSock = "unix:/tmp/agent.sock"
 // its own validation. The transport is then the only thing left to refuse
 // it.
 type adminLeaf struct {
-	// fn is the exported entry point, so the coverage check below can name
-	// a verb that nobody added here.
+	// fn is the exported entry point, so the coverage check below can
+	// identify a verb that nobody added here.
 	fn string
 	// name is the command path, for the subtest name.
 	name string

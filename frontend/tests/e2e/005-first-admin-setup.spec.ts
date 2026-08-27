@@ -8,8 +8,8 @@ import { enableVirtualAuthenticator } from './helpers/webauthn'
 /**
  * Uses a standalone unseeded dev server (no pre-registered admin) so we can
  * exercise the /setup flow. Scoped per test so each test sees a fresh
- * setup-mode instance; the shared fixtures from fixtures.ts can't be used
- * because that fixture signs up `admin` automatically.
+ * setup-mode instance; this file cannot use the shared fixtures from
+ * fixtures.ts, because that fixture signs up `admin` automatically.
  */
 // Playwright fixtures declare their dependencies by destructuring the first
 // parameter; this fixture has no dependencies, hence the empty pattern.
@@ -37,12 +37,12 @@ test.describe('First-admin setup', () => {
     await expect(page).toHaveURL(/\/setup$/)
     await expect(page.getByRole('heading', { name: /Welcome to LeapMux/i })).toBeVisible()
 
-    // No theme control before an account exists: a theme is stored per account,
-    // and this page is what runs when there is not one yet. The page still
-    // paints -- the default palette, at whatever the OS asks for.
+    // No theme control before an account exists: the app stores a theme per
+    // account, and this page is what runs when there is not one yet. The page
+    // still paints -- the default palette, at whatever the OS asks for.
     //
-    // Folded into this test rather than given one of its own: the fixture in
-    // this file boots a dedicated unseeded dev instance per `test()`.
+    // This check lives in this test rather than in one of its own: the fixture
+    // in this file boots a dedicated unseeded dev instance per `test()`.
     await expect(page.getByTestId('theme-chooser')).toHaveCount(0)
     await expect(page.locator('html')).toHaveAttribute('data-ui-theme', 'default')
   })
@@ -77,7 +77,7 @@ test.describe('First-admin setup', () => {
   })
 
   // The mirror rule, and the reason it moved out of SetupPage: the page read
-  // the setup state from onMount, before the system info had arrived, so a
+  // the setup state from onMount, before the system info arrived, so a
   // cold load answered the fabricated "setup required" and bounced /setup to
   // /login and straight back.
   test('/setup gives way to /login once an administrator exists', async ({ page }) => {
@@ -130,7 +130,7 @@ test.describe('First-admin setup', () => {
 
   // The first administrator picks a credential the same way anybody else
   // does. The hub used to refuse BeginPasskeySignUp during initial setup and
-  // the page hid the method pills to match; both halves went at once. The
+  // the page hid the method pills to match; one change removed both. The
   // account is still an admin, and it still claims the reserved `admin` name.
   test('setup accepts a passkey for the first administrator', async ({ page, server, context }) => {
     await enableVirtualAuthenticator(page)

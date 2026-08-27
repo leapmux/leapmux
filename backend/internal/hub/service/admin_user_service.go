@@ -156,7 +156,7 @@ func storeConnectError(err error, op string) error {
 		// A stale or truncated cursor is the caller's to fix, and the fix
 		// is not obvious from the parse error alone. ErrInvalidCursor is
 		// its own sentinel and does NOT wrap ErrInvalidArgument, so
-		// without this arm it read as a hub fault — and WorkerManagement
+		// without this case it read as a hub fault — and WorkerManagement
 		// classifies the same sentinel as InvalidArgument, so the two
 		// admin surfaces disagreed.
 		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf(
@@ -233,7 +233,7 @@ func revokeByID(ctx context.Context, id, op, notFoundFormat string, verb func(co
 // second time and get whatever a concurrent revocation left.
 //
 // It takes the minted userid.UserID alone and spells the row id from it, so
-// no caller can pass an id and a userid that name two different users.
+// no caller can pass an id and a userid that identify two different users.
 func revokeEveryUserCredential(ctx context.Context, tx store.Store, uid userid.UserID) (apiCount, delegationCount, committedGeneration int64, err error) {
 	if err := tx.Sessions().DeleteByUser(ctx, uid); err != nil {
 		return 0, 0, 0, fmt.Errorf("delete sessions: %w", err)
@@ -253,11 +253,11 @@ func revokeEveryUserCredential(ctx context.Context, tx store.Store, uid userid.U
 	return apiCount, delegationCount, revoked.AuthGeneration, nil
 }
 
-// Page-size bounds every paginated admin RPC applies.
+// The page-size limits every paginated admin RPC applies.
 //
 // Exported because the CLI reads them: it refuses an out-of-range --limit
 // before the dial so the operator gets an answer that identifies the flag.
-// The two sides therefore name ONE range. They act on it differently -- the
+// The two sides therefore state ONE range. They act on it differently -- the
 // hub caps an oversized limit and returns a page, the CLI refuses it -- and
 // that is deliberate: an operator who asks for 900 rows is better served by
 // the range than by 500 rows that look like the whole answer.
@@ -379,7 +379,8 @@ func (s *AdminUserService) GetUser(ctx context.Context, req *connect.Request[lea
 // administrator and signs in as them. See
 // requireElevatedSessionForDurableAuthority.
 func (s *AdminUserService) CreateUser(ctx context.Context, req *connect.Request[leapmuxv1.CreateUserRequest]) (*connect.Response[leapmuxv1.CreateUserResponse], error) {
-	if err := requireElevatedSessionForDurableAuthority(ctx, s.now()); err != nil {
+	actor, err := requireElevatedSessionForDurableAuthority(ctx, s.now())
+	if err != nil {
 		return nil, err
 	}
 	msg := req.Msg
@@ -409,24 +410,26 @@ func (s *AdminUserService) CreateUser(ctx context.Context, req *connect.Request[
 	// nothing to verify. Administrators and explicit email_verified=true
 	// requests pass.
 	//
-	// Through auth.EmailVerificationSatisfied, which is the ONE derivation
+	// Through auth.EmailVerificationFacts.Satisfied, which is the ONE derivation
 	// of the administrator exemption -- the interceptor, both login legs and
 	// UpdateUser read it too. Spelled out here as a fourth copy, a later
 	// change to the exemption would reach those three and silently miss
 	// this one, and the two admin verbs would then disagree about which
 	// accounts may exist without an address.
 	//
-	// The administrator arm rests on that exemption alone now. It used to
+	// The administrator branch rests on that exemption alone now. It used to
 	// rest on CreateUser forcing email_verified in the database, which this
 	// change removed: the column records whether somebody confirmed the
 	// address, and forcing it made an administrator's unconfirmed address a
 	// valid self-service password-reset target.
-	if email == "" && s.set != nil && !auth.EmailVerificationSatisfied(
-		settings.EmailVerificationEffective(s.set.Snapshot(ctx)), msg.GetIsAdmin(), msg.GetEmailVerified()) {
+	if email == "" && s.set != nil && !(auth.EmailVerificationFacts{
+		IsAdmin:       msg.GetIsAdmin(),
+		EmailVerified: msg.GetEmailVerified(),
+	}).Satisfied(settings.EmailVerificationEffective(s.set.Snapshot(ctx))) {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("email is required when the hub requires email verification"))
 	}
 
-	// Pre-check availability so a collision is reported as a collision;
+	// Pre-check availability so the hub reports a collision as a collision;
 	// the unique index remains the real guard against the race.
 	if err := CheckUsernameAvailable(ctx, s.store, username); err != nil {
 		return nil, AvailabilityConnectError(err)
@@ -442,18 +445,25 @@ func (s *AdminUserService) CreateUser(ctx context.Context, req *connect.Request[
 	// EmailVerified is what the operator asked for, and nothing forces it:
 	// the column records whether somebody confirmed the address, and an
 	// administrator's address is no more confirmed than anybody else's. The
-	// login gate takes its own exemption; see auth.EmailVerificationSatisfied.
-	user, err := CreateUser(ctx, s.store, CreateUserParams{
-		Username:      username,
-		PasswordHash:  hashed,
-		DisplayName:   displayName,
-		Email:         email,
-		EmailVerified: msg.GetEmailVerified(),
-		PasswordSet:   true,
-		IsAdmin:       msg.GetIsAdmin(),
-	})
-	if err != nil {
-		return nil, userConflictError(err, username, email)
+	// login gate takes its own exemption; see auth.EmailVerificationFacts.Satisfied.
+	var user *store.User
+	if err := commitUnderElevation(ctx, s.store, actor, s.now, func() error {
+		var createErr error
+		user, createErr = CreateUser(ctx, s.store, CreateUserParams{
+			Username:      username,
+			PasswordHash:  hashed,
+			DisplayName:   displayName,
+			Email:         email,
+			EmailVerified: msg.GetEmailVerified(),
+			PasswordSet:   true,
+			IsAdmin:       msg.GetIsAdmin(),
+		})
+		if createErr != nil {
+			return userConflictError(createErr, username, email)
+		}
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 	created, err := s.store.Users().GetByID(ctx, user.ID)
 	if err != nil {
@@ -469,13 +479,14 @@ func (s *AdminUserService) CreateUser(ctx context.Context, req *connect.Request[
 // unless the same request raises it explicitly. Carrying the old flag onto
 // the new address marked an address nobody confirmed as verified -- and a
 // verified address is a valid self-service password-reset target, so the
-// carry handed the account's recovery route to whatever address was typed.
+// carry handed the account's recovery route to whatever address the request
+// carried.
 //
 // There is NO administrator exception, and there used to be. The column now
 // records only whether somebody confirmed the address, so an administrator's
 // new address is exactly as unconfirmed as anybody else's; the exemption
 // that kept an administrator signed in lives at the login gate instead (see
-// auth.EmailVerificationSatisfied). With the carve-out, an administrator
+// auth.EmailVerificationFacts.Satisfied). With the carve-out, an administrator
 // moved to a brand-new address kept a live self-service reset route to it.
 //
 // The rule applies to a NEW address only, and only when it differs from the
@@ -488,7 +499,7 @@ func (s *AdminUserService) CreateUser(ctx context.Context, req *connect.Request[
 // can ever arrive.
 //
 // Rewriting the same address is excluded because the confirmation that
-// address already carries still holds. Both sides are compared through
+// address already carries still holds. This rule compares both sides through
 // NormalizeEmail, the same folding the write path applies, so a change of
 // letter case alone does not read as a new address.
 //
@@ -512,6 +523,22 @@ func resolveEmailVerified(user *store.User, msg *leapmuxv1.UpdateUserRequest) (v
 	return value, msg.EmailVerified != nil || value != user.EmailVerified
 }
 
+// An account's email address is a RECOVERY IDENTITY, so writing one is
+// creating durable new authority.
+//
+// {email: attacker@example.com, email_verified: true} in one call moves where
+// the public RequestPasswordReset mails a reset link, and that verb refuses
+// only an UNVERIFIED address -- so this pair hands over any account, exactly
+// as ResetPassword does, and leaves the victim's password working until the
+// attacker chooses to reset it. Restricting ResetPassword and not this
+// gained nothing: an un-elevated administrator cookie reached the same
+// outcome by the longer route.
+//
+// TWO gates, because the verb writes two classes. The email fields take the
+// strict session rule its sibling ResetPassword takes; a display-name edit or
+// a cleared pending address only needs the acting credential's own proven
+// factor, and refusing a bearer for those would break
+// `leapmux control admin user update --display-name` for no gain.
 func (s *AdminUserService) UpdateUser(ctx context.Context, req *connect.Request[leapmuxv1.UpdateUserRequest]) (*connect.Response[leapmuxv1.UpdateUserResponse], error) {
 	msg := req.Msg
 	user, err := resolveAdminUser(ctx, s.store, msg.GetId(), msg.GetUsername())
@@ -524,6 +551,15 @@ func (s *AdminUserService) UpdateUser(ctx context.Context, req *connect.Request[
 	clearPending := msg.GetClearPendingEmail()
 	if !updateDisplayName && !updateEmail && !updateEmailVerified && !clearPending {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("no fields to update"))
+	}
+	var actor *auth.UserInfo
+	if updateEmail || updateEmailVerified {
+		actor, err = requireElevatedSessionForDurableAuthority(ctx, s.now())
+	} else {
+		actor, err = requireElevatedActor(ctx, s.now())
+	}
+	if err != nil {
+		return nil, err
 	}
 
 	var sanitizedDisplayName string
@@ -552,60 +588,63 @@ func (s *AdminUserService) UpdateUser(ctx context.Context, req *connect.Request[
 	// state the guard refuses -- the two-call form of the same edit
 	// ({email_verified:false}, then {email:""}) was correctly refused, and the
 	// one-call form was not.
-	if updateEmail && msg.GetEmail() == "" &&
-		s.set != nil && !auth.EmailVerificationSatisfied(
-		settings.EmailVerificationEffective(s.set.Snapshot(ctx)), user.IsAdmin, emailVerifiedAfter) {
+	if updateEmail && msg.GetEmail() == "" && s.set != nil && !(auth.EmailVerificationFacts{
+		IsAdmin:       user.IsAdmin,
+		EmailVerified: emailVerifiedAfter,
+	}).Satisfied(settings.EmailVerificationEffective(s.set.Snapshot(ctx))) {
 		return nil, connect.NewError(connect.CodeInvalidArgument,
 			errors.New("cannot clear the email of an unverified account while the hub requires email verification"))
 	}
 
-	err = s.store.RunInTransaction(ctx, func(tx store.Store) error {
-		if updateDisplayName {
-			if err := tx.Users().UpdateProfile(ctx, store.UpdateUserProfileParams{
-				Username:    user.Username,
-				DisplayName: sanitizedDisplayName,
-				ID:          user.ID,
-			}); err != nil {
-				return fmt.Errorf("update display name: %w", err)
+	err = commitUnderElevation(ctx, s.store, actor, s.now, func() error {
+		return s.store.RunInTransaction(ctx, func(tx store.Store) error {
+			if updateDisplayName {
+				if err := tx.Users().UpdateProfile(ctx, store.UpdateUserProfileParams{
+					Username:    user.Username,
+					DisplayName: sanitizedDisplayName,
+					ID:          user.ID,
+				}); err != nil {
+					return fmt.Errorf("update display name: %w", err)
+				}
 			}
-		}
-		if updateEmail {
-			if err := CheckEmailAvailable(ctx, tx, msg.GetEmail(), user.ID); err != nil {
-				return AvailabilityConnectError(err)
+			if updateEmail {
+				if err := CheckEmailAvailable(ctx, tx, msg.GetEmail(), user.ID); err != nil {
+					return AvailabilityConnectError(err)
+				}
+				// The address only, and the flag at its CURRENT value. Any change
+				// to email_verified travels through its own verb below, whatever
+				// this request also changes -- including the lowering that an
+				// address change implies. Writing the lowered flag here instead
+				// would leave the fenced verb nothing to reduce, so it would skip
+				// the fence and leave every token of a now-unverified account
+				// live: the exact bug the two separate blocks exist to prevent.
+				// resolveEmailVerified decides the value; this call never does.
+				if err := SetEmailAndClearCompeting(ctx, tx, user.ID, msg.GetEmail(), user.EmailVerified); err != nil {
+					return userConflictError(err, "", msg.GetEmail())
+				}
 			}
-			// The address only, and the flag at its CURRENT value. Any change
-			// to email_verified travels through its own verb below, whatever
-			// this request also changes -- including the lowering that an
-			// address change implies. Writing the lowered flag here instead
-			// would leave the fenced verb nothing to reduce, so it would skip
-			// the fence and leave every token of a now-unverified account
-			// live: the exact bug the two separate blocks exist to prevent.
-			// resolveEmailVerified decides the value; this call never does.
-			if err := SetEmailAndClearCompeting(ctx, tx, user.ID, msg.GetEmail(), user.EmailVerified); err != nil {
-				return userConflictError(err, "", msg.GetEmail())
+			// A SEPARATE block, never the else-branch of the address update.
+			// UpdateEmailVerified is the FENCED verb: lowering email_verified
+			// reduces the user's auth gate, so it must bump auth_generation and
+			// tear the user's leases and channels down. UpdateEmail is not
+			// fenced. As one else-if, `{email, email_verified:false}` took the
+			// unfenced path and left every token of a now-unverified account
+			// live, while `{email_verified:false}` alone fenced them.
+			if applyEmailVerified {
+				if err := tx.Users().UpdateEmailVerified(ctx, store.UpdateUserEmailVerifiedParams{
+					EmailVerified: emailVerifiedAfter,
+					ID:            user.ID,
+				}); err != nil {
+					return fmt.Errorf("update email verified: %w", err)
+				}
 			}
-		}
-		// A SEPARATE block, never the else-arm of the address update.
-		// UpdateEmailVerified is the FENCED verb: lowering email_verified
-		// reduces the user's auth gate, so it must bump auth_generation and
-		// tear the user's leases and channels down. UpdateEmail is not
-		// fenced. As one else-if, `{email, email_verified:false}` took the
-		// unfenced path and left every token of a now-unverified account
-		// live, while `{email_verified:false}` alone fenced them.
-		if applyEmailVerified {
-			if err := tx.Users().UpdateEmailVerified(ctx, store.UpdateUserEmailVerifiedParams{
-				EmailVerified: emailVerifiedAfter,
-				ID:            user.ID,
-			}); err != nil {
-				return fmt.Errorf("update email verified: %w", err)
+			if clearPending {
+				if err := tx.Users().ClearPendingEmail(ctx, user.ID); err != nil {
+					return fmt.Errorf("clear pending email: %w", err)
+				}
 			}
-		}
-		if clearPending {
-			if err := tx.Users().ClearPendingEmail(ctx, user.ID); err != nil {
-				return fmt.Errorf("clear pending email: %w", err)
-			}
-		}
-		return nil
+			return nil
+		})
 	})
 	if err != nil {
 		var connectErr *connect.Error
@@ -621,7 +660,22 @@ func (s *AdminUserService) UpdateUser(ctx context.Context, req *connect.Request[
 	return connect.NewResponse(&leapmuxv1.UpdateUserResponse{User: adminUserToProto(updated)}), nil
 }
 
+// Deleting an account is irreversible, so it takes the elevation window.
+//
+// The class the window guards is an irreversible move of a credential or an
+// identity, and destruction is one: this verb soft-deletes the account, every
+// workspace it owns and every worker it registered, revokes every credential
+// it holds, and clears its passkeys -- with force, on another administrator.
+// requireElevatedActor rather than the stricter session rule, because
+// deletion creates no NEW way into an account and `leapmux control admin user
+// delete` is a documented headless verb; the admin scope that admits a
+// credential here was itself granted at a browser consent that demanded a
+// proven factor.
 func (s *AdminUserService) DeleteUser(ctx context.Context, req *connect.Request[leapmuxv1.DeleteUserRequest]) (*connect.Response[leapmuxv1.DeleteUserResponse], error) {
+	actor, err := requireElevatedActor(ctx, s.now())
+	if err != nil {
+		return nil, err
+	}
 	user, err := resolveAdminUser(ctx, s.store, req.Msg.GetId(), req.Msg.GetUsername())
 	if err != nil {
 		return nil, err
@@ -642,33 +696,40 @@ func (s *AdminUserService) DeleteUser(ctx context.Context, req *connect.Request[
 		return nil, err
 	}
 	var committedGeneration int64
-	err = s.store.RunInUserAuthTransaction(ctx, delUID, func(tx store.Store) error {
-		if err := tx.Workers().MarkAllDeletedByUser(ctx, delUID); err != nil {
-			return fmt.Errorf("mark workers deleted: %w", err)
-		}
-		if err := tx.Workspaces().SoftDeleteAllByUser(ctx, delUID); err != nil {
-			return fmt.Errorf("soft-delete workspaces: %w", err)
-		}
-		// User deletion implies every credential the user had dies with it.
-		// The teardown must run BEFORE the soft-delete below:
-		// LockUserAuthState filters `deleted_at IS NULL`, so a revoke that
-		// ran after tx.Users().Delete would abort the transaction and lose
-		// the cross-process teardown. store.RevokeUserTokens states the rule.
-		var err error
-		if _, _, committedGeneration, err = revokeEveryUserCredential(ctx, tx, delUID); err != nil {
-			return err
-		}
-		// Soft-delete does not CASCADE; clear passkey state now so
-		// credential_id uniqueness and encrypted material do not linger.
-		if err := RevokePasskeyAuthState(ctx, tx, user.ID); err != nil {
-			return err
-		}
-		if err := tx.Users().Delete(ctx, user.ID); err != nil {
-			return fmt.Errorf("delete user: %w", err)
-		}
-		return nil
+	err = commitUnderElevation(ctx, s.store, actor, s.now, func() error {
+		return s.store.RunInUserAuthTransaction(ctx, delUID, func(tx store.Store) error {
+			if err := tx.Workers().MarkAllDeletedByUser(ctx, delUID); err != nil {
+				return fmt.Errorf("mark workers deleted: %w", err)
+			}
+			if err := tx.Workspaces().SoftDeleteAllByUser(ctx, delUID); err != nil {
+				return fmt.Errorf("soft-delete workspaces: %w", err)
+			}
+			// User deletion implies every credential the user had dies with
+			// it. The teardown must run BEFORE the soft-delete below:
+			// LockUserAuthState filters `deleted_at IS NULL`, so a revoke
+			// that ran after tx.Users().Delete would abort the transaction
+			// and lose the cross-process teardown. store.RevokeUserTokens
+			// states the rule.
+			var err error
+			if _, _, committedGeneration, err = revokeEveryUserCredential(ctx, tx, delUID); err != nil {
+				return err
+			}
+			// Soft-delete does not CASCADE; clear passkey state now so
+			// credential_id uniqueness and encrypted material do not linger.
+			if err := RevokePasskeyAuthState(ctx, tx, user.ID); err != nil {
+				return err
+			}
+			if err := tx.Users().Delete(ctx, user.ID); err != nil {
+				return fmt.Errorf("delete user: %w", err)
+			}
+			return nil
+		})
 	})
 	if err != nil {
+		var connectErr *connect.Error
+		if errors.As(err, &connectErr) {
+			return nil, connectErr
+		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	// AFTER the commit, never inside it. SendDeregister persists a
@@ -686,6 +747,27 @@ func (s *AdminUserService) DeleteUser(ctx context.Context, req *connect.Request[
 		}
 	}
 	return connect.NewResponse(&leapmuxv1.DeleteUserResponse{}), nil
+}
+
+// issuedByAnotherPerson reports whether somebody OTHER than the account owner
+// issued this credential. It is the byAdministrator flag the issuance notice
+// takes, and the notice's wording turns on it: "An administrator issued a
+// command-line credential for your account. You did not authorize this
+// yourself" against a plain receipt.
+//
+// resolveAdminUser accepts the actor's OWN id or username, so an
+// administrator can issue a credential for themselves through this verb --
+// and used to mail themselves that alarm. It trains the one reader who can
+// act on a real one to treat the strongest notice the hub sends as noise.
+//
+// It FAILS CLOSED on a blank id, in the direction that keeps the alarm:
+// userid.UserID.Matches reports false when either side is empty, so an actor
+// the hub could not identify still reads as a third party.
+func issuedByAnotherPerson(actor *auth.UserInfo, owner *store.User) bool {
+	if actor == nil || owner == nil {
+		return true
+	}
+	return !actor.ID.Matches(owner.ID)
 }
 
 // liveWorkerIDs pages every worker the user still owns. The admin
@@ -714,24 +796,21 @@ func (s *AdminUserService) liveWorkerIDs(ctx context.Context, owner userid.UserI
 // Granting administration is creating durable new authority. See
 // requireElevatedSessionForDurableAuthority.
 func (s *AdminUserService) SetUserAdmin(ctx context.Context, req *connect.Request[leapmuxv1.SetUserAdminRequest]) (*connect.Response[leapmuxv1.SetUserAdminResponse], error) {
-	if err := requireElevatedSessionForDurableAuthority(ctx, s.now()); err != nil {
+	actor, err := requireElevatedSessionForDurableAuthority(ctx, s.now())
+	if err != nil {
 		return nil, err
 	}
 	user, err := resolveAdminUser(ctx, s.store, req.Msg.GetId(), req.Msg.GetUsername())
 	if err != nil {
 		return nil, err
 	}
-	// Removing your OWN administrator access is a one-way door from this
+	// Removing your OWN administrator access is irreversible from this
 	// surface: UpdateAdmin runs the fenced verb, so it logs the caller out
 	// at once, and the auth interceptor then denies every Admin* procedure
 	// to the account. Recovery needs the offline
 	// `leapmux recover bootstrap create-admin`, which itself refuses while
 	// any administrator remains. So the caller must state the intent.
 	if user.IsAdmin && !req.Msg.GetIsAdmin() {
-		actor, err := auth.MustGetUser(ctx)
-		if err != nil {
-			return nil, err
-		}
 		if actor.ID.String() == user.ID && !req.Msg.GetForce() {
 			return nil, connect.NewError(connect.CodeInvalidArgument,
 				errors.New("this removes your own administrator access; pass force to confirm"))
@@ -746,21 +825,26 @@ func (s *AdminUserService) SetUserAdmin(ctx context.Context, req *connect.Reques
 	// somebody confirmed the address, which is a fact promotion does not
 	// change, so there is nothing to force and nothing to repair. The
 	// exemption that keeps an administrator signed in lives at the login
-	// gate; see auth.EmailVerificationSatisfied.
-	if err := s.store.RunInTransaction(ctx, func(tx store.Store) error {
-		if err := tx.Users().UpdateAdmin(ctx, store.UpdateUserAdminParams{
-			IsAdmin: req.Msg.GetIsAdmin(),
-			ID:      user.ID,
+	// gate; see auth.EmailVerificationFacts.Satisfied.
+	if err := commitUnderElevation(ctx, s.store, actor, s.now, func() error {
+		if err := s.store.RunInTransaction(ctx, func(tx store.Store) error {
+			if err := tx.Users().UpdateAdmin(ctx, store.UpdateUserAdminParams{
+				IsAdmin: req.Msg.GetIsAdmin(),
+				ID:      user.ID,
+			}); err != nil {
+				return storeConnectError(err, "update admin flag")
+			}
+			return nil
 		}); err != nil {
-			return storeConnectError(err, "update admin flag")
+			var connectErr *connect.Error
+			if errors.As(err, &connectErr) {
+				return connectErr
+			}
+			return connect.NewError(connect.CodeInternal, err)
 		}
 		return nil
 	}); err != nil {
-		var connectErr *connect.Error
-		if errors.As(err, &connectErr) {
-			return nil, connectErr
-		}
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, err
 	}
 	updated, err := s.store.Users().GetByID(ctx, user.ID)
 	if err != nil {
@@ -784,14 +868,15 @@ func (s *AdminUserService) SetUserAdmin(ctx context.Context, req *connect.Reques
 // Resetting your OWN password ends your own sessions and bearer tokens as
 // well, including the credential that made this call. That is deliberate:
 // the effect must match the offline verb exactly, or the two paths drift.
-// Unlike self-demotion on SetUserAdmin it is not a one-way door -- the
-// caller chose the new password and can log in again with it -- so it takes
-// no force flag.
+// Unlike self-demotion on SetUserAdmin it is not irreversible -- the caller
+// chose the new password and can log in again with it -- so it takes no
+// force flag.
 // Setting an account's password without the old one is creating durable new
 // authority: it is account takeover by design, which is why it is an admin
 // verb at all. See requireElevatedSessionForDurableAuthority.
 func (s *AdminUserService) ResetPassword(ctx context.Context, req *connect.Request[leapmuxv1.ResetPasswordRequest]) (*connect.Response[leapmuxv1.ResetPasswordResponse], error) {
-	if err := requireElevatedSessionForDurableAuthority(ctx, s.now()); err != nil {
+	actor, err := requireElevatedSessionForDurableAuthority(ctx, s.now())
+	if err != nil {
 		return nil, err
 	}
 	msg := req.Msg
@@ -811,28 +896,40 @@ func (s *AdminUserService) ResetPassword(ctx context.Context, req *connect.Reque
 		return nil, err
 	}
 	var apiCount, delegationCount, committedGeneration int64
-	err = s.store.RunInUserAuthTransaction(ctx, uid, func(tx store.Store) error {
-		if err := tx.Users().UpdatePassword(ctx, store.UpdateUserPasswordParams{
-			PasswordHash: hashed,
-			ID:           user.ID,
-		}); err != nil {
-			return fmt.Errorf("update password: %w", err)
-		}
-		// Admin password reset is break-glass: clear passkeys the same way
-		// self-service CompletePasswordReset does, so a lost-device recovery
-		// cannot leave orphan credentials, and a reset email requested
-		// before this emergency reset must not stay completable.
-		if err := RevokePasskeyAuthState(ctx, tx, user.ID); err != nil {
+	// commitUnderElevation re-reads the acting authority before the write. A
+	// self-reset revokes the acting session inside the transaction, so the
+	// slide that follows writes no rows -- which is the correct answer for a
+	// credential the same call just took away.
+	err = commitUnderElevation(ctx, s.store, actor, s.now, func() error {
+		return s.store.RunInUserAuthTransaction(ctx, uid, func(tx store.Store) error {
+			if err := tx.Users().UpdatePassword(ctx, store.UpdateUserPasswordParams{
+				PasswordHash: hashed,
+				ID:           user.ID,
+			}); err != nil {
+				return fmt.Errorf("update password: %w", err)
+			}
+			// Admin password reset is break-glass: clear passkeys the same
+			// way self-service CompletePasswordReset does, so a lost-device
+			// recovery cannot leave orphan credentials, and a reset email
+			// requested before this emergency reset must not stay
+			// completable.
+			if err := RevokePasskeyAuthState(ctx, tx, user.ID); err != nil {
+				return err
+			}
+			// An administrator's reset rotates the user's auth basis
+			// globally. Every credential that predates the rotation must
+			// die, because whoever knew the old password is often the reason
+			// for the reset.
+			var err error
+			apiCount, delegationCount, committedGeneration, err = revokeEveryUserCredential(ctx, tx, uid)
 			return err
-		}
-		// An administrator's reset rotates the user's auth basis globally.
-		// Every credential that predates the rotation must die, because
-		// whoever knew the old password is often the reason for the reset.
-		var err error
-		apiCount, delegationCount, committedGeneration, err = revokeEveryUserCredential(ctx, tx, uid)
-		return err
+		})
 	})
 	if err != nil {
+		var connectErr *connect.Error
+		if errors.As(err, &connectErr) {
+			return nil, connectErr
+		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	// AFTER the commit, the half revokeEveryUserCredential leaves to its
@@ -1034,38 +1131,38 @@ func (s *AdminUserService) IssueAPIToken(ctx context.Context, req *connect.Reque
 	// unrecoverable. A credential that does not rotate cannot lose what it
 	// was minted with.
 
-	// The last read before an irreversible mint. See
-	// refuseIfActingAuthorityMoved: the gate above answered from a cached
-	// UserInfo, and what this writes outlives the session by months.
-	if err := refuseIfActingAuthorityMoved(ctx, s.store, actor, s.now()); err != nil {
-		return nil, err
-	}
-
 	// The kind this call mints, from the rule above.
 	rotating := secs <= 0
-	minted, err := mintAPIToken(s.validator, mintedByActor(actor), s.now(), apiTokenMint{
-		UserID:     owner,
-		ClientType: msg.GetClientType(),
-		ClientName: clientName,
-		AdminScope: msg.GetAdminScope(),
-		AccessTTL:  time.Duration(secs) * time.Second,
-		Rotating:   rotating,
-	})
-	if err != nil {
+	// commitUnderElevation re-reads the acting authority before the mint --
+	// the gate above answered from a cached UserInfo, and what this writes
+	// outlives the session by months -- and slides the window after it.
+	var minted mintedAPIToken
+	if err := commitUnderElevation(ctx, s.store, actor, s.now, func() error {
+		var mintErr error
+		minted, mintErr = mintAPIToken(s.validator, mintedByActor(actor), s.now(), apiTokenMint{
+			UserID:     owner,
+			ClientType: msg.GetClientType(),
+			ClientName: clientName,
+			AdminScope: msg.GetAdminScope(),
+			AccessTTL:  time.Duration(secs) * time.Second,
+			Rotating:   rotating,
+		})
+		if mintErr != nil {
+			return mintErr
+		}
+		if err := s.store.APITokens().Create(ctx, minted.Params); err != nil {
+			return storeConnectError(err, "create token")
+		}
+		return nil
+	}); err != nil {
 		return nil, err
 	}
-	if err := s.store.APITokens().Create(ctx, minted.Params); err != nil {
-		return nil, storeConnectError(err, "create token")
-	}
-	// This verb gates on the elevation window, so it extends it like every
-	// other gated action. A bearer actor carries no session and slides
-	// nothing, which slideElevation answers by returning.
-	slideElevation(ctx, s.store, actor, s.now())
 	// The owner learns about a credential minted on their account from the
 	// admin surface, exactly as they do from a consent leg. This surface is
 	// the one a stolen administrator cookie reaches, so it is the last one
 	// that should mint in silence.
-	notifyCredentialIssued(ctx, s.mail, s.renderer, user, clientName, msg.GetAdminScope(), true)
+	notifyCredentialIssued(ctx, s.mail, s.renderer, user, clientName, msg.GetAdminScope(),
+		issuedByAnotherPerson(actor, user))
 	// The secrets cross the wire exactly once; they cannot be retrieved.
 	return connect.NewResponse(&leapmuxv1.IssueAPITokenResponse{
 		TokenId:      minted.TokenID,

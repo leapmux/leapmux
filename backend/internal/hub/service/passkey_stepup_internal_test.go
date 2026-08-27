@@ -49,7 +49,7 @@ func stepUpUser(t *testing.T, st store.Store, passwordSet bool) *store.User {
 }
 
 // firstCredentialSession seeds an UN-elevated session whose authentication is
-// fresh: the exact credential the first-credential arm admits.
+// fresh: the exact credential the first-credential branch admits.
 func firstCredentialSession(t *testing.T, st store.Store, user *store.User, now time.Time) *auth.UserInfo {
 	t.Helper()
 	uid := userid.MustNew(user.ID)
@@ -87,7 +87,7 @@ func TestRecheckStepUpUnderLock(t *testing.T) {
 	t.Parallel()
 
 	elevated := stepUpAdmission{}
-	// The first-credential arm never reaches the session re-read, so the
+	// The first-credential branch never reaches the session re-read, so the
 	// credential it carries is never dereferenced on that path.
 	noCredential := &auth.UserInfo{}
 
@@ -106,7 +106,7 @@ func TestRecheckStepUpUnderLock(t *testing.T) {
 	// case: the admission verified no secret at this call, so there is
 	// nothing to re-check it against. What still matters is the
 	// STRUCTURAL flip, because that is what changes which branch of
-	// passkeyManagementAuth applies.
+	// stepUpMutationAuth applies.
 	t.Run("a rotated hash alone is not a state move", func(t *testing.T) {
 		t.Parallel()
 		st := newStepUpTestStore(t)
@@ -135,7 +135,7 @@ func TestRecheckStepUpUnderLock(t *testing.T) {
 		}
 	})
 
-	// An ABSENT session row is TOLERATED, and this pins that on purpose.
+	// The re-check TOLERATES an ABSENT session row, and this pins that on purpose.
 	// Sessions().Delete does not contend on the user-auth lock, so a
 	// same-user "sign out everywhere" can remove the acting session in the
 	// middle of a change the user legitimately started; rolling that change
@@ -159,9 +159,9 @@ func TestRecheckStepUpUnderLock(t *testing.T) {
 			"a concurrent sign-out must not roll back a change the user started")
 	})
 
-	// A LAPSED window is refused: nothing legitimate waits two hours on
-	// this lock, so a request whose window closed while it queued is not a
-	// race to tolerate.
+	// The re-check refuses a LAPSED window: nothing legitimate waits two
+	// hours on this lock, so a request whose window closed while it queued is
+	// not a race to tolerate.
 	t.Run("a lapsed elevation refuses with a retry error", func(t *testing.T) {
 		t.Parallel()
 		st := newStepUpTestStore(t)
@@ -175,8 +175,8 @@ func TestRecheckStepUpUnderLock(t *testing.T) {
 	})
 
 	// The first-credential admission is the one input a concurrent write
-	// can invalidate: the account was admitted BECAUSE it held no
-	// credential to present, so a registration that commits in the window
+	// can invalidate: stepUpMutationAuth admitted the account BECAUSE it held
+	// no credential to present, so a registration that commits in the window
 	// means the caller must elevate instead.
 	//
 	// Without this re-read, two concurrent first-credential mutations both
@@ -214,7 +214,7 @@ func TestRecheckStepUpUnderLock(t *testing.T) {
 	// cleared the account's verified address while this request queued left
 	// the count at zero, so the enumeration still passed and the session
 	// attached the account's first password or passkey on an authority that
-	// had disappeared. Re-deriving the whole admission is what closes it.
+	// already disappeared. Re-deriving the whole admission is what closes it.
 	t.Run("a durable identity withdrawn under the lock refuses", func(t *testing.T) {
 		t.Parallel()
 		st := newStepUpTestStore(t)
@@ -236,7 +236,7 @@ func TestRecheckStepUpUnderLock(t *testing.T) {
 		require.NoError(t, err)
 
 		// The refusal is the RULE's own message, not the retry error: it
-		// names what the caller must do next, and a retry would meet the
+		// states what the caller must do next, and a retry would meet the
 		// same answer.
 		err = recheckStepUpUnderLock(context.Background(), st, locked, user, firstCredential, entryStepUp(acting), now)
 		require.Error(t, err)
@@ -245,7 +245,7 @@ func TestRecheckStepUpUnderLock(t *testing.T) {
 
 	// The five-minute window is re-evaluated at NOW, so a request whose
 	// window lapsed during the Argon2 hash and the lock wait is refused --
-	// the same answer the elevated arm gives for its own lapsed window.
+	// the same answer the elevated branch gives for its own lapsed window.
 	t.Run("a first-credential window that lapsed under the lock refuses", func(t *testing.T) {
 		t.Parallel()
 		st := newStepUpTestStore(t)
@@ -267,10 +267,10 @@ func TestRecheckStepUpUnderLock(t *testing.T) {
 // The admission and the locked re-check are two predicates over the same
 // window, and the grace has to reach both. It reached only the first, so a
 // FinishPasskeyRegistration whose window lapsed during the browser prompt
-// passed the admission and was then refused inside the transaction with
+// passed the admission, and the transaction then refused it with
 // stepUpStateMovedError -- which carries no ElevationRequiredHeader, so the
 // client's gate does not even open a prompt. The user answered the biometric
-// prompt and the credential the authenticator created was discarded.
+// prompt and the hub discarded the credential the authenticator created.
 //
 // Nothing slides the window between the two legs: Begin does not slide, and
 // the slide runs after the commit.
@@ -292,7 +292,7 @@ func TestRecheckStepUpUnderLock_AppliesTheLegsGrace(t *testing.T) {
 		recheckStepUpUnderLock(context.Background(), st, user, user, stepUpAdmission{}, finishStepUp(info), finishAt),
 		"a ceremony the hub still accepts must not be refused after the user answered the prompt")
 
-	// The grace is a bound, not an amnesty: a window that lapsed a day ago
+	// The grace is a limit, not an amnesty: a window that lapsed a day ago
 	// stays refused on the Finish leg too.
 	requireStepUpStateMoved(t,
 		recheckStepUpUnderLock(context.Background(), st, user, user, stepUpAdmission{}, finishStepUp(info),
@@ -305,7 +305,7 @@ func TestRecheckStepUpUnderLock_AppliesTheLegsGrace(t *testing.T) {
 // The attack: an attacker holds a stolen elevated cookie and fires
 // DeletePasskey, which blocks on the user-auth lock. The owner changes their
 // password on another session; that rotation DELETES the attacker's session
-// row and bumps the account's credential epoch. Row presence alone cannot
+// row and moves the account's credential epoch. Row presence alone cannot
 // refuse this, because a plain "sign out everywhere" deletes the row too and
 // must stay tolerated -- so the epoch is what separates them.
 func TestRecheckStepUpUnderLock_RefusesARevokedCredentialEpoch(t *testing.T) {
@@ -322,7 +322,7 @@ func TestRecheckStepUpUnderLock_RefusesARevokedCredentialEpoch(t *testing.T) {
 		"precondition: the live session passes")
 
 	// The rotation, as ChangePassword performs it: revoke every credential
-	// (which bumps the epoch) and delete the other sessions.
+	// (which moves the epoch) and delete the other sessions.
 	_, _, err := auth.RevokeAllUserCredentials(ctx, st, userid.MustNew(user.ID))
 	require.NoError(t, err)
 	_, err = st.Sessions().Delete(ctx, sessionID)
@@ -336,8 +336,8 @@ func TestRecheckStepUpUnderLock_RefusesARevokedCredentialEpoch(t *testing.T) {
 	requireStepUpStateMoved(t,
 		recheckStepUpUnderLock(ctx, st, locked, user, stepUpAdmission{}, entryStepUp(info), now))
 
-	// The first-credential arm reads the same epoch, so a revocation
-	// refuses it too rather than only the elevated arm.
+	// The first-credential branch reads the same epoch, so a revocation
+	// refuses it too rather than only the elevated branch.
 	requireStepUpStateMoved(t,
 		recheckStepUpUnderLock(ctx, st, locked, user, stepUpAdmission{firstCredential: true}, entryStepUp(info), now))
 }
@@ -375,7 +375,7 @@ func (failingSender) Send(_ context.Context, _ mail.Message) error {
 // and the failure must not surface as err (the callers report it through
 // the sent flag instead). The address must survive, because a
 // verification-required sign-up leaves users.email empty, so it is the only
-// record of what the account is trying to verify -- clearing it leaves
+// record of the address the account must verify -- clearing it leaves
 // ResendVerificationEmail with nothing to re-send to.
 func TestIssuePendingEmailVerificationFailedSendKeepsAddressDropsCode(t *testing.T) {
 	t.Parallel()
@@ -402,7 +402,7 @@ func TestIssuePendingEmailVerificationFailedSendKeepsAddressDropsCode(t *testing
 
 // The regression this pair exists for: a sign-up that requires
 // verification stores the address ONLY in pending_email, so a failed
-// resend that wiped the row left the account with no address anywhere and
+// resend that deleted the row left the account with no address anywhere and
 // ResendVerificationEmail refusing forever with "no pending email change".
 func TestResendAfterFailedSendStillFindsTheAddress(t *testing.T) {
 	t.Parallel()
@@ -421,5 +421,5 @@ func TestResendAfterFailedSendStillFindsTheAddress(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, after.Email, "precondition: the address is only in pending_email")
 	assert.Equal(t, "signup@example.com", after.PendingEmail,
-		"ResendVerificationEmail reads PendingEmail; an empty one is a permanent dead end")
+		"ResendVerificationEmail reads PendingEmail; an empty one refuses forever")
 }

@@ -354,8 +354,8 @@ describe('composerPlusMenu', () => {
   })
 
   it('marks an in-flight settings change on the trigger, and only while it is in flight', () => {
-    // Every settings surface flips its label optimistically the moment a value
-    // is picked, so without this marker a pending change is indistinguishable
+    // Every settings surface flips its label optimistically the moment the user
+    // picks a value, so without this marker a pending change is indistinguishable
     // from an applied one and the user picks again. It rides THIS button
     // because it is the only settings surface that is always present -- the
     // status bar is a preference this menu can switch off.
@@ -421,7 +421,7 @@ describe('composerPlusMenu', () => {
 
     // The case the two above miss: a fresh tab before its first status push has
     // NOTHING between the attach item and the view toggles, so both fencing
-    // rules used to render back to back.
+    // rules used to render one directly after the other.
     cleanup()
     const bare = renderMenu()
     expect(countAdjacentRules(bare.container)).toBe(0)
@@ -435,7 +435,7 @@ describe('composerPlusMenu', () => {
     // The trigger stays ENABLED — the two items inside it are what the guard
     // disables — and carries the reason through Tooltip, which renders its text
     // lazily on hover and so is not assertable here. The contract this test
-    // names is the two items.
+    // specifies is the two items.
     expect(screen.getByRole('menuitem', { name: /Change branch/, hidden: true })).toBeDisabled()
     expect(screen.getByRole('menuitem', { name: /Delete branch/, hidden: true })).toBeDisabled()
     expect(onChangeBranch).not.toHaveBeenCalled()

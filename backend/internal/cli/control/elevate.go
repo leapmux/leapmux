@@ -7,11 +7,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"os"
-	"strings"
 	"time"
 
 	"connectrpc.com/connect"
+	"golang.org/x/sync/singleflight"
 
 	"github.com/leapmux/leapmux/locallisten"
 )
@@ -30,26 +29,18 @@ import (
 // browser is on another machine entirely.
 //
 // What it grants is a WINDOW on the credential this CLI already holds. It
-// mints nothing: the file on disk is unchanged, and every gated command inside
-// the window lands without another prompt.
+// mints nothing: the file on disk is unchanged, and every restricted command
+// inside the window lands without another prompt.
 
-const (
-	// ElevationRequiredHeader marks a hub refusal whose remedy is "prove a
-	// factor and retry". It mirrors the constant the hub sets; the value is
-	// always "1" and only its presence is meaningful.
-	//
-	// Duplicated rather than imported, and the duplication is the point: the
-	// CLI must not depend on the hub's internal packages, and this is a WIRE
-	// contract between two programs that a user can upgrade separately.
-	// service.ElevationRequiredHeader carries the same note.
-	ElevationRequiredHeader = "Leapmux-Elevation-Required"
-
-	// elevationPollFallback is the poll cadence used when the hub names none.
-	elevationPollFallback = 5 * time.Second
-	// elevationSlowDownStep is how much a slow_down answer adds to the
-	// cadence, matching what the login flow does with the same signal.
-	elevationSlowDownStep = 5 * time.Second
-)
+// ElevationRequiredHeader marks a hub refusal whose remedy is "prove a
+// factor and retry". It mirrors the constant the hub sets; the value is
+// always "1" and only its presence is meaningful.
+//
+// Duplicated rather than imported, and the duplication is the point: the
+// CLI must not depend on the hub's internal packages, and this is a WIRE
+// contract between two programs that a user can upgrade separately.
+// service.ElevationRequiredHeader carries the same note.
+const ElevationRequiredHeader = "Leapmux-Elevation-Required"
 
 // ErrElevationUnsupported reports a credential the hub will not elevate: a
 // worker-minted delegation token, or an IPC client with no bearer at all.
@@ -57,10 +48,21 @@ const (
 // original refusal rather than a failed step-up.
 var ErrElevationUnsupported = errors.New("this credential cannot be verified in a browser")
 
+// ErrElevationNeedsAPerson reports a step-up that cannot run here, because
+// nothing drives this process from a terminal or the caller refused the
+// prompt with LEAPMUX_CONTROL_NO_PROMPT.
+//
+// The ceremony ends only when a person opens a browser, so a process with
+// nobody at a keyboard would print a URL that nobody reads and then block
+// for the full life of the grant -- ten minutes of a CI job or a cron run,
+// ending in "the verification request expired". Refusing at once lets the
+// caller report the hub's own refusal, which states what the command needs.
+var ErrElevationNeedsAPerson = errors.New("this command needs a person to verify their identity in a browser, and nothing here can show the prompt")
+
 // NeedsElevation reports whether a hub error is the marked refusal.
 //
-// The MARKER, never the message. The wording is user-facing prose that will be
-// reworded, and matching it would break on the first edit; the code alone is
+// The MARKER, never the message. The wording is user-facing prose that somebody
+// will reword, and matching it would break on the first edit; the code alone is
 // too broad, because a FailedPrecondition also means "this account has no
 // password" and half a dozen other things a step-up cannot fix.
 func NeedsElevation(err error) bool {
@@ -71,43 +73,76 @@ func NeedsElevation(err error) bool {
 	return connectErr.Meta().Get(ElevationRequiredHeader) != ""
 }
 
+// elevateFlight collapses concurrent step-ups of the SAME credential.
+//
+// One ceremony needs one person, and a CLI command fans its calls out on one
+// client -- the entity resolver runs its lookups in an errgroup, and the
+// workspace cleanup fans out too. Without this, the first restricted verb on such
+// a path posts one device-authorization row per call and prints that many
+// interleaved URL and code triples, which a person cannot answer.
+//
+// The followers take the LEADER's answer, including its context. That costs
+// nothing to repair -- a step-up mints no credential, so a cancelled leg
+// leaves no rotated-away secret behind and the next command asks again --
+// which is why this needs no detached context of its own, and the refresh
+// flight does.
+var elevateFlight singleflight.Group
+
 // Elevate runs one browser step-up for this client's credential and returns
 // when the hub reports it granted.
 //
 // It BLOCKS on a human, for up to the grant's own lifetime, and prints the
-// address and the code to this package's Out. A caller that cannot show a
-// prompt -- a script, a hook -- should test NeedsElevation and report the
-// hub's refusal instead of calling this.
+// address and the code to this package's Err. A process with nobody at a
+// keyboard gets ErrElevationNeedsAPerson at once instead, so a caller may
+// call this without testing first.
+//
+// Err, never Out: a restricted verb prints its JSON envelope to Out in the same
+// invocation, and four lines of prose in that stream stop `... | jq` from
+// parsing on the first run after the window lapses.
 func (c *Client) Elevate(ctx context.Context) error {
-	hc, baseURL := c.HTTPClient, c.connectURL
-	grant, err := c.startElevation(ctx, hc, baseURL)
+	key, keyErr := CredentialsPath(c.HubURL)
+	if keyErr != nil {
+		// A hub address with no derivable credential path collapses on the
+		// address itself. The key only has to be equal for two callers that
+		// share one credential.
+		key = c.HubURL
+	}
+	_, err, _ := elevateFlight.Do(key, func() (any, error) {
+		return nil, c.elevateOnce(ctx)
+	})
+	return err
+}
+
+// elevateOnce runs the ceremony itself. Elevate wraps it in the flight.
+func (c *Client) elevateOnce(ctx context.Context) error {
+	if !c.promptAllowed {
+		return ErrElevationNeedsAPerson
+	}
+	grant, err := c.startElevation(ctx)
 	if err != nil {
 		return err
 	}
-	_, _ = fmt.Fprintln(Out, "This command needs you to verify your identity.")
-	_, _ = fmt.Fprintln(Out, "  1. Visit", grant.VerificationURI)
-	_, _ = fmt.Fprintln(Out, "  2. Enter the code:", grant.UserCode)
+	_, _ = fmt.Fprintln(Err, "This command needs you to verify your identity.")
+	_, _ = fmt.Fprintln(Err, "  1. Visit", grant.VerificationURI)
+	_, _ = fmt.Fprintln(Err, "  2. Enter the code:", grant.UserCode)
 	if grant.VerificationURIComplete != "" {
-		_, _ = fmt.Fprintln(Out, "Or open:", grant.VerificationURIComplete)
+		_, _ = fmt.Fprintln(Err, "Or open:", grant.VerificationURIComplete)
 	}
 
-	interval := time.Duration(grant.Interval) * time.Second
-	if interval <= 0 {
-		interval = elevationPollFallback
-	}
-	deadline := time.Now().Add(time.Duration(grant.ExpiresIn) * time.Second)
+	interval := grant.PollInterval()
+	deadline := grant.Deadline(time.Now())
 	for time.Now().Before(deadline) {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-time.After(interval):
 		}
-		err := c.pollElevation(ctx, hc, baseURL, grant.DeviceCode)
+		err := c.pollElevation(ctx, grant.DeviceCode)
 		switch {
-		case errors.Is(err, errElevationPending):
+		case errors.Is(err, ErrAuthorizationPending):
 			continue
-		case errors.Is(err, errElevationSlowDown):
-			interval += elevationSlowDownStep
+		case errors.Is(err, ErrSlowDown):
+			interval += DeviceCodeSlowDownStep
 			continue
 		case err != nil:
 			return err
@@ -117,42 +152,13 @@ func (c *Client) Elevate(ctx context.Context) error {
 	return errors.New("the verification request expired before it was approved")
 }
 
-// elevationGrant is the hub's answer to a step-up request. It is the SAME
-// body shape the device-code login returns, because the poll below is the same
-// endpoint.
-type elevationGrant struct {
-	DeviceCode              string `json:"device_code"`
-	UserCode                string `json:"user_code"`
-	VerificationURI         string `json:"verification_uri"`
-	VerificationURIComplete string `json:"verification_uri_complete"`
-	ExpiresIn               int    `json:"expires_in"`
-	Interval                int    `json:"interval"`
-}
-
-// elevationDeviceName is what the approval page shows the person as the thing
-// asking. The hostname is what a login already records as the client name, so
-// the two read alike in the credential list and on the page.
-func (c *Client) elevationDeviceName() string {
-	host, err := os.Hostname()
-	if err != nil || host == "" {
-		return "a command-line credential"
-	}
-	return host
-}
-
-func (c *Client) startElevation(ctx context.Context, hc *http.Client, baseURL string) (*elevationGrant, error) {
-	form := url.Values{"device_name": {c.elevationDeviceName()}}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		locallisten.JoinPath(baseURL, "/auth/cli/elevate-authorization"),
-		strings.NewReader(form.Encode()))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+func (c *Client) startElevation(ctx context.Context) (*DeviceGrant, error) {
+	form := url.Values{"device_name": {DefaultDeviceName()}}
 	// The credential itself is the right to ASK. What it cannot do is
 	// approve, which needs a browser session that proves a factor.
-	c.ApplyAuth(req.Header)
-	resp, err := hc.Do(req)
+	resp, err := PostForm(ctx, c.HTTPClient,
+		locallisten.JoinPath(c.connectURL, "/auth/cli/elevate-authorization"),
+		form, c.ApplyAuth)
 	if err != nil {
 		return nil, err
 	}
@@ -163,7 +169,7 @@ func (c *Client) startElevation(ctx context.Context, hc *http.Client, baseURL st
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("the hub refused the verification request: %s", resp.Status)
 	}
-	grant := &elevationGrant{}
+	grant := &DeviceGrant{}
 	if err := json.NewDecoder(resp.Body).Decode(grant); err != nil {
 		return nil, err
 	}
@@ -173,28 +179,17 @@ func (c *Client) startElevation(ctx context.Context, hc *http.Client, baseURL st
 	return grant, nil
 }
 
-var (
-	errElevationPending  = errors.New("authorization_pending")
-	errElevationSlowDown = errors.New("slow_down")
-)
-
 // pollElevation performs one /auth/cli/token poll for a step-up grant. It is
 // the login flow's poll without the credential handling: a step-up mints
 // nothing, so there is nothing to persist. The hub answers `{"elevated":true}`
 // once the window is stamped.
-func (c *Client) pollElevation(ctx context.Context, hc *http.Client, baseURL, deviceCode string) error {
+func (c *Client) pollElevation(ctx context.Context, deviceCode string) error {
 	form := url.Values{
-		"grant_type":  {"urn:ietf:params:oauth:grant-type:device_code"},
+		"grant_type":  {GrantTypeDeviceCode},
 		"device_code": {deviceCode},
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		locallisten.JoinPath(baseURL, "/auth/cli/token"),
-		strings.NewReader(form.Encode()))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := hc.Do(req)
+	resp, err := PostForm(ctx, c.HTTPClient,
+		locallisten.JoinPath(c.connectURL, "/auth/cli/token"), form)
 	if err != nil {
 		return err
 	}
@@ -202,17 +197,5 @@ func (c *Client) pollElevation(ctx context.Context, hc *http.Client, baseURL, de
 	if resp.StatusCode == http.StatusOK {
 		return nil
 	}
-	var oerr struct {
-		Error            string `json:"error"`
-		ErrorDescription string `json:"error_description"`
-	}
-	_ = json.NewDecoder(resp.Body).Decode(&oerr)
-	switch oerr.Error {
-	case "authorization_pending":
-		return errElevationPending
-	case "slow_down":
-		return errElevationSlowDown
-	default:
-		return fmt.Errorf("%s: %s", oerr.Error, oerr.ErrorDescription)
-	}
+	return DeviceFlowError(resp)
 }

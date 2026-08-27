@@ -43,10 +43,10 @@ type OAuthHandler struct {
 	keystore  *keystore.Keystore
 
 	// The clock every instant this handler mints or compares comes from.
-	// It is the THIRD elevation arm, and grantSessionElevation takes now as
-	// a parameter precisely so each arm passes its own seam rather than
-	// inventing a fourth notion of the current instant -- this arm had
-	// none, so a test that moved the password and passkey arms forward
+	// It is the THIRD elevation path, and grantSessionElevation takes now as
+	// a parameter precisely so each path passes its own seam rather than
+	// inventing a fourth notion of the current instant -- this path had
+	// none, so a test that moved the password and passkey paths forward
 	// could not move this one, and completeOAuthReauth read the wall clock
 	// three separate times inside one request.
 	clockSeam
@@ -54,7 +54,7 @@ type OAuthHandler struct {
 	// providers caches built Provider instances.
 	//
 	// The key carries the redirect URL as well as the provider ID, because
-	// a built Provider bakes BOTH in and only one of them is immutable. The
+	// a built Provider includes BOTH and only one of them is immutable. The
 	// row's own config cannot change after creation -- AdminOAuthService
 	// exposes add, remove and enable/disable and no edit verb, and the one
 	// writer of client_secret is the offline re-encrypt command, which
@@ -69,11 +69,28 @@ type OAuthHandler struct {
 	// mismatch.
 	providers   map[providerCacheKey]huboauth.Provider
 	providersMu sync.RWMutex
+	// providerGen counts the invalidations of one provider id, under
+	// providersMu.
+	//
+	// It is what stops a build that races an administrator's DELETE from
+	// re-populating the cache after InvalidateProvider swept it. A caller
+	// reads the count BEFORE it reads the provider row, and cacheProvider
+	// compares that snapshot against the current count, so an invalidation
+	// that lands anywhere between the row read and the insert makes the
+	// insert a no-op. See buildProvider and cacheProvider.
+	//
+	// An entry is never removed. The key set is the provider ids an
+	// administrator invalidated in this process, so it grows by one per
+	// remove or disable and by nothing per request. Removing an entry would
+	// re-open the race it exists to close: a build holding the old count
+	// would then read a missing key as the same count and insert.
+	providerGen map[string]uint64
 	// providerFlight collapses concurrent COLD builds of one key onto one
 	// discovery leg.
 	//
 	// The double-check under the write lock made the discarded instances
-	// unreachable; it could not stop them being BUILT. An OIDC build is an
+	// unreachable; it could not stop the code from BUILDING them. An OIDC
+	// build is an
 	// outbound round trip to the identity provider for
 	// .well-known/openid-configuration plus the JWKS, so N cold callers ran N
 	// of them and kept one -- on process start, and again whenever an
@@ -93,7 +110,15 @@ func NewOAuthHandler(st store.Store, cfg *config.Config, set *settings.Manager, 
 	if lifecycle == nil {
 		panic("oauth handler requires credential lifecycle effects")
 	}
-	return &OAuthHandler{store: st, cfg: cfg, set: set, lifecycle: lifecycle, keystore: ks, providers: make(map[providerCacheKey]huboauth.Provider)}
+	return &OAuthHandler{
+		store:       st,
+		cfg:         cfg,
+		set:         set,
+		lifecycle:   lifecycle,
+		keystore:    ks,
+		providers:   make(map[providerCacheKey]huboauth.Provider),
+		providerGen: make(map[string]uint64),
+	}
 }
 
 // RegisterRoutes registers OAuth HTTP routes on the given mux.
@@ -124,10 +149,17 @@ func (h *OAuthHandler) handleOAuth(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// loadEnabledProvider fetches the provider from DB, checks it's enabled, and
+// loadEnabledProvider fetches the provider from DB, checks that it is
+// enabled, and
 // builds the cached Provider instance. Returns the provider, its trust_email
 // setting, and whether the load succeeded. Writes an HTTP error on failure.
+//
+// It reads the row on EVERY call: the provider cache holds the built client,
+// not the row. A caller that needs the provider twice in one request passes
+// the instance along instead of calling this again.
 func (h *OAuthHandler) loadEnabledProvider(w http.ResponseWriter, ctx context.Context, providerID string) (huboauth.Provider, bool, bool) {
+	// Before the row read, never after. See buildProvider.
+	gen := h.providerGeneration(providerID)
 	dbProvider, err := h.store.OAuthProviders().GetByID(ctx, providerID)
 	if err != nil {
 		http.Error(w, "unknown provider", http.StatusNotFound)
@@ -137,7 +169,7 @@ func (h *OAuthHandler) loadEnabledProvider(w http.ResponseWriter, ctx context.Co
 		http.Error(w, "provider disabled", http.StatusForbidden)
 		return nil, false, false
 	}
-	provider, err := h.buildProvider(ctx, dbProvider)
+	provider, err := h.buildProvider(ctx, dbProvider, gen)
 	if err != nil {
 		slog.Error("oauth: build provider", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -147,7 +179,11 @@ func (h *OAuthHandler) loadEnabledProvider(w http.ResponseWriter, ctx context.Co
 }
 
 func (h *OAuthHandler) handleLogin(w http.ResponseWriter, r *http.Request, providerID string) {
-	h.beginOAuthFlow(w, r, providerID, store.OAuthStatePurposeLogin, "")
+	provider, _, ok := h.loadEnabledProvider(w, r.Context(), providerID)
+	if !ok {
+		return
+	}
+	h.beginOAuthFlow(w, r, providerID, provider, store.OAuthStatePurposeLogin, "")
 }
 
 // handleReauth starts an OAuth RE-AUTHENTICATION: the caller is already
@@ -160,7 +196,7 @@ func (h *OAuthHandler) handleLogin(w http.ResponseWriter, r *http.Request, provi
 // Cookies only, and a session is required: there is nothing to elevate
 // otherwise, and a bearer has no session row to stamp.
 //
-// The account shape must ALSO admit the arm -- see providerMayElevateAccount
+// The account shape must ALSO admit the path -- see providerMayElevateAccount
 // for the one rule. Refusing here keeps the browser from ever leaving;
 // completeOAuthReauth checks it again, because it is the leg that grants and
 // the shape can move inside the state row's five minutes.
@@ -192,8 +228,9 @@ func (h *OAuthHandler) handleReauth(w http.ResponseWriter, r *http.Request, prov
 		return
 	}
 	user, err := auth.AuthenticateHTTP(ctx, r, auth.HTTPAuthOpts{
-		Store:   h.store,
-		Cookies: []bool{false, true},
+		Store:         h.store,
+		ReadCookie:    true,
+		SecureCookies: h.secureCookies(ctx),
 	})
 	if err != nil || user == nil || user.Credential.SessionID() == "" {
 		http.Error(w, "sign in first: there is no session to verify", http.StatusUnauthorized)
@@ -205,17 +242,23 @@ func (h *OAuthHandler) handleReauth(w http.ResponseWriter, r *http.Request, prov
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	// The provider is loaded before the shape check, and only to REFUSE a
-	// disabled or missing one here rather than after the browser has left
+	// This loads the provider before the shape check, and only to REFUSE a
+	// disabled or missing one here rather than after the browser leaves
 	// the app. The rule itself no longer depends on which provider this is.
-	// The instance is cached, so beginOAuthFlow's own load costs nothing.
-	if _, _, ok := h.loadEnabledProvider(w, ctx, providerID); !ok {
+	//
+	// The instance travels on to beginOAuthFlow, so the row is read ONCE.
+	// loadEnabledProvider always reads oauth_providers before it consults
+	// the provider cache -- the cache holds the built client, not the row --
+	// so calling it twice was a second read, and the two reads were not one
+	// snapshot either.
+	provider, _, ok := h.loadEnabledProvider(w, ctx, providerID)
+	if !ok {
 		return
 	}
 	if !h.providerMayElevateAccount(w, ctx, row) {
 		return
 	}
-	h.beginOAuthFlow(w, r, providerID, store.OAuthStatePurposeReauth, user.Credential.SessionID())
+	h.beginOAuthFlow(w, r, providerID, provider, store.OAuthStatePurposeReauth, user.Credential.SessionID())
 }
 
 // providerMayElevateAccount answers the question both re-authentication legs
@@ -225,13 +268,13 @@ func (h *OAuthHandler) handleReauth(w http.ResponseWriter, r *http.Request, prov
 // ONE rule: an account with NO password and NO passkey is signed in BY the
 // provider, so the elevation is exactly as strong as the sign-in it stands
 // on. Any linked provider qualifies, GitHub included --
-// operating/security.md states that limit plainly. Anything else is refused,
-// because the account holds a factor it can present directly and "the
+// operating/security.md states that limit plainly. This refuses anything
+// else, because the account holds a factor it can present directly and "the
 // browser can still reach the provider session" is a weaker claim than the
 // one that factor makes.
 //
 // The rule is accountElevatesOnlyThroughAProvider, CALLED rather than spelled
-// again: the first-credential branch of passkeyManagementAuth reads the same
+// again: the first-credential branch of stepUpMutationAuth reads the same
 // two facts, and a copy meant a change to what counts as "a factor" could
 // land in one and miss the other. There is no wrapper between the two either,
 // because a name that only forwards is a difference a reader has to look for
@@ -241,16 +284,16 @@ func (h *OAuthHandler) handleReauth(w http.ResponseWriter, r *http.Request, prov
 // passkey THIS HUB CANNOT RUN, bridged by a provider that fills auth_time.
 // It is gone, and its absence is the design rather than an omission. A hub
 // that cannot run a passkey ceremony has one cause -- it has no usable
-// browser origin, because public_url is unset and nothing is listening -- so
+// browser origin, because public_url is unset and nothing listens -- so
 // the tier existed only to rescue users from an administrator's
 // misconfiguration whose real remedy is to restore the address. Serving it
 // cost a second freshness rule, a per-provider capability the code could not
 // actually know (Google, Apple, Entra and GitLab-as-OP all report
 // provider_type "oidc" and none of them fills auth_time on request), and an
-// arm the step-up screen offered and the grant leg then refused. Refusing
-// the shape outright is both simpler and stricter: the account waits for the
-// hub to be repaired instead of elevating on a weaker claim than the passkey
-// it holds.
+// option the step-up screen offered and the grant leg then refused. Refusing
+// the shape outright is both simpler and stricter: the account waits for an
+// administrator to repair the hub instead of elevating on a weaker claim than
+// the passkey it holds.
 func (h *OAuthHandler) providerMayElevateAccount(w http.ResponseWriter, ctx context.Context, user *store.User) bool {
 	mayElevate, err := accountElevatesOnlyThroughAProvider(ctx, h.store, user)
 	if err != nil {
@@ -259,7 +302,7 @@ func (h *OAuthHandler) providerMayElevateAccount(w http.ResponseWriter, ctx cont
 		return false
 	}
 	if !mayElevate {
-		// The refusal names the remedy rather than the rule: the account
+		// The refusal states the remedy rather than the rule: the account
 		// holds a factor it can present directly, and that is what it must
 		// present. It does NOT say which of the two the account holds --
 		// this runs before the caller proved it owns the account.
@@ -274,26 +317,27 @@ func (h *OAuthHandler) providerMayElevateAccount(w http.ResponseWriter, ctx cont
 // cannot drift on the browser binding, the PKCE verifier, or the expiry --
 // they differ only in the purpose they record and whether they force the
 // provider to prompt.
-func (h *OAuthHandler) beginOAuthFlow(w http.ResponseWriter, r *http.Request, providerID, purpose, sessionID string) {
+//
+// The CALLER loads the provider and passes the built instance in. The reauth
+// leg has to load it anyway, to refuse a disabled or missing provider before
+// the browser leaves the app, and loadEnabledProvider reads the
+// oauth_providers row on every call -- so a load here as well made that leg
+// read the row twice, off two different snapshots.
+func (h *OAuthHandler) beginOAuthFlow(w http.ResponseWriter, r *http.Request, providerID string, provider huboauth.Provider, purpose, sessionID string) {
 	ctx := r.Context()
-
-	provider, _, ok := h.loadEnabledProvider(w, ctx, providerID)
-	if !ok {
-		return
-	}
 
 	verifier := oauth2.GenerateVerifier()
 	state := id.Generate()
 	// The nonce binds this flow to THIS browser. The state alone does not: it
 	// travels in the callback URL, so whoever holds that URL can complete the
 	// flow, and an attacker who starts a login with their own identity and
-	// withholds the callback can hand the live (code, state) pair to a victim
+	// withholds the callback can give the live (code, state) pair to a victim
 	// -- whose browser is then signed in as the attacker. Only the browser
 	// that received this cookie can redeem the row. RFC 6749 section 10.12.
 	//
 	// On the reauth leg the binding matters just as much: the row specifies the
 	// session it will elevate, so a state that anybody could redeem would
-	// hand an attacker's completed provider flow the victim's elevation.
+	// give an attacker's completed provider flow the victim's elevation.
 	nonce := id.Generate()
 
 	redirectURI := sanitizeRedirectURI(r.URL.Query().Get("redirect"))
@@ -359,7 +403,7 @@ func (h *OAuthHandler) consumeOAuthState(w http.ResponseWriter, r *http.Request,
 	oauthState, err := h.store.OAuthStates().Get(ctx, state)
 	if err != nil {
 		// A missing/unknown state is a genuine client error (expired or forged),
-		// but a transient store error should not masquerade as "invalid state"
+		// but this must not report a transient store error as "invalid state"
 		// and force the user to restart the whole login -- surface it as
 		// retryable, matching the ErrNotFound split the user link uses.
 		if !errors.Is(err, store.ErrNotFound) {
@@ -383,12 +427,12 @@ func (h *OAuthHandler) consumeOAuthState(w http.ResponseWriter, r *http.Request,
 	// nonce is what makes owner-only consumption expressible, so it must
 	// run before the consume rather than after it.
 	//
-	// The cookie name is built from the LOADED row's state, never from the
-	// query parameter, so a caller cannot aim the lookup at a name of its
+	// This builds the cookie name from the LOADED row's state, never from the
+	// query parameter, so a caller cannot point the lookup at a name of its
 	// own choosing.
 	secureCookies := h.secureCookies(ctx)
 	if !browserSecretMatches(oauthState.NonceHash, auth.OAuthNonceFromRequest(r, oauthState.State, secureCookies)) {
-		http.Error(w, "this sign-in was started in a different browser; start again from the sign-in page", http.StatusBadRequest)
+		http.Error(w, "a different browser started this sign-in; start again from the sign-in page", http.StatusBadRequest)
 		return "", nil, false
 	}
 
@@ -397,11 +441,30 @@ func (h *OAuthHandler) consumeOAuthState(w http.ResponseWriter, r *http.Request,
 	// failed delete leaves the row live for the rest of its expiry, which is
 	// not worth failing the login over, but it must not be silent: it is the
 	// only consumption of a single-use row in the hub.
-	if err := h.store.OAuthStates().Delete(ctx, state); err != nil {
+	consumed, err := h.store.OAuthStates().Delete(ctx, state)
+	if err != nil {
 		slog.Error("oauth: delete state", "error", err, "provider_id", providerID)
 	}
 	for _, c := range auth.ClearOAuthNonceCookie(oauthState.State) {
 		http.SetCookie(w, c)
+	}
+	// The delete's row count is what makes the single use the HUB's
+	// property. Two callbacks carrying the same state and the same nonce
+	// cookie -- a double-clicked callback, a browser prefetch of the
+	// Location header, a retried navigation -- both reach this line, and
+	// exactly one of them removes the row. This refuses the loser here
+	// rather than at provider.Exchange, so the property no longer rests on
+	// the identity provider rejecting the second use of its authorization
+	// code. It matters most on the reauth purpose, whose completion grants
+	// an elevation.
+	//
+	// A delete that FAILED is a different case and keeps its own trade
+	// above: the row is still live, the count is 0 for a reason that is not
+	// a second use, and refusing here would fail a legitimate login on a
+	// transient store failure.
+	if err == nil && consumed == 0 {
+		http.Error(w, "invalid or expired state", http.StatusBadRequest)
+		return "", nil, false
 	}
 
 	if auth.IsExpired(h.now().UTC(), oauthState.ExpiresAt) {
@@ -428,18 +491,18 @@ func (h *OAuthHandler) handleCallback(w http.ResponseWriter, r *http.Request, pr
 		return
 	}
 
-	// Exchange code for tokens, under a deadline of our own.
+	// Exchange code for tokens, under a deadline this handler sets.
 	//
 	// This is a mux route, so it never passes through the RPC interceptor chain
 	// that limits every Connect handler -- and the leg it makes is an outbound
 	// call to a third party. golang.org/x/oauth2 runs it on http.DefaultClient
 	// unless the context carries an oauth2.HTTPClient, and http.DefaultClient
 	// has NO timeout, so without this deadline an identity provider that accepts
-	// the connection and never answers parks this handler until the hub shuts
+	// the connection and never answers blocks this handler until the hub shuts
 	// down (the http.Server's shutdown-scoped BaseContext cancels it then, but a
-	// hung IdP during NORMAL operation would otherwise park it for the process's
-	// life). This per-leg deadline limits exactly that: a slow or wedged IdP
-	// while the hub is healthy.
+	// stuck IdP during NORMAL operation would otherwise block it for the
+	// process's life). This per-leg deadline limits exactly that: a slow or
+	// stuck IdP while the hub is healthy.
 	exchangeCtx, cancelExchange := context.WithTimeout(ctx, settings.KeyTimeouts.Of(h.set.Snapshot(r.Context())).APITimeout())
 	defer cancelExchange()
 	tokenSet, claims, err := provider.Exchange(exchangeCtx, code, oauthState.PkceVerifier)
@@ -458,8 +521,24 @@ func (h *OAuthHandler) handleCallback(w http.ResponseWriter, r *http.Request, pr
 	// never fall through to the auto-link or signup branches below: those
 	// create a session or an account, and this leg exists only to elevate a
 	// session that already exists.
-	if oauthState.Purpose == store.OAuthStatePurposeReauth {
-		h.completeOAuthReauth(w, r, oauthState, provider, claims, link, err)
+	//
+	// This switch spells out both purposes, and REFUSES an unrecognised one.
+	// The login leg is the one that creates, so it must never be the branch a
+	// value reaches by not matching something else -- and the Go zero value
+	// "" is exactly such a value. oauth_states.purpose carries
+	// CHECK (purpose IN ('login','reauth')) in all three dialects, so a row
+	// cannot hold anything else; this branch keeps the two statements of the
+	// rule in agreement rather than trusting one of them alone.
+	switch oauthState.Purpose {
+	case store.OAuthStatePurposeReauth:
+		h.completeOAuthReauth(w, r, oauthState, link, err)
+		return
+	case store.OAuthStatePurposeLogin:
+		// The rest of this function is the login leg.
+	default:
+		slog.Error("oauth: state row carries an unknown purpose",
+			"purpose", oauthState.Purpose, "provider_id", providerID)
+		http.Error(w, "invalid or expired state", http.StatusBadRequest)
 		return
 	}
 
@@ -469,9 +548,9 @@ func (h *OAuthHandler) handleCallback(w http.ResponseWriter, r *http.Request, pr
 	// address: it identifies the person by claims.Subject, through the link
 	// this lookup just made. Demanding one refused every step-up on a
 	// provider that stopped reporting a VERIFIED address -- and for the
-	// accounts this arm serves, which hold neither a password nor a passkey,
-	// it is the only arm they have. The refusal even blamed the `email`
-	// scope, which the operator had granted.
+	// accounts this path serves, which hold neither a password nor a passkey,
+	// it is the only path they have. The refusal even blamed the `email`
+	// scope, which the operator already granted.
 	if claims.Email == "" {
 		slog.Error("oauth: provider did not return an email", "provider_id", providerID)
 		http.Error(w, "OAuth provider did not return an email address; ensure the 'email' scope is granted", http.StatusBadRequest)
@@ -504,10 +583,11 @@ func (h *OAuthHandler) handleCallback(w http.ResponseWriter, r *http.Request, pr
 	if trustEmail {
 		existingUser, emailErr := h.store.Users().GetByEmail(ctx, claims.Email)
 		// Distinguish "no such user" (fall through to signup) from a transient
-		// store failure: on a DB blip, GetByEmail must NOT be read as absence, or
-		// a returning verified user is either turned into a permanent 403 (signup
-		// disabled) or duplicated into a fresh account (signup enabled). Mirror the
-		// ErrNotFound-vs-internal split the OAuthUserLinks().Get read above uses.
+		// store failure: on such a failure, GetByEmail must NOT be read as
+		// absence, or a returning verified user is either turned into a permanent
+		// 403 (signup disabled) or duplicated into a fresh account (signup
+		// enabled). Mirror the ErrNotFound-vs-internal split the
+		// OAuthUserLinks().Get read above uses.
 		if emailErr != nil && !errors.Is(emailErr, store.ErrNotFound) {
 			slog.Error("oauth: look up user by email for auto-link", "error", emailErr)
 			http.Error(w, "internal error", http.StatusInternalServerError)
@@ -573,12 +653,15 @@ func (h *OAuthHandler) handleCallback(w http.ResponseWriter, r *http.Request, pr
 //
 // linkErr carries the outcome of the caller's link lookup so this does not
 // repeat the query.
+//
+// It reads NO claim the provider returned, and takes none: the identity is
+// the oauth_user_links row the caller already found, and every other claim
+// (the address, the display name, auth_time) is a value this leg refuses to
+// act on. A parameter it never reads would advertise the opposite.
 func (h *OAuthHandler) completeOAuthReauth(
 	w http.ResponseWriter,
 	r *http.Request,
 	oauthState *store.OAuthState,
-	provider huboauth.Provider,
-	claims *huboauth.UserClaims,
 	link *store.OAuthUserLink,
 	linkErr error,
 ) {
@@ -592,13 +675,13 @@ func (h *OAuthHandler) completeOAuthReauth(
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	// The session is loaded, not trusted from the state row alone, because
+	// This loads the session rather than trusting the state row alone, because
 	// the elevation must land on a session that is still live and because
-	// its user_id is what the link is compared against.
+	// its user_id is what this compares the link against.
 	session, err := h.store.Sessions().GetByID(ctx, oauthState.SessionID, now)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			http.Error(w, "your session ended while you were verifying; sign in again", http.StatusUnauthorized)
+			http.Error(w, "your session ended during the verification; sign in again", http.StatusUnauthorized)
 			return
 		}
 		slog.Error("oauth: load session for reauth", "error", err)
@@ -612,11 +695,11 @@ func (h *OAuthHandler) completeOAuthReauth(
 		http.Error(w, "that account is not linked to the signed-in user", http.StatusForbidden)
 		return
 	}
-	// The account shape is checked HERE as well as at the start leg, because
+	// This checks the account shape HERE as well as at the start leg, because
 	// this is where the grant happens and the shape can move in between: the
 	// state row lives for oauthStateExpiry, and the first-credential rule
 	// lets an account attach a password in another tab inside that window. A
-	// row minted while the account held nothing would otherwise buy
+	// row minted while the account held nothing would otherwise gain
 	// provider-strength elevation for an account that now holds a password.
 	owner, err := h.store.Users().GetByID(ctx, session.UserID)
 	if err != nil {
@@ -634,10 +717,10 @@ func (h *OAuthHandler) completeOAuthReauth(
 		return
 	}
 	// Through the shared grant, so the window, the zero-row refusal and the
-	// cache invalidation are the same ones the password and passkey arms use.
+	// cache invalidation are the same ones the password and passkey paths use.
 	if _, err := grantSessionElevation(ctx, h.store, h.lifecycle, oauthState.SessionID, uid, now); err != nil {
 		if errors.Is(err, errElevationSessionEnded) {
-			http.Error(w, "your session ended while you were verifying; sign in again", http.StatusUnauthorized)
+			http.Error(w, "your session ended during the verification; sign in again", http.StatusUnauthorized)
 			return
 		}
 		slog.Error("oauth: record session elevation", "error", err)
@@ -649,7 +732,7 @@ func (h *OAuthHandler) completeOAuthReauth(
 
 // redirectBack sends the browser to the address the flow recorded, or home
 // when it recorded none. The value passed through sanitizeRedirectURI when
-// the state row was minted, so it needs no second guard here.
+// beginOAuthFlow minted the state row, so it needs no second guard here.
 func (h *OAuthHandler) redirectBack(w http.ResponseWriter, r *http.Request, redirectURI string) {
 	redirectTo := "/"
 	if redirectURI != "" {
@@ -664,7 +747,7 @@ func (h *OAuthHandler) secureCookies(ctx context.Context) bool {
 }
 
 // loginOAuthUser stores tokens, creates a session, and redirects the user.
-// Used by both the existing-link and auto-link-by-email paths.
+// Both the existing-link and auto-link-by-email paths call it.
 func (h *OAuthHandler) loginOAuthUser(w http.ResponseWriter, r *http.Request, userID, providerID string, tokenSet *huboauth.TokenSet, redirectURI string) {
 	ctx := r.Context()
 
@@ -699,7 +782,7 @@ func (h *OAuthHandler) loginOAuthUser(w http.ResponseWriter, r *http.Request, us
 // This is the sink guard: the value it returns reaches a Location header
 // through http.Redirect, so it must refuse every spelling a BROWSER reads
 // as an authority, not just the ones Go's URL parser does. Two spellings
-// beyond the obvious "//host" get through an RFC 3986 parser:
+// beyond the obvious "//host" pass an RFC 3986 parser:
 //
 //   - "/\host". A WHATWG parser treats a backslash as a slash for a
 //     special scheme, so it reads "host" as the authority. Go's net/url
@@ -755,9 +838,9 @@ func tokenExpiryTime(tokenSet *huboauth.TokenSet, now time.Time) time.Time {
 // unused in the same call.
 //
 // CleanName never fails, so an all-invisible claim becomes "" and takes the
-// fallback, and a claim over the byte limit is cut instead of refused. Its
-// result is idempotent and already within the limit, so the later
-// SanitizeDisplayName passes it through unchanged.
+// fallback, and CleanName cuts a claim over the byte limit instead of
+// refusing it. Its result is idempotent and already within the limit, so the
+// later SanitizeDisplayName passes it through unchanged.
 //
 // An empty return value means the provider supplied no usable name, and the
 // caller that reads the stored row then falls back to the username.
@@ -771,7 +854,7 @@ func cleanProviderDisplayName(claims *huboauth.UserClaims) string {
 func (h *OAuthHandler) storePendingSignup(ctx context.Context, providerID string, claims *huboauth.UserClaims, tokenSet *huboauth.TokenSet, redirectURI, nonceHash string) (string, error) {
 	token := id.Generate()
 
-	// Use the signup token as entity ID for AAD since the user doesn't exist yet.
+	// Use the signup token as entity ID for AAD since the user does not exist yet.
 	encAccessToken, encRefreshToken, err := encryptTokenPair(h.keystore, tokenSet.AccessToken, tokenSet.RefreshToken, token, providerID)
 	if err != nil {
 		return "", err
@@ -802,8 +885,8 @@ func (h *OAuthHandler) storePendingSignup(ctx context.Context, providerID string
 	return token, nil
 }
 
-// encryptTokenPair encrypts an access/refresh token pair. The entityID is used
-// as part of the AAD and is typically a user ID or a pending-signup token.
+// encryptTokenPair encrypts an access/refresh token pair. The AAD includes
+// the entityID, which is typically a user ID or a pending-signup token.
 func encryptTokenPair(ks *keystore.Keystore, accessToken, refreshToken string, entityID, providerID string) (encAccess, encRefresh []byte, err error) {
 	encAccess, err = ks.Encrypt([]byte(accessToken), keystore.AccessTokenAAD(entityID, providerID))
 	if err != nil {
@@ -839,7 +922,18 @@ func (h *OAuthHandler) storeTokens(ctx context.Context, userID, providerID strin
 	})
 }
 
-func (h *OAuthHandler) buildProvider(ctx context.Context, dbProvider *store.OAuthProvider) (huboauth.Provider, error) {
+// buildProvider returns the built client for one provider row, from the
+// cache when it is warm and through one collapsed build when it is not.
+//
+// builtAtGen is the invalidation count the caller read BEFORE it read
+// dbProvider, and the order is the whole point. The row read is the caller's
+// last evidence that the provider still exists, so a count taken before it
+// covers every instant from that evidence to the insert: an administrator's
+// remove or disable that lands anywhere in between moves the count and
+// cacheProvider refuses. A count taken AFTER the row read would leave the
+// gap between the two, and a count taken by this function could not see the
+// caller's read at all.
+func (h *OAuthHandler) buildProvider(ctx context.Context, dbProvider *store.OAuthProvider, builtAtGen uint64) (huboauth.Provider, error) {
 	snap := h.set.Snapshot(ctx)
 	key := providerCacheKey{
 		providerID:  dbProvider.ID,
@@ -852,15 +946,15 @@ func (h *OAuthHandler) buildProvider(ctx context.Context, dbProvider *store.OAut
 
 	// ONE build per key, however many cold callers arrive together. The
 	// flight key is the WHOLE cache key: two redirect URLs build two
-	// different clients, and collapsing them would hand a follower a client
-	// baked with somebody else's redirect_uri.
+	// different clients, and collapsing them would give a follower a client
+	// built with somebody else's redirect_uri.
 	//
 	// The build runs on a context DETACHED from the leader's request.
 	// singleflight cancels nothing itself, so the shared leg would otherwise
 	// carry the leader's context and one abandoned tab would fail discovery
 	// for every waiter -- the trade refresh.go states for its own flight, and
 	// settings.Manager takes for the same reason. It keeps its own deadline,
-	// so a wedged identity provider still cannot park the work for ever.
+	// so a stuck identity provider still cannot block the work for ever.
 	built, err, _ := h.providerFlight.Do(key.providerID+"\x00"+key.redirectURL, func() (any, error) {
 		// Re-check INSIDE the flight: a caller that gathered while the leader
 		// built shares the leader's result, and a later arrival finds the
@@ -876,7 +970,12 @@ func (h *OAuthHandler) buildProvider(ctx context.Context, dbProvider *store.OAut
 		}
 		h.providersMu.Lock()
 		defer h.providersMu.Unlock()
-		h.cacheProvider(key, provider)
+		// The LEADER's builtAtGen decides the insert, because this closure
+		// is the leader's. A follower supplied its own count and its own row
+		// read, and it shares the instance rather than the insert -- the
+		// cached entry stands on one caller's evidence pair, and this is
+		// that caller.
+		h.cacheProvider(key, provider, builtAtGen)
 		return provider, nil
 	})
 	if err != nil {
@@ -915,7 +1014,7 @@ func (h *OAuthHandler) newProvider(
 		// same reason the token exchange does: this is a mux route, so it
 		// never passes through the interceptor chain, and
 		// http.DefaultClient has no timeout. Without it an identity
-		// provider that accepts the connection and never answers parks the
+		// provider that accepts the connection and never answers blocks the
 		// handler for the process's life.
 		discoverCtx, cancel := context.WithTimeout(ctx, settings.KeyTimeouts.Of(snap).APITimeout())
 		defer cancel()
@@ -936,12 +1035,39 @@ func (h *OAuthHandler) newProvider(
 // each holding its own OIDC client and discovery state for the life of the
 // process. Only the current redirect URL can ever be looked up again, so
 // the rest are unreachable rather than merely cold.
-func (h *OAuthHandler) cacheProvider(key providerCacheKey, provider huboauth.Provider) {
+//
+// builtAtGen is the invalidation count the build snapshotted before it
+// started. A mismatch means an administrator invalidated this provider id
+// while the build ran, so this refuses the insert and drops the built
+// client.
+//
+// The refusal exists because remove and disable are NOT the same case.
+// After a DISABLE, a later request re-reads the row and cacheProvider
+// evicts the resurrected entry, so a lost eviction repairs itself. After a
+// REMOVE there is no later call at all: loadEnabledProvider answers 404 on
+// the missing row before buildProvider runs, re-adding the provider mints a
+// fresh id, and nothing calls dropProviderLocked for the old id again --
+// so an entry inserted after InvalidateProvider swept the map holds the
+// keystore-decrypted client secret for the life of the process.
+func (h *OAuthHandler) cacheProvider(key providerCacheKey, provider huboauth.Provider, builtAtGen uint64) {
+	if h.providerGen[key.providerID] != builtAtGen {
+		return
+	}
 	h.dropProviderLocked(key.providerID)
 	h.providers[key] = provider
 }
 
-// InvalidateProvider drops every built instance of one provider.
+// providerGeneration reads one provider id's invalidation count under the
+// read lock. A build takes it before it starts and passes it to
+// cacheProvider.
+func (h *OAuthHandler) providerGeneration(providerID string) uint64 {
+	h.providersMu.RLock()
+	defer h.providersMu.RUnlock()
+	return h.providerGen[providerID]
+}
+
+// InvalidateProvider drops every built instance of one provider, and bars
+// an in-flight build of the same provider from inserting a new one.
 //
 // An administrator who removes or disables a provider makes its entry
 // UNREACHABLE rather than stale: loadEnabledProvider refuses a deleted row
@@ -950,13 +1076,12 @@ func (h *OAuthHandler) cacheProvider(key providerCacheKey, provider huboauth.Pro
 // built client -- holding the client secret the keystore decrypted -- stays
 // in memory for the life of the process.
 //
-// Best effort by design. A request that read the row before the write can
-// still insert an entry after this call. The eviction is hygiene, never
-// access control: loadEnabledProvider's own row read is what refuses the
-// flow.
+// The eviction is hygiene, never access control: loadEnabledProvider's own
+// row read is what refuses the flow.
 func (h *OAuthHandler) InvalidateProvider(providerID string) {
 	h.providersMu.Lock()
 	defer h.providersMu.Unlock()
+	h.providerGen[providerID]++
 	h.dropProviderLocked(providerID)
 }
 

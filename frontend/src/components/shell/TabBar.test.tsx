@@ -273,7 +273,7 @@ describe('tabBar readOnly prop', () => {
     expect(closeButtons).toHaveLength(3)
   })
 
-  it('disables the close button while a persisted tab is closing', () => {
+  it('disables the close button while a persisted tab close is in flight', () => {
     const tabs = [
       makeTab(TabType.AGENT, 'a1', 'Agent Olivia'),
     ]
@@ -534,7 +534,7 @@ describe('tabBar tileActions for grid', () => {
  * A `Tab` is a join result, rebuilt whenever any field it derives from
  * `tabMetadata` changes. Keying the strip's `<For>` on those objects made every
  * such change dispose the row and mount a fresh one, which is fatal for the two
- * things a row can be holding: the inline rename `<input>` the user is typing
+ * things a row can hold: the inline rename `<input>` that the user types
  * into, and `createSortable`'s drag handle.
  */
 describe('tabBar row identity', () => {
@@ -590,7 +590,7 @@ describe('tabBar row identity', () => {
     expect(after[1]).toBe(before[1])
   })
 
-  it('keeps a row being renamed mounted through an unrelated tab\'s change', () => {
+  it('keeps the row that the user renames mounted through an unrelated tab\'s change', () => {
     const [tabs, setTabs] = createSignal<Tab[]>([
       makeTab(TabType.AGENT, 'a1', 'Agent Olivia'),
       makeTab(TabType.TERMINAL, 't1', 'Terminal Liam'),
@@ -615,7 +615,7 @@ describe('tabBar row identity', () => {
 
     const stillThere = document.querySelector('input.tabEditInput') as HTMLInputElement
     expect(stillThere, 'the rename input must survive a sibling row updating').toBe(input)
-    expect(stillThere.value, 'and keep what the user had typed').toBe('half-typed name')
+    expect(stillThere.value, 'and keep what the user typed').toBe('half-typed name')
   })
 })
 
@@ -693,8 +693,8 @@ describe('tabBar mobile variant', () => {
   }
 
   /**
-       Renders the mobile bar with a real signal behind the sheet-open prop, the
-      same contract AppShell's overlay state feeds it.
+   * Renders the mobile bar with a real signal behind the sheet-open prop, the
+   * same contract AppShell's overlay state feeds it.
    */
   function renderMobileTabBar(tabs: Tab[] | (() => Tab[]), activeTabKey: string | null, opts: MobileOpts = {}) {
     const [sheetOpen, setSheetOpen] = createSignal(false)
@@ -790,7 +790,7 @@ describe('tabBar mobile variant', () => {
       // The rows ride out with the panel — the slide needs them mounted.
       expect(screen.getAllByTestId('tab-sheet-row')).toHaveLength(2)
 
-      // Once the slide has had its duration, they are gone: no invisible
+      // Once the slide runs for its whole duration, they are gone: no invisible
       // droppables, nothing left to tab to, and the panel hides from
       // assistive tech again.
       vi.advanceTimersByTime(motion.medium + 100)

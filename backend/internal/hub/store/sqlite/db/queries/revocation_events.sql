@@ -92,9 +92,9 @@ DELETE FROM hub_runtime_lease WHERE singleton_id = 1 AND lease_expires_at <= str
 -- byte-exact at full millisecond precision --
 -- matching what postgres/mysql compact, with no strftime re-normalization per
 -- row. Unlike a function wrap on the column, this is sargable: the partial
--- idx_revocation_events_published(published_at, seq) serves an upper-bounded
--- SEARCH (the `ev.seq <= ...` term implies seq IS NOT NULL, satisfying the
--- partial predicate).
+-- idx_revocation_events_published(published_at, seq) serves a SEARCH with an
+-- upper limit (the `ev.seq <= ...` term implies seq IS NOT NULL, satisfying
+-- the partial predicate).
 DELETE FROM revocation_events
 WHERE id IN (
     SELECT ev.id

@@ -41,25 +41,25 @@ const MENU_ITEM_SELECTOR = [
 const TYPE_AHEAD_RESET_MS = 700
 
 /**
- * Show the menu, as `manual` when a long press is still holding a finger over
- * it and as the plain `auto` popover otherwise.
+ * Show the menu, as `manual` when a long press still holds a finger over it
+ * and as the plain `auto` popover otherwise.
  *
  * A menu that opens under a pressing finger cannot be an `auto` popover: the
  * release still to come is what the HTML light-dismiss pass acts on, and it
  * hides every `auto` popover whose chain excludes that release. Which engine
  * hides what, and when, is not something to code around -- Chromium hides
  * before dispatching the release, WebKit after, and WebKit hit-tests the
- * release live, so whether the menu survived came down to where the finger
- * happened to be sitting. `manual` is not light-dismissed at all, and
- * `armPressDismiss` takes over the one job that costs, closing on a press
- * outside. `Escape` needs nothing: `handleMenuKeyDown` calls `hidePopover`
- * itself.
+ * release live, so whether the menu survived depended on where the finger
+ * happened to be. `manual` is not light-dismissed at all, and
+ * `armPressDismiss` replaces the one behavior that matters: it closes the menu
+ * on a press outside. `Escape` needs nothing: `handleMenuKeyDown` calls
+ * `hidePopover` itself.
  *
  * Asked at SHOW TIME, of the gesture rather than of the caller, because both
  * ways this component opens need it: the gesture it attaches itself, and a
  * controlled `open` driven by a singleton host -- which is how the chat list's
- * shared message menu opens, and why fixing only the first path left the menu
- * a phone user actually presses still vanishing on release.
+ * shared message menu opens, and why a fix to the first path alone left the
+ * menu that a phone user actually presses to vanish on release.
  *
  * @returns whether the menu opened in manual mode, so the caller can arm the
  * dismissal that goes with it.
@@ -117,8 +117,8 @@ export interface ContextMenuTargetProps {
 
 /**
  * The row element for a `contextMenuFor` menu, as a signal so the menu's attach
- * effect tracks it -- a plain `let` depends on the ref happening to be assigned
- * before effects flush. Pass the accessor to `contextMenuFor`, and use the setter
+ * effect tracks it -- a plain `let` depends on an assignment to the ref before
+ * effects flush. Pass the accessor to `contextMenuFor`, and use the setter
  * as the row's `ref`, or call it first inside a composed ref callback beside the
  * row's own directives (`sortable`, `draggable`, an imperative `let` for
  * scroll-into-view, ...).
@@ -144,7 +144,7 @@ export interface DropdownMenuProps {
   'trigger'?: JSX.Element | ((props: DropdownTriggerProps) => JSX.Element)
 
   /**
-   * Anchor for positioning when no trigger is provided.
+   * Anchor for positioning when the caller gives no trigger.
    * Used for programmatic popovers (e.g. CodeLanguagePopover).
    */
   'anchorRef'?: Accessor<PopoverAnchor | undefined>
@@ -185,7 +185,7 @@ export interface DropdownMenuProps {
    * - `card` is a `div` whose content is a CARD -- labelled rows, a list, a
    *   panel. It supplies the `popoverCard` class ITSELF, so a call site cannot
    *   apply the element without the class or the class without the element.
-   *   That pair is exactly what came apart before: the `[+]` menu's agent-info
+   *   That pair is exactly what drifted apart before: the `[+]` menu's agent-info
    *   card carried the class but stayed a `<menu>`, so it dismissed on every
    *   click, and the chip popovers carried `as="div"` with a bare `card`, so
    *   they had no positioning reset and no viewport clamp.
@@ -236,7 +236,7 @@ export function DropdownMenuItemContent(props: DropdownMenuItemContentProps) {
           `ClippedText` renders a plain string. Every live caller passes one
           today, so narrowing `label` to `string` would let this take the
           component -- that changes a shared prop contract, so it is the
-          author's call, not a mechanical swap. */}
+          author's decision, not a mechanical swap. */}
       <span class={clippedText}>{props.label}</span>
       <Show when={props.shortcut}>
         {shortcut => <span class={menuItemShortcut}>{shortcut()}</span>}
@@ -408,8 +408,8 @@ export function DropdownMenu(props: DropdownMenuProps) {
       return
     }
     // A press anchor is a frozen point in the viewport, not an element: the row
-    // the user pressed has scrolled away, and re-running the arithmetic would
-    // glue the menu to that dead point over whatever scrolled into place. Every
+    // the user pressed scrolled away, and re-running the arithmetic would
+    // attach the menu to that stale point over whatever scrolled into place. Every
     // OS context menu closes on scroll instead, and so does this one. An
     // element anchor follows its element, so it keeps repositioning.
     if (!(getAnchor() instanceof Element)) {
@@ -421,13 +421,13 @@ export function DropdownMenu(props: DropdownMenuProps) {
 
   // --- keyboard navigation -------------------------------------------------
   //
-  // A native `<select>` supplied all of this for free, and retiring it took the
-  // lot: arrow keys, Home/End, and type-ahead. A keyboard user was left Tabbing
+  // A native `<select>` supplied all of this for free, and its removal took all
+  // of it: arrow keys, Home/End, and type-ahead. A keyboard user had to Tab
   // through every option, which on a twelve-shell machine is twelve presses to
   // reach the last one. It lives HERE rather than in `LoadingMenu` because
   // every menu popover has items, not just the ones that wrap a list.
   //
-  // OAT's own `ot-dropdown` roving-focus code cannot serve: it bails when there
+  // OAT's own `ot-dropdown` roving-focus code cannot serve: it stops when there
   // is no `[popovertarget]` (this component deliberately renders none), and it
   // queries `[role="menuitem"]` while these items carry `menuitemradio`.
 
@@ -462,7 +462,8 @@ export function DropdownMenu(props: DropdownMenuProps) {
    *
    * Searches from the item AFTER the focused one and wraps, so typing the same
    * letter repeatedly cycles through the items that share it -- which is what a
-   * `<select>` does, and the reason the buffer is not simply reset per key.
+   * `<select>` does, and the reason this code does not simply reset the buffer
+   * per key.
    */
   const typeAhead = (key: string) => {
     clearTimeout(typeAheadTimer)
@@ -473,7 +474,7 @@ export function DropdownMenu(props: DropdownMenuProps) {
     if (items.length === 0)
       return
     // A repeat of one letter cycles; a longer buffer re-searches from the
-    // current item so the match the user is extending stays in the running.
+    // current item so the match that the user extends stays a candidate.
     const repeated = typeAheadBuffer.length > 1
       && [...typeAheadBuffer].every(c => c === typeAheadBuffer[0])
     const from = focusedItemIndex()
@@ -536,7 +537,7 @@ export function DropdownMenu(props: DropdownMenuProps) {
    * The outside-press dismissal a `manual` popover has to supply itself.
    *
    * Armed only for a menu that a long press opened (see `showPressMenu`), and
-   * disarmed the moment it closes, so nothing here is standing while the app is
+   * disarmed the moment it closes, so no listener remains while the app is
    * idle. On `pointerdown`, which is where the native pass acts too, and in the
    * CAPTURE phase so a row that swallows its own presses cannot hide one.
    *
@@ -727,8 +728,8 @@ export function DropdownMenu(props: DropdownMenuProps) {
     popoverEl?.removeEventListener('toggle', handleToggle)
     window.removeEventListener('scroll', repositionOnExternalScroll, true)
     resizeObserver?.disconnect()
-    // A menu unmounted while open never fires its closing `toggle`, so the
-    // document listener that dismisses a press-opened one is dropped here too.
+    // A menu unmounted while open never fires its closing `toggle`, so this
+    // cleanup drops the document listener that dismisses a press-opened one too.
     disarmPressDismiss?.()
   })
 

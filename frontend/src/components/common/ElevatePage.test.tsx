@@ -1,6 +1,8 @@
+import type { Timestamp } from '@bufbuild/protobuf/wkt'
 import { timestampFromDate } from '@bufbuild/protobuf/wkt'
 import { createMemoryHistory, MemoryRouter, Route } from '@solidjs/router'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
+import { createSignal } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ElevatePage } from '~/components/common/ElevatePage'
@@ -9,9 +11,24 @@ import { resetSystemInfoMock, setSystemInfoMock } from '~/test-support/systemInf
 const mockUser = vi.fn()
 const mockLoading = vi.fn<() => boolean>(() => false)
 const mockIsAuthenticated = vi.fn<() => boolean>(() => true)
-const mockElevationExpiresAt = vi.fn<() => ReturnType<typeof timestampFromDate> | undefined>(() => undefined)
-const mockSetElevationExpiresAt = vi.fn()
-const mockElevateWithPassword = vi.fn()
+
+/**
+ * A REAL signal, not a `vi.fn` that answers a fixed value.
+ *
+ * The page decides from this signal, and a successful ceremony writes it. With
+ * a constant stub the ceremony's write changes nothing, so the memo recomputes
+ * once and the double navigation this suite exists to catch cannot happen in a
+ * test at all.
+ */
+const [mockElevationExpiresAt, mockSetElevationExpiresAt] = createSignal<Timestamp | undefined>()
+
+/**
+ * Stands in for `AuthState.elevateWithPassword`, which runs the RPC AND adopts
+ * the returned deadline. So the fake adopts one too: the ceremony's own write
+ * and the form's `onElevated` land in two different microtasks, and Solid does
+ * not batch across an await.
+ */
+const mockElevateWithPassword = vi.fn<(currentPassword: string) => Promise<void>>()
 
 vi.mock('~/context/AuthContext', () => ({
   useAuth: () => ({
@@ -19,7 +36,8 @@ vi.mock('~/context/AuthContext', () => ({
     loading: mockLoading,
     isAuthenticated: mockIsAuthenticated,
     elevationExpiresAt: mockElevationExpiresAt,
-    setElevationExpiresAt: mockSetElevationExpiresAt,
+    elevateWithPassword: (...args: [string]) => mockElevateWithPassword(...args),
+    elevateWithPasskey: vi.fn(),
     refreshUser: async () => {},
   }),
 }))
@@ -29,14 +47,12 @@ vi.mock('~/lib/systemInfo', async () => {
   return m.systemInfoMock
 })
 
-vi.mock('~/lib/elevation', async () => {
-  const actual = await vi.importActual<typeof import('~/lib/elevation')>('~/lib/elevation')
-  return {
-    ...actual,
-    elevateWithPassword: (...args: unknown[]) => mockElevateWithPassword(...args),
-    elevateWithPasskey: vi.fn(),
+/** A ceremony that succeeds and adopts the window the hub granted. */
+function elevationGranted(): () => Promise<void> {
+  return async () => {
+    mockSetElevationExpiresAt(timestampFromDate(new Date(Date.now() + 60_000)))
   }
-})
+}
 
 const assign = vi.fn()
 
@@ -70,7 +86,9 @@ describe('elevatePage', () => {
     vi.stubGlobal('location', { assign })
     mockLoading.mockReturnValue(false)
     mockIsAuthenticated.mockReturnValue(true)
-    mockElevationExpiresAt.mockReturnValue(undefined)
+    // A signal survives `clearAllMocks`, so this hook resets it by hand.
+    mockSetElevationExpiresAt(undefined)
+    mockElevateWithPassword.mockResolvedValue(undefined)
     mockUser.mockReturnValue({
       id: 'user-1',
       username: 'alice',
@@ -90,7 +108,7 @@ describe('elevatePage', () => {
   // consent gate relies on. Without it, a browser that arrives already
   // elevated sits on a prompt for a window it already holds.
   it('leaves immediately when the session is already elevated', async () => {
-    mockElevationExpiresAt.mockReturnValue(timestampFromDate(new Date(Date.now() + 60_000)))
+    mockSetElevationExpiresAt(timestampFromDate(new Date(Date.now() + 60_000)))
     const { navigations } = renderElevate('/elevate?redirect=%2F')
     await vi.waitFor(() => {
       expect(navigations).toContain('/')
@@ -99,7 +117,7 @@ describe('elevatePage', () => {
   })
 
   it('returns to a hub route with a full-document load', async () => {
-    mockElevateWithPassword.mockResolvedValue(timestampFromDate(new Date(Date.now() + 60_000)))
+    mockElevateWithPassword.mockImplementation(elevationGranted())
     renderElevate(`/elevate?redirect=${encodeURIComponent('/auth/cli/start?state=s&elevated=1')}`)
 
     fireEvent.input(await screen.findByTestId('elevate-password'), { target: { value: 'secret' } })
@@ -110,12 +128,16 @@ describe('elevatePage', () => {
       // waits for a consent screen nobody ever sees.
       expect(assign).toHaveBeenCalledWith('/auth/cli/start?state=s&elevated=1')
     })
-    expect(mockSetElevationExpiresAt).toHaveBeenCalled()
-    // EXACTLY once. The ceremony records the outcome and the state memo
-    // decides; it used to navigate directly as well, so a success ran the
-    // transition twice -- once from the handler and once from the effect,
-    // after the new deadline made the memo recompute. On a hub route that
-    // is two full-document loads of a single-use consent URL.
+    expect(mockElevateWithPassword).toHaveBeenCalledWith('secret')
+    // EXACTLY once, and a success writes TWO signals to get here: the adopted
+    // deadline inside the ceremony, then `proven` in the continuation after the
+    // await. Solid does not batch across an await, so the memo recomputes twice
+    // -- and a memo that compares two fresh objects with `===` notifies on
+    // both. On a hub route that is two full-document loads of a single-use
+    // consent URL.
+    //
+    // Wait for the second call before this reads the count.
+    await new Promise(done => setTimeout(done, 20))
     expect(assign).toHaveBeenCalledTimes(1)
   })
 
@@ -170,7 +192,7 @@ describe('elevatePage', () => {
     const message = await screen.findByTestId('elevate-impossible')
     // This account CAN recover: the hub admits a first password on a recent
     // sign-in rather than on an elevation, so the instruction is to sign in
-    // again -- not "set a password", which is the thing being refused.
+    // again -- not "set a password", which is the thing that the hub refuses.
     expect(message).toHaveTextContent(/sign in again/i)
   })
 
@@ -184,10 +206,10 @@ describe('elevatePage', () => {
   // the passkey blocker, which was a second source of truth for an authorization
   // decision.
   //
-  // Offering an arm the hub refuses is a dead end rather than a wasted
+  // Offering an option that the hub refuses is a dead end rather than a wasted
   // click: it is a full-document navigation out of the app to a bare 403
-  // page with no way back, and it hides the copy that states the remedy.
-  it('offers no arm when the hub marks the only linked provider unusable', async () => {
+  // page with no route back, and it hides the copy that states the remedy.
+  it('offers no option when the hub marks the only linked provider unusable', async () => {
     setSystemInfoMock({ passkeyBlocker: 'origin-not-allowed' })
     mockUser.mockReturnValue({
       id: 'user-1',
@@ -206,7 +228,7 @@ describe('elevatePage', () => {
   })
 
   // A DISABLED provider is still listed -- the owner must be able to detach
-  // it -- and must still not be offered as an arm, because both OAuth legs
+  // it -- and must still not be offered as an option, because both OAuth legs
   // answer 403 "provider disabled".
   it('offers only the enabled links, and no other', async () => {
     setSystemInfoMock({ passkeyBlocker: 'origin-not-allowed' })
@@ -231,8 +253,8 @@ describe('elevatePage', () => {
 
   // The account flag OUTRANKS what the form could infer, and it outranks the
   // per-link one too. This account holds a password -- the one shape where it
-  // chose a secret and the provider arm would let somebody past it without
-  // knowing it -- so the hub refuses the arm and the form must not offer it,
+  // chose a secret and the provider option would let somebody past it without
+  // knowing it -- so the hub refuses the option and the form must not offer it,
   // whatever the provider is and however enabled it is.
   it('hides an enabled provider when the account may not use one', async () => {
     setSystemInfoMock({ passkeyBlocker: 'origin-not-allowed' })
@@ -253,7 +275,7 @@ describe('elevatePage', () => {
 
   // And the reverse: an account with no password and no passkey elevates
   // through ANY linked provider, GitHub included, because the provider IS
-  // its sign-in credential. A form that tried to infer the arm from the
+  // its sign-in credential. A form that tried to infer the option from the
   // provider's protocol capability would hide this one.
   it('offers a provider the hub allowed', async () => {
     setSystemInfoMock({ passkeyBlocker: 'origin-not-allowed' })

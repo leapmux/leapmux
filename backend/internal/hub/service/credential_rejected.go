@@ -5,7 +5,7 @@ import "connectrpc.com/connect"
 // A rejected CREDENTIAL and a dead SESSION are opposites for a client, and
 // this file is the one place the difference is stated.
 //
-// Three surfaces answer a rejected credential: the two elevation factor arms,
+// Three surfaces answer a rejected credential: the two elevation factor paths,
 // passkey management, and passkey sign-in. It lived beside the elevation
 // service while only that one used it, which made a rule about every
 // credential read as a rule about one of them -- and the surface that then

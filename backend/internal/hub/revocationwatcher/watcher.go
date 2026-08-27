@@ -8,7 +8,7 @@
 // not a timestamp, so late commits and same-clock ties cannot be skipped.
 //
 // In-process callers still drive direct close paths for zero-latency local
-// teardown. Watcher delivery is the cross-process, idempotent safety net.
+// teardown. Watcher delivery is the cross-process, idempotent safeguard.
 package revocationwatcher
 
 import (
@@ -147,10 +147,10 @@ func New(st store.Store, lifecycle *auth.CredentialLifecycleEffects, opts ...Opt
 	return w
 }
 
-// SeedCursor publishes at most one bounded startup batch and advances this
+// SeedCursor publishes at most one limited startup batch and advances this
 // watcher's cursor to the sequence fence returned by that same locked
-// transaction. Pending events beyond the batch are intentionally replayed by
-// RunOnce; this bounds startup without skipping concurrently published events.
+// transaction. RunOnce deliberately replays pending events beyond the batch;
+// this limits startup without skipping concurrently published events.
 func (w *Watcher) SeedCursor(ctx context.Context) error {
 	if w.closed.Load() {
 		return fmt.Errorf("seed revocation event cursor: %w", ErrClosed)
@@ -196,13 +196,13 @@ func (w *Watcher) SeedCursor(ctx context.Context) error {
 	return nil
 }
 
-// StartLoop starts the owned watcher goroutine. Lease loss is sent to Errors
+// StartLoop starts the owned watcher goroutine. It sends lease loss to Errors
 // and permanently stops the loop; callers must treat it as process-fatal.
 func (w *Watcher) StartLoop(ctx context.Context) {
 	if w.closed.Load() {
 		return
 	}
-	// Unbounded acquire: StartLoop has no caller budget to honor, and a
+	// Unlimited acquire: StartLoop has no caller budget to honor, and a
 	// context.Background acquire cannot fail, so the error is discarded.
 	_ = w.lease.mu.Lock(context.Background())
 	if !w.lease.seeded {
@@ -229,10 +229,10 @@ func (w *Watcher) StartLoop(ctx context.Context) {
 	// The lease heartbeat runs on its OWN goroutine, independent of event
 	// processing. runOnce releases w.lease.mu across the (potentially slow) channel
 	// teardown in applyEvent, so the heartbeat can renew the lease even while a
-	// wedged worker/frontend blocks a teardown -- otherwise a hung peer could
+	// stalled worker/frontend blocks a teardown -- otherwise a hung peer could
 	// stall the single processing goroutine past the lease deadline and
 	// self-fence the whole Hub. Either goroutine cancels loopCtx on a fatal
-	// error, stopping the other; loopDone closes once both have exited.
+	// error, stopping the other; loopDone closes once both exit.
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() { defer wg.Done(); w.processingLoop(loopCtx) }()
@@ -274,7 +274,7 @@ func (w *Watcher) processingLoop(loopCtx context.Context) {
 // renewalLoop keeps the runtime lease alive on a heartbeat that is decoupled
 // from event processing, so a slow channel teardown cannot delay renewal past
 // the lease deadline. It ticks at a quarter of the lease duration and renews
-// once the lease has passed its half-life, guaranteeing a renewal well before
+// once the lease passes its half-life, guaranteeing a renewal well before
 // expiry. A fatal lease loss cancels loopCtx so the processing goroutine stops.
 func (w *Watcher) renewalLoop(loopCtx context.Context) {
 	ticker := time.NewTicker(max(w.lease.duration/4, time.Millisecond))
@@ -284,19 +284,19 @@ func (w *Watcher) renewalLoop(loopCtx context.Context) {
 		case <-loopCtx.Done():
 			return
 		case <-ticker.C:
-			// Unbounded acquire (cannot fail): the heartbeat must renew whenever
+			// Unlimited acquire (cannot fail): the heartbeat must renew whenever
 			// the sweep lets go, and loopCtx cancellation is observed on the next
 			// select rather than by abandoning a renewal it is entitled to make.
 			_ = w.lease.mu.Lock(context.Background())
 			// loopCtx, not a lease-limited context: renew limits its own
 			// round-trip by the lease, and the recovery it falls back to runs
-			// precisely when that deadline has passed.
+			// precisely after that deadline passes.
 			err := w.lease.renewIfStale(loopCtx)
 			w.lease.mu.Unlock()
 			// Only a lease-fatal error (a rival holder, or a local-budget expiry)
-			// stops the watcher; renew and recover have already
+			// stops the watcher; renew and recover already
 			// signaled it on w.errors so the server fences. A transient store
-			// error (SQLITE_BUSY, a network blip) leaves the still-valid lease
+			// error (SQLITE_BUSY, a brief network failure) leaves the still-valid lease
 			// intact -- log and retry on the next tick instead of silently killing
 			// the watcher (which would leave the Hub serving with revocations no
 			// longer applied). A lease that merely LAPSED is likewise not fatal:
@@ -323,14 +323,14 @@ func stopTimer(timer *time.Timer) {
 }
 
 // RunOnce publishes pending revocation events and consumes published events in
-// bounded pages. Store errors are logged and retried by the next sweep.
+// limited pages. It logs store errors, and the next sweep retries them.
 func (w *Watcher) RunOnce(ctx context.Context) error {
 	_, err := w.runOnce(ctx)
 	return err
 }
 
 // runOnce also reports whether it consumed the per-run cap, allowing the
-// owned loop to drain a backlog promptly without making one pass unbounded.
+// owned loop to drain a backlog promptly without making one pass unlimited.
 func (w *Watcher) runOnce(ctx context.Context) (bool, error) {
 	if w.closed.Load() {
 		return false, ErrClosed
@@ -359,14 +359,14 @@ func (w *Watcher) runOnce(ctx context.Context) (bool, error) {
 	// stops mutating past its lease while renewalLoop can still renew during a
 	// slow page -- a merely-slow (not down) store cannot self-fence the sole Hub.
 	// Each phase re-derives its deadline from the current leaseExpiresAt, which
-	// renew/renewalLoop extend, so a multi-page drain is not aborted at the
-	// pre-renewal deadline even though the lease was validly renewed.
+	// renew/renewalLoop extend, so the pre-renewal deadline does not abort a
+	// multi-page drain although renew extended the lease validly.
 	pageSize := w.pageSize
 	maxEvents := w.maxEventsPerRun
 	// A lease-fatal publish error (the lease expired mid-drain) aborts the
-	// sweep -- publishPendingLocked has already signaled it. A transient publish
-	// error is logged there and left for the next sweep, so fall through and
-	// consume whatever is already published.
+	// sweep -- publishPendingLocked already signaled it. publishPendingLocked
+	// logs a transient publish error and leaves it for the next sweep, so fall
+	// through and consume whatever is already published.
 	if err := w.publishPendingLocked(ctx, pageSize, maxEvents); errorsIsLeaseFatal(err) {
 		return false, err
 	}
@@ -387,12 +387,12 @@ func (w *Watcher) runOnce(ctx context.Context) (bool, error) {
 }
 
 // publishPendingLocked publishes pending revocation events into the gapless seq
-// stream in bounded pages. Each page's store round-trip runs with w.lease.mu released
+// stream in limited pages. Each page's store round-trip runs with w.lease.mu released
 // (see runtimeLease.runStoreUnlocked) so renewalLoop can keep the lease alive during a slow
 // publish, and it also renews between pages to persist lease liveness across a
-// large backlog drain. Transient store errors are logged and returned for the
-// caller to treat as non-fatal; a lease-fatal error (already signaled) is
-// returned so the sweep aborts. Caller holds w.lease.mu.
+// large backlog drain. It logs transient store errors and returns them for the
+// caller to treat as non-fatal; it returns a lease-fatal error (already
+// signaled) so the sweep aborts. Caller holds w.lease.mu.
 func (w *Watcher) publishPendingLocked(parentCtx context.Context, pageSize, maxEvents int32) error {
 	var published int32
 	for published < maxEvents {
@@ -421,7 +421,7 @@ func (w *Watcher) publishPendingLocked(parentCtx context.Context, pageSize, maxE
 			// Log before returning: runOnce treats a non-fatal return here as
 			// transient and discards it (falling through to consume), so without
 			// this the only store error on the publish path that leaves no
-			// breadcrumb is the inter-page renew. Consistent with the publish/list
+			// log line is the inter-page renew. Consistent with the publish/list
 			// warnings above; a lease-fatal err is already signaled via
 			// signalFatal, so logging unconditionally is harmless.
 			slog.Warn("revocation watcher: inter-page lease renewal failed", "error", err)
@@ -470,7 +470,7 @@ func (w *Watcher) consumePageLocked(parentCtx context.Context, limit int32) (int
 			return 0, false, fatal
 		}
 		// Apply the event's teardown WITHOUT w.lease.mu so renewalLoop can keep the
-		// lease alive across a slow channel teardown -- a wedged worker or
+		// lease alive across a slow channel teardown -- a stalled worker or
 		// back-pressured frontend can block a channel close for seconds, and
 		// holding w.lease.mu across that would stall renewal and self-fence the Hub.
 		// applyEvent touches only the auth registry and channel manager (their
@@ -478,7 +478,7 @@ func (w *Watcher) consumePageLocked(parentCtx context.Context, limit int32) (int
 		// event kind applies an in-process effect and an unknown kind is logged and
 		// skipped, never fenced (see applyEvent), so there is no fatal path here.
 		w.applyEventUnlocked(event)
-		// Record progress immediately: applyEventUnlocked has already applied the
+		// Record progress immediately: applyEventUnlocked already applied the
 		// event's in-process effect, so the cursor must advance with it. Inserting
 		// the parentCtx/closed checks between apply and advance would let a
 		// concurrent cancel/close leave the event applied but the cursor stale,
@@ -495,15 +495,15 @@ func (w *Watcher) consumePageLocked(parentCtx context.Context, limit int32) (int
 	// parentCtx, not a lease-limited context. renew reads leaseExpiresAt
 	// itself when it limits its round-trip, so it always uses the deadline
 	// renewalLoop left there rather than one snapshotted before the teardown
-	// above -- and its recovery path still runs when that deadline has passed.
+	// above -- and its recovery path still runs after that deadline passes.
 	if err := w.lease.renew(parentCtx); err != nil {
 		return 0, false, err
 	}
 	// A short page (fewer than limit) means no more events exist at this seq
 	// right now, so report drained and skip the trailing empty ListPublishedAfter
 	// the caller would otherwise issue just to learn the backlog is exhausted --
-	// mirroring publishPendingLocked's `n < limit` short-circuit. Concurrently
-	// published events are picked up on the next tick, as the publish path already
+	// mirroring publishPendingLocked's `n < limit` short-circuit. The next tick
+	// picks up concurrently published events, as the publish path already
 	// assumes.
 	return int32(len(events)), int32(len(events)) < limit, nil
 }
@@ -517,7 +517,7 @@ func errorsIsLeaseFatal(err error) bool {
 // closed because the Watcher has a single lifetime and emits at most one error.
 func (w *Watcher) Errors() <-chan error { return w.errors }
 
-// cancelLoop cancels the owned loop's context if one is running. Safe to call
+// cancelLoop cancels the owned loop's context if a loop is active. Safe to call
 // before StartLoop (no-op) and repeatedly (context cancel is idempotent).
 func (w *Watcher) cancelLoop() {
 	if cp := w.loopCancel.Load(); cp != nil {
@@ -537,8 +537,8 @@ func (w *Watcher) operationContext(parent context.Context) (context.Context, con
 }
 
 // Close stops the owned loop, waits for it, and releases the runtime lease.
-// Lease release is attempted even when the loop does not drain before ctx is
-// exhausted; in that case the drain error is returned after the release.
+// It attempts the lease release even when the loop does not drain before ctx
+// is exhausted; it then returns the drain error after the release.
 func (w *Watcher) Close(ctx context.Context) error {
 	w.closed.Store(true)
 	if w.cancelOperations != nil {
@@ -563,8 +563,8 @@ func (w *Watcher) stopLoop(ctx context.Context) error {
 	w.lifecycleMu.Unlock()
 
 	// Wait for the processing/renewal goroutines to exit so no straggler
-	// touches the lease row. A slow drain is reported to Close, which still
-	// attempts release so the next Hub launch is not fenced until the lease TTL.
+	// touches the lease row. Close reports a slow drain, and still attempts
+	// release so the lease TTL does not fence the next Hub launch.
 	if done != nil {
 		select {
 		case <-done:
@@ -586,7 +586,7 @@ func (w *Watcher) releaseSeededLease(ctx context.Context) error {
 	// orphan the lease for its 30s TTL. applyEventUnlocked releases lease.mu
 	// during each event's lifecycle effect, so this acquisition succeeds even
 	// while a sweep is stuck in that teardown. The sweep cannot re-acquire the
-	// lease afterwards: Close has already set `closed` (renew checks that flag)
+	// lease afterwards: Close already set `closed` (renew checks that flag)
 	// and cancelled operationsCtx, so the sweep aborts at its next event
 	// boundary and any in-flight renewal unwinds through its cancelled context.
 	// A limited acquire, not a TryLock spin: ctxutil.Mutex serves waiters FIFO, so
@@ -609,8 +609,8 @@ func (w *Watcher) releaseSeededLease(ctx context.Context) error {
 		return fmt.Errorf("release Hub runtime lease: %w", err)
 	}
 	w.lease.seeded = false
-	// Pairs with the acquisition log, so a lease that was NEVER released is
-	// visible as a missing line. That is the difference between a Hub that shut
+	// Pairs with the acquisition log, so a lease that nothing ever released
+	// appears as a missing line. That is the difference between a Hub that shut
 	// down cleanly and one whose row is orphaned until the TTL expires -- which
 	// is what fences the next launch.
 	slog.Info("revocation watcher: released the Hub runtime lease",
@@ -626,7 +626,7 @@ func (w *Watcher) releaseSeededLease(ctx context.Context) error {
 // The deferred re-lock keeps the "held on entry, held on return" invariant.
 func (w *Watcher) applyEventUnlocked(event store.PublishedRevocationEvent) {
 	w.lease.mu.Unlock()
-	// Unbounded (and therefore infallible) re-lock: see runtimeLease.runStoreUnlocked.
+	// Unlimited (and therefore infallible) re-lock: see runtimeLease.runStoreUnlocked.
 	defer func() { _ = w.lease.mu.Lock(context.Background()) }()
 	w.applyEvent(event)
 }
@@ -654,20 +654,21 @@ func (w *Watcher) applyEvent(event store.PublishedRevocationEvent) {
 	case store.RevocationEventKindUserInfo:
 		w.applyUserInfoEvent(event.Event)
 	default:
-		// An unrecognized event kind (data corruption, or a forward-compat kind
-		// written by a newer binary) is logged and SKIPPED, not treated as fatal.
-		// Fencing the sole active Hub on one unprocessable row is a full outage,
-		// and a restart seeds the cursor past the row anyway -- so skipping reaches
-		// the same end-state without the downtime, while every OTHER revocation in
-		// the stream keeps flowing. Surfaced loudly so an operator/alert can catch
-		// a genuinely-unexpected kind.
+		// The watcher logs an unrecognized event kind (data corruption, or a
+		// forward-compat kind written by a newer binary) and SKIPS it, rather
+		// than treating it as fatal. Fencing the sole active Hub on one
+		// unprocessable row is a full outage, and a restart seeds the cursor past
+		// the row anyway -- so skipping reaches the same end-state without the
+		// downtime, while every OTHER revocation in the stream keeps flowing. It
+		// logs at error level so an operator or an alert can catch a
+		// genuinely-unexpected kind.
 		slog.Error("revocation watcher: skipping unknown event kind",
 			"seq", event.Seq, "event", event.Event.ID, "kind", event.Event.Kind)
 	}
 }
 
 func (w *Watcher) applyAPITokenRotationEvent(event store.RevocationEvent) {
-	// Cross-process backstop: invalidate the cached secret only. The zero
+	// Cross-process safeguard: invalidate the cached secret only. The zero
 	// expiry means "do not reschedule leases/channels" -- those live on the Hub
 	// that performed the rotation, which already extended them in-process.
 	w.lifecycle.BearerRotatedCacheOnly(auth.BearerKindAPI, event.SubjectID)

@@ -122,9 +122,9 @@ func (s *sessionStore) deleteEmitting(ctx context.Context, id, kind string) (int
 func (s *sessionStore) DeleteByUser(ctx context.Context, userID userid.UserID) error {
 	owner, ok := userid.OwnerFilter(userID)
 	if !ok {
-		// An unminted caller names no user, so a bulk mutation must refuse
-		// rather than address every blank-owner row -- or report success
-		// having changed nothing. See userid.OwnerFilter.
+		// An unminted caller specifies no user, so a bulk mutation must refuse
+		// rather than address every blank-owner row -- or report success when
+		// it changed nothing. See userid.OwnerFilter.
 		return store.ErrInvalidArgument
 	}
 	return mapErr(s.conn.q.DeleteUserSessionsByUser(ctx, owner))
@@ -217,7 +217,7 @@ func (s *sessionStore) Elevate(ctx context.Context, p store.ElevateSessionParams
 	return store.RunCredentialMutation(ctx, s.conn.withTransaction, func(ctx context.Context, conn *sqliteConn) (*store.CredentialEvent, error) {
 		n, err := rowsAffected(conn.q.ElevateUserSession(ctx, gendb.ElevateUserSessionParams{
 			ElevationProvenAt:  sqltime.SQLiteNullTimeOf(p.ElevationProvenAt),
-			ElevationExpiresAt: sqltime.SQLiteNullTimeOf(p.ElevationExpiresAt),
+			ElevationExpiresAt: sqltime.SQLiteNullTimeOf(p.ClampedExpiresAt()),
 			ID:                 p.SessionID,
 			UserID:             owner,
 			Now:                sqltime.NewSQLiteTime(now),
@@ -242,7 +242,7 @@ func (s *sessionStore) SlideElevation(ctx context.Context, p store.SlideSessionE
 	// TestAllDatetimeColumnsStoreCanonicalLayout that fails on a raw bind.
 	return rowsAffected(s.conn.q.SlideUserSessionElevation(ctx, gendb.SlideUserSessionElevationParams{
 		WindowDeadline: sqltime.NewSQLiteTime(p.WindowDeadline),
-		MaxTotalMicros: p.MaxTotal.Microseconds(),
+		MaxTotalMicros: store.ElevationMaxTotal.Microseconds(),
 		ID:             p.SessionID,
 		UserID:         owner,
 		Now:            sqltime.SQLiteNullTimeOf(now),

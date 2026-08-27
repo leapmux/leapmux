@@ -66,9 +66,9 @@ func SessionDuration(s *Snapshot) time.Duration {
 
 // SMTPValue is the smtp key's public shape; the password lives in the
 // encrypted half. Enabled() is the single fact every consumer
-// (GetSystemInfo, the sender, verification gating) asks for: it needs the
-// host AND the from address, which are the two fields a relay cannot be
-// used without and neither of which has a usable default.
+// (GetSystemInfo, the sender, the verification requirement) asks for: it
+// needs the host AND the from address, which are the two fields a relay
+// cannot work without and neither of which has a usable default.
 type SMTPValue struct {
 	Host        string `json:"host,omitempty"`
 	Port        int    `json:"port,omitempty"`
@@ -85,7 +85,7 @@ type SMTPValue struct {
 // This is what lets validateSMTP accept a partly staged document. The
 // admin surface writes ONE field per row, so a rule that refused an absent
 // from address would refuse the host write that comes before it, with an
-// error naming a field the operator has not reached yet.
+// error that specifies a field the operator did not reach yet.
 func (v SMTPValue) Enabled() bool { return v.Host != "" && v.FromAddress != "" }
 
 // validateSMTP ports the SMTP cross-field rules from the old
@@ -136,8 +136,8 @@ func isLocalhost(host string) bool {
 }
 
 // TimeoutsValue groups the RPC timeout budget the hub advertises and
-// enforces. All hot: api_seconds is read per request by the timeout
-// interceptor, the worker-facing pair via GetTimeouts.
+// enforces. All hot: the timeout interceptor reads api_seconds per
+// request, and GetTimeouts reads the worker-facing pair.
 type TimeoutsValue struct {
 	APITimeoutSeconds          int64 `json:"api_seconds,omitempty"`
 	AgentStartupTimeoutSeconds int64 `json:"agent_startup_seconds,omitempty"`
@@ -173,8 +173,8 @@ func (v TimeoutsValue) WorktreeCreateTimeout() time.Duration {
 // changes and pushes them into the existing atomic setters (see the
 // PropagationHot rule for why these keys and no others).
 //
-// Both are guards, not quotas — the defaults are meant never to be
-// reached by a person. The connection cap limits how many long-lived
+// Both are guards, not quotas — a person is never meant to reach the
+// defaults. The connection cap limits how many long-lived
 // sockets one user may hold at once (an active tab holds two,
 // /ws/userevents plus /ws/channel): the queue pools limit the BYTES each
 // class of connection may hold, but a pool member is a connection, not a
@@ -194,8 +194,8 @@ type LimitsValue struct {
 }
 
 // QueueBudgetValue limits the three outbound queue memory pools. All
-// restart-class: pool minimum floors are derived from them (and from the
-// max message size) at startup, before any pool exists. A zero field
+// restart-class: the hub derives the pool minimum floors from them (and
+// from the max message size) at startup, before any pool exists. A zero field
 // means auto-size from the process's own memory limit, so multi-instance
 // hubs on heterogeneous machines keep per-process budgets.
 //
@@ -218,9 +218,9 @@ type QueueBudgetValue struct {
 const DefaultMaxMessageSizeBytes = channelwire.MaxMessageSize
 
 // validatePublicURL ports the old canonical public_url rule: scheme+host
-// only, nothing else — the hub appends its own routes. A trailing slash,
-// userinfo, query, or fragment is refused rather than normalized or
-// ignored: BaseURL returns the stored string verbatim, and any of those
+// only, nothing else — the hub appends its own routes. The validator
+// refuses a trailing slash, userinfo, query, or fragment rather than
+// normalizing or ignoring it: BaseURL returns the stored string verbatim, and any of those
 // would corrupt every URL the hub derives from it (double-slash links,
 // credentials leaked into email footers).
 func validatePublicURL(v string) error {
@@ -287,8 +287,8 @@ func validateTimeouts(v TimeoutsValue) error {
 	return nil
 }
 
-// validateLimits ports the connection-cap floor: four is the least that
-// can be called working (an active tab holds two sockets), and zero means
+// validateLimits ports the connection-cap floor: four is the smallest
+// working value (an active tab holds two sockets), and zero means
 // unlimited rather than "refuse everyone".
 func validateLimits(v LimitsValue) error {
 	if err := validateCap("max_connections_per_user", v.MaxConnectionsPerUser, 4); err != nil {
@@ -427,8 +427,8 @@ var (
 		})
 
 	// Solo can send no mail at all, so the relay has nothing to carry.
-	// There are two senders: the verification email, which rides sign-up
-	// and email change (solo refuses both), and the worker registration
+	// There are two senders: the verification email, which accompanies
+	// sign-up and email change (solo refuses both), and the worker registration
 	// instructions, which need a verified address that the solo user can
 	// never obtain -- bootstrap creates it with an empty email and
 	// RequestEmailChange refuses solo.
@@ -506,7 +506,7 @@ var (
 			WithUI(UIMeta{
 			Category: "advanced",
 			Title:    "Queue budgets",
-			Summary:  "outbound queue memory pool budgets in bytes (0 = auto-size); applies after restart",
+			Summary:  "memory budgets for the outbound queue pools, in bytes (0 = auto-size); applies after restart",
 			// The rule these fields enforce is a UNION -- 0, or at least the
 			// class floor -- which Min/Max cannot express, so the declared
 			// interval is wider than the validator. Help states the part the
@@ -553,9 +553,10 @@ func EmailVerificationEffective(s *Snapshot) bool {
 // SignupEnabledEffective applies the dev-mode default at read time: dev
 // mode runs the full multi-user path with open signup as the dev-friendly
 // default, but a stored row (an explicit `settings set`) always wins.
-// Resolved here rather than seeded as a row at startup so the key keeps
-// reporting customized=false in dev — a row stays an operator write — and
-// so dev-ness is never persisted into a database another hub shares.
+// This function resolves it here rather than seeding a row at startup, so
+// the key keeps reporting customized=false in dev — a row stays an operator
+// write — and so the hub never persists dev-ness into a database another
+// hub shares.
 func SignupEnabledEffective(s *Snapshot, devMode bool) bool {
 	if devMode && !s.Customized(KeySignupEnabled) {
 		return true
@@ -571,7 +572,7 @@ func SignupEnabledEffective(s *Snapshot, devMode bool) bool {
 //
 // A WILDCARD bind answers on every address the machine holds, so no single
 // host derives from it and localhost is the one the hub's own links can
-// name. All three spellings resolve that way -- ":4327", "0.0.0.0:4327" and
+// use. All three spellings resolve that way -- ":4327", "0.0.0.0:4327" and
 // "[::]:4327". Only ":4327" did before, and the other two produced
 // "http://0.0.0.0:4327": an address no browser can open, printed into every
 // verification and password-reset mail, into the device-code
@@ -602,7 +603,7 @@ func BaseURL(s *Snapshot, listen string) string {
 
 // browserHostForListen is the authority a browser reaches this hub at,
 // derived from the bind address. A WILDCARD bind answers on every address
-// the machine holds, and localhost is the one the hub's own links can name.
+// the machine holds, and localhost is the one the hub's own links can use.
 // httpsec.IsWildcardHost answers for every spelling of it, so "[::0]:4327"
 // and "0:0:0:0:0:0:0:0:4327" resolve the same way ":4327" does.
 //
@@ -616,9 +617,9 @@ func browserHostForListen(listen string) string {
 	if host == "" {
 		return ""
 	}
-	// Split the port off so the wildcard host can be recognised. The split
-	// and the wildcard test both live in httpsec, which is the leaf the
-	// captcha gate and the passkey origin resolution reach for as well: one
+	// Split the port off so this function can recognise the wildcard host.
+	// The split and the wildcard test both live in httpsec, which the
+	// captcha gate and the passkey origin resolution also use: one
 	// definition of "what host does this bind address mean to a browser",
 	// rather than three that agree only by comment.
 	hostPart, port := httpsec.SplitBindHostPort(host)

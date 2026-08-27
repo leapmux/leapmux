@@ -88,10 +88,14 @@ func (s *registrationKeyStore) SoftDelete(ctx context.Context, p store.SoftDelet
 
 // Consume runs the SELECT FOR UPDATE + UPDATE pair in a transaction so
 // concurrent callers cannot both observe the same live row. MySQL has no
-// UPDATE ... RETURNING, so the row lock is doing the heavy lifting here.
+// UPDATE ... RETURNING, so the row lock does the essential work here.
 func (s *registrationKeyStore) Consume(ctx context.Context, id string) (*store.WorkerRegistrationKey, error) {
 	var consumed *store.WorkerRegistrationKey
 	err := s.conn.withTransaction(ctx, func(conn *mysqlConn) error {
+		// Reset first: a retried attempt that fails must not return the key
+		// an earlier, rolled-back attempt read. That key is still live in
+		// the database, and the caller would register a worker against it.
+		consumed = nil
 		now := sqltime.NewMySQLTime(time.Now())
 		r, err := conn.q.GetActiveRegistrationKeyForUpdate(ctx, gendb.GetActiveRegistrationKeyForUpdateParams{
 			ID:        id,

@@ -52,7 +52,7 @@ func NewOIDCProvider(ctx context.Context, issuerURL, clientID, clientSecret, red
 // the prompt, typing a password, answering a second factor -- and nothing
 // more.
 //
-// This number binds the PROVIDER, not the hub: a conforming OP must
+// This number obliges the PROVIDER, not the hub: a conforming OP must
 // re-authenticate a session older than it, and that server-side obligation is
 // the whole value.
 //
@@ -69,7 +69,7 @@ func NewOIDCProvider(ctx context.Context, issuerURL, clientID, clientSecret, red
 // widely deployed providers never fill the claim at all -- Google documents
 // that it does not re-authenticate on request, and Microsoft Entra carries
 // auth_time as an optional claim the app registration must ask for. Refusing
-// them answered the only arm such an account has with a 403 every time.
+// them answered the only path such an account has with a 403 every time.
 //
 // So the request carries prompt=login and max_age, and the hub reads neither
 // the claim nor anything derived from it. UserClaims carries no auth_time
@@ -80,7 +80,7 @@ const ReauthMaxAge = 5 * time.Minute
 // AuthURL builds the OIDC authorization URL.
 //
 // ForceReauthentication emits BOTH prompt=login and max_age, and the second
-// is the one with teeth. prompt=login alone is a SHOULD -- OpenID Connect
+// is the one a provider must obey. prompt=login alone is a SHOULD -- OpenID Connect
 // Core 3.1.2.1 says the provider "SHOULD prompt the user for
 // reauthentication", so one that ignores it answers exactly like one that
 // honoured it. max_age states a number the same section obliges a conforming
@@ -132,8 +132,8 @@ func (p *OIDCProvider) Exchange(ctx context.Context, code, codeVerifier string) 
 		return nil, nil, fmt.Errorf("oidc parse claims: %w", err)
 	}
 
-	// INVARIANT: Only emails confirmed as verified by the provider are included
-	// in UserClaims.Email. This check ensures email_verified is explicitly true;
+	// INVARIANT: UserClaims.Email carries only an email the provider confirms
+	// as verified. This check ensures email_verified is explicitly true;
 	// missing or false values result in an empty email. The per-provider
 	// trust_email setting controls whether the hub treats such verified emails
 	// as pre-verified for account linking and signup — it does NOT bypass this

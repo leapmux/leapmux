@@ -24,7 +24,7 @@ export interface AuthMethodSelection {
    * flip false at runtime — a captcha refusal re-fetches system info, an
    * admin settings write re-fetches it, and an admin can clear the hub's
    * public URL — so a passkey selection made before that falls back to the
-   * password arm.
+   * password option.
    */
   effectiveMethod: Accessor<AuthMethod>
   /** Handler for the method pills. */
@@ -41,8 +41,8 @@ export interface AuthMethodSelection {
  * the raw signal at one or two sites while every other site read the
  * effective one — so a hub that lost passkey support mid-form hid the
  * password field, hid the "Forgot password?" link and skipped the password
- * validation, while the submit path had already fallen back to the password
- * arm. A caller that cannot reach the raw signal cannot reintroduce that
+ * validation, while the submit path already fell back to the password
+ * option. A caller that cannot reach the raw signal cannot reintroduce that
  * split.
  */
 export function createAuthMethodSelection(kind: AuthMethodKind): AuthMethodSelection {
@@ -71,8 +71,8 @@ export function createAuthMethodSelection(kind: AuthMethodKind): AuthMethodSelec
  *
  *   - The BROWSER refuses (the page is not secure, or it has no WebAuthn at
  *     all). The pill STAYS, disabled, carrying the reason. It is a property of
- *     where the reader is standing, and they can move: hiding it leaves
- *     somebody whose only credential is a passkey at a dead end with nothing
+ *     where the reader stands, and they can move: hiding it leaves somebody
+ *     whose only credential is a passkey with no way to sign in and nothing
  *     to read.
  *   - The HUB does not run ceremonies at this origin. The pill GOES. It is a
  *     property of the deployment, identical for every visitor, and a

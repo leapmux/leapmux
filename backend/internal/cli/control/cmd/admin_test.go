@@ -1,11 +1,16 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -13,6 +18,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/hub/captcha"
 	"github.com/leapmux/leapmux/internal/hub/ratelimit"
@@ -21,7 +27,7 @@ import (
 
 // TestAdminCommandsRefuseWorkerIPC pins the transport rule every admin
 // leaf inherits through requireAdminClient: admin commands talk to the
-// hub directly and never ride the worker-IPC bridge. The hubrpc table
+// hub directly and never use the worker-IPC bridge. The hubrpc table
 // the bridge dispatches through is a typing device, not a security
 // boundary — anything registered there is callable by any spawned agent
 // — so no admin procedure is registered there and the client refuses the
@@ -35,8 +41,8 @@ func TestAdminCommandsRefuseWorkerIPC(t *testing.T) {
 }
 
 // TestAdminCommandUsageStrings pins the usage/validation messages that
-// carried over verbatim from the old offline verbs, checked before any
-// client is built (so no hub or credentials are needed).
+// carried over verbatim from the old offline verbs. The CLI checks them
+// before it builds any client (so no hub or credentials are needed).
 func TestAdminCommandUsageStrings(t *testing.T) {
 	cases := []struct {
 		name string
@@ -69,7 +75,7 @@ func TestAdminUserUpdateNoFields(t *testing.T) {
 }
 
 // TestParseSettingValue pins the scalar coercion the old offline verb
-// accepted: JSON documents pass through, bare scalars are quoted.
+// accepted: JSON documents pass through, and the CLI quotes bare scalars.
 func TestParseSettingValue(t *testing.T) {
 	v, err := parseSettingValue("3600")
 	require.NoError(t, err)
@@ -88,7 +94,7 @@ func TestParseSettingValue(t *testing.T) {
 	assert.JSONEq(t, `"dark"`, string(v))
 
 	// An empty VALUE is refused, but the empty STRING is a legal value for
-	// some keys, so the message must name both ways to reach it.
+	// some keys, so the message must state both ways to reach it.
 	_, err = parseSettingValue("")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `pass '""' to store the empty string`)
@@ -149,7 +155,7 @@ func TestAdminRateLimitSet_RefusesUnknownOperation(t *testing.T) {
 
 // The hub decodes the value as JSON, so a bare `T`/`TRUE`/`False` must be
 // normalized to the JSON literal. Passing the token through made the hub
-// answer with a decode error naming a line the operator never typed.
+// answer with a decode error that specifies a line the operator never typed.
 func TestParseSettingValue_NormalizesEveryBooleanSpelling(t *testing.T) {
 	for _, raw := range []string{"true", "TRUE", "True", "t", "T"} {
 		v, err := parseSettingValue(raw)
@@ -175,8 +181,8 @@ func TestParseSettingValue_DigitsStayNumbers(t *testing.T) {
 
 	// strconv.ParseFloat accepts far more than JSON does. Each of these
 	// parses as a float and is NOT valid JSON, so shipping it verbatim made
-	// the hub answer with a decode error naming a character the operator
-	// typed for a different reason. They belong on the string path.
+	// the hub answer with a decode error that specifies a character the
+	// operator typed for a different reason. They belong on the string path.
 	for _, raw := range []string{"NaN", "Infinity", "-Inf", "infinity", "0x1p-2", "1_000"} {
 		v, err := parseSettingValue(raw)
 		require.NoErrorf(t, err, "%q", raw)
@@ -318,7 +324,7 @@ func TestAdminListVerbs_RefuseANonPositiveLimit(t *testing.T) {
 	}
 }
 
-// `--secret` with no `--provider` used to fall through to the ALTCHA arm
+// `--secret` with no `--provider` used to fall through to the ALTCHA branch
 // and overwrite the signing key, invalidating every live challenge.
 func TestAdminCaptchaSet_RefusesAProviderForeignFlag(t *testing.T) {
 	err := RunAdminCaptchaSet(nil, []string{"--provider", "altcha", "--site-key", "abc"})
@@ -350,7 +356,7 @@ func TestAdminCaptchaSet_RefusesAnUnknownProvider(t *testing.T) {
 // TestSettingShapeFromDescriptor_ScalarKindMatchesTheGoSpelling pins the
 // CLI's kind names to settings.FieldKind.String().
 //
-// The CLI used to restate the wire-to-schema table, and the two had already
+// The CLI used to restate the wire-to-schema table, and the two already
 // drifted: `settings get` printed "boolean" where the Go schema — and the
 // golden account schema that pins it — say "bool". An operator reading one
 // surface must be able to use what it says on the other.
@@ -480,7 +486,7 @@ func TestCaptchaSetRefusesAnAlgorithmBeforeTheDial(t *testing.T) {
 //
 // Seven verbs address exactly ONE user, and the hub holds the same rule —
 // but it can only answer over a connection the operator did not need. A
-// missing or ambiguous selector must name the flag, not the transport.
+// missing or ambiguous selector must state the flag, not the transport.
 func TestUserSelectorRefusalsHappenBeforeTheDial(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -526,7 +532,7 @@ func TestUserSelectorRefusalsHappenBeforeTheDial(t *testing.T) {
 // A missing selector must answer BEFORE the password prompt, for the same
 // reason `user create` checks --username first: an operator must not type a
 // secret into a request that cannot succeed, and with a non-terminal stdin
-// the prompt's own refusal names --password, which is not the missing flag.
+// the prompt's own refusal states --password, which is not the missing flag.
 func TestAdminUserResetPassword_RefusesAMissingSelectorBeforeItPrompts(t *testing.T) {
 	err := RunAdminUserResetPassword(nil, nil)
 	require.Error(t, err)
@@ -578,7 +584,7 @@ func TestTokenListingsAcceptAnEmptySelector(t *testing.T) {
 
 // A missing --username must answer BEFORE the password prompt. The prompt
 // ran first, so an operator typed a secret into a request that could not
-// succeed -- and with a non-terminal stdin the refusal named --password,
+// succeed -- and with a non-terminal stdin the refusal stated --password,
 // which is not the flag that was missing.
 func TestAdminUserCreate_RefusesAMissingUsernameBeforeItPrompts(t *testing.T) {
 	err := RunAdminUserCreate(nil, nil)
@@ -602,12 +608,12 @@ func TestAdminUserCreate_RefusesAMissingUsernameBeforeItPrompts(t *testing.T) {
 
 // `settings set-secret KEY VALUE` merges NAMED fields, so only a JSON
 // DOCUMENT can be a legal partial. A validity test alone let every other
-// JSON value dial the hub and come back as a decode error naming a Go type.
+// JSON value dial the hub and come back as a decode error that specifies a Go type.
 func TestAdminSettingsSetSecret_RefusesAnyValueThatIsNotADocument(t *testing.T) {
 	for _, value := range []string{`"hunter2"`, "5", "null", "[1,2]", "true", `"{}"`} {
 		err := RunAdminSettingsSetSecret(nil, []string{"smtp", value})
 		require.Errorf(t, err, "%s must be refused", value)
-		assert.Containsf(t, err.Error(), "VALUE must be a JSON document naming the secret fields", "%s", value)
+		assert.Containsf(t, err.Error(), "VALUE must be a JSON document that specifies the secret fields", "%s", value)
 		assert.Containsf(t, err.Error(), `{"password":"..."}`, "the refusal shows the shape: %s", value)
 	}
 
@@ -628,7 +634,7 @@ func TestAdminSettingsSetSecret_RefusesAnyValueThatIsNotADocument(t *testing.T) 
 // An admin verb with no hub address must identify the flag and the
 // variable. Falling through built a client for the empty URL, whose
 // credential lookup answered `hub url missing hostname` under the
-// not_logged_in code -- a message that names neither.
+// not_logged_in code -- a message that states neither.
 func TestRequireAdminClient_RefusesAnEmptyHubAddress(t *testing.T) {
 	t.Setenv("LEAPMUX_CONTROL_SOCK", "")
 	t.Setenv("LEAPMUX_HUB", "")
@@ -639,7 +645,7 @@ func TestRequireAdminClient_RefusesAnEmptyHubAddress(t *testing.T) {
 	assert.Contains(t, err.Error(), "invalid_request")
 	assert.Contains(t, err.Error(), "--hub")
 	assert.Contains(t, err.Error(), "LEAPMUX_HUB")
-	assert.Contains(t, err.Error(), "auth login", "the message names the verb that stores a credential")
+	assert.Contains(t, err.Error(), "auth login", "the message states the verb that stores a credential")
 	assert.NotContains(t, err.Error(), "missing hostname")
 
 	// The worker-IPC refusal still wins, because that operator has an
@@ -897,5 +903,73 @@ func populateEveryField(t *testing.T, m proto.Message) {
 		default:
 			t.Fatalf("field %s has kind %v, which this populator does not set", f.Name(), f.Kind())
 		}
+	}
+}
+
+// permissionDeniedUserService refuses ListUsers the way the hub refuses an
+// administrator whose CLI credential carries no admin scope.
+type permissionDeniedUserService struct {
+	leapmuxv1connect.UnimplementedAdminUserServiceHandler
+	message string
+}
+
+func (s *permissionDeniedUserService) ListUsers(
+	_ context.Context,
+	_ *connect.Request[leapmuxv1.ListUsersRequest],
+) (*connect.Response[leapmuxv1.ListUsersResponse], error) {
+	return nil, connect.NewError(connect.CodePermissionDenied, errors.New(s.message))
+}
+
+// TestAdminVerb_ReportsTheHubsRefusalVerbatim is why the CLI adds nothing of
+// its own to a PermissionDenied.
+//
+// It used to append a remedy whenever the LOCAL credential file recorded no
+// admin scope, and the file cannot decide that. The hub answers two
+// different refusals here and each one states its own remedy, so the
+// appended line either repeated the hub word for word, or told a
+// non-administrator to run a login that the hub refuses.
+func TestAdminVerb_ReportsTheHubsRefusalVerbatim(t *testing.T) {
+	for name, message := range map[string]string{
+		"the account is not an administrator": "administrator privileges are required",
+		"the credential carries no scope": "this CLI credential was not granted hub administration; " +
+			"run `leapmux control auth login --admin` to mint one that was",
+	} {
+		t.Run(name, func(t *testing.T) {
+			clearRemoteEnv(t)
+			// requireAdminClient refuses the worker-IPC transport on the
+			// presence of the variable alone, and a suite run from inside
+			// an agent inherits it.
+			t.Setenv("LEAPMUX_CONTROL_SOCK", "")
+			mux := http.NewServeMux()
+			path, handler := leapmuxv1connect.NewAdminUserServiceHandler(
+				&permissionDeniedUserService{message: message})
+			mux.Handle(path, handler)
+			srv := httptest.NewServer(mux)
+			t.Cleanup(srv.Close)
+
+			t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+			// A credential file that records NO admin scope, which is what
+			// the deleted hint keyed on.
+			require.NoError(t, control.SaveCredentials(srv.URL, control.CredentialFile{
+				HubURL: srv.URL, AccessToken: "lmx_a_at_1",
+				ExpiresAt: time.Now().Add(time.Hour), AdminScope: false,
+			}))
+
+			out := withCapturedStdout(t, func() {
+				require.Error(t, RunAdminUserList(fakeCmdCtx{}, []string{"--hub", srv.URL}))
+			})
+
+			var env struct {
+				Error map[string]string `json:"error"`
+			}
+			require.NoError(t, json.Unmarshal(out, &env))
+			assert.Equal(t, "rpc_failed", env.Error["code"])
+			assert.Contains(t, env.Error["message"], message)
+			assert.Equal(t,
+				strings.Count(message, "auth login --admin"),
+				strings.Count(env.Error["message"], "auth login --admin"),
+				"the remedy appears exactly where the hub put it: once on the scope refusal, "+
+					"and never on a refusal that a login cannot repair")
+		})
 	}
 }

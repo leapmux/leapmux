@@ -146,15 +146,15 @@ test.describe('Email verification', () => {
  * The app mounts its dialogs beside the route outlet. Mounted OUTSIDE the
  * router they had no router context, so `<A>` threw and the whole app went to
  * its error boundary the moment this row appeared -- with the Preferences
- * dialog never opening and a flood of "email verification required" toasts as
- * the only clue. Both halves are needed to reach it, which is why it sat
- * unnoticed.
+ * dialog never opening and a rapid series of "email verification required"
+ * toasts as the only clue. The bug needs both halves, which is why nobody
+ * noticed it.
  */
 test.describe('the account panel on an unverified address', () => {
   test('offers verification without tearing the app down', async ({ page, leapmuxServer }) => {
     await clearSmtpViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken)
 
-    // Signed up BEFORE SMTP: the account lands verified-by-absence, and the
+    // Signed up BEFORE SMTP: the account becomes verified-by-absence, and the
     // hub starts refusing it only once the relay is configured below.
     const username = `acct-verify-${Date.now()}`
     const cookie = await signUpViaAPI(

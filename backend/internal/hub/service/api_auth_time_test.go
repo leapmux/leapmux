@@ -40,7 +40,7 @@ func TestPreTouchPollOAuthError_ThrottleUsesSuppliedNow(t *testing.T) {
 	assert.Equal(t, "slow_down", body.Error)
 }
 
-// TestAPIAuthHandlerNow_DefaultsToTheWallClock pins the PRODUCTION arm of the
+// TestAPIAuthHandlerNow_DefaultsToTheWallClock pins the PRODUCTION branch of the
 // Now seam.
 //
 // Every handler the tests build sets Now, so without this the nil branch --
@@ -67,9 +67,9 @@ func TestAPIAuthHandlerNow_UsesTheInjectedClock(t *testing.T) {
 
 	assert.Equal(t, fixed, h.now())
 
-	// The seam reaches the decisions, not just the accessor: an expiry the
-	// injected clock has passed must read as expired even though the real
-	// clock is nowhere near it.
+	// The seam reaches the decisions, not just the accessor: an expiry that
+	// the injected clock already passed must read as expired even though the
+	// real clock is nowhere near it.
 	body, rejected := h.preTouchPollOAuthError(
 		&store.DeviceAuthorization{ExpiresAt: fixed.Add(-time.Second)}, h.now())
 	require.True(t, rejected)

@@ -4,16 +4,16 @@ import "time"
 
 // The resend cooldown, in ONE place, for every mail the hub sends on demand.
 //
-// Two flows are limited by it -- the email-verification code and the
-// password-reset link -- and both were written out separately: two constants
+// It limits two flows -- the email-verification code and the
+// password-reset link -- and each flow carried its own copy: two constants
 // holding the same 60 seconds, and two spellings of the same cutoff formula.
-// Each carried a comment naming the other as its twin, which is the shape a
-// second source of truth takes just before the two drift.
+// Each carried a comment that identified the other as its twin, which is the
+// shape a second source of truth takes just before the two drift.
 //
 // The token LIFETIMES stay per-flow and differ on purpose (a verification code
 // is short because it is short to type; a reset link is longer because it
-// arrives by mail and is clicked later). The cooldown and the derivation do
-// not differ, so they live here.
+// arrives by mail and the person clicks it later). The cooldown and the
+// derivation do not differ, so they live here.
 
 // resendCooldown caps how often one account can ask the hub to send again.
 //
@@ -24,13 +24,13 @@ import "time"
 const resendCooldown = 60 * time.Second
 
 // mintCutoff is the instant a previous token must have expired at or before
-// for a fresh mint to land, which is how the cooldown is enforced.
+// for a fresh mint to land, which is how the hub enforces the cooldown.
 //
 // The derivation, once: neither SetPendingEmail nor SetPendingPasswordReset
-// stores an issued-at, so issued_at is reconstructed as the previous expiry
-// minus the constant TTL that set it. "Issued at least the cooldown ago" is
-// then "previous expiry at or before now + (TTL - cooldown)". Both instants
-// are on the app clock, the clock that wrote the expiry.
+// stores an issued-at, so the derivation reconstructs issued_at as the
+// previous expiry minus the constant TTL that set it. "Issued at least the
+// cooldown ago" is then "previous expiry at or before now + (TTL - cooldown)".
+// Both instants are on the app clock, the clock that wrote the expiry.
 //
 // The comparison belongs in the mint STATEMENT rather than in a Go
 // read-then-check, and that is why this returns a cutoff instead of a

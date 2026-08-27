@@ -123,8 +123,9 @@ func setupElevationTest(t *testing.T) *elevationEnv {
 // TestElevateSession_InvalidatesTheCacheWithoutSigningTheUserOut is the
 // single most important regression test in the change.
 //
-// The grant must reach the NEXT request through a cache that was populated
-// before it existed -- and it must do that on the one lane whose contract is
+// The grant must reach the NEXT request through a cache that the hub
+// populated before it existed -- and it must do that on the one lane whose
+// contract is
 // "drop the cached UserInfo without logging the user out". Any of the other
 // revocation lanes would also refresh the cache, and would also cancel the
 // user's leases and close their channels: an elevation would then look like
@@ -154,14 +155,14 @@ func TestElevateSession_InvalidatesTheCacheWithoutSigningTheUserOut(t *testing.T
 	require.NoError(t, err)
 	require.NotNil(t, resp.Msg.GetElevationExpiresAt())
 
-	// (1) The next validation RE-READS: the same call that was refused a
+	// (1) The next validation RE-READS: the same call the hub refused a
 	// moment ago now lands, inside the auth cache's TTL.
 	_, err = env.client.ChangePassword(ctx, authedReq(&leapmuxv1.ChangePasswordRequest{
 		NewPassword: "newpass123",
 	}, env.token))
 	require.NoError(t, err, "the grant must reach the next request through the warm cache")
 
-	// (2) The user is NOT signed out: the session still authenticates.
+	// (2) Nothing signs the user out: the session still authenticates.
 	// TestElevateSession_GrantTearsNothingDown isolates the teardown half,
 	// away from the credential revocation ChangePassword performs on the
 	// user's OTHER sessions and tokens.
@@ -171,7 +172,7 @@ func TestElevateSession_InvalidatesTheCacheWithoutSigningTheUserOut(t *testing.T
 }
 
 // TestElevateSession_GrantTearsNothingDown isolates the effect of the grant
-// itself, with no follow-up mutation to muddy the recorder.
+// itself, with no follow-up mutation to confuse the recorder.
 func TestElevateSession_GrantTearsNothingDown(t *testing.T) {
 	t.Parallel()
 
@@ -203,7 +204,8 @@ func TestElevateSession_GrantTearsNothingDown(t *testing.T) {
 
 // TestDropElevation_InvalidatesTheCacheImmediately is the polarity that
 // matters on the way DOWN. A cached longer deadline fails OPEN, so the drop
-// must reach the next request rather than waiting out the cache TTL.
+// must reach the next request rather than waiting for the cache TTL to
+// expire.
 func TestDropElevation_InvalidatesTheCacheImmediately(t *testing.T) {
 	t.Parallel()
 
@@ -238,8 +240,8 @@ func TestDropElevation_InvalidatesTheCacheImmediately(t *testing.T) {
 // browser would see is what the assertion reads.
 //
 // This is the bug the E2E suite found: the wrong-password answer was a bare
-// Unauthenticated, and the frontend's blanket "Unauthenticated means signed
-// out" rule ended the very session the prompt was protecting.
+// Unauthenticated, and the frontend's general "Unauthenticated means signed
+// out" rule ended the very session the prompt protected.
 func TestElevateSession_WrongFactorDoesNotReadAsADeadSession(t *testing.T) {
 	t.Parallel()
 
@@ -262,7 +264,7 @@ func TestElevateSession_WrongFactorDoesNotReadAsADeadSession(t *testing.T) {
 	_, err = auth.ValidateToken(ctx, env.store, env.token)
 	assert.NoError(t, err)
 
-	// An EMPTY password takes the same arm: a client must not be signed out
+	// An EMPTY password takes the same path: a client must not be signed out
 	// for submitting an empty prompt either.
 	_, err = env.client.ElevateSession(ctx, authedReq(&leapmuxv1.ElevateSessionRequest{}, env.token))
 	require.Error(t, err)

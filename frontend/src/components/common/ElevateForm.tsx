@@ -2,7 +2,7 @@ import type { Component } from 'solid-js'
 import type { LinkedOAuthProvider } from '~/generated/leapmux/v1/auth_pb'
 import { createSignal, For, Show } from 'solid-js'
 import { useAuth } from '~/context/AuthContext'
-import { elevateWithPasskey, elevateWithPassword, oauthReauthUrl } from '~/lib/elevation'
+import { oauthReauthUrl } from '~/lib/elevation'
 import { formatErrorMessage } from '~/lib/errors'
 import { passkeyBlocker, passkeysUsableHere } from '~/lib/systemInfo'
 import { passkeyBlockerMessage, passkeyErrorMessage } from '~/lib/webauthn'
@@ -11,27 +11,26 @@ import { errorText, srOnly } from '~/styles/shared.css'
 /**
  * The step-up ceremony, without a container.
  *
- * It is a form BODY so the same markup serves both places a step-up is
- * needed: the standalone `/elevate` route the hub bounces a CLI login
+ * It is a form BODY so the same markup serves both places that need a
+ * step-up: the standalone `/elevate` route the hub bounces a CLI login
  * through, and the in-app dialog a settings action opens. Two copies would
  * drift, and the factor list is the part that must not: an account that can
- * only elevate through its identity provider must be offered that arm
- * wherever it is asked.
+ * only elevate through its identity provider must be offered that option
+ * wherever the app asks for a step-up.
  */
 export const ElevateForm: Component<{
   /**
-   * Called after a factor is proven and the new deadline is adopted.
+   * Called after the auth context proves a factor and adopts the new deadline.
    *
-   * It carries no value. The form writes the deadline into the auth context
-   * itself, because BOTH of its mounts did — two copies of an adoption step
-   * that a third mount would have had to remember, and forgetting it leaves
-   * the mirrored deadline silently stale.
+   * It carries no value. The auth context runs the ceremony and adopts the
+   * deadline itself, so no mount of this form -- and no third one -- can
+   * forget that step and leave the mirrored deadline stale.
    */
   onElevated: () => void
   /**
    * Where the OAuth re-authentication leg returns the browser. It leaves
-   * this document, so the caller must specify an address that can resume what
-   * the user was doing.
+   * this document, so the caller must specify an address that can resume the
+   * user's previous page.
    */
   oauthRedirect: string
 }> = (props) => {
@@ -47,15 +46,15 @@ export const ElevateForm: Component<{
    * The reason an account whose ONLY factor is a passkey cannot verify here.
    *
    * Null while the account has no passkey, so the copy below still falls back
-   * to the "nothing to verify with yet" arm for an account that holds no
-   * factor at all. Non-null exactly when this form offers no passkey arm for
-   * a passkey the account does hold, because `passkeyAvailable` is the same
-   * two facts.
+   * to the "nothing to verify with yet" branch for an account that holds no
+   * factor at all. Non-null exactly when this form offers no passkey option
+   * for a passkey that the account does hold, because `passkeyAvailable` is
+   * the same two facts.
    */
   const passkeyOnlyBlocker = () => (passkeyCount() > 0 ? passkeyBlocker() : null)
   const providers = (): LinkedOAuthProvider[] => auth.user()?.oauthProviders ?? []
   /**
-   * The providers the HUB will accept a step-up from.
+   * The providers that the HUB accepts a step-up from.
    *
    * TWO facts, and both come from the hub. `mayElevateThroughAProvider` is the
    * ACCOUNT rule, from the same predicate the OAuth re-authentication leg
@@ -68,16 +67,16 @@ export const ElevateForm: Component<{
    * truth for an authorization decision, and the two drifted at the first
    * change to either side.
    *
-   * The form offers exactly what the hub accepts, and the reason is a dead
-   * end rather than a wasted click: an arm the hub refuses is a
-   * full-document navigation out of the app to a bare 403 page with no way
-   * back, and it hides the copy below that gives a remedy.
+   * The form offers exactly what the hub accepts, because a refused option is
+   * a dead end rather than a wasted click: it is a full-document navigation
+   * out of the app to a bare 403 page with no route back, and it hides the
+   * copy below that gives a remedy.
    */
   const accountMayUseAProvider = () => auth.user()?.mayElevateThroughAProvider === true
   const elevatingProviders = (): LinkedOAuthProvider[] =>
     accountMayUseAProvider() ? providers().filter(p => p.enabled) : []
-  const oauthOnly = () => elevatingProviders().length > 0
-  const canElevate = () => passwordSet() || passkeyAvailable() || oauthOnly()
+  const hasElevatingProvider = () => elevatingProviders().length > 0
+  const canElevate = () => passwordSet() || passkeyAvailable() || hasElevatingProvider()
 
   const submitPassword = (e: Event) => {
     e.preventDefault()
@@ -85,12 +84,12 @@ export const ElevateForm: Component<{
     setMessage('')
     void (async () => {
       try {
-        auth.setElevationExpiresAt(await elevateWithPassword(password()))
+        await auth.elevateWithPassword(password())
         props.onElevated()
       }
       catch (err) {
         // The hub answers a wrong password and a rate-limit refusal with
-        // messages the user can act on, so both are shown verbatim.
+        // messages the user can act on, so this form shows both verbatim.
         setMessage(formatErrorMessage(err, 'Could not verify your password'))
       }
       finally {
@@ -104,7 +103,7 @@ export const ElevateForm: Component<{
     setMessage('')
     void (async () => {
       try {
-        auth.setElevationExpiresAt(await elevateWithPasskey())
+        await auth.elevateWithPasskey()
         props.onElevated()
       }
       catch (e) {
@@ -129,7 +128,7 @@ export const ElevateForm: Component<{
             A re-authentication form asks for a password and nothing else, so a
             manager has no field to match a stored entry's user against and
             fills either the wrong one or none. The remedy every manager and
-            every sign-in-form guide names is the same: carry the username in
+            every sign-in-form guide specifies is the same: carry the username in
             the form as an `autocomplete="username"` field.
 
             It is OFFSCREEN rather than `display: none`, because a manager that
@@ -148,11 +147,11 @@ export const ElevateForm: Component<{
             over a modal <dialog>. Bitwarden's does not -- its content script
             calls hidePopover() on an element the browser reports as "in the no
             popover state" and the exception aborts the rest of its mutation
-            pass (bitwarden/clients#21388, open). That is an extension bug with
-            no page-side remedy short of abandoning the native modal dialog for
+            pass (bitwarden/clients#21388, open). That is an extension bug, and
+            the page has no remedy except to abandon the native modal dialog for
             every dialog in the app; the manager's toolbar and keyboard-shortcut
             fill paths do not use that menu, and this field is what makes those
-            land on the right credential.
+            reach the right credential.
           */}
           <input
             class={srOnly}
@@ -187,10 +186,10 @@ export const ElevateForm: Component<{
         </button>
       </Show>
 
-      <Show when={oauthOnly()}>
+      <Show when={hasElevatingProvider()}>
         <p>Verify with the provider you sign in with:</p>
         {/*
-          elevatingProviders(), never providers(): a link the hub refuses
+          elevatingProviders(), never providers(): a link that the hub refuses
           leaves the app for a 403 page it could have predicted.
         */}
         <For each={elevatingProviders()}>
@@ -212,9 +211,9 @@ export const ElevateForm: Component<{
         too. An account with NOTHING can still set a first password -- the
         hub admits that on a recent sign-in rather than on an elevation -- so
         the instruction is to sign in again first. An account whose only
-        factor is a passkey this page cannot run gets the blocker's own
+        factor is a passkey that this page cannot run gets the blocker's own
         sentence, because the three blockers have three different remedies and
-        they go to three different people. The copy this replaced named the
+        they go to three different people. The copy this replaced specified the
         administrator for all of them, which is wrong advice for the two the
         BROWSER raises: no address an administrator publishes makes a
         plain-HTTP page secure.

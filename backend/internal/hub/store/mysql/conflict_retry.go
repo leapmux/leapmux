@@ -58,19 +58,23 @@ func isRetryableConflict(err error) bool {
 // behind, while inside one the whole attempt is what must repeat (which
 // withTransaction does).
 //
+// The pool conn carries it on BOTH its Queries and its raw exec (see
+// newPoolConn), so the hand-composed bulk tab-index statements retry exactly
+// as the generated ones do. Inside a transaction it carries neither.
+//
 // QueryRowContext IS NOT WRAPPED, and it cannot be. database/sql returns the
 // concrete *sql.Row, whose only method reads unexported fields, so there is no
 // way to return a Row that retries -- and no interface to substitute, because
 // sqlc's generated DBTX specifies the concrete type. The postgres dialect
 // wraps its equivalent because pgx returns the pgx.Row INTERFACE.
 //
-// What that costs is limited. In this dialect a single-row read is a SELECT:
-// MySQL has no UPDATE ... RETURNING, so every mutation sqlc generates lands on
-// ExecContext, which this does wrap. A SELECT can still take a lock-wait
+// So ONE gap remains, and it is narrow. In this dialect a single-row read is a
+// SELECT: MySQL has no UPDATE ... RETURNING, so every mutation sqlc generates
+// lands on ExecContext, which this wraps. A SELECT can still take a lock-wait
 // timeout inside a transaction, and there the transaction-level retry covers
-// it. The gap is a bare single-row SELECT outside a transaction that loses a
-// lock race, which needs a concurrent writer holding a row this reader wants
-// and no surrounding transaction.
+// it. What is left is a bare single-row SELECT outside a transaction that
+// loses a lock race, which needs a concurrent writer holding a row this reader
+// wants and no surrounding transaction.
 type conflictRetryDBTX struct {
 	inner gendb.DBTX
 }

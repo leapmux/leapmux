@@ -13,13 +13,13 @@ interface PasswordFieldsProps {
 
 /**
  * Shared password + confirm password fields with live inline validation.
- * Use `error()` and `canSubmit()` from the returned helpers to wire up
- * the parent form's submit button.
+ * Call the exported `passwordError` and `passwordCanSubmit` helpers to
+ * control the parent form's submit button.
  *
  * There is no "current password" field, and adding one would ask for a
  * secret that nothing verifies. Session elevation is the step-up for a
- * password change: the factor is proven once, in the elevation prompt, and
- * admits every sensitive action for a window.
+ * password change: the user proves the factor once, in the elevation prompt,
+ * and it admits every sensitive action for a window.
  */
 export const PasswordFields: Component<PasswordFieldsProps> = (props) => {
   return (

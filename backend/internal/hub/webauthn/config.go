@@ -42,7 +42,7 @@ func RPConfigFromSettings(s *settings.Snapshot, listen string) (RPConfig, error)
 // (scheme, host, port): a host-only match would admit a different port or
 // scheme, the browser would accept the ceremony (the RP ID is still a
 // suffix of the page host), and the finish-time origin check would then
-// reject the assertion — a guaranteed-dead ceremony after interactive
+// reject the assertion — a ceremony that cannot succeed, after interactive
 // biometric work. An unallowed or unparseable origin reports allowed=false
 // so Begin can refuse it with a clear error. An empty origin (a non-browser
 // client without an Origin header) keeps the default RPID: there is no
@@ -88,7 +88,14 @@ func allowedOrigins(u *url.URL) []string {
 }
 
 // servesLoopback reports whether a hub bound on this host also answers on
-// the loopback spellings: a loopback bind, a wildcard bind, or an empty host.
+// the loopback spellings. Two binds do: a loopback bind, and a wildcard bind.
+//
+// An EMPTY host reports false. httpsec.IsWildcardHost states that an empty
+// host is not a wildcard there, and that each caller must give it its own
+// meaning; here it means "no host at all", which serves nothing. The case is
+// unreachable in any event -- RPConfigFromSettings refuses a base URL with an
+// empty hostname before allowedOrigins runs -- so the answer is the safe one
+// rather than a rule the code depends on.
 func servesLoopback(host string) bool {
 	h := normalizeHost(host)
 	// httpsec answers both halves, so this file spells neither the loopback

@@ -37,10 +37,10 @@ test.describe('Preferences administration groups', () => {
   })
 
   /**
-   * A dev instance holds sign-up open while nothing is stored, so this row
-   * is where the configured value and the enforced value differ: the
-   * switch carries the configured default (closed) and the note carries
-   * what the hub applies (open). The note speaks the switch's own
+   * A dev instance holds sign-up open while the hub stores no value, so
+   * this row is where the configured value and the enforced value differ:
+   * the switch carries the configured default (closed) and the note carries
+   * what the hub applies (open). The note uses the switch's own
    * vocabulary -- "On", never the JSON literal `true` the wire carries.
    */
   test('states an enforced toggle in the words of its switch', async ({ page, leapmuxServer }) => {
@@ -82,7 +82,7 @@ test.describe('Preferences administration groups', () => {
    *
    * public_url is the sharpest case: it decides which browser origin the hub
    * runs passkey ceremonies for. An administrator who published the hub's URL
-   * watched Add passkey stay disabled -- on the very screen that had just
+   * watched Add passkey stay disabled -- on the very screen that just
    * accepted the change -- until a page reload, with nothing to say why.
    *
    * The test drives the two sections the way a person does, because the store
@@ -100,7 +100,7 @@ test.describe('Preferences administration groups', () => {
     // the Account section is a `role="alert"` too, so an unscoped alert
     // locator matches two elements and fails strict mode.
     const passkeyRow = dialog.locator('[data-setting-id="account.passkeys"]')
-    // The listing gates the button too, so settle on the enabled state
+    // The listing controls the button too, so settle on the enabled state
     // before changing anything.
     const addPasskey = passkeyRow.getByRole('button', { name: 'Add passkey' })
     await expect(addPasskey).toBeEnabled()
@@ -147,17 +147,18 @@ test.describe('Preferences administration groups', () => {
  * A hub setting is deployment-wide, and several of these keys ARE the hub's
  * security controls: sign-up, captcha, the rate limits, SMTP, and the
  * public_url the passkey relying party derives from. Renaming yourself asked
- * for a proven factor while opening the hub to the world asked for nothing.
+ * for a proven factor while opening the hub to the public internet asked for
+ * nothing.
  *
  * Only a browser shows the half that matters to an operator: the refusal
- * arrives as a PROMPT they can answer, and the write they started lands after
- * they do.
+ * arrives as a PROMPT they can answer, and the write they started succeeds
+ * after they do.
  */
 test.describe('administration settings need a verified session', () => {
   /**
    * A FRESH admin session, never elevated.
    *
-   * The worker's shared `adminToken` is elevated in the fixture -- every other
+   * The fixture elevates the worker's shared `adminToken` -- every other
    * spec here writes settings through it -- so a test about the gate has to
    * mint its own, exactly as 006-passkey and 143-cli-elevation do.
    */
@@ -165,7 +166,7 @@ test.describe('administration settings need a verified session', () => {
     return loginViaAPI(hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD)
   }
 
-  test('prompts on the first write and lands it after verifying', async ({ page, leapmuxServer }) => {
+  test('prompts on the first write and applies it once the user verifies', async ({ page, leapmuxServer }) => {
     await loginViaToken(page, await unelevatedAdminSession(leapmuxServer.hubUrl))
     await page.goto('/')
     await openPreferencesDialog(page, 'admin-general')
@@ -186,7 +187,7 @@ test.describe('administration settings need a verified session', () => {
     await verify.getByTestId('elevate-password').fill(TEST_ADMIN_PASSWORD)
     await verify.getByTestId('elevate-password-submit').click()
 
-    // The refused write ran again and landed, with no second click.
+    // The refused write ran again and succeeded, with no second click.
     await expect(row.getByText('Customized')).toBeVisible()
     await expect(page.getByRole('dialog', { name: 'Verify your identity' })).toHaveCount(0)
 
@@ -214,8 +215,9 @@ test.describe('administration settings need a verified session', () => {
     await dialog.getByTestId('elevation-drop').click()
     await expect(dialog.getByTestId('elevation-status')).toHaveCount(0)
 
-    // Re-elevate, so the worker's shared session is left as the fixture made
-    // it and a later spec's settings write is not refused.
+    // Re-elevate, so this test leaves the worker's shared session as the
+    // fixture made it, and the hub does not refuse a later spec's settings
+    // write.
     const row = dialog.locator('[data-setting-id="session_duration_seconds"]')
     const input = row.locator('input[type="number"]')
     await input.fill('7200')

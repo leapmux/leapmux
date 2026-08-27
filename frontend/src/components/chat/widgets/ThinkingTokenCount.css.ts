@@ -43,7 +43,7 @@ const fadeOut = keyframes({ from: { opacity: 1 }, to: { opacity: 0 } })
 // "star power" -- a Mario-star pulse. Two animations layer on the root: a hue
 // cycle through the spectrum (the rainbow) and a faster scale+glow throb (the
 // pulse). They run on `color`/`transform`, so every glyph -- the rolling digits
-// and the unit noun, all of which inherit `color` -- shifts in lockstep.
+// and the unit noun, all of which inherit `color` -- shifts at the same time.
 const starRainbow = keyframes({
   '0%': { color: '#ff3b30' }, // red
   '16%': { color: '#ff9500' }, // orange
@@ -53,7 +53,7 @@ const starRainbow = keyframes({
   '83%': { color: '#bf5af2' }, // violet
   '100%': { color: '#ff3b30' }, // back to red for a seamless loop
 })
-// The throb: scale up a touch and bloom a currentColor glow at the midpoint, so
+// The throb: scale up slightly and bloom a currentColor glow at the midpoint, so
 // the halo takes on whatever rainbow hue is live at that instant.
 const starPulse = keyframes({
   '0%': { transform: 'scale(1)', textShadow: 'none' },

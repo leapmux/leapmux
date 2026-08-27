@@ -18,9 +18,9 @@ interface RegisterWorkerDialogProps {
   onClose: () => void
 }
 
-// Cadence (frontend, ms): how often we check whether the key is close
-// enough to expiry to be worth extending. The backend rejects extensions
-// while remaining > 2 minutes, so a 30-second tick gives us plenty of
+// Cadence (frontend, ms): how often this dialog checks whether the key is
+// close enough to expiry to be worth extending. The backend rejects
+// extensions while remaining > 2 minutes, so a 30-second tick gives plenty of
 // in-window attempts before the 5-minute TTL elapses.
 const EXTEND_TICK_MS = 30_000
 const EXTEND_THRESHOLD_MS = 2 * 60 * 1000
@@ -48,8 +48,8 @@ export const RegisterWorkerDialog: Component<RegisterWorkerDialogProps> = (props
 
   const canEmail = createMemo(() => Boolean(auth.user()?.emailVerified))
 
-  // Soft-delete the key on close. Errors are swallowed because the
-  // dialog is going away regardless — the key will expire on its own.
+  // Soft-delete the key on close. This discards the errors because the
+  // dialog closes regardless — the key expires on its own.
   onCleanup(() => {
     const k = registrationKey()
     if (k)
@@ -72,7 +72,7 @@ export const RegisterWorkerDialog: Component<RegisterWorkerDialogProps> = (props
   //
   // Auto-extension loop: only fires inside the last EXTEND_THRESHOLD_MS
   // before expiry. The backend's anti-spam guard refuses earlier calls,
-  // so the threshold check on the client just avoids burning RPCs. The
+  // so the threshold check on the client only avoids wasted RPCs. The
   // threshold is purposely smaller than the backend's anti-spam buffer
   // — staying inside a single tick avoids alignment edge cases.
   onMount(() => {

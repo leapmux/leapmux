@@ -39,7 +39,7 @@ func (s *AuthService) BeginPasskeyLogin(ctx context.Context, req *connect.Reques
 	sessionID, optionsJSON, rpID, err := wa.BeginLogin(ctx, user.ID, originFromRequest(req))
 	if err != nil {
 		if classifyWebAuthnError(err) == webAuthnErrorUnavailable {
-			// An unserved origin names the remediation. Everything else in
+			// An unserved origin gives the remediation. Everything else in
 			// this class answers with the same code and message as the
 			// missing-user path, so the error is not an enumeration oracle.
 			if errors.Is(err, hubwebauthn.ErrOriginNotAllowed) {
@@ -180,13 +180,13 @@ func (s *AuthService) FinishPasskeySignUp(ctx context.Context, req *connect.Requ
 
 	// Re-check the controls at finish so an admin disable or a race on
 	// username/email between Begin and Finish cannot create an account past
-	// policy. Setup mode is re-checked rather than carried over from Begin,
-	// because the state can flip either way inside the ceremony window: a
-	// second operator can win the race to become the first administrator, and
-	// every user can vanish. This commit creates the hub's first account
-	// whenever it is still the first, and that account must be an admin,
-	// exactly like password sign-up -- otherwise /setup is withdrawn and the
-	// hub has no administrator.
+	// policy. This handler re-checks setup mode rather than carries it over
+	// from Begin, because the state can flip either way inside the ceremony
+	// window: a second operator can win the race to become the first
+	// administrator, and every user can vanish. This commit creates the hub's
+	// first account whenever it is still the first, and that account must be
+	// an admin, exactly like password sign-up -- otherwise the hub withdraws
+	// /setup and has no administrator.
 	hasUser, err := s.checkHasAnyUser(ctx)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("check users: %w", err))
@@ -209,6 +209,7 @@ func (s *AuthService) FinishPasskeySignUp(ctx context.Context, req *connect.Requ
 		pendingEmail = draft.Email
 	}
 	createdUser, storedCode, err := createUserInTx(ctx, s.store, createUserTxParams{
+		now:          s.now,
 		userID:       draft.UserID,
 		username:     draft.Username,
 		displayName:  draft.DisplayName,
@@ -271,7 +272,7 @@ func (s *AuthService) FinishPasskeySignUp(ctx context.Context, req *connect.Requ
 // password reset. The credential-rotation teardown paths (self-service
 // CompletePasswordReset, admin ResetPassword, admin DeleteUser, the
 // offline recover CLI, and signup rollback) share it, so the next
-// credential type is registered here once instead of remembered at each
+// credential type needs one registration here instead of one at each
 // rotation site.
 //
 // There is no separate step-up artifact to sweep. The single-use reauth

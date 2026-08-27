@@ -46,8 +46,8 @@ type userTestEnv struct {
 	// contexts is the interceptor's UserInfo cache. A test that writes the
 	// elevation columns directly must drop it, because the RPC that writes
 	// them in production drops it too (through
-	// lifecycle.UserInfoInvalidated). Without that, the next call is served
-	// from a cache entry minted before the elevation existed.
+	// lifecycle.UserInfoInvalidated). Without that, the next call reads a
+	// cache entry minted before the elevation existed.
 	contexts *auth.AuthContextRegistry
 	// tv backs the interceptor's bearer rung, so a test can present a REAL
 	// API credential and not just a session cookie. The two rungs answer
@@ -112,9 +112,9 @@ func (e *userTestEnv) setElevationRow(t *testing.T, provenAt, expiresAt time.Tim
 }
 
 // elevateSessionRow is the one place a test writes the elevation columns.
-// It goes through the REAL store write ElevateSession performs, so the
-// dialect's own mapping of the pair and the read on the hot auth path that
-// carries them back are both exercised.
+// It goes through the REAL store write ElevateSession performs, so it
+// exercises both the dialect's own mapping of the pair and the read on the
+// hot auth path that carries them back.
 func elevateSessionRow(t *testing.T, st store.Store, sessionID, userID string, provenAt, expiresAt time.Time) {
 	t.Helper()
 	n, err := st.Sessions().Elevate(context.Background(), store.ElevateSessionParams{
@@ -128,7 +128,7 @@ func elevateSessionRow(t *testing.T, st store.Store, sessionID, userID string, p
 }
 
 // elevateSession stamps the ordinary window on a session a test logged in by
-// hand, for the harnesses that hand back a bare token rather than a
+// hand, for the harnesses that return a bare token rather than a
 // userTestEnv. Call it BEFORE the first RPC on that token: there is no
 // UserInfo cache entry to evict yet, which is why no registry is needed.
 func elevateSession(t *testing.T, st store.Store, sessionID, userID string) {
@@ -287,7 +287,7 @@ func TestUserService_UpdateProfile(t *testing.T) {
 	assert.Equal(t, "newname", resp.Msg.GetUsername())
 	assert.Equal(t, "New Display", resp.Msg.GetDisplayName())
 
-	// Verify the database was actually updated.
+	// Verify that the update reached the database.
 	user, err := env.store.Users().GetByID(context.Background(), env.userID)
 	require.NoError(t, err)
 	assert.Equal(t, "newname", user.Username)
@@ -383,7 +383,7 @@ func TestUserService_ChangePassword_LapsedElevationIsRefused(t *testing.T) {
 }
 
 // TestUserService_ElevateSession_WrongPasswordThenRight drives the password
-// arm end to end and pins that a wrong password answers Unauthenticated --
+// path end to end and pins that a wrong password answers Unauthenticated --
 // the code the rate limiter counts -- while the refusal for a MISSING
 // elevation is FailedPrecondition. Confusing the two is what would make a
 // lapsed window spend the user's attempt budget.
@@ -527,7 +527,7 @@ func TestUserService_UpdateUserSetting_PerKeyMerge(t *testing.T) {
 	require.NoError(t, err)
 
 	// A second update touching a DIFFERENT key must leave the first
-	// untouched — the whole-blob clobber the per-key merge replaced.
+	// untouched — the whole-blob overwrite the per-key merge replaced.
 	_, err = env.client.UpdateUserSetting(context.Background(), authedReq(&leapmuxv1.UpdateUserSettingRequest{
 		Key:         "ui_fonts",
 		PartialJson: `{"enabled":true,"fonts":["Inter","Roboto"]}`,
@@ -566,7 +566,7 @@ func TestUserService_UpdateUserSetting_PartialMergeWithinKey(t *testing.T) {
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"enabled":false,"fonts":["Hack NF"]}`, resp.Msg.GetValue().GetEffectiveJson())
 
-	// An unknown field name is refused, not silently ignored.
+	// The handler refuses an unknown field name rather than ignoring it.
 	_, err = env.client.UpdateUserSetting(context.Background(), authedReq(&leapmuxv1.UpdateUserSettingRequest{
 		Key:         "ui_fonts",
 		PartialJson: `{"bogus":true}`,
@@ -710,7 +710,7 @@ func TestRequestEmailChange_Success(t *testing.T) {
 	// Admin users get immediate change (no verification required).
 	assert.False(t, resp.Msg.GetVerificationRequired())
 
-	// Verify the email was updated in the DB.
+	// Verify that the change reached the DB.
 	user, err := env.store.Users().GetByID(context.Background(), env.userID)
 	require.NoError(t, err)
 	assert.Equal(t, "new@example.com", user.Email)
@@ -810,10 +810,11 @@ func TestRequestEmailChange_Admin_ImmediateChangeLandsUnverified(t *testing.T) {
 
 // --- RequestEmailChange: non-admin, verification off, immediate unverified change ---
 
-// TestRequestEmailChange_NonAdmin_VerificationNotRequired_LandsUnverified covers
-// the non-admin arm of the collapsed immediate-change branch: with verification
-// off, the change applies immediately but the new address must land UNVERIFIED
-// (verified == userInfo.IsAdmin == false), unlike the admin arm which trusts it.
+// TestRequestEmailChange_NonAdmin_VerificationNotRequired_LandsUnverified
+// covers the non-admin case of the collapsed immediate-change branch: with
+// verification off, the change applies immediately but the new address must
+// land UNVERIFIED (verified == userInfo.IsAdmin == false), unlike the admin
+// case which trusts it.
 func TestRequestEmailChange_NonAdmin_VerificationNotRequired_LandsUnverified(t *testing.T) {
 	t.Parallel()
 
@@ -829,7 +830,7 @@ func TestRequestEmailChange_NonAdmin_VerificationNotRequired_LandsUnverified(t *
 		PasswordSet:  true,
 		IsAdmin:      false,
 	}))
-	// Start from a verified address so the interceptor doesn't gate the call.
+	// Start from a verified address so the interceptor does not refuse the call.
 	require.NoError(t, st.Users().UpdateEmail(context.Background(), store.UpdateUserEmailParams{
 		Email:         "old@example.com",
 		EmailVerified: true,
@@ -857,7 +858,7 @@ func TestRequestEmailChange_NonAdmin_VerificationNotRequired_LandsUnverified(t *
 // RequestEmailChange had no cooldown at all: the address is
 // caller-supplied and nothing rate-limits the procedure, so a logged-in
 // user could send one verification message per request to any address
-// they named. The conditional mint is what closes that -- it refuses
+// they gave. The conditional mint is what closes that -- it refuses
 // while a previous code is live, whatever address the second request
 // asks for.
 func TestRequestEmailChange_CooldownRefusesASecondAddress(t *testing.T) {
@@ -935,10 +936,11 @@ func TestRequestEmailChange_DuplicateEmail_Rejected(t *testing.T) {
 
 // --- RequestEmailChange: config on, pending email ---
 
-// setupVerificationUserTestServer creates a test server with the given
-// Email verification is controlled by SMTP (EmailVerificationEffective). Both UserService and AuthService
-// registered. The interceptor and the services read the rule from the
-// same settings. It returns a UserService client, st, and the admin token.
+// setupVerificationUserTestServer creates a test server where SMTP controls
+// email verification (EmailVerificationEffective). It registers both
+// UserService and AuthService. The interceptor and the services read the
+// rule from the same settings. It returns a UserService client, st, and the
+// admin token.
 func setupVerificationUserTestServer(t *testing.T, emailVerificationRequired bool) (leapmuxv1connect.UserServiceClient, store.Store, string) {
 	t.Helper()
 
@@ -1098,7 +1100,7 @@ func TestVerifyEmail_InvalidShape(t *testing.T) {
 
 	env := setupUserTest(t)
 
-	// Bad shape never makes it past Normalize → InvalidArgument, regardless
+	// Bad shape never passes Normalize → InvalidArgument, regardless
 	// of whether a pending row exists for this user.
 	_, err := env.client.VerifyEmail(context.Background(), authedReq(&leapmuxv1.VerifyEmailRequest{
 		VerificationToken: "bogus-token",
@@ -1111,7 +1113,7 @@ func TestVerifyEmail_ExpiredOrMismatchSurfacesIdentically(t *testing.T) {
 	t.Parallel()
 
 	// The whole point of collapsing expiry and mismatch into one error is
-	// that callers can't distinguish them — that closes a timing oracle on
+	// that callers cannot distinguish them — that closes a timing oracle on
 	// "is there a code at all?". Assert both code AND message are equal.
 	env := setupUserTest(t)
 
@@ -1272,7 +1274,7 @@ func TestResendVerificationEmail_RequiresPendingEmail(t *testing.T) {
 	t.Parallel()
 
 	env, _ := setupResendUserTest(t)
-	// User has no pending email — there's nothing to resend.
+	// User has no pending email — there is nothing to resend.
 	_, err := env.client.ResendVerificationEmail(context.Background(), authedReq(&leapmuxv1.ResendVerificationEmailRequest{}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
@@ -1284,7 +1286,7 @@ func TestResendVerificationEmail_RotatesCodeAndSends(t *testing.T) {
 	env, sender := setupResendUserTest(t)
 
 	// Seed a pending row with an "old" expires_at far enough back that
-	// the cooldown window has elapsed (TTL is 30min, cooldown 60s — set
+	// the cooldown window already elapsed (TTL is 30min, cooldown 60s — set
 	// expires_at = now+25min so issued_at = now-5min).
 	originalCode := verifycode.Generate()
 	minted, err := env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
@@ -1323,7 +1325,7 @@ func TestResendVerificationEmail_CooldownEnforced(t *testing.T) {
 
 	// Seed a pending row whose implied "issued_at" is just now: the
 	// cooldown must reject a back-to-back resend so a runaway client
-	// (or hostile caller) can't flood the user's inbox.
+	// (or hostile caller) cannot flood the user's inbox.
 	env, _ := setupResendUserTest(t)
 
 	minted, err := env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
@@ -1386,8 +1388,8 @@ func TestVerifyEmail_CrossUser_NoOracle(t *testing.T) {
 	t.Parallel()
 
 	// Per-user lookup: if user B submits user A's code, B's row simply
-	// doesn't have a matching token, so they get the same generic
-	// NotFound as anyone typing a wrong code. There's nothing to leak.
+	// does not have a matching token, so they get the same generic
+	// NotFound as anyone typing a wrong code. There is nothing to leak.
 	env := setupUserTest(t)
 
 	victimToken := verifycode.Generate()
@@ -1402,8 +1404,8 @@ func TestVerifyEmail_CrossUser_NoOracle(t *testing.T) {
 
 	// Create a different user and log in as them. Important: the
 	// attacker has *no* pending row of their own, so any submission
-	// they make hits the FailedPrecondition path. Give them one too so
-	// we exercise the actual mismatch case.
+	// they make reaches the FailedPrecondition path. Give them one too so
+	// this exercises the actual mismatch case.
 	attackerID := id.Generate()
 	attackerHash, _ := password.Hash("testpass2")
 	_ = env.store.Users().Create(context.Background(), store.CreateUserParams{
@@ -1457,17 +1459,18 @@ func TestChangePassword_InvalidatesOtherSessions(t *testing.T) {
 	}, env.token))
 	require.NoError(t, err)
 
-	// Original session should still be valid (it's the current session).
+	// Original session should still be valid (it is the current session).
 	_, err = auth.ValidateToken(context.Background(), env.store, env.token)
 	assert.NoError(t, err)
 
-	// The other session should be invalidated.
+	// The handler should invalidate the other session.
 	_, err = auth.ValidateToken(context.Background(), env.store, otherSession)
 	assert.Error(t, err, "other sessions should be invalidated after password change")
 }
 
-// onUserAuthTxStore fires a one-shot side effect when a user-auth transaction is
-// opened, letting a test inject a concurrent mutation into ChangePassword.
+// onUserAuthTxStore fires a one-shot side effect when a caller opens a
+// user-auth transaction, letting a test inject a concurrent mutation into
+// ChangePassword.
 type onUserAuthTxStore struct {
 	store.Store
 	once   sync.Once
@@ -1569,12 +1572,13 @@ func newConcurrentSessionRemovalEnv(t *testing.T, remove func(ctx context.Contex
 // The gate at the top of the handler answers from a CACHED UserInfo, and a
 // revoke raised on another hub reaches this process only on the revocation
 // watcher's next sweep -- so "elevated" could be true of a session an
-// administrator had already taken away. The account email receives the
-// password-reset link, so a change that landed on that authority handed the
+// administrator already took away. The account email receives the
+// password-reset link, so a change that landed on that authority gave the
 // account away.
 //
 // It is the SAME shape the passkey mutations use: the write moved inside the
-// user-auth transaction, and the authority is re-read under the lock. Only the
+// user-auth transaction, and the handler re-reads the authority under the
+// lock. Only the
 // SMTP send stayed outside, because it must never hold SQLite's single writer
 // lock.
 //
@@ -1609,8 +1613,9 @@ func TestRequestEmailChange_RefusesAConcurrentActingSessionRevocation(t *testing
 // TestChangePassword_ToleratesConcurrentActingSessionDeletion verifies that a
 // same-user logout deleting the acting session mid-request (Sessions().Delete
 // does not contend on the user-auth lock ChangePassword holds) does not roll
-// back an otherwise-valid password change: RefreshAuthGeneration matching zero
-// rows for the now-absent session is tolerated, not fatal. Against the pre-fix
+// back an otherwise-valid password change: the handler tolerates
+// RefreshAuthGeneration matching zero rows for the now-absent session rather
+// than treating it as fatal. Against the pre-fix
 // `n != 1` guard this request failed with a spurious CodeInternal and left the
 // password unchanged.
 func TestChangePassword_ToleratesConcurrentActingSessionDeletion(t *testing.T) {
@@ -1645,7 +1650,7 @@ func TestChangePassword_ToleratesConcurrentActingSessionDeletion(t *testing.T) {
 // delete the same row, so the absent row cannot separate them either. The
 // tolerance above therefore covered the revoke as well, and a queued
 // password change committed on the authority of a session an administrator
-// had already taken away. The revocation event kind is what separates them.
+// already took away. The revocation event kind is what separates them.
 func TestChangePassword_RefusesConcurrentActingSessionRevocation(t *testing.T) {
 	t.Parallel()
 
@@ -1824,7 +1829,7 @@ func TestUnlinkOAuthProvider_LastLink_NoPassword_Blocked(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Should be blocked — last link and no password.
+	// The rule should block this — last link and no password.
 	_, err = env.client.UnlinkOAuthProvider(context.Background(), authedReq(&leapmuxv1.UnlinkOAuthProviderRequest{
 		ProviderId: "github-3",
 	}, env.token))
@@ -1843,10 +1848,10 @@ func TestUnlinkOAuthProvider_LastLink_NoPassword_Blocked(t *testing.T) {
 //
 // It used to test `len(links) <= 1` from a list read before the lock, so two
 // requests each removing one of the account's last two links both passed it
-// and the account was left with no login method at all. Re-running the rule
+// and the account kept no login method at all. Re-running the rule
 // inside the transaction is what closes that, and counting the remainder is
 // what makes the rule correct against the locked list -- which cannot assume
-// the request names a link the account still holds.
+// the request specifies a link the account still holds.
 func TestUnlinkOAuthProvider_ConcurrentRequestsCannotStripEveryLoginMethod(t *testing.T) {
 	t.Parallel()
 
@@ -1975,33 +1980,43 @@ func assertElevationRequired(t *testing.T, err error) {
 		"the refusal must carry the marker a client opens the prompt for")
 }
 
-// assertMustElevate is its opposite: a credential that CAN prove a factor is
-// told to, with the marker its client keys on to run the ceremony and retry.
-func assertMustElevate(t *testing.T, err error) {
+// assertCannotVerify is the OTHER refusal, and the marker is the whole
+// difference. A caller that cannot prove a factor on this surface must never
+// receive a prompt, because the retry would meet the same answer: the client
+// would run a browser ceremony and report the same refusal after it.
+func assertCannotVerify(t *testing.T, err error) {
 	t.Helper()
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 	var connectErr *connect.Error
 	require.ErrorAs(t, err, &connectErr)
-	assert.Equal(t, "1", connectErr.Meta().Get(service.ElevationRequiredHeader),
-		"a credential that can prove a factor must be told to")
+	assert.Empty(t, connectErr.Meta().Get(service.ElevationRequiredHeader),
+		"a credential with no remedy must not be offered a prompt")
 }
 
 // A CLI credential carries a step-up window of its own, proven in a browser
-// through /auth/cli/elevate-authorization. So each restricted RPC refuses it
-// with the MARKER: the remedy is real, and the CLI runs the ceremony and
-// retries rather than reporting a dead end.
+// through /auth/cli/elevate-authorization. Every restricted RPC answers it
+// the SAME way, and the marker says so: the remedy is real, so the CLI runs
+// the ceremony and retries rather than reporting a refusal it cannot act on.
 //
-// It used to be admitted with no factor at all on the admin surface and told
-// "sign in from a browser" here, which was two different answers to one
-// question and left possession of the credential file as the whole check for
-// the first of them.
+// The step-up MUTATION surface -- ChangePassword and the passkey verbs --
+// used to be the exception. It refused a command-line credential outright,
+// on the reasoning that its locked re-check, its revocation and its teardown
+// all read the acting SESSION row. Two of those three were real defects
+// rather than reasons: the re-check is credential-shaped now, and the
+// revocation keeps the acting credential whichever kind it is. So the
+// exception is gone, and one question has one answer again.
+//
+// The account shape below matters: it holds a password, so the account has a
+// factor to prove and requireElevation is the rule that applies.
+// TestGatedRPCs_RefuseACommandLineCredentialWithNothingToElevateWith covers
+// the other shape, where the answer is different for a stated reason.
 //
 // This is unreachable from the shipped CLI, which calls no restricted UserService
 // procedure, and from a worker-spawned tab, whose delegation bearer the
-// interceptor refuses several layers earlier. The rule is pinned anyway: the
+// interceptor refuses several layers earlier. This pins the rule anyway: the
 // hub must not depend on its clients to keep a refusal honest.
-func TestGatedRPCs_TellACommandLineCredentialToVerify(t *testing.T) {
+func TestGatedRPCs_AnswerACommandLineCredentialByItsRemedy(t *testing.T) {
 	t.Parallel()
 
 	env := setupUserTest(t)
@@ -2013,29 +2028,81 @@ func TestGatedRPCs_TellACommandLineCredentialToVerify(t *testing.T) {
 	_, err := env.client.ChangePassword(context.Background(), bearerReq(&leapmuxv1.ChangePasswordRequest{
 		NewPassword: "newpass123",
 	}, bearer))
-	assertMustElevate(t, err)
+	assertElevationRequired(t, err)
 
 	_, err = env.client.RequestEmailChange(context.Background(), bearerReq(&leapmuxv1.RequestEmailChangeRequest{
 		NewEmail: "moved@example.com",
 	}, bearer))
-	assertMustElevate(t, err)
+	assertElevationRequired(t, err)
 
 	_, err = env.client.UnlinkOAuthProvider(context.Background(), bearerReq(&leapmuxv1.UnlinkOAuthProviderRequest{
 		ProviderId: "github-1",
 	}, bearer))
-	assertMustElevate(t, err)
+	assertElevationRequired(t, err)
 
 	_, err = env.client.RenamePasskey(context.Background(), bearerReq(&leapmuxv1.RenamePasskeyRequest{
 		Id: "pk-1", FriendlyName: "Renamed",
 	}, bearer))
-	assertMustElevate(t, err)
+	assertElevationRequired(t, err)
 
-	// Nothing was written on any of the four paths.
+	// The whole passkey-management surface answers alike.
+	_, err = env.client.DeletePasskey(context.Background(), bearerReq(&leapmuxv1.DeletePasskeyRequest{
+		Id: "pk-1",
+	}, bearer))
+	assertElevationRequired(t, err)
+
+	_, err = env.client.DeactivatePasskeyAuth(context.Background(),
+		bearerReq(&leapmuxv1.DeactivatePasskeyAuthRequest{NewPassword: "newpass123"}, bearer))
+	assertElevationRequired(t, err)
+
+	// Registration is refused at the same gate for the same reason. What a
+	// command line cannot do is answer the WebAuthn ceremony that follows,
+	// which is a property of WebAuthn rather than of this gate.
+	_, err = env.client.BeginPasskeyRegistration(context.Background(),
+		bearerReq(&leapmuxv1.BeginPasskeyRegistrationRequest{}, bearer))
+	assertElevationRequired(t, err)
+
+	// No path of the seven wrote anything.
 	user, err := env.store.Users().GetByID(context.Background(), env.userID)
 	require.NoError(t, err)
 	assert.Equal(t, "old@example.com", user.Email)
 	_, _, _, loginErr := auth.Login(context.Background(), env.store, "testuser", "testpass", auth.DefaultSessionDuration)
 	require.NoError(t, loginErr, "a refused change must leave the password alone")
+}
+
+// TestGatedRPCs_RefuseACommandLineCredentialWithNothingToElevateWith is the
+// one shape where the step-up mutations still answer a command-line
+// credential without a prompt.
+//
+// The account holds no password and no passkey, so the elevation branch has
+// nothing to read and the first-credential rule decides instead. That rule
+// rests on a recent SIGN-IN, and the hub mints a command-line credential once
+// and lets it live until a revoke ends it -- so its creation time says
+// nothing about who holds it now. The message states the remedy the caller
+// can act on, and the absent marker keeps the client from opening a prompt
+// whose retry would meet the same answer.
+func TestGatedRPCs_RefuseACommandLineCredentialWithNothingToElevateWith(t *testing.T) {
+	t.Parallel()
+
+	env := setupOAuthUserTest(t)
+	bearer := env.bearerFor(t)
+
+	user, err := env.store.Users().GetByID(context.Background(), env.userID)
+	require.NoError(t, err)
+	require.False(t, user.PasswordSet, "precondition: the account has nothing to elevate with")
+
+	_, err = env.client.ChangePassword(context.Background(), bearerReq(&leapmuxv1.ChangePasswordRequest{
+		NewPassword: "newpass123",
+	}, bearer))
+	assertCannotVerify(t, err)
+
+	_, err = env.client.BeginPasskeyRegistration(context.Background(),
+		bearerReq(&leapmuxv1.BeginPasskeyRegistrationRequest{}, bearer))
+	assertCannotVerify(t, err)
+
+	after, err := env.store.Users().GetByID(context.Background(), env.userID)
+	require.NoError(t, err)
+	assert.False(t, after.PasswordSet, "a refused change must attach no first password")
 }
 
 // TestGatedRPCs_TellASessionToElevate is the contrast that gives the test
@@ -2069,14 +2136,14 @@ func TestGatedRPCs_TellASessionToElevate(t *testing.T) {
 	}, env.token))
 	assertElevationRequired(t, err)
 
-	// The four passkey legs the list above used to stop short of. Each one
-	// is classified gatedByPasskeyManagementAuth in userProcedureElevation,
-	// and that table records the DECISION -- it cannot observe the handler,
-	// so a leg whose gate was never wired would sit there classified and
-	// ship open. These are what observe it.
+	// The four passkey legs the list above used to omit. userProcedureElevation
+	// classifies each one as protectedByPasskeyManagementAuth, and that table
+	// records the DECISION -- it cannot observe the handler, so a leg whose
+	// gate was never wired would sit there classified and ship with no gate.
+	// These are what observe it.
 	//
-	// Every one is refused BEFORE its own argument validation, which is the
-	// order that matters: an un-elevated caller must not learn whether a
+	// The hub refuses every one BEFORE its own argument validation, which is
+	// the order that matters: an un-elevated caller must not learn whether a
 	// passkey id exists, and a Begin must refuse before it writes a
 	// ceremony row.
 	_, err = env.client.BeginPasskeyRegistration(context.Background(),
@@ -2529,6 +2596,42 @@ func TestUserService_DeactivatePasskeyAuth_ElevatedWithNewPassword(t *testing.T)
 	require.NoError(t, err)
 }
 
+// TestUserService_DeactivatePasskeyAuth_EmptyPasswordAnswersTheRule pins WHICH
+// complaint an empty new_password gets on a passwordless account.
+//
+// It went straight to the hash, so validate.ValidatePassword answered with a
+// password-STRENGTH rule -- how long a password must be, and which characters
+// it must hold -- about a field the caller never filled. The real fault is
+// that this account keeps no other way to sign in, and the refusal has to say
+// so, because that is what tells the user to type one.
+func TestUserService_DeactivatePasskeyAuth_EmptyPasswordAnswersTheRule(t *testing.T) {
+	t.Parallel()
+
+	env := setupOAuthUserTest(t)
+	pkID := seedPasskeyCredential(t, env.store, env.userID, "Only")
+	env.elevate(t)
+
+	_, err := env.client.DeactivatePasskeyAuth(context.Background(),
+		authedReq(&leapmuxv1.DeactivatePasskeyAuthRequest{NewPassword: ""}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err),
+		"the rule is a precondition of the account, not a malformed argument")
+	assert.Contains(t, err.Error(), "new_password")
+	assert.Contains(t, err.Error(), "without a password")
+	// NOT the sibling's wording. lastPasskeyNeedsPasswordError offers
+	// DeactivatePasskeyAuth as the remedy, which inside DeactivatePasskeyAuth
+	// tells the caller to make the call that is already running.
+	assert.NotContains(t, err.Error(), "DeactivatePasskeyAuth")
+
+	// The handler deleted nothing, so the account still signs in with the
+	// passkey it was refused permission to remove.
+	_, err = env.store.PasskeyCredentials().GetByID(context.Background(), pkID)
+	require.NoError(t, err)
+	user, err := env.store.Users().GetByID(context.Background(), env.userID)
+	require.NoError(t, err)
+	assert.False(t, user.PasswordSet)
+}
+
 func TestUserService_DeactivatePasskeyAuth_InvalidatesOtherSessions(t *testing.T) {
 	t.Parallel()
 
@@ -2760,7 +2863,7 @@ func TestFinishPasskeyElevation_MalformedCredentialIsUnauthenticated(t *testing.
 	}))
 
 	// A LIVE elevation ceremony (BeginElevation writes the properly
-	// encrypted session row), so the failure lands on the parse arm.
+	// encrypted session row), so the failure lands on the parse branch.
 	sessionID, _, _, err := wa.BeginElevation(context.Background(), userID, "")
 	require.NoError(t, err)
 	token, _, err := auth.CreateSession(context.Background(), st, userid.MustNew(userID), auth.DefaultSessionDuration)
@@ -2784,7 +2887,7 @@ func TestFinishPasskeyElevation_MalformedCredentialIsUnauthenticated(t *testing.
 // TestBeginPasskeyRegistration_RefusesBeforeTheBrowserPrompt pins WHERE the
 // gate runs. Begin writes no credential, so refusing an un-elevated caller
 // there costs nothing -- and admitting it would put a biometric prompt on
-// screen that the Finish leg was always going to refuse.
+// screen that the Finish leg would always refuse.
 func TestBeginPasskeyRegistration_RefusesBeforeTheBrowserPrompt(t *testing.T) {
 	t.Parallel()
 
@@ -2866,7 +2969,7 @@ func TestBeginPasskeyRegistration_RefusesBeforeTheBrowserPrompt(t *testing.T) {
 // the elevation window exists for, and the one a single-use proof did NOT
 // have: a second sensitive action inside the window needs no new factor.
 // The risk this accepts is stated in the plan -- one ceremony admits every
-// sensitive action for the window -- so it is pinned rather than assumed.
+// sensitive action for the window -- so this pins it rather than assuming it.
 func TestDeletePasskey_ElevationWindowCoversRepeatedActions(t *testing.T) {
 	t.Parallel()
 

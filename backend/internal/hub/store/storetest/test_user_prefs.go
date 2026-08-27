@@ -12,9 +12,9 @@ import (
 func (s *Suite) testUserPrefs(t *testing.T) {
 	// INSIDE a transaction, which is the only place this method answers.
 	// SELECT ... FOR UPDATE takes a row lock the enclosing transaction holds;
-	// with no transaction the lock is taken and released at once, so the
-	// caller reads a row it does not hold and every later write races what it
-	// just read. Every caller already went through RunInTransaction, and the
+	// with no transaction the database takes and releases the lock at once, so
+	// the caller reads a row it does not hold and every later write races what
+	// it just read. Every caller already went through RunInTransaction, and the
 	// store now refuses the shape that does not.
 	t.Run("GetPrefsForUpdate reads like GetPrefs; absent user is not found", func(t *testing.T) {
 		st := s.NewStore(t)
@@ -33,18 +33,25 @@ func (s *Suite) testUserPrefs(t *testing.T) {
 		}))
 	})
 
-	// And the refusal itself, in every dialect. A locking read on the pool is
-	// a caller mistake the store must not answer silently -- on the mysql
-	// dialect it is additionally unretryable, because conflictRetryDBTX
-	// cannot wrap QueryRowContext.
+	// And the refusal itself, in every dialect, for BOTH locking reads the
+	// store interface declares. See store.ErrLockingReadOutsideTransaction for
+	// what the guard protects.
+	//
+	// The specific sentinel, not the ErrInvalidArgument it wraps: every
+	// store-level invariant returns that one, so an assertion on it alone
+	// passes for a guard that fired on the wrong reason -- an unknown user id,
+	// say. The wrapping is asserted too, because the dialect-independent
+	// mapping still keys on it.
 	t.Run("a locking read outside a transaction is refused", func(t *testing.T) {
 		st := s.NewStore(t)
 		user := SeedUser(t, st, "prefs-no-tx")
 
 		_, err := st.Users().GetPrefsForUpdate(ctx, user.ID)
+		assert.ErrorIs(t, err, store.ErrLockingReadOutsideTransaction)
 		assert.ErrorIs(t, err, store.ErrInvalidArgument)
 
 		_, err = st.Settings().GetAllForUpdate(ctx)
+		assert.ErrorIs(t, err, store.ErrLockingReadOutsideTransaction)
 		assert.ErrorIs(t, err, store.ErrInvalidArgument)
 	})
 

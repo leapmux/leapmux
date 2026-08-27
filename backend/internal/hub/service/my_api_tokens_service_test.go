@@ -60,15 +60,15 @@ func TestListMyAPITokens_ReportsTheAccountsOwnCredentials(t *testing.T) {
 	assert.False(t, byID[laptop].GetAdminScope())
 	assert.True(t, byID[ciBot].GetAdminScope(), "an audit of hub administration needs this field")
 	assert.NotNil(t, byID[laptop].GetRefreshExpiresAt(), "the deadline that sends a device back to a browser")
-	// `current` is derived from the CALLER's own credential; a cookie is not
-	// a CLI credential, so nothing is marked.
+	// The handler derives `current` from the CALLER's own credential; a cookie
+	// is not a CLI credential, so it marks nothing.
 	assert.False(t, byID[laptop].GetCurrent())
 	assert.False(t, byID[ciBot].GetCurrent())
 }
 
 // TestListMyAPITokens_LeaksNoSecret is the pin the plan asks for: the mapper
 // copies METADATA only. A secret or a hash reaching the wire here would be a
-// credential handed to anything that can read one response.
+// credential given to anything that can read one response.
 func TestListMyAPITokens_LeaksNoSecret(t *testing.T) {
 	t.Parallel()
 
@@ -78,8 +78,8 @@ func TestListMyAPITokens_LeaksNoSecret(t *testing.T) {
 	resp, err := env.client.ListMyAPITokens(context.Background(), authedReq(&leapmuxv1.ListMyAPITokensRequest{}, env.token))
 	require.NoError(t, err)
 
-	// Serialize the WHOLE response and search it, so a field added to the
-	// message later is covered without anybody remembering to extend this.
+	// Serialize the WHOLE response and search it, so this covers a field added
+	// to the message later without anybody remembering to extend it.
 	raw, err := protojson.Marshal(resp.Msg)
 	require.NoError(t, err)
 	body := string(raw)
@@ -88,7 +88,7 @@ func TestListMyAPITokens_LeaksNoSecret(t *testing.T) {
 	}
 
 	// And the message itself declares no such field, so the search above
-	// cannot pass merely because the value was renamed.
+	// cannot pass merely because somebody renamed the value.
 	var shape map[string]any
 	require.NoError(t, json.Unmarshal(raw, &shape))
 	for _, tok := range shape["tokens"].([]any) {
@@ -182,9 +182,10 @@ func TestRevokeMyAPIToken_RefusesAnotherUsersToken(t *testing.T) {
 	assert.Nil(t, row.RevokedAt, "the victim's credential must survive")
 }
 
-// TestRevokeMyAPIToken_TwiceIsNotFound pins that an already-revoked row is
-// not silently reported as revoked again: the listing shows live rows only,
-// so a second attempt is against something the caller can no longer see.
+// TestRevokeMyAPIToken_TwiceIsNotFound pins that the handler does not
+// silently report an already-revoked row as revoked again: the listing shows
+// live rows only, so a second attempt is against something the caller can no
+// longer see.
 func TestRevokeMyAPIToken_TwiceIsNotFound(t *testing.T) {
 	t.Parallel()
 

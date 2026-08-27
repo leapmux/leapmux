@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { accountWireDescriptors, goldenAccountSchema } from '~/test-support/accountSchema'
 import { makeFakePrefs } from '~/test-support/preferencesFake'
 import { CATEGORY_IDS } from '../protoRegistry'
+import { CUSTOM_EDITOR_OWNS_ITS_VALUE } from './bindings'
 import { CLAIMED_PROTO_KEYS, createBrowserRows } from './index'
 import { browserSettings, buildBrowserReset } from './settings'
 
@@ -74,6 +75,25 @@ describe('browserSettings registry', () => {
     expect(browserSettings.length).toBeGreaterThan(0)
     for (const decl of browserSettings)
       expect(['nullable', 'default-on', 'default-off']).toContain(decl.sentinel)
+  })
+
+  // A row whose CUSTOM EDITOR owns its value has no scalar to bind, and its
+  // `value`/`set` pair is never called. Seven rows are in that shape, and each
+  // used to re-type the same two no-op closures.
+  //
+  // The assertion is IDENTITY, not behavior: two hand-written no-op literals
+  // behave alike, so a test that called `value()` and compared to null would
+  // pass for a re-typed copy and catch nothing. Sharing the one constant is
+  // what this pins, so the eighth such row reuses it instead of inventing a
+  // ninth spelling.
+  it('binds every custom-editor row to the one shared no-op binding', () => {
+    const prefs = makeFakePrefs() as unknown as PreferencesState
+    const customRows = browserSettings.filter(
+      decl => decl.protoKey === undefined && decl.control.kind === 'custom',
+    )
+    expect(customRows.length).toBe(7)
+    for (const decl of customRows)
+      expect(decl.bind(prefs), `row "${decl.id}"`).toBe(CUSTOM_EDITOR_OWNS_ITS_VALUE)
   })
 
   it('derives its descriptors from the same entries (same ids, no duplicates)', () => {

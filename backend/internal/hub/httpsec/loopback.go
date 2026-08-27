@@ -21,10 +21,10 @@ import (
 // All three carried a comment claiming they matched, and no test connected
 // them. A set that widens in one place and not the others is either a hole (the
 // policy admits a host the redirect refuses) or an outage (the redirect offers
-// a host the policy blocks), and neither shows up until a CLI login hangs.
+// a host the policy blocks), and neither appears until a CLI login hangs.
 //
 // It lives here because `hub/frontend` and `hub/service` are siblings and this
-// package is the leaf both already reach for.
+// package is the leaf that both already import.
 var LoopbackHosts = []string{"127.0.0.1", "localhost", "::1"}
 
 // LoopbackSchemes are the schemes a CLI login may redirect to.
@@ -44,7 +44,7 @@ var LoopbackSchemes = []string{"http", "https"}
 
 // IsLoopbackRedirectScheme reports whether scheme is one a CLI callback can
 // use. The comparison folds case, because a URL scheme is case-insensitive
-// and "JavaScript" must not slip past a lower-case literal.
+// and "JavaScript" must not evade a lower-case literal.
 func IsLoopbackRedirectScheme(scheme string) bool {
 	return slices.Contains(LoopbackSchemes, strings.ToLower(strings.TrimSpace(scheme)))
 }
@@ -63,16 +63,30 @@ func NormalizeHost(host string) string {
 //
 // net.SplitHostPort is not usable here. It rejects an address with no port
 // ("hub.example.com"), and every caller must still report that host: they
-// ask what the address specifies, not whether the hub can bind it. So the
-// split is the last colon that is not inside an IPv6 literal's brackets.
+// ask what the address SPECIFIES, not whether the hub can bind it.
 //
-// It lives here, beside the host predicates, because two packages need the
-// same answer: settings.BaseURL and the passkey relying-party resolution.
-// Both grew their own copy of this exact parse in one change, and a third
-// caller spelled the wildcard set again -- which is the drift LoopbackHosts
-// already exists to stop.
+// A WHOLE-ADDRESS IP test comes first, and it is what makes an unbracketed
+// IPv6 literal split correctly. "::1" has no port, but the last colon in it
+// looks exactly like a port separator, so the split alone returned the host
+// ":" and the port ":1" -- and ":" is neither loopback nor a wildcard, so
+// "::" and "::0" missed IsWildcardHost below although settings/keys.go
+// promises every wildcard spelling resolves alike. An address that parses
+// whole as an IP carries no port by construction, whatever its colons say.
+//
+// After that test the split is the last colon outside an IPv6 literal's
+// brackets, so "[::1]:8080" and "0:0:0:0:0:0:0:0:4327" both keep their port.
+//
+// It lives HERE, beside the host predicates, because it applies one of them:
+// NormalizeHost folds the brackets that the IP test must not see. The result
+// then goes straight into IsWildcardHost or IsLoopbackHost, so the parse and
+// the tests that read it share one file and one notion of a host. There is
+// one production caller today -- settings.BaseURL. The passkey relying party
+// reaches the same answer through that function rather than through this one.
 func SplitBindHostPort(listen string) (host, port string) {
 	l := strings.TrimSpace(listen)
+	if net.ParseIP(NormalizeHost(l)) != nil {
+		return l, ""
+	}
 	if i := strings.LastIndex(l, ":"); i >= 0 && !strings.Contains(l[i+1:], "]") {
 		return l[:i], l[i:]
 	}

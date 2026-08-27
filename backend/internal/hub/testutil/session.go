@@ -39,8 +39,8 @@ func ElevateSession(t *testing.T, st store.Store, sessionID, userID string) {
 }
 
 // ElevateAPIToken stamps a live step-up window on one command-line
-// credential, so a test can reach a gated surface without running the browser
-// ceremony. The api_tokens twin of ElevateSession, and it holds the same two
+// credential, so a test can reach a restricted surface without running the
+// browser ceremony. The api_tokens twin of ElevateSession, and it holds the same two
 // rules: it goes through the statement production writes, and it asserts that
 // exactly one row moved.
 //
@@ -48,7 +48,7 @@ func ElevateSession(t *testing.T, st store.Store, sessionID, userID string) {
 // evicts the cached UserInfo after it stamps the row (see
 // APIAuthHandler.elevateGrantedToken); this writes the row alone, so a
 // credential that already made a request in the same process keeps serving
-// the deadline it was cached with. A test that needs both arms mints two
+// the deadline it was cached with. A test that needs both paths mints two
 // credentials rather than reusing one.
 func ElevateAPIToken(t *testing.T, st store.Store, tokenID, userID string) {
 	t.Helper()
@@ -70,14 +70,14 @@ func ElevateAPIToken(t *testing.T, st store.Store, tokenID, userID string) {
 // AssertSessionLifetime pins the contract that both writers of a session expiry
 // keep -- CreateSession at the login and the interceptor at each slide.
 //
-// The lower bound is the promise the setting makes: the session lasts at least
+// The lower limit is the promise the setting makes: the session lasts at least
 // the configured lifetime past the request that wrote the expiry. The upper
-// bound is what the slide throttle costs, and it is stated as a fraction rather
-// than as the throttle constant, which the auth package keeps to itself: a
-// slide waits at most a tenth of the session, so the row can carry at most a
-// tenth more than the configured value.
+// limit is what the slide throttle costs, and this helper states it as a
+// fraction rather than as the throttle constant, which the auth package keeps
+// to itself: a slide waits at most a tenth of the session, so the row can carry
+// at most a tenth more than the configured value.
 //
-// Stated as a range rather than as a formula, on purpose. A formula copied from
+// A range rather than a formula, on purpose. A formula copied from
 // the code under test passes whatever that code does, including passing the
 // wrong lifetime through; this range fails the moment a mint site drops its
 // argument and falls back to the default.
@@ -95,4 +95,36 @@ func AssertSessionLifetime(t *testing.T, before time.Time, lifetime time.Duratio
 	assert.True(t, expiresAt.Before(latest),
 		"a session must not outlive its configured lifetime (%s) by more than the slide throttle: want before %s, got %s",
 		lifetime, latest, expiresAt)
+}
+
+// ElevatedAdminContext returns a context that carries an ALREADY ELEVATED
+// administrator, for a test that drives a restricted handler directly rather
+// than through the interceptor.
+//
+// A test that goes over the wire elevates the real session row instead (see
+// ElevateSession): that path exercises the interceptor, the cache and the
+// store statement, which is what a test of the gate itself must do. This one
+// is for a test whose subject is what the handler does AFTER the gate admits
+// it -- a deregistration cascade, an effect fan-out -- where building a login
+// and a session row is fixture setup that the assertions never read.
+//
+// The user row must exist, because the gate re-reads the acting account's
+// credential epoch immediately before the write. The session id is
+// deliberately synthetic: the gate TOLERATES a missing session row (an owner's
+// own sign-out in another tab must not roll back a change they started), so the
+// re-read passes and the elevation is what admits the call.
+func ElevatedAdminContext(t *testing.T, ctx context.Context, userID string) context.Context {
+	t.Helper()
+
+	owner, ok := userid.New(userID)
+	require.True(t, ok, "an actor id must be non-empty")
+
+	now := time.Now().UTC()
+	until := now.Add(auth.ElevationWindow)
+	return auth.WithUser(ctx, &auth.UserInfo{
+		ID:         owner,
+		IsAdmin:    true,
+		Credential: auth.SessionCredential("elevated-admin-context"),
+		Elevation:  auth.NewElevation(&now, &until),
+	})
 }

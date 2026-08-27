@@ -37,11 +37,11 @@ export interface SettingsPanelProps {
  * One category's rows.
  *
  * The panel RENDERS; it does not decide what to render. Rows arrive built
- * and filtered from the dialog, which is also what the navigation and the
- * search index are computed from — so a row can no longer be searchable,
- * or make a nav group occupied, while this panel drops it. Building them
- * here as well was a second construction path over the same descriptors,
- * and the two filters had already diverged.
+ * and filtered from the dialog, which is also the source of the navigation
+ * and the search index — so a row can no longer be searchable, or make a nav
+ * group occupied, while this panel drops it. Building them here as well was a
+ * second construction path over the same descriptors, and the two filters
+ * already diverged.
  */
 export const SettingsPanel: Component<SettingsPanelProps> = (props) => {
   const storeError = (id: string): string | null => {
@@ -64,8 +64,8 @@ export const SettingsPanel: Component<SettingsPanelProps> = (props) => {
       {/*
         The verification state sits ABOVE the rows it explains, in every group
         that holds one the hub refuses without a proven factor -- the Account
-        group and every ADMINISTRATION group, since the hub gates every
-        settings write on the same window.
+        group and every ADMINISTRATION group, since the hub requires the same
+        window for every settings write.
 
         It lived inside ONE account editor before, which put it half way down
         the Account panel under a Save button it had nothing to do with, and
@@ -74,7 +74,7 @@ export const SettingsPanel: Component<SettingsPanelProps> = (props) => {
         the panel is where it belongs.
 
         `ElevationStatus` renders nothing while the session is not verified,
-        so a group that needs one is not carrying an empty box.
+        so a group that needs one does not carry an empty box.
       */}
       <Show when={props.elevationGroup}>
         <ElevationStatus />

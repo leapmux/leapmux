@@ -16,7 +16,7 @@ export interface NavGroup {
 export const NAV_GROUPS: readonly NavGroup[] = [
   // Account LEADS the list. It is the group a user comes to the dialog for
   // deliberately -- a password, a passkey, an address -- where the rest are
-  // preferences they adjust while they are already here, so burying it under
+  // preferences they adjust while they are already here, so a place under
   // seven of them put the errand behind the browsing.
   { id: 'account', title: 'Account', category: 'account', admin: false },
   { id: 'appearance', title: 'Appearance', category: 'appearance', admin: false },

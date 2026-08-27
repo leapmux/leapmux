@@ -30,7 +30,7 @@ vi.mock('~/lib/systemInfo', async () => {
 
 // The fake widget holds its payload in a signal the test controls, so a
 // test can keep the form unsolved (button disabled) and release it. The
-// unavailable callback is captured so a test can simulate the hub
+// mock captures the unavailable callback so a test can simulate the hub
 // answering "no challenge" (captcha disabled at runtime).
 const [mockCaptchaPayload, setMockCaptchaPayload] = createSignal<string | null>(null)
 let mockCaptchaUnavailable: (() => void) | undefined
@@ -119,36 +119,22 @@ describe('loginPage', () => {
     mockLoginWithPasskey.mockResolvedValue({ verificationRequired: false, verificationEmailSent: false })
   })
 
-  // These two pin the bootstrap race. The system-info getters are plain
-  // module reads whose pre-fetch values are fabrications (soloMode = false,
-  // signupEnabled = false), so sampling them before bootstrap resolves is
-  // sampling a guess. This used to run in onMount, which fires once and never
-  // re-checks: on any load that beat the RPC, a solo-mode visitor was stranded
-  // on a credential form that cannot succeed, and the signup link was pinned
-  // off. The decision must therefore wait for auth.loading() to clear and must
-  // still happen afterwards.
+  // This pins the bootstrap race. The system-info getters are plain module
+  // reads whose pre-fetch values are fabrications (signupEnabled = false), so
+  // sampling them before bootstrap resolves is sampling a guess. It used to
+  // run in onMount, which fires once and never re-checks, so on any load that
+  // finished before the RPC the signup link stayed off permanently. The decision must
+  // therefore wait for auth.loading() to clear and must still happen
+  // afterwards.
   //
-  // Each of these models the getter faithfully: it answers the module's
-  // fabricated default while bootstrap is in flight, and the truth afterwards.
-  // Reading it early therefore yields the WRONG answer, not merely an early
-  // one -- which is what made the onMount version fail silently and forever.
-  it('waits for bootstrap before deciding, then redirects a solo hub', async () => {
-    setAuthLoading(true)
-
-    renderLoginPage()
-
-    // Bootstrap is still in flight, so nothing has been decided yet.
-    expect(screen.queryByTestId('app-home')).not.toBeInTheDocument()
-
-    setSystemInfoMock({ soloMode: true })
-    setAuthLoading(false)
-
-    expect(await screen.findByTestId('app-home')).toBeInTheDocument()
-  })
-
-  // The fresh-install redirect is NOT here any more: `SetupGate` answers it
-  // above the router outlet, for every address rather than only this one. See
-  // SetupGate.test.tsx.
+  // It models the getter faithfully: the module's fabricated default while
+  // bootstrap is in flight, and the truth afterwards. Reading it early
+  // therefore yields the WRONG answer, not merely an early one -- which is
+  // what made the onMount version fail silently and forever.
+  //
+  // Two redirects are NOT here any more. `SetupGate` answers the fresh install
+  // above the router outlet, and `SignedOutOnly` answers the solo hub for all
+  // five credential pages. See SetupGate.test.tsx and SignedOutOnly.test.tsx.
 
   it('shows the signup link once bootstrap enables it', async () => {
     setSystemInfoMock({ signupEnabled: false })
@@ -327,7 +313,7 @@ describe('loginPage', () => {
     })
   })
 
-  it('keeps Sign in disabled while bootstrap has not answered the captcha question', async () => {
+  it('keeps Sign in disabled until bootstrap answers the captcha question', async () => {
     // Fail closed: submitting against an unknown captcha policy would send
     // an empty payload the hub denies, so the button waits for the answer.
     setSystemInfoMock({ loaded: false, captchaEnabled: false })
@@ -352,7 +338,7 @@ describe('loginPage', () => {
   it('passes the login action to the captcha field under an external provider', async () => {
     // The dispatcher test covers provider switching; this pins the page's
     // half of the contract — with Turnstile selected (site key present),
-    // the field it renders is told which procedure the token is for. A
+    // the page tells the field which procedure the token is for. A
     // wrong action would make the hub's siteverify action check deny every
     // login token even though the widget solved fine.
     setSystemInfoMock({ captchaEnabled: true, captchaProvider: CaptchaProvider.TURNSTILE, captchaSiteKey: '1x00000000000000000000AA' })
@@ -391,7 +377,7 @@ describe('loginPage', () => {
     })
     fireEvent.input(screen.getByLabelText('Username'), { target: { value: 'alice' } })
     fireEvent.input(screen.getByLabelText('Password'), { target: { value: 'secret' } })
-    // An autofill heuristic dropping a value into the hidden input must
+    // A value that an autofill heuristic drops into the hidden input must
     // reach the request — the server checks it even with captcha off.
     fireEvent.input(screen.getByTestId('captcha-honeypot'), { target: { value: 'http://spam.example' } })
     fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
@@ -510,7 +496,7 @@ describe('loginPage', () => {
     expect(screen.getByRole('radio', { name: 'Passkey' })).toBeInTheDocument()
   })
 
-  // The other arm of the same branch, which nothing exercised. An option that
+  // The other branch of the same condition, which nothing exercised. An option that
   // can only fail is worse than no option: it costs a click, a browser prompt,
   // and a raw error.
   //
@@ -523,13 +509,13 @@ describe('loginPage', () => {
       expect(screen.getByLabelText('Username')).toBeInTheDocument()
     })
     expect(screen.queryByRole('radio', { name: 'Passkey' })).not.toBeInTheDocument()
-    // The password arm survives, which is the point: the form still signs
+    // The password option survives, which is the point: the form still signs
     // somebody in rather than losing its chooser with the option.
     expect(screen.getByRole('radio', { name: 'Password' })).toBeInTheDocument()
     expect(screen.getByLabelText('Password')).toBeInTheDocument()
   })
 
-  // The BROWSER's refusal is a property of where the reader is standing, and
+  // The BROWSER's refusal is a property of where the reader is, and
   // they can move. So the option STAYS and carries the reason: hiding it
   // leaves somebody whose only credential is a passkey at a dead end with
   // nothing to read.

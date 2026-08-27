@@ -12,7 +12,7 @@ import (
 )
 
 // The passkey_enabled flag answers one question for the client: can THIS page
-// run a ceremony? Every passkey affordance gates on it -- the sign-in form's
+// run a ceremony? Every passkey affordance requires it -- the sign-in form's
 // Passkey option, the sign-up form's, and the account panel's Add passkey
 // button -- so a hub-wide answer offered controls that could only fail on a
 // page whose origin the hub does not serve.

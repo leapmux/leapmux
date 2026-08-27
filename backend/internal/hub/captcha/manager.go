@@ -30,7 +30,7 @@ var ErrVerificationFailed = errors.New("captcha verification failed")
 var errReplayed = fmt.Errorf("%w: token or salt already used", ErrVerificationFailed)
 
 // Result classifies a verification outcome for the metrics counter. The
-// typed constants keep the Prometheus label set closed: a typo'd string
+// typed constants keep the Prometheus label set closed: a mistyped string
 // would silently mint a fourth series.
 type Result string
 
@@ -43,9 +43,9 @@ const (
 // Manager issues and verifies captcha challenges for the selected
 // provider (ALTCHA by default; reCAPTCHA v3 or Turnstile when the admin
 // CLI activates them). Configuration resolves from the shared settings
-// snapshot (the captcha.* keys declared in keys.go); the ALTCHA signing
-// secret is provisioned into the altcha key's encrypted half on first
-// use.
+// snapshot (the captcha.* keys declared in keys.go); the manager
+// provisions the ALTCHA signing secret into the altcha key's encrypted
+// half on first use.
 //
 // ALTCHA replay protection is store-backed: a consumed salt's row lives
 // until its challenge expiry, so single-use holds across restarts and
@@ -62,6 +62,9 @@ type Manager struct {
 
 	fallbackMu   sync.Mutex
 	lastFallback string // the degrade reason last reported; "" = healthy
+
+	standDownMu sync.Mutex
+	stoodDown   bool // whether the secure-context stand-down was last reported as active
 }
 
 type resolvedConfig struct {
@@ -91,7 +94,7 @@ func NewManager(st store.Store, set *settings.Manager, soloMode bool, opts ...Op
 	// The gate reads two CORE settings keys, and they are its ONLY inputs.
 	// A manager that never registered them answers the DEFAULT for both --
 	// Key.Of resolves an unregistered key to its zero value with no error
-	// and no log -- which silently swallows a configured public_url and
+	// and no log -- which silently discards a configured public_url and
 	// stands ALTCHA down.
 	// Refuse that wiring here, where the stack trace identifies the caller,
 	// rather than at a request that reports a captcha failure.
@@ -121,17 +124,22 @@ func NewManager(st store.Store, set *settings.Manager, soloMode bool, opts ...Op
 // caller has no error path to handle. When ALTCHA is selected and this
 // hub cannot serve a secure context, Enabled is false at runtime only:
 // the captcha.enabled settings row keeps its stored value.
+//
+// The returned Enabled flag is the EFFECTIVE one, so every surface that
+// reports what this hub enforces reads it here rather than reading the
+// captcha.enabled settings row. The row and this flag differ exactly in
+// the stand-down case, which noteStandDown reports to the operator.
 func (m *Manager) Describe(ctx context.Context) Config {
 	if m.solo {
 		return DisabledConfig()
 	}
 	snap := m.set.Snapshot(ctx)
 	cfg, _ := Effective(snap)
-	return applySecureContextGate(cfg, altchaCanProtect(snap))
+	return m.applyGate(snap, cfg)
 }
 
-// ErrProviderNotAltcha is returned by AltchaChallengeJSON when another
-// provider is selected: external providers mint their tokens client-side
+// AltchaChallengeJSON returns ErrProviderNotAltcha when another provider
+// is selected: external providers mint their tokens client-side
 // and have no challenge to issue. It is an error, not an empty string —
 // the empty string means "captcha disabled" and makes the caller's form
 // stand down, while a stale altcha widget under an external selection
@@ -141,9 +149,10 @@ var ErrProviderNotAltcha = errors.New("captcha challenge unavailable: the select
 
 // AltchaChallengeJSON issues a fresh ALTCHA challenge and returns its
 // JSON — the exact interchange format the frontend widget's
-// configure({challenge}) expects. The per-challenge KDF is never run
-// here (the solver does the work), so issuance costs one HMAC and is
-// safe to expose unauthenticated. Empty only when captcha is disabled.
+// configure({challenge}) expects. This method never runs the
+// per-challenge KDF (the solver does the work), so issuance costs one
+// HMAC and is safe to expose unauthenticated. Empty only when captcha is
+// disabled.
 func (m *Manager) AltchaChallengeJSON(ctx context.Context) (string, error) {
 	if m.solo {
 		return "", nil
@@ -180,7 +189,7 @@ func (m *Manager) AltchaChallengeJSON(ctx context.Context) (string, error) {
 
 // Verify checks a provider token minted under the given action and
 // enforces single use, dispatching on the selected provider. The action
-// specifies the procedure being protected ("login", "signup",
+// specifies the procedure that it protects ("login", "signup",
 // "complete_signup"): reCAPTCHA v3 requires verifying it server-side,
 // Turnstile echoes it back, and ALTCHA ignores it.
 func (m *Manager) Verify(ctx context.Context, action, payload string) error {
@@ -191,7 +200,7 @@ func (m *Manager) Verify(ctx context.Context, action, payload string) error {
 	if err != nil {
 		// A store or keystore outage fails every submission closed; the
 		// denial still counts, under the "unknown" provider label, so the
-		// outage shows up as failed traffic on the counter instead of as
+		// outage appears as failed traffic on the counter instead of as
 		// silence.
 		m.countUnattributedDenial()
 		return fmt.Errorf("captcha verify: %w", err)
@@ -207,7 +216,7 @@ func (m *Manager) Verify(ctx context.Context, action, payload string) error {
 	}
 	spec, ok := specFor(res.cfg.Provider)
 	if !ok {
-		// Effective never returns an unknown provider; this arm exists so
+		// Effective never returns an unknown provider; this branch exists so
 		// an enum value without a registered spec fails closed.
 		return m.counted(res.cfg.Provider, ResultFailed, ErrVerificationFailed)
 	}
@@ -216,9 +225,9 @@ func (m *Manager) Verify(ctx context.Context, action, payload string) error {
 
 // verifyAltcha decodes a base64 ALTCHA payload and checks signature,
 // expiry, and solution, enforcing single use per salt. The checks run
-// cheapest-first so an unauthenticated flood of garbage payloads dies on
-// CPU (the signature-only pre-check) before it can buy store reads, and
-// a replay dies on one indexed read before the memory-hard derivation.
+// cheapest-first so an unauthenticated flood of garbage payloads stops at
+// the CPU (the signature-only pre-check) before it can cause store reads,
+// and a replay stops at one indexed read before the memory-hard derivation.
 func (m *Manager) verifyAltcha(ctx context.Context, res *resolvedConfig, payload string) error {
 	var p altcha.Payload
 	if err := decodeAltchaPayload(payload, &p); err != nil {
@@ -236,7 +245,7 @@ func (m *Manager) verifyAltcha(ctx context.Context, res *resolvedConfig, payload
 	// Signature-only pre-check: VerifySolution with no DeriveKey and no
 	// key-signature secret runs exactly the expiry integer-compare and the
 	// challenge HMAC (microseconds, zero I/O) and never the KDF. Garbage
-	// payloads die here; only a payload this hub actually signed proceeds
+	// payloads stop here; only a payload this hub actually signed proceeds
 	// to the store and the derivation below.
 	sigOK, err := altcha.VerifySolution(altcha.VerifySolutionOptions{
 		Challenge:           p.Challenge,
@@ -250,7 +259,7 @@ func (m *Manager) verifyAltcha(ctx context.Context, res *resolvedConfig, payload
 	// The salt ledger answers before the memory-hard derivation runs: a
 	// replayed solved payload then costs one indexed read instead of a
 	// full KDF re-derivation, and this unauthenticated path cannot turn
-	// one solved challenge into unbounded server work at line rate. The
+	// one solved challenge into unlimited server work at line rate. The
 	// lookup is advisory — ConsumeAltchaSalt below stays the single-use
 	// authority — so a lookup error falls through to the full checks
 	// instead of failing open or closed on its own.
@@ -343,33 +352,65 @@ func (m *Manager) resolve(ctx context.Context) (*resolvedConfig, error) {
 	cfg, fallback := Effective(snap)
 	m.noteFallback(fallback)
 	// The gate runs at every return below, never here: it only flips
-	// Enabled, and neither branch that follows reads that flag, so gating
-	// once at the end covers both paths without computing the answer twice
-	// on the provisioning path.
+	// Enabled, and neither branch that follows reads that flag, so applying
+	// it once at the end covers both paths without computing the answer
+	// twice on the provisioning path.
 	if cfg.Provider != ProviderAltcha {
-		return m.resolveSecret(snap, m.gate(snap, cfg))
+		return m.resolveSecret(snap, m.applyGate(snap, cfg))
 	}
 	if snap.Customized(AltchaKey) && len(AltchaKey.Of(snap).HMACKey) > 0 {
-		return m.resolveSecret(snap, m.gate(snap, cfg))
+		return m.resolveSecret(snap, m.applyGate(snap, cfg))
 	}
 	// First-use self-heal: provision the altcha row's signing key (with the
 	// row itself, and its default settings, when neither exists) and
 	// re-read. A row that exists without a key can only come from a
-	// tuning-only `captcha set` on a data dir the hub has never started on
-	// — the key is filled without touching the stored tuning.
+	// tuning-only `captcha set` on a data dir the hub never started on
+	// — the update fills the key without touching the stored tuning.
 	if err := provisionAltchaRow(ctx, m.set); err != nil {
 		return nil, err
 	}
 	snap = m.set.Snapshot(ctx)
 	cfg, fallback = Effective(snap)
 	m.noteFallback(fallback)
-	return m.resolveSecret(snap, m.gate(snap, cfg))
+	return m.resolveSecret(snap, m.applyGate(snap, cfg))
 }
 
-// gate applies the secure-context stand-down for one snapshot, so resolve
-// states the rule once instead of at each of its three returns.
-func (m *Manager) gate(snap *settings.Snapshot, cfg Config) Config {
-	return applySecureContextGate(cfg, altchaCanProtect(snap))
+// applyGate applies the secure-context stand-down for one snapshot, so
+// resolve states the rule once instead of at each of its three returns.
+// Describe reads it too, so the effective flag one caller reports and the
+// flag another enforces come from the same statement of the rule.
+func (m *Manager) applyGate(snap *settings.Snapshot, cfg Config) Config {
+	restricted := applySecureContextGate(cfg, altchaCanProtect(snap))
+	m.noteStandDown(cfg.Enabled && !restricted.Enabled)
+	return restricted
+}
+
+// noteStandDown reports the secure-context stand-down on transition, with
+// the same warn-once contract noteFallback applies to the degrade state:
+// applyGate runs on every protected submission, which is the flood path
+// captcha exists for, so a line per request would be the wrong shape.
+//
+// The stand-down is silent to the CALLER on purpose -- it must not tell a
+// bot which control is off -- and that is exactly why it must not be silent
+// to the operator. A hub with captcha.enabled stored true, behind a
+// TLS-terminating reverse proxy, with neither public_url nor secure_cookies
+// set, enforces the honeypot and nothing else. Both defaults produce that
+// state, so nothing about the stored settings looks wrong.
+func (m *Manager) noteStandDown(down bool) {
+	m.standDownMu.Lock()
+	if m.stoodDown == down {
+		m.standDownMu.Unlock()
+		return
+	}
+	m.stoodDown = down
+	m.standDownMu.Unlock()
+	if !down {
+		slog.Info("captcha enforcement restored: this hub publishes a secure browser address")
+		return
+	}
+	slog.Warn("captcha is enabled in the settings but verifies nothing",
+		"reason", "the selected provider needs a secure browser context, and this hub publishes no secure address",
+		"remedy", "set "+settings.KeyPublicURL.Name()+" to the https address that your users type")
 }
 
 // noteFallback reports the effective-config degrade state on transition:
@@ -440,8 +481,8 @@ func (m *Manager) EnsureProvisioned(ctx context.Context) error {
 // provisionAltchaRow guarantees the altcha settings row exists AND carries
 // an HMAC signing key, generating a fresh random key when it must. Two
 // paths: no row at all (a fresh install — SetIfAbsent makes racing first
-// uses a one-winner race, so the loser's key is simply discarded) or a row
-// without a key (a tuning-only `captcha set` on a data dir the hub has
+// uses a one-winner race, so the hub simply discards the loser's key) or a
+// row without a key (a tuning-only `captcha set` on a data dir the hub
 // never started on — a partial-document update fills the key and preserves
 // the stored tuning).
 func provisionAltchaRow(ctx context.Context, set *settings.Manager) error {

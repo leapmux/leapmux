@@ -97,7 +97,7 @@ describe('accountProfile', () => {
     expect(screen.queryByText('Profile updated.')).not.toBeInTheDocument()
   })
 
-  // An account that has not loaded yet renders empty fields rather than
+  // An account that did not load yet renders empty fields rather than
   // throwing; the Save button stays inert because nothing is dirty.
   it('renders with no account loaded', async () => {
     mockUser.mockReturnValue(null)

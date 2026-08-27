@@ -1,7 +1,7 @@
 import type { Component } from 'solid-js'
 import type { InspectLastTabCloseResponse } from '~/generated/leapmux/v1/git_pb'
 import type { TabType as TabTypeT } from '~/generated/leapmux/v1/workspace_pb'
-import { createMemo, Show } from 'solid-js'
+import { createMemo, createUniqueId, Show } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { ConfirmButton } from '~/components/common/ConfirmButton'
 import { Dialog } from '~/components/common/Dialog'
@@ -47,6 +47,11 @@ export const LastTabCloseDialog: Component<LastTabCloseDialogProps> = (props) =>
   // is unavailable. Reading the raw field at each site let the two disagree: the
   // button is a WORKTREE-target control, so a reason arriving on any other
   // target rendered a warning with no button beside it.
+  // One id, shared by the visible reason and the button's description. See
+  // the <Tooltip describedBy> prop for why the description must not be a
+  // second copy of a sentence the dialog already shows.
+  const blockedReasonId = `last-tab-blocked-reason-${createUniqueId()}`
+
   const removalBlockedReason = createMemo(() =>
     props.state.target === LastTabCloseTarget.WORKTREE ? props.state.worktreeRemovalBlockedReason : '',
   )
@@ -64,7 +69,7 @@ export const LastTabCloseDialog: Component<LastTabCloseDialogProps> = (props) =>
   // A degraded refresh (worktree vanished, git broke) returns a response
   // with shouldPrompt=false + errorHint instead of rejecting. The dialog
   // stays open so the user still sees the pre-push branch state, but the
-  // post-push safety check was skipped — surface the hint as a warn toast
+  // dialog skipped the post-push safety check — surface the hint as a warn toast
   // so the user isn't silently left looking at stale state. Mirrors
   // useTabOperations.handleTabClose's error_hint handling.
   const refreshStatus = async () => {
@@ -100,14 +105,14 @@ export const LastTabCloseDialog: Component<LastTabCloseDialogProps> = (props) =>
             when={props.state.target === LastTabCloseTarget.WORKTREE}
             fallback={(
               <>
-                You are closing the last non-worktree tab for branch
+                This closes the last non-worktree tab for branch
                 {' '}
                 <code>{props.state.branchName}</code>
                 .
               </>
             )}
           >
-            You are closing the last tab for worktree
+            This closes the last tab for worktree
             {' '}
             <code>{props.state.worktreePath}</code>
             .
@@ -130,7 +135,7 @@ export const LastTabCloseDialog: Component<LastTabCloseDialogProps> = (props) =>
             // and a closed FILE tab is just gone — there's no process
             // to stop or keep — so the more accurate phrasing is
             // "will keep running" for the (zero) agents/terminals when
-            // a FILE tab is the one being closed.
+            // the user closes a FILE tab.
             willStop: props.state.tabType !== TabType.FILE,
           }}
         />
@@ -139,11 +144,13 @@ export const LastTabCloseDialog: Component<LastTabCloseDialogProps> = (props) =>
             dialog, so it states the refusal while the tab is still open.
             After the tab closes, the removal runs unattended and no
             surface is left to report a refusal. This renders the reason as
-            visible text, not only as the button's `title`, because a
+            visible text, not only in the button's tooltip, because a
             greyed-out destructive option with no stated reason looks like
             a defect. */}
         <Show when={removalBlockedReason()}>
-          <div class={warningText}>{removalBlockedReason()}</div>
+          <div id={blockedReasonId} class={warningText} data-testid="last-tab-blocked-reason">
+            {removalBlockedReason()}
+          </div>
         </Show>
         {/* The worker sets error_hint when a probe it needed did not answer.
             An empty blocked reason is also what a clean worktree sends, so
@@ -173,14 +180,12 @@ export const LastTabCloseDialog: Component<LastTabCloseDialogProps> = (props) =>
               available, so the user still closes the tab -- only the
               removal is refused.
 
-              The blocked reason goes through <Tooltip>, which works on a
-              disabled control and leaves the button its own name. On `title`
-              the reason BECOMES that name, and this button's name is STATE
-              ("Confirm?" once armed) -- so the reason replaced the one thing
-              the name had to carry, and a role+name lookup for "Delete"
-              stopped matching. The same text also renders in the body above,
-              for anybody who never hovers. */}
-          <Tooltip text={removalBlockedReason() || undefined}>
+              The blocked reason goes through <Tooltip>; see that component's
+              header for why no control here takes a `title`. The same text
+              also renders in the body above, for anybody who never hovers --
+              and `describedBy` points the description at THAT element, so the
+              reason reaches the accessibility tree once rather than twice. */}
+          <Tooltip text={removalBlockedReason() || undefined} describedBy={blockedReasonId}>
             <ConfirmButton
               data-variant="danger"
               disabled={Boolean(removalBlockedReason())}

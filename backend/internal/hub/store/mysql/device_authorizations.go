@@ -61,8 +61,8 @@ func (s *deviceAuthorizationStore) GetByUserCode(ctx context.Context, userCode s
 }
 
 func (s *deviceAuthorizationStore) Approve(ctx context.Context, p store.ApproveDeviceAuthorizationParams, now time.Time) (int64, error) {
-	// An approval names WHO approved. A zero id would be written as SQL NULL
-	// while the UPDATE still matched the row, so the store would report one
+	// An approval identifies WHO approved. The store would write a zero id as
+	// SQL NULL while the UPDATE still matched the row, so it would report one
 	// row affected, the browser would say "device authorized", and the CLI
 	// would then poll authorization_pending forever against a row whose
 	// user_id is blank -- told the opposite of what happened. NULL is the
@@ -79,8 +79,8 @@ func (s *deviceAuthorizationStore) Approve(ctx context.Context, p store.ApproveD
 }
 
 func (s *deviceAuthorizationStore) ApproveByUserCode(ctx context.Context, p store.ApproveDeviceAuthorizationByUserCodeParams, now time.Time) (int64, error) {
-	// An approval names WHO approved. A zero id would be written as SQL NULL
-	// while the UPDATE still matched the row, so the store would report one
+	// An approval identifies WHO approved. The store would write a zero id as
+	// SQL NULL while the UPDATE still matched the row, so it would report one
 	// row affected, the browser would say "device authorized", and the CLI
 	// would then poll authorization_pending forever against a row whose
 	// user_id is blank -- told the opposite of what happened. NULL is the

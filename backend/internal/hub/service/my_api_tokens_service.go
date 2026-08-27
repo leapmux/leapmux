@@ -38,6 +38,14 @@ func myAPITokenToProto(row store.APIToken, currentTokenID string) *leapmuxv1.MyA
 	}
 	if row.RefreshExpiresAt != nil {
 		out.RefreshExpiresAt = timestamppb.New(*row.RefreshExpiresAt)
+	} else if row.ExpiresAt != nil {
+		// The fixed-lifetime kind. Its access expiry IS its whole life,
+		// because nothing renews it -- so reporting it here is the opposite
+		// of reporting a renewing credential's access expiry, which the
+		// field above deliberately withholds. The two branches are exclusive
+		// by construction: mintAPIToken writes a refresh deadline only for
+		// the rotating kind.
+		out.ExpiresAt = timestamppb.New(*row.ExpiresAt)
 	}
 	return out
 }
@@ -45,13 +53,14 @@ func myAPITokenToProto(row store.APIToken, currentTokenID string) *leapmuxv1.MyA
 // callerAPITokenID returns the api_tokens row id the request authenticated
 // with, or "" when it did not authenticate with one (a browser session, a
 // delegation bearer, solo mode). Derived from the caller's own credential,
-// never from the request body, so `current` cannot be aimed at another row.
+// never from the request body, so `current` cannot mark another row.
+//
+// The answer comes from CredentialIdentity.APITokenID, which is the accessor
+// written for this question. Re-deriving it from Bearer() here meant TWO
+// statements of "an api_tokens bearer, and a delegation bearer is not one",
+// and only one of them could be corrected.
 func callerAPITokenID(userInfo *auth.UserInfo) string {
-	kind, tokenID, ok := userInfo.Credential.Bearer()
-	if !ok || kind != auth.BearerKindAPI {
-		return ""
-	}
-	return tokenID
+	return userInfo.Credential.APITokenID()
 }
 
 func (s *UserService) ListMyAPITokens(ctx context.Context, req *connect.Request[leapmuxv1.ListMyAPITokensRequest]) (*connect.Response[leapmuxv1.ListMyAPITokensResponse], error) {
@@ -67,7 +76,7 @@ func (s *UserService) ListMyAPITokens(ctx context.Context, req *connect.Request[
 		// Through NormalizePageParams like every other paginated handler: an
 		// omitted limit is the proto3 zero, and the queries read zero as
 		// "return no rows", so a caller that simply left it out would get an
-		// empty page it could not tell from an empty table.
+		// empty page it could not distinguish from an empty table.
 		PageParams: NormalizePageParams(req.Msg.GetCursor(), req.Msg.GetLimit()),
 	})
 	if err != nil {
@@ -98,10 +107,10 @@ func (s *UserService) RevokeMyAPIToken(ctx context.Context, req *connect.Request
 	if req.Msg.GetId() == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
 	}
-	// The owner equality lives in the UPDATE, so a token id belonging to
-	// somebody else matches no row and is answered exactly like a missing
-	// one -- the listing is per-user, so a caller has no legitimate way to
-	// learn another user's token id, and this refuses to confirm one.
+	// The owner equality lives in the UPDATE, so a token id that belongs to
+	// somebody else matches no row, and the handler answers it exactly like a
+	// missing one -- the listing is per-user, so a caller has no legitimate
+	// way to learn another user's token id, and this refuses to confirm one.
 	n, err := s.store.APITokens().RevokeOwned(ctx, store.RevokeOwnedAPITokenParams{
 		ID:     req.Msg.GetId(),
 		UserID: userInfo.ID,

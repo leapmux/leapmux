@@ -30,6 +30,33 @@ func TestRunCredentialMutation(t *testing.T) {
 		assert.True(t, emitted)
 	})
 
+	// The retry contract: the postgres and mysql dialects repeat the WHOLE
+	// transaction when the backend aborts it, so this callback can run more
+	// than once. A first attempt that wrote its row and then lost its commit
+	// must not report that row through an attempt that changed nothing.
+	t.Run("a failed retry reports no affected row", func(t *testing.T) {
+		attempts := 0
+		aborted := errors.New("conflict on the second attempt")
+		n, err := RunCredentialMutation(context.Background(), func(_ context.Context, fn func(int) error) error {
+			// Attempt one runs to the end and then loses its commit.
+			attempts++
+			if err := fn(1); err != nil {
+				return err
+			}
+			// Attempt two fails before the mutation reports an event.
+			attempts++
+			return fn(1)
+		}, func(context.Context, int) (*CredentialEvent, error) {
+			if attempts > 1 {
+				return nil, aborted
+			}
+			return &CredentialEvent{SubjectID: "token", UserID: "user"}, nil
+		}, func(context.Context, int, CredentialEvent) error { return nil })
+		require.ErrorIs(t, err, aborted)
+		assert.Equal(t, 2, attempts, "the harness must have run the callback twice")
+		assert.Zero(t, n, "a rolled-back attempt's row must not be reported")
+	})
+
 	t.Run("skips event on no-op", func(t *testing.T) {
 		n, err := RunCredentialMutation(context.Background(), func(_ context.Context, fn func(int) error) error { return fn(1) },
 			func(context.Context, int) (*CredentialEvent, error) { return nil, nil },

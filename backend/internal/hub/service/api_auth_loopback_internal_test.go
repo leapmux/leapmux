@@ -97,14 +97,15 @@ func TestIsLoopbackURLAgreesWithTheCSPSchemes(t *testing.T) {
 // TestGateModeForDerivesFromTheMethod pins the rule the four CLI consent
 // legs used to each restate for themselves.
 //
-// A GET is replayable from its own URL, so an un-elevated caller is sent
-// away and comes back to exactly that address. Anything that carries its
-// parameters in the BODY is refused instead: handleAuthorize reads the PKCE
-// challenge from the form, and a redirect would drop it, so the user would
-// return to a consent page that forgot what it was consenting to.
+// A GET is replayable from its own URL, so the gate sends an un-elevated
+// caller away, and that caller comes back to exactly that address. The gate
+// refuses anything that carries its parameters in the BODY instead:
+// handleAuthorize reads the PKCE challenge from the form, and a redirect
+// would drop it, so the user would return to a consent page that forgot
+// what it consented to.
 //
-// HEAD is a GET without the body, so it bounces too rather than falling into
-// the body-carrying default.
+// HEAD is a GET without the body, so it bounces too rather than taking the
+// body-carrying default.
 func TestGateModeForDerivesFromTheMethod(t *testing.T) {
 	t.Parallel()
 

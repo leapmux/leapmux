@@ -38,7 +38,7 @@ vi.mock('~/lib/systemInfo', () => ({
  *
  * `/login` is an unguarded stub, mirroring the real route tree where only the
  * `(app)` layout sits behind the guard — so a redirect chain that bounces
- * through `/login` shows up as an extra `navigations` entry instead of being
+ * through `/login` appears as an extra `navigations` entry rather than staying
  * invisible behind a single final URL.
  */
 function renderGuard(options: { path?: string } = {}) {
@@ -86,7 +86,7 @@ describe('authGuard', () => {
     expect(navigations).toEqual([])
   })
 
-  it('shows loading while auth is loading', () => {
+  it('shows the boot splash while auth loads', () => {
     mockUser.mockReturnValue(null)
     mockLoading.mockReturnValue(true)
     mockIsAuthenticated.mockReturnValue(false)
@@ -135,7 +135,7 @@ describe('authGuard', () => {
   // so was the loading fallback this used to land on. `restoreSession` records
   // NO bootstrapError for an Unauthenticated reply (it is the ordinary "no
   // session yet" answer everywhere else), so solo + unauthenticated fell
-  // through every arm and spun forever with nothing to click. In solo mode the
+  // through every branch and spun forever with nothing to click. In solo mode the
   // hub authenticates every request, so that reply is a transport or config
   // failure and has to be reported like any other.
   it('reports rather than spins when a solo hub answers with no session', async () => {
@@ -166,12 +166,12 @@ describe('authGuard', () => {
   })
 
   // A failed bootstrap (hub unreachable / erroring) is NOT a missing session.
-  // It used to be swallowed into an empty catch, so it was indistinguishable
-  // from "not logged in": in solo mode -- where there is no login to fall back
-  // to -- the guard showed its loading fallback forever, and if loadSystemInfo
-  // had also failed, isSoloMode() defaults to false and the visitor was sent to
-  // a login form no credentials could satisfy. Both were unrecoverable and
-  // silent. The guard must report it and offer a way out instead.
+  // An empty catch used to discard it, so it was indistinguishable from "not
+  // logged in": in solo mode -- where there is no login to fall back to -- the
+  // guard showed its loading fallback forever, and if loadSystemInfo also
+  // failed, isSoloMode() defaults to false and the guard sent the visitor to a
+  // login form that no credentials could satisfy. Both were unrecoverable and
+  // silent. The guard must report it and offer a way to recover instead.
   it('reports a failed bootstrap instead of redirecting or spinning', async () => {
     mockLoading.mockReturnValue(false)
     mockUser.mockReturnValue(null)

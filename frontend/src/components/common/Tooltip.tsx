@@ -33,6 +33,20 @@ export interface TooltipProps {
    */
   content?: JSX.Element
   /**
+   * The id of an element that ALREADY states this reason on screen. When set,
+   * the tooltip points `aria-describedby` at that element and renders no
+   * offscreen copy of `text`.
+   *
+   * For the surface that shows the reason twice on purpose: a dialog that
+   * greys out a destructive action states why in its body, so a reader who
+   * never hovers still learns it, AND wraps the control so a reader who does
+   * hover learns it there. Without this the same sentence reaches the
+   * accessibility tree twice -- a screen reader announces the reason, then
+   * announces it again as the control's description -- and any locator that
+   * matches on the TEXT resolves to two elements and fails on strict mode.
+   */
+  describedBy?: string
+  /**
    * When set, applies an aria-label to the target element.
    * Use `true` to reuse `text`, or pass a string for an explicit label.
    */
@@ -69,8 +83,8 @@ type TooltipTarget = Element & {
  * `:disabled` rather than the `disabled` property, so a control disabled by an
  * enclosing `<fieldset>` counts as well. `aria-disabled` is the other half: it
  * looks disabled and takes pointer events, so a tooltip on it needs no wrapper
- * -- but the description below is still owed, because a screen reader reads it
- * as unavailable and the reader deserves the reason either way.
+ * -- but this component still owes the description below, because a screen
+ * reader reads it as unavailable and the reader deserves the reason either way.
  */
 function targetRefusesPointerEvents(el: Element): boolean {
   return el.matches(':disabled')
@@ -93,7 +107,7 @@ function clipsOverflow(el: Element): boolean {
  *
  * Auto-detect strategy:
  * 1. If the target itself has non-visible overflow on an axis where its
- *    scroll size exceeds its client size, it's truncating its own content.
+ *    scroll size exceeds its client size, it truncates its own content.
  * 2. Otherwise, walk parent elements; for each one whose computed overflow
  *    isn't `visible`, check whether the target's rect extends past it
  *    HORIZONTALLY. The vertical axis is deliberately not tested: a row
@@ -176,17 +190,26 @@ function isTargetClipped(target: Element): boolean {
  * reader announces the remedy where the label belongs and every by-name lookup
  * stops matching. Two mechanics carry the disabled case:
  *
- *   - The wrapper takes a real box and the hover listeners move onto it. A
- *     disabled control dispatches no pointer event of its own, and the wrapper
- *     is `display: contents` otherwise, which puts it outside the box tree and
- *     therefore outside the hit test. The switch is reactive, because
- *     `disabled` moves while the tooltip is mounted -- a button is disabled
- *     while a request is in flight.
+ *   - The wrapper takes a real box, and the hover listeners sit on the wrapper
+ *     AND on the target at the same time. A disabled control dispatches no
+ *     pointer event of its own, and the wrapper is `display: contents`
+ *     otherwise, which puts it outside the box tree and therefore outside the
+ *     hit test. The box is reactive, because `disabled` moves while the tooltip
+ *     is mounted -- a button is disabled while a request is in flight.
  *   - An offscreen description sits beside the wrapper and stays in
  *     `aria-describedby` for as long as the control is disabled. Nothing else
  *     can reach a screen-reader user there: a disabled control takes no focus,
  *     so `focusin` never fires and the tooltip can only ever open under a
- *     pointer.
+ *     pointer. A caller that ALREADY states the reason on screen passes
+ *     `describedBy` instead, and then this renders no copy of its own -- see
+ *     that prop for why a second copy is worse than none.
+ *
+ * TWO predicates, not one, and the difference is which mechanism the control
+ * uses. `:disabled` refuses pointer events, so it needs the box. `aria-disabled`
+ * only LOOKS unavailable and still dispatches its own events, so it needs the
+ * description and nothing else. An empty tooltip needs neither: with no text
+ * and no content there is nothing a hover could open, so the wrapper stays
+ * boxless and this component installs no observer.
  *
  * The description is PLAIN TEXT, so it comes from `text`. A `content`-only
  * tooltip on a disabled control has no description to give; pass `text`
@@ -205,14 +228,48 @@ export function Tooltip(props: TooltipProps) {
   let triggerWrapperEl: HTMLSpanElement | undefined
   let tooltipEl: HTMLDivElement | undefined
   const tooltipId = createUniqueId()
-  const descriptionId = `tooltip-desc-${tooltipId}`
+  const ownDescriptionId = `tooltip-desc-${tooltipId}`
+  /** The element `aria-describedby` points at: the caller's, or our own. */
+  const descriptionId = () => props.describedBy ?? ownDescriptionId
+  /** Whether this component renders the offscreen copy itself. */
+  const ownsDescription = () => !props.describedBy
   const [visible, setVisible] = createSignal(false)
-  const [disabledTarget, setDisabledTarget] = createSignal(false)
+  /**
+   * The target presents itself as unavailable, by EITHER mechanism.
+   *
+   * It drives the offscreen description alone. A screen reader announces an
+   * `aria-disabled` control as unavailable exactly as it announces a
+   * `:disabled` one, so this component owes the reader the reason either way.
+   */
+  const [describedAsDisabled, setDescribedAsDisabled] = createSignal(false)
+  /**
+   * The target refuses pointer events, so the wrapper must take a box.
+   *
+   * The NARROWER predicate. An `aria-disabled` control still dispatches its own
+   * pointer events, so it needs neither a box around it nor the listeners moved
+   * -- and giving it one put an inert inline-flex box into whatever row it sits
+   * in.
+   */
+  const [targetRefusesPointer, setTargetRefusesPointer] = createSignal(false)
   const [pos, setPos] = createSignal({ top: 0, left: 0 })
   const [targetEl, setTargetEl] = createSignal<TooltipTarget | undefined>()
   let showTimer: ReturnType<typeof setTimeout> | undefined
   let hideTimer: ReturnType<typeof setTimeout> | undefined
   let warnedInvalidChild = false
+
+  /** Whether this tooltip has anything to show. */
+  const hasTooltipContent = () => Boolean(props.text || props.content)
+
+  /**
+   * Whether the wrapper takes a real box instead of `display: contents`.
+   *
+   * BOTH facts. A control that refuses pointer events needs the box so the
+   * hover can be caught somewhere, and a tooltip with nothing to show has
+   * nothing to catch a hover FOR -- so an empty tooltip on a disabled control
+   * put an inert box into a dialog footer's flex row at rest and again for the
+   * whole submit, for a tooltip that can never open.
+   */
+  const wrapperTakesBox = () => targetRefusesPointer() && hasTooltipContent()
 
   const resolveTargetEl = (): TooltipTarget | undefined => {
     const node = triggerWrapperEl?.firstElementChild
@@ -247,11 +304,20 @@ export function Tooltip(props: TooltipProps) {
    */
   createEffect(() => {
     const target = targetEl()
-    if (!target) {
-      setDisabledTarget(false)
+    // NOTHING TO SHOW, so nothing to observe. This is per INSTANCE, and the
+    // instance count is not limited by the call sites: `ClippedText`,
+    // `RelativeTime` and `IconButton` each render a Tooltip unconditionally, so
+    // a busy chat screen holds hundreds and a virtualized list allocates and
+    // disconnects one for each recycled row on the scroll path.
+    if (!target || !hasTooltipContent()) {
+      setDescribedAsDisabled(false)
+      setTargetRefusesPointer(false)
       return
     }
-    const sync = () => setDisabledTarget(targetIsDisabled(target))
+    const sync = () => {
+      setDescribedAsDisabled(targetIsDisabled(target))
+      setTargetRefusesPointer(targetRefusesPointerEvents(target))
+    }
     sync()
     const observer = new MutationObserver(sync)
     observer.observe(target, { attributes: true, attributeFilter: ['disabled', 'aria-disabled'] })
@@ -357,12 +423,23 @@ export function Tooltip(props: TooltipProps) {
     const target = targetEl()
     if (!target)
       return
-    // The element the listeners go on. It is the target itself in every
-    // ordinary case; for a control the browser refuses to dispatch to, it is
-    // the wrapper, which the effect below gives a box for exactly this reason.
+    // BOTH elements, always, and never one chosen from the disabled state.
+    //
+    // The target carries the ordinary case. The wrapper carries the control the
+    // browser refuses to dispatch to, which dispatches no pointer event of its
+    // own -- the effect below gives the wrapper a box for exactly that. Every
+    // handler is idempotent, so the pair that a bubbling `focusin` or `click`
+    // delivers twice costs one cleared timer.
+    //
+    // Choosing ONE host made the disabled state a dependency of this effect,
+    // and a flip while the pointer already rested on the control re-hosted the
+    // listeners with no new `mouseenter` behind them: that hover's tooltip
+    // never opened. Listening on both removes the re-hosting rather than
+    // ordering it.
+    //
     // The RECT still comes from the target either way, so the tooltip points at
     // the control rather than at the box around it.
-    const listenEl: Element = disabledTarget() && triggerWrapperEl ? triggerWrapperEl : target
+    const listenEls: Element[] = triggerWrapperEl ? [triggerWrapperEl, target] : [target]
 
     // Re-establish the Tooltip's reactive owner inside the event listener
     // callbacks. Without this, reading `props.content` (a lazy JSX getter)
@@ -378,10 +455,10 @@ export function Tooltip(props: TooltipProps) {
     // A NAMED function, like the two handlers below it. `show` reads
     // `props.text` and `props.content`, and an inline function expression
     // carrying those reads into a call that `solid/reactivity` cannot follow --
-    // `wrapInOwner` is a plain local helper, not a tracked scope -- is reported
-    // as reactivity that will be ignored. The reads are correct here, because
-    // the wrapped result IS an event handler, so the fix is to let the rule see
-    // a reference rather than to silence it.
+    // `wrapInOwner` is a plain local helper, not a tracked scope. The lint rule
+    // reports it as reactivity that will be ignored. The reads are correct
+    // here, because the wrapped result IS an event handler, so the fix is to
+    // let the rule see a reference rather than to silence it.
     const showUnlessMenuOwnsPress = () => {
       if (holdIsOverMenu() || touchReleaseOpensMenu())
         return
@@ -389,23 +466,27 @@ export function Tooltip(props: TooltipProps) {
     }
     const handleShow = wrapInOwner(showUnlessMenuOwnsPress)
     const handleHide = wrapInOwner(hide)
-    // Clicking (or activating via Space/Enter) means the user is taking an
+    // Clicking (or activating via Space/Enter) means that the user takes an
     // action — dismiss immediately so the tooltip doesn't linger over a
     // menu or state change. `click` fires for both mouse and keyboard.
     const handleDismiss = wrapInOwner(dismiss)
 
-    listenEl.addEventListener('mouseenter', handleShow)
-    listenEl.addEventListener('mouseleave', handleHide)
-    listenEl.addEventListener('focusin', handleShow)
-    listenEl.addEventListener('focusout', handleHide)
-    listenEl.addEventListener('click', handleDismiss)
+    for (const el of listenEls) {
+      el.addEventListener('mouseenter', handleShow)
+      el.addEventListener('mouseleave', handleHide)
+      el.addEventListener('focusin', handleShow)
+      el.addEventListener('focusout', handleHide)
+      el.addEventListener('click', handleDismiss)
+    }
 
     onCleanup(() => {
-      listenEl.removeEventListener('mouseenter', handleShow)
-      listenEl.removeEventListener('mouseleave', handleHide)
-      listenEl.removeEventListener('focusin', handleShow)
-      listenEl.removeEventListener('focusout', handleHide)
-      listenEl.removeEventListener('click', handleDismiss)
+      for (const el of listenEls) {
+        el.removeEventListener('mouseenter', handleShow)
+        el.removeEventListener('mouseleave', handleHide)
+        el.removeEventListener('focusin', handleShow)
+        el.removeEventListener('focusout', handleHide)
+        el.removeEventListener('click', handleDismiss)
+      }
     })
   })
 
@@ -425,8 +506,8 @@ export function Tooltip(props: TooltipProps) {
       // The offscreen description, for as long as the control is disabled. It
       // is the only route to a screen-reader user there, so it does NOT wait
       // for the tooltip to open -- nothing can open it without a pointer.
-      if (disabledTarget() && props.text)
-        nextIds.push(descriptionId)
+      if (describedAsDisabled() && props.text)
+        nextIds.push(descriptionId())
       if (visible() && (props.text || props.content))
         nextIds.push(`tooltip-${tooltipId}`)
       if (nextIds.length > 0)
@@ -479,16 +560,18 @@ export function Tooltip(props: TooltipProps) {
           triggerWrapperEl = el
         }}
         // `display: contents` everywhere it can be, so the wrapper adds no box
-        // to any layout that did not ask for one. A DISABLED child forces the
-        // exception: a boxless element is not in the hit test, so it would
-        // never see the pointer that the child itself refuses. `inline-flex`
-        // hugs the child and stays one item of whatever row it sits in.
-        style={{ display: disabledTarget() ? 'inline-flex' : 'contents' }}
+        // to any layout that did not ask for one. A child that REFUSES POINTER
+        // EVENTS forces the exception, and only while this tooltip has
+        // something to show: a boxless element is not in the hit test, so it
+        // would never see the pointer that the child itself refuses.
+        // `inline-flex` hugs the child and stays one item of whatever row it
+        // sits in.
+        style={{ display: wrapperTakesBox() ? 'inline-flex' : 'contents' }}
       >
         {props.children}
       </span>
-      <Show when={disabledTarget() && props.text}>
-        <span id={descriptionId} class={srOnly}>{props.text}</span>
+      <Show when={describedAsDisabled() && props.text && ownsDescription()}>
+        <span id={ownDescriptionId} class={srOnly}>{props.text}</span>
       </Show>
       <Show when={visible() && (props.text || props.content)}>
         <Portal>

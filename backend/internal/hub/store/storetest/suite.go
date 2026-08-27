@@ -18,7 +18,7 @@ type Suite struct {
 	// concurrency to conflict.
 	//
 	// It is a capability rather than a backend name, so a new dialect states
-	// what it can do instead of being added to a list somewhere else.
+	// what it can do, and nobody adds it to a list somewhere else.
 	ConcurrentWriteTransactions bool
 }
 

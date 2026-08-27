@@ -4,6 +4,7 @@ import (
 	"context"
 	"math"
 	"testing"
+	"time"
 
 	"github.com/leapmux/leapmux/internal/util/userid"
 
@@ -65,12 +66,12 @@ func TestCreateUserParams_Validate(t *testing.T) {
 }
 
 // TestCreateUserParams_ValidateRejectsBlankID pins the create path's other
-// invariant, and the one with the wider blast radius: users.id is the parent
-// key every owner-keyed child row hangs off, so a blank one is the single
-// thing that makes a blank-OWNER row storable at all. SQLite accepts "" as a
+// invariant, and the one whose failure damages more rows: users.id is the
+// parent key that every owner-keyed child row refers to, so a blank one is the
+// single thing that makes a blank-OWNER row storable at all. SQLite accepts "" as a
 // TEXT primary key, so `user_id REFERENCES users(id)` admits a blank-owner tab
 // or CRDT row the moment a blank-id parent exists -- and no ownership
-// predicate can name it, because binding "" matches every blank-owner row
+// predicate can identify it, because binding "" matches every blank-owner row
 // rather than none (see userid.OwnerFilter).
 //
 // Routing the check through userid.New rather than a local `== ""` is what
@@ -157,4 +158,75 @@ func TestClampListLimit(t *testing.T) {
 	// The clamped value +1 (the probe row) is always a safe int32 conversion.
 	assert.LessOrEqual(t, ClampListLimit(math.MaxInt64)+1, int64(math.MaxInt32))
 	assert.GreaterOrEqual(t, ClampListLimit(math.MinInt64), int64(0))
+}
+
+// TestClampedExpiresAt pins the elevation ceiling on the GRANT path. The slide
+// clamps in SQL, and it can only move a deadline forward, so an over-long
+// deadline that a grant wrote would stay for its whole life. Both param types
+// route through the same helper, so both are checked here.
+func TestClampedExpiresAt(t *testing.T) {
+	provenAt := time.Date(2026, 3, 4, 9, 0, 0, 0, time.UTC)
+	ceiling := provenAt.Add(ElevationMaxTotal)
+
+	cases := map[string]struct {
+		requested time.Time
+		want      time.Time
+	}{
+		"a window inside the cap passes through": {
+			requested: provenAt.Add(2 * time.Hour),
+			want:      provenAt.Add(2 * time.Hour),
+		},
+		"a window exactly at the cap passes through": {
+			requested: ceiling,
+			want:      ceiling,
+		},
+		"one nanosecond past the cap clamps": {
+			requested: ceiling.Add(time.Nanosecond),
+			want:      ceiling,
+		},
+		"a far longer window clamps": {
+			requested: provenAt.Add(30 * 24 * time.Hour),
+			want:      ceiling,
+		},
+		"a deadline before the anchor passes through unchanged": {
+			requested: provenAt.Add(-time.Hour),
+			want:      provenAt.Add(-time.Hour),
+		},
+		"a zero deadline stays zero, which the dialects map to NULL": {
+			requested: time.Time{},
+			want:      time.Time{},
+		},
+	}
+
+	for label, tc := range cases {
+		t.Run(label, func(t *testing.T) {
+			session := ElevateSessionParams{
+				SessionID:          "s1",
+				UserID:             userid.MustNew("alice"),
+				ElevationProvenAt:  provenAt,
+				ElevationExpiresAt: tc.requested,
+			}
+			assert.True(t, tc.want.Equal(session.ClampedExpiresAt()),
+				"session grant: want %s, got %s", tc.want, session.ClampedExpiresAt())
+
+			token := ElevateAPITokenParams{
+				TokenID:            "t1",
+				UserID:             userid.MustNew("alice"),
+				ElevationProvenAt:  provenAt,
+				ElevationExpiresAt: tc.requested,
+			}
+			assert.True(t, tc.want.Equal(token.ClampedExpiresAt()),
+				"token grant: want %s, got %s", tc.want, token.ClampedExpiresAt())
+		})
+	}
+}
+
+// TestElevationMaxTotalIsPositive keeps the one constant that every clamp binds
+// from becoming a value that disables the clamp. A zero or negative cap would
+// collapse the SQL LEAST(...) to the anchor, and GREATEST would then keep the
+// stored deadline: every slide becomes a silent no-op.
+func TestElevationMaxTotalIsPositive(t *testing.T) {
+	assert.Positive(t, ElevationMaxTotal, "the elevation cap must be a positive duration")
+	assert.Positive(t, ElevationMaxTotal.Microseconds(),
+		"the cap must survive the microsecond conversion the three dialects bind")
 }

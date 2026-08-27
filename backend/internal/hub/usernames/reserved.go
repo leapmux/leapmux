@@ -22,19 +22,19 @@ func normalize(u string) string {
 
 // IsReservedSystem reports whether a username is reserved in every creation
 // path (public signup, setup signup, OAuth signup, CLI user-create). Covers
-// Solo: a user by that name in a non-solo database would be auto-authenticated
-// for every request if the same data-dir were later opened in solo mode (see
-// auth/interceptor.go).
+// Solo: the hub would auto-authenticate a user by that name in a non-solo
+// database for every request, if an operator later opened the same data-dir in
+// solo mode (see auth/interceptor.go).
 func IsReservedSystem(u string) bool {
 	return normalize(u) == Solo
 }
 
 // IsReservedForSignup reports whether a sign-up may not claim a username.
 //
-// setupMode says whether this sign-up creates the hub's FIRST account. Solo
-// is refused in every mode: a user by that name in a non-solo database would
-// be auto-authenticated for every request if the same data-dir were later
-// opened in solo mode (see auth/interceptor.go). Admin is squat-protected in
+// setupMode says whether this sign-up creates the hub's FIRST account. The hub
+// refuses Solo in every mode: it would auto-authenticate a user by that name in
+// a non-solo database for every request, if an operator later opened the same
+// data-dir in solo mode (see auth/interceptor.go). Admin is squat-protected in
 // anonymous public signup and claimable by the first administrator, so the
 // setup flows accept it.
 //

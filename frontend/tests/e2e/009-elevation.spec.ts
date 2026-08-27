@@ -3,7 +3,7 @@
  *
  * The property under test is the ONE the window exists for and a single-use
  * proof did not have: prove a factor once, and every sensitive action for
- * the next two hours lands without another prompt. The unit tests pin the
+ * the next two hours succeeds without another prompt. The unit tests pin the
  * predicate and the SQL clamp; only a browser can show that the prompt
  * appears where a user meets it and does not appear again.
  *
@@ -93,8 +93,8 @@ test.describe('session elevation', () => {
   })
 
   // The window is ONE window across every sensitive action, not one per
-  // action type. Two different kinds of change back to back is the case that
-  // proves it: a per-action secret would ask twice.
+  // action type. Two different kinds of change, one immediately after the
+  // other, is the case that proves it: a per-action secret would ask twice.
   test('covers a second action of a different kind', async ({ page, leapmuxServer }) => {
     const cookie = await freshAccount(leapmuxServer.hubUrl, 'elev-cross')
     await loginViaToken(page, cookie)
@@ -124,7 +124,7 @@ test.describe('session elevation', () => {
     await expect(page.getByRole('dialog', { name: 'Verify your identity' })).toHaveCount(0)
   })
 
-  test('an already-elevated session is never prompted', async ({ page, leapmuxServer }) => {
+  test('never prompts an already-elevated session', async ({ page, leapmuxServer }) => {
     const cookie = await freshAccount(leapmuxServer.hubUrl, 'elev-pre')
     // Elevate out of band, exactly as a prior action in the same window
     // would have.
@@ -147,11 +147,11 @@ test.describe('session elevation', () => {
  *
  * It sits at the TOP of every group whose rows the hub refuses without a
  * proven factor -- above them, because it is the thing that makes those rows
- * land without a prompt. It used to sit inside one account editor, half way
- * down the panel and under a Save button it had nothing to do with.
+ * succeed without a prompt. It used to sit inside one account editor, half
+ * way down the panel and under a Save button that was unrelated to it.
  */
 test.describe('the verified-session state', () => {
-  test('appears above the account rows once a factor is proven', async ({ page, leapmuxServer }) => {
+  test('appears above the account rows once the user proves a factor', async ({ page, leapmuxServer }) => {
     const cookie = await freshAccount(leapmuxServer.hubUrl, 'elev-panel')
     await loginViaToken(page, cookie)
     await page.goto('/')
@@ -174,8 +174,8 @@ test.describe('the verified-session state', () => {
     await expect(status).toBeVisible()
     await expect(status).toContainText('This session is verified')
 
-    // ABOVE the first account row, not somewhere inside the panel. Compared
-    // by document position, because "is visible" was true of the old
+    // ABOVE the first account row, not somewhere inside the panel. The test
+    // compares by document position, because "is visible" was true of the old
     // placement too.
     const panel = page.locator('#preferences-panel')
     const order = await panel.evaluate((el) => {

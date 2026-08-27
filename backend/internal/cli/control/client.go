@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"slices"
 	"sync"
 	"time"
 
@@ -71,6 +72,39 @@ type Client struct {
 	// peer rather than the scheme is what lets `--hub unix:.../hub.sock`
 	// work.
 	peer peerKind
+	// promptAllowed reports whether this client may run a ceremony that
+	// blocks on a person: today, the browser step-up. The constructor
+	// decides it ONCE, so every call of one command answers alike.
+	//
+	// A worker-spawned client is never allowed one. It runs inside an
+	// agent, where there is no terminal and nobody to read a URL.
+	promptAllowed bool
+}
+
+// noPromptEnv refuses every prompt that waits for a person, whatever the
+// terminal detection says: the browser step-up and the password prompt
+// alike.
+//
+// Detection answers "is somebody probably there"; this answers "I am a
+// script, do not wait for me", which a caller sometimes knows and the
+// terminal never does -- a supervisor that gives its child a pseudo-terminal
+// is the ordinary case. Presence is the whole test, the way NO_COLOR works:
+// ANY non-empty value refuses the prompt.
+const noPromptEnv = "LEAPMUX_CONTROL_NO_PROMPT"
+
+// promptsAllowed reports whether this process may open a prompt that ends
+// only when a person acts.
+func promptsAllowed() bool {
+	return os.Getenv(noPromptEnv) == "" && isInteractive()
+}
+
+// noPromptReason states WHY this process may not prompt, so a refusal can
+// state the condition the caller is able to change.
+func noPromptReason() string {
+	if os.Getenv(noPromptEnv) != "" {
+		return noPromptEnv + " is set"
+	}
+	return "stdin is not a terminal"
 }
 
 // peerKind distinguishes the two transports a Client can carry.
@@ -109,11 +143,12 @@ func newHubClient(hubURL string, creds *CredentialFile) (*Client, error) {
 		return nil, err
 	}
 	c := &Client{
-		HubURL:     hubURL,
-		HTTPClient: httpClient,
-		WSClient:   wsClient,
-		connectURL: connectURL,
-		peer:       peerHub,
+		HubURL:        hubURL,
+		HTTPClient:    httpClient,
+		WSClient:      wsClient,
+		connectURL:    connectURL,
+		peer:          peerHub,
+		promptAllowed: promptsAllowed(),
 	}
 	if creds != nil {
 		c.bearer = creds.AccessToken
@@ -130,7 +165,7 @@ func newHubClient(hubURL string, creds *CredentialFile) (*Client, error) {
 // parsed must refuse that call and nothing else. Opening it in the
 // constructor made a corrupt file refuse every verb, including each
 // `control admin ...` verb, which reports the failure under the
-// not_logged_in code — a message that names neither the file nor the
+// not_logged_in code — a message that states neither the file nor the
 // cause.
 func (c *Client) pinStore() (*PinStore, error) {
 	// The preset test is INSIDE the Once, so two concurrent opens read the
@@ -273,7 +308,7 @@ func (c *Client) bearerNeedsRenewal() bool {
 }
 
 // WorkspaceService returns a ConnectRPC client for the hub-side
-// WorkspaceService. Auth headers are injected via an interceptor.
+// WorkspaceService. An interceptor injects the auth headers.
 func (c *Client) WorkspaceService() leapmuxv1connect.WorkspaceServiceClient {
 	return leapmuxv1connect.NewWorkspaceServiceClient(
 		c.HTTPClient,
@@ -293,7 +328,7 @@ func (c *Client) WorkerManagementService() leapmuxv1connect.WorkerManagementServ
 // UserCRDT returns a ConnectRPC client for the unary SubmitOps and
 // UpdatePresence calls. The user-event subscription (formerly the
 // `WatchUser` streaming RPC) lives on `/ws/userevents` — see
-// `OpenUserEvents`. Auth headers are injected via an interceptor.
+// `OpenUserEvents`. An interceptor injects the auth headers.
 func (c *Client) UserCRDT() leapmuxv1connect.UserCRDTClient {
 	return leapmuxv1connect.NewUserCRDTClient(
 		c.HTTPClient, c.connectURL,
@@ -342,7 +377,7 @@ type UserEventsStream struct {
 }
 
 // Recv reads the next event from the stream. Returns io.EOF when the
-// peer closes cleanly; any other transport error is returned verbatim.
+// peer closes cleanly, and returns any other transport error verbatim.
 func (s *UserEventsStream) Recv() (*leapmuxv1.WatchUserEvent, error) {
 	if s == nil || s.ws == nil {
 		return nil, io.EOF
@@ -378,8 +413,8 @@ func (s *UserEventsStream) Close() error {
 }
 
 // OpenUserEvents opens a `/ws/userevents` WebSocket subscription against
-// this hub. Bearer auth is added via the Authorization header; the bearer
-// implies the user, so no user_id is sent. The returned stream's first
+// this hub. The Authorization header carries the bearer; the bearer
+// implies the user, so the request sends no user_id. The returned stream's first
 // event is always `UserMaterialized` (the bootstrap snapshot). Only valid
 // for non-local clients — local-IPC clients should use the worker's
 // per-agent delegation bearer to reach the hub directly (the worker is
@@ -444,8 +479,8 @@ func (c *Client) OpenE2EEChannel(operationCtx, lifetimeCtx context.Context, work
 		BearerToken:         bearer,
 		// The CLI resolves workspaces/workers under c.UserID (see resolve.Resolver
 		// and cmd/workspace.go), so it DOES have an expectation: creds whose bearer
-		// and user_id have decoupled -- a rotated or reassigned token -- would have
-		// it resolving as X while running channel RPCs as Y. Empty c.UserID (creds
+		// and user_id no longer match -- a rotated or reassigned token -- would make
+		// it resolve as X while it runs channel RPCs as Y. Empty c.UserID (creds
 		// predating user_id resolution) leaves the cross-check disabled, which is
 		// exactly the no-expectation case OpenChannel skips.
 		ExpectedUserID: c.UserID,
@@ -525,61 +560,91 @@ func (c *Client) AuthInterceptor() connect.Interceptor {
 // only acts as a client.
 type authInterceptor struct{ client *Client }
 
-// WrapUnary renews the credential before the call when it is close to
-// expiry, and retries EXACTLY ONCE after a refusal it can repair. There are
-// two such refusals, and they are repaired differently:
+// unaryRepair is one repair the interceptor can apply to a refused unary
+// call: the test that recognizes the refusal, and the action that removes
+// its cause.
+type unaryRepair struct {
+	matches func(err error) bool
+	repair  func(ctx context.Context) error
+}
+
+// repairs returns the repairs the interceptor can apply, in no significant
+// order -- the loop picks whichever one matches the refusal it holds.
 //
-//   - Unauthenticated: the stored token is dead, so refresh it. The reactive
-//     retry exists because the proactive check reads a STORED expiry, which
-//     can be wrong: a clock that moved, a token another process rotated, a
-//     file written by an older build.
+//   - Unauthenticated: the presented token is dead, so adopt or rotate the
+//     credential. This repair exists because the proactive check reads a
+//     STORED expiry, which can be wrong: a clock that moved, a token another
+//     process rotated, a file written by an older build.
 //   - The MARKED FailedPrecondition: the credential is live but proved no
-//     factor recently, so run the browser step-up. This one blocks on a
-//     human, which is why it is keyed on the hub's marker and not on the
-//     code -- a FailedPrecondition also means half a dozen things a prompt
-//     cannot fix, and stopping a script to show a URL for one of those would
-//     be worse than reporting it.
+//     factor recently, so run the browser step-up. It is keyed on the hub's
+//     marker and not on the code, because a FailedPrecondition also means
+//     half a dozen things a prompt cannot fix, and stopping a script to show
+//     a URL for one of those would be worse than reporting it.
+func (a *authInterceptor) repairs() []unaryRepair {
+	return []unaryRepair{
+		{matches: NeedsElevation, repair: a.client.Elevate},
+		{
+			matches: func(err error) bool { return connect.CodeOf(err) == connect.CodeUnauthenticated },
+			repair:  a.client.repairAfterUnauthenticated,
+		},
+	}
+}
+
+// WrapUnary renews the credential before the call, and replays the call
+// after each refusal it can repair.
 //
-// A unary call is safe to replay in both cases: the hub refused the first
-// one, so it acted on nothing.
+// Each repair runs AT MOST ONCE, in any order, and the call is replayed
+// while some unused repair matches. Both properties are load-bearing:
 //
-// ONE retry, whichever repair ran. A second refusal is the truth -- the
-// factor was proven and the action is still refused -- and looping would ask
-// the user to verify the same credential for ever.
+//   - A call can need BOTH repairs. Another process rotates the credential,
+//     so the hub answers Unauthenticated; the replay then reaches the hub
+//     with a live credential that proved no factor, which is the marked
+//     refusal. A fixed sequence of one repair reported that second refusal
+//     raw, with no prompt.
+//   - A repair that already ran cannot run again, so a hub that keeps
+//     refusing ends the loop. A second refusal of the same kind is the truth
+//     -- the factor was proven and the action is still refused -- and
+//     repeating the repair would ask the user to verify the same credential
+//     for ever.
 //
-// A proactive-refresh failure is swallowed: the stored token may still work,
-// and the call that follows reports the truth. Turning a transient blip
-// during a renewal into a failed command would be worse than the renewal not
-// happening.
+// The freshness check runs before EVERY attempt, not only the first. A
+// repair can block on a person for minutes (the browser step-up lives for
+// ten), and the access token it started with lapses inside that window; a
+// replay stamped with the token from before the prompt would fail as
+// unauthenticated, and report that to a user who just finished verifying.
+//
+// A unary call is always safe to replay: the hub refused it, so it acted on
+// nothing.
+//
+// A proactive-refresh failure that leaves a usable token is swallowed inside
+// EnsureFreshBearer: the stored token may still work, and the call that
+// follows reports the truth.
 func (a *authInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-		if err := a.client.EnsureFreshBearer(ctx); err != nil {
-			return nil, connect.NewError(connect.CodeUnauthenticated, err)
-		}
-		a.client.ApplyAuth(req.Header())
-		resp, err := next(ctx, req)
-		if err == nil {
-			return resp, err
-		}
-		if NeedsElevation(err) {
-			// The hub's own refusal is what the user must read when the
-			// step-up cannot run or the human declines it. Reporting the
-			// ceremony's failure instead would name the remedy as the
-			// problem.
-			if a.client.Elevate(ctx) != nil {
-				return resp, err
+		repairs := a.repairs()
+		for {
+			if err := a.client.EnsureFreshBearer(ctx); err != nil {
+				return nil, connect.NewError(bearerErrorCode(err), err)
 			}
 			a.client.ApplyAuth(req.Header())
-			return next(ctx, req)
+			resp, err := next(ctx, req)
+			if err == nil {
+				return resp, nil
+			}
+			i := slices.IndexFunc(repairs, func(r unaryRepair) bool { return r.matches(err) })
+			if i < 0 {
+				return resp, err
+			}
+			repair := repairs[i].repair
+			repairs = slices.Delete(repairs, i, i+1)
+			if repair(ctx) != nil {
+				// The hub's own refusal is what the user must read when a
+				// repair cannot run or the person declines it. Reporting the
+				// repair's failure instead would name the remedy as the
+				// problem.
+				return resp, err
+			}
 		}
-		if connect.CodeOf(err) != connect.CodeUnauthenticated {
-			return resp, err
-		}
-		if !a.client.retryAfterUnauthenticated(ctx) {
-			return resp, err
-		}
-		a.client.ApplyAuth(req.Header())
-		return next(ctx, req)
 	}
 }
 

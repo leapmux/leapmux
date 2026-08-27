@@ -106,9 +106,9 @@ func (s *sessionStore) deleteEmitting(ctx context.Context, id, kind string) (int
 func (s *sessionStore) DeleteByUser(ctx context.Context, userID userid.UserID) error {
 	owner, ok := userid.OwnerFilter(userID)
 	if !ok {
-		// An unminted caller names no user, so a bulk mutation must refuse
-		// rather than address every blank-owner row -- or report success
-		// having changed nothing. See userid.OwnerFilter.
+		// An unminted caller specifies no user, so a bulk mutation must refuse
+		// rather than address every blank-owner row -- or report success when
+		// it changed nothing. See userid.OwnerFilter.
 		return store.ErrInvalidArgument
 	}
 	return mapErr(s.conn.q.DeleteUserSessionsByUser(ctx, owner))
@@ -205,7 +205,7 @@ func (s *sessionStore) Elevate(ctx context.Context, p store.ElevateSessionParams
 	return store.RunCredentialMutation(ctx, s.conn.withTransaction, func(ctx context.Context, conn *pgConn) (*store.CredentialEvent, error) {
 		n, err := conn.q.ElevateUserSession(ctx, gendb.ElevateUserSessionParams{
 			ElevationProvenAt:  pgtime.NullOf(p.ElevationProvenAt),
-			ElevationExpiresAt: pgtime.NullOf(p.ElevationExpiresAt),
+			ElevationExpiresAt: pgtime.NullOf(p.ClampedExpiresAt()),
 			ID:                 p.SessionID,
 			UserID:             owner,
 			Now:                pgtime.New(now),
@@ -227,7 +227,7 @@ func (s *sessionStore) SlideElevation(ctx context.Context, p store.SlideSessionE
 	}
 	n, err := s.conn.q.SlideUserSessionElevation(ctx, gendb.SlideUserSessionElevationParams{
 		WindowDeadline: pgtime.NullOf(p.WindowDeadline),
-		MaxTotalMicros: p.MaxTotal.Microseconds(),
+		MaxTotalMicros: store.ElevationMaxTotal.Microseconds(),
 		ID:             p.SessionID,
 		UserID:         owner,
 		Now:            pgtime.NullOf(now),

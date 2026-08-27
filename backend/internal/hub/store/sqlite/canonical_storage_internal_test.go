@@ -30,8 +30,8 @@ import (
 // The test also asserts non-vacuity: every discovered DATETIME column --
 // NOT NULL and nullable alike -- must hold at least one non-null value by the
 // end of the fixtures, so no column's layout contract passes merely because
-// nothing was ever stored in it. A new DATETIME column therefore fails this
-// test until a fixture write for it is added here.
+// no write ever stored a value in it. A new DATETIME column therefore fails
+// this test until somebody adds a fixture write for it here.
 func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	ctx := context.Background()
 	testable, err := OpenTestable(":memory:")
@@ -106,6 +106,7 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 		State:        "canon-state",
 		ProviderID:   provider.ID,
 		PkceVerifier: "verifier",
+		Purpose:      store.OAuthStatePurposeLogin,
 		ExpiresAt:    future,
 	}))
 
@@ -233,7 +234,6 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 		SessionID:      session.ID,
 		UserID:         userid.MustNew(user.ID),
 		WindowDeadline: now.Add(3 * time.Hour),
-		MaxTotal:       8 * time.Hour,
 	}, now)
 	require.NoError(t, err)
 	require.EqualValues(t, 1, slid, "the slide must move the deadline, so its bind is exercised")
@@ -376,7 +376,6 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 		TokenID:        rotatedID,
 		UserID:         userid.MustNew(user.ID),
 		WindowDeadline: now.Add(3 * time.Hour),
-		MaxTotal:       8 * time.Hour,
 	}, now)
 	require.NoError(t, err)
 	require.EqualValues(t, 1, tokenSlid, "the slide must move the deadline, so its bind is exercised")
@@ -420,8 +419,8 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	require.NoError(t, CheckCanonicalTimestamps(ctx, testable))
 
 	// Non-vacuity: a column with zero non-null rows passes the layout probe
-	// without ever being exercised, so a raw time.Time bind on that write path
-	// would ship unnoticed. Every discovered column must hold at least one
+	// although no fixture exercises it, so a raw time.Time bind on that write
+	// path would ship unnoticed. Every discovered column must hold at least one
 	// value by the end of the fixture writes above. This assertion lives here
 	// rather than in CheckCanonicalTimestamps because no single storetest
 	// subtest writes every table -- only this test's fixtures do.

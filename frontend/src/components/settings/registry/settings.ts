@@ -3,7 +3,7 @@ import type { PreferencesState } from '~/context/PreferencesContext'
 import { createLogger } from '~/lib/logger'
 import { isDesktopApp, isSoloMode } from '~/lib/systemInfo'
 import { themeLabel, THEMES } from '~/styles/themes'
-import { browserToggle, dualFontHalf, dualScalar } from './bindings'
+import { browserToggle, CUSTOM_EDITOR_OWNS_ITS_VALUE, dualFontHalf, dualScalar } from './bindings'
 import { requestTerminalOsNotifications } from './terminalNotifications'
 
 const log = createLogger('settingsRegistry')
@@ -78,7 +78,7 @@ export interface BrowserOnlySettingDecl extends SettingDeclBase {
    *
    * BROWSER-ONLY entries declare it. A `dual` entry does NOT: its binding
    * already builds exactly this action as `clearOverride`, and the two
-   * copies had already drifted into a pair that reset one font tier twice
+   * copies already drifted into a pair that reset one font tier twice
    * and could reset the other never. `buildBrowserReset` takes the dual
    * action from the binding.
    */
@@ -91,7 +91,7 @@ export interface BrowserOnlySettingDecl extends SettingDeclBase {
  * The hub ships a full descriptor for every account key on
  * `ListUserSettings`, so this entry states none of the value's shape — not
  * the category, not the control kind, not the enum values, not the numeric
- * bounds. `createBrowserRows` reads all of that off the wire and joins it
+ * limits. `createBrowserRows` reads all of that off the wire and joins it
  * to this declaration on `protoKey` + `protoField`. Restating that shape
  * here made a second source of truth that one golden file alone pinned to
  * Go, and a client which offers a value the hub's validator refuses stores
@@ -116,7 +116,7 @@ export interface AccountSettingDecl extends SettingDeclBase {
    * a reader has to split: a settings key may itself contain a dot
    * (`captcha.altcha` on the hub scope), so splitting on the first one is
    * a rule that holds only until it does not. An absent `protoField`
-   * addresses the key's scalar, which the wire names `''`.
+   * addresses the key's scalar, which the wire identifies as `''`.
    */
   protoKey: string
   protoField?: string
@@ -468,10 +468,7 @@ export const browserSettings: BrowserSettingDecl[] = [
     // The key-pin store is trust state, not a preference override: the
     // "reset all browser overrides" row deliberately leaves it alone, so this
     // entry declares no resetBrowser.
-    bind: () => ({
-      value: () => null,
-      set: () => {},
-    }),
+    bind: () => CUSTOM_EDITOR_OWNS_ITS_VALUE,
   },
   {
     id: 'advanced.resetBrowserOverrides',
@@ -525,10 +522,7 @@ export const browserSettings: BrowserSettingDecl[] = [
     control: { kind: 'custom', id: 'accountProfile' },
     sentinel: 'nullable',
     hidden: () => isSoloMode(),
-    bind: () => ({
-      value: () => null,
-      set: () => {},
-    }),
+    bind: () => CUSTOM_EDITOR_OWNS_ITS_VALUE,
   },
   {
     id: 'account.email',
@@ -541,10 +535,7 @@ export const browserSettings: BrowserSettingDecl[] = [
     sentinel: 'nullable',
     needsElevation: true,
     hidden: () => isSoloMode(),
-    bind: () => ({
-      value: () => null,
-      set: () => {},
-    }),
+    bind: () => CUSTOM_EDITOR_OWNS_ITS_VALUE,
   },
   {
     id: 'account.password',
@@ -557,10 +548,7 @@ export const browserSettings: BrowserSettingDecl[] = [
     sentinel: 'nullable',
     needsElevation: true,
     hidden: () => isSoloMode(),
-    bind: () => ({
-      value: () => null,
-      set: () => {},
-    }),
+    bind: () => CUSTOM_EDITOR_OWNS_ITS_VALUE,
   },
   {
     id: 'account.passkeys',
@@ -573,10 +561,7 @@ export const browserSettings: BrowserSettingDecl[] = [
     sentinel: 'nullable',
     needsElevation: true,
     hidden: () => isSoloMode(),
-    bind: () => ({
-      value: () => null,
-      set: () => {},
-    }),
+    bind: () => CUSTOM_EDITOR_OWNS_ITS_VALUE,
   },
   {
     id: 'account.linkedProviders',
@@ -589,10 +574,7 @@ export const browserSettings: BrowserSettingDecl[] = [
     sentinel: 'nullable',
     needsElevation: true,
     hidden: () => isSoloMode(),
-    bind: () => ({
-      value: () => null,
-      set: () => {},
-    }),
+    bind: () => CUSTOM_EDITOR_OWNS_ITS_VALUE,
   },
   {
     id: 'account.cliTokens',
@@ -604,10 +586,7 @@ export const browserSettings: BrowserSettingDecl[] = [
     control: { kind: 'custom', id: 'accountCliTokens' },
     sentinel: 'nullable',
     hidden: () => isSoloMode(),
-    bind: () => ({
-      value: () => null,
-      set: () => {},
-    }),
+    bind: () => CUSTOM_EDITOR_OWNS_ITS_VALUE,
   },
 ]
 
@@ -633,7 +612,7 @@ export interface BrowserResetAction {
  *
  * A DUAL entry's action comes from its own binding's `clearOverride`, not
  * from a second copy on the entry. That is the same operation, and the
- * copies had drifted. It also makes the action ONE PER KEY rather than one
+ * copies drifted. It also makes the action ONE PER KEY rather than one
  * per row: a font tier renders its toggle and its stack as two rows over
  * one override document, so a per-row list cleared `ui_fonts` twice and
  * misstated what it does.

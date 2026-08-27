@@ -63,9 +63,8 @@ func TestInlineScriptHashes(t *testing.T) {
 		assert.Equal(t, []string{sha256Source(body)}, got)
 	})
 
-	// A script with `src` runs the FILE; its body is dead text the browser
-	// never executes, so hashing it would add a source that authorizes
-	// nothing.
+	// A script with `src` runs the FILE; its body is text the browser never
+	// executes, so hashing it would add a source that authorizes nothing.
 	t.Run("skips a script that carries src", func(t *testing.T) {
 		got, err := inlineScriptHashes(fstest.MapFS{
 			"index.html": {Data: []byte(
@@ -178,8 +177,8 @@ func TestAllInlineScriptHashes(t *testing.T) {
 		assert.Contains(t, err.Error(), "no HTML document")
 	})
 
-	// The real embedded tree, so the walk is proved against the documents the
-	// hub actually ships rather than a fixture alone.
+	// The real embedded tree, so this test proves the walk against the
+	// documents the hub actually ships rather than against a fixture alone.
 	t.Run("covers every document in the embedded frontend", func(t *testing.T) {
 		publicFS := mustPublicFS(t)
 		got, err := allInlineScriptHashes(publicFS)
@@ -233,7 +232,7 @@ func TestPolicy(t *testing.T) {
 	// browser refuses the module and sign-up cannot solve its challenge -- an
 	// outage, and one that only the captcha flow reaches. 'wasm-unsafe-eval'
 	// is the narrow source: it permits WebAssembly and still refuses eval() of
-	// JavaScript, which is the part 'unsafe-eval' would have handed over too.
+	// JavaScript, which is the part 'unsafe-eval' would have permitted too.
 	t.Run("permits WebAssembly without permitting eval", func(t *testing.T) {
 		scriptSrc := directive(t, p.CSP, "script-src")
 		assert.Contains(t, scriptSrc, "'wasm-unsafe-eval'",
@@ -263,7 +262,7 @@ func TestPolicy(t *testing.T) {
 		// connect-src carries them too, and NO TEST REACHES THIS. The E2E
 		// specs replace window.turnstile and window.grecaptcha with fakes, so
 		// the vendors' real traffic never runs in CI -- reCAPTCHA v3 scores a
-		// request by calling home, and omitting the target would leave a hole
+		// request by calling its own servers, and omitting the target would leave a hole
 		// that only a real deployment finds, as a login that hangs.
 		connectSrc := directive(t, p.CSP, "connect-src")
 		assert.Contains(t, connectSrc, "'self'", "the app's own WebSockets and fetches are same-origin")
@@ -400,15 +399,15 @@ func TestFormActionAllowsTheCliLoopbackCallback(t *testing.T) {
 				"the app's own forms must keep posting to this origin")
 			// DERIVED from the same list `isLoopbackURL` reads, rather than a
 			// third literal that claims to match it. A literal here asserted
-			// only that the policy had not changed, never that it agreed with
+			// only that the policy did not change, never that it agreed with
 			// the redirect -- the two could widen apart and this test would
-			// keep passing on whichever one it had memorized.
+			// keep passing on whichever one it memorized.
 			//
 			// An IPv6 literal is the one host the two cannot share: CSP's
 			// `host-source` grammar has no production for one, so a browser
 			// reports `http://[::1]:*` as an invalid source and ignores the
-			// entry. It is skipped HERE for the same reason the policy skips
-			// it, and the case below pins that it stays out.
+			// entry. This test skips it HERE for the same reason the policy
+			// skips it, and the case below pins that it stays out.
 			// The SCHEME is derived too. A literal "http://" here was a
 			// fourth copy of the accepted set: isLoopbackURL accepts every
 			// scheme in httpsec.LoopbackSchemes, and a scheme the redirect
@@ -423,9 +422,10 @@ func TestFormActionAllowsTheCliLoopbackCallback(t *testing.T) {
 						"the CLI binds an ephemeral loopback port, so %q must be allowed", source)
 				}
 			}
-			// An entry the browser IGNORES is worse than none: it buys no
+			// An entry the browser IGNORES is worse than none: it gains no
 			// permission and logs a console error on every page load, which is
-			// how this was found (tests/e2e/181-security-headers.spec.ts).
+			// how the E2E violation collector found it
+			// (tests/e2e/181-security-headers.spec.ts).
 			assert.NotContains(t, formAction, "[",
 				"CSP cannot express an IPv6 host, so no bracketed source may be stated")
 			// Not a blanket relaxation: nothing off the loopback may receive a form.

@@ -17,7 +17,7 @@ import (
 // The client signs the user out on any Unauthenticated that carries no
 // marker, so a ceremony the hub refused -- a mismatched RP ID after
 // public_url changed, an expired or replayed ceremony session, a clone
-// warning -- threw the user back to /login mid-dialog instead of showing
+// warning -- sent the user back to /login mid-dialog instead of showing
 // "Failed to add passkey". The session is never what fails on this surface:
 // auth.MustGetUser and the interceptor answer a dead session first, and every
 // concurrency refusal here is FailedPrecondition.
@@ -36,12 +36,12 @@ func TestMapPasskeyConnectError_MarksARejectedCredential(t *testing.T) {
 			assert.Equal(t, connect.CodeUnauthenticated, connectErr.Code(),
 				"a rejected credential is still Unauthenticated; the marker says WHICH credential")
 			assert.Equal(t, "1", connectErr.Meta().Get(CredentialRejectedHeader),
-				"without the marker the client ends the session the dialog was protecting")
+				"without the marker the client ends the session the dialog protected")
 		})
 	}
 
-	// A refusal the handler already built passes through untouched, marker
-	// and all -- and a FailedPrecondition must not acquire one, because it
+	// A refusal the handler already built passes through untouched, with its
+	// marker -- and a FailedPrecondition must not acquire one, because it
 	// was never about a credential.
 	t.Run("a handler's own refusal passes through", func(t *testing.T) {
 		t.Parallel()

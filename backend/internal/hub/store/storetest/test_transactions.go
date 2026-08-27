@@ -119,12 +119,12 @@ func (s *Suite) testTransactions(t *testing.T) {
 		// the retry this case fails with "restart transaction:
 		// TransactionRetryWithProtoRefreshError ... (SQLSTATE 40001)".
 		// PostgreSQL and MySQL make the slow UPDATE wait on the row lock
-		// instead, so one attempt is enough there. The bound is what both
-		// share: a backend that kept aborting must not spin.
+		// instead, so one attempt is enough there. The limit is what both
+		// share: a backend that kept aborting must not retry without end.
 		attempted := attempts.Load()
 		assert.GreaterOrEqual(t, attempted, int32(1))
 		assert.LessOrEqualf(t, attempted, int32(5),
-			"the retry is bounded; %d attempts means it is spinning", attempted)
+			"the retry is capped; %d attempts means it retries without end", attempted)
 
 		// The slow one wrote last, so its value is what survives. That is the
 		// point of retrying the whole unit of work rather than one statement:

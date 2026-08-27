@@ -16,10 +16,10 @@ const payloadRaw = `"><script>alert(1)</script>`
 // The whole point of moving these pages onto html/template: escaping stops
 // being a rule the next writer has to remember at every slot.
 //
-// The four pages were built with fmt.Sprintf and hand-placed
-// html.EscapeString calls. Every one of them was correct -- but device_name
-// reaches the activation page from an ANONYMOUS endpoint, so one omitted call
-// is script injection on the page where a user grants a year-long credential.
+// The four pages used fmt.Sprintf and hand-placed html.EscapeString calls.
+// Every one of them was correct -- but device_name reaches the activation
+// page from an ANONYMOUS endpoint, so one omitted call is script injection
+// on the page where a user grants a year-long credential.
 // These cases would have caught the omission; nothing in the old shape could.
 func TestConsentPagesEscapeEveryInterpolatedValue(t *testing.T) {
 	t.Parallel()
@@ -56,6 +56,23 @@ func TestConsentPagesEscapeEveryInterpolatedValue(t *testing.T) {
 		assertNoInjection(t, w.Body.String())
 	})
 
+	// The step-up branch of the same page. Its slots come from the api_tokens
+	// row rather than from the grant, and whoever ran the CLI that minted the
+	// credential chooses client_name -- so it is attacker-influenced text on
+	// the page where a user re-arms that credential.
+	t.Run("activate page for a step-up", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		writePage(w, 200, activatePageTmpl, activatePageData{
+			UserCode:   payload,
+			Elevating:  true,
+			Credential: &activateCredential{Name: payload, Added: payload, Revoked: true},
+		})
+		assertNoInjection(t, w.Body.String())
+		assert.Contains(t, w.Body.String(), "&lt;script&gt;")
+		assert.NotContains(t, w.Body.String(), "Requested by",
+			"a step-up must never identify its subject from the requester's own label")
+	})
+
 	t.Run("elevation required page", func(t *testing.T) {
 		w := httptest.NewRecorder()
 		writePage(w, 403, elevationRequiredPageTmpl, payload)
@@ -77,7 +94,7 @@ func assertNoInjection(t *testing.T, page string) {
 	assert.NotContains(t, page, payloadRaw, "the raw payload reached the document")
 	assert.NotContains(t, page, "<script", "a payload opened a tag")
 	// There is deliberately no check for a quote-then-tag sequence: the
-	// pages own markup contains one legitimately, in `<p style="...">
+	// pages' own markup contains one legitimately, in `<p style="...">
 	// <label>`, so it would fail against correct output. The raw-payload
 	// check above is what covers the attribute breakout, and it is exact.
 	// The chrome must still be intact: a payload that closed <body> early
@@ -86,9 +103,9 @@ func assertNoInjection(t *testing.T, page string) {
 	assert.True(t, strings.HasSuffix(strings.TrimSpace(page), "</body></html>"))
 }
 
-// The pages that DEPEND on a conditional must render both arms, or a branch
-// that never fires is a branch nobody notices is broken.
-func TestConsentPagesRenderTheirConditionalArms(t *testing.T) {
+// The pages that DEPEND on a conditional must render both branches, or a
+// branch that never fires is a branch nobody notices is broken.
+func TestConsentPagesRenderTheirConditionalBranches(t *testing.T) {
 	t.Parallel()
 
 	t.Run("no admin notice without the scope", func(t *testing.T) {
@@ -106,7 +123,7 @@ func TestConsentPagesRenderTheirConditionalArms(t *testing.T) {
 			"there is no scope for them to grant, and offering one that is refused reads as a bug")
 	})
 
-	t.Run("no device notice for a code that names no live grant", func(t *testing.T) {
+	t.Run("no device notice for a code that identifies no live grant", func(t *testing.T) {
 		w := httptest.NewRecorder()
 		writePage(w, 200, activatePageTmpl, activatePageData{UserCode: "ABCD-1234"})
 		assert.NotContains(t, w.Body.String(), "Requested by")
@@ -123,9 +140,9 @@ func TestConsentPagesRenderTheirConditionalArms(t *testing.T) {
 	})
 }
 
-// Every page shares one chrome, which is the other half of the change: it
-// used to be copied into four fmt.Sprintf literals, so a change to it landed
-// in some of them and not the rest.
+// Every page shares one chrome, which is the other half of the change: four
+// fmt.Sprintf literals used to hold their own copy of it, so a change to it
+// landed in some of them and not the rest.
 func TestEveryPageSharesOneChrome(t *testing.T) {
 	t.Parallel()
 

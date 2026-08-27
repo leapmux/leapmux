@@ -302,7 +302,7 @@ The `LEAPMUX_CONTROL_*` variables (the `_SOCK` / `_TOKEN` / `_*_ID` / `_TAB_*` f
 
 ## Config and data locations
 
-Each mode reads an optional YAML config named after the mode, and stores data, under its own directory. A missing config file is silently skipped.
+Each mode reads an optional YAML config named after the mode, and stores data, under its own directory. LeapMux skips a missing config file without a message.
 
 | Mode | Config file | Default data dir |
 |------|-------------|------------------|

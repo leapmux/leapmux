@@ -94,7 +94,7 @@ Authorizes the CLI against a Hub and writes a credential file to disk. The `--hu
 | `--device-code` | `false` | Force the RFC 8628 device-code flow (headless / SSH / container) |
 | `--admin` | `false` | Also request hub administration for this credential |
 
-**You verify your identity in the browser, not in the terminal.** Authorizing a CLI credential needs an elevated session, so the consent page sends you through a verification prompt (password, passkey, or your identity provider) before it hands anything back. That elevation lasts two hours, so a second login in the same sitting does not ask again. See [Session elevation](/docs/operating/security/#session-elevation).
+**You verify your identity in the browser, not in the terminal.** Authorizing a CLI credential needs an elevated session, so the consent page sends you through a verification prompt (password, passkey, or your identity provider) before it hands anything back. That elevation lasts {{< duration elevation-window >}}, so a second login in the same sitting does not ask again. See [Session elevation](/docs/operating/security/#session-elevation).
 
 **Default flow (PKCE local redirect).** The CLI opens a loopback listener on `127.0.0.1`, prints the authorization URL with an instruction to open it in your browser, and tries to launch your browser automatically (`open` on macOS, `xdg-open` on Linux, the shell handler on Windows). You sign in on the Hub's web page; the Hub redirects back to the loopback listener to complete the exchange. The CLI waits up to **10 minutes** for the callback before failing with `{"error":{"code":"timeout",...}}`.
 
@@ -135,9 +135,9 @@ Only an administrator may grant the scope, and the browser decides: the PKCE con
 
 ### Renewal and lifetime
 
-The access token lives for an hour. The CLI renews it silently: before a call whose stored expiry is close, and once more if the hub refuses a call it expected to succeed. You do not run anything to renew.
+The access token lives for {{< duration access-token >}}. The CLI renews it silently: before a call whose stored expiry is close, and once more if the hub refuses a call it expected to succeed. You do not run anything to renew.
 
-Each renewal moves the 90-day refresh window forward, but never past **one year** from the day you authorized the credential. After that the device signs in again. `auth status` reports both deadlines.
+Each renewal moves the {{< duration refresh-token >}} refresh window forward, but never past **{{< duration absolute-cap >}}** from the day you authorized the credential. After that the device signs in again. `auth status` reports both deadlines.
 
 Logging in again on the same machine **revokes the credential it replaces**, so a re-login leaves no live secret behind.
 
@@ -147,7 +147,7 @@ Logging in again on the same machine **revokes the credential it replaces**, so 
 | --- | --- | --- |
 | `auth status` | `--hub` | `{hub_url, username, user_id, expires, expired, refresh_expires, admin_scope, token_id}` for the specified Hub. Error `not_logged_in` if there is no credential. `expires` is the hour-long access token, which renews itself; `refresh_expires` is when the device must sign in again. |
 | `auth list` | none | An array of `{hub_url, username, user_id, expires, admin_scope}` for every Hub you have credentials for. |
-| `auth credentials` | `--hub` | An array of `{id, client_type, client_name, created_at, last_used_at, refresh_expires, admin_scope, current}` for every credential the account holds. `current` marks the one this command is using. |
+| `auth credentials` | `--hub` | An array of `{id, client_type, client_name, created_at, last_used_at, refresh_expires, expires, admin_scope, current}` for every credential the account holds. `current` marks the one this command uses. Each credential carries exactly one deadline: a renewing credential reports `refresh_expires`, and one minted with `--ttl` reports `expires`. A row with neither never expires. |
 | `auth logout` | `--hub` | Best-effort revokes the token on the Hub, then deletes the local credential file. Emits `{hub_url}`. |
 
 **`list` and `credentials` answer different questions.** `list` reads this machine's credential files — which Hubs this box can reach. `credentials` asks the Hub what the whole account holds — what else can reach your account, from anywhere. It is the same list the browser shows under **Preferences → Account → Command-line credentials**, where you can also revoke.
@@ -193,9 +193,18 @@ A service account that must run `leapmux control admin ...` needs the admin scop
 leapmux control admin api-token issue --user-id usr_... --client-name "ci-bot" --admin
 ```
 
-**What an admin-scoped credential cannot do.** Four admin verbs create a *new* way into an account — `api-token issue`, `user create`, `user grant-admin` and `user reset-password` — and three of them need a browser **session** that verified recently. A credential cannot run `user create`, `user grant-admin` or `user reset-password` however recently it verified: each hands out authority the credential itself did not have, and the session that would verify it is the granting one. `api-token issue` runs from a verified credential.
+**What an admin-scoped credential cannot do.** One rule decides it, rather than a list of verb names: **an admin verb that creates a new way into an account needs a browser session that verified recently.** A command-line credential is refused there however recently it verified, because the verb hands out authority the credential itself did not have, and the session that would verify it is the granting one.
 
-`api-token issue` is the exception, because a headless service account has to be able to renew. What limits it instead is the credential it mints: **a credential issued by another credential does not renew, and it expires no later than the one that issued it.** So a chain of self-issued credentials gets shorter each time and ends at the browser consent that started it. To issue one that renews, run the verb from a browser-backed session.
+Today the rule covers four things:
+
+- `user create` — a new account, optionally an administrator, with a password the caller picks.
+- `user reset-password` — a password on any account, without the old one.
+- `user grant-admin` **and** `user revoke-admin` — one hub procedure carries both directions, so the refusal covers the demotion as well as the promotion. Plan an emergency demotion from a browser; a CI credential cannot run it.
+- `user update --email` and `user update --email-verified` — the address receives the password-reset link, so writing one hands over a way in.
+
+Every other admin write that needs verification accepts a **command-line credential that verified recently**: `api-token issue`, `user delete`, `user update --display-name` and `--clear-pending-email`, `settings set` / `set-secret` / `reset` with the `captcha` and `rate-limit` sugar over them, and the `oauth-provider` add, remove, enable and disable verbs. Reads need no verification at all.
+
+`api-token issue` is on that second list because a headless service account has to be able to renew. What limits it instead is the credential it mints: **a credential issued by another credential does not renew, and it expires no later than the one that issued it.** So a chain of self-issued credentials gets shorter each time and ends at the browser consent that started it. To issue one that renews, run the verb from a browser-backed session.
 
 ## Worker-spawned environment variables
 
@@ -214,7 +223,7 @@ When a Worker spawns an agent or terminal (and remote control is enabled on that
 
 These variables become the **defaults** for the matching entity flags, so a script running inside an agent can call `leapmux control agent send --message "hi"` with no IDs at all — the current tab is inferred from `LEAPMUX_CONTROL_TAB_ID`.
 
-Two IDs are deliberately **not** injected: the workspace id and the tile id. They are derived from the tab id at call time via the Hub's tab-locator RPC, so a script never targets a stale tile after the tab has been moved.
+Two IDs are deliberately **not** injected: the workspace id and the tile id. They are derived from the tab id at call time via the Hub's tab-locator RPC, so a script never targets a stale tile after somebody moves the tab.
 
 > **Note:** There is no "remote-enabled" flag or checkbox. Terminals and agents receive `LEAPMUX_CONTROL_*` automatically whenever the Worker has remote control enabled. Inherited `LEAPMUX_CONTROL_*` values are stripped before re-injection, so a Worker spawned from inside another agent gets a fresh context rather than its parent's. See [Terminals](/docs/using/terminals/) for the terminal side of this.
 
@@ -652,7 +661,7 @@ leapmux control admin settings reset smtp
 
 **Every write here needs an admin-scoped credential that verified recently.** Several of these keys are the hub's own security controls, so `set`, `set-secret` and `reset` each require a proven factor — from a command-line credential exactly as from a browser session.
 
-You do not run anything extra for it. A refused command prints an address and a short code, waits while you approve it in a browser, and then runs. The credential stays verified for two hours, and every write slides that window forward. Reads (`list`, `get`) need no verification at all. See [Verifying a command-line credential](/docs/operating/security/#verifying-a-command-line-credential).
+You do not run anything extra for it. A refused command prints an address and a short code, waits while you approve it in a browser, and then runs. The credential stays verified for {{< duration elevation-window >}}, and every write slides that window forward. Reads (`list`, `get`) need no verification at all. See [Verifying a command-line credential](/docs/operating/security/#verifying-a-command-line-credential).
 
 **When a write takes effect** depends on the key's propagation class. A `hot` key reaches the hub instance that serves the write at once, because that instance replaces its cached settings snapshot right after the commit. Another hub instance on the same database picks the same change up within ~30 seconds, the lifetime of its own settings cache. A `restart` key applies only after a hub restart. Every verb that reports one key states the class: `list`, `get`, and `set` each carry a `propagation` field of `hot` or `restart`, and the Preferences dialog's administration panels show a "Requires Restart" badge.
 
@@ -743,8 +752,8 @@ Address the owner with `--user-id` or `--username`, the selector every other use
 
 `--ttl` picks **which kind of credential** this is, and the two kinds are exclusive:
 
-- **Omit it** (or pass `0`) for the ordinary renewing credential: an access token that lives an hour plus a refresh token, exactly what `auth login` mints. The envelope carries `access_token`, `refresh_token` and `token_id`.
-- **Pass a number of seconds** for a fixed-lifetime service credential. It lives exactly that long, up to one year, and it carries **no refresh token** — the envelope's `refresh_token` is empty. Nothing renews it, and nothing can shorten it either.
+- **Omit it** (or pass `0`) for the ordinary renewing credential: an access token that lives {{< duration access-token >}} plus a refresh token, exactly what `auth login` mints. The envelope carries `access_token`, `refresh_token` and `token_id`.
+- **Pass a number of seconds** for a fixed-lifetime service credential. It lives exactly that long, up to {{< duration absolute-cap >}}, and it carries **no refresh token** — the envelope's `refresh_token` is empty. Nothing renews it, and nothing can shorten it either.
 
 The two do not combine. A credential with both a long TTL and a refresh token loses the TTL the first time it renews, because the row records an expiry and never the lifetime it was minted from.
 

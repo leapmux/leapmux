@@ -65,8 +65,8 @@ describe('transport', () => {
  * It moved here from a per-call-site wrapper, and that is the point: every
  * sensitive call used to opt in, so one that forgot rendered the hub's raw
  * refusal beside a form with no way forward — and nothing in the frontend
- * listed the gated procedures, so no guard could catch it. The hub's own
- * marker is the classification now, and no call site can miss it.
+ * listed the procedures that required elevation, so no guard could catch it.
+ * The hub's own marker is the classification now, and no call site can miss it.
  */
 describe('elevationInterceptor', () => {
   /** A refusal carrying the hub's elevation-required marker. */
@@ -80,7 +80,7 @@ describe('elevationInterceptor', () => {
    * A request in the shape Connect hands an interceptor: a deadline signal
    * minted before the chain ran, and the per-call budget in the header.
    *
-   * Both matter to the retry, so neither is faked away. `timeoutMs` is what
+   * Both matter to the retry, so this helper fakes neither away. `timeoutMs` is what
    * `createConnectTransport({ defaultTimeoutMs })` writes.
    */
   function makeUnaryReq(opts: { signal?: AbortSignal, timeoutMs?: number } = {}) {
@@ -177,7 +177,7 @@ describe('elevationInterceptor', () => {
    * and the prompt sits inside that call — so a user who reads the dialog and
    * types a password for longer than the budget used to find the request
    * already aborted. Adding a passkey then failed with DeadlineExceeded, and
-   * nothing had actually waited for anything.
+   * nothing actually waited for anything.
    */
   describe('the retry deadline', () => {
     it('does not charge the user thinking time to the request', async () => {
@@ -230,7 +230,7 @@ describe('elevationInterceptor', () => {
     })
 
     // The retry keeps the budget the CALL declared, so a caller that asked
-    // for a longer or shorter deadline is not silently moved onto another.
+    // for a longer or shorter deadline keeps it.
     it('gives the retry the deadline the call declared', async () => {
       vi.useFakeTimers()
       try {
@@ -298,5 +298,116 @@ describe('elevationInterceptor', () => {
       await transportModule.elevationInterceptor(next as never)(req)
       expect(seen?.aborted).toBe(false)
     })
+  })
+})
+
+/**
+ * The deadline the hub reports on a SLIDE.
+ *
+ * A step-up ceremony reports the window it granted in its response body. Every
+ * sensitive action after that slides the window forward, and the hub emits no
+ * event for a slide, because a client still holding the shorter deadline fails
+ * closed. So the displayed deadline used to stay where it was, up to two hours
+ * early, for the whole window. The hub reports the slid deadline on the
+ * response to the request that caused it, and this interceptor adopts it.
+ */
+describe('elevationDeadlineInterceptor', () => {
+  const req = { stream: false } as never
+
+  /** A response carrying the hub's report. */
+  function reporting(value: string) {
+    const header = new Headers()
+    header.set('leapmux-elevation-expires-at', value)
+    return { header } as never
+  }
+
+  /** The adoption seam AuthContext registers, recorded rather than applied. */
+  function recordAdoptions(): { opened: number, adopted: Date[] } {
+    const seen = { opened: 0, adopted: [] as Date[] }
+    transportModule.setElevationAdoptionOpener(() => {
+      seen.opened++
+      return (until: Date) => {
+        seen.adopted.push(until)
+      }
+    })
+    return seen
+  }
+
+  afterEach(() => transportModule.setElevationAdoptionOpener(null))
+
+  it('adopts the deadline the hub reports on a success', async () => {
+    const seen = recordAdoptions()
+    const next = vi.fn(async () => reporting('2026-08-27T15:55:00Z'))
+
+    await transportModule.elevationDeadlineInterceptor(next)(req)
+
+    expect(seen.adopted).toHaveLength(1)
+    expect(seen.adopted[0]!.toISOString()).toBe('2026-08-27T15:55:00.000Z')
+  })
+
+  it('adopts nothing when the response carries no report', async () => {
+    const seen = recordAdoptions()
+    const next = vi.fn(async () => ({ header: new Headers() }) as never)
+
+    await transportModule.elevationDeadlineInterceptor(next)(req)
+
+    expect(seen.adopted).toHaveLength(0)
+  })
+
+  // `new Date('...')` answers Invalid Date rather than throwing, and adopting
+  // one renders "Invalid Date" on the Preferences row.
+  it('adopts nothing from an unreadable value', async () => {
+    const seen = recordAdoptions()
+    const next = vi.fn(async () => reporting('whenever'))
+
+    await transportModule.elevationDeadlineInterceptor(next)(req)
+
+    expect(seen.adopted).toHaveLength(0)
+  })
+
+  // The hub slides AFTER its write commits, so a handler that fails afterwards
+  // still left a longer window behind.
+  it('adopts the report a failure carries, and still rethrows', async () => {
+    const seen = recordAdoptions()
+    const meta = new Headers()
+    meta.set('leapmux-elevation-expires-at', '2026-08-27T15:55:00Z')
+    const next = vi.fn(async () => {
+      throw new ConnectError('the hub could not send the email', Code.Unavailable, meta)
+    })
+
+    await expect(transportModule.elevationDeadlineInterceptor(next)(req)).rejects.toThrow('could not send')
+    expect(seen.adopted).toHaveLength(1)
+  })
+
+  it('passes a plain failure through untouched', async () => {
+    const seen = recordAdoptions()
+    const next = vi.fn(async () => {
+      throw new Error('network down')
+    })
+
+    await expect(transportModule.elevationDeadlineInterceptor(next)(req)).rejects.toThrow('network down')
+    expect(seen.adopted).toHaveLength(0)
+  })
+
+  // The opener runs when the request LEAVES, which is what lets AuthContext
+  // discard a report that an "End now" beat while the request was in flight.
+  it('opens the adoption before the request leaves', async () => {
+    const seen = recordAdoptions()
+    let openedWhenSent = -1
+    const next = vi.fn(async () => {
+      openedWhenSent = seen.opened
+      return reporting('2026-08-27T15:55:00Z')
+    })
+
+    await transportModule.elevationDeadlineInterceptor(next)(req)
+
+    expect(openedWhenSent).toBe(1)
+  })
+
+  it('runs without an adopter registered', async () => {
+    transportModule.setElevationAdoptionOpener(null)
+    const next = vi.fn(async () => reporting('2026-08-27T15:55:00Z'))
+
+    await expect(transportModule.elevationDeadlineInterceptor(next)(req)).resolves.toBeDefined()
   })
 })

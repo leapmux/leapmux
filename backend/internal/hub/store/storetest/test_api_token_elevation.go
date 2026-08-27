@@ -85,9 +85,39 @@ func (s *Suite) testAPITokenElevation(t *testing.T) {
 		assert.Nil(t, row.ElevationExpiresAt)
 	})
 
+	t.Run("the grant clamps to the absolute cap", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "tok-elev-grant-cap")
+		tokenID := seedToken(t, st, user.ID)
+		at := now()
+		ceiling := at.Add(store.ElevationMaxTotal)
+
+		// The same rule a session gets, on the credential file: the STORE
+		// owns the ceiling, so a caller that asks for a week gets the cap.
+		// The slide cannot repair an over-long grant afterwards, because it
+		// only moves a deadline FORWARD.
+		n, err := st.APITokens().Elevate(ctx, store.ElevateAPITokenParams{
+			TokenID:            tokenID,
+			UserID:             userid.MustNew(user.ID),
+			ElevationProvenAt:  at,
+			ElevationExpiresAt: at.Add(7 * 24 * time.Hour),
+		}, at)
+		require.NoError(t, err)
+		require.EqualValues(t, 1, n, "an over-long request still elevates -- clamped, not refused")
+
+		row, err := st.APITokens().GetByID(ctx, tokenID)
+		require.NoError(t, err)
+		require.NotNil(t, row.ElevationProvenAt)
+		require.NotNil(t, row.ElevationExpiresAt)
+		assert.WithinDuration(t, at, *row.ElevationProvenAt, time.Second,
+			"the anchor is the caller's instant, untouched by the clamp")
+		assert.WithinDuration(t, ceiling, *row.ElevationExpiresAt, time.Second,
+			"the grant must store the cap, not the week the caller asked for")
+	})
+
 	// The owner equality lives INSIDE each statement, which is what makes a
-	// grant naming somebody else's credential a no-op rather than a check the
-	// handler has to remember.
+	// grant that specifies somebody else's credential a no-op rather than a
+	// check the handler has to remember.
 	t.Run("another user's credential is untouched", func(t *testing.T) {
 		st := s.NewStore(t)
 		owner := SeedUser(t, st, "tok-elev-owner")
@@ -138,7 +168,7 @@ func (s *Suite) testAPITokenElevation(t *testing.T) {
 		// while the caller asks for two more hours. The stored deadline
 		// starts BELOW the ceiling, so a slide that lands on the ceiling is
 		// visible as a change rather than as the value that was already
-		// there -- an upper-bound assertion against a pre-set ceiling passes
+		// there -- an upper-limit assertion against a pre-set ceiling passes
 		// even when the UPDATE matches no row at all.
 		anchor := now().Add(-7*time.Hour - 30*time.Minute)
 		ceiling := anchor.Add(8 * time.Hour)
@@ -155,7 +185,6 @@ func (s *Suite) testAPITokenElevation(t *testing.T) {
 			TokenID:        tokenID,
 			UserID:         userid.MustNew(user.ID),
 			WindowDeadline: now().Add(2 * time.Hour),
-			MaxTotal:       8 * time.Hour,
 		}, now())
 		require.NoError(t, err)
 		assert.EqualValues(t, 1, n, "the slide must actually write the row it clamps")
@@ -166,7 +195,7 @@ func (s *Suite) testAPITokenElevation(t *testing.T) {
 		require.NotNil(t, row.ElevationProvenAt)
 		assert.WithinDuration(t, anchor, *row.ElevationProvenAt, time.Second,
 			"the anchor must NEVER slide: it is what fixes the absolute cap")
-		// Both bounds. The upper one is the clamp; the lower one is what
+		// Both limits. The upper one is the clamp; the lower one is what
 		// separates "clamped to the ceiling" from "wrote nothing".
 		assert.False(t, row.ElevationExpiresAt.After(ceiling.Add(time.Second)),
 			"the clamp lives in SQL, so no caller can extend past the ceiling (got %s, ceiling %s)",
@@ -193,7 +222,6 @@ func (s *Suite) testAPITokenElevation(t *testing.T) {
 			TokenID:        tokenID,
 			UserID:         userid.MustNew(user.ID),
 			WindowDeadline: at.Add(2 * time.Hour),
-			MaxTotal:       8 * time.Hour,
 		}, at)
 		require.NoError(t, err)
 		assert.EqualValues(t, 0, n, "a lapsed window is re-proven, never extended")

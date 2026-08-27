@@ -138,12 +138,12 @@ describe('passkey ceremony error classification', () => {
 })
 
 /**
- * One text for each blocker, and each one names the party that has to act.
+ * One text for each blocker, and each one identifies the party that has to act.
  *
  * The three remedies go to three different people, so a shared or missing
  * sentence is a defect the surfaces cannot catch: they render whatever this
- * returns. The copy this map replaced named an administrator for every
- * blocker, which is wrong advice for both that the browser raises.
+ * returns. The copy this map replaced specified an administrator for every
+ * blocker, which is wrong advice for the two blockers the browser raises.
  */
 describe('passkeyBlockerMessage', () => {
   const blockers: PasskeyBlocker[] = ['insecure-context', 'no-webauthn', 'origin-not-allowed']
@@ -161,7 +161,7 @@ describe('passkeyBlockerMessage', () => {
     expect(passkeyBlockerMessage('no-webauthn')).not.toMatch(/administrator/i)
   })
 
-  it('names the repair each party can make', () => {
+  it('states the repair each party can make', () => {
     expect(passkeyBlockerMessage('insecure-context')).toMatch(/HTTPS/)
     expect(passkeyBlockerMessage('no-webauthn')).toMatch(/browser/i)
     expect(passkeyBlockerMessage('origin-not-allowed')).toMatch(/address/i)

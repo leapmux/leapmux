@@ -63,12 +63,12 @@ function renderGate(path: string, child: () => JSX.Element = () => <div data-tes
   const navigations: string[] = []
   history.listen(value => navigations.push(value))
 
-  const Gated = () => <SetupGate>{child()}</SetupGate>
+  const Restricted = () => <SetupGate>{child()}</SetupGate>
 
   const result = render(() => (
     <MemoryRouter history={history}>
       {/* One definition for every address, which `Route` accepts as an array. */}
-      <Route path={ROUTES} component={Gated} />
+      <Route path={ROUTES} component={Restricted} />
       {/*
         `/setup` alone, exactly as the file route declares it. The matcher
         trims a trailing slash, so this also serves `/setup/` -- which is the
@@ -130,8 +130,9 @@ describe('setupGate', () => {
       expect(history.get()).not.toBe('/login')
     })
 
-    // The redirect is decided but the navigation has not landed, so the form
-    // must already be gone: a page on its way out can still take a password.
+    // The redirect is decided but the navigation did not land yet, so the form
+    // must already be gone: a page that the app is about to remove can still
+    // take a password.
     it('hides the route while the redirect is in flight', () => {
       renderGate('/login')
       expect(screen.queryByTestId('route-content')).not.toBeInTheDocument()
@@ -152,7 +153,7 @@ describe('setupGate', () => {
     // THE ordering hazard. When the bootstrap resolves, the gate and the page
     // below it read the same change, and every page below carries a
     // navigation of its own: AuthGuard sends an unauthenticated visitor to
-    // `/login`, LoginPage sends a solo one to `/`.
+    // `/login`, SignedOutOnly sends a solo one to `/`.
     //
     // The page never gets to act on it. `Show` is a render effect, so it
     // tears the subtree down in the update phase, and Solid skips a queued
@@ -246,11 +247,11 @@ describe('setupGate', () => {
       expect(await screen.findByTestId('setup-page')).toBeInTheDocument()
     })
 
-    // The snapshot can change AFTER the gate has already decided: a forced
+    // The snapshot can change AFTER the gate already decided: a forced
     // re-fetch lands when an admin toggles a setting, and setup itself flips
     // this flag. A memo that sampled the getter once would strand a visitor on
     // the page the previous answer chose.
-    it('follows a setup state that changes after it has decided', async () => {
+    it('follows a setup state that changes after it already decided', async () => {
       setSystemInfoMock({ setupRequired: true })
       const { navigations } = renderGate('/setup')
       expect(screen.getByTestId('setup-page')).toBeInTheDocument()
@@ -266,9 +267,74 @@ describe('setupGate', () => {
     // The hub is unreachable, so `setupRequired` never got a real value.
     // Bouncing the operator off /setup here would take away the one page they
     // need and offer a login form that cannot work either; AuthGuard renders
-    // the real diagnosis for `/`.
-    it('decides nothing when the system info never loaded', () => {
+    // the real diagnosis for `/`. So the gate does not redirect -- it WAITS.
+    it('sends /setup nowhere when the system info never loaded', () => {
       setSystemInfoMock({ loaded: false })
+      const { navigations } = renderGate('/setup')
+      expect(navigations).toEqual([])
+    })
+  })
+
+  // The THIRD outcome, and the page it exists for. `/setup` paints "Welcome to
+  // LeapMux -- Create the first administrator account" over a live sign-up
+  // form. Rendering it while nobody knows whether this hub still needs a first
+  // administrator means a submit inside that window creates an ORDINARY
+  // account under a heading that promised an administrator.
+  describe('/setup while the answer is unknown', () => {
+    it('waits behind the splash during the bootstrap, then renders', async () => {
+      setAuthLoading(true)
+      setSystemInfoMock({ setupRequired: true })
+
+      renderGate('/setup')
+      expect(screen.queryByTestId('setup-page')).not.toBeInTheDocument()
+      expect(screen.getByTestId('boot-splash')).toBeInTheDocument()
+
+      setAuthLoading(false)
+      expect(await screen.findByTestId('setup-page')).toBeInTheDocument()
+    })
+
+    // Indefinitely, and deliberately: the operator can reach the real
+    // diagnosis at `/`, and a splash is better than a form that answers them
+    // with the wrong kind of account.
+    it('waits behind the splash while the hub is unreachable', () => {
+      setSystemInfoMock({ loaded: false })
+      renderGate('/setup')
+      expect(screen.queryByTestId('setup-page')).not.toBeInTheDocument()
+      expect(screen.getByTestId('boot-splash')).toBeInTheDocument()
+    })
+
+    // And it becomes the redirect once the answer arrives and says the hub is
+    // already set up.
+    it('sends /setup to /login once the answer arrives', async () => {
+      setAuthLoading(true)
+      const { navigations } = renderGate('/setup')
+      expect(navigations).toEqual([])
+
+      setAuthLoading(false)
+      await vi.waitFor(() => {
+        expect(navigations).toEqual(['/login'])
+      })
+    })
+
+    // The four credential pages keep the trade. The common visitor
+    // there is signed out on a hub that is set up, and a splash would delay
+    // every sign-in to answer a question that concerns one installation once.
+    it('does not hold the credential pages behind the splash', () => {
+      setAuthLoading(true)
+      for (const path of ['/login', '/signup', '/forgot-password', '/reset-password']) {
+        const { unmount } = renderGate(path)
+        expect(screen.getByTestId('route-content'), path).toBeInTheDocument()
+        unmount()
+      }
+    })
+
+    // A session outranks every unknown: it PROVES an account exists. This is
+    // the new administrator on the way home -- /setup adopts the session and
+    // navigates to `/` while its forced re-fetch is still in flight, and the
+    // page must stay mounted long enough to do it.
+    it('renders /setup for a signed-in visitor although the answer is unknown', () => {
+      setSystemInfoMock({ loaded: false })
+      setAuthUser({ id: 'u-1' })
       const { navigations } = renderGate('/setup')
       expect(screen.getByTestId('setup-page')).toBeInTheDocument()
       expect(navigations).toEqual([])

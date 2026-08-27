@@ -24,9 +24,9 @@ import (
 // user_sessions, in all three dialects.
 //
 // It has to be tested through RAW SQL. The store API cannot produce a half
-// pair -- ElevateUserSession writes both, the slide guards on the anchor
-// being present, and the drop clears both -- which is exactly why nothing
-// else here would notice the constraint being dropped from the migration.
+// pair -- ElevateUserSession writes both, the slide guards on the anchor's
+// presence, and the drop clears both -- which is exactly why nothing else
+// here would notice a migration that dropped the constraint.
 func TestElevationColumnsAreWritableOnlyAsAPair(t *testing.T) {
 	ctx := context.Background()
 	st, db := newSessionTestStore(t)

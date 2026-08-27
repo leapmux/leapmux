@@ -53,9 +53,9 @@ import (
 // failure and on runtime shutdown -- one constant so the two paths cannot drift.
 const crdtShutdownTimeout = 10 * time.Second
 
-// handlerGrace is how long in-flight HTTP handlers are given to finish on their
-// own once shutdown begins before their shared base context is cancelled to force
-// unwinding. It must stay strictly below httpDrainTimeout (asserted in
+// handlerGrace is how long the server gives in-flight HTTP handlers to finish on
+// their own once shutdown begins, before it cancels their shared base context to
+// force unwinding. It must stay strictly below httpDrainTimeout (asserted in
 // server_handler_context_test.go) so the forced cancellation still leaves the
 // drain time to observe the handlers returning and close their connections. 5s is
 // generous for a handler making progress (a Connect unary is already capped at
@@ -71,21 +71,21 @@ const httpDrainTimeout = 10 * time.Second
 // maxConnectRequestBytes limits every inbound message on the hub's Connect
 // surface. Per MESSAGE, not per stream -- see connect.WithReadMaxBytes, which
 // also documents that "both clients and handlers default to allowing any request
-// size". Without it an authenticated SubmitOps body is buffered whole before the
-// handler ever sees it, and is then applied on that user's SINGLE-WRITER manager
-// goroutine, so one oversized batch serializes every other tab's submits behind
+// size". Without it the hub buffers an authenticated SubmitOps body whole before
+// the handler ever sees it, and then applies it on that user's SINGLE-WRITER
+// manager goroutine, so one oversized batch serializes every other tab's submits behind
 // its own unmarshal + validate.
 //
 // Sized from crdt.MaxResumeDeltaBytes, the budget a resume may read back out of
 // the journal, rather than from a round number: a batch bigger than that is one
-// whose OWN later resume is guaranteed to blow the budget and force that client
+// whose OWN later resume is guaranteed to exceed the budget and force that client
 // onto a full snapshot, so accepting it buys nothing. It is far above any
 // legitimate message on this surface -- the largest are a worker's whole-machine
 // tab inventory (identity fields only) and a relayed ChannelMessage, itself
 // chunk-capped at channelwire.MaxCiphertextForChunk (64 KiB).
 //
-// READS only; responses are deliberately not capped (no WithSendMaxBytes),
-// because GetMaterialized legitimately returns a multi-MB snapshot for a large
+// READS only; this option set deliberately caps no response (no
+// WithSendMaxBytes), because GetMaterialized legitimately returns a multi-MB snapshot for a large
 // account.
 const maxConnectRequestBytes = crdt.MaxResumeDeltaBytes
 
@@ -108,18 +108,18 @@ func connectOptions(interceptors ...connect.Interceptor) connect.Option {
 // Once, because the basis is a property of the process, probed once
 // (config.QueueMemoryBasis), and not of any one budget. It used to be rendered
 // into every budget's Source, so a machine whose cgroup limit could not be read
-// printed that diagnosis three times inside this single line, burying the thing
-// it exists to surface. Each budget still accounts for its own figure: Source
-// names the share it took of the basis logged beside it, or says the operator
-// set it outright.
+// printed that diagnosis three times inside this single line, which hid the
+// thing it exists to surface. Each budget still accounts for its own figure:
+// Source states the share it took of the basis logged beside it, or says the
+// operator set it outright.
 //
 // The failure gets a Warn of its own rather than riding the Info line because
 // it is an operational problem, not a fact: a confined host that sized its
-// queues off the HOST's memory has budgeted whatever the ratio between the two
+// queues off the HOST's memory budgets whatever the ratio between the two
 // is, and the next place that surfaces is the OOM kill. It carries the error
 // and not the figure, which the Info record beside it already states -- the
-// whole point here is that one probe produces one mention. Nothing at all is
-// emitted on a healthy host: CgroupErr is nil both when a cgroup limit WAS the
+// whole point here is that one probe produces one mention. This function emits
+// nothing at all on a healthy host: CgroupErr is nil both when a cgroup limit WAS the
 // basis and when the probe ran fine and found none, so an unconfined machine
 // gains no new line, and a warning that is always on is not one.
 //
@@ -142,17 +142,17 @@ func logQueueMemoryBudgets(logger *slog.Logger, basis memlimit.Basis, budgets ..
 // Content-Security-Policy that goes with it.
 //
 // The two are returned TOGETHER, from one function, because the script-src
-// hashes are derived from the assets that are actually mounted. Choosing the
+// hashes come from the assets that this process actually mounts. Choosing the
 // handler in one place and the policy in another lets the two drift, and a
-// policy built for a different frontend than the one being served is an
+// policy built for a different frontend than the one this process serves is an
 // OUTAGE rather than a weaker defence: the browser refuses the app's own
 // script and the user gets a blank page.
 //
-// A function rather than an inline branch so all three arms are reachable
+// A function rather than an inline branch so all three branches are reachable
 // from a test without standing up a whole Server, which needs a live store,
 // listeners and a keystore. connectOptions above exists for the same reason.
 //
-// The three arms, in the order they are tested:
+// The three branches, in the order this function tests them:
 //
 //   - An INJECTED handler (hub.WithFrontendHandler) brings assets this process
 //     cannot read, so it gets no policy at all. See
@@ -160,7 +160,7 @@ func logQueueMemoryBudgets(logger *slog.Logger, basis memlimit.Basis, budgets ..
 //   - A DEV proxy fronts the Vite dev server, whose HMR client injects inline
 //     scripts and evaluates source maps, so its policy is report-only. See
 //     frontend.DevPolicy.
-//   - Otherwise the EMBEDDED assets are served, and the policy is enforced and
+//   - Otherwise the hub serves the EMBEDDED assets, under an enforced policy
 //     derived from those exact bytes. See frontend.Policy.
 func resolveFrontend(injected http.Handler, devFrontend string) (http.Handler, httpsec.Policy, error) {
 	if injected != nil {
@@ -233,7 +233,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// the local listener here also avoids a race where solo.Start's
 	// dial-based readiness probe could connect to a foreign listener on
 	// the same name (e.g. another running Solo instance) while our own
-	// Serve goroutine is still propagating the bind failure.
+	// Serve goroutine still propagates the bind failure.
 	var tcpLn net.Listener
 	if cfg.Listen != "" {
 		var listenErr error
@@ -275,8 +275,8 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// captcha, rate limits) resolves through its snapshot, so admin CLI
 	// writes propagate within the TTL and restart-class values (queue
 	// budgets, max message size) are fixed for the process's life. Loaded
-	// synchronously so a broken store fails startup, before any pool is
-	// constructed from a value it must never see change.
+	// synchronously so a broken store fails startup, before the hub constructs
+	// any pool from a value it must never see change.
 	setMgr := settingsregistry.NewManager(st, ks)
 	if err := setMgr.Load(context.Background()); err != nil {
 		return nil, acquired.close(fmt.Errorf("load settings: %w", err))
@@ -352,7 +352,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// dropping a worker takes every user's channels on that machine and has no
 	// replay in the frontend->worker direction, and dropping a user-event
 	// subscriber costs a reconnect and a delta resume. Separate budgets make
-	// that blast radius structural rather than a property of whichever
+	// that scope of damage structural rather than a property of whichever
 	// connection happened to be biggest.
 	// Each pool is built from its class's whole budget, not just the total:
 	// QueueMemoryBudget.PoolConfig carries the class's largest frame through to
@@ -434,6 +434,14 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		metrics.NewInterceptor(),
 		auth.NewTimeoutInterceptor(apiTimeout),
 		authInterceptor,
+		// AFTER the auth interceptor, because it reports state that belongs to
+		// the credential that one resolved. It installs the holder
+		// slideElevation writes into, and copies the new deadline onto the
+		// response, so a client learns that its own restricted action moved the
+		// window. Without it the client's mirror is early by up to
+		// auth.ElevationWindow for the whole window, because a slide
+		// deliberately emits no event.
+		service.NewElevationSlideInterceptor(),
 		captcha.NewInterceptor(captchaMgr),
 		ratelimit.NewInterceptor(rateLimitMgr),
 	)
@@ -484,7 +492,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	//
 	// One config key, two enforcement points, because one of them cannot do the
 	// job alone. The service caps ACTIVE ROWS, which is the refusal an operator
-	// can act on -- it names the key and happens at registration. The registry
+	// can act on -- it states the key and happens at registration. The registry
 	// caps LIVE CONNECTIONS, which is the one the pool actually feels: a
 	// deregistering worker keeps its stream (that is how it learns to stop) but
 	// stops counting as a row, so the row cap alone lets register/deregister
@@ -569,6 +577,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		Store:     st,
 		Validator: tokenValidator,
 		Lifecycle: lifecycle,
+		Settings:  setMgr,
 		HubURL: func() string {
 			return settings.BaseURL(setMgr.Snapshot(context.Background()), cfg.Listen)
 		},
@@ -591,7 +600,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	userPath, userHandler := leapmuxv1connect.NewUserServiceHandler(userSvc, connectOpts)
 	mux.Handle(userPath, userHandler)
 
-	// The admin services: the authenticated, online face of hub
+	// The admin services: the authenticated, online surface of hub
 	// administration, restricted to admin users by the auth interceptor's
 	// adminProcedures map (tripwired against these handlers' proto
 	// descriptors in internal/hub/auth and against the mounted mux paths
@@ -611,6 +620,12 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		settings.WithEffective(settings.KeySignupEnabled.Name(), func(s *settings.Snapshot) (any, bool) {
 			return settings.SignupEnabledEffective(s, cfg.DevMode), true
 		}),
+		// A captcha the operator enabled can still stand down at read time,
+		// because ALTCHA needs a secure browser context this hub cannot
+		// publish. Report the flag that is ENFORCED beside the one that is
+		// stored, so the admin surface cannot say "enabled" for a control
+		// that admits every request.
+		settings.WithEffective(captcha.CaptchaEnabledKey.Name(), captcha.EnabledEffective),
 		settings.WithEffective(captcha.CaptchaSelectedKey.Name(), func(s *settings.Snapshot) (any, bool) {
 			// A selected provider that is not fully configured degrades at
 			// read time; report the provider that actually serves challenges.
@@ -712,8 +727,8 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// BaseContext seeds the context of EVERY accepted connection (and thus every
 	// request and h2c stream) with handlerCtx. Cancelling handlerCtx during
 	// shutdown cascades to r.Context() for in-flight handlers on both HTTP/1.1
-	// and h2c, without per-handler wiring -- the structural bound for the class
-	// of bug where a mux route doing unbounded I/O parks the drain. net/http
+	// and h2c, without per-handler wiring -- the structural limit for the class
+	// of bug where a mux route doing unlimited I/O parks the drain. net/http
 	// derives connCtx from BaseContext in Serve->conn.serve, and h2c's
 	// sc.baseCtx comes from the same chain.
 	server := &http.Server{
@@ -733,7 +748,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 			MaxConcurrentStreams: 1000,
 			// Without this a peer that stops draining its socket parks the
 			// writer forever, and workermgr.Conn.Send holds the conn's mutex
-			// across that write -- so ONE wedged worker blocks every other
+			// across that write -- so ONE stalled worker blocks every other
 			// sender to it (notifier, channel relay, shutdown notice) for the
 			// process's life, and its Connect handler can never return. The
 			// timeout is extended whenever any byte is written, so it caps
@@ -741,10 +756,10 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 			// but moving consumer never trips it, however large the frame. 30s
 			// is therefore about how long a stalled-but-recoverable socket may
 			// take to accept a single byte -- generous for a paused VM or a
-			// saturated link, and far short of leaving a wedged peer to hold
+			// saturated link, and far short of leaving a stalled peer to hold
 			// the conn mutex for the process's life.
 			//
-			// It does NOT bound a peer that stalls its HTTP/2 flow-control
+			// It does NOT limit a peer that stalls its HTTP/2 flow-control
 			// window instead, because then no socket write is attempted; see
 			// workermgr.FenceAll for that residual.
 			WriteByteTimeout: 30 * time.Second,
@@ -758,7 +773,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// (UserService.ChangePassword, the per-token revoke handler)
 	// continue to invoke the close paths inline so they observe
 	// zero-latency revocation; the watcher is the cross-process
-	// safety net.
+	// safeguard.
 	revWatcher := revocationwatcher.New(st, lifecycle)
 
 	return &Server{
@@ -802,9 +817,9 @@ type WorkerCredentials struct {
 // RegisterWorker creates a worker record directly in the database,
 // bypassing the normal registration-key flow. This is the in-process
 // path used by the solo/dev binary to auto-register a co-located worker:
-// since the caller is already running inside the same process as the
-// hub, presenting a bearer token to a local RPC would just be
-// security theatre. Outside solo mode, all worker registration must go
+// since the caller already runs inside the same process as the
+// hub, presenting a bearer token to a local RPC would add no
+// security. Outside solo mode, all worker registration must go
 // through WorkerConnectorService.Register with a real registration key.
 //
 // Rows created here are flagged auto_registered so the deregister
@@ -839,8 +854,8 @@ func (s *Server) RegisterWorker(ctx context.Context, registeredBy string) (*Work
 	}, nil
 }
 
-// GetWorkerOwner returns the id of the user who registered workerID, erroring if
-// the worker is unknown (or soft-deleted, which GetByID filters).
+// GetWorkerOwner returns the id of the user who registered workerID, and returns
+// an error when the worker is unknown (or soft-deleted, which GetByID filters).
 //
 // It returns the owner rather than just an existence check because workers.registered_by
 // is the AUTHORITY on who owns a worker -- it is NOT NULL, set at registration, and
@@ -860,7 +875,7 @@ func (s *Server) GetWorkerOwner(ctx context.Context, workerID string) (string, e
 // local workers to. In solo mode this is the bootstrapped solo user. In
 // dev/hub mode this is the first admin user registered via the /setup
 // flow; the caller gets store.ErrNotFound when no admin exists yet and
-// is expected to retry once one does.
+// should retry once one does.
 func (s *Server) GetAdminUser(ctx context.Context) (userID string, err error) {
 	if s.cfg.SoloMode {
 		user, err := s.store.Users().GetByUsername(ctx, usernames.Solo)
@@ -888,7 +903,7 @@ func (s *Server) Serve(ctx context.Context) error {
 
 	// Register the watcher before starting listeners or other background work.
 	// Without the singleton runtime lease, serving authenticated traffic would let
-	// cleanup compact revocations this process has not observed.
+	// cleanup compact revocations this process did not observe.
 	if err := s.revocationWatcher.SeedCursor(serveCtx); err != nil {
 		s.authContexts.Stop()
 		s.crdtRegistry.Shutdown(crdtShutdownTimeout)
@@ -963,7 +978,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		// in-flight request (HTTP/1.1 and h2c). handlerGrace lets short handlers
 		// finish on their own before the forced unwind, so a quick store read is
 		// not cut off; only a handler parked past the grace (e.g. a mux route on
-		// unbounded outbound I/O) is cancelled. This is the structural bound
+		// unlimited outbound I/O) is cancelled. This is the structural limit
 		// FenceAll cannot express, since FenceAll only reaches handlers the
 		// worker registry knows about.
 		graceTimer := time.AfterFunc(handlerGrace, s.cancelHandlers)
@@ -980,12 +995,12 @@ func (s *Server) Serve(ctx context.Context) error {
 		// map — so Close() cannot reach it. (An unencrypted-HTTP/2 connection
 		// carrying a worker's bidi stream stays in the map, but marked ACTIVE
 		// for its whole life, which is why the drain above needs the fenced
-		// handlers to have returned.) locallisten.CloseAccepted closes the
+		// handlers to return first.) locallisten.CloseAccepted closes the
 		// underlying pipe handles directly via the listener's own
 		// accepted-connection tracking — the only level that sees every conn
 		// THAT listener accepted.
 		//
-		// It is a backstop, not the primary teardown: authContexts.Stop above
+		// It is a safeguard, not the primary teardown: authContexts.Stop above
 		// cancels each relay's auth lease, which ends its handler and closes
 		// the socket. This catches one hijacked before its lease existed. The
 		// TCP listener needs no equivalent — a lingering accepted TCP conn does
@@ -1088,7 +1103,7 @@ func (s *Server) Serve(ctx context.Context) error {
 	return teardownErrs.finalize()
 }
 
-// logShutdownCause reports why the Hub is stopping, at the moment it decides to.
+// logShutdownCause reports why the Hub stops, at the moment it decides to.
 //
 // Every cancelServe call site passes a cause, and without this the log could not
 // tell them apart: a user bug report showed "hub shutting down..." reading
@@ -1153,7 +1168,7 @@ func (e serverTeardownErrors) finalize() error {
 	)
 }
 
-// acquiredResources tracks the Hub resources NewServer has acquired so far, so
+// acquiredResources tracks the Hub resources NewServer acquired so far, so
 // a construction failure closes exactly what was opened and aggregates every
 // cleanup error.
 //

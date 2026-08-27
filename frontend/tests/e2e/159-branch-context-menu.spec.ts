@@ -139,13 +139,20 @@ test.describe('Branch context menu', () => {
     await expect(page.getByRole('heading', { name: 'Delete branch' })).toBeVisible()
 
     // Delete is unavailable, and git's own reason says why. Visible text, not
-    // the button's `title` alone: a greyed-out destructive option with no
+    // the button's tooltip alone: a greyed-out destructive option with no
     // stated reason looks like a defect.
-    await expect(page.getByRole('dialog').getByText(/held by the e2e test/)).toBeVisible()
-    // Located by TEXT, not by role+name: while `title` is set it becomes the
-    // button's accessible name, so `{ name: 'Delete branch' }` stops matching
-    // in exactly the state under test. See the note at the ConfirmButton.
-    await expect(page.getByRole('contentinfo').getByText('Delete branch')).toBeDisabled()
+    //
+    // By TEST ID, not by text. The same reason reaches the button's <Tooltip>,
+    // which renders it a second time as an offscreen aria-describedby node, so
+    // a text match resolves to two elements and dies on strict mode.
+    await expect(
+      page.getByRole('dialog').getByTestId('branch-delete-blocked-reason'),
+    ).toHaveText(/held by the e2e test/)
+    // By role+name, which is what the button carries again now that no control
+    // here takes a `title`. It used to be located by TEXT, because a `title`
+    // long enough to state a reason BECAME the accessible name and stopped
+    // `{ name: 'Delete branch' }` from matching in exactly this state.
+    await expect(page.getByRole('button', { name: 'Delete branch' })).toBeDisabled()
 
     // The escape hatch is offered instead, so the dialog is not a dead end.
     await expect(page.getByRole('button', { name: 'Close tabs, keep worktree' })).toBeEnabled()

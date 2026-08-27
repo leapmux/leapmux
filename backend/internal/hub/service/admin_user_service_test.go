@@ -50,9 +50,10 @@ type adminUserEnv struct {
 
 // awaitCredentialNotice waits for the issuance notice and returns it.
 //
-// The notice is sent DETACHED, on its own goroutine and its own deadline, so
-// that an SMTP exchange never sits in front of a mint the caller is blocked
-// on. That is why this polls rather than reading straight after the call.
+// The hub sends the notice DETACHED, on its own goroutine and its own
+// deadline, so that an SMTP exchange never delays a mint the caller is
+// blocked on. That is why this polls rather than reading straight after the
+// call.
 func (e *adminUserEnv) awaitCredentialNotice(t *testing.T) mail.Message {
 	t.Helper()
 	var got *mail.Message
@@ -64,14 +65,14 @@ func (e *adminUserEnv) awaitCredentialNotice(t *testing.T) mail.Message {
 }
 
 // recordingCredentialCloser is the CredentialChannelCloser the admin
-// service's lifecycle effects run against. EVERY arm records, because every
-// revoking verb on this service owes exactly one of them and the arms are
-// not interchangeable: RevokeSession owes the session arm, RevokeAPIToken
-// and RevokeDelegationToken owe the bearer arm carrying their OWN kind, and
-// the user-wide verbs owe the user-revocation arm at the generation their
+// service's lifecycle effects run against. EVERY path records, because every
+// revoking verb on this service owes exactly one of them and the paths are
+// not interchangeable: RevokeSession owes the session path, RevokeAPIToken
+// and RevokeDelegationToken owe the bearer path carrying their OWN kind, and
+// the user-wide verbs owe the user-revocation path at the generation their
 // transaction committed.
 //
-// An arm that records NOTHING makes the effect it stands for untestable:
+// A path that records NOTHING makes the effect it stands for untestable:
 // every method on CredentialLifecycleEffects is nil-safe by design, so a
 // dropped call and a delivered call read alike from outside.
 type recordingCredentialCloser struct {
@@ -125,14 +126,14 @@ func (c *recordingCredentialCloser) recorded() []userRevocationCall {
 	return append([]userRevocationCall(nil), c.calls...)
 }
 
-// closedSessions reports the session ids the session arm received, in order.
+// closedSessions reports the session ids the session path received, in order.
 func (c *recordingCredentialCloser) closedSessions() []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return append([]string(nil), c.sessions...)
 }
 
-// closedBearers reports the bearer refs the bearer arm received, in order.
+// closedBearers reports the bearer refs the bearer path received, in order.
 // The ref carries the KIND, which is the half a revoke verb can get wrong
 // while still calling the effect: an API revoke that passed
 // BearerKindDelegation would tear down a row in the other table.
@@ -238,7 +239,7 @@ func setupAdminUserTestWithSettings(t *testing.T) *adminUserEnv {
 
 // elevateAdminSession stamps a live elevation on the environment's session.
 //
-// IssueAPIToken gates on one, because it mints a credential that outlives
+// IssueAPIToken requires one, because it mints a credential that outlives
 // the session that asked for it -- the same reason every /auth/cli/* consent
 // leg does. A test that exercises the mint states the elevation rather than
 // relying on a hole; TestAdminUserService_IssueAPITokenNeedsAnElevatedSession
@@ -479,7 +480,8 @@ func TestAdminUserService_UpdateUser_EmailRules(t *testing.T) {
 	require.NoError(t, err, "a user's own address must not collide with herself")
 	assert.Equal(t, "alice@example.com", resp.Msg.GetUser().GetEmail())
 
-	// Another user's address IS a conflict, and the message names the email.
+	// Another user's address IS a conflict, and the message identifies the
+	// email.
 	_, err = env.client.UpdateUser(ctx, authedReq(&leapmuxv1.UpdateUserRequest{
 		Username: "alice", Email: ptr("bob@example.com"),
 	}, env.token))
@@ -495,7 +497,7 @@ func TestAdminUserService_UpdateUser_EmailRules(t *testing.T) {
 	assert.Equal(t, "Alice A", resp.Msg.GetUser().GetDisplayName())
 	assert.True(t, resp.Msg.GetUser().GetEmailVerified())
 
-	// A request that names no field changes nothing and says so.
+	// A request that specifies no field changes nothing and says so.
 	_, err = env.client.UpdateUser(ctx, authedReq(&leapmuxv1.UpdateUserRequest{
 		Username: "alice",
 	}, env.token))
@@ -582,7 +584,7 @@ func TestAdminUserService_CreateUserRequiresEmailWhenVerificationRequired(t *tes
 }
 
 // TestAdminUserService_LoweringEmailVerifiedIsAllowedForAdmins pins the
-// arm that used to refuse.
+// branch that used to refuse.
 //
 // email_verified records whether somebody confirmed the address, so an
 // administrator's is as lowerable as anybody else's -- there is no stored
@@ -620,11 +622,11 @@ func TestAdminUserService_LoweringEmailVerifiedIsAllowedForAdmins(t *testing.T) 
 
 	// The administrator can still use the hub: the login gate takes its own
 	// exemption rather than reading a forced column.
-	assert.True(t, auth.EmailVerificationSatisfied(true, row.IsAdmin, row.EmailVerified))
+	assert.True(t, auth.EmailVerificationFactsFromUser(row).Satisfied(true))
 }
 
 // The paired form an earlier bug shipped -- {email, email_verified:false}
-// taking the UNFENCED arm -- must still take the fenced one.
+// taking the UNFENCED branch -- must still take the fenced one.
 func TestAdminUserService_LoweringWithAnAddressChangeStaysFenced(t *testing.T) {
 	env := setupAdminUserTest(t)
 	ctx := context.Background()
@@ -650,7 +652,7 @@ func TestAdminUserService_LoweringWithAnAddressChangeStaysFenced(t *testing.T) {
 	assert.Equal(t, "moved@example.com", row.Email)
 	assert.False(t, row.EmailVerified)
 	assert.Greater(t, row.AuthGeneration, before.AuthGeneration,
-		"the paired form must not take the unfenced arm")
+		"the paired form must not take the unfenced branch")
 }
 
 // TestAdminUserService_SetUserAdmin_FencesADemotedUser pins the credential
@@ -804,7 +806,7 @@ func TestAdminUserService_TokenListings(t *testing.T) {
 	assert.Equal(t, aliceToken, scoped[0].GetId())
 	assert.False(t, scoped[0].GetOwnerDeleted())
 
-	// Revoked tokens are hidden by default and visible for forensics.
+	// The listing hides revoked tokens by default and shows them for forensics.
 	_, err = env.client.RevokeAPIToken(ctx, authedReq(&leapmuxv1.RevokeAPITokenRequest{Id: aliceToken}, env.token))
 	require.NoError(t, err)
 	assert.Empty(t, list(&leapmuxv1.ListAPITokensRequest{UserId: alice}),
@@ -941,16 +943,16 @@ func TestAdminUserService_SetUserAdminAllowsDemotingSomeoneElse(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// TestAdminUserService_IssueAPITokenTTLBounds pins the ttl ceiling. The
+// TestAdminUserService_IssueAPITokenTTLCeiling pins the ttl ceiling. The
 // handler multiplies the requested seconds by time.Second, and an int64
 // with no ceiling WRAPS on that multiply: ttl_seconds = 20000000000 wraps
 // to roughly 18 days, passes the `ttl <= 0` guard, and mints a bearer that
 // expires 634 years before the operator asked.
-func TestAdminUserService_IssueAPITokenTTLBounds(t *testing.T) {
+func TestAdminUserService_IssueAPITokenTTLCeiling(t *testing.T) {
 	env := setupAdminUserTest(t)
 	ctx := context.Background()
 
-	// At the bound: accepted.
+	// At the ceiling: accepted.
 	_, err := env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
 		UserId: env.adminID, ClientName: "cli", TtlSeconds: service.MaxAPITokenTTLSeconds,
 	}, env.token))
@@ -992,7 +994,7 @@ func TestAdminUserService_IssueAPITokenTakesTheSharedSelector(t *testing.T) {
 }
 
 // TestAdminUserService_IssueAPITokenNeedsAnElevatedSession pins the gate a
-// stolen administrator cookie used to walk straight past.
+// stolen administrator cookie used to bypass.
 //
 // The four /auth/cli/* consent legs demand an elevated session because what
 // they mint outlives the session by months, and with the admin scope it
@@ -1102,7 +1104,7 @@ func TestAdminUserService_IssueAPITokenNotifiesTheOwner(t *testing.T) {
 	require.NoError(t, err)
 
 	msg := env.awaitCredentialNotice(t)
-	assert.Contains(t, msg.Body, "ci-bot", "the notice names the device that asked")
+	assert.Contains(t, msg.Body, "ci-bot", "the notice identifies the device that asked")
 }
 
 // The CONTROL CLI's own path, which authenticates by bearer and never by
@@ -1118,7 +1120,7 @@ func TestAdminUserService_IssueAPITokenAdmitsAnElevatedBearer(t *testing.T) {
 	env := setupAdminUserTest(t)
 
 	// The admin's own admin-scoped credentials, as a browser consent would
-	// have minted them. TWO of them, and each is used for one arm only: a
+	// have minted them. TWO of them, and each serves one case only: a
 	// credential that authenticates once is cached, and the elevation the
 	// store writes reaches this process through an eviction the production
 	// leg performs and this helper cannot.
@@ -1147,7 +1149,7 @@ func TestAdminUserService_IssueAPITokenAdmitsAnElevatedBearer(t *testing.T) {
 
 	// Unelevated, so the pass below measures the elevation and not the
 	// absence of a gate. The refusal is MARKED: the CLI runs the step-up leg
-	// and retries rather than reporting a dead end.
+	// and retries rather than reporting an error the user cannot clear.
 	_, unverified := mint("operator-laptop")
 	_, err := issueAs(unverified)
 	require.Error(t, err)
@@ -1173,7 +1175,7 @@ func TestAdminUserService_IssueAPITokenAdmitsAnElevatedBearer(t *testing.T) {
 //
 // Every other test on this verb exercises the ADMIT path, so the guard could
 // be deleted, inverted, or turned from "refuse" into "continue" on a read
-// failure and the suite would stay green. What it protects is not small: the
+// failure and the suite would still pass. What it protects is not small: the
 // gate above it answers from a CACHED UserInfo, and what the mint writes
 // outlives the session by months.
 func TestAdminUserService_IssueAPITokenRefusesWithdrawnAuthority(t *testing.T) {
@@ -1184,6 +1186,13 @@ func TestAdminUserService_IssueAPITokenRefusesWithdrawnAuthority(t *testing.T) {
 	// session_revoked event is what the guard reads.
 	t.Run("a revoked acting session", func(t *testing.T) {
 		env := setupAdminUserTest(t)
+
+		// One read FIRST, so the interceptor holds a validated UserInfo for
+		// this cookie. Without it Revoke leaves no row, the interceptor
+		// refuses the request itself, and the case passes with the handler's
+		// re-read deleted -- it would measure the interceptor instead.
+		_, err := env.client.GetUser(ctx, authedReq(&leapmuxv1.GetUserRequest{Id: env.adminID}, env.token))
+		require.NoError(t, err)
 
 		revoked, err := env.st.Sessions().Revoke(ctx, env.token)
 		require.NoError(t, err)
@@ -1208,32 +1217,36 @@ func TestAdminUserService_IssueAPITokenRefusesWithdrawnAuthority(t *testing.T) {
 	t.Run("a plain sign-out is tolerated", func(t *testing.T) {
 		env := setupAdminUserTest(t)
 
+		// The same priming read, for the same reason: the interceptor must
+		// serve the cached UserInfo, or the request never reaches the guard
+		// this case is about.
+		_, err := env.client.GetUser(ctx, authedReq(&leapmuxv1.GetUserRequest{Id: env.adminID}, env.token))
+		require.NoError(t, err)
+
 		deleted, err := env.st.Sessions().Delete(ctx, env.token)
 		require.NoError(t, err)
 		require.EqualValues(t, 1, deleted)
 
 		// The interceptor still holds the validated UserInfo for its cache
-		// TTL, which is exactly the staleness the guard exists to answer.
+		// TTL, which is exactly the staleness the guard exists to answer. A
+		// plain Delete writes no session_revoked event, so the guard must
+		// ADMIT the mint: rolling back a change the owner legitimately
+		// started was a real regression once already.
 		_, err = env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
 			Username: "admin", ClientName: "ci-bot",
 		}, env.token))
-		if err != nil {
-			// A dead session may be refused by the interceptor before the
-			// handler runs; what must NOT happen is the guard turning a
-			// sign-out into the revoked answer.
-			assert.NotContains(t, err.Error(), "state moved")
-		}
+		require.NoError(t, err, "the owner's own sign-out must not refuse the change they started")
 	})
 }
 
 // Creating DURABLE NEW AUTHORITY is one class, and all four verbs in it
 // demand an elevated session.
 //
-// Gating only IssueAPIToken recorded a property the hub did not have: a stolen
-// admin bearer that could not renew itself past the one-year ceiling could
-// instead CreateUser a fresh administrator with a password it chose, sign in
-// through a browser, elevate with that password, and mint whatever it liked.
-// The ceiling bought nothing while that door was open.
+// Restricting only IssueAPIToken recorded a property the hub did not have: a
+// stolen admin bearer that could not renew itself past the one-year ceiling
+// could instead CreateUser a fresh administrator with a password it chose,
+// sign in through a browser, elevate with that password, and mint whatever it
+// liked. The ceiling gained nothing while that route stayed open.
 func TestAdminUserService_DurableAuthorityVerbsNeedAnElevatedSession(t *testing.T) {
 	ctx := context.Background()
 
@@ -1322,6 +1335,113 @@ func TestAdminUserService_DurableAuthorityVerbsNeedAnElevatedSession(t *testing.
 	}
 }
 
+// TestAdminUserService_CredentialGatedVerbsNeedAProvenFactor covers the other
+// half of the gate on this service: the verbs that demand a recently proven
+// factor from the ACTING CREDENTIAL, and admit an elevated command-line
+// credential rather than refusing it.
+//
+// Both shipped with NO gate. DeleteUser is irreversible destruction of an
+// account, every workspace it owns and every credential it holds; UpdateUser
+// writes the account email, which is the address the public password-reset
+// verb mails a link to -- so {email, email_verified:true} in one call handed
+// over any account by the longer route while its sibling ResetPassword was
+// restricted. The classification record in admin_procedures_internal_test.go
+// states the decision; this observes the handler.
+func TestAdminUserService_CredentialGatedVerbsNeedAProvenFactor(t *testing.T) {
+	ctx := context.Background()
+
+	// The verbs that take requireElevatedActor: an elevated bearer passes.
+	for name, call := range map[string]func(*adminUserEnv, requestAuth) error{
+		"DeleteUser": func(env *adminUserEnv, authorize requestAuth) error {
+			_, err := env.client.DeleteUser(ctx, authorized(&leapmuxv1.DeleteUserRequest{
+				Id: env.adminID, Force: true,
+			}, authorize))
+			return err
+		},
+		"UpdateUser display name": func(env *adminUserEnv, authorize requestAuth) error {
+			_, err := env.client.UpdateUser(ctx, authorized(&leapmuxv1.UpdateUserRequest{
+				Id: env.adminID, DisplayName: proto.String("Renamed"),
+			}, authorize))
+			return err
+		},
+	} {
+		t.Run(name+" refuses an un-elevated session", func(t *testing.T) {
+			env := setupAdminUserTestUnelevated(t)
+			err := call(env, cookieAuth(env.token))
+			require.Error(t, err)
+			assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+			var connectErr *connect.Error
+			require.ErrorAs(t, err, &connectErr)
+			assert.Equal(t, "1", connectErr.Meta().Get(service.ElevationRequiredHeader),
+				"the refusal must be the one a step-up prompt can clear")
+		})
+
+		t.Run(name+" admits an elevated session", func(t *testing.T) {
+			env := setupAdminUserTest(t)
+			assert.NoError(t, call(env, cookieAuth(env.token)))
+		})
+
+		t.Run(name+" admits an elevated bearer", func(t *testing.T) {
+			// `leapmux control admin user delete` and `... update
+			// --display-name` are documented headless verbs, and neither
+			// creates a new way INTO an account, so the strict session rule
+			// would cost the CLI for no gain.
+			env := setupAdminUserTest(t)
+			issued, err := env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
+				UserId: env.adminID, ClientName: "admin-cli", ClientType: "cli", AdminScope: true,
+			}, env.token))
+			require.NoError(t, err)
+			hubtestutil.ElevateAPIToken(t, env.st, issued.Msg.GetTokenId(), env.adminID)
+
+			assert.NoError(t, call(env, bearerAuth(issued.Msg.GetAccessToken())))
+		})
+	}
+
+	// The EMAIL fields take the strict session rule instead, because the
+	// address is a recovery identity. A bearer is refused with no marker: it
+	// has no row to stamp and nobody at a keyboard, so a prompt would collect a
+	// factor and refuse the retry for the same reason.
+	updateEmail := func(env *adminUserEnv, authorize requestAuth) error {
+		_, err := env.client.UpdateUser(ctx, authorized(&leapmuxv1.UpdateUserRequest{
+			Id: env.adminID, Email: proto.String("moved@example.test"), EmailVerified: proto.Bool(true),
+		}, authorize))
+		return err
+	}
+
+	t.Run("UpdateUser email refuses an un-elevated session", func(t *testing.T) {
+		env := setupAdminUserTestUnelevated(t)
+		err := updateEmail(env, cookieAuth(env.token))
+		require.Error(t, err)
+		assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+
+		user, err := env.st.Users().GetByID(ctx, env.adminID)
+		require.NoError(t, err)
+		assert.Equal(t, "admin@example.test", user.Email,
+			"a refused update must leave the recovery address alone")
+	})
+
+	t.Run("UpdateUser email admits an elevated session", func(t *testing.T) {
+		env := setupAdminUserTest(t)
+		assert.NoError(t, updateEmail(env, cookieAuth(env.token)))
+	})
+
+	t.Run("UpdateUser email refuses a bearer", func(t *testing.T) {
+		env := setupAdminUserTest(t)
+		issued, err := env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
+			UserId: env.adminID, ClientName: "admin-cli", ClientType: "cli", AdminScope: true,
+		}, env.token))
+		require.NoError(t, err)
+		hubtestutil.ElevateAPIToken(t, env.st, issued.Msg.GetTokenId(), env.adminID)
+
+		err = updateEmail(env, bearerAuth(issued.Msg.GetAccessToken()))
+		require.Error(t, err, "a bearer must not move a recovery identity")
+		var connectErr *connect.Error
+		require.ErrorAs(t, err, &connectErr)
+		assert.Empty(t, connectErr.Meta().Get(service.ElevationRequiredHeader),
+			"a bearer can never elevate, so the refusal must not offer a prompt")
+	})
+}
+
 // A credential a BEARER mints cannot outlive its minter, and does not rotate.
 //
 // Both halves are needed. Without the inherited ceiling the child restarts the
@@ -1364,12 +1484,12 @@ func TestAdminUserService_IssueAPITokenClampsABearerMintedCredential(t *testing.
 		"the child inherits the minter's ceiling rather than restarting it")
 }
 
-// TestAdminUserService_CreateUserConflictNamesOnlyTheSuppliedField pins
+// TestAdminUserService_CreateUserConflictIdentifiesOnlyTheSuppliedField pins
 // the conflict message. The dialect layer cannot say which unique index
 // fired, so the handler -- which knows what it sent -- identifies it.
 // Blaming both unconditionally produced `username "bob" or email "" is
 // already taken` for a create with no email at all.
-func TestAdminUserService_CreateUserConflictNamesOnlyTheSuppliedField(t *testing.T) {
+func TestAdminUserService_CreateUserConflictIdentifiesOnlyTheSuppliedField(t *testing.T) {
 	env := setupAdminUserTest(t)
 	ctx := context.Background()
 
@@ -1382,16 +1502,16 @@ func TestAdminUserService_CreateUserConflictNamesOnlyTheSuppliedField(t *testing
 	assert.NotContains(t, err.Error(), `email ""`, "an email the caller never supplied must not be blamed")
 }
 
-// TestUserConflictErrorNamesOnlyTheSuppliedFields pins the conflict
-// classifier's four arms. It runs only when a unique index fires on a lost
-// race, so the RPC pre-checks answer first and the arms are unreachable
+// TestUserConflictErrorIdentifiesOnlyTheSuppliedFields pins the conflict
+// classifier's four cases. It runs only when a unique index fires on a lost
+// race, so the RPC pre-checks answer first and the cases are unreachable
 // from the client side.
 //
 // The dialect layer reports every duplicate as one opaque conflict, so the
 // caller -- which knows what it sent -- identifies it. Blaming both
 // unconditionally produced `username "bob" or email "" is already taken`
 // for a create with no email at all.
-func TestUserConflictErrorNamesOnlyTheSuppliedFields(t *testing.T) {
+func TestUserConflictErrorIdentifiesOnlyTheSuppliedFields(t *testing.T) {
 	conflict := store.ErrConflict
 
 	both := service.UserConflictErrorForTest(conflict, "bob", "bob@example.com")
@@ -1526,8 +1646,8 @@ func TestAdminUserService_ResetPassword_ByIDAndByUsername(t *testing.T) {
 		Id: env.userID, Password: "by-id-password",
 	}, env.token))
 	require.NoError(t, err)
-	// The subject is echoed back whichever handle the caller sent, so a
-	// caller holding only one of the two learns the other.
+	// The response echoes the subject back whichever handle the caller sent,
+	// so a caller holding only one of the two learns the other.
 	assert.Equal(t, env.userID, byID.Msg.GetUserId())
 	assert.Equal(t, env.username, byID.Msg.GetUsername())
 
@@ -1581,11 +1701,11 @@ func TestAdminUserService_ResetPassword_RefusesAPasswordThePolicyRefuses(t *test
 // that matters: a reset exists because someone else may know the old
 // password, so every credential that password authenticated must die.
 //
-// Both halves are asserted. The DURABLE half is the store: sessions gone,
-// bearer rows revoked, auth_generation advanced. The IN-PROCESS half is the
-// lifecycle effect, which is the only thing that evicts this hub's own
-// caches and channels before the revocation watcher's next sweep — up to
-// two seconds later, during which the old credential would still be served.
+// This test asserts both halves. The DURABLE half is the store: sessions
+// gone, bearer rows revoked, auth_generation advanced. The IN-PROCESS half is
+// the lifecycle effect, which is the only thing that evicts this hub's own
+// caches and channels before the revocation watcher's next sweep — up to two
+// seconds later, during which the old credential would still be served.
 func TestAdminUserService_ResetPassword_TearsDownEveryCredential(t *testing.T) {
 	env := setupResetPasswordTest(t)
 	ctx := context.Background()
@@ -1718,8 +1838,8 @@ func TestAdminUserService_ResetPassword_SelfResetEndsTheActingSession(t *testing
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err),
 		"the cookie that made the call stops authenticating at once")
 
-	// Not a one-way door: the caller chose the new password and logs in
-	// again with it. This is what makes the missing force flag correct.
+	// Not irreversible: the caller chose the new password and logs in again
+	// with it. This is what makes the missing force flag correct.
 	_, _, _, err = auth.Login(ctx, env.st, "admin", "brand-new-adminpass", auth.DefaultSessionDuration)
 	assert.NoError(t, err)
 }
@@ -1805,7 +1925,7 @@ func TestAdminUserService_SetUserAdmin_DoesNotMarkEmailVerified(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, row.EmailVerified)
 	// The new administrator can still use the hub.
-	assert.True(t, auth.EmailVerificationSatisfied(true, row.IsAdmin, row.EmailVerified))
+	assert.True(t, auth.EmailVerificationFactsFromUser(row).Satisfied(true))
 }
 
 // Creating an administrator does not confirm their address either: the
@@ -1858,8 +1978,8 @@ func TestAdminUserService_ResetPassword_DeletesPasskeys(t *testing.T) {
 // Carrying the old flag across marked an address nobody confirmed as
 // verified. That is not cosmetic: a verified address is a valid
 // self-service password-reset target, so the carry handed the account's
-// recovery route to whatever address was typed. The change must also FENCE,
-// because lowering email_verified reduces the user's auth gate.
+// recovery route to whatever address the request carried. The change must
+// also FENCE, because lowering email_verified reduces the user's auth gate.
 func TestAdminUserService_AddressChangeLowersEmailVerified(t *testing.T) {
 	ctx := context.Background()
 	env := setupAdminUserTest(t)
@@ -1922,10 +2042,11 @@ func TestAdminUserService_AddressChangeKeepsAnExplicitVerification(t *testing.T)
 // administrator's brand-new address is exactly as unconfirmed as anybody
 // else's, and a verified address is a valid self-service password-reset
 // target -- so keeping the flag across the move handed the highest-privilege
-// accounts on the hub a live reset route to whatever address was typed.
+// accounts on the hub a live reset route to whatever address the request
+// carried.
 //
 // Nothing locks the administrator out: the login gate takes its own
-// exemption (auth.EmailVerificationSatisfied), which is the same derivation
+// exemption (auth.EmailVerificationFacts.Satisfied), which is the same derivation
 // at the right altitude.
 func TestAdminUserService_AdminAddressChangeIsUnverified(t *testing.T) {
 	ctx := context.Background()
@@ -1952,8 +2073,8 @@ func TestAdminUserService_AdminAddressChangeIsUnverified(t *testing.T) {
 	assert.Equal(t, "newadmin@example.com", after.Email)
 	assert.False(t, after.EmailVerified, "nobody confirmed the new address, administrator or not")
 	// And the administrator can still use the hub, which is what the forced
-	// column used to buy.
-	assert.True(t, auth.EmailVerificationSatisfied(true, after.IsAdmin, after.EmailVerified))
+	// column used to provide.
+	assert.True(t, auth.EmailVerificationFactsFromUser(after).Satisfied(true))
 }
 
 // TestAdminUserService_ClearingEmailKeepsVerified pins the exclusion that
@@ -2060,7 +2181,7 @@ func TestAdminUserService_SettingAFirstEmailIsUnverified(t *testing.T) {
 // The guard reads whether the account will be able to sign in AFTER this
 // edit, and it read the flag ALREADY STORED instead. So the two-call form of
 // the edit was refused -- {email_verified:false}, then {email:""} -- while
-// the one-call form committed `email=”` with `email_verified=0` on a hub
+// the one-call form committed `email=""` with `email_verified=0` on a hub
 // that requires verification, which is an account stranded on /verify-email
 // with no address a code can ever reach. That is the exact state the guard's
 // own comment says must not be minted.

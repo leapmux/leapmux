@@ -26,9 +26,9 @@ import (
 // resend_cooldown.go).
 
 // passwordResetExpiry is the lifetime of a reset link. It is longer than a
-// verification code's because it arrives by mail and is clicked later, rather
-// than read off a screen and typed. The cooldown that limits how often one
-// may be minted is shared -- see resend_cooldown.go.
+// verification code's because it arrives by mail and a user clicks it later,
+// rather than reads it off a screen and types it. The cooldown that limits
+// how often one may be minted is the shared one -- see resend_cooldown.go.
 const passwordResetExpiry = time.Hour
 
 // generatePasswordResetToken mints the emailed reset secret from the
@@ -60,18 +60,19 @@ func (s *AuthService) RequestPasswordReset(ctx context.Context, req *connect.Req
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	// Every miss path returns the same empty body as a hit. Timing is NOT
-	// equalized: the hit path performs a synchronous SMTP send whose dial
-	// dominates any padding, so a burn would be security theater. The real
-	// anti-enumeration controls are the captcha on this procedure, the
-	// uniform response body, and the per-account resend cooldown below.
+	// Every miss path returns the same empty body as a hit. This code does
+	// NOT equalize the timing: the hit path sends SMTP mail synchronously,
+	// and its dial dominates any padding, so padding the miss path would look
+	// like a control and protect nothing. The real anti-enumeration controls
+	// are the captcha on this procedure, the uniform response body, and the
+	// per-account resend cooldown below.
 	targetEmail := user.Email
 	if targetEmail == "" {
 		return connect.NewResponse(&leapmuxv1.RequestPasswordResetResponse{}), nil
 	}
 	// No IsAdmin exemption here, unlike the auth interceptor's verification
-	// control: this predicate asks whether THIS address is trusted with a
-	// credential-bearing reset link, and the hub has never verified it.
+	// control: this predicate asks whether the hub trusts THIS address with a
+	// credential-bearing reset link, and the hub never verified it.
 	//
 	// An unverified administrator self-recovers with ResendVerificationEmail
 	// plus VerifyEmail, which Preferences, Account offers beside the
@@ -113,9 +114,9 @@ func (s *AuthService) RequestPasswordReset(ctx context.Context, req *connect.Req
 	}
 	if err := s.mail.Send(ctx, s.renderer.PasswordResetEmail(targetEmail, rawToken, passwordResetExpiry)); err != nil {
 		// Report the clear separately from the send. A log line that claims
-		// "cleared pending token" while the clear itself failed sends the
-		// operator looking for the wrong cause of a token that is still
-		// live for the full reset TTL.
+		// "cleared pending token" while the clear itself failed makes the
+		// operator look for the wrong cause of a token that is still live
+		// for the full reset TTL.
 		if clearErr := s.store.Users().ClearPendingPasswordReset(ctx, user.ID); clearErr != nil {
 			slog.WarnContext(ctx, "clear pending password reset after failed send",
 				"user_id", user.ID, "err", clearErr)
@@ -144,7 +145,7 @@ func (s *AuthService) CompletePasswordReset(ctx context.Context, req *connect.Re
 
 	// Charge one attempt against the row that holds this exact token. The
 	// find, the charge, and the token re-check are one statement, so a token
-	// cleared by a concurrent reset cannot slip through as a 500.
+	// cleared by a concurrent reset cannot surface as a 500.
 	now := s.now().UTC()
 	charged, err := s.store.Users().ConsumePasswordResetAttemptByToken(ctx, hashedToken, now, maxPasswordResetAttempts)
 	if err != nil {

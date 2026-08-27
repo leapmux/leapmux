@@ -62,6 +62,36 @@ func (s *Suite) testSessionElevation(t *testing.T) {
 		assert.WithinDuration(t, at.Add(2*time.Hour), *joined.ElevationExpiresAt, time.Second)
 	})
 
+	t.Run("the grant clamps to the absolute cap", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "elev-grant-cap")
+		sess := SeedSession(t, st, user.ID)
+		at := now()
+		ceiling := at.Add(store.ElevationMaxTotal)
+
+		// The caller asks for a week. The STORE owns the ceiling, so the row
+		// must carry the cap and not the request. The slide cannot repair an
+		// over-long grant afterwards -- it only moves a deadline FORWARD --
+		// so the grant is the writer that has to hold the cap here.
+		n, err := st.Sessions().Elevate(ctx, store.ElevateSessionParams{
+			SessionID:          sess.ID,
+			UserID:             userid.MustNew(user.ID),
+			ElevationProvenAt:  at,
+			ElevationExpiresAt: at.Add(7 * 24 * time.Hour),
+		}, at)
+		require.NoError(t, err)
+		require.EqualValues(t, 1, n, "an over-long request still elevates -- clamped, not refused")
+
+		row, err := st.Sessions().GetByID(ctx, sess.ID, at)
+		require.NoError(t, err)
+		require.NotNil(t, row.ElevationProvenAt)
+		require.NotNil(t, row.ElevationExpiresAt)
+		assert.WithinDuration(t, at, *row.ElevationProvenAt, time.Second,
+			"the anchor is the caller's instant, untouched by the clamp")
+		assert.WithinDuration(t, ceiling, *row.ElevationExpiresAt, time.Second,
+			"the grant must store the cap, not the week the caller asked for")
+	})
+
 	t.Run("elevate refuses another user's session", func(t *testing.T) {
 		st := s.NewStore(t)
 		owner := SeedUser(t, st, "elev-owner")
@@ -118,7 +148,6 @@ func (s *Suite) testSessionElevation(t *testing.T) {
 			SessionID:      sess.ID,
 			UserID:         userid.MustNew(user.ID),
 			WindowDeadline: now().Add(2 * time.Hour),
-			MaxTotal:       8 * time.Hour,
 		}, now())
 		require.NoError(t, err)
 		assert.EqualValues(t, 1, n)
@@ -140,7 +169,7 @@ func (s *Suite) testSessionElevation(t *testing.T) {
 		// while the caller asks for two more hours. The stored deadline
 		// starts BELOW the ceiling, so a slide that lands on the ceiling is
 		// visible as a change rather than as the value that was already there
-		// -- an upper-bound assertion against a pre-set ceiling passes even
+		// -- an upper-limit assertion against a pre-set ceiling passes even
 		// when the UPDATE matches no row at all.
 		anchor := now().Add(-7*time.Hour - 30*time.Minute)
 		ceiling := anchor.Add(8 * time.Hour)
@@ -158,7 +187,6 @@ func (s *Suite) testSessionElevation(t *testing.T) {
 			SessionID:      sess.ID,
 			UserID:         userid.MustNew(user.ID),
 			WindowDeadline: now().Add(2 * time.Hour),
-			MaxTotal:       8 * time.Hour,
 		}, now())
 		require.NoError(t, err)
 		assert.EqualValues(t, 1, n, "the slide must actually write the row it clamps")
@@ -166,7 +194,7 @@ func (s *Suite) testSessionElevation(t *testing.T) {
 		row, err := st.Sessions().GetByID(ctx, sess.ID, now())
 		require.NoError(t, err)
 		require.NotNil(t, row.ElevationExpiresAt)
-		// Both bounds. The upper one is the clamp; the lower one is what
+		// Both limits. The upper one is the clamp; the lower one is what
 		// separates "clamped to the ceiling" from "wrote nothing" and from
 		// "collapsed back to the anchor".
 		assert.False(t, row.ElevationExpiresAt.After(ceiling.Add(time.Second)),
@@ -195,7 +223,6 @@ func (s *Suite) testSessionElevation(t *testing.T) {
 			SessionID:      sess.ID,
 			UserID:         userid.MustNew(user.ID),
 			WindowDeadline: at.Add(time.Minute),
-			MaxTotal:       8 * time.Hour,
 		}, at)
 		require.NoError(t, err)
 		row, err := st.Sessions().GetByID(ctx, sess.ID, at)
@@ -203,8 +230,8 @@ func (s *Suite) testSessionElevation(t *testing.T) {
 		require.NotNil(t, row.ElevationExpiresAt)
 		assert.WithinDuration(t, at.Add(2*time.Hour), *row.ElevationExpiresAt, time.Second)
 
-		// A session whose window ALREADY closed cannot be slid back to life:
-		// otherwise a mutation would grant the elevation it was refused for.
+		// A slide must not revive a session whose window ALREADY closed:
+		// otherwise a mutation would grant the elevation the hub refused it.
 		lapsed := SeedSession(t, st, user.ID)
 		_, err = st.Sessions().Elevate(ctx, store.ElevateSessionParams{
 			SessionID:          lapsed.ID,
@@ -217,7 +244,6 @@ func (s *Suite) testSessionElevation(t *testing.T) {
 			SessionID:      lapsed.ID,
 			UserID:         userid.MustNew(user.ID),
 			WindowDeadline: at.Add(2 * time.Hour),
-			MaxTotal:       8 * time.Hour,
 		}, at)
 		require.NoError(t, err)
 		assert.EqualValues(t, 0, n)
@@ -236,7 +262,6 @@ func (s *Suite) testSessionElevation(t *testing.T) {
 			SessionID:      sess.ID,
 			UserID:         userid.MustNew(user.ID),
 			WindowDeadline: now().Add(2 * time.Hour),
-			MaxTotal:       8 * time.Hour,
 		}, now())
 		require.NoError(t, err)
 		assert.EqualValues(t, 0, n)
@@ -331,7 +356,6 @@ func (s *Suite) testSessionElevation(t *testing.T) {
 			SessionID:      sess.ID,
 			UserID:         userid.MustNew(other.ID),
 			WindowDeadline: at.Add(4 * time.Hour),
-			MaxTotal:       8 * time.Hour,
 		}, at)
 		require.NoError(t, err)
 		assert.EqualValues(t, 0, n)
@@ -346,7 +370,7 @@ func (s *Suite) testSessionElevation(t *testing.T) {
 	// A fresh ceremony restarts BOTH columns, which is what makes the
 	// eight-hour cap a per-elevation ceiling rather than a per-session one:
 	// a user who verifies again gets a whole new maximum window instead of
-	// topping up the old anchor. Only the deadline moving would leave the
+	// adding to the old anchor. Only the deadline moving would leave the
 	// second elevation capped by the FIRST ceremony's clock.
 	t.Run("a second elevation restarts the anchor, not only the deadline", func(t *testing.T) {
 		st := s.NewStore(t)
@@ -386,7 +410,6 @@ func (s *Suite) testSessionElevation(t *testing.T) {
 			SessionID:      sess.ID,
 			UserID:         userid.MustNew(user.ID),
 			WindowDeadline: second.Add(7 * time.Hour),
-			MaxTotal:       8 * time.Hour,
 		}, second.Add(30*time.Minute))
 		require.NoError(t, err)
 		row, err = st.Sessions().GetByID(ctx, sess.ID, second)
@@ -433,7 +456,6 @@ func (s *Suite) testSessionElevation(t *testing.T) {
 			SessionID:      sess.ID,
 			UserID:         userid.MustNew(user.ID),
 			WindowDeadline: at.Add(3 * time.Hour),
-			MaxTotal:       8 * time.Hour,
 		}, at)
 		require.NoError(t, err)
 		assert.Len(t, publishedKinds(), len(afterGrant),

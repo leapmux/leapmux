@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"strings"
 	"sync"
 	"time"
 
+	"connectrpc.com/connect"
 	"golang.org/x/sync/singleflight"
 
 	"github.com/leapmux/leapmux/locallisten"
@@ -25,14 +25,16 @@ import (
 //   - Proactive, before a call, once the stored expiry is within
 //     refreshSkew. This is the ordinary path and it costs one extra request
 //     per hour of use.
-//   - Reactive, on a single 401 from a unary call. The proactive check reads
+//   - Reactive, on a 401 from a unary call. The proactive check reads
 //     a stored expiry, and a stored expiry can be wrong -- a clock that
 //     moved, a token revoked by hand, a file written by an older build.
 //
-// Exactly ONE retry, and none on a stream. A retried unary call is
-// idempotent from the CLI's point of view (the hub did not act on a
-// request it refused); a stream already begins delivering, and replaying
-// it would duplicate what the caller consumed.
+// The reactive repair runs at most ONCE for one call, and never on a
+// stream. A replayed unary call is idempotent from the CLI's point of view
+// (the hub did not act on a request it refused); a stream already begins
+// delivering, and replaying it would duplicate what the caller consumed.
+// WrapUnary owns that rule -- see its own comment for the loop that holds
+// it.
 
 const (
 	// refreshSkew is how long before the recorded expiry the CLI renews.
@@ -53,6 +55,17 @@ const (
 // stored file before this reaches a caller, so the next command reports
 // ErrNotLoggedIn, whose message already specifies the remedy.
 var ErrCredentialRejected = errors.New("this hub credential is no longer valid")
+
+// ErrCredentialsNotSaved reports a rotation that the hub COMMITTED and this
+// process could not write to disk.
+//
+// The pair in memory is live and the process keeps working with it. The FILE
+// is what is broken: it still holds the refresh secret the hub rotated away,
+// and past the hub's reuse grace a command that presents it reads as a reuse
+// -- which the hub answers by revoking the row. So the CLI reports this, and
+// never swallows it. One command fails with the reason, and the operator can repair
+// the disk before the next login is lost.
+var ErrCredentialsNotSaved = errors.New("the hub rotated this credential and it could not be written to disk; the stored file is stale and a later command may revoke the credential")
 
 // refreshFlight collapses concurrent refreshes of the SAME credential file.
 //
@@ -80,20 +93,26 @@ var credsMu sync.Mutex
 //     revoked row, so the call that follows can only answer Unauthenticated
 //     -- and the message that specifies `leapmux control auth login` would be
 //     replaced by the hub's bare refusal.
-//   - A transient failure with a token still INSIDE its lifetime is
-//     swallowed. That token may well work, and turning a network blip
-//     during a renewal into a failed command is worse than the renewal not
-//     happening.
+//   - EnsureFreshBearer swallows a transient failure with a token still
+//     INSIDE its lifetime. That token may well work, and turning a brief
+//     network failure during a renewal into a failed command is worse than
+//     the renewal not happening.
 //   - A transient failure with a token already PAST its expiry is fatal.
 //     Continuing can only produce a 401 with nothing in it that identifies the
 //     cause; the refresh error does.
+//   - A rotation that could not be SAVED (ErrCredentialsNotSaved) is fatal,
+//     although the rotated pair is already adopted and the call that follows
+//     would succeed. The file holds a secret the hub rotated away, and the
+//     next process to present it loses the credential; the swallow above
+//     would hide that, because a proactive renewal fires refreshSkew before
+//     the expiry and so is always inside the token's lifetime.
 func (c *Client) EnsureFreshBearer(ctx context.Context) error {
 	// From memory first. This runs before EVERY unary call and every
 	// stream open, and the file read below is an os.ReadFile plus a JSON
 	// decode under a process-wide mutex -- so a command that makes N calls
 	// paid N of them to re-learn an expiry that cannot have moved. The
-	// cached value moves only when this process rotates the token, and an
-	// expiry another process wrote is picked up by the reactive retry.
+	// cached value moves only when this process rotates the token, and the
+	// reactive retry picks up an expiry another process wrote.
 	if !c.bearerNeedsRenewal() {
 		return nil
 	}
@@ -101,17 +120,16 @@ func (c *Client) EnsureFreshBearer(ctx context.Context) error {
 	if !ok {
 		return nil
 	}
-	if time.Until(creds.ExpiresAt) > refreshSkew {
-		// The file is ahead of this client: adopt its token and its expiry
-		// rather than presenting the stale one until a 401.
-		c.setBearer(creds.AccessToken, creds.ExpiresAt)
+	// The file is ahead of this client: adopt its token and its expiry
+	// rather than presenting the stale one until a 401.
+	if c.adoptStoredBearer(creds) {
 		return nil
 	}
 	err := c.refreshBearer(ctx, creds)
 	switch {
 	case err == nil:
 		return nil
-	case errors.Is(err, ErrCredentialRejected):
+	case errors.Is(err, ErrCredentialRejected), errors.Is(err, ErrCredentialsNotSaved):
 		return err
 	case time.Now().Before(creds.ExpiresAt):
 		return nil
@@ -120,13 +138,40 @@ func (c *Client) EnsureFreshBearer(ctx context.Context) error {
 	}
 }
 
+// adoptStoredBearer adopts the stored access token and its expiry when that
+// expiry is far enough away to use, and reports whether it did.
+//
+// The bar is refreshSkew, the same one that decides to renew: a token this
+// client would renew at once is not one worth adopting.
+func (c *Client) adoptStoredBearer(creds *CredentialFile) bool {
+	if time.Until(creds.ExpiresAt) <= refreshSkew {
+		return false
+	}
+	c.setBearer(creds.AccessToken, creds.ExpiresAt)
+	return true
+}
+
+// bearerErrorCode maps a pre-call credential failure onto the code the
+// caller reports.
+//
+// Almost every one means "this call cannot authenticate". A rotation that
+// the hub committed and this process could not SAVE is the exception: the
+// token in memory is live and the fault is a local disk, so Unauthenticated
+// would send the operator to the login rather than to the file.
+func bearerErrorCode(err error) connect.Code {
+	if errors.Is(err, ErrCredentialsNotSaved) {
+		return connect.CodeInternal
+	}
+	return connect.CodeUnauthenticated
+}
+
 // freshBearer renews the credential and returns the token to present.
 //
 // The two paths that hand a bearer to a transport of their own -- the
 // user-event subscription and the E2EE channel open -- go through this one
 // call rather than remembering to renew and then read. ApplyAuth stays a
-// pure header stamp, because WrapUnary calls it twice (before the call and
-// before the retry) and the second must not re-check freshness.
+// pure header stamp, because WrapUnary stamps the header once per attempt
+// and runs the freshness check itself, in one place, before each of them.
 func (c *Client) freshBearer(ctx context.Context) (string, error) {
 	if err := c.EnsureFreshBearer(ctx); err != nil {
 		return "", err
@@ -152,8 +197,8 @@ func (c *Client) refreshableCredentials() (*CredentialFile, bool) {
 
 // refreshBearer performs one refresh and adopts the result. presented is the
 // credential the caller ALREADY read, so a concurrent refresh that rotated
-// in the meantime is detected as "somebody else moved it" and simply
-// adopted -- and this path does not read the file again to learn what it
+// in the meantime reads as "somebody else moved it" and this path simply
+// adopts it -- and it does not read the file again to learn what it
 // was just handed.
 func (c *Client) refreshBearer(ctx context.Context, presented *CredentialFile) error {
 	path, err := CredentialsPath(c.HubURL)
@@ -163,12 +208,15 @@ func (c *Client) refreshBearer(ctx context.Context, presented *CredentialFile) e
 	v, err, _ := refreshFlight.Do(path, func() (any, error) {
 		return c.doRefresh(ctx, presented)
 	})
-	if err != nil {
-		return err
+	// refreshBearer adopts the pair whenever there IS one, error or not. doRefresh
+	// returns a pair with an error exactly once -- the hub rotated and the
+	// file could not be written -- and the pair it hands back is then the
+	// only live one in this process. Discarding it because the call also
+	// failed threw away a credential the hub already committed to.
+	if creds, ok := v.(*CredentialFile); ok && creds != nil {
+		c.setBearer(creds.AccessToken, creds.ExpiresAt)
 	}
-	creds := v.(*CredentialFile)
-	c.setBearer(creds.AccessToken, creds.ExpiresAt)
-	return nil
+	return err
 }
 
 // doRefresh runs the rotation and rewrites the credential file.
@@ -194,22 +242,27 @@ func (c *Client) doRefresh(ctx context.Context, presented *CredentialFile) (*Cre
 	// DETACHED from the caller's context, and this is the same rule the
 	// hub's own handleRefresh states for the same exchange. A refresh
 	// rotates the token single-use: once the request reaches the hub, the
-	// old secret is dead whatever happens next, so a cancellation between
+	// old secret is unusable whatever happens next, so a cancellation between
 	// the hub's commit and SaveCredentials below leaves the file holding a
 	// secret the hub already rotated away. Presenting it later reads as a
-	// reuse, which the hub answers by REVOKING the row -- a Ctrl-C would
-	// end a credential that nothing was wrong with.
+	// reuse, which the hub answers by REVOKING the row -- a credential that
+	// nothing was wrong with would end.
 	//
-	// It matters twice here, because singleflight collapses concurrent
-	// callers onto one leg: the leader's cancellation would otherwise abort
-	// the rotation for every follower as well, including one whose own
-	// deadline had ample time left.
+	// Three cancellations reach here, and the commonest is not the one that
+	// reads as obvious. Any verb that resolves an entity fans its lookups
+	// out under errgroup.WithContext, so the FIRST sibling call to fail
+	// cancels the context of every other call in flight, one of which may be
+	// mid-rotation. Next, singleflight collapses concurrent callers onto one
+	// leg, so the leader's cancellation would abort the rotation for every
+	// follower as well, including one whose own deadline had ample time
+	// left. Last, `control events` installs signal.NotifyContext, so a
+	// Ctrl-C there cancels the stream's context and the refresh under it.
 	refreshCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), refreshTimeout)
 	defer cancel()
-	body, err := postRefresh(refreshCtx, c.HubURL, current.RefreshToken)
+	body, err := c.postRefresh(refreshCtx, current.RefreshToken)
 	if err != nil {
-		// A permanent rejection is what deletes the stored file, and it is
-		// deleted HERE rather than in the transport leg: this function owns
+		// A permanent rejection is what deletes the stored file, and this
+		// function deletes it HERE rather than the transport leg: it owns
 		// the read-modify-write of that file and holds credsMu around it,
 		// so the one place that writes it is the one place that removes it.
 		if errors.Is(err, ErrCredentialRejected) {
@@ -237,7 +290,12 @@ func (c *Client) doRefresh(ctx context.Context, presented *CredentialFile) (*Cre
 		next.TokenID = body.TokenID
 	}
 	if err := SaveCredentials(c.HubURL, next); err != nil {
-		return nil, fmt.Errorf("save refreshed credentials: %w", err)
+		// doRefresh returns the pair WITH the error, and the caller adopts
+		// it. The hub rotated already, so the old access token is unusable
+		// and the pair held here is the only live one; returning nil
+		// discarded it and left the process presenting a token the hub
+		// retired.
+		return &next, fmt.Errorf("%w: %w", ErrCredentialsNotSaved, err)
 	}
 	return &next, nil
 }
@@ -260,21 +318,17 @@ type refreshBody struct {
 // next command answers ErrNotLoggedIn -- whose message specifies
 // `leapmux control auth login` -- instead of retrying a credential that can
 // never work again.
-func postRefresh(ctx context.Context, hubURL, refreshToken string) (refreshBody, error) {
-	// locallisten.RESTClient, which the login-flow REST calls in the cmd
-	// package also use: the two packages cannot share a helper between
-	// themselves, because cmd imports this one, so they both reach for the
-	// leaf instead.
-	hc, baseURL := locallisten.RESTClient(hubURL, refreshTimeout)
+//
+// It reuses the client's OWN transport rather than building one. For a
+// `unix:`/`npipe:` hub each build allocates an http.Transport whose
+// IdleConnTimeout is zero and that nothing closes, so a long-running
+// `control events` leaked one idle connection and its read goroutine per
+// hourly rotation. The 30-second budget of a rotation is enforced by the
+// request context's deadline, which refreshTimeout already sets.
+func (c *Client) postRefresh(ctx context.Context, refreshToken string) (refreshBody, error) {
 	form := url.Values{"refresh_token": {refreshToken}}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		locallisten.JoinPath(baseURL, "/auth/cli/refresh"),
-		strings.NewReader(form.Encode()))
-	if err != nil {
-		return refreshBody{}, err
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := hc.Do(req)
+	resp, err := PostForm(ctx, c.HTTPClient,
+		locallisten.JoinPath(c.connectURL, "/auth/cli/refresh"), form)
 	if err != nil {
 		return refreshBody{}, err
 	}
@@ -291,11 +345,7 @@ func postRefresh(ctx context.Context, hubURL, refreshToken string) (refreshBody,
 		return body, nil
 	}
 
-	var oerr struct {
-		Error            string `json:"error"`
-		ErrorDescription string `json:"error_description"`
-	}
-	_ = json.NewDecoder(resp.Body).Decode(&oerr)
+	oerr := ReadOAuthError(resp)
 	if oerr.Error == "invalid_grant" {
 		if oerr.ErrorDescription != "" {
 			return refreshBody{}, fmt.Errorf("%w: %s", ErrCredentialRejected, oerr.ErrorDescription)
@@ -305,24 +355,32 @@ func postRefresh(ctx context.Context, hubURL, refreshToken string) (refreshBody,
 	return refreshBody{}, fmt.Errorf("refresh failed: %s", resp.Status)
 }
 
-// retryAfterUnauthenticated refreshes once after a rejected unary call and
-// reports whether the caller should retry.
+// errNothingToRefresh reports a client with no credential to renew: an
+// anonymous client, a worker-IPC client, or a credential file with no
+// refresh token. The refusal is what keeps a genuinely unauthenticated
+// caller reading the hub's own error rather than a doubled one.
+var errNothingToRefresh = errors.New("this client holds no credential that can be renewed")
+
+// repairAfterUnauthenticated renews the credential after a rejected unary
+// call, so the replay can present a live token.
 //
-// It refuses to retry when the credential was permanently rejected (the file
-// is gone by then) or when nothing was refreshable, so a genuinely
-// unauthenticated caller sees the hub's own error rather than a doubled one.
+// It ADOPTS before it rotates. A 401 on a token that differs from the stored
+// one means another process rotated the credential and this client presented
+// the token it replaced, so the stored token is the repair and a rotation is
+// pure loss: two long-lived processes on one credential file would rotate on
+// nearly every call, each one retiring the token the other just adopted.
 //
-// The loaded credential is PASSED DOWN so doRefresh can tell "my token is
-// still the current one" from "somebody else already rotated it"; doRefresh
-// re-reads the file for that comparison, which is the point rather than a
-// duplicate. See its own comment.
-func (c *Client) retryAfterUnauthenticated(ctx context.Context) bool {
+// A rotation, when it runs, PASSES DOWN the credential this path read, so
+// doRefresh can tell "my token is still the current one" from "somebody else
+// already rotated it"; doRefresh re-reads the file for that comparison,
+// which is the point rather than a duplicate. See its own comment.
+func (c *Client) repairAfterUnauthenticated(ctx context.Context) error {
 	creds, ok := c.refreshableCredentials()
 	if !ok {
-		return false
+		return errNothingToRefresh
 	}
-	// The presented token is whatever this path read from disk: the 401 may
-	// come from a rotation another process already performed, in which case
-	// doRefresh adopts it without a network call.
-	return c.refreshBearer(ctx, creds) == nil
+	if creds.AccessToken != c.currentBearer() && c.adoptStoredBearer(creds) {
+		return nil
+	}
+	return c.refreshBearer(ctx, creds)
 }

@@ -39,14 +39,26 @@ WHERE s.id = ?
 --
 -- elevation_proven_at is the instant a step-up factor was proven and is rewritten
 -- ONLY by ElevateUserSession. elevation_expires_at slides forward on each
--- successful sensitive action, and the slide clamps itself to
--- elevation_proven_at + the maximum total window, so no Go path can extend an
--- elevation past its absolute cap.
+-- successful sensitive action.
+--
+-- TWO writers hold the absolute cap, and both bind store.ElevationMaxTotal.
+-- ElevateUserSession writes the anchor and the first deadline in one statement,
+-- so the store clamps that deadline in Go before it binds it (see
+-- ElevateSessionParams.ClampedExpiresAt). SlideUserSessionElevation measures
+-- the ceiling from the STORED anchor, which Go never reads, so it clamps in
+-- SQL. The slide alone is not sufficient: max(...) keeps the deadline
+-- monotone, so it can never SHORTEN an over-long deadline that the grant
+-- wrote. Neither parameter struct carries a ceiling field, so no caller can
+-- widen the cap, and none can pass 0 and make every slide a silent no-op.
 
 -- name: ElevateUserSession :execresult
 -- Proves a fresh factor: it restarts BOTH the anchor and the deadline, so a
--- new ceremony grants a whole new maximum window rather than topping up an
+-- new ceremony grants a whole new maximum window rather than adding to an
 -- old one.
+--
+-- elevation_expires_at arrives ALREADY CLAMPED to elevation_proven_at +
+-- store.ElevationMaxTotal; ElevateSessionParams.ClampedExpiresAt applies the
+-- cap, because both instants are Go values here. See the block comment above.
 UPDATE user_sessions
 SET elevation_proven_at = sqlc.arg(elevation_proven_at),
     elevation_expires_at = sqlc.arg(elevation_expires_at)
@@ -57,12 +69,13 @@ WHERE id = sqlc.arg(id)
 -- name: SlideUserSessionElevation :execresult
 -- max(...) keeps the deadline monotone (a late request cannot shorten it),
 -- and min(..., elevation_proven_at + cap) enforces the absolute ceiling. Both run in
--- SQL so a slide cannot over-extend whatever the caller passes. The cap is
--- added in MICROSECONDS, the same unit the Postgres and MySQL slides bind,
--- so one Go constant reaches all three dialects as one number rather than
--- as two. The strftime wrap re-emits the canonical layout every raw-string
--- comparison in this file depends on; see the ListAllActiveSessions note
--- below.
+-- SQL so a slide cannot over-extend whatever the caller passes.
+-- max_total_micros is NOT a caller parameter: sessions.go binds
+-- store.ElevationMaxTotal into it. The statement adds the cap in MICROSECONDS, the same
+-- unit the Postgres and MySQL slides bind, so one Go constant reaches all
+-- three dialects as one number rather than as two. The strftime wrap
+-- re-emits the canonical layout every raw-string comparison in this file
+-- depends on; see the ListAllActiveSessions note below.
 --
 -- There is no expires_at guard, unlike ElevateUserSession. A slide runs only
 -- after a request that this session just authenticated, so
@@ -70,13 +83,21 @@ WHERE id = sqlc.arg(id)
 -- elevation cannot be resurrected here, because elevation_expires_at > now must
 -- hold.
 --
--- The window_deadline parameter is ALSO compared against elevation_expires_at
--- in the WHERE, which is what gives sqlc a column type for it: inside
--- min()/LEAST() it has none, and an untyped parameter escapes the
--- compile-time guarantee that only a canonical-layout valuer can be bound
--- (see TestGeneratedInterfaceParamsAreAllowlisted). The comparison is not
--- decoration: it also skips the write entirely when the caller's deadline is
--- not ahead of the stored one.
+-- window_deadline stays UNTYPED in this dialect, and that is the sqlite truth
+-- rather than the shared one. The parameter first appears inside min(), which
+-- carries no column type, and sqlc keeps that first inference even though the
+-- WHERE below compares the same parameter against elevation_expires_at. The
+-- Postgres and MySQL twins ARE typed by that comparison; this one is not, and
+-- the generated field is `WindowDeadline interface{}` (the sqlite entry in
+-- TestGeneratedInterfaceParamsAreAllowlisted pins it).
+--
+-- So the BIND SITE owns the layout here. sessions.go passes
+-- sqltime.NewSQLiteTime, and it must: a raw time.Time stores modernc's driver
+-- layout and breaks every raw-string comparison on elevation_expires_at.
+-- TestAllDatetimeColumnsStoreCanonicalLayout fails on that bind.
+--
+-- The comparison is not decoration even so: it skips the write entirely when
+-- the caller's deadline is not ahead of the stored one.
 UPDATE user_sessions
 SET elevation_expires_at = max(
         elevation_expires_at,

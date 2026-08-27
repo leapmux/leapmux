@@ -37,11 +37,24 @@ func lastPasskeyNeedsPasswordError() error {
 		fmt.Errorf("cannot delete your only passkey; provide new_password or use DeactivatePasskeyAuth"))
 }
 
+// deactivationNeedsPasswordError is the same rule for the other leg:
+// DeactivatePasskeyAuth deletes every passkey at once, so an account with no
+// password must supply one here too.
+//
+// A SEPARATE constructor rather than a shared one, and the wording is the
+// reason. lastPasskeyNeedsPasswordError ends "or use DeactivatePasskeyAuth",
+// which offers a remedy that this RPC IS -- inside it that clause reads as an
+// instruction to call the call that is already running.
+func deactivationNeedsPasswordError() error {
+	return connect.NewError(connect.CodeFailedPrecondition,
+		fmt.Errorf("cannot turn off passkey sign-in without a password; provide new_password"))
+}
+
 func rejectSoloPasskeyManagement(solo bool) error {
 	return rejectSolo(solo, "passkey management")
 }
 
-// stepUpAdmission records HOW passkeyManagementAuth admitted a mutation, so
+// stepUpAdmission records HOW stepUpMutationAuth admitted a mutation, so
 // the locked re-check can re-derive the same decision from the locked row
 // instead of trusting the pre-lock peek.
 type stepUpAdmission struct {
@@ -60,8 +73,8 @@ type stepUpAdmission struct {
 // opens with, in the one order that is correct, and returns the acting user.
 //
 // A helper rather than six copies, for the reason elevationCaller gives for
-// its own four: the ORDER is the rule. Solo mode is refused FIRST, because it
-// authenticates every request as the synthetic solo user and has no
+// its own four: the ORDER is the rule. This refuses solo mode FIRST, because
+// solo mode authenticates every request as the synthetic solo user and has no
 // credential store to act on, so resolving the credential first would answer
 // a solo caller with a message about a user that is not the one it means.
 // A seventh handler that forgot the refusal would reach a store the mode does
@@ -73,12 +86,34 @@ func (s *UserService) passkeyManagementCaller(ctx context.Context) (*auth.UserIn
 	return auth.MustGetUser(ctx)
 }
 
-// passkeyManagementAuth decides whether a passkey-management mutation (or
-// ChangePassword) may proceed.
+// stepUpMutationAuth decides whether a step-up mutation may proceed. The
+// mutations are the four passkey verbs and ChangePassword.
 //
-// Every account elevates, through requireElevation: one proven factor admits
-// every sensitive action for auth.ElevationWindow, and each success slides
-// the window.
+// It admits every ELEVATABLE credential: a browser session, and a
+// command-line credential, which proves its factor in a browser through the
+// /auth/cli/elevate-authorization leg and carries a window of its own. A
+// delegation bearer and solo mode carry no window and cannot obtain one, so
+// requireElevation refuses them with the plain message that states the
+// remedy: sign in from a browser.
+//
+// There is NO extra session rule here, and an earlier pass that added one was
+// wrong twice over. It refused a credential the whole elevation design admits
+// -- every other protected surface takes it -- and it hid two real defects
+// rather than correcting them: the locked re-check was session-shaped, and
+// the revocation had no exclusion for the acting command-line credential.
+// Both are corrected at the source, in recheckActingCredentialUnderLock and
+// in revokeOtherCredentialsPreservingActingCredential, so the whole path is
+// credential-shaped rather than session-shaped.
+//
+// The one leg a command line still cannot run is the REGISTRATION ceremony.
+// BeginPasskeyRegistration and FinishPasskeyRegistration need a WebAuthn
+// authenticator, which is a property of WebAuthn and not of this gate; the
+// management verbs (rename, delete, deactivate) and ChangePassword work from
+// an elevated command-line credential.
+//
+// Every admitted account elevates, through requireElevation: one proven
+// factor admits every sensitive action for auth.ElevationWindow, and each
+// success slides the window.
 //
 // An account with no password and no passkey has nothing to elevate WITH, so
 // it takes a SECOND rule beside that one -- the first-credential rule: a
@@ -93,16 +128,21 @@ func (s *UserService) passkeyManagementCaller(ctx context.Context) (*auth.UserIn
 //     defect. The OAuth re-authentication leg grants an elevation to exactly
 //     this account shape -- providerMayElevateAccount reads the same
 //     predicate this branch does -- so with the first-credential rule as the
-//     only arm, that leg could never help the two procedures it exists for.
-//     A user proved a factor at their identity provider, came back, and was
-//     refused with the same message as before; only signing out and in again
-//     worked.
+//     only branch, that leg could never help the two procedures it exists
+//     for. A user proved a factor at their identity provider, came back, and
+//     the hub refused them with the same message as before; only signing out
+//     and in again worked.
 //
-// Both branches already separate "a session that never proved itself" from
-// "a credential that never can": the first-credential branch does it in
-// assertFirstCredentialAuthIsFresh, and requireElevation does it for the
-// elevation branch. So a bearer is told to sign in from a browser on either
-// path, and never handed a prompt that its retry would fail again.
+// Each branch answers "a credential that never can prove itself" for itself,
+// so neither one gives such a caller a prompt that its retry would fail
+// again: requireElevation reaches requireElevatableCredential on the
+// elevation branch, and assertFirstCredentialAuthIsFresh refuses a bearer on
+// the first-credential branch. The two answers differ, and the difference is
+// the account shape rather than an oversight. An elevated command-line
+// credential proves that somebody stood at a browser inside the window, so
+// the elevation branch takes it; the first-credential branch has no
+// elevation to read and rests on a sign-in instant instead, which a
+// long-lived bearer does not have.
 //
 // The count read happens outside the user-auth transaction: it is one
 // indexed COUNT, and on SQLite that transaction holds the single writer lock
@@ -113,17 +153,17 @@ func (s *UserService) passkeyManagementCaller(ctx context.Context) (*auth.UserIn
 // take that slack from it rather than from a raw duration: p.grace reaches
 // each rule only through firstCredentialWindow and elevationInstant, so a
 // third rule added here cannot read the credential and forget the slack.
-// The locked re-check in runPasskeyManagementTx takes the same p, which is
-// what keeps the two evaluations of one window in step.
-func (s *UserService) passkeyManagementAuth(ctx context.Context, p stepUpParams, user *store.User) (stepUpAdmission, error) {
+// The locked re-check in runStepUpMutationTx takes the same p, which is
+// what keeps the two evaluations of one window consistent.
+func (s *UserService) stepUpMutationAuth(ctx context.Context, p stepUpParams, user *store.User) (stepUpAdmission, error) {
 	// One instant for the whole fork. The two rules decide the same question
 	// -- may this caller act now -- so a clock that moved between them would
 	// let a test pin a disagreement rather than the rule.
 	now := s.now()
-	// The elevated arm is tried first for EVERY shape, because a session that
-	// proved a factor is admitted on the strongest authority available and
-	// must not be sent back for a weaker one. The admission is reported as
-	// the elevated arm too (firstCredential stays false), so the locked
+	// The elevated branch runs first for EVERY shape, because this admits a
+	// session that proved a factor on the strongest authority available and
+	// must not send it back for a weaker one. The admission reports the
+	// elevated branch too (firstCredential stays false), so the locked
 	// re-check verifies the window rather than the account shape -- see
 	// recheckStepUpUnderLock.
 	//
@@ -161,7 +201,7 @@ func (s *UserService) passkeyManagementAuth(ctx context.Context, p stepUpParams,
 // admission.
 //
 // A raised flag is a durable identity only while an ADDRESS exists. The two
-// can come apart: resolveEmailVerified excludes a cleared address from the
+// can separate: resolveEmailVerified excludes a cleared address from the
 // lowering rule on purpose, so an administrator who clears a verified
 // address leaves email_verified raised over an empty column. The flag alone
 // then proves nothing about who holds the session -- and this is the rule
@@ -183,9 +223,10 @@ func assertFirstCredentialWithoutPasswordAllowed(ctx context.Context, tx store.S
 		return nil
 	}
 	// "password or passkey", not "passkey": ChangePassword reaches this
-	// through the same rule, so a user setting their FIRST password was told
-	// to act before adding a passkey they never asked for. One message,
-	// because both callers share one rule and a second wording would drift.
+	// through the same rule, so the old message told a user who set their
+	// FIRST password to act before adding a passkey they never asked for.
+	// One message, because both callers share one rule and a second wording
+	// would drift.
 	return connect.NewError(connect.CodeFailedPrecondition,
 		fmt.Errorf("verify your email or link an OAuth provider before setting this account's first password or passkey"))
 }
@@ -203,17 +244,17 @@ const firstCredentialAuthFreshness = 5 * time.Minute
 //
 // It is DERIVED, not chosen. Finish re-runs the same admission that Begin
 // ran, against the same fixed instants, so one window evaluated at both
-// legs cannot make the guarantee for ANY value: a Begin admitted at the
-// last moment is refused at Finish, AFTER the user answered the biometric
-// prompt, and the credential the authenticator already created is
-// discarded. Finish is unreachable without a Begin that passed within one
+// legs cannot make the guarantee for ANY value: Finish refuses a Begin
+// admitted at the last moment, AFTER the user answered the biometric
+// prompt, and the hub discards the credential the authenticator already
+// created. Finish is unreachable without a Begin that passed within one
 // ceremony, so extending by exactly one ceremony covers the gap and widens
 // nothing else.
 //
 // It applies to the ELEVATION rule as well as the first-credential one,
-// because both rules can lapse the same way. The first-credential rule was
-// widened first and the elevation rule was not, so a Begin admitted in the
-// last seconds of the two-hour window was refused at Finish and the client
+// because both rules can lapse the same way. An earlier change widened the
+// first-credential rule and left the elevation rule alone, so Finish refused
+// a Begin admitted in the last seconds of the two-hour window and the client
 // -- whose gate re-runs the WHOLE action -- opened a second ceremony while
 // the authenticator's first credential was never stored.
 const ceremonyGrace = hubwebauthn.CeremonyTTL
@@ -234,26 +275,41 @@ const ceremonyGrace = hubwebauthn.CeremonyTTL
 // expiry -- so "sign in again" is a self-service remedy that a long-lived
 // stolen cookie cannot perform without the identity provider.
 //
-// A bearer credential is refused outright rather than given a window. An API
-// or delegation token is minted once and lives until it is revoked, so its
-// creation time says nothing about who holds it now, and no human is present
-// to re-authenticate. Solo mode never arrives here: every caller refuses it
-// before the admission runs.
+// This refuses a bearer credential outright rather than giving it a window.
+// The hub mints an API or delegation token once, and it lives until a revoke
+// ends it, so its creation time says nothing about who holds it now, and no
+// human is present to re-authenticate.
+//
+// The bearer refusal below is the AUTHORITATIVE one for this branch, and it
+// is the only refusal a bearer meets on it: stepUpMutationAuth admits every
+// elevatable credential, so a command-line credential reaches this line
+// whenever the account holds no password and no passkey. Its remedy is the
+// sibling branch -- elevate through the browser leg, and the elevation
+// branch takes it before this rule ever runs. The same refusal also fails
+// closed on a nil UserInfo, which must never reach the AuthenticatedAt read
+// below. Solo mode never arrives here: every caller refuses it before the
+// admission runs.
 func assertFirstCredentialAuthIsFresh(userInfo *auth.UserInfo, now time.Time, maxAge time.Duration) error {
 	if userInfo == nil || userInfo.Credential.SessionID() == "" {
-		// NO marker. A bearer can never carry an elevation, so a prompt would
-		// ask for a factor and then refuse the retry for the same reason --
-		// which is exactly what requireElevatableSession says about its own
-		// refusal.
+		// NO marker, and the message states the remedy instead. A delegation
+		// bearer can carry no elevation at all, so a step-up prompt would ask
+		// for a factor and then refuse the retry for the same reason -- what
+		// requireElevatableCredential says about its own refusal. A
+		// command-line credential can carry one, and the elevated branch
+		// above already took it if it did; reaching this line means it did
+		// not, and this account elevates only at its identity provider, in a
+		// browser. Signing in there is a remedy BOTH kinds can act on, and it
+		// is the only remedy for an account whose durable identity is a
+		// verified email with no provider behind it.
 		return connect.NewError(connect.CodeFailedPrecondition,
 			fmt.Errorf("sign in from a browser to set this account's first password or passkey"))
 	}
 	if userInfo.AuthenticatedAt.IsZero() || now.Sub(userInfo.AuthenticatedAt) > maxAge {
 		// WITH the marker, because a prompt now resolves this. The two
-		// admissions are siblings, so a session that proves a factor at its
-		// identity provider is admitted on the elevated arm even though its
+		// admissions are siblings, so the elevated branch admits a session that
+		// proves a factor at its identity provider even though its
 		// sign-in is stale -- and for an account that cannot elevate at all,
-		// the prompt's own copy names the remedy ("sign in again, then set a
+		// the prompt's own copy states the remedy ("sign in again, then set a
 		// password"), which is this message. Without the marker the client
 		// printed this sentence as raw text beside a form and offered
 		// nothing.
@@ -267,7 +323,7 @@ func assertFirstCredentialAuthIsFresh(userInfo *auth.UserInfo, now time.Time, ma
 // account must hold a durable identity, and the session must have
 // authenticated recently. One function so the two halves of one rule have
 // one name and one test seam, and so a later edit cannot add a check to one
-// arm and leave the other admitting.
+// half and leave the other admitting.
 //
 // now is a parameter rather than a call to time.Now, so this branch reads
 // the SAME clock as the elevation branch beside it -- see UserService.Now.
@@ -294,9 +350,9 @@ type stepUpParams struct {
 	//
 	// Read it through the two methods below and never directly. The grace
 	// must reach EVERY predicate a leg evaluates, and it did not: the
-	// admission applied it and the locked re-check did not, so a Finish that
-	// the admission admitted was refused again inside the transaction --
-	// exactly the case ceremonyGrace exists for.
+	// admission applied it and the locked re-check did not, so the transaction
+	// refused a Finish again although the admission admitted it -- exactly the
+	// case ceremonyGrace exists for.
 	grace time.Duration
 }
 
@@ -332,29 +388,29 @@ func finishStepUp(userInfo *auth.UserInfo) stepUpParams {
 	return p
 }
 
-// passkeyMutationResult is what a committed mutation tells
-// runPasskeyManagementTx to do after the transaction closes.
+// stepUpMutationResult is what a committed mutation tells
+// runStepUpMutationTx to do after the transaction closes.
 //
 // The zero value means "nothing further", which is the right default: a
 // rename and a registration Finish change no credential the account's other
 // sessions stand on, so they revoke nothing.
-type passkeyMutationResult struct {
+type stepUpMutationResult struct {
 	// revokeOtherCredentials asks for the in-process teardown of every
 	// credential this account holds EXCEPT the acting session, which the
 	// transaction restamped to authGeneration.
 	revokeOtherCredentials bool
 	// authGeneration is the generation the transaction committed. It is what
-	// the teardown compares against, so an older lease or channel is closed
-	// and the surviving session's own are not.
+	// the teardown compares against, so the teardown closes an older lease or
+	// channel and spares the surviving session's own.
 	authGeneration int64
 }
 
-// runPasskeyManagementTx admits and runs a passkey-management mutation
+// runStepUpMutationTx admits and runs a passkey-management mutation
 // (Finish/Rename/Delete/Deactivate, and ChangePassword's step-up side). The
 // admission runs OUTSIDE the user-auth transaction, and so does prepare --
 // callers hash a new password there, and Argon2 must not hold SQLite's
 // single writer lock (see auth.Login's comment on the same trade). Inside
-// the transaction the user row is re-read and the admission is re-derived
+// the transaction this re-reads the user row and re-derives the admission
 // when the credential state moved between the peek and the lock, mirroring
 // auth.Login's prelock-verify/locked-recheck pattern.
 //
@@ -366,23 +422,23 @@ type passkeyMutationResult struct {
 //
 // mutate REPORTS what the commit did, and this runs the after-commit half.
 // Three callers used to hoist a pair of variables above the call, assign them
-// inside the closure and repeat the same post-commit revocation, so the rule
-// "revoke after the transaction commits, never inside it" was re-typed at
-// every site and a fourth mutation could commit and forget it. Here the
+// inside the closure and repeat the same post-commit revocation, so each
+// site re-typed the rule "revoke after the transaction commits, never inside
+// it", and a fourth mutation could commit and forget it. Here the
 // ordering is a property of this function.
-func (s *UserService) runPasskeyManagementTx(
+func (s *UserService) runStepUpMutationTx(
 	ctx context.Context,
 	p stepUpParams,
 	prepare func(peek *store.User) error,
-	mutate func(tx store.Store, user *store.User) (passkeyMutationResult, error),
+	mutate func(tx store.Store, user *store.User) (stepUpMutationResult, error),
 ) error {
 	userInfo := p.userInfo
-	var outcome passkeyMutationResult
+	var outcome stepUpMutationResult
 	peek, err := s.store.Users().GetByID(ctx, userInfo.ID.String())
 	if err != nil {
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("query user: %w", err))
 	}
-	admission, err := s.passkeyManagementAuth(ctx, p, peek)
+	admission, err := s.stepUpMutationAuth(ctx, p, peek)
 	if err != nil {
 		return err
 	}
@@ -410,11 +466,22 @@ func (s *UserService) runPasskeyManagementTx(
 		return err
 	}
 	if outcome.revokeOtherCredentials {
-		// AFTER the commit, and this is the one place that ordering is
-		// stated. The acting session survives at the new generation, which
+		// AFTER the commit, and this is the one place that states the
+		// ordering. The acting session survives at the new generation, which
 		// the transaction already restamped, so the in-process teardown of
 		// every older-generation lease and channel runs against a session
-		// that will not be caught by it.
+		// that it does not catch.
+		//
+		// A command-line credential passes an empty session id, so the
+		// preserve step does nothing and the teardown closes that
+		// credential's own leases and channels along with the rest. It is a
+		// transient disconnect and never a sign-out: the transaction
+		// restamped the api_tokens row too, so the very next request
+		// authenticates and rebuilds the context. Restamping a BEARER's
+		// holders needs a bearer-keyed index that the lease registry and the
+		// channel manager do not have today --
+		// AuthContextRegistry.RestampSessionLeaseGeneration and
+		// Manager.RestampSessionGeneration are both keyed by session id.
 		s.lifecycle.RevokeUserPreservingSession(
 			userInfo.ID.String(), userInfo.Credential.SessionID(), outcome.authGeneration)
 	}
@@ -426,41 +493,41 @@ func (s *UserService) runPasskeyManagementTx(
 // a concurrent write could have invalidated the pre-transaction peek.
 //
 // A structural flip (a password added or removed concurrently) changes WHICH
-// branch of passkeyManagementAuth applies, so the admission the caller
+// branch of stepUpMutationAuth applies, so the admission the caller
 // obtained no longer describes the state the mutation would commit against;
 // it fails with a clean retry error.
 //
 // There is no password re-verification here any more. The elevation branch
-// verifies no secret at THIS call -- a factor was proven earlier and the
+// verifies no secret at THIS call -- somebody proved a factor earlier and the
 // session carries the result -- so a concurrently rotated password hash has
 // nothing left to re-check against. The password-set flip above still
 // catches the case that matters, because it is the case that changes the
 // rule.
 //
 // What a rotation DOES invalidate is the acting session, and that is what
-// the elevated arm re-reads. Every password rotation revokes the account's
+// the elevated branch re-reads. Every password rotation revokes the account's
 // sessions under this same lock, so a mutation admitted before the rotation
 // waits here and would otherwise commit on the authority of a session the
 // rotation already deleted -- the owner changes their password to lock an
 // attacker out, and the attacker's queued passkey deletion lands anyway.
-// One indexed primary-key read, only on the elevated arm.
+// One indexed primary-key read, only on the elevated branch.
 //
-// The first-credential admission is RE-DERIVED rather than spot-checked. It
-// used to re-read the passkey count alone -- an enumeration of the inputs
-// somebody believed a concurrent write could move -- which left the
+// This RE-DERIVES the first-credential admission rather than spot-checking
+// it. It used to re-read the passkey count alone -- an enumeration of the
+// inputs somebody believed a concurrent write could move -- which left the
 // durable-identity half unguarded: an administrator who cleared the account's
 // verified address while this request queued still let the session attach the
-// account's first password or passkey on an authority that had disappeared.
-// admitFirstCredential already takes a store.Store, so running the WHOLE rule
-// against the locked row costs the same query the enumeration did and cannot
-// fall behind the rule it is meant to re-check.
+// account's first password or passkey on an authority that already
+// disappeared. admitFirstCredential already takes a store.Store, so running
+// the WHOLE rule against the locked row costs the same query the enumeration
+// did and cannot drift from the rule it is meant to re-check.
 //
 // It also re-evaluates the five-minute window at now, which refuses a request
 // whose window lapsed during the Argon2 hash and the lock wait -- the same
-// answer the elevated arm gives for its own lapsed window.
+// answer the elevated branch gives for its own lapsed window.
 //
 // The re-derivation runs only for a passwordless account that had no passkey,
-// so the writer lock is not paying for it on the common path.
+// so the writer lock does not pay for it on the common path.
 func recheckStepUpUnderLock(
 	ctx context.Context,
 	tx store.Store,
@@ -476,11 +543,11 @@ func recheckStepUpUnderLock(
 		return stepUpStateMovedError()
 	}
 	if !admission.firstCredential {
-		return recheckActingSessionUnderLock(ctx, tx, p, now)
+		return recheckActingCredentialUnderLock(ctx, tx, p, now)
 	}
-	// The account was admitted BECAUSE it held no credential to present. A
-	// registration that committed in the window gave it one, so the caller
-	// must elevate instead; without this re-read, two concurrent
+	// stepUpMutationAuth admitted the account BECAUSE it held no credential
+	// to present. A registration that committed in the window gave it one, so
+	// the caller must elevate instead; without this re-read, two concurrent
 	// first-credential mutations both commit and the second sets a password
 	// with no step-up at all.
 	nothingToElevateWith, err := accountElevatesOnlyThroughAProvider(ctx, tx, locked)
@@ -491,26 +558,62 @@ func recheckStepUpUnderLock(
 		return stepUpStateMovedError()
 	}
 	// The other half of the same rule, against the locked row. A refusal here
-	// is the rule's own message rather than the retry error, because it names
+	// is the rule's own message rather than the retry error, because it states
 	// what the caller must do next and a retry would meet the same answer.
 	return admitFirstCredential(ctx, tx, p.userInfo, locked, now, p.firstCredentialWindow())
 }
 
-// recheckActingSessionUnderLock refuses a mutation whose elevation window
+// recheckActingCredentialUnderLock refuses a mutation whose elevation window
 // closed while the request waited for the lock.
 //
-// It runs only on the elevated arm: the first-credential arm is admitted by
-// the session's authentication instant, which no concurrent write moves, and
-// its own count re-read covers what does. A bearer never reaches here,
-// because requireElevation refused it before the transaction opened.
+// It runs only on the elevated branch: the credential's authentication
+// instant admits the first-credential branch, and no concurrent write moves
+// that instant, so its own count re-read covers what does.
 //
-// An ABSENT session row is tolerated when the OWNER ended the session, and
-// that is the one case this does not refuse. Sessions().Delete does not
+// It routes on ElevatableRow, exactly as slideElevation and DropElevation
+// do, because BOTH elevatable kinds reach it. A session-shaped re-check was
+// a defect that no test caught while a second rule refused a command-line
+// credential at the gate: SessionID() is empty for an api_tokens row, so an
+// elevated command-line credential passed the gate and then met "account
+// credentials changed; please retry" inside the transaction, on every
+// attempt, permanently. A credential kind that carries no window at all keeps
+// the refusal, and no caller can reach that case -- requireElevation refuses
+// it before the transaction opens.
+//
+// refuseIfActingAuthorityMovedFrom is the same rule at the other three
+// surfaces, and this stays consistent with it rather than contradicting it:
+// there a bearer passes on the credential epoch alone, here it re-reads the
+// api_tokens row for the one further fact this call needs, which is the
+// window.
+//
+// Nil-safe, like the elevatable-credential rules in elevation_service.go.
+// recheckCredentialEpochUnderLock already refuses a nil UserInfo before this
+// runs, so this guard is the second one; it stays because a rule that reads
+// a credential must never panic on the absence of one.
+func recheckActingCredentialUnderLock(ctx context.Context, tx store.Store, p stepUpParams, now time.Time) error {
+	if p.userInfo == nil {
+		return stepUpStateMovedError()
+	}
+	sessionID, apiTokenID, ok := p.userInfo.Credential.ElevatableRow()
+	switch {
+	case !ok:
+		return stepUpStateMovedError()
+	case sessionID != "":
+		return recheckActingSessionUnderLock(ctx, tx, sessionID, p, now)
+	default:
+		return recheckActingAPITokenUnderLock(ctx, tx, apiTokenID, p, now)
+	}
+}
+
+// recheckActingSessionUnderLock is the session branch of the re-check.
+//
+// This tolerates an ABSENT session row when the OWNER ended the session, and
+// that is the one case it does not refuse. Sessions().Delete does not
 // contend on the user-auth lock, so a plain sign-out in another tab can
 // remove the acting session in the middle of a change the user legitimately
 // started, and rolling that change back was a real regression once already
 // (see TestChangePassword_ToleratesConcurrentActingSessionDeletion).
-// Refusing it would buy very little: a caller that reached this point
+// Refusing it would gain very little: a caller that reached this point
 // already proved a factor, so the window it would close is one in-flight
 // request by somebody who held the credential.
 //
@@ -529,16 +632,14 @@ func recheckStepUpUnderLock(
 // share one snapshot and cannot disagree: an administrator's DELETE is
 // visible here only together with the event its own transaction inserted.
 //
-// A LAPSED window is different, and it is refused. Nothing legitimate waits
+// A LAPSED window is different, and this refuses it. Nothing legitimate waits
 // two hours on this lock, so a request whose window closed while it queued
 // is not a race to tolerate. The leg's grace applies to that predicate and
 // to nothing else here: the row lookup keeps the true instant, or a grace
 // would revive a session that expired rather than extend a proven factor.
-func recheckActingSessionUnderLock(ctx context.Context, tx store.Store, p stepUpParams, now time.Time) error {
-	sessionID := p.userInfo.Credential.SessionID()
-	if sessionID == "" {
-		return stepUpStateMovedError()
-	}
+func recheckActingSessionUnderLock(
+	ctx context.Context, tx store.Store, sessionID string, p stepUpParams, now time.Time,
+) error {
 	session, err := tx.Sessions().GetByID(ctx, sessionID, now)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -552,14 +653,56 @@ func recheckActingSessionUnderLock(ctx context.Context, tx store.Store, p stepUp
 	return nil
 }
 
-// refuseIfSessionWasRevoked answers the absent-row case: an administrator's
-// revoke is refused, and the owner's own sign-out is tolerated.
+// recheckActingAPITokenUnderLock is the command-line branch of the re-check.
+// It asks the api_tokens row the same question the session branch asks the
+// user_sessions row: is the window that admitted this request still current
+// at this instant.
+//
+// It REFUSES an absent row, where the session branch tolerates one. The
+// tolerance there exists for the owner's own sign-out in another tab, which
+// deletes the session row and means "end this browser", not "end this
+// change". A command-line credential has no such verb: nothing deletes a
+// live api_tokens row, and the cleanup sweep removes only a row that is
+// already revoked or long expired. So absence here means the credential is
+// gone, and committing a password change on a credential that is gone is the
+// wrong direction to fail in.
+//
+// A REVOKED row is refused for the same reason, and it is the case the
+// session branch answers with the revocation event kind. A single-credential
+// revoke -- an administrator's, or the owner's own from the credential list
+// -- leaves the account's credential epoch where it is, so
+// recheckCredentialEpochUnderLock cannot see it. The column can, and it is
+// already on the row this read returned.
+//
+// The leg's grace applies to the window predicate and to nothing else, for
+// the reason the session branch gives.
+func recheckActingAPITokenUnderLock(
+	ctx context.Context, tx store.Store, apiTokenID string, p stepUpParams, now time.Time,
+) error {
+	row, err := tx.APITokens().GetByID(ctx, apiTokenID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return stepUpStateMovedError()
+		}
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("re-read the acting credential: %w", err))
+	}
+	if row.RevokedAt != nil {
+		return stepUpStateMovedError()
+	}
+	if !auth.NewElevation(row.ElevationProvenAt, row.ElevationExpiresAt).IsCurrent(p.elevationInstant(now)) {
+		return stepUpStateMovedError()
+	}
+	return nil
+}
+
+// refuseIfSessionWasRevoked answers the absent-row case: it refuses an
+// administrator's revoke, and it tolerates the owner's own sign-out.
 //
 // A read failure REFUSES. This runs only when the acting session already
 // disappeared, so the question it cannot answer is "did an administrator
 // take this session away", and committing a step-up mutation on an
 // unanswered version of that question is the wrong direction to fail in.
-// The cost of the strict arm is one retry for a user who signed out in
+// The cost of the strict branch is one retry for a user who signed out in
 // another tab while the database was unreachable.
 func refuseIfSessionWasRevoked(ctx context.Context, tx store.Store, sessionID string) error {
 	revoked, err := tx.RevocationEvents().SessionWasRevoked(ctx, sessionID)
@@ -577,10 +720,10 @@ func refuseIfSessionWasRevoked(ctx context.Context, tx store.Store, sessionID st
 // account revoked while the request waited for the lock.
 //
 // This is what replaces the password-hash re-verification the elevation
-// model removed. The elevated arm verifies no secret at THIS call -- a
-// factor was proven earlier and the session carries the result -- so a
+// model removed. The elevated branch verifies no secret at THIS call --
+// somebody proved a factor earlier and the session carries the result -- so a
 // concurrently rotated hash has nothing left to re-check against. What a
-// rotation DOES do is bump the account's credential epoch, and so does an
+// rotation DOES do is move the account's credential epoch, and so does an
 // administrator's reset and a "revoke every credential". Reading the epoch
 // therefore refuses every one of them with one comparison.
 //
@@ -590,15 +733,17 @@ func refuseIfSessionWasRevoked(ctx context.Context, tx store.Store, sessionID st
 // them; the epoch can. Sessions().Delete alone -- Logout, and the admin's
 // per-session revoke -- leaves the epoch where it is, while every path that
 // means "this account's credentials are no longer trusted"
-// (revokeEveryUserCredential, revokeOtherCredentialsPreservingSession)
+// (revokeEveryUserCredential,
+// revokeOtherCredentialsPreservingActingCredential)
 // moves it.
 //
 // Without this, the owner changes their password to lock an attacker out,
 // the rotation deletes the attacker's session, and the attacker's queued
-// passkey deletion then finds no row, is tolerated, and commits anyway.
+// passkey deletion then finds no row, escapes the refusal, and commits
+// anyway.
 //
-// It covers BOTH arms of the admission. The first-credential arm rests on
-// the session's authentication instant, which no concurrent write moves --
+// It covers BOTH branches of the admission. The first-credential branch rests
+// on the session's authentication instant, which no concurrent write moves --
 // but the epoch that authorises that session is a different fact, and a
 // revocation moves it.
 func recheckCredentialEpochUnderLock(locked *store.User, userInfo *auth.UserInfo) error {
@@ -631,7 +776,7 @@ func (s *UserService) BeginPasskeyRegistration(ctx context.Context, req *connect
 	}
 	// Peek only: the ceremony writes nothing yet, so this refuses an
 	// un-elevated caller BEFORE the browser prompt rather than after it.
-	if _, err := s.passkeyManagementAuth(ctx, entryStepUp(userInfo), user); err != nil {
+	if _, err := s.stepUpMutationAuth(ctx, entryStepUp(userInfo), user); err != nil {
 		return nil, mapPasskeyConnectError(ctx, err)
 	}
 
@@ -668,7 +813,7 @@ func (s *UserService) FinishPasskeyRegistration(ctx context.Context, req *connec
 
 	var passkey *store.PasskeyCredential
 	var verified hubwebauthn.FinishedSignUpCredential
-	// The attestation is verified in prepare -- after admission, still
+	// prepare verifies the attestation -- after admission, still
 	// OUTSIDE the write transaction. It is a keystore decrypt per existing
 	// credential plus a JSON/base64/CBOR parse of a body capped only at the
 	// request limit, and on SQLite the transaction holds the single writer
@@ -676,10 +821,10 @@ func (s *UserService) FinishPasskeyRegistration(ctx context.Context, req *connec
 	// credential INSERT needs the lock.
 	//
 	// The FINISH leg of a ceremony a Begin already admitted, so the
-	// first-credential window covers that ceremony too. Without it a
-	// registration admitted near the end of the window is refused AFTER
+	// first-credential window covers that ceremony too. Without it Finish
+	// refuses a registration admitted near the end of the window, AFTER
 	// the user answered the biometric prompt.
-	if err := s.runPasskeyManagementTx(ctx, finishStepUp(userInfo),
+	if err := s.runStepUpMutationTx(ctx, finishStepUp(userInfo),
 		func(peek *store.User) error {
 			wa, err := s.webauthnService(ctx)
 			if err != nil {
@@ -688,13 +833,13 @@ func (s *UserService) FinishPasskeyRegistration(ctx context.Context, req *connec
 			verified, err = wa.VerifyRegistration(ctx, peek.ID, req.Msg.GetSessionId(), req.Msg.GetCredentialJson())
 			return err
 		},
-		func(tx store.Store, user *store.User) (passkeyMutationResult, error) {
+		func(tx store.Store, user *store.User) (stepUpMutationResult, error) {
 			wa, err := s.webauthnServiceWithStore(ctx, tx)
 			if err != nil {
-				return passkeyMutationResult{}, err
+				return stepUpMutationResult{}, err
 			}
 			passkey, err = wa.StoreCredential(ctx, tx, id.Generate(), user.ID, verified, friendlyName)
-			return passkeyMutationResult{}, err
+			return stepUpMutationResult{}, err
 		}); err != nil {
 		return nil, mapPasskeyConnectError(ctx, err)
 	}
@@ -714,8 +859,8 @@ func (s *UserService) ListPasskeys(ctx context.Context, _ *connect.Request[leapm
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	// Surface an unconfigured hub instead of hiding it behind an empty
-	// list: the client cannot tell "no passkeys" from "passkeys cannot run
-	// here", and the settings page would render a broken section.
+	// list: the client cannot distinguish "no passkeys" from "passkeys cannot
+	// run here", and the settings page would render a broken section.
 	wa, err := s.webauthnService(ctx)
 	if err != nil {
 		return nil, mapPasskeyConnectError(ctx, err)
@@ -741,20 +886,20 @@ func (s *UserService) RenamePasskey(ctx context.Context, req *connect.Request[le
 	}
 
 	var row *store.PasskeyCredential
-	if err := s.runPasskeyManagementTx(ctx, entryStepUp(userInfo), nil, func(tx store.Store, user *store.User) (passkeyMutationResult, error) {
+	if err := s.runStepUpMutationTx(ctx, entryStepUp(userInfo), nil, func(tx store.Store, user *store.User) (stepUpMutationResult, error) {
 		got, err := tx.PasskeyCredentials().GetByID(ctx, req.Msg.GetId())
 		if err != nil {
-			return passkeyMutationResult{}, err
+			return stepUpMutationResult{}, err
 		}
 		if got.UserID != user.ID {
-			return passkeyMutationResult{}, store.ErrNotFound
+			return stepUpMutationResult{}, store.ErrNotFound
 		}
 		if err := tx.PasskeyCredentials().UpdateFriendlyName(ctx, got.ID, got.UserID, friendlyName); err != nil {
-			return passkeyMutationResult{}, err
+			return stepUpMutationResult{}, err
 		}
 		got.FriendlyName = friendlyName
 		row = got
-		return passkeyMutationResult{}, nil
+		return stepUpMutationResult{}, nil
 	}); err != nil {
 		return nil, mapPasskeyConnectError(ctx, err)
 	}
@@ -798,24 +943,38 @@ func (s *UserService) DeletePasskey(ctx context.Context, req *connect.Request[le
 		hashedNewPassword = hashed
 		return nil
 	}
-	if err := s.runPasskeyManagementTx(ctx, entryStepUp(userInfo), prepare, func(tx store.Store, user *store.User) (passkeyMutationResult, error) {
+	if err := s.runStepUpMutationTx(ctx, entryStepUp(userInfo), prepare, func(tx store.Store, user *store.User) (stepUpMutationResult, error) {
 		row, err := tx.PasskeyCredentials().GetByID(ctx, req.Msg.GetId())
 		if err != nil {
-			return passkeyMutationResult{}, err
+			return stepUpMutationResult{}, err
 		}
 		if row.UserID != user.ID {
-			return passkeyMutationResult{}, store.ErrNotFound
+			return stepUpMutationResult{}, store.ErrNotFound
 		}
 		count, err := tx.PasskeyCredentials().CountByUser(ctx, user.ID)
 		if err != nil {
-			return passkeyMutationResult{}, err
+			return stepUpMutationResult{}, err
+		}
+		// prepare hashed a replacement password because the PEEK said this
+		// delete would leave the account with no login method. The locked
+		// state disagrees, so the plain-delete branch below is the correct
+		// one -- and that branch has nowhere to put the hash. It dropped it
+		// and answered success: the account stayed passwordless while the
+		// user believed they set a password. The retry recomputes the branch
+		// against the settled state.
+		//
+		// The guard used to run in one direction only. commitPasskeyDeactivation
+		// catches a FALLING count, because it refuses an empty hash; a
+		// RISING one had nothing to catch it.
+		if hashedNewPassword != "" && (user.PasswordSet || count > 1) {
+			return stepUpMutationResult{}, stepUpStateMovedError()
 		}
 		// Last passkey on a passkey-only account: delegate to the
 		// deactivation commit (plan CommitPasskeyDelete).
 		if !user.PasswordSet && count <= 1 {
-			return s.commitPasskeyDeactivation(ctx, tx, user, hashedNewPassword, userInfo.Credential.SessionID())
+			return s.commitPasskeyDeactivation(ctx, tx, user, hashedNewPassword, userInfo.Credential)
 		}
-		return passkeyMutationResult{}, tx.PasskeyCredentials().Delete(ctx, row.ID, user.ID)
+		return stepUpMutationResult{}, tx.PasskeyCredentials().Delete(ctx, row.ID, user.ID)
 	}); err != nil {
 		return nil, mapPasskeyConnectError(ctx, err)
 	}
@@ -836,6 +995,16 @@ func (s *UserService) DeactivatePasskeyAuth(ctx context.Context, req *connect.Re
 		if peek.PasswordSet {
 			return nil
 		}
+		// This answers the empty string FIRST, with the rule. Straight to
+		// hashReplacementPassword, validate.ValidatePassword reported how a
+		// password must be built -- an answer about a field the caller never
+		// filled, on a request whose real fault is that this account keeps no
+		// other way to sign in. DeletePasskey states its own leg's rule the
+		// same way; the wording differs because that leg offers this RPC as a
+		// remedy and this one cannot offer itself.
+		if req.Msg.GetNewPassword() == "" {
+			return deactivationNeedsPasswordError()
+		}
 		hashed, err := hashReplacementPassword(req.Msg.GetNewPassword())
 		if err != nil {
 			return err
@@ -843,8 +1012,8 @@ func (s *UserService) DeactivatePasskeyAuth(ctx context.Context, req *connect.Re
 		hashedNewPassword = hashed
 		return nil
 	}
-	if err := s.runPasskeyManagementTx(ctx, entryStepUp(userInfo), prepare, func(tx store.Store, user *store.User) (passkeyMutationResult, error) {
-		return s.commitPasskeyDeactivation(ctx, tx, user, hashedNewPassword, userInfo.Credential.SessionID())
+	if err := s.runStepUpMutationTx(ctx, entryStepUp(userInfo), prepare, func(tx store.Store, user *store.User) (stepUpMutationResult, error) {
+		return s.commitPasskeyDeactivation(ctx, tx, user, hashedNewPassword, userInfo.Credential)
 	}); err != nil {
 		return nil, mapPasskeyConnectError(ctx, err)
 	}
@@ -868,79 +1037,148 @@ func hashReplacementPassword(newPassword string) (string, error) {
 // commitPasskeyDeactivation deletes every passkey for the user. On a
 // passkey-only account it also sets the pre-hashed replacement password
 // (hashedNewPassword; empty means the caller did not supply one) and
-// revokes other sessions and tokens while preserving the acting session
+// revokes other sessions and tokens while preserving the acting CREDENTIAL
 // (mirror ChangePassword). Caller must hold the user-auth lock and must
 // verify auth before this call.
-func (s *UserService) commitPasskeyDeactivation(ctx context.Context, tx store.Store, user *store.User, hashedNewPassword, actingSessionID string) (passkeyMutationResult, error) {
+func (s *UserService) commitPasskeyDeactivation(
+	ctx context.Context,
+	tx store.Store,
+	user *store.User,
+	hashedNewPassword string,
+	acting auth.CredentialIdentity,
+) (stepUpMutationResult, error) {
 	wasPasskeyOnly := !user.PasswordSet
 	if wasPasskeyOnly {
+		// DeletePasskey is the leg that reaches this: its prepare skips the
+		// hash while the account holds a second passkey, and a registration
+		// that the delete removes again leaves the count at one under the
+		// lock. DeactivatePasskeyAuth cannot reach it -- its prepare hashes
+		// for every passwordless peek, and recheckStepUpUnderLock refuses a
+		// password_set flip -- so the message states the delete's remedy.
 		if hashedNewPassword == "" {
-			return passkeyMutationResult{}, lastPasskeyNeedsPasswordError()
+			return stepUpMutationResult{}, lastPasskeyNeedsPasswordError()
 		}
 		if err := tx.Users().UpdatePassword(ctx, store.UpdateUserPasswordParams{
 			PasswordHash: hashedNewPassword,
 			ID:           user.ID,
 		}); err != nil {
-			return passkeyMutationResult{}, fmt.Errorf("update password: %w", err)
+			return stepUpMutationResult{}, fmt.Errorf("update password: %w", err)
 		}
 	}
 	if err := tx.PasskeyCredentials().DeleteAllByUser(ctx, user.ID); err != nil {
-		return passkeyMutationResult{}, err
+		return stepUpMutationResult{}, err
 	}
 	if !wasPasskeyOnly {
-		return passkeyMutationResult{}, nil
+		return stepUpMutationResult{}, nil
 	}
-	gen, err := s.revokeOtherCredentialsPreservingSession(ctx, tx, user.ID, actingSessionID)
+	gen, err := s.revokeOtherCredentialsPreservingActingCredential(ctx, tx, user.ID, acting)
 	if err != nil {
-		return passkeyMutationResult{}, err
+		return stepUpMutationResult{}, err
 	}
-	return passkeyMutationResult{revokeOtherCredentials: true, authGeneration: gen}, nil
+	return stepUpMutationResult{revokeOtherCredentials: true, authGeneration: gen}, nil
 }
 
-// revokeOtherCredentialsPreservingSession deletes other sessions, revokes API
-// and delegation tokens, bumps auth_generation, and restamps the acting
-// session. Caller must hold the user-auth transaction. Shared by
+// revokeOtherCredentialsPreservingActingCredential deletes other sessions,
+// revokes other API tokens and every delegation token, increments
+// auth_generation, and restamps the acting credential onto the new
+// generation. Caller must hold the user-auth transaction. Shared by
 // ChangePassword, DeletePasskey, and DeactivatePasskeyAuth.
 //
-// RefreshAuthGeneration returning n==0 means the acting session was
-// concurrently deleted (a same-user logout does not contend on this
-// user-auth lock) after the transaction began. The password change itself
-// stays valid and there is no surviving session row left to restamp, so the
-// caller does not roll the change back; the post-transaction revocation is
-// a harmless no-op for a same-process logout and self-heals across hubs
-// once the durable session-revoked event replays. n>1 is impossible
-// (session id is unique) and indicates corruption, so it stays fatal.
-func (s *UserService) revokeOtherCredentialsPreservingSession(ctx context.Context, tx store.Store, userID, actingSessionID string) (int64, error) {
+// It preserves the ONE row the caller acts on, whichever kind that is, and
+// it takes the whole CredentialIdentity rather than a session id so that no
+// call site can preserve one kind and forget the other. Both halves route on
+// ElevatableRow, exactly as slideElevation and recheckActingCredentialUnderLock
+// do.
+//
+// The command-line case is the reason the parameter changed. Before it, a
+// credential that successfully changed its owner's password destroyed itself:
+// auth.RevokeAllUserCredentials revoked every api_tokens row with no
+// exclusion, the mutation committed, and every later call answered
+// Unauthenticated with the credential file still on disk.
+//
+// PRESERVING a row takes two writes, and each one alone is not enough. The
+// revoke must skip the row, and the restamp must move it onto the new
+// auth_generation -- validation refuses a row behind users.auth_generation
+// whether or not revoked_at is set, so an unrevoked row at the old
+// generation reads as revoked.
+//
+// A credential kind that carries no elevatable row (a delegation bearer, or
+// solo mode) preserves nothing and revokes everything. No caller reaches
+// that case, because stepUpMutationAuth refuses such a credential before the
+// transaction opens; the branch is the second guard, and it fails in the
+// safe direction.
+//
+// RefreshAuthGeneration returning n==0 means a concurrent request removed
+// the acting row (a same-user logout does not contend on this user-auth
+// lock) after the transaction began. The password change itself stays valid
+// and there is no surviving row left to restamp, so the caller does not roll
+// the change back; the post-transaction revocation is a harmless no-op for a
+// same-process logout and self-heals across hubs once the durable
+// session-revoked event replays. n>1 is impossible (each id is a primary
+// key) and indicates corruption, so it stays fatal.
+func (s *UserService) revokeOtherCredentialsPreservingActingCredential(
+	ctx context.Context, tx store.Store, userID string, acting auth.CredentialIdentity,
+) (int64, error) {
 	rowUID, err := mintRowUserID(userID)
 	if err != nil {
 		return 0, err
 	}
+	// ok is false for a credential that carries no window: it keeps nothing,
+	// so both ids stay empty and both statements address the whole set.
+	actingSessionID, actingAPITokenID, _ := acting.ElevatableRow()
 	if err := tx.Sessions().DeleteOthers(ctx, store.DeleteOtherSessionsParams{
 		UserID: rowUID,
 		KeepID: actingSessionID,
 	}); err != nil {
 		return 0, fmt.Errorf("delete other sessions: %w", err)
 	}
-	if _, _, err := auth.RevokeAllUserCredentials(ctx, tx, rowUID); err != nil {
+	if _, _, err := auth.RevokeUserCredentialsExceptAPIToken(ctx, tx, rowUID, actingAPITokenID); err != nil {
 		return 0, err
 	}
-	if actingSessionID != "" {
-		n, err := tx.Sessions().RefreshAuthGeneration(ctx, store.RefreshSessionAuthGenerationParams{
-			SessionID: actingSessionID,
-			UserID:    rowUID,
-		})
-		if err != nil {
-			return 0, fmt.Errorf("refresh current session auth generation: %w", err)
-		}
-		if n > 1 {
-			return 0, fmt.Errorf("refresh current session auth generation: updated %d rows", n)
-		}
+	if err := restampActingCredential(ctx, tx, rowUID, actingSessionID, actingAPITokenID); err != nil {
+		return 0, err
 	}
 	updatedUser, err := tx.Users().GetByID(ctx, userID)
 	if err != nil {
 		return 0, fmt.Errorf("query updated user auth generation: %w", err)
 	}
 	return updatedUser.AuthGeneration, nil
+}
+
+// restampActingCredential moves the preserved row onto the account's new
+// auth_generation. Exactly one of the two ids is non-empty on every path a
+// caller can take, and both are empty for a credential that preserves
+// nothing.
+//
+// A free function rather than two branches inline, so the rule that each
+// preserved kind takes a restamp reads once. See the caller for why the
+// restamp is half of "preserve", and for what n==0 means.
+func restampActingCredential(
+	ctx context.Context, tx store.Store, userID userid.UserID, sessionID, apiTokenID string,
+) error {
+	var n int64
+	var err error
+	switch {
+	case sessionID != "":
+		n, err = tx.Sessions().RefreshAuthGeneration(ctx, store.RefreshSessionAuthGenerationParams{
+			SessionID: sessionID,
+			UserID:    userID,
+		})
+	case apiTokenID != "":
+		n, err = tx.APITokens().RefreshAuthGeneration(ctx, store.RefreshAPITokenAuthGenerationParams{
+			TokenID: apiTokenID,
+			UserID:  userID,
+		})
+	default:
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("refresh acting credential auth generation: %w", err)
+	}
+	if n > 1 {
+		return fmt.Errorf("refresh acting credential auth generation: updated %d rows", n)
+	}
+	return nil
 }
 
 func validatePasskeyFriendlyName(name string) (string, error) {
@@ -973,7 +1211,7 @@ func passkeyInfoToProto(ctx context.Context, row *store.PasskeyCredential) *leap
 	// A malformed transports column degrades the browser hint rather than
 	// failing the RPC, but it must not pass silently: the only production
 	// writer emits json.Marshal output, so a value that will not parse
-	// means the row was written from outside that path.
+	// means something outside that path wrote the row.
 	transports, err := parsePasskeyTransports(row.Transports)
 	if err != nil {
 		slog.WarnContext(ctx, "passkey transports column did not parse",
@@ -1015,10 +1253,10 @@ func mapPasskeyConnectError(ctx context.Context, err error) error {
 	case webAuthnErrorCredential:
 		// CredentialRejectedHeader, because the rejected credential is the
 		// one the REQUEST carried and not the session that made it. Without
-		// it the client's blanket rule read this Unauthenticated as "your
+		// it the client's general rule read this Unauthenticated as "your
 		// session ended" and signed the user out mid-dialog: a mismatched RP
 		// ID after public_url changed, an expired or replayed ceremony
-		// session, or a clone warning threw them back to /login instead of
+		// session, or a clone warning sent them back to /login instead of
 		// showing "Failed to add passkey".
 		//
 		// The session is never what fails here. auth.MustGetUser and the

@@ -39,25 +39,25 @@ export interface ProtoSettingRow extends SettingRowModel {
 }
 
 // The safe integer range as bigints, hoisted rather than rebuilt for each
-// bound of each field of each row.
+// limit of each field of each row.
 const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER)
 const MIN_SAFE = BigInt(Number.MIN_SAFE_INTEGER)
 
 /**
- * One int64 bound as a JavaScript number, CLAMPED FOR DISPLAY.
+ * One int64 limit as a JavaScript number, CLAMPED FOR DISPLAY.
  *
  * A proto int64 decodes as a bigint, and `Number` on one past
- * `Number.MAX_SAFE_INTEGER` rounds SILENTLY: a bound of 2^53+1 becomes
+ * `Number.MAX_SAFE_INTEGER` rounds SILENTLY: a limit of 2^53+1 becomes
  * 2^53, and the number control then refuses a value the hub accepts (or
  * offers one it refuses). The clamp to the safe range keeps the control
  * inside what a JavaScript number states exactly.
  *
  * The clamp moves the CONTROL's limit, never the setting's: the hub holds
- * the authoritative int64 bound and validates every write against it, so a
- * value between the clamp and the real bound is refused by the hub, not
+ * the authoritative int64 limit and validates every write against it, so a
+ * value between the clamp and the real limit is refused by the hub, not
  * accepted silently here.
  */
-function boundToNumber(v: bigint | undefined): number | undefined {
+function limitToNumber(v: bigint | undefined): number | undefined {
   if (v === undefined)
     return undefined
   return Number(v > MAX_SAFE ? MAX_SAFE : v < MIN_SAFE ? MIN_SAFE : v)
@@ -84,7 +84,7 @@ export function controlForField(
   // `<redacted>` placeholder — so any control that renders `effectiveJson`
   // shows that placeholder as if it were the value, and commits it back on
   // blur. The ALTCHA signing key is declared BYTES, so testing
-  // `field.secret` inside the STRING arm alone put the hub's signing key
+  // `field.secret` inside the STRING case alone put the hub's signing key
   // in a plain text box.
   if (field.secret)
     return { kind: 'secret', isSet: () => valueOf()?.secretSet[field.name] === true }
@@ -92,8 +92,8 @@ export function controlForField(
     case SettingFieldKind.BOOL:
       return { kind: 'toggle' }
     case SettingFieldKind.INT: {
-      const min = boundToNumber(field.min)
-      const max = boundToNumber(field.max)
+      const min = limitToNumber(field.min)
+      const max = limitToNumber(field.max)
       if (field.unit === '%' || field.unit === 'percent')
         return { kind: 'slider', min: min ?? 0, max: max ?? 100, step: 1, unit: '%' }
       return { kind: 'number', min, max, step: 1, unit: field.unit || undefined }
@@ -303,7 +303,7 @@ export function buildProtoRows(
       // Every hide rule is a separate reason, and the row hides when ANY of
       // them holds. A chain of ternaries would let the first reason cancel
       // the rest: a captcha key declares HiddenInSolo AND a per-field
-      // dependsOn, so the solo arm alone left every inactive provider's
+      // dependsOn, so the solo branch alone left every inactive provider's
       // fields on screen. A third rule cannot silently cancel these two.
       const hideReasons: (() => boolean)[] = []
       if (desc.hiddenInSolo)
@@ -324,18 +324,16 @@ export function buildProtoRows(
           scope: 'hub',
           control,
           restart: desc.restart || undefined,
-          // EVERY hub row, unconditionally, because the hub gates every
-          // settings WRITE on an elevated session and not one key at a time:
-          // a hub setting is deployment-wide, and several of them are the
-          // hub's own security controls (sign-up, captcha, the rate limits,
+          // NO `needsElevation` here. `scope: 'hub'` above already answers it,
+          // and `descriptorNeedsElevation` reads the scope: the hub requires an
+          // elevated session for every settings write rather than for one key
+          // at a time -- a hub setting is deployment-wide, and several of them are
+          // the hub's own security controls (sign-up, captcha, the rate limits,
           // SMTP, and the public_url the passkey relying party derives from).
           // See AdminSettingsService.requireElevatedWriter.
           //
-          // Stated from the SCOPE rather than from a per-key wire flag for
-          // the same reason the hub states it once: a flag the hub would have
-          // to set on each descriptor is a flag a new key can be added
-          // without.
-          needsElevation: true,
+          // Stating it from the SCOPE is what the hub does too, and it leaves
+          // no per-key flag that a new key can be added without.
           hidden: hideReasons.length === 0
             ? undefined
             : () => hideReasons.some(holds => holds()),

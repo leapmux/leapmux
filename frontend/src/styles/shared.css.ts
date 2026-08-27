@@ -49,8 +49,8 @@ export const emptyState = style({
 })
 
 /**
- * A label that stays on ONE line: the overflow is clipped at the right edge and
- * marked with an ellipsis.
+ * A label that stays on ONE line: the browser clips the overflow at the right
+ * edge and marks it with an ellipsis.
  *
  * `min-width: 0` is what lets a flex item shrink below the width of its own
  * text. Without it the item keeps its content width, the row grows instead, and
@@ -170,8 +170,8 @@ export const pageCard = style(['card', { width: '480px' }])
  *     disabled element dispatches no pointer event and takes no focus, so the
  *     tooltip itself can never open there, and this is what a screen reader
  *     reads instead.
- *   - The plain-text copy of a widget whose visual DOM reads as gibberish --
- *     the thinking odometer's pile of 0-9 strips.
+ *   - The plain-text copy of a widget whose visual DOM reads as meaningless
+ *     text -- the thinking odometer's stack of 0-9 strips.
  *
  * `position: absolute` keeps it out of flow, so it is not a flex or grid item
  * and cannot open a gap in the row it sits in.

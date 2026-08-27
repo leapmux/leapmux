@@ -17,7 +17,7 @@ import (
 // has no password", "this is your last passkey" and half a dozen other things
 // a browser step-up cannot fix, and stopping a script to print a URL for one
 // of those would be worse than reporting it. The MESSAGE is user-facing prose
-// that will be reworded, so matching it would break on the first edit.
+// that somebody will reword, so matching it would break on the first edit.
 func TestNeedsElevation(t *testing.T) {
 	t.Parallel()
 

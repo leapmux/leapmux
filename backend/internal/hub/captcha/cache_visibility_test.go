@@ -33,7 +33,7 @@ func TestResolveRefreshesAfterTTL(t *testing.T) {
 	// The two CORE keys the secure-context gate reads are registered here
 	// too, and public_url is published below. Without both, this test ran
 	// its whole scenario against an ALTCHA-DISABLED manager and asserted
-	// only the algorithm, so it stayed green while covering a path it never
+	// only the algorithm, so it kept passing while covering a path it never
 	// meant to take.
 	descs := append(SettingsDescriptors(), settings.KeyPublicURL, settings.KeySecureCookies)
 	set := settings.NewManager(st, ks, descs,
@@ -55,7 +55,7 @@ func TestResolveRefreshesAfterTTL(t *testing.T) {
 	require.NoError(t, admin.Load(ctx))
 	require.NoError(t, admin.Update(ctx, AltchaKey, json.RawMessage(cheapAltchaSettings)))
 
-	// Before TTL expiry the cached config is still served.
+	// Before TTL expiry the manager still serves the cached config.
 	res, err := m.resolve(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, "PBKDF2/SHA-256", res.cfg.Altcha.Algorithm)

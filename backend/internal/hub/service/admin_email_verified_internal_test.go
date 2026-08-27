@@ -14,7 +14,7 @@ import (
 // The email_verified rule of an admin UpdateUser, exercised directly.
 //
 // Through the RPC each case costs a user creation and two store round
-// trips, so the rule was only ever covered at the happy paths somebody
+// trips, so the tests only ever covered the rule at the happy paths somebody
 // remembered to write. It is a pure function of the row and the request, so
 // the whole table fits here and the RPC tests keep proving that the fenced
 // verb runs.
@@ -54,9 +54,10 @@ func TestResolveEmailVerified(t *testing.T) {
 		// No administrator exception, and this is the recovery-route fix. A
 		// verified address is a valid self-service password-reset target, so
 		// carrying the flag onto an address nobody confirmed handed the
-		// highest-privilege accounts a live reset route to whatever was
-		// typed. The exemption that keeps an administrator signed in lives at
-		// the login gate; see auth.EmailVerificationSatisfied.
+		// highest-privilege accounts a live reset route to whatever address
+		// the request carried. The exemption that keeps an administrator
+		// signed in lives at the login gate; see
+		// auth.EmailVerificationFacts.Satisfied.
 		"an administrator loses the flag across an address change too": {
 			user:      store.User{Email: "old@example.com", EmailVerified: true, IsAdmin: true},
 			msg:       &leapmuxv1.UpdateUserRequest{Email: proto.String("new@example.com")},
@@ -107,7 +108,7 @@ func TestResolveEmailVerified(t *testing.T) {
 	}
 }
 
-// TestEmailVerificationSatisfied_SeparatesTheAddressFromThePrivilege is the
+// TestEmailVerificationFactsSatisfied_SeparatesTheAddressFromThePrivilege is the
 // whole shape of the change, stated once.
 //
 // email_verified answers "did anybody confirm this address". The
@@ -116,7 +117,7 @@ func TestResolveEmailVerified(t *testing.T) {
 // unconfirmed address a valid self-service password-reset target -- because
 // RequestPasswordReset reads the column and CANNOT take the exemption: the
 // question it asks is exactly the first one.
-func TestEmailVerificationSatisfied_SeparatesTheAddressFromThePrivilege(t *testing.T) {
+func TestEmailVerificationFactsSatisfied_SeparatesTheAddressFromThePrivilege(t *testing.T) {
 	t.Parallel()
 
 	for name, tc := range map[string]struct {
@@ -130,7 +131,34 @@ func TestEmailVerificationSatisfied_SeparatesTheAddressFromThePrivilege(t *testi
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			assert.Equal(t, tc.want, auth.EmailVerificationSatisfied(tc.required, tc.isAdmin, tc.emailVerified))
+			facts := auth.EmailVerificationFacts{IsAdmin: tc.isAdmin, EmailVerified: tc.emailVerified}
+			assert.Equal(t, tc.want, facts.Satisfied(tc.required))
+
+			// The two constructors must read the same two fields. They are
+			// what removes the three adjacent booleans a call site could
+			// transpose in silence, so a constructor that read the wrong
+			// column would put the defect back behind a nicer name.
+			assert.Equal(t, facts, auth.EmailVerificationFactsFromUser(&store.User{
+				IsAdmin: tc.isAdmin, EmailVerified: tc.emailVerified,
+			}))
+			assert.Equal(t, facts, (&auth.UserInfo{
+				IsAdmin: tc.isAdmin, EmailVerified: tc.emailVerified,
+			}).EmailVerificationFacts())
 		})
 	}
+}
+
+// A missing account satisfies nothing. Both constructors are nil-safe, and
+// both fail CLOSED: the zero value holds neither the exemption nor the
+// confirmation, so a caller that lost its row is refused rather than admitted.
+func TestEmailVerificationFacts_NilFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	var user *store.User
+	var info *auth.UserInfo
+	assert.False(t, auth.EmailVerificationFactsFromUser(user).Satisfied(true))
+	assert.False(t, info.EmailVerificationFacts().Satisfied(true))
+	// And a hub that requires nothing still admits, because the requirement
+	// is the hub's fact and not the account's.
+	assert.True(t, auth.EmailVerificationFactsFromUser(user).Satisfied(false))
 }

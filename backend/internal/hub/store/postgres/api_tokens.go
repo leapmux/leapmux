@@ -190,14 +190,43 @@ func (s *apiTokenStore) RevokeOwned(ctx context.Context, p store.RevokeOwnedAPIT
 }
 
 func (s *apiTokenStore) RevokeByUser(ctx context.Context, userID userid.UserID) (int64, error) {
-	owner, ok := userid.OwnerFilter(userID)
+	return s.RevokeOthers(ctx, store.RevokeOtherAPITokensParams{UserID: userID})
+}
+
+// RevokeOthers is the whole-set revocation with ONE exclusion; RevokeByUser
+// above is this statement with no exclusion. One statement rather than two,
+// so the predicate that decides which credentials survive a password change
+// has one home.
+func (s *apiTokenStore) RevokeOthers(ctx context.Context, p store.RevokeOtherAPITokensParams) (int64, error) {
+	owner, ok := userid.OwnerFilter(p.UserID)
 	if !ok {
-		// An unminted caller names no user, so a bulk mutation must refuse
-		// rather than address every blank-owner row -- or report success
-		// having changed nothing. See userid.OwnerFilter.
+		// An unminted caller specifies no user, so a bulk mutation must refuse
+		// rather than address every blank-owner row -- or report success when
+		// it changed nothing. See userid.OwnerFilter.
 		return 0, store.ErrInvalidArgument
 	}
-	n, err := s.conn.q.RevokeAPITokensByUserFast(ctx, owner)
+	n, err := s.conn.q.RevokeOtherUserAPITokens(ctx, gendb.RevokeOtherUserAPITokensParams{
+		UserID: owner,
+		KeepID: p.KeepID,
+	})
+	return n, mapErr(err)
+}
+
+// RefreshAuthGeneration stamps the kept command-line credential onto the
+// user's current auth_generation, exactly as the session twin does for the
+// kept session. See the sessionStore method for why a no-op re-stamp still
+// counts one row on each dialect.
+func (s *apiTokenStore) RefreshAuthGeneration(ctx context.Context, p store.RefreshAPITokenAuthGenerationParams) (int64, error) {
+	owner, ok := userid.OwnerFilter(p.UserID)
+	if !ok {
+		// An unminted caller owns nothing; binding "" would MATCH every
+		// blank-owner row rather than none. See userid.OwnerFilter.
+		return 0, nil
+	}
+	n, err := s.conn.q.RefreshUserAPITokenAuthGeneration(ctx, gendb.RefreshUserAPITokenAuthGenerationParams{
+		TokenID: p.TokenID,
+		UserID:  owner,
+	})
 	return n, mapErr(err)
 }
 
@@ -216,7 +245,7 @@ func (s *apiTokenStore) Elevate(ctx context.Context, p store.ElevateAPITokenPara
 	return store.RunCredentialMutation(ctx, s.conn.withTransaction, func(ctx context.Context, conn *pgConn) (*store.CredentialEvent, error) {
 		n, err := conn.q.ElevateAPIToken(ctx, gendb.ElevateAPITokenParams{
 			ElevationProvenAt:  pgtime.NullOf(p.ElevationProvenAt),
-			ElevationExpiresAt: pgtime.NullOf(p.ElevationExpiresAt),
+			ElevationExpiresAt: pgtime.NullOf(p.ClampedExpiresAt()),
 			ID:                 p.TokenID,
 			UserID:             owner,
 			Now:                pgtime.NullOf(now),
@@ -238,7 +267,7 @@ func (s *apiTokenStore) SlideElevation(ctx context.Context, p store.SlideAPIToke
 	}
 	n, err := s.conn.q.SlideAPITokenElevation(ctx, gendb.SlideAPITokenElevationParams{
 		WindowDeadline: pgtime.NullOf(p.WindowDeadline),
-		MaxTotalMicros: p.MaxTotal.Microseconds(),
+		MaxTotalMicros: store.ElevationMaxTotal.Microseconds(),
 		ID:             p.TokenID,
 		UserID:         owner,
 		Now:            pgtime.NullOf(now),

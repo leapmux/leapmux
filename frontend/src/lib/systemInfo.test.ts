@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { CaptchaProvider } from '~/generated/leapmux/v1/auth_pb'
-import { getAltchaAlgorithm, getCaptchaProvider, getCaptchaSiteKey, isCaptchaEnabled, isCaptchaUnsolvableHere, isSignupEnabled, isSoloMode, isSystemInfoLoaded, loadSystemInfo, passkeyBlocker, passkeysUsableHere, refreshSnapshot } from './systemInfo'
+import { captchaProviderNeedsSecureContext, getAltchaAlgorithm, getCaptchaProvider, getCaptchaSiteKey, isCaptchaEnabled, isCaptchaUnsolvableHere, isSignupEnabled, isSoloMode, isSystemInfoLoaded, loadSystemInfo, passkeyBlocker, passkeysUsableHere, refreshSnapshot } from './systemInfo'
 
 const mockGetSystemInfo = vi.fn()
 vi.mock('~/api/clients', () => ({
@@ -44,11 +44,11 @@ describe('loadSystemInfo', () => {
     vi.clearAllMocks()
   })
 
-  // A swallowed failure leaves the module's defaults in place -- notably
+  // A discarded failure leaves the module's defaults in place -- notably
   // `soloMode = false` -- with no signal that they are fabrications. On a solo
   // hub that means the app renders a "Log out" affordance whose one click sends
   // the user to a login form no credentials can satisfy. Callers must be able
-  // to tell "the hub said non-solo" from "we never got an answer".
+  // to tell "the hub said non-solo" from "nobody got an answer".
   it('propagates a load failure instead of silently defaulting to non-solo', async () => {
     mockGetSystemInfo.mockRejectedValue(new Error('not connected'))
 
@@ -80,7 +80,7 @@ describe('loadSystemInfo', () => {
 
   // Last on purpose: a successful load flips the module's one-way `loaded`
   // latch, and earlier tests assert retry behavior that assumes it is off.
-  it('caches the hub\'s captcha flags for the pre-login gating', async () => {
+  it('caches the hub\'s captcha flags for the pre-login forms', async () => {
     mockGetSystemInfo.mockResolvedValue(systemInfoResponse({
       captchaEnabled: true,
       altchaAlgorithm: 'PBKDF2/SHA-256',
@@ -178,7 +178,7 @@ describe('loadSystemInfo', () => {
   // pre-existing ones (soloMode, signupEnabled, ...). A consumer that
   // reads one inside a reactive scope re-evaluates when a forced reload
   // changes it — the LoginPage signup link no longer needs an
-  // auth.loading() crutch to appear on a direct load.
+  // auth.loading() workaround to appear on a direct load.
   it('re-evaluates reactive reads of non-captcha fields on a forced reload', async () => {
     mockGetSystemInfo.mockResolvedValue(systemInfoResponse({ signupEnabled: false }))
     await loadSystemInfo(true)
@@ -219,7 +219,7 @@ describe('refreshSnapshot', () => {
         expect(mockGetSystemInfo).toHaveBeenCalledTimes(1)
       })
 
-      // Inside the window: a third trigger still owes nothing.
+      // Inside the window: a third trigger still issues no fetch.
       refreshSnapshot()
       await Promise.resolve()
       expect(mockGetSystemInfo).toHaveBeenCalledTimes(1)
@@ -243,8 +243,9 @@ describe('refreshSnapshot', () => {
  *
  * The bug this covers: a hub published at its own plain-HTTP address answers
  * passkey_enabled = true, every surface offered a passkey, and the ceremony
- * died inside @simplewebauthn/browser with "WebAuthn is not supported in this
- * browser" -- a message that names the browser when the browser is fine.
+ * failed inside @simplewebauthn/browser with "WebAuthn is not supported in
+ * this browser" -- a message that identifies the browser as the cause when the
+ * browser is fine.
  */
 describe('passkeyBlocker', () => {
   const credentialKey = 'PublicKeyCredential' as const
@@ -278,7 +279,7 @@ describe('passkeyBlocker', () => {
       Reflect.deleteProperty(window, 'isSecureContext')
   })
 
-  it('reports nothing in the way when both parties agree', async () => {
+  it('reports no blocker when both parties agree', async () => {
     setWebAuthnAPI(true)
     setSecureContext(true)
     mockGetSystemInfo.mockResolvedValue(systemInfoResponse({ passkeyEnabled: true }))
@@ -290,7 +291,7 @@ describe('passkeyBlocker', () => {
 
   // The reported bug. The hub serves this origin, and the page is plain HTTP
   // away from loopback, so the browser exposes no WebAuthn API at all.
-  it('names the insecure page when the browser exposes no WebAuthn API', async () => {
+  it('identifies the insecure page when the browser exposes no WebAuthn API', async () => {
     setWebAuthnAPI(false)
     setSecureContext(false)
     mockGetSystemInfo.mockResolvedValue(systemInfoResponse({ passkeyEnabled: true }))
@@ -302,7 +303,7 @@ describe('passkeyBlocker', () => {
 
   // A secure page whose browser still has no WebAuthn is a different fact
   // with a different remedy, so it must not be reported as an insecure page.
-  it('names the browser on a secure page that has no WebAuthn', async () => {
+  it('identifies the browser on a secure page that has no WebAuthn', async () => {
     setWebAuthnAPI(false)
     setSecureContext(true)
     mockGetSystemInfo.mockResolvedValue(systemInfoResponse({ passkeyEnabled: true }))
@@ -323,7 +324,7 @@ describe('passkeyBlocker', () => {
     expect(passkeyBlocker()).toBe('no-webauthn')
   })
 
-  it('names the origin when the browser is ready and the hub refuses it', async () => {
+  it('identifies the origin when the browser is ready and the hub refuses it', async () => {
     setWebAuthnAPI(true)
     setSecureContext(true)
     mockGetSystemInfo.mockResolvedValue(systemInfoResponse({ passkeyEnabled: false }))
@@ -332,10 +333,10 @@ describe('passkeyBlocker', () => {
     expect(passkeyBlocker()).toBe('origin-not-allowed')
   })
 
-  // Both parties refuse. The BROWSER's reason wins, because the hub's reason
-  // would be wrong advice: an operator who published http://hub.example:4327
-  // and opened exactly that address is told to open the configured URL, which
-  // is what they already did.
+  // Both parties refuse. The BROWSER's reason takes precedence, because the
+  // hub's reason would be wrong advice: an operator who published
+  // http://hub.example:4327 and opened exactly that address reads advice to
+  // open the configured URL, which is what they already did.
   it('reports the browser reason when both parties refuse', async () => {
     setWebAuthnAPI(false)
     setSecureContext(false)
@@ -358,5 +359,24 @@ describe('passkeyBlocker', () => {
     mockGetSystemInfo.mockResolvedValue(systemInfoResponse({ passkeyEnabled: true }))
     await loadSystemInfo(true)
     expect(passkeysUsableHere()).toBe(true)
+  })
+})
+
+/**
+ * The same rule the backend spells as `providerRequiresSecureContext`, in
+ * `internal/hub/captcha/secure_context.go`.
+ *
+ * ALTCHA's proof of work calls SubtleCrypto, which a page holds only in a
+ * secure context; Turnstile and reCAPTCHA v3 both run on a plain-HTTP page. A
+ * fourth provider added without an entry here would answer `false` and put a
+ * widget on a page that cannot mount it, so the rule is a named predicate on
+ * both sides rather than a comparison spelled at one call site.
+ */
+describe('captchaProviderNeedsSecureContext', () => {
+  it('claims ALTCHA, and nothing else', () => {
+    expect(captchaProviderNeedsSecureContext(CaptchaProvider.ALTCHA)).toBe(true)
+    expect(captchaProviderNeedsSecureContext(CaptchaProvider.TURNSTILE)).toBe(false)
+    expect(captchaProviderNeedsSecureContext(CaptchaProvider.RECAPTCHA_V3)).toBe(false)
+    expect(captchaProviderNeedsSecureContext(CaptchaProvider.UNSPECIFIED)).toBe(false)
   })
 })

@@ -3,9 +3,9 @@ import { expect, test } from './fixtures'
 import { openTerminalViaUI } from './helpers/ui'
 
 /**
- * The Content-Security-Policy is derived from the assets the Hub actually
+ * The Hub derives the Content-Security-Policy from the assets it actually
  * serves (`frontend.Policy` in the Go backend), so the only honest check is a
- * real browser loading a real build.
+ * real browser that loads a real build.
  *
  * A wrong policy is an OUTAGE, not a weaker defence: one inline script the
  * `script-src` hash does not cover leaves a blank page, and one directive too
@@ -35,7 +35,7 @@ test.describe('security headers', () => {
 
     const headers = response!.headers()
 
-    // Enforced, not report-only. The shipped policy must bite.
+    // Enforced, not report-only. The shipped policy must take effect.
     const csp = headers['content-security-policy']
     expect(csp, 'the app document must carry an enforced CSP').toBeTruthy()
     expect(headers['content-security-policy-report-only']).toBeUndefined()
@@ -57,9 +57,9 @@ test.describe('security headers', () => {
   // /elevate is a step-up prompt that runs a WebAuthn ceremony, so a policy
   // that reaches it without the derived script-src hash is not a weaker
   // defence -- it is a blank page where a user has to prove who they are,
-  // and the CLI login it was bounced from waits for ever. It sits OUTSIDE
-  // the (app) group, so it is worth its own check rather than assuming the
-  // shell's coverage carries.
+  // and the CLI login that sent the browser here waits for ever. It sits
+  // OUTSIDE the (app) group, so it is worth its own check rather than an
+  // assumption that the shell's coverage extends to it.
   test('serves the same enforced CSP on the standalone /elevate route', async ({ page }) => {
     const violations = collectCspViolations(page)
     const response = await page.goto('/elevate?redirect=%2F')
@@ -93,16 +93,16 @@ test.describe('security headers', () => {
 
     // RELOAD, so the listener is armed for the boot it claims to cover. The
     // workspace fixture signs in and renders the shell BEFORE the test body
-    // runs, so every violation from that first boot -- a font, an image, a
-    // stylesheet or a worker the policy refuses -- was emitted before this
-    // listener existed. Only a blocked SCRIPT was caught, by the visibility
-    // assertion below, and script-src is the one directive the derived hashes
-    // already cover; the subresource directives had no coverage at all.
+    // runs, so the browser emitted every violation from that first boot -- a
+    // font, an image, a stylesheet or a worker the policy refuses -- before
+    // this listener existed. The visibility assertion below caught a blocked
+    // SCRIPT and nothing else, and script-src is the one directive the derived
+    // hashes already cover; the subresource directives had no coverage at all.
     await page.reload()
 
     // The boot runs again under the listener: the inline manifest executes, the
-    // module chunk loads, the channel WebSocket connects, and the fonts and
-    // images the shell needs are fetched.
+    // module chunk loads, the channel WebSocket connects, and the browser
+    // fetches the fonts and images the shell needs.
     await expect(page.locator('[data-testid="tab-bar"]').first()).toBeVisible()
 
     // The terminal is the directive-sensitive surface: xterm's DOM renderer
@@ -116,8 +116,9 @@ test.describe('security headers', () => {
 
   /**
    * The guard on the test above. "No violations" proves nothing while the
-   * detector cannot fire and the policy does not bite, and both failures are
-   * silent -- a hub that dropped the header entirely would pass that test.
+   * detector cannot fire and the policy does not take effect, and both
+   * failures are silent -- a hub that dropped the header entirely would pass
+   * that test.
    *
    * So inject the payload the policy exists to stop. `page.evaluate` runs over
    * CDP and is not itself subject to CSP, but a <script> element it appends to
@@ -140,9 +141,9 @@ test.describe('security headers', () => {
     // it at one instant. `expect.poll` retries under the GLOBAL expect timeout,
     // with no per-call override -- the E2E rule in CLAUDE.md forbids one.
     //
-    // The mirror assertion above is deliberately NOT polled: `expect.poll`
-    // retries until an assertion PASSES, so polling "still empty" would succeed
-    // on its first evaluation and catch nothing extra.
+    // This spec deliberately does NOT poll the mirror assertion above:
+    // `expect.poll` retries until an assertion PASSES, so polling "still empty"
+    // would succeed on its first evaluation and catch nothing extra.
     await expect.poll(
       () => violations.length,
       { message: 'the violation detector must see the refusal it exists to catch' },

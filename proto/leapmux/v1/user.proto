@@ -20,8 +20,8 @@ service UserService {
   rpc VerifyEmail(VerifyEmailRequest) returns (VerifyEmailResponse);
   // Re-issue the verification email for the current user's pending
   // address. Authenticated; requires a pending verification to exist
-  // (FailedPrecondition otherwise). The previous code is invalidated —
-  // a fresh 6-character code with a new 30-minute TTL replaces it. Use
+  // (FailedPrecondition otherwise). The RPC invalidates the previous code
+  // — a fresh 6-character code with a new 30-minute TTL replaces it. Use
   // this when the original mail was lost or never arrived.
   rpc ResendVerificationEmail(ResendVerificationEmailRequest) returns (ResendVerificationEmailResponse);
   // Change the current user's password. Requires an elevated session,
@@ -53,13 +53,12 @@ service UserService {
   // as "signed out".
   //
   // ElevateSession proves a password. BeginPasskeyElevation /
-  // FinishPasskeyElevation prove a passkey; both arms answer with the SAME
-  // field, elevation_expires_at, so a client has one success path. (The
+  // FinishPasskeyElevation prove a passkey; both paths answer with the SAME
+  // field, elevation_expires_at, so a client has one success shape. (The
   // two response messages are separate because a proto response type may
-  // serve only one RPC.) An
-  // OAuth-only account elevates through the OAuth re-authentication leg at
-  // /auth/oauth/<provider>/reauth, which is a browser redirect rather than
-  // an RPC.
+  // serve only one RPC.) An OAuth-only account elevates through the OAuth
+  // re-authentication leg at /auth/oauth/<provider>/reauth, which is a
+  // browser redirect rather than an RPC.
   rpc ElevateSession(ElevateSessionRequest) returns (ElevateSessionResponse);
   rpc BeginPasskeyElevation(BeginPasskeyElevationRequest) returns (BeginPasskeyElevationResponse);
   rpc FinishPasskeyElevation(FinishPasskeyElevationRequest) returns (FinishPasskeyElevationResponse);
@@ -114,8 +113,8 @@ message VerifyEmailResponse {
 message ResendVerificationEmailRequest {}
 
 message ResendVerificationEmailResponse {
-  // True iff the verification email was successfully dispatched. False
-  // means the row was refreshed but the mail backend failed; the
+  // True iff the hub sent the verification email successfully. False
+  // means the hub refreshed the row but the mail backend failed; the
   // frontend should surface a "couldn't send, try again" message.
   bool email_sent = 1;
   google.protobuf.Timestamp next_resend_available_at = 2;
@@ -214,7 +213,7 @@ message FinishPasskeyElevationRequest {
 
 message FinishPasskeyElevationResponse {
   // The same field ElevateSessionResponse carries, with the same meaning:
-  // one success shape for both factor arms.
+  // one success shape for both factor paths.
   google.protobuf.Timestamp elevation_expires_at = 1;
 }
 
@@ -276,9 +275,9 @@ message MyAPIToken {
   google.protobuf.Timestamp created_at = 4;
   google.protobuf.Timestamp last_used_at = 5;
   // When the token stops being able to refresh itself, which is when the
-  // device must sign in again. The shorter access-token expiry is not
-  // reported: it renews itself and would read as "expiring today" on a
-  // credential with months left.
+  // device must sign in again. The hub does not report the shorter
+  // access-token expiry: it renews itself and would read as "expiring
+  // today" on a credential with months left.
   google.protobuf.Timestamp refresh_expires_at = 6;
   // Whether this credential may administer the hub.
   bool admin_scope = 7;
@@ -286,6 +285,19 @@ message MyAPIToken {
   // the user revokes the device they are on. Always false when the caller
   // is a browser session.
   bool current = 8;
+  // When a credential that does NOT renew itself stops authenticating.
+  //
+  // The hub sets it only when refresh_expires_at is absent: the two kinds
+  // are exclusive, so exactly one deadline exists for each credential. A
+  // credential minted with an explicit lifetime -- the command
+  // `admin api-token issue --ttl <n>` -- carries no refresh deadline, so
+  // without this field it appeared in the account's own listing and in
+  // `leapmux control auth credentials` with no deadline at all, and a
+  // reader could not tell a one-year service credential from one that
+  // never expires. The hub never sets it for a renewing credential, where
+  // the access expiry moves at every rotation and would read as "expiring
+  // today" on a credential with months left.
+  google.protobuf.Timestamp expires_at = 9;
 }
 
 message ListMyAPITokensRequest {

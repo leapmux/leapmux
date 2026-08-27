@@ -40,12 +40,12 @@ func TestNewElevation_AnAbsentDeadlineIsNeverElevated(t *testing.T) {
 		"and it admits nothing")
 }
 
-// TestElevation_IsCurrentUsesAnExclusiveUpperBound pins the boundary against
+// TestElevation_IsCurrentUsesAnExclusiveUpperLimit pins the boundary against
 // auth.IsExpired, which the rest of the hub uses: a credential is invalid AT
 // the recorded instant, not one clock tick afterward. Two predicates that
 // disagree at exactly the deadline is the kind of difference nothing catches
 // until it matters.
-func TestElevation_IsCurrentUsesAnExclusiveUpperBound(t *testing.T) {
+func TestElevation_IsCurrentUsesAnExclusiveUpperLimit(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
@@ -116,16 +116,16 @@ func TestUserInfo_ElevatedRequiresAnElevatableCredential(t *testing.T) {
 	assert.False(t, delegated.Elevated(now), "a delegation bearer must still be refused")
 
 	// Solo mode carries the zero CredentialIdentity, so it fails on the same
-	// arm without a special case.
+	// branch without a special case.
 	solo := &auth.UserInfo{ID: userid.MustNew("usr_1"), Elevation: elevation}
 	assert.False(t, solo.Elevated(now))
 }
 
-// TestElevationConstantsBoundOneAnother states the relation the design rests
+// TestElevationConstantsLimitOneAnother states the relation the design rests
 // on rather than the two literals: a cap at or below the window would make
 // the slide pointless, and the whole point of two columns is that the cap
 // outlives one window.
-func TestElevationConstantsBoundOneAnother(t *testing.T) {
+func TestElevationConstantsLimitOneAnother(t *testing.T) {
 	t.Parallel()
 
 	assert.Greater(t, auth.ElevationMaxTotal, auth.ElevationWindow,
@@ -142,14 +142,14 @@ func TestRefreshWindowFor(t *testing.T) {
 
 	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 
-	// A fresh credential: the ordinary window binds.
+	// A fresh credential: the ordinary window applies.
 	assert.Equal(t, auth.RefreshTokenTTL, auth.RefreshWindowFor(now, now))
 
 	// Young enough that the ceiling is still far away.
 	young := now.Add(-24 * time.Hour)
 	assert.Equal(t, auth.RefreshTokenTTL, auth.RefreshWindowFor(young, now))
 
-	// Inside the last RefreshTokenTTL of its life: the ceiling binds, and
+	// Inside the last RefreshTokenTTL of its life: the ceiling applies, and
 	// the window is exactly what remains.
 	old := now.Add(-auth.AbsoluteTokenLifetime).Add(24 * time.Hour)
 	assert.Equal(t, 24*time.Hour, auth.RefreshWindowFor(old, now))
@@ -160,7 +160,7 @@ func TestRefreshWindowFor(t *testing.T) {
 	assert.LessOrEqual(t, auth.RefreshWindowFor(expired, now), time.Duration(0))
 
 	// A zero created_at (a caller that did not load the row) yields the
-	// ordinary window rather than an instantly-dead token: failing closed
+	// ordinary window rather than an instantly-expired token: failing closed
 	// here would revoke every live credential on a mapping slip.
 	assert.Equal(t, auth.RefreshTokenTTL, auth.RefreshWindowFor(time.Time{}, now))
 

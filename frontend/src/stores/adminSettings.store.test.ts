@@ -21,7 +21,7 @@ function value(key: string, effectiveJson: string, customized = false): SettingV
 }
 
 describe('createAdminSettingsStore', () => {
-  it('is gated on the admin accessor: load is a no-op and mutations refuse', async () => {
+  it('is restricted by the admin accessor: load is a no-op and mutations refuse', async () => {
     const store = createAdminSettingsStore(() => false)
     await store.load()
     expect(listSettings).not.toHaveBeenCalled()
@@ -121,7 +121,7 @@ describe('createAdminSettingsStore', () => {
  * Half of what GetSystemInfo answers IS hub settings, and the page fetches it
  * once at bootstrap. Without a refresh here every one of those flags stayed
  * at the value the page loaded with: an administrator who published the hub's
- * URL watched Add passkey stay disabled, on the screen that had just accepted
+ * URL watched Add passkey stay disabled, on the screen that just accepted
  * the change, with no way to know why.
  */
 describe('createAdminSettingsStore system-info convergence', () => {

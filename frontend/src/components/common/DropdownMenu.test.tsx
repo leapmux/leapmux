@@ -59,12 +59,12 @@ describe('dropdownMenu', () => {
     ))
 
     const trigger = screen.getByTestId('trigger')
-    // No popovertarget — toggling is handled via onClick + togglePopover()
+    // No popovertarget — onClick + togglePopover() drive the toggle
     expect(trigger).not.toHaveAttribute('popovertarget')
     expect(trigger).toHaveAttribute('aria-expanded', 'false')
   })
 
-  it('a JSX element trigger is wrapped in a div with display:contents', () => {
+  it('wraps a JSX element trigger in a div with display:contents', () => {
     render(() => (
       <DropdownMenu
         id="wrap-test"
@@ -80,7 +80,7 @@ describe('dropdownMenu', () => {
     expect(wrapper).toHaveStyle({ display: 'contents' })
   })
 
-  it('popoverRef callback is called with the popover DOM element', () => {
+  it('calls the popoverRef callback with the popover DOM element', () => {
     let refEl: HTMLElement | undefined
 
     render(() => (
@@ -101,7 +101,7 @@ describe('dropdownMenu', () => {
    * A card popover is a `div` AND the `popoverCard` class, and a call site that
    * applied one without the other is what produced both popover bugs this
    * component's `as` doc records. `card` supplies the class itself, so the pair
-   * cannot come apart at a fifth call site.
+   * cannot drift apart at a fifth call site.
    */
   it('renders as="card" as a div that carries popoverCard itself', () => {
     render(() => (
@@ -161,7 +161,7 @@ describe('dropdownMenu', () => {
   })
 
   it('keeps the Escape dismiss handler on the as="div" popover (Dynamic swap)', () => {
-    // The menu/div branches were collapsed into a single <Dynamic>; the dismiss
+    // A single <Dynamic> now renders the menu/div branches; the dismiss
     // handlers must survive the swap on the non-default `div` tag, not just
     // `menu`. Escape dismisses BOTH tags -- only the click handler reads the tag
     // (see the content-click suite below).
@@ -179,7 +179,7 @@ describe('dropdownMenu', () => {
     hide.mockRestore()
   })
 
-  it('custom id is applied to the popover', () => {
+  it('applies a custom id to the popover', () => {
     render(() => (
       <DropdownMenu
         id="custom-id"
@@ -194,7 +194,7 @@ describe('dropdownMenu', () => {
     expect(popover?.tagName).toBe('MENU')
   })
 
-  it('custom class is applied to the popover', () => {
+  it('applies a custom class to the popover', () => {
     render(() => (
       <DropdownMenu
         trigger={<button>Open</button>}
@@ -209,7 +209,7 @@ describe('dropdownMenu', () => {
     expect(popover).toHaveClass('my-custom-class')
   })
 
-  it('solid accessor trigger (zero-arg function) is resolved and wrapped like JSX element', () => {
+  it('resolves and wraps a solid accessor trigger (zero-arg function) like a JSX element', () => {
     // Solid wraps component JSX (e.g. <IconButton />) in zero-arg accessor
     // functions. DropdownMenu must detect these via Function.length === 0,
     // call them to resolve the DOM node, and wrap in the display:contents div.
@@ -233,7 +233,7 @@ describe('dropdownMenu', () => {
     expect(wrapper).toHaveStyle({ display: 'contents' })
   })
 
-  it('render-prop (function with parameter) is NOT treated as accessor', () => {
+  it('does NOT treat a render-prop (function with parameter) as an accessor', () => {
     // A render-prop has length >= 1 (declares a triggerProps parameter).
     // It must NOT be called as an accessor — it should receive triggerProps.
     render(() => (
@@ -370,7 +370,7 @@ describe('dropdownMenu nested-submenu dismiss', () => {
 })
 
 describe('dropdownMenu content-click dismiss', () => {
-  it('does not dismiss a div popover when its content is clicked', async () => {
+  it('does not dismiss a div popover on a click inside its content', async () => {
     // A `div` popover is a panel of content. Dismissing on a click would make
     // its text unselectable: the press starts the selection and the release
     // closes the popover under it.
@@ -399,7 +399,7 @@ describe('dropdownMenu content-click dismiss', () => {
     expect(hide).not.toHaveBeenCalled()
   })
 
-  it('dismisses a menu popover when its content is clicked', async () => {
+  it('dismisses a menu popover on a click inside its content', async () => {
     // The other half of the same rule: a `menu` popover is a list of commands,
     // so it still closes behind the click that runs one.
     render(() => (
@@ -528,7 +528,7 @@ describe('dropdownMenu contextMenuFor', () => {
       expect(popover.matches(':popover-open')).toBe(true)
 
       // A press anchor is a frozen point, not an element to follow: the row it
-      // pointed at has scrolled away, so the menu closes instead of floating
+      // pointed at scrolled away, so the menu closes instead of floating
       // over whatever took its place. Element-anchored menus keep repositioning.
       document.dispatchEvent(new Event('scroll'))
 
@@ -565,7 +565,7 @@ describe('dropdownMenu contextMenuFor', () => {
   })
 
   it('attaches nothing when the accessor has no element yet', () => {
-    // A row whose ref has not resolved must not throw or bind to anything.
+    // A row whose ref did not resolve yet must not throw or bind to anything.
     expect(() =>
       render(() => (
         <DropdownMenu id="empty-menu" contextMenuFor={() => undefined}>
@@ -578,7 +578,7 @@ describe('dropdownMenu contextMenuFor', () => {
   /**
    * A trigger-less dropdown holds nothing but its `position: fixed` popover, and
    * `ot-dropdown` defaults to `display: inline`. Inside a flex row that empty
-   * inline box is still a flex ITEM, adding one `gap` of dead space to every row
+   * inline box is still a flex ITEM, adding one `gap` of empty space to every row
    * that mounts such a menu -- which is every tab row. The attribute is what the
    * `display: contents` rule in ~/styles/popover.css.ts keys on.
    */

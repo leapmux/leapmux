@@ -66,9 +66,9 @@ func TestNormalizePageParams(t *testing.T) {
 	assert.Less(t, int64(DefaultPageLimit), int64(MaxPageLimit),
 		"the default page must fit inside the ceiling")
 
-	// The cursor is carried through untouched at every limit: normalizing it
-	// is the store's job, and a handler that rewrote it would silently
-	// restart a listing from the first page.
+	// NormalizePageParams carries the cursor through untouched at every limit:
+	// normalizing it is the store's job, and a handler that rewrote it would
+	// silently restart a listing from the first page.
 	assert.Equal(t, "opaque-cursor", NormalizePageParams("opaque-cursor", 0).Cursor)
 	assert.Equal(t, "opaque-cursor", NormalizePageParams("opaque-cursor", math.MaxInt64).Cursor)
 	assert.Empty(t, NormalizePageParams("", 10).Cursor)
@@ -188,9 +188,9 @@ func TestPurgeExpiredRegistrationKeysStopsAtTheRunawayCeiling(t *testing.T) {
 }
 
 // TestPurgeExpiredRegistrationKeysReportsAFailedPass pins the error path. A
-// store fault mid-drain must surface as Internal with the operation named,
-// not as a short success that reports the rows deleted so far and invites
-// the operator to believe the backlog is clear.
+// store fault mid-drain must surface as Internal with the operation in the
+// message, not as a short success that reports the rows deleted so far and
+// invites the operator to believe the backlog is clear.
 func TestPurgeExpiredRegistrationKeysReportsAFailedPass(t *testing.T) {
 	t.Parallel()
 

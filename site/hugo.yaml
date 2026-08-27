@@ -96,3 +96,37 @@ params:
   editURL:
     enable: true
     base: "https://github.com/leapmux/leapmux/edit/main/site/content"
+
+  # The fixed durations of the authentication model, held once because three
+  # pages state them in prose. Render one with the `duration` shortcode:
+  #
+  #   {{< duration elevation-window >}}          -> two hours
+  #   {{< duration elevation-window digits >}}   -> 2 hours
+  #
+  # `words` reads inside a sentence; `digits` reads inside a table. The
+  # shortcode fails the build for an unknown name or form, so the two forms
+  # of one duration cannot drift apart and a typo cannot render nothing.
+  #
+  # Change a value here and every page follows. The canonical prose home is
+  # the Quick reference table in content/docs/operating/security.md.
+  durations:
+    # How long one proven factor keeps a session or a CLI credential elevated.
+    elevation-window:
+      words: two hours
+      digits: 2 hours
+    # The maximum age of the proven factor, whatever slides the window.
+    elevation-cap:
+      words: eight hours
+      digits: 8 hours
+    # A CLI credential's access token, which renews itself.
+    access-token:
+      words: one hour
+      digits: 1 hour
+    # A CLI credential's refresh token. Each renewal moves it forward.
+    refresh-token:
+      words: 90 days
+      digits: 90 days
+    # The maximum lifetime of a CLI credential, counted from the authorization.
+    absolute-cap:
+      words: one year
+      digits: 1 year

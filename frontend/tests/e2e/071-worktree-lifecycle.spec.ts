@@ -429,7 +429,7 @@ test.describe('Worktree Lifecycle', () => {
     // Dialog appears BEFORE tab closes
     await expect(page.getByRole('heading', { name: 'Close Last Tab' })).toBeVisible()
     // `.first()`: the dialog renders the worktree path TWICE -- once in the
-    // "You are closing the last tab for worktree <path>." sentence and once in
+    // "This closes the last tab for worktree <path>." sentence and once in
     // BranchStatusInfo's "Worktree: <path>" line -- so a bare locator is a
     // strict-mode violation. Either occurrence proves the dialog is showing
     // this worktree, which is all this assertion is for.

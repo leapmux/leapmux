@@ -87,8 +87,8 @@ func (s *AdminWorkerService) DeregisterWorker(ctx context.Context, req *connect.
 	if err := requireField(req.Msg.GetId(), "id"); err != nil {
 		return nil, err
 	}
-	// Read the row FIRST: the workers-changed notification is addressed to
-	// the worker's OWNER, and after the status flip the id is still
+	// Read the row FIRST: the workers-changed notification goes to the
+	// worker's OWNER, and after the status flip the id is still
 	// resolvable but the intent is no longer obvious to a later reader.
 	w, err := s.store.Workers().GetAdmin(ctx, req.Msg.GetId())
 	if err != nil {

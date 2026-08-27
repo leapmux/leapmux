@@ -16,7 +16,7 @@ const tokenRefreshInterval = 1 * time.Minute
 // StartTokenRefresh starts a background goroutine that periodically refreshes
 // OAuth tokens that are about to expire. It stops when ctx is cancelled.
 // The first refresh waits for the first interval tick — there is nothing to
-// refresh at startup until tokens have aged.
+// refresh at startup until tokens age.
 func (h *OAuthHandler) StartTokenRefresh(ctx context.Context) {
 	periodic.Start(ctx, periodic.Schedule{Interval: tokenRefreshInterval, SkipFirstRun: true}, func(ctx context.Context) {
 		h.refreshExpiringTokens(ctx)
@@ -37,17 +37,23 @@ func (h *OAuthHandler) refreshExpiringTokens(ctx context.Context) {
 	}
 
 	// Cache DB lookups within this tick to avoid repeated GetOAuthProviderByID
-	// calls. The built Provider itself is cached on OAuthHandler.
+	// calls. OAuthHandler caches the built Provider itself.
 	type dbLookup struct {
 		dbProvider *store.OAuthProvider
-		err        error
+		// gen is the provider cache's invalidation count, read BEFORE the row
+		// beside it. buildProvider states why the order matters: the count
+		// has to cover every instant from the last evidence that the row
+		// exists to the cache insert. This tick reuses one row read for many
+		// tokens, so it reuses that read's count with it.
+		gen uint64
+		err error
 	}
 	dbCache := make(map[string]*dbLookup)
 
 	for _, tok := range tokens {
 		lookup, ok := dbCache[tok.ProviderID]
 		if !ok {
-			lookup = &dbLookup{}
+			lookup = &dbLookup{gen: h.providerGeneration(tok.ProviderID)}
 			dbProvider, getErr := h.store.OAuthProviders().GetByID(ctx, tok.ProviderID)
 			if getErr != nil {
 				lookup.err = getErr
@@ -61,7 +67,7 @@ func (h *OAuthHandler) refreshExpiringTokens(ctx context.Context) {
 			continue
 		}
 
-		provider, buildErr := h.buildProvider(ctx, lookup.dbProvider)
+		provider, buildErr := h.buildProvider(ctx, lookup.dbProvider, lookup.gen)
 		if buildErr != nil {
 			slog.Error("oauth refresh: build provider", "provider_id", tok.ProviderID, "error", buildErr)
 			continue

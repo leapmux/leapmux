@@ -21,7 +21,7 @@ Never write a bare `*.css.ts` basename inside a `.css.ts` file — not in code, 
 
 ### sqlc files
 
-`backend/internal/hub/store/{sqlite,postgres,mysql}/db/queries/*.sql` and any other sqlc query files MUST contain only ASCII characters. The sqlc parser falls over on non-ASCII bytes (typically inside comments) with a misleading `mismatched input 'SELECr'`-style error that points at the wrong line. Use `--` (double hyphen) and plain ASCII punctuation instead of `—` (em-dash) or smart quotes.
+`backend/internal/hub/store/{sqlite,postgres,mysql}/db/queries/*.sql` and any other sqlc query files MUST contain only ASCII characters. The sqlc parser fails on non-ASCII bytes (typically inside comments) with a misleading `mismatched input 'SELECr'`-style error that points at the wrong line. Use `--` (double hyphen) and plain ASCII punctuation instead of `—` (em-dash) or smart quotes.
 
 ## Common commands
 
@@ -33,7 +33,7 @@ Never write a bare `*.css.ts` basename inside a `.css.ts` file — not in code, 
 - `task lint-backend` / `task lint-frontend` / `task lint-desktop`
 - `task test-backend` / `task test-frontend`
 
-Lint Rust/desktop code with `task lint-desktop`, not `cargo clippy` directly. The task builds the Go sidecar binary first, which Tauri's bundle resources reference at `../go/bin/*`. Running `cargo clippy` directly fails with a misleading build error.
+Lint Rust/desktop code with `task lint-desktop`, not `cargo clippy` directly. The task builds the Go sidecar binary first, which Tauri's bundle resources point at `../go/bin/*`. Running `cargo clippy` directly fails with a misleading build error.
 
 ## Coding conventions
 
@@ -60,16 +60,16 @@ provider-neutral and delegates the provider-specific decision.
   message shapes are known — see the `frontend-owns-message-extraction` principle.
 
 Why: hardcoding one provider's shape into shared code silently breaks or half-serves
-every other provider and is a second source of truth that drifts. When you catch
-yourself writing a provider's tool/method name outside its plugin, move it into the
-plugin behind an interface method.
+every other provider and is a second source of truth that drifts. If you write a
+provider's tool/method name outside its plugin, move it into the plugin behind
+an interface method.
 
 ### Tests
 
 - Backend: `testify/assert`, `testify/require`.
 - Frontend: `vitest`. `describe` names must not be Title Case — start them lowercase (`describe('parses empty input')`). Naming one after the symbol under test keeps that symbol's own casing: `describe('createStableContext')`, `describe('channelManager openChannel')`. Never start a `describe` or `it` name with a word that must keep its capital, because the lint autofix lowercases the first letter alone and misspells it (`dEFAULT_MONO_FONT_FAMILY`). Lead with a lowercase phrase instead: `describe('default mono font stack (DEFAULT_MONO_FONT_FAMILY)')` (see `src/test-support/noMangledTestTitles.test.ts`, which fails the suite on a mangled title).
-- **Unit tests are co-located** with the code they test: `foo.ts` → `foo.test.ts` in the same directory. This holds under `tests/e2e/` too — an E2E helper carries its own `.test.ts` beside it (`helpers/mail.ts` → `helpers/mail.test.ts`). Do **not** add a second test file for a module under `tests/unit/` — that mirror has been retired (see `src/test-support/noMirroredUnitTests.test.ts`, which fails the suite if it comes back). Shared unit-test helpers live in `src/test-support/` (imported via `~/test-support/…`).
-- **The file extension picks the runner**, everywhere: `.spec.ts` is Playwright, `.test.ts` is vitest. So a `.test.ts` under `tests/e2e/helpers/` runs in `task test-frontend` — no browser, no hub, milliseconds — and never in the E2E suite. Both configs are pinned to this (`vitest.config.ts` excludes `tests/e2e/**/*.spec.ts` by name, not `tests/e2e/**`; `playwright.config.ts` sets `testMatch: '**/*.spec.ts'`), and `src/test-support/testFileNaming.test.ts` fails the suite when a file lands on the wrong side or a config stops enforcing its half. Do not widen the vitest exclude back to `tests/e2e/**`: with Playwright pinned to `.spec.ts`, a co-located test would then run under **neither** runner. Playwright's own default `testMatch` takes `*.test.ts` as well, which is why the pin is there — without it those tests run in a browser worker, where vitest's API does not exist.
+- **Unit tests are co-located** with the code they test: `foo.ts` → `foo.test.ts` in the same directory. This holds under `tests/e2e/` too — an E2E helper carries its own `.test.ts` beside it (`helpers/mail.ts` → `helpers/mail.test.ts`). Do **not** add a second test file for a module under `tests/unit/` — that mirror no longer exists (see `src/test-support/noMirroredUnitTests.test.ts`, which fails the suite if it comes back). Shared unit-test helpers live in `src/test-support/` (imported via `~/test-support/…`).
+- **The file extension picks the runner**, everywhere: `.spec.ts` is Playwright, `.test.ts` is vitest. So a `.test.ts` under `tests/e2e/helpers/` runs in `task test-frontend` — no browser, no hub, milliseconds — and never in the E2E suite. Both configs are pinned to this (`vitest.config.ts` excludes `tests/e2e/**/*.spec.ts` by name, not `tests/e2e/**`; `playwright.config.ts` sets `testMatch: '**/*.spec.ts'`), and `src/test-support/testFileNaming.test.ts` fails the suite when a file is on the wrong side or a config stops enforcing its half. Do not widen the vitest exclude back to `tests/e2e/**`: with Playwright pinned to `.spec.ts`, a co-located test would then run under **neither** runner. Playwright's own default `testMatch` takes `*.test.ts` as well, which is why the pin is there — without it those tests run in a browser worker, where vitest's API does not exist.
 - E2E: do NOT pass per-call `{ timeout: … }` overrides to `expect`, `locator.waitFor`, etc. Playwright's global timeout (configured in `playwright.config.ts`) already applies; per-call overrides are redundant noise. If a specific assertion legitimately needs a longer-than-global timeout (e.g. waiting on a slow worker spawn), discuss it before silently adding one.
 - Unused imports cause lint failures (strict).
 - Test provider-specific logic in that provider's test file (e.g. Claude's `previewText` in `providers/claude/plugin.test.ts`), not in a shared module's test.
@@ -91,7 +91,7 @@ Prefer direct imports over re-export aliases. Do NOT add `export { foo as bar } 
 
 ### Tooltips
 
-Use the `<Tooltip>` component (`~/components/common/Tooltip`) for hover text on an interactive element. Do NOT reach for a bare `title` attribute — it renders the OS tooltip, which ignores the app's theme and typography, appears after a browser-controlled delay, and is invisible on touch.
+Use the `<Tooltip>` component (`~/components/common/Tooltip`) for hover text on an interactive element. Do NOT use a bare `title` attribute — it renders the OS tooltip, which ignores the app's theme and typography, appears after a browser-controlled delay, and is invisible on touch.
 
 ```tsx
 <Tooltip text="Remove link, keeping the text" ariaLabel>
@@ -99,7 +99,7 @@ Use the `<Tooltip>` component (`~/components/common/Tooltip`) for hover text on 
 </Tooltip>
 ```
 
-Pass `ariaLabel` when the control has no visible text, so the tooltip doubles as its accessible name.
+Pass `ariaLabel` when the control has no visible text, so the tooltip also serves as its accessible name.
 
 **`title` on a DOM element is a lint error** (`no-restricted-syntax` in `eslint.config.ts`). There is no exception, including a **disabled** control: `<Tooltip>` covers that case. It gives its wrapper a real box and listens there — a disabled element dispatches no pointer event of its own — and it leaves an offscreen description in `aria-describedby` for as long as the control is disabled, which is the only route to a screen-reader user there (a disabled element takes no focus, so the tooltip can never open from the keyboard).
 
@@ -115,20 +115,21 @@ Never render a native `<select>`. Use:
   four options that fit on one row. It supplies `role="radiogroup"`, roving
   tabindex and the arrow-key contract.
 - `<DropdownMenu>` + `<DropdownMenuCheckableItem kind="radio">`
-  (`~/components/common/DropdownMenu`) for anything longer, dynamic or
-  unbounded. Follow `AgentProviderSelector` and `PreferencesNav`, which already
-  do this.
+  (`~/components/common/DropdownMenu`) for anything longer, dynamic or with
+  no upper limit. Follow `AgentProviderSelector` and `PreferencesNav`, which
+  already do this.
 
 Why: a native `<select>` opens the OS picker, which ignores the app's theme and
 typography — the same reason a bare `title` is banned for tooltips. It renders
 text and nothing else, so a colour swatch, an icon or a second line is
 impossible; `ThemeChooser` needs exactly that. And its selected index is browser
-state, so every caller ends up repairing the DOM by hand after a refused write
-or an option-list swap — two such repairs were deleted when the last selects
-went. A menu derives from props and cannot drift.
+state, so every caller inevitably repairs the DOM by hand after a refused write
+or an option-list swap — two such repairs were deleted when this project
+removed the last selects. A menu derives from props and cannot drift.
 
-For an unbounded list, give the menu a filter box: render it `as="div"` so a
-click inside does not dismiss it, and close from the item's own handler.
+For a list with no upper limit, give the menu a filter box: render it
+`as="div"` so a click inside does not dismiss it, and close from the item's own
+handler.
 
 ### Browser storage
 
@@ -143,7 +144,7 @@ Two registries hold every key, by logical name:
 - `LOCAL_KEY_SPECS` — localStorage.
 - `SESSION_KEY_SPECS` — sessionStorage.
 
-Each entry states `match` (`exact` or `prefix`), `scope` and `ttlMs`. A `scope: 'account'` key is stored at `leapmux:u:<userId>:<name>`, and that is the answer for anything a user owns. A `scope: 'device'` key is stored at `leapmux:<name>`, for state that fences a resource shared by every account on the origin; the two relay sequence marks are the only entries today.
+Each entry states `match` (`exact` or `prefix`), `scope` and `ttlMs`. A `scope: 'account'` key is stored at `leapmux:u:<userId>:<name>`, and that is the answer for anything a user owns. A `scope: 'device'` key is stored at `leapmux:<name>`, for state that guards a resource shared by every account on the origin; the two relay sequence marks are the only entries today.
 
 `setStorageAccount(userId)` points the account namespace at the signed-in user, and `AuthContext` is its one caller. An account-scoped access before that call throws. A module that MIRRORS an account-scoped key in memory subscribes to `onStorageAccountChange` so the mirror moves with the namespace.
 
@@ -151,7 +152,7 @@ Adding a new key:
 
 1. Add the constant (`KEY_*`) or the prefix (`PREFIX_*`) to `browserStorage.ts`.
 2. Register it in `LOCAL_KEY_SPECS` or `SESSION_KEY_SPECS` with a `match`, a `scope` and a TTL. `satisfies Record<string, KeySpec>` turns a missing `scope` into a compile error.
-3. Read and write through the helpers. They throw for an unregistered name, so a missed registration fails loudly instead of disappearing on the next sweep.
+3. Read and write through the helpers. They throw for an unregistered name, so a missed registration fails visibly instead of disappearing on the next sweep.
 
 Two guards enforce what the types cannot: `no-restricted-globals` in `eslint.config.ts` rejects any reference to the storage globals outside the gateway, and `src/test-support/storageKeysAreRegistered.test.ts` fails the suite for an exported key constant that neither table registers, and for a name registered in both.
 

@@ -49,9 +49,10 @@ func assertBoundarySweep(t *testing.T, cutoff time.Time, sweep func(time.Time) (
 // strictly-older row, keeps the exact-cutoff row, and keeps newer rows, even
 // when all of them share the same second. The coarse multi-day gaps in
 // testCleanup are exactly the shape that let a mixed-layout cutoff bind (which
-// missed every same-day row on SQLite) ship green. The users hard-delete is
-// pinned here too (its FK gating is testCleanup's job), since its predicate is
-// hand-written per dialect rather than shared with the workspace/worker twins.
+// missed every same-day row on SQLite) reach a release with the suite still
+// green. The users hard-delete is pinned here too (its FK restriction is
+// testCleanup's job), since its predicate is hand-written per dialect rather
+// than shared with the workspace/worker twins.
 //
 // Where a table has no unfiltered GetByID to enumerate survivors, a second
 // sweep with a far-future cutoff pins the survivor count instead: it must
@@ -126,9 +127,9 @@ func (s *Suite) testCleanupBoundaries(t *testing.T) {
 		// alone, so this credential still authenticates however long ago its
 		// refresh window closed -- the admin-issued shape.
 		liveAccess := seed("live-access", &open, &cutoff)
-		// No refresh leg at all: a closed leg, not an open one, so the access
-		// expiry alone decides. Here it is past, so the row goes with the
-		// second sweep below.
+		// No refresh deadline at all: a closed deadline, not an open one, so
+		// the access expiry alone decides. Here it is past, so the row goes
+		// with the second sweep below.
 		noRefresh := seed("no-refresh", &cutoff, nil)
 		// No access expiry at all: the row never stops authenticating, so it
 		// is never swept here.
@@ -318,8 +319,8 @@ func (s *Suite) testCleanupBoundaries(t *testing.T) {
 	// `users.deleted_at < ?` on MySQL), so a `<` -> `<=` slip in ONE dialect is
 	// invisible to testCleanup, whose users case plants a 48h-old row against a
 	// 24h cutoff. Each fixture user is seeded FK-free (no workspace, no worker),
-	// so the NOT EXISTS gates in HardDeleteUsersBefore never mask the boundary
-	// by skipping a row for the wrong reason.
+	// so the NOT EXISTS gate clauses in HardDeleteUsersBefore never mask the
+	// boundary by skipping a row for the wrong reason.
 	t.Run("user soft-delete sweep is millisecond-exact", func(t *testing.T) {
 		st := s.NewStore(t)
 		cutoff := boundaryCutoff()

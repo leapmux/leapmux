@@ -53,7 +53,7 @@ export interface ComposerPlusMenuProps {
   /**
    * Whether a settings change is in flight. A model or effort change relaunches
    * the session and takes seconds, and every settings surface flips its label
-   * optimistically the moment a value is picked — so without a busy marker the
+   * optimistically the moment the user picks a value — so without a busy marker the
    * user cannot tell an applied change from a pending one, and picks again.
    *
    * The marker lives on this menu's trigger, not on the status bar: the bar is a
@@ -91,7 +91,7 @@ export interface ComposerPlusMenuProps {
    * so an element built inside one is rebuilt whenever the getter's
    * dependencies change. Here that discarded and recreated every row of an open
    * card — resetting each copy button's "copied" check and dropping any text
-   * the user had selected in it — on every status push.
+   * the user selected in it — on every status push.
    */
   agentInfo?: () => JSX.Element
 }
@@ -145,7 +145,7 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
    * branch, agent info and provider actions -- each of which inserts rows ABOVE
    * the two toggles at the bottom. A pointer already aimed at "Send with Enter"
    * then lands on whatever slid into its place, and one of those is a provider
-   * action that applies a setting the moment it is clicked.
+   * action that applies a setting the moment the user clicks it.
    *
    * Reading `open()` FIRST and returning `prev` without touching any live source
    * is what freezes it: that run subscribes to `open` alone, so no push can
@@ -244,8 +244,8 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
       <Show when={hasMiddleSection()}><hr /></Show>
 
       {/* Keyed by group id, not by the group object: the worker re-broadcasts
-          the whole catalog on every status push, so the group the user is
-          changing arrives as a fresh object. Keying by object would dispose
+          the whole catalog on every status push, so the group that the user
+          changes arrives as a fresh object. Keying by object would dispose
           and recreate that submenu — the one whose popover is open — mid-click. */}
       <For each={groupIds()}>
         {id => (
@@ -260,7 +260,7 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
       </For>
 
       {/* Divide the two kinds of item: above are the axes that configure what
-          the agent DOES, below is the session it is working in — its branch and
+          the agent DOES, below is the session that it works in — its branch and
           its usage. Guarded on BOTH sides, so an agent that reports no option
           groups, or none of the session items, cannot leave this rule stranded
           against the one above or below it. */}

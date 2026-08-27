@@ -18,12 +18,23 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
+
+// deletingAdminCtx carries the elevated administrator DeleteUser now
+// requires. It seeds its OWN account rather than reusing the doomed owner,
+// because the gate re-reads the acting account immediately before the write
+// and the owner is the row this verb deletes.
+func deletingAdminCtx(t *testing.T, ctx context.Context, st store.Store) context.Context {
+	t.Helper()
+	admin := storetest.SeedUser(t, st, "deleting-admin")
+	return hubtestutil.ElevatedAdminContext(t, ctx, admin.ID)
+}
 
 // notifiedUsers reports which users the broadcaster holds a pending
 // workers-changed event for. The debounce map is the earliest observable
@@ -52,8 +63,8 @@ func newDeregisterTestStore(t *testing.T) store.Store {
 // the administrator who typed the command, which is why the handler reads
 // the row before it flips the status.
 //
-// The admin surface used to run NONE of the deregister effects: the worker
-// was never told to stop, its memoized delegation scope kept outstanding
+// The admin surface used to run NONE of the deregister effects: nothing
+// told the worker to stop, its memoized delegation scope kept outstanding
 // tokens reaching across workers, no client learned the list changed, and
 // the row stuck at DEREGISTERING forever because only the notifier's
 // acknowledgement path calls MarkDeleted.
@@ -78,8 +89,7 @@ func TestAdminDeregisterNotifiesTheWorkersOwner(t *testing.T) {
 // rule from the other side: the effects must not run for a worker the
 // store did not deregister. SendDeregister persists a notification row and
 // moves worker-manager state, so telling a client the list changed for a
-// worker that is still active is state the caller was told it never
-// reached.
+// worker that is still active reports state the hub never reached.
 func TestAdminDeregisterRunsNoEffectWhenTheStoreRefuses(t *testing.T) {
 	st := newDeregisterTestStore(t)
 	ctx := context.Background()
@@ -110,7 +120,7 @@ func TestAdminDeregisterRunsNoEffectWhenTheStoreRefuses(t *testing.T) {
 // That fallback is what makes the notifier a PER-WORKER observation point:
 // each worker told to stop leaves a worker_notifications row a case can read
 // back, where the broadcaster's debounce map is keyed by user and cannot
-// tell one worker from ten.
+// distinguish one worker from ten.
 func newTestNotifier(t *testing.T, st store.Store) *notifier.Notifier {
 	t.Helper()
 	pending := workermgr.NewPendingRequests(func() time.Duration { return time.Second })
@@ -143,7 +153,7 @@ var errNotificationWriteFailed = errors.New("notification write failed")
 // failingNotificationStore serves every call from the real store except the
 // notification write for ONE worker, which fails. It is how a case reaches
 // the "this worker was not told to stop" branch: the deletion is already
-// committed there, so the handler logs and carries on rather than reporting
+// committed there, so the handler logs and continues rather than reporting
 // a failure that invites a retry of a deletion that cannot be repeated.
 type failingNotificationStore struct {
 	store.Store
@@ -194,7 +204,7 @@ func TestDeleteUserTellsEveryWorkerToStop(t *testing.T) {
 		WorkerEffects: NewWorkerDeregisterEffects(scopeCache, newTestNotifier(t, st), broadcaster),
 	})
 
-	// One memoized delegation scope per worker, so the eviction arm is
+	// One memoized delegation scope per worker, so the eviction branch is
 	// observable per worker too.
 	bearers := map[string]*auth.UserInfo{}
 	for _, workerID := range workerIDs {
@@ -209,7 +219,7 @@ func TestDeleteUserTellsEveryWorkerToStop(t *testing.T) {
 			"an agent on its owner's own ACTIVE worker reaches that owner's other workers")
 	}
 
-	_, err := svc.DeleteUser(ctx, connectRequestForTest(&leapmuxv1.DeleteUserRequest{Id: owner.ID}))
+	_, err := svc.DeleteUser(deletingAdminCtx(t, ctx, st), connectRequestForTest(&leapmuxv1.DeleteUserRequest{Id: owner.ID}))
 	require.NoError(t, err)
 
 	assert.ElementsMatch(t, workerIDs, deregisterNotifiedWorkers(t, st, workerIDs),
@@ -237,12 +247,12 @@ func otherWorkerID(ids []string, self string) string {
 	return ""
 }
 
-// TestDeleteUserCarriesOnWhenOneWorkerCannotBeTold pins the branch the
+// TestDeleteUserContinuesWhenOneWorkerCannotBeTold pins the branch the
 // cascade takes when an effect fails. The user IS deleted and the rows ARE
-// soft-deleted by then, so the handler must log the miss and keep going:
+// soft-deleted by then, so the handler must log the miss and continue:
 // reporting a failure would invite a retry of a deletion that already
 // committed, and stopping would leave the REMAINING workers running.
-func TestDeleteUserCarriesOnWhenOneWorkerCannotBeTold(t *testing.T) {
+func TestDeleteUserContinuesWhenOneWorkerCannotBeTold(t *testing.T) {
 	st := newDeregisterTestStore(t)
 	ctx := context.Background()
 	owner := storetest.SeedUser(t, st, "doomed-owner")
@@ -253,8 +263,8 @@ func TestDeleteUserCarriesOnWhenOneWorkerCannotBeTold(t *testing.T) {
 	// Read the order the cascade walks, and fail its FIRST worker. The
 	// listing orders by (created_at, id), and three workers seeded in one
 	// instant are ordered by their random ids -- so failing a worker chosen
-	// by name would leave the "carries on" property untested whenever that
-	// worker happened to come last.
+	// by name would leave the "continues after a failure" property untested
+	// whenever that worker happened to come last.
 	order, err := NewAdminUserService(AdminUserServiceDeps{Store: st}).liveWorkerIDs(ctx, userid.MustNew(owner.ID))
 	require.NoError(t, err)
 	require.Len(t, order, 3)
@@ -268,7 +278,7 @@ func TestDeleteUserCarriesOnWhenOneWorkerCannotBeTold(t *testing.T) {
 	})
 
 	logs := testutil.CaptureDefaultLogger(t)
-	_, err = svc.DeleteUser(ctx, connectRequestForTest(&leapmuxv1.DeleteUserRequest{Id: owner.ID}))
+	_, err = svc.DeleteUser(deletingAdminCtx(t, ctx, st), connectRequestForTest(&leapmuxv1.DeleteUserRequest{Id: owner.ID}))
 	require.NoError(t, err, "a failed effect must not fail an already-committed deletion")
 
 	assert.Equal(t, order[1:], deregisterNotifiedWorkers(t, st, order),
@@ -314,7 +324,7 @@ func TestDeleteUserTellsEveryWorkerPastTheFirstPage(t *testing.T) {
 		Store:         st,
 		WorkerEffects: NewWorkerDeregisterEffects(nil, newTestNotifier(t, st), nil),
 	})
-	_, err := svc.DeleteUser(ctx, connectRequestForTest(&leapmuxv1.DeleteUserRequest{Id: owner.ID}))
+	_, err := svc.DeleteUser(deletingAdminCtx(t, ctx, st), connectRequestForTest(&leapmuxv1.DeleteUserRequest{Id: owner.ID}))
 	require.NoError(t, err)
 
 	assert.Len(t, deregisterNotifiedWorkers(t, st, workerIDs), len(workerIDs),
@@ -333,15 +343,15 @@ func connectRequestForTest[T any](msg *T) *connect.Request[T] {
 // calls the operator's containment action.
 //
 // A delegation token minted on a worker reaches every OTHER worker its user
-// owns, and the scope that says so is memoized for a TTL. Deregistering the
-// worker is the one action an operator has against a compromised one, so
-// the memo must be dropped at once: without the eviction the outstanding
-// tokens keep their cross-worker reach for the rest of that TTL, and the
-// containment action is inert for as long as it matters.
+// owns, and the cache memoizes the scope that says so for a TTL.
+// Deregistering the worker is the one action an operator has against a
+// compromised one, so the memo must be dropped at once: without the eviction
+// the outstanding tokens keep their cross-worker reach for the rest of that
+// TTL, and the containment action is inert for as long as it matters.
 //
 // A real cache is what makes the effect observable at all. Passing nil for
 // it leaves every OTHER effect assertable and this one not, because each
-// arm of Apply is nil-tolerant by design.
+// branch of Apply is nil-tolerant by design.
 func TestAdminDeregisterEvictsTheWorkersMemoizedScope(t *testing.T) {
 	st := newDeregisterTestStore(t)
 	ctx := context.Background()
@@ -378,7 +388,7 @@ func TestAdminDeregisterEvictsTheWorkersMemoizedScope(t *testing.T) {
 // TestAdminDeregisterEvictsOnlyTheDeregisteredWorker pins the eviction's
 // scope. It is keyed by minting worker, so deregistering one worker must
 // not drop the memo of another -- a sweep that cleared the whole cache
-// would turn one containment action into a stampede of re-resolves for
+// would turn one containment action into a burst of re-resolves for
 // every delegation bearer the hub serves.
 func TestAdminDeregisterEvictsOnlyTheDeregisteredWorker(t *testing.T) {
 	st := newDeregisterTestStore(t)
@@ -414,17 +424,17 @@ func TestAdminDeregisterEvictsOnlyTheDeregisteredWorker(t *testing.T) {
 	after, err := scopeCache.Resolve(ctx, survivorBearer)
 	require.NoError(t, err)
 	assert.True(t, after.Allows(doomed.ID),
-		"one worker's deregistration must not drop another worker's memo, which would turn every containment action into a cache-wide stampede")
+		"one worker's deregistration must not drop another worker's memo, which would turn every containment action into a cache-wide burst of re-resolves")
 }
 
 // TestWorkerDeregisterEffectsToleratesAnAbsentCollaborator pins the
 // nil-tolerance the type documents, which every case that builds a partial
 // effects value depends on.
 //
-// Each collaborator is exercised ALONE as well as together, so a guard
-// present on one arm cannot stand in for a guard missing on another. A case
-// that only builds one combination proves the guards that combination
-// happens to reach, not each arm.
+// This exercises each collaborator ALONE as well as together, so a guard
+// present on one branch cannot stand in for a guard missing on another. A
+// case that only builds one combination proves the guards that combination
+// happens to reach, not each branch.
 func TestWorkerDeregisterEffectsToleratesAnAbsentCollaborator(t *testing.T) {
 	st := newDeregisterTestStore(t)
 	ctx := context.Background()
@@ -468,8 +478,8 @@ func TestWorkerDeregisterEffectsWrapsTheNotifierFault(t *testing.T) {
 }
 
 // TestAdminDeregisterReportsAFailedEffect pins how that error reaches the
-// caller. The row IS flipped by then, so the administrator has to learn the
-// worker was not told to stop -- unlike the user-deletion cascade, which
+// caller. The row IS flipped by then, so the administrator has to learn that
+// nothing told the worker to stop -- unlike the user-deletion cascade, which
 // logs instead because it cannot ask for a retry of an already-deleted user.
 func TestAdminDeregisterReportsAFailedEffect(t *testing.T) {
 	st := newDeregisterTestStore(t)

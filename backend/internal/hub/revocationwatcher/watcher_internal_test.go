@@ -44,15 +44,16 @@ func (s *renewCountingEvents) RenewHubRuntimeLease(context.Context, store.RenewH
 	return true, nil
 }
 
-// An idle sweep must not write a lease renewal on every tick: renewal is gated
-// on the lease having passed half its duration.
+// An idle sweep must not write a lease renewal on every tick: a renewal
+// requires the lease to pass half its duration first.
 func TestRenewLeaseIfStaleSkipsFreshLease(t *testing.T) {
 	rev := &renewCountingEvents{}
 	w := attachLease(&Watcher{store: fakeRevStore{rev: rev}}, "holder", time.Hour)
 	_ = w.lease.mu.Lock(context.Background())
 	defer w.lease.mu.Unlock()
 
-	// Fresh lease (well over half its duration remaining): renewal is skipped.
+	// Fresh lease (well over half its duration remaining): the watcher skips
+	// the renewal.
 	w.lease.leaseExpiresAt = time.Now().Add(time.Hour)
 	require.NoError(t, w.lease.renewIfStale(context.Background()))
 	require.Equal(t, 0, rev.renewals, "a fresh lease must not be renewed")
@@ -127,7 +128,7 @@ func TestConsumePageReleasesLockDuringSlowStoreRead(t *testing.T) {
 		done <- err
 	}()
 
-	<-rev.entered // ListPublishedAfter is now blocking mid-read.
+	<-rev.entered // ListPublishedAfter now blocks mid-read.
 
 	// With w.lease.mu released during the read, a heartbeat goroutine can acquire it.
 	acquired := make(chan struct{})
@@ -142,7 +143,7 @@ func TestConsumePageReleasesLockDuringSlowStoreRead(t *testing.T) {
 	}()
 	select {
 	case <-acquired:
-		// good: the lock was released during the slow read.
+		// good: the sweep released the lock during the slow read.
 	case <-time.After(2 * time.Second):
 		close(rev.release)
 		t.Fatal("w.lease.mu held during ListPublishedAfter: renewalLoop would be blocked and could self-fence the Hub")
@@ -152,9 +153,9 @@ func TestConsumePageReleasesLockDuringSlowStoreRead(t *testing.T) {
 	require.NoError(t, <-done)
 }
 
-// A mid-sweep lease renewal extends the lease, and the deadline bounding
+// A mid-sweep lease renewal extends the lease, and the deadline that limits
 // subsequent store round-trips must follow it. Otherwise a multi-page drain
-// keeps aborting at the pre-renewal deadline even though the lease is valid.
+// keeps aborting at the pre-renewal deadline although the lease is valid.
 func TestConsumeReDerivesDeadlineAfterRenewal(t *testing.T) {
 	rev := &deadlineCapturingEvents{
 		pages: [][]store.PublishedRevocationEvent{
@@ -169,7 +170,7 @@ func TestConsumeReDerivesDeadlineAfterRenewal(t *testing.T) {
 		lease: runtimeLease{
 			seeded: true,
 			// Start with a near-term deadline; the first page's renewal must push
-			// it far into the future so the second page is not limited by this.
+			// it far into the future so this deadline does not limit the second page.
 			leaseExpiresAt: time.Now().Add(time.Second),
 		},
 	}, "holder", time.Hour)
@@ -298,8 +299,9 @@ func TestPublishErrorOnLeaseLostToRivalIsFatalAndSignaled(t *testing.T) {
 	assert.Len(t, w.errors, 1, "the fatal must be signaled to the server so it fences")
 }
 
-// The same lapse with no rival must NOT fence: recovery takes the lease back and
-// the publish failure is reported as the ordinary transient store error it is.
+// The same lapse with no rival must NOT fence: recovery takes the lease back
+// and the watcher reports the publish failure as the ordinary transient store
+// error it is.
 // This is the suspend path -- a laptop that slept past its lease keeps serving.
 func TestPublishErrorOnLapsedLeaseRecoversAndReportsStoreError(t *testing.T) {
 	rev := &errPublishEvents{}
@@ -384,14 +386,14 @@ func TestRecoverRetriesAfterATransientStoreFailure(t *testing.T) {
 
 	err := w.lease.renewIfStale(context.Background())
 	require.Error(t, err)
-	assert.False(t, errorsIsLeaseFatal(err), "a store blip during recovery must not be lease-fatal")
+	assert.False(t, errorsIsLeaseFatal(err), "a brief store failure during recovery must not be lease-fatal")
 	assert.NotErrorIs(t, err, ErrLeaseLost,
-		"the lapse cause must not be wrapped in, or callers stop the watcher for a store blip")
+		"the lapse cause must not be wrapped in, or callers stop the watcher for a brief store failure")
 	assert.Empty(t, w.errors, "a retryable failure must not fence the server")
 
 	// The lease is still lapsed, so the next attempt must try again rather than
-	// latch. A recovery that gave up once would leave the Hub running without a
-	// lease for the rest of the process.
+	// latch. A recovery that stopped after one attempt would leave the Hub
+	// running without a lease for the rest of the process.
 	_ = w.lease.renewIfStale(context.Background())
 	assert.Equal(t, 2, rev.reacquireCalls, "recovery must retry while the lease is still lapsed")
 }
@@ -450,8 +452,8 @@ func TestRecoverHoldsTheCursorUnverifiedUntilItCanBeProven(t *testing.T) {
 	assert.True(t, w.lease.cursorUnverified, "the cursor must stay unverified until it is proven")
 	assert.Empty(t, w.errors)
 
-	// Consumption stays blocked while the flag is set, so no event is applied
-	// from a cursor that was never proven.
+	// Consumption stays blocked while the flag is set, so the watcher applies
+	// no event from a cursor that nothing ever proved.
 	require.Error(t, w.lease.ensure(context.Background()))
 
 	// Once the store answers, the proof completes and consume may proceed. maxSeq at
@@ -574,8 +576,8 @@ func TestConsumeFencesWhenTheStreamHasAHole(t *testing.T) {
 
 func TestApplyEventSkipsUnknownKind(t *testing.T) {
 	w := &Watcher{}
-	// An unknown kind is logged and skipped, never fatal -- the caller advances
-	// the cursor past it instead of fencing the Hub. applyEvent has no failure
+	// The watcher logs and skips an unknown kind, and never fences on it -- the
+	// caller advances the cursor past it instead of fencing the Hub. applyEvent has no failure
 	// path, so the guarantee is that it returns without panicking (it does not
 	// dispatch to any lifecycle effect for an unrecognized kind).
 	assert.NotPanics(t, func() {
@@ -590,13 +592,13 @@ func TestApplyEventSkipsUnknownKind(t *testing.T) {
 
 // A user_info event is a recognized cache-invalidation kind. With a nil
 // lifecycle the effect is a nil-safe no-op; the point is that applyEvent routes
-// it (removing the case would fall into the unknown-kind skip arm, silently
-// dropping a benign cache-invalidation instead of applying it).
+// it (removing the case would fall into the unknown-kind skip branch,
+// silently dropping a benign cache-invalidation instead of applying it).
 func TestApplyEventDispatchesUserInfo(t *testing.T) {
 	w := &Watcher{}
 	// A recognized kind routes to its (nil-safe) lifecycle effect without panic;
 	// the point is that applyEvent has a case for it rather than falling into the
-	// unknown-kind skip arm.
+	// unknown-kind skip branch.
 	assert.NotPanics(t, func() {
 		w.applyEvent(store.PublishedRevocationEvent{
 			Seq: 8,
@@ -626,7 +628,7 @@ func (*recordingCloser) RestampSessionGeneration(string, int64)          {}
 // separate a revoke from a sign-out under the user-auth lock. Every consumer
 // downstream of the watcher must treat them alike, and dropping the new kind
 // from this case would silently leave a revoked session's streams open until
-// the next validate -- the unknown-kind arm logs and skips rather than
+// the next validate -- the unknown-kind branch logs and skips rather than
 // fencing, so nothing else would report it.
 func TestApplyEventClosesStreamsForBothSessionKinds(t *testing.T) {
 	for _, kind := range []string{
@@ -646,7 +648,7 @@ func TestApplyEventClosesStreamsForBothSessionKinds(t *testing.T) {
 	}
 }
 
-// panickingCloser stands in for a wedged teardown that panics inside
+// panickingCloser stands in for a stalled teardown that panics inside
 // applyEvent's unlocked window.
 type panickingCloser struct{}
 
@@ -704,7 +706,7 @@ func (*singleSessionEventStore) ReleaseHubRuntimeLease(context.Context, string) 
 // event effect to finish. applyEvent runs in a lock-free window
 // (applyEventUnlocked releases lease.mu) and can block for seconds on a
 // back-pressured frontend; the lease release acquires only lease.mu (which that
-// window frees), so Close can return while the effect is still running. This is
+// window frees), so Close can return while the effect still runs. This is
 // safe because the effect is in-process and idempotent -- it mutates only the
 // closing Hub's own auth/channel state, never the durable lease row or the
 // shared DB, so it cannot corrupt a Hub that has since acquired the released
@@ -801,8 +803,8 @@ func TestRunStoreUnlockedReLocksAfterPanic(t *testing.T) {
 
 // Close must cancel the owned loop's context BEFORE acquiring w.lease.mu: an in-flight
 // runOnce holds w.lease.mu across its store round-trips, so if Close locked first it
-// could block past its ctx budget. Here we hold w.lease.mu to stand in for that
-// in-flight runOnce and assert Close still cancels the loop.
+// could block past its ctx budget. This test holds w.lease.mu to stand in for
+// that in-flight runOnce, and asserts that Close still cancels the loop.
 func TestCloseCancelsLoopBeforeAcquiringMu(t *testing.T) {
 	w := &Watcher{}
 	loopCtx, cancel := context.WithCancel(context.Background())
@@ -824,10 +826,11 @@ func TestCloseCancelsLoopBeforeAcquiringMu(t *testing.T) {
 }
 
 // elapsedDeadlineCtx models the race window leaseReleaseContext must survive:
-// a context whose Deadline() has already passed on the wall clock while Err()
-// still reads nil (the deadline elapsing between the two reads). Feeding the
-// negative remainder into the timeout min would hand back an already-expired
-// context -- the stillborn release the function's doc promises cannot happen.
+// a context whose Deadline() is already in the past on the wall clock while
+// Err() still reads nil (the deadline elapsing between the two reads). Feeding
+// the negative remainder into the timeout min would hand back an
+// already-expired context -- the release the function's doc promises cannot
+// expire before it starts.
 type elapsedDeadlineCtx struct{ context.Context }
 
 func (elapsedDeadlineCtx) Deadline() (time.Time, bool) { return time.Now().Add(-time.Second), true }

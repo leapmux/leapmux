@@ -17,8 +17,8 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/httpsec"
 )
 
-// The captcha vendors LeapMux can be configured to use. An operator selects
-// one with `admin captcha set --provider`, and the field then loads that
+// The captcha vendors an operator can configure LeapMux to use. An operator
+// selects one with `admin captcha set --provider`, and the field then loads that
 // vendor's script and renders its iframe -- so the policy has to authorize
 // both origins or the sign-up page cannot show its challenge.
 //
@@ -41,10 +41,10 @@ var (
 		"https://challenges.cloudflare.com",
 		"https://www.google.com/recaptcha/",
 	}
-	// reCAPTCHA v3 scores a request by calling home, and Turnstile's platform
-	// does the same on some configurations.
+	// reCAPTCHA v3 scores a request by calling its own servers, and
+	// Turnstile's platform does the same on some configurations.
 	//
-	// These are listed although NO TEST REACHES THEM. The E2E specs replace
+	// This list includes them although NO TEST REACHES THEM. The E2E specs replace
 	// `window.turnstile` and `window.grecaptcha` with fakes, so they prove
 	// that the vendor SCRIPT may load and stop there -- the vendors' real
 	// runtime traffic never runs in CI, and it cannot without shipping a live
@@ -65,7 +65,8 @@ var (
 //   - connect-src 'self' plus the two captcha vendors: both WebSockets are
 //     same-origin (`${wsProtocol}//${window.location.host}/ws/channel`) and
 //     every fetch of the app's own goes to the hub that served the page, but
-//     reCAPTCHA v3 scores a request by calling home. See captchaConnectSources.
+//     reCAPTCHA v3 scores a request by calling its own servers. See
+//     captchaConnectSources.
 //   - style-src keeps 'unsafe-inline', and it CANNOT be tightened today.
 //     @xterm/xterm's DomRenderer builds a stylesheet as text and assigns it to
 //     a <style> element's textContent, which CSP governs and whose content
@@ -89,7 +90,7 @@ var (
 //     needs script execution first, and script-src already governs that.
 //     Stated rather than left to the default-src fallback, so a later change
 //     to default-src cannot silently stop the workers.
-//   - object-src 'none': the app embeds no plugin, so it is dead surface.
+//   - object-src 'none': the app embeds no plugin, so it is unused surface.
 //   - frame-src lists the two captcha vendors and nothing else. Turnstile and
 //     reCAPTCHA each render their challenge in an iframe of their own origin;
 //     the app frames nothing else.
@@ -101,10 +102,10 @@ var (
 //     loopback sources are not a relaxation -- they are the CLI login, which is
 //     the only form in the app whose submission leaves this origin. `/auth/cli/start`
 //     renders a consent form, and the POST answers with a redirect to the local
-//     callback the CLI is listening on. A browser matches `form-action` against
+//     callback the CLI listens on. A browser matches `form-action` against
 //     EVERY hop of a submission's redirect chain, so `'self'` alone blocks that
-//     hop on Chromium and WebKit and the CLI waits until it times out. The port
-//     is chosen by the CLI at run time, hence the wildcard; the host set is
+//     hop on Chromium and WebKit and the CLI waits until it times out. The CLI
+//     chooses the port at run time, hence the wildcard; the host set is
 //     exactly what `isLoopbackURL` already refuses to redirect outside.
 var cspDirectives = []string{
 	"default-src 'self'",
@@ -132,12 +133,12 @@ var cspDirectives = []string{
 // as well, and a scheme the redirect accepts and the policy omits is the
 // outage this derivation exists to prevent.
 //
-// AN IPv6 LITERAL CANNOT BE STATED AT ALL, so `::1` is filtered out rather than
-// bracketed. CSP's `host-source` grammar has no production for one: Chromium
-// reports `contains an invalid source: 'http://[::1]:*'` and IGNORES that
-// entry, so writing it bought nothing and left a console error on every page
-// load -- which is how it was found, by the violation collector in
-// tests/e2e/181-security-headers.spec.ts.
+// AN IPv6 LITERAL CANNOT BE STATED AT ALL, so this function filters `::1` out
+// rather than bracketing it. CSP's `host-source` grammar has no production for
+// one: Chromium reports `contains an invalid source: 'http://[::1]:*'` and
+// IGNORES that entry, so writing it gained nothing and left a console error on
+// every page load -- which is how the violation collector in
+// tests/e2e/181-security-headers.spec.ts found it.
 //
 // Nothing is lost today. The CLI binds `127.0.0.1:0` and builds its
 // redirect_uri from that literal (internal/cli/control/cmd/auth.go), so no
@@ -186,14 +187,13 @@ func withDirective(directives []string, name, sources string) []string {
 // Vite's HMR client injects inline scripts and evaluates source maps, so an
 // enforced policy stops hot reload. Report-only still surfaces a violation in
 // the console, which is where a developer wants to learn that a new dependency
-// reaches for something the shipped policy refuses -- before it ships, not
-// after.
+// needs something the shipped policy refuses -- before it ships, not after.
 //
 // DERIVED FROM cspDirectives, with the two overrides the dev server needs and
 // nothing else. It used to be a second hand-written list, and it drifted four
 // directives behind the shipped one: a developer who added a font, a worker, an
-// iframe or a plugin embed saw no report for it, so the report-only policy went
-// quiet about exactly the additions it exists to catch. Deriving it means a new
+// iframe or a plugin embed saw no report for it, so the report-only policy
+// stopped reporting exactly the additions it exists to catch. Deriving it means a new
 // directive is covered in dev the day it ships.
 var devCSP = func() string {
 	directives := withDirective(cspDirectives, "script-src", "'self' 'unsafe-inline' 'unsafe-eval'")
@@ -216,10 +216,11 @@ func DevPolicy() httpsec.Policy {
 // UnknownAssetsPolicy returns the policy for a frontend whose assets this
 // package cannot read -- one an embedder injects with hub.WithFrontendHandler.
 //
-// It sends NO Content-Security-Policy. A policy guessed for assets we have not
-// seen is worse than none: the first inline script it did not account for
-// leaves the caller with a blank page and a console error, and the header we
-// added is the cause. Whoever mounts their own assets owns their policy.
+// It sends NO Content-Security-Policy. A policy guessed for assets this
+// package never read is worse than none: the first inline script it did not
+// account for leaves the caller with a blank page and a console error, and the
+// header this package added is the cause. Whoever mounts their own assets owns
+// their policy.
 func UnknownAssetsPolicy() httpsec.Policy {
 	return httpsec.Policy{}
 }
@@ -228,10 +229,11 @@ func UnknownAssetsPolicy() httpsec.Policy {
 // frontend, with one 'sha256-...' source for each inline script in EVERY HTML
 // document it serves.
 //
-// THE HASH IS DERIVED, NEVER WRITTEN DOWN. The one inline script the build
-// emits is an 18 KB asset manifest carrying the hashed chunk file names, so
-// its bytes change on every frontend build that touches any source file. A
-// hash checked into Go source would be stale before it was reviewed, and a
+// THIS PACKAGE DERIVES THE HASH AND NEVER WRITES IT DOWN. The one inline
+// script the build emits is an 18 KB asset manifest carrying the hashed chunk
+// file names, so its bytes change on every frontend build that touches any
+// source file. A hash checked into Go source would be stale before anybody
+// reviewed it, and a
 // stale hash fails at RUNTIME as a blank page with a console error -- never at
 // build time. Reading the bytes that this same package is about to serve is
 // what makes the two impossible to disagree.
@@ -259,7 +261,7 @@ var embeddedPolicy = sync.OnceValue(func() httpsec.Policy {
 	// browser refuses the module and sign-up cannot solve its challenge.
 	// 'wasm-unsafe-eval' is the NARROW source for exactly this -- it permits
 	// WebAssembly compilation and still refuses eval() of JavaScript, which is
-	// what 'unsafe-eval' would have opened up as well.
+	// what 'unsafe-eval' would have permitted as well.
 	//
 	// The captcha vendors' own bundles load from their origins; see
 	// captchaScriptSources for why they are listed unconditionally.
@@ -273,7 +275,7 @@ var embeddedPolicy = sync.OnceValue(func() httpsec.Policy {
 
 // failedPolicy is what a hub serves when the hashes cannot be derived.
 //
-// It sends NO policy, and it says so loudly. The alternative -- shipping the
+// It sends NO policy, and it logs an error to say so. The alternative -- shipping the
 // directive list without the script hashes -- serves an app whose own script
 // the browser then refuses, which is a blank page for every user. A missing
 // header is a missing defence; a wrong header is an outage.
@@ -293,8 +295,8 @@ func failedPolicy(err error) httpsec.Policy {
 // one does, the browser refuses it and the page breaks at runtime with a
 // console error, which is the exact failure the derived hash exists to prevent.
 //
-// It WALKS rather than reading a list of names, so a document added to the
-// frontend build is covered without an edit here. A list is a second place to
+// It WALKS rather than reading a list of names, so it covers a document added
+// to the frontend build without an edit here. A list is a second place to
 // remember, and the cost of forgetting lands on the user.
 func allInlineScriptHashes(fsys fs.FS) ([]string, error) {
 	seen := make(map[string]struct{})
@@ -349,8 +351,8 @@ func inlineScriptHashes(fsys fs.FS, name string) ([]string, error) {
 // produces a hash that looks valid and is wrong, and the failure lands on the
 // user rather than on this function.
 //
-// A script that carries a `src` attribute is skipped. Its body is dead text
-// that the browser never runs, so a hash of it would authorize nothing.
+// This function skips a script that carries a `src` attribute. Its body is
+// text that the browser never runs, so a hash of it would authorize nothing.
 func addInlineScriptHashes(fsys fs.FS, name string, seen map[string]struct{}) error {
 	f, err := fsys.Open(name)
 	if err != nil {

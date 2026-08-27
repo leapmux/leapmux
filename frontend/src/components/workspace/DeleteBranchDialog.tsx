@@ -1,7 +1,7 @@
 import type { Component } from 'solid-js'
 import type { InspectBranchDeletionResponse } from '~/generated/leapmux/v1/git_pb'
 import type { Tab } from '~/stores/tab.types'
-import { createMemo, createSignal, Show } from 'solid-js'
+import { createMemo, createSignal, createUniqueId, Show } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { ConfirmButton } from '~/components/common/ConfirmButton'
 import { labelRow } from '~/components/common/Dialog.css'
@@ -78,7 +78,7 @@ interface DeleteBranchDialogProps {
    * directory was switched to. Parents route this into AppShell's
    * `onBranchChanged` handler, which stamps every tab in the same repo across
    * every workspace (it carries the rationale).
-   * Not called for the worktree path (those tabs are being removed
+   * Not called for the worktree path (the app removes those tabs
    * entirely).
    */
   onBranchChanged?: (newBranch: string) => void
@@ -161,6 +161,11 @@ export const DeleteBranchDialog: Component<DeleteBranchDialogProps> = (props) =>
   // populates it only for a worktree, and this restates that gate so a reason
   // arriving on any other response cannot render a warning about a removal
   // this dialog never offers.
+  // One id, shared by the visible reason and the button's description. See
+  // the <Tooltip describedBy> prop for why the description must not be a
+  // second copy of a sentence the dialog already shows.
+  const blockedReasonId = `branch-delete-blocked-reason-${createUniqueId()}`
+
   const removalBlockedReason = createMemo(() => {
     const i = info()
     return i?.isWorktree ? i.worktreeRemovalBlockedReason : ''
@@ -170,7 +175,7 @@ export const DeleteBranchDialog: Component<DeleteBranchDialogProps> = (props) =>
     const i = info()
     if (!i)
       return false
-    // Gate re-clicks while either delete is in flight (both paths drive
+    // Refuse re-clicks while either delete is in flight (both paths drive
     // `run`, so the busy overlay is up and a second confirm must no-op).
     if (submitting.loading())
       return false
@@ -289,7 +294,7 @@ export const DeleteBranchDialog: Component<DeleteBranchDialogProps> = (props) =>
       // disposed owner. AppShellDialogs renders this dialog under a keyed
       // <Show>, which hands its children the payload itself, so its
       // callbacks hold no accessor to go stale. This order keeps every
-      // other parent safe also. An earlier close-first order swallowed the
+      // other parent safe also. An earlier close-first order discarded the
       // stamp, and the sidebar kept the deleted branch's label until a page
       // reload.
       //
@@ -330,7 +335,7 @@ export const DeleteBranchDialog: Component<DeleteBranchDialogProps> = (props) =>
       footer={(
         <>
           {/* `disabled` while submitting, to match DialogFormFooter's own
-              Cancel. The Dialog `busy` flag gates only Escape, the backdrop
+              Cancel. The Dialog `busy` flag covers only Escape, the backdrop
               click, and the X button; it never reaches a custom footer
               button, which calls `props.onClose()` directly. Without this
               gate the user can dismiss the dialog while DeleteBranch is in
@@ -368,14 +373,10 @@ export const DeleteBranchDialog: Component<DeleteBranchDialogProps> = (props) =>
               worktree path checks whether git removes the worktree, the
               branch path runs the delete itself.
 
-              The blocked reason goes through <Tooltip>, which works on a
-              disabled control and leaves the button its own name. On `title`
-              the reason BECOMES that name, and this button's name is STATE
-              ("Confirm?" once armed) -- so the reason replaced the one thing
-              the name had to carry, and a role+name lookup for "Delete
-              branch" stopped matching. The same text also renders in the body
-              above, for anybody who never hovers. */}
-          <Tooltip text={removalBlockedReason() || undefined}>
+              The blocked reason goes through <Tooltip>; see that component's
+              header for why no control here takes a `title`. The same text
+              also renders in the body above, for anybody who never hovers. */}
+          <Tooltip text={removalBlockedReason() || undefined} describedBy={blockedReasonId}>
             <ConfirmButton
               data-variant="danger"
               disabled={!canSubmit()}
@@ -403,10 +404,16 @@ export const DeleteBranchDialog: Component<DeleteBranchDialogProps> = (props) =>
               }}
             />
             {/* Why the Delete button is unavailable. Visible text, not the
-                button's `title` alone, because a greyed-out destructive
-                option with no stated reason looks like a defect. */}
+                button's tooltip alone, because a greyed-out destructive
+                option with no stated reason looks like a defect.
+                The test id is what a caller matches on. The SAME reason also
+                reaches the button's tooltip, which renders it a second time as
+                an offscreen aria-describedby node, so a locator that matches on
+                the TEXT finds two elements and fails on strict mode. */}
             <Show when={removalBlockedReason()}>
-              <div class={warningText}>{removalBlockedReason()}</div>
+              <div id={blockedReasonId} class={warningText} data-testid="branch-delete-blocked-reason">
+                {removalBlockedReason()}
+              </div>
             </Show>
             {/* The worker sets error_hint when a probe it needed did not
                 answer. An empty blocked reason is also what a clean worktree

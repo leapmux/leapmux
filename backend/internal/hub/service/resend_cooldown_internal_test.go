@@ -9,7 +9,7 @@ import (
 
 // The two flows that send mail on demand share ONE cooldown and ONE
 // derivation. They used to carry a constant and a formula each, with a
-// comment in both naming the other as its twin.
+// comment in both that identified the other as its twin.
 //
 // What these pin is the property that made sharing correct: the TTLs differ
 // and the cooldown does not, so the cutoff must move with the TTL and the
@@ -31,8 +31,8 @@ func TestMintCutoff(t *testing.T) {
 		passwordResetExpiry-pendingEmailExpiry,
 		mintCutoff(now, passwordResetExpiry).Sub(mintCutoff(now, pendingEmailExpiry)))
 
-	// UTC whatever the caller passed, because the cutoff is compared against
-	// a stored expiry the app clock wrote.
+	// UTC whatever the caller passed, because the mint statement compares the
+	// cutoff against a stored expiry the app clock wrote.
 	loc := time.FixedZone("UTC+9", 9*3600)
 	assert.Equal(t, time.UTC, mintCutoff(now.In(loc), pendingEmailExpiry).Location())
 	assert.True(t, mintCutoff(now.In(loc), pendingEmailExpiry).Equal(mintCutoff(now, pendingEmailExpiry)))
@@ -51,7 +51,7 @@ func TestIssuedAtFromExpiryAgreesWithMintCutoff(t *testing.T) {
 		issued := issuedAtFromExpiry(expiry, ttl)
 		assert.Equalf(t, now.Add(-resendCooldown), issued,
 			"ttl %s: a token expiring at the cutoff was issued one cooldown ago", ttl)
-		// So the countdown a client renders for it has just run out.
+		// So the countdown a client renders for it just ran out.
 		assert.Equalf(t, now, nextResendAt(issued), "ttl %s", ttl)
 	}
 }

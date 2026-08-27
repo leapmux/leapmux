@@ -49,6 +49,6 @@ func (s *oauthStateStore) Get(ctx context.Context, state string) (*store.OAuthSt
 	return fromDBOAuthState(row), nil
 }
 
-func (s *oauthStateStore) Delete(ctx context.Context, state string) error {
-	return mapErr(s.conn.q.DeleteOAuthState(ctx, state))
+func (s *oauthStateStore) Delete(ctx context.Context, state string) (int64, error) {
+	return rowsAffected(s.conn.q.DeleteOAuthState(ctx, state))
 }

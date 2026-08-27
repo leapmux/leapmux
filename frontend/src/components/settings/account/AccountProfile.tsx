@@ -1,14 +1,13 @@
 import type { Component } from 'solid-js'
-import type { StatusMessage } from '~/components/common/StatusLine'
 import { createMemo, createSignal, onMount, Show } from 'solid-js'
 import { userClient } from '~/api/clients'
 import { StatusLine } from '~/components/common/StatusLine'
 import { UsernameField } from '~/components/common/UsernameField'
 import { useAuth } from '~/context/AuthContext'
-import { formatErrorMessage } from '~/lib/errors'
 import { sanitizeDisplayName, sanitizeName, sanitizeSlug } from '~/lib/validate'
 import { errorText } from '~/styles/shared.css'
 import * as styles from './accountFields.css'
+import { createAccountAction } from './createAccountAction'
 
 /**
  * The account's own name: the username other people address, and the display
@@ -28,8 +27,7 @@ export const AccountProfile: Component = () => {
   const auth = useAuth()
   const [username, setUsername] = createSignal('')
   const [displayName, setDisplayName] = createSignal('')
-  const [saving, setSaving] = createSignal(false)
-  const [message, setMessage] = createSignal<StatusMessage | null>(null)
+  const action = createAccountAction()
 
   const dirty = createMemo(() => {
     const user = auth.user()
@@ -56,29 +54,26 @@ export const AccountProfile: Component = () => {
   const save = async () => {
     const [slug, slugErr] = sanitizeSlug('Username', username())
     if (slugErr) {
-      setMessage({ type: 'error', text: slugErr })
+      action.reject(slugErr)
       return
     }
     const { value: sanitizedDisplayName, error: dnErr } = sanitizeDisplayName(displayName(), slug)
     if (dnErr) {
-      setMessage({ type: 'error', text: dnErr })
+      action.reject(dnErr)
       return
     }
-    setSaving(true)
-    setMessage(null)
-    try {
-      await userClient.updateProfile({ username: slug, displayName: sanitizedDisplayName })
-      await auth.refreshUser()
-      setDisplayName(auth.user()?.displayName ?? '')
-      setUsername(auth.user()?.username ?? '')
-      setMessage({ type: 'success', text: 'Profile updated.' })
-    }
-    catch (e) {
-      setMessage({ type: 'error', text: formatErrorMessage(e, 'Failed to update profile') })
-    }
-    finally {
-      setSaving(false)
-    }
+    await action.run({
+      fallback: 'Failed to update profile',
+      work: async () => {
+        await userClient.updateProfile({ username: slug, displayName: sanitizedDisplayName })
+        // The hub sanitizes both fields again, so the form adopts what it
+        // stored rather than what the user typed.
+        await auth.refreshUser()
+        setDisplayName(auth.user()?.displayName ?? '')
+        setUsername(auth.user()?.username ?? '')
+        return 'Profile updated.'
+      },
+    })
   }
 
   return (
@@ -91,10 +86,10 @@ export const AccountProfile: Component = () => {
       <Show when={displayNameError()}>
         {err => <div class={errorText}>{err()}</div>}
       </Show>
-      <StatusLine message={message()} />
+      <StatusLine message={action.message()} />
       <div>
-        <button type="button" onClick={() => void save()} disabled={saving() || !dirty() || !!displayNameError()}>
-          {saving() ? 'Saving...' : 'Save Profile'}
+        <button type="button" onClick={() => void save()} disabled={action.running() || !dirty() || !!displayNameError()}>
+          {action.running() ? 'Saving...' : 'Save Profile'}
         </button>
       </div>
     </div>

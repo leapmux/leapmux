@@ -13,7 +13,7 @@ import (
 // The sentence states the actor, and that is what lets one template serve a
 // plural subject and a singular one alike: the hand-written copies each
 // chose their own verb ("changes are", "sign-up is"), so a passive template
-// had to be wrong for some of them. One of the nine had already lost its
+// had to be wrong for some of them. One of the nine already lost its
 // subject entirely and read only "not available in solo mode".
 func TestRejectSolo(t *testing.T) {
 	t.Parallel()

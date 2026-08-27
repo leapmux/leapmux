@@ -11,8 +11,8 @@ import { collectFiles } from '~/test-support/sourceTree'
 // evaluation time -- `createClient(AuthService, transport)` runs in the module
 // body, not in a function -- so it reads `transport` the instant the bundler
 // evaluates it. Put that module in a cycle and the bundler must evaluate one
-// of the two first; the loser reads the other's binding before it is assigned
-// and captures `undefined`.
+// of the two first; the second one reads the other's binding before it is
+// assigned and captures `undefined`.
 //
 // That already happened. `~/api/transport` imported the step-up marker from
 // `~/lib/elevation`, which imports `~/api/clients` for the ceremony RPCs,
@@ -38,11 +38,11 @@ const srcRoot = join(frontendRoot, 'src')
 
 /**
  * A static `import ... from '<spec>'` or `export ... from '<spec>'`, with the
- * statement head captured so a type-only form can be dropped.
+ * statement head captured so the caller can drop a type-only form.
  *
  * TypeScript erases `import type { X } from './x'` completely, so it creates
  * no runtime edge and cannot cause a cycle. Counting it would report cycles
- * that do not exist -- a pair of modules that name each other's types is
+ * that do not exist -- a pair of modules that refers to each other's types is
  * both common and harmless.
  */
 const FROM_IMPORT = /(?:^|\n)[ \t]*((?:import|export)\b[^;\n]+?)\bfrom\s+['"]([^'"]+)['"]/g
@@ -143,8 +143,8 @@ function importsOf(file: string): string[] {
  * The import graph over the hand-written modules of `src/`, keyed by
  * repo-relative path.
  *
- * A test file is excluded on both sides. Nothing imports one, so it can never
- * sit on a cycle that the bundler evaluates.
+ * This function excludes a test file on both sides. Nothing imports one, so it
+ * can never sit on a cycle that the bundler evaluates.
  */
 function buildGraph(): Map<string, string[]> {
   const files = collectFiles(srcRoot, {
@@ -170,8 +170,8 @@ function buildGraph(): Map<string, string[]> {
  *
  * A depth-first search always finds a back edge when the graph has a cycle,
  * so this NEVER misses one. It does not enumerate every path through a
- * tangled component: once a module is finished, a later route into it is not
- * explored again. The report then names fewer paths than exist, and the
+ * tangled component: once a module is finished, the search does not explore a
+ * later route into it. The report then lists fewer paths than exist, and the
  * guard still fails.
  */
 function findCycles(graph: Map<string, string[]>): string[][] {
@@ -217,7 +217,7 @@ describe('module graph', () => {
       cycles.map(cycle => cycle.join('\n     -> ')),
       'An import cycle decides when a binding holds its value: a module that '
       + 'builds something in its body (like ~/api/clients) can read a partner '
-      + 'that has not been assigned yet and capture undefined. Break the cycle '
+      + 'the bundler did not assign yet and capture undefined. Break the cycle '
       + 'by moving the shared symbol into a module that imports neither side.\n'
       + 'Cycles found:',
     ).toEqual([])
@@ -225,13 +225,13 @@ describe('module graph', () => {
 
   // A resolver that matched nothing would make the cycle test above pass on an
   // EMPTY graph, and pass forever. That is the failure a guard cannot report on
-  // itself, so each specifier form this repo writes is asserted DIRECTLY.
+  // itself, so this test asserts each specifier form this repo writes DIRECTLY.
   //
   // Not a floor on the edge count: the two forms are both in heavy use, so
   // losing either one still leaves well over a thousand edges, and a floor low
   // enough to be stable is too low to notice. Losing the `~/` form is the
-  // realistic break -- it is the one with a rule behind it -- and it would make
-  // this guard silently blind to most of the module graph.
+  // realistic break -- it is the one with a rule behind it -- and it would
+  // silently hide most of the module graph from this guard.
   it('resolves every specifier form the repo writes', () => {
     const anyFile = join(srcRoot, 'app.tsx')
 
@@ -264,7 +264,7 @@ describe('module graph', () => {
   it('scans the source tree', () => {
     expect(
       buildGraph().size,
-      'no modules were scanned; check the walk root and the skip list',
+      'this test scanned no modules; check the walk root and the skip list',
     ).toBeGreaterThan(500)
   })
 

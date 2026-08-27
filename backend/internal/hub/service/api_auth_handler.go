@@ -4,6 +4,7 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/httpsec"
 	"github.com/leapmux/leapmux/internal/hub/mail"
+	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/verifycode"
 	"github.com/leapmux/leapmux/util/validate"
@@ -29,7 +31,7 @@ const (
 	// DeviceCodePollInterval is the recommended polling cadence the CLI
 	// honours; the hub returns slow_down to throttle pollers exceeding it.
 	DeviceCodePollInterval = 5 * time.Second
-	// RefreshWorkTimeout bounds detached singleflight work after the request
+	// RefreshWorkTimeout limits detached singleflight work after the request
 	// that became the leader disconnects.
 	RefreshWorkTimeout = 15 * time.Second
 	// CredentialNoticeTimeout limits the detached "a CLI credential was
@@ -41,11 +43,11 @@ const (
 	// elevatePath is the SPA route that runs a step-up ceremony and returns
 	// the browser to where it came from.
 	elevatePath = "/elevate"
-	// elevatedMarkerParam is appended to the URL the hub sends the browser
+	// The hub appends elevatedMarkerParam to the URL it sends the browser
 	// back to after /elevate. Its ONLY effect is to stop this handler
 	// redirecting a second time: a request carrying it that is still not
 	// elevated gets an explanatory page instead of another bounce. It never
-	// admits anything, so a hand-written one buys the caller nothing.
+	// admits anything, so a hand-written one gains the caller nothing.
 	elevatedMarkerParam = "elevated"
 )
 
@@ -55,6 +57,12 @@ type APIAuthHandlerDeps struct {
 	Store     store.Store
 	Validator *auth.TokenValidator
 	Lifecycle *auth.CredentialLifecycleEffects
+	// Settings reports the hub's own secure_cookies setting, which decides
+	// which session-cookie spelling the consent legs read. Nil means "this
+	// hub does not write the __Host- prefix", which is the safe reading for
+	// a handler wired without it: it widens nothing, because the prefixed
+	// name is still tried first.
+	Settings *settings.Manager
 	// HubURL builds the device-code verification URLs returned to the CLI.
 	HubURL func() string
 	// Mail and Renderer send the "a CLI credential was issued" notice.
@@ -68,7 +76,7 @@ type APIAuthHandlerDeps struct {
 	Renderer mail.Renderer
 }
 
-// APIAuthHandler implements /auth/cli/*. Credential changes are routed through
+// APIAuthHandler implements /auth/cli/*. It routes credential changes through
 // lifecycle so cache, lease, and channel effects remain consistent.
 type APIAuthHandler struct {
 	store         store.Store
@@ -77,6 +85,7 @@ type APIAuthHandler struct {
 	hubURL        func() string
 	mail          mail.Sender
 	renderer      mail.Renderer
+	set           *settings.Manager
 	refreshFlight singleflight.Group
 
 	// The clock every instant the handler mints or compares comes from:
@@ -97,6 +106,7 @@ func NewAPIAuthHandler(deps APIAuthHandlerDeps) *APIAuthHandler {
 		hubURL:    deps.HubURL,
 		mail:      deps.Mail,
 		renderer:  deps.Renderer,
+		set:       deps.Settings,
 	}
 }
 
@@ -104,8 +114,8 @@ func NewAPIAuthHandler(deps APIAuthHandlerDeps) *APIAuthHandler {
 func (h *APIAuthHandler) RegisterRoutes(mux *http.ServeMux) {
 	// The three CONSENT legs mount through consentLeg, so the gate is a
 	// property of the route rather than the first line somebody remembered
-	// to write. The other four authenticate by grant or by bearer and are
-	// ungated by design.
+	// to write. The other four authenticate by grant or by bearer, and no
+	// gate applies to them by design.
 	mux.HandleFunc("/auth/cli/start", h.consentLeg([]string{http.MethodGet, http.MethodHead}, h.handleStart))
 	mux.HandleFunc("/auth/cli/authorize", h.consentLeg([]string{http.MethodPost}, h.handleAuthorize))
 	mux.HandleFunc("/auth/cli/device-authorization", h.handleDeviceAuthorization)
@@ -122,18 +132,29 @@ func (h *APIAuthHandler) RegisterRoutes(mux *http.ServeMux) {
 // --- Helpers ---
 
 func (h *APIAuthHandler) requireSession(r *http.Request) *auth.UserInfo {
-	// /auth/cli/* endpoints only accept session cookies; bearer/solo
-	// rungs are unwired by leaving Validator/SoloUser nil. Both
-	// cookie modes are tried so a session issued under TLS still
-	// works when the browser falls back to plain HTTP and vice versa.
+	// /auth/cli/* endpoints only accept session cookies; leaving
+	// Validator/SoloUser nil unwires the bearer and solo rungs. The hub's own
+	// secure_cookies setting decides which spelling the handler reads; see
+	// AuthenticateHTTP for why the fallback direction is asymmetric.
 	user, err := auth.AuthenticateHTTP(r.Context(), r, auth.HTTPAuthOpts{
-		Store:   h.store,
-		Cookies: []bool{false, true},
+		Store:         h.store,
+		ReadCookie:    true,
+		SecureCookies: h.secureCookies(r.Context()),
 	})
 	if err != nil {
 		return nil
 	}
 	return user
+}
+
+// secureCookies reports whether this hub writes __Host- prefixed cookies.
+// A handler wired with no settings manager reads false; see
+// APIAuthHandlerDeps.Settings.
+func (h *APIAuthHandler) secureCookies(ctx context.Context) bool {
+	if h.set == nil {
+		return false
+	}
+	return settings.KeySecureCookies.Of(h.set.Snapshot(ctx))
 }
 
 // gateMode says how a leg answers a caller that is not signed in or not
@@ -158,8 +179,8 @@ const (
 //
 // DERIVED rather than passed. Each of the four consent legs used to choose
 // its own value, and every one of them chose it from its method -- so the
-// parameter could only ever be got wrong, never usefully varied. A fifth leg
-// now cannot pick the mode that discards its own body.
+// caller could only ever get the parameter wrong, never vary it usefully. A
+// fifth leg now cannot pick the mode that discards its own body.
 func gateModeFor(r *http.Request) gateMode {
 	if r.Method == http.MethodGet || r.Method == http.MethodHead {
 		return gateBounce
@@ -174,18 +195,18 @@ func gateModeFor(r *http.Request) gateMode {
 // it so. user_procedures_internal_test.go's tripwire cannot reach here --
 // these are mux routes, not Connect procedures -- so a fifth leg that
 // shipped without its gate would mint a credential from an unproven session
-// and no suite would say a word. A leg that needs the consenting identity
+// and no suite would report it. A leg that needs the consenting identity
 // now cannot compile onto the mux without passing through this.
 //
 // The METHOD check runs first, and the order is the rule: a wrong method on
-// a gated leg must answer 405 rather than bounce an anonymous caller
+// a restricted leg must answer 405 rather than bounce an anonymous caller
 // through /elevate for a request the leg would refuse anyway.
 //
 // It also SLIDES the window, on the same route-level terms. Consenting to a
 // command-line credential is the most consequential thing a session can do,
-// and it used to be the one gated action that did not count as use: a user
-// who elevated at 11:58 and consented at 11:59 was bounced through /elevate
-// again at 12:01. Sliding here rather than inside each leg keeps the
+// and it used to be the one restricted action that did not count as use: the
+// hub bounced a user who elevated at 11:58 and consented at 11:59 through
+// /elevate again at 12:01. Sliding here rather than inside each leg keeps the
 // property that a fifth leg cannot mount without it.
 //
 // The slide runs BEFORE the leg, deliberately. A leg writes its own response
@@ -194,6 +215,11 @@ func gateModeFor(r *http.Request) gateMode {
 // anyway: it must never turn a served page into an error. What the ordering
 // costs is that a leg which then fails still extended the window, which is
 // the same answer the gate already gave by admitting the request.
+//
+// The slide REPORTS nothing here, although the Connect surface reports on
+// every slide (see ElevationExpiresAtHeader). Each route below renders a whole
+// HTML document to a top-level navigation, so no client waits on a response
+// header to read the new deadline off.
 //
 // A request ANOTHER DOCUMENT started slides nothing, and the reason is the
 // one that guards the OAuth re-authentication leg. Two of these legs answer
@@ -234,11 +260,12 @@ func (h *APIAuthHandler) consentLeg(methods []string, leg func(http.ResponseWrit
 //
 // Minting a CLI credential is the most consequential thing a session can do:
 // what it hands back outlives the session by months, and with --admin it
-// administers the hub. So the session alone is not enough -- a recently
-// proven factor is required, exactly as it is for changing a password.
+// administers the hub. So the session alone is not enough -- the hub
+// requires a recently proven factor, exactly as it does for a password
+// change.
 //
-// Loop prevention is two INDEPENDENT layers, because one of them can be
-// defeated by a stale cache and the other cannot:
+// Loop prevention is two INDEPENDENT layers, because a stale cache can defeat
+// one of them and cannot defeat the other:
 //
 //   - /elevate returns immediately when the session is already elevated, so
 //     the ordinary round trip ends after one bounce.
@@ -282,7 +309,7 @@ func markElevationAttempted(u *url.URL) string {
 // The return address goes through sanitizeRedirectURI, the same sink guard
 // the OAuth handler uses, because it reaches a Location header by way of the
 // SPA. A value that guard refuses becomes no parameter at all, so the user
-// lands on the destination page rather than being sent somewhere else.
+// lands on the destination page rather than somewhere else.
 func (h *APIAuthHandler) redirectTo(w http.ResponseWriter, r *http.Request, path, returnTo string) {
 	dest := path
 	if safe := sanitizeRedirectURI(returnTo); safe != "" {
@@ -320,21 +347,21 @@ const deviceNameByteLimit = 128
 // normalizeDeviceName cleans a device name at the boundary where it ENTERS
 // the hub.
 //
-// The value is chosen by whoever runs the CLI, and on the device-code leg
+// Whoever runs the CLI chooses the value, and on the device-code leg
 // that endpoint is anonymous -- so an attacker who persuades somebody to
 // activate their user code chooses this text. It then reaches the consent
 // page, the activation page, the account's CLI-credential list, the stored
 // row, and the plain-text security notice that tells an owner a credential
 // was issued.
 //
-// deviceNameNotice is what puts it on the activation page, so a device-code
+// grantDeviceName is what puts it on the activation page, so a device-code
 // consent is about a device the user can identify; cleaning at intake is
 // what makes that page safe to render it on.
 //
 // A newline in it writes arbitrary lines into the security notice,
-// including a second signature delimiter and a forged hub address, so the
-// one signal the docs call "how you learn about a credential you did not
-// create" could be written by whoever created it.
+// including a second signature delimiter and a forged hub address, so
+// whoever created the credential could also write the one signal the docs
+// call "how you learn about a credential you did not create".
 //
 // Normalizing at INTAKE rather than in the mail renderer fixes every one of
 // those readers at once, and makes the column overflow impossible as well.
@@ -346,7 +373,7 @@ func normalizeDeviceName(name string) string {
 	return validate.CleanNameTo(name, deviceNameByteLimit)
 }
 
-// requestsAdminScope reports whether a consent leg was asked for hub
+// requestsAdminScope reports whether the caller asked a consent leg for hub
 // administration. Accepts the query and the form, because the same flag
 // travels as a query parameter into the consent page and as a hidden field
 // out of it.
@@ -358,9 +385,9 @@ func requestsAdminScope(r *http.Request) bool {
 	return false
 }
 
-// resolveAdminScope decides the scope a consent grants. Asking for
-// administration on an account that is not an administrator is refused
-// outright rather than silently downgraded: the CLI would otherwise report a
+// resolveAdminScope decides the scope a consent grants. It refuses outright
+// a request for administration on an account that is not an administrator,
+// rather than downgrade it silently: the CLI would otherwise report a
 // successful `--admin` login and then fail on the first admin verb, with
 // nothing to point at.
 func resolveAdminScope(w http.ResponseWriter, requested bool, user *auth.UserInfo) (bool, bool) {
@@ -411,8 +438,8 @@ func writeInternalError(w http.ResponseWriter, operation string, err error) {
 func generateUserCode() string {
 	// Reuse verifycode.Generate which produces a 6-char alphanumeric
 	// from an unambiguous alphabet — exactly the user-code shape we
-	// want. The display form (XXX-XXX) is added by verifycode.Format
-	// when we build verification_uri_complete.
+	// want. verifycode.Format adds the display form (XXX-XXX) when we
+	// build verification_uri_complete.
 	return verifycode.Generate()
 }
 

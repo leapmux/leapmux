@@ -37,7 +37,7 @@ func LocalH2CClient(hubURL string, timeout time.Duration) (*http.Client, string,
 //
 // timeout caps individual requests (0 = no timeout). The HTTP/1.1
 // transport is appropriate for plain REST endpoints and for
-// WebSocket upgrade (which doesn't ride on HTTP/2 streams).
+// WebSocket upgrade (which does not use HTTP/2 streams).
 func LocalHTTPClient(hubURL string, timeout time.Duration) (*http.Client, string, error) {
 	dial, err := Dialer(hubURL)
 	if err != nil {
@@ -55,9 +55,9 @@ func LocalHTTPClient(hubURL string, timeout time.Duration) (*http.Client, string
 //
 // It lives HERE because two packages need it and they cannot share it
 // between themselves: `control/cmd` imports `control`, so neither can hold
-// the helper for the other. This package is the leaf both already reach for,
-// which makes the "they cannot be shared" note in the callers obsolete
-// rather than true.
+// the helper for the other. This package is the leaf that both already
+// import, which makes the "they cannot be shared" note in the callers
+// obsolete rather than true.
 //
 // The remote leg is a client with the SAME timeout, not http.DefaultClient.
 // The default client has no timeout at all, so the duration a caller passed
@@ -84,8 +84,8 @@ func JoinPath(hubURL, path string) string {
 // succeeds, returns its (client, base) pair (base is the placeholder
 // URL the local transport dials internally); otherwise falls through
 // to `remoteBuild` which returns the verbatim-URL pair. Centralises
-// the if-IsLocal/try-local/fallback dance every per-transport factory
-// across worker/hub/delegation had open-coded.
+// the if-IsLocal/try-local/fallback sequence that every per-transport
+// factory across worker/hub/delegation open-coded.
 func SelectClient(
 	hubURL string,
 	localBuild func() (*http.Client, string, error),

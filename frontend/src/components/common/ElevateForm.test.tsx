@@ -5,29 +5,22 @@ import { ElevateForm } from '~/components/common/ElevateForm'
 import { resetSystemInfoMock, setSystemInfoMock } from '~/test-support/systemInfoMock'
 
 const mockUser = vi.fn()
-const mockSetElevationExpiresAt = vi.fn()
 const mockElevateWithPassword = vi.fn()
 const mockElevateWithPasskey = vi.fn()
 
+// The CONTEXT runs the ceremony and adopts the deadline, so this test mocks
+// the context at that seam. The form itself writes no elevation state.
 vi.mock('~/context/AuthContext', () => ({
   useAuth: () => ({
     user: mockUser,
-    setElevationExpiresAt: mockSetElevationExpiresAt,
+    elevateWithPassword: (...args: unknown[]) => mockElevateWithPassword(...args),
+    elevateWithPasskey: (...args: unknown[]) => mockElevateWithPasskey(...args),
   }),
 }))
 
 vi.mock('~/lib/systemInfo', async () => {
   const m = await import('~/test-support/systemInfoMock')
   return m.systemInfoMock
-})
-
-vi.mock('~/lib/elevation', async () => {
-  const actual = await vi.importActual<typeof import('~/lib/elevation')>('~/lib/elevation')
-  return {
-    ...actual,
-    elevateWithPassword: (...args: unknown[]) => mockElevateWithPassword(...args),
-    elevateWithPasskey: (...args: unknown[]) => mockElevateWithPasskey(...args),
-  }
 })
 
 const passwordUser = {
@@ -73,13 +66,13 @@ describe('elevateForm', () => {
     expect(onElevated).not.toHaveBeenCalled()
   })
 
-  it('offers the passkey arm only when the account has one this hub can run', () => {
+  it('offers the passkey option only when the account has one that this hub can run', () => {
     mockUser.mockReturnValue({ ...passwordUser, passkeyCount: 1 })
     renderForm()
     expect(screen.getByTestId('elevate-passkey')).toBeInTheDocument()
   })
 
-  it('hides the passkey arm when the hub runs no ceremony at this address', () => {
+  it('hides the passkey option when the hub runs no ceremony at this address', () => {
     // The per-origin answer: the hub HAS passkeys and this page's origin is
     // not one it serves, so every Begin would answer FailedPrecondition.
     setSystemInfoMock({ passkeyBlocker: 'origin-not-allowed' })
@@ -94,7 +87,7 @@ describe('elevateForm', () => {
  *
  * An account whose only factor is a passkey can verify nothing here when the
  * page cannot run a ceremony, and the three blockers have three different
- * remedies that go to three different people. The copy this replaced named an
+ * remedies that go to three different people. The copy this replaced specified an
  * administrator for all of them -- wrong advice for both blockers the BROWSER
  * raises, because no address anybody publishes makes a plain-HTTP page
  * secure.
@@ -112,7 +105,7 @@ describe('elevateForm dead-end copy', () => {
     mockUser.mockReturnValue(passkeyOnlyUser)
   })
 
-  it('names the insecure page, and no administrator', () => {
+  it('specifies the insecure page, and no administrator', () => {
     setSystemInfoMock({ passkeyBlocker: 'insecure-context' })
     renderForm()
 
@@ -121,7 +114,7 @@ describe('elevateForm dead-end copy', () => {
     expect(message).not.toHaveTextContent(/administrator/i)
   })
 
-  it('names the browser when the page is secure and WebAuthn is absent', () => {
+  it('specifies the browser when the page is secure and WebAuthn is absent', () => {
     setSystemInfoMock({ passkeyBlocker: 'no-webauthn' })
     renderForm()
 
@@ -130,14 +123,14 @@ describe('elevateForm dead-end copy', () => {
     expect(message).not.toHaveTextContent(/administrator/i)
   })
 
-  it('names the administrator when the hub does not serve this origin', () => {
+  it('specifies the administrator when the hub does not serve this origin', () => {
     setSystemInfoMock({ passkeyBlocker: 'origin-not-allowed' })
     renderForm()
 
     expect(screen.getByTestId('elevate-impossible')).toHaveTextContent(/administrator/i)
   })
 
-  // The blocker must not steal the OTHER dead end. An account with no factor
+  // The blocker must not replace the OTHER dead-end copy. An account with no factor
   // at all can still set a first password after a fresh sign-in, so it keeps
   // the copy that says so -- whatever the page can or cannot run.
   it('keeps the no-factor copy for an account that holds no passkey', () => {
@@ -151,12 +144,60 @@ describe('elevateForm dead-end copy', () => {
 })
 
 /**
+ * The warning for a host whose OAuth round trip discards the page.
+ *
+ * The provider option is a full-document navigation out of the app. The
+ * standalone `/elevate` route returns the browser to itself, so nothing is
+ * lost; the in-app dialog can only return to `/`, so a half-filled form goes
+ * with it. The FLAG is the host's and the WORDING is the form's, because only
+ * the form knows whether a provider option is on screen at all.
+ */
+describe('elevateForm oauth round-trip warning', () => {
+  const providerOnlyUser = {
+    ...passwordUser,
+    passwordSet: false,
+    passkeyCount: 0,
+    oauthProviders: [{ id: 'github-1', name: 'GitHub', enabled: true }],
+    mayElevateThroughAProvider: true,
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    resetSystemInfoMock()
+    mockUser.mockReturnValue(providerOnlyUser)
+  })
+
+  // The provider option leaves the app, and it USED to carry a note saying so
+  // and warning that the user would lose what they had typed. The note is gone
+  // because the loss is gone: the address survives the round trip through the
+  // storage gateway, and the caller now passes the address the user is on, so
+  // the browser returns to the panel it left. A note that describes neither
+  // cost is one more thing to read on a screen that asks for a password.
+  it('states no cost, because the round trip no longer has one', () => {
+    render(() => <ElevateForm oauthRedirect="/?prefs=account" onElevated={vi.fn()} />)
+
+    expect(screen.getByTestId('elevate-oauth-github-1')).toBeInTheDocument()
+    expect(screen.queryByTestId('elevate-oauth-discards-typed-text')).toBeNull()
+    expect(screen.queryByText(/home page/i)).toBeNull()
+  })
+
+  // The link carries the address the caller gave, so the hub returns the
+  // browser to the panel it left rather than to the app root.
+  it('carries the caller address into the provider link', () => {
+    render(() => <ElevateForm oauthRedirect="/?prefs=account" onElevated={vi.fn()} />)
+
+    expect(screen.getByTestId('elevate-oauth-github-1').getAttribute('href'))
+      .toBe(`/auth/oauth/github-1/reauth?redirect=${encodeURIComponent('/?prefs=account')}`)
+  })
+})
+
+/**
  * The account this password belongs to, carried in the form for the password
  * manager.
  *
  * A re-authentication form asks for a password and nothing else, so a manager
- * has no field to match a stored entry's user against. The remedy every
- * manager and every sign-in-form guide names is the same: an
+ * has no field to match a stored entry's user against. The remedy that every
+ * manager and every sign-in-form guide specifies is the same: an
  * `autocomplete="username"` field beside the password.
  */
 describe('elevateForm password-manager hints', () => {
@@ -183,8 +224,8 @@ describe('elevateForm password-manager hints', () => {
   })
 
   // NOT `display: none` and NOT `hidden`: a manager that walks the rendered
-  // fields skips a field with no box, which defeats the whole point of
-  // carrying one.
+  // fields skips a field with no box, which removes the whole reason to carry
+  // one.
   it('keeps the hint in the layout rather than removing it', () => {
     renderForm()
     const username = screen.getByTestId('elevate-username')
@@ -193,8 +234,8 @@ describe('elevateForm password-manager hints', () => {
     expect((username as HTMLInputElement).style.display).not.toBe('none')
   })
 
-  // It is not a field the user fills, so it must not take a tab stop or be
-  // announced as one.
+  // It is not a field the user fills, so it must not take a tab stop, and
+  // assistive technology must not announce it as one.
   it('leaves the hint out of the tab order and the accessibility tree', () => {
     renderForm()
     const username = screen.getByTestId('elevate-username')

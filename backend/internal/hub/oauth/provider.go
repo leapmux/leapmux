@@ -23,7 +23,7 @@ func (t TokenSet) String() string { return "[REDACTED TokenSet]" }
 func (t TokenSet) GoString() string { return "[REDACTED TokenSet]" }
 
 // UserClaims holds the user identity claims from an OAuth provider.
-// Email is only populated when the provider has verified it.
+// Email carries a value only when the provider verified it.
 type UserClaims struct {
 	Subject     string // unique identifier (sub claim for OIDC, user ID for GitHub)
 	Email       string // set only when the provider confirms it is verified
@@ -38,14 +38,14 @@ type AuthURLOptions struct {
 	//
 	// It exists for the step-up leg: an OAuth-only account has no password
 	// and no passkey, so "prove who you are again" can only be asked of the
-	// provider. Without it the provider silently reuses its session, the
-	// user is bounced back in a fraction of a second, and the click proves
-	// nothing at all.
+	// provider. Without it the provider silently reuses its session, returns
+	// the user in a fraction of a second, and the click proves nothing at
+	// all.
 	//
-	// It ASKS; it does not prove. What the request can oblige a provider to
-	// do, what no provider reports back reliably enough to check, and why
-	// the hub therefore reads none of it are all stated once, on
-	// ReauthMaxAge.
+	// It ASKS; it does not prove. ReauthMaxAge states three things once:
+	// what the request can oblige a provider to do, what no provider reports
+	// back reliably enough to check, and why the hub therefore reads none of
+	// it.
 	ForceReauthentication bool
 }
 

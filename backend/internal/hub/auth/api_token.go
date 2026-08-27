@@ -52,13 +52,13 @@ const RefreshTokenTTL = 90 * 24 * time.Hour
 // created_at rather than from the last rotation.
 //
 // Without it a refresh window that slides by RefreshTokenTTL on EVERY
-// rotation is unbounded: a CLI that refreshes weekly keeps one browser
+// rotation is unlimited: a CLI that refreshes weekly keeps one browser
 // consent alive for ever, and the consent is what the user actually gave.
 // The cap turns "90 days since you last used it" into "one year since you
 // authorized it", after which the device signs in again.
 //
-// Deliberately far longer than the refresh window, so it binds only on a
-// credential in continuous use for a year -- an idle one dies
+// Deliberately far longer than the refresh window, so it applies only to a
+// credential in continuous use for a year -- an idle one expires
 // on RefreshTokenTTL first.
 const AbsoluteTokenLifetime = 365 * 24 * time.Hour
 
@@ -69,7 +69,7 @@ const AbsoluteTokenLifetime = 365 * 24 * time.Hour
 //
 // One function, so the mint and the rotation cannot disagree about when a
 // credential dies. A zero createdAt (a caller that did not load the row)
-// yields the ordinary window rather than an instantly-dead token: failing
+// yields the ordinary window rather than an instantly-expired token: failing
 // closed here would revoke every live credential on a mapping slip, and the
 // mint path legitimately has no row yet.
 func RefreshWindowFor(createdAt, now time.Time) time.Duration {
@@ -107,8 +107,8 @@ const DelegationTokenTTL = 1 * time.Hour
 // triggers compromise revocation.
 const RefreshReuseGrace = 60 * time.Second
 
-// ErrInvalidToken is returned for malformed bearer strings. ErrTokenExpired
-// is returned for syntactically valid but expired/revoked tokens.
+// The validator returns ErrInvalidToken for malformed bearer strings, and
+// ErrTokenExpired for syntactically valid but expired or revoked tokens.
 var (
 	ErrInvalidToken  = errors.New("invalid token")
 	ErrTokenExpired  = errors.New("token expired")
@@ -118,11 +118,28 @@ var (
 
 // TokenValidator verifies api_token / delegation_token bearers against
 // the hub store, applying caching + HMAC-pepper hashing. The same
-// validator is used by the request interceptor and the WebSocket relay
+// validator serves the request interceptor and the WebSocket relay
 // upgrade path.
 type TokenValidator struct {
 	store  store.Store
 	pepper []byte
+	// Now is the clock seam. Every deadline this validator compares reads it,
+	// so a test that expires a credential moves one field instead of waiting.
+	//
+	// It carried none, and it is the one deadline no other seam could move: a
+	// bearer's own expiry, its absolute ceiling, and the refresh window all
+	// read the wall clock here, while the services around it read their own
+	// seam. Nil means time.Now, so production wires nothing -- the same
+	// default the service-side clockSeam takes.
+	Now func() time.Time
+}
+
+// now returns the validator's notion of the current instant.
+func (v *TokenValidator) now() time.Time {
+	if v.Now != nil {
+		return v.Now()
+	}
+	return time.Now()
 }
 
 // NewTokenValidator returns a validator. Pepper must be at least 32 bytes;
@@ -185,8 +202,8 @@ func ParseBearer(bearer string) (kind BearerKind, tokenID, secret string, err er
 }
 
 // IsValid reports whether kind is one of the registered bearer kinds.
-// A bearer with an unrecognised kind char is rejected outright —
-// the validator never queries the DB for tokens it doesn't know
+// The validator rejects a bearer with an unrecognised kind char
+// outright — it never queries the DB for tokens it doesn't know
 // how to look up.
 func (k BearerKind) IsValid() bool {
 	switch k {
@@ -225,7 +242,7 @@ func (v *TokenValidator) MintBearerPair(kind BearerKind, tokenID string, now tim
 // newBearerPair assembles a MintedBearerPair from already-chosen access and
 // refresh secrets. Both the fresh-mint (random secrets) and the deterministic
 // refresh-derivation (pepper-derived secrets) paths funnel through here so the
-// bearer wire format, secret hashing, and TTL derivation are defined once and
+// bearer wire format, secret hashing, and TTL derivation live in one place and
 // cannot drift between them.
 func (v *TokenValidator) newBearerPair(kind BearerKind, tokenID, access, refresh string, now time.Time, accessTTL, refreshTTL time.Duration) MintedBearerPair {
 	return MintedBearerPair{
@@ -358,13 +375,13 @@ type loadedBearer struct {
 	credential CredentialIdentity
 }
 
-// apiTokenExpired reports whether a CLI credential is dead at now, by either
-// of the two deadlines that bind it. See loadBearer.
+// apiTokenExpired reports whether a CLI credential expired at now, by either
+// of the two deadlines that limit it. See loadBearer.
 //
 // A nil expiresAt means a credential that never expires on its own; the
 // ceiling still applies to it. A zero createdAt means a row the caller did not
-// load a creation instant for, and the ceiling is skipped rather than treated
-// as "created at the epoch, therefore dead" -- failing closed on a mapping
+// load a creation instant for, and this function skips the ceiling rather than
+// treating the row as "created at the epoch, therefore expired" -- failing closed on a mapping
 // slip would refuse every live credential at once.
 func apiTokenExpired(expiresAt *time.Time, createdAt, now time.Time) bool {
 	if expiresAt != nil && IsExpired(now, *expiresAt) {
@@ -388,7 +405,7 @@ func (v *TokenValidator) loadBearer(ctx context.Context, kind BearerKind, tokenI
 		return loadedBearer{
 			fields: validateRowFields{
 				Revoked: api.RevokedAt != nil,
-				// TWO deadlines, and the credential is dead at whichever comes
+				// TWO deadlines, and the credential expires at whichever comes
 				// first: its own expires_at, and the ceiling
 				// AbsoluteTokenLifetime puts on created_at.
 				//
@@ -408,9 +425,9 @@ func (v *TokenValidator) loadBearer(ctx context.Context, kind BearerKind, tokenI
 				// expiry.
 				//
 				// This is the API-token branch alone. AbsoluteTokenLifetime is
-				// a rule about a CLI credential's consent, and a delegation
-				// token is minted by a worker for one spawn.
-				Expired:        apiTokenExpired(api.ExpiresAt, api.CreatedAt, time.Now()),
+				// a rule about a CLI credential's consent, and a worker mints a
+				// delegation token for one spawn.
+				Expired:        apiTokenExpired(api.ExpiresAt, api.CreatedAt, v.now()),
 				SecretHash:     api.SecretHash,
 				UserID:         api.UserID,
 				RowID:          api.ID,
@@ -420,8 +437,8 @@ func (v *TokenValidator) loadBearer(ctx context.Context, kind BearerKind, tokenI
 				AdminScope:     api.AdminScope,
 				// Through NewElevation, which refuses half a stored pair --
 				// the same read the session path uses, so a repaired or
-				// restored row cannot admit a gated action on a factor that
-				// was never proven.
+				// restored row cannot admit a restricted action on a factor
+				// that was never proven.
 				Elevation: NewElevation(api.ElevationProvenAt, api.ElevationExpiresAt),
 			},
 			touch:      func() { _ = v.store.APITokens().Touch(ctx, api.ID) },
@@ -438,7 +455,7 @@ func (v *TokenValidator) loadBearer(ctx context.Context, kind BearerKind, tokenI
 		}
 		if del.WorkerID == "" {
 			// A delegation row must always carry the worker that minted it: it
-			// is the one bound on where the token may be used
+			// is the one limit on where the token may be used
 			// (DelegationWorkerScope). An empty one is a data-integrity slip
 			// that would make DelegationCredential panic -- and this runs as the
 			// singleflight leader, so the panic re-fires into every follower
@@ -449,7 +466,7 @@ func (v *TokenValidator) loadBearer(ctx context.Context, kind BearerKind, tokenI
 		return loadedBearer{
 			fields: validateRowFields{
 				Revoked:        del.RevokedAt != nil,
-				Expired:        IsExpired(time.Now(), del.ExpiresAt),
+				Expired:        IsExpired(v.now(), del.ExpiresAt),
 				SecretHash:     del.SecretHash,
 				UserID:         del.UserID,
 				RowID:          del.ID,
@@ -468,7 +485,7 @@ func (v *TokenValidator) loadBearer(ctx context.Context, kind BearerKind, tokenI
 	return loadedBearer{}, connect.NewError(connect.CodeUnauthenticated, ErrInvalidToken)
 }
 
-// IsExpired treats expiry timestamps as exclusive upper bounds: a credential
+// IsExpired treats expiry timestamps as exclusive upper limits: a credential
 // is invalid at the recorded instant, not one clock tick afterward.
 func IsExpired(now, expiresAt time.Time) bool {
 	return !now.Before(expiresAt)
@@ -500,13 +517,14 @@ type validateRowFields struct {
 
 // validateRow runs the shared secret-match/revoked/expired/load-user path.
 //
-// The secret is verified FIRST, before any revoked/expired state is surfaced.
+// validateRow verifies the secret FIRST, before it surfaces any revoked or
+// expired state.
 // token_id is non-secret (returned in JSON to /auth/cli/token, /auth/cli/refresh,
 // and the worker delegation-mint endpoint), so a caller who knows only a victim's
 // token_id must not be able to probe its existence or lifecycle: a wrong secret
 // yields a uniform ErrInvalidToken, indistinguishable from loadBearer's not-found
-// path. This mirrors the sibling VerifyBearerSecret, which is deliberately built to
-// never leak which check failed. A legitimate secret-holder still learns
+// path. This mirrors the sibling VerifyBearerSecret, which deliberately never
+// leaks which check failed. A legitimate secret-holder still learns
 // revoked/expired below -- revocation and expiry leave secret_hash intact, so the
 // access secret keeps matching -- so refresh-on-expiry is unaffected.
 func (v *TokenValidator) validateRow(ctx context.Context, f validateRowFields, secret string) (*UserInfo, error) {
@@ -563,14 +581,14 @@ func (v *TokenValidator) loadUser(ctx context.Context, userID string) (*UserInfo
 
 // ValidateRefresh validates a presented refresh token against an api_tokens
 // row, distinguishing benign retries (within the grace window) from reuse-
-// after-rotation (compromise). If reuse is detected the row is revoked
-// and ErrRefreshReused is returned.
+// after-rotation (compromise). On a detected reuse it revokes the row and
+// returns ErrRefreshReused.
 //
 // Returns the matched row on success along with whether the refresh matched the
 // previous hash inside the grace window. A grace-window retry re-emits the
 // cached access pair; a current-refresh match rotates the row. Refreshes are
 // only valid against api_tokens (delegation tokens have a separate mint flow),
-// so a bearer with the wrong kind is rejected upfront.
+// so this function rejects a bearer with the wrong kind upfront.
 func (v *TokenValidator) ValidateAPIRefresh(ctx context.Context, refresh string) (row *store.APIToken, retry bool, err error) {
 	kind, tokenID, secret, perr := ParseBearer(refresh)
 	if perr != nil {
@@ -595,7 +613,7 @@ func (v *TokenValidator) ValidateAPIRefresh(ctx context.Context, refresh string)
 	if row.RevokedAt != nil {
 		return nil, false, ErrTokenRevoked
 	}
-	now := time.Now()
+	now := v.now()
 	if currentMatches {
 		if row.RefreshExpiresAt != nil && IsExpired(now, *row.RefreshExpiresAt) {
 			return nil, false, ErrTokenExpired

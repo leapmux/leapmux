@@ -53,7 +53,7 @@ func (a adminArgs) AnyPassed() bool {
 // protects every other client. The check here is for the ANSWER an operator
 // gets: it runs before the dial, so `--limit 0` identifies the flag and its
 // range instead of quietly returning a page of a size nobody asked for.
-// Both sides read the same constants, so the range the CLI names is the
+// Both sides read the same constants, so the range the CLI states is the
 // hub's own. The hub caps an oversized limit; the CLI refuses it, so the
 // operator sees the range instead of a shorter page.
 type adminPageFlags struct {

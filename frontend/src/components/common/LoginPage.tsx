@@ -13,7 +13,7 @@ import { authMethodOptions, createAuthMethodSelection } from '~/lib/authMethodSe
 import { createCaptchaForm } from '~/lib/captchaForm'
 import { postAuthNavigate } from '~/lib/postAuthNavigate'
 import { stringParam } from '~/lib/searchParam'
-import { isEmailEnabled, isSignupEnabled, isSoloMode, loadOAuthProviders } from '~/lib/systemInfo'
+import { isEmailEnabled, isSignupEnabled, loadOAuthProviders } from '~/lib/systemInfo'
 import { errorText, pageCard } from '~/styles/shared.css'
 import * as styles from './LoginPage.css'
 
@@ -31,23 +31,17 @@ export const LoginPage: Component = () => {
   let usernameRef!: HTMLInputElement
   let passwordRef!: HTMLInputElement
 
-  // `/login` sits outside the `(app)` layout, so AuthGuard never sees a visit
-  // here. This arm covers the visitor who lands on the login form directly
-  // (bookmark, typed URL, stale tab) on a SOLO instance, which has no login to
-  // offer: the hub authenticates every request, so the form can only fail.
+  // Two guards ABOVE this page answer the two hubs with no login to offer. A solo
+  // hub authenticates every request, so `SignedOutOnly` sends that visitor to
+  // the app; a hub whose first-run setup is not complete has no account, so
+  // `SetupGate` sends them to `/setup`. Both guards cover every credential
+  // address rather than this one alone.
   //
-  // The other instance with no login to offer -- one whose first-run setup is
-  // not complete -- is answered by `SetupGate` above the router outlet, for
-  // every address rather than only this one.
-  //
-  // Requires `auth.loading()`, and that gate is the whole point. Before
-  // the first system-info load `isSoloMode()` answers a fabricated default
-  // (`false`), not the hub's answer -- so reading it from `onMount`, as this
-  // used to, sampled the default on any load that won this race and then
-  // never looked again, because onMount runs once. A solo-mode visitor was
-  // left on a credential form that cannot succeed, which is exactly the dead
-  // end this arm exists to prevent. AuthGuard's copy of the same call is safe
-  // only because it sits behind this same gate.
+  // What stays here is the page's own setup, and it still requires
+  // `auth.loading()`. Before the first system-info load the getters answer
+  // fabricated defaults -- `isSignupEnabled()` reads `false` -- so an
+  // `onMount` that sampled them on a load which won the race pinned the signup
+  // link off and never looked again.
   //
   // createEffect, not onMount: it re-runs when `auth.loading()` flips, which is
   // the earliest moment the getters are answers rather than guesses.
@@ -59,7 +53,7 @@ export const LoginPage: Component = () => {
   // providers) is a fire-and-forget continuation at the end, which needs no
   // tracking: it reads nothing reactive and only writes.
   //
-  // The captcha gate does NOT lean on `auth.loading()`: that signal flips on
+  // The captcha gate does NOT depend on `auth.loading()`: that signal flips on
   // every attempt, which would tear the widget down mid-session. It tracks the
   // system-info signal instead (see createCaptchaForm).
   let bootstrapped = false
@@ -69,11 +63,9 @@ export const LoginPage: Component = () => {
     }
     bootstrapped = true
 
-    if (isSoloMode()) {
-      navigate('/', { replace: true })
-      return
-    }
-
+    // The solo rule is NOT here. `SignedOutOnly` carries it for all five
+    // credential pages, so this page no longer keeps a copy that reached one.
+    //
     // Focus the first empty input field (username if both empty).
     if (!usernameRef.value) {
       usernameRef.focus()
@@ -112,7 +104,7 @@ export const LoginPage: Component = () => {
       // error and no way to resubmit.
     }
     catch (err) {
-      // Error is captured by auth context. A rejected captcha (expired
+      // The auth context captures the error. A rejected captcha (expired
       // solve, replay) must not linger: force a fresh challenge. Pass
       // the error so PermissionDenied refreshes captcha system-info.
       captcha.reset(err)

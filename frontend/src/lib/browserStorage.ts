@@ -171,6 +171,23 @@ export const PREFIX_TAB_TREE = 'tabTree:'
 export const PREFIX_DIRECTORY_TREE = 'directoryTree:'
 /** Singleton sessionStorage keys (exact-match in the key registry). */
 export const KEY_CLI_PATH_CHECKED = 'cli-path-checked'
+
+/**
+ * The address a user typed into the account email field but has not sent yet.
+ *
+ * It exists for ONE journey. An account with no password and no passkey can
+ * only elevate at its identity provider, and that option is a full-document
+ * navigation out of the app and back. Without this the user typed the new
+ * address, was asked to verify, came back to an empty field, and had to type
+ * it again -- on the one account shape that has no other way to verify.
+ *
+ * sessionStorage, not localStorage: an unsent address is the tab's business,
+ * and it must not reappear in a window the user opens tomorrow. The TTL is a
+ * backstop for a tab that survives the round trip and is then abandoned; the
+ * field clears itself on a successful send, which is the ordinary end.
+ */
+export const KEY_EMAIL_CHANGE_DRAFT = 'email-change-draft'
+
 export const KEY_EXPANDED_WORKSPACES = 'expandedWorkspaces'
 export const KEY_CLIENT_ID = 'client-id'
 /** Per-tab MRU stamp map (`Record<tabId, number>`), single blob. See tabMetadata.store. */
@@ -178,6 +195,7 @@ export const KEY_TAB_MRU = 'tab-mru'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 const HOUR_MS = 60 * 60 * 1000
+const MINUTE_MS = 60 * 1000
 const REFRESH_THRESHOLD_MS = 3 * HOUR_MS
 const CLEANUP_INTERVAL_MS = HOUR_MS
 const YEAR_MS = 365 * DAY_MS
@@ -307,6 +325,11 @@ export const SESSION_KEY_SPECS = {
   // per session; the TTL is a backstop in case sessionStorage is preserved
   // across sessions.
   [KEY_CLI_PATH_CHECKED]: { match: 'exact', scope: 'account', ttlMs: 1 * DAY_MS },
+  // An unsent email address, kept only long enough to survive the OAuth
+  // round trip that the elevation prompt sends this account shape on. Half an
+  // hour covers a provider that asks the user to sign in again; anything the
+  // user still has not sent by then, they are no longer in the middle of.
+  [KEY_EMAIL_CHANGE_DRAFT]: { match: 'exact', scope: 'account', ttlMs: 30 * MINUTE_MS },
   // Per-tab MRU stamp map. A single JSON blob keyed by globally-unique tab id
   // (no workspace dimension, so it is an exact singleton rather than a templated
   // prefix family). 30 days matches the sibling tab-pointer keys so a user who

@@ -30,7 +30,7 @@ const CREDENTIAL_REJECTED_HEADER = 'leapmux-credential-rejected'
  * Exported because it is the decision, not an implementation detail of the
  * interceptor below: an Unauthenticated carrying the hub's
  * credential-rejected marker is a wrong answer to a prompt, and signing the
- * user out for it ends the session the prompt was protecting.
+ * user out for it ends the session the prompt protected.
  */
 export function isSessionEnded(err: unknown): boolean {
   return err instanceof ConnectError
@@ -51,7 +51,7 @@ const errorInterceptor: Interceptor = next => async (req) => {
 
 /**
  * Opens the step-up prompt on the hub's elevation refusal, and runs the
- * refused request again once a factor is proven.
+ * refused request again once the user proves a factor.
  *
  * ATTEMPT-THEN-PROMPT, not check-then-attempt. A client's copy of the
  * elevation deadline can be stale by a whole page lifetime, so a client that
@@ -62,21 +62,21 @@ const errorInterceptor: Interceptor = next => async (req) => {
  * HERE rather than at each call site, which is the whole point. Every
  * sensitive call used to opt in by wrapping itself in `gate.run(...)`, so one
  * that forgot rendered the hub's raw refusal text beside a form with no way
- * forward — and nothing in the frontend said which procedures were gated, so
- * no guard could check. An interceptor needs no such list: the hub's own
+ * forward — and nothing in the frontend said which procedures required
+ * elevation, so no guard could check. An interceptor needs no such list: the hub's own
  * marker is the classification.
  *
  * EXACTLY ONE retry. Every action behind this is a deliberate mutation the
  * user already confirmed, and the first attempt changed nothing — the hub
- * refused it before doing any work. A second refusal is reported.
+ * refused it before doing any work. The interceptor reports a second refusal.
  *
  * STREAMS are excluded. A stream's request carries an async iterable of
  * messages that cannot be consumed twice, so replaying one would send an
- * empty body. No streaming procedure is elevation-gated; this is the guard
- * that keeps that true if one ever is.
+ * empty body. No streaming procedure requires elevation; this is the guard
+ * that keeps that true if one ever does.
  *
  * Exported for the same reason isSessionEnded is: it is the decision, and the
- * one place the retry rule can be asserted directly.
+ * one place a test can assert the retry rule directly.
  */
 export const elevationInterceptor: Interceptor = next => async (req) => {
   try {
@@ -97,6 +97,99 @@ export const elevationInterceptor: Interceptor = next => async (req) => {
   }
 }
 
+/**
+ * The hub's report of the elevation deadline it holds NOW, on the response to
+ * the request that SLID the window. Mirrors service.ElevationExpiresAtHeader.
+ *
+ * It does not repeat what a GRANT says: both step-up ceremonies report their
+ * deadline in the response body, and `~/lib/elevation` reads it there. A slide
+ * has no response of its own -- it rides whatever the sensitive action
+ * returns -- so a header is the only place its new deadline can travel.
+ *
+ * The value is RFC 3339 in UTC, which `Date` parses on its own.
+ */
+const ELEVATION_EXPIRES_AT_HEADER = 'leapmux-elevation-expires-at'
+
+/**
+ * Completes one adoption of a hub-reported deadline. `AuthContext` supplies it.
+ */
+export type ElevationAdoption = (until: Date) => void
+
+/**
+ * Opens one adoption, and returns the function that completes it.
+ *
+ * TWO calls rather than one, and the split is the whole contract: the opener
+ * runs when the request LEAVES, and what it returns runs when that request's
+ * response lands. `AuthContext` owns what happens in between -- an "End now",
+ * a sign-out and an identity change each END the window, and each must beat a
+ * deadline that a request already in flight reports afterwards. This module
+ * holds no idea of that state; it only states when each half happens.
+ */
+let openElevationAdoption: (() => ElevationAdoption) | null = null
+
+/** Registers the adoption above. `AuthContext` is the one caller. */
+export function setElevationAdoptionOpener(open: (() => ElevationAdoption) | null): void {
+  openElevationAdoption = open
+}
+
+/**
+ * Reads the hub's deadline off one response, and adopts it.
+ *
+ * An absent header is the ordinary case -- most requests slide nothing -- and
+ * leaves the mirror alone. An UNREADABLE value does too: `new Date('...')`
+ * answers Invalid Date rather than throwing, and adopting one would render
+ * "Invalid Date" on the Preferences row and make every comparison against it
+ * false.
+ */
+function adoptReportedDeadline(adopt: ElevationAdoption | null, header: Headers | undefined): void {
+  const reported = header?.get(ELEVATION_EXPIRES_AT_HEADER)
+  if (!adopt || !reported)
+    return
+  const until = new Date(reported)
+  if (Number.isNaN(until.getTime()))
+    return
+  adopt(until)
+}
+
+/**
+ * Adopts the elevation deadline the hub reports on a slide.
+ *
+ * The hub extends the window on every sensitive action and deliberately emits
+ * no event for it, because a client still holding the shorter deadline fails
+ * closed. What that silence costs is the DISPLAYED deadline: a tab that
+ * adopted 14:00 and then renamed a passkey at 13:55 keeps showing 14:00 while
+ * the hub holds 15:55, for the whole window, on the one screen the docs point
+ * a user at when they step away from a shared machine. The hub now reports the
+ * new deadline on the response to the request that caused the slide, and this
+ * is what adopts it.
+ *
+ * INNERMOST of the three, so each ATTEMPT opens its own adoption. The step-up
+ * retry above replays the refused call after a ceremony that itself writes the
+ * mirror; an adoption opened before the first attempt would already be stale
+ * when the retry's response landed, and the deadline that retry slid is
+ * exactly the one worth having.
+ *
+ * A FAILURE reports too. The hub slides after its write commits, so a handler
+ * that fails afterwards still leaves a longer window behind, and connect
+ * carries the header in the error's metadata for that case.
+ *
+ * Exported for the same reason `elevationInterceptor` is: it is the decision,
+ * and the one place a test can drive the adoption end to end.
+ */
+export const elevationDeadlineInterceptor: Interceptor = next => async (req) => {
+  const adopt = openElevationAdoption?.() ?? null
+  try {
+    const res = await next(req)
+    adoptReportedDeadline(adopt, res.header)
+    return res
+  }
+  catch (err) {
+    if (err instanceof ConnectError)
+      adoptReportedDeadline(adopt, err.metadata)
+    throw err
+  }
+}
+
 /** The header Connect puts a per-call deadline in. Mirrors `headerTimeout`. */
 const CONNECT_TIMEOUT_HEADER = 'connect-timeout-ms'
 
@@ -105,12 +198,12 @@ const CONNECT_TIMEOUT_HEADER = 'connect-timeout-ms'
  *
  * Connect mints one deadline signal per call, before any interceptor runs, and
  * hands the same signal to every attempt. The step-up prompt sits INSIDE the
- * refused call — that is what makes the retry automatic — so the seconds the
- * user spends reading the dialog and typing a password are charged to the
- * request's own deadline. Past it the signal aborts while the dialog is still
- * open, and the retry fails instantly with DeadlineExceeded: adding a passkey
- * failed for anyone who did not type fast enough, and the reported cause named
- * a timeout that nothing had actually waited for.
+ * refused call — that is what makes the retry automatic — so the request's own
+ * deadline counts the seconds the user spends reading the dialog and typing a
+ * password. Past it the signal aborts while the dialog is still open, and the
+ * retry fails instantly with DeadlineExceeded: adding a passkey failed for
+ * anyone who did not type fast enough, and the reported cause identified a
+ * timeout that nothing actually waited for.
  *
  * Thinking time is not request time. The retry therefore starts its budget
  * over, from the same value the call declared — `connect-timeout-ms` is the
@@ -118,9 +211,9 @@ const CONNECT_TIMEOUT_HEADER = 'connect-timeout-ms'
  * that asked for a longer or shorter one keeps it, and a call with no deadline
  * gets none here either.
  *
- * A CANCELLATION still propagates. The original signal is linked in, minus the
- * one reason this function exists to replace: an abort whose reason is the
- * expired deadline is ignored, and every other reason (a caller's own
+ * A CANCELLATION still propagates. This function links the original signal in,
+ * minus the one reason it exists to replace: it ignores an abort whose reason
+ * is the expired deadline, and every other reason (a caller's own
  * AbortController) aborts the retry.
  */
 function restartDeadline(original: AbortSignal, header: Headers): { signal: AbortSignal, cleanup: () => void } {
@@ -179,7 +272,7 @@ function getTransportFetch(): typeof globalThis.fetch {
     return credentialFetch
 
   // Return a wrapper that checks capabilities on each call so the
-  // transport picks up runtime-state changes (e.g. switching from
+  // transport sees runtime-state changes (e.g. switching from
   // launcher → solo mode). The eager check at module-init time would
   // use stale heuristics—especially in dev mode where the webview
   // loads from http://localhost instead of tauri://localhost.
@@ -196,8 +289,9 @@ export const transport = createConnectTransport({
   // The elevation interceptor sits INSIDE the error interceptor, so a retry
   // that itself fails still reaches the session-ended rule. Neither can fire
   // for the other's case: an elevation refusal is FailedPrecondition and a
-  // dead session is Unauthenticated.
-  interceptors: [errorInterceptor, elevationInterceptor],
+  // dead session is Unauthenticated. The deadline interceptor sits inside
+  // BOTH, so the retry's own response is the one it reads -- see its comment.
+  interceptors: [errorInterceptor, elevationInterceptor, elevationDeadlineInterceptor],
   fetch: getTransportFetch(),
   defaultTimeoutMs: 30_000,
 })
@@ -207,7 +301,7 @@ export const transport = createConnectTransport({
  *
  * `keepalive` requests share a 64 KiB budget across ALL in-flight ones, and a
  * request over it fails outright — so a caller must fall back rather than
- * discover this during unload, when there is no second chance.
+ * discover this during unload, where no retry is possible.
  */
 export const MAX_KEEPALIVE_BODY_BYTES = 60 * 1024
 
@@ -215,7 +309,7 @@ export const MAX_KEEPALIVE_BODY_BYTES = 60 * 1024
  * A transport for requests issued from a `pagehide` handler.
  *
  * Identical to `transport` except for `keepalive: true`. That flag is the whole
- * point: a normal fetch started while the page is unloading is CANCELLED with
+ * point: a normal fetch started while the page unloads is CANCELLED with
  * it, so an op enqueued at unload never reaches the hub — the browser tears the
  * request down along with the document. `keepalive` asks the browser to let it
  * complete after the page is gone.
@@ -224,22 +318,23 @@ export const MAX_KEEPALIVE_BODY_BYTES = 60 * 1024
  * carries a hard 64 KiB budget shared across every in-flight keepalive request.
  * Making it the default would silently cap ordinary traffic (a materialized
  * snapshot is routinely larger); confining it to the unload path keeps the cap
- * where the payload is a handful of ops.
+ * where the payload is a few ops.
  *
  * Everything else — auth via the same credential fetch, the Connect protocol
  * framing, the error interceptor — is shared, which is why this is a transport
- * and not a hand-rolled `sendBeacon`: a beacon cannot set headers, so it would
- * need its own endpoint and its own auth story.
+ * and not a hand-written `sendBeacon` call: a beacon cannot set headers, so it
+ * would need its own endpoint and its own authentication design.
  */
 export const unloadTransport = createConnectTransport({
   baseUrl: window.location.origin,
   fetch: (input, init) => getTransportFetch()(input, { ...init, keepalive: true }),
-  // NO elevation interceptor. The page is going away, so there is nobody to
-  // answer a prompt and nothing left to render one in; an op enqueued at
-  // unload is not a sensitive mutation either.
+  // NO elevation interceptor, and no deadline interceptor either. The page
+  // unloads, so there is nobody to answer a prompt and nothing left to render
+  // one in; an op enqueued at unload is not a sensitive mutation, so it slides
+  // no window, and there is no surface left to show a deadline on.
   interceptors: [errorInterceptor],
-  // No timeout: the page is going away, so there is nothing left to time out
-  // INTO. The browser bounds the request itself once the document is gone.
+  // No timeout: the page unloads, so there is nothing left to time out
+  // INTO. The browser limits the request itself once the document is gone.
 })
 
 // ---------------------------------------------------------------------------
@@ -279,9 +374,9 @@ export async function loadTimeouts(): Promise<void> {
 /**
  * Canonical frontend RPC deadline (milliseconds).
  *
- * Used both as the `timeoutMs` for unary RPC calls and as the UI loading
- * signal budget — by design they match, so the RPC's own DeadlineExceeded
- * error path always wins over a forced loading-state clear.
+ * Used both as the `timeoutMs` for unary RPC calls and as the budget for the
+ * UI loading signal — by design they match, so the RPC's own DeadlineExceeded
+ * error path always takes precedence over a forced loading-state clear.
  */
 export function apiLoadingTimeoutMs(): number {
   return Math.ceil(TIMEOUT_MULTIPLIER * timeoutConfig.apiTimeoutSeconds * 1000)
@@ -295,10 +390,10 @@ export function apiLoadingTimeoutMs(): number {
  * budget covers a socket connect, a Noise handshake and a full user-state
  * materialization, so a value tight enough to catch a slow-but-working
  * bootstrap would flash the empty state on every cold load. It is a watchdog
- * against a bootstrap that will never arrive, not a latency target — nothing
- * is cancelled when it fires, and a late bootstrap still fills the projection
- * in. Scales with `TIMEOUT_MULTIPLIER` so CI and E2E inherit the same slack as
- * every other deadline.
+ * against a bootstrap that will never arrive, not a latency target — it
+ * cancels nothing when it fires, and a late bootstrap still fills the
+ * projection in. Scales with `TIMEOUT_MULTIPLIER` so CI and E2E inherit the
+ * same margin as every other deadline.
  */
 export function workspaceBootstrapTimeoutMs(): number {
   return apiLoadingTimeoutMs() * 3

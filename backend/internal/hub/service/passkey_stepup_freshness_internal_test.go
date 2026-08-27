@@ -65,10 +65,11 @@ func TestAssertFirstCredentialAuthIsFresh_RefusesAStaleSession(t *testing.T) {
 }
 
 // TestAssertFirstCredentialAuthIsFresh_RefusesABearer pins the credential
-// kind. An API or delegation token is minted once and lives until it is
-// revoked, so its creation time says nothing about who holds it now, and no
-// human is present to re-authenticate. A bearer is refused outright rather
-// than given a window -- a freshly minted token would otherwise pass.
+// kind. The hub mints an API or delegation token once, and it lives until a
+// revoke ends it, so its creation time says nothing about who holds it now,
+// and no human is present to re-authenticate. The rule refuses a bearer
+// outright rather than giving it a window -- a freshly minted token would
+// otherwise pass.
 func TestAssertFirstCredentialAuthIsFresh_RefusesABearer(t *testing.T) {
 	t.Parallel()
 
@@ -117,7 +118,7 @@ func TestAssertFirstCredentialAuthIsFresh_RefusesAnUnknownCredential(t *testing.
 
 // TestAssertFirstCredentialAuthIsFresh_ToleratesClockSkew keeps a session
 // row stamped slightly ahead of this process from reading as stale. The
-// window is a lower bound on recency, and a negative age is more recent
+// window is a lower limit on recency, and a negative age is more recent
 // than now, not less.
 func TestAssertFirstCredentialAuthIsFresh_ToleratesClockSkew(t *testing.T) {
 	t.Parallel()
@@ -127,12 +128,12 @@ func TestAssertFirstCredentialAuthIsFresh_ToleratesClockSkew(t *testing.T) {
 		freshUserInfo("s-1", now.Add(2*time.Second)), now, firstCredentialAuthFreshness))
 }
 
-// TestPasskeyManagementAuth_FirstCredentialRequiresFreshAuth exercises the
+// TestStepUpMutationAuth_FirstCredentialRequiresFreshAuth exercises the
 // admission itself, not only the predicate it calls. The account below is
 // the shape the rule exists for: a verified email, no password, and no
-// passkey, so nothing can be presented as a step-up and the session alone
-// decides.
-func TestPasskeyManagementAuth_FirstCredentialRequiresFreshAuth(t *testing.T) {
+// passkey, so the account can present nothing as a step-up and the session
+// alone decides.
+func TestStepUpMutationAuth_FirstCredentialRequiresFreshAuth(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -163,25 +164,25 @@ func TestPasskeyManagementAuth_FirstCredentialRequiresFreshAuth(t *testing.T) {
 		}
 	}
 
-	admission, err := svc.passkeyManagementAuth(ctx, entryStepUp(info(time.Now().UTC())), user)
+	admission, err := svc.stepUpMutationAuth(ctx, entryStepUp(info(time.Now().UTC())), user)
 	require.NoError(t, err, "a session that just authenticated may set the first credential")
 	assert.True(t, admission.firstCredential)
 
-	admission, err = svc.passkeyManagementAuth(
+	admission, err = svc.stepUpMutationAuth(
 		ctx, entryStepUp(info(time.Now().UTC().Add(-24*time.Hour))), user)
 	require.Error(t, err, "a day-old session must not set the first credential")
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 	assert.True(t, admission.firstCredential,
-		"the admission still records WHY it was refused, so the locked re-check stays correct")
+		"the admission still records WHY it refused, so the locked re-check stays correct")
 
 	// THE most important property of the whole change: an account with
 	// nothing to elevate with must never be REQUIRED to elevate. If an
 	// elevation were a precondition, this account could never attach its
 	// first credential -- and could therefore never become elevatable, which
-	// is a permanent dead end rather than a prompt.
+	// is a permanent refusal rather than a prompt.
 	require.False(t, info(time.Now().UTC()).Elevated(time.Now()),
 		"precondition: this session holds no elevation")
-	admission, err = svc.passkeyManagementAuth(ctx, entryStepUp(info(time.Now().UTC())), user)
+	admission, err = svc.stepUpMutationAuth(ctx, entryStepUp(info(time.Now().UTC())), user)
 	require.NoError(t, err)
 	assert.True(t, admission.firstCredential,
 		"the first-credential rule is a SIBLING, reachable with no elevation at all")
@@ -191,24 +192,25 @@ func TestPasskeyManagementAuth_FirstCredentialRequiresFreshAuth(t *testing.T) {
 	//
 	// The OAuth re-authentication leg grants an elevation to EXACTLY this
 	// account shape -- providerMayElevateAccount reads the same predicate
-	// this branch does -- so with the first-credential rule as the only arm,
+	// this branch does -- so with the first-credential rule as the only branch,
 	// that leg could never help the two procedures it exists for. A user
-	// proved a factor at their identity provider, came back, and was refused
-	// with the same message as before; only signing out and in again worked.
+	// proved a factor at their identity provider, came back, and the hub
+	// refused them with the same message as before; only signing out and in
+	// again worked.
 	until := time.Now().UTC().Add(auth.ElevationWindow)
 	stale := info(time.Now().UTC().Add(-24 * time.Hour))
 	stale.Elevation = auth.NewElevation(&until, &until)
 	require.True(t, stale.Elevated(time.Now().UTC()), "precondition: the session is elevated")
 
-	admission, err = svc.passkeyManagementAuth(ctx, entryStepUp(stale), user)
+	admission, err = svc.stepUpMutationAuth(ctx, entryStepUp(stale), user)
 	require.NoError(t, err, "a proven factor admits, however old the sign-in is")
 	assert.False(t, admission.firstCredential,
-		"admitted on the ELEVATED arm, so the locked re-check verifies the window")
+		"admitted on the ELEVATED branch, so the locked re-check verifies the window")
 
 	// The refusal a prompt CAN resolve carries the marker that opens one.
 	// Without it the client printed the sentence as raw text beside a form
 	// and offered nothing.
-	_, err = svc.passkeyManagementAuth(
+	_, err = svc.stepUpMutationAuth(
 		ctx, entryStepUp(info(time.Now().UTC().Add(-24*time.Hour))), user)
 	require.Error(t, err)
 	var connectErr *connect.Error
@@ -217,10 +219,10 @@ func TestPasskeyManagementAuth_FirstCredentialRequiresFreshAuth(t *testing.T) {
 		"a stale sign-in is now resolvable by proving a factor, so it must open a prompt")
 }
 
-// TestPasskeyManagementAuth_ElevationRequiredOnceACredentialExists is the
+// TestStepUpMutationAuth_ElevationRequiredOnceACredentialExists is the
 // other side of the same fork: as soon as the account holds something to
 // prove, the session must prove it.
-func TestPasskeyManagementAuth_ElevationRequiredOnceACredentialExists(t *testing.T) {
+func TestStepUpMutationAuth_ElevationRequiredOnceACredentialExists(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -251,9 +253,9 @@ func TestPasskeyManagementAuth_ElevationRequiredOnceACredentialExists(t *testing
 
 	// Un-elevated: refused, and with FailedPrecondition rather than
 	// Unauthenticated -- the frontend's interceptor reads Unauthenticated
-	// as "signed out" and would throw away the session the user is about to
+	// as "signed out" and would discard the session the user is about to
 	// prove a factor for.
-	_, err = svc.passkeyManagementAuth(ctx, entryStepUp(base), user)
+	_, err = svc.stepUpMutationAuth(ctx, entryStepUp(base), user)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 
@@ -262,7 +264,7 @@ func TestPasskeyManagementAuth_ElevationRequiredOnceACredentialExists(t *testing
 	elevatedInfo := *base
 	now := time.Now().UTC()
 	elevatedInfo.Elevation = auth.Elevation{ExpiresAt: now.Add(time.Hour)}
-	admission, err := svc.passkeyManagementAuth(ctx, entryStepUp(&elevatedInfo), user)
+	admission, err := svc.stepUpMutationAuth(ctx, entryStepUp(&elevatedInfo), user)
 	require.NoError(t, err)
 	assert.False(t, admission.firstCredential)
 
@@ -270,17 +272,44 @@ func TestPasskeyManagementAuth_ElevationRequiredOnceACredentialExists(t *testing
 	// of use, so a cached UserInfo cannot keep granting past its window.
 	lapsed := *base
 	lapsed.Elevation = auth.Elevation{ExpiresAt: now.Add(-time.Hour)}
-	_, err = svc.passkeyManagementAuth(ctx, entryStepUp(&lapsed), user)
+	_, err = svc.stepUpMutationAuth(ctx, entryStepUp(&lapsed), user)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 
-	// A COMMAND-LINE credential carries a window of its own now, proven in a
-	// browser, so it is admitted on the same terms a session is.
+	// An ELEVATED command-line credential is ADMITTED, on the same branch a
+	// session takes. It proves its factor in a browser through the
+	// /auth/cli/elevate-authorization leg and carries a window of its own, so
+	// refusing it here would answer one question two ways -- every other
+	// protected surface admits it. The whole path below is credential-shaped:
+	// recheckActingCredentialUnderLock re-reads whichever row carries the
+	// window, and revokeOtherCredentialsPreservingActingCredential keeps
+	// whichever row asked.
 	cli := *base
 	cli.Credential = auth.APICredential("tok-1")
 	cli.Elevation = auth.Elevation{ExpiresAt: now.Add(time.Hour)}
-	_, err = svc.passkeyManagementAuth(ctx, entryStepUp(&cli), user)
+	cliAdmission, err := svc.stepUpMutationAuth(ctx, entryStepUp(&cli), user)
 	require.NoError(t, err)
+	assert.False(t, cliAdmission.firstCredential,
+		"admitted on the ELEVATED branch, so the locked re-check verifies the window")
+
+	// UN-elevated, it is refused WITH the marker: the CLI runs the browser
+	// leg and retries, rather than reporting a refusal it cannot act on.
+	unelevatedCLI := *base
+	unelevatedCLI.Credential = auth.APICredential("tok-1")
+	_, err = svc.stepUpMutationAuth(ctx, entryStepUp(&unelevatedCLI), user)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+	var cliErr *connect.Error
+	require.ErrorAs(t, err, &cliErr)
+	assert.Equal(t, "1", cliErr.Meta().Get(ElevationRequiredHeader))
+
+	// A LAPSED window on the same credential is refused the same way.
+	lapsedCLI := *base
+	lapsedCLI.Credential = auth.APICredential("tok-1")
+	lapsedCLI.Elevation = auth.Elevation{ExpiresAt: now.Add(-time.Hour)}
+	_, err = svc.stepUpMutationAuth(ctx, entryStepUp(&lapsedCLI), user)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 
 	// A DELEGATION bearer cannot be elevated even carrying the field: a
 	// worker mints it for an agent that reads untrusted input, and there is
@@ -288,7 +317,7 @@ func TestPasskeyManagementAuth_ElevationRequiredOnceACredentialExists(t *testing
 	delegated := *base
 	delegated.Credential = auth.DelegationCredential("del-1", "worker-1")
 	delegated.Elevation = auth.Elevation{ExpiresAt: now.Add(time.Hour)}
-	_, err = svc.passkeyManagementAuth(ctx, entryStepUp(&delegated), user)
+	_, err = svc.stepUpMutationAuth(ctx, entryStepUp(&delegated), user)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 	// And it is NOT offered a step-up prompt. The marker means "prove a
@@ -297,6 +326,35 @@ func TestPasskeyManagementAuth_ElevationRequiredOnceACredentialExists(t *testing
 	var connectErr *connect.Error
 	require.ErrorAs(t, err, &connectErr)
 	assert.Empty(t, connectErr.Meta().Get(ElevationRequiredHeader))
+
+	// The FIRST-CREDENTIAL shape is the one case that still refuses a
+	// command-line credential, and it refuses it without a marker. The
+	// account holds nothing to elevate with, so the elevated branch has no
+	// window to read and the rule rests on a recent SIGN-IN instead -- which
+	// a credential the hub minted once and lets live until a revoke does not
+	// have. assertFirstCredentialAuthIsFresh is the refusal.
+	shell := id.Generate()
+	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
+		ID:            shell,
+		Username:      "nocredential",
+		DisplayName:   "No Credential",
+		Email:         "nocredential@example.com",
+		EmailVerified: true,
+		PasswordSet:   false,
+	}))
+	shellUser, err := st.Users().GetByID(ctx, shell)
+	require.NoError(t, err)
+	freshCLI := &auth.UserInfo{
+		ID:              userid.MustNew(shell),
+		Credential:      auth.APICredential("tok-2"),
+		AuthenticatedAt: now,
+	}
+	_, err = svc.stepUpMutationAuth(ctx, entryStepUp(freshCLI), shellUser)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+	var shellErr *connect.Error
+	require.ErrorAs(t, err, &shellErr)
+	assert.Empty(t, shellErr.Meta().Get(ElevationRequiredHeader))
 }
 
 // TestFirstCredentialCeremonyWindowOutlastsOneCeremony pins the
@@ -304,9 +362,9 @@ func TestPasskeyManagementAuth_ElevationRequiredOnceACredentialExists(t *testing
 //
 // Finish re-runs the admission its own Begin already passed, against the
 // same fixed sign-in instant. One window evaluated at both legs cannot make
-// the guarantee for ANY value: a Begin admitted at the last moment is
-// refused at Finish, after the user answered the biometric prompt, and the
-// credential the authenticator created is discarded. The Finish window must
+// the guarantee for ANY value: Finish refuses a Begin admitted at the last
+// moment, after the user answered the biometric prompt, and the hub discards
+// the credential the authenticator created. The Finish window must
 // therefore exceed the entry window by at least one whole ceremony.
 func TestFirstCredentialCeremonyWindowOutlastsOneCeremony(t *testing.T) {
 	t.Parallel()
@@ -348,11 +406,11 @@ func TestFirstCredentialAdmittedAtBeginSurvivesFinish(t *testing.T) {
 // TestElevationAdmittedAtBeginSurvivesFinish is the SAME property on the
 // other branch of the fork, which is the half that had no grace at all.
 //
-// An account that holds a password takes the elevation branch, so a Begin
-// admitted in the last seconds of the two-hour window was refused at Finish
+// An account that holds a password takes the elevation branch, so Finish
+// refused a Begin admitted in the last seconds of the two-hour window
 // -- after the user answered the biometric prompt. The client's gate re-runs
 // the WHOLE action on that refusal, so it opened a second ceremony and the
-// credential the authenticator created on the first was never stored.
+// hub never stored the credential the authenticator created on the first.
 func TestElevationAdmittedAtBeginSurvivesFinish(t *testing.T) {
 	t.Parallel()
 
@@ -387,26 +445,26 @@ func TestElevationAdmittedAtBeginSurvivesFinish(t *testing.T) {
 		return &UserService{store: st, clockSeam: clockSeam{Now: func() time.Time { return now }}}
 	}
 
-	_, err = at(beginAt).passkeyManagementAuth(ctx, entryStepUp(info), user)
+	_, err = at(beginAt).stepUpMutationAuth(ctx, entryStepUp(info), user)
 	require.NoError(t, err, "precondition: Begin admits this session")
 
-	_, err = at(finishAt).passkeyManagementAuth(ctx, entryStepUp(info), user)
+	_, err = at(finishAt).stepUpMutationAuth(ctx, entryStepUp(info), user)
 	require.Error(t, err, "precondition: the window really did close during the ceremony")
 
-	_, err = at(finishAt).passkeyManagementAuth(ctx, finishStepUp(info), user)
+	_, err = at(finishAt).stepUpMutationAuth(ctx, finishStepUp(info), user)
 	assert.NoError(t, err,
 		"a ceremony the hub still accepts must not be refused after the user answered the prompt")
 
-	// The grace is still a bound: a window that lapsed long ago stays refused.
-	_, err = at(provenAt.Add(24*time.Hour)).passkeyManagementAuth(ctx, finishStepUp(info), user)
+	// The grace is still a limit: a window that lapsed long ago stays refused.
+	_, err = at(provenAt.Add(24*time.Hour)).stepUpMutationAuth(ctx, finishStepUp(info), user)
 	assert.Error(t, err)
 }
 
 // TestFirstCredentialDurableIdentityNeedsAnAddress pins the half of the
 // durable-identity rule the flag alone cannot carry.
 //
-// email_verified says somebody confirmed THIS address. The two can come
-// apart: resolveEmailVerified excludes a CLEARED address from the lowering
+// email_verified says somebody confirmed THIS address. The two can
+// separate: resolveEmailVerified excludes a CLEARED address from the lowering
 // rule on purpose, so an administrator who clears a verified address leaves
 // the flag raised over an empty column. Read alone, that raised flag then
 // admitted a session-only first password or passkey -- durable, silently
@@ -443,7 +501,7 @@ func TestFirstCredentialDurableIdentityNeedsAnAddress(t *testing.T) {
 	assert.NoError(t, assertFirstCredentialWithoutPasswordAllowed(ctx, st, confirmed))
 
 	// No address and no flag, but a live OAuth link: admitted through the
-	// other arm, so the narrowing did not close that door.
+	// other branch, so the narrowing left that route open.
 	linked := seed(t, "linked", "", false)
 	require.NoError(t, st.OAuthProviders().Create(ctx, store.CreateOAuthProviderParams{
 		ID: "gh", ProviderType: "github", Name: "GitHub", ClientID: "cid",

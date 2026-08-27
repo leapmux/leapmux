@@ -33,7 +33,7 @@ export interface OptionGroupMenuItemsProps {
 }
 
 /**
- * Menu items for a single option group, designed to be placed directly inside a
+ * Menu items for a single option group. Place them directly inside a
  * `DropdownMenu` (submenu or chip popover). Two modes:
  *
  * - **≤ 7 options**: each option is a `<button role="menuitemradio">` with a
@@ -61,10 +61,10 @@ export function OptionGroupMenuItems(props: OptionGroupMenuItemsProps): JSX.Elem
               />
             )
             // ONE text, and the reason the group is disabled outranks the
-            // option's own description: an option nobody can pick has nothing
-            // to say about itself that beats why. Two nested Tooltips would
-            // otherwise resolve the outer one's target to the inner one's
-            // wrapper rather than to the button.
+            // option's own description: an option that nobody can pick has
+            // nothing to say about itself that matters more than the reason.
+            // Two nested Tooltips would otherwise resolve the outer one's
+            // target to the inner one's wrapper rather than to the button.
             const tip = () => (props.disabled ? props.disabledReason : item().tooltip)
             // Wrap only when there is tooltip text. A Tooltip mounts its own
             // wrapper and listeners even with nothing to show, and most option
@@ -83,10 +83,10 @@ export function OptionGroupMenuItems(props: OptionGroupMenuItemsProps): JSX.Elem
         fallback={(
           // Read-only group: the list is not offered, so show the current
           // selection. The label alone would leave the user with no way to see
-          // which value the agent is actually running.
-          // A <span> receives pointer events, so <Tooltip> fires on it and the
-          // reason keeps the app's own typography. `title` is reserved for a
-          // control the browser has actually disabled.
+          // which value the agent actually runs.
+          // Through <Tooltip>, like every hover text in the app: `title` on a
+          // DOM element is banned with no exception, a disabled control
+          // included. See the header of ~/components/common/Tooltip.
           <Tooltip text={props.disabledReason ?? ''}>
             <span>
               {props.items.find(i => i.value === props.current)?.label || props.label}

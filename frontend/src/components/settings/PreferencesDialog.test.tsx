@@ -28,7 +28,7 @@ vi.mock('~/context/AuthContext', () => ({
   useAuth: () => ({
     user: () => ({ username: 'admin', isAdmin: isAdmin() }),
     elevationExpiresAt: () => elevationExpiresAt(),
-    setElevationExpiresAt: vi.fn(),
+    dropElevation: vi.fn().mockResolvedValue(undefined),
     refreshUser: vi.fn().mockResolvedValue(undefined),
   }),
 }))
@@ -42,7 +42,7 @@ vi.mock('~/lib/systemInfo', async importOriginal => ({
 function renderDialog(category = 'appearance') {
   return render(() => (
     <PreferencesProvider>
-      <PreferencesDialog category={category} openSeq={0} onClose={() => {}} />
+      <PreferencesDialog category={category} onCategory={() => {}} onClose={() => {}} />
     </PreferencesProvider>
   ))
 }
@@ -53,7 +53,7 @@ beforeEach(() => {
   // number, rather than the running total of every test before it.
   vi.clearAllMocks()
   // Every account row takes its SHAPE from this reply: the hub declares
-  // each key's category, control kind, enum values and bounds, and the
+  // each key's category, control kind, enum values and limits, and the
   // registry joins only the text a user reads onto it. A dialog that wants
   // Theme, the font stacks or the keyboard-shortcuts editor therefore needs
   // the real schema here.
@@ -68,7 +68,7 @@ afterEach(() => {
   cleanup()
 })
 
-describe('preferencesDialog admin gating', () => {
+describe('preferencesDialog admin restriction', () => {
   it('shows the administration groups only to admins', async () => {
     isAdmin.mockReturnValue(true)
     listSettings.mockResolvedValue({
@@ -159,7 +159,7 @@ describe('preferencesDialog admin gating', () => {
   // restart-class row marks both whichever source it came from. Both used to
   // read `group.admin ? adminRows() : []`, so a USER-scope restart row got
   // neither -- the badge in the list and the warning in the panel agreed
-  // only because they were equally blind.
+  // only because neither one could see it.
   it('marks a USER group whose row the hub declares restart-class', async () => {
     listUserSettings.mockResolvedValue({
       descriptors: accountWireDescriptors().map(d => (d.key === 'theme' ? { ...d, restart: true } : d)),
@@ -194,27 +194,50 @@ describe('preferencesDialog admin gating', () => {
 })
 
 describe('preferencesDialog deep link', () => {
-  // Every entry point (the app menu, $mod+, and the user menu) passes the
-  // same category, and a signal notifies only on a CHANGE — so asking for
-  // Preferences again while it sat on another section wrote the same string
-  // and moved nothing. The request COUNT is what changes on a repeat.
-  it('returns to the requested section when Preferences is asked for again', async () => {
-    const [seq, setSeq] = createSignal(0)
+  // The category lives in the ADDRESS, so the dialog holds no copy of it: it
+  // shows what the prop says and reports every pick. A private copy needed a
+  // request counter beside the category, because a caller that asked for the
+  // section already open wrote the same string and moved nothing.
+  it('reports a picked section instead of selecting it itself', async () => {
+    const picks: string[] = []
+    const [category, setCategory] = createSignal('appearance')
     render(() => (
       <PreferencesProvider>
-        <PreferencesDialog category="appearance" openSeq={seq()} onClose={() => {}} />
+        <PreferencesDialog category={category()} onCategory={id => picks.push(id)} onClose={() => {}} />
       </PreferencesProvider>
     ))
     await waitFor(() => expect(screen.getByTestId('preferences-nav-appearance')).toBeTruthy())
 
     fireEvent.click(screen.getByTestId('preferences-nav-notifications'))
+
+    await waitFor(() => expect(picks).toEqual(['notifications']))
+    // Nothing moved on the click alone: the address is what moves it.
+    expect(screen.getByTestId('preferences-nav-appearance').getAttribute('aria-selected')).toBe('true')
+
+    setCategory('notifications')
     await waitFor(() =>
       expect(screen.getByTestId('preferences-nav-notifications').getAttribute('aria-selected')).toBe('true'))
+    expect(screen.getByTestId('preferences-nav-appearance').getAttribute('aria-selected')).toBe('false')
+  })
 
-    setSeq(n => n + 1)
-    await waitFor(() =>
-      expect(screen.getByTestId('preferences-nav-appearance').getAttribute('aria-selected')).toBe('true'))
-    expect(screen.getByTestId('preferences-nav-notifications').getAttribute('aria-selected')).toBe('false')
+  // A search result reports the same way, so a jump from the results list is
+  // an address change like any other.
+  it('reports the category a search result jumps to', async () => {
+    const picks: string[] = []
+    render(() => (
+      <PreferencesProvider>
+        <PreferencesDialog category="appearance" onCategory={id => picks.push(id)} onClose={() => {}} />
+      </PreferencesProvider>
+    ))
+    await waitFor(() => expect(screen.getByTestId('preferences-nav-appearance')).toBeTruthy())
+    const search = screen.getByTestId('preferences-search') as HTMLInputElement
+    fireEvent.input(search, { target: { value: 'volume' } })
+    await waitFor(() => expect(screen.getByTestId('preferences-search-results')).toBeTruthy())
+
+    fireEvent.click(screen.getByRole('button', { name: /Turn-end volume/ }))
+
+    await waitFor(() => expect(picks).toEqual(['notifications']))
+    await waitFor(() => expect(search.value).toBe(''))
   })
 
   // The dialog unmounts on close, so an unpaired media-query listener
@@ -354,7 +377,7 @@ describe('preferencesDialog search', () => {
     const onClose = vi.fn()
     render(() => (
       <PreferencesProvider>
-        <PreferencesDialog category="appearance" openSeq={0} onClose={onClose} />
+        <PreferencesDialog category="appearance" onCategory={() => {}} onClose={onClose} />
       </PreferencesProvider>
     ))
     await waitFor(() => expect(screen.getByTestId('preferences-nav-appearance')).toBeTruthy())
@@ -364,7 +387,7 @@ describe('preferencesDialog search', () => {
 
     fireEvent.keyDown(search, { key: 'Escape' })
     await waitFor(() => expect(search.value).toBe(''))
-    // Navigation is back; the dialog was not asked to close.
+    // Navigation is back; nothing asked the dialog to close.
     await waitFor(() => expect(screen.getByTestId('preferences-nav-appearance')).toBeTruthy())
     expect(onClose).not.toHaveBeenCalled()
   })
@@ -376,19 +399,6 @@ describe('preferencesDialog search', () => {
     fireEvent.input(search, { target: { value: 'xyzzy-no-such-setting' } })
     await waitFor(() => expect(screen.getByText(/No settings match/)).toBeTruthy())
     expect(screen.getByText(/xyzzy-no-such-setting/)).toBeTruthy()
-  })
-
-  it('selects the matching category and clears the query when a result is clicked', async () => {
-    renderDialog('appearance')
-    await waitFor(() => expect(screen.getByTestId('preferences-nav-appearance')).toBeTruthy())
-    const search = screen.getByTestId('preferences-search') as HTMLInputElement
-    fireEvent.input(search, { target: { value: 'volume' } })
-    await waitFor(() => expect(screen.getByTestId('preferences-search-results')).toBeTruthy())
-
-    fireEvent.click(screen.getByRole('button', { name: /Turn-end volume/ }))
-    await waitFor(() => expect(search.value).toBe(''))
-    await waitFor(() => expect(screen.getByTestId('preferences-nav-notifications')).toBeTruthy())
-    expect(screen.getByTestId('preferences-nav-notifications').getAttribute('aria-selected')).toBe('true')
   })
 })
 
@@ -462,7 +472,7 @@ describe('preferencesDialog load failure', () => {
     render(() => (
       <PreferencesProvider>
         <Show when={open()}>
-          <PreferencesDialog category="appearance" openSeq={0} onClose={() => {}} />
+          <PreferencesDialog category="appearance" onCategory={() => {}} onClose={() => {}} />
         </Show>
       </PreferencesProvider>
     ))
@@ -483,7 +493,7 @@ describe('preferencesDialog load failure', () => {
     render(() => (
       <PreferencesProvider>
         <Show when={open()}>
-          <PreferencesDialog category="appearance" openSeq={0} onClose={() => {}} />
+          <PreferencesDialog category="appearance" onCategory={() => {}} onClose={() => {}} />
         </Show>
       </PreferencesProvider>
     ))
@@ -561,7 +571,7 @@ describe('a failed account-settings load', () => {
   // than asking again, so it can never fail — which left a failed load
   // completely silent: every row rendered its built-in default, and the
   // first change the user made overwrote their real stored value.
-  it('is stated in the dialog', async () => {
+  it('appears in the dialog', async () => {
     listUserSettings.mockRejectedValue(new Error('network is unreachable'))
     renderDialog()
 

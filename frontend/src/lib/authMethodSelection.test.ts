@@ -33,12 +33,12 @@ describe('createAuthMethodSelection', () => {
   })
 
   // The regression this helper exists for. A captcha refusal re-fetches
-  // system info, and an admin can clear the hub's public URL, so
-  // The blocker can appear with a passkey already selected. Every
+  // system info, and an admin can clear the hub's public URL, so the
+  // blocker can appear with a passkey already selected. Every
   // reader must then see 'password' -- LoginPage and SignupForm each read
   // the RAW signal at one or two sites, which hid the password field, hid
   // the "Forgot password?" link, and skipped the password validation while
-  // the submit path had already fallen back.
+  // the submit path already fell back.
   it('falls back to password when passkey support disappears mid-form', () => {
     setSystemInfoMock({ passkeyBlocker: null })
     createRoot((dispose) => {
@@ -91,7 +91,7 @@ describe('createAuthMethodSelection', () => {
  * The pills BOTH forms render, stated once.
  *
  * Two shapes of refusal, and they are not the same to a reader: one is a
- * property of where they are standing and they can move, the other is a
+ * property of where they stand and they can move, the other is a
  * property of the deployment and identical for every visitor. An answer that
  * differed between the login form and the sign-up form would be a bug neither
  * file could show.
@@ -110,8 +110,8 @@ describe('authMethodOptions', () => {
   })
 
   // The BROWSER refuses: the pill stays and carries the reason, because
-  // hiding it leaves somebody whose only credential is a passkey at a dead
-  // end with nothing to read.
+  // hiding it leaves somebody whose only credential is a passkey with no way
+  // to sign in and nothing to read.
   it.each([
     ['insecure-context' as const, /secure page/i],
     ['no-webauthn' as const, /does not support passkeys/i],
@@ -129,13 +129,13 @@ describe('authMethodOptions', () => {
     expect(authMethodOptions().map(o => o.value)).toEqual(['password'])
   })
 
-  // Whatever the pills show, the password arm survives -- it is the only way
-  // in once the other one is refused.
+  // Whatever the pills show, the password option survives -- it is the only
+  // way to sign in once the other one is refused.
   it.each([
     ['insecure-context' as const],
     ['no-webauthn' as const],
     ['origin-not-allowed' as const],
-  ])('always leaves the password arm live under %s', (blocker) => {
+  ])('always leaves the password option live under %s', (blocker) => {
     setSystemInfoMock({ passkeyBlocker: blocker })
     const password = authMethodOptions().find(o => o.value === 'password')
     expect(password).toBeDefined()

@@ -157,7 +157,7 @@ func TestConflictRetryDBTXDoesNotRetryOtherErrors(t *testing.T) {
 	assert.Equal(t, 1, inner.calls, "a non-conflict error is final")
 }
 
-// The attempt count is bounded, and the LAST error reaches the caller. A
+// The attempt count is capped, and the LAST error reaches the caller. A
 // backend that keeps aborting is congested rather than contended, and a caller
 // that waits for ever serves nobody.
 func TestConflictRetryDBTXGivesUpAndReportsTheConflict(t *testing.T) {
@@ -221,6 +221,23 @@ func TestPoolConnRetriesThroughItsQueries(t *testing.T) {
 	require.NoError(t, conn.q.SetRevocationEventSequence(context.Background(), 1))
 	assert.Equal(t, 2, pool.calls,
 		"the pool's Queries must carry conflictRetryDBTX; without it the abort reaches the caller")
+}
+
+// TestPoolConnRetriesThroughItsRawExec is the other half of the wiring. This
+// dialect runs only the publish statement through conn.exec, but the rule is
+// one rule across both dialects rather than a per-dialect judgement, and this
+// pins it here too.
+func TestPoolConnRetriesThroughItsRawExec(t *testing.T) {
+	t.Parallel()
+
+	pool := &scriptedDBTX{errs: []error{abortErr(pgerrcode.DeadlockDetected)}}
+	conn := newPoolConn(&pgShared{}, pool)
+
+	require.False(t, conn.inTx(), "a pool-backed conn is not a transaction")
+	_, err := conn.exec.Exec(context.Background(), "DELETE FROM workspace_tab_owned WHERE user_id = $1", "u1")
+	require.NoError(t, err)
+	assert.Equal(t, 2, pool.calls,
+		"the pool's raw exec must carry conflictRetryDBTX, exactly as its Queries do")
 }
 
 // The wrapper covers the pool and NOT a transaction, and that is the safety

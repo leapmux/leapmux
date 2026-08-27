@@ -181,7 +181,7 @@ describe('navIdsWhere', () => {
   })
 
   // A group whose only matching row is HIDDEN holds nothing that matches, so
-  // marking it would be false. `groupRowsByNav` has already dropped it, which
+  // marking it would be false. `groupRowsByNav` already dropped it, which
   // is why this helper needs no visibility rule of its own.
   it('does not mark a group whose matching row is hidden', () => {
     const ids = navIdsWhere(

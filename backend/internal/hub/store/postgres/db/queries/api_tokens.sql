@@ -130,17 +130,53 @@ SET revoked_at = clock_timestamp()
 WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id) AND revoked_at IS NULL
 RETURNING id, user_id, revoked_at;
 
--- name: RevokeAPITokensByUserFast :execrows
+-- name: RevokeOtherUserAPITokens :execrows
+-- Bulk revocation with ONE exclusion, the twin of DeleteOtherUserSessions.
+--
+-- keep_id is the acting command-line credential, and it survives. A password
+-- change made FROM that credential must revoke every other credential the
+-- account holds and keep the one that asked, exactly as the same change made
+-- from a browser keeps the acting session. Without the exclusion the
+-- credential destroyed itself as a side effect of its own success.
+--
+-- An EMPTY keep_id excludes nothing, because api_tokens.id is a primary key
+-- and is never empty, so id != '' matches every row. That is the shape every
+-- administrator path binds -- a reset or an account delete revokes the whole
+-- set -- and it is the same convention DeleteOtherUserSessions uses.
 UPDATE api_tokens
 SET revoked_at = clock_timestamp()
-WHERE user_id = $1 AND revoked_at IS NULL;
+WHERE user_id = sqlc.arg(user_id)
+  AND id != sqlc.arg(keep_id)
+  AND revoked_at IS NULL;
+
+-- name: RefreshUserAPITokenAuthGeneration :execrows
+-- Moves the kept command-line credential onto the account's new
+-- auth_generation, the twin of RefreshUserSessionAuthGeneration.
+--
+-- The exclusion above is only half of "keep this credential alive". Bearer
+-- validation refuses a row whose auth_generation is behind users.auth_generation
+-- (auth.TokenValidator.validateRow), and the same transaction bumps that
+-- column, so an unrevoked row that keeps the old generation still answers
+-- "token revoked" on its next request.
+--
+-- A REVOKED row is excluded. The restamp exists to keep a live credential
+-- live, and moving a revoked row onto the new epoch would say that the hub
+-- still trusts it.
+UPDATE api_tokens AS t
+SET auth_generation = u.auth_generation
+FROM users AS u
+WHERE t.id = sqlc.arg(token_id)
+  AND t.user_id = sqlc.arg(user_id)
+  AND t.revoked_at IS NULL
+  AND u.id = t.user_id
+  AND u.deleted_at IS NULL;
 
 -- name: DeleteExpiredAPITokensBefore :execrows
 -- Hard-deletes a live row that can no longer authenticate AND can no longer
 -- renew. The caller passes a cutoff behind "now" by a retention margin, so a
 -- user who asks why the CLI stopped working can still be shown the row.
 --
--- BOTH legs must be closed, and the access expiry is the one that decides
+-- BOTH deadlines must be closed, and the access expiry is the one that decides
 -- whether the row still works: bearer validation reads expires_at alone
 -- (auth.validateRow), so a row whose access token is live must survive
 -- whatever its refresh window says. An administrator issues a token with a
@@ -149,8 +185,8 @@ WHERE user_id = $1 AND revoked_at IS NULL;
 -- while it still authenticated.
 --
 -- expires_at IS NULL means a token that never expires, so it is never swept
--- here. refresh_expires_at IS NULL means a row with no refresh leg, which is
--- a closed leg rather than an open one.
+-- here. refresh_expires_at IS NULL means a row with no refresh deadline,
+-- which is a closed deadline rather than an open one.
 DELETE FROM api_tokens
 WHERE revoked_at IS NULL
   AND expires_at IS NOT NULL
@@ -169,7 +205,7 @@ WHERE revoked_at IS NOT NULL AND revoked_at < $1;
 -- admitted unconditionally by the gate that protects hub settings, the user
 -- surface and the mint, so possession of the credential file was the whole of
 -- the check. It proves a factor through the browser step-up leg now, and one
--- proof admits gated actions for the same sliding window a session gets.
+-- proof admits restricted actions for the same sliding window a session gets.
 --
 -- The expires_at guard on the grant is NULL-tolerant: an api_tokens row with
 -- no expires_at never expires on its own account, where a session row always
@@ -177,8 +213,13 @@ WHERE revoked_at IS NOT NULL AND revoked_at < $1;
 
 -- name: ElevateAPIToken :execrows
 -- Proves a fresh factor: it restarts BOTH the anchor and the deadline, so a
--- new ceremony grants a whole new maximum window rather than topping up an
+-- new ceremony grants a whole new maximum window rather than adding to an
 -- old one.
+--
+-- elevation_expires_at arrives ALREADY CLAMPED to elevation_proven_at +
+-- store.ElevationMaxTotal; ElevateAPITokenParams.ClampedExpiresAt applies the
+-- cap. The slide clamps in SQL instead, because it measures the ceiling from
+-- the stored anchor. Same rule, two writers.
 UPDATE api_tokens
 SET elevation_proven_at = sqlc.arg(elevation_proven_at),
     elevation_expires_at = sqlc.arg(elevation_expires_at)

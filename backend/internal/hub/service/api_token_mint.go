@@ -20,14 +20,15 @@ import (
 // headless service account. This file is the one place that shape is
 // decided.
 //
-// They were two literals before, and the drift a second copy invites had
+// They were two literals before, and the drift a second copy invites
 // already happened twice: the admin path sent no issuance notice, and it
 // wrote an access expiry the refresh leg silently rewrote. One builder means
 // a change to the lifetime, the scope, or the row shape reaches both
 // surfaces or neither.
 
-// mintAuthority answers "what permits this mint". Exactly one of the two arms
-// is present, and there are two because the hub genuinely has two answers.
+// mintAuthority answers "what permits this mint". Exactly one of the two
+// cases is present, and there are two because the hub genuinely has two
+// answers.
 //
 // A mint an ACTOR performs directly -- the admin verb -- is permitted by that
 // actor's own credential, on the rule assertElevatedActor states.
@@ -50,7 +51,7 @@ func mintedByActor(actor *auth.UserInfo) mintAuthority {
 }
 
 // mintedByConsentGrant permits a mint that redeems a browser consent. grantID
-// is the resolved grant row's id: a caller that has not loaded one has nothing
+// is the resolved grant row's id: a caller that did not load one has nothing
 // to pass.
 func mintedByConsentGrant(grantID string) mintAuthority {
 	return mintAuthority{grantID: grantID}
@@ -68,12 +69,12 @@ func (m mintAuthority) assert(now time.Time) error {
 }
 
 // clamp limits what this authority may mint, and it is what contains the one
-// arm that admits a bearer.
+// path that admits a bearer.
 //
 // A credential a BEARER mints inherits the minter's remaining life and does
 // NOT rotate. Both halves are needed and neither works alone: without the
 // inherited ceiling the child restarts the one-year lifetime from its own
-// created_at, and without dropping the refresh leg the first rotation
+// created_at, and without dropping the refresh token the first rotation
 // recomputes every window from that same fresh created_at and un-clamps it.
 // Together they make each generation strictly shorter than the last, so a
 // chain of self-issued credentials terminates at the browser consent that
@@ -123,9 +124,9 @@ type apiTokenMint struct {
 	// Rotating says whether the credential carries a refresh leg.
 	//
 	// A rotating credential holds a short access token and renews itself,
-	// and its whole life is capped by auth.AbsoluteTokenLifetime. A
-	// NON-rotating one holds exactly the access token it was minted with and
-	// has no second secret, so its life is AccessTTL and nothing can move it.
+	// and auth.AbsoluteTokenLifetime caps its whole life. A NON-rotating one
+	// holds exactly the access token it was minted with and has no second
+	// secret, so its life is AccessTTL and nothing can move it.
 	//
 	// The two must not be combined, and that is what the field exists to
 	// make unsayable. An admin-issued credential with a year of access AND a
@@ -149,13 +150,13 @@ type mintedAPIToken struct {
 // transaction that consumes their grant and the admin verb does not.
 //
 // It REFUSES a mint that states no authority, and that is the point of taking
-// one. Every surface gated this as the first line of its own handler, and
-// nothing made it so: the classification tripwire in
+// one. Every surface applied this restriction as the first line of its own
+// handler, and nothing made it so: the classification tripwire in
 // user_procedures_internal_test.go cannot reach an Admin* procedure, and the
 // consent legs are mux routes rather than Connect procedures. So the omission
 // the gate exists to prevent was possible at exactly the place it mattered,
-// and it had already happened once. Here a new mint site cannot compile
-// without naming its authority, and cannot name one that is absent.
+// and it already happened once. Here a new mint site cannot compile without
+// stating its authority, and cannot state one that is absent.
 func mintAPIToken(v *auth.TokenValidator, by mintAuthority, now time.Time, spec apiTokenMint) (mintedAPIToken, error) {
 	if err := by.assert(now); err != nil {
 		return mintedAPIToken{}, err
@@ -223,20 +224,21 @@ func (m mintedAPIToken) RefreshExpiresIn(now time.Time) int {
 //
 // Best-effort with a logged warning, NEVER an error. The token is already
 // committed by the time this runs, so failing here would leave the hub
-// holding a live credential the caller never received: the worst of both.
+// holding a live credential the caller never received, which is the worst of
+// the two outcomes.
 //
 // It runs DETACHED, on its own goroutine and its own deadline, and this is
 // the only mail send in the hub that does. Every other one IS the request the
 // caller made -- a password-reset link, a verification code -- so the caller
 // waits for it and reads its error. This one is incidental to a token the
 // caller is blocked on, and an SMTP exchange is capped at sendTimeout, so
-// leaving it on the response path put up to that long in front of a login a
-// human waits for. context.WithoutCancel for the same reason handleRefresh
-// uses it: the notice must not die because the client hung up.
+// leaving it on the response path added up to that long to a login a human
+// waits for. context.WithoutCancel for the same reason handleRefresh uses
+// it: the notice must not die because the client disconnected.
 //
-// Silent when the address is unverified: an unverified address is not known
-// to belong to the account, so sending an account notice to it is a delivery
-// to a stranger. Silent when the hub has no relay, because ErrEmailDisabled
+// Silent when the address is unverified: the hub does not know that an
+// unverified address belongs to the account, so sending an account notice to
+// it is a delivery to a stranger. Silent when the hub has no relay, because ErrEmailDisabled
 // is a configuration state and not a failure -- logging it would print a
 // warning on every CLI login of every hub without SMTP.
 //

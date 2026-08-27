@@ -273,8 +273,8 @@ var rawBindMethods = map[string]bool{
 }
 
 // flagRawTime records a violation when the expression's static type is one of
-// the raw-time shapes (see rawTimeTypeName); sink names where the value was
-// headed, and the position key dedupes the Tests:true double type-check.
+// the raw-time shapes (see rawTimeTypeName); sink identifies where the value
+// was headed, and the position key dedupes the Tests:true double type-check.
 func flagRawTime(pkg *packages.Package, violations map[string]string, value ast.Expr, sink string) {
 	badType, ok := rawTimeTypeName(pkg.TypesInfo.TypeOf(value))
 	if !ok {
@@ -326,8 +326,8 @@ func structUnder(t types.Type) *types.Struct {
 // literalField resolves which struct field the i-th composite-literal element
 // fills -- keyed literals via the type-checker's field object for the key,
 // positional literals via field order -- and returns it with the value
-// expression being bound. Returns nils for elements that resolve to no field
-// (which the type checker rejects anyway).
+// expression that the literal binds. Returns nils for elements that resolve
+// to no field (which the type checker rejects anyway).
 func literalField(info *types.Info, st *types.Struct, i int, elt ast.Expr) (*types.Var, ast.Expr) {
 	if kv, ok := elt.(*ast.KeyValueExpr); ok {
 		key, ok := kv.Key.(*ast.Ident)

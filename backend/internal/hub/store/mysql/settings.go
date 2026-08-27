@@ -32,19 +32,10 @@ func (s *settingsStore) GetAll(ctx context.Context) ([]store.SettingRow, error) 
 	return store.MapSlice(rows, fromDBSetting), nil
 }
 
-// A locking read outside a transaction is a caller mistake, not a query this
-// store can answer. SELECT ... FOR UPDATE takes a row lock that the enclosing
-// transaction holds; with no transaction the lock is taken and released at
-// once, so the caller reads a row it does not hold and every later write races
-// what it just read. On the mysql dialect the loss is additionally SILENT:
-// conflictRetryDBTX cannot wrap QueryRowContext, so a lock-wait timeout on a
-// bare single-row SELECT reaches the caller unretried.
-//
-// Every caller today goes through RunInTransaction, so this refuses nothing
-// that exists. It is here so that the next one fails loudly instead.
+// See store.ErrLockingReadOutsideTransaction for the rule and its reason.
 func (s *settingsStore) GetAllForUpdate(ctx context.Context) ([]store.SettingRow, error) {
 	if !s.conn.inTx() {
-		return nil, store.ErrInvalidArgument
+		return nil, store.ErrLockingReadOutsideTransaction
 	}
 	rows, err := s.conn.q.GetAllSettingsForUpdate(ctx)
 	if err != nil {

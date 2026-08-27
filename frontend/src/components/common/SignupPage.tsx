@@ -64,7 +64,7 @@ export const SignupPage: Component = () => {
                 )}
                 onSuccess={(resp) => {
                   // The signup RPC creates a session even when verification
-                  // is required, so the user can hit the authenticated
+                  // is required, so the user can call the authenticated
                   // VerifyEmail RPC directly. Send them to the verify page to
                   // click the email link or paste the code.
                   auth.setAuth(resp.user)

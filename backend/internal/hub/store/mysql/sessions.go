@@ -114,9 +114,9 @@ func (s *sessionStore) deleteEmitting(ctx context.Context, id, kind string) (int
 func (s *sessionStore) DeleteByUser(ctx context.Context, userID userid.UserID) error {
 	owner, ok := userid.OwnerFilter(userID)
 	if !ok {
-		// An unminted caller names no user, so a bulk mutation must refuse
-		// rather than address every blank-owner row -- or report success
-		// having changed nothing. See userid.OwnerFilter.
+		// An unminted caller specifies no user, so a bulk mutation must refuse
+		// rather than address every blank-owner row -- or report success when
+		// it changed nothing. See userid.OwnerFilter.
 		return store.ErrInvalidArgument
 	}
 	return mapErr(s.conn.q.DeleteUserSessionsByUser(ctx, owner))
@@ -217,7 +217,7 @@ func (s *sessionStore) Elevate(ctx context.Context, p store.ElevateSessionParams
 	return store.RunCredentialMutation(ctx, s.conn.withTransaction, func(ctx context.Context, conn *mysqlConn) (*store.CredentialEvent, error) {
 		n, err := rowsAffected(conn.q.ElevateUserSession(ctx, gendb.ElevateUserSessionParams{
 			ElevationProvenAt:  sqltime.MySQLNullTimeOf(p.ElevationProvenAt),
-			ElevationExpiresAt: sqltime.MySQLNullTimeOf(p.ElevationExpiresAt),
+			ElevationExpiresAt: sqltime.MySQLNullTimeOf(p.ClampedExpiresAt()),
 			ID:                 p.SessionID,
 			UserID:             owner,
 			Now:                sqltime.NewMySQLTime(now),
@@ -234,11 +234,12 @@ func (s *sessionStore) SlideElevation(ctx context.Context, p store.SlideSessionE
 	if !ok {
 		return 0, store.ErrInvalidArgument
 	}
-	// The cap is added in microseconds because DATETIME(3) keeps millisecond
-	// precision; a whole-second interval would quantize the ceiling.
+	// The statement adds the cap in microseconds because DATETIME(3) keeps
+	// millisecond precision; a whole-second interval would quantize the
+	// ceiling.
 	return rowsAffected(s.conn.q.SlideUserSessionElevation(ctx, gendb.SlideUserSessionElevationParams{
 		WindowDeadline: sqltime.MySQLNullTimeOf(p.WindowDeadline),
-		MaxTotalMicros: p.MaxTotal.Microseconds(),
+		MaxTotalMicros: store.ElevationMaxTotal.Microseconds(),
 		ID:             p.SessionID,
 		UserID:         owner,
 		Now:            sqltime.MySQLNullTimeOf(now),

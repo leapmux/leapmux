@@ -63,7 +63,7 @@ export function passkeyErrorMessage(err: unknown, fallback: string): string | nu
  * ONE text for each blocker, beside `passkeyErrorMessage`, because two
  * surfaces already say it and they must say the same thing: the account
  * panel disables Add passkey, and the step-up form explains a passkey-only
- * account it cannot verify. Each sentence names the party that has to act,
+ * account it cannot verify. Each sentence identifies the party that has to act,
  * because the three remedies go to three different people -- the reader
  * moves to a secure address, the reader changes browser, or an
  * administrator publishes the address.
@@ -153,8 +153,8 @@ export function signalPasskeyRemoved(rpId: string, credentialId: string): void {
   if (!credentialId)
     return
   // The Signal API can reject (unknown RP, malformed credential id); it is
-  // a best-effort hint, so a rejection is logged and swallowed -- an
-  // unhandled rejection would fire right after the success toast.
+  // a best-effort hint, so this handler logs a rejection and discards it --
+  // an unhandled rejection would fire right after the success toast.
   publicKeyCredentialSignal()?.signalUnknownCredential?.({ rpId, credentialId }).catch((err) => {
     log.warn('signalUnknownCredential rejected', { error: String(err) })
   })

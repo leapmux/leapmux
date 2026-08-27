@@ -15,27 +15,28 @@ import "leapmux/v1/worker.proto";
 // refuses non-admin callers before the handler runs. Solo mode's
 // synthesized user is an admin, so a local solo hub self-administrates.
 service AdminSettingsService {
-  // List every hub setting with its descriptor and stored value. Descriptors
-  // marked hidden_in_solo are omitted in solo mode. Secrets never leave the
-  // hub: value_json is redacted and secret_set reports their presence.
+  // List every hub setting with its descriptor and stored value. In solo
+  // mode the hub omits every descriptor marked hidden_in_solo. Secrets never
+  // leave the hub: the hub redacts value_json, and secret_set reports their
+  // presence.
   rpc ListSettings(ListSettingsRequest) returns (ListSettingsResponse);
-  // Merge a partial JSON document onto one setting's current value,
-  // validated and written transactionally.
+  // Merge a partial JSON document onto one setting's current value. The hub
+  // validates the result and writes it in one transaction.
   rpc UpdateSetting(UpdateSettingRequest) returns (UpdateSettingResponse);
   // Merge a partial JSON document onto one setting's secret half. The
-  // document must name at least one secret field.
+  // document must specify at least one secret field.
   rpc UpdateSettingSecret(UpdateSettingSecretRequest) returns (UpdateSettingSecretResponse);
   // Apply several settings writes ATOMICALLY: one transaction, one
   // cross-key validation over the whole result.
   //
   // A caller that has to change more than one key cannot express that as a
-  // sequence of single-key writes. Each one is validated against the state
-  // the previous one left, so an intermediate state a cross-key rule
+  // sequence of single-key writes. The hub validates each one against the
+  // state the previous one left, so an intermediate state a cross-key rule
   // refuses blocks the sequence part-way — and a failure after the first
   // write leaves the hub in a state the caller was told it never reached.
-  // The captcha verbs met both: selecting a provider before its keys are
-  // stored is refused, and re-keying the SELECTED provider could publish a
-  // new site key against the old secret.
+  // The captcha verbs met both: the hub refuses to select a provider before
+  // its keys are stored, and re-keying the SELECTED provider could publish
+  // a new site key against the old secret.
   rpc UpdateSettings(UpdateSettingsRequest) returns (UpdateSettingsResponse);
   // Remove one setting's row, returning it to its code default.
   rpc ResetSetting(ResetSettingRequest) returns (ResetSettingResponse);
@@ -65,7 +66,7 @@ message UpdateSettingRequest {
 
 message UpdateSettingResponse {
   SettingValue value = 1;
-  // True when the key is restart-class, so the write is stored but the
+  // True when the key is restart-class, so the hub stores the write but the
   // running hub keeps the previous value until it restarts. The caller
   // says so instead of leaving the operator to compare the descriptor.
   bool restart = 2;
@@ -77,8 +78,8 @@ message SettingWrite {
   // Merged onto the key's public half. Empty leaves it alone.
   string partial_json = 2;
   // Merged onto the key's SECRET half. Empty leaves it alone. Both halves
-  // of one key may travel in a single write, which is what lets a provider's
-  // site key and its secret land together or not at all.
+  // of one key may travel in a single write, which is what lets the hub store
+  // a provider's site key and its secret together or not at all.
   string secret_partial_json = 3;
 }
 
@@ -88,7 +89,7 @@ message UpdateSettingsRequest {
 }
 
 message UpdateSettingsResponse {
-  // The resulting value of every key the request named, in request order.
+  // The resulting value of every key the request listed, in request order.
   repeated SettingValue values = 1;
 }
 
@@ -250,14 +251,14 @@ message ResetPasswordRequest {
   string password = 3;
 }
 
-// The subject is echoed back because the caller addresses the user by id OR
-// by username and holds only the one it sent.
+// The response echoes the subject back because the caller addresses the user
+// by id OR by username and holds only the one it sent.
 message ResetPasswordResponse {
   string user_id = 1;
   string username = 2;
   // The bearer tokens the reset revoked, in the shape RevokeUserSessions
-  // reports them. Sessions are deleted rather than revoked, so they have no
-  // count of their own.
+  // reports them. The hub deletes sessions rather than revoking them, so
+  // they have no count of their own.
   int64 api_tokens_revoked = 3;
   int64 delegation_tokens_revoked = 4;
 }
@@ -357,6 +358,14 @@ message IssueAPITokenRequest {
   // Access-token TTL seconds; 0 = the default (1h). At most 31536000 (one
   // year): a larger value overflows the nanosecond duration the hub mints
   // from it.
+  //
+  // The value also picks WHICH KIND of credential the hub mints, and the two
+  // kinds are exclusive. 0 asks for the ordinary rotating credential, which
+  // carries a refresh token. A POSITIVE value asks for a fixed-lifetime service
+  // credential, which does not rotate -- so the response carries an empty
+  // refresh_token. A credential that rotates cannot keep the lifetime it was
+  // minted with, because the row records an expiry and never the TTL behind
+  // it, and the first rotation clips the access window back to one hour.
   int64 ttl_seconds = 4;
   string username = 5;
   // Grant this credential hub administration. Without it the token can do
@@ -369,6 +378,10 @@ message IssueAPITokenRequest {
 message IssueAPITokenResponse {
   string token_id = 1;
   string access_token = 2;
+  // EMPTY when the request set a positive ttl_seconds. That value mints a
+  // fixed-lifetime credential, which has no refresh token to return; see
+  // IssueAPITokenRequest.ttl_seconds for the rule. An empty value here is the
+  // documented answer for that request, not a hub failure.
   string refresh_token = 3;
 }
 
@@ -560,7 +573,8 @@ message RemoveOAuthProviderRequest {
 
 message RemoveOAuthProviderResponse {
   // How many live accounts lost their last login method. It is zero
-  // unless force was set, because the hub refuses the removal otherwise.
+  // unless the request set force, because the hub refuses the removal
+  // otherwise.
   int64 locked_out_users = 1;
 }
 

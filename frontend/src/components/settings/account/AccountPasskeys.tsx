@@ -11,8 +11,7 @@ import { Spinner } from '~/components/common/Spinner'
 import { StatusLine } from '~/components/common/StatusLine'
 import { Tooltip } from '~/components/common/Tooltip'
 import { useAuth } from '~/context/AuthContext'
-import { isElevationCurrent } from '~/lib/elevation'
-import { canPromptForElevation, elevationPrompting, promptForElevation } from '~/lib/elevationPrompt'
+import { elevationPrompting } from '~/lib/elevationPrompt'
 import { formatErrorMessage } from '~/lib/errors'
 import {
   credentialIdFromRegistrationJson,
@@ -57,9 +56,9 @@ export const AccountPasskeys: Component = () => {
    * TWO parties can refuse, and the button says which BEFORE the click. The
    * hub refuses an origin it does not publish -- reach the same hub by
    * another address (the LAN IP behind the reverse proxy, a tunnel host, a
-   * port the public URL does not name) and every Begin answers "origin is not
-   * allowed for passkey ceremonies". The browser refuses a page that is not a
-   * secure context, and it refuses by exposing no WebAuthn API at all: the
+   * port that the public URL does not specify) and every Begin answers "origin
+   * is not allowed for passkey ceremonies". The browser refuses a page that is
+   * not a secure context, and it refuses by exposing no WebAuthn API at all: the
    * ceremony then failed with "WebAuthn is not supported in this browser",
    * which reads as a broken browser rather than a plain-HTTP address.
    */
@@ -102,7 +101,7 @@ export const AccountPasskeys: Component = () => {
    *
    * AWAITED, and the caller waits on the result. A fire-and-forget refresh
    * let a deactivation resolve before the cached user landed, so the Password
-   * button still read "Set Password" for an account that had just set one,
+   * button still read "Set Password" for an account that just set one,
    * and a prompt opened in that window offered a passkey factor for passkeys
    * that no longer existed.
    */
@@ -149,61 +148,33 @@ export const AccountPasskeys: Component = () => {
   }
 
   /**
-   * Open a dialog whose action the hub refuses without a proven factor --
-   * proving it FIRST when the session does not already hold one.
+   * The three dialogs open on the CLICK. None of them verifies anything first.
    *
-   * This is the ONE place this surface departs from attempt-then-prompt, and
-   * the reason is what the prompt would otherwise land on. Every dialog here
-   * opens over the Preferences dialog, so a refusal raised from inside one
-   * stacks a THIRD modal on the browser's top layer -- and for the add
-   * ceremony it arrives after the user already named the passkey, with the
-   * authenticator prompt still to come. Verifying at the click empties the
-   * stack and puts the two credential prompts in the order a person expects.
-   *
-   * It is a HINT, not a decision, and every part of it fails soft:
-   *
-   *   - The mirrored deadline can be stale SHORT (the hub slid the window
-   *     forward and deliberately emitted no event), and this then prompts for
-   *     a window the user already holds. One extra prompt, no lost work.
-   *   - It can be stale LONG (the hub dropped the window on another tab), and
-   *     this then opens the dialog without prompting -- at which point the
-   *     hub refuses the ceremony and the transport prompts exactly as it did
-   *     before. Nothing here is load-bearing for authorization.
-   *   - With no prompter mounted, nothing can verify anything, so the dialog
-   *     opens and the hub's own refusal reaches the user (see
-   *     `canPromptForElevation`).
-   *
-   * A DISMISSAL stops here, and that is the point of asking first: nothing
-   * was started, so there is nothing to report or to undo.
+   * Attempt-then-prompt, the same as every other surface: the hub refuses an
+   * un-elevated session, the transport turns that refusal into one prompt and
+   * one retry, and `ElevationPromptHost` puts that prompt above whichever
+   * dialog raised it and holds that dialog inert until it settles. This panel
+   * used to pre-empt the stack per click, which decided no authorization -- the
+   * interceptor runs either way -- and left the next dialog to raise a
+   * restricted call to copy the same reasoning.
    */
-  const openVerified = (open: () => void) => {
-    if (isElevationCurrent(auth.elevationExpiresAt()) || !canPromptForElevation()) {
-      open()
-      return
-    }
-    void promptForElevation().then((proven) => {
-      if (proven)
-        open()
-    })
-  }
-
-  const openAdd = () => openVerified(() => {
+  const openAdd = () => {
     resetModalFields()
     setModalMessage(null)
     setFriendlyName('Passkey')
     setModal('add')
-  })
+  }
 
-  const openDelete = (passkey: PasskeyInfo) => openVerified(() => {
+  const openDelete = (passkey: PasskeyInfo) => {
     resetModalFields()
     setTargetPasskey(passkey)
     setModal('delete')
-  })
+  }
 
-  const openDeactivate = () => openVerified(() => {
+  const openDeactivate = () => {
     resetModalFields()
     setModal('deactivate')
-  })
+  }
 
   // Removing the LAST passkey from an account that has no password would
   // leave nothing to sign in with, so that one case demands a replacement.
@@ -212,7 +183,7 @@ export const AccountPasskeys: Component = () => {
   // uses, so these two dialogs run validatePassword with live feedback
   // instead of an equality check. The hub validates in `prepare`, which runs
   // AFTER the elevation ceremony -- so a password it will refuse used to
-  // surface only once the user had already answered a biometric prompt.
+  // surface only once the user already answered a biometric prompt.
   const newPasswordReady = () => passwordCanSubmit({ password: newPassword, confirmPassword })
   const deleteConfirmDisabled = () => working() || (deleteIsDeactivation() && !newPasswordReady())
   const deactivateConfirmDisabled = () => working() || (!passwordSet() && !newPasswordReady())
@@ -236,10 +207,17 @@ export const AccountPasskeys: Component = () => {
       })
       forceCloseModal()
       setMessage({ type: 'success', text: 'Passkey added.' })
+      // The optimistic row goes in only when the Finish echoed one.
       if (finish.passkey) {
         const added = finish.passkey
-        await applyLocalList([...passkeys().filter(pk => pk.id !== added.id), added])
+        setLocalList([...passkeys().filter(pk => pk.id !== added.id), added])
       }
+      // The cached account follows EVERY successful Finish, so this sits
+      // outside that branch. The success message is unconditional, and the
+      // cached passkey COUNT is what ElevateForm reads to decide whether to
+      // offer the passkey factor -- a Finish that echoes no row would leave the
+      // count one short and hide a factor the account holds.
+      await auth.refreshUser()
       const userId = auth.user()?.id
       if (userId && rpId()) {
         const ids = new Set(passkeys().map(pk => pk.credentialId).filter(Boolean))

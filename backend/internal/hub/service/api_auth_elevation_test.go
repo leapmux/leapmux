@@ -70,8 +70,8 @@ func bodyOf(t *testing.T, resp *http.Response) string {
 }
 
 // TestCLIConsent_UnelevatedGetBouncesThroughElevate pins the GET leg's
-// answer: a replayable URL is sent away and comes back to exactly this
-// address, so nothing the CLI supplied is lost.
+// answer: the gate sends a replayable URL away, and it comes back to exactly
+// this address, so nothing the CLI supplied is lost.
 func TestCLIConsent_UnelevatedGetBouncesThroughElevate(t *testing.T) {
 	t.Parallel()
 
@@ -96,7 +96,7 @@ func TestCLIConsent_UnelevatedGetBouncesThroughElevate(t *testing.T) {
 
 // TestCLIConsent_ElevatedMarkerStopsTheLoopWithoutAdmitting pins the second,
 // independent loop-prevention layer. The marker may only stop redirecting;
-// a hand-written one must buy the caller nothing.
+// a hand-written one must gain the caller nothing.
 func TestCLIConsent_ElevatedMarkerStopsTheLoopWithoutAdmitting(t *testing.T) {
 	t.Parallel()
 
@@ -144,17 +144,17 @@ func TestCLIConsent_UnelevatedPostIsRefusedNotRedirected(t *testing.T) {
 	assert.Empty(t, page.Rows)
 }
 
-// TestCLIConsent_SlidesTheWindowLikeEveryOtherGatedAction is the regression
-// for the one surface the sliding rule missed.
+// TestCLIConsent_SlidesTheWindowLikeEveryOtherRestrictedAction is the
+// regression for the one surface the sliding rule missed.
 //
 // "Each sensitive action slides that window forward" is the rule the design
 // and operating/security.md both state, and the consent legs enforced the
 // window without extending it: slideElevation was a *UserService method, so
 // only UserService procedures could reach it. Authorizing a command-line
 // credential -- the most consequential thing a session can do -- was the one
-// gated action that did not count as use, so a user who verified at 11:58 and
-// consented at 11:59 was bounced through /elevate again at 12:01.
-func TestCLIConsent_SlidesTheWindowLikeEveryOtherGatedAction(t *testing.T) {
+// restricted action that did not count as use, so the hub bounced a user who
+// verified at 11:58 and consented at 11:59 through /elevate again at 12:01.
+func TestCLIConsent_SlidesTheWindowLikeEveryOtherRestrictedAction(t *testing.T) {
 	t.Parallel()
 
 	env := setupAPIAuth(t)
@@ -373,7 +373,7 @@ func TestCLIConsent_AdminScopeRefusedAtEveryLegThatBindsIt(t *testing.T) {
 	})
 
 	// The device-activation POST is the same rule on the flow that runs when
-	// the browser is on a different machine from the one being authorized.
+	// the browser is on a different machine from the one it authorizes.
 	t.Run("the device activation POST", func(t *testing.T) {
 		t.Parallel()
 		env := setupAPIAuth(t)
@@ -405,7 +405,7 @@ func TestCLIConsent_AdminScopeRefusedAtEveryLegThatBindsIt(t *testing.T) {
 
 // TestDeviceActivation_RequiresElevationAndBindsTheScope covers the flow
 // used from SSH and containers, where the elevation happens on a DIFFERENT
-// machine from the one being authorized.
+// machine from the one it authorizes.
 func TestDeviceActivation_RequiresElevationAndBindsTheScope(t *testing.T) {
 	t.Parallel()
 
@@ -480,14 +480,14 @@ func TestDeviceActivation_GetBouncesThroughElevate(t *testing.T) {
 		"the marker is what turns a second failure into an explanation")
 }
 
-// TestDeviceActivation_NamesTheDeviceForACLISuppliedCode covers the one
+// TestDeviceActivation_IdentifiesTheDeviceForACLISuppliedCode covers the one
 // fact the consent decision needs and the page did not carry.
 //
 // The device-authorization endpoint is anonymous, so whoever runs the CLI
 // chooses this text. The page therefore renders it only for the code the
 // CLI printed into its own complete URI -- a code typed by hand arrives in
 // the POST form and gets nothing back.
-func TestDeviceActivation_NamesTheDeviceForACLISuppliedCode(t *testing.T) {
+func TestDeviceActivation_IdentifiesTheDeviceForACLISuppliedCode(t *testing.T) {
 	t.Parallel()
 
 	env := setupAPIAuth(t)
@@ -512,7 +512,7 @@ func TestDeviceActivation_NamesTheDeviceForACLISuppliedCode(t *testing.T) {
 	assert.NotContains(t, bodyOf(t, missing), "Requested by")
 
 	// An EXPIRED grant is a miss too: it cannot be approved, so it has no
-	// device worth naming.
+	// device worth showing.
 	env.clock.advance(11 * time.Minute)
 	expired := getWithCookie(t, env.server.URL+"/auth/cli/activate?user_code="+url.QueryEscape(verifycode.Format(userCode)), cookie)
 	require.Equal(t, http.StatusOK, expired.StatusCode)
@@ -618,13 +618,13 @@ func TestIssuedToken_EmailsTheOwner(t *testing.T) {
 			defer func() { _ = resp.Body.Close() }()
 			require.Equal(t, http.StatusOK, resp.StatusCode, "the notice must never be able to fail the mint")
 
-			// The notice is sent DETACHED, on its own goroutine, so that a
-			// slow relay cannot sit in front of the token a CLI login is
+			// The hub sends the notice DETACHED, on its own goroutine, so
+			// that a slow relay cannot delay the token a CLI login is
 			// blocked on. The assertion therefore waits for it rather than
 			// reading once.
 			if !tc.wantEmail {
-				// Nothing to wait for: the guard returns before the
-				// goroutine is ever started, so no send is queued. Never
+				// Nothing to wait for: the guard returns before anything
+				// starts the goroutine, so nothing queues a send. Never
 				// rather than Eventually, because this asserts an absence.
 				assert.Never(t, func() bool { return sender.last() != nil },
 					200*time.Millisecond, 20*time.Millisecond,
@@ -693,7 +693,7 @@ func TestRefresh_ClipsToTheAbsoluteLifetime(t *testing.T) {
 	// INSIDE the last AccessTokenTTL, deliberately. That is the only
 	// position where the access clip can be observed at all: further out,
 	// now+1h still lands under the ceiling and an unclipped access token
-	// looks correct. The refresh clip bites here just as it did a day out.
+	// looks correct. The refresh clip applies here just as it did a day out.
 	env.clock.advance(auth.AbsoluteTokenLifetime - 30*time.Minute)
 	resp, err := http.PostForm(env.server.URL+"/auth/cli/refresh", url.Values{"refresh_token": {refreshToken}})
 	require.NoError(t, err)
@@ -720,7 +720,7 @@ func TestRefresh_ClipsToTheAbsoluteLifetime(t *testing.T) {
 	// that decides whether the credential still authenticates: validateRow
 	// reads expires_at alone. Minted with a full AccessTokenTTL, the last
 	// rotation before the ceiling wrote an hour past it, so the bearer kept
-	// working after the hub had already answered the next refresh with
+	// working after the hub already answered the next refresh with
 	// "this credential reached its maximum lifetime".
 	require.NotNil(t, row.ExpiresAt)
 	assert.False(t, row.ExpiresAt.After(ceiling.Add(time.Minute)),
@@ -768,7 +768,7 @@ func TestRefresh_ClipsToTheAbsoluteLifetime(t *testing.T) {
 // no omitempty, so the same response answered a flat false for a credential
 // that really did carry the scope.
 //
-// It is pinned here rather than in the CLI, and that is the point: the
+// This test pins it here rather than in the CLI, and that is the point: the
 // CLI-side test drives a stub that hard-codes the field, so it asserts what
 // the fixture returns and would pass against a hub that sends nothing.
 func TestRefresh_ReportsTheRefreshDeadlineAndTheScope(t *testing.T) {
@@ -791,7 +791,7 @@ func TestRefresh_ReportsTheRefreshDeadlineAndTheScope(t *testing.T) {
 
 	assert.Positive(t, body.ExpiresIn, "the access window must be reported")
 	// The whole window, because this credential is young: the clip only
-	// bites near the absolute ceiling, which the sibling test covers.
+	// applies near the absolute ceiling, which the sibling test covers.
 	assert.InDelta(t, (auth.RefreshTokenTTL).Seconds(), float64(body.RefreshExpiresIn), 60,
 		"the rotation must report the deadline that sends the device back to a browser")
 	assert.False(t, body.AdminScope, "this grant asked for no admin scope")
@@ -799,12 +799,12 @@ func TestRefresh_ReportsTheRefreshDeadlineAndTheScope(t *testing.T) {
 
 // TestElevationRequiredHeaderValueIsPinned keeps the Go constant and the
 // frontend's copy from drifting silently. The frontend cannot import this
-// package, so the two are joined only by the literal below and the comment
-// on each side; a rename that changes one and not the other turns every
-// step-up prompt into an unexplained failure the user cannot act on.
+// package, so only the literal below and the comment on each side join the
+// two; a rename that changes one and not the other turns every step-up
+// prompt into an unexplained failure the user cannot act on.
 //
-// The literal is written out rather than compared to the constant, so
-// renaming the constant alone does not make this pass.
+// This test writes the literal out rather than compares it to the constant,
+// so renaming the constant alone does not make this pass.
 func TestElevationRequiredHeaderValueIsPinned(t *testing.T) {
 	t.Parallel()
 	assert.Equal(t, "Leapmux-Elevation-Required", service.ElevationRequiredHeader,
@@ -813,8 +813,8 @@ func TestElevationRequiredHeaderValueIsPinned(t *testing.T) {
 
 // TestElevationFactorRefusalIsMarkedAsACredentialRejection is the guard on
 // the failure the E2E suite found: a mistyped step-up password answered
-// Unauthenticated, the browser's blanket "Unauthenticated means signed out"
-// rule fired, and the prompt ended the very session it protects.
+// Unauthenticated, the browser's unconditional "Unauthenticated means signed
+// out" rule fired, and the prompt ended the very session it protects.
 //
 // The code stays Unauthenticated -- a rejected credential is what it means
 // -- and the marker says WHICH credential, so a client can tell a dead

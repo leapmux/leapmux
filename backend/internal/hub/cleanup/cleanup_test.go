@@ -135,8 +135,8 @@ func TestRun_BoundsRevocationCompactionWorkPerPass(t *testing.T) {
 func TestRun_DrainsRevocationCompactionUntilEmpty(t *testing.T) {
 	// The loop must keep compacting until a batch deletes NOTHING, not stop on a
 	// partial batch. This decouples termination from the delete query's internal
-	// LIMIT (a separate constant that could drift from CleanupBatchLimit): a batch
-	// that deletes fewer than a full page must still be followed by a drain check.
+	// LIMIT (a separate constant that could drift from CleanupBatchLimit): a drain
+	// check must still follow a batch that deletes fewer than a full page.
 	st := setupTestStore(t)
 	spy := &cleanupSpy{
 		CleanupStore: st.Cleanup(),
@@ -163,12 +163,12 @@ func TestRun_StopsRevocationCompactionWhenContextIsCanceled(t *testing.T) {
 	require.Equal(t, 1, spy.compactionRuns)
 }
 
-// DrainUntilEmpty is the shared loop behind both paged sweeps, so its contract
-// is pinned directly rather than only through the two callers: terminate on a
-// pass that deletes nothing, stop on the first error, respect the runaway bound,
-// and report a cancelled context as a PAUSE (total, no error) rather than a
-// failure -- the rows already deleted are committed and the next scheduled
-// sweep picks up the rest.
+// DrainUntilEmpty is the shared loop behind both paged sweeps, so this test
+// pins its contract directly rather than only through the two callers:
+// terminate on a pass that deletes nothing, stop on the first error, respect
+// the runaway limit, and report a cancelled context as a PAUSE (total, no
+// error) rather than a failure -- the store already committed the deleted rows
+// and the next scheduled sweep picks up the rest.
 func TestDrainUntilEmpty(t *testing.T) {
 	t.Run("drains until a pass deletes nothing", func(t *testing.T) {
 		pages := []int64{1000, 1000, 250, 0}
@@ -318,7 +318,7 @@ func TestRun_DeletesAPITokensPastBothDeadlines(t *testing.T) {
 	// ago. This is the admin-issued shape, and it must survive: the bearer
 	// still authenticates.
 	liveAccess := seed("live-access", at(300*24*time.Hour), stale)
-	// A row with no refresh leg but a live access expiry: kept.
+	// A row with no refresh deadline but a live access expiry: kept.
 	noRefresh := seed("no-refresh", at(time.Hour), nil)
 	// A row that never expires: kept, whatever else is true of it.
 	neverExpires := seed("never-expires", nil, stale)
@@ -333,7 +333,7 @@ func TestRun_DeletesAPITokensPastBothDeadlines(t *testing.T) {
 		{recent, "a row inside the retention margin must stay"},
 		{liveRefresh, "a row whose refresh window is open must stay"},
 		{liveAccess, "a row whose access token still authenticates must stay"},
-		{noRefresh, "a row with no refresh leg and a live access expiry must stay"},
+		{noRefresh, "a row with no refresh deadline and a live access expiry must stay"},
 		{neverExpires, "a row with no access expiry must stay"},
 	} {
 		_, err = st.APITokens().GetByID(ctx, kept.id)

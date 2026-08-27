@@ -196,8 +196,8 @@ export async function loginWithPasskeyViaAPIInBrowser(
 /**
  * Elevate the session inside `page` with a passkey ceremony.
  *
- * This is the arm a passkey-only account uses: it holds no password, so the
- * assertion IS the factor. Virtual authenticator must already be enabled.
+ * This is the option a passkey-only account uses: it holds no password, so
+ * the assertion IS the factor. Virtual authenticator must already be enabled.
  */
 export async function elevateWithPasskeyViaAPIInBrowser(
   page: Page,
@@ -217,9 +217,9 @@ export async function elevateWithPasskeyViaAPIInBrowser(
 /**
  * Register an additional passkey for the authenticated session inside `page`.
  *
- * The session is elevated FIRST, because passkey management now needs a
- * proven factor rather than a secret on each request. With a password, the
- * password arm; without one, the passkey arm.
+ * This helper elevates the session FIRST, because passkey management now
+ * needs a proven factor rather than a secret on each request. With a
+ * password, the password option; without one, the passkey option.
  */
 export async function addPasskeyViaAPIInBrowser(
   page: Page,

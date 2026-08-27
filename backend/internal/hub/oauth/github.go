@@ -95,7 +95,7 @@ func fetchGitHubUser(ctx context.Context, accessToken string, baseURL string) (*
 		return nil, err
 	}
 
-	// INVARIANT: Only the verified primary email is included in UserClaims.Email.
+	// INVARIANT: UserClaims.Email carries only the verified primary email.
 	// See the comment in oidc.go Exchange for the relationship between provider-level
 	// email verification and the per-provider trust_email setting.
 	email := fetchGitHubVerifiedEmail(ctx, accessToken, baseURL)
@@ -109,7 +109,7 @@ func fetchGitHubUser(ctx context.Context, accessToken string, baseURL string) (*
 }
 
 // fetchGitHubVerifiedEmail returns the primary verified email from /user/emails,
-// or empty string if none is found.
+// or an empty string when it finds none.
 func fetchGitHubVerifiedEmail(ctx context.Context, accessToken, baseURL string) string {
 	type ghEmail struct {
 		Email    string `json:"email"`

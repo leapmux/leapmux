@@ -30,7 +30,7 @@ func TestNewGoWebAuthnValidatesTheRPID(t *testing.T) {
 	require.NotNil(t, w)
 
 	// An RP ID must be a bare registrable domain. These are the spellings
-	// protocol.ValidateRPID refuses, and a copied config would sail past
+	// protocol.ValidateRPID refuses, and a copied config would evade
 	// every one of them.
 	for _, bad := range []string{
 		"http://localhost",

@@ -45,7 +45,7 @@ func RunAdminWorkerList(rawCtx any, args []string) error {
 				UserId: userID, Username: username, Status: statusEnum, Limit: page.Limit, Cursor: page.Cursor,
 			}))
 			if err != nil {
-				return adminRPCError(c, "rpc_failed", err)
+				return control.EmitErrorWith("rpc_failed", err)
 			}
 			rows := make([]map[string]any, 0, len(resp.Msg.GetWorkers()))
 			for _, w := range resp.Msg.GetWorkers() {
@@ -86,7 +86,7 @@ func RunAdminWorkerGet(rawCtx any, args []string) error {
 		Run: func(c *control.Client, _ adminArgs) error {
 			resp, err := c.AdminWorkerService().GetWorker(context.Background(), connect.NewRequest(&leapmuxv1.AdminWorkerServiceGetWorkerRequest{Id: id}))
 			if err != nil {
-				return adminRPCError(c, "rpc_failed", err)
+				return control.EmitErrorWith("rpc_failed", err)
 			}
 			return control.EmitData(adminWorkerJSON(resp.Msg.GetWorker()))
 		},
@@ -102,7 +102,7 @@ func RunAdminWorkerDeregister(rawCtx any, args []string) error {
 		BeforeDial: requireFlag(&id, "id"),
 		Run: func(c *control.Client, _ adminArgs) error {
 			if _, err := c.AdminWorkerService().DeregisterWorker(context.Background(), connect.NewRequest(&leapmuxv1.AdminWorkerServiceDeregisterWorkerRequest{Id: id})); err != nil {
-				return adminRPCError(c, "deregister_failed", err)
+				return control.EmitErrorWith("deregister_failed", err)
 			}
 			return control.EmitData(map[string]any{"deregistered": id})
 		},
@@ -122,7 +122,7 @@ func RunAdminWorkerRegKeyList(rawCtx any, args []string) error {
 				IncludeExpired: includeExpired, Limit: page.Limit, Cursor: page.Cursor,
 			}))
 			if err != nil {
-				return adminRPCError(c, "rpc_failed", err)
+				return control.EmitErrorWith("rpc_failed", err)
 			}
 			rows := make([]map[string]any, 0, len(resp.Msg.GetKeys()))
 			for _, k := range resp.Msg.GetKeys() {
@@ -161,7 +161,7 @@ func RunAdminWorkerRegKeyRevoke(rawCtx any, args []string) error {
 		BeforeDial: requireFlag(&id, "id"),
 		Run: func(c *control.Client, _ adminArgs) error {
 			if _, err := c.AdminWorkerService().RevokeRegistrationKey(context.Background(), connect.NewRequest(&leapmuxv1.RevokeRegistrationKeyRequest{Id: id})); err != nil {
-				return adminRPCError(c, "revoke_failed", err)
+				return control.EmitErrorWith("revoke_failed", err)
 			}
 			return control.EmitData(map[string]any{"revoked": id})
 		},
@@ -173,7 +173,7 @@ func RunAdminWorkerRegKeyPurgeExpired(rawCtx any, args []string) error {
 		Run: func(c *control.Client, _ adminArgs) error {
 			resp, err := c.AdminWorkerService().PurgeExpiredRegistrationKeys(context.Background(), connect.NewRequest(&leapmuxv1.PurgeExpiredRegistrationKeysRequest{}))
 			if err != nil {
-				return adminRPCError(c, "purge_failed", err)
+				return control.EmitErrorWith("purge_failed", err)
 			}
 			return control.EmitData(map[string]any{"purged": resp.Msg.GetPurged()})
 		},
@@ -228,7 +228,7 @@ func RunAdminOAuthProviderAdd(rawCtx any, args []string) error {
 		Run: func(c *control.Client, _ adminArgs) error {
 			resp, err := c.AdminOAuthService().AddOAuthProvider(context.Background(), connect.NewRequest(req))
 			if err != nil {
-				return adminRPCError(c, "add_failed", err)
+				return control.EmitErrorWith("add_failed", err)
 			}
 			return control.EmitData(adminOAuthProviderJSON(resp.Msg.GetProvider()))
 		},
@@ -240,7 +240,7 @@ func RunAdminOAuthProviderList(rawCtx any, args []string) error {
 		Run: func(c *control.Client, _ adminArgs) error {
 			resp, err := c.AdminOAuthService().ListOAuthProviders(context.Background(), connect.NewRequest(&leapmuxv1.ListOAuthProvidersRequest{}))
 			if err != nil {
-				return adminRPCError(c, "rpc_failed", err)
+				return control.EmitErrorWith("rpc_failed", err)
 			}
 			providers := make([]map[string]any, 0, len(resp.Msg.GetProviders()))
 			for _, p := range resp.Msg.GetProviders() {
@@ -276,7 +276,7 @@ func RunAdminOAuthProviderRemove(rawCtx any, args []string) error {
 				Id: id, Force: force,
 			}))
 			if err != nil {
-				return adminRPCError(c, "remove_failed", err)
+				return control.EmitErrorWith("remove_failed", err)
 			}
 			return control.EmitData(map[string]any{"removed": id, "locked_out_users": resp.Msg.GetLockedOutUsers()})
 		},
@@ -296,7 +296,7 @@ func RunAdminOAuthProviderSetEnabled(rawCtx any, args []string, enabled bool) er
 			if _, err := c.AdminOAuthService().SetOAuthProviderEnabled(context.Background(), connect.NewRequest(&leapmuxv1.SetOAuthProviderEnabledRequest{
 				Id: id, Enabled: enabled,
 			})); err != nil {
-				return adminRPCError(c, "update_failed", err)
+				return control.EmitErrorWith("update_failed", err)
 			}
 			return control.EmitData(map[string]any{"id": id, "enabled": enabled})
 		},

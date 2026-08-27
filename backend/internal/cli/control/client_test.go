@@ -36,7 +36,7 @@ func shortIPCSocket(t *testing.T) string {
 
 // TestNewClientFromEnv_LocalWhoami exercises the full local-IPC path
 // the CLI takes when invoked from a remote-enabled terminal tab:
-// LEAPMUX_CONTROL_SOCK is parsed, the h2c transport dials the unix
+// the CLI parses LEAPMUX_CONTROL_SOCK, the h2c transport dials the unix
 // socket, and `control whoami` reaches the per-agent IPC server.
 //
 // Regression coverage for "unavailable: http2: unsupported scheme" —
@@ -144,7 +144,7 @@ func TestNewClientFromEnv_LocalStreamingAttachesAuth(t *testing.T) {
 	t.Cleanup(func() { _ = stream.Close() })
 
 	// Drain. The downstream router produces error envelopes for an
-	// unknown method, but those ride on a successful (non-401)
+	// unknown method, but those travel on a successful (non-401)
 	// stream — proving the auth header reached the server. A 401
 	// from withAuth short-circuits the request before any envelope
 	// is sent, surfacing as `stream.Err()` with code Unauthenticated.
@@ -163,7 +163,7 @@ func TestNewClientFromEnv_LocalStreamingAttachesAuth(t *testing.T) {
 // OpenChannel makes before the identity cross-check: the handshake params
 // (a real X25519 static key, CLASSIC mode, so the initiator's message 1
 // builds) and the open itself, which reports whatever identity the test
-// wants the hub to have authenticated. Everything past the cross-check is
+// configured. Everything past the cross-check is
 // deliberately left to fail -- the handshake payload is junk -- so the test
 // can tell "rejected on identity" apart from "got past identity".
 type fakeChannelHub struct {
@@ -245,7 +245,7 @@ func startFakeChannelHub(t *testing.T, cliUserID, hubUserID string) *control.Cli
 }
 
 // TestNewClientFromEnv_NoHubErrorMentionsControlCommand locks the
-// guidance a user sees when no transport input is supplied: neither the
+// guidance a user sees when the caller supplies no transport input: neither the
 // --hub flag, LEAPMUX_HUB, nor LEAPMUX_CONTROL_SOCK. The message points
 // at the renamed `leapmux control auth login` command, so a future
 // rename that forgets this string fails the test.
@@ -266,7 +266,7 @@ func TestNewClientFromEnv_NoHubErrorMentionsControlCommand(t *testing.T) {
 // user_id, so a hub that authenticates the channel as somebody else must
 // abort the open rather than hand back a channel that silently runs every
 // later RPC as the wrong user. Without ExpectedUserID wired into
-// OpenChannelOptions the open sails past this and fails later (or not at
+// OpenChannelOptions the open passes this and fails later (or not at
 // all), which is exactly what this asserts against.
 func TestOpenE2EEChannel_RejectsIdentityMismatch(t *testing.T) {
 	c := startFakeChannelHub(t, "cli-user-1", "someone-else-2")
@@ -358,7 +358,7 @@ func TestWorkerIPCClientSendsIPCHeader(t *testing.T) {
 // Opening it in the constructor made a corrupt file refuse every verb --
 // `control workspace list` and each `control admin ...` verb alike, none of
 // which touches a pin. The admin verbs reported it as `not_logged_in`,
-// which names neither the file nor the cause.
+// which states neither the file nor the cause.
 func TestPinStore_ACorruptFileRefusesOnlyTheChannel(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", dir)
@@ -396,7 +396,7 @@ func TestNewClientOrAnonymous_ReportsACredentialFileItCannotParse(t *testing.T) 
 	_, err = control.NewClientOrAnonymous(testHub)
 	require.Error(t, err, "a broken credential must not read as 'no credential'")
 	assert.Contains(t, err.Error(), "parse credentials")
-	assert.Contains(t, err.Error(), path, "the message names the file to repair or delete")
+	assert.Contains(t, err.Error(), path, "the message states the file to repair or delete")
 
 	// Only "no credential stored" takes the anonymous fallback, which is
 	// what a solo hub needs.

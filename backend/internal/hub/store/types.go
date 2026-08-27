@@ -203,7 +203,7 @@ type WorkerNotification struct {
 // presents the row's ID on WorkerConnectorService.Register and the hub
 // atomically consumes the row to create the workers entry.
 //
-// Soft-deletion is encoded by setting ExpiresAt to a past time; the
+// SoftDelete encodes the deletion by setting ExpiresAt to a past time; the
 // cleanup loop hard-deletes rows whose ExpiresAt is older than the
 // retention cutoff.
 type WorkerRegistrationKey struct {
@@ -485,7 +485,7 @@ type CreateUserParams struct {
 // parent key every owner-keyed child row hangs off, and SQLite accepts "" as a
 // TEXT primary key -- so a blank-id user is what makes a blank-OWNER tab or
 // CRDT row satisfy `user_id REFERENCES users(id)` and become storable. No
-// predicate can then name that row: binding "" matches every blank-owner row
+// predicate can then identify that row: binding "" matches every blank-owner row
 // rather than none, which is the fail-open userid.OwnerFilter exists to refuse.
 // Checking through userid.New rather than a local `p.ID == ""` is what keeps
 // the two ends from drifting -- the id create accepts is by construction
@@ -517,8 +517,8 @@ func (p CreateUserParams) Validate() error {
 // therefore accepted (the store lowercases it, as NormalizeUsername's contract
 // promises), while whitespace-only, "a b", or "Bad Name!" is refused before any
 // query runs. Surrounding whitespace is refused too: the stored value would
-// keep it, and SanitizeSlug's trimmed output would then disagree with what is
-// written.
+// keep it, and SanitizeSlug's trimmed output would then disagree with the
+// value the store persists.
 func validateUsernameSlug(username string) error {
 	stored := NormalizeUsername(username)
 	if cleaned, err := validate.SanitizeSlug("username", stored); err != nil || cleaned != stored {
@@ -613,9 +613,55 @@ type ListAllUsersParams struct {
 	PageParams // Keyset on (created_at DESC, id DESC).
 }
 
+// ElevationMaxTotal caps the total life of ONE elevation, measured from the
+// instant the factor was proven rather than from the last slide.
+//
+// The cap is what stops a sliding window from becoming a permanent privilege:
+// without it a user -- or a stolen cookie that acts for them -- who performs
+// one sensitive action every two hours stays elevated for ever. Eight hours is
+// a working day, so a genuine all-day session reaches the ceiling and nothing
+// shorter does.
+//
+// The constant lives in the STORE because the store is what enforces it. The
+// auth package holds the rest of the elevation policy (auth.ElevationWindow)
+// and cannot hold this one: auth imports the store, so the dependency runs one
+// way only. auth.ElevationMaxTotal must therefore be an ALIAS of this constant
+// rather than a second literal, or the two drift apart in silence.
+//
+// Both writers bind this constant and nothing else. Elevate clamps the granted
+// deadline through ClampedExpiresAt below, and SlideElevation binds it into
+// the SQL clamp. No parameter struct carries a ceiling, so no call site can
+// widen one, and none can pass 0 and turn the clamp into a no-op.
+const ElevationMaxTotal = 8 * time.Hour
+
+// clampElevationExpiry returns the deadline an elevation GRANT may write: the
+// requested deadline, or provenAt + ElevationMaxTotal when the request reaches
+// past that ceiling.
+//
+// The grant clamps in Go where the slide clamps in SQL, and the difference is
+// structural. The slide measures the ceiling from the STORED anchor, which Go
+// never reads, so only the statement can apply it. The grant writes the anchor
+// itself, so both instants are already in hand here and one Go expression
+// serves all three dialects. Three SQL expressions would each carry a
+// dialect's own datetime arithmetic, and two of the three also lose the sqlc
+// parameter type that makes a raw time.Time bind a compile error: sqlite drops
+// the deadline to interface{} inside min(), and mysql infers two incompatible
+// types for the anchor because DATE_ADD reads it a second time.
+func clampElevationExpiry(provenAt, requested time.Time) time.Time {
+	ceiling := provenAt.Add(ElevationMaxTotal)
+	if requested.After(ceiling) {
+		return ceiling
+	}
+	return requested
+}
+
 // ElevateSessionParams grants a session a fresh elevation window. Both
 // instants come from the caller's clock, so a test that moves that clock
 // moves the whole window with it.
+//
+// ElevationExpiresAt is the deadline the caller WANTS. Read it through
+// ClampedExpiresAt, never directly: the field holds the request, and the
+// method holds what the store agrees to write.
 type ElevateSessionParams struct {
 	SessionID          string
 	UserID             userid.UserID
@@ -623,15 +669,22 @@ type ElevateSessionParams struct {
 	ElevationExpiresAt time.Time
 }
 
+// ClampedExpiresAt returns the deadline this grant writes: the requested one,
+// capped at ElevationProvenAt + ElevationMaxTotal. Every dialect binds this
+// and not the raw field.
+func (p ElevateSessionParams) ClampedExpiresAt() time.Time {
+	return clampElevationExpiry(p.ElevationProvenAt, p.ElevationExpiresAt)
+}
+
 // SlideSessionElevationParams extends a live elevation. WindowDeadline is the
-// deadline the caller WANTS; MaxTotal is the absolute ceiling measured from
-// the session's elevation_proven_at. The statement clamps the first by the second, so
-// a caller cannot extend an elevation past its cap however it is called.
+// deadline the caller WANTS; the statement clamps it against the session's
+// stored elevation_proven_at plus ElevationMaxTotal, which the store binds
+// itself. There is no ceiling field, so a caller cannot extend an elevation
+// past the cap however it is called.
 type SlideSessionElevationParams struct {
 	SessionID      string
 	UserID         userid.UserID
 	WindowDeadline time.Time
-	MaxTotal       time.Duration
 }
 
 // DropSessionElevationParams ends a session's elevation immediately.
@@ -643,10 +696,11 @@ type DropSessionElevationParams struct {
 // The api_tokens half of the same three shapes. A command-line credential
 // elevates exactly as a session does -- see APITokenStore.Elevate for why it
 // must be able to at all -- so the parameters differ only in which row they
-// name.
+// identify.
 
 // ElevateAPITokenParams grants a command-line credential a fresh elevation
-// window. Both instants come from the caller's clock.
+// window. Both instants come from the caller's clock. ElevationExpiresAt is
+// the deadline the caller WANTS; read it through ClampedExpiresAt.
 type ElevateAPITokenParams struct {
 	TokenID            string
 	UserID             userid.UserID
@@ -654,14 +708,20 @@ type ElevateAPITokenParams struct {
 	ElevationExpiresAt time.Time
 }
 
+// ClampedExpiresAt returns the deadline this grant writes: the requested one,
+// capped at ElevationProvenAt + ElevationMaxTotal. Every dialect binds this
+// and not the raw field.
+func (p ElevateAPITokenParams) ClampedExpiresAt() time.Time {
+	return clampElevationExpiry(p.ElevationProvenAt, p.ElevationExpiresAt)
+}
+
 // SlideAPITokenElevationParams extends a live elevation. WindowDeadline is the
-// deadline the caller WANTS; MaxTotal is the absolute ceiling measured from
-// the row's elevation_proven_at, applied in SQL.
+// deadline the caller WANTS; the statement clamps it against the row's stored
+// elevation_proven_at plus ElevationMaxTotal, which the store binds itself.
 type SlideAPITokenElevationParams struct {
 	TokenID        string
 	UserID         userid.UserID
 	WindowDeadline time.Time
-	MaxTotal       time.Duration
 }
 
 // DropAPITokenElevationParams ends a command-line credential's elevation
@@ -765,8 +825,8 @@ type CreateRegistrationKeyParams struct {
 	ExpiresAt time.Time
 }
 
-// GetOwnedRegistrationKeyParams names the ownership gate's two halves so the
-// caller id cannot be an untyped positional string, mirroring
+// GetOwnedRegistrationKeyParams gives a name to each half of the ownership
+// gate, so the caller id cannot be an untyped positional string, mirroring
 // GetOwnedWorkerParams.
 type GetOwnedRegistrationKeyParams struct {
 	ID        string
@@ -843,7 +903,7 @@ type UpsertRenderedTabParams = UpsertOwnedTabParams
 //
 // UserID is the tenancy axis and is REQUIRED, for the reason spelled out on
 // GetOwnedTabParams: workspace_tab_rendered has the same (user_id, tab_id) key
-// and the same plain workspace_id FK, so any user's row may name any existing
+// and the same plain workspace_id FK, so any user's row may refer to any existing
 // workspace and tab ids are unique only within one user. Verifying that the
 // CALLER owns the workspace does not establish that the ROW does.
 type GetRenderedTabParams struct {
@@ -870,7 +930,7 @@ type ListRenderedTabsByWorkspaceIDsParams struct {
 // alone returns whichever tenant's row the index visited first.
 //
 // There is no workspace predicate: the caller that needs this -- the
-// delegation mint -- is asking "does this worker host this tab for this
+// delegation mint -- asks "does this worker host this tab for this
 // user?", which the (user, tab, worker) triple answers on its own. The row's
 // workspace_id was never the tenancy axis and pinning it added nothing the
 // key does not already give.
@@ -882,7 +942,7 @@ type GetOwnedTabParams struct {
 // ListOwnedTabsByWorkerParams scopes the worker-reconciliation snapshot to one
 // worker AND one owner. See GetOwnedTabParams for why worker_id alone is not a
 // tenancy scope: nothing in the schema ties a row's user_id to the registrant
-// of the worker it names.
+// of the worker it identifies.
 type ListOwnedTabsByWorkerParams struct {
 	UserID   userid.UserID
 	WorkerID string
@@ -972,8 +1032,8 @@ type UpsertUserStateParams struct {
 	StatePayload []byte
 	// CompactionPhysicalMs is StatePayload's own compaction_watermark.physical,
 	// projected into a column so SQL can filter on it. Callers MUST derive it
-	// from the very state they are marshalling into StatePayload -- it is the
-	// bound the cross-user retention sweep trusts to decide which op batches are
+	// from the very state they marshal into StatePayload -- it is the limit
+	// the cross-user retention sweep trusts to decide which op batches are
 	// already absorbed, and a value that outran the blob would license deleting
 	// ops no Bootstrap could then replay.
 	CompactionPhysicalMs int64
@@ -1309,7 +1369,7 @@ type DeviceAuthorization struct {
 	CreatedAt  time.Time
 	ExpiresAt  time.Time
 	ConsumedAt *time.Time
-	// ElevateTokenID names the command-line credential this grant ELEVATES,
+	// ElevateTokenID identifies the command-line credential this grant ELEVATES,
 	// when it elevates one rather than minting one. Empty for a login.
 	//
 	// The two flows share the row, and with it the TTL, the poll throttle,
@@ -1373,6 +1433,27 @@ type ListAPITokensByUserParams struct {
 type RevokeOwnedAPITokenParams struct {
 	ID     string
 	UserID userid.UserID
+}
+
+// RevokeOtherAPITokensParams revokes every live command-line credential one
+// account holds EXCEPT KeepID. It is the twin of DeleteOtherSessionsParams,
+// and the two carry the same field names for that reason: a password change
+// keeps the credential that asked for it, whichever kind that credential is.
+//
+// An EMPTY KeepID keeps nothing and revokes the whole set. Every
+// administrator path binds it that way; see APITokenStore.RevokeByUser, which
+// is the name for that intent.
+type RevokeOtherAPITokensParams struct {
+	UserID userid.UserID
+	KeepID string
+}
+
+// RefreshAPITokenAuthGenerationParams moves one kept command-line credential
+// onto the account's current auth_generation. The twin of
+// RefreshSessionAuthGenerationParams.
+type RefreshAPITokenAuthGenerationParams struct {
+	TokenID string
+	UserID  userid.UserID
 }
 
 // ListAllAPITokensParams pages the admin api-token listing (ListAllAPITokens),

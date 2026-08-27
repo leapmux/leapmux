@@ -89,8 +89,8 @@ func rejectedAssertionError() error {
 	return connect.NewError(connect.CodeUnauthenticated, auth.ErrInvalidElevationAssertion)
 }
 
-// finishPasskeyElevationClient is the passkey arm's twin of
-// elevateSessionClient. The two arms share ONE budget, which is what stops
+// finishPasskeyElevationClient is the passkey path's twin of
+// elevateSessionClient. The two paths share ONE budget, which is what stops
 // an attacker doubling their attempts by alternating between them.
 func finishPasskeyElevationClient(t *testing.T, m *Manager, handlerErr error, authenticated bool) (leapmuxv1connect.UserServiceClient, *int) {
 	t.Helper()
@@ -185,8 +185,8 @@ func TestLimiterSuccessResetsWindow(t *testing.T) {
 	wrongClient, _ := elevateSessionClient(t, m, wrongPasswordError(), true)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(tryElevateSession(t, wrongClient)))
 
-	// A success wipes the slate while budget remains; the full budget is
-	// available again afterwards.
+	// A success clears the failure count while budget remains; the full
+	// budget is available again afterwards.
 	okClient, _ := elevateSessionClient(t, m, nil, true)
 	require.NoError(t, tryElevateSession(t, okClient))
 	for i := 0; i < 2; i++ {
@@ -208,7 +208,7 @@ func TestLimiterWindowExpires(t *testing.T) {
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(tryElevateSession(t, client)))
 }
 
-// elevateSpec is the routing entry ElevateSession carries: the password arm
+// elevateSpec is the routing entry ElevateSession carries: the password path
 // PROVES the credential the failure window counts, so a success there
 // resets it. Tests that exercise the window itself use this one, because a
 // non-proving entry can never reset and would pin nothing.
@@ -229,7 +229,7 @@ func recordCredentialFailure(t *testing.T, m *Manager, userID string) {
 	m.complete(a, wrongPasswordError())
 }
 
-// TestExpiredWindowEntryIsReclaimed pins the memory bound: an allow() that
+// TestExpiredWindowEntryIsReclaimed pins the memory limit: an allow() that
 // observes an expired window deletes the entry instead of leaving it inert
 // in the map for the life of the process.
 func TestExpiredWindowEntryIsReclaimed(t *testing.T) {
@@ -249,9 +249,9 @@ func TestExpiredWindowEntryIsReclaimed(t *testing.T) {
 	m.windowMu.Unlock()
 }
 
-// TestExpiredWindowsAreSweptForAbsentUsers pins the other memory bound:
+// TestExpiredWindowsAreSweptForAbsentUsers pins the other memory limit:
 // a user who fails once and never returns still leaves the map, because
-// the expiry-gated sweep in allow() drops expired entries no same-key
+// the expiry-controlled sweep in allow() drops expired entries no same-key
 // lazy delete would ever reach.
 func TestExpiredWindowsAreSweptForAbsentUsers(t *testing.T) {
 	m := newTestManager(t, false)
@@ -288,9 +288,9 @@ func TestConcurrentBurstCannotExceedBudget(t *testing.T) {
 		require.True(t, allowed, "attempt %d within budget", i+1)
 		inFlight = append(inFlight, a)
 	}
-	// The fourth concurrent attempt is denied even though zero failures
-	// have completed yet; the zero retry duration is the in-flight bound,
-	// not an open window.
+	// The fourth concurrent attempt is denied although no failure completed
+	// yet; the zero retry duration is the in-flight limit, not an open
+	// window.
 	_, allowed, _, err := m.allow(context.Background(), elevateSpec, "usr_test123")
 	require.NoError(t, err)
 	assert.False(t, allowed, "an in-flight burst must not exceed the budget")
@@ -311,7 +311,7 @@ func TestConcurrentBurstCannotExceedBudget(t *testing.T) {
 }
 
 // TestInFlightDrivenDenialReportsZeroRetryAfter pins the denial reason's
-// honest retry duration: when recorded failures alone have NOT exhausted
+// honest retry duration: when recorded failures alone do NOT exhaust
 // the budget and in-flight reservations drive the denial, the reservations
 // clear within one handler latency, so the caller owes no failure window —
 // only a failures-driven denial reports the window remainder.
@@ -409,8 +409,9 @@ func TestNonProvingSuccessKeepsTheFailureWindow(t *testing.T) {
 }
 
 // TestProvingSuccessResetsTheFailureWindow is the other half: a caller who
-// really presented the secret makes the accumulated failures noise, so the
-// window goes. Without this the guard above would be indistinguishable from
+// really presented the secret makes the accumulated failures irrelevant, so
+// the manager drops the window. Without this the guard above would be
+// indistinguishable from
 // "never reset", and a user who mistypes twice and then answers correctly
 // would carry the failures for the rest of the window.
 func TestProvingSuccessResetsTheFailureWindow(t *testing.T) {
@@ -489,7 +490,7 @@ func TestExpensiveMutationsAreRouted(t *testing.T) {
 
 	// The negative half, and it is the half OpElevation's doc has to keep
 	// true. Both of these are elevation-admitted mutations, so a reader who
-	// took "every mutation an elevation admits" at face value would look for
+	// took "every mutation an elevation admits" literally would look for
 	// them above -- and both are deliberately absent, because neither runs
 	// Argon2 or a ceremony write. RequestEmailChange is capped instead by
 	// the pending-email mint cooldown, in SQL, on the row.
@@ -605,7 +606,7 @@ func TestLimiterUnauthenticatedCallsPassThrough(t *testing.T) {
 	upsertLimit(t, m, OpElevation, true, 1, 900)
 
 	// No user in context: the limiter stands down (in the real chain the
-	// auth interceptor has already rejected the call).
+	// auth interceptor already rejected the call).
 	client, _ := elevateSessionClient(t, m, nil, false)
 	for i := 0; i < 3; i++ {
 		require.NoError(t, tryElevateSession(t, client))
@@ -636,11 +637,11 @@ func TestProcedureRoutingAndCatalogueAgree(t *testing.T) {
 	}
 }
 
-// TestElevationBudgetIsSharedByBothFactorArms pins that the password arm and
-// the passkey arm spend ONE budget. Two budgets would let an attacker take
-// 2N guesses by alternating, which is the whole reason elevation is a single
-// operation rather than one per procedure.
-func TestElevationBudgetIsSharedByBothFactorArms(t *testing.T) {
+// TestElevationBudgetIsSharedByBothFactorPaths pins that the password path
+// and the passkey path spend ONE budget. Two budgets would let an attacker
+// take 2N guesses by alternating, which is the whole reason elevation is a
+// single operation rather than one per procedure.
+func TestElevationBudgetIsSharedByBothFactorPaths(t *testing.T) {
 	m := newTestManager(t, false)
 	upsertLimit(t, m, OpElevation, true, 2, 900)
 
@@ -652,7 +653,7 @@ func TestElevationBudgetIsSharedByBothFactorArms(t *testing.T) {
 	assert.Equal(t, 1, *passwordCalls)
 	assert.Equal(t, 1, *passkeyCalls)
 
-	// The budget of 2 is spent -- by one attempt on EACH arm.
+	// The budget of 2 is spent -- by one attempt on EACH path.
 	assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(tryElevateSession(t, passwordClient)))
 	assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(tryFinishPasskeyElevation(t, passkeyClient)))
 	assert.Equal(t, 1, *passwordCalls, "a denied attempt must not reach the handler")
@@ -735,4 +736,90 @@ func TestElevationRefusalDoesNotSpendTheBudget(t *testing.T) {
 		assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(tryElevateSession(t, client)))
 	}
 	assert.Equal(t, 5, *calls, "every attempt must reach the handler; none counted against the budget")
+}
+
+// TestSpentFailureWindowStillAdmitsTheProceduresThatVerifyNothing pins the
+// polarity of the DENIAL, which is the other half of what one shared
+// operation buys.
+//
+// One operation covers every path that can present a wrong secret, so an
+// attacker cannot alternate between the password and the passkey to double
+// their guess budget. But the same key routes the seven mutations an
+// elevation ADMITS, and those verify nothing: an un-elevated caller is
+// refused with FailedPrecondition, which is not a guess. Denying them on the
+// failure count handed an attacker the account owner's whole remedy surface
+// -- five wrong passwords locked the owner out of passkey elevation, passkey
+// management and the password change for the window, renewably, from a
+// stolen cookie the owner wants to defeat.
+//
+// The set comes from the live routing map, so a procedure added on either
+// side of provesCredential is covered without an edit here.
+func TestSpentFailureWindowStillAdmitsTheProceduresThatVerifyNothing(t *testing.T) {
+	m := newTestManager(t, false)
+	upsertLimit(t, m, OpElevation, true, 2, 900)
+	recordCredentialFailure(t, m, "usr_test123")
+	recordCredentialFailure(t, m, "usr_test123")
+
+	// The precondition: the guess surface really is closed. Without this the
+	// case below could pass on a window that was never spent.
+	_, allowed, retryAfter, err := m.allow(context.Background(), elevateSpec, "usr_test123")
+	require.NoError(t, err)
+	require.False(t, allowed, "the budget must be spent before the admissions below mean anything")
+	require.Positive(t, retryAfter, "a failure-driven denial reports the window the caller must wait out")
+
+	nonProving := 0
+	for procedure, spec := range procedureOperations {
+		if spec.provesCredential {
+			continue
+		}
+		nonProving++
+		a, allowed, _, err := m.allow(context.Background(), spec, "usr_test123")
+		require.NoError(t, err)
+		assert.Truef(t, allowed,
+			"%s verifies no secret, so a wrong-password burst must not deny it", procedure)
+		m.complete(a, nil)
+	}
+	require.Equal(t, 7, nonProving,
+		"the routing map must still carry the seven mutations an elevation admits")
+
+	// And the window is untouched by those admissions: a procedure that
+	// proves nothing must neither spend the budget nor clear it.
+	_, allowed, _, err = m.allow(context.Background(), elevateSpec, "usr_test123")
+	require.NoError(t, err)
+	assert.False(t, allowed, "the guess cap must still hold after the admitted mutations ran")
+}
+
+// TestSpentFailureWindowStillCapsConcurrency is the limit the change above
+// must NOT remove.
+//
+// The failure count and the in-flight reservation are separate budgets on one
+// key. Only the first became conditional; every routed procedure runs an
+// Argon2 hash or a ceremony write that takes SQLite's single writer lock, and
+// that cost is what the concurrent cap protects, whatever the procedure
+// proves.
+func TestSpentFailureWindowStillCapsConcurrency(t *testing.T) {
+	m := newTestManager(t, false)
+	upsertLimit(t, m, OpElevation, true, 2, 900)
+	recordCredentialFailure(t, m, "usr_test123")
+	recordCredentialFailure(t, m, "usr_test123")
+
+	// Two admitted mutations, left IN FLIGHT.
+	first, allowed, _, err := m.allow(context.Background(), beginElevationSpec, "usr_test123")
+	require.NoError(t, err)
+	require.True(t, allowed)
+	second, allowed, _, err := m.allow(context.Background(), beginElevationSpec, "usr_test123")
+	require.NoError(t, err)
+	require.True(t, allowed)
+
+	_, allowed, retryAfter, err := m.allow(context.Background(), beginElevationSpec, "usr_test123")
+	require.NoError(t, err)
+	assert.False(t, allowed, "the concurrent cap stays unconditional")
+	assert.Zero(t, retryAfter,
+		"an in-flight denial owes no window: the reservations land within one handler latency")
+
+	m.complete(first, nil)
+	m.complete(second, nil)
+	m.windowMu.Lock()
+	assert.Empty(t, m.inFlight, "completed attempts release their reservations")
+	m.windowMu.Unlock()
 }

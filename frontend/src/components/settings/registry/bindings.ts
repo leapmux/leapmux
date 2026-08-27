@@ -11,6 +11,26 @@ import type { DualPreference, FontTier } from '~/context/PreferencesContext'
 // has that shape.
 
 /**
+ * The binding a row whose CUSTOM EDITOR owns its own value: none.
+ *
+ * Seven rows need it -- the six `account.*` rows and `advanced.keyPins`. Each
+ * renders a bespoke editor that reads and writes through its own RPCs, so
+ * there is no scalar for the registry to bind, and the row's `value`/`set`
+ * pair is never called. The registry's base declaration still demands the
+ * pair, because every VALUE-BACKED row needs it and a missing one is a dead
+ * control; this is the one honest answer for a row that holds no value.
+ *
+ * ONE shared object, not a fresh literal at each entry. Seven copies of the
+ * same two no-op closures say nothing seven times, and a reader has to compare
+ * them to learn that they agree. Nothing mutates a binding -- the panel reads
+ * `value`, `set` and the optional override members -- so the rows may share it.
+ */
+export const CUSTOM_EDITOR_OWNS_ITS_VALUE: SettingBinding = {
+  value: () => null,
+  set: () => {},
+}
+
+/**
  * The five members every dual-scope binding carries: which tier the
  * control edits, how the user moves between the tiers, and how the
  * account tier is addressed.

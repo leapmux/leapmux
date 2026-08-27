@@ -5,9 +5,9 @@
 -- owner-keyed row hangs off. store.CreateUserParams.Validate refuses a blank id
 -- at the Go API, but that closes only the store as a route to the shape; raw SQL
 -- (an operator repair script, a restored file, a seed) could still land one, and
--- from there every REFERENCES users(id) below would happily point at it. The
--- CHECK is what makes the blank-owner family unrepresentable rather than merely
--- unreachable through one API.
+-- from there every REFERENCES users(id) below would point at it without
+-- complaint. The CHECK is what makes the blank-owner family unrepresentable
+-- rather than merely unreachable through one API.
 --
 -- NOTE: enforced on SQLite, PostgreSQL, CockroachDB and YugabyteDB. TiDB parses
 -- and IGNORES CHECK constraints unless tidb_enable_check_constraint is ON --
@@ -43,8 +43,8 @@ CREATE TABLE users (
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     -- High-water mark bumped whenever this user's auth basis is
     -- bulk-revoked. Each bump also records a durable user-token
-    -- revocation event so cookie channels and bearer caches die in
-    -- lock-step with admin-CLI mutations that run in a separate process.
+    -- revocation event so cookie channels and bearer caches die together
+    -- with admin-CLI mutations that run in a separate process.
     tokens_revoked_at        TIMESTAMPTZ,
     -- Monotonic credential epoch. Sessions and bearer rows copy this
     -- value when issued; user-wide revocation increments it so stale
@@ -173,7 +173,7 @@ CREATE INDEX idx_worker_notifications_worker_status ON worker_notifications(work
 -- the WorkerConnectorService.Register RPC; the hub atomically consumes
 -- the row and creates a workers row in one transaction.
 --
--- Soft-delete is implemented by setting expires_at to a past instant.
+-- The store implements soft-delete by setting expires_at to a past instant.
 -- The cleanup loop hard-deletes rows whose expires_at is older than the
 -- retention cutoff.
 CREATE TABLE worker_registration_keys (
@@ -203,11 +203,11 @@ CREATE INDEX idx_workspace_sections_user_id ON workspace_sections(user_id);
 -- SECTION_TYPE_WORKSPACES_CUSTOM, which a user may hold any number of, so the
 -- uniqueness applies to every OTHER type only.
 --
--- Structural, not procedural: the defaults are written in the same transaction
--- as the user row and nothing backfills them, so a second signup path that
--- forgot to seed -- or a read path that seeded on the fly, which is what this
--- replaced -- used to produce a sidebar with two of every pane, indistinguishable
--- from one another.
+-- Structural, not procedural: CreateUser writes the defaults in the same
+-- transaction as the user row and nothing backfills them, so a second signup
+-- path that forgot to seed -- or a read path that seeded during the read, which
+-- is what this replaced -- used to produce a sidebar with two of every pane,
+-- indistinguishable from one another.
 CREATE UNIQUE INDEX idx_workspace_sections_user_default_type
     ON workspace_sections(user_id, section_type) WHERE section_type <> 1;
 
@@ -268,7 +268,7 @@ CREATE TABLE user_state (
     -- physical_ms/logical over batch_payload: written from the same struct in
     -- the same statement and rebuildable from the payload alone.
     --
-    -- It is the only safe upper bound on op-batch deletion. Bootstrap rebuilds
+    -- It is the only safe upper limit on op-batch deletion. Bootstrap rebuilds
     -- a user as state_payload + every batch ABOVE this watermark, so a batch at
     -- or below it is absorbed and a batch above it is the sole surviving copy
     -- of those ops. The cross-user retention sweep joins on it for that reason.
@@ -393,7 +393,7 @@ CREATE TABLE api_tokens (
     -- Elevation ("sudo mode") for a command-line credential, the same pair
     -- user_sessions carries and enforced by the same rule. A CLI token proves
     -- a factor through the browser step-up leg (/auth/cli/elevate), and every
-    -- gated action slides elevation_expires_at forward, clamped to
+    -- restricted action slides elevation_expires_at forward, clamped to
     -- elevation_proven_at + the maximum total window.
     --
     -- Without it a stolen credential file administered the hub outright: the
@@ -479,8 +479,8 @@ CREATE TABLE device_authorizations (
     -- No foreign key, deliberately: the row outlives nothing here, and a
     -- revoked or deleted credential must make the approval a no-op rather
     -- than fail the insert. The approval re-reads api_tokens under the
-    -- approving user's own id, so a grant naming a row somebody else owns
-    -- elevates nothing.
+    -- approving user's own id, so a grant that specifies a row somebody else
+    -- owns elevates nothing.
     elevate_token_id      TEXT COLLATE "C"
 );
 CREATE INDEX idx_device_authorizations_expires_at ON device_authorizations(expires_at);
@@ -548,7 +548,11 @@ CREATE TABLE oauth_states (
     -- 'login' starts a sign-in; 'reauth' proves the identity again for an
     -- ALREADY signed-in session, to elevate it. The callback branches on
     -- this: a reauth state must never create a session or link an identity.
-    purpose         TEXT COLLATE "C" NOT NULL DEFAULT 'login',
+    -- The CHECK is the enforcement, not the DEFAULT. Go's zero value for the
+    -- column is "", never 'login', so an explicit insert never reaches the
+    -- DEFAULT, and the callback treats every value that is not 'reauth' as a
+    -- login -- which may create a session or link an identity.
+    purpose         TEXT COLLATE "C" NOT NULL DEFAULT 'login' CHECK (purpose IN ('login', 'reauth')),
     -- The session the reauth leg elevates on success. Empty for 'login'.
     session_id      TEXT COLLATE "C" NOT NULL DEFAULT '',
     expires_at      TIMESTAMPTZ NOT NULL,

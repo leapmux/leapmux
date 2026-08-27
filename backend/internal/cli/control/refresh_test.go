@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -161,9 +163,9 @@ func TestEnsureFreshBearer_AdoptsATokenAnotherProcessWrote(t *testing.T) {
 // rule the hub's own handleRefresh states, applied on the client side.
 //
 // A refresh rotates the token single-use: once the request reaches the hub
-// the old secret is dead whatever happens next. Under the CALLER's context a
-// Ctrl-C between the hub's commit and SaveCredentials left the file holding
-// a secret the hub had already rotated away, and presenting it later reads
+// the old secret is unusable whatever happens next. Under the CALLER's context
+// a Ctrl-C between the hub's commit and SaveCredentials left the file holding
+// a secret the hub already rotated away, and presenting it later reads
 // as a reuse -- which the hub answers by REVOKING the row. A credential
 // nothing was wrong with would then need a browser again.
 func TestEnsureFreshBearer_CompletesARotationAfterTheCallerIsCancelled(t *testing.T) {
@@ -173,7 +175,7 @@ func TestEnsureFreshBearer_CompletesARotationAfterTheCallerIsCancelled(t *testin
 	rotate := rotatingResponder(&counter)
 	rs := newRefreshServer(t, func(w http.ResponseWriter, presented string) {
 		arrived <- struct{}{}
-		<-release // Hold the hub's answer until the caller has gone away.
+		<-release // Hold the hub's answer until the caller is gone.
 		rotate(w, presented)
 	})
 	seedCredentials(t, rs.server.URL, time.Now().Add(refreshSkew/2))
@@ -253,7 +255,7 @@ func TestEnsureFreshBearer_RenewsInsideTheSkew(t *testing.T) {
 
 // TestRefresh_InvalidGrantDeletesTheCredential pins the permanent case. A
 // revoked, reused, or lifetime-expired credential can never work again, so
-// retrying it is pure noise; deleting it makes the next command answer
+// retrying it achieves nothing; deleting it makes the next command answer
 // ErrNotLoggedIn, whose message already specifies the remedy.
 func TestRefresh_InvalidGrantDeletesTheCredential(t *testing.T) {
 	rs := newRefreshServer(t, func(w http.ResponseWriter, _ string) {
@@ -290,7 +292,35 @@ func TestRefresh_TransientFailureKeepsTheCredential(t *testing.T) {
 
 	stored, err := LoadCredentials(rs.server.URL)
 	require.NoError(t, err)
-	assert.Equal(t, "lmx_a_refresh_0", stored.RefreshToken, "a blip must not discard the credential")
+	assert.Equal(t, "lmx_a_refresh_0", stored.RefreshToken, "a brief failure must not discard the credential")
+}
+
+// TestEnsureFreshBearer_SwallowsABriefFailureOnALiveToken is the branch the
+// fatal cases must step around, and the reason each of them is keyed on a
+// sentinel rather than on "the refresh failed".
+//
+// A proactive renewal fires refreshSkew BEFORE the expiry, so the token in
+// hand still works. A hub that is briefly unreachable during that renewal
+// must cost nothing: the call that follows presents the stored token and
+// reports the truth, whatever it is.
+func TestEnsureFreshBearer_SwallowsABriefFailureOnALiveToken(t *testing.T) {
+	rs := newRefreshServer(t, func(w http.ResponseWriter, _ string) {
+		w.WriteHeader(http.StatusBadGateway)
+	})
+	seedCredentials(t, rs.server.URL, time.Now().Add(refreshSkew/2))
+
+	c, err := NewClient(rs.server.URL)
+	require.NoError(t, err)
+
+	assert.NoError(t, c.EnsureFreshBearer(context.Background()),
+		"a token that is still alive must survive a hub that is briefly unreachable")
+	assert.Len(t, rs.calls(), 1, "the renewal was attempted")
+	assert.Equal(t, "lmx_a_access_0", c.currentBearer(),
+		"the stored token is what the call that follows presents")
+
+	stored, err := LoadCredentials(rs.server.URL)
+	require.NoError(t, err)
+	assert.Equal(t, "lmx_a_refresh_0", stored.RefreshToken, "nothing rotated, so nothing may change on disk")
 }
 
 // TestRefresh_ConcurrentCallersRotateOnce is the property singleflight plus
@@ -333,10 +363,10 @@ func TestRefresh_ConcurrentCallersRotateOnce(t *testing.T) {
 	assert.Equal(t, "lmx_a_access_1", c.currentBearer())
 }
 
-// TestRetryAfterUnauthenticated_RefusesWhenNothingIsRefreshable keeps the
-// single reactive retry from doubling a genuinely unauthenticated caller's
-// error: with no credential to renew there is nothing to retry with.
-func TestRetryAfterUnauthenticated_RefusesWhenNothingIsRefreshable(t *testing.T) {
+// TestRepairAfterUnauthenticated_RefusesWhenNothingIsRefreshable keeps the
+// reactive repair from doubling a genuinely unauthenticated caller's error:
+// with no credential to renew there is nothing to retry with.
+func TestRepairAfterUnauthenticated_RefusesWhenNothingIsRefreshable(t *testing.T) {
 	rs := newRefreshServer(t, func(w http.ResponseWriter, _ string) {
 		t.Error("a refresh must not run here")
 	})
@@ -350,7 +380,7 @@ func TestRetryAfterUnauthenticated_RefusesWhenNothingIsRefreshable(t *testing.T)
 
 	c, err := NewClient(rs.server.URL)
 	require.NoError(t, err)
-	assert.False(t, c.retryAfterUnauthenticated(context.Background()))
+	assert.ErrorIs(t, c.repairAfterUnauthenticated(context.Background()), errNothingToRefresh)
 	assert.Empty(t, rs.calls())
 }
 
@@ -487,4 +517,491 @@ func TestAuthInterceptor_DoesNotRetryTwice(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err), "the hub's own answer must survive")
 	assert.Len(t, handler.presented(), 2, "one attempt plus one retry, and no more")
+}
+
+// --- the interceptor's repair loop ------------------------------------
+
+// scriptedChannelHandler answers CloseChannel from a queue and records the
+// bearer each attempt presented. An exhausted queue answers success.
+type scriptedChannelHandler struct {
+	leapmuxv1connect.UnimplementedChannelServiceHandler
+	mu      sync.Mutex
+	bearers []string
+	answers []error
+}
+
+func (h *scriptedChannelHandler) CloseChannel(
+	_ context.Context,
+	req *connect.Request[leapmuxv1.CloseChannelRequest],
+) (*connect.Response[leapmuxv1.CloseChannelResponse], error) {
+	h.mu.Lock()
+	h.bearers = append(h.bearers, req.Header().Get("Authorization"))
+	var answer error
+	if len(h.answers) > 0 {
+		answer, h.answers = h.answers[0], h.answers[1:]
+	}
+	h.mu.Unlock()
+	return connect.NewResponse(&leapmuxv1.CloseChannelResponse{}), answer
+}
+
+func (h *scriptedChannelHandler) presented() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]string(nil), h.bearers...)
+}
+
+// elevationRequired is the hub's marked refusal: the code alone means half a
+// dozen things a step-up cannot fix, so the CLI keys on the marker.
+func elevationRequired() error {
+	err := connect.NewError(connect.CodeFailedPrecondition,
+		errors.New("this action needs a recent sign-in: verify your identity and try again"))
+	err.Meta().Set(ElevationRequiredHeader, "1")
+	return err
+}
+
+// repairHub serves everything one restricted unary call can touch: the RPC, the
+// refresh leg, and the step-up ceremony.
+type repairHub struct {
+	rpc       *scriptedChannelHandler
+	elevation *elevationHub
+	rotations *atomic.Int64
+	server    *httptest.Server
+}
+
+// newRepairHub mounts them on one origin, which is what the credential file
+// specifies. expiresIn is what each rotation reports; a short one makes the
+// token lapse while a repair blocks on a person.
+func newRepairHub(t *testing.T, expiresIn int, answers ...error) *repairHub {
+	t.Helper()
+	h := &repairHub{
+		rpc:       &scriptedChannelHandler{answers: answers},
+		elevation: newElevationRoutes(),
+		rotations: &atomic.Int64{},
+	}
+	mux := http.NewServeMux()
+	path, handler := leapmuxv1connect.NewChannelServiceHandler(h.rpc)
+	mux.Handle(path, handler)
+	h.elevation.register(mux)
+	mux.HandleFunc("/auth/cli/refresh", func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, r.ParseForm())
+		n := h.rotations.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token":       "lmx_a_access_" + strconv.FormatInt(n, 10),
+			"refresh_token":      "lmx_a_refresh_" + strconv.FormatInt(n, 10),
+			"expires_in":         expiresIn,
+			"refresh_expires_in": 7776000,
+			"token_id":           "tok-1",
+		})
+	})
+	h.server = httptest.NewServer(mux)
+	t.Cleanup(h.server.Close)
+	return h
+}
+
+// call runs one CloseChannel through the interceptor.
+func (h *repairHub) call(c *Client) error {
+	_, err := c.ChannelService().CloseChannel(context.Background(),
+		connect.NewRequest(&leapmuxv1.CloseChannelRequest{ChannelId: "ch-1"}))
+	return err
+}
+
+// TestAuthInterceptor_RepairsBothRefusalsInOneCall is why the repairs are a
+// loop over a table rather than two hand-written sequences.
+//
+// One call can need BOTH. Another process rotates the credential, so the hub
+// answers Unauthenticated; the replay then reaches the hub with a live
+// credential that proved no factor, which is the marked refusal. The
+// hand-written elevation branch returned its replay DIRECTLY, so the second
+// refusal was reported raw and the user never saw a prompt.
+func TestAuthInterceptor_RepairsBothRefusalsInOneCall(t *testing.T) {
+	hub := newRepairHub(t, 3600,
+		connect.NewError(connect.CodeUnauthenticated, errors.New("token expired")),
+		elevationRequired(),
+	)
+	seedCredentials(t, hub.server.URL, time.Now().Add(time.Hour))
+	captureStreams(t)
+
+	c, err := NewClient(hub.server.URL)
+	require.NoError(t, err)
+	c.promptAllowed = true
+
+	require.NoError(t, hub.call(c), "a call that needs both repairs must still land")
+
+	assert.Len(t, hub.rpc.presented(), 3, "one attempt for each refusal, and one that succeeds")
+	starts, _ := hub.elevation.counts()
+	assert.Equal(t, 1, starts, "the marked refusal must open the step-up, whatever ran before it")
+}
+
+// TestAuthInterceptor_RunsEachRepairAtMostOnce keeps the loop from asking a
+// user to verify the same credential for ever. A second refusal of the same
+// kind is the truth: the factor was proven and the action is still refused.
+func TestAuthInterceptor_RunsEachRepairAtMostOnce(t *testing.T) {
+	hub := newRepairHub(t, 3600, elevationRequired(), elevationRequired(), elevationRequired())
+	seedCredentials(t, hub.server.URL, time.Now().Add(time.Hour))
+	captureStreams(t)
+
+	c, err := NewClient(hub.server.URL)
+	require.NoError(t, err)
+	c.promptAllowed = true
+
+	err = hub.call(c)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err), "the hub's own answer must survive")
+	assert.Len(t, hub.rpc.presented(), 2, "one attempt plus one replay, and no more")
+	starts, _ := hub.elevation.counts()
+	assert.Equal(t, 1, starts, "one ceremony for one call")
+}
+
+// TestAuthInterceptor_ReplaysWithATokenRenewedAfterThePrompt is the reason
+// the freshness check runs before EVERY attempt.
+//
+// The step-up blocks on a person for up to ten minutes and the access token
+// lives for one hour, so the token a call started with can be dead by the
+// time the person finishes. Stamping the replay from the header alone made
+// the command fail as unauthenticated, and told a user who just finished
+// verifying that they were not signed in.
+func TestAuthInterceptor_ReplaysWithATokenRenewedAfterThePrompt(t *testing.T) {
+	// One second of life per rotation, so the token the first attempt
+	// presents is inside the renewal window again by the replay.
+	hub := newRepairHub(t, 1, elevationRequired())
+	seedCredentials(t, hub.server.URL, time.Now().Add(refreshSkew/2))
+	captureStreams(t)
+
+	c, err := NewClient(hub.server.URL)
+	require.NoError(t, err)
+	c.promptAllowed = true
+
+	require.NoError(t, hub.call(c))
+
+	presented := hub.rpc.presented()
+	require.Len(t, presented, 2)
+	assert.Equal(t, "Bearer lmx_a_access_1", presented[0])
+	assert.Equal(t, "Bearer lmx_a_access_2", presented[1],
+		"the replay must carry a token renewed AFTER the prompt, not the one from before it")
+}
+
+// TestAuthInterceptor_ReportsTheHubsRefusalWhenNobodyCanVerify is the
+// headless case at the call site. The hub's own refusal states what the
+// command needs; reporting the ceremony's failure instead would state the
+// remedy as the problem.
+func TestAuthInterceptor_ReportsTheHubsRefusalWhenNobodyCanVerify(t *testing.T) {
+	hub := newRepairHub(t, 3600, elevationRequired())
+	seedCredentials(t, hub.server.URL, time.Now().Add(time.Hour))
+	out, errOut := captureStreams(t)
+
+	c, err := NewClient(hub.server.URL)
+	require.NoError(t, err)
+	c.promptAllowed = false
+
+	err = hub.call(c)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), "verify your identity", "the hub's message is what the user must read")
+	assert.Len(t, hub.rpc.presented(), 1, "no replay, because nothing repaired the refusal")
+	starts, _ := hub.elevation.counts()
+	assert.Zero(t, starts, "a ceremony nobody can finish must never be opened")
+	assert.Empty(t, out.String())
+	assert.Empty(t, errOut.String())
+}
+
+// TestAuthInterceptor_LeavesAnUnrepairableRefusalAlone: a code with no
+// repair in the table is reported as the hub sent it, with no replay.
+func TestAuthInterceptor_LeavesAnUnrepairableRefusalAlone(t *testing.T) {
+	hub := newRepairHub(t, 3600,
+		connect.NewError(connect.CodePermissionDenied, errors.New("administrator privileges are required")))
+	seedCredentials(t, hub.server.URL, time.Now().Add(time.Hour))
+	captureStreams(t)
+
+	c, err := NewClient(hub.server.URL)
+	require.NoError(t, err)
+	c.promptAllowed = true
+
+	err = hub.call(c)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+	assert.Len(t, hub.rpc.presented(), 1)
+	assert.Zero(t, hub.rotations.Load(), "an unrepairable refusal must not rotate the credential")
+}
+
+// TestAuthInterceptor_LeavesAnUnmarkedFailedPreconditionAlone: the marker,
+// never the code. A FailedPrecondition also means "this account has no
+// password", and stopping a script to print a URL for one of those would be
+// worse than reporting it.
+func TestAuthInterceptor_LeavesAnUnmarkedFailedPreconditionAlone(t *testing.T) {
+	hub := newRepairHub(t, 3600,
+		connect.NewError(connect.CodeFailedPrecondition, errors.New("this account has no password")))
+	seedCredentials(t, hub.server.URL, time.Now().Add(time.Hour))
+	captureStreams(t)
+
+	c, err := NewClient(hub.server.URL)
+	require.NoError(t, err)
+	c.promptAllowed = true
+
+	require.Error(t, hub.call(c))
+	assert.Len(t, hub.rpc.presented(), 1)
+	starts, _ := hub.elevation.counts()
+	assert.Zero(t, starts)
+}
+
+// TestAuthInterceptor_RepairsAnExpiredTokenAfterTheStepUp is the OTHER
+// order, and the one the fixed sequence could never reach.
+//
+// The step-up blocks on a person for up to ten minutes, and another process
+// on the same credential file rotates inside that window -- so the replay
+// that follows the ceremony reaches the hub with a token the hub retired,
+// and the hub answers Unauthenticated. The hand-written elevation branch
+// RETURNED that replay directly, so the user who just finished verifying
+// read "unauthenticated" and the call died. The loop repairs it and lands
+// the call.
+func TestAuthInterceptor_RepairsAnExpiredTokenAfterTheStepUp(t *testing.T) {
+	hub := newRepairHub(t, 3600,
+		elevationRequired(),
+		connect.NewError(connect.CodeUnauthenticated, errors.New("token expired")),
+	)
+	seedCredentials(t, hub.server.URL, time.Now().Add(time.Hour))
+	out, errOut := captureStreams(t)
+
+	c, err := NewClient(hub.server.URL)
+	require.NoError(t, err)
+	c.promptAllowed = true
+
+	require.NoError(t, hub.call(c), "a call refused in this order must still land")
+
+	assert.Equal(t,
+		[]string{"Bearer lmx_a_access_0", "Bearer lmx_a_access_0", "Bearer lmx_a_access_1"},
+		hub.rpc.presented(),
+		"the third attempt must carry the pair the rotation adopted")
+	starts, _ := hub.elevation.counts()
+	assert.Equal(t, 1, starts)
+	assert.Equal(t, int64(1), hub.rotations.Load(), "the refusal after the ceremony must rotate the credential")
+
+	// The JSON contract, under the interceptor that interrupts an ordinary
+	// verb: the prose reaches Err alone, so the verb's own envelope is the
+	// whole of Out and `... | jq` still parses it.
+	assert.Empty(t, out.String())
+	assert.Contains(t, errOut.String(), "verify your identity")
+}
+
+// TestAuthInterceptor_StopsWhenEveryRepairIsUsed is the loop's termination.
+//
+// Each repair runs at most once, so a hub that keeps refusing ends the loop
+// rather than asking a person to verify the same credential for ever. Two
+// repairs allow at most two replays, whatever order the refusals arrive in.
+func TestAuthInterceptor_StopsWhenEveryRepairIsUsed(t *testing.T) {
+	hub := newRepairHub(t, 3600,
+		connect.NewError(connect.CodeUnauthenticated, errors.New("token expired")),
+		elevationRequired(),
+		connect.NewError(connect.CodeUnauthenticated, errors.New("token expired")),
+	)
+	seedCredentials(t, hub.server.URL, time.Now().Add(time.Hour))
+	captureStreams(t)
+
+	c, err := NewClient(hub.server.URL)
+	require.NoError(t, err)
+	c.promptAllowed = true
+
+	err = hub.call(c)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err),
+		"the last refusal the hub sent is what the caller reads")
+	assert.Len(t, hub.rpc.presented(), 3, "one attempt plus one replay for each repair, and no more")
+	starts, _ := hub.elevation.counts()
+	assert.Equal(t, 1, starts, "one ceremony for one call")
+	assert.Equal(t, int64(1), hub.rotations.Load(), "one rotation for one call")
+}
+
+// --- the credential file the rotation could not write -----------------
+
+// TestRefresh_AdoptsThePairItCouldNotSave is the failure that used to
+// destroy a credential.
+//
+// The hub rotated both hashes before it answered, so the old access token is
+// already dead. Discarding the fresh pair because the FILE could not be
+// written left the process presenting a token the hub retired, and left
+// the file holding the refresh secret the hub rotated away -- which the hub
+// reads as a reuse past its grace window, and answers by REVOKING the row.
+func TestRefresh_AdoptsThePairItCouldNotSave(t *testing.T) {
+	var counter atomic.Int64
+	rs := newRefreshServer(t, rotatingResponder(&counter))
+	dir := t.TempDir()
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", dir)
+	require.NoError(t, SaveCredentials(rs.server.URL, CredentialFile{
+		HubURL:       rs.server.URL,
+		AccessToken:  "lmx_a_access_0",
+		RefreshToken: "lmx_a_refresh_0",
+		ExpiresAt:    time.Now().Add(refreshSkew / 2),
+	}))
+
+	c, err := NewClient(rs.server.URL)
+	require.NoError(t, err)
+
+	// A config directory nothing can write to: the rotation reaches the hub
+	// and the save fails. The mode is restored before t.TempDir removes it.
+	require.NoError(t, os.Chmod(dir, 0o500))
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	err = c.EnsureFreshBearer(context.Background())
+	require.ErrorIs(t, err, ErrCredentialsNotSaved,
+		"a rotation that could not be saved must be reported, not swallowed")
+	assert.Equal(t, "lmx_a_access_1", c.currentBearer(),
+		"the pair the hub committed to is the only live one, so the process must adopt it")
+	assert.Len(t, rs.calls(), 1)
+}
+
+// TestAuthInterceptor_ReportsALocalDiskFailureAsSuchNotAsASignIn wires
+// bearerErrorCode into the call that reads it.
+//
+// The pre-call renewal reached the hub and could not write the pair to disk.
+// Every other pre-call failure means "this call cannot authenticate", so the
+// interceptor reported Unauthenticated for all of them -- which sent an
+// operator with a full disk to `leapmux control auth login`, where the
+// login writes to the same directory and fails the same way.
+func TestAuthInterceptor_ReportsALocalDiskFailureAsSuchNotAsASignIn(t *testing.T) {
+	hub := newRepairHub(t, 3600)
+	dir := t.TempDir()
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", dir)
+	require.NoError(t, SaveCredentials(hub.server.URL, CredentialFile{
+		HubURL:       hub.server.URL,
+		AccessToken:  "lmx_a_access_0",
+		RefreshToken: "lmx_a_refresh_0",
+		// Inside the skew, so the call renews before it dials.
+		ExpiresAt: time.Now().Add(refreshSkew / 2),
+	}))
+	captureStreams(t)
+
+	c, err := NewClient(hub.server.URL)
+	require.NoError(t, err)
+
+	// A config directory nothing can write to. The mode is restored before
+	// t.TempDir removes it.
+	require.NoError(t, os.Chmod(dir, 0o500))
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	err = hub.call(c)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err),
+		"a disk that cannot be written is not a credential that cannot sign in")
+	assert.ErrorIs(t, err, ErrCredentialsNotSaved, "the reason must reach the operator")
+	assert.Empty(t, hub.rpc.presented(),
+		"a rotation the file cannot record must stop the call, not ride it")
+}
+
+// TestBearerErrorCode_SeparatesALocalDiskFromABadCredential: the code the
+// caller reads must not send an operator to the login when the fault is a
+// full disk.
+func TestBearerErrorCode_SeparatesALocalDiskFromABadCredential(t *testing.T) {
+	assert.Equal(t, connect.CodeInternal, bearerErrorCode(
+		fmt.Errorf("%w: no space left on device", ErrCredentialsNotSaved)))
+	assert.Equal(t, connect.CodeUnauthenticated, bearerErrorCode(ErrCredentialRejected))
+	assert.Equal(t, connect.CodeUnauthenticated, bearerErrorCode(errors.New("dial tcp: refused")))
+}
+
+// --- the reactive repair ----------------------------------------------
+
+// TestRepairAfterUnauthenticated_AdoptsInsteadOfRotating is what keeps two
+// long-lived processes on one credential file from rotating on nearly every
+// call, each one retiring the token the other just adopted.
+//
+// The 401 came from a token another process replaced, so the token on disk
+// IS the repair. Rotating instead spends a single-use secret to learn what
+// the file already said.
+func TestRepairAfterUnauthenticated_AdoptsInsteadOfRotating(t *testing.T) {
+	rs := newRefreshServer(t, func(w http.ResponseWriter, _ string) {
+		t.Error("a rotation must not run when the file already holds a live token")
+	})
+	seedCredentials(t, rs.server.URL, time.Now().Add(time.Hour))
+
+	c, err := NewClient(rs.server.URL)
+	require.NoError(t, err)
+
+	// Another process rotated and wrote the pair it received.
+	require.NoError(t, SaveCredentials(rs.server.URL, CredentialFile{
+		HubURL:       rs.server.URL,
+		AccessToken:  "lmx_a_access_other",
+		RefreshToken: "lmx_a_refresh_other",
+		ExpiresAt:    time.Now().Add(time.Hour),
+	}))
+
+	require.NoError(t, c.repairAfterUnauthenticated(context.Background()))
+	assert.Equal(t, "lmx_a_access_other", c.currentBearer())
+	assert.Empty(t, rs.calls(), "the stored token was the repair; no rotation was needed")
+}
+
+// TestRepairAfterUnauthenticated_RotatesWhenTheStoredTokenIsTheRejectedOne
+// is the other polarity: when the file holds the very token the hub just
+// refused, only a rotation can produce a live one.
+func TestRepairAfterUnauthenticated_RotatesWhenTheStoredTokenIsTheRejectedOne(t *testing.T) {
+	var counter atomic.Int64
+	rs := newRefreshServer(t, rotatingResponder(&counter))
+	seedCredentials(t, rs.server.URL, time.Now().Add(time.Hour))
+
+	c, err := NewClient(rs.server.URL)
+	require.NoError(t, err)
+
+	require.NoError(t, c.repairAfterUnauthenticated(context.Background()))
+	assert.Len(t, rs.calls(), 1)
+	assert.Equal(t, "lmx_a_access_1", c.currentBearer())
+}
+
+// TestRepairAfterUnauthenticated_RotatesWhenTheStoredTokenIsAlsoStale keeps
+// the adopt path from presenting a token that dies in the next second: the
+// bar is the same refreshSkew that decides to renew.
+func TestRepairAfterUnauthenticated_RotatesWhenTheStoredTokenIsAlsoStale(t *testing.T) {
+	var counter atomic.Int64
+	rs := newRefreshServer(t, rotatingResponder(&counter))
+	seedCredentials(t, rs.server.URL, time.Now().Add(time.Hour))
+
+	c, err := NewClient(rs.server.URL)
+	require.NoError(t, err)
+
+	require.NoError(t, SaveCredentials(rs.server.URL, CredentialFile{
+		HubURL:       rs.server.URL,
+		AccessToken:  "lmx_a_access_nearly_dead",
+		RefreshToken: "lmx_a_refresh_other",
+		ExpiresAt:    time.Now().Add(refreshSkew / 2),
+	}))
+
+	require.NoError(t, c.repairAfterUnauthenticated(context.Background()))
+	assert.Len(t, rs.calls(), 1, "a stored token this client would renew at once is not worth adopting")
+	assert.Equal(t, "lmx_a_access_1", c.currentBearer())
+}
+
+// TestRefresh_ReusesTheClientsOwnTransport pins where the rotation's HTTP
+// client comes from.
+//
+// Building one per rotation allocated an http.Transport for a `unix:` or
+// `npipe:` hub whose IdleConnTimeout is zero and that nothing closes, so a
+// long-running `control events` leaked one idle connection and its read
+// goroutine every hour. Swapping the client's transport is what makes the
+// choice observable.
+func TestRefresh_ReusesTheClientsOwnTransport(t *testing.T) {
+	var counter atomic.Int64
+	rs := newRefreshServer(t, rotatingResponder(&counter))
+	seedCredentials(t, rs.server.URL, time.Now().Add(refreshSkew/2))
+
+	c, err := NewClient(rs.server.URL)
+	require.NoError(t, err)
+	counting := &countingTransport{next: c.HTTPClient.Transport}
+	c.HTTPClient = &http.Client{Transport: counting, Timeout: c.HTTPClient.Timeout}
+
+	require.NoError(t, c.EnsureFreshBearer(context.Background()))
+	assert.Equal(t, int64(1), counting.calls.Load(),
+		"the rotation must ride the transport the client already holds")
+	assert.Equal(t, "lmx_a_access_1", c.currentBearer())
+}
+
+// countingTransport counts the requests that pass through it.
+type countingTransport struct {
+	next  http.RoundTripper
+	calls atomic.Int64
+}
+
+func (t *countingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	t.calls.Add(1)
+	next := t.next
+	if next == nil {
+		next = http.DefaultTransport
+	}
+	return next.RoundTrip(req)
 }

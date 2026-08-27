@@ -17,8 +17,9 @@ import (
 // contribution stays.
 //
 // That rule was prose plus a one-time manual audit, and SQLite never retries,
-// so the DEFAULT test store exercised the single-run path only. The one shape
-// that matters was therefore untested everywhere it is relied on.
+// so the DEFAULT test store exercised the single-run path only. No test
+// therefore covered the one shape that matters, anywhere the code relies on
+// it.
 //
 // DoubleRunStore is the mechanism. It runs every transaction callback twice:
 // once against an attempt it then rolls back, and once for real. The database
@@ -71,7 +72,7 @@ func (d DoubleRunStore) RunInTransaction(ctx context.Context, fn func(tx store.S
 // answering unless it carries the method itself -- and several suites reach
 // for that interface to backdate a timestamp. Forwarding it unconditionally
 // is right for a decorator that only ever wraps a test store: a wrapped store
-// that has no helper panics with a message naming the cause, which is a
+// that has no helper panics with a message that states the cause, which is a
 // louder answer than a type assertion that silently reports false.
 func (d DoubleRunStore) TestHelper() store.TestHelper {
 	testable, ok := d.Store.(store.TestableStore)

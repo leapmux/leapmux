@@ -50,14 +50,26 @@ WHERE s.id = ?
 --
 -- elevation_proven_at is the instant a step-up factor was proven and is rewritten
 -- ONLY by ElevateUserSession. elevation_expires_at slides forward on each
--- successful sensitive action, and the slide clamps itself to
--- elevation_proven_at + the maximum total window, so no Go path can extend an
--- elevation past its absolute cap.
+-- successful sensitive action.
+--
+-- TWO writers hold the absolute cap, and both bind store.ElevationMaxTotal.
+-- ElevateUserSession writes the anchor and the first deadline in one statement,
+-- so the store clamps that deadline in Go before it binds it (see
+-- ElevateSessionParams.ClampedExpiresAt). SlideUserSessionElevation measures
+-- the ceiling from the STORED anchor, which Go never reads, so it clamps in
+-- SQL. The slide alone is not sufficient: GREATEST keeps the deadline
+-- monotone, so it can never SHORTEN an over-long deadline that the grant
+-- wrote. Neither parameter struct carries a ceiling field, so no caller can
+-- widen the cap, and none can pass 0 and make every slide a silent no-op.
 
 -- name: ElevateUserSession :execresult
 -- Proves a fresh factor: it restarts BOTH the anchor and the deadline, so a
--- new ceremony grants a whole new maximum window rather than topping up an
+-- new ceremony grants a whole new maximum window rather than adding to an
 -- old one.
+--
+-- elevation_expires_at arrives ALREADY CLAMPED to elevation_proven_at +
+-- store.ElevationMaxTotal; ElevateSessionParams.ClampedExpiresAt applies the
+-- cap, because both instants are Go values here. See the block comment above.
 UPDATE user_sessions
 SET elevation_proven_at = sqlc.arg(elevation_proven_at),
     elevation_expires_at = sqlc.arg(elevation_expires_at)
@@ -68,8 +80,10 @@ WHERE id = sqlc.arg(id)
 -- name: SlideUserSessionElevation :execresult
 -- GREATEST keeps the deadline monotone (a late request cannot shorten it),
 -- and LEAST(..., elevation_proven_at + cap) enforces the absolute ceiling. Both run
--- in SQL so a slide cannot over-extend whatever the caller passes. The cap
--- is added in microseconds so DATETIME(3) keeps its millisecond precision.
+-- in SQL so a slide cannot over-extend whatever the caller passes.
+-- max_total_micros is NOT a caller parameter: sessions.go binds
+-- store.ElevationMaxTotal into it. The statement adds the cap in microseconds so
+-- DATETIME(3) keeps its millisecond precision.
 --
 -- There is no expires_at guard, unlike ElevateUserSession. A slide runs only
 -- after a request that this session just authenticated, so

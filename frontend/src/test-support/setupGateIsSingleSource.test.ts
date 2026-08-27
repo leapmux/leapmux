@@ -13,14 +13,14 @@ import { collectFiles } from '~/test-support/sourceTree'
 // isSetupRequired and navigated), and the four addresses that needed it most
 // carried none: /signup, /forgot-password, /reset-password and /verify-email
 // all served a form that cannot succeed on a hub with no account. Which
-// address was covered depended on who remembered.
+// address the rule covered depended on who remembered.
 //
 // Neither half of the invariant fails loudly on its own. Drop `<SetupGate>`
 // from app.tsx and every unit test still passes, because SetupGate.test.tsx
 // exercises the component rather than its mounting. Add a private
 // isSetupRequired call back to a page and nothing objects either -- until the
-// two answers disagree. So both halves are asserted here, in the fast suite,
-// rather than left to the E2E that boots an unseeded hub.
+// two answers disagree. So this file asserts both halves here, in the fast
+// suite, rather than leaves them to the E2E that boots an unseeded hub.
 
 const frontendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const srcRoot = join(frontendRoot, 'src')
@@ -39,12 +39,12 @@ const TEST_FILE = /\.(?:test|spec)\.tsx?$/
 /**
  * Every `src/` module that calls `isSetupRequired`, as a repo-relative path.
  *
- * Comment lines are blanked first, so prose that names the getter -- which
- * several of these files carry, explaining where the rule went -- is not
- * counted as a call.
+ * This function blanks comment lines first, so prose that mentions the getter
+ * -- which several of these files carry, explaining where the rule went --
+ * never counts as a call.
  *
  * Two exemptions, and neither can hide a routing decision. A test file may
- * drive the getter it is testing. And `src/test-support/` holds the shared
+ * drive the getter it tests. And `src/test-support/` holds the shared
  * systemInfo mock, which must declare every getter it stands in for; nothing
  * there renders a route.
  */

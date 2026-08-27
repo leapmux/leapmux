@@ -26,7 +26,7 @@ const elevationExpiresAt = vi.hoisted(() => vi.fn((): { seconds: bigint, nanos: 
 vi.mock('~/context/AuthContext', () => ({
   useAuth: () => ({
     elevationExpiresAt: () => elevationExpiresAt(),
-    setElevationExpiresAt: vi.fn(),
+    dropElevation: vi.fn().mockResolvedValue(undefined),
     refreshUser: vi.fn().mockResolvedValue(undefined),
   }),
 }))
@@ -124,13 +124,13 @@ function registryFor(category: string): SettingRowModel[] {
     descriptor.category === category && !(descriptor.hidden?.() ?? false))
 }
 
-// The wire cannot name these apart: `controlForField` answers for every key
-// of both scopes at once, so it builds a plain "Add" for every string list.
+// The wire gives these no distinct names: `controlForField` answers for every
+// key of both scopes at once, so it builds a plain "Add" for every string list.
 // Two identically named text boxes and two identically named buttons in one
 // panel leave a screen-reader user unable to tell the UI stack from the
 // monospace one, so the DECLARATION carries the name and the join keeps it.
 describe('settingsPanel string-list accessible names', () => {
-  it('names the two font-stack add affordances apart', () => {
+  it('gives the two font-stack add affordances distinct names', () => {
     render(withPreferences(() => (
       <SettingsPanel rows={registryFor('appearance')} restartGroup={false} elevationGroup={false} writeError={null} />
     )))

@@ -11,11 +11,11 @@ import (
 // way: the CLI redirect allowlist, the CSP's form-action, and the WebAuthn
 // relying-party derivation. The folding these helpers apply is the whole
 // mechanism -- a set that widens in one place and not the others is either a
-// hole or an outage, and neither shows up until a CLI login hangs.
+// hole or an outage, and neither appears until a CLI login hangs.
 //
 // The helpers had no test of their own, so a change that dropped the
 // lower-casing or the bracket trim would have broken passkeys on a loopback
-// deployment with a green suite.
+// deployment with a passing suite.
 
 func TestNormalizeHost(t *testing.T) {
 	t.Parallel()
@@ -87,7 +87,7 @@ func TestIsLoopbackRedirectScheme(t *testing.T) {
 		"spaced": {" https ", true},
 		"empty":  {"", false},
 		// The value reaches a Location header, so a scheme that executes
-		// must not slip past a lower-case literal.
+		// must not evade a lower-case literal.
 		"javascript": {"javascript", false},
 		"JavaScript": {"JavaScript", false},
 		"data":       {"data", false},
@@ -101,23 +101,39 @@ func TestIsLoopbackRedirectScheme(t *testing.T) {
 	}
 }
 
-// TestSplitBindHostPort pins the split three packages depend on. The port
+// TestSplitBindHostPort pins the split settings.BaseURL depends on. The port
 // keeps its leading colon, so a caller rebuilds the input by concatenating,
 // and an IPv6 literal's own colons must not be read as the separator.
+//
+// The UNBRACKETED cases are the ones that broke. The last colon in "::1" is
+// not a port separator, but it looks exactly like one, so the split returned
+// the host ":" and the port ":1". "::" and "::0" then missed IsWildcardHost,
+// which contradicts what settings/keys.go promises about every wildcard
+// spelling. The whole-address IP test answers all of them at once, and the
+// nine-group form -- an address with a port that no bracket marks -- must
+// keep splitting.
 func TestSplitBindHostPort(t *testing.T) {
 	t.Parallel()
 
 	for name, tc := range map[string]struct{ in, host, port string }{
-		"port only":          {":4327", "", ":4327"},
-		"ipv4 wildcard":      {"0.0.0.0:4327", "0.0.0.0", ":4327"},
-		"ipv6 wildcard":      {"[::]:4327", "[::]", ":4327"},
-		"ipv6 loopback":      {"[::1]:4327", "[::1]", ":4327"},
-		"bare ipv6 no port":  {"[::]", "[::]", ""},
-		"host with port":     {"hub.example.com:4327", "hub.example.com", ":4327"},
-		"host with no port":  {"hub.example.com", "hub.example.com", ""},
-		"empty":              {"", "", ""},
-		"surrounding space":  {"  0.0.0.0:4327  ", "0.0.0.0", ":4327"},
-		"long ipv6 wildcard": {"[0:0:0:0:0:0:0:0]:4327", "[0:0:0:0:0:0:0:0]", ":4327"},
+		"port only":               {":4327", "", ":4327"},
+		"ipv4 wildcard":           {"0.0.0.0:4327", "0.0.0.0", ":4327"},
+		"ipv6 wildcard":           {"[::]:4327", "[::]", ":4327"},
+		"ipv6 loopback":           {"[::1]:4327", "[::1]", ":4327"},
+		"bare ipv6 no port":       {"[::]", "[::]", ""},
+		"host with port":          {"hub.example.com:4327", "hub.example.com", ":4327"},
+		"host with no port":       {"hub.example.com", "hub.example.com", ""},
+		"localhost":               {"localhost", "localhost", ""},
+		"empty":                   {"", "", ""},
+		"surrounding space":       {"  0.0.0.0:4327  ", "0.0.0.0", ":4327"},
+		"long ipv6 wildcard":      {"[0:0:0:0:0:0:0:0]:4327", "[0:0:0:0:0:0:0:0]", ":4327"},
+		"bare ipv6 loopback":      {"::1", "::1", ""},
+		"bare ipv6 wildcard":      {"::", "::", ""},
+		"bare ipv6 wildcard zero": {"::0", "::0", ""},
+		"bare ipv6 spelled":       {"0:0:0:0:0:0:0:0", "0:0:0:0:0:0:0:0", ""},
+		"bare ipv6 address":       {"2001:db8::1", "2001:db8::1", ""},
+		"unbracketed ipv6 port":   {"0:0:0:0:0:0:0:0:4327", "0:0:0:0:0:0:0:0", ":4327"},
+		"ipv4 loopback":           {"127.0.0.1", "127.0.0.1", ""},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -125,6 +141,37 @@ func TestSplitBindHostPort(t *testing.T) {
 			assert.Equal(t, tc.host, host, "host")
 			assert.Equal(t, tc.port, port, "port")
 			assert.Equal(t, strings.TrimSpace(tc.in), host+port, "host+port must rebuild the input")
+		})
+	}
+}
+
+// TestSplitBindHostPort_FeedsTheWildcardTest is the reason the split exists.
+//
+// settings.BaseURL splits a bind address and asks IsWildcardHost about the
+// host half, so a split that mangles a spelling silently withdraws that
+// spelling from the wildcard rule. Every wildcard form must reach the same
+// answer through the pair, bracketed or not.
+func TestSplitBindHostPort_FeedsTheWildcardTest(t *testing.T) {
+	t.Parallel()
+
+	for name, tc := range map[string]struct {
+		in   string
+		want bool
+	}{
+		"bare ipv6 wildcard":      {"::", true},
+		"bare ipv6 wildcard zero": {"::0", true},
+		"bare ipv6 spelled":       {"0:0:0:0:0:0:0:0", true},
+		"bracketed with port":     {"[::]:4327", true},
+		"unbracketed with port":   {"0:0:0:0:0:0:0:0:4327", true},
+		"ipv4 wildcard":           {"0.0.0.0:4327", true},
+		"bare ipv6 loopback":      {"::1", false},
+		"bracketed loopback":      {"[::1]:4327", false},
+		"hostname":                {"hub.example.com:4327", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			host, _ := SplitBindHostPort(tc.in)
+			assert.Equal(t, tc.want, IsWildcardHost(host))
 		})
 	}
 }

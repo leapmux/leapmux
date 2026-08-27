@@ -9,8 +9,8 @@ import * as styles from './ThinkingTokenCount.css'
 // The strip repeats 0-9 several times so a forward roll always has cells ahead
 // of it; `pos` (the shown cell index) only increases between resets, and a
 // settled roll folds it back by whole 0-9 cycles — invisibly, since a cell and
-// its lower copy render the same digit. RESET_HEADROOM cells are kept below the
-// top of the strip as slack for update bursts that outpace the roll.
+// its lower copy render the same digit. The strip keeps RESET_HEADROOM cells
+// below its top as slack for update bursts that outpace the roll.
 //
 // Load-bearing invariant tying these together: after the eager reset (which
 // fires when pos + delta >= STRIP_CELLS - RESET_HEADROOM), pos is folded into
@@ -74,8 +74,8 @@ const DigitColumn: Component<{ digit: number, enter: boolean }> = (props) => {
   // eslint-disable-next-line solid/reactivity -- intentional one-time initial read; the effect below tracks changes.
   let pos = props.digit
   // Count of roll transitions started but not yet ended/cancelled. The settle
-  // fold (below) runs only when this returns to 0 — i.e. the LATEST roll has
-  // come to rest — so a stale transitionend from a roll the burst-reset already
+  // fold (below) runs only when this returns to 0 — i.e. the LATEST roll is at
+  // rest — so a stale transitionend from a roll the burst-reset already
   // interrupted can never fold (and thus snap) the strip mid-animation.
   let pending = 0
 
@@ -142,7 +142,7 @@ const DigitColumn: Component<{ digit: number, enter: boolean }> = (props) => {
   // A roll transition ended (`settled`) or was interrupted by a newer one
   // (`!settled`, a transitioncancel); a started roll fires exactly one. Decrement
   // the in-flight counter, then on a genuine end fold the cycle only if the strip
-  // has actually come to rest — its live offset matches the target -pos, meaning
+  // is actually at rest — its live offset matches the target -pos, meaning
   // no newer roll superseded this one. That geometric at-rest check also
   // reconciles `pending` to 0, so a browser that elides a transitioncancel can't
   // leave it stuck > 0 and permanently disable the fold. When the offset can't be
@@ -189,7 +189,7 @@ const DigitColumn: Component<{ digit: number, enter: boolean }> = (props) => {
     // Forward advance only: 9->0 is +1 (rolls up through the wrap), never -9.
     const delta = forwardDelta(prevDigit, next)
     // Safety for bursts that outpace transitionend: fold down before the strip
-    // runs out. Only bites on the fast-spinning low digit, where it's unseen.
+    // runs out. Only applies to the fast-spinning low digit, where nobody sees it.
     if (pos + delta >= STRIP_CELLS - RESET_HEADROOM)
       foldCycle()
     pos += delta
@@ -215,7 +215,7 @@ const DigitColumn: Component<{ digit: number, enter: boolean }> = (props) => {
 }
 
 // Renders one formatted value as a row of rolling digit columns and static
-// chars. The chars are reversed and laid out right-to-left (the layer is
+// chars. It reverses the chars and lays them out right-to-left (the layer is
 // flex-direction: row-reverse), so Index keys each slot by its distance from
 // the RIGHT edge: a count growing a leading digit appends a slot (the existing
 // columns keep their identity and roll) instead of shifting every position.
@@ -324,7 +324,6 @@ export const ThinkingTokenCount: Component<{ tokens: number }> = (props) => {
 
   return (
     <span classList={{ [styles.root]: true, [styles.starPower]: starPower() }}>
-      {/* Real value for assistive tech and tests; the visual odometer is aria-hidden. */}
       {/* The real value for assistive tech, and a stable hook for a test.
           The visual odometer beside it is aria-hidden: its DOM is a pile of
           0-9 strips that reads as gibberish. */}

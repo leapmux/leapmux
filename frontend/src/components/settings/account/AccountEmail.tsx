@@ -1,17 +1,17 @@
 import type { Component } from 'solid-js'
-import type { StatusMessage } from '~/components/common/StatusLine'
 import { A } from '@solidjs/router'
 import { createMemo, createSignal, Show } from 'solid-js'
 import { userClient } from '~/api/clients'
 import { StatusLine } from '~/components/common/StatusLine'
 import { useAuth } from '~/context/AuthContext'
+import { KEY_EMAIL_CHANGE_DRAFT, sessionStorageGet, sessionStorageRemove, sessionStorageSet } from '~/lib/browserStorage'
 import { elevationPrompting } from '~/lib/elevationPrompt'
-import { formatErrorMessage } from '~/lib/errors'
 import { isEmailEnabled } from '~/lib/systemInfo'
 import { useVerificationResend } from '~/lib/useVerificationResend'
 import { validateEmail } from '~/lib/validate'
 import { errorText, successText, warningText } from '~/styles/shared.css'
 import * as styles from './accountFields.css'
+import { createAccountAction } from './createAccountAction'
 
 /**
  * The account's email: its current state, the route to a confirmed one, and
@@ -28,9 +28,33 @@ export const AccountEmail: Component = () => {
   // cooldown a send hands out survives a move between the two surfaces.
   const verification = useVerificationResend({ nextResendAvailableAt: auth.verificationResendAvailableAt })
 
-  const [newEmail, setNewEmail] = createSignal('')
-  const [saving, setSaving] = createSignal(false)
-  const [message, setMessage] = createSignal<StatusMessage | null>(null)
+  // The field SURVIVES a full-document round trip, because one account shape
+  // is sent on one every time it changes its address.
+  //
+  // An account with no password and no passkey elevates only at its identity
+  // provider, and that option leaves the app. Without this the user typed the
+  // new address, was asked to verify, came back to an empty field and typed it
+  // again -- on the shape that has no other way to verify. Every other shape
+  // proves its factor in the dialog and never leaves, so for them this only
+  // means a reload no longer loses the field either.
+  //
+  // Through the storage gateway, so the value is scoped to the account and
+  // carries an expiry; see KEY_EMAIL_CHANGE_DRAFT for why the store is the
+  // session and not the browser.
+  const [newEmail, setNewEmail] = createSignal(
+    sessionStorageGet<string>(KEY_EMAIL_CHANGE_DRAFT) ?? '',
+  )
+
+  /** Write the field through, so the address is there when the browser returns. */
+  const editEmail = (next: string) => {
+    setNewEmail(next)
+    if (next === '')
+      sessionStorageRemove(KEY_EMAIL_CHANGE_DRAFT)
+    else
+      sessionStorageSet(KEY_EMAIL_CHANGE_DRAFT, next)
+  }
+
+  const action = createAccountAction()
 
   const sameAsCurrent = createMemo(() => {
     const trimmed = newEmail().trim().toLowerCase()
@@ -40,36 +64,33 @@ export const AccountEmail: Component = () => {
   const requestChange = async () => {
     const email = newEmail().trim()
     if (!email) {
-      setMessage({ type: 'error', text: 'Email must not be empty.' })
+      action.reject('Email must not be empty.')
       return
     }
     const emailErr = validateEmail(email)
     if (emailErr) {
-      setMessage({ type: 'error', text: emailErr })
+      action.reject(emailErr)
       return
     }
-    setSaving(true)
-    setMessage(null)
-    try {
-      const resp = await userClient.requestEmailChange({ newEmail: email })
-      if (resp.verificationRequired) {
-        setMessage({ type: 'success', text: 'Verification email sent. Check your inbox.' })
-      }
-      else {
-        setMessage({ type: 'success', text: 'Email updated.' })
-      }
-      setNewEmail('')
-      auth.refreshUser()
-    }
-    catch (e) {
-      // No step-up wrapper here. The transport opens the prompt on the hub's
-      // refusal and retries this request ONCE, so what reaches this catch is a
-      // second refusal or a failure a prompt cannot fix.
-      setMessage({ type: 'error', text: formatErrorMessage(e, 'Failed to request email change') })
-    }
-    finally {
-      setSaving(false)
-    }
+    // No step-up wrapper here. The transport opens the prompt on the hub's
+    // refusal and retries this request ONCE, so what the failure path reports
+    // is a second refusal or a failure a prompt cannot fix.
+    await action.run({
+      fallback: 'Failed to request email change',
+      work: async () => {
+        const resp = await userClient.requestEmailChange({ newEmail: email })
+        // The ordinary end of the draft. The TTL is only the backstop for a
+        // round trip the user never finished.
+        editEmail('')
+        // AWAITED, and inside the work: `busy` clears when this resolves, so
+        // an unawaited refresh would re-enable the button while the user still
+        // carries the old address and no pending change.
+        await auth.refreshUser()
+        return resp.verificationRequired
+          ? 'Verification email sent. Check your inbox.'
+          : 'Email updated.'
+      },
+    })
   }
 
   return (
@@ -130,11 +151,11 @@ export const AccountEmail: Component = () => {
         <input
           type="email"
           value={newEmail()}
-          onInput={e => setNewEmail(e.currentTarget.value)}
+          onInput={e => editEmail(e.currentTarget.value)}
           placeholder="Enter new email address"
         />
       </label>
-      <StatusLine message={message()} />
+      <StatusLine message={action.message()} />
       <Show when={sameAsCurrent()}>
         <div class={errorText}>This is already your current email.</div>
       </Show>
@@ -142,9 +163,9 @@ export const AccountEmail: Component = () => {
         <button
           type="button"
           onClick={() => void requestChange()}
-          disabled={saving() || elevationPrompting() || !newEmail().trim() || sameAsCurrent()}
+          disabled={action.running() || elevationPrompting() || !newEmail().trim() || sameAsCurrent()}
         >
-          {saving() ? 'Requesting...' : 'Change Email'}
+          {action.running() ? 'Requesting...' : 'Change Email'}
         </button>
       </div>
     </div>

@@ -45,7 +45,7 @@ func cookieName(secure bool) string {
 // One constructor makes that true for every cookie the package builds,
 // rather than true in four literals that a fifth can forget.
 //
-// maxAge is clamped rather than trusted. int(ttl.Seconds()) truncates
+// newCookie clamps maxAge rather than trusting it. int(ttl.Seconds()) truncates
 // toward zero, and Go writes NO Max-Age attribute for 0, so a sub-second
 // positive TTL would produce a cookie that lives for the whole browsing
 // session and a sub-second negative one would fail to clear.
@@ -76,7 +76,8 @@ func cookieMaxAge(ttl time.Duration) int {
 
 // flowCookieName returns the per-flow cookie name for one family.
 //
-// The flow id is HASHED into the name rather than embedded. A cookie name
+// flowCookieName HASHES the flow id into the name rather than embedding it.
+// A cookie name
 // must be an RFC 7230 token, and Go answers an invalid name by returning an
 // empty Set-Cookie line: http.SetCookie then writes no header at all, with
 // no error and no log, and every login afterwards fails with the refusal
@@ -85,12 +86,13 @@ func cookieMaxAge(ttl time.Duration) int {
 // token can produce a name a browser never receives.
 //
 // The flow id is part of the name so two logins started in the same browser
-// do not fight over one cookie. With a single shared name the second login
+// do not share one cookie. With a single shared name the second login
 // overwrote the first one's nonce, and the older tab's callback then failed
-// with "started in a different browser" -- a refusal aimed at an attacker,
+// with "a different browser started this sign-in" -- a refusal aimed at an
+// attacker,
 // shown to a user who did nothing wrong.
 //
-// Per-flow naming costs nothing in security. A callback for flow S reads
+// A per-flow name costs nothing in security. A callback for flow S reads
 // only the cookie for S, and the victim's browser holds one solely because
 // that browser started the flow. An attacker's state identifies a cookie
 // that the victim never received, so the lookup misses and the callback
@@ -101,14 +103,14 @@ func flowCookieName(family, flowID string) string {
 }
 
 // flowCookieFamily is one per-flow binding cookie: its two spellings, and
-// the naming, building and clearing that follow from them.
+// the name, build and clear methods that follow from them.
 //
 // TWO families exist -- the OAuth flow's nonce and the pending signup's --
 // and they differed only in which flow id they hash. Each carried its own
 // name function, its own Build and its own Clear, so the rules that make a
 // binding cookie work (hash the flow id into the name, write both spellings
 // when clearing, give each spelling the Secure flag its own name requires)
-// were stated twice and could drift. A third binding cookie now inherits
+// appeared twice and could drift. A third binding cookie now inherits
 // them instead of copying them.
 //
 // The READERS stay separate below, deliberately: one holds an
@@ -188,11 +190,12 @@ func ClearOAuthNonceCookie(state string) []*http.Cookie {
 // and the asymmetry is the point. secure_cookies is read once when the
 // login leg writes the cookie and again when the callback reads it, so an
 // operator who turns it OFF inside the five-minute window would otherwise
-// turn every in-flight login into "started in a different browser" -- a
+// turn every in-flight login into "a different browser started this
+// sign-in" -- a
 // security accusation for an operator action. Reading the secure spelling
 // costs nothing: only an https origin can set a __Host- cookie at all, so
-// a plain-HTTP attacker cannot plant one. The reverse fallback is refused
-// on purpose, because any plain-HTTP page on the registrable domain CAN
+// a plain-HTTP attacker cannot plant one. This reader refuses the reverse
+// fallback on purpose, because any plain-HTTP page on the registrable domain CAN
 // plant the unprefixed name, which is exactly what __Host- prevents.
 func OAuthNonceFromRequest(r *http.Request, state string, secure bool) string {
 	if v := cookieValue(r, oauthNonceFamily.name(state, true)); v != "" {
@@ -272,7 +275,7 @@ func cookieValueFromHeader(cookieHeader, name string) string {
 // BuildSessionCookie creates an HttpOnly session cookie.
 func BuildSessionCookie(sessionID string, expiresAt time.Time, secure bool) *http.Cookie {
 	c := newCookie(cookieName(secure), sessionID, cookieMaxAge(time.Until(expiresAt)), secure)
-	// The one attribute only this cookie carries. Expires is the backstop
+	// The one attribute only this cookie carries. Expires is the fallback
 	// that keeps a browser which ignores Max-Age on the same deadline.
 	c.Expires = expiresAt
 	return c
@@ -280,8 +283,8 @@ func BuildSessionCookie(sessionID string, expiresAt time.Time, secure bool) *htt
 
 // sessionRefresh carries a session slide from the auth interceptor to the
 // response, so the cookie's own Expires attribute tracks the slid DB expiry.
-// The zero value means that nothing slid on this request and no cookie is
-// written.
+// The zero value means that nothing slid on this request and this code
+// writes no cookie.
 type sessionRefresh struct {
 	sessionID string
 	expiresAt time.Time
@@ -290,7 +293,7 @@ type sessionRefresh struct {
 // applyTo writes the refreshed session cookie into h, unless the handler already
 // wrote a session cookie of its own.
 //
-// Standing back from a handler's own cookie is what makes the refresh safe to
+// Leaving a handler's own cookie alone is what makes the refresh safe to
 // run on every response. A browser applies several Set-Cookie headers for one
 // name in order and keeps the last, so a refresh appended after Logout's
 // clearing cookie leaves a live session cookie in the browser -- the user stays
@@ -301,7 +304,7 @@ type sessionRefresh struct {
 //
 // The test is the cookie's NAME, not the presence of any cookie at all. A
 // browser keeps the last cookie per name, so only a cookie of this name can
-// overwrite this one. A guard that stood back from every Set-Cookie would stop
+// overwrite this one. A guard that left every Set-Cookie alone would stop
 // refreshing the session on the first response that also carried an unrelated
 // cookie, silently and with nothing to point at the cause.
 func (r sessionRefresh) applyTo(h http.Header, secure bool) {
@@ -362,7 +365,7 @@ func SessionIDFromRequest(r *http.Request, secure bool) string {
 }
 
 // SessionIDFromHeader extracts the session ID from a raw Cookie header value.
-// This is used in ConnectRPC interceptors where we only have the header string.
+// ConnectRPC interceptors use this, because they hold only the header string.
 func SessionIDFromHeader(cookieHeader string, secure bool) string {
 	return cookieValueFromHeader(cookieHeader, cookieName(secure))
 }

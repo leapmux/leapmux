@@ -2,6 +2,8 @@ package service_test
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -10,11 +12,17 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
+	"github.com/leapmux/leapmux/internal/hub/bootstrap"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/service"
+	"github.com/leapmux/leapmux/internal/hub/servicetest"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
+	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
+	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
@@ -51,7 +59,8 @@ func authorized[T any](msg *T, authorize requestAuth) *connect.Request[T] {
 }
 
 // settingsWriteVerbs is every write verb on the service, so a verb added
-// without the gate turns these tests red rather than shipping the hole.
+// without the gate fails these tests rather than reaching a release with the
+// hole.
 func settingsWriteVerbs() map[string]settingsWrite {
 	key := settings.KeySignupEnabled.Name()
 	return map[string]settingsWrite{
@@ -116,7 +125,8 @@ func TestAdminSettingsService_WriteGate(t *testing.T) {
 		})
 
 		// And the refusal is the one the CLI can ACT on: marked, so it runs
-		// the step-up leg and retries rather than reporting a dead end.
+		// the step-up leg and retries rather than reporting an error the
+		// user cannot clear.
 		t.Run(name+" tells an unelevated command-line credential to verify", func(t *testing.T) {
 			env := setupAdminSettingsTest(t, &config.Config{})
 			bearer, _ := env.adminBearer(t)
@@ -130,8 +140,9 @@ func TestAdminSettingsService_WriteGate(t *testing.T) {
 	}
 }
 
-// Reads stay ungated. The dialog lists every key before the operator edits
-// one, so gating the listing would prompt for a factor to look at a page.
+// Reads need no elevation. The dialog lists every key before the operator
+// edits one, so restricting the listing would prompt for a factor to look at
+// a page.
 func TestAdminSettingsService_ListNeedsNoElevation(t *testing.T) {
 	env := setupAdminSettingsTestUnelevated(t, &config.Config{})
 	resp, err := env.client.ListSettings(context.Background(),
@@ -141,10 +152,10 @@ func TestAdminSettingsService_ListNeedsNoElevation(t *testing.T) {
 }
 
 // The same rule for a COMMAND-LINE credential, which is where it matters most:
-// an operator running one gated command a minute would otherwise be sent back
+// an operator running one restricted command a minute would otherwise return
 // to the browser every two hours, for a session the hub can see is continuous.
 func TestAdminSettingsService_WriteSlidesACredentialWindow(t *testing.T) {
-	// The ELEVATED fixture, because minting the credential is itself gated on
+	// The ELEVATED fixture, because minting the credential itself requires
 	// the consenting session. What this measures is the CREDENTIAL's window,
 	// which the mint leaves unset.
 	env := setupAdminSettingsTest(t, &config.Config{})
@@ -179,9 +190,9 @@ func TestAdminSettingsService_WriteSlidesACredentialWindow(t *testing.T) {
 }
 
 // The hub's standing rule is that a sensitive action slides the window that
-// admitted it. A gated verb that did not slide would be a verb the window
-// does not count as use, and the operator editing settings for two hours
-// would be prompted again in the middle of the work.
+// admitted it. A restricted verb that did not slide would be a verb the
+// window does not count as use, and the hub would prompt an operator who
+// edits settings for two hours again in the middle of the work.
 func TestAdminSettingsService_WriteSlidesTheElevationWindow(t *testing.T) {
 	env := setupAdminSettingsTestUnelevated(t, &config.Config{})
 	ctx := context.Background()
@@ -233,9 +244,9 @@ func TestAdminSettingsService_RefusedWriteDoesNotSlideTheWindow(t *testing.T) {
 		session.ElevationExpiresAt, nearly)
 }
 
-// An unknown key is reported as an unknown key even without a factor, so the
-// operator is not asked to verify for a request the hub was going to refuse
-// on its arguments anyway.
+// The hub reports an unknown key as an unknown key even without a factor, so
+// it does not ask the operator to verify for a request that it refuses on its
+// arguments anyway.
 func TestAdminSettingsService_UnknownKeyIsReportedBeforeTheGate(t *testing.T) {
 	env := setupAdminSettingsTestUnelevated(t, &config.Config{})
 	_, err := env.client.UpdateSetting(context.Background(), authedReq(&leapmuxv1.UpdateSettingRequest{
@@ -245,7 +256,7 @@ func TestAdminSettingsService_UnknownKeyIsReportedBeforeTheGate(t *testing.T) {
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 }
 
-// elevateParams stamps a window that ENDS at `until`, so a slide shows up as
+// elevateParams stamps a window that ENDS at `until`, so a slide appears as
 // an increase over a deadline the test chose rather than over one the shared
 // helper wrote.
 func elevateParams(env *adminSettingsEnv, provenAt, until time.Time) store.ElevateSessionParams {
@@ -254,5 +265,78 @@ func elevateParams(env *adminSettingsEnv, provenAt, until time.Time) store.Eleva
 		UserID:             userid.MustNew(env.adminID),
 		ElevationProvenAt:  provenAt,
 		ElevationExpiresAt: until,
+	}
+}
+
+// TestAdminSettingsService_SoloModeWritesWithoutAFactor is the gate's solo
+// branch, observed at the HANDLER rather than at the rule.
+//
+// Solo mode holds no session row and no credential row, so every
+// credential-shaped test in the rule answers "cannot elevate" and the refusal
+// that follows -- "sign in from a browser" -- describes a sign-in that does
+// not exist there. That refusal is permanent, and it covers the whole
+// hub-administration surface a desktop hub exists to serve.
+//
+// solo_elevation_internal_test.go pins the rule. Only a request shows what the
+// handler does with it: the write goes through writeUnderElevation, which asks
+// the rule and then slides a window the synthetic user has no row for, and
+// each of those two steps could refuse on its own.
+func TestAdminSettingsService_SoloModeWritesWithoutAFactor(t *testing.T) {
+	ctx := context.Background()
+	env := setupAdminSettingsSoloEnv(t)
+
+	// public_url is a key solo READS (it is not HiddenInSolo), so the write
+	// below reaches the gate rather than the solo key filter.
+	resp, err := env.client.UpdateSetting(ctx, connect.NewRequest(&leapmuxv1.UpdateSettingRequest{
+		Key: settings.KeyPublicURL.Name(), PartialJson: `"https://hub.example.com"`,
+	}))
+	require.NoError(t, err, "a solo hub must be able to administer itself with no ceremony to prove a factor with")
+	require.NotNil(t, resp)
+
+	// The value really landed, so the pass above is not a handler that
+	// answered without writing.
+	assert.Equal(t, "https://hub.example.com",
+		settings.KeyPublicURL.Of(env.set.Snapshot(ctx)))
+}
+
+// setupAdminSettingsSoloEnv mounts the REAL AdminSettingsService behind the
+// real auth interceptor in SOLO mode: no cookie, no bearer, and the
+// bootstrapped solo user authenticating every request.
+//
+// A separate builder from setupAdminSettingsEnvRaw because the two differ in
+// the one thing the case is about. That fixture logs an administrator in and
+// carries a session row, so it can elevate; this one has neither.
+func setupAdminSettingsSoloEnv(t *testing.T) *adminSettingsEnv {
+	t.Helper()
+	ctx := context.Background()
+
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = st.Close() })
+	require.NoError(t, st.Migrator().Migrate(ctx))
+	require.NoError(t, bootstrap.Run(ctx, st, true))
+	soloUser, err := auth.LoadSoloUser(ctx, st)
+	require.NoError(t, err)
+
+	set := servicetest.NewSettingsManager(t, st, nil)
+	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, SoloUser: soloUser})
+	connectOpts := connect.WithInterceptors(interceptor, service.NewElevationSlideInterceptor())
+
+	mux := http.NewServeMux()
+	svc := service.NewAdminSettingsService(set, &config.Config{SoloMode: true}, st)
+	path, handler := leapmuxv1connect.NewAdminSettingsServiceHandler(svc, connectOpts)
+	mux.Handle(path, handler)
+
+	server := httptest.NewUnstartedServer(mux)
+	server.EnableHTTP2 = true
+	server.StartTLS()
+	t.Cleanup(server.Close)
+
+	return &adminSettingsEnv{
+		client:  leapmuxv1connect.NewAdminSettingsServiceClient(server.Client(), server.URL, connect.WithGRPC()),
+		st:      st,
+		set:     set,
+		adminID: soloUser.ID.String(),
+		svc:     svc,
 	}
 }

@@ -35,8 +35,8 @@ vi.mock('~/lib/systemInfo', () => ({
   getCaptchaSiteKey: () => '',
 }))
 
-// The stub surfaces the action the form binds, so the signup half of the
-// action contract is pinned (the hub siteverify check enforces the same
+// The stub surfaces the action the form binds, so this test pins the signup
+// half of the action contract (the hub siteverify check enforces the same
 // string server-side).
 vi.mock('~/components/common/CaptchaField', () => ({
   CaptchaField: (props: { action: string }) => <div data-testid="captcha-field" data-action={props.action} />,

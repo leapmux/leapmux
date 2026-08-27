@@ -26,14 +26,32 @@ import (
 )
 
 type adminOAuthEnv struct {
-	client leapmuxv1connect.AdminOAuthServiceClient
-	st     store.Store
-	ks     *keystore.Keystore
-	token  string
-	cache  *recordingProviderCache
+	client  leapmuxv1connect.AdminOAuthServiceClient
+	st      store.Store
+	ks      *keystore.Keystore
+	token   string
+	adminID string
+	cache   *recordingProviderCache
 }
 
+// setupAdminOAuthTest is the DEFAULT fixture, and its session is elevated.
+//
+// Every write on this surface runs under the elevation window, exactly as
+// every hub-settings write does: an identity provider row installs a sign-in
+// route for the whole hub. Almost every test here exercises what a verb DOES
+// rather than whether the gate is there, so supplying the elevation is what
+// keeps those tests about their own subject.
+// TestAdminOAuthService_WritesNeedAProvenFactor asserts the refusal.
 func setupAdminOAuthTest(t *testing.T) *adminOAuthEnv {
+	t.Helper()
+	env := setupAdminOAuthTestUnelevated(t)
+	hubtestutil.ElevateSession(t, env.st, env.token, env.adminID)
+	return env
+}
+
+// setupAdminOAuthTestUnelevated builds the same environment with a session
+// that proved no factor. It is what the gate tests use.
+func setupAdminOAuthTestUnelevated(t *testing.T) *adminOAuthEnv {
 	t.Helper()
 
 	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
@@ -43,7 +61,7 @@ func setupAdminOAuthTest(t *testing.T) *adminOAuthEnv {
 
 	hash, err := password.Hash("adminpass123")
 	require.NoError(t, err)
-	_, err = service.CreateUser(context.Background(), st, service.CreateUserParams{
+	admin, err := service.CreateUser(context.Background(), st, service.CreateUserParams{
 		Username:     "admin",
 		PasswordHash: hash,
 		DisplayName:  "Admin",
@@ -53,7 +71,6 @@ func setupAdminOAuthTest(t *testing.T) *adminOAuthEnv {
 	require.NoError(t, err)
 	session, _, _, err := auth.Login(context.Background(), st, "admin", "adminpass123", auth.DefaultSessionDuration)
 	require.NoError(t, err)
-
 	ks, err := keystore.LoadOrGenerate(filepath.Join(t.TempDir(), "encryption.key"))
 	require.NoError(t, err)
 
@@ -70,11 +87,12 @@ func setupAdminOAuthTest(t *testing.T) *adminOAuthEnv {
 	t.Cleanup(server.Close)
 
 	return &adminOAuthEnv{
-		client: leapmuxv1connect.NewAdminOAuthServiceClient(server.Client(), server.URL, connect.WithGRPC()),
-		st:     st,
-		ks:     ks,
-		token:  session,
-		cache:  cache,
+		client:  leapmuxv1connect.NewAdminOAuthServiceClient(server.Client(), server.URL, connect.WithGRPC()),
+		st:      st,
+		ks:      ks,
+		token:   session,
+		adminID: admin.ID,
+		cache:   cache,
 	}
 }
 
@@ -161,8 +179,8 @@ func TestAdminOAuthService_AddListRemoveGithub(t *testing.T) {
 // email_verified claim" — so a generic OIDC provider must state it rather
 // than inherit a default. A preset carries its own answer, which is why
 // the GitHub path below needs no flag. Collapse the fallback chain to a
-// plain getter and a provider is created with an unintended trust setting
-// and nothing fails.
+// plain getter and the hub creates a provider with an unintended trust
+// setting, and nothing fails.
 func TestAdminOAuthService_OIDCRefusals(t *testing.T) {
 	env := setupAdminOAuthTest(t)
 	ctx := context.Background()
@@ -191,7 +209,7 @@ func TestAdminOAuthService_OIDCRefusals(t *testing.T) {
 	require.Error(t, err, "a generic OIDC provider must state its issuer")
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 
-	// Both refusals run BEFORE the issuer is contacted, which is what makes
+	// Both refusals run BEFORE the hub contacts the issuer, which is what makes
 	// them assertable without a network. Stating both fields therefore gets
 	// past this gate and on to OIDC discovery, which a unit test cannot
 	// reach — so the happy path stops here, at "no longer refused for a
@@ -263,7 +281,7 @@ func TestAdminOAuthService_SetEnabledAndRemove(t *testing.T) {
 }
 
 // linkUser creates a user with the given password state and links it to
-// every provider named.
+// every provider the caller lists.
 func linkUser(t *testing.T, env *adminOAuthEnv, username string, passwordSet bool, providerIDs ...string) *store.User {
 	t.Helper()
 	ctx := context.Background()
@@ -335,7 +353,7 @@ func TestAdminOAuthService_RemoveRefusesToLockAccountsOut(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, listed.Msg.GetProviders(), 2, "the refused removal deletes nothing")
 
-	// force lets it through, and reports exactly what it cost.
+	// force admits the removal, and reports exactly what it cost.
 	removed, err := env.client.RemoveOAuthProvider(ctx, authedReq(&leapmuxv1.RemoveOAuthProviderRequest{
 		Id: primary, Force: true,
 	}, env.token))
@@ -349,7 +367,7 @@ func TestAdminOAuthService_RemoveRefusesToLockAccountsOut(t *testing.T) {
 }
 
 // TestAdminOAuthService_RemoveAllowedWhenNobodyIsOrphaned pins the other
-// side: the guard must not stand in the way of an ordinary removal, and
+// side: the guard must not block an ordinary removal, and
 // the count travels in the reply either way.
 func TestAdminOAuthService_RemoveAllowedWhenNobodyIsOrphaned(t *testing.T) {
 	env := setupAdminOAuthTest(t)
@@ -432,4 +450,91 @@ func TestAdminOAuthService_EvictsTheProviderCache(t *testing.T) {
 	}, env.token))
 	require.NoError(t, err)
 	assert.Equal(t, []string{id}, env.cache.taken(), "a removed provider's built instance must go")
+}
+
+// unelevatedSession signs the same administrator in a SECOND time and returns
+// that session, which proved no factor.
+//
+// A second session rather than a drop on the first: the elevation lives on the
+// session row, so this is the state a user reaches by opening the app in
+// another browser, and the fixture's own seeding writes stay admitted.
+func (e *adminOAuthEnv) unelevatedSession(t *testing.T) string {
+	t.Helper()
+	session, _, _, err := auth.Login(context.Background(), e.st, "admin", "adminpass123", auth.DefaultSessionDuration)
+	require.NoError(t, err)
+	return session
+}
+
+// TestAdminOAuthService_WritesNeedAProvenFactor drives every write verb on
+// this service through a caller that proved no factor.
+//
+// The three verbs shipped with NO gate at all while the sign-up toggle beside
+// them had one, and nothing observed the omission: the classification record
+// in admin_procedures_internal_test.go says which side of the gate each
+// procedure sits on, and only a request can show what the handler does with
+// that decision.
+//
+// Each call is a REAL write that succeeds once the caller is elevated, never a
+// deliberately malformed request: a refusal these tests could not tell from an
+// argument error would pass whether the gate existed or not.
+func TestAdminOAuthService_WritesNeedAProvenFactor(t *testing.T) {
+	ctx := context.Background()
+
+	// The id an elevated fixture already holds, so Remove and SetEnabled
+	// address a provider that exists. Add needs none.
+	type oauthWrite func(env *adminOAuthEnv, providerID string, authorize requestAuth) error
+
+	writes := map[string]oauthWrite{
+		"AddOAuthProvider": func(env *adminOAuthEnv, _ string, authorize requestAuth) error {
+			_, err := env.client.AddOAuthProvider(ctx, authorized(&leapmuxv1.AddOAuthProviderRequest{
+				ProviderType: "github", Name: "second", ClientId: "gh2", ClientSecret: "ghs2",
+			}, authorize))
+			return err
+		},
+		"SetOAuthProviderEnabled": func(env *adminOAuthEnv, providerID string, authorize requestAuth) error {
+			_, err := env.client.SetOAuthProviderEnabled(ctx, authorized(&leapmuxv1.SetOAuthProviderEnabledRequest{
+				Id: providerID, Enabled: false,
+			}, authorize))
+			return err
+		},
+		"RemoveOAuthProvider": func(env *adminOAuthEnv, providerID string, authorize requestAuth) error {
+			_, err := env.client.RemoveOAuthProvider(ctx, authorized(&leapmuxv1.RemoveOAuthProviderRequest{
+				Id: providerID,
+			}, authorize))
+			return err
+		},
+	}
+
+	for name, write := range writes {
+		t.Run(name+" refuses an un-elevated session", func(t *testing.T) {
+			// The provider is seeded through an ELEVATED session, then the
+			// window is dropped: the fixture's own writes must not be what the
+			// gate refuses.
+			env := setupAdminOAuthTest(t)
+			id := addProvider(t, env, "seeded")
+
+			err := write(env, id, cookieAuth(env.unelevatedSession(t)))
+			require.Error(t, err, "a write on this surface must not land without a proven factor")
+			assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+			var connectErr *connect.Error
+			require.ErrorAs(t, err, &connectErr)
+			assert.Equal(t, "1", connectErr.Meta().Get(service.ElevationRequiredHeader),
+				"the refusal must be the one a step-up prompt can clear")
+		})
+
+		t.Run(name+" admits an elevated session", func(t *testing.T) {
+			env := setupAdminOAuthTest(t)
+			id := addProvider(t, env, "seeded")
+			assert.NoError(t, write(env, id, cookieAuth(env.token)))
+		})
+	}
+
+	// A READ takes nothing. The window guards what a stolen administrator
+	// cookie could CHANGE for every account on the hub; the inventory it can
+	// already see is not that.
+	t.Run("ListOAuthProviders needs no elevation", func(t *testing.T) {
+		env := setupAdminOAuthTestUnelevated(t)
+		_, err := env.client.ListOAuthProviders(ctx, authedReq(&leapmuxv1.ListOAuthProvidersRequest{}, env.token))
+		assert.NoError(t, err)
+	})
 }

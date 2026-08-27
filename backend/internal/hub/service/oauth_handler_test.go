@@ -5,6 +5,9 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -37,7 +40,7 @@ func setupOAuthTestServer(t *testing.T) (*httptest.Server, store.Store, *keystor
 	return server, st, ks
 }
 
-// setupOAuthTestServerWithSettings also hands back the settings manager, so
+// setupOAuthTestServerWithSettings also returns the settings manager, so
 // a test can put the hub in its production shape (secure cookies) before it
 // drives a flow.
 func setupOAuthTestServerWithSettings(t *testing.T) (*httptest.Server, store.Store, *keystore.Keystore, *settings.Manager) {
@@ -47,9 +50,22 @@ func setupOAuthTestServerWithSettings(t *testing.T) (*httptest.Server, store.Sto
 // setupOAuthTestServerWithListen varies the bind address, which is what
 // decides whether this hub can run a passkey ceremony at all: an empty
 // listen has no browser-reachable origin, so RPConfigFromSettings refuses
-// and passkeys are cleanly unavailable. The step-up leg's second tier reads
-// exactly that.
+// and passkeys are cleanly unavailable. The account-shape rule still refuses
+// a provider step-up for an account that holds such a passkey.
 func setupOAuthTestServerWithListen(t *testing.T, listen string) (*httptest.Server, store.Store, *keystore.Keystore, *settings.Manager) {
+	return setupOAuthTestServerOver(t, listen, nil)
+}
+
+// setupOAuthTestServerOver builds the same hub with a store the caller may
+// decorate. The handler reads through the decorator, so a test can count the
+// reads one request makes, hold two requests at the same row, or give the
+// handler a row shape the schema refuses to store. The returned store is the
+// UNDECORATED one, which is what a test seeds and asserts with.
+func setupOAuthTestServerOver(
+	t *testing.T,
+	listen string,
+	wrap func(store.Store) store.Store,
+) (*httptest.Server, store.Store, *keystore.Keystore, *settings.Manager) {
 	t.Helper()
 
 	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
@@ -72,7 +88,11 @@ func setupOAuthTestServerWithListen(t *testing.T, listen string) (*httptest.Serv
 	set := servicetest.NewSettingsManager(t, st, ks)
 	enableSignup(t, set)
 
-	oauthHandler := service.NewOAuthHandler(st, cfg, set, auth.NewCredentialLifecycleEffects(nil, nil, nil), ks)
+	handlerStore := st
+	if wrap != nil {
+		handlerStore = wrap(st)
+	}
+	oauthHandler := service.NewOAuthHandler(handlerStore, cfg, set, auth.NewCredentialLifecycleEffects(nil, nil, nil), ks)
 
 	mux := http.NewServeMux()
 	oauthHandler.RegisterRoutes(mux)
@@ -114,7 +134,7 @@ func TestOAuthLogin_RedirectsToProvider(t *testing.T) {
 	server, st, ks := setupOAuthTestServer(t)
 	providerID := createTestProvider(t, st, ks)
 
-	// Don't follow redirects.
+	// Do not follow redirects.
 	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse
 	}}
@@ -129,9 +149,9 @@ func TestOAuthLogin_RedirectsToProvider(t *testing.T) {
 	assert.Contains(t, location, "github.com")
 	assert.Contains(t, location, "state=")
 
-	// Verify state was stored in DB.
-	// (We can't easily extract it from the redirect URL without parsing, but
-	// the redirect working proves CreateOAuthState succeeded.)
+	// Verify that the handler stored the state in the DB.
+	// (Extracting it from the redirect URL needs parsing, but a working
+	// redirect proves CreateOAuthState succeeded.)
 }
 
 func TestOAuthLogin_UnknownProvider_Returns404(t *testing.T) {
@@ -223,7 +243,7 @@ func TestOAuthCallback_MissingCodeOrState_Returns400(t *testing.T) {
 // browser that DOES hold the flow's nonce, so the request reaches the
 // expiry check. The binding check runs first and answers 400 as well, so a
 // status assertion alone would pass without ever reaching this guard; the
-// body is what tells the two refusals apart.
+// body is what distinguishes the two refusals.
 func TestOAuthCallback_ExpiredState_Returns400(t *testing.T) {
 	t.Parallel()
 
@@ -237,6 +257,7 @@ func TestOAuthCallback_ExpiredState_Returns400(t *testing.T) {
 		ProviderID:   providerID,
 		PkceVerifier: "test-verifier",
 		NonceHash:    hashNonceForTest(nonce),
+		Purpose:      store.OAuthStatePurposeLogin,
 		ExpiresAt:    time.Now().Add(-1 * time.Minute).UTC(),
 	})
 	require.NoError(t, err)
@@ -256,8 +277,8 @@ func TestOAuthCallback_ExpiredState_Returns400(t *testing.T) {
 }
 
 // TestOAuthCallback_StateProviderMismatch_Returns400 pins the guard that
-// stops a state minted for provider A from being redeemed at provider B's
-// callback. It sits behind the binding check, so the browser holds the
+// stops provider B's callback from redeeming a state minted for provider A.
+// It sits behind the binding check, so the browser holds the
 // flow's nonce here too.
 func TestOAuthCallback_StateProviderMismatch_Returns400(t *testing.T) {
 	t.Parallel()
@@ -309,7 +330,7 @@ func TestGetOAuthProviders_ReturnsEnabledOnly(t *testing.T) {
 	providers, err := st.OAuthProviders().ListEnabled(context.Background())
 	require.NoError(t, err)
 
-	// Only the enabled provider should be listed.
+	// The listing should show only the enabled provider.
 	assert.Len(t, providers, 1)
 	assert.Equal(t, enabledID, providers[0].ID)
 }
@@ -538,11 +559,11 @@ func TestCompleteOAuthSignup_Success(t *testing.T) {
 	assert.Equal(t, "bobuser", resp.Msg.GetUser().GetUsername())
 	assert.Equal(t, "Bob User", resp.Msg.GetUser().GetDisplayName())
 
-	// Verify session cookie is set.
+	// Verify that the response sets the session cookie.
 	setCookie := resp.Header().Get("Set-Cookie")
 	assert.Contains(t, setCookie, auth.CookieName+"=")
 
-	// Verify OAuth user link was created.
+	// Verify that the flow created the OAuth user link.
 	link, err := st.OAuthUserLinks().Get(context.Background(), store.GetOAuthUserLinkParams{
 		ProviderID:      providerID,
 		ProviderSubject: "sub-bob",
@@ -550,7 +571,7 @@ func TestCompleteOAuthSignup_Success(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, resp.Msg.GetUser().GetId(), link.UserID)
 
-	// Verify pending signup was consumed.
+	// Verify that the flow consumed the pending signup.
 	_, err = st.PendingOAuthSignups().Get(context.Background(), signupToken)
 	require.Error(t, err)
 }
@@ -594,7 +615,8 @@ func TestCompleteOAuthSignup_UsesProviderEmail_IgnoresRequestEmail(t *testing.T)
 	// Pending signup has provider email "provider@example.com".
 	insertPendingSignup(t, st, ks, providerID, signupToken, "provider@example.com", "Provider", "sub-provider", time.Now().Add(5*time.Minute).UTC())
 
-	// Request tries to override with a different email — should be ignored.
+	// The request tries to override with a different email; the handler must
+	// ignore it.
 	resp, err := client.CompleteOAuthSignup(context.Background(), signupReq(&leapmuxv1.CompleteOAuthSignupRequest{
 		SignupToken: signupToken,
 		Username:    "provideruser",
@@ -609,7 +631,7 @@ func TestCompleteOAuthSignup_UsesProviderEmail_IgnoresRequestEmail(t *testing.T)
 }
 
 // An UNTRUSTED provider that omits the email claim leaves the caller to
-// supply the address. Without the fallback the sign-up was a dead end
+// supply the address. Without the fallback the sign-up could never finish
 // whenever verification was on: validateSignupEmail refuses an empty
 // address, no step in the flow could produce one, and the pending token
 // expired with the account never created.
@@ -689,7 +711,8 @@ func TestCompleteOAuthSignup_DuplicateUsername(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeAlreadyExists, connect.CodeOf(err))
 
-	// Pending row should NOT be deleted so the user can retry with a different username.
+	// The handler should NOT delete the pending row, so the user can retry
+	// with a different username.
 	_, err = st.PendingOAuthSignups().Get(context.Background(), signupToken)
 	require.NoError(t, err)
 }
@@ -1003,6 +1026,7 @@ func TestOAuthCallback_NewUser_SignupDisabled(t *testing.T) {
 		ProviderID:   providerID,
 		PkceVerifier: "test-verifier",
 		NonceHash:    hashNonceForTest(nonce),
+		Purpose:      store.OAuthStatePurposeLogin,
 		ExpiresAt:    time.Now().Add(5 * time.Minute).UTC(),
 	})
 	require.NoError(t, err)
@@ -1012,7 +1036,7 @@ func TestOAuthCallback_NewUser_SignupDisabled(t *testing.T) {
 	// network error before the signup-disabled check, so this test covers
 	// the full state validation path: the binding, the expiry, the
 	// provider match, and the state consumption. The signup-disabled check
-	// is covered through the RPC path (GetPendingOAuthSignup /
+	// runs on the RPC path instead (GetPendingOAuthSignup /
 	// CompleteOAuthSignup).
 
 	req, err := http.NewRequest(http.MethodGet,
@@ -1032,7 +1056,8 @@ func TestOAuthCallback_NewUser_SignupDisabled(t *testing.T) {
 	assert.Contains(t, body, "OAuth exchange failed",
 		"the request must reach the exchange, which is what proves the state and provider resolved")
 
-	// The state row is consumed either way, so a refused pair cannot be retried.
+	// The handler consumes the state row either way, so a refused pair cannot
+	// be retried.
 	_, err = st.OAuthStates().Get(context.Background(), stateValue)
 	assert.ErrorIs(t, err, store.ErrNotFound)
 }
@@ -1164,7 +1189,8 @@ func TestAutoLinkByEmail_SkippedWhenUnverified(t *testing.T) {
 	assert.False(t, existingUser.EmailVerified)
 
 	// The auto-link path checks EmailVerified == 1 and skips when unverified.
-	// This means a new pending signup would be created instead (tested elsewhere).
+	// This means the flow would create a new pending signup instead (tested
+	// elsewhere).
 }
 
 func TestDeleteOAuthTokens_ScopedToProvider(t *testing.T) {
@@ -1237,4 +1263,232 @@ func TestDeleteOAuthTokens_ScopedToProvider(t *testing.T) {
 	})
 	require.NoError(t, err, "provider B tokens should still exist")
 	assert.Equal(t, providerBID, tok.ProviderID)
+}
+
+// The store decorators below let a test observe or shape what the OAuth
+// handler reads. Each one embeds the interface it decorates, so a method
+// added to store.Store reaches these through the embedded value rather than
+// failing to compile here.
+
+// countingProviderReadStore counts the oauth_providers row reads one request
+// makes.
+type countingProviderReadStore struct {
+	store.Store
+	reads *atomic.Int64
+}
+
+func (s countingProviderReadStore) OAuthProviders() store.OAuthProviderStore {
+	return countingProviderReads{OAuthProviderStore: s.Store.OAuthProviders(), reads: s.reads}
+}
+
+type countingProviderReads struct {
+	store.OAuthProviderStore
+	reads *atomic.Int64
+}
+
+func (s countingProviderReads) GetByID(ctx context.Context, id string) (*store.OAuthProvider, error) {
+	s.reads.Add(1)
+	return s.OAuthProviderStore.GetByID(ctx, id)
+}
+
+// TestOAuthReauth_ReadsTheProviderRowOnce pins the cost of the start leg.
+//
+// The leg loads the provider to REFUSE a disabled or missing one before the
+// browser leaves the app, and beginOAuthFlow needs the same instance. The
+// provider cache holds the built client, not the row, so
+// loadEnabledProvider issues GetByID on every call -- two calls were two
+// reads off two different snapshots.
+func TestOAuthReauth_ReadsTheProviderRowOnce(t *testing.T) {
+	t.Parallel()
+
+	reads := &atomic.Int64{}
+	server, st, ks, _ := setupOAuthTestServerOver(t, ":4327", func(s store.Store) store.Store {
+		return countingProviderReadStore{Store: s, reads: reads}
+	})
+	providerID := createTestProvider(t, st, ks)
+	cookie, _, _ := reauthSession(t, st, providerID, "sub-1")
+
+	reads.Store(0)
+	state, nonce, _ := beginReauth(t, server, providerID, cookie, "")
+	require.NotEmpty(t, state)
+	require.NotNil(t, nonce)
+
+	assert.EqualValues(t, 1, reads.Load(), "the start leg must read the provider row once")
+}
+
+// purposeRewritingStore gives the handler a state row whose purpose is a
+// value the schema refuses to store, which is the only way to drive the
+// unknown-purpose branch. oauth_states.purpose carries
+// CHECK (purpose IN ('login','reauth')) in all three dialects.
+type purposeRewritingStore struct {
+	store.Store
+	purpose string
+}
+
+func (s purposeRewritingStore) OAuthStates() store.OAuthStateStore {
+	return purposeRewritingStates{OAuthStateStore: s.Store.OAuthStates(), purpose: s.purpose}
+}
+
+type purposeRewritingStates struct {
+	store.OAuthStateStore
+	purpose string
+}
+
+func (s purposeRewritingStates) Get(ctx context.Context, state string) (*store.OAuthState, error) {
+	row, err := s.OAuthStateStore.Get(ctx, state)
+	if err != nil {
+		return nil, err
+	}
+	rewritten := *row
+	rewritten.Purpose = s.purpose
+	return &rewritten, nil
+}
+
+// TestOAuthCallback_RefusesAnUnknownPurpose pins the fail-CLOSED shape of
+// the branch that picks the finishing leg.
+//
+// The login leg creates: a session, an account, an identity link. It must
+// never be the branch a value reaches by not matching something else -- and
+// the Go zero value "" is exactly such a value, so a row that lost its
+// purpose used to sign somebody in.
+func TestOAuthCallback_RefusesAnUnknownPurpose(t *testing.T) {
+	t.Parallel()
+
+	for _, purpose := range []string{"", "elevate", "LOGIN"} {
+		t.Run("purpose "+strconv.Quote(purpose), func(t *testing.T) {
+			t.Parallel()
+
+			server, st, ks, _ := setupOAuthTestServerOver(t, ":4327", func(s store.Store) store.Store {
+				return purposeRewritingStore{Store: s, purpose: purpose}
+			})
+			providerID := createTestOIDCProviderWithStubClaims(t, st, ks, "newcomer@example.com", "sub-new")
+
+			loginResp, err := noRedirectClient().Get(server.URL + "/auth/oauth/" + providerID + "/login")
+			require.NoError(t, err)
+			defer func() { _ = loginResp.Body.Close() }()
+			state := stateFromLoginResponse(t, loginResp)
+			flowCookie := oauthNonceCookie(t, loginResp, state)
+			require.NotNil(t, flowCookie)
+
+			req, err := http.NewRequest(http.MethodGet,
+				server.URL+"/auth/oauth/"+providerID+"/callback?code=c&state="+state, nil)
+			require.NoError(t, err)
+			req.AddCookie(flowCookie)
+			resp, err := noRedirectClient().Do(req)
+			require.NoError(t, err)
+			defer func() { _ = resp.Body.Close() }()
+
+			assert.Equal(t, http.StatusBadRequest, resp.StatusCode, readBody(t, resp))
+			assert.Empty(t, resp.Header.Get("Location"),
+				"an unrecognised purpose must not reach the sign-up hand-off")
+			for _, c := range resp.Cookies() {
+				assert.NotEqual(t, auth.CookieName, c.Name, "and must not sign anybody in")
+			}
+		})
+	}
+}
+
+// stateReadBarrier holds every caller of OAuthStates().Get until `parties`
+// of them arrive, so two callbacks provably hold the SAME state row before
+// either one consumes it.
+type stateReadBarrier struct {
+	mu        sync.Mutex
+	remaining int
+	released  chan struct{}
+}
+
+func newStateReadBarrier(parties int) *stateReadBarrier {
+	return &stateReadBarrier{remaining: parties, released: make(chan struct{})}
+}
+
+// arrive blocks until the last party arrives. It stops after a generous
+// deadline so a regression that stops one caller reaching the row fails the
+// test instead of hanging the whole package.
+func (b *stateReadBarrier) arrive(t *testing.T) {
+	t.Helper()
+	b.mu.Lock()
+	b.remaining--
+	if b.remaining == 0 {
+		close(b.released)
+	}
+	b.mu.Unlock()
+	select {
+	case <-b.released:
+	case <-time.After(30 * time.Second):
+		t.Error("the callbacks never met at the state row")
+	}
+}
+
+type barrierStateStore struct {
+	store.Store
+	t       *testing.T
+	barrier *stateReadBarrier
+}
+
+func (s barrierStateStore) OAuthStates() store.OAuthStateStore {
+	return barrierStates{OAuthStateStore: s.Store.OAuthStates(), t: s.t, barrier: s.barrier}
+}
+
+type barrierStates struct {
+	store.OAuthStateStore
+	t       *testing.T
+	barrier *stateReadBarrier
+}
+
+func (s barrierStates) Get(ctx context.Context, state string) (*store.OAuthState, error) {
+	row, err := s.OAuthStateStore.Get(ctx, state)
+	s.barrier.arrive(s.t)
+	return row, err
+}
+
+// TestOAuthCallback_ConcurrentCallbacksSpendTheStateOnce pins the single use
+// of a flow as the HUB's property.
+//
+// Two callbacks that carry the same state and the same nonce cookie -- a
+// double-clicked callback, a browser prefetch of the Location header, a
+// retried navigation -- both pass the nonce check and both reach the delete.
+// The delete's row count is what distinguishes them. Without it both
+// continued to provider.Exchange, and on the reauth purpose both reached the
+// elevation grant; the property then rested on the identity provider
+// rejecting the second use of its authorization code, which this hub does
+// not control.
+// The stub provider here accepts the code twice, exactly like an identity
+// provider that is lenient about a retry.
+func TestOAuthCallback_ConcurrentCallbacksSpendTheStateOnce(t *testing.T) {
+	t.Parallel()
+
+	barrier := newStateReadBarrier(2)
+	server, st, ks, _ := setupOAuthTestServerOver(t, ":4327", func(s store.Store) store.Store {
+		return barrierStateStore{Store: s, t: t, barrier: barrier}
+	})
+	providerID := createTestOIDCProviderWithStubClaims(t, st, ks, "user@example.com", "sub-1")
+	cookie, _, _ := reauthSession(t, st, providerID, "sub-1")
+
+	state, nonce, _ := beginReauth(t, server, providerID, cookie, "/workspace/1")
+	require.NotNil(t, nonce)
+
+	statuses := make([]int, 2)
+	var wg sync.WaitGroup
+	for i := range statuses {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req, err := http.NewRequest(http.MethodGet,
+				server.URL+"/auth/oauth/"+providerID+"/callback?code=test&state="+state, nil)
+			if !assert.NoError(t, err) {
+				return
+			}
+			req.AddCookie(nonce)
+			resp, err := noRedirectClient().Do(req)
+			if !assert.NoError(t, err) {
+				return
+			}
+			defer func() { _ = resp.Body.Close() }()
+			statuses[i] = resp.StatusCode
+		}()
+	}
+	wg.Wait()
+
+	assert.ElementsMatch(t, []int{http.StatusFound, http.StatusBadRequest}, statuses,
+		"exactly one of two racing callbacks may spend the state")
 }

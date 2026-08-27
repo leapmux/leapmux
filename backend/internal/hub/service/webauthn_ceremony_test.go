@@ -77,9 +77,9 @@ func setupPasskeyAuthTestServer(t *testing.T, seed authTestSeed, mailSender mail
 }
 
 // setupEmptyPasskeyAuthTestServer is the same server with an EMPTY database,
-// which is the state the first-administrator flow runs in. The admin fixture
-// is created afterwards by the wrapper above rather than here, so setup mode
-// is reachable without a second copy of this construction.
+// which is the state the first-administrator flow runs in. The wrapper above
+// creates the admin fixture afterwards rather than here, so setup mode is
+// reachable without a second copy of this construction.
 func setupEmptyPasskeyAuthTestServer(t *testing.T, seed authTestSeed, mailSender mail.Sender) passkeyAuthTestEnv {
 	t.Helper()
 

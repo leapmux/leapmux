@@ -18,8 +18,8 @@ import (
 // LeapMux runs this dialect against PostgreSQL, YugabyteDB and CockroachDB.
 // The two distributed backends resolve a write-write conflict by aborting one
 // of the transactions with a retryable SQLSTATE, and both document that the
-// application retries it -- there is no server-side wait that makes the error
-// go away. PostgreSQL itself raises the same two codes: 40001 under REPEATABLE
+// application retries it -- no server-side wait removes the error.
+// PostgreSQL itself raises the same two codes: 40001 under REPEATABLE
 // READ or SERIALIZABLE, and 40P01 whenever two transactions take row locks in
 // opposite orders.
 //
@@ -58,14 +58,17 @@ func isRetryableConflict(err error) bool {
 // for. A statement inside an explicit transaction is not -- the abort killed
 // the whole transaction, every later statement in it answers
 // "current transaction is aborted", and re-running one statement would rejoin
-// a dead transaction rather than repeat the unit of work. So pgConn.q carries
-// this wrapper and q.WithTx(tx) does not, which makes the wrong retry
+// a dead transaction rather than repeat the unit of work. So the pool conn
+// carries this wrapper on BOTH its Queries and its raw exec (see newPoolConn),
+// while the transaction conn carries it on neither -- q.WithTx(tx) drops it
+// and runTransaction installs the raw pgx.Tx. That makes the wrong retry
 // unreachable rather than merely avoided.
 //
-// Retrying a whole EXPLICIT transaction is the other half of the contract and
-// is not implemented here: it would re-run a caller's callback, and a callback
-// that appends to a slice or sends on a channel is not safe to run twice. See
-// the note in RunInTransaction.
+// Retrying a whole EXPLICIT transaction is the OTHER half of the contract, and
+// pgConn.withTransaction is where it lives -- not here, because a statement
+// wrapper cannot repeat a unit of work it can only see one piece of. The price
+// is that a caller's callback runs more than once, which store.Store states as
+// the contract its callers must meet.
 type conflictRetryDBTX struct {
 	inner gendb.DBTX
 }
@@ -88,8 +91,8 @@ func (d conflictRetryDBTX) Exec(ctx context.Context, sql string, args ...any) (p
 // (a failed describe, an argument-count mismatch). The server's
 // SerializationFailure or DeadlockDetected lands on the result reader and
 // reaches the caller through rows.Err() after Next() returns false. A wrapper
-// here therefore always sees a nil error, and a retry that ran anyway would
-// have to be decided at a point where nothing is known yet.
+// here therefore always sees a nil error, and a wrapper that retried anyway
+// would have to decide at a point where it knows nothing yet.
 //
 // Retrying LATER is not available either: by the time the error is knowable
 // the caller already holds the Rows and may have consumed part of it, so

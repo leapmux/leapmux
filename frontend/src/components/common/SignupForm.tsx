@@ -18,8 +18,8 @@ import { UsernameField } from './UsernameField'
 
 /**
  * What a successful sign-up hands its caller. `user` is always set on a
- * successful RPC; `verificationEmailSent` is display noise the callers never
- * read, so it stays out of the contract.
+ * successful RPC; `verificationEmailSent` is a display detail that the callers
+ * never read, so it stays out of the contract.
  */
 export interface SignupResult {
   user: User
@@ -133,7 +133,7 @@ export const SignupForm: Component<SignupFormProps> = (props) => {
           ...captcha.fields(),
         })
       }
-      // One success path for both arms: the two responses carry the same
+      // One success path for both branches: the two responses carry the same
       // two fields, and the `?? false` defaults were spelled twice.
       if (!resp.user)
         throw new Error('sign-up response missing user')
@@ -193,8 +193,8 @@ export const SignupForm: Component<SignupFormProps> = (props) => {
         {/*
           Offered on every sign-up surface, `/setup` included: the hub accepts
           a passkey for the first administrator too, and creates that account
-          as an admin exactly as password sign-up does. What the pills show is
-          decided by `authMethodOptions`, which drops the passkey option on a
+          as an admin exactly as password sign-up does. `authMethodOptions`
+          decides what the pills show, and it drops the passkey option on a
           hub that runs no ceremonies at this origin.
         */}
         <PillGroup
