@@ -3,6 +3,7 @@ package sqlutil
 import (
 	"database/sql"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/leapmux/leapmux/internal/util/userid"
@@ -27,6 +28,32 @@ func RequireInt64(value int64, valid bool, column string) (int64, error) {
 		return 0, fmt.Errorf("database row returned NULL %s", column)
 	}
 	return value, nil
+}
+
+// CoerceInt64 reads an integer that sqlc typed as a bare interface{} -- an
+// expression such as COALESCE(LENGTH(col), 0), whose type the generator cannot
+// infer per dialect. The drivers answer int64, int32, float64 or []byte
+// depending on the engine, so every numeric kind is accepted; anything else is
+// zero, which reads as "absent" for the boolean-sized uses this serves.
+func CoerceInt64(value any) int64 {
+	switch v := value.(type) {
+	case int64:
+		return v
+	case int32:
+		return int64(v)
+	case int:
+		return int64(v)
+	case float64:
+		return int64(v)
+	case []byte:
+		n, _ := strconv.ParseInt(string(v), 10, 64)
+		return n
+	case string:
+		n, _ := strconv.ParseInt(v, 10, 64)
+		return n
+	default:
+		return 0
+	}
 }
 
 // RequireTime unwraps a nullable database timestamp that the schema requires

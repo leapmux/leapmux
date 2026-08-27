@@ -2,7 +2,7 @@
 title: "Encryption & Data"
 description: "What LeapMux stores and encrypts at rest, how to rotate encryption keys, how database migrations work, and how to back up and restore a Hub safely."
 type: docs
-weight: 6
+weight: 7
 ---
 
 This chapter is for operators who run a LeapMux **Hub** (or a solo-mode instance) and need to understand what data is stored, what is encrypted at rest, how to rotate encryption keys, how database migrations work, and how to back up and restore everything safely.

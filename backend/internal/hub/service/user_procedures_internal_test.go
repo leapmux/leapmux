@@ -16,7 +16,7 @@ import (
 // the account's shape (a user row plus a passkey count) before it can say
 // whether a caller must elevate at all, and an interceptor admits or refuses
 // -- it cannot say "the handler decides". Four of the legs are not Connect
-// procedures either; they are the /auth/cli/* consent pages, whose refusal
+// procedures either; they are the /oauth/* consent pages, whose refusal
 // has a third shape (redirect a GET, refuse a POST) that a rung cannot
 // express.
 //
@@ -72,6 +72,7 @@ var userProcedureElevation = map[string]struct {
 	// Deliberately unprotected, each for a stated reason.
 	leapmuxv1connect.UserServiceListMyAPITokensProcedure:         {unprotectedOnPurpose, "metadata only; no secret and no hash leaves the store layer"},
 	leapmuxv1connect.UserServiceRevokeMyAPITokenProcedure:        {unprotectedOnPurpose, "only REDUCES access; a delay is the attacker's gain"},
+	leapmuxv1connect.UserServiceDisconnectAppProcedure:           {unprotectedOnPurpose, "ends every credential one app holds; it only REDUCES access, and it is the remedy on realizing an app is malicious"},
 	leapmuxv1connect.UserServiceUpdateProfileProcedure:           {unprotectedOnPurpose, "a username and a display name are not credentials"},
 	leapmuxv1connect.UserServiceListPasskeysProcedure:            {unprotectedOnPurpose, "reads the owner's own credential metadata"},
 	leapmuxv1connect.UserServiceResendVerificationEmailProcedure: {unprotectedOnPurpose, "re-sends to the address already on the account; it moves nothing"},

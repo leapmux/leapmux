@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/sendq"
 	"github.com/leapmux/leapmux/internal/util/userid"
 
@@ -23,6 +24,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/channelmgr"
+	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
@@ -286,17 +288,11 @@ func newBearerRelay(t *testing.T) (*ChannelRelayHandler, store.Store, *auth.Toke
 	return h, st, tv
 }
 
+// mintAdminAPIToken mints the CLI's default grant: everything except admin:*.
+// See mintScopedAPIToken for an arbitrary one.
 func mintAdminAPIToken(t *testing.T, st store.Store, tv *auth.TokenValidator) string {
 	t.Helper()
-	u, err := st.Users().GetByUsername(context.Background(), "admin")
-	require.NoError(t, err)
-	tokenID := id.Generate()
-	secret := auth.MintAccessSecret()
-	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID: tokenID, UserID: userid.MustNew(u.ID), ClientType: "cli", ClientName: "test",
-		SecretHash: tv.HashSecret(secret),
-	}))
-	return auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)
+	return mintScopedAPIToken(t, st, tv, authscope.NonAdminGrant().String())
 }
 
 // Calling /ws/channel without WebSocket-upgrade headers makes the
@@ -345,7 +341,7 @@ func TestChannelRelay_Bearer_RejectsExpiredToken(t *testing.T) {
 	secret := auth.MintAccessSecret()
 	past := time.Now().Add(-time.Minute)
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID: tokenID, UserID: userid.MustNew(u.ID), ClientType: "cli", ClientName: "test",
+		ID: tokenID, UserID: userid.MustNew(u.ID), ClientID: oauthapp.ControlCLIClientID, InstallationName: "test", GrantedScopes: authscope.NonAdminGrant().String(),
 		SecretHash: tv.HashSecret(secret), ExpiresAt: &past,
 	}))
 
@@ -489,6 +485,7 @@ func TestChannelRelay_DelegationCannotAttachUnscopedChannel(t *testing.T) {
 	tokenID := id.Generate()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, st.DelegationTokens().Create(context.Background(), store.CreateDelegationTokenParams{
+		GrantedScopes:    "workspace:read workspace:write worker:read",
 		ID:               tokenID,
 		UserID:           userid.MustNew(userID),
 		WorkerID:         workerID,

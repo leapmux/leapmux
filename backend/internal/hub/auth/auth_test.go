@@ -10,7 +10,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/hub/auth"
+	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
@@ -443,11 +445,12 @@ func TestRevokeAllUserCredentialsEmitsOnlyGenerationEvent(t *testing.T) {
 	ctx := context.Background()
 
 	require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
-		ID:         id.Generate(),
-		UserID:     userid.MustNew(userID),
-		ClientType: "cli",
-		ClientName: "test",
-		SecretHash: []byte("hash"),
+		ID:               id.Generate(),
+		UserID:           userid.MustNew(userID),
+		ClientID:         oauthapp.ControlCLIClientID,
+		InstallationName: "test",
+		GrantedScopes:    authscope.NonAdminGrant().String(),
+		SecretHash:       []byte("hash"),
 	}))
 	workerID := id.Generate()
 	require.NoError(t, st.Workers().Create(ctx, store.CreateWorkerParams{
@@ -469,7 +472,8 @@ func TestRevokeAllUserCredentialsEmitsOnlyGenerationEvent(t *testing.T) {
 		Position: "a", TileID: "tile-1",
 	}))
 	require.NoError(t, st.DelegationTokens().Create(ctx, store.CreateDelegationTokenParams{
-		ID: id.Generate(), UserID: userid.MustNew(userID), WorkerID: workerID, IssuedForTabID: tabID,
+		GrantedScopes: "workspace:read workspace:write worker:read",
+		ID:            id.Generate(), UserID: userid.MustNew(userID), WorkerID: workerID, IssuedForTabID: tabID,
 		IssuedForTabType: int32(leapmuxv1.TabType_TAB_TYPE_AGENT),
 		SecretHash:       []byte("hash"), ExpiresAt: time.Now().Add(time.Hour),
 	}))

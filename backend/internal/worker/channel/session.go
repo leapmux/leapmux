@@ -13,6 +13,7 @@ import (
 
 	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/authscope"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"google.golang.org/grpc/codes"
@@ -66,8 +67,14 @@ type errorSend struct {
 type channelSession struct {
 	ChannelID string
 	UserID    userid.UserID
-	Session   *noiseutil.Session
-	sender    *channelSender // shared sender for this channel (protects Encrypt+Send)
+	// Scopes is what the credential that opened this channel was GRANTED, as
+	// the Hub announced it at the handshake. It is fixed for the life of the
+	// session: the Hub cannot renegotiate a channel it cannot read, so a
+	// narrowing of the grant CLOSES the channel instead (see
+	// auth.BearerRotated).
+	Scopes  authscope.ScopeSet
+	Session *noiseutil.Session
+	sender  *channelSender // shared sender for this channel (protects Encrypt+Send)
 	// ctx is the session-scoped context handed to every inner-RPC
 	// handler dispatched on this channel. cancel fires on HandleClose
 	// (and CloseAll) so handlers that pass ctx to subprocesses /
@@ -280,6 +287,25 @@ func (m *Manager) HandleOpen(req *leapmuxv1.ChannelOpenRequest) *leapmuxv1.Chann
 		)
 	}
 
+	// The GRANT, on the same terms as the identity above and refused the same
+	// way. An empty list means the Hub failed to say -- a first-party
+	// credential sends the explicit SCOPE_ALL -- so a Hub that dropped the
+	// field opens no channel at all rather than silently promoting a narrow
+	// app to full authority. The failure is loud and immediate; the
+	// alternative is silent and total.
+	scopes, scopesOK := authscope.ScopesFromWire(req.GetGrantedScopes())
+	if !scopesOK {
+		slog.Warn("rejecting channel open: hub announced no usable grant",
+			"channel_id", req.GetChannelId(),
+			"user_id", req.GetUserId(),
+		)
+		return channelwire.NewChannelOpenError(
+			req.GetChannelId(),
+			"no granted scopes",
+			leapmuxv1.ChannelOpenErrorCode_CHANNEL_OPEN_ERROR_CODE_NO_AUTHENTICATED_USER,
+		)
+	}
+
 	hubMax, err := channelwire.IntFromUint64(req.GetMaxMessageSize())
 	if err != nil {
 		return m.rejectInvalidHubMaxMessageSize(req.GetChannelId(), req.GetMaxMessageSize(), err)
@@ -359,6 +385,7 @@ func (m *Manager) HandleOpen(req *leapmuxv1.ChannelOpenRequest) *leapmuxv1.Chann
 	sess := &channelSession{
 		ChannelID: req.GetChannelId(),
 		UserID:    uid,
+		Scopes:    scopes,
 		Session:   session,
 		sender: &channelSender{
 			channelID:      req.GetChannelId(),
@@ -529,7 +556,7 @@ func (m *Manager) HandleMessage(msg *leapmuxv1.ChannelMessage) {
 			// Add(1): the dispatcher increments its bound cleanup
 			// WaitGroup BEFORE launching the goroutine for tracked
 			// methods.
-			m.dispatcher.DispatchAsync(sess.ctx, sess.UserID, kind.Request, bs)
+			m.dispatcher.DispatchAsync(sess.ctx, sess.Caller(), kind.Request, bs)
 		} else {
 			// No dispatcher: route the error through the sender's error-send
 			// queue so this receive-goroutine send can neither block the loop
@@ -1178,4 +1205,11 @@ func (b *boundSender) BindStream(ctrl StreamController) (release func(), ok bool
 
 func (s *channelSender) bindStream(requestID uint64, ctrl StreamController) func() {
 	return s.streams.bind(requestID, ctrl)
+}
+
+// Caller pairs this session's identity with its grant, which is what every
+// inner-RPC handler receives. Building it here rather than at the dispatch site
+// keeps the two facts together from the handshake onwards.
+func (s *channelSession) Caller() Caller {
+	return NewCaller(s.UserID, s.Scopes)
 }

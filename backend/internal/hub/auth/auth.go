@@ -9,6 +9,7 @@ import (
 
 	"connectrpc.com/connect"
 
+	"github.com/leapmux/leapmux/internal/authscope"
 	pwdhash "github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/usernames"
@@ -160,25 +161,30 @@ const userKey contextKey = iota
 // directly -- see Elevation on why the deadline stays raw here and the
 // predicate takes the current instant.
 //
-// CredentialAdminScope reports whether an API-token credential was minted
-// with hub administration. It lives on UserInfo rather than on
+// Scopes is what the CREDENTIAL was granted, which is never wider than what
+// the user themself may do. It lives on UserInfo rather than on
 // CredentialIdentity because that value is compared by value on the hot path
-// (channel and lease indexes key on it), and a second field would change
-// what "same credential" means there. Cookies carry no scope column and
-// leave it false; enforceAdmin admits a session on IsAdmin alone.
+// (channel and lease indexes key on it), and a second field would change what
+// "same credential" means there.
+//
+// It must be constructed EXPLICITLY at every producer. The zero ScopeSet
+// reaches nothing, so a path that forgets to fill it denies rather than
+// grants: ValidateToken (a session cookie), LoadSoloUser (solo mode) and
+// validateRow (a bearer) each state their own answer, and a fourth producer
+// cannot inherit one by accident.
 type UserInfo struct {
-	ID                   userid.UserID
-	Username             string
-	IsAdmin              bool
-	Email                string
-	EmailVerified        bool
-	Credential           CredentialIdentity
-	CredentialAdminScope bool
-	AuthenticatedAt      time.Time
-	CredentialExpiresAt  CredentialDeadline
-	Elevation            Elevation
-	UserAuthGeneration   int64
-	AuthGeneration       uint64
+	ID                  userid.UserID
+	Username            string
+	IsAdmin             bool
+	Email               string
+	EmailVerified       bool
+	Credential          CredentialIdentity
+	Scopes              authscope.ScopeSet
+	AuthenticatedAt     time.Time
+	CredentialExpiresAt CredentialDeadline
+	Elevation           Elevation
+	UserAuthGeneration  int64
+	AuthGeneration      uint64
 	// Solo marks solo mode's synthetic user. LoadSoloUser is the only
 	// producer; every authenticated path leaves it false.
 	Solo bool
@@ -342,9 +348,15 @@ func LoadSoloUser(ctx context.Context, st store.Store) (*UserInfo, error) {
 		return nil, fmt.Errorf("solo user row has a blank id")
 	}
 	return &UserInfo{
-		ID:                 id,
-		Username:           user.Username,
-		IsAdmin:            user.IsAdmin,
+		ID:       id,
+		Username: user.Username,
+		IsAdmin:  user.IsAdmin,
+		// Solo mode's synthetic user is UNSCOPED, spelled out for the same
+		// reason a session is: whoever reaches the port already has full
+		// authority, so there is nothing here for a scope to subtract. A solo
+		// hub still honours a PRESENTED bearer's grant -- the solo rung yields
+		// to one; see authenticate.
+		Scopes:             authscope.UnscopedGrant(),
 		AuthenticatedAt:    time.Now().UTC(),
 		UserAuthGeneration: user.AuthGeneration,
 		Solo:               true,
@@ -516,8 +528,14 @@ func ValidateToken(ctx context.Context, st store.Store, token string) (*UserInfo
 		return nil, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid or expired token"))
 	}
 	return &UserInfo{
-		ID:                  id,
-		Credential:          SessionCredential(token),
+		ID:         id,
+		Credential: SessionCredential(token),
+		// A browser session is UNSCOPED, and it says so explicitly. A session
+		// is the account itself signed in, not an app the account authorized,
+		// so no scope subtracts from it -- and stating that here rather than
+		// leaving the zero value is what keeps a dropped grant fail-closed
+		// everywhere else.
+		Scopes:              authscope.UnscopedGrant(),
 		Username:            row.Username,
 		IsAdmin:             row.IsAdmin,
 		Email:               row.Email,

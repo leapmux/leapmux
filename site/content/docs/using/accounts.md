@@ -162,7 +162,7 @@ Open **Preferences → Account** (or **Profile** from the app menu) — it is th
 
 The first of these in a sitting opens a **Verify your identity** dialog. The passkey rows ask **at the click**, before their own dialog opens, so you answer one credential prompt at a time and never lose a half-filled form to a refusal. Enter your password or use a passkey, and the session stays verified for {{< duration elevation-window >}} — every further change lands without another prompt, and each one extends that window. While it lasts, the top of the Account section says so and offers **End now**. See [Session elevation](/docs/operating/security/#session-elevation) for the limits.
 
-The same dialog guards the rest of **Preferences → Account**: changing your password, changing your account email, and removing a linked provider. One answer covers them all for the next {{< duration elevation-window >}}, so a sitting that touches several settings asks once. Your **Profile** name and your **Command-line credentials** are the two rows it does not cover.
+The same dialog guards the rest of **Preferences → Account**: changing your password, changing your account email, and removing a linked provider. One answer covers them all for the next {{< duration elevation-window >}}, so a sitting that touches several settings asks once. Your **Profile** name and your **Connected apps** are the two rows it does not cover.
 
 > **Note:** Two parties decide whether a passkey ceremony can run on the page you are on, and each one can stop it. **Add passkey** is disabled with the reason on it whenever either does. On the login and sign-up forms the two look different, so the form itself tells you which party refused:
 >
@@ -195,7 +195,7 @@ If you signed up with a passkey and never set a password, use **Disable passkey 
 
 ## Signing in with OAuth / OIDC
 
-If your operator configures one or more external identity providers — GitHub, Google, Apple, or a generic OIDC provider — you can sign in or sign up with them instead of (or in addition to) a password. Configuring providers is an operator task; see [Authentication Providers](/docs/operating/authentication-providers/).
+If your operator configures one or more external identity providers — GitHub, Google, Apple, or a generic OIDC provider — you can sign in or sign up with them instead of (or in addition to) a password. Configuring providers is an operator task; see [Sign-in Providers](/docs/operating/sign-in-providers/).
 
 ### The flow
 
@@ -311,13 +311,13 @@ While the session is verified, a panel at the top of the section says so and off
 
 See [Passkeys](#passkeys) above for the full passkey management surface in this dialog.
 
-### Command-line credentials
+### Connected apps
 
-Every device signed in with `leapmux control auth login` appears here, with the name it reported at consent time, when it was last used, and when it must sign in again. A credential granted hub administration says so.
+Every app that holds access to your account appears here, **grouped by app**: one block per app, and under it one row per machine that app runs on, with every permission you granted, when it was last used, and when it stops working. A credential that can administer the Hub says so.
 
-**Revoke** ends a credential immediately; that device must sign in again. Revoking is the one account change that needs no verification, so you can act the moment you suspect a device is lost. `leapmux control auth credentials` prints the same list from a terminal.
+**Disconnect**, on the app's line, ends your whole authorization of it — every machine at once. **Revoke**, on one row, ends that machine only and leaves the app working elsewhere. Either way the app must be authorized again to come back. Both are among the few account changes that need no verification, so you can act the moment you suspect an app is malicious. `leapmux control auth credentials` prints the same list from a terminal.
 
-See [Command-line credentials](/docs/operating/security/#command-line-credentials) for what a credential can do, how long it lives, and the email notice you get when one is issued.
+See [Connected Apps](/docs/using/connected-apps/) for how to read a row and what registering your own app involves, and [App credentials](/docs/operating/security/#app-credentials) for what a credential can do, how long it lives, and the email notice you get when one is issued.
 
 ### Linked accounts
 
@@ -330,6 +330,6 @@ See [Command-line credentials](/docs/operating/security/#command-line-credential
 ## Where to go next
 
 - [Settings & Preferences](/docs/using/settings/) — the full Profile dialog and other preferences.
-- [Authentication Providers](/docs/operating/authentication-providers/) — configuring OAuth/OIDC as an operator.
+- [Sign-in Providers](/docs/operating/sign-in-providers/) — configuring OAuth/OIDC as an operator.
 - [Running LeapMux](/docs/operating/running-leapmux/) and [Configuration](/docs/operating/configuration/) — choosing a run mode, the `signup_enabled` setting, and SMTP (which controls email verification and password reset).
 - [Security & Threat Model](/docs/operating/security/) — what authentication does and does not protect.

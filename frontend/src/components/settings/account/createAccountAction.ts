@@ -58,9 +58,9 @@ export interface AccountAction<T> {
  * The ordering lives here now, in one place: `busy` clears only after `work`
  * resolves, and `work` is where a caller puts its own re-read.
  *
- * `AccountPasskeys` and `AccountCLITokens` keep their own state. Each holds a
- * list, a modal and a second message channel, so a shared pair of signals
- * would carry a fraction of what they need.
+ * `AccountPasskeys` and `AccountConnectedApps` keep their own state. Each
+ * holds a list, a modal and a second message channel, so a shared pair of
+ * signals would carry a fraction of what they need.
  */
 export function createAccountAction<T = true>(): AccountAction<T> {
   const [busy, setBusy] = createSignal<T | null>(null)

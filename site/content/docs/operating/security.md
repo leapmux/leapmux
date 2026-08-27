@@ -2,7 +2,7 @@
 title: "Security & Threat Model"
 description: "LeapMux trust model and end-to-end encryption: how browser-to-agent traffic is protected, how Worker identity is pinned, and the steps to operate it safely."
 type: docs
-weight: 7
+weight: 8
 ---
 
 This chapter is the security reference for security-conscious users and operators. It describes the trust model LeapMux assumes, the end-to-end encryption (E2EE) that protects Frontend↔Worker traffic, how Worker identity is pinned, what changes in solo mode, and the concrete steps you should take to operate LeapMux safely.
@@ -220,14 +220,17 @@ These actions require elevation:
 - Any passkey change: registering, renaming, removing, or disabling passkey sign-in.
 - Changing your account email.
 - Removing a linked OAuth provider.
-- Authorizing a command-line credential.
+- Authorizing an app.
+- Registering an app, editing its registration, allowing it the step-up leg, or vouching for it.
 - Changing any **Hub setting**, from the Preferences dialog or from `leapmux control admin settings`.
 
 Your account email and a linked provider are on that list because both are recovery identities: the address receives the password-reset link, and a provider is a login method. Whoever can move either one can come back later without the session they started from.
 
+An app **registration** is on it for the same shape of reason one layer out. Editing one rewrites where a consent redirects, so it diverts an authorization code already in flight to an address the editor chose — the most dangerous single write in the feature. **Disconnecting** an app is deliberately not on the list, and neither is retiring a registration: both only reduce what an app can reach, and demanding a fresh factor from somebody who just realized an app is malicious is the wrong failure mode.
+
 An administrator's own surface takes the same rule, and one property decides how strictly: **does the verb create a new way into an account?** Creating a user, resetting somebody's password, changing an account's administration, and writing somebody's email address or its verified flag all do. Each of those refuses a command-line credential outright, however recently that credential verified — it hands out authority the credential itself did not have, and the browser session that would have to verify it is the granting one. The administration change refuses in **both** directions, because one Hub procedure carries the grant and the revoke, so an emergency demotion needs a browser too.
 
-Issuing a command-line credential also creates a new way in, and it is the single exception: an **elevated** command-line credential is admitted, so a headless service account can still renew. What limits it instead is the credential it mints — that one does not renew and expires no later than its issuer. Every other elevated admin verb accepts an elevated command-line credential: deleting a user, editing a display name, writing a Hub setting, and writing an identity provider. See [Command-line credentials](#command-line-credentials).
+Issuing a command-line credential also creates a new way in, and it is the single exception: an **elevated** command-line credential is admitted, so a headless service account can still renew. What limits it instead is the credential it mints — that one does not renew and expires no later than its issuer. Every other elevated admin verb accepts an elevated command-line credential: deleting a user, editing a display name, writing a Hub setting, and writing an identity provider. See [App credentials](#app-credentials).
 
 Hub settings are on the list for a reason of scale rather than of ownership: several of those keys *are* the controls this document describes — `signup_enabled`, the captcha configuration, the rate limits, SMTP, and the `public_url` that passkey sign-in derives its relying party from. A stolen administrator cookie that could turn those off would buy more than any single account change the window already guards.
 
@@ -257,15 +260,15 @@ The ceremony is the device-code ceremony: the CLI asks, the Hub returns an addre
 ```
 $ leapmux control admin settings set public_url https://hub.example.com
 This command needs you to verify your identity.
-  1. Visit https://hub.example.com/auth/cli/activate
+  1. Visit https://hub.example.com/oauth/device
   2. Enter the code: 7XC-8DZ
-Or open: https://hub.example.com/auth/cli/activate?user_code=7XC-8DZ
+Or open: https://hub.example.com/oauth/device?user_code=7XC-8DZ
 ```
 
 Three properties are worth stating:
 
 - **The credential cannot approve its own request.** The approval page accepts a browser session only, and that session must itself be elevated. A stolen credential file can start a ceremony and can never finish one.
-- **Approving grants a window, not a credential.** Nothing is minted, nothing on disk changes, and no "a CLI credential was issued" mail is sent. The window is the same {{< duration elevation-window >}} a browser session gets, every command that uses it slides it forward, and it is capped the same way.
+- **Approving grants a window, not a credential.** Nothing is minted, nothing on disk changes, and no "an app was authorized" mail is sent. The window is the same {{< duration elevation-window >}} a browser session gets, every command that uses it slides it forward, and it is capped the same way.
 - **The browser can be on another machine.** This is the flow SSH sessions and containers already use to sign in, so a headless host verifies from a laptop.
 
 A fully unattended job cannot answer a prompt, and no design makes it able to. Give one a narrowly scoped, short-lived credential instead, and expect to re-verify when a person is present.
@@ -287,22 +290,26 @@ A cookie captured earlier in the day therefore cannot attach a credential that o
 
 Self-service **password reset** and admin **reset-password** both **delete every passkey** on the account. That is deliberate: a password reset is break-glass recovery, and leaving old passkeys registered would let someone who still holds a device sign back in without knowing the new password.
 
-## Command-line credentials
+## App credentials
 
-`leapmux control auth login` mints an API token: an access token that lives for {{< duration access-token >}} and renews itself, backed by a refresh token that lives {{< duration refresh-token >}}. The credential is written to one file per Hub at mode `0600` — see [Credential file location](/docs/operating/control-cli/#credential-file-location) for where.
+`leapmux control auth login` mints an app credential: an access token that lives for {{< duration access-token >}} and renews itself, backed by a refresh token that lives {{< duration refresh-token >}}. The credential is written to one file per Hub at mode `0600` — see [Credential file location](/docs/operating/control-cli/#credential-file-location) for where.
 
 These rules limit what that credential can do:
 
 - **Authorizing one needs an elevated session.** The consent page sends you through a verification prompt first, and consenting slides the window forward like every other sensitive action. This holds for the device-code flow too, where the verification happens in a browser on a *different* machine from the machine to authorize — which is the point.
-- **Hub administration is opt-in per credential.** An ordinary CLI credential can do everything you can do *except* administer the Hub, even when your account is an administrator. `leapmux control auth login --admin` asks for the admin scope, the browser consent page states plainly what it grants, and only an administrator may grant it. So a stolen credential file from a routine login cannot manage users, workers, or settings.
+- **Every credential carries a named set of permissions.** A grant only ever subtracts from what its owner can do; it never adds. The consent page states each permission as a sentence, and the credential is refused anything outside its grant — at the Hub, and again inside the encrypted channel at the Worker, which is where a file read or a terminal write actually happens.
+- **Hub administration is opt-in per credential.** An ordinary credential can do everything you can do *except* administer the Hub, even when your account is an administrator. `leapmux control auth login --scope "admin:read admin:users"` asks for it, the browser consent page states plainly what it grants, and only an administrator may grant it. So a stolen credential file from a routine login cannot manage users, workers, or settings.
+- **The account's own authenticators are outside every grant.** Adding a passkey, changing the recovery address, unlinking a sign-in provider, and managing another app's credential are refused to any credential, whatever the consent screen offered. Each of those creates authority that outlives the app's connection, so disconnecting the app would no longer withdraw what it was given.
 - **The lifetime is capped.** Each refresh moves the refresh window forward, but never past **{{< duration absolute-cap >}}** from the day you authorized the credential. After that the device signs in again.
 - **Logging in again retires the old credential.** The previous token is revoked, so a re-login does not leave a live secret behind in your shell history or on the Hub.
-- **A credential issued by another credential does not renew, and expires no later than its issuer.** So a chain of self-issued credentials gets shorter each time and ends at the browser consent that started it, instead of restarting the absolute ceiling at each step.
+- **A credential issued by another credential does not renew, expires no later than its issuer, and is never wider than it.** So a chain of self-issued credentials gets shorter and narrower each time, and ends at the browser consent that started it instead of restarting the ceiling at each step.
 - **A credential either renews or has a fixed lifetime, never both.** `leapmux control auth login` and the default `admin api-token issue` mint the renewing kind. `admin api-token issue --ttl <seconds>` mints a service credential that lives exactly that long and carries no refresh token; see [API tokens](/docs/operating/control-cli/#api-tokens).
 
-If SMTP is configured and your address is verified, LeapMux emails you whenever a command-line credential is issued for your account, saying which device asked and whether it was granted hub administration. That notice is how you learn about a credential you did not create.
+If SMTP is configured and your address is verified, LeapMux emails you whenever a credential is issued for your account. The message names the app, the installation, and **every** permission granted — listed in full rather than counted, so an ordinary authorization is distinguishable from one that also administers the Hub. A credential an administrator issued for you says so, and does not read as a receipt for something you did.
 
-Review and revoke your credentials under **Preferences → Account → Command-line credentials**. Revoking deliberately does *not* require elevation: it only reduces access, and somebody who believes a credential is stolen should not have to find their password first.
+Review and end access under **Preferences → Account → Connected apps**, which groups the list by app. **Disconnect** ends the app's access on every machine it runs on at once; **Revoke** ends one machine and leaves the app connected elsewhere. Reach for the first whenever the decision is about the app, because ending one installation of an app you no longer trust leaves it working on the others. Neither requires elevation: both only reduce access, and somebody who believes an app is malicious should not have to find their password first. See [Connected Apps](/docs/using/connected-apps/).
+
+Which apps may be authorized at all, and what each may ask for, is an operator decision — see [App Authorization](/docs/operating/app-authorization/).
 
 ## OAuth flow binding
 
@@ -351,6 +358,6 @@ The facts an operator looks up most often. The full crypto primitives are in the
 | Solo mode default bind | `127.0.0.1:4327`, no authentication (local trust only) |
 | At-rest secret key file | `encryption.key` (mode `0600`, default `<DataDir>/encryption.key`) |
 | Session elevation window | {{< duration elevation-window digits >}}, extended by each sensitive action; {{< duration elevation-cap digits >}} maximum from the proven factor |
-| CLI credential lifetime | Access token {{< duration access-token digits >}} (renewed for you) · refresh {{< duration refresh-token digits >}} · {{< duration absolute-cap digits >}} absolute |
+| App credential lifetime | Access token {{< duration access-token digits >}} (renewed for you) · refresh {{< duration refresh-token digits >}} · {{< duration absolute-cap digits >}} absolute |
 
-See also: [Managing Workers](/docs/operating/managing-workers/) · [Encryption & Data](/docs/operating/encryption-and-data/) · [Authentication Providers](/docs/operating/authentication-providers/) · [Accounts & Authentication](/docs/using/accounts/) · [Running LeapMux](/docs/operating/running-leapmux/).
+See also: [Managing Workers](/docs/operating/managing-workers/) · [Encryption & Data](/docs/operating/encryption-and-data/) · [Sign-in Providers](/docs/operating/sign-in-providers/) · [Accounts & Authentication](/docs/using/accounts/) · [Running LeapMux](/docs/operating/running-leapmux/).

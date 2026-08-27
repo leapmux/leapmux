@@ -11,7 +11,24 @@ package audit
 // once. It used to be restated inside that regex, and the rule's one silent
 // failure mode is a column the scan does not know -- the query is simply never
 // classified as an ownership predicate, and nothing anywhere reports a gap.
-var ownerColumns = []string{"user_id", "owner_user_id", "registered_by", "created_by"}
+// ownerColumns are the column names that name a row's OWNER.
+//
+// created_by_user_id is PROVENANCE rather than ownership -- who registered an
+// app -- but it is listed anyway, and the reason is the rule's polarity: this
+// list decides which WHERE clauses get classified at all, so a column left off
+// it is silently outside every check. A provenance column that no query filters
+// on costs one line here and nothing else; one that a query starts filtering on
+// later is then classified from the first day rather than from the day somebody
+// notices.
+//
+// verified_by_user_id is NOT here, and the tripwire below is why: it is the one
+// provenance column that carries no foreign key onto users, so listing it would
+// be a stale entry rather than early coverage. See the oauth_clients migration
+// for why it cannot have one.
+var ownerColumns = []string{
+	"user_id", "owner_user_id", "registered_by", "created_by",
+	"created_by_user_id",
+}
 
 // unguardedOwnerFilterQueries are the queries whose WHERE clause names an owner
 // column but whose caller deliberately does NOT route the bind through
@@ -59,6 +76,19 @@ var unguardedOwnerFilterQueries = map[string]string{
 	// cannot widen anything: the correlation is column-to-column, so a row can
 	// only ever match its own user_state row.
 	"DeleteUserOpBatchesBeforePhysical": "cross-user retention sweep; its only user_id comparison correlates each batch to its own owner's compaction watermark, and it accepts no caller id to guard",
+	// The app-disconnect cascade. Its user_id is not a CALLER id at all: it
+	// names WHOSE credentials to retire, and an EMPTY value means "every
+	// user's", which is what retiring the app itself does. The statement says
+	// so explicitly -- `(sqlc.arg(user_id) = '' OR user_id = sqlc.arg(user_id))`
+	// -- so a blank value takes the whole-set arm rather than matching
+	// blank-owner rows, exactly as RevokeOtherUserAPITokens' empty keep_id does.
+	//
+	// Routing it through userid.OwnerFilter would REFUSE the whole-set case,
+	// which is the one an administrator retiring an app needs. The
+	// authorization that decides whether the caller may retire the app happened
+	// one statement earlier, in RevokeOAuthClient, which does carry the guard.
+	"RevokeAPITokensForOAuthClient": "the disconnect cascade; its user_id names WHOSE credentials to retire, and empty deliberately means every user's",
+	"ListAPITokenIDsForOAuthClient": "the read that pairs with RevokeAPITokensForOAuthClient, on the same whole-set convention",
 }
 
 // unscopedOwnerKeyedQueries are the queries that touch an owner-keyed table --

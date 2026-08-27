@@ -248,7 +248,7 @@ export const SettingRow: Component<SettingRowProps> = (props) => {
           return null
         // DEFERRED until the row comes into view. A custom editor is a whole
         // panel of its own, and several load on mount: AccountPasskeys issues
-        // ListPasskeys and AccountCLITokens runs a keyset loop over
+        // ListPasskeys and AccountConnectedApps runs a keyset loop over
         // ListMyAPITokens. The Account group leads the navigation, so every
         // Ctrl+, mounted both -- two list requests for a user who came for
         // Appearance and clicks away -- and both of those rows sit below the

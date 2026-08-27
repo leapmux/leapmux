@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/util/userid"
 
 	"connectrpc.com/connect"
@@ -26,6 +27,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/mail"
 	hubwebauthn "github.com/leapmux/leapmux/internal/hub/webauthn"
 
+	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/servicetest"
 	"github.com/leapmux/leapmux/internal/hub/settings"
@@ -66,12 +68,13 @@ func (e *userTestEnv) bearerFor(t *testing.T) string {
 	secret := auth.MintAccessSecret()
 	expires := time.Now().Add(time.Hour)
 	require.NoError(t, e.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID:         tokenID,
-		UserID:     userid.MustNew(e.userID),
-		ClientType: "cli",
-		ClientName: "test-cli",
-		SecretHash: e.tv.HashSecret(secret),
-		ExpiresAt:  &expires,
+		ID:               tokenID,
+		UserID:           userid.MustNew(e.userID),
+		ClientID:         oauthapp.ControlCLIClientID,
+		InstallationName: "test-cli",
+		GrantedScopes:    authscope.NonAdminGrant().String(),
+		SecretHash:       e.tv.HashSecret(secret),
+		ExpiresAt:        &expires,
 	}))
 	return auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)
 }
@@ -1994,21 +1997,47 @@ func assertCannotVerify(t *testing.T, err error) {
 		"a credential with no remedy must not be offered a prompt")
 }
 
+// assertOutOfScope is the THIRD refusal, and it is the one an app meets on the
+// account's own authenticators.
+//
+// Those procedures are ScopeNever: they add a factor, remove a sign-in method,
+// or manage another credential, and every one of those outlives the app's
+// connection. No consent screen offers them, so no ceremony can ever grant
+// them -- which is why the answer must carry NO elevation marker. A marker
+// here would send the CLI to a browser for a permission the browser cannot
+// give, and the retry would meet this same refusal.
+func assertOutOfScope(t *testing.T, err error) {
+	t.Helper()
+	require.Error(t, err)
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+	var connectErr *connect.Error
+	require.ErrorAs(t, err, &connectErr)
+	assert.Empty(t, connectErr.Meta().Get(service.ElevationRequiredHeader),
+		"a refusal no ceremony can clear must not be offered a prompt")
+}
+
 // A CLI credential carries a step-up window of its own, proven in a browser
-// through /auth/cli/elevate-authorization. Every restricted RPC answers it
+// through /oauth/step-up. Every restricted RPC answers it
 // the SAME way, and the marker says so: the remedy is real, so the CLI runs
 // the ceremony and retries rather than reporting a refusal it cannot act on.
 //
-// The step-up MUTATION surface -- ChangePassword and the passkey verbs --
-// used to be the exception. It refused a command-line credential outright,
-// on the reasoning that its locked re-check, its revocation and its teardown
-// all read the acting SESSION row. Two of those three were real defects
-// rather than reasons: the re-check is credential-shaped now, and the
-// revocation keeps the acting credential whichever kind it is. So the
-// exception is gone, and one question has one answer again.
+// The step-up MUTATION surface answers a command-line credential at one of TWO
+// rungs, and which one is the point of this test.
+//
+// ChangePassword takes account:write, so a credential that holds it reaches the
+// elevation gate and gets the marker: the remedy is real, and the CLI runs the
+// step-up leg. Everything that manages the account's AUTHENTICATORS -- the
+// passkey verbs, the recovery address, an unlinked provider -- is ScopeNever,
+// so the scope rung answers first and carries no marker. Those permissions
+// appear on no consent screen, so no browser ceremony can grant them, and a
+// marker would send the CLI to a prompt whose retry meets the same refusal.
+//
+// The two answers must stay distinguishable, because a client picks its next
+// move from the marker alone.
 //
 // The account shape below matters: it holds a password, so the account has a
-// factor to prove and requireElevation is the rule that applies.
+// factor to prove and requireElevation is the rule that applies where the
+// scope rung lets the request through.
 // TestGatedRPCs_RefuseACommandLineCredentialWithNothingToElevateWith covers
 // the other shape, where the answer is different for a stated reason.
 //
@@ -2030,37 +2059,39 @@ func TestGatedRPCs_AnswerACommandLineCredentialByItsRemedy(t *testing.T) {
 	}, bearer))
 	assertElevationRequired(t, err)
 
+	// The recovery address and the sign-in methods are ScopeNever, so the
+	// scope rung answers before the elevation gate runs. That is a DIFFERENT
+	// refusal with a different remedy, and assertOutOfScope pins the
+	// difference the client acts on: no marker, so no prompt.
 	_, err = env.client.RequestEmailChange(context.Background(), bearerReq(&leapmuxv1.RequestEmailChangeRequest{
 		NewEmail: "moved@example.com",
 	}, bearer))
-	assertElevationRequired(t, err)
+	assertOutOfScope(t, err)
 
 	_, err = env.client.UnlinkOAuthProvider(context.Background(), bearerReq(&leapmuxv1.UnlinkOAuthProviderRequest{
 		ProviderId: "github-1",
 	}, bearer))
-	assertElevationRequired(t, err)
+	assertOutOfScope(t, err)
 
 	_, err = env.client.RenamePasskey(context.Background(), bearerReq(&leapmuxv1.RenamePasskeyRequest{
 		Id: "pk-1", FriendlyName: "Renamed",
 	}, bearer))
-	assertElevationRequired(t, err)
+	assertOutOfScope(t, err)
 
 	// The whole passkey-management surface answers alike.
 	_, err = env.client.DeletePasskey(context.Background(), bearerReq(&leapmuxv1.DeletePasskeyRequest{
 		Id: "pk-1",
 	}, bearer))
-	assertElevationRequired(t, err)
+	assertOutOfScope(t, err)
 
 	_, err = env.client.DeactivatePasskeyAuth(context.Background(),
 		bearerReq(&leapmuxv1.DeactivatePasskeyAuthRequest{NewPassword: "newpass123"}, bearer))
-	assertElevationRequired(t, err)
+	assertOutOfScope(t, err)
 
-	// Registration is refused at the same gate for the same reason. What a
-	// command line cannot do is answer the WebAuthn ceremony that follows,
-	// which is a property of WebAuthn rather than of this gate.
+	// Registration is refused at the same rung for the same reason.
 	_, err = env.client.BeginPasskeyRegistration(context.Background(),
 		bearerReq(&leapmuxv1.BeginPasskeyRegistrationRequest{}, bearer))
-	assertElevationRequired(t, err)
+	assertOutOfScope(t, err)
 
 	// No path of the seven wrote anything.
 	user, err := env.store.Users().GetByID(context.Background(), env.userID)
@@ -2096,9 +2127,11 @@ func TestGatedRPCs_RefuseACommandLineCredentialWithNothingToElevateWith(t *testi
 	}, bearer))
 	assertCannotVerify(t, err)
 
+	// Registering a passkey ADDS an authenticator that outlives the app, so it
+	// is out of scope for a credential rather than a factor it could prove.
 	_, err = env.client.BeginPasskeyRegistration(context.Background(),
 		bearerReq(&leapmuxv1.BeginPasskeyRegistrationRequest{}, bearer))
-	assertCannotVerify(t, err)
+	assertOutOfScope(t, err)
 
 	after, err := env.store.Users().GetByID(context.Background(), env.userID)
 	require.NoError(t, err)

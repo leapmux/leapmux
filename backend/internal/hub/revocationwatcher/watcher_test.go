@@ -15,8 +15,10 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/config"
+	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/hub/revocationwatcher"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/servicetest"
@@ -201,11 +203,12 @@ func (e *envT) seedAPIToken(t *testing.T) string {
 	t.Helper()
 	tokenID := id.Generate()
 	require.NoError(t, e.st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID:         tokenID,
-		UserID:     userid.MustNew(e.userID),
-		ClientType: "cli",
-		ClientName: "test",
-		SecretHash: []byte("hash"),
+		ID:               tokenID,
+		UserID:           userid.MustNew(e.userID),
+		ClientID:         oauthapp.ControlCLIClientID,
+		InstallationName: "test",
+		GrantedScopes:    authscope.NonAdminGrant().String(),
+		SecretHash:       []byte("hash"),
 	}))
 	return tokenID
 }
@@ -214,6 +217,7 @@ func (e *envT) seedDelegationToken(t *testing.T) string {
 	t.Helper()
 	tokenID := id.Generate()
 	require.NoError(t, e.st.DelegationTokens().Create(context.Background(), store.CreateDelegationTokenParams{
+		GrantedScopes:    "workspace:read workspace:write worker:read",
 		ID:               tokenID,
 		UserID:           userid.MustNew(e.userID),
 		WorkerID:         e.workerID,
@@ -266,8 +270,9 @@ func TestWatcher_APITokenRotationEvictsRemoteCacheWithoutClosingChannels(t *test
 	require.NoError(t, env.st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
 		ID:               tokenID,
 		UserID:           userid.MustNew(env.userID),
-		ClientType:       "cli",
-		ClientName:       "remote-cache-test",
+		ClientID:         oauthapp.ControlCLIClientID,
+		InstallationName: "remote-cache-test",
+		GrantedScopes:    authscope.NonAdminGrant().String(),
 		SecretHash:       validator.HashSecret(oldAccessSecret),
 		RefreshHash:      validator.HashSecret(oldRefreshSecret),
 		ExpiresAt:        &expiresAt,

@@ -30,7 +30,7 @@ func sessionCookieNamed(name, sessionID string) *http.Cookie {
 	return &http.Cookie{Name: name, Value: sessionID}
 }
 
-// TestCLIConsentLegReadsTheHubsCookieSpelling covers /auth/cli/start.
+// TestCLIConsentLegReadsTheHubsCookieSpelling covers /oauth/authorize.
 //
 // A signed-in, elevated browser reaches the consent page. The same session
 // under the plantable spelling reaches the sign-in bounce instead, because
@@ -42,7 +42,7 @@ func TestCLIConsentLegReadsTheHubsCookieSpelling(t *testing.T) {
 	env := setupAPIAuth(t)
 	require.NoError(t, settings.KeySecureCookies.Set(context.Background(), env.set, true))
 	cookie := env.elevatedAdminCookie(t)
-	target := env.server.URL + "/auth/cli/start?" + startQuery(nil).Encode()
+	target := env.server.URL + "/oauth/authorize?" + startQuery(nil).Encode()
 
 	resp := getWithCookie(t, target, sessionCookieNamed(auth.SecureCookieName, cookie.Value))
 	assert.Equal(t, http.StatusOK, resp.StatusCode,
@@ -77,7 +77,7 @@ func TestOAuthReauthLegReadsTheHubsCookieSpelling(t *testing.T) {
 
 	// The plantable spelling does not, and the refusal is the one that says
 	// there is no session rather than a redirect to a provider.
-	req, err := http.NewRequest(http.MethodGet, server.URL+"/auth/oauth/"+providerID+"/reauth", nil)
+	req, err := http.NewRequest(http.MethodGet, server.URL+"/auth/idp/"+providerID+"/reauth", nil)
 	require.NoError(t, err)
 	req.AddCookie(sessionCookieNamed(auth.CookieName, cookie.Value))
 	resp, err := noRedirectClient().Do(req)

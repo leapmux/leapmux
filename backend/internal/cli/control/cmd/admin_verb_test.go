@@ -49,6 +49,28 @@ func adminLeaves() []adminLeaf {
 		}},
 		{"RunAdminSettingsReset", "settings reset", func() error { return RunAdminSettingsReset(nil, []string{"theme"}) }},
 
+		{"RunAdminAppList", "app list", func() error { return RunAdminAppList(nil, nil) }},
+		{"RunAdminAppRegister", "app register", func() error {
+			return RunAdminAppRegister(nil, []string{"--name", "an app", "--scope", "workspace:read"})
+		}},
+		{"RunAdminAppUpdate", "app update", func() error {
+			return RunAdminAppUpdate(nil, []string{"--client-id", "c1", "--name", "renamed"})
+		}},
+		{"RunAdminAppSetElevation", "app allow-elevation", func() error {
+			return RunAdminAppSetElevation(nil, []string{"--client-id", "c1"}, true)
+		}},
+		{"RunAdminAppSetElevation", "app deny-elevation", func() error {
+			return RunAdminAppSetElevation(nil, []string{"--client-id", "c1"}, false)
+		}},
+		{"RunAdminAppSetVerified", "app verify", func() error {
+			return RunAdminAppSetVerified(nil, []string{"--client-id", "c1"}, true)
+		}},
+		{"RunAdminAppSetVerified", "app unverify", func() error {
+			return RunAdminAppSetVerified(nil, []string{"--client-id", "c1"}, false)
+		}},
+		{"RunAdminAppRevoke", "app revoke", func() error { return RunAdminAppRevoke(nil, []string{"--client-id", "c1"}) }},
+		{"RunAdminAppDelete", "app delete", func() error { return RunAdminAppDelete(nil, []string{"--client-id", "c1"}) }},
+
 		{"RunAdminUserList", "user list", func() error { return RunAdminUserList(nil, nil) }},
 		{"RunAdminUserGet", "user get", func() error { return RunAdminUserGet(nil, []string{"--username", "amy"}) }},
 		{"RunAdminUserCreate", "user create", func() error {
@@ -87,7 +109,7 @@ func adminLeaves() []adminLeaf {
 
 		{"RunAdminAPITokenList", "api-token list", func() error { return RunAdminAPITokenList(nil, nil) }},
 		{"RunAdminAPITokenIssue", "api-token issue", func() error {
-			return RunAdminAPITokenIssue(nil, []string{"--user-id", "u1", "--client-name", "ci"})
+			return RunAdminAPITokenIssue(nil, []string{"--user-id", "u1", "--installation-name", "ci"})
 		}},
 		{"RunAdminAPITokenRevoke", "api-token revoke", func() error {
 			return RunAdminAPITokenRevoke(nil, []string{"--id", "t1"})
@@ -112,17 +134,17 @@ func adminLeaves() []adminLeaf {
 			return RunAdminWorkerRegKeyPurgeExpired(nil, nil)
 		}},
 
-		{"RunAdminOAuthProviderAdd", "oauth-provider add", func() error {
+		{"RunAdminOAuthProviderAdd", "idp add", func() error {
 			return RunAdminOAuthProviderAdd(nil, []string{"--type", "github"})
 		}},
-		{"RunAdminOAuthProviderList", "oauth-provider list", func() error { return RunAdminOAuthProviderList(nil, nil) }},
-		{"RunAdminOAuthProviderRemove", "oauth-provider remove", func() error {
+		{"RunAdminOAuthProviderList", "idp list", func() error { return RunAdminOAuthProviderList(nil, nil) }},
+		{"RunAdminOAuthProviderRemove", "idp remove", func() error {
 			return RunAdminOAuthProviderRemove(nil, []string{"--id", "p1"})
 		}},
-		{"RunAdminOAuthProviderSetEnabled", "oauth-provider enable", func() error {
+		{"RunAdminOAuthProviderSetEnabled", "idp enable", func() error {
 			return RunAdminOAuthProviderSetEnabled(nil, []string{"--id", "p1"}, true)
 		}},
-		{"RunAdminOAuthProviderSetEnabled", "oauth-provider disable", func() error {
+		{"RunAdminOAuthProviderSetEnabled", "idp disable", func() error {
 			return RunAdminOAuthProviderSetEnabled(nil, []string{"--id", "p1"}, false)
 		}},
 
@@ -347,9 +369,9 @@ func TestAdminVerbs_RefuseAMissingRequiredID(t *testing.T) {
 		"worker get":              func() error { return RunAdminWorkerGet(nil, nil) },
 		"worker deregister":       func() error { return RunAdminWorkerDeregister(nil, nil) },
 		"worker reg-key revoke":   func() error { return RunAdminWorkerRegKeyRevoke(nil, nil) },
-		"oauth-provider remove":   func() error { return RunAdminOAuthProviderRemove(nil, nil) },
-		"oauth-provider enable":   func() error { return RunAdminOAuthProviderSetEnabled(nil, nil, true) },
-		"oauth-provider disable":  func() error { return RunAdminOAuthProviderSetEnabled(nil, nil, false) },
+		"idp remove":              func() error { return RunAdminOAuthProviderRemove(nil, nil) },
+		"idp enable":              func() error { return RunAdminOAuthProviderSetEnabled(nil, nil, true) },
+		"idp disable":             func() error { return RunAdminOAuthProviderSetEnabled(nil, nil, false) },
 	}
 	for name, run := range verbs {
 		t.Run(name, func(t *testing.T) {

@@ -17,7 +17,7 @@ import { centeredFull, pageCard } from '~/styles/shared.css'
  * The standalone step-up page.
  *
  * It sits OUTSIDE the `(app)` group, so it renders without the application
- * shell — the hub bounces a CLI login here from `/auth/cli/start`, and that
+ * shell — the hub bounces a CLI login here from `/oauth/authorize`, and that
  * user has no reason to load the workspace. It therefore carries its own
  * guard, modelled on AuthGuard: the same states, decided once, with the
  * redirect and the render reading one value.

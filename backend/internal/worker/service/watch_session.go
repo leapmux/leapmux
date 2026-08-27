@@ -24,8 +24,12 @@ type watchSession struct {
 	channelID string
 	sessionID uint64
 	sender    channel.ResponseWriter
-	ctx       context.Context
-	cancel    context.CancelFunc
+	// caller carries the grant the channel was opened with. WatchEvents is a
+	// MULTIPLEXER -- one stream carries agents and terminals -- so its method
+	// scope can only be a floor, and the real gate is per entity here.
+	caller channel.Caller
+	ctx    context.Context
+	cancel context.CancelFunc
 
 	// pending is a COALESCING SLOT, not a queue: every request states the whole
 	// interest, so a newer one supersedes an older one outright.
@@ -34,7 +38,7 @@ type watchSession struct {
 	notify  chan struct{} // cap 1
 }
 
-func newWatchSession(svc *Service, sender channel.ResponseWriter) *watchSession {
+func newWatchSession(svc *Service, caller channel.Caller, sender channel.ResponseWriter) *watchSession {
 	ctx, cancel := context.WithCancel(bgCtx())
 	channelID := sender.ChannelID()
 	return &watchSession{
@@ -42,6 +46,7 @@ func newWatchSession(svc *Service, sender channel.ResponseWriter) *watchSession 
 		channelID: channelID,
 		sessionID: svc.Watchers.BeginSession(channelID),
 		sender:    sender,
+		caller:    caller,
 		ctx:       ctx,
 		cancel:    cancel,
 		notify:    make(chan struct{}, 1),
@@ -117,8 +122,21 @@ func (s *watchSession) apply(r *leapmuxv1.WatchEventsRequest) {
 	if s.ctx.Err() != nil {
 		return
 	}
-	agentResult := s.resolveAgents(r.GetAgents())
-	termResult := s.resolveTerminals(r.GetTerminals())
+	// The PER-ENTITY gate. A grant that covers one kind and not the other must
+	// subscribe what it covers and say precisely what it did not -- refusing
+	// the whole request would take away the half the account did grant.
+	//
+	// A forbidden kind is reported as though the request had listed those
+	// entities and they were refused, and it is applied as an EMPTY interest:
+	// registration is replace-semantics, so an app whose grant narrows must end
+	// up watching nothing of that kind rather than keeping what it had.
+	agentReq, agentDenied := partitionByScope(s.caller, r.GetAgents(), leapmuxv1.Scope_SCOPE_AGENT_READ, agentEntryIDs)
+	termReq, termDenied := partitionByScope(s.caller, r.GetTerminals(), leapmuxv1.Scope_SCOPE_TERMINAL_READ, terminalEntryIDs)
+
+	agentResult := s.resolveAgents(agentReq)
+	termResult := s.resolveTerminals(termReq)
+	agentResult.rejections = append(agentResult.rejections, agentDenied...)
+	termResult.rejections = append(termResult.rejections, termDenied...)
 
 	// Re-check after DB work: OnCancel may have retired this session, or a
 	// successor may own the channel — either way, do not re-register.
@@ -398,3 +416,42 @@ func (s *watchSession) resolveTerminals(terminals []*leapmuxv1.WatchTerminalEntr
 		rejections:  rejections,
 	}
 }
+
+// partitionByScope splits a requested entity list into the part this caller's
+// grant reaches and the part it does not.
+//
+// It is generic over the two entry kinds because the RULE is the same for both
+// and only the id accessor differs -- two copies would be two chances for one
+// kind's gate to drift from the other's, on a stream that carries them
+// together.
+//
+// A caller WITH the scope keeps its whole request. A caller without it gets an
+// EMPTY request plus one FORBIDDEN rejection per entity it named: the empty
+// request matters because registration is replace-semantics, so a grant that
+// narrows must leave the session watching nothing of that kind rather than
+// keeping whatever it had before.
+func partitionByScope[T any](
+	caller channel.Caller,
+	requested []T,
+	scope leapmuxv1.Scope,
+	idOf func(T) string,
+) ([]T, []*leapmuxv1.WatchRejection) {
+	if caller.Allows(scope) {
+		return requested, nil
+	}
+	rejections := make([]*leapmuxv1.WatchRejection, 0, len(requested))
+	for _, entry := range requested {
+		rejections = append(rejections, &leapmuxv1.WatchRejection{
+			EntityId: idOf(entry),
+			Reason:   leapmuxv1.WatchRejectionReason_WATCH_REJECTION_REASON_FORBIDDEN,
+		})
+	}
+	return nil, rejections
+}
+
+// agentEntryIDs and terminalEntryIDs are the id accessors partitionByScope
+// needs. They exist because Go has no generic METHOD, so the shared rule is a
+// free function and each kind hands it the one thing that differs.
+func agentEntryIDs(e *leapmuxv1.WatchAgentEntry) string { return e.GetAgentId() }
+
+func terminalEntryIDs(e *leapmuxv1.WatchTerminalEntry) string { return e.GetTerminalId() }

@@ -64,6 +64,30 @@ const (
 	// One operation rather than several, so the two budgets cannot drift
 	// apart and an operator has one number to set.
 	OpElevation Operation = "elevation"
+
+	// OpOAuthAnonymous limits the authorization server's three ANONYMOUS legs:
+	// /oauth/device-authorization, /oauth/token and /oauth/register.
+	//
+	// They are the only endpoints on the hub an unauthenticated caller can
+	// drive in a loop against the store, and no interceptor sees them: they
+	// are mux routes rather than Connect procedures, so they reach this
+	// package through AllowHTTP instead.
+	//
+	// It is keyed by CLIENT ADDRESS rather than by user, because there is no
+	// user. See clientAddressKey for what that costs behind a proxy, and why
+	// the budget is sized the way it is.
+	//
+	// The budget is deliberately generous: a device-code client polls every
+	// five seconds for up to ten minutes, which is 120 requests for ONE
+	// authorization, and several clients legitimately share one address. What
+	// it stops is the unbounded case -- a script minting device grants or
+	// registrations as fast as the hub answers.
+	//
+	// It counts no CREDENTIAL FAILURE, so it has no entry in the failure
+	// window at all: a wrong device_code is not a guess at a secret (the code
+	// is 128 bits of entropy the hub issued), and counting it would let an
+	// attacker exhaust a shared address's budget with garbage.
+	OpOAuthAnonymous Operation = "oauth_anonymous"
 )
 
 // Limits is one operation's effective budget.
@@ -103,6 +127,18 @@ type LimitValue struct {
 type opSpec struct {
 	limits              Limits
 	isCredentialFailure func(error) bool
+	// hiddenInSolo drops the operation's settings key from ListSettings on a
+	// solo hub, and it is a PER-OPERATION answer rather than a property of
+	// rate limiting.
+	//
+	// The question it asks is whether the thing counted still happens with one
+	// user and no sign-up. For a per-user credential ceremony the answer is no,
+	// so the key is inert clutter. For a limit keyed by client ADDRESS on an
+	// endpoint solo also serves, the answer is yes -- and hiding the key would
+	// take it out of the preferences dialog AND out of `leapmux control admin
+	// settings`, leaving an operator who runs `leapmux solo -listen
+	// 0.0.0.0:4327` no way to reach it.
+	hiddenInSolo bool
 }
 
 // defaults is the code-side source of truth applied when no settings row
@@ -112,12 +148,25 @@ type opSpec struct {
 var defaults = map[Operation]opSpec{
 	OpElevation: {
 		limits: Limits{MaxAttempts: 5, WindowSeconds: 900},
+		// One user, and elevation is keyed by that user.
+		hiddenInSolo: true,
 		isCredentialFailure: func(err error) bool {
 			// The two factors a user may present to elevate share one
 			// budget, so an attacker cannot double their attempts by
 			// alternating between the password and the passkey path.
 			return errors.Is(err, auth.ErrInvalidCurrentPassword) || errors.Is(err, auth.ErrInvalidElevationAssertion)
 		},
+	},
+	OpOAuthAnonymous: {
+		// 600 in ten minutes: five device-code polls' worth of headroom on one
+		// shared address, and still a hard ceiling on a loop.
+		limits: Limits{MaxAttempts: 600, WindowSeconds: 600},
+		// Nothing here presents a secret the caller had to guess, so no error
+		// counts against the failure window. See OpOAuthAnonymous.
+		isCredentialFailure: func(error) bool { return false },
+		// A solo hub authorizes apps like any other -- the solo rung yields to
+		// a presented bearer -- and these legs are anonymous there too.
+		hiddenInSolo: false,
 	},
 }
 
@@ -139,7 +188,7 @@ var limitKeys = func() map[Operation]*settings.Key[LimitValue] {
 				Category:     "rate-limits",
 				Title:        "Rate limit - " + string(op),
 				Summary:      fmt.Sprintf("rate limit for %s (failed attempts per window)", op),
-				HiddenInSolo: true,
+				HiddenInSolo: spec.hiddenInSolo,
 				Fields: []settings.Field{
 					{Name: "enabled", Label: "Enabled", Kind: settings.FieldBool},
 					{Name: "max_attempts", Label: "Max attempts", Kind: settings.FieldInt,

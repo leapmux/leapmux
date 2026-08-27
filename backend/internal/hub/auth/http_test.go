@@ -23,7 +23,7 @@ import (
 // plain-HTTP page on the registrable domain can plant `leapmux-session`, which
 // is precisely what the __Host- prefix exists to prevent. The old option
 // carried an ordered list of secure modes, and the two most consequential
-// HTTP surfaces -- the /auth/cli/* consent legs and the OAuth
+// HTTP surfaces -- the /oauth/* consent legs and the OAuth
 // re-authentication leg that GRANTS an elevation -- passed `{false, true}`, so
 // a planted cookie took priority over the real one.
 //
@@ -70,7 +70,7 @@ func newHTTPAuthFixture(t *testing.T) httpAuthFixture {
 // written out rather than built through BuildSessionCookie, because the
 // SPELLING is the subject and a helper that chose it would hide the case.
 func (f httpAuthFixture) request(cookies map[string]string) *http.Request {
-	r := httptest.NewRequest(http.MethodGet, "/auth/cli/start", nil)
+	r := httptest.NewRequest(http.MethodGet, "/oauth/authorize", nil)
 	for name, value := range cookies {
 		r.AddCookie(&http.Cookie{Name: name, Value: value})
 	}

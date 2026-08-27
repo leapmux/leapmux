@@ -20,6 +20,16 @@ var (
 	// ErrHTTPUnauthenticated distinguishes rejected credentials from
 	// infrastructure failures that HTTP handlers must surface as 500s.
 	ErrHTTPUnauthenticated = errors.New("http authentication failed")
+	// ErrHTTPForbidden marks a caller the hub AUTHENTICATED and then refused:
+	// the credential is live, and its grant does not reach this endpoint.
+	//
+	// A separate sentinel from ErrHTTPUnauthenticated because the two ask the
+	// client for different things. 401 says "present a credential", and a
+	// client that obeys it re-runs a whole sign-in ceremony that ends in the
+	// same refusal. 403 says "this credential is not enough", which is the
+	// only answer that is true and the only one an app can act on -- by asking
+	// its account for a wider grant.
+	ErrHTTPForbidden = errors.New("http authorization failed")
 )
 
 // AuthenticateWorkerBearer resolves an HTTP "Authorization: Bearer …"
@@ -71,7 +81,7 @@ type HTTPAuthOpts struct {
 // ReadCookie causes that rung to no-op. Handlers that only support a
 // subset of the rungs pass the subset they want — e.g. the
 // `/ws/userevents` and `/ws/channel` relays support all three;
-// the `/auth/cli/*` endpoints support only cookies.
+// the `/oauth/*` endpoints support only cookies.
 //
 // The cookie rung is ASYMMETRIC, exactly as OAuthNonceFromRequest is,
 // and for the same reason. AuthenticateHTTP reads the __Host- spelling
@@ -85,7 +95,21 @@ type HTTPAuthOpts struct {
 // safe and stays, so a session issued under TLS still validates after the
 // operator turns the setting off.
 func AuthenticateHTTP(ctx context.Context, r *http.Request, opts HTTPAuthOpts) (*UserInfo, error) {
-	if opts.SoloUser != nil {
+	// The solo rung YIELDS to a presented bearer.
+	//
+	// Solo authenticates every caller as its one account, with an unscoped
+	// grant, because reaching the port is the authentication. But a caller that
+	// presents an lmx_ bearer is ASKING to be its app: it accepted a narrower
+	// grant on a consent screen, and answering "you are the solo user, you may
+	// do anything" would discard that narrowing silently. The scope model would
+	// then be inert on solo -- an agent handed file:read would still hold every
+	// permission the account has.
+	//
+	// It yields on the PRESENCE of a leapmux bearer, not on its validity: a
+	// revoked or malformed one falls through to the validator below and is
+	// refused there. Falling back to the solo rung instead would make a
+	// credential stronger by being broken.
+	if opts.SoloUser != nil && !presentsLeapMuxBearer(r) {
 		return opts.Contexts.CurrentSyntheticUser(opts.SoloUser), nil
 	}
 	if opts.Validator != nil {
@@ -101,10 +125,7 @@ func AuthenticateHTTP(ctx context.Context, r *http.Request, opts HTTPAuthOpts) (
 		}
 	}
 	if opts.ReadCookie {
-		token := SessionIDFromRequest(r, true)
-		if token == "" && !opts.SecureCookies {
-			token = SessionIDFromRequest(r, false)
-		}
+		token := sessionIDFromCookieHeader(r.Header.Get("Cookie"), opts.SecureCookies)
 		if token != "" {
 			user, err := ValidateToken(ctx, opts.Store, token)
 			if err != nil {
@@ -117,4 +138,13 @@ func AuthenticateHTTP(ctx context.Context, r *http.Request, opts HTTPAuthOpts) (
 		}
 	}
 	return nil, fmt.Errorf("%w: no credentials", ErrHTTPUnauthenticated)
+}
+
+// presentsLeapMuxBearer reports whether the request carries a leapmux bearer at
+// all, valid or not. It is what the solo rung yields to; see AuthenticateHTTP.
+//
+// The predicate itself lives in headerPresentsLeapMuxBearer, the string form
+// both auth doors share, so the yield rule has one body.
+func presentsLeapMuxBearer(r *http.Request) bool {
+	return headerPresentsLeapMuxBearer(r.Header.Get("Authorization"))
 }

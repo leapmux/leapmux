@@ -54,17 +54,17 @@ func TestDefaultDeviceName_FallsBackToUSERNAME(t *testing.T) {
 func TestDefaultDeviceName_IsTheOnlySourceOfTheLabel(t *testing.T) {
 	t.Parallel()
 
-	// Every file that puts a device_name on the wire must take the label from
-	// the one function. cmd/auth.go reaches it through its --device-name flag
-	// default, which is the same source with an override.
+	// Every file that puts an installation_name on the wire must take the
+	// label from the one function. cmd/auth.go reaches it through its
+	// --device-name flag default, which is the same source with an override.
 	for _, path := range []string{"elevate.go", "cmd/auth.go"} {
 		src, err := os.ReadFile(path)
 		require.NoError(t, err, "%s must be readable", path)
 		text := string(src)
-		require.Contains(t, text, "device_name",
-			"%s is listed here because it writes a device_name; remove it if that stopped being true", path)
+		require.Contains(t, text, "installation_name",
+			"%s is listed here because it writes an installation_name; remove it if that stopped being true", path)
 		assert.Contains(t, text, "DefaultDeviceName()",
-			"%s writes a device_name, so it must take the label from DefaultDeviceName rather than build its own", path)
+			"%s writes an installation_name, so it must take the label from DefaultDeviceName rather than build its own", path)
 	}
 }
 

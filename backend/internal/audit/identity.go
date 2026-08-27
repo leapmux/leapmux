@@ -40,6 +40,15 @@ var identityComparisonSites = map[string]string{
 	"internal/hub/service.issuedByAnotherPerson": "TestIssuedByAnotherPerson_BlankIdKeepsTheAlarm",
 	// The package's other resource-ownership predicate.
 	"internal/hub/service.(*SectionService).requireOwnedSection": "TestMoveSectionDeniesZeroCallerOnBlankOwnedSection",
+	// Decides whether a request may see one registered app. A PRIVATE app is
+	// visible to its owner alone, so a zero caller must resolve none: an
+	// unauthenticated leg (the device-code first hop) reaches hub-wide apps and
+	// nothing else, which is exactly what a blank comparison would break.
+	"internal/hub/service.(*OAuthServerHandler).resolveApp": "TestResolveApp_ZeroCallerReachesNoPrivateApp",
+	// Decides whether a caller may EDIT one registered app. It is the early
+	// refusal with a message; the store statement carries the same predicate,
+	// so this is the second of two independent checks rather than the only one.
+	"internal/hub/service.assertAppOwner": "TestAssertAppOwner_ZeroCallerOwnsNothing",
 	// Decides whether a caller may reuse an already-registered channel.
 	"internal/hub/service.userCanUseChannel": "TestUserCanUseChannelRequiresMatchingIdentity",
 	// Decides whether a delegation token may be minted for a worker. The id is

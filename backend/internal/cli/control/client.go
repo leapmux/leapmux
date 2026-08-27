@@ -521,6 +521,20 @@ func (c *Client) AdminUserService() leapmuxv1connect.AdminUserServiceClient {
 	)
 }
 
+// AppService is the app REGISTRATION surface.
+//
+// It is NOT an admin service, although `control admin app` is where the CLI
+// puts it: an ordinary user registers apps for themself through the same RPCs,
+// and ownership rather than a role decides what each caller sees. Only two
+// verbs need an administrator -- a hub-wide registration and a vouch -- and
+// each says so in its own handler.
+func (c *Client) AppService() leapmuxv1connect.AppServiceClient {
+	return leapmuxv1connect.NewAppServiceClient(
+		c.HTTPClient, c.connectURL,
+		connect.WithInterceptors(c.AuthInterceptor()),
+	)
+}
+
 // AdminWorkerService returns a ConnectRPC client for AdminWorkerService
 // (cross-user worker administration and registration keys).
 func (c *Client) AdminWorkerService() leapmuxv1connect.AdminWorkerServiceClient {
@@ -530,9 +544,9 @@ func (c *Client) AdminWorkerService() leapmuxv1connect.AdminWorkerServiceClient 
 	)
 }
 
-// AdminOAuthService returns a ConnectRPC client for AdminOAuthService.
-func (c *Client) AdminOAuthService() leapmuxv1connect.AdminOAuthServiceClient {
-	return leapmuxv1connect.NewAdminOAuthServiceClient(
+// AdminIdPService returns a ConnectRPC client for AdminIdPService.
+func (c *Client) AdminIdPService() leapmuxv1connect.AdminIdPServiceClient {
+	return leapmuxv1connect.NewAdminIdPServiceClient(
 		c.HTTPClient, c.connectURL,
 		connect.WithInterceptors(c.AuthInterceptor()),
 	)

@@ -28,7 +28,9 @@ func fromDBDeviceAuthorization(d gendb.DeviceAuthorization) store.DeviceAuthoriz
 		Approved:        int64(d.Approved),
 		LastPolledAt:    d.LastPolledAt.Ptr(),
 		IntervalSeconds: int64(d.IntervalSeconds),
-		AdminScope:      d.AdminScope,
+		ClientID:        d.ClientID,
+		RequestedScopes: d.RequestedScopes,
+		GrantedScopes:   d.GrantedScopes,
 		ElevateTokenID:  d.ElevateTokenID.String,
 		CreatedAt:       d.CreatedAt.Time,
 		ExpiresAt:       d.ExpiresAt.Time,
@@ -52,6 +54,8 @@ func (s *deviceAuthorizationStore) Create(ctx context.Context, p store.CreateDev
 		DeviceCode:      p.DeviceCode,
 		UserCode:        p.UserCode,
 		DeviceName:      p.DeviceName,
+		ClientID:        p.ClientID,
+		RequestedScopes: p.RequestedScopes,
 		IntervalSeconds: int32(p.IntervalSeconds),
 		ExpiresAt:       pgtime.New(p.ExpiresAt),
 		ElevateTokenID:  textNonEmpty(p.ElevateTokenID),
@@ -87,10 +91,10 @@ func (s *deviceAuthorizationStore) Approve(ctx context.Context, p store.ApproveD
 		return 0, store.ErrInvalidArgument
 	}
 	return s.conn.q.ApproveDeviceAuthorization(ctx, gendb.ApproveDeviceAuthorizationParams{
-		UserID:     userIDText(p.UserID),
-		DeviceCode: p.DeviceCode,
-		AdminScope: p.AdminScope,
-		Now:        pgtime.New(now),
+		UserID:        userIDText(p.UserID),
+		DeviceCode:    p.DeviceCode,
+		GrantedScopes: p.GrantedScopes,
+		Now:           pgtime.New(now),
 	})
 }
 
@@ -105,15 +109,15 @@ func (s *deviceAuthorizationStore) ApproveByUserCode(ctx context.Context, p stor
 		return 0, store.ErrInvalidArgument
 	}
 	return s.conn.q.ApproveDeviceAuthorizationByUserCode(ctx, gendb.ApproveDeviceAuthorizationByUserCodeParams{
-		UserID:     userIDText(p.UserID),
-		UserCode:   p.UserCode,
-		AdminScope: p.AdminScope,
-		Now:        pgtime.New(now),
+		UserID:        userIDText(p.UserID),
+		UserCode:      p.UserCode,
+		GrantedScopes: p.GrantedScopes,
+		Now:           pgtime.New(now),
 	})
 }
 
-func (s *deviceAuthorizationStore) Deny(ctx context.Context, deviceCode string) (int64, error) {
-	return s.conn.q.DenyDeviceAuthorization(ctx, deviceCode)
+func (s *deviceAuthorizationStore) DenyByUserCode(ctx context.Context, userCode string) (int64, error) {
+	return s.conn.q.DenyDeviceAuthorizationByUserCode(ctx, userCode)
 }
 
 func (s *deviceAuthorizationStore) Consume(ctx context.Context, deviceCode string, now time.Time) (int64, error) {

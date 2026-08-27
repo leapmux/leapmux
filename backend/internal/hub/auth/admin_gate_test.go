@@ -13,9 +13,11 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/bootstrap"
 	"github.com/leapmux/leapmux/internal/hub/config"
+	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/servicetest"
 	"github.com/leapmux/leapmux/internal/hub/store"
@@ -117,46 +119,67 @@ func TestAdminGate_Unauthenticated(t *testing.T) {
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
 
-// TestAdminGate_AdminBearerNeedsTheAdminScope is the point of the scope:
-// being an administrator is not enough for a CLI credential. A routine
-// `auth login` mints a token that can do everything its owner can do EXCEPT
-// administer the hub, so the credential file it leaves on disk for months is
-// not a hub-administration credential.
-func TestAdminGate_AdminBearerNeedsTheAdminScope(t *testing.T) {
+// TestAdminGate_AdminBearerNeedsAnAdminScope is the point of the scope model:
+// being an administrator is not enough for an app credential. A routine
+// authorization mints a credential that can do everything its owner can do
+// EXCEPT administer the hub, so the credential file it leaves on disk for
+// months is not a hub-administration credential.
+//
+// It also pins the GRANULARITY the four admin scopes bought, which the single
+// admin_scope boolean could not express: a credential granted admin:users is
+// still refused the settings surface. That is the gap recorded in-tree at
+// elevation_service.go -- "a credential minted for user administration can also
+// rewrite the hub's security settings" -- and this is the test that says it is
+// closed.
+func TestAdminGate_AdminBearerNeedsAnAdminScope(t *testing.T) {
 	f := setupAdminGateServer(t)
 	owner, ownerOK := userid.New(f.adminUserID)
 	require.True(t, ownerOK)
 
-	mint := func(adminScope bool) string {
+	mint := func(grant string) string {
 		tokenID := id.Generate()
 		secret := auth.MintAccessSecret()
 		require.NoError(t, f.st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-			ID:         tokenID,
-			UserID:     owner,
-			ClientType: "cli",
-			ClientName: "test",
-			SecretHash: f.tv.HashSecret(secret),
-			AdminScope: adminScope,
+			ID:               tokenID,
+			UserID:           owner,
+			ClientID:         oauthapp.ControlCLIClientID,
+			InstallationName: "test",
+			GrantedScopes:    grant,
+			SecretHash:       f.tv.HashSecret(secret),
 		}))
 		return auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)
 	}
+	listSettings := func(bearer string) error {
+		req := connect.NewRequest(&leapmuxv1.ListSettingsRequest{})
+		req.Header().Set("Authorization", "Bearer "+bearer)
+		_, err := f.adminClient.ListSettings(context.Background(), req)
+		return err
+	}
 
-	unscoped := connect.NewRequest(&leapmuxv1.ListSettingsRequest{})
-	unscoped.Header().Set("Authorization", "Bearer "+mint(false))
-	_, err := f.adminClient.ListSettings(context.Background(), unscoped)
+	// The DEFAULT grant: everything except administration.
+	err := listSettings(mint(authscope.NonAdminGrant().String()))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
-	assert.Contains(t, err.Error(), "--admin", "the refusal must specify the remedy")
+	assert.Contains(t, err.Error(), "admin:read", "the refusal must name the permission it wanted")
 
-	scoped := connect.NewRequest(&leapmuxv1.ListSettingsRequest{})
-	scoped.Header().Set("Authorization", "Bearer "+mint(true))
-	_, err = f.adminClient.ListSettings(context.Background(), scoped)
-	require.NoError(t, err)
+	// admin:users is administration, and it still does not reach the settings
+	// surface: that separation is what four scopes exist for.
+	err = listSettings(mint("admin:users"))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+
+	// admin:read is what ListSettings asks for.
+	require.NoError(t, listSettings(mint("admin:read")))
 }
 
-// TestAdminGate_NonAdminAdminScopedBearerStillDenied pins the ORDER of the
-// two checks: the scope widens what a credential may do, it never grants
-// administration to an account that does not have it.
+// TestAdminGate_NonAdminAdminScopedBearerStillDenied pins the COMPOSITION
+// rule: a scope subtracts from the account's own authority and never adds to
+// it, so an admin scope on a credential whose owner is not an administrator
+// grants nothing.
+//
+// A hand-edited row is the case that matters. The consent leg refuses to write
+// such a grant, but the enforcement must not depend on the mint having refused
+// it -- so this seeds the row directly.
 func TestAdminGate_NonAdminAdminScopedBearerStillDenied(t *testing.T) {
 	f := setupAdminGateServer(t)
 	owner, ownerOK := userid.New(f.plainUserID)
@@ -165,12 +188,13 @@ func TestAdminGate_NonAdminAdminScopedBearerStillDenied(t *testing.T) {
 	tokenID := id.Generate()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, f.st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID:         tokenID,
-		UserID:     owner,
-		ClientType: "cli",
-		ClientName: "test",
-		SecretHash: f.tv.HashSecret(secret),
-		AdminScope: true,
+		ID:               tokenID,
+		UserID:           owner,
+		ClientID:         oauthapp.ControlCLIClientID,
+		InstallationName: "test",
+		// Every admin scope, on an account that is not an administrator.
+		GrantedScopes: "admin:read admin:users admin:settings admin:workers",
+		SecretHash:    f.tv.HashSecret(secret),
 	}))
 
 	req := connect.NewRequest(&leapmuxv1.ListSettingsRequest{})
@@ -178,14 +202,20 @@ func TestAdminGate_NonAdminAdminScopedBearerStillDenied(t *testing.T) {
 	_, err := f.adminClient.ListSettings(context.Background(), req)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
-	assert.Contains(t, err.Error(), "administrator privileges are required")
+	assert.Contains(t, err.Error(), "administrator privileges are required",
+		"the SCOPE rung passes, so the ACCOUNT rung must be the one that refuses")
 }
 
 func TestAdminGate_DelegationBearerOfAdminRefused(t *testing.T) {
 	// The load-bearing negative case: a delegation bearer resolves the FULL
-	// user row — including IsAdmin — so without the delegation refusal
-	// running FIRST, a worker-spawned agent holding an admin's delegation
-	// token would pass the admin gate outright.
+	// user row -- including IsAdmin -- so without a refusal that runs FIRST, a
+	// worker-spawned agent holding an admin's delegation token would pass the
+	// admin gate outright.
+	//
+	// The refusal used to be an allowlist of procedures. It is now the
+	// delegation CEILING, applied when loadBearer reads the row: the grant
+	// itself cannot carry an admin scope, so the row below states one and the
+	// bearer still holds none.
 	f := setupAdminGateServer(t)
 	owner, ownerOK := userid.New(f.adminUserID)
 	require.True(t, ownerOK)
@@ -204,11 +234,12 @@ func TestAdminGate_DelegationBearerOfAdminRefused(t *testing.T) {
 	tokenID := id.Generate()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, f.st.DelegationTokens().Create(context.Background(), store.CreateDelegationTokenParams{
-		ID:         tokenID,
-		UserID:     owner,
-		WorkerID:   workerID,
-		SecretHash: f.tv.HashSecret(secret),
-		ExpiresAt:  time.Now().Add(time.Hour),
+		GrantedScopes: "workspace:read workspace:write worker:read",
+		ID:            tokenID,
+		UserID:        owner,
+		WorkerID:      workerID,
+		SecretHash:    f.tv.HashSecret(secret),
+		ExpiresAt:     time.Now().Add(time.Hour),
 	}))
 
 	req := connect.NewRequest(&leapmuxv1.ListSettingsRequest{})
@@ -217,8 +248,8 @@ func TestAdminGate_DelegationBearerOfAdminRefused(t *testing.T) {
 	require.Error(t, callErr)
 	err := callErr
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
-	assert.Contains(t, err.Error(), "delegation token cannot call this procedure",
-		"the delegation refusal must fire before the admin gate")
+	assert.Contains(t, err.Error(), "admin:read",
+		"the SCOPE rung must refuse first, so the caller never learns whether its user is an administrator")
 }
 
 func TestAdminGate_SoloModeAutoAdmin(t *testing.T) {

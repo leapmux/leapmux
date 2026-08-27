@@ -88,11 +88,11 @@ func TestExpandTilde(t *testing.T) {
 func dispatchOwnerOnlyProbe(svc *Service, userID string) bool {
 	d := channel.NewDispatcher()
 	admitted := false
-	newRegistrar(d, svc).ownerOnly().Register("Probe",
-		func(context.Context, userid.UserID, *leapmuxv1.InnerRpcRequest, channel.ResponseWriter) {
+	newRegistrar(d, svc).ownerOnly().Register("Probe", leapmuxv1.Scope_SCOPE_WORKER_READ,
+		func(context.Context, channel.Caller, *leapmuxv1.InnerRpcRequest, channel.ResponseWriter) {
 			admitted = true
 		})
-	d.DispatchWith(context.Background(), userid.MustNew(userID), &leapmuxv1.InnerRpcRequest{Method: "Probe"}, newTestWriter())
+	d.DispatchWith(context.Background(), channel.LocalAgentCaller(userid.MustNew(userID)), &leapmuxv1.InnerRpcRequest{Method: "Probe"}, newTestWriter())
 	return admitted
 }
 
@@ -403,12 +403,12 @@ func TestRegisterAll_BindsTheCleanupDrain(t *testing.T) {
 
 	release := make(chan struct{})
 	entered := make(chan struct{})
-	d.RegisterTracked("test.Tracked", func(context.Context, userid.UserID, *leapmuxv1.InnerRpcRequest, channel.ResponseWriter) {
+	d.RegisterTracked("test.Tracked", func(context.Context, channel.Caller, *leapmuxv1.InnerRpcRequest, channel.ResponseWriter) {
 		close(entered)
 		<-release
 	})
 
-	d.DispatchAsync(context.Background(), userid.MustNew("user-1"),
+	d.DispatchAsync(context.Background(), channel.LocalAgentCaller(userid.MustNew("user-1")),
 		&leapmuxv1.InnerRpcRequest{Method: "test.Tracked"}, newTestWriter())
 
 	<-entered

@@ -563,13 +563,14 @@ func TestResolve_HasNoUserIDAxis(t *testing.T) {
 // a dep that CONFIRMS it against the hub.
 //
 // Both procedures that could implement such a dep --
-// WorkerManagementService's GetWorker and ListWorkers -- are
-// deliberately absent from `auth.delegationAllowedProcedures`, and
-// widening that allowlist is not the fix: a leaked worker delegation
-// token would gain the ability to enumerate the user's whole fleet.
-// Since the worker injects $LEAPMUX_CONTROL_WORKER_ID into every agent
-// it spawns, a resolver leg on this axis fires on essentially every
-// agent-issued command and can only fail it.
+// WorkerManagementService's GetWorker and ListWorkers -- need
+// worker:read, and a delegation bearer's ceiling
+// (auth.CeilingFor(BearerKindDelegation)) admits that scope. So the leg
+// would usually succeed, which is worse than a clean refusal: since the
+// worker injects $LEAPMUX_CONTROL_WORKER_ID into every agent it spawns,
+// a resolver leg on this axis fires on essentially every agent-issued
+// command, and its only observable effect is a hub round trip that turns
+// a transient failure into `resolve_failed`.
 func TestResolve_HasNoWorkerExistenceCheck(t *testing.T) {
 	depsType := reflect.TypeOf(resolve.Deps{})
 	for _, name := range []string{"GetWorker", "ListWorkers"} {

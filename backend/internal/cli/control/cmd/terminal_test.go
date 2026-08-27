@@ -12,7 +12,6 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 )
 
@@ -25,7 +24,7 @@ type shellsDispatcher struct {
 	methods []string
 }
 
-func (d *shellsDispatcher) DispatchWith(_ context.Context, _ userid.UserID, req *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter) {
+func (d *shellsDispatcher) DispatchWith(_ context.Context, _ channel.Caller, req *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter) {
 	d.mu.Lock()
 	d.methods = append(d.methods, req.GetMethod())
 	d.mu.Unlock()
@@ -58,12 +57,12 @@ func (d *shellsDispatcher) called() []string {
 // `leapmux control` invocation an agent makes, not an exotic one.
 //
 // Both hub round-trips that used to hang off that value target
-// WorkerManagementService, which is absent from the hub's
-// `auth.delegationAllowedProcedures`: the resolver's GetWorker
-// existence leg (deleted) and maybePreflightWorker's ListWorkers (now
-// tolerates a lookup it cannot perform). Either one aborted the
-// command with `resolve_failed` / `preflight_failed` before it could
-// issue the worker RPC it actually wanted.
+// WorkerManagementService: the resolver's GetWorker existence leg
+// (deleted) and maybePreflightWorker's ListWorkers (now tolerates a
+// lookup it cannot perform). Either one aborted the command with
+// `resolve_failed` / `preflight_failed` before it could issue the worker
+// RPC it actually wanted, and the hub stub here refuses both -- the
+// narrowest grant a delegation bearer could carry.
 func TestRunTerminalShells_InsideWorkerSpawn(t *testing.T) {
 	disp := &shellsDispatcher{}
 	hub := &recordingHub{}

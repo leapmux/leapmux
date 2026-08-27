@@ -23,7 +23,8 @@ export const CUSTOM_EDITOR_IDS = [
   'accountPassword',
   'accountPasskeys',
   'accountLinkedProviders',
-  'accountCliTokens',
+  'accountConnectedApps',
+  'accountAppRegistrations',
   'keyPins',
   'theme',
   'terminalTheme',
@@ -198,7 +199,7 @@ export interface SettingRowModel {
   binding: SettingBinding
 }
 
-export type CategoryId = 'appearance' | 'notifications' | 'chat' | 'terminal' | 'files' | 'shortcuts' | 'advanced' | 'account' | 'general' | 'signup' | 'email' | 'captcha' | 'rate-limits' | 'limits'
+export type CategoryId = 'appearance' | 'notifications' | 'chat' | 'terminal' | 'files' | 'shortcuts' | 'advanced' | 'account' | 'general' | 'signup' | 'email' | 'captcha' | 'rate-limits' | 'limits' | 'apps'
 
 /** A component rendering the whole-setting editor for a CustomEditorId. */
 export type CustomEditorComponent = Component<Record<string, never>>

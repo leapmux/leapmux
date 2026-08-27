@@ -8,7 +8,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/hub/auth"
+	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
@@ -28,11 +30,12 @@ func liveElevatedCredentialAt(
 	uid := userid.MustNew(user.ID)
 	tokenID := id.Generate()
 	require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
-		ID:         tokenID,
-		UserID:     uid,
-		ClientType: "cli",
-		ClientName: "test-cli",
-		SecretHash: []byte("hash"),
+		ID:               tokenID,
+		UserID:           uid,
+		ClientID:         oauthapp.ControlCLIClientID,
+		InstallationName: "test-cli",
+		GrantedScopes:    authscope.NonAdminGrant().String(),
+		SecretHash:       []byte("hash"),
 	}))
 	n, err := st.APITokens().Elevate(ctx, store.ElevateAPITokenParams{
 		TokenID:            tokenID,

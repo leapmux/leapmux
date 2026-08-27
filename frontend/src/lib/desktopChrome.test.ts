@@ -14,7 +14,7 @@ describe('hasWorkspaceDesktopChrome', () => {
     expect(hasWorkspaceDesktopChrome('/login')).toBe(false)
     expect(hasWorkspaceDesktopChrome('/setup')).toBe(false)
     expect(hasWorkspaceDesktopChrome('/verify-email')).toBe(false)
-    expect(hasWorkspaceDesktopChrome('/oauth/complete-signup')).toBe(false)
+    expect(hasWorkspaceDesktopChrome('/auth/idp/complete-signup')).toBe(false)
     expect(hasWorkspaceDesktopChrome('/unknown')).toBe(false)
   })
 

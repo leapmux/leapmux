@@ -420,11 +420,79 @@ CREATE TABLE hub_runtime_lease (
 ) COLLATE=utf8mb4_bin;
 
 -- See sqlite migration for full rationale on api_tokens.
+-- Registered apps. See the sqlite migration for the full rationale on each
+-- column; the shape is identical.
+CREATE TABLE oauth_clients (
+    client_id             VARCHAR(255) PRIMARY KEY,
+    -- NULL = hub-wide; non-NULL = that user's private app. One column carries
+    -- the whole visibility rule.
+    owner_user_id         VARCHAR(255),
+    created_by_user_id    VARCHAR(255),
+    -- NULL is a PUBLIC client and non-NULL is a CONFIDENTIAL one.
+    secret_hash           VARBINARY(64),
+    client_name           VARCHAR(255) NOT NULL,
+    icon_blob             BLOB,
+    icon_media_type       VARCHAR(255) NOT NULL DEFAULT '',
+    client_uri            VARCHAR(2048) NOT NULL DEFAULT '',
+    -- Newline-delimited exact-match list.
+    redirect_uris         TEXT NOT NULL,
+    -- Space-delimited RFC 6749 section 3.3: the ceiling on what this app may
+    -- reach. LIVE rather than consent-time, and narrowing only; see the sqlite
+    -- twin.
+    scopes                TEXT NOT NULL,
+    grant_types           VARCHAR(512) NOT NULL DEFAULT 'authorization_code refresh_token',
+    elevation_allowed     BOOLEAN NOT NULL DEFAULT FALSE,
+    registration_source   VARCHAR(16) NOT NULL
+        CHECK (registration_source IN ('builtin', 'admin', 'user', 'dynamic')),
+    -- WHO vouched, and WHEN. The two move together, which the CHECK below
+    -- enforces: a row with one and not the other describes a vouch nobody can
+    -- read.
+    --
+    -- verified_by_user_id carries NO foreign key, and that is what makes the
+    -- CHECK possible. ON DELETE SET NULL would clear this column while
+    -- verified_at stayed set, which violates the CHECK -- so deleting a
+    -- vouching administrator would fail, and TiDB refuses the schema outright
+    -- rather than at that moment. The column is an ATTRIBUTION rather than a
+    -- live reference: an administrator vouched for this app on this date, and
+    -- deleting their account does not unmake that. The surface renders a name
+    -- it cannot resolve as no name, which is the honest reading.
+    verified_at           DATETIME(3),
+    verified_by_user_id   VARCHAR(255),
+    created_at            DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at            DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    revoked_at            DATETIME(3),
+    CHECK ((verified_at IS NULL) = (verified_by_user_id IS NULL)),
+    FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (created_by_user_id) REFERENCES users(id) ON DELETE SET NULL
+) COLLATE=utf8mb4_bin;
+CREATE INDEX idx_oauth_clients_owner ON oauth_clients(owner_user_id, created_at DESC, client_id DESC);
+CREATE INDEX idx_oauth_clients_revoked_at ON oauth_clients(revoked_at);
+
+-- The two built-in registrations; see the sqlite migration for why both state
+-- elevation_allowed = TRUE explicitly against the column's FALSE default.
+--
+-- redirect_uris and scopes are TEXT, which MySQL refuses a DEFAULT on, so
+-- every INSERT states them.
+INSERT INTO oauth_clients (client_id, client_name, redirect_uris, scopes, grant_types, elevation_allowed, registration_source, verified_at, verified_by_user_id)
+VALUES
+    ('leapmux-control-cli', 'LeapMux control CLI', 'http://127.0.0.1/callback',
+     'account:read account:write workspace:read workspace:write worker:read worker:admin agent:read agent:write terminal:read terminal:write file:read git:read git:write tunnel:open admin:read admin:users admin:settings admin:workers',
+     'authorization_code refresh_token urn:ietf:params:oauth:grant-type:device_code',
+     TRUE, 'builtin', NULL, NULL),
+    ('leapmux-service-account', 'Administrator-issued credential', '',
+     'account:read account:write workspace:read workspace:write worker:read worker:admin agent:read agent:write terminal:read terminal:write file:read git:read git:write tunnel:open admin:read admin:users admin:settings admin:workers',
+     '',
+     TRUE, 'builtin', NULL, NULL);
+
 CREATE TABLE api_tokens (
     id                            VARCHAR(255) PRIMARY KEY,
     user_id                       VARCHAR(255) NOT NULL,
-    client_type                   VARCHAR(64) NOT NULL,
-    client_name                   VARCHAR(255) NOT NULL,
+    -- RESTRICT, not CASCADE: deleting an app with live credentials is refused;
+    -- the surface offers revoke, which cascades with lifecycle effects.
+    client_id                     VARCHAR(255) NOT NULL,
+    installation_name             VARCHAR(255) NOT NULL,
+    -- No DEFAULT: an INSERT that omits the grant must fail at the schema.
+    granted_scopes                TEXT NOT NULL,
     secret_hash                   VARBINARY(64) NOT NULL,
     refresh_hash                  VARBINARY(64),
     previous_refresh_hash         VARBINARY(64),
@@ -436,17 +504,12 @@ CREATE TABLE api_tokens (
     expires_at                    DATETIME(3),
     refresh_expires_at            DATETIME(3),
     revoked_at                    DATETIME(3),
-    -- admin_scope is opt-in hub administration, chosen at consent time
-    -- (`leapmux control auth login --admin`) and refused unless the session
-    -- that consents is elevated. A CLI token without it authenticates as an
-    -- administrator but is refused on every Admin* procedure, so a stolen
-    -- credential file cannot administer the hub.
-    admin_scope                   BOOLEAN NOT NULL DEFAULT FALSE,
-    -- Elevation ("sudo mode") for a command-line credential, the same pair
-    -- user_sessions carries and enforced by the same rule. A CLI token proves
-    -- a factor through the browser step-up leg (/auth/cli/elevate), and every
-    -- restricted action slides elevation_expires_at forward, clamped to
-    -- elevation_proven_at + the maximum total window.
+    -- Elevation ("sudo mode") for an app credential, the same pair
+    -- user_sessions carries and enforced by the same rule. The credential
+    -- proves a factor through the browser step-up leg (/oauth/step-up), and
+    -- every restricted action slides elevation_expires_at forward, clamped to
+    -- elevation_proven_at + the maximum total window. The leg and the write
+    -- both require oauth_clients.elevation_allowed.
     --
     -- Without it a stolen credential file administered the hub outright: the
     -- gate that protects the settings, the user surface and the mint admitted
@@ -455,7 +518,8 @@ CREATE TABLE api_tokens (
     elevation_proven_at           DATETIME(3),
     elevation_expires_at          DATETIME(3),
     CHECK ((elevation_proven_at IS NULL) = (elevation_expires_at IS NULL)),
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (client_id) REFERENCES oauth_clients(client_id) ON DELETE RESTRICT
 ) COLLATE=utf8mb4_bin;
 CREATE INDEX idx_api_tokens_revoked_at ON api_tokens(revoked_at);
 -- Serves the DeleteExpiredAPITokensBefore sweep of live-but-dead rows: seek
@@ -485,6 +549,9 @@ CREATE TABLE delegation_tokens (
     terminal_id                   VARCHAR(255) NOT NULL DEFAULT '',
     issued_for_tab_id             VARCHAR(255) NOT NULL DEFAULT '',
     issued_for_tab_type           INT NOT NULL DEFAULT 0,
+    -- What the minting worker delegated, already narrowed to the delegation
+    -- ceiling. No DEFAULT, as on api_tokens.
+    granted_scopes                TEXT NOT NULL,
     secret_hash                   VARBINARY(64) NOT NULL,
     refresh_hash                  VARBINARY(64),
     created_at                    DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -514,6 +581,13 @@ CREATE TABLE device_authorizations (
     device_code           VARCHAR(255) PRIMARY KEY,
     user_code             VARCHAR(64) NOT NULL UNIQUE,
     device_name           VARCHAR(255) NOT NULL DEFAULT '',
+    -- Which app started the flow; see the sqlite migration.
+    client_id             VARCHAR(255) NOT NULL,
+    -- What the app asked for; the row is the only carrier across the two
+    -- machines this flow spans.
+    requested_scopes      TEXT NOT NULL,
+    -- What the approval granted. It binds at the consent.
+    granted_scopes        TEXT NOT NULL,
     user_id               VARCHAR(255),
     approved              INT NOT NULL DEFAULT 0,        -- 0 pending, 1 approved, 2 denied
     last_polled_at        DATETIME(3),
@@ -521,11 +595,7 @@ CREATE TABLE device_authorizations (
     created_at            DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     expires_at            DATETIME(3) NOT NULL,
     consumed_at           DATETIME(3),
-    -- The admin scope the user granted at activation. It binds HERE, at the
-    -- consent, and the exchange reads it back: taken from the exchange form
-    -- instead, any holder of a device code could upgrade the grant.
-    admin_scope           BOOLEAN NOT NULL DEFAULT FALSE,
-    -- The command-line credential this grant ELEVATES, when it elevates one
+    -- The app credential this grant ELEVATES, when it elevates one
     -- rather than minting one. NULL for a login: those two flows differ only
     -- in what the approval does, so they share the row, the TTL, the poll
     -- throttle, the expiry sweep and the activation page.
@@ -536,23 +606,28 @@ CREATE TABLE device_authorizations (
     -- approving user's own id, so a grant that specifies a row somebody else
     -- owns elevates nothing.
     elevate_token_id      VARCHAR(255),
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (client_id) REFERENCES oauth_clients(client_id) ON DELETE RESTRICT
 ) COLLATE=utf8mb4_bin;
 CREATE INDEX idx_device_authorizations_expires_at ON device_authorizations(expires_at);
 
-CREATE TABLE cli_authorization_codes (
+-- One-shot RFC 6749 section 4.1 authorization codes; see the sqlite migration.
+CREATE TABLE oauth_authorization_codes (
     code                  VARCHAR(255) PRIMARY KEY,
     user_id               VARCHAR(255) NOT NULL,
+    client_id             VARCHAR(255) NOT NULL,
     code_challenge        VARCHAR(255) NOT NULL,
-    device_name           VARCHAR(255) NOT NULL DEFAULT '',
+    redirect_uri          VARCHAR(2048) NOT NULL DEFAULT '',
+    granted_scopes        TEXT NOT NULL,
+    installation_name     VARCHAR(255) NOT NULL DEFAULT '',
     created_at            DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     expires_at            DATETIME(3) NOT NULL,
     consumed_at           DATETIME(3),
-    -- See device_authorizations.admin_scope: the scope binds at consent.
-    admin_scope           BOOLEAN NOT NULL DEFAULT FALSE,
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    minted_token_id       VARCHAR(255),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (client_id) REFERENCES oauth_clients(client_id) ON DELETE RESTRICT
 ) COLLATE=utf8mb4_bin;
-CREATE INDEX idx_cli_authorization_codes_expires_at ON cli_authorization_codes(expires_at);
+CREATE INDEX idx_oauth_authorization_codes_expires_at ON oauth_authorization_codes(expires_at);
 
 -- OAuth identity providers (admin-configured)
 CREATE TABLE oauth_providers (
@@ -706,10 +781,11 @@ CREATE TABLE altcha_used_salts (
 CREATE INDEX idx_altcha_used_salts_expires_at ON altcha_used_salts(expires_at);
 
 -- +goose Down
-DROP TABLE IF EXISTS cli_authorization_codes;
+DROP TABLE IF EXISTS oauth_authorization_codes;
 DROP TABLE IF EXISTS device_authorizations;
 DROP TABLE IF EXISTS delegation_tokens;
 DROP TABLE IF EXISTS api_tokens;
+DROP TABLE IF EXISTS oauth_clients;
 DROP TABLE IF EXISTS hub_runtime_lease;
 DROP TABLE IF EXISTS revocation_events;
 DROP TABLE IF EXISTS revocation_event_sequence;

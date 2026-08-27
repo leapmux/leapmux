@@ -90,8 +90,8 @@ func (c CredentialIdentity) SessionID() string {
 // APITokenID returns the api_tokens row ID, or an empty string for other
 // kinds -- a DELEGATION bearer included, which is the point of not reading
 // Bearer() here. Both bearer kinds share that accessor, and the two callers of
-// this one are the step-up window writer (api_auth_elevate.go) and the
-// "current" mark on the CLI-credential listing (my_api_tokens_service.go): a
+// this one are the step-up window writer (oauth_server_stepup.go) and the
+// "current" mark on the connected-app listing (my_connections_service.go): a
 // worker mints a delegation token for an agent that reads untrusted
 // input, so it must never carry a window and must never mark a row as the
 // caller's own.

@@ -15,7 +15,6 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 	"github.com/leapmux/leapmux/internal/util/optionids"
-	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 )
 
@@ -577,7 +576,7 @@ type closeDispatcher struct {
 	methods []string
 }
 
-func (d *closeDispatcher) DispatchWith(_ context.Context, _ userid.UserID, req *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter) {
+func (d *closeDispatcher) DispatchWith(_ context.Context, _ channel.Caller, req *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter) {
 	d.mu.Lock()
 	d.methods = append(d.methods, req.GetMethod())
 	d.mu.Unlock()

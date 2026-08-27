@@ -22,10 +22,16 @@ import (
 // worker-spawned agent" regression tests. A spawned agent talks to
 // its worker over a per-agent unix socket (controlipc), and the
 // worker proxies `hub.*` calls onward using a delegation bearer --
-// a bearer the hub restricts to `auth.delegationAllowedProcedures`.
-// Any hub RPC the CLI makes outside that allowlist comes back denied,
-// so these tests stand up a hub stub that mirrors the allowlist and
-// assert the command still completes.
+// a bearer the hub limits with `auth.CeilingFor(BearerKindDelegation)`.
+// Any hub RPC needing a scope outside that ceiling comes back denied,
+// so these tests stand up a hub stub that refuses everything but the
+// workspace listing and assert the command still completes.
+//
+// The stub is DELIBERATELY narrower than the live ceiling, which admits
+// worker:read. A test that mirrored the ceiling exactly would stop
+// exercising the tolerance the moment the ceiling widened, and the
+// tolerance is the behaviour under test: the CLI must complete whatever
+// the bearer was granted.
 
 // shortIPCSocket builds a unix-socket path under os.TempDir() short
 // enough to fit the platform's sun_path limit (~104 chars on macOS).
@@ -39,12 +45,11 @@ func shortIPCSocket(t *testing.T) string {
 }
 
 // recordingHub is a controlipc.HubClient stub that serves
-// ListWorkspaces and refuses everything else, mimicking the hub's
-// delegation-bearer allowlist (auth.delegationAllowedProcedures):
-// a worker-spawned agent's bearer may list workspaces and little
-// else. Notably absent from that allowlist is every
-// WorkerManagementService procedure (GetWorker, ListWorkers), so a
-// command that reaches for one inside a spawn gets PermissionDenied.
+// ListWorkspaces and refuses everything else: the narrowest grant a
+// worker-spawned agent's bearer could carry. A command that reaches for
+// WorkerManagementService (GetWorker, ListWorkers) inside a spawn
+// therefore gets PermissionDenied here, which is the case each test
+// below asserts the command survives.
 type recordingHub struct {
 	// listWorkers, when non-nil, makes the stub answer ListWorkers
 	// with these worker ids instead of denying it. A real delegation

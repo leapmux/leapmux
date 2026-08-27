@@ -369,3 +369,19 @@ func SessionIDFromRequest(r *http.Request, secure bool) string {
 func SessionIDFromHeader(cookieHeader string, secure bool) string {
 	return cookieValueFromHeader(cookieHeader, cookieName(secure))
 }
+
+// sessionIDFromCookieHeader reads the session id with the asymmetric fallback
+// BOTH auth ladders use: the __Host- spelling first, and the unprefixed one
+// only on a hub whose secure_cookies setting is off (so it never writes the
+// prefix). See AuthenticateHTTP for why the fallback direction is safe.
+//
+// ONE helper, because the Connect interceptor and AuthenticateHTTP answer the
+// same question for the same browser, and a caller that held only the header
+// string used to need a second spelling of the rule.
+func sessionIDFromCookieHeader(cookieHeader string, secureCookies bool) string {
+	token := cookieValueFromHeader(cookieHeader, cookieName(true))
+	if token == "" && !secureCookies {
+		token = cookieValueFromHeader(cookieHeader, cookieName(false))
+	}
+	return token
+}

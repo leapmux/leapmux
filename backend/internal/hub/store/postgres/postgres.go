@@ -189,8 +189,12 @@ func (s *pgStore) RevocationEvents() store.RevocationEventStore {
 func (s *pgStore) DeviceAuthorizations() store.DeviceAuthorizationStore {
 	return &deviceAuthorizationStore{conn: s.conn}
 }
-func (s *pgStore) CLIAuthorizationCodes() store.CLIAuthorizationCodeStore {
-	return &cliAuthorizationCodeStore{conn: s.conn}
+func (s *pgStore) OAuthAuthorizationCodes() store.OAuthAuthorizationCodeStore {
+	return &oauthAuthorizationCodeStore{conn: s.conn}
+}
+
+func (s *pgStore) OAuthClients() store.OAuthClientStore {
+	return &oauthClientStore{conn: s.conn}
 }
 func (s *pgStore) Cleanup() store.CleanupStore { return &cleanupStore{conn: s.conn} }
 func (s *pgStore) Migrator() store.Migrator    { return s.conn.shared.migrator }

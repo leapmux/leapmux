@@ -11,11 +11,13 @@ import (
 	"context"
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/util/userid"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -30,7 +32,7 @@ func TestAdminPath_APITokenRevoke_ClosesBearerChannels(t *testing.T) {
 
 	apiTokenID := id.Generate()
 	require.NoError(t, env.st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID: apiTokenID, UserID: userid.MustNew(env.userID), ClientType: "cli", ClientName: "test",
+		ID: apiTokenID, UserID: userid.MustNew(env.userID), ClientID: oauthapp.ControlCLIClientID, InstallationName: "test", GrantedScopes: authscope.NonAdminGrant().String(),
 		SecretHash: []byte("hash"),
 	}))
 
@@ -54,7 +56,7 @@ func TestAdminPath_UserDelete_TearsDownEverything(t *testing.T) {
 
 	apiTok := id.Generate()
 	require.NoError(t, env.st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID: apiTok, UserID: userid.MustNew(env.userID), ClientType: "cli", ClientName: "test",
+		ID: apiTok, UserID: userid.MustNew(env.userID), ClientID: oauthapp.ControlCLIClientID, InstallationName: "test", GrantedScopes: authscope.NonAdminGrant().String(),
 		SecretHash: []byte("hash"),
 	}))
 	env.seedDelegationToken(t)
@@ -87,7 +89,7 @@ func TestAdminPath_ResetPassword_RevokesTokensAndChannels(t *testing.T) {
 	env := setup(t)
 	apiTok := id.Generate()
 	require.NoError(t, env.st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID: apiTok, UserID: userid.MustNew(env.userID), ClientType: "cli", ClientName: "test",
+		ID: apiTok, UserID: userid.MustNew(env.userID), ClientID: oauthapp.ControlCLIClientID, InstallationName: "test", GrantedScopes: authscope.NonAdminGrant().String(),
 		SecretHash: []byte("hash"),
 	}))
 	env.seedDelegationToken(t)
@@ -118,7 +120,7 @@ func TestAdminPath_SessionRevokeUser_TearsDownAllChannels(t *testing.T) {
 	env := setup(t)
 	apiTok := id.Generate()
 	require.NoError(t, env.st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID: apiTok, UserID: userid.MustNew(env.userID), ClientType: "cli", ClientName: "test",
+		ID: apiTok, UserID: userid.MustNew(env.userID), ClientID: oauthapp.ControlCLIClientID, InstallationName: "test", GrantedScopes: authscope.NonAdminGrant().String(),
 		SecretHash: []byte("hash"),
 	}))
 	env.seedDelegationToken(t)

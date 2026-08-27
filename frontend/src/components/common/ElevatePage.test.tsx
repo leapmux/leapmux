@@ -118,7 +118,7 @@ describe('elevatePage', () => {
 
   it('returns to a hub route with a full-document load', async () => {
     mockElevateWithPassword.mockImplementation(elevationGranted())
-    renderElevate(`/elevate?redirect=${encodeURIComponent('/auth/cli/start?state=s&elevated=1')}`)
+    renderElevate(`/elevate?redirect=${encodeURIComponent('/oauth/authorize?state=s&elevated=1')}`)
 
     fireEvent.input(await screen.findByTestId('elevate-password'), { target: { value: 'secret' } })
     fireEvent.click(screen.getByTestId('elevate-password-submit'))
@@ -126,7 +126,7 @@ describe('elevatePage', () => {
     await vi.waitFor(() => {
       // A router navigate would render the SPA's 404 page while the CLI
       // waits for a consent screen nobody ever sees.
-      expect(assign).toHaveBeenCalledWith('/auth/cli/start?state=s&elevated=1')
+      expect(assign).toHaveBeenCalledWith('/oauth/authorize?state=s&elevated=1')
     })
     expect(mockElevateWithPassword).toHaveBeenCalledWith('secret')
     // EXACTLY once, and a success writes TWO signals to get here: the adopted

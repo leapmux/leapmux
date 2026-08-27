@@ -83,20 +83,17 @@ func PublicProcedures() []string {
 	return out
 }
 
-var delegationAllowedProcedures = map[string]bool{
-	leapmuxv1connect.ChannelServiceGetWorkerHandshakeParamsProcedure: true,
-	leapmuxv1connect.ChannelServiceOpenChannelProcedure:              true,
-	leapmuxv1connect.ChannelServiceCloseChannelProcedure:             true,
-	leapmuxv1connect.WorkspaceServiceListWorkspacesProcedure:         true,
-	leapmuxv1connect.WorkspaceServiceGetWorkspaceProcedure:           true,
-	leapmuxv1connect.WorkspaceServiceListTabsProcedure:               true,
-	leapmuxv1connect.WorkspaceServiceGetTabProcedure:                 true,
-	leapmuxv1connect.WorkspaceServiceLocateTabProcedure:              true,
-	leapmuxv1connect.WorkspaceServiceLocateTileProcedure:             true,
-	leapmuxv1connect.UserCRDTSubmitOpsProcedure:                      true,
-	leapmuxv1connect.UserCRDTGetMaterializedProcedure:                true,
-	leapmuxv1connect.UserCRDTUpdatePresenceProcedure:                 true,
-}
+// The delegation ALLOWLIST that used to live here is gone. Its guarantee -- a
+// worker-minted bearer for a process that reads untrusted input can never
+// administer the hub -- now rides on CeilingFor(BearerKindDelegation), which
+// loadBearer applies when it READS the row. That is strictly stronger: an
+// allowlist limited the procedures a delegation bearer could call and left the
+// grant on the row unbounded, so a mint bug or a hand-edited row produced an
+// over-scoped credential that still authenticated. The ceiling limits the
+// GRANT, at every validation, so there is no such row.
+//
+// delegation_procedures_test.go pins the new ceiling against the exact
+// procedure set the old allowlist named.
 
 // adminProcedurePrefix is what MAKES a procedure admin-only: every
 // Connect procedure path is /leapmux.v1.<Service>/<Method>, and the four
@@ -163,10 +160,10 @@ var adminProcedures = map[string]bool{
 	leapmuxv1connect.AdminWorkerServiceRevokeRegistrationKeyProcedure:        true,
 	leapmuxv1connect.AdminWorkerServicePurgeExpiredRegistrationKeysProcedure: true,
 
-	leapmuxv1connect.AdminOAuthServiceAddOAuthProviderProcedure:        true,
-	leapmuxv1connect.AdminOAuthServiceListOAuthProvidersProcedure:      true,
-	leapmuxv1connect.AdminOAuthServiceRemoveOAuthProviderProcedure:     true,
-	leapmuxv1connect.AdminOAuthServiceSetOAuthProviderEnabledProcedure: true,
+	leapmuxv1connect.AdminIdPServiceAddOAuthProviderProcedure:        true,
+	leapmuxv1connect.AdminIdPServiceListOAuthProvidersProcedure:      true,
+	leapmuxv1connect.AdminIdPServiceRemoveOAuthProviderProcedure:     true,
+	leapmuxv1connect.AdminIdPServiceSetOAuthProviderEnabledProcedure: true,
 }
 
 // No exported accessor for adminProcedures: unlike PublicProcedures,
@@ -909,12 +906,35 @@ func (a *authInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc
 // caller writes to the response as a refreshed cookie. It is the zero value on
 // every path that slides nothing: solo mode, a public procedure, and bearer
 // auth all hold no session cookie to refresh.
+//
+// headerPresentsLeapMuxBearer reports whether an Authorization header carries a
+// leapmux bearer at all, valid or not. It is what the solo rung yields to; see
+// the comment in authenticate. AuthenticateHTTP asks the same question of a
+// *http.Request through presentsLeapMuxBearer.
+func headerPresentsLeapMuxBearer(authHeader string) bool {
+	bearer, ok := BearerToken(authHeader)
+	return ok && IsLeapMuxBearer(bearer)
+}
+
 func (a *authInterceptor) authenticate(ctx context.Context, procedure, cookieHeader, authHeader string, p Policy) (context.Context, sessionRefresh, error) {
 	var noRefresh sessionRefresh
 
 	// Solo mode authenticates every procedure -- public or not -- as the
-	// synthetic user and short-circuits the bearer/cookie paths.
-	if a.soloUser != nil {
+	// synthetic user, and short-circuits the cookie path.
+	//
+	// It YIELDS to a presented lmx_ bearer, which is what makes the scope model
+	// work on a solo hub. Reaching the port is the authentication there, so the
+	// synthetic user carries an unscoped grant; a caller that presents a bearer
+	// is asking to be its APP instead, having accepted a narrower grant on a
+	// consent screen. Answering "you are the solo user" would discard that
+	// narrowing without a word, and an agent handed file:read would still hold
+	// everything the account can do.
+	//
+	// It yields on the PRESENCE of a bearer, not its validity. A revoked or
+	// malformed one falls through to tryAuthenticateBearer and is refused
+	// there; falling back to the solo rung would make a broken credential
+	// stronger than a working one.
+	if a.soloUser != nil && !headerPresentsLeapMuxBearer(authHeader) {
 		return WithUser(ctx, a.state.currentSyntheticUser(a.soloUser)), noRefresh, nil
 	}
 
@@ -926,19 +946,17 @@ func (a *authInterceptor) authenticate(ctx context.Context, procedure, cookieHea
 		return ctx, noRefresh, err
 	} else if ok {
 		ctx = WithUser(ctx, userInfo)
-		if userInfo.Credential.IsDelegation() && !delegationAllowedProcedures[procedure] {
-			return ctx, noRefresh, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("delegation token cannot call this procedure"))
-		}
-		if err := a.enforceEmailVerification(procedure, userInfo, p); err != nil {
-			return ctx, noRefresh, err
-		}
-		if err := enforceAdmin(procedure, userInfo); err != nil {
-			return ctx, noRefresh, err
-		}
-		return ctx, noRefresh, nil
+		return ctx, noRefresh, a.authorize(procedure, userInfo, p)
 	}
 
-	token := SessionIDFromHeader(cookieHeader, p.SecureCookies)
+	// The cookie rung reads the SAME asymmetric fallback AuthenticateHTTP
+	// reads, through the shared helper: the __Host- spelling first, and the
+	// unprefixed one only on a hub that does not write the prefix. The two
+	// ladders used to spell this separately, and the interceptor's single
+	// spelling signed the same browser out of every Connect procedure the
+	// moment an operator turned secure_cookies off, while the WebSockets --
+	// which AuthenticateHTTP serves -- kept the session alive.
+	token := sessionIDFromCookieHeader(cookieHeader, p.SecureCookies)
 	if token == "" {
 		return ctx, noRefresh, connect.NewError(connect.CodeUnauthenticated, nil)
 	}
@@ -960,14 +978,35 @@ func (a *authInterceptor) authenticate(ctx context.Context, procedure, cookieHea
 	// an unverified user waiting to verify, whose every non-allowlisted procedure
 	// is denied -- would slide the row again and again and never receive a cookie
 	// for it.
-	if err := a.enforceEmailVerification(procedure, userInfo, p); err != nil {
-		return ctx, refresh, err
-	}
-	if err := enforceAdmin(procedure, userInfo); err != nil {
-		return ctx, refresh, err
-	}
+	return ctx, refresh, a.authorize(procedure, userInfo, p)
+}
 
-	return ctx, refresh, nil
+// authorize runs every rung that decides whether an AUTHENTICATED caller may
+// call this procedure.
+//
+// ONE method, for both credential paths. The bearer path and the cookie path
+// used to spell the sequence separately, which is how the delegation refusal
+// came to exist on one of them only. A rung added here now applies to both by
+// construction rather than by the author remembering the second call site.
+//
+// The ORDER is deliberate:
+//
+//  1. Scope. Cheapest, applies to every kind, and running it first means an
+//     app with no admin:read is refused for its own grant rather than told
+//     whether its user is an administrator.
+//  2. Email verification. An unverified account reaches almost nothing, and
+//     the allowlist that clears it is a property of the account rather than
+//     of the credential.
+//  3. The admin gate, last, because it is the one that reads IsAdmin -- so a
+//     caller that fails an earlier rung never learns it.
+func (a *authInterceptor) authorize(procedure string, userInfo *UserInfo, p Policy) error {
+	if err := enforceScope(procedure, userInfo); err != nil {
+		return err
+	}
+	if err := a.enforceEmailVerification(procedure, userInfo, p); err != nil {
+		return err
+	}
+	return enforceAdmin(procedure, userInfo)
 }
 
 // currentPolicy resolves the settings-backed auth policy once per
@@ -1001,6 +1040,14 @@ func (a *authInterceptor) enforceEmailVerification(procedure string, userInfo *U
 // user-resolving branch. An unverified admin passes by design — admins are
 // exempt from the email gate, and an admin who cannot receive mail must
 // still be able to configure SMTP.
+//
+// It asks about the ACCOUNT alone. The parallel question -- was this
+// CREDENTIAL granted hub administration? -- used to live beside it as
+// enforceAdminScope, reading a single api_tokens.admin_scope boolean. It is
+// now four named scopes (admin:read, admin:users, admin:settings,
+// admin:workers) that enforceScope decides one rung earlier, so a credential
+// minted to administer users can no longer also rewrite the hub's security
+// settings.
 func enforceAdmin(procedure string, userInfo *UserInfo) error {
 	// Deny by PREFIX, never by the map. See adminProcedurePrefix: the map
 	// is the rationale record, and a lookup miss there must not open a
@@ -1011,31 +1058,7 @@ func enforceAdmin(procedure string, userInfo *UserInfo) error {
 	if !userInfo.IsAdmin {
 		return connect.NewError(connect.CodePermissionDenied, fmt.Errorf("administrator privileges are required"))
 	}
-	return enforceAdminScope(userInfo)
-}
-
-// enforceAdminScope refuses an administrator's API-token bearer that was not
-// minted with the admin scope.
-//
-// Administration is opt-in per credential, not implied by the account. A CLI
-// login mints a token that lives for months in a plaintext file; without the
-// scope, that file is a full hub-administration credential for every admin
-// who ever ran `leapmux control auth login`. With it, the ordinary login
-// mints a token that can do everything the user can do EXCEPT administer the
-// hub, and the administering token exists only when the user asked for it
-// and proved a factor to get it.
-//
-// A cookie carries no scope column and is admitted on IsAdmin alone: the web
-// admin UI is a session, and a session is already the thing an elevation
-// prompt can protect. A delegation bearer never reaches here -- the
-// interceptor refuses it before the admin gate.
-func enforceAdminScope(userInfo *UserInfo) error {
-	kind, _, isBearer := userInfo.Credential.Bearer()
-	if !isBearer || kind != BearerKindAPI || userInfo.CredentialAdminScope {
-		return nil
-	}
-	return connect.NewError(connect.CodePermissionDenied,
-		fmt.Errorf("this CLI credential was not granted hub administration; run `leapmux control auth login --admin` to mint one that was"))
+	return nil
 }
 
 // tryAuthenticateBearer attempts Bearer-token auth. Returns (info, true,

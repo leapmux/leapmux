@@ -41,7 +41,8 @@ type Store interface {
 	DelegationTokens() DelegationTokenStore
 	RevocationEvents() RevocationEventStore
 	DeviceAuthorizations() DeviceAuthorizationStore
-	CLIAuthorizationCodes() CLIAuthorizationCodeStore
+	OAuthAuthorizationCodes() OAuthAuthorizationCodeStore
+	OAuthClients() OAuthClientStore
 	Cleanup() CleanupStore
 
 	// Migrator returns the schema migration manager for this backend.
@@ -469,7 +470,7 @@ type APITokenStore interface {
 	// protects hub settings, the user surface and the mint would otherwise
 	// admit it unconditionally -- it had no row to stamp, so possession of
 	// the credential file was the whole of the check. The factor is proven
-	// in a browser (the /auth/cli/elevate consent leg), which is the only
+	// in a browser (the /oauth/step-up consent leg), which is the only
 	// place a person can answer a password or a passkey prompt.
 	//
 	// A DELEGATION token deliberately has no equivalent. It is minted by a
@@ -700,16 +701,98 @@ type DeviceAuthorizationStore interface {
 	GetByUserCode(ctx context.Context, userCode string) (*DeviceAuthorization, error)
 	Approve(ctx context.Context, p ApproveDeviceAuthorizationParams, now time.Time) (int64, error)
 	ApproveByUserCode(ctx context.Context, p ApproveDeviceAuthorizationByUserCodeParams, now time.Time) (int64, error)
-	Deny(ctx context.Context, deviceCode string) (int64, error)
+	// DenyByUserCode is the deny the BROWSER runs: the activation page holds
+	// the user code and never the device code. It matches a pending row only,
+	// so an answered grant keeps its answer.
+	DenyByUserCode(ctx context.Context, userCode string) (int64, error)
 	Consume(ctx context.Context, deviceCode string, now time.Time) (int64, error)
 	TouchPoll(ctx context.Context, deviceCode string) error
 }
 
-// CLIAuthorizationCodeStore manages local-redirect one-shot codes.
-type CLIAuthorizationCodeStore interface {
-	Create(ctx context.Context, p CreateCLIAuthorizationCodeParams) error
-	GetActive(ctx context.Context, code string, now time.Time) (*CLIAuthorizationCode, error)
-	Consume(ctx context.Context, code string, now time.Time) (*CLIAuthorizationCode, error)
+// OAuthAuthorizationCodeStore manages RFC 6749 section 4.1 one-shot codes.
+type OAuthAuthorizationCodeStore interface {
+	Create(ctx context.Context, p CreateOAuthAuthorizationCodeParams) error
+	// Get returns the row WHATEVER its state, consumed and expired included.
+	// The REPLAY path needs it: RFC 6749 section 4.1.2 requires the server to
+	// revoke the credential a replayed code already produced, and only a
+	// consumed row names that credential.
+	Get(ctx context.Context, code string) (*OAuthAuthorizationCode, error)
+	GetActive(ctx context.Context, code string, now time.Time) (*OAuthAuthorizationCode, error)
+	Consume(ctx context.Context, code string, now time.Time) (*OAuthAuthorizationCode, error)
+	// MarkMinted records which credential the exchange produced, so a later
+	// replay of the same code can revoke it.
+	MarkMinted(ctx context.Context, code, tokenID string) error
+}
+
+// OAuthClientStore manages registered apps.
+//
+// Every write carries the CALLER into the statement rather than trusting a
+// check the service ran first: a read-then-write pair leaves a window in which
+// the row changes hands between the two. See UpdateOAuthClientParams.
+type OAuthClientStore interface {
+	Create(ctx context.Context, p CreateOAuthClientParams) error
+	// Get returns the app WHATEVER its state, revoked included. A revoked app
+	// must still be readable: bearer validation joins it to refuse a live
+	// credential on a retired app, and the disconnect surface has to name what
+	// it revoked.
+	Get(ctx context.Context, clientID string) (*OAuthClient, error)
+	// GetIcon reads the icon bytes, their media type, and the facts that gate
+	// serving them, for the /oauth/apps/<id>/icon asset endpoint. It is a
+	// separate read because the full-row queries carry only whether an icon
+	// exists -- the bytes would put 64 KiB on every token exchange otherwise.
+	GetIcon(ctx context.Context, clientID string) (*OAuthClientIcon, error)
+	// ListVisibleTo pages every app this user may AUTHORIZE: their own private
+	// ones plus the whole hub-wide catalogue.
+	ListVisibleTo(ctx context.Context, p ListOAuthClientsParams) (Page[OAuthClient], error)
+	// ListOwnedBy pages the apps this user REGISTERED, which is what they can
+	// edit. It excludes the hub-wide catalogue, so it answers a different
+	// question from ListVisibleTo.
+	ListOwnedBy(ctx context.Context, p ListOAuthClientsParams) (Page[OAuthClient], error)
+	Update(ctx context.Context, p UpdateOAuthClientParams) (int64, error)
+	// SetElevationAllowed toggles the one field the app list changes inline,
+	// and the ONE field a built-in registration may still change: an operator
+	// who does not want `leapmux control admin ...` to elevate must be able to
+	// say so.
+	SetElevationAllowed(ctx context.Context, p SetOAuthClientElevationAllowedParams) (int64, error)
+	SetIcon(ctx context.Context, p SetOAuthClientIconParams) (int64, error)
+	SetVerified(ctx context.Context, p SetOAuthClientVerifiedParams) (int64, error)
+	// Revoke retires the app. It is the verb the surface offers, because a
+	// hard delete of an app with live credentials is refused by the RESTRICT
+	// foreign key -- and because revocation is what the caller can cascade
+	// with each credential's lifecycle effects.
+	Revoke(ctx context.Context, p OAuthClientOwnershipParams) (int64, error)
+	// Delete hard-deletes an app that never held a credential. The foreign key
+	// refuses it otherwise, which is the point: a delete that silently
+	// orphaned credentials would be worse than a refusal.
+	//
+	// It clears the app's DEVICE GRANTS and AUTHORIZATION CODES first, in the
+	// same transaction. Those reference the app under the same RESTRICT key but
+	// are one-shot artifacts of a flow -- ten minutes and one minute of life --
+	// so an app that ran a single abandoned device flow would otherwise be
+	// undeletable, with a foreign-key error naming a table the operator has no
+	// surface for. api_tokens is not cleared: a revoked credential is history,
+	// and the delete refuses while one exists.
+	Delete(ctx context.Context, p OAuthClientOwnershipParams) (int64, error)
+	// ListTokenRefs reads the credentials RevokeTokens will revoke, before it
+	// runs, so the caller can apply each row's lifecycle effects after the
+	// transaction commits.
+	ListTokenRefs(ctx context.Context, p RevokeAPITokensForClientParams) ([]APITokenRef, error)
+	// RevokeTokens is the cascade of a disconnect (one user) or an app
+	// revocation (every user).
+	RevokeTokens(ctx context.Context, p RevokeAPITokensForClientParams) (int64, error)
+	// CountLiveTokens reports how many LIVE credentials the app holds across
+	// every user. It answers "what can this app still do", which is what the
+	// app listing shows.
+	CountLiveTokens(ctx context.Context, clientID string) (int64, error)
+	// CountLiveTokensByClients is CountLiveTokens batched over a page's worth
+	// of apps: one GROUP BY round trip instead of one query per row, for the
+	// listing surfaces. Ids with no live credential are absent from the map.
+	CountLiveTokensByClients(ctx context.Context, clientIDs []string) (map[string]int64, error)
+	// CountTokens reports EVERY credential row, revoked ones included, which is
+	// what the RESTRICT foreign key counts -- so it is the honest delete
+	// precondition. Using the live count there told an operator to revoke and
+	// then refused the delete anyway.
+	CountTokens(ctx context.Context, clientID string) (int64, error)
 }
 
 type WorkspaceSectionStore interface {
@@ -904,7 +987,7 @@ type CleanupStore interface {
 	DeleteExpiredPendingOAuthSignups(ctx context.Context, now time.Time) (int64, error)
 	DeleteExpiredWebAuthnSessions(ctx context.Context, now time.Time) (int64, error)
 	DeleteExpiredDeviceAuthorizations(ctx context.Context, now time.Time) (int64, error)
-	DeleteExpiredCLIAuthorizationCodes(ctx context.Context, now time.Time) (int64, error)
+	DeleteExpiredOAuthAuthorizationCodes(ctx context.Context, now time.Time) (int64, error)
 	// DeleteExpiredAPITokensBefore hard-deletes a live api_tokens row only
 	// when BOTH of its deadlines closed before cutoff: the access expiry AND
 	// the refresh window. The caller sets cutoff behind now by a retention

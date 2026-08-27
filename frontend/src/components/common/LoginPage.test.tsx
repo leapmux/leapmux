@@ -192,8 +192,8 @@ describe('loginPage', () => {
 
   it('renders oauth buttons when providers are configured', async () => {
     mockLoadOAuthProviders.mockResolvedValue([
-      { id: 'p1', name: 'Google', providerType: 'oidc', loginUrl: '/auth/oauth/p1/login' },
-      { id: 'p2', name: 'GitHub', providerType: 'github', loginUrl: '/auth/oauth/p2/login' },
+      { id: 'p1', name: 'Google', providerType: 'oidc', loginUrl: '/auth/idp/p1/login' },
+      { id: 'p2', name: 'GitHub', providerType: 'github', loginUrl: '/auth/idp/p2/login' },
     ])
 
     renderLoginPage()
@@ -208,7 +208,7 @@ describe('loginPage', () => {
 
   it('oauth button links to correct login url', async () => {
     mockLoadOAuthProviders.mockResolvedValue([
-      { id: 'p1', name: 'TestProvider', providerType: 'oidc', loginUrl: '/auth/oauth/p1/login' },
+      { id: 'p1', name: 'TestProvider', providerType: 'oidc', loginUrl: '/auth/idp/p1/login' },
     ])
 
     renderLoginPage()
@@ -218,7 +218,7 @@ describe('loginPage', () => {
     })
 
     const link = screen.getByText(/Sign in with TestProvider/).closest('a')
-    expect(link).toHaveAttribute('href', '/auth/oauth/p1/login')
+    expect(link).toHaveAttribute('href', '/auth/idp/p1/login')
   })
 
   it('shows signup link when signup is enabled', async () => {
@@ -233,7 +233,7 @@ describe('loginPage', () => {
 
   it('renders provider with long name correctly', async () => {
     mockLoadOAuthProviders.mockResolvedValue([
-      { id: 'p1', name: 'Corporate Azure Active Directory', providerType: 'oidc', loginUrl: '/auth/oauth/p1/login' },
+      { id: 'p1', name: 'Corporate Azure Active Directory', providerType: 'oidc', loginUrl: '/auth/idp/p1/login' },
     ])
 
     renderLoginPage()

@@ -4,8 +4,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/util/userid"
 
+	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/stretchr/testify/assert"
@@ -67,11 +69,12 @@ func (s *Suite) testCleanupBoundaries(t *testing.T) {
 		create := func(expiresAt time.Time) string {
 			tokenID := id.Generate()
 			require.NoError(t, st.DelegationTokens().Create(ctx, store.CreateDelegationTokenParams{
-				ID:         tokenID,
-				UserID:     userid.MustNew(user.ID),
-				WorkerID:   worker.ID,
-				SecretHash: []byte("secret"),
-				ExpiresAt:  expiresAt,
+				GrantedScopes: "workspace:read workspace:write worker:read",
+				ID:            tokenID,
+				UserID:        userid.MustNew(user.ID),
+				WorkerID:      worker.ID,
+				SecretHash:    []byte("secret"),
+				ExpiresAt:     expiresAt,
 			}))
 			return tokenID
 		}
@@ -112,7 +115,7 @@ func (s *Suite) testCleanupBoundaries(t *testing.T) {
 		seed := func(name string, expiresAt, refreshExpiresAt *time.Time) string {
 			tokenID := id.Generate()
 			require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
-				ID: tokenID, UserID: userid.MustNew(user.ID), ClientType: "cli", ClientName: name,
+				ID: tokenID, UserID: userid.MustNew(user.ID), ClientID: oauthapp.ControlCLIClientID, InstallationName: name, GrantedScopes: authscope.NonAdminGrant().String(),
 				SecretHash: []byte("secret"), ExpiresAt: expiresAt, RefreshExpiresAt: refreshExpiresAt,
 			}))
 			return tokenID
@@ -166,11 +169,12 @@ func (s *Suite) testCleanupBoundaries(t *testing.T) {
 		// whatever the dialect's precision.
 		apiID := id.Generate()
 		require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
-			ID:         apiID,
-			UserID:     userid.MustNew(user.ID),
-			ClientType: "cli",
-			ClientName: "boundary-client",
-			SecretHash: []byte("secret"),
+			ID:               apiID,
+			UserID:           userid.MustNew(user.ID),
+			ClientID:         oauthapp.ControlCLIClientID,
+			InstallationName: "boundary-client",
+			GrantedScopes:    authscope.NonAdminGrant().String(),
+			SecretHash:       []byte("secret"),
 		}))
 		n, err := st.APITokens().Revoke(ctx, apiID)
 		require.NoError(t, err)
@@ -188,11 +192,12 @@ func (s *Suite) testCleanupBoundaries(t *testing.T) {
 
 		delID := id.Generate()
 		require.NoError(t, st.DelegationTokens().Create(ctx, store.CreateDelegationTokenParams{
-			ID:         delID,
-			UserID:     userid.MustNew(user.ID),
-			WorkerID:   worker.ID,
-			SecretHash: []byte("secret"),
-			ExpiresAt:  boundaryCutoff().Add(time.Hour),
+			GrantedScopes: "workspace:read workspace:write worker:read",
+			ID:            delID,
+			UserID:        userid.MustNew(user.ID),
+			WorkerID:      worker.ID,
+			SecretHash:    []byte("secret"),
+			ExpiresAt:     boundaryCutoff().Add(time.Hour),
 		}))
 		n, err = st.DelegationTokens().Revoke(ctx, delID)
 		require.NoError(t, err)
@@ -222,7 +227,9 @@ func (s *Suite) testCleanupBoundaries(t *testing.T) {
 			{"code-at-cutoff", cutoff},
 			{"code-live", cutoff.Add(time.Millisecond)},
 		} {
-			require.NoError(t, st.CLIAuthorizationCodes().Create(ctx, store.CreateCLIAuthorizationCodeParams{
+			require.NoError(t, st.OAuthAuthorizationCodes().Create(ctx, store.CreateOAuthAuthorizationCodeParams{
+				ClientID:      oauthapp.ControlCLIClientID,
+				GrantedScopes: authscope.NonAdminGrant().String(),
 				Code:          c.code,
 				UserID:        userid.MustNew(user.ID),
 				CodeChallenge: "challenge",
@@ -231,7 +238,7 @@ func (s *Suite) testCleanupBoundaries(t *testing.T) {
 		}
 
 		assertBoundarySweep(t, cutoff, func(c time.Time) (int64, error) {
-			return st.Cleanup().DeleteExpiredCLIAuthorizationCodes(ctx, c)
+			return st.Cleanup().DeleteExpiredOAuthAuthorizationCodes(ctx, c)
 		})
 	})
 
@@ -248,6 +255,7 @@ func (s *Suite) testCleanupBoundaries(t *testing.T) {
 			{"live", cutoff.Add(time.Millisecond)},
 		} {
 			require.NoError(t, st.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
+				ClientID:        oauthapp.ControlCLIClientID,
 				DeviceCode:      "device-" + d.suffix,
 				UserCode:        "USER-" + d.suffix,
 				IntervalSeconds: 5,

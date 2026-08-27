@@ -19,10 +19,10 @@ import (
 // CredentialFile is the per-hub credential payload stored under
 // ~/.config/leapmux/control/<hub-host>.json (mode 0600).
 //
-// TokenID and AdminScope are ADVISORY: they let the CLI say which row it
-// holds and what it was granted, without a round trip. The hub decides both
-// -- a hand-edited AdminScope grants nothing, because the scope lives in the
-// api_tokens row the bearer specifies.
+// TokenID and Scope are ADVISORY: they let the CLI say which row it holds and
+// what it was granted, without a round trip. The hub decides both -- a
+// hand-edited Scope grants nothing, because the grant lives in the api_tokens
+// row the bearer specifies.
 type CredentialFile struct {
 	HubURL       string    `json:"hub_url"`
 	HubID        string    `json:"hub_id"`
@@ -37,7 +37,9 @@ type CredentialFile struct {
 	UserID           string    `json:"user_id"`
 	Username         string    `json:"username"`
 	TokenID          string    `json:"token_id,omitempty"`
-	AdminScope       bool      `json:"admin_scope,omitempty"`
+	// Scope is the canonical RFC 6749 section 3.3 grant the hub reported, so
+	// `auth status` can print what this credential may do.
+	Scope string `json:"scope,omitempty"`
 }
 
 // HubHost extracts the hostname (or socket path) used for the on-disk

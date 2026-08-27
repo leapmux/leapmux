@@ -251,7 +251,7 @@ message OAuthProviderInfo {
   string id = 1;
   string name = 2;
   string provider_type = 3; // "oidc" or "github"
-  string login_url = 4;     // full URL to /auth/oauth/{id}/login
+  string login_url = 4;     // full URL to /auth/idp/{id}/login
 }
 
 message GetPendingOAuthSignupRequest {

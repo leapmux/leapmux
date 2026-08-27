@@ -224,13 +224,30 @@ export async function deregisterWorkerViaAPI(
  * all accepts one sign-up and makes it an administrator.
  */
 export async function enableSignupViaAPI(hubUrl: string, cookie: string): Promise<void> {
+  await updateSettingViaAPI(hubUrl, cookie, 'signup_enabled', 'true')
+}
+
+/**
+ * Write one hub setting, as an administrator.
+ *
+ * `partialJson` is the wire shape `UpdateSetting` takes: a scalar key sends a
+ * bare JSON value (`'true'`), and a structured one sends an object with only
+ * the fields it changes. The write needs an ELEVATED session — every hub
+ * setting write does — so the caller elevates first.
+ */
+export async function updateSettingViaAPI(
+  hubUrl: string,
+  cookie: string,
+  key: string,
+  partialJson: string,
+): Promise<void> {
   const res = await fetch(`${hubUrl}/leapmux.v1.AdminSettingsService/UpdateSetting`, {
     method: 'POST',
     headers: authedHeaders(cookie),
-    body: JSON.stringify({ key: 'signup_enabled', partialJson: 'true' }),
+    body: JSON.stringify({ key, partialJson }),
   })
   if (!res.ok) {
-    throw new Error(`enableSignupViaAPI failed: ${res.status} ${await res.text()}`)
+    throw new Error(`updateSettingViaAPI(${key}) failed: ${res.status} ${await res.text()}`)
   }
 }
 
@@ -369,11 +386,18 @@ export async function deletePasskeyResponse(
   })
 }
 
-/** The account's own CLI credentials. */
+/**
+ * One credential an app holds on the account.
+ *
+ * `clientName` is the APP's registered display name and `installationName` is
+ * the one device or checkout that holds this credential — one app, many
+ * installations, which is why both are here.
+ */
 export interface MyAPITokenSummary {
   id: string
   clientName: string
-  adminScope: boolean
+  installationName: string
+  grantedScopes: string[]
   current: boolean
 }
 
@@ -387,12 +411,19 @@ export async function listMyAPITokensViaAPI(hubUrl: string, cookie: string): Pro
     throw new Error(`listMyAPITokensViaAPI failed: ${res.status} ${await res.text()}`)
   }
   const data = await res.json() as {
-    tokens?: Array<{ id?: string, clientName?: string, adminScope?: boolean, current?: boolean }>
+    tokens?: Array<{
+      id?: string
+      clientName?: string
+      installationName?: string
+      grantedScopes?: string[]
+      current?: boolean
+    }>
   }
   return (data.tokens ?? []).map(t => ({
     id: t.id ?? '',
     clientName: t.clientName ?? '',
-    adminScope: t.adminScope === true,
+    installationName: t.installationName ?? '',
+    grantedScopes: t.grantedScopes ?? [],
     current: t.current === true,
   }))
 }

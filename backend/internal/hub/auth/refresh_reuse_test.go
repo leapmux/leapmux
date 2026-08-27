@@ -7,12 +7,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/util/userid"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/internal/hub/auth"
+	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
 )
@@ -42,12 +44,13 @@ func mintAPIToken(t *testing.T, st store.Store, v *auth.TokenValidator, userID s
 	currentSecret = auth.MintAccessSecret()
 	refreshSecret = auth.MintAccessSecret()
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID:          tokenID,
-		UserID:      userid.MustNew(userID),
-		ClientType:  "cli",
-		ClientName:  "test",
-		SecretHash:  v.HashSecret(currentSecret),
-		RefreshHash: v.HashSecret(refreshSecret),
+		ID:               tokenID,
+		UserID:           userid.MustNew(userID),
+		ClientID:         oauthapp.ControlCLIClientID,
+		InstallationName: "test",
+		GrantedScopes:    authscope.NonAdminGrant().String(),
+		SecretHash:       v.HashSecret(currentSecret),
+		RefreshHash:      v.HashSecret(refreshSecret),
 	}))
 	return
 }

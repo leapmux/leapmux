@@ -311,8 +311,12 @@ func (s *mysqlStore) RevocationEvents() store.RevocationEventStore {
 func (s *mysqlStore) DeviceAuthorizations() store.DeviceAuthorizationStore {
 	return &deviceAuthorizationStore{conn: s.conn}
 }
-func (s *mysqlStore) CLIAuthorizationCodes() store.CLIAuthorizationCodeStore {
-	return &cliAuthorizationCodeStore{conn: s.conn}
+func (s *mysqlStore) OAuthAuthorizationCodes() store.OAuthAuthorizationCodeStore {
+	return &oauthAuthorizationCodeStore{conn: s.conn}
+}
+
+func (s *mysqlStore) OAuthClients() store.OAuthClientStore {
+	return &oauthClientStore{conn: s.conn}
 }
 func (s *mysqlStore) Cleanup() store.CleanupStore { return &cleanupStore{conn: s.conn} }
 func (s *mysqlStore) Migrator() store.Migrator    { return s.conn.shared.migrator }

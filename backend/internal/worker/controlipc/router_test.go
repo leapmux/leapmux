@@ -33,9 +33,9 @@ type fakeLocalDispatcher struct {
 	emitStream  [][]byte
 }
 
-func (f *fakeLocalDispatcher) DispatchWith(_ context.Context, userID userid.UserID, req *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter) {
+func (f *fakeLocalDispatcher) DispatchWith(_ context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter) {
 	f.mu.Lock()
-	f.gotUserID = userID
+	f.gotUserID = caller.UserID
 	f.gotMethod = req.GetMethod()
 	f.gotPayload = req.GetPayload()
 	stream := f.emitStream
@@ -803,7 +803,7 @@ type cancelRaceDispatcher struct {
 	bindResult chan bool
 }
 
-func (d *cancelRaceDispatcher) DispatchWith(ctx context.Context, _ userid.UserID, _ *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter) {
+func (d *cancelRaceDispatcher) DispatchWith(ctx context.Context, _ channel.Caller, _ *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter) {
 	// Simulate the watchSession handler: the entry is already stored by
 	// StreamInner, so signal that the cancel race window is open, wait for it
 	// to be retired, then attempt the bind.
@@ -845,7 +845,7 @@ type ctrlStreamDispatcher struct {
 	onCancelOrder chan string
 }
 
-func (d *ctrlStreamDispatcher) DispatchWith(ctx context.Context, _ userid.UserID, _ *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter) {
+func (d *ctrlStreamDispatcher) DispatchWith(ctx context.Context, _ channel.Caller, _ *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter) {
 	release, _ := w.BindStream(d.ctrl)
 	defer release()
 	if d.onCancelOrder != nil {
@@ -1043,7 +1043,7 @@ type slowStreamDispatcher struct {
 	emitted *atomic.Int32
 }
 
-func (d *slowStreamDispatcher) DispatchWith(_ context.Context, _ userid.UserID, _ *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter) {
+func (d *slowStreamDispatcher) DispatchWith(_ context.Context, _ channel.Caller, _ *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter) {
 	for {
 		select {
 		case <-d.stop:
@@ -1084,7 +1084,7 @@ type asyncErrorDispatcher struct {
 	release chan struct{}
 }
 
-func (d *asyncErrorDispatcher) DispatchWith(_ context.Context, _ userid.UserID, _ *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter) {
+func (d *asyncErrorDispatcher) DispatchWith(_ context.Context, _ channel.Caller, _ *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter) {
 	go func() {
 		<-d.release
 		_ = w.SendStream(&leapmuxv1.InnerStreamMessage{

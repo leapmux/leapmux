@@ -58,10 +58,9 @@ func (s *CRDTService) SubmitOps(
 	// Resolve the delegation worker bound BEFORE handing the batches to the
 	// manager: a bearer whose minter cannot be established must not submit ops
 	// at all, and a SetTabRegisterOp naming another user's worker is the same
-	// cross-tenant reach ChannelService refuses -- SubmitOps is a
-	// delegation-allowed procedure (auth's delegationAllowedProcedures lists
-	// UserCRDTSubmitOpsProcedure), so it is a worker-directed entrypoint whether
-	// or not it looks like one.
+	// cross-tenant reach ChannelService refuses -- SubmitOps needs
+	// workspace:write, which auth.CeilingFor(BearerKindDelegation) admits, so
+	// it is a worker-directed entrypoint whether or not it looks like one.
 	//
 	// With the tenant now taken from the session rather than the request, the
 	// hazard is no longer ordering against registry.Get -- it is DROPPING this
@@ -94,7 +93,7 @@ func (s *CRDTService) SubmitOps(
 		Batches:      req.Msg.GetBatches(),
 		PrincipalID:  user.ID.String(),
 		OriginClient: user.ID.String(),
-		WorkerScope:  workerScopePredicate(workerScope),
+		WorkerScope:  submitWorkerBound(user, workerScope),
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)

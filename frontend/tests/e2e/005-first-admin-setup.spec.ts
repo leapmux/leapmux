@@ -61,7 +61,7 @@ test.describe('First-admin setup', () => {
     '/reset-password?token=whatever',
     '/verify-email',
     '/elevate',
-    '/oauth/complete-signup?token=whatever',
+    '/auth/idp/complete-signup?token=whatever',
     '/no-such-page',
   ]
 

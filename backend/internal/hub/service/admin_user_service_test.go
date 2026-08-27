@@ -16,8 +16,10 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/mail"
+	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/servicetest"
@@ -240,7 +242,7 @@ func setupAdminUserTestWithSettings(t *testing.T) *adminUserEnv {
 // elevateAdminSession stamps a live elevation on the environment's session.
 //
 // IssueAPIToken requires one, because it mints a credential that outlives
-// the session that asked for it -- the same reason every /auth/cli/* consent
+// the session that asked for it -- the same reason every /oauth/* consent
 // leg does. A test that exercises the mint states the elevation rather than
 // relying on a hole; TestAdminUserService_IssueAPITokenNeedsAnElevatedSession
 // is the one that asserts the refusal.
@@ -339,11 +341,12 @@ func TestAdminUserService_DeleteUser_ForceAndCredentialRevocation(t *testing.T) 
 	worker := storetest.SeedWorker(t, env.st, carolID)
 	tokenID := id.Generate()
 	require.NoError(t, env.st.APITokens().Create(ctx, store.CreateAPITokenParams{
-		ID:         tokenID,
-		UserID:     userid.MustNew(carolID),
-		ClientType: "cli",
-		ClientName: "test",
-		SecretHash: []byte("hash"),
+		ID:               tokenID,
+		UserID:           userid.MustNew(carolID),
+		ClientID:         oauthapp.ControlCLIClientID,
+		InstallationName: "test",
+		GrantedScopes:    authscope.NonAdminGrant().String(),
+		SecretHash:       []byte("hash"),
 	}))
 	_, _, _, err = auth.Login(ctx, env.st, "carol", "password1", auth.DefaultSessionDuration)
 	require.NoError(t, err)
@@ -395,7 +398,7 @@ func TestAdminUserService_IssueAndRevokeAPIToken(t *testing.T) {
 	ctx := context.Background()
 
 	_, err := env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
-		ClientName: "cli",
+		InstallationName: "cli",
 	}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
@@ -406,19 +409,18 @@ func TestAdminUserService_IssueAndRevokeAPIToken(t *testing.T) {
 	}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
-	assert.Contains(t, err.Error(), "client_name is required")
+	assert.Contains(t, err.Error(), "installation_name is required")
 
 	_, err = env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
-		UserId:     "missing",
-		ClientName: "cli",
+		UserId:           "missing",
+		InstallationName: "cli",
 	}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
 
 	issued, err := env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
-		UserId:     env.adminID,
-		ClientName: "cli",
-		ClientType: "cli",
+		UserId:           env.adminID,
+		InstallationName: "cli",
 	}, env.token))
 	require.NoError(t, err)
 	assert.NotEmpty(t, issued.Msg.GetTokenId())
@@ -444,9 +446,9 @@ func TestAdminUserService_IssueAndRevokeAPIToken(t *testing.T) {
 	// ttl <= 0 uses the default access-token lifetime rather than minting
 	// an immediately-expired bearer.
 	issuedDefault, err := env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
-		UserId:     env.adminID,
-		ClientName: "default-ttl",
-		TtlSeconds: 0,
+		UserId:           env.adminID,
+		InstallationName: "default-ttl",
+		TtlSeconds:       0,
 	}, env.token))
 	require.NoError(t, err)
 	assert.NotEmpty(t, issuedDefault.Msg.GetAccessToken())
@@ -780,7 +782,7 @@ func TestAdminUserService_TokenListings(t *testing.T) {
 
 	issue := func(userID, name string) string {
 		resp, err := env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
-			UserId: userID, ClientType: "cli", ClientName: name, TtlSeconds: 3600,
+			UserId: userID, ClientId: oauthapp.ControlCLIClientID, InstallationName: name, Scopes: []string{"account:read", "account:write", "agent:read", "agent:write", "file:read", "git:read", "git:write", "terminal:read", "terminal:write", "tunnel:open", "worker:admin", "worker:read", "workspace:read", "workspace:write"}, TtlSeconds: 3600,
 		}, env.token))
 		require.NoError(t, err)
 		return resp.Msg.GetTokenId()
@@ -954,7 +956,7 @@ func TestAdminUserService_IssueAPITokenTTLCeiling(t *testing.T) {
 
 	// At the ceiling: accepted.
 	_, err := env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
-		UserId: env.adminID, ClientName: "cli", TtlSeconds: service.MaxAPITokenTTLSeconds,
+		UserId: env.adminID, InstallationName: "cli", TtlSeconds: service.MaxAPITokenTTLSeconds,
 	}, env.token))
 	require.NoError(t, err)
 
@@ -964,7 +966,7 @@ func TestAdminUserService_IssueAPITokenTTLCeiling(t *testing.T) {
 		-1,
 	} {
 		_, err := env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
-			UserId: env.adminID, ClientName: "cli", TtlSeconds: secs,
+			UserId: env.adminID, InstallationName: "cli", TtlSeconds: secs,
 		}, env.token))
 		require.Errorf(t, err, "ttl_seconds %d must be refused", secs)
 		assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
@@ -981,13 +983,13 @@ func TestAdminUserService_IssueAPITokenTakesTheSharedSelector(t *testing.T) {
 	ctx := context.Background()
 
 	got, err := env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
-		Username: "admin", ClientName: "cli",
+		Username: "admin", InstallationName: "cli",
 	}, env.token))
 	require.NoError(t, err)
 	assert.NotEmpty(t, got.Msg.GetTokenId())
 
 	_, err = env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
-		UserId: env.adminID, Username: "admin", ClientName: "cli",
+		UserId: env.adminID, Username: "admin", InstallationName: "cli",
 	}, env.token))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "mutually exclusive")
@@ -996,7 +998,7 @@ func TestAdminUserService_IssueAPITokenTakesTheSharedSelector(t *testing.T) {
 // TestAdminUserService_IssueAPITokenNeedsAnElevatedSession pins the gate a
 // stolen administrator cookie used to bypass.
 //
-// The four /auth/cli/* consent legs demand an elevated session because what
+// The three /oauth/* consent legs demand an elevated session because what
 // they mint outlives the session by months, and with the admin scope it
 // administers the hub. This verb mints the SAME credential, with a TTL of up
 // to a year, and asked for nothing: a replayed admin cookie POSTed
@@ -1011,7 +1013,7 @@ func TestAdminUserService_IssueAPITokenNeedsAnElevatedSession(t *testing.T) {
 	ctx := context.Background()
 
 	_, err := env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
-		Username: "admin", ClientName: "stolen-laptop", AdminScope: true, TtlSeconds: service.MaxAPITokenTTLSeconds,
+		Username: "admin", InstallationName: "stolen-laptop", Scopes: []string{"admin:read", "admin:users", "admin:settings", "admin:workers"}, TtlSeconds: service.MaxAPITokenTTLSeconds,
 	}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
@@ -1033,7 +1035,7 @@ func TestAdminUserService_IssueAPITokenNeedsAnElevatedSession(t *testing.T) {
 	// expired, which is the cache's job to solve and not this test's.
 	elevated := setupAdminUserTest(t)
 	got, err := elevated.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
-		Username: "admin", ClientName: "stolen-laptop", AdminScope: true, TtlSeconds: service.MaxAPITokenTTLSeconds,
+		Username: "admin", InstallationName: "stolen-laptop", Scopes: []string{"admin:read", "admin:users", "admin:settings", "admin:workers"}, TtlSeconds: service.MaxAPITokenTTLSeconds,
 	}, elevated.token))
 	require.NoError(t, err)
 	assert.NotEmpty(t, got.Msg.GetTokenId())
@@ -1055,7 +1057,7 @@ func TestAdminUserService_IssueAPITokenTTLPicksTheCredentialKind(t *testing.T) {
 		env := setupAdminUserTest(t)
 
 		got, err := env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
-			Username: "admin", ClientName: "ci-bot",
+			Username: "admin", InstallationName: "ci-bot",
 		}, env.token))
 		require.NoError(t, err)
 		assert.NotEmpty(t, got.Msg.GetRefreshToken(), "the ordinary credential renews itself")
@@ -1072,7 +1074,7 @@ func TestAdminUserService_IssueAPITokenTTLPicksTheCredentialKind(t *testing.T) {
 
 		const year = int64(365 * 24 * 60 * 60)
 		got, err := env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
-			Username: "admin", ClientName: "service-account", TtlSeconds: year,
+			Username: "admin", InstallationName: "service-account", TtlSeconds: year,
 		}, env.token))
 		require.NoError(t, err)
 		assert.Empty(t, got.Msg.GetRefreshToken(),
@@ -1099,7 +1101,7 @@ func TestAdminUserService_IssueAPITokenNotifiesTheOwner(t *testing.T) {
 	env := setupAdminUserTest(t)
 
 	_, err := env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
-		Username: "admin", ClientName: "ci-bot", AdminScope: true,
+		Username: "admin", InstallationName: "ci-bot", Scopes: []string{"admin:read", "admin:users", "admin:settings", "admin:workers"},
 	}, env.token))
 	require.NoError(t, err)
 
@@ -1107,11 +1109,21 @@ func TestAdminUserService_IssueAPITokenNotifiesTheOwner(t *testing.T) {
 	assert.Contains(t, msg.Body, "ci-bot", "the notice identifies the device that asked")
 }
 
+// adminConsentGrant is what a browser consent mints for an ADMINISTRATOR: the
+// CLI's default ask, plus the admin scopes an administrator's consent screen
+// offers and nobody else's does.
+//
+// IssueAPIToken needs both halves, for two separate reasons. admin:users is
+// the procedure's own scope. The rest is the ISSUER CEILING -- a credential
+// cannot mint one wider than itself -- so an issuer holding admin:users alone
+// could not issue the default grant it is asked for here.
+var adminConsentGrant = "admin:read admin:users " + authscope.NonAdminGrant().String()
+
 // The CONTROL CLI's own path, which authenticates by bearer and never by
 // cookie -- and is the only caller this verb actually has.
 //
 // A bearer takes the SAME elevation rule a session does, and proves its
-// factor in a browser through /auth/cli/elevate-authorization. It used to be
+// factor in a browser through /oauth/step-up. It used to be
 // admitted with no factor at all, which made possession of the credential
 // file the whole of the check for the most consequential verb on this
 // surface: a stolen file minted itself fresh admin-scoped credentials.
@@ -1130,18 +1142,18 @@ func TestAdminUserService_IssueAPITokenAdmitsAnElevatedBearer(t *testing.T) {
 		tokenID = id.Generate()
 		secret := auth.MintAccessSecret()
 		require.NoError(t, env.st.APITokens().Create(ctx, store.CreateAPITokenParams{
-			ID:         tokenID,
-			UserID:     owner,
-			ClientType: "cli",
-			ClientName: name,
-			SecretHash: env.validator.HashSecret(secret),
-			AdminScope: true,
+			ID:               tokenID,
+			UserID:           owner,
+			ClientID:         oauthapp.ControlCLIClientID,
+			InstallationName: name,
+			GrantedScopes:    adminConsentGrant,
+			SecretHash:       env.validator.HashSecret(secret),
 		}))
 		return tokenID, auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)
 	}
 	issueAs := func(bearer string) (*connect.Response[leapmuxv1.IssueAPITokenResponse], error) {
 		req := connect.NewRequest(&leapmuxv1.IssueAPITokenRequest{
-			Username: "admin", ClientName: "ci-bot",
+			Username: "admin", InstallationName: "ci-bot",
 		})
 		req.Header().Set("Authorization", "Bearer "+bearer)
 		return env.client.IssueAPIToken(ctx, req)
@@ -1199,7 +1211,7 @@ func TestAdminUserService_IssueAPITokenRefusesWithdrawnAuthority(t *testing.T) {
 		require.EqualValues(t, 1, revoked)
 
 		_, err = env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
-			Username: "admin", ClientName: "ci-bot",
+			Username: "admin", InstallationName: "ci-bot",
 		}, env.token))
 		require.Error(t, err, "a mint must not land on a session an administrator took away")
 
@@ -1233,7 +1245,7 @@ func TestAdminUserService_IssueAPITokenRefusesWithdrawnAuthority(t *testing.T) {
 		// ADMIT the mint: rolling back a change the owner legitimately
 		// started was a real regression once already.
 		_, err = env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
-			Username: "admin", ClientName: "ci-bot",
+			Username: "admin", InstallationName: "ci-bot",
 		}, env.token))
 		require.NoError(t, err, "the owner's own sign-out must not refuse the change they started")
 	})
@@ -1271,7 +1283,7 @@ func TestAdminUserService_DurableAuthorityVerbsNeedAnElevatedSession(t *testing.
 		},
 		"IssueAPIToken": func(env *adminUserEnv, token string) error {
 			_, err := env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
-				Username: "admin", ClientName: "ci-bot",
+				Username: "admin", InstallationName: "ci-bot",
 			}, token))
 			return err
 		},
@@ -1321,7 +1333,7 @@ func TestAdminUserService_DurableAuthorityVerbsNeedAnElevatedSession(t *testing.
 		t.Run(name+" refuses a bearer", func(t *testing.T) {
 			env := setupAdminUserTest(t)
 			issued, err := env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
-				UserId: env.adminID, ClientName: "admin-cli", ClientType: "cli", AdminScope: true,
+				UserId: env.adminID, InstallationName: "admin-cli", Scopes: []string{"admin:read", "admin:users", "admin:settings", "admin:workers"},
 			}, env.token))
 			require.NoError(t, err)
 
@@ -1388,7 +1400,7 @@ func TestAdminUserService_CredentialGatedVerbsNeedAProvenFactor(t *testing.T) {
 			// would cost the CLI for no gain.
 			env := setupAdminUserTest(t)
 			issued, err := env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
-				UserId: env.adminID, ClientName: "admin-cli", ClientType: "cli", AdminScope: true,
+				UserId: env.adminID, InstallationName: "admin-cli", Scopes: []string{"admin:read", "admin:users", "admin:settings", "admin:workers"},
 			}, env.token))
 			require.NoError(t, err)
 			hubtestutil.ElevateAPIToken(t, env.st, issued.Msg.GetTokenId(), env.adminID)
@@ -1428,7 +1440,7 @@ func TestAdminUserService_CredentialGatedVerbsNeedAProvenFactor(t *testing.T) {
 	t.Run("UpdateUser email refuses a bearer", func(t *testing.T) {
 		env := setupAdminUserTest(t)
 		issued, err := env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
-			UserId: env.adminID, ClientName: "admin-cli", ClientType: "cli", AdminScope: true,
+			UserId: env.adminID, InstallationName: "admin-cli", Scopes: []string{"admin:read", "admin:users", "admin:settings", "admin:workers"},
 		}, env.token))
 		require.NoError(t, err)
 		hubtestutil.ElevateAPIToken(t, env.st, issued.Msg.GetTokenId(), env.adminID)
@@ -1455,7 +1467,7 @@ func TestAdminUserService_IssueAPITokenClampsABearerMintedCredential(t *testing.
 	env := setupAdminUserTest(t)
 
 	parent, err := env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
-		UserId: env.adminID, ClientName: "admin-cli", ClientType: "cli", AdminScope: true,
+		UserId: env.adminID, InstallationName: "admin-cli", Scopes: []string{"admin:read", "admin:users", "admin:settings", "admin:workers"},
 	}, env.token))
 	require.NoError(t, err)
 
@@ -1466,7 +1478,7 @@ func TestAdminUserService_IssueAPITokenClampsABearerMintedCredential(t *testing.
 	hubtestutil.ElevateAPIToken(t, env.st, parent.Msg.GetTokenId(), env.adminID)
 
 	child, err := env.client.IssueAPIToken(ctx, adminBearerReq(&leapmuxv1.IssueAPITokenRequest{
-		Username: "admin", ClientName: "self-issued", AdminScope: true,
+		Username: "admin", InstallationName: "self-issued", Scopes: []string{"admin:read", "admin:users", "admin:settings", "admin:workers"},
 	}, parent.Msg.GetAccessToken()))
 	require.NoError(t, err, "the documented headless path still works")
 	assert.Empty(t, child.Msg.GetRefreshToken(),
@@ -1569,16 +1581,18 @@ func setupResetPasswordTest(t *testing.T) *resetPasswordEnv {
 
 	apiTokenID := id.Generate()
 	require.NoError(t, env.st.APITokens().Create(ctx, store.CreateAPITokenParams{
-		ID:         apiTokenID,
-		UserID:     userid.MustNew(userID),
-		ClientType: "cli",
-		ClientName: "carols-laptop",
-		SecretHash: []byte("hash"),
+		ID:               apiTokenID,
+		UserID:           userid.MustNew(userID),
+		ClientID:         oauthapp.ControlCLIClientID,
+		InstallationName: "carols-laptop",
+		GrantedScopes:    authscope.NonAdminGrant().String(),
+		SecretHash:       []byte("hash"),
 	}))
 
 	worker := storetest.SeedWorker(t, env.st, userID)
 	delegationID := id.Generate()
 	require.NoError(t, env.st.DelegationTokens().Create(ctx, store.CreateDelegationTokenParams{
+		GrantedScopes:    "workspace:read workspace:write worker:read",
 		ID:               delegationID,
 		UserID:           userid.MustNew(userID),
 		WorkerID:         worker.ID,
@@ -1860,7 +1874,7 @@ func TestAdminUserService_ResetPassword_KillsTheAccountsAPITokens(t *testing.T) 
 	// AdminScope, because the bearer must reach an Admin* procedure at all:
 	// an ordinary CLI credential is refused there even for an administrator.
 	issued, err := env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
-		UserId: env.adminID, ClientName: "admin-cli", ClientType: "cli", AdminScope: true,
+		UserId: env.adminID, InstallationName: "admin-cli", Scopes: []string{"admin:read", "admin:users", "admin:settings", "admin:workers"},
 	}, env.token))
 	require.NoError(t, err)
 	bearer := issued.Msg.GetAccessToken()
@@ -2227,7 +2241,7 @@ func TestAdminUserService_ClearingEmailAndLoweringVerifiedTogetherIsRefused(t *t
 	require.NoError(t, err)
 }
 
-// TestAdminUserService_IssueAPITokenCleansTheClientName pins the fourth
+// TestAdminUserService_IssueAPITokenCleansTheInstallationName pins the fourth
 // writer of api_tokens.client_name.
 //
 // The three CLI consent legs clean the name where it ENTERS the hub, for a
@@ -2235,13 +2249,13 @@ func TestAdminUserService_ClearingEmailAndLoweringVerifiedTogetherIsRefused(t *t
 // security notice, where a newline writes arbitrary lines. This verb writes
 // the same column and cleaned nothing -- and it caps nothing either, while
 // MySQL declares the column VARCHAR(255) where SQLite and Postgres use TEXT.
-func TestAdminUserService_IssueAPITokenCleansTheClientName(t *testing.T) {
+func TestAdminUserService_IssueAPITokenCleansTheInstallationName(t *testing.T) {
 	ctx := context.Background()
 	env := setupAdminUserTest(t)
 
 	issued, err := env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
-		Username:   "admin",
-		ClientName: "laptop\n\n-- \nThis is an automated message from your hub at http://evil.test.",
+		Username:         "admin",
+		InstallationName: "laptop\n\n-- \nThis is an automated message from your hub at http://evil.test.",
 	}, env.token))
 	require.NoError(t, err)
 
@@ -2254,9 +2268,133 @@ func TestAdminUserService_IssueAPITokenCleansTheClientName(t *testing.T) {
 	// name is what the guard already refuses -- so the clean must run
 	// BEFORE the check, not after it.
 	_, err = env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
-		Username: "admin", ClientName: "\n\r\t",
+		Username: "admin", InstallationName: "\n\r\t",
 	}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
-	assert.Contains(t, err.Error(), "client_name is required")
+	assert.Contains(t, err.Error(), "installation_name is required")
+}
+
+// TestListAPITokens_ReportsWhatEachCredentialReaches pins the audit listing
+// against the app's REGISTERED ceiling rather than the stored consent.
+//
+// An administrator reads this list to answer "what can this credential do".
+// The two values differ the moment an app's owner narrows its registration --
+// validation applies the ceiling at every request, while the credential's own
+// column keeps the consent -- so a listing that reported the column would name
+// permissions the app cannot use, on the one surface whose whole purpose is to
+// say what it can.
+func TestListAPITokens_ReportsWhatEachCredentialReaches(t *testing.T) {
+	t.Parallel()
+
+	env := setupAdminUserTest(t)
+	ctx := context.Background()
+
+	// A private app of the administrator's, registered with two permissions.
+	clientID := id.Generate()
+	require.NoError(t, env.st.OAuthClients().Create(ctx, store.CreateOAuthClientParams{
+		ClientID: clientID, ClientName: "Audited app", OwnerUserID: env.adminID,
+		RedirectURIs:       "https://app.example.com/callback",
+		Scopes:             "workspace:read file:read worker:read",
+		GrantTypes:         "authorization_code refresh_token",
+		RegistrationSource: store.OAuthClientSourceUser,
+	}))
+	tokenID := id.Generate()
+	require.NoError(t, env.st.APITokens().Create(ctx, store.CreateAPITokenParams{
+		ID: tokenID, UserID: userid.MustNew(env.adminID), ClientID: clientID,
+		InstallationName: "ci-runner",
+		GrantedScopes:    "workspace:read file:read worker:read",
+		SecretHash:       []byte("hash"),
+	}))
+
+	listed := func() *leapmuxv1.AdminAPIToken {
+		t.Helper()
+		resp, err := env.client.ListAPITokens(ctx,
+			authedReq(&leapmuxv1.ListAPITokensRequest{ClientId: clientID}, env.token))
+		require.NoError(t, err)
+		require.Len(t, resp.Msg.GetTokens(), 1)
+		return resp.Msg.GetTokens()[0]
+	}
+	assert.Equal(t, []string{"file:read", "worker:read", "workspace:read"},
+		listed().GetGrantedScopes(), "while the registration allows all three")
+
+	// The owner takes file:read off the REGISTRATION, leaving the credential's
+	// own consent untouched.
+	rows, err := env.st.OAuthClients().Update(ctx, store.UpdateOAuthClientParams{
+		ClientID: clientID, ClientName: "Audited app",
+		RedirectURIs: "https://app.example.com/callback",
+		Scopes:       "workspace:read worker:read",
+		GrantTypes:   "authorization_code refresh_token",
+		CallerUserID: userid.MustNew(env.adminID), CallerIsAdmin: true,
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, 1, rows)
+
+	assert.Equal(t, []string{"worker:read", "workspace:read"}, listed().GetGrantedScopes(),
+		"the audit must not name a permission the credential can no longer use")
+
+	// And the consent survives in the column, so the listing is a REPORT rather
+	// than a record of what the narrowing destroyed.
+	row, err := env.st.APITokens().GetByID(ctx, tokenID)
+	require.NoError(t, err)
+	assert.Contains(t, row.GrantedScopes, "file:read")
+}
+
+// TestAdminUserService_IssueAPITokenResolvesTheRegistration pins the three
+// client-load rules the mint now enforces. It used to accept any client_id:
+// a typo died on the foreign key inside Create and surfaced as a 500 after
+// the elevation was consumed, and a retired app's id minted a
+// dead-on-arrival credential that reported itself as issued. The mint also
+// narrows to the registration's ceiling and refuses rather than narrowing
+// silently, exactly as the consent and refresh legs do.
+func TestAdminUserService_IssueAPITokenResolvesTheRegistration(t *testing.T) {
+	env := setupAdminUserTest(t)
+	ctx := context.Background()
+
+	t.Run("an unknown client_id is an invalid argument, not a 500", func(t *testing.T) {
+		_, err := env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
+			UserId: env.adminID, InstallationName: "cli", ClientId: "no-such-app",
+		}, env.token))
+		require.Error(t, err)
+		assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+		assert.Contains(t, err.Error(), "no app is registered")
+	})
+
+	t.Run("a retired app does not mint", func(t *testing.T) {
+		clientID := id.Generate()
+		require.NoError(t, env.st.OAuthClients().Create(ctx, store.CreateOAuthClientParams{
+			ClientID: clientID, ClientName: "Retired", Scopes: "workspace:read",
+			RegistrationSource: store.OAuthClientSourceAdmin,
+		}))
+		uid, ok := userid.New(env.adminID)
+		require.True(t, ok)
+		_, err := env.st.OAuthClients().Revoke(ctx, store.OAuthClientOwnershipParams{
+			ClientID: clientID, CallerUserID: uid, CallerIsAdmin: true,
+		})
+		require.NoError(t, err)
+
+		_, err = env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
+			UserId: env.adminID, InstallationName: "cli", ClientId: clientID,
+		}, env.token))
+		require.Error(t, err)
+		assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+		assert.Contains(t, err.Error(), "retired")
+	})
+
+	t.Run("an ask beyond the registration's ceiling is refused", func(t *testing.T) {
+		clientID := id.Generate()
+		require.NoError(t, env.st.OAuthClients().Create(ctx, store.CreateOAuthClientParams{
+			ClientID: clientID, ClientName: "Narrow", Scopes: "workspace:read",
+			RegistrationSource: store.OAuthClientSourceAdmin,
+		}))
+
+		_, err := env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
+			// The default grant is everything except admin -- far past a
+			// workspace:read registration.
+			UserId: env.adminID, InstallationName: "cli", ClientId: clientID,
+		}, env.token))
+		require.Error(t, err)
+		assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+		assert.Contains(t, err.Error(), "not registered for every permission")
+	})
 }

@@ -1,5 +1,6 @@
 import type { CustomEditorComponent, CustomEditorId } from '../types'
-import { AccountCLITokens } from '../account/AccountCLITokens'
+import { AccountAppRegistrations } from '../account/AccountAppRegistrations'
+import { AccountConnectedApps } from '../account/AccountConnectedApps'
 import { AccountEmail } from '../account/AccountEmail'
 import { AccountLinkedProviders } from '../account/AccountLinkedProviders'
 import { AccountPasskeys } from '../account/AccountPasskeys'
@@ -37,12 +38,19 @@ export const CUSTOM_EDITORS: Record<CustomEditorId, CustomEditorComponent> = {
   accountPasskeys: AccountPasskeys,
   accountLinkedProviders: AccountLinkedProviders,
   /**
-   * The account's command-line credentials, with self-service revocation.
-   * It is the panel the credential-issued notice email links to, and the one
-   * account row that needs NO elevated session: listing carries metadata only,
-   * and revoking can only reduce access.
+   * The account's connected apps — what it has authorized — with self-service
+   * disconnection. It is the panel the credential-issued notice email links
+   * to, and the one account row that needs NO elevated session: listing
+   * carries metadata only, and disconnecting can only reduce access.
    */
-  accountCliTokens: AccountCLITokens,
+  accountConnectedApps: AccountConnectedApps,
+  /**
+   * The account's app registrations — what it has registered for others to
+   * authorize. Editing a redirect address on an existing registration diverts
+   * an in-flight authorization code, so this row DOES demand an elevated
+   * session, unlike its neighbour above.
+   */
+  accountAppRegistrations: AccountAppRegistrations,
   keyPins: KeyPinsControl,
   /**
    * The palette drop-down and the light/dark tri-switch, as one control.

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/util/userid"
 
 	"connectrpc.com/connect"
@@ -18,6 +19,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/bootstrap"
 	"github.com/leapmux/leapmux/internal/hub/config"
+	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/servicetest"
 	"github.com/leapmux/leapmux/internal/hub/settings"
@@ -128,6 +130,75 @@ func TestInterceptor_SoloMode_AutoAuthenticated(t *testing.T) {
 	assert.True(t, resp.Msg.GetUser().GetIsAdmin())
 }
 
+// TestInterceptor_SoloMode_YieldsToAPresentedBearer pins the solo decision on
+// the Connect surface: reaching the port authenticates the synthetic user, but
+// a caller that PRESENTS an lmx_ bearer is asking to be its app, so the solo
+// rung steps aside and the credential's grant binds.
+//
+// Without the yield, the narrow subtest below would pass -- the solo user is
+// unscoped, so answering "you are the solo user" would hand a file:read
+// credential every permission the account has, silently discarding the
+// narrowing its owner accepted on a consent screen.
+func TestInterceptor_SoloMode_YieldsToAPresentedBearer(t *testing.T) {
+	st := hubtestutil.OpenTestStore(t)
+
+	err := bootstrap.Run(context.Background(), st, true)
+	require.NoError(t, err)
+
+	soloUser, err := auth.LoadSoloUser(context.Background(), st)
+	require.NoError(t, err)
+
+	pepper := []byte("0123456789abcdef0123456789abcdef")
+	tv, err := auth.NewTokenValidator(st, pepper)
+	require.NoError(t, err)
+
+	mux := http.NewServeMux()
+	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, SoloUser: soloUser, TokenValidator: tv})
+	interceptors := connect.WithInterceptors(interceptor)
+	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{SoloMode: true}, servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil)))
+	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, interceptors)
+	mux.Handle(path, handler)
+
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	client := leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL)
+
+	soloRow, err := st.Users().GetByUsername(context.Background(), "solo")
+	require.NoError(t, err)
+
+	// A credential whose grant does not reach GetCurrentUser (account:read).
+	// file:read implies worker:read and nothing else, so the scope rung must
+	// refuse it there.
+	tokenID := newTestTokenID()
+	secret := auth.MintAccessSecret()
+	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		ID:               tokenID,
+		UserID:           userid.MustNew(soloRow.ID),
+		ClientID:         oauthapp.ControlCLIClientID,
+		InstallationName: "test",
+		GrantedScopes:    "file:read",
+		SecretHash:       tv.HashSecret(secret),
+	}))
+
+	narrow := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
+	narrow.Header().Set("Authorization", "Bearer "+auth.FormatBearer(auth.BearerKindAPI, tokenID, secret))
+	_, err = client.GetCurrentUser(context.Background(), narrow)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err),
+		"the solo rung must yield to a presented bearer, so its grant binds instead of the account's unscoped authority")
+
+	// The yield is on the PRESENCE of a bearer, not its validity: a malformed
+	// one must be refused by the bearer rung, not fall back to solo -- falling
+	// back would make a broken credential stronger than a working one.
+	broken := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
+	broken.Header().Set("Authorization", "Bearer lmx_only-one-piece")
+	_, err = client.GetCurrentUser(context.Background(), broken)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err),
+		"a malformed bearer must be refused, not answered as the solo user")
+}
+
 func TestInterceptor_PrivateProcedure_InvalidCookie(t *testing.T) {
 	client := setupInterceptorTestServer(t)
 
@@ -197,11 +268,12 @@ func TestInterceptor_LeapMuxBearer_AcceptsValidToken(t *testing.T) {
 	tokenID := newTestTokenID()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID:         tokenID,
-		UserID:     userid.MustNew(userID),
-		ClientType: "cli",
-		ClientName: "test",
-		SecretHash: tv.HashSecret(secret),
+		ID:               tokenID,
+		UserID:           userid.MustNew(userID),
+		ClientID:         oauthapp.ControlCLIClientID,
+		InstallationName: "test",
+		GrantedScopes:    authscope.NonAdminGrant().String(),
+		SecretHash:       tv.HashSecret(secret),
 	}))
 
 	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
@@ -219,11 +291,12 @@ func TestInterceptor_LeapMuxBearer_RejectsWrongSecretAfterCacheWarm(t *testing.T
 	tokenID := newTestTokenID()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID:         tokenID,
-		UserID:     userid.MustNew(userID),
-		ClientType: "cli",
-		ClientName: "test",
-		SecretHash: tv.HashSecret(secret),
+		ID:               tokenID,
+		UserID:           userid.MustNew(userID),
+		ClientID:         oauthapp.ControlCLIClientID,
+		InstallationName: "test",
+		GrantedScopes:    authscope.NonAdminGrant().String(),
+		SecretHash:       tv.HashSecret(secret),
 	}))
 
 	validReq := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
@@ -245,11 +318,12 @@ func TestInterceptor_LeapMuxBearer_RejectsRevoked(t *testing.T) {
 	tokenID := newTestTokenID()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID:         tokenID,
-		UserID:     userid.MustNew(userID),
-		ClientType: "cli",
-		ClientName: "test",
-		SecretHash: tv.HashSecret(secret),
+		ID:               tokenID,
+		UserID:           userid.MustNew(userID),
+		ClientID:         oauthapp.ControlCLIClientID,
+		InstallationName: "test",
+		GrantedScopes:    authscope.NonAdminGrant().String(),
+		SecretHash:       tv.HashSecret(secret),
 	}))
 	_, err := st.APITokens().Revoke(context.Background(), tokenID)
 	require.NoError(t, err)
@@ -313,7 +387,7 @@ func TestInterceptor_LeapMuxBearer_CacheEvictedOnRevoke(t *testing.T) {
 	tokenID := newTestTokenID()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID: tokenID, UserID: userid.MustNew(userID), ClientType: "cli", ClientName: "test",
+		ID: tokenID, UserID: userid.MustNew(userID), ClientID: oauthapp.ControlCLIClientID, InstallationName: "test", GrantedScopes: authscope.NonAdminGrant().String(),
 		SecretHash: tv.HashSecret(secret),
 	}))
 
@@ -352,12 +426,13 @@ func TestInterceptor_LeapMuxBearer_RejectsExpired(t *testing.T) {
 	secret := auth.MintAccessSecret()
 	pastExpiry := time.Now().Add(-1 * time.Minute)
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID:         tokenID,
-		UserID:     userid.MustNew(userID),
-		ClientType: "cli",
-		ClientName: "test",
-		SecretHash: tv.HashSecret(secret),
-		ExpiresAt:  &pastExpiry,
+		ID:               tokenID,
+		UserID:           userid.MustNew(userID),
+		ClientID:         oauthapp.ControlCLIClientID,
+		InstallationName: "test",
+		GrantedScopes:    authscope.NonAdminGrant().String(),
+		SecretHash:       tv.HashSecret(secret),
+		ExpiresAt:        &pastExpiry,
 	}))
 
 	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
@@ -377,12 +452,13 @@ func TestInterceptor_LeapMuxBearer_CachedEntryExpiresWithCredential(t *testing.T
 	secret := auth.MintAccessSecret()
 	expiresAt := time.Now().Add(50 * time.Millisecond)
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID:         tokenID,
-		UserID:     userid.MustNew(userID),
-		ClientType: "cli",
-		ClientName: "test",
-		SecretHash: tv.HashSecret(secret),
-		ExpiresAt:  &expiresAt,
+		ID:               tokenID,
+		UserID:           userid.MustNew(userID),
+		ClientID:         oauthapp.ControlCLIClientID,
+		InstallationName: "test",
+		GrantedScopes:    authscope.NonAdminGrant().String(),
+		SecretHash:       tv.HashSecret(secret),
+		ExpiresAt:        &expiresAt,
 	}))
 
 	bearer := "Bearer " + auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)
@@ -425,11 +501,12 @@ func TestInterceptor_DelegationBearer_RejectsAccountProcedure(t *testing.T) {
 	tokenID := newTestTokenID()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, st.DelegationTokens().Create(context.Background(), store.CreateDelegationTokenParams{
-		ID:         tokenID,
-		UserID:     userid.MustNew(userID),
-		WorkerID:   workerID,
-		SecretHash: tv.HashSecret(secret),
-		ExpiresAt:  time.Now().Add(time.Hour),
+		GrantedScopes: "workspace:read workspace:write worker:read",
+		ID:            tokenID,
+		UserID:        userid.MustNew(userID),
+		WorkerID:      workerID,
+		SecretHash:    tv.HashSecret(secret),
+		ExpiresAt:     time.Now().Add(time.Hour),
 	}))
 
 	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
@@ -468,11 +545,12 @@ func TestInterceptor_DelegationBearer_RejectsRevoked(t *testing.T) {
 	tokenID := newTestTokenID()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, st.DelegationTokens().Create(context.Background(), store.CreateDelegationTokenParams{
-		ID:         tokenID,
-		UserID:     userid.MustNew(userID),
-		WorkerID:   workerID,
-		SecretHash: tv.HashSecret(secret),
-		ExpiresAt:  time.Now().Add(time.Hour),
+		GrantedScopes: "workspace:read workspace:write worker:read",
+		ID:            tokenID,
+		UserID:        userid.MustNew(userID),
+		WorkerID:      workerID,
+		SecretHash:    tv.HashSecret(secret),
+		ExpiresAt:     time.Now().Add(time.Hour),
 	}))
 	_, err := st.DelegationTokens().Revoke(context.Background(), tokenID)
 	require.NoError(t, err)
@@ -511,11 +589,12 @@ func TestInterceptor_DelegationBearer_RejectsExpired(t *testing.T) {
 	tokenID := newTestTokenID()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, st.DelegationTokens().Create(context.Background(), store.CreateDelegationTokenParams{
-		ID:         tokenID,
-		UserID:     userid.MustNew(userID),
-		WorkerID:   workerID,
-		SecretHash: tv.HashSecret(secret),
-		ExpiresAt:  time.Now().Add(-time.Minute), // already expired
+		GrantedScopes: "workspace:read workspace:write worker:read",
+		ID:            tokenID,
+		UserID:        userid.MustNew(userID),
+		WorkerID:      workerID,
+		SecretHash:    tv.HashSecret(secret),
+		ExpiresAt:     time.Now().Add(-time.Minute), // already expired
 	}))
 
 	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
@@ -748,11 +827,12 @@ func TestBearerRequest_SendsNoSessionCookie(t *testing.T) {
 	tokenID := newTestTokenID()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID:         tokenID,
-		UserID:     userid.MustNew(userID),
-		ClientType: "cli",
-		ClientName: "test",
-		SecretHash: tv.HashSecret(secret),
+		ID:               tokenID,
+		UserID:           userid.MustNew(userID),
+		ClientID:         oauthapp.ControlCLIClientID,
+		InstallationName: "test",
+		GrantedScopes:    authscope.NonAdminGrant().String(),
+		SecretHash:       tv.HashSecret(secret),
 	}))
 
 	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})

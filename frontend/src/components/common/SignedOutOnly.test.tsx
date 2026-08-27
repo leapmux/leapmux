@@ -112,11 +112,11 @@ describe('signedOutOnly', () => {
   // by navigating last -- but a `?redirect=` that points at a hub route takes
   // postAuthNavigate's full-document branch, and a document that already
   // started to leave cannot be called back: a CLI sign-in on a hub that
-  // requires email verification left for /auth/cli/start with the emailed code
+  // requires email verification left for /oauth/authorize with the emailed code
   // never shown.
   it('ignores a sign-in performed ON the page', async () => {
     mockUser.mockReturnValue(null)
-    const { navigations } = renderGate('/login?redirect=%2Fauth%2Fcli%2Fstart')
+    const { navigations } = renderGate('/login?redirect=%2Foauth%2Fauthorize')
     expect(screen.getByTestId('credential-form')).toBeInTheDocument()
 
     // The page's own sign-in lands. The gate must not answer it.
@@ -131,9 +131,9 @@ describe('signedOutOnly', () => {
   // And the arrival it DOES answer still works, on the same address.
   it('sends a visitor who arrived signed in to the hub route', async () => {
     mockUser.mockReturnValue({ id: 'u-1' })
-    renderGate('/login?redirect=%2Fauth%2Fcli%2Fstart')
+    renderGate('/login?redirect=%2Foauth%2Fauthorize')
     await vi.waitFor(() => {
-      expect(assign).toHaveBeenCalledWith('/auth/cli/start')
+      expect(assign).toHaveBeenCalledWith('/oauth/authorize')
     })
   })
 
@@ -144,9 +144,9 @@ describe('signedOutOnly', () => {
   // target that is two full-document loads of a single-use consent address.
   it('issues the post-authentication navigation once', async () => {
     mockUser.mockReturnValue({ id: 'u-1' })
-    renderGate('/login?redirect=%2Fauth%2Fcli%2Fstart')
+    renderGate('/login?redirect=%2Foauth%2Fauthorize')
     await vi.waitFor(() => {
-      expect(assign).toHaveBeenCalledWith('/auth/cli/start')
+      expect(assign).toHaveBeenCalledWith('/oauth/authorize')
     })
     expect(assign).toHaveBeenCalledTimes(1)
   })
@@ -230,14 +230,14 @@ describe('signedOutOnly', () => {
     })
   })
 
-  // A CLI sign-in bounces the browser to /login?redirect=/auth/cli/start...
+  // A CLI sign-in bounces the browser to /login?redirect=/oauth/authorize...
   // Sending an already-signed-in user to `/` would end that flow with
   // nothing on screen and the CLI waiting for a consent screen.
   it('hands a hub-served redirect target back to the server', async () => {
     mockUser.mockReturnValue({ id: 'u-1' })
-    renderGate('/login?redirect=%2Fauth%2Fcli%2Fstart%3Fadmin%3D1')
+    renderGate('/login?redirect=%2Foauth%2Fauthorize%3Fadmin%3D1')
     await vi.waitFor(() => {
-      expect(assign).toHaveBeenCalledWith('/auth/cli/start?admin=1')
+      expect(assign).toHaveBeenCalledWith('/oauth/authorize?admin=1')
     })
   })
 

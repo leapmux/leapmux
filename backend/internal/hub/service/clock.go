@@ -5,11 +5,11 @@ import "time"
 // clockSeam is the one notion of "now" a service reads.
 //
 // Five types embed it rather than repeat it, because the elevation surface
-// spans them all -- UserService grants and slides the window, APIAuthHandler
-// restricts the CLI consent legs by it, OAuthHandler grants through its
-// re-authentication leg, AdminUserService mints the same credential the
-// consent legs do, and AuthService REPORTS the deadline to the client -- and
-// the five must agree. Two of them grew their own identical copy of the
+// spans them all -- UserService grants and slides the window,
+// OAuthServerHandler restricts the consent legs by it, IdPHandler grants
+// through its re-authentication leg, AdminUserService mints the same
+// credential the consent legs do, and AuthService REPORTS the deadline to the
+// client -- and the five must agree. Two of them grew their own identical copy of the
 // field plus the nil-check method, and the rest grew none, so GetCurrentUser
 // answered from the wall clock while the grant beside it answered from the
 // seam. A test that moved one moved half the surface, and what it pinned was

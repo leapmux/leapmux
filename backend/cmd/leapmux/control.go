@@ -38,7 +38,7 @@ var controlTree = cmdGroup{
 				{Name: "logout", Summary: "Revoke + remove local credentials", Run: controlRun(cmdcontrol.RunAuthLogout)},
 				{Name: "list", Summary: "List configured hubs", Run: controlRun(cmdcontrol.RunAuthList)},
 				{Name: "status", Summary: "Show user, expiry, scope for the active hub", Run: controlRun(cmdcontrol.RunAuthStatus)},
-				{Name: "credentials", Summary: "List this account's command-line credentials on the hub", Run: controlRun(cmdcontrol.RunAuthCredentials)},
+				{Name: "credentials", Summary: "List this account's connected apps on the hub", Run: controlRun(cmdcontrol.RunAuthCredentials)},
 			},
 		},
 		{
@@ -222,8 +222,43 @@ var controlTree = cmdGroup{
 					},
 				},
 				{
-					Name:    "oauth-provider",
-					Summary: "Manage OAuth/OIDC providers",
+					// "app" is the OUTBOUND direction: a program this hub grants
+					// access to. The inbound direction -- an identity provider the
+					// hub signs users in WITH -- is `control admin idp`.
+					//
+					// The RPCs behind these verbs are NOT admin-only: an ordinary
+					// user registers an app for themself through the same ones in
+					// the preferences dialog, and ownership rather than a role
+					// decides what each caller sees. They live here because
+					// registering an app is an operator's job on a shared hub.
+					Name:    "app",
+					Summary: "Manage app registrations (what a consent screen authorizes)",
+					Commands: []cmdLeaf{
+						{Name: "list", Summary: "List app registrations", Run: controlRun(cmdcontrol.RunAdminAppList)},
+						{Name: "register", Summary: "Register an app (the app secret is shown once)", Run: controlRun(cmdcontrol.RunAdminAppRegister)},
+						{Name: "update", Summary: "Change an app's editable fields", Run: controlRun(cmdcontrol.RunAdminAppUpdate)},
+						{Name: "verify", Summary: "Vouch for an app, so its consent screen stops warning", Run: func(c cmdCtx, args []string) error {
+							return cmdcontrol.RunAdminAppSetVerified(controlCmdCtxAdapter{PathStr: c.Path, DescriptionStr: c.Description}, args, true)
+						}},
+						{Name: "unverify", Summary: "Withdraw a vouch", Run: func(c cmdCtx, args []string) error {
+							return cmdcontrol.RunAdminAppSetVerified(controlCmdCtxAdapter{PathStr: c.Path, DescriptionStr: c.Description}, args, false)
+						}},
+						{Name: "allow-elevation", Summary: "Let an app run the step-up leg", Run: func(c cmdCtx, args []string) error {
+							return cmdcontrol.RunAdminAppSetElevation(controlCmdCtxAdapter{PathStr: c.Path, DescriptionStr: c.Description}, args, true)
+						}},
+						{Name: "deny-elevation", Summary: "Take the step-up leg away, closing every open window on the next call", Run: func(c cmdCtx, args []string) error {
+							return cmdcontrol.RunAdminAppSetElevation(controlCmdCtxAdapter{PathStr: c.Path, DescriptionStr: c.Description}, args, false)
+						}},
+						{Name: "revoke", Summary: "Retire an app and revoke every credential it holds", Run: controlRun(cmdcontrol.RunAdminAppRevoke)},
+						{Name: "delete", Summary: "Delete an app that never held a credential", Run: controlRun(cmdcontrol.RunAdminAppDelete)},
+					},
+				},
+				{
+					// "idp" is the INBOUND direction: an identity provider the hub
+					// signs users in with. The outbound direction -- an app the hub
+					// grants access to -- is `control admin app`.
+					Name:    "idp",
+					Summary: "Manage sign-in identity providers (OAuth/OIDC)",
 					Commands: []cmdLeaf{
 						{Name: "add", Summary: "Add an OAuth/OIDC provider", Run: controlRun(cmdcontrol.RunAdminOAuthProviderAdd)},
 						{Name: "list", Summary: "List configured providers", Run: controlRun(cmdcontrol.RunAdminOAuthProviderList)},

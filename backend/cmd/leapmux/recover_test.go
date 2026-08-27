@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/util/userid"
 
 	"github.com/stretchr/testify/assert"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/captcha"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
+	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
@@ -83,7 +85,7 @@ func openTestDB(t *testing.T, dir string) (*sql.DB, *gendb.Queries) {
 
 // seedEncryptedOAuthProvider stores one OAuth provider whose client secret
 // is encrypted under the data dir's active key version — the state the old
-// `admin oauth-provider add` verb produced.
+// `admin idp add` verb produced.
 func seedEncryptedOAuthProvider(t *testing.T, dir, secret string) {
 	t.Helper()
 	ctx := context.Background()
@@ -212,7 +214,7 @@ func TestCLI_ReencryptSecrets(t *testing.T) {
 	keyPath := filepath.Join(dir, "encryption.key")
 
 	// Add a provider with an encrypted secret (seeded directly: the old
-	// seeding path was the `admin oauth-provider add` verb, now an RPC).
+	// seeding path was the `admin idp add` verb, now an RPC).
 	seedEncryptedOAuthProvider(t, dir, "original-secret")
 
 	// Rotate key.
@@ -566,11 +568,12 @@ func TestCLI_PasswordReset_RevokesAPIAndDelegationTokens(t *testing.T) {
 	require.NoError(t, err)
 	tokenID := id.Generate()
 	require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
-		ID:         tokenID,
-		UserID:     userid.MustNew(user.ID),
-		ClientType: "cli",
-		ClientName: "test",
-		SecretHash: []byte("hash"),
+		ID:               tokenID,
+		UserID:           userid.MustNew(user.ID),
+		ClientID:         oauthapp.ControlCLIClientID,
+		InstallationName: "test",
+		GrantedScopes:    authscope.NonAdminGrant().String(),
+		SecretHash:       []byte("hash"),
 	}))
 	require.NoError(t, st.Close())
 

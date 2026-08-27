@@ -2,7 +2,7 @@
 title: "Worktrees & Branches"
 description: "Run many agents on one repo without conflicts using git worktrees: pick a branch or worktree when opening a tab, change it, push, and protect uncommitted work."
 type: docs
-weight: 6
+weight: 7
 ---
 
 LeapMux is built to run several coding agents at once against the same repository. The thing that keeps them from clobbering each other's changes is **git worktrees** — each agent (or terminal) can work in its own linked worktree, on its own branch, with its own working copy. This chapter explains how to choose a branch or worktree when you open a tab, how to change or delete branches later, how to push your work, and how LeapMux protects you from losing uncommitted changes when you close a tab.

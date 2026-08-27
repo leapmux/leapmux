@@ -147,7 +147,7 @@ func (h *sqliteTestHelper) TruncateAll(ctx context.Context) error {
 	}
 	defer func() { _, _ = h.db.ExecContext(ctx, "PRAGMA foreign_keys = ON") }()
 	for _, t := range sqlutil.SQLTruncateTableOrder {
-		if _, err := h.db.ExecContext(ctx, "DELETE FROM "+t); err != nil {
+		if _, err := h.db.ExecContext(ctx, sqlutil.TruncateStatement(t)); err != nil {
 			return fmt.Errorf("truncate %s: %w", t, err)
 		}
 	}

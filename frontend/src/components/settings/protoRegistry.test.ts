@@ -517,6 +517,7 @@ describe('buildProtoRows', () => {
   it('gives every CategoryId a nav group', () => {
     const declared: Record<CategoryId, true> = {
       'appearance': true,
+      'apps': true,
       'notifications': true,
       'chat': true,
       'terminal': true,

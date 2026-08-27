@@ -6,13 +6,12 @@ import (
 	"runtime"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/util/version"
 )
 
 func registerSysInfoHandlers(d ownerOnlyRegistrar, svc *Service) {
-	d.Register("GetWorkerSystemInfo", func(_ context.Context, _ userid.UserID, _ *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
+	d.Register("GetWorkerSystemInfo", leapmuxv1.Scope_SCOPE_WORKER_READ, func(_ context.Context, _ channel.Caller, _ *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		homeDir, _ := os.UserHomeDir()
 		sendProtoResponse(sender, &leapmuxv1.GetWorkerSystemInfoResponse{
 			Name:       svc.Name,

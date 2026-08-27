@@ -2,7 +2,7 @@
 title: "Device Sync & Presence"
 description: "How LeapMux keeps a workspace layout in sync across your browsers and devices in near-real-time, and how the turn-end sound picks a single client."
 type: docs
-weight: 9
+weight: 10
 ---
 
 LeapMux keeps a workspace's **layout** in sync across every client where you have it open — your browser tabs, windows, and devices. Open the same workspace in two places and its tiling tree, tabs, splits, and floating windows stay identical in both, in near-real-time. This is layout sync, not content mirroring: what you type into an agent chat or terminal composer in one client does not echo into another's input area.
@@ -31,7 +31,7 @@ LeapMux tracks one presence fact per workspace: which client is **active** — t
 
 You don't choose the active client — it follows wherever you last interacted. To keep a particular client quiet regardless, set **Turn End Sound** to **None** in its **Preferences** dialog (see [Settings & Preferences](/docs/using/settings/)). The sound is also skipped for trivial single-exchange turns and rate-limited so it can't fire repeatedly.
 
-> **Note:** All tabs and windows of one browser profile count as a **single** client, because they share one login session — so they never compete for the ding among themselves. A separate browser, another device, or a CLI token is a distinct client.
+> **Note:** All tabs and windows of one browser profile count as a **single** client, because they share one login session — so they never compete for the ding among themselves. A separate browser, another device, or an authorized app is a distinct client.
 
 There are no other presence features — no avatars, "who's viewing" badges, remote cursors, or typing indicators.
 
@@ -44,6 +44,6 @@ You see — and sync — exactly the workspaces you own. Workspace access is str
 | Symptom | Likely cause | What to do |
 | --- | --- | --- |
 | A change in one tab didn't appear in another | The tabs aren't on the same workspace, or one lost its connection | Confirm both show the same workspace; reload the one that's behind. |
-| Every device dinged when an agent finished | Each was a separate client (different browser/device/CLI token), or no active client could be determined | Interact with the client you want active, or set **Turn End Sound** to **None** on the others. Tabs of one browser share a session and won't each ding. |
+| Every device dinged when an agent finished | Each was a separate client (a different browser, device, or authorized app), or no active client could be determined | Interact with the client you want active, or set **Turn End Sound** to **None** on the others. Tabs of one browser share a session and won't each ding. |
 
 For broader diagnostics, see [Troubleshooting](/docs/reference/troubleshooting/).

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/util/userid"
 
 	"connectrpc.com/connect"
@@ -19,6 +20,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/bootstrap"
 	"github.com/leapmux/leapmux/internal/hub/config"
+	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/servicetest"
 	"github.com/leapmux/leapmux/internal/hub/store"
@@ -135,11 +137,12 @@ func TestLocalSocket_MultiUser_AcceptsBearer(t *testing.T) {
 	tokenID := id.Generate()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID:         tokenID,
-		UserID:     userid.MustNew(u.ID),
-		ClientType: "cli",
-		ClientName: "test",
-		SecretHash: tv.HashSecret(secret),
+		ID:               tokenID,
+		UserID:           userid.MustNew(u.ID),
+		ClientID:         oauthapp.ControlCLIClientID,
+		InstallationName: "test",
+		GrantedScopes:    authscope.NonAdminGrant().String(),
+		SecretHash:       tv.HashSecret(secret),
 	}))
 
 	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
@@ -167,7 +170,7 @@ func TestLocalSocket_MultiUser_RejectsRevokedBearer(t *testing.T) {
 	tokenID := id.Generate()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID: tokenID, UserID: userid.MustNew(u.ID), ClientType: "cli", ClientName: "test",
+		ID: tokenID, UserID: userid.MustNew(u.ID), ClientID: oauthapp.ControlCLIClientID, InstallationName: "test", GrantedScopes: authscope.NonAdminGrant().String(),
 		SecretHash: tv.HashSecret(secret),
 	}))
 	_, err = st.APITokens().Revoke(context.Background(), tokenID)

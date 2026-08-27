@@ -15,13 +15,14 @@
 //
 // --worker-id likewise gets no confirmation RPC. Every worker-spawned
 // agent inherits $LEAPMUX_CONTROL_WORKER_ID, so such a call would fire
-// on essentially every agent-issued command -- and the only RPCs that
-// could serve it (WorkerManagementService.GetWorker / ListWorkers) are
-// deliberately absent from the hub's delegation-bearer allowlist
-// (auth.delegationAllowedProcedures). It could therefore only turn
-// legal commands into `resolve_failed`. The cmd package's
-// maybePreflightWorker keeps a best-effort check that tolerates the
-// denial instead of failing on it.
+// on essentially every agent-issued command, over a delegation bearer
+// the hub limits with auth.CeilingFor(BearerKindDelegation). The RPCs
+// that could serve it -- WorkerManagementService.GetWorker and
+// ListWorkers -- need worker:read, which that ceiling does admit, but a
+// leg that adds a hub round trip to every agent command buys nothing
+// the command does not learn anyway when it opens the channel. The cmd
+// package's maybePreflightWorker keeps a best-effort check that
+// tolerates a denial instead of failing on it.
 //
 // The resolver does NOT read environment variables directly. The
 // caller is expected to bind flag defaults to the LEAPMUX_CONTROL_*_ID

@@ -91,7 +91,7 @@ func (s *UserService) passkeyManagementCaller(ctx context.Context) (*auth.UserIn
 //
 // It admits every ELEVATABLE credential: a browser session, and a
 // command-line credential, which proves its factor in a browser through the
-// /auth/cli/elevate-authorization leg and carries a window of its own. A
+// /oauth/step-up leg and carries a window of its own. A
 // delegation bearer and solo mode carry no window and cannot obtain one, so
 // requireElevation refuses them with the plain message that states the
 // remedy: sign in from a browser.

@@ -2,7 +2,7 @@
 title: "Tabs & Layout"
 description: "Build a workspace layout in LeapMux: divide the canvas into tiles, fill them with agent, terminal, and file tabs, arrange splits and grids, and float panes."
 type: docs
-weight: 4
+weight: 5
 ---
 
 The center of every workspace is a tiling canvas. You divide it into **tiles** (rectangular panes), fill each tile with **tabs** (agents, terminals, or files), arrange those tiles as splits or grids, and — when you need a pane to float above everything else — pop a tab out into a movable, resizable **floating window**. This chapter explains every part of that workflow.

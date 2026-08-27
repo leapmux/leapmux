@@ -1,5 +1,6 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
+import { elevateSessionViaAPI, loginViaAPI, TEST_ADMIN_PASSWORD, TEST_ADMIN_USERNAME } from './helpers/api'
 import { openTerminalViaUI } from './helpers/ui'
 
 /**
@@ -148,5 +149,81 @@ test.describe('security headers', () => {
       () => violations.length,
       { message: 'the violation detector must see the refusal it exists to catch' },
     ).toBeGreaterThan(0)
+  })
+})
+
+/**
+ * The authorization server's own pages, and the two directives that decide
+ * where a consent can send a browser.
+ *
+ * `form-action` is the load-bearing one and it is per RESPONSE. The app
+ * document's policy says `'self'`, because nothing the SPA renders should post
+ * off-origin; a consent page must additionally allow the ONE address its app
+ * registered, or the browser blocks the redirect and the app never gets a code.
+ *
+ * The old policy listed every loopback port in the app document instead, which
+ * is both too wide there (any page could post to any local listener) and too
+ * narrow here (an `https` app has no loopback address at all). Only a real
+ * browser walking a real consent shows either.
+ */
+test.describe('the authorization server pages', () => {
+  const CONTROL_CLI_CLIENT_ID = 'leapmux-control-cli'
+
+  test('the app document allows no off-origin form post', async ({ page }) => {
+    const response = await page.goto('/')
+    const csp = response!.headers()['content-security-policy'] ?? ''
+
+    expect(csp).toContain('form-action \'self\'')
+    // No loopback origin in the app document's policy. A page that lists one
+    // lets ANY script on it post to a local listener.
+    expect(csp).not.toContain('127.0.0.1:')
+    expect(csp).not.toContain('http://localhost')
+  })
+
+  test('a consent page allows only the address its app registered', async ({ page, leapmuxServer }) => {
+    // An ELEVATED session, so the request reaches the consent page itself.
+    // Anonymously the gate bounces to /login and the response that comes back
+    // carries the SPA's policy, which is a different page and a different
+    // answer.
+    const cookie = await loginViaAPI(leapmuxServer.hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD)
+    await elevateSessionViaAPI(leapmuxServer.hubUrl, cookie, TEST_ADMIN_PASSWORD)
+
+    const params = new URLSearchParams({
+      client_id: CONTROL_CLI_CLIENT_ID,
+      response_type: 'code',
+      code_challenge_method: 'S256',
+      redirect_uri: 'http://127.0.0.1:54321/callback',
+      state: 'state-csp',
+      code_challenge: 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM',
+      installation_name: 'e2e-laptop',
+    })
+    const res = await page.request.get(
+      `${leapmuxServer.hubUrl}/oauth/authorize?${params.toString()}`,
+      { headers: { Cookie: cookie }, maxRedirects: 0 },
+    )
+    expect(res.status()).toBe(200)
+    const csp = res.headers()['content-security-policy'] ?? ''
+    expect(csp, 'a consent page must carry its own policy').toBeTruthy()
+
+    // A page that renders NOTHING scriptable. `default-src 'none'` covers
+    // script-src, so a WebAuthn ceremony is impossible here -- which is exactly
+    // why the gate bounces to the SPA's /elevate instead of prompting in place.
+    expect(csp).toContain('default-src \'none\'')
+    expect(csp).not.toContain('\'unsafe-eval\'')
+    expect(csp).not.toContain('sha256-')
+    expect(csp).toContain('frame-ancestors \'none\'')
+    expect(csp).toContain('base-uri \'none\'')
+
+    // form-action names 'self' plus the app's OWN address, and only those.
+    //
+    // The port is a WILDCARD because this app's registered address is a
+    // loopback one: RFC 8252 section 7.3 lets a native app bind any free port,
+    // so the hub matches every port on that host and the policy must agree. A
+    // policy that named the one port the launch happened to pick would block
+    // the next launch, which picks a different one. A non-loopback app gets its
+    // exact origin instead -- see redirectFormActionSource and its unit test.
+    expect(csp).toContain('form-action \'self\' http://127.0.0.1:*')
+    expect(csp).not.toContain('http://localhost')
+    expect(csp).not.toContain('https://')
   })
 })

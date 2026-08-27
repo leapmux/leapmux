@@ -24,8 +24,8 @@ func TestRegisterAgentGated_PassesLoadedRow(t *testing.T) {
 	r := newRegistrar(d, svc)
 
 	var gotID, gotDir string
-	registerAgentGated(r, "ProbeAgent",
-		func(_ context.Context, _ userid.UserID, _ *leapmuxv1.RenameAgentRequest, row db.Agent, sender channel.ResponseWriter) {
+	registerAgentGated(r, "ProbeAgent", leapmuxv1.Scope_SCOPE_WORKER_READ,
+		func(_ context.Context, _ channel.Caller, _ *leapmuxv1.RenameAgentRequest, row db.Agent, sender channel.ResponseWriter) {
 			gotID = row.ID
 			gotDir = row.WorkingDir
 			sendProtoResponse(sender, &leapmuxv1.RenameAgentResponse{})
@@ -34,7 +34,7 @@ func TestRegisterAgentGated_PassesLoadedRow(t *testing.T) {
 	w := newTestWriter()
 	payload, err := proto.Marshal(&leapmuxv1.RenameAgentRequest{AgentId: "agent-1", Title: "x"})
 	require.NoError(t, err)
-	d.DispatchWith(context.Background(), userid.MustNew("user-1"), &leapmuxv1.InnerRpcRequest{
+	d.DispatchWith(context.Background(), channel.LocalAgentCaller(userid.MustNew("user-1")), &leapmuxv1.InnerRpcRequest{
 		Method: "ProbeAgent", Payload: payload,
 	}, w)
 
@@ -52,8 +52,8 @@ func TestRegisterAgentGatedByID_PassesDecodedRequest(t *testing.T) {
 	r := newRegistrar(d, svc)
 
 	var gotID string
-	registerAgentGatedByID(r, "ProbeAgentID", dispatchPlain,
-		func(_ context.Context, _ userid.UserID, req *leapmuxv1.InterruptAgentRequest, sender channel.ResponseWriter) {
+	registerAgentGatedByID(r, "ProbeAgentID", leapmuxv1.Scope_SCOPE_WORKER_READ, dispatchPlain,
+		func(_ context.Context, _ channel.Caller, req *leapmuxv1.InterruptAgentRequest, sender channel.ResponseWriter) {
 			gotID = req.GetAgentId()
 			sendProtoResponse(sender, &leapmuxv1.InterruptAgentResponse{})
 		})
@@ -61,7 +61,7 @@ func TestRegisterAgentGatedByID_PassesDecodedRequest(t *testing.T) {
 	w := newTestWriter()
 	payload, err := proto.Marshal(&leapmuxv1.InterruptAgentRequest{AgentId: "agent-1"})
 	require.NoError(t, err)
-	d.DispatchWith(context.Background(), userid.MustNew("user-1"), &leapmuxv1.InnerRpcRequest{
+	d.DispatchWith(context.Background(), channel.LocalAgentCaller(userid.MustNew("user-1")), &leapmuxv1.InnerRpcRequest{
 		Method: "ProbeAgentID", Payload: payload,
 	}, w)
 
@@ -78,8 +78,8 @@ func TestRegisterTerminalGated_PassesLoadedRow(t *testing.T) {
 	r := newRegistrar(d, svc)
 
 	var gotID, gotDir string
-	registerTerminalGated(r, "ProbeTerm",
-		func(_ context.Context, _ userid.UserID, _ *leapmuxv1.UpdateTerminalTitleRequest, row db.Terminal, sender channel.ResponseWriter) {
+	registerTerminalGated(r, "ProbeTerm", leapmuxv1.Scope_SCOPE_WORKER_READ,
+		func(_ context.Context, _ channel.Caller, _ *leapmuxv1.UpdateTerminalTitleRequest, row db.Terminal, sender channel.ResponseWriter) {
 			gotID = row.ID
 			gotDir = row.WorkingDir
 			sendProtoResponse(sender, &leapmuxv1.UpdateTerminalTitleResponse{})
@@ -88,7 +88,7 @@ func TestRegisterTerminalGated_PassesLoadedRow(t *testing.T) {
 	w := newTestWriter()
 	payload, err := proto.Marshal(&leapmuxv1.UpdateTerminalTitleRequest{TerminalId: "term-1", Title: "x"})
 	require.NoError(t, err)
-	d.DispatchWith(context.Background(), userid.MustNew("user-1"), &leapmuxv1.InnerRpcRequest{
+	d.DispatchWith(context.Background(), channel.LocalAgentCaller(userid.MustNew("user-1")), &leapmuxv1.InnerRpcRequest{
 		Method: "ProbeTerm", Payload: payload,
 	}, w)
 
@@ -106,8 +106,8 @@ func TestRegisterTerminalForRestartGated_PassesRow(t *testing.T) {
 	r := newRegistrar(d, svc)
 
 	var gotDir string
-	registerTerminalForRestartGated(r, "ProbeRestart",
-		func(_ context.Context, _ userid.UserID, _ *leapmuxv1.RestartTerminalRequest, row db.GetTerminalForRestartRow, sender channel.ResponseWriter) {
+	registerTerminalForRestartGated(r, "ProbeRestart", leapmuxv1.Scope_SCOPE_WORKER_READ,
+		func(_ context.Context, _ channel.Caller, _ *leapmuxv1.RestartTerminalRequest, row db.GetTerminalForRestartRow, sender channel.ResponseWriter) {
 			gotDir = row.WorkingDir
 			sendProtoResponse(sender, &leapmuxv1.RestartTerminalResponse{})
 		})
@@ -115,7 +115,7 @@ func TestRegisterTerminalForRestartGated_PassesRow(t *testing.T) {
 	w := newTestWriter()
 	payload, err := proto.Marshal(&leapmuxv1.RestartTerminalRequest{TerminalId: "term-1", Cols: 80, Rows: 25})
 	require.NoError(t, err)
-	d.DispatchWith(context.Background(), userid.MustNew("user-1"), &leapmuxv1.InnerRpcRequest{
+	d.DispatchWith(context.Background(), channel.LocalAgentCaller(userid.MustNew("user-1")), &leapmuxv1.InnerRpcRequest{
 		Method: "ProbeRestart", Payload: payload,
 	}, w)
 
@@ -141,8 +141,8 @@ func TestGatedTrackedHelpersTrackInFlightDispatches(t *testing.T) {
 			name: "registerAgentGatedByID+dispatchTracked",
 			seed: func(t *testing.T, svc *Service) { seedAgent(t, svc, "agent-1") },
 			register: func(r registrar, method string, block func()) {
-				registerAgentGatedByID(r, method, dispatchTracked,
-					func(context.Context, userid.UserID, *leapmuxv1.CloseAgentRequest, channel.ResponseWriter) {
+				registerAgentGatedByID(r, method, leapmuxv1.Scope_SCOPE_WORKER_READ, dispatchTracked,
+					func(context.Context, channel.Caller, *leapmuxv1.CloseAgentRequest, channel.ResponseWriter) {
 						block()
 					})
 			},
@@ -152,8 +152,8 @@ func TestGatedTrackedHelpersTrackInFlightDispatches(t *testing.T) {
 			name: "registerTerminalGatedByID+dispatchTracked",
 			seed: func(t *testing.T, svc *Service) { seedTerminal(t, svc, "term-1") },
 			register: func(r registrar, method string, block func()) {
-				registerTerminalGatedByID(r, method, dispatchTracked,
-					func(context.Context, userid.UserID, *leapmuxv1.CloseTerminalRequest, channel.ResponseWriter) {
+				registerTerminalGatedByID(r, method, leapmuxv1.Scope_SCOPE_WORKER_READ, dispatchTracked,
+					func(context.Context, channel.Caller, *leapmuxv1.CloseTerminalRequest, channel.ResponseWriter) {
 						block()
 					})
 			},
@@ -163,8 +163,8 @@ func TestGatedTrackedHelpersTrackInFlightDispatches(t *testing.T) {
 			name: "registerOwnerGated+dispatchTracked",
 			seed: func(*testing.T, *Service) {},
 			register: func(r registrar, method string, block func()) {
-				registerOwnerGated(r, method, dispatchTracked,
-					func(context.Context, userid.UserID, *leapmuxv1.RevokeFileTabPathRequest, channel.ResponseWriter) {
+				registerOwnerGated(r, method, leapmuxv1.Scope_SCOPE_WORKER_READ, dispatchTracked,
+					func(context.Context, channel.Caller, *leapmuxv1.RevokeFileTabPathRequest, channel.ResponseWriter) {
 						block()
 					})
 			},
@@ -189,7 +189,7 @@ func TestGatedTrackedHelpersTrackInFlightDispatches(t *testing.T) {
 
 			payload, err := proto.Marshal(tc.req)
 			require.NoError(t, err)
-			d.DispatchAsync(context.Background(), userid.MustNew("user-1"), &leapmuxv1.InnerRpcRequest{
+			d.DispatchAsync(context.Background(), channel.LocalAgentCaller(userid.MustNew("user-1")), &leapmuxv1.InnerRpcRequest{
 				Method: "slow-probe", Payload: payload,
 			}, newTestWriter())
 
@@ -219,10 +219,36 @@ func TestRegistrarPanicsOnDuplicateMethod(t *testing.T) {
 	d := channel.NewDispatcher()
 	r := newRegistrar(d, svc)
 
-	registerUngated(r, "Dup", func(context.Context, userid.UserID, *leapmuxv1.InnerRpcRequest, channel.ResponseWriter) {})
+	registerUngated(r, "Dup", leapmuxv1.Scope_SCOPE_WORKER_READ, func(context.Context, channel.Caller, *leapmuxv1.InnerRpcRequest, channel.ResponseWriter) {})
 	assert.Panics(t, func() {
-		registerUngated(r, "Dup", func(context.Context, userid.UserID, *leapmuxv1.InnerRpcRequest, channel.ResponseWriter) {})
+		registerUngated(r, "Dup", leapmuxv1.Scope_SCOPE_WORKER_READ, func(context.Context, channel.Caller, *leapmuxv1.InnerRpcRequest, channel.ResponseWriter) {})
 	})
+}
+
+// A registration stating no grantable scope fails at boot, not in production.
+//
+// The three non-grantable values are the whole fail-closed construction: the
+// zero is "nobody classified this", NEVER is the recorded refusal, and ALL is
+// a grant a producer states rather than one a gate defaults to. Wiring a
+// handler behind any of them is a category error -- a gate can only test
+// membership in a grantable permission -- so the registrar refuses to start
+// rather than serve a method whose gate cannot fire.
+func TestRegistrarPanicsOnAnUngrantableScope(t *testing.T) {
+	t.Parallel()
+
+	for _, scope := range []leapmuxv1.Scope{
+		leapmuxv1.Scope_SCOPE_UNSPECIFIED,
+		leapmuxv1.Scope_SCOPE_NEVER,
+		leapmuxv1.Scope_SCOPE_ALL,
+	} {
+		t.Run(scope.String(), func(t *testing.T) {
+			svc, _, _ := setupTestService(t)
+			r := newRegistrar(channel.NewDispatcher(), svc)
+			assert.Panics(t, func() {
+				registerUngated(r, "Whatever", scope, func(context.Context, channel.Caller, *leapmuxv1.InnerRpcRequest, channel.ResponseWriter) {})
+			})
+		})
+	}
 }
 
 // TestRegisterOwnerGated_InvalidPayloadAnswersInvalidArgument restores coverage
@@ -245,13 +271,13 @@ func TestRegisterOwnerGated_InvalidPayloadAnswersInvalidArgument(t *testing.T) {
 	r := newRegistrar(d, svc)
 
 	called := false
-	registerOwnerGated(r, "ProbeInvalid", dispatchPlain,
-		func(_ context.Context, _ userid.UserID, _ *leapmuxv1.ListAgentsRequest, _ channel.ResponseWriter) {
+	registerOwnerGated(r, "ProbeInvalid", leapmuxv1.Scope_SCOPE_WORKER_READ, dispatchPlain,
+		func(_ context.Context, _ channel.Caller, _ *leapmuxv1.ListAgentsRequest, _ channel.ResponseWriter) {
 			called = true
 		})
 
 	w := newTestWriter()
-	d.DispatchWith(context.Background(), userid.MustNew("user-1"), &leapmuxv1.InnerRpcRequest{
+	d.DispatchWith(context.Background(), channel.LocalAgentCaller(userid.MustNew("user-1")), &leapmuxv1.InnerRpcRequest{
 		Method: "ProbeInvalid", Payload: []byte("not-a-proto"),
 	}, w)
 
@@ -277,13 +303,13 @@ func TestRegisterOwnerGatedStream_InvalidPayloadAnswersStreamError(t *testing.T)
 	r := newRegistrar(d, svc)
 
 	called := false
-	registerOwnerGatedStream(r, "ProbeInvalidStream",
-		func(_ context.Context, _ userid.UserID, _ *leapmuxv1.WatchEventsRequest, _ channel.ResponseWriter) {
+	registerOwnerGatedStream(r, "ProbeInvalidStream", leapmuxv1.Scope_SCOPE_WORKER_READ,
+		func(_ context.Context, _ channel.Caller, _ *leapmuxv1.WatchEventsRequest, _ channel.ResponseWriter) {
 			called = true
 		})
 
 	w := newTestWriter()
-	d.DispatchWith(context.Background(), userid.MustNew("user-1"), &leapmuxv1.InnerRpcRequest{
+	d.DispatchWith(context.Background(), channel.LocalAgentCaller(userid.MustNew("user-1")), &leapmuxv1.InnerRpcRequest{
 		Method: "ProbeInvalidStream", Payload: []byte("not-a-proto"),
 	}, w)
 

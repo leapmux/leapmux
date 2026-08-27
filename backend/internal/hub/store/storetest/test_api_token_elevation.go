@@ -7,7 +7,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/hub/auth"
+	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
@@ -29,11 +31,12 @@ func (s *Suite) testAPITokenElevation(t *testing.T) {
 		t.Helper()
 		tokenID := id.Generate()
 		require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
-			ID:         tokenID,
-			UserID:     userid.MustNew(userID),
-			ClientType: "cli",
-			ClientName: "operator-laptop",
-			SecretHash: []byte("hash"),
+			ID:               tokenID,
+			UserID:           userid.MustNew(userID),
+			ClientID:         oauthapp.ControlCLIClientID,
+			InstallationName: "operator-laptop",
+			GrantedScopes:    authscope.NonAdminGrant().String(),
+			SecretHash:       []byte("hash"),
 		}))
 		return tokenID
 	}

@@ -1,6 +1,8 @@
 syntax = "proto3";
 package leapmux.v1;
 
+import "leapmux/v1/scope.proto";
+
 // ChannelService manages end-to-end encrypted channels between Frontend and Worker.
 // Hub acts purely as an authenticated relay -- it cannot read channel traffic.
 service ChannelService {
@@ -74,6 +76,27 @@ message ChannelOpenRequest {
   // Hub's resolved max_message_size (application payload budget). Worker
   // takes min(this, its own config) as the effective per-channel budget.
   uint64 max_message_size = 4;
+  // What the credential that opened this channel was GRANTED.
+  //
+  // The Worker enforces it on every inner method. Without it the Worker
+  // restricted each method to `is this the registrant` alone -- one bit -- so a bearer
+  // that could open a channel reached ReadFile, SendInput, PushBranch and
+  // OpenTunnelConn alike, and a hub-side scope check would have handed a
+  // read-only app a shell.
+  //
+  // It trusts nothing new, and the argument is the one InnerMessage already
+  // makes below: the client's identity is established by the Hub, and a claim
+  // carried inside the channel could only restate it. A hub-supplied scope set
+  // is structurally identical to the hub-supplied user_id -- it arrives over
+  // the authenticated Hub-to-Worker stream, not from the E2EE client.
+  //
+  // AN EMPTY LIST IS A REFUSAL, not a default. It means the Hub failed to say,
+  // exactly as an empty user_id does, and the Worker refuses the open the same
+  // way. A first-party credential sends the explicit [SCOPE_ALL], so a Hub that
+  // DROPS this field opens no channel at all rather than silently promoting a
+  // narrow app to full authority: the failure is loud and immediate, and the
+  // alternative is silent and total.
+  repeated Scope granted_scopes = 5;
 }
 
 // Worker -> Hub: response to channel open request.

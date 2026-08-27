@@ -26,7 +26,7 @@ type elevationHub struct {
 	polls  int
 	// authorization is the credential the last start request presented.
 	authorization string
-	// deviceLabel is the device_name the last start request carried.
+	// deviceLabel is the installation_name the last start request carried.
 	deviceLabel string
 	grant       map[string]any
 	// startStatus, when non-zero, is the answer instead of the grant.
@@ -50,8 +50,8 @@ func newElevationRoutes() *elevationHub {
 		grant: map[string]any{
 			"device_code":               "dev-1",
 			"user_code":                 "WDJB-MJHT",
-			"verification_uri":          "https://hub.example/auth/cli/activate",
-			"verification_uri_complete": "https://hub.example/auth/cli/activate?user_code=WDJB-MJHT",
+			"verification_uri":          "https://hub.example/oauth/device",
+			"verification_uri_complete": "https://hub.example/oauth/device?user_code=WDJB-MJHT",
 			"expires_in":                60,
 			"interval":                  1,
 		},
@@ -60,12 +60,18 @@ func newElevationRoutes() *elevationHub {
 
 // register mounts the two step-up legs on mux.
 func (h *elevationHub) register(mux *http.ServeMux) {
-	mux.HandleFunc("/auth/cli/elevate-authorization", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/oauth/step-up", h.startLeg())
+	mux.HandleFunc("/oauth/token", h.tokenEndpoint(nil))
+}
+
+// startLeg answers /oauth/step-up.
+func (h *elevationHub) startLeg() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
 		h.mu.Lock()
 		h.starts++
 		h.authorization = r.Header.Get("Authorization")
-		h.deviceLabel = r.FormValue("device_name")
+		h.deviceLabel = r.FormValue("installation_name")
 		status, grant, hook := h.startStatus, h.grant, h.onStart
 		h.mu.Unlock()
 		if hook != nil {
@@ -77,8 +83,27 @@ func (h *elevationHub) register(mux *http.ServeMux) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(grant)
-	})
-	mux.HandleFunc("/auth/cli/token", func(w http.ResponseWriter, r *http.Request) {
+	}
+}
+
+// tokenEndpoint answers /oauth/token, routing by grant_type.
+//
+// `other` handles every grant this fixture does not: a nil `other` means the
+// fixture serves the device-code poll alone. A caller that also stands in for
+// the refresh grant passes its own handler, and the two share ONE registration
+// -- which is what the hub does now, and what makes a second mux.HandleFunc for
+// the same path a panic rather than a silent shadow.
+func (h *elevationHub) tokenEndpoint(other http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		if r.FormValue("grant_type") != GrantTypeDeviceCode {
+			if other != nil {
+				other(w, r)
+				return
+			}
+			http.Error(w, "unsupported_grant_type", http.StatusBadRequest)
+			return
+		}
 		h.mu.Lock()
 		h.polls++
 		n, answer := h.polls, h.pollAnswer
@@ -89,7 +114,7 @@ func (h *elevationHub) register(mux *http.ServeMux) {
 			return
 		}
 		answer(w, n)
-	})
+	}
 }
 
 // newElevationHub is newElevationRoutes on a server of its own.
@@ -191,7 +216,7 @@ func TestElevate_PrintsThePromptToErrAndNothingToOut(t *testing.T) {
 	assert.Empty(t, out.String(), "the JSON envelope stream must carry no prose")
 	prompt := errOut.String()
 	assert.Contains(t, prompt, "verify your identity")
-	assert.Contains(t, prompt, "https://hub.example/auth/cli/activate")
+	assert.Contains(t, prompt, "https://hub.example/oauth/device")
 	assert.Contains(t, prompt, "WDJB-MJHT")
 	assert.Contains(t, prompt, "user_code=WDJB-MJHT", "the one-click URL must reach the user")
 }

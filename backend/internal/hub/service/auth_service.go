@@ -586,7 +586,7 @@ func (s *AuthService) GetOAuthProviders(ctx context.Context, req *connect.Reques
 			Id:           p.ID,
 			Name:         p.Name,
 			ProviderType: p.ProviderType,
-			LoginUrl:     fmt.Sprintf("%s/auth/oauth/%s/login", baseURL, p.ID),
+			LoginUrl:     fmt.Sprintf("%s/auth/idp/%s/login", baseURL, p.ID),
 		})
 	}
 

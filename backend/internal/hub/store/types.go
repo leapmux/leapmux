@@ -1273,10 +1273,14 @@ type PasswordResetRevocation struct {
 // as "lmx_<id>_<secret>"; SecretHash stores HMAC-SHA256(secret, server
 // pepper) so leaks of the snapshot alone don't allow forgery.
 type APIToken struct {
-	ID                       string
-	UserID                   string
-	ClientType               string
-	ClientName               string
+	ID     string
+	UserID string
+	// ClientID is WHICH APP holds this credential, and InstallationName is
+	// which copy of that app ("trustin's MacBook"). The two used to be one
+	// column (client_name), which fused an identity the hub registered with a
+	// label the caller asserted about itself.
+	ClientID                 string
+	InstallationName         string
 	SecretHash               []byte
 	RefreshHash              []byte
 	PreviousRefreshHash      []byte
@@ -1288,17 +1292,50 @@ type APIToken struct {
 	ExpiresAt                *time.Time
 	RefreshExpiresAt         *time.Time
 	RevokedAt                *time.Time
-	// AdminScope reports whether this token may reach the Admin* procedures.
-	// It is opt-in at mint time and cannot be widened later: a token without
-	// it authenticates as its (possibly administrator) owner and is still
-	// refused every admin procedure.
-	AdminScope bool
+	// GrantedScopes is the canonical RFC 6749 section 3.3 scope string the
+	// consent granted. Read it through authscope.Parse, which refuses an
+	// unknown token outright rather than dropping it -- a grant that quietly
+	// lost a member would keep working as a narrower app and nobody would
+	// notice the vocabulary drifted.
+	GrantedScopes string
 	// The step-up window, the same pair a session row carries. Nil means the
 	// credential never proved a factor, and the two are written and cleared
 	// together -- read them through auth.NewElevation, which refuses half a
 	// pair.
 	ElevationProvenAt  *time.Time
 	ElevationExpiresAt *time.Time
+
+	// The four fields below come from the oauth_clients JOIN, which is total:
+	// client_id is NOT NULL with a foreign key, so every credential names a
+	// registered app.
+	//
+	// Two of them are CEILINGS the registration holds over this credential,
+	// and both are read at every validation rather than only at the mint --
+	// so an owner's edit takes effect on the next request instead of on the
+	// next mint. See loadBearer.
+
+	// ClientName is the app's display name, so a listing can group by app
+	// rather than by installation.
+	ClientName string
+	// ClientScopes is the app's REGISTERED permission ceiling, as the
+	// canonical RFC 6749 section 3.3 string. Validation narrows the stored
+	// grant to it, so removing a permission from a registration takes it from
+	// every credential the app already holds.
+	ClientScopes string
+	// ClientElevationAllowed is the app's permission to run the step-up leg.
+	// Validation re-reads it, so turning it off closes every live window on
+	// the next request rather than at the next write.
+	ClientElevationAllowed bool
+	// ClientRevokedAt is the APP's retirement, not this credential's. It is
+	// joined so a hub that died part-way through a disconnect cannot leave a
+	// live credential on a retired app.
+	ClientRevokedAt *time.Time
+	// ClientVerifiedAt and ClientRegistrationSource answer whether somebody
+	// vouched for the app, through store.ClientIsVerified. The connected-app
+	// list labels every row with the answer, exactly as the consent screen
+	// does; only the per-user listing joins them.
+	ClientVerifiedAt         *time.Time
+	ClientRegistrationSource string
 }
 
 // PageCursor returns the keyset position for the per-user api-token listing
@@ -1331,6 +1368,10 @@ type DelegationToken struct {
 	TerminalID       string
 	IssuedForTabID   string
 	IssuedForTabType int32
+	// GrantedScopes is what the minting worker delegated, already narrowed to
+	// auth.CeilingFor(BearerKindDelegation) at the mint -- and narrowed again
+	// when the row is READ, so a hand-edited row cannot widen it.
+	GrantedScopes    string
 	SecretHash       []byte
 	RefreshHash      []byte
 	CreatedAt        time.Time
@@ -1363,12 +1404,18 @@ type DeviceAuthorization struct {
 	Approved        int64 // 0 pending, 1 approved, 2 denied
 	LastPolledAt    *time.Time
 	IntervalSeconds int64
-	// AdminScope is the scope the user granted at activation; see
-	// CLIAuthorizationCode.AdminScope.
-	AdminScope bool
-	CreatedAt  time.Time
-	ExpiresAt  time.Time
-	ConsumedAt *time.Time
+	// ClientID is the app that started the flow.
+	ClientID string
+	// RequestedScopes is what the APP asked for, written at creation.
+	// GrantedScopes is what the APPROVAL bound, written by the browser leg and
+	// read back by the token leg. The two are separate columns because the
+	// request and the consent happen on different machines: taken from the
+	// activation form instead, whoever types the code could widen the ask.
+	RequestedScopes string
+	GrantedScopes   string
+	CreatedAt       time.Time
+	ExpiresAt       time.Time
+	ConsumedAt      *time.Time
 	// ElevateTokenID identifies the command-line credential this grant ELEVATES,
 	// when it elevates one rather than minting one. Empty for a login.
 	//
@@ -1379,38 +1426,287 @@ type DeviceAuthorization struct {
 	ElevateTokenID string
 }
 
-// CLIAuthorizationCode is a one-shot OAuth-style code for the CLI's
-// local-redirect login flow.
-type CLIAuthorizationCode struct {
-	Code          string
-	UserID        string
-	CodeChallenge string
-	DeviceName    string
-	// AdminScope is the scope the user granted on the consent page. The token
-	// exchange reads it from HERE and never from its own form, so holding the
-	// code does not let a caller widen the grant.
-	AdminScope bool
+// OAuthClient is one registered app: everything that may ask an account for
+// access, including the two LeapMux ships with.
+//
+// The VISIBILITY rule is one column. A non-NULL OwnerUserID makes the app that
+// user's private one -- visible and authorizable only to them -- and a NULL one
+// makes it hub-wide. No second flag exists to disagree with it.
+//
+// The CLIENT TYPE is one column too. A non-nil SecretHash is a confidential
+// client and a nil one is public, so "a public client with a secret" is not a
+// state this type can hold.
+type OAuthClient struct {
+	ClientID    string
+	OwnerUserID string // empty = hub-wide
+	CreatedBy   string
+	// SecretHash is nil for a PUBLIC client. It is never returned to a caller;
+	// the secret itself crosses once, at registration.
+	SecretHash []byte
+	ClientName string
+	// HasIcon reports whether an icon exists, served from
+	// /oauth/apps/<client_id>/icon same-origin, so the consent page's img-src
+	// stays 'self'. A remote logo URL would be a beacon that reports to the
+	// app operator when the consent page rendered and from which IP, and its
+	// bytes would be chosen by the registrant.
+	//
+	// The BYTES themselves live behind OAuthClientStore.GetIcon, because the
+	// full-row reads (the token endpoint, every consent page, every device
+	// poll) need only this boolean, and the column holds up to 64 KiB.
+	HasIcon   bool
+	ClientURI string
+	// RedirectURIs is the newline-delimited exact-match list, and Scopes and
+	// GrantTypes are space-delimited. Read them through the RedirectURIList,
+	// ScopeSet and GrantTypeList accessors rather than splitting by hand.
+	RedirectURIs string
+	Scopes       string
+	GrantTypes   string
+	// ElevationAllowed is whether this app may run the step-up leg. It is NOT
+	// a trust tier and NOT a scope: the elevation window is orthogonal to the
+	// scope set and MULTIPLIES it, so no grant field could express it and mean
+	// anything.
+	ElevationAllowed bool
+	// RegistrationSource is one of builtin, admin, user, dynamic. The CHECK
+	// constraint is the closed set.
+	RegistrationSource string
+	// VerifiedAt and VerifiedBy move together (a CHECK enforces it). Nil is the
+	// unverified marker the consent page renders.
+	VerifiedAt *time.Time
+	VerifiedBy string
 	CreatedAt  time.Time
-	ExpiresAt  time.Time
-	ConsumedAt *time.Time
+	UpdatedAt  time.Time
+	RevokedAt  *time.Time
+}
+
+// PageCursor returns the keyset position for the app listings, which order by
+// (created_at DESC, client_id DESC).
+func (c OAuthClient) PageCursor() (time.Time, string) { return c.CreatedAt, c.ClientID }
+
+// IsConfidential reports whether this app holds a secret. See SecretHash: the
+// presence of the hash IS the client type, so the two can never disagree.
+func (c OAuthClient) IsConfidential() bool { return len(c.SecretHash) > 0 }
+
+// IsHubWide reports whether every account can see and authorize this app.
+func (c OAuthClient) IsHubWide() bool { return c.OwnerUserID == "" }
+
+// IsVerified reports whether an administrator vouched for this app.
+//
+// A BUILT-IN registration is verified by construction: it ships with the
+// build, so its author is known. ClientIsVerified states the rule once, for
+// the JOIN-carrying readers that do not hold this struct.
+func (c OAuthClient) IsVerified() bool {
+	return ClientIsVerified(c.RegistrationSource, c.VerifiedAt)
+}
+
+// ClientIsVerified is the one rule for "did somebody vouch for this app": an
+// administrator's timestamp, or a source the build itself stands behind.
+//
+// It exists as a function because two kinds of reader ask -- the Go struct
+// above, and the columns a JOIN carries onto an api_tokens listing -- and a
+// second spelling of "builtin means verified" is exactly the drift a fifth
+// surface would inherit.
+func ClientIsVerified(registrationSource string, verifiedAt *time.Time) bool {
+	return verifiedAt != nil || registrationSource == OAuthClientSourceBuiltin
+}
+
+// Registration sources, the closed set the CHECK constraint enforces.
+const (
+	// OAuthClientSourceBuiltin is an app this build ships with. Its fields are
+	// constants of the build, so the surface refuses to edit, revoke or delete
+	// one -- see internal/hub/oauthapp.
+	OAuthClientSourceBuiltin = "builtin"
+	// OAuthClientSourceAdmin is an app an administrator registered. It is
+	// hub-wide.
+	OAuthClientSourceAdmin = "admin"
+	// OAuthClientSourceUser is an app one user registered for themself.
+	OAuthClientSourceUser = "user"
+	// OAuthClientSourceDynamic is an app that self-registered through RFC 7591,
+	// which an administrator must turn on. It is hub-wide and unverified.
+	OAuthClientSourceDynamic = "dynamic"
+)
+
+// CreateOAuthClientParams registers one app.
+type CreateOAuthClientParams struct {
+	ClientID string
+	// OwnerUserID empty registers a HUB-WIDE app. Only an administrator or
+	// dynamic registration may leave it empty; the calling service binds it.
+	OwnerUserID        string
+	CreatedBy          string
+	SecretHash         []byte
+	ClientName         string
+	IconBlob           []byte
+	IconMediaType      string
+	ClientURI          string
+	RedirectURIs       string
+	Scopes             string
+	GrantTypes         string
+	ElevationAllowed   bool
+	RegistrationSource string
+	VerifiedAt         *time.Time
+	VerifiedBy         string
+}
+
+// UpdateOAuthClientParams rewrites the editable half of a registration.
+//
+// CallerUserID and CallerIsAdmin are part of the STATEMENT, not a check the
+// caller runs first: a read-then-write pair would leave a window in which the
+// row changes hands between the two.
+type UpdateOAuthClientParams struct {
+	ClientID         string
+	ClientName       string
+	ClientURI        string
+	RedirectURIs     string
+	Scopes           string
+	GrantTypes       string
+	ElevationAllowed bool
+	CallerUserID     userid.UserID
+	CallerIsAdmin    bool
+}
+
+// SetOAuthClientElevationAllowedParams toggles the one field the app list
+// changes inline, and the one field a BUILT-IN registration may still change.
+type SetOAuthClientElevationAllowedParams struct {
+	ClientID         string
+	ElevationAllowed bool
+	CallerUserID     userid.UserID
+	CallerIsAdmin    bool
+}
+
+// SetOAuthClientIconParams replaces the stored icon. A nil blob clears it, and
+// the consent page then renders a monogram, which fetches nothing.
+type SetOAuthClientIconParams struct {
+	ClientID      string
+	IconBlob      []byte
+	IconMediaType string
+	CallerUserID  userid.UserID
+	CallerIsAdmin bool
+}
+
+// SetOAuthClientVerifiedParams records or withdraws an administrator's vouch.
+// Both fields move together, so the half-vouch CHECK can never be violated.
+type SetOAuthClientVerifiedParams struct {
+	ClientID   string
+	VerifiedAt *time.Time
+	VerifiedBy string
+}
+
+// OAuthClientOwnershipParams addresses one app for a caller-authorized write
+// (revoke, delete). See UpdateOAuthClientParams on why the caller travels into
+// the statement.
+type OAuthClientOwnershipParams struct {
+	ClientID      string
+	CallerUserID  userid.UserID
+	CallerIsAdmin bool
+}
+
+// ListOAuthClientsParams pages an app listing, keyset on
+// (created_at DESC, client_id DESC).
+type ListOAuthClientsParams struct {
+	// UserID selects whose apps. It is required for the visible-to and
+	// owned-by listings.
+	UserID userid.UserID
+	// IncludeRevoked widens the page to retired rows, which the "include
+	// retired" listing asks for. The default keeps the live-only shape every
+	// authorize surface reads.
+	IncludeRevoked bool
+	PageParams
+}
+
+// OAuthClientIcon is what the icon asset endpoint serves: the bytes, their
+// media type, and the three facts that gate serving them. It is a separate
+// read because the full-row queries carry only whether an icon exists -- the
+// bytes would put 64 KiB on every token exchange otherwise.
+type OAuthClientIcon struct {
+	IconBlob           []byte
+	IconMediaType      string
+	VerifiedAt         *time.Time
+	RegistrationSource string
+	RevokedAt          *time.Time
+}
+
+// RevokeAPITokensForClientParams cascades an app revocation or a disconnect
+// onto the credentials it holds.
+//
+// An EMPTY UserID revokes across EVERY user, which is what retiring the app
+// itself means; a non-empty one is one account disconnecting.
+type RevokeAPITokensForClientParams struct {
+	ClientID string
+	UserID   string
+}
+
+// APITokenRef names one credential an app holds. The caller reads these BEFORE
+// a cascade so it can apply each row's lifecycle effects after the transaction
+// commits -- lifecycle effects ACCUMULATE, so they must not run inside a
+// transaction the store may retry.
+type APITokenRef struct {
+	ID     string
+	UserID string
+	// GrantedScopes is what this credential was consented, as the canonical
+	// RFC 6749 section 3.3 string.
+	//
+	// It is here for the caller that NARROWS the app's registered ceiling
+	// rather than retiring the app: only the credentials that actually held
+	// the removed permission need their channels torn down, and closing every
+	// one of a hub-wide app's channels would be an outage for accounts whose
+	// grant never reached it. A caller that revokes the row outright ignores
+	// this field.
+	GrantedScopes string
+}
+
+// OAuthAuthorizationCode is a one-shot RFC 6749 section 4.1 code.
+type OAuthAuthorizationCode struct {
+	Code   string
+	UserID string
+	// ClientID is the app the code was issued TO. The token leg refuses a code
+	// presented by a different one (RFC 6749 section 4.1.3).
+	ClientID      string
+	CodeChallenge string
+	// RedirectURI is the address the authorization used. The token leg
+	// compares it, so a code intercepted at one registered redirect cannot be
+	// redeemed as though it came from another.
+	RedirectURI string
+	// GrantedScopes is what the user consented to. The token exchange reads it
+	// from HERE and never from its own form, so holding the code does not let
+	// a caller widen the grant.
+	GrantedScopes    string
+	InstallationName string
+	CreatedAt        time.Time
+	ExpiresAt        time.Time
+	ConsumedAt       *time.Time
+	// MintedTokenID is the credential this code produced, stamped at
+	// consumption. A REPLAY revokes it, which is what RFC 6749 section 4.1.2
+	// requires and what nothing could express while the column was absent.
+	MintedTokenID string
 }
 
 type CreateAPITokenParams struct {
-	ID               string
-	UserID           userid.UserID
-	ClientType       string
-	ClientName       string
+	ID     string
+	UserID userid.UserID
+	// ClientID must name a registered app; the foreign key refuses anything
+	// else. There is no NULL: "an administrator issued this out of band" is
+	// an ANSWER to which app holds the credential, and
+	// oauthapp.ServiceAccountClientID is that answer.
+	ClientID         string
+	InstallationName string
+	// GrantedScopes is the canonical scope string. The column has no default,
+	// so a caller that omits it fails the INSERT rather than storing a silent
+	// empty grant. Build it with authscope.ScopeSet.Storable, which refuses
+	// the unscoped grant -- no stored credential carries one.
+	GrantedScopes    string
 	SecretHash       []byte
 	RefreshHash      []byte
 	ExpiresAt        *time.Time
 	RefreshExpiresAt *time.Time
-	// AdminScope grants the token hub administration. It is decided at the
-	// consent that mints the token and never afterwards; see APIToken.
-	AdminScope bool
 }
 
 type RotateAPITokenRefreshParams struct {
-	ID                       string
+	ID string
+	// NewGrantedScopes rides the rotation because RFC 6749 section 6 lets a
+	// refresh NARROW its grant, and a narrowing must land atomically with the
+	// new secrets: written separately, a hub that died between the two would
+	// leave the old grant on a credential whose owner had just given part of
+	// it up. A refresh that narrows nothing binds the current value.
+	NewGrantedScopes         string
 	NewSecretHash            []byte
 	NewExpiresAt             *time.Time
 	NewRefreshHash           []byte
@@ -1422,9 +1718,10 @@ type RotateAPITokenRefreshParams struct {
 // ListAPITokensByUserParams pages one user's OWN live tokens (the account
 // settings device list), ordered by (created_at DESC, id DESC).
 type ListAPITokensByUserParams struct {
-	UserID     userid.UserID
-	ClientType string // empty = all
-	PageParams        // Keyset on (created_at DESC, id DESC).
+	UserID userid.UserID
+	// ClientID narrows the listing to ONE app; empty lists every app.
+	ClientID   string
+	PageParams // Keyset on (created_at DESC, id DESC).
 }
 
 // RevokeOwnedAPITokenParams revokes one of the caller's own tokens. The owner
@@ -1461,7 +1758,7 @@ type RefreshAPITokenAuthGenerationParams struct {
 // username rides each row (no per-user fanout).
 type ListAllAPITokensParams struct {
 	UserID     *string // nil = all users; non-nil dispatches to the ByUser query twin
-	ClientType string  // empty = all
+	ClientID   string  // empty = all apps
 	PageParams         // Keyset on (created_at DESC, id DESC).
 	// IncludeRevoked adds revoked rows to the listing (forensics); the default
 	// lists live tokens only and rides the partial keyset indexes.
@@ -1486,6 +1783,9 @@ type CreateDelegationTokenParams struct {
 	TerminalID       string
 	IssuedForTabID   string
 	IssuedForTabType int32
+	// GrantedScopes is the canonical scope string; see DelegationToken. The
+	// column has no default, so an unstated grant fails the INSERT.
+	GrantedScopes    string
 	SecretHash       []byte
 	RefreshHash      []byte
 	ExpiresAt        time.Time
@@ -1496,6 +1796,8 @@ type CreateDeviceAuthorizationParams struct {
 	DeviceCode      string
 	UserCode        string
 	DeviceName      string
+	ClientID        string
+	RequestedScopes string
 	IntervalSeconds int64
 	ExpiresAt       time.Time
 	// ElevateTokenID makes this an ELEVATION grant for that api_tokens row
@@ -1506,22 +1808,26 @@ type CreateDeviceAuthorizationParams struct {
 type ApproveDeviceAuthorizationParams struct {
 	DeviceCode string
 	UserID     userid.UserID
-	AdminScope bool
+	// GrantedScopes is what the browser consented to, canonical form.
+	GrantedScopes string
 }
 
 type ApproveDeviceAuthorizationByUserCodeParams struct {
-	UserCode   string
-	UserID     userid.UserID
-	AdminScope bool
+	UserCode string
+	UserID   userid.UserID
+	// GrantedScopes is what the browser consented to, canonical form.
+	GrantedScopes string
 }
 
-type CreateCLIAuthorizationCodeParams struct {
-	Code          string
-	UserID        userid.UserID
-	CodeChallenge string
-	DeviceName    string
-	AdminScope    bool
-	ExpiresAt     time.Time
+type CreateOAuthAuthorizationCodeParams struct {
+	Code             string
+	UserID           userid.UserID
+	ClientID         string
+	CodeChallenge    string
+	RedirectURI      string
+	GrantedScopes    string
+	InstallationName string
+	ExpiresAt        time.Time
 }
 
 type CreatePendingOAuthSignupParams struct {

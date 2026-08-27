@@ -13,7 +13,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	genfrontend "github.com/leapmux/leapmux/internal/hub/generated/frontend"
-	"github.com/leapmux/leapmux/internal/hub/httpsec"
 )
 
 // sha256Source returns the CSP source expression a browser computes for body.
@@ -370,11 +369,22 @@ func mustPublicFS(t *testing.T) fs.FS {
 	return publicFS
 }
 
-// The CLI consent form is the one form in the app whose submission leaves this
-// origin, and `form-action` is matched against every hop of a submission's
-// redirect chain. With `'self'` alone, Chromium and WebKit refuse the 302 to the
-// loopback callback and `leapmux control auth login` waits until it times out.
-func TestFormActionAllowsTheCliLoopbackCallback(t *testing.T) {
+// TestFormActionIsSelfAlone pins the GLOBAL policy's form-action.
+//
+// It used to carry a wildcard loopback set, for one page: the CLI consent form,
+// whose POST answers with a redirect to the local callback the CLI listens on,
+// and a browser matches `form-action` against EVERY hop of a submission's
+// redirect chain. That relaxation applied to every page in the app to serve
+// one, and it could never have admitted a third-party app's https callback
+// anyway.
+//
+// The consent pages carry their OWN policy now, naming exactly the origin that
+// one grant redirects to -- see service.writePage and
+// redirectFormActionSource, and TestWritePageCarriesItsSecurityHeaders, which
+// pins it. httpsec.Middleware documents that a route's own header wins, so the
+// per-request policy replaces this one where it applies; everywhere else this
+// policy is now strictly tighter than before.
+func TestFormActionIsSelfAlone(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range []struct {
@@ -387,50 +397,10 @@ func TestFormActionAllowsTheCliLoopbackCallback(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			var formAction string
-			for _, directive := range strings.Split(tc.policy, "; ") {
-				if strings.HasPrefix(directive, "form-action ") {
-					formAction = directive
-				}
-			}
-			require.NotEmpty(t, formAction, "the policy must state form-action")
-
-			assert.Contains(t, formAction, "'self'",
-				"the app's own forms must keep posting to this origin")
-			// DERIVED from the same list `isLoopbackURL` reads, rather than a
-			// third literal that claims to match it. A literal here asserted
-			// only that the policy did not change, never that it agreed with
-			// the redirect -- the two could widen apart and this test would
-			// keep passing on whichever one it memorized.
-			//
-			// An IPv6 literal is the one host the two cannot share: CSP's
-			// `host-source` grammar has no production for one, so a browser
-			// reports `http://[::1]:*` as an invalid source and ignores the
-			// entry. This test skips it HERE for the same reason the policy
-			// skips it, and the case below pins that it stays out.
-			// The SCHEME is derived too. A literal "http://" here was a
-			// fourth copy of the accepted set: isLoopbackURL accepts every
-			// scheme in httpsec.LoopbackSchemes, and a scheme the redirect
-			// accepts while the policy omits it is a CLI login that hangs.
-			for _, host := range httpsec.LoopbackHosts {
-				if strings.Contains(host, ":") {
-					continue
-				}
-				for _, scheme := range httpsec.LoopbackSchemes {
-					source := scheme + "://" + host + ":*"
-					assert.Containsf(t, formAction, source,
-						"the CLI binds an ephemeral loopback port, so %q must be allowed", source)
-				}
-			}
-			// An entry the browser IGNORES is worse than none: it gains no
-			// permission and logs a console error on every page load, which is
-			// how the E2E violation collector found it
-			// (tests/e2e/181-security-headers.spec.ts).
-			assert.NotContains(t, formAction, "[",
-				"CSP cannot express an IPv6 host, so no bracketed source may be stated")
-			// Not a blanket relaxation: nothing off the loopback may receive a form.
-			assert.NotContains(t, formAction, "*.",
-				"form-action must not admit a wildcard host")
+			formAction := directive(t, tc.policy, "form-action")
+			assert.Equal(t, "'self'", formAction,
+				"a form the app never wrote must not post anywhere but back here; "+
+					"the ONE page whose submission leaves this origin carries its own policy")
 		})
 	}
 }

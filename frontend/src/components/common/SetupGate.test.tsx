@@ -40,7 +40,7 @@ const ROUTES = [
   '/reset-password',
   '/verify-email',
   '/elevate',
-  '/oauth/complete-signup',
+  '/auth/idp/complete-signup',
   '/no-such-page',
 ]
 

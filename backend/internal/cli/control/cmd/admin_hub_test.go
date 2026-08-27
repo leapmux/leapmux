@@ -35,7 +35,7 @@ import (
 type fakeAdminHub struct {
 	leapmuxv1connect.UnimplementedAdminSettingsServiceHandler
 	leapmuxv1connect.UnimplementedAdminUserServiceHandler
-	leapmuxv1connect.UnimplementedAdminOAuthServiceHandler
+	leapmuxv1connect.UnimplementedAdminIdPServiceHandler
 
 	mu sync.Mutex
 
@@ -257,7 +257,7 @@ func startAdminHub(t *testing.T, hub *fakeAdminHub) string {
 	mux := http.NewServeMux()
 	mux.Handle(leapmuxv1connect.NewAdminSettingsServiceHandler(hub))
 	mux.Handle(leapmuxv1connect.NewAdminUserServiceHandler(hub))
-	mux.Handle(leapmuxv1connect.NewAdminOAuthServiceHandler(hub))
+	mux.Handle(leapmuxv1connect.NewAdminIdPServiceHandler(hub))
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv.URL
@@ -883,14 +883,14 @@ func TestAdminAPITokenIssue_AddressesTheOwnerByUsername(t *testing.T) {
 
 	withCapturedStdout(t, func() {
 		require.NoError(t, RunAdminAPITokenIssue(fakeCmdCtx{},
-			[]string{"--hub", url, "--username", "amy", "--client-name", "ci-bot"}))
+			[]string{"--hub", url, "--username", "amy", "--installation-name", "ci-bot"}))
 	})
 
 	issued := hub.takeIssuedTokens()
 	require.Len(t, issued, 1)
 	assert.Equal(t, "amy", issued[0].GetUsername())
 	assert.Empty(t, issued[0].GetUserId())
-	assert.Equal(t, "ci-bot", issued[0].GetClientName())
+	assert.Equal(t, "ci-bot", issued[0].GetInstallationName())
 }
 
 // An admin verb never touches a TOFU pin, so a pins.json that cannot be

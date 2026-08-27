@@ -289,6 +289,12 @@ func (c *Client) doRefresh(ctx context.Context, presented *CredentialFile) (*Cre
 	if body.TokenID != "" {
 		next.TokenID = body.TokenID
 	}
+	// The hub states the reachable grant on every rotation; an empty value is
+	// a hub that did not answer the field, and the stored one stays rather
+	// than being wiped by silence.
+	if body.Scope != "" {
+		next.Scope = body.Scope
+	}
 	if err := SaveCredentials(c.HubURL, next); err != nil {
 		// doRefresh returns the pair WITH the error, and the caller adopts
 		// it. The hub rotated already, so the old access token is unusable
@@ -300,14 +306,28 @@ func (c *Client) doRefresh(ctx context.Context, presented *CredentialFile) (*Cre
 	return &next, nil
 }
 
-// refreshBody is the /auth/cli/refresh success payload.
+// refreshBody is the /oauth/token refresh-grant success payload.
+//
+// scope is what the credential REACHES after this rotation, not what it asked
+// for: the hub reports the stored grant narrowed to the app registration's
+// ceiling, so an owner removing a permission from the registration reaches
+// this file on the next rotation. Leaving it out would keep `auth status`
+// printing a grant the hub stopped honoring.
 type refreshBody struct {
 	AccessToken      string `json:"access_token"`
 	RefreshToken     string `json:"refresh_token"`
 	ExpiresIn        int    `json:"expires_in"`
 	RefreshExpiresIn int    `json:"refresh_expires_in"`
 	TokenID          string `json:"token_id"`
+	Scope            string `json:"scope"`
 }
+
+// TokenResponseBody is refreshBody, exported for the login's decode: the
+// authorization-code exchange and the rotation read the SAME endpoint's
+// success payload, and the login embeds this shape plus its two one-time
+// fields rather than restating six fields whose drift already happened once
+// (scope reached the rotation's copy one commit before the login's).
+type TokenResponseBody = refreshBody
 
 // postRefresh performs the token rotation request.
 //
@@ -326,9 +346,15 @@ type refreshBody struct {
 // hourly rotation. The 30-second budget of a rotation is enforced by the
 // request context's deadline, which refreshTimeout already sets.
 func (c *Client) postRefresh(ctx context.Context, refreshToken string) (refreshBody, error) {
-	form := url.Values{"refresh_token": {refreshToken}}
+	// One token endpoint, and grant_type is REQUIRED: the hub no longer infers
+	// which grant a request means from which field happens to be present.
+	form := url.Values{
+		"grant_type":    {GrantTypeRefreshToken},
+		"client_id":     {ControlCLIClientID},
+		"refresh_token": {refreshToken},
+	}
 	resp, err := PostForm(ctx, c.HTTPClient,
-		locallisten.JoinPath(c.connectURL, "/auth/cli/refresh"), form)
+		locallisten.JoinPath(c.connectURL, "/oauth/token"), form)
 	if err != nil {
 		return refreshBody{}, err
 	}

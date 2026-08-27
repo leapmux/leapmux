@@ -7,11 +7,13 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
 	"connectrpc.com/connect"
 
+	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
@@ -402,6 +404,60 @@ func (v *TokenValidator) loadBearer(ctx context.Context, kind BearerKind, tokenI
 			}
 			return loadedBearer{}, connect.NewError(connect.CodeInternal, err)
 		}
+		// The APP's own retirement, joined onto the row. A hub that died
+		// part-way through a disconnect would otherwise leave a live
+		// credential on an app nobody can see any more; this refuses it at the
+		// next request rather than waiting for the cascade to be retried.
+		if api.ClientRevokedAt != nil {
+			return loadedBearer{}, connect.NewError(connect.CodeUnauthenticated, ErrTokenRevoked)
+		}
+		// The stored grant, NARROWED at the moment the row is READ by BOTH
+		// ceilings that govern it. A mint bug, a hand-edited row or a restored
+		// backup therefore cannot produce an over-scoped credential that
+		// authenticates, and neither can a registration whose owner has since
+		// taken a permission back.
+		//
+		// An UNKNOWN scope token refuses the whole credential. Dropping it is
+		// the failure that looks safe: a row holding two scopes whose second
+		// became unknown would keep working as a narrower app, and nobody
+		// would notice the vocabulary drifted.
+		scopes, err := authscope.Parse(api.GrantedScopes)
+		if err != nil {
+			slog.WarnContext(ctx, "api token carries an unreadable grant",
+				"token_id", api.ID, "err", err)
+			return loadedBearer{}, connect.NewError(connect.CodeUnauthenticated, ErrInvalidToken)
+		}
+		// The KIND's ceiling: a property of what kind of credential this is,
+		// at every validation rather than of the leg that happened to mint it.
+		scopes = scopes.NarrowTo(CeilingFor(BearerKindAPI))
+		// The APP's ceiling: what its registration says it may ask for.
+		//
+		// Read HERE and not only at the consent, for the reason
+		// ClientElevationAllowed is read here one line down -- the two are the
+		// same rule over two columns. An owner who removes a permission from a
+		// registration means the app should no longer have it, and a ceiling
+		// applied only at the mint would make that edit a silent no-op for
+		// every credential already issued: their only remedy would be to
+		// disconnect the app entirely.
+		//
+		// It NARROWS and never widens, so putting a permission back does not
+		// hand it to a credential whose owner never consented to it -- the
+		// stored grant is still the other half of the intersection.
+		//
+		// An unreadable registration refuses the credential rather than
+		// admitting it, on the same argument as the grant above: a ceiling
+		// nobody can parse is not a ceiling.
+		clientCeiling, err := authscope.Parse(api.ClientScopes)
+		if err != nil {
+			slog.WarnContext(ctx, "api token identifies an app whose registered scopes are unreadable",
+				"token_id", api.ID, "client_id", api.ClientID, "err", err)
+			return loadedBearer{}, connect.NewError(connect.CodeUnauthenticated, ErrInvalidToken)
+		}
+		scopes = scopes.NarrowTo(clientCeiling)
+		elevation := NewElevation(api.ElevationProvenAt, api.ElevationExpiresAt)
+		if !api.ClientElevationAllowed {
+			elevation = Elevation{}
+		}
 		return loadedBearer{
 			fields: validateRowFields{
 				Revoked: api.RevokedAt != nil,
@@ -434,12 +490,19 @@ func (v *TokenValidator) loadBearer(ctx context.Context, kind BearerKind, tokenI
 				CreatedAt:      api.CreatedAt,
 				ExpiresAt:      ptrconv.DerefTime(api.ExpiresAt),
 				AuthGeneration: api.AuthGeneration,
-				AdminScope:     api.AdminScope,
+				Scopes:         scopes,
 				// Through NewElevation, which refuses half a stored pair --
 				// the same read the session path uses, so a repaired or
 				// restored row cannot admit a restricted action on a factor
 				// that was never proven.
-				Elevation: NewElevation(api.ElevationProvenAt, api.ElevationExpiresAt),
+				//
+				// ZEROED when the app may not elevate. Reading the flag HERE,
+				// at every validation, is what makes turning it off close a
+				// live window on the next request rather than at the next
+				// write -- the same argument apiTokenExpired makes for
+				// AbsoluteTokenLifetime: read the ceiling at validation, so no
+				// issuer, present or future, can write past it.
+				Elevation: elevation,
 			},
 			touch:      func() { _ = v.store.APITokens().Touch(ctx, api.ID) },
 			credential: APICredential(tokenID),
@@ -463,6 +526,16 @@ func (v *TokenValidator) loadBearer(ctx context.Context, kind BearerKind, tokenI
 			// invalid token (permanent, not a retryable 500) instead.
 			return loadedBearer{}, connect.NewError(connect.CodeUnauthenticated, ErrInvalidToken)
 		}
+		// The same read-time narrowing the api_tokens branch performs, and
+		// here it carries the guarantee the deleted delegationAllowedProcedures
+		// allowlist used to: a bearer minted for a process that reads untrusted
+		// input can never administer the hub, whatever the row says.
+		delScopes, err := authscope.Parse(del.GrantedScopes)
+		if err != nil {
+			slog.WarnContext(ctx, "delegation token carries an unreadable grant",
+				"token_id", del.ID, "err", err)
+			return loadedBearer{}, connect.NewError(connect.CodeUnauthenticated, ErrInvalidToken)
+		}
 		return loadedBearer{
 			fields: validateRowFields{
 				Revoked:        del.RevokedAt != nil,
@@ -473,6 +546,7 @@ func (v *TokenValidator) loadBearer(ctx context.Context, kind BearerKind, tokenI
 				CreatedAt:      del.CreatedAt,
 				ExpiresAt:      del.ExpiresAt,
 				AuthGeneration: del.AuthGeneration,
+				Scopes:         delScopes.NarrowTo(CeilingFor(BearerKindDelegation)),
 			},
 			touch:      func() { _ = v.store.DelegationTokens().Touch(ctx, del.ID) },
 			credential: DelegationCredential(tokenID, del.WorkerID),
@@ -503,11 +577,10 @@ type validateRowFields struct {
 	RowID      string
 	CreatedAt  time.Time
 	ExpiresAt  time.Time
-	// AdminScope is the api_tokens opt-in that lets a bearer reach the
-	// Admin* procedures. A delegation token has no such column and leaves it
-	// false, which is the answer enforceAdmin needs anyway: a worker-minted
-	// bearer is refused every admin procedure before the scope is read.
-	AdminScope     bool
+	// Scopes is the credential's grant, already narrowed to its kind's
+	// ceiling by loadBearer. The zero value reaches nothing, so a branch that
+	// forgets to fill it denies rather than grants.
+	Scopes         authscope.ScopeSet
 	AuthGeneration int64
 	// Elevation is the api_tokens step-up window. A delegation row has no
 	// such pair and leaves it zero, which is the answer ElevationDeadline
@@ -519,7 +592,7 @@ type validateRowFields struct {
 //
 // validateRow verifies the secret FIRST, before it surfaces any revoked or
 // expired state.
-// token_id is non-secret (returned in JSON to /auth/cli/token, /auth/cli/refresh,
+// token_id is non-secret (returned in JSON to /oauth/token, /oauth/token,
 // and the worker delegation-mint endpoint), so a caller who knows only a victim's
 // token_id must not be able to probe its existence or lifecycle: a wrong secret
 // yields a uniform ErrInvalidToken, indistinguishable from loadBearer's not-found
@@ -546,7 +619,7 @@ func (v *TokenValidator) validateRow(ctx context.Context, f validateRowFields, s
 	}
 	user.AuthenticatedAt = f.CreatedAt.UTC()
 	user.CredentialExpiresAt = DeadlineAt(f.ExpiresAt.UTC())
-	user.CredentialAdminScope = f.AdminScope
+	user.Scopes = f.Scopes
 	user.Elevation = f.Elevation
 	return user, nil
 }

@@ -544,7 +544,7 @@ func TestPanickingHandlerReleasesReservation(t *testing.T) {
 }
 
 func TestKnownOperationsSortedAndEffectiveLimitsOverlay(t *testing.T) {
-	assert.Equal(t, []Operation{OpElevation}, KnownOperations())
+	assert.Equal(t, []Operation{OpElevation, OpOAuthAnonymous}, KnownOperations())
 
 	// No row: defaults, enabled.
 	m := newTestManager(t, false)
@@ -613,6 +613,18 @@ func TestLimiterUnauthenticatedCallsPassThrough(t *testing.T) {
 	}
 }
 
+// httpRoutedOperations are the operations reached through AllowHTTP rather than
+// through the Connect interceptor, each with the routes that spend them.
+//
+// They exist because procedureOperations cannot express them: the OAuth
+// authorization server's anonymous legs are MUX ROUTES, so no interceptor sees
+// them. Listing them here keeps the "catalogued implies enforced" half of the
+// tripwire honest -- an operation in neither map is one the admin CLI
+// configures and nothing enforces.
+var httpRoutedOperations = map[Operation]string{
+	OpOAuthAnonymous: "/oauth/device-authorization, /oauth/token and /oauth/register, via AllowHTTP",
+}
+
 // TestProcedureRoutingAndCatalogueAgree pins the two hand-maintained maps
 // that must change together: every routed operation must be catalogued
 // (an uncatalogued op fails closed with CodeUnavailable on every call),
@@ -632,8 +644,16 @@ func TestProcedureRoutingAndCatalogueAgree(t *testing.T) {
 				break
 			}
 		}
+		if _, viaHTTP := httpRoutedOperations[op]; viaHTTP {
+			routed = true
+		}
 		assert.Truef(t, routed,
-			"operation %q is catalogued but no procedureOperations entry routes to it; the admin CLI configures it but nothing enforces it", op)
+			"operation %q is catalogued but nothing routes to it; the admin CLI configures it but nothing enforces it -- add a procedureOperations entry, or an httpRoutedOperations entry naming the routes", op)
+	}
+	for op, where := range httpRoutedOperations {
+		assert.Containsf(t, defaults, op,
+			"operation %q is listed as HTTP-routed (%s) but has no defaults entry", op, where)
+		assert.NotEmptyf(t, where, "operation %q has an empty routing note", op)
 	}
 }
 

@@ -837,16 +837,16 @@ type ownerOnlyRegistrar struct {
 }
 
 func (o ownerOnlyRegistrar) gate(handler channel.HandlerFunc) channel.HandlerFunc {
-	return func(ctx context.Context, userID userid.UserID, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
-		if !requireWorkerOwner(o.r.svc, userID, sender) {
+	return func(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
+		if !requireWorkerOwner(o.r.svc, caller.UserID, sender) {
 			return
 		}
-		handler(ctx, userID, req, sender)
+		handler(ctx, caller, req, sender)
 	}
 }
 
-func (o ownerOnlyRegistrar) Register(method string, handler channel.HandlerFunc) {
-	o.r.register(method, gateOwnerOnly, dispatchPlain, o.gate(handler))
+func (o ownerOnlyRegistrar) Register(method string, scope leapmuxv1.Scope, handler channel.HandlerFunc) {
+	o.r.register(method, gateOwnerOnly, scope, dispatchPlain, o.gate(handler))
 }
 
 // RegisterMode is Register/RegisterTracked selected by an argument, so a gated
@@ -855,32 +855,32 @@ func (o ownerOnlyRegistrar) Register(method string, handler channel.HandlerFunc)
 // (a stream-frame denial) rather than gate, and the unary-vs-stream shape is what
 // the methodShape table pins -- routing it through the same argument would let a
 // caller pick a unary denial for a streaming method.
-func (o ownerOnlyRegistrar) RegisterMode(method string, mode dispatchMode, handler channel.HandlerFunc) {
+func (o ownerOnlyRegistrar) RegisterMode(method string, scope leapmuxv1.Scope, mode dispatchMode, handler channel.HandlerFunc) {
 	switch mode {
 	case dispatchTracked:
-		o.RegisterTracked(method, handler)
+		o.RegisterTracked(method, scope, handler)
 	case dispatchPlain, dispatchStreaming:
 		// dispatchStreaming cannot arrive: the streaming helpers call
 		// RegisterStream directly. Treating it as plain here would silently give a
 		// streaming method a unary denial, so it is grouped with plain only to keep
 		// the switch exhaustive.
-		o.Register(method, handler)
+		o.Register(method, scope, handler)
 	}
 }
 
-func (o ownerOnlyRegistrar) RegisterTracked(method string, handler channel.HandlerFunc) {
-	o.r.register(method, gateOwnerOnly, dispatchTracked, o.gate(handler))
+func (o ownerOnlyRegistrar) RegisterTracked(method string, scope leapmuxv1.Scope, handler channel.HandlerFunc) {
+	o.r.register(method, gateOwnerOnly, scope, dispatchTracked, o.gate(handler))
 }
 
 // gateStream is gate for a STREAMING method: same predicate, different denial
 // encoding (a stream frame, so the receiver has an End to terminate on -- see
 // sendStreamError).
 func (o ownerOnlyRegistrar) gateStream(handler channel.HandlerFunc) channel.HandlerFunc {
-	return func(ctx context.Context, userID userid.UserID, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
-		if !requireWorkerOwnerStream(o.r.svc, userID, sender) {
+	return func(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
+		if !requireWorkerOwnerStream(o.r.svc, caller.UserID, sender) {
 			return
 		}
-		handler(ctx, userID, req, sender)
+		handler(ctx, caller, req, sender)
 	}
 }
 
@@ -891,8 +891,8 @@ func (o ownerOnlyRegistrar) gateStream(handler channel.HandlerFunc) channel.Hand
 // gate inline, which made "recorded owner-gated but never gated" a one-line
 // mistake nothing would catch. Routing them through here leaves gateOwnerOnly
 // mentioned in exactly three places, all inside this type.
-func (o ownerOnlyRegistrar) RegisterStream(method string, handler channel.HandlerFunc) {
-	o.r.register(method, gateOwnerOnly, dispatchStreaming, o.gateStream(handler))
+func (o ownerOnlyRegistrar) RegisterStream(method string, scope leapmuxv1.Scope, handler channel.HandlerFunc) {
+	o.r.register(method, gateOwnerOnly, scope, dispatchStreaming, o.gateStream(handler))
 }
 
 // SetRegisteredBy seeds the worker's owner before the Hub has delivered one.
@@ -1066,14 +1066,15 @@ func RegisterAll(d *channel.Dispatcher, svc *Service) {
 // call this on a throwaway dispatcher so the gate map and Methods() come from
 // the same function production runs — replay drift is impossible.
 func registerAllWithGates(d *channel.Dispatcher, svc *Service) map[string]methodGate {
-	gates, _ := registerAllClassified(d, svc)
+	gates, _, _ := registerAllClassified(d, svc)
 	return gates
 }
 
-// registerAllClassified is registerAllWithGates plus the reply-shape map,
-// so a test can assert both classifications came from the one function
-// production runs.
-func registerAllClassified(d *channel.Dispatcher, svc *Service) (map[string]methodGate, map[string]methodShape) {
+// registerAllClassified is registerAllWithGates plus the reply-shape and
+// scope maps, so a test can assert that every classification came from the
+// one function production runs -- including that each method's declared scope
+// sits inside the delegation grant a sibling-worker caller carries.
+func registerAllClassified(d *channel.Dispatcher, svc *Service) (map[string]methodGate, map[string]methodShape, map[string]leapmuxv1.Scope) {
 	r := newRegistrar(d, svc)
 	registerPingHandler(r, svc)
 	// Machine-scoped: owner-only by construction (see ownerOnlyRegistrar).
@@ -1098,7 +1099,7 @@ func registerAllClassified(d *channel.Dispatcher, svc *Service) (map[string]meth
 	if prior := svc.tunnels.Swap(tunnels); prior != nil {
 		prior.Stop()
 	}
-	return r.gates, r.shapes
+	return r.gates, r.shapes, r.scopes
 }
 
 // optionGroupLabelInGroups returns the display label of the option group with the

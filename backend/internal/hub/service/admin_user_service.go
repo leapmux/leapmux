@@ -4,14 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"log/slog"
 
 	"connectrpc.com/connect"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/mail"
+	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
@@ -45,7 +48,7 @@ type AdminUserService struct {
 	renderer mail.Renderer
 
 	// The clock this service reads. It mints an API token pair exactly as
-	// APIAuthHandler.issueAPIToken does, and it requires the same elevation
+	// OAuthServerHandler.issueAPIToken does, and it requires the same elevation
 	// window for that mint, so the two must answer one instant or a test that
 	// moves the clock moves half the surface.
 	clockSeam
@@ -64,7 +67,7 @@ type AdminUserServiceDeps struct {
 	// WorkerEffects runs the out-of-database half of a deregistration.
 	WorkerEffects *WorkerDeregisterEffects
 	// Mail and Renderer send the "a CLI credential was issued" notice, on the
-	// same terms APIAuthHandlerDeps states: Mail may be nil and issuance then
+	// same terms OAuthServerDeps states: Mail may be nil and issuance then
 	// sends nothing, and Renderer is a struct value whose zero value is valid.
 	Mail     mail.Sender
 	Renderer mail.Renderer
@@ -1043,7 +1046,7 @@ func (s *AdminUserService) ListAPITokens(ctx context.Context, req *connect.Reque
 	}
 	page, err := s.store.APITokens().ListAll(ctx, store.ListAllAPITokensParams{
 		UserID:         userFilter,
-		ClientType:     req.Msg.GetClientType(),
+		ClientID:       req.Msg.GetClientId(),
 		PageParams:     NormalizePageParams(req.Msg.GetCursor(), req.Msg.GetLimit()),
 		IncludeRevoked: req.Msg.GetIncludeRevoked(),
 	})
@@ -1058,18 +1061,28 @@ func (s *AdminUserService) ListAPITokens(ctx context.Context, req *connect.Reque
 }
 
 func apiTokenToProto(t store.APITokenWithOwner) *leapmuxv1.AdminAPIToken {
+	// What the credential REACHES, matching the account's own listing and the
+	// validation path: the consent intersected with the app's registered
+	// ceiling. An audit that reported the stored column would name permissions
+	// an app cannot use, which is the opposite of what an audit is for.
+	//
+	// An unreadable value renders as NO permissions, on the same terms: an
+	// audit must not show a credential as though its grant were legible when
+	// it is not, and validation already refuses such a row.
+	granted, _ := reachableGrantOf(t.GrantedScopes, t.ClientScopes)
 	return &leapmuxv1.AdminAPIToken{
-		Id:           t.ID,
-		UserId:       t.UserID,
-		Username:     t.OwnerUsername,
-		OwnerDeleted: t.OwnerDeleted,
-		ClientType:   t.ClientType,
-		ClientName:   t.ClientName,
-		CreatedAt:    timestamppb.New(t.CreatedAt),
-		LastUsedAt:   optTimestamp(t.LastUsedAt),
-		ExpiresAt:    optTimestamp(t.ExpiresAt),
-		RevokedAt:    optTimestamp(t.RevokedAt),
-		AdminScope:   t.AdminScope,
+		Id:               t.ID,
+		UserId:           t.UserID,
+		Username:         t.OwnerUsername,
+		OwnerDeleted:     t.OwnerDeleted,
+		ClientId:         t.ClientID,
+		ClientName:       t.ClientName,
+		InstallationName: t.InstallationName,
+		CreatedAt:        timestamppb.New(t.CreatedAt),
+		LastUsedAt:       optTimestamp(t.LastUsedAt),
+		ExpiresAt:        optTimestamp(t.ExpiresAt),
+		RevokedAt:        optTimestamp(t.RevokedAt),
+		GrantedScopes:    SortedScopeTokens(granted),
 	}
 }
 
@@ -1081,16 +1094,47 @@ func (s *AdminUserService) IssueAPIToken(ctx context.Context, req *connect.Reque
 	if err != nil {
 		return nil, err
 	}
-	// The SAME cleaning the three CLI consent legs apply at intake. This verb
-	// writes the same api_tokens.client_name column, and the value reaches
-	// the owner's credential list and the admin CLI's table -- so a newline
-	// here writes arbitrary lines into both, and a long name fails on
-	// MySQL's VARCHAR(255) while SQLite and Postgres take it. Cleaning BEFORE
-	// the empty check also refuses a name of only control characters, which
-	// the raw check accepted and stored as visible junk.
-	clientName := normalizeDeviceName(msg.GetClientName())
-	if clientName == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("client_name is required"))
+	// The SAME cleaning the consent legs apply at intake. This verb writes the
+	// same api_tokens.installation_name column, and the value reaches the
+	// owner's connected-app list and the admin CLI's table -- so a newline here
+	// writes arbitrary lines into both, and a long name fails on MySQL's
+	// VARCHAR(255) while SQLite and Postgres take it. Cleaning BEFORE the empty
+	// check also refuses a name of only control characters, which the raw check
+	// accepted and stored as visible junk.
+	installationName := normalizeInstallationName(msg.GetInstallationName())
+	if installationName == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("installation_name is required"))
+	}
+	// EMPTY names the built-in service-account registration, which runs no
+	// flow. It exists so this out-of-band credential still names an app, which
+	// is what keeps api_tokens.client_id NOT NULL and every listing, join and
+	// cascade free of a NULL branch.
+	clientID := msg.GetClientId()
+	if clientID == "" {
+		clientID = oauthapp.ServiceAccountClientID
+	}
+	// The registration must exist and be live BEFORE the mint, for the same
+	// reason every other leg resolves the app first: an unknown id used to die
+	// on the foreign key inside Create and surface as a 500 for caller input,
+	// and a retired app's id minted a dead-on-arrival credential that reported
+	// itself as issued. Both are refusals here, where the operator can act on
+	// them.
+	app, err := s.store.OAuthClients().Get(ctx, clientID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, connect.NewError(connect.CodeInvalidArgument,
+				fmt.Errorf("no app is registered under client_id %s", clientID))
+		}
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("load app: %w", err))
+	}
+	if app.RevokedAt != nil {
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			errors.New("this app is retired; issue the credential under a live registration instead"))
+	}
+	appCeiling, err := authscope.Parse(app.Scopes)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal,
+			fmt.Errorf("app %s carries an unreadable scope ceiling: %w", clientID, err))
 	}
 	owner, err := mintRowUserID(user.ID)
 	if err != nil {
@@ -1109,12 +1153,27 @@ func (s *AdminUserService) IssueAPIToken(ctx context.Context, req *connect.Reque
 		return nil, connect.NewError(connect.CodeInvalidArgument,
 			fmt.Errorf("ttl_seconds must be between 0 and %d (got %d)", MaxAPITokenTTLSeconds, secs))
 	}
-	// The admin scope is opt-in and cannot exceed the OWNER's authority:
-	// granting it to a non-administrator would mint a credential whose scope
-	// says one thing and whose every admin call is refused for another.
-	if msg.GetAdminScope() && !user.IsAdmin {
+	// The grant. EMPTY means "everything except the four admin scopes", which
+	// is what a headless service account needs and what the control CLI's own
+	// default grant is -- so the two surfaces that mint a credential agree on
+	// what "unspecified" means.
+	granted, err := resolveIssuedScopes(msg.GetScopes(), user, actor)
+	if err != nil {
+		return nil, err
+	}
+	// The APP's registered ceiling is the third bound, and it narrows nothing
+	// silently: the consent legs refuse an over-ceiling ask and so does the
+	// refresh leg, so an administrator's mint refuses too. Narrowing here
+	// instead would email and store a grant loadBearer strips at every
+	// validation -- a credential that reports a width it does not have, which
+	// is the exact failure the other refusals exist to prevent.
+	if !appCeiling.Contains(granted) {
 		return nil, connect.NewError(connect.CodeFailedPrecondition,
-			fmt.Errorf("user %s is not an administrator, so a token for them cannot carry the admin scope", user.Username))
+			fmt.Errorf("app %s is not registered for every permission this credential asks for", app.ClientName))
+	}
+	grantedString, err := granted.Storable()
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	// ttl_seconds picks WHICH KIND of credential this is, and the two kinds
 	// are exclusive.
@@ -1140,12 +1199,12 @@ func (s *AdminUserService) IssueAPIToken(ctx context.Context, req *connect.Reque
 	if err := commitUnderElevation(ctx, s.store, actor, s.now, func() error {
 		var mintErr error
 		minted, mintErr = mintAPIToken(s.validator, mintedByActor(actor), s.now(), apiTokenMint{
-			UserID:     owner,
-			ClientType: msg.GetClientType(),
-			ClientName: clientName,
-			AdminScope: msg.GetAdminScope(),
-			AccessTTL:  time.Duration(secs) * time.Second,
-			Rotating:   rotating,
+			UserID:           owner,
+			ClientID:         clientID,
+			InstallationName: installationName,
+			GrantedScopes:    grantedString,
+			AccessTTL:        time.Duration(secs) * time.Second,
+			Rotating:         rotating,
 		})
 		if mintErr != nil {
 			return mintErr
@@ -1161,8 +1220,16 @@ func (s *AdminUserService) IssueAPIToken(ctx context.Context, req *connect.Reque
 	// admin surface, exactly as they do from a consent leg. This surface is
 	// the one a stolen administrator cookie reaches, so it is the last one
 	// that should mint in silence.
-	notifyCredentialIssued(ctx, s.mail, s.renderer, user, clientName, msg.GetAdminScope(),
-		issuedByAnotherPerson(actor, user))
+	noticeName := app.ClientName
+	if noticeName == "" {
+		noticeName = clientID
+	}
+	notifyCredentialIssued(ctx, s.mail, s.renderer, user, credentialNotice{
+		AppName:          noticeName,
+		InstallationName: installationName,
+		Scopes:           SortedScopeTokens(granted),
+		IssuedByAdmin:    issuedByAnotherPerson(actor, user),
+	})
 	// The secrets cross the wire exactly once; they cannot be retrieved.
 	return connect.NewResponse(&leapmuxv1.IssueAPITokenResponse{
 		TokenId:      minted.TokenID,
@@ -1224,4 +1291,52 @@ func (s *AdminUserService) RevokeDelegationToken(ctx context.Context, req *conne
 	}
 	s.lifecycle.BearerRevoked(auth.BearerKindDelegation, req.Msg.GetId())
 	return connect.NewResponse(&leapmuxv1.AdminUserServiceRevokeDelegationTokenResponse{}), nil
+}
+
+// resolveIssuedScopes decides the grant an administrator's out-of-band
+// credential carries.
+//
+// An EMPTY request means every scope EXCEPT the four admin ones. That is the
+// same default the control CLI's own login takes, so the two surfaces that mint
+// a credential agree on what "unspecified" means -- and it preserves the
+// property the deleted admin_scope column defended: an ordinary credential can
+// do everything its owner can do except administer the hub.
+//
+// An admin scope needs an administrator OWNER. Granting one to somebody else
+// would mint a credential whose grant says one thing and whose every admin call
+// is refused for another, which is the failure the refusal exists to prevent:
+// the operator learns now rather than at the first admin verb.
+func resolveIssuedScopes(tokens []string, owner *store.User, actor *auth.UserInfo) (authscope.ScopeSet, error) {
+	requested := authscope.NonAdminGrant()
+	if len(tokens) > 0 {
+		parsed, err := authscope.Parse(strings.Join(tokens, " "))
+		if err != nil {
+			return authscope.ScopeSet{}, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		requested = parsed
+	}
+	if !owner.IsAdmin {
+		for _, scope := range adminScopeList {
+			if requested.Allows(scope) {
+				token, _ := authscope.Token(scope)
+				return authscope.ScopeSet{}, connect.NewError(connect.CodeFailedPrecondition,
+					fmt.Errorf("user %s is not an administrator, so a credential for them cannot carry %s",
+						owner.Username, token))
+			}
+		}
+	}
+	// The ISSUER's own grant is a ceiling, and it is the second bound this verb
+	// needs. The scope rung admits an app with admin:users; without this, such
+	// an app could mint ITSELF a credential carrying tunnel:open -- a total
+	// bypass of the scope model rather than a wide grant.
+	//
+	// It REFUSES rather than silently narrows, for the reason every other scope
+	// refusal here does: an operator told "issued" and then refused on the
+	// first call has nothing to point at.
+	if actor != nil && !actor.Scopes.Contains(requested) {
+		return authscope.ScopeSet{}, connect.NewError(connect.CodePermissionDenied,
+			errors.New("this credential cannot issue a credential wider than itself"))
+	}
+	// Closed here, at the mint, so the stored set is the one every gate reads.
+	return requested.Close(), nil
 }

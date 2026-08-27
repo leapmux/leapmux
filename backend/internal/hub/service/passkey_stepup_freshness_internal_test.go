@@ -278,7 +278,7 @@ func TestStepUpMutationAuth_ElevationRequiredOnceACredentialExists(t *testing.T)
 
 	// An ELEVATED command-line credential is ADMITTED, on the same branch a
 	// session takes. It proves its factor in a browser through the
-	// /auth/cli/elevate-authorization leg and carries a window of its own, so
+	// /oauth/step-up leg and carries a window of its own, so
 	// refusing it here would answer one question two ways -- every other
 	// protected surface admits it. The whole path below is credential-shaped:
 	// recheckActingCredentialUnderLock re-reads whichever row carries the

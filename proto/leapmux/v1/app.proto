@@ -1,0 +1,208 @@
+syntax = "proto3";
+package leapmux.v1;
+
+import "google/protobuf/timestamp.proto";
+import "leapmux/v1/scope.proto";
+
+// AppService manages OAuth app REGISTRATIONS: the rows a consent screen
+// authorizes against.
+// Called by Frontend on Hub via ConnectRPC.
+//
+// It is the registration surface, not the authorization surface. Authorizing an
+// app, listing what a user authorized, and disconnecting one are the OAuth
+// endpoints under /oauth/ and the MyConnections RPCs -- this service is where an
+// app comes from.
+//
+// Every verb is SCOPE_NEVER. An app that could register an app would name its
+// own redirect address and its own scope ceiling, which is not a wide grant but
+// a way out of the model: the next consent screen would be the attacker's. So
+// the whole service answers a session and nothing else.
+//
+// Ownership, not a role, decides what a caller sees. A user's app is visible
+// and authorizable to that user alone; an administrator's app is hub-wide. One
+// column carries that rule (oauth_clients.owner_user_id), so no second flag can
+// disagree with it.
+service AppService {
+  // RegisterApp creates a registration owned by the caller, or hub-wide when an
+  // administrator asks for that. The client secret crosses ONCE, in the
+  // response: the hub stores only its hash and can never show it again.
+  rpc RegisterApp(RegisterAppRequest) returns (RegisterAppResponse);
+  // ListApps pages the registrations the caller may EDIT -- their own, plus the
+  // hub-wide catalogue for an administrator.
+  rpc ListApps(ListAppsRequest) returns (ListAppsResponse);
+  // UpdateApp changes the editable fields of one registration.
+  rpc UpdateApp(UpdateAppRequest) returns (UpdateAppResponse);
+  // SetAppElevationAllowed toggles whether the app may run the step-up leg. It
+  // is separate because it is the ONE field a built-in registration may still
+  // change, and because it is not part of the grant.
+  rpc SetAppElevationAllowed(SetAppElevationAllowedRequest) returns (SetAppElevationAllowedResponse);
+  // VerifyApp records an administrator's vouch, or withdraws it. An unverified
+  // app is the default and the consent page says so.
+  rpc VerifyApp(VerifyAppRequest) returns (VerifyAppResponse);
+  // RevokeApp retires the app and revokes every credential it holds, for every
+  // user, in one transaction.
+  rpc RevokeApp(RevokeAppRequest) returns (RevokeAppResponse);
+  // DeleteApp removes a registration that never held a credential. The hub
+  // refuses it otherwise rather than orphaning credentials.
+  rpc DeleteApp(DeleteAppRequest) returns (DeleteAppResponse);
+}
+
+// AppVisibility is who may see and authorize a registration.
+//
+// It mirrors oauth_clients.owner_user_id rather than adding a second field: the
+// column IS the rule, and this enum is how a caller states which value it wants
+// without sending a user id it should not choose.
+enum AppVisibility {
+  APP_VISIBILITY_UNSPECIFIED = 0;
+  // The caller's own app. Nobody else sees it or can authorize it.
+  APP_VISIBILITY_PRIVATE = 1;
+  // Every account on this hub sees it. Administrators only.
+  APP_VISIBILITY_HUB_WIDE = 2;
+}
+
+// AppClientType says whether the app can keep a secret.
+//
+// It is derived from oauth_clients.secret_hash, which is NULL for a public
+// client. There is no second column, so "a public client with a secret" is
+// unsayable rather than merely unlikely.
+enum AppClientType {
+  APP_CLIENT_TYPE_UNSPECIFIED = 0;
+  // No secret. A CLI, a desktop app, a browser app -- anything whose binary a
+  // user holds. PKCE is what protects it, and PKCE is required of every client.
+  APP_CLIENT_TYPE_PUBLIC = 1;
+  // Holds a secret it can keep, which means a server the app operator runs.
+  APP_CLIENT_TYPE_CONFIDENTIAL = 2;
+}
+
+// App is one registration, as a management surface sees it.
+//
+// It never carries the client secret. The secret crosses once, in
+// RegisterAppResponse, and the hub keeps only its hash.
+message App {
+  string client_id = 1;
+  string client_name = 2;
+  string client_uri = 3;
+  AppVisibility visibility = 4;
+  AppClientType client_type = 5;
+  repeated string redirect_uris = 6;
+  // The ceiling on what any consent may grant, never the grant itself. What one
+  // account actually granted lives on that account's credential.
+  repeated Scope scopes = 7;
+  repeated string grant_types = 8;
+  bool elevation_allowed = 9;
+  // One of builtin, admin, user, dynamic. A builtin row is a constant of the
+  // build: it cannot be edited, revoked or deleted, and only its
+  // elevation_allowed moves.
+  string registration_source = 10;
+  // Unset means unverified, which is the default and what the consent page
+  // renders a warning for.
+  google.protobuf.Timestamp verified_at = 11;
+  string verified_by_username = 12;
+  // has_icon rather than the bytes: the icon is served from
+  // /oauth/apps/<client_id>/icon on the hub's own origin, so a consent page
+  // keeps img-src 'self'.
+  bool has_icon = 13;
+  google.protobuf.Timestamp created_at = 14;
+  google.protobuf.Timestamp updated_at = 15;
+  google.protobuf.Timestamp revoked_at = 16;
+  // live_credential_count is why a delete may be refused, so the surface can
+  // say so instead of reporting a failure the user cannot read.
+  int64 live_credential_count = 17;
+}
+
+message RegisterAppRequest {
+  string client_name = 1;
+  string client_uri = 2;
+  repeated string redirect_uris = 3;
+  repeated Scope scopes = 4;
+  repeated string grant_types = 5;
+  AppVisibility visibility = 6;
+  AppClientType client_type = 7;
+  bool elevation_allowed = 8;
+  // Raw image bytes, stored as-is and served back from the hub's own origin.
+  bytes icon = 9;
+  string icon_media_type = 10;
+}
+
+message RegisterAppResponse {
+  App app = 1;
+  // The ONLY time the hub emits this. It is empty for a public client, which
+  // has no secret at all.
+  string client_secret = 2;
+}
+
+// ListAppsRequest pages the registrations the caller may edit.
+message ListAppsRequest {
+  string cursor = 1;
+  int32 limit = 2;
+  // Include registrations that were revoked. They stay readable because a live
+  // credential on a retired app must still be explainable.
+  bool include_revoked = 3;
+}
+
+message ListAppsResponse {
+  repeated App apps = 1;
+  string next_cursor = 2;
+  // Whether RFC 7591 dynamic registration is on. The surface reads it here so
+  // an administrator sees the switch beside what it affects.
+  bool open_registration_enabled = 3;
+}
+
+// UpdateAppRequest replaces the editable fields. Each field is optional, and an
+// absent one is left alone -- so a caller that knows one field does not have to
+// send the rest back and risk overwriting a concurrent edit with stale values.
+message UpdateAppRequest {
+  string client_id = 1;
+  optional string client_name = 2;
+  optional string client_uri = 3;
+  // Present replaces the whole list. Repeated fields cannot distinguish empty
+  // from absent, so the flag is what says "I mean to clear it".
+  bool replace_redirect_uris = 4;
+  repeated string redirect_uris = 5;
+  bool replace_scopes = 6;
+  repeated Scope scopes = 7;
+  bool replace_grant_types = 8;
+  repeated string grant_types = 9;
+  // Present replaces the icon; set replace_icon with empty bytes to remove it.
+  bool replace_icon = 10;
+  bytes icon = 11;
+  string icon_media_type = 12;
+}
+
+message UpdateAppResponse {
+  App app = 1;
+}
+
+message SetAppElevationAllowedRequest {
+  string client_id = 1;
+  bool allowed = 2;
+}
+
+message SetAppElevationAllowedResponse {
+  App app = 1;
+}
+
+message VerifyAppRequest {
+  string client_id = 1;
+  // False withdraws an existing vouch.
+  bool verified = 2;
+}
+
+message VerifyAppResponse {
+  App app = 1;
+}
+
+message RevokeAppRequest {
+  string client_id = 1;
+}
+
+message RevokeAppResponse {
+  // How many credentials the revocation took, across every account.
+  int64 revoked_credential_count = 1;
+}
+
+message DeleteAppRequest {
+  string client_id = 1;
+}
+
+message DeleteAppResponse {}

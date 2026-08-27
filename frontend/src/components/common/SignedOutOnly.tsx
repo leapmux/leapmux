@@ -39,7 +39,7 @@ import { centeredFull, pageCard } from '~/styles/shared.css'
  * pages that needed it most had no copy at all.
  *
  * It honors `?redirect=`, which is not decoration. A CLI sign-in bounces the
- * browser to `/login?redirect=/auth/cli/start...`; a user who was ALREADY
+ * browser to `/login?redirect=/oauth/authorize...`; a user who was ALREADY
  * signed in had to sign in a second time to reach that consent screen, and
  * sending them to `/` instead would end the CLI flow with nothing on screen.
  * postAuthNavigate is the same call the login form makes on success, so the

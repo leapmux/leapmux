@@ -175,13 +175,14 @@ func emitInnerRPCError(err error) error {
 // localIPCCallInnerBest routes a worker-namespace call over the per-agent
 // socket.
 //
-// WorkspaceId is deliberately left unset. Every other local-IPC call site
-// threads a real workspace id, and the worker's router only enforces the
-// bearer-scope check when one is present (controlipc.Router.CallInner) -- but a
-// `worker.` dispatch either targets the local worker, where there is nothing to
-// scope, or a sibling, where the router falls back to the spawning agent's
-// workspace. The parameter used to exist and was passed "" at both call sites,
-// which read as a live scoping decision that could never be made.
+// WorkspaceId is deliberately left unset. The worker's router applies no
+// workspace or bearer-scope check of its own (controlipc.Router.CallInner
+// dispatches on the method name alone): the scope rung for a sibling dispatch
+// is the DELEGATION bearer the cross-worker path mints, which the sibling
+// worker's own gate enforces, and the local dispatch needs no rung because
+// the caller already holds the agent's socket. The parameter used to exist
+// and was passed "" at both call sites, which read as a live scoping
+// decision that could never be made.
 func localIPCCallInnerBest(ctx context.Context, c *control.Client, workerID, method string, payload []byte, out proto.Message) error {
 	ipc, err := c.ControlIPCService()
 	if err != nil {

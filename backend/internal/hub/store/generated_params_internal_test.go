@@ -43,11 +43,15 @@ func TestGeneratedInterfaceParamsAreAllowlisted(t *testing.T) {
 	// a reason it cannot be typed by the overrides:
 	allowlist := map[string]map[string]string{
 		sqliteGenPkg: {
-			"CursorTime": "keyset narg IS NULL OR-chain; fed sqltime.SQLiteNullTime by the typed withCursor closure",
-			"Now":        "registration-key expiry narg OR-chain; fed sqltime.SQLiteNullTime by the typed builder",
-			"Query":      "search LIKE narg OR-chain; fed a *string-derived pattern",
-			"ClientType": "narg OR-chain over a text column",
-			"TabType":    "narg OR-chain over a text column",
+			"CursorTime":     "keyset narg IS NULL OR-chain; fed sqltime.SQLiteNullTime by the typed withCursor closure",
+			"Now":            "registration-key expiry narg OR-chain; fed sqltime.SQLiteNullTime by the typed builder",
+			"Query":          "search LIKE narg OR-chain; fed a *string-derived pattern",
+			"TabType":        "narg OR-chain over a text column",
+			"ClientID":       "narg OR-chain over a text column (the app filter on every api-token listing)",
+			"CallerIsAdmin":  "the app-ownership predicate's administrator arm: a bare boolean parameter that no column types, and CASTing it would type it on postgres alone",
+			"IncludeRevoked": "the retired-row widening arm of the app listings: a bare boolean parameter that no column types, bound as bool by the dialect wrapper",
+			"IconBytes":      "COALESCE(LENGTH(icon_blob), 0) loses its decltype; read through sqlutil.CoerceInt64, never bound",
+			"UserID":         "the app-disconnect cascade's whole-set OR-chain, where empty means every user",
 			// The elevation slide's requested deadline sits inside min()
 			// in the SET clause, which carries no column type, and sqlc
 			// keeps that first inference even though the WHERE compares
@@ -59,10 +63,18 @@ func TestGeneratedInterfaceParamsAreAllowlisted(t *testing.T) {
 			"WindowDeadline": "elevation-slide deadline inside min(); fed sqltime.SQLiteTime, guarded by the canonical-layout fixture",
 		},
 		mysqlGenPkg: {
-			"LeaseMillis": "arithmetic expression param; not a timestamp",
+			"LeaseMillis":    "arithmetic expression param; not a timestamp",
+			"CallerIsAdmin":  "the app-ownership predicate's administrator arm: a bare boolean parameter that no column types, and CASTing it would type it on postgres alone",
+			"IncludeRevoked": "the retired-row widening arm of the app listings: a bare boolean parameter that no column types, bound as bool by the dialect wrapper",
+			"IconBytes":      "COALESCE(LENGTH(icon_blob), 0) loses its decltype; read through sqlutil.CoerceInt64, never bound",
 		},
-		postgresGenPkg: {},
-		workerGenPkg:   {},
+		postgresGenPkg: {
+			"CallerIsAdmin":  "the app-ownership predicate's administrator arm: a bare boolean parameter that no column types, and CASTing it would type it on postgres alone",
+			"IncludeRevoked": "the retired-row widening arm of the app listings: a bare boolean parameter that no column types, bound as bool by the dialect wrapper",
+			"IconBytes":      "COALESCE(LENGTH(icon_blob), 0) loses its decltype; read through sqlutil.CoerceInt64, never bound",
+			"UserID":         "the app-disconnect cascade's whole-set OR-chain, where empty means every user",
+		},
+		workerGenPkg: {},
 	}
 
 	patterns := make([]string, 0, len(allowlist))

@@ -538,7 +538,7 @@ export const AuthProvider: ParentComponent = (props) => {
   }
 
   const setAuth = (u: User) => {
-    // The same identity transition runSignIn makes: /oauth/complete-signup
+    // The same identity transition runSignIn makes: /auth/idp/complete-signup
     // and the verify-email page both land a NEW user in a document that may
     // still hold the previous one's elevation.
     adoptSignedInUser(u)

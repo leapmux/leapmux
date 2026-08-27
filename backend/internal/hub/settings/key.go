@@ -449,7 +449,21 @@ func (k *Key[T]) Redacted(v any) any {
 // the snapshot (never registered with this manager, or degraded at decode)
 // resolves to the default, so a consumer never sees a zero value it cannot
 // distinguish from a real one.
+//
+// A NIL snapshot is one of those cases, not a programming error. A component
+// wired with no settings manager has nothing to snapshot and says so by
+// returning nil; every such caller reads defaults. Answering here rather than
+// at each call site is what keeps that uniform -- a caller that forgot the
+// check would otherwise panic on a path that only a partially wired build
+// reaches, which is a test harness or a solo bootstrap.
 func (k *Key[T]) Of(s *Snapshot) T {
+	if s == nil {
+		v, err := k.defaultCopy()
+		if err != nil {
+			return k.def
+		}
+		return v
+	}
 	if v, ok := s.values[k.name].(T); ok {
 		return v
 	}

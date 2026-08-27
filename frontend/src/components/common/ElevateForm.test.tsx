@@ -187,7 +187,7 @@ describe('elevateForm oauth round-trip warning', () => {
     render(() => <ElevateForm oauthRedirect="/?prefs=account" onElevated={vi.fn()} />)
 
     expect(screen.getByTestId('elevate-oauth-github-1').getAttribute('href'))
-      .toBe(`/auth/oauth/github-1/reauth?redirect=${encodeURIComponent('/?prefs=account')}`)
+      .toBe(`/auth/idp/github-1/reauth?redirect=${encodeURIComponent('/?prefs=account')}`)
   })
 })
 

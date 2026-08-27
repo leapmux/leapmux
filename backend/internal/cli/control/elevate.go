@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"time"
 
 	"connectrpc.com/connect"
 	"golang.org/x/sync/singleflight"
@@ -129,41 +128,35 @@ func (c *Client) elevateOnce(ctx context.Context) error {
 		_, _ = fmt.Fprintln(Err, "Or open:", grant.VerificationURIComplete)
 	}
 
-	interval := grant.PollInterval()
-	deadline := grant.Deadline(time.Now())
-	for time.Now().Before(deadline) {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(interval):
+	if err := grant.Poll(ctx, func(ctx context.Context) error {
+		return c.pollElevation(ctx, grant.DeviceCode)
+	}); err != nil {
+		if errors.Is(err, ErrDeviceGrantExpired) {
+			return errors.New("the verification request expired before it was approved")
 		}
-		err := c.pollElevation(ctx, grant.DeviceCode)
-		switch {
-		case errors.Is(err, ErrAuthorizationPending):
-			continue
-		case errors.Is(err, ErrSlowDown):
-			interval += DeviceCodeSlowDownStep
-			continue
-		case err != nil:
-			return err
-		}
-		return nil
+		return err
 	}
-	return errors.New("the verification request expired before it was approved")
+	return nil
 }
 
 func (c *Client) startElevation(ctx context.Context) (*DeviceGrant, error) {
-	form := url.Values{"device_name": {DefaultDeviceName()}}
+	form := url.Values{"installation_name": {DefaultDeviceName()}}
 	// The credential itself is the right to ASK. What it cannot do is
 	// approve, which needs a browser session that proves a factor.
 	resp, err := PostForm(ctx, c.HTTPClient,
-		locallisten.JoinPath(c.connectURL, "/auth/cli/elevate-authorization"),
+		locallisten.JoinPath(c.connectURL, "/oauth/step-up"),
 		form, c.ApplyAuth)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnauthorized {
+	// 403 is the app's own registration refusing the leg: its owner has not
+	// allowed it to verify a factor. 400 and 401 are the credential kinds that
+	// carry no window at all. All three are permanent for this credential, so
+	// the caller reports the remedy instead of retrying.
+	if resp.StatusCode == http.StatusBadRequest ||
+		resp.StatusCode == http.StatusUnauthorized ||
+		resp.StatusCode == http.StatusForbidden {
 		return nil, ErrElevationUnsupported
 	}
 	if resp.StatusCode != http.StatusOK {
@@ -179,17 +172,18 @@ func (c *Client) startElevation(ctx context.Context) (*DeviceGrant, error) {
 	return grant, nil
 }
 
-// pollElevation performs one /auth/cli/token poll for a step-up grant. It is
+// pollElevation performs one /oauth/token poll for a step-up grant. It is
 // the login flow's poll without the credential handling: a step-up mints
 // nothing, so there is nothing to persist. The hub answers `{"elevated":true}`
 // once the window is stamped.
 func (c *Client) pollElevation(ctx context.Context, deviceCode string) error {
 	form := url.Values{
 		"grant_type":  {GrantTypeDeviceCode},
+		"client_id":   {ControlCLIClientID},
 		"device_code": {deviceCode},
 	}
 	resp, err := PostForm(ctx, c.HTTPClient,
-		locallisten.JoinPath(c.connectURL, "/auth/cli/token"), form)
+		locallisten.JoinPath(c.connectURL, "/oauth/token"), form)
 	if err != nil {
 		return err
 	}

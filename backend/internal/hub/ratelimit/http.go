@@ -1,0 +1,81 @@
+package ratelimit
+
+import (
+	"context"
+	"log/slog"
+	"net"
+	"net/http"
+	"strings"
+)
+
+// The plain-HTTP entry point.
+//
+// This package is reached everywhere else through a Connect interceptor, keyed
+// by procedure. The OAuth authorization server's three ANONYMOUS legs --
+// device authorization, the token exchange and dynamic registration -- are mux
+// routes rather than Connect procedures, so no interceptor sees them, and they
+// were the only endpoints on the hub an unauthenticated caller could drive in
+// a loop against the store.
+//
+// It lives beside the interceptor so BOTH entry points read one budget table:
+// an operator sets `rate_limit.oauth_anonymous` once, and it governs whichever
+// door the traffic came through.
+
+// AllowHTTP reports whether a plain-HTTP request may proceed, and reserves its
+// slot when it may.
+//
+// It does NOT return an attempt to complete, and the difference from the
+// interceptor is deliberate. The interceptor's reservation caps CONCURRENCY of
+// an expensive handler, so it must be released when the handler returns. This
+// budget caps the RATE at which one address may drive an anonymous endpoint, so
+// a request that finished still counts -- releasing it would let an attacker
+// with fast responses run without limit.
+//
+// A nil manager, solo mode, or an unreachable configuration all ADMIT. The two
+// former are deliberate (a test wires no manager; a solo hub has one user). The
+// latter differs from the interceptor's fail-closed choice on purpose: these
+// endpoints are how a client authenticates at all, so a settings-store blip
+// that locked every app out of every hub would be a worse outage than the
+// unthrottled window it prevents. The failure is logged so it is not silent.
+func AllowHTTP(ctx context.Context, m *Manager, op Operation, r *http.Request) bool {
+	if m == nil || m.solo {
+		return true
+	}
+	_, allowed, _, err := m.allow(ctx, procedureSpec{op: op}, clientAddressKey(r))
+	if err != nil {
+		slog.WarnContext(ctx, "rate limit unavailable for an anonymous OAuth leg; admitting",
+			"operation", string(op), "err", err)
+		return true
+	}
+	return allowed
+}
+
+// clientAddressKey is the budget key for an anonymous caller: its IP address.
+//
+// The REMOTE ADDRESS of the connection, never a forwarded header. A header is
+// caller-controlled, so keying on one would let an attacker mint a fresh budget
+// per request by varying it -- which is worse than no limit, because it also
+// lets them exhaust a victim's budget by claiming the victim's address.
+//
+// A hub behind a reverse proxy therefore sees the proxy's address and shares
+// one budget across every client behind it. That is the honest reading of what
+// the hub can actually verify, and the budget is sized for it: these endpoints
+// are polled, not held open, so the default admits a large multiple of what one
+// real client needs.
+//
+// The port is stripped, because a client picks a fresh one per connection and
+// keying on it would give every request its own budget.
+func clientAddressKey(r *http.Request) string {
+	addr := r.RemoteAddr
+	if host, _, err := net.SplitHostPort(addr); err == nil {
+		addr = host
+	}
+	addr = strings.Trim(addr, "[]")
+	if addr == "" {
+		// An unaddressed caller (a test transport, a unix socket) shares one
+		// budget under a name no address can collide with, rather than each
+		// getting an unlimited one.
+		return "anonymous:unknown"
+	}
+	return "anonymous:" + addr
+}

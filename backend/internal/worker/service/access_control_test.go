@@ -16,6 +16,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -358,7 +359,7 @@ func TestStreamingDenialArrivesAsAStreamFrame(t *testing.T) {
 	t.Parallel()
 
 	svc, d, _ := setupTestService(t)
-	_, shapes := registerAllClassified(channel.NewDispatcher(), svc)
+	_, shapes, _ := registerAllClassified(channel.NewDispatcher(), svc)
 
 	var streaming []string
 	for method, shape := range shapes {
@@ -371,7 +372,7 @@ func TestStreamingDenialArrivesAsAStreamFrame(t *testing.T) {
 	for _, method := range streaming {
 		t.Run(method, func(t *testing.T) {
 			w := newTestWriter()
-			d.DispatchWith(context.Background(), userid.MustNew("user-2"), &leapmuxv1.InnerRpcRequest{
+			d.DispatchWith(context.Background(), channel.LocalAgentCaller(userid.MustNew("user-2")), &leapmuxv1.InnerRpcRequest{
 				Method: method,
 			}, w)
 
@@ -475,7 +476,7 @@ func TestMachineScopedFamiliesAreOwnerOnly(t *testing.T) {
 		t.Run(method+" denies a non-owner", func(t *testing.T) {
 			w := newTestWriter()
 			// "user-2" holds a valid channel but does not own this worker.
-			d.DispatchWith(context.Background(), userid.MustNew("user-2"), &leapmuxv1.InnerRpcRequest{
+			d.DispatchWith(context.Background(), channel.LocalAgentCaller(userid.MustNew("user-2")), &leapmuxv1.InnerRpcRequest{
 				Method: method,
 			}, w)
 
@@ -557,7 +558,7 @@ func TestEveryStreamingMethodIsRegisteredAsStreaming(t *testing.T) {
 	t.Parallel()
 
 	svc, _, _ := setupTestService(t)
-	_, shapes := registerAllClassified(channel.NewDispatcher(), svc)
+	_, shapes, _ := registerAllClassified(channel.NewDispatcher(), svc)
 
 	var streaming []string
 	for method, shape := range shapes {
@@ -904,4 +905,45 @@ func registrationMethodAndHandler(call *ast.CallExpr) (method, handler string, l
 		}
 	}
 	return method, handler, lit, method != ""
+}
+
+// TestEveryRegisteredMethodIsWithinTheDelegationGrant pins the cross-worker
+// half of the delegation ceiling: the channel a sibling worker opens
+// authenticates with the delegation bearer the hub mints, and the gate below
+// refuses any method whose declared scope the grant does not carry. When the
+// ceiling carried only its hub-side scopes, every cross-worker inner call --
+// a tab close, a file read, a branch push from a spawned agent -- answered
+// PermissionDenied where it worked the day before. This test fails the suite
+// the moment a new worker method states a scope the delegation grant lacks,
+// which is the earliest point that breakage can be caught.
+func TestEveryRegisteredMethodIsWithinTheDelegationGrant(t *testing.T) {
+	t.Parallel()
+
+	svc, d, _ := setupTestService(t)
+	gates, _, scopes := registerAllClassified(d, svc)
+
+	// The delegation grant, spelled exactly as the hub's mint writes it
+	// (worker_delegation_handler.go derives it from CeilingFor). The literal
+	// here is a test PIN: a scope added to the worker surface without the
+	// ceiling following fails right below, and a ceiling edit that drops a
+	// scope the worker needs fails the same assertion from the other side.
+	grant, err := authscope.Parse("workspace:read workspace:write worker:read " +
+		"agent:read agent:write terminal:read terminal:write file:read git:read git:write tunnel:open")
+	require.NoError(t, err)
+
+	methods := d.Methods()
+	require.NotEmpty(t, methods)
+	for _, method := range methods {
+		_, gated := gates[method]
+		scope, stated := scopes[method]
+		if !gated || !stated {
+			// The ungated local probe records no scope; a sibling never sees
+			// it, because the cross-worker path authenticates as a caller and
+			// the gate reads the caller's grant.
+			continue
+		}
+		token, _ := authscope.Token(scope)
+		assert.Truef(t, grant.Allows(scope),
+			"%s requires %s, which the delegation grant does not carry: a sibling-worker call answers PermissionDenied", method, token)
+	}
 }

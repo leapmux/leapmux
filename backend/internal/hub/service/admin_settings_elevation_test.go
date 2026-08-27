@@ -116,7 +116,7 @@ func TestAdminSettingsService_WriteGate(t *testing.T) {
 
 		// The headless path takes the SAME rule. A command-line credential
 		// carries its own step-up window now, proven in a browser through
-		// /auth/cli/elevate-authorization, so admitting it unconditionally
+		// /oauth/step-up, so admitting it unconditionally
 		// would make possession of the credential file the whole of the check
 		// for the hub's own security settings.
 		t.Run(name+" admits an elevated command-line credential", func(t *testing.T) {

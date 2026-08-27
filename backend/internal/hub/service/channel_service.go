@@ -10,6 +10,7 @@ import (
 
 	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/channelmgr"
 	"github.com/leapmux/leapmux/internal/hub/store"
@@ -199,8 +200,22 @@ func (s *ChannelService) OpenChannel(
 			resp, sendErr := s.pending.SendAndWait(ctx, conn, &leapmuxv1.ConnectResponse{
 				Payload: &leapmuxv1.ConnectResponse_ChannelOpen{
 					ChannelOpen: &leapmuxv1.ChannelOpenRequest{
-						ChannelId:        channelID,
-						UserId:           user.ID.String(),
+						ChannelId: channelID,
+						UserId:    user.ID.String(),
+						// The GRANT rides the handshake, on the same terms as
+						// the identity beside it. The Worker enforces it on
+						// every inner method, because a hub-side scope check
+						// would hand a read-only app a shell: a bearer that can
+						// open a channel reaches ReadFile, SendInput,
+						// PushBranch and OpenTunnelConn alike.
+						//
+						// A first-party credential sends the explicit
+						// [SCOPE_ALL], which is what makes a DROPPED field
+						// distinguishable from an unscoped one -- the worker
+						// refuses an empty list outright, so a hub that stopped
+						// sending this opens no channel at all rather than
+						// silently promoting a narrow app to full authority.
+						GrantedScopes:    authscope.ScopesToWire(user.Scopes),
 						HandshakePayload: req.Msg.GetHandshakePayload(),
 						MaxMessageSize:   uint64(s.channelMgr.MaxMessageSize()),
 					},

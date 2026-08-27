@@ -1,44 +1,72 @@
 -- name: CreateAPIToken :exec
 INSERT INTO api_tokens (
-    id, user_id, client_type, client_name, secret_hash, refresh_hash,
-    expires_at, refresh_expires_at, admin_scope, auth_generation
+    id, user_id, client_id, installation_name, granted_scopes, secret_hash,
+    refresh_hash, expires_at, refresh_expires_at, auth_generation
 ) VALUES (
     sqlc.arg(id),
     sqlc.arg(user_id),
-    sqlc.arg(client_type),
-    sqlc.arg(client_name),
+    sqlc.arg(client_id),
+    sqlc.arg(installation_name),
+    sqlc.arg(granted_scopes),
     sqlc.arg(secret_hash),
     sqlc.arg(refresh_hash),
     sqlc.arg(expires_at),
     sqlc.arg(refresh_expires_at),
-    sqlc.arg(admin_scope),
     (SELECT auth_generation FROM users WHERE users.id = sqlc.arg(user_id))
 );
 
 -- name: GetAPITokenByID :one
-SELECT * FROM api_tokens WHERE id = ?;
+-- The oauth_clients join is INNER and total: api_tokens.client_id is NOT NULL
+-- with a foreign key, so every credential names a registered app. See the
+-- sqlite twin for what the four joined columns are for.
+SELECT sqlc.embed(t),
+       c.client_name AS client_name,
+       c.scopes AS client_scopes,
+       c.elevation_allowed AS client_elevation_allowed,
+       c.revoked_at AS client_revoked_at
+FROM api_tokens t
+JOIN oauth_clients c ON c.client_id = t.client_id
+WHERE id = ?;
 
 -- name: ListAPITokensByUser :many
 -- The user's OWN device listing (Preferences -> CLI tokens). Keyset on
 -- (created_at DESC, id DESC) like every other listing in the hub, and it
 -- rides idx_api_tokens_user_created.
-SELECT * FROM api_tokens
-WHERE user_id = sqlc.arg(user_id)
-  AND (sqlc.arg(client_type) = '' OR client_type = sqlc.arg(client_type))
-  AND revoked_at IS NULL
+--
+-- client_verified_at and client_registration_source ride along so the mapper
+-- can state whether an administrator vouched for the app -- a fact the
+-- connected-app list labels every row with, exactly as the consent screen
+-- does. See store.ClientIsVerified for why the source is part of the answer.
+SELECT sqlc.embed(t),
+       c.client_name AS client_name,
+       c.scopes AS client_scopes,
+       c.elevation_allowed AS client_elevation_allowed,
+       c.revoked_at AS client_revoked_at,
+       c.verified_at AS client_verified_at,
+       c.registration_source AS client_registration_source
+FROM api_tokens t
+JOIN oauth_clients c ON c.client_id = t.client_id
+WHERE t.user_id = sqlc.arg(user_id)
+  AND (sqlc.arg(client_id) = '' OR t.client_id = sqlc.arg(client_id))
+  AND t.revoked_at IS NULL
   AND (sqlc.narg(cursor_time) IS NULL
-       OR created_at < sqlc.narg(cursor_time)
-       OR (created_at = sqlc.narg(cursor_time) AND id < sqlc.narg(cursor_id)))
-ORDER BY created_at DESC, id DESC
+       OR t.created_at < sqlc.narg(cursor_time)
+       OR (t.created_at = sqlc.narg(cursor_time) AND t.id < sqlc.narg(cursor_id)))
+ORDER BY t.created_at DESC, t.id DESC
 LIMIT ?;
 
 -- name: ListAllAPITokens :many
 -- Admin listing across all users (LEFT JOIN users for the owner username).
-SELECT sqlc.embed(t), COALESCE(u.username, '') AS owner_username, (u.id IS NULL) AS owner_deleted
+SELECT sqlc.embed(t), COALESCE(u.username, '') AS owner_username, (u.id IS NULL) AS owner_deleted,
+       c.client_name AS client_name,
+       c.scopes AS client_scopes,
+       c.elevation_allowed AS client_elevation_allowed,
+       c.revoked_at AS client_revoked_at
 FROM api_tokens t
+JOIN oauth_clients c ON c.client_id = t.client_id
 LEFT JOIN users u ON t.user_id = u.id AND u.deleted_at IS NULL
 WHERE t.revoked_at IS NULL
-  AND (sqlc.arg(client_type) = '' OR t.client_type = sqlc.arg(client_type))
+  AND (sqlc.arg(client_id) = '' OR t.client_id = sqlc.arg(client_id))
   AND (sqlc.narg(cursor_time) IS NULL OR t.created_at < sqlc.narg(cursor_time) OR (t.created_at = sqlc.narg(cursor_time) AND t.id < sqlc.narg(cursor_id)))
 ORDER BY t.created_at DESC, t.id DESC
 LIMIT ?;
@@ -48,10 +76,15 @@ LIMIT ?;
 -- (--include-revoked). No matching partial index serves this shape -- an
 -- occasional admin forensics page may top-N sort, which is deliberate; the
 -- live listings keep their partial-index seeks.
-SELECT sqlc.embed(t), COALESCE(u.username, '') AS owner_username, (u.id IS NULL) AS owner_deleted
+SELECT sqlc.embed(t), COALESCE(u.username, '') AS owner_username, (u.id IS NULL) AS owner_deleted,
+       c.client_name AS client_name,
+       c.scopes AS client_scopes,
+       c.elevation_allowed AS client_elevation_allowed,
+       c.revoked_at AS client_revoked_at
 FROM api_tokens t
+JOIN oauth_clients c ON c.client_id = t.client_id
 LEFT JOIN users u ON t.user_id = u.id AND u.deleted_at IS NULL
-WHERE (sqlc.arg(client_type) = '' OR t.client_type = sqlc.arg(client_type))
+WHERE (sqlc.arg(client_id) = '' OR t.client_id = sqlc.arg(client_id))
   AND (sqlc.narg(cursor_time) IS NULL OR t.created_at < sqlc.narg(cursor_time) OR (t.created_at = sqlc.narg(cursor_time) AND t.id < sqlc.narg(cursor_id)))
 ORDER BY t.created_at DESC, t.id DESC
 LIMIT ?;
@@ -59,12 +92,17 @@ LIMIT ?;
 -- name: ListAllAPITokensByUser :many
 -- Per-user variant of ListAllAPITokens (the admin --user path): required
 -- user_id equality on top of the same keyset + owner join.
-SELECT sqlc.embed(t), COALESCE(u.username, '') AS owner_username, (u.id IS NULL) AS owner_deleted
+SELECT sqlc.embed(t), COALESCE(u.username, '') AS owner_username, (u.id IS NULL) AS owner_deleted,
+       c.client_name AS client_name,
+       c.scopes AS client_scopes,
+       c.elevation_allowed AS client_elevation_allowed,
+       c.revoked_at AS client_revoked_at
 FROM api_tokens t
+JOIN oauth_clients c ON c.client_id = t.client_id
 LEFT JOIN users u ON t.user_id = u.id AND u.deleted_at IS NULL
 WHERE t.revoked_at IS NULL
-  AND t.user_id = sqlc.arg(user_id)
-  AND (sqlc.arg(client_type) = '' OR t.client_type = sqlc.arg(client_type))
+  AND user_id = sqlc.arg(user_id)
+  AND (sqlc.arg(client_id) = '' OR t.client_id = sqlc.arg(client_id))
   AND (sqlc.narg(cursor_time) IS NULL OR t.created_at < sqlc.narg(cursor_time) OR (t.created_at = sqlc.narg(cursor_time) AND t.id < sqlc.narg(cursor_id)))
 ORDER BY t.created_at DESC, t.id DESC
 LIMIT ?;
@@ -73,11 +111,16 @@ LIMIT ?;
 -- Forensics variant of ListAllAPITokensByUser: includes revoked rows
 -- (--include-revoked); see ListAllAPITokensIncludingRevoked for the
 -- no-matching-index note.
-SELECT sqlc.embed(t), COALESCE(u.username, '') AS owner_username, (u.id IS NULL) AS owner_deleted
+SELECT sqlc.embed(t), COALESCE(u.username, '') AS owner_username, (u.id IS NULL) AS owner_deleted,
+       c.client_name AS client_name,
+       c.scopes AS client_scopes,
+       c.elevation_allowed AS client_elevation_allowed,
+       c.revoked_at AS client_revoked_at
 FROM api_tokens t
+JOIN oauth_clients c ON c.client_id = t.client_id
 LEFT JOIN users u ON t.user_id = u.id AND u.deleted_at IS NULL
-WHERE t.user_id = sqlc.arg(user_id)
-  AND (sqlc.arg(client_type) = '' OR t.client_type = sqlc.arg(client_type))
+WHERE user_id = sqlc.arg(user_id)
+  AND (sqlc.arg(client_id) = '' OR t.client_id = sqlc.arg(client_id))
   AND (sqlc.narg(cursor_time) IS NULL OR t.created_at < sqlc.narg(cursor_time) OR (t.created_at = sqlc.narg(cursor_time) AND t.id < sqlc.narg(cursor_id)))
 ORDER BY t.created_at DESC, t.id DESC
 LIMIT ?;
@@ -95,8 +138,14 @@ WHERE id = ?;
 -- replaces the rotated-out one). The previous refresh hash and its
 -- grace window are preserved so any Hub can recognize a racing retry
 -- and deterministically derive the same replacement pair.
+--
+-- granted_scopes rides the same statement. RFC 6749 section 6 lets a refresh
+-- NARROW its grant, and a narrowing must land atomically with the rotation:
+-- written separately, a hub that died between the two would leave the old
+-- grant on a credential whose owner had just given part of it up.
 UPDATE api_tokens
-SET secret_hash = sqlc.arg(new_secret_hash),
+SET granted_scopes = sqlc.arg(new_granted_scopes),
+    secret_hash = sqlc.arg(new_secret_hash),
     expires_at = sqlc.arg(new_expires_at),
     refresh_hash = sqlc.arg(new_refresh_hash),
     refresh_expires_at = sqlc.arg(new_refresh_expires_at),
@@ -228,7 +277,19 @@ SET elevation_proven_at = sqlc.arg(elevation_proven_at),
 WHERE id = sqlc.arg(id)
   AND user_id = sqlc.arg(user_id)
   AND revoked_at IS NULL
-  AND (expires_at IS NULL OR expires_at > sqlc.arg(now));
+  AND (expires_at IS NULL OR expires_at > sqlc.arg(now))
+  -- The app must be ALLOWED to elevate. Enforced HERE, in the write, as well
+  -- as at the endpoint: a bypass at either point still meets the other, so an
+  -- app without oauth_clients.elevation_allowed has no window to write or to
+  -- slide.
+  AND api_tokens.client_id IN (
+      -- Both sides are qualified: without it a reader has to know that the
+      -- inner client_id binds to oauth_clients and the outer one to
+      -- api_tokens, which is exactly the kind of scope question a name should
+      -- not raise.
+      SELECT oauth_clients.client_id FROM oauth_clients
+      WHERE oauth_clients.elevation_allowed AND oauth_clients.revoked_at IS NULL
+  );
 
 -- name: SlideAPITokenElevation :execresult
 -- The clamping, the monotonicity and the untyped-parameter note are the same
@@ -246,7 +307,19 @@ WHERE id = sqlc.arg(id)
   AND elevation_proven_at IS NOT NULL
   AND elevation_expires_at IS NOT NULL
   AND elevation_expires_at > sqlc.arg(now)
-  AND sqlc.arg(window_deadline) > elevation_expires_at;
+  AND sqlc.arg(window_deadline) > elevation_expires_at
+  -- The app must be ALLOWED to elevate. Enforced HERE, in the write, as well
+  -- as at the endpoint: a bypass at either point still meets the other, so an
+  -- app without oauth_clients.elevation_allowed has no window to write or to
+  -- slide.
+  AND api_tokens.client_id IN (
+      -- Both sides are qualified: without it a reader has to know that the
+      -- inner client_id binds to oauth_clients and the outer one to
+      -- api_tokens, which is exactly the kind of scope question a name should
+      -- not raise.
+      SELECT oauth_clients.client_id FROM oauth_clients
+      WHERE oauth_clients.elevation_allowed AND oauth_clients.revoked_at IS NULL
+  );
 
 -- name: DropAPITokenElevation :execresult
 UPDATE api_tokens

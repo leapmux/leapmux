@@ -125,7 +125,7 @@ func adminCommitVerbs() map[string]adminCommitVerb {
 		"IssueAPIToken": {
 			call: func(ctx context.Context, env *adminUserEnv, subjectID, _, token string) error {
 				_, err := env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
-					UserId: subjectID, ClientName: "ci-bot",
+					UserId: subjectID, InstallationName: "ci-bot",
 				}, token))
 				return err
 			},

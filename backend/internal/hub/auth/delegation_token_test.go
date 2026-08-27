@@ -67,6 +67,7 @@ func TestDelegationToken_IssuedForTabIDIsProvenanceOnly(t *testing.T) {
 	// issued_for_tab_id corresponds to a real tab — the row is for
 	// audit, not authorization.
 	tokenID, secret := mintDelegation(t, st, v, store.CreateDelegationTokenParams{
+		GrantedScopes:    "workspace:read workspace:write worker:read",
 		UserID:           userid.MustNew(userID),
 		WorkerID:         workerID,
 		IssuedForTabID:   "no-such-tab",
@@ -93,7 +94,8 @@ func TestDelegationToken_TouchUpdatesLastUsedAt(t *testing.T) {
 	workerID, _ := seedWorkerAndWorkspace(t, st, userID)
 
 	tokenID, secret := mintDelegation(t, st, v, store.CreateDelegationTokenParams{
-		UserID: userid.MustNew(userID), WorkerID: workerID})
+		GrantedScopes: "workspace:read workspace:write worker:read",
+		UserID:        userid.MustNew(userID), WorkerID: workerID})
 
 	// Brand-new row: last_used_at is unset until validation runs.
 	rowBefore, err := st.DelegationTokens().GetByID(context.Background(), tokenID)
@@ -118,12 +120,14 @@ func TestDelegationToken_DeleteRevokedDelegationTokensBefore_RespectsCutoff(t *t
 
 	// Active (not revoked) token — must be left alone by cleanup.
 	activeID, _ := mintDelegation(t, st, v, store.CreateDelegationTokenParams{
-		UserID: userid.MustNew(userID), WorkerID: workerID})
+		GrantedScopes: "workspace:read workspace:write worker:read",
+		UserID:        userid.MustNew(userID), WorkerID: workerID})
 
 	// Revoked token — should be hard-deleted when cleanup runs with a
 	// cutoff after its revocation timestamp.
 	revokedID, _ := mintDelegation(t, st, v, store.CreateDelegationTokenParams{
-		UserID: userid.MustNew(userID), WorkerID: workerID})
+		GrantedScopes: "workspace:read workspace:write worker:read",
+		UserID:        userid.MustNew(userID), WorkerID: workerID})
 	_, err := st.DelegationTokens().Revoke(context.Background(), revokedID)
 	require.NoError(t, err)
 
@@ -151,16 +155,18 @@ func TestDelegationToken_DeleteExpiredBefore_RespectsCutoff(t *testing.T) {
 
 	// Long-lived token: must not be swept.
 	freshID, _ := mintDelegation(t, st, v, store.CreateDelegationTokenParams{
-		UserID:    userid.MustNew(userID),
-		WorkerID:  workerID,
-		ExpiresAt: time.Now().Add(time.Hour),
+		GrantedScopes: "workspace:read workspace:write worker:read",
+		UserID:        userid.MustNew(userID),
+		WorkerID:      workerID,
+		ExpiresAt:     time.Now().Add(time.Hour),
 	})
 
 	// Already-expired token: must be swept.
 	expiredID, _ := mintDelegation(t, st, v, store.CreateDelegationTokenParams{
-		UserID:    userid.MustNew(userID),
-		WorkerID:  workerID,
-		ExpiresAt: time.Now().Add(-time.Minute),
+		GrantedScopes: "workspace:read workspace:write worker:read",
+		UserID:        userid.MustNew(userID),
+		WorkerID:      workerID,
+		ExpiresAt:     time.Now().Add(-time.Minute),
 	})
 
 	// Cutoff = now: only rows whose ExpiresAt < now get deleted.

@@ -48,7 +48,7 @@ func run(ctx context.Context, st store.Store) {
 	cleanupStep("expired webauthn sessions", func() (int64, error) { return cs.DeleteExpiredWebAuthnSessions(ctx, now) })
 	cleanupStep("expired device authorizations", func() (int64, error) { return cs.DeleteExpiredDeviceAuthorizations(ctx, now) })
 	cleanupStep("expired CLI authorization codes", func() (int64, error) {
-		return cs.DeleteExpiredCLIAuthorizationCodes(ctx, now)
+		return cs.DeleteExpiredOAuthAuthorizationCodes(ctx, now)
 	})
 	// Hard-delete API tokens whose revocation is older than the retention
 	// window. Same pattern as workspaces/users.

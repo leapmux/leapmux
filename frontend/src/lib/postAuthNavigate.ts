@@ -103,7 +103,7 @@ export function isServerRoute(target: string): boolean {
  *
  * The router's `navigate()` is a CLIENT-side transition: it looks the target up
  * in this application's route table. That is right for `/` or `/verify-email`,
- * and wrong for `/auth/cli/start`, which the Go mux serves -- the router finds
+ * and wrong for `/oauth/authorize`, which the Go mux serves -- the router finds
  * no entry and renders the 404 page while the CLI waits for a consent screen
  * the user never sees. A full-document assign hands the address back to the
  * server, which is the only thing that can answer it.

@@ -67,6 +67,7 @@ var (
 //     every fetch of the app's own goes to the hub that served the page, but
 //     reCAPTCHA v3 scores a request by calling its own servers. See
 //     captchaConnectSources.
+//
 //   - style-src keeps 'unsafe-inline', and it CANNOT be tightened today.
 //     @xterm/xterm's DomRenderer builds a stylesheet as text and assigns it to
 //     a <style> element's textContent, which CSP governs and whose content
@@ -75,10 +76,13 @@ var (
 //     CSP is NOT a second line of defence for a CSS-injection escape: the
 //     escaping in frontend/src/lib/fontStack.ts is the only one. Removing
 //     'unsafe-inline' needs a patch to xterm that sets styleElement.nonce.
+//
 //   - img-src allows data: and blob: because the app renders pasted and
 //     generated images from memory. The markdown pipeline already refuses a
 //     remote image, so no host is listed.
+//
 //   - font-src 'self': Hack NF ships with the app.
+//
 //   - worker-src 'self' blob:. The app's own workers (markdown, Shiki, the two
 //     lazily loaded ALTCHA solvers) are same-origin asset URLs, but the ALTCHA
 //     WIDGET builds its default solver worker from a Blob and runs it through
@@ -90,23 +94,35 @@ var (
 //     needs script execution first, and script-src already governs that.
 //     Stated rather than left to the default-src fallback, so a later change
 //     to default-src cannot silently stop the workers.
+//
 //   - object-src 'none': the app embeds no plugin, so it is unused surface.
+//
 //   - frame-src lists the two captcha vendors and nothing else. Turnstile and
 //     reCAPTCHA each render their challenge in an iframe of their own origin;
 //     the app frames nothing else.
+//
 //   - base-uri 'self': a <base> tag injected into the document would otherwise
 //     re-point every relative asset URL at another origin.
+//
 //   - frame-ancestors 'none': nothing may frame LeapMux. This replaces
 //     X-Frame-Options, which therefore needs no header of its own.
-//   - form-action: a form the app never wrote cannot post elsewhere. The
-//     loopback sources are not a relaxation -- they are the CLI login, which is
-//     the only form in the app whose submission leaves this origin. `/auth/cli/start`
-//     renders a consent form, and the POST answers with a redirect to the local
-//     callback the CLI listens on. A browser matches `form-action` against
-//     EVERY hop of a submission's redirect chain, so `'self'` alone blocks that
-//     hop on Chromium and WebKit and the CLI waits until it times out. The CLI
-//     chooses the port at run time, hence the wildcard; the host set is
-//     exactly what `isLoopbackURL` already refuses to redirect outside.
+//
+//   - form-action 'self', with NO exception. A form the app never wrote cannot
+//     post anywhere but back here.
+//
+//     It used to carry a wildcard loopback set, for one page: the CLI consent
+//     form, whose POST answers with a redirect to the local callback the CLI
+//     listens on, and a browser matches `form-action` against EVERY hop of a
+//     submission's redirect chain. That relaxation applied to every page in the
+//     app to serve one, and it could never have admitted a third-party app's
+//     https callback anyway.
+//
+//     The consent pages carry their OWN policy now, naming exactly the origin
+//     that one grant redirects to (see service.writePage and
+//     redirectFormActionSource). httpsec.Middleware documents that a route's
+//     own header wins, so the per-request policy replaces this one where it
+//     applies -- and the global policy is strictly tighter than before
+//     everywhere else.
 var cspDirectives = []string{
 	"default-src 'self'",
 	"connect-src " + strings.Join(append([]string{"'self'"}, captchaConnectSources...), " "),
@@ -118,46 +134,8 @@ var cspDirectives = []string{
 	"frame-src " + strings.Join(captchaFrameSources, " "),
 	"base-uri 'self'",
 	"frame-ancestors 'none'",
-	"form-action " + strings.Join(append([]string{"'self'"}, loopbackFormTargets...), " "),
+	"form-action 'self'",
 }
-
-// loopbackFormTargets are the redirect targets of the CLI consent form.
-//
-// DERIVED from httpsec.LoopbackSchemes and httpsec.LoopbackHosts, which
-// `isLoopbackURL` (hub/service) reads as well, so the policy cannot state a
-// different set from the one the redirect accepts. The port is a wildcard
-// because the CLI binds an ephemeral one.
-//
-// Both schemes are stated. Today's CLI binds a plain-HTTP listener, but the
-// redirect rule accepts an https loopback callback from a hand-built client
-// as well, and a scheme the redirect accepts and the policy omits is the
-// outage this derivation exists to prevent.
-//
-// AN IPv6 LITERAL CANNOT BE STATED AT ALL, so this function filters `::1` out
-// rather than bracketing it. CSP's `host-source` grammar has no production for
-// one: Chromium reports `contains an invalid source: 'http://[::1]:*'` and
-// IGNORES that entry, so writing it gained nothing and left a console error on
-// every page load -- which is how the violation collector in
-// tests/e2e/181-security-headers.spec.ts found it.
-//
-// Nothing is lost today. The CLI binds `127.0.0.1:0` and builds its
-// redirect_uri from that literal (internal/cli/control/cmd/auth.go), so no
-// consent-form POST is ever aimed at `[::1]`. `LoopbackHosts` keeps `::1`
-// because `isLoopbackURL` must still ACCEPT a hand-built one -- the two answer
-// different questions, and this is the one place where what CSP can express is
-// narrower than what the redirect allows.
-var loopbackFormTargets = func() []string {
-	targets := make([]string, 0, len(httpsec.LoopbackHosts)*len(httpsec.LoopbackSchemes))
-	for _, host := range httpsec.LoopbackHosts {
-		if strings.Contains(host, ":") {
-			continue
-		}
-		for _, scheme := range httpsec.LoopbackSchemes {
-			targets = append(targets, scheme+"://"+host+":*")
-		}
-	}
-	return targets
-}()
 
 // withDirective returns directives with `name`'s entry replaced by `sources`,
 // appending it when the list does not already state that directive.

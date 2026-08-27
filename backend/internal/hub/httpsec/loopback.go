@@ -6,44 +6,45 @@ import (
 	"strings"
 )
 
-// LoopbackHosts are the hosts a CLI login may redirect to.
+// LoopbackHosts are the hosts an OAuth redirect may name as loopback.
 //
-// ONE list, because three places need the same answer and a comment saying
-// they agree is not a mechanism:
+// ONE list, because two questions read it and a comment saying they agree is
+// not a mechanism:
 //
-//   - `isLoopbackURL` (hub/service) accepts exactly these as a `redirect_uri`.
-//   - The CSP's `form-action` must admit the same set, or the browser blocks
-//     the consent form's redirect hop and `leapmux control auth login` waits
-//     until it times out. A browser matches `form-action` against EVERY hop of
-//     a submission's redirect chain, so `'self'` alone is not enough.
-//   - The CSP test asserted the set with a literal of its own.
+//   - MatchRedirectURI (hub/service) applies the RFC 8252 section 7.3 PORT
+//     exception to exactly these hosts: a registered loopback address matches
+//     with the port free, because a native app binds an ephemeral one.
+//   - redirectFormActionSource builds the per-request `form-action` source for
+//     the consent page, and gives exactly these a wildcard port. A host the
+//     redirect accepts and the policy omits is a login that hangs with nothing
+//     in any log; the reverse is a policy admitting a hop the redirect refuses.
 //
-// All three carried a comment claiming they matched, and no test connected
-// them. A set that widens in one place and not the others is either a hole (the
-// policy admits a host the redirect refuses) or an outage (the redirect offers
-// a host the policy blocks), and neither appears until a CLI login hangs.
+// The GLOBAL policy no longer reads this list at all. It states `form-action
+// 'self'` with no exception, because the consent pages carry their own policy
+// naming one origin per request -- which is narrower than a wildcard set
+// applied to every page in the app.
 //
 // It lives here because `hub/frontend` and `hub/service` are siblings and this
 // package is the leaf that both already import.
 var LoopbackHosts = []string{"127.0.0.1", "localhost", "::1"}
 
-// LoopbackSchemes are the schemes a CLI login may redirect to.
+// LoopbackSchemes are the schemes a loopback redirect may use.
 //
 // It lives beside LoopbackHosts for the same reason, and the reason is the
-// same failure: the accepted set is spelled in two places. A CLI serves its
-// callback over http, or over https with a local certificate, and nothing
+// same failure: the accepted set is spelled in two places. A native app serves
+// its callback over http, or over https with a local certificate, and nothing
 // else -- the value reaches a Location header, so a hostname test alone
-// accepts "javascript://127.0.0.1/%0aalert(1)", where the host IS loopback
-// and the scheme executes.
+// accepts "javascript://127.0.0.1/%0aalert(1)", where the host IS loopback and
+// the scheme executes.
 //
-// The CSP's `form-action` must admit the same schemes for the same hosts.
-// A browser matches form-action against every hop of a submission's
-// redirect chain, so a scheme the redirect accepts and the policy omits is
-// a CLI login that hangs with nothing in any log.
+// The consent page's per-request `form-action` must admit the same schemes for
+// the same hosts. A browser matches form-action against every hop of a
+// submission's redirect chain, so a scheme the redirect accepts and the policy
+// omits is a login that hangs with nothing in any log.
 var LoopbackSchemes = []string{"http", "https"}
 
-// IsLoopbackRedirectScheme reports whether scheme is one a CLI callback can
-// use. The comparison folds case, because a URL scheme is case-insensitive
+// IsLoopbackRedirectScheme reports whether scheme is one a loopback callback
+// can use. The comparison folds case, because a URL scheme is case-insensitive
 // and "JavaScript" must not evade a lower-case literal.
 func IsLoopbackRedirectScheme(scheme string) bool {
 	return slices.Contains(LoopbackSchemes, strings.ToLower(strings.TrimSpace(scheme)))
@@ -107,12 +108,25 @@ func IsWildcardHost(host string) bool {
 	return ip != nil && ip.IsUnspecified()
 }
 
+// CSPCannotStateHost reports whether a Content-Security-Policy host-source can
+// spell this host. The grammar's host-char excludes the colon, so no IPv6
+// literal -- bracketed or not, loopback or remote -- can be stated at all.
+//
+// It lives beside the host predicates because it is the other half of the
+// redirect admission rule: a redirect URI the policy cannot state is refused
+// at registration (see ValidateRedirectURI) rather than accepted there and
+// blocked at the consent hop, which keeps "what the redirect accepts" and
+// "what the policy can express" one surface.
+func CSPCannotStateHost(host string) bool {
+	return strings.Contains(NormalizeHost(host), ":")
+}
+
 // IsLoopbackHost reports whether host is one of LoopbackHosts, after
 // NormalizeHost folds it. It is the membership test that keeps the list
 // above the single source of truth: a caller that compares against its own
 // copy of the three literals is the drift this package exists to remove.
 //
-// It answers the CLI-redirect question only. A caller that needs a
+// It answers the OAUTH-redirect question only. A caller that needs a
 // different question -- "is a plain-HTTP page on this host a secure
 // context", which grants the whole 127.0.0.0/8 block and every
 // *.localhost name -- must state its own extra rules, because a browser

@@ -81,7 +81,7 @@ func TestElevation_DeadlineHidesALapsedWindow(t *testing.T) {
 // a credential can be elevated only when it has a row to stamp and a person
 // who can be prompted. Two kinds do -- a session cookie, and a command-line
 // credential, which proves its factor in a browser through
-// /auth/cli/elevate-authorization.
+// /oauth/step-up.
 func TestUserInfo_ElevatedRequiresAnElevatableCredential(t *testing.T) {
 	t.Parallel()
 

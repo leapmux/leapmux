@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/authscope"
+
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -935,20 +937,30 @@ func TestDelegationAllowedProcedures_FailClosed(t *testing.T) {
 		leapmuxv1connect.UserCRDTGetMaterializedProcedure,
 		leapmuxv1connect.UserCRDTUpdatePresenceProcedure,
 	}
+	delegated := &UserInfo{
+		ID:         userid.MustNew("u-delegation"),
+		Credential: DelegationCredential("d-1", "w-1"),
+		Scopes:     authscope.UnscopedGrant().NarrowTo(CeilingFor(BearerKindDelegation)),
+	}
 	for _, procedure := range allowed {
-		assert.True(t, delegationAllowedProcedures[procedure], "%s must be callable by scoped delegation bearers", procedure)
+		assert.NoError(t, enforceScope(procedure, delegated), "%s must be callable by scoped delegation bearers", procedure)
 	}
 
+	// The three families the delegation ceiling excludes: the ACCOUNT itself,
+	// worker ADMINISTRATION, and hub administration. See delegationCeiling --
+	// the widenings the ceiling did accept are recorded and justified in
+	// delegation_procedures_test.go's newlyDelegationReachable.
 	denied := []string{
 		leapmuxv1connect.AuthServiceGetCurrentUserProcedure,
-		leapmuxv1connect.WorkerManagementServiceListWorkersProcedure,
-		leapmuxv1connect.WorkerManagementServiceGetWorkerProcedure,
-		leapmuxv1connect.WorkspaceServiceCreateWorkspaceProcedure,
-		leapmuxv1connect.WorkspaceServiceRenameWorkspaceProcedure,
-		leapmuxv1connect.WorkspaceServiceDeleteWorkspaceProcedure,
+		leapmuxv1connect.UserServiceUpdateProfileProcedure,
+		leapmuxv1connect.UserServiceListMyAPITokensProcedure,
+		leapmuxv1connect.WorkerManagementServiceCreateRegistrationKeyProcedure,
+		leapmuxv1connect.WorkerManagementServiceDeregisterWorkerProcedure,
+		leapmuxv1connect.AdminSettingsServiceListSettingsProcedure,
+		leapmuxv1connect.AdminUserServiceListUsersProcedure,
 	}
 	for _, procedure := range denied {
-		assert.False(t, delegationAllowedProcedures[procedure], "%s must stay denied unless it gets an explicit scope guard", procedure)
+		assert.Error(t, enforceScope(procedure, delegated), "%s must stay outside the delegation ceiling", procedure)
 	}
 }
 

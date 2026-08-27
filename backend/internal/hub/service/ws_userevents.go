@@ -98,10 +98,14 @@ func NewUserEventsHandler(
 	concurrentBuilds := max(1, queuePool.Capacity()/
 		(int64(channelwire.UserEventsReadLimit)*crdt.ResidentFactor))
 	return &UserEventsHandler{
-		wsAuthenticator: newWSAuthenticator(st, authContexts, soloUser, secureCookie),
-		registry:        registry,
-		queuePool:       queuePool,
-		bootstrapGate:   make(chan struct{}, concurrentBuilds),
+		// workspace:read, because the stream IS the account's layout document
+		// and every change to it. An app granted account:read alone has no
+		// business reading which workspaces, tabs and agents its owner has.
+		wsAuthenticator: newWSAuthenticator(st, authContexts, soloUser, secureCookie,
+			leapmuxv1.Scope_SCOPE_WORKSPACE_READ),
+		registry:      registry,
+		queuePool:     queuePool,
+		bootstrapGate: make(chan struct{}, concurrentBuilds),
 	}
 }
 

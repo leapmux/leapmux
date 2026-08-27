@@ -130,8 +130,12 @@ func (s *sqliteStore) RevocationEvents() store.RevocationEventStore {
 func (s *sqliteStore) DeviceAuthorizations() store.DeviceAuthorizationStore {
 	return &deviceAuthorizationStore{conn: s.conn}
 }
-func (s *sqliteStore) CLIAuthorizationCodes() store.CLIAuthorizationCodeStore {
-	return &cliAuthorizationCodeStore{conn: s.conn}
+func (s *sqliteStore) OAuthAuthorizationCodes() store.OAuthAuthorizationCodeStore {
+	return &oauthAuthorizationCodeStore{conn: s.conn}
+}
+
+func (s *sqliteStore) OAuthClients() store.OAuthClientStore {
+	return &oauthClientStore{conn: s.conn}
 }
 func (s *sqliteStore) Cleanup() store.CleanupStore { return &cleanupStore{conn: s.conn} }
 func (s *sqliteStore) Migrator() store.Migrator    { return s.conn.shared.migrator }

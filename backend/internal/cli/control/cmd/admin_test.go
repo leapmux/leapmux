@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/hub/oauthapp"
+
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -441,10 +443,13 @@ func TestTokenRowsCarryTheOwnerDeletedFlag(t *testing.T) {
 
 	api := adminAPITokenJSON(&leapmuxv1.AdminAPIToken{
 		Id: "t-1", UserId: "u-1", Username: "alice", OwnerDeleted: true,
-		ClientType: "cli", ClientName: "laptop", CreatedAt: created,
+		ClientId: oauthapp.ControlCLIClientID, InstallationName: "laptop", GrantedScopes: []string{"account:read", "account:write", "agent:read", "agent:write", "file:read", "git:read", "git:write", "terminal:read", "terminal:write", "tunnel:open", "worker:admin", "worker:read", "workspace:read", "workspace:write"}, CreatedAt: created,
 	})
 	assert.Equal(t, true, api["owner_deleted"])
-	assert.Equal(t, "cli", api["client_type"])
+	assert.Equal(t, oauthapp.ControlCLIClientID, api["client_id"])
+	assert.Equal(t, "laptop", api["installation_name"])
+	assert.Contains(t, api["granted_scopes"], "workspace:read",
+		"the grant always appears, so a reader can tell a narrow credential from a wide one")
 	assert.NotContains(t, api, "revoked_at", "an absent stamp leaves no field")
 
 	del := adminDelegationTokenJSON(&leapmuxv1.AdminDelegationToken{
@@ -729,7 +734,7 @@ func TestAdminRowMappers_CarryEveryFieldOfTheirProtoMessage(t *testing.T) {
 		{
 			name: "adminAPITokenJSON", msg: apiToken,
 			render: func() map[string]any { return adminAPITokenJSON(apiToken) },
-			keys:   merge(tokenFields(), identity("client_type", "client_name", "admin_scope")),
+			keys:   merge(tokenFields(), identity("client_id", "client_name", "installation_name", "granted_scopes")),
 		},
 		{
 			name: "adminDelegationTokenJSON", msg: delegation,
@@ -802,6 +807,19 @@ func TestAdminRowMappers_CarryEveryFieldOfTheirProtoMessage(t *testing.T) {
 func expectedPrintedValue(t *testing.T, m proto.Message, f protoreflect.FieldDescriptor) any {
 	t.Helper()
 	v := m.ProtoReflect().Get(f)
+	// A REPEATED string prints as the slice itself, which is what a JSON
+	// consumer reads: joining it would make one long value indistinguishable
+	// from two short ones.
+	if f.IsList() {
+		require.Equalf(t, protoreflect.StringKind, f.Kind(),
+			"field %s is a repeated %v, which this expectation has no rule for", f.Name(), f.Kind())
+		list := v.List()
+		out := make([]string, 0, list.Len())
+		for i := range list.Len() {
+			out = append(out, list.Get(i).String())
+		}
+		return out
+	}
 	switch f.Kind() {
 	case protoreflect.StringKind:
 		return v.String()
@@ -882,7 +900,18 @@ func populateEveryField(t *testing.T, m proto.Message) {
 	base := time.Date(2026, 8, 18, 3, 0, 0, 0, time.UTC)
 	for i := range fields.Len() {
 		f := fields.Get(i)
-		require.Falsef(t, f.IsList() || f.IsMap(), "field %s is repeated and needs its own rule here", f.Name())
+		require.Falsef(t, f.IsMap(), "field %s is a map and needs its own rule here", f.Name())
+		// A REPEATED string carries two distinct elements, for the same reason
+		// every scalar carries a distinct value: one element could be produced
+		// by a mapper reading a sibling list, and two cannot.
+		if f.IsList() {
+			require.Equalf(t, protoreflect.StringKind, f.Kind(),
+				"field %s is a repeated %v, which this populator has no rule for", f.Name(), f.Kind())
+			list := r.Mutable(f).List()
+			list.Append(protoreflect.ValueOfString("v-" + string(f.Name()) + "-1"))
+			list.Append(protoreflect.ValueOfString("v-" + string(f.Name()) + "-2"))
+			continue
+		}
 		switch f.Kind() {
 		case protoreflect.StringKind:
 			r.Set(f, protoreflect.ValueOfString("v-"+string(f.Name())))
@@ -931,8 +960,7 @@ func (s *permissionDeniedUserService) ListUsers(
 func TestAdminVerb_ReportsTheHubsRefusalVerbatim(t *testing.T) {
 	for name, message := range map[string]string{
 		"the account is not an administrator": "administrator privileges are required",
-		"the credential carries no scope": "this CLI credential was not granted hub administration; " +
-			"run `leapmux control auth login --admin` to mint one that was",
+		"the credential carries no scope":     "this app was not granted the admin:read permission",
 	} {
 		t.Run(name, func(t *testing.T) {
 			clearRemoteEnv(t)
@@ -952,8 +980,7 @@ func TestAdminVerb_ReportsTheHubsRefusalVerbatim(t *testing.T) {
 			// the deleted hint keyed on.
 			require.NoError(t, control.SaveCredentials(srv.URL, control.CredentialFile{
 				HubURL: srv.URL, AccessToken: "lmx_a_at_1",
-				ExpiresAt: time.Now().Add(time.Hour), AdminScope: false,
-			}))
+				ExpiresAt: time.Now().Add(time.Hour)}))
 
 			out := withCapturedStdout(t, func() {
 				require.Error(t, RunAdminUserList(fakeCmdCtx{}, []string{"--hub", srv.URL}))
@@ -966,10 +993,9 @@ func TestAdminVerb_ReportsTheHubsRefusalVerbatim(t *testing.T) {
 			assert.Equal(t, "rpc_failed", env.Error["code"])
 			assert.Contains(t, env.Error["message"], message)
 			assert.Equal(t,
-				strings.Count(message, "auth login --admin"),
-				strings.Count(env.Error["message"], "auth login --admin"),
-				"the remedy appears exactly where the hub put it: once on the scope refusal, "+
-					"and never on a refusal that a login cannot repair")
+				strings.Count(message, "admin:read"),
+				strings.Count(env.Error["message"], "admin:read"),
+				"the hub's wording reaches the operator once and unchanged; the CLI adds nothing")
 		})
 	}
 }
