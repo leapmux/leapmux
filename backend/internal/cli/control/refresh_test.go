@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"runtime"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -813,6 +814,30 @@ func TestAuthInterceptor_StopsWhenEveryRepairIsUsed(t *testing.T) {
 
 // --- the credential file the rotation could not write -----------------
 
+// blockCredentialSaves makes the next SaveCredentials for hubURL fail,
+// after LoadCredentials has already succeeded.
+//
+// chmod 0500 on the config directory is the Unix form: the existing
+// file stays readable (owner execute on the directory is enough) and
+// CreateTemp cannot create a sibling. Windows ignores a directory's
+// read-only bit for child creates, so the same chmod lets the save
+// succeed and swallows the rotation. A read-only credential FILE is
+// the Windows form: ReadFile still works and the replace cannot.
+func blockCredentialSaves(t *testing.T, hubURL string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		path, err := CredentialsPath(hubURL)
+		require.NoError(t, err)
+		require.NoError(t, os.Chmod(path, 0o400))
+		t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+		return
+	}
+	dir, err := ConfigDir()
+	require.NoError(t, err)
+	require.NoError(t, os.Chmod(dir, 0o500))
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+}
+
 // TestRefresh_AdoptsThePairItCouldNotSave is the failure that used to
 // destroy a credential.
 //
@@ -836,10 +861,7 @@ func TestRefresh_AdoptsThePairItCouldNotSave(t *testing.T) {
 	c, err := NewClient(rs.server.URL)
 	require.NoError(t, err)
 
-	// A config directory nothing can write to: the rotation reaches the hub
-	// and the save fails. The mode is restored before t.TempDir removes it.
-	require.NoError(t, os.Chmod(dir, 0o500))
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	blockCredentialSaves(t, rs.server.URL)
 
 	err = c.EnsureFreshBearer(context.Background())
 	require.ErrorIs(t, err, ErrCredentialsNotSaved,
@@ -873,10 +895,7 @@ func TestAuthInterceptor_ReportsALocalDiskFailureAsSuchNotAsASignIn(t *testing.T
 	c, err := NewClient(hub.server.URL)
 	require.NoError(t, err)
 
-	// A config directory nothing can write to. The mode is restored before
-	// t.TempDir removes it.
-	require.NoError(t, os.Chmod(dir, 0o500))
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	blockCredentialSaves(t, hub.server.URL)
 
 	err = hub.call(c)
 	require.Error(t, err)
