@@ -1,12 +1,13 @@
 package agent
 
 import (
+	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -603,62 +604,81 @@ func checkBinaryAvailable(ctx context.Context, shellPath string, loginShell bool
 	return available, conclusive
 }
 
+// probeReachedPresent / probeReachedAbsent are printed by the inner
+// command so a login profile that exits before the probe cannot be
+// cached as "binary absent". Exit status alone cannot tell those apart:
+// both are ExitError.
+const (
+	probeReachedPresent = "__LEAPMUX_PROBE_REACHED__present"
+	probeReachedAbsent  = "__LEAPMUX_PROBE_REACHED__absent"
+)
+
 // probeBinary asks the shell whether binaryName resolves, and reports
 // whether the answer ESTABLISHES anything.
 //
 // The two are not the same, and conflating them is what froze a broken
-// environment as "not installed" for the worker's lifetime. `cmd.Run()`
-// returns an error for four different reasons, and only one of them is an
-// answer:
+// environment as "not installed" for the worker's lifetime. Presence is
+// the inner command's marker on stdout, not the shell's exit status:
 //
-//   - the shell ran and reported the binary absent (ExitError) — conclusive;
+//   - the inner command printed probeReachedPresent or Absent — conclusive;
 //   - the shell could not START at all (a $SHELL that is not executable, a
 //     missing interpreter, EACCES, fork failure under load) — proves
 //     nothing about the binary;
-//   - a login profile exited non-zero before reaching the probe — likewise;
-//   - ctx expired and CommandContext killed the process — likewise, and
-//     note the process reports an ExitError ("signal: killed") rather than
-//     the context error, so ctx must be checked separately.
+//   - a login profile exited before the inner command — no marker, likewise;
+//   - ctx expired and CommandContext killed the process — likewise.
 //
 // $SHELL reaches here unvalidated (terminal.ResolveDefaultShell does no
 // LookPath), so the start-failure case is reachable, not theoretical.
 func probeBinary(ctx context.Context, shellPath string, loginShell bool, binaryName string) (available, conclusive bool) {
 	shellName := terminal.ShellBaseName(shellPath)
+	quoted := posixQuote(binaryName)
 
 	var inner, flag string
 	switch {
 	case terminal.IsPwsh(shellName):
-		inner = fmt.Sprintf("if (Get-Command %s -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }", pwshQuote(binaryName))
+		inner = fmt.Sprintf(
+			"if (Get-Command %s -ErrorAction SilentlyContinue) { Write-Output '%s' } else { Write-Output '%s' }",
+			pwshQuote(binaryName), probeReachedPresent, probeReachedAbsent,
+		)
 		flag = "-Command"
 	case shellName == "nu":
-		inner = fmt.Sprintf("if (which %s | is-not-empty) { exit 0 } else { exit 1 }", nuQuote(binaryName))
+		inner = fmt.Sprintf(
+			"if (which %s | is-not-empty) { echo '%s' } else { echo '%s' }",
+			nuQuote(binaryName), probeReachedPresent, probeReachedAbsent,
+		)
 		flag = "-c"
 	case shellName == "tcsh" || shellName == "csh":
-		inner = fmt.Sprintf("which %s >& /dev/null", posixQuote(binaryName))
+		inner = fmt.Sprintf(
+			"which %s >& /dev/null && printf '%%s\\n' '%s' || printf '%%s\\n' '%s'",
+			quoted, probeReachedPresent, probeReachedAbsent,
+		)
 		flag = "-c"
 	default:
-		inner = fmt.Sprintf("command -v %s >/dev/null 2>&1", posixQuote(binaryName))
+		inner = fmt.Sprintf(
+			"if command -v %s >/dev/null 2>&1; then printf '%%s\\n' '%s'; else printf '%%s\\n' '%s'; fi",
+			quoted, probeReachedPresent, probeReachedAbsent,
+		)
 		flag = "-c"
 	}
 
-	var args []string
-	if loginShell {
-		args = append(terminal.LoginShellArgs(shellPath), flag, inner)
-	} else {
-		args = []string{flag, inner}
-	}
+	args := terminal.CommandArgs(shellPath, loginShell, flag, inner)
 
 	cmd := exec.CommandContext(ctx, shellPath, args...)
 	cmd.Dir = os.TempDir()
 	procutil.HideConsoleWindow(cmd)
-	err := cmd.Run()
-	if err == nil {
-		return true, ctx.Err() == nil
+	procutil.DetachFromTerminal(cmd)
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	_ = cmd.Run()
+	if ctx.Err() != nil {
+		return false, false
 	}
-	// Only a real exit status means the shell ran and answered. Anything
-	// else (exec.Error, a permission fault, a fork failure) is a broken
-	// environment, and a killed process reports an ExitError too — so the
-	// context still has to be clean for the status to mean anything.
-	var exitErr *exec.ExitError
-	return false, errors.As(err, &exitErr) && ctx.Err() == nil
+	out := stdout.String()
+	if strings.Contains(out, probeReachedPresent) {
+		return true, true
+	}
+	if strings.Contains(out, probeReachedAbsent) {
+		return false, true
+	}
+	return false, false
 }

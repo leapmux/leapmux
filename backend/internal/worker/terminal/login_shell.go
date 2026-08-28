@@ -34,7 +34,12 @@ func ShellBaseName(p string) string {
 
 // LoginShellArgs returns the flags needed to start the given shell as an
 // interactive login shell (no -c command). The returned slice is safe to
-// append to.
+// append to. The PTY path in Start uses this list; go-pty sets Setsid.
+//
+// A caller that runs a command string through a plain exec.Cmd (no pty)
+// must use CommandArgs and procutil.DetachFromTerminal. An interactive
+// shell otherwise inherits the parent's process group and controlling
+// terminal, and bash job control then sends SIGTTIN to that whole group.
 //
 //   - pwsh/pwsh-preview:        ["-Login"]  — PowerShell Core 6+
 //   - powershell(-preview):     nil  — Windows PowerShell 5.1 has no -Login
@@ -62,4 +67,21 @@ func LoginShellArgs(shellPath string) []string {
 	default:
 		return []string{"-i", "-l"}
 	}
+}
+
+// CommandArgs is the argv after the shell path for one command string.
+// loginShell adds LoginShellArgs, except tcsh/csh login which uses -ic
+// because tcsh rejects -l combined with any other flag.
+//
+// A caller that starts this argv through a plain exec.Cmd (no pty) must
+// call procutil.DetachFromTerminal on that command.
+func CommandArgs(shellPath string, loginShell bool, commandFlag, command string) []string {
+	name := ShellBaseName(shellPath)
+	if loginShell && (name == "tcsh" || name == "csh") {
+		return []string{"-ic", command}
+	}
+	if loginShell {
+		return append(LoginShellArgs(shellPath), commandFlag, command)
+	}
+	return []string{commandFlag, command}
 }

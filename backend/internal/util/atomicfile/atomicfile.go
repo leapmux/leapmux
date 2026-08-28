@@ -16,8 +16,8 @@ import (
 const tempSuffix = ".tmp"
 
 // WriteFile writes data to path atomically: it first writes the bytes
-// to a UNIQUE temporary file beside path with mode, then renames that
-// file onto path. On the success path the rename is the only observable
+// to a UNIQUE temporary file beside path with mode, then replaces path
+// with that file. On the success path the replace is the only observable
 // mutation, so a crash partway through cannot leave path truncated or
 // partially overwritten. On the failure path WriteFile removes the
 // temporary file so the next attempt starts from a clean state.
@@ -29,6 +29,11 @@ const tempSuffix = ".tmp"
 // bytes, and rename a mixed document onto path -- after which every
 // reader reports a parse failure. The credential file takes exactly that
 // shape, because every long-lived command rotates its token by itself.
+//
+// On Windows the replace is not one kernel call: a destination that
+// still has an open handle fails with ACCESS_DENIED, so replaceFile
+// retries a sharing conflict. It does not retry a directory or a
+// read-only destination; those cannot succeed.
 //
 // The bytes reach the disk before the rename, so a machine that loses
 // power right after the rename cannot replace the previous content
@@ -71,7 +76,7 @@ func WriteFile(path string, data []byte, mode os.FileMode) error {
 	if err := f.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := replaceFile(tmp, path); err != nil {
 		return err
 	}
 	committed = true

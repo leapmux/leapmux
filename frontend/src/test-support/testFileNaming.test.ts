@@ -1,9 +1,8 @@
 import { existsSync, readFileSync } from 'node:fs'
-import { dirname, join, relative, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { collectE2EFiles } from '~/test-support/e2eFiles'
-import { collectFiles } from '~/test-support/sourceTree'
+import { collectFiles, frontendRoot, posixRelative } from '~/test-support/sourceTree'
 import { isPlaywrightSpec, isUnitTest, siblingModulePath } from '~/test-support/testFileNaming'
 
 // Repo layout guard: the file EXTENSION decides which runner collects a test,
@@ -23,7 +22,6 @@ import { isPlaywrightSpec, isUnitTest, siblingModulePath } from '~/test-support/
 // names no module it tests (a mistyped E2E spec, which vitest now collects and
 // Playwright ignores), and a runner config that stops enforcing its half.
 
-const frontendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const srcRoot = join(frontendRoot, 'src')
 
 /** Every co-located unit test under `tests/e2e/`, as an absolute path. */
@@ -34,7 +32,7 @@ function collectE2EUnitTests(): string[] {
 describe('test file naming', () => {
   it('keeps every .spec file under tests/e2e, where Playwright collects it', () => {
     const strays = collectFiles(srcRoot, { matches: isPlaywrightSpec })
-      .map(file => relative(frontendRoot, file))
+      .map(file => posixRelative(frontendRoot, file))
 
     expect(
       strays,
@@ -51,7 +49,7 @@ describe('test file naming', () => {
     // would never run it.
     const orphans = collectE2EUnitTests()
       .filter(file => !existsSync(siblingModulePath(file)))
-      .map(file => relative(frontendRoot, file))
+      .map(file => posixRelative(frontendRoot, file))
 
     expect(
       orphans,

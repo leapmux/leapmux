@@ -76,6 +76,11 @@ func TestWriteFile_NeverUsesTheNameDerivedFromTheDestination(t *testing.T) {
 // property under real contention. It cannot fail on demand -- an interleave
 // needs a write that the kernel splits -- so read it as a smoke test of the
 // unique name, not as the proof; the test above is the proof.
+//
+// Windows cannot replace a destination that still has an open handle, so
+// two writers of the same path get ACCESS_DENIED. replaceFile retries
+// that conflict; this case is what proves the retry lands a whole
+// document rather than leaving a sharing error for the caller.
 func TestWriteFile_ConcurrentWritersEachLandAWholeDocument(t *testing.T) {
 	t.Parallel()
 
@@ -105,6 +110,38 @@ func TestWriteFile_ConcurrentWritersEachLandAWholeDocument(t *testing.T) {
 	entries, err := os.ReadDir(dir)
 	require.NoError(t, err)
 	assert.Len(t, entries, 1, "every temporary file must be gone")
+}
+
+// TestWriteFile_ReadOnlyDestination pins the permanent Windows failure
+// that replaceFile must not retry: a sharing conflict is transient, a
+// read-only destination is not. Unix rename replaces a 0400 file when
+// the directory is writable.
+func TestWriteFile_ReadOnlyDestination(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "creds.json")
+	require.NoError(t, atomicfile.WriteFile(path, []byte("one"), 0o600))
+	require.NoError(t, os.Chmod(path, 0o400))
+	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+
+	err := atomicfile.WriteFile(path, []byte("two"), 0o600)
+	if runtime.GOOS == "windows" {
+		require.Error(t, err, "Windows cannot replace a read-only file")
+		data, readErr := os.ReadFile(path)
+		require.NoError(t, readErr)
+		assert.Equal(t, "one", string(data))
+	} else {
+		require.NoError(t, err)
+		data, err := os.ReadFile(path)
+		require.NoError(t, err)
+		assert.Equal(t, "two", string(data))
+	}
+
+	entries, listErr := os.ReadDir(dir)
+	require.NoError(t, listErr)
+	require.Len(t, entries, 1, "a failed or successful replace must not leave a temporary file")
+	assert.Equal(t, "creds.json", entries[0].Name())
 }
 
 // TestWriteFile_RemovesTheTemporaryFileWhenTheRenameFails pins the failure

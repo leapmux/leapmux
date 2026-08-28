@@ -331,11 +331,12 @@ func (p *processBase) PreambleOutput() string {
 	return strings.Join(p.preambleOutput, "\n")
 }
 
-// attachJobObject assigns a freshly-started command to a Windows kill-on-close
-// job object so that force-killing later reaps the whole process tree. Must
-// be called immediately after cmd.Start. Non-Windows is a no-op; a job
-// creation failure is logged but not fatal — the agent still works, we just
-// lose the tree-kill guarantee for that session.
+// attachJobObject assigns a freshly-started command to a kill group so
+// later force-kills reap the whole process tree (Windows job object;
+// Unix process group after Setsid/Setpgid). Must be called immediately
+// after cmd.Start. A job creation failure is logged but not fatal — the
+// agent still works, we just lose the tree-kill guarantee for that
+// session.
 func (p *processBase) attachJobObject(cmd *exec.Cmd) {
 	job, err := procutil.AssignCmd(cmd)
 	if err != nil {
@@ -384,7 +385,7 @@ func (p *processBase) startCmd(cmd *exec.Cmd, cancel func()) error {
 // stdin, stdout, and stderr pipes. On error it calls cancel() and returns.
 func setupProcessPipes(cmd *exec.Cmd, cancel func()) (stdin io.WriteCloser, stdout, stderr io.ReadCloser, err error) {
 	cmd.Cancel = func() error {
-		return cmd.Process.Signal(syscall.SIGTERM)
+		return procutil.SignalProcessGroup(cmd, syscall.SIGTERM)
 	}
 	cmd.WaitDelay = 5 * time.Second
 

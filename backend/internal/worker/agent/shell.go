@@ -54,43 +54,26 @@ func buildShellWrappedCommand(ctx context.Context, spec shellWrapSpec) (*exec.Cm
 	}
 	shellName := terminal.ShellBaseName(spec.Shell)
 
-	var cmdArgs []string
+	var inner, flag string
 	switch {
 	case terminal.IsPwsh(shellName):
-		inner := buildPwshCommand(spec, delimiter, metaPrefix)
-		if spec.LoginShell {
-			cmdArgs = append(terminal.LoginShellArgs(spec.Shell), "-Command", inner)
-		} else {
-			cmdArgs = []string{"-Command", inner}
-		}
-	case shellName == "tcsh" || shellName == "csh":
-		inner := buildPosixCommand(spec, delimiter, metaPrefix)
-		if spec.LoginShell {
-			cmdArgs = []string{"-ic", inner} // tcsh: -l must be the only flag
-		} else {
-			cmdArgs = []string{"-c", inner}
-		}
+		inner = buildPwshCommand(spec, delimiter, metaPrefix)
+		flag = "-Command"
 	case shellName == "nu":
-		inner := buildNuCommand(spec, delimiter, metaPrefix)
-		if spec.LoginShell {
-			cmdArgs = append(terminal.LoginShellArgs(spec.Shell), "-c", inner)
-		} else {
-			cmdArgs = []string{"-c", inner}
-		}
+		inner = buildNuCommand(spec, delimiter, metaPrefix)
+		flag = "-c"
 	default:
-		// bash, zsh, fish, sh, ash, dash, ksh, xonsh, and unknown shells
-		inner := buildPosixCommand(spec, delimiter, metaPrefix)
-		if spec.LoginShell {
-			cmdArgs = append(terminal.LoginShellArgs(spec.Shell), "-c", inner)
-		} else {
-			cmdArgs = []string{"-c", inner}
-		}
+		// bash, zsh, fish, sh, ash, dash, ksh, xonsh, tcsh/csh, and unknown shells
+		inner = buildPosixCommand(spec, delimiter, metaPrefix)
+		flag = "-c"
 	}
+	cmdArgs := terminal.CommandArgs(spec.Shell, spec.LoginShell, flag, inner)
 
 	cmd := exec.CommandContext(ctx, spec.Shell, cmdArgs...)
 	cmd.Dir = spec.WorkingDir
 	envutil.ScrubAppImageEnv(cmd)
 	procutil.HideConsoleWindow(cmd)
+	procutil.DetachFromTerminal(cmd)
 	return cmd, delimiter, metaPrefix
 }
 

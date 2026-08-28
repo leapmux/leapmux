@@ -1,8 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs'
-import { dirname, join, relative, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { dirname, join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { collectFiles } from '~/test-support/sourceTree'
+import { collectFiles, frontendRoot, posixRelative } from '~/test-support/sourceTree'
 
 // Module-graph guard: no import cycle in `src/`.
 //
@@ -33,7 +32,6 @@ import { collectFiles } from '~/test-support/sourceTree'
 // so it cannot capture an unassigned binding, and counting it would flag every
 // lazily loaded route.
 
-const frontendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const srcRoot = join(frontendRoot, 'src')
 
 /**
@@ -129,15 +127,17 @@ function importsOf(file: string): string[] {
       continue
     const resolved = resolveSpecifier(match[2], file)
     if (resolved)
-      targets.add(relative(frontendRoot, resolved))
+      targets.add(posixRelative(frontendRoot, resolved))
   }
   for (const match of text.matchAll(BARE_IMPORT)) {
     const resolved = resolveSpecifier(match[1], file)
     if (resolved)
-      targets.add(relative(frontendRoot, resolved))
+      targets.add(posixRelative(frontendRoot, resolved))
   }
   return [...targets].sort()
 }
+
+let graphCache: Map<string, string[]> | undefined
 
 /**
  * The import graph over the hand-written modules of `src/`, keyed by
@@ -147,6 +147,8 @@ function importsOf(file: string): string[] {
  * can never sit on a cycle that the bundler evaluates.
  */
 function buildGraph(): Map<string, string[]> {
+  if (graphCache !== undefined)
+    return graphCache
   const files = collectFiles(srcRoot, {
     matches: name =>
       SOURCE_EXTENSIONS.some(extension => name.endsWith(extension))
@@ -156,7 +158,8 @@ function buildGraph(): Map<string, string[]> {
   })
   const graph = new Map<string, string[]>()
   for (const file of files)
-    graph.set(relative(frontendRoot, file), importsOf(file))
+    graph.set(posixRelative(frontendRoot, file), importsOf(file))
+  graphCache = graph
   return graph
 }
 
@@ -211,6 +214,10 @@ function findCycles(graph: Map<string, string[]>): string[][] {
 }
 
 describe('module graph', () => {
+  it('reuses one graph across cases', () => {
+    expect(buildGraph()).toBe(buildGraph())
+  })
+
   it('has no import cycle in src/', () => {
     const cycles = findCycles(buildGraph())
     expect(

@@ -1,8 +1,5 @@
-import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { collectFiles } from '~/test-support/sourceTree'
-
-const frontendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
+import { join } from 'node:path'
+import { collectFiles, frontendRoot } from '~/test-support/sourceTree'
 
 /** The one sanctioned home for tests outside `src/`. */
 export const e2eRoot = join(frontendRoot, 'tests', 'e2e')

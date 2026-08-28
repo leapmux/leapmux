@@ -1,9 +1,8 @@
 import { readFileSync } from 'node:fs'
-import { dirname, join, relative, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { lineNumberAt, stripCommentLines } from '~/test-support/sourceScan'
-import { collectFiles } from '~/test-support/sourceTree'
+import { collectFiles, frontendRoot, posixRelative } from '~/test-support/sourceTree'
 
 // Unit-test guard: each test file registers a mocked path one time only.
 //
@@ -25,7 +24,6 @@ import { collectFiles } from '~/test-support/sourceTree'
 // `vi.fn` at describe scope, give it to the single factory, and let each test
 // call `mockImplementation` on it. `src/entry-client.test.ts` shows the shape.
 
-const frontendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const srcRoot = join(frontendRoot, 'src')
 
 /**
@@ -99,7 +97,7 @@ describe('unit-test module mocks', () => {
     const offenders: string[] = []
     for (const file of collectSrcTestFiles()) {
       for (const { path, lines } of findDuplicateMocks(readFileSync(file, 'utf-8')))
-        offenders.push(`${relative(frontendRoot, file)}:${lines.join(',')}  registers "${path}" ${lines.length} times`)
+        offenders.push(`${posixRelative(frontendRoot, file)}:${lines.join(',')}  registers "${path}" ${lines.length} times`)
     }
     const hint = [
       'Two queued registrations of one path have no defined winner: vitest resolves the queued',

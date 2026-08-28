@@ -644,6 +644,15 @@ func (svc *Service) Shutdown() {
 	// dispatcher goroutine while the worker receives a deregister/SIGTERM.
 	svc.Cleanup.Wait()
 
+	// Setsid (DetachFromTerminal, go-pty) takes agent CLIs out of the
+	// worker's process group. Ctrl+C and SIGHUP therefore no longer
+	// reap them. Stop them here, after startups have finished, while
+	// Output.SetShuttingDown already latched so background-task rows
+	// stay ACTIVE for the next boot.
+	if svc.Agents != nil {
+		svc.Agents.StopAll()
+	}
+
 	// Stop the tunnel idle reaper goroutine. The worker process is exiting, so
 	// correctness does not depend on it, but stopping it keeps the goroutine
 	// count tidy for an orderly shutdown and for tests that call Shutdown.

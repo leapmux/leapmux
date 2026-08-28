@@ -1,12 +1,11 @@
 import type { LocationChange } from '@solidjs/router'
 import { readFileSync } from 'node:fs'
-import { dirname, join, relative, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { join } from 'node:path'
 import { createMemoryHistory, MemoryRouter, Route } from '@solidjs/router'
 import { cleanup, render, waitFor } from '@solidjs/testing-library'
 import { afterEach, describe, expect, it } from 'vitest'
 import { DEFAULT_NAV_GROUP_ID } from '~/components/settings/navGroups'
-import { collectFiles } from '~/test-support/sourceTree'
+import { collectFiles, frontendRoot, posixRelative } from '~/test-support/sourceTree'
 import { closePreferences, openPreferences, PreferencesAddress, showPreferencesDialog } from './UserMenuState'
 
 /**
@@ -190,7 +189,6 @@ describe('preferences address', () => {
  * `ElevationPromptHost.test.tsx`, which pins the sibling registration.
  */
 describe('preferencesAddress mounting', () => {
-  const frontendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
   const srcRoot = join(frontendRoot, 'src')
   // A JSX MOUNT, never the bare name: this module defines the component and
   // several files carry prose about it, and neither is a mount.
@@ -202,7 +200,7 @@ describe('preferencesAddress mounting', () => {
       alsoSkip: new Set(['generated']),
     })
       .filter(file => MOUNT.test(readFileSync(file, 'utf-8')))
-      .map(file => relative(frontendRoot, file))
+      .map(file => posixRelative(frontendRoot, file))
       .sort()
 
     expect(
