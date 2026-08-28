@@ -79,11 +79,8 @@ beforeEach(() => {
  * testable on its own, which it was not while it lived inline.
  */
 describe('useWorkerSection', () => {
-  function mount(
-    getUserId: () => string = () => 'u1',
-    clearRepoGitForWorker?: (workerId: string) => void,
-  ) {
-    return useWorkerSection({ getUserId, keyPinConfirmDialog: createDialogState(), clearRepoGitForWorker })
+  function mount(getUserId: () => string = () => 'u1') {
+    return useWorkerSection({ getUserId, keyPinConfirmDialog: createDialogState() })
   }
 
   it('fetches workers once the user id is known', async () => {
@@ -200,10 +197,18 @@ describe('useWorkerSection', () => {
     })
   })
 
-  it('clears keyed git state when a worker is deregistered', async () => {
+  /**
+   * Deregistration removes the worker from the list, and NOTHING else.
+   *
+   * It used to clear the worker's keyed git state too. That left every tab of
+   * the worker under its repo with no branch name, for the life of the page:
+   * nothing removes those tab rows, they keep `gitToplevel`, the sidebar groups
+   * a tab by that field, and the branch label comes from the store. It is the
+   * same defect the worker-offline sweep used to cause, from the other trigger.
+   */
+  it('removes the worker from the list and leaves its keyed git state alone', async () => {
     await createRoot(async (dispose) => {
-      const clearRepoGitForWorker = vi.fn()
-      const s = mount(() => 'u1', clearRepoGitForWorker)
+      const s = mount(() => 'u1')
       await flush()
 
       s.openWorkerSettings(worker('w1') as never)
@@ -216,7 +221,6 @@ describe('useWorkerSection', () => {
       await flush()
 
       expect(mockDeregisterWorker).toHaveBeenCalledWith({ workerId: 'w1' })
-      expect(clearRepoGitForWorker).toHaveBeenCalledWith('w1')
       expect(s.workers().map(w => w.id)).toEqual([])
 
       unmount()

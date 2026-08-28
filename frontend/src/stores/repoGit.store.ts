@@ -12,6 +12,7 @@ import {
   findCanonicalRepoKey,
   hasHealthyRepoForProbe,
   isUntrackedDirEntry,
+  markNonRepoProbeIgnored,
   patchFromGetGitFileStatus,
   patchFromNonRepoGetGitFileStatus,
   repoKey,
@@ -31,6 +32,19 @@ export {
 } from './repoGit'
 
 const ZERO_DIFF_STATS = { added: 0, deleted: 0, untracked: 0 }
+
+/**
+ * How many repo entries one page session keeps.
+ *
+ * Nothing else reclaims them: a dropped link keeps its entries, and so does a
+ * deregistration, because the tab rows they label survive both. The cap is the
+ * only limit, and each entry holds an uncapped `files` list.
+ *
+ * Set high on purpose. A real session touches a handful of repositories, so
+ * eviction should reach only a session that visited hundreds of distinct
+ * directories. See `evictLeastRecentlyUsed` for what it refuses to evict.
+ */
+const MAX_REPO_ENTRIES = 256
 
 function emptyRepoState(): RepoGitState {
   return {
@@ -65,6 +79,15 @@ export function createRepoGitStore() {
   const [workerKeyEpoch, setWorkerKeyEpoch] = createSignal(0)
   const workerKeys = new Map<string, Set<RepoKey>>()
 
+  /**
+   * Least-recently-used order, newest last. A plain `Map` keeps insertion
+   * order, so `delete` then `set` moves a key to the end.
+   *
+   * NOT reactive on purpose. `get` touches this on a read, and a signal write
+   * inside a tracked read would loop.
+   */
+  const touchOrder = new Map<RepoKey, true>()
+
   /** Global clock for ordering; each probe path has its own generation slot. */
   let clock = 0
   const probeGen = new Map<string, number>()
@@ -72,7 +95,32 @@ export function createRepoGitStore() {
   const lastCompletedByKey = new Map<RepoKey, { gen: number, keptPin: boolean }>()
   let loadingCount = 0
 
-  const get = (key: RepoKey): RepoGitState | undefined => repos[key]
+  /**
+   * Read WITHOUT touching the LRU order.
+   *
+   * The internal key scans (`findCanonicalRepoKey`, the pin helpers) read every
+   * key a worker owns. Touching there would make every entry equally recent and
+   * leave the order meaningless, so they use this.
+   */
+  const peek = (key: RepoKey): RepoGitState | undefined => repos[key]
+
+  /**
+   * Read AND mark the entry as recently used.
+   *
+   * This is the tab-facing read: `repoGitView` calls it for each tab the
+   * sidebar renders, so an entry that backs a live tab is touched on every
+   * render and can never be the least recently used one. That is what keeps
+   * eviction away from the rows whose branch label this store exists to
+   * supply.
+   */
+  const get = (key: RepoKey): RepoGitState | undefined => {
+    const state = repos[key]
+    if (state) {
+      touchOrder.delete(key)
+      touchOrder.set(key, true)
+    }
+    return state
+  }
 
   const bumpWorkerKeyIndex = () => setWorkerKeyEpoch(n => n + 1)
 
@@ -125,7 +173,7 @@ export function createRepoGitStore() {
 
   const pruneCompletedIfIdle = (key: RepoKey) => {
     const completed = lastCompletedByKey.get(key)
-    if (!completed || completed.keptPin || get(key)?.branchPinnedUntilRefresh)
+    if (!completed || completed.keptPin || peek(key)?.branchPinnedUntilRefresh)
       return
     for (const inflight of inflightByProbe.values()) {
       if (inflight.gen < completed.gen)
@@ -136,7 +184,7 @@ export function createRepoGitStore() {
 
   const dropCompletedKeepPinWhenUnpinned = (key: RepoKey) => {
     const completed = lastCompletedByKey.get(key)
-    if (completed && !get(key)?.branchPinnedUntilRefresh)
+    if (completed && !peek(key)?.branchPinnedUntilRefresh)
       completed.keptPin = false
     pruneCompletedIfIdle(key)
   }
@@ -145,6 +193,49 @@ export function createRepoGitStore() {
     const completed = lastCompletedByKey.get(key)
     if (completed)
       completed.keptPin = false
+  }
+
+  const clear = (key: RepoKey) => {
+    const prev = untrack(() => repos[key])
+    setRepos(produce((map) => {
+      delete map[key]
+    }))
+    lastCompletedByKey.delete(key)
+    touchOrder.delete(key)
+    if (prev)
+      unindexKey(key, prev.workerId)
+    else
+      unindexKey(key)
+  }
+
+  /**
+   * Evict the least recently used entries down to {@link MAX_REPO_ENTRIES}.
+   *
+   * Three keys are never evicted, because dropping them would recreate the
+   * defect this store exists to avoid -- a tab row that keeps `gitToplevel`
+   * while its entry is gone renders under a repository with no branch name:
+   *
+   *  - the key just written, which the caller is about to read;
+   *  - the focused key, which the Files section renders right now;
+   *  - a key with a branch pin, which holds in-flight optimistic state.
+   *
+   * A key that backs a live tab is touched by `get` on every sidebar render,
+   * so it stays at the recent end and eviction never reaches it. Only a
+   * directory the session visited once and abandoned goes cold.
+   */
+  const evictLeastRecentlyUsed = (justWritten: RepoKey) => {
+    if (touchOrder.size <= MAX_REPO_ENTRIES)
+      return
+    const focused = untrack(focusedKey)
+    for (const key of [...touchOrder.keys()]) {
+      if (touchOrder.size <= MAX_REPO_ENTRIES)
+        return
+      if (key === justWritten || key === focused)
+        continue
+      if (untrack(() => repos[key])?.branchPinnedUntilRefresh)
+        continue
+      clear(key)
+    }
   }
 
   const upsert = (key: RepoKey, patch: Partial<RepoGitState>) => {
@@ -156,6 +247,8 @@ export function createRepoGitStore() {
       const base = map[key] ?? emptyRepoState()
       map[key] = { ...base, ...rest }
     }))
+    touchOrder.delete(key)
+    touchOrder.set(key, true)
     const workerId = patch.workerId || prev?.workerId || repoKeyParts(key).workerId
     if (prev?.workerId && prev.workerId !== workerId)
       unindexKey(key, prev.workerId)
@@ -166,6 +259,7 @@ export function createRepoGitStore() {
       dropCompletedKeepPinWhenUnpinned(key)
     if ('branchPinnedUntilRefresh' in rest && rest.branchPinnedUntilRefresh === true)
       resetCompletedKeepPinForNewStamp(key)
+    evictLeastRecentlyUsed(key)
   }
 
   /** Keys this refresh may have stamped a branch pin onto. */
@@ -175,7 +269,7 @@ export function createRepoGitStore() {
       pinKeys.add(hintKey)
     pinKeys.add(repoKey(workerId, path))
     const canonical = findCanonicalRepoKey(
-      { get, repos: () => repos as Readonly<Record<RepoKey, RepoGitState>>, keysForWorker },
+      { get: peek, repos: () => repos as Readonly<Record<RepoKey, RepoGitState>>, keysForWorker },
       workerId,
       path,
     )
@@ -187,29 +281,37 @@ export function createRepoGitStore() {
   const clearBranchPins = (keys: Iterable<RepoKey>, opts?: { respectCompletedKeep?: boolean }) => {
     for (const key of keys) {
       const completed = lastCompletedByKey.get(key)
-      if (opts?.respectCompletedKeep && completed?.keptPin && get(key)?.branchPinnedUntilRefresh)
+      if (opts?.respectCompletedKeep && completed?.keptPin && peek(key)?.branchPinnedUntilRefresh)
         continue
-      if (get(key)?.branchPinnedUntilRefresh)
+      if (peek(key)?.branchPinnedUntilRefresh)
         upsert(key, { branchPinnedUntilRefresh: false })
     }
   }
 
-  const clear = (key: RepoKey) => {
-    const prev = untrack(() => repos[key])
-    setRepos(produce((map) => {
-      delete map[key]
-    }))
-    lastCompletedByKey.delete(key)
-    if (prev)
-      unindexKey(key, prev.workerId)
-    else
-      unindexKey(key)
+  /**
+   * Release every optimistic branch pin this worker holds, keeping the branch
+   * values themselves.
+   *
+   * A pin means "a branch change succeeded here, so ignore a metadata broadcast
+   * that still reports the old branch". A dropped link ends that claim: the
+   * checkout may never have completed, and the pin outlives it. Only a refresh
+   * that AGREES clears a pin, and a background tab issues no refresh -- so
+   * without this the sidebar can show a stamped branch for the rest of the page
+   * while the checkout sits on another one.
+   *
+   * The branch value stays, because it is still the last thing anyone knew.
+   */
+  const releaseBranchPinsForWorker = (workerId: string) => {
+    if (!workerId)
+      return
+    clearBranchPins(workerKeys.get(workerId) ?? [])
   }
 
   const clearAll = () => {
     const hadKeys = workerKeys.size > 0
     setRepos({})
     workerKeys.clear()
+    touchOrder.clear()
     lastCompletedByKey.clear()
     probeGen.clear()
     inflightByProbe.clear()
@@ -261,13 +363,15 @@ export function createRepoGitStore() {
     }
   }
 
-  const clearForWorker = (workerId: string) => {
-    if (!workerId)
-      return
-    const keys = [...(workerKeys.get(workerId) ?? [])]
-    for (const key of keys)
-      clear(key)
-  }
+  // There is deliberately NO `clearForWorker`. Both callers were removed,
+  // because dropping a worker's entries is never right while its tab rows
+  // survive: a row keeps `gitToplevel`, the sidebar groups on that field, and
+  // the branch label comes from here -- so a cleared entry puts every tab of
+  // that worker under its repo with no branch name. Neither a dropped link nor
+  // a deregistration removes the rows, so neither may remove the entries.
+  //
+  // `clear(key)` still exists for the one case that IS right: a single key whose
+  // repo identity was re-resolved elsewhere.
 
   /**
    * Refresh git file status for one probe path.
@@ -316,7 +420,7 @@ export function createRepoGitStore() {
       }
       const mapped = patchFromGetGitFileStatus(workerId, resp)
       if (!mapped) {
-        const lookup = { get, repos: () => repos as Readonly<Record<RepoKey, RepoGitState>>, keysForWorker }
+        const lookup = { get: peek, repos: () => repos as Readonly<Record<RepoKey, RepoGitState>>, keysForWorker }
         if (nonRepoKey && !hasHealthyRepoForProbe(lookup, workerId, path, nonRepoKey)) {
           const nonRepo = patchFromNonRepoGetGitFileStatus(workerId, resp, nonRepoKey)
           if (canApplyToKey(nonRepo.key)) {
@@ -333,8 +437,17 @@ export function createRepoGitStore() {
         else if (hasHealthyRepoForProbe(lookup, workerId, path, nonRepoKey)) {
           log.warn('ignored non-repo git status response; keeping last-good repo state', { workerId, path })
           writtenKey = findCanonicalRepoKey(lookup, workerId, path) ?? nonRepoKey
-          // Keep an optimistic branch pin across a transient non-repo probe.
-          // Entries for a deregistered/offline worker are dropped via clearForWorker.
+          // One answer can be transient, so this branch keeps the last-good
+          // repo state. Mark the allowance as used. The next non-repo answer
+          // for this path then writes the stub, because two answers in a row
+          // are the worker's real report.
+          //
+          // The mark is what limits the allowance. A worker that goes offline
+          // keeps its entries -- the branch is last-known state, and nothing
+          // re-seeds a background tab after a drop. Before the mark existed,
+          // an entry that outlived a deleted repo suppressed every later probe
+          // for the life of the page.
+          markNonRepoProbeIgnored({ ...lookup, upsert }, workerId, path, nonRepoKey)
         }
         realignFocusedKeyAfterRefresh(writtenKey, workerId, path, nonRepoKey)
         return writtenKey
@@ -512,7 +625,7 @@ export function createRepoGitStore() {
     upsert,
     clear,
     clearAll,
-    clearForWorker,
+    releaseBranchPinsForWorker,
     repos: () => repos as Readonly<Record<RepoKey, RepoGitState>>,
     keysForWorker,
     focusedKey,

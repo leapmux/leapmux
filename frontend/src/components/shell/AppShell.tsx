@@ -195,7 +195,6 @@ export const AppShell: Component = () => {
   const workerSection = useWorkerSection({
     getUserId: () => userId(),
     keyPinConfirmDialog,
-    clearRepoGitForWorker: workerId => repoGitStore.clearForWorker(workerId),
   })
 
   // Tell the channel manager who this page thinks it is, so an open the Hub
@@ -259,6 +258,9 @@ export const AppShell: Component = () => {
     // no other way to learn it, because a worker reconnecting changes nothing
     // about the candidate set.
     onlineWorkerIds: () => onlineWorkerIdSet(workerSection.workers()),
+    // A worker coming back re-asks for its agent tabs, and that reply must not
+    // land over a settings edit the user is making right now.
+    settingsPendingAxes: agentId => settingsLoading.pendingAxes(agentId),
   })
 
   // Mount the input-driven heartbeat for the active workspace. The

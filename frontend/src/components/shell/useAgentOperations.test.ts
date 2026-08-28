@@ -8,12 +8,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as workerRpc from '~/api/workerRpc'
 import { useAgentOperations } from '~/components/shell/useAgentOperations'
 import { AgentInfoSchema, AgentProvider, ContentCompression, MessageSource } from '~/generated/leapmux/v1/agent_pb'
-import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
+import { GitRepoStatusSchema, WorktreeAction } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { KEY_MRU_AGENT_PROVIDERS, localStorageClearForTests, localStorageGet, localStorageSet } from '~/lib/browserStorage'
 import { ChannelError, channelNotOpenError } from '~/lib/channelError'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createControlStore } from '~/stores/control.store'
+import { repoKey } from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 import { protoToAgentTabFields } from '~/stores/tab.helpers'
 import { emitAddTab } from '~/stores/tabOps'
@@ -65,6 +66,11 @@ vi.mock('~/components/common/Toast', async () => {
   }
 })
 
+// A throwaway store for the fixture mapper. `protoToAgentTabFields` writes the
+// repo entry that matches the `gitToplevel` it returns, so it takes one; these
+// fixtures only want the row fields.
+const fixtureStore = createRepoGitStore()
+
 let nextPosition = 0
 
 /**
@@ -112,6 +118,7 @@ function setup(storeWorkspaceId: string = 'ws-1', getWorkerId: () => string = ()
     forgetAgent: vi.fn(),
   } as any
 
+  const repoGitStore = createRepoGitStore()
   const ops = useAgentOperations({
     agentSessionStore,
     chatStore,
@@ -127,7 +134,7 @@ function setup(storeWorkspaceId: string = 'ws-1', getWorkerId: () => string = ()
     getCurrentTabContext: () => ({ workerId: getWorkerId(), workingDir: '/tmp' }),
     newAgentDialog: { open: vi.fn(), close: vi.fn(), isOpen: () => false },
     setNewAgentLoadingProvider: vi.fn(),
-    repoGitStore: createRepoGitStore(),
+    repoGitStore,
   })
 
   return {
@@ -136,6 +143,7 @@ function setup(storeWorkspaceId: string = 'ws-1', getWorkerId: () => string = ()
     agentSessionStore,
     controlStore,
     chatStore,
+    repoGitStore,
     ops,
     /** Place an agent on the seeded root tile — the only tile that exists. */
     add: (fields: { id: string } & Record<string, unknown>) =>
@@ -194,6 +202,108 @@ describe('useAgentOperations', () => {
             agentProvider: AgentProvider.CODEX,
             workingDir: '/tmp',
           }))
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    /**
+     * What a freshly opened agent really shows in the sidebar.
+     *
+     * The OpenAgent response carries NO git status -- the worker computes it in
+     * startup phase 1 and sends it on the STARTING broadcast, so the
+     * `git status` shell-out does not block the RPC
+     * (`TestOpenAgent_ResponseHasNilGitStatus`). The row therefore gets no
+     * `gitToplevel` from the response, and the optimistic seed is the tab's
+     * only repo identity until the broadcast lands.
+     *
+     * That seed comes from the ACTIVE tab, which can be on a DIFFERENT worker:
+     * `resolveOptimisticGitInfo` compares working directories, never worker
+     * ids. So the new tab shows the other machine's branch for the length of
+     * the agent's startup. This test states that, so a change to it is a
+     * decision and not an accident.
+     */
+    it('shows the active tab\'s branch until the worker reports, even across workers', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          mockListAvailableProviders.mockResolvedValue({ providers: [AgentProvider.CLAUDE_CODE] })
+          mockOpenAgent.mockResolvedValue({
+            agent: create(AgentInfoSchema, {
+              id: 'new-agent',
+              workerId: 'w-1',
+              // Matched to the active tab's dir on purpose: `resolveOptimisticGitInfo`
+              // compares the RESPONSE's working dir against the active tab's, and
+              // refuses to copy anything when they differ.
+              workingDir: '/repo',
+              agentProvider: AgentProvider.CLAUDE_CODE,
+              // No gitStatus: the shape the worker really sends.
+            }),
+          })
+
+          const { ops, view, add, repoGitStore } = setup()
+          add({ id: 'active', workerId: 'w-other', workingDir: '/repo', gitToplevel: '/repo' })
+          repoGitStore.upsert(repoKey('w-other', '/repo'), {
+            workerId: 'w-other',
+            toplevel: '/repo',
+            branch: 'on-another-machine',
+            gitStatusSeen: true,
+          })
+
+          await flush()
+          await ops.handleOpenAgent()
+          await flush()
+
+          const tab = view.getAgentTab('new-agent')
+          expect(tab?.gitToplevel, 'the row identity comes from the seed, not the response').toBe('/repo')
+          expect(
+            repoGitStore.get(repoKey('w-1', '/repo'))?.branch,
+            'the guess stands in until the STARTING broadcast replaces it',
+          ).toBe('on-another-machine')
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    /**
+     * The row and the store must key the tab to the SAME repo.
+     *
+     * `seed` is spread BEFORE `agentFields` so the worker's own answer wins on
+     * the row, exactly as it wins in the store. Reverse the two and a response
+     * that resolves a different toplevel than the active tab's guess leaves the
+     * row pointing at one key while the authoritative entry sits under another,
+     * which is the divergence that shows a tab under the wrong repo group.
+     */
+    it('prefers the response\'s own toplevel over the active tab\'s guess on the row', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          mockListAvailableProviders.mockResolvedValue({ providers: [AgentProvider.CLAUDE_CODE] })
+          mockOpenAgent.mockResolvedValue({
+            agent: create(AgentInfoSchema, {
+              id: 'new-agent',
+              workerId: 'w-1',
+              workingDir: '/repo',
+              agentProvider: AgentProvider.CLAUDE_CODE,
+              // A linked worktree: the same working dir resolves to a DEEPER
+              // toplevel here than the active tab recorded for its own worker.
+              gitStatus: create(GitRepoStatusSchema, { toplevel: '/repo/wt' }),
+            }),
+          })
+
+          const { ops, view, add } = setup()
+          add({ id: 'active', workerId: 'w-other', workingDir: '/repo', gitToplevel: '/repo' })
+
+          await flush()
+          await ops.handleOpenAgent()
+          await flush()
+
+          expect(
+            view.getAgentTab('new-agent')?.gitToplevel,
+            'the worker that owns this agent answered; the guess must not outrank it',
+          ).toBe('/repo/wt')
         }
         finally {
           dispose()
@@ -334,7 +444,7 @@ describe('useAgentOperations', () => {
             agentProvider: AgentProvider.CODEX,
             agentSessionId: 'thread-1',
           })
-          add({ id: agent.id, ...protoToAgentTabFields(agent.workerId, agent) })
+          add({ id: agent.id, ...protoToAgentTabFields(fixtureStore, agent.workerId, agent) })
           mockInterruptAgent.mockResolvedValue({})
 
           await ops.handleInterrupt('codex-1')
@@ -371,7 +481,7 @@ describe('useAgentOperations', () => {
               ],
             }],
           })
-          add({ id: agent.id, ...protoToAgentTabFields(agent.workerId, agent) })
+          add({ id: agent.id, ...protoToAgentTabFields(fixtureStore, agent.workerId, agent) })
           mockUpdateAgentSettings.mockRejectedValueOnce(new Error('boom'))
 
           await ops.handleAgentSettingChange('a-1', { sets: { opencode_mode: 'fast' } })
@@ -421,7 +531,7 @@ describe('useAgentOperations', () => {
               },
             ],
           })
-          add({ id: agent.id, ...protoToAgentTabFields(agent.workerId, agent) })
+          add({ id: agent.id, ...protoToAgentTabFields(fixtureStore, agent.workerId, agent) })
 
           // First call will fail; second succeeds.
           let rejectFirst!: (err: Error) => void
@@ -475,7 +585,7 @@ describe('useAgentOperations', () => {
               ],
             }],
           })
-          add({ id: agent.id, ...protoToAgentTabFields(agent.workerId, agent) })
+          add({ id: agent.id, ...protoToAgentTabFields(fixtureStore, agent.workerId, agent) })
           mockUpdateAgentSettings.mockRejectedValueOnce(new Error('boom'))
 
           await ops.handleAgentSettingChange('a-2', { sets: { opencode_mode: 'fast' } })
@@ -496,7 +606,7 @@ describe('useAgentOperations', () => {
         try {
           const { chatStore, ops, add } = setup()
           const agent = create(AgentInfoSchema, { id: 'a-1', workerId: 'w-1' })
-          add({ id: agent.id, ...protoToAgentTabFields(agent.workerId, agent) })
+          add({ id: agent.id, ...protoToAgentTabFields(fixtureStore, agent.workerId, agent) })
           chatStore.getMessages.mockReturnValue([{
             id: 'local-1',
             source: MessageSource.USER,
@@ -522,7 +632,7 @@ describe('useAgentOperations', () => {
         try {
           const { chatStore, ops, add } = setup()
           const agent = create(AgentInfoSchema, { id: 'a-2', workerId: 'w-1' })
-          add({ id: agent.id, ...protoToAgentTabFields(agent.workerId, agent) })
+          add({ id: agent.id, ...protoToAgentTabFields(fixtureStore, agent.workerId, agent) })
           chatStore.getMessages.mockReturnValue([{
             id: 'local-2',
             source: MessageSource.USER,
@@ -551,7 +661,7 @@ describe('useAgentOperations', () => {
           mockDeleteAgentMessage.mockReset()
           mockShowWarnToast.mockReset()
           const agent = create(AgentInfoSchema, { id: 'a-3', workerId: 'w-1' })
-          add({ id: agent.id, ...protoToAgentTabFields(agent.workerId, agent) })
+          add({ id: agent.id, ...protoToAgentTabFields(fixtureStore, agent.workerId, agent) })
           // A SERVER-persisted failed message (non-local id) so the deleteAgentMessage
           // cleanup path runs.
           chatStore.getMessages.mockReturnValue([{
@@ -584,7 +694,7 @@ describe('useAgentOperations', () => {
         try {
           const { view, chatStore, ops, add } = setup()
           const agent = create(AgentInfoSchema, { id: 'a-1', workerId: 'w-1' })
-          add({ id: agent.id, ...protoToAgentTabFields(agent.workerId, agent) })
+          add({ id: agent.id, ...protoToAgentTabFields(fixtureStore, agent.workerId, agent) })
           add({ id: 'a-1', title: 'Agent Olivia', workerId: 'w-1', workingDir: '/tmp' })
 
           // Never-resolving RPC to prove the UI mutation is synchronous.
@@ -611,7 +721,7 @@ describe('useAgentOperations', () => {
         try {
           const { ops, add } = setup()
           const agent = create(AgentInfoSchema, { id: 'a-remove', workerId: 'w-1' })
-          add({ id: agent.id, ...protoToAgentTabFields(agent.workerId, agent) })
+          add({ id: agent.id, ...protoToAgentTabFields(fixtureStore, agent.workerId, agent) })
           add({ id: 'a-remove', title: 'Agent Remove', workerId: 'w-1', workingDir: '/tmp' })
 
           mockCloseAgent.mockResolvedValueOnce({
@@ -639,7 +749,7 @@ describe('useAgentOperations', () => {
         try {
           const { view, ops, add } = setup()
           const agent = create(AgentInfoSchema, { id: 'a-fail', workerId: 'w-1' })
-          add({ id: agent.id, ...protoToAgentTabFields(agent.workerId, agent) })
+          add({ id: agent.id, ...protoToAgentTabFields(fixtureStore, agent.workerId, agent) })
           add({ id: 'a-fail', title: 'Agent Fail', workerId: 'w-1', workingDir: '/tmp' })
 
           mockCloseAgent.mockResolvedValueOnce({
@@ -669,7 +779,7 @@ describe('useAgentOperations', () => {
         try {
           const { view, ops, add } = setup()
           const agent = create(AgentInfoSchema, { id: 'a-reject', workerId: 'w-1' })
-          add({ id: agent.id, ...protoToAgentTabFields(agent.workerId, agent) })
+          add({ id: agent.id, ...protoToAgentTabFields(fixtureStore, agent.workerId, agent) })
           add({ id: 'a-reject', title: 'Agent Reject', workerId: 'w-1', workingDir: '/tmp' })
 
           const err = new Error('network down')
@@ -692,7 +802,7 @@ describe('useAgentOperations', () => {
         try {
           const { view, ops, add } = setup()
           const agent = create(AgentInfoSchema, { id: 'a-2', workerId: '' })
-          add({ id: agent.id, ...protoToAgentTabFields(agent.workerId, agent) })
+          add({ id: agent.id, ...protoToAgentTabFields(fixtureStore, agent.workerId, agent) })
           add({ id: 'a-2', title: 'Agent Liam', workerId: '', workingDir: '' })
 
           mockCloseAgent.mockClear()
@@ -742,7 +852,7 @@ describe('useAgentOperations', () => {
           const { view, ops, add } = setup()
           for (const id of ['a-root', 'a-child', 'a-grandchild']) {
             const agent = create(AgentInfoSchema, { id, workerId: 'w-1' })
-            add({ id, ...protoToAgentTabFields(agent.workerId, agent) })
+            add({ id, ...protoToAgentTabFields(fixtureStore, agent.workerId, agent) })
             add({ id, title: id, workerId: 'w-1', workingDir: '/tmp' })
           }
           // No parentAgentId on either child: the hydration that would set one
@@ -786,7 +896,7 @@ describe('useAgentOperations', () => {
           const { view, ops, add, harness } = setup()
           for (const id of ['a-root3', 'a-real']) {
             const agent = create(AgentInfoSchema, { id, workerId: 'w-1' })
-            add({ id, ...protoToAgentTabFields(agent.workerId, agent) })
+            add({ id, ...protoToAgentTabFields(fixtureStore, agent.workerId, agent) })
             add({ id, title: id, workerId: 'w-1', workingDir: '/tmp' })
           }
 
@@ -827,7 +937,7 @@ describe('useAgentOperations', () => {
           const { ops, add, chatStore, controlStore } = setup()
           for (const id of ['a-root4', 'a-kid']) {
             const agent = create(AgentInfoSchema, { id, workerId: 'w-1' })
-            add({ id, ...protoToAgentTabFields(agent.workerId, agent) })
+            add({ id, ...protoToAgentTabFields(fixtureStore, agent.workerId, agent) })
             add({ id, title: id, workerId: 'w-1', workingDir: '/tmp' })
           }
           const clearAgent = vi.spyOn(controlStore, 'clearAgent')
@@ -857,7 +967,7 @@ describe('useAgentOperations', () => {
           const { view, ops, add } = setup()
           for (const id of ['a-root2', 'a-child2']) {
             const agent = create(AgentInfoSchema, { id, workerId: 'w-1' })
-            add({ id, ...protoToAgentTabFields(agent.workerId, agent) })
+            add({ id, ...protoToAgentTabFields(fixtureStore, agent.workerId, agent) })
             add({ id, title: id, workerId: 'w-1', workingDir: '/tmp' })
           }
           mockCloseAgent.mockRejectedValueOnce(new Error('worker unreachable'))

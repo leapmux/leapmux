@@ -1,4 +1,4 @@
-import type { RepoGitStore } from './repoGit'
+import type { RepoGitStore, UpsertRepoGitFromProtoOpts } from './repoGit'
 import type { AgentTab, Tab, TerminalTab } from './tab.types'
 import type { TerminalMeta } from './tabMetadata.store'
 import type { listTerminals } from '~/api/workerRpc'
@@ -10,14 +10,19 @@ import { TerminalProgress_State, TerminalStatus } from '~/generated/leapmux/v1/t
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { basename } from '~/lib/paths'
 import { updateSettingsLabelCache } from '~/lib/settingsLabelCache'
-import { repoKey, repoKeyFromTab } from './repoGit'
+import { repoKey, repoKeyFromTab, upsertRepoGitFromProtoStatus } from './repoGit'
 import { isTerminalTab } from './tab.types'
 
 /**
- * Module note: pure helpers over `Tab` records — no signals, no
- * imperative API. Lives in its own module so test code can import
- * just `tabKey` / `parseTabKey` / proto-to-tab converters without
- * dragging in the store factory's reactive dependencies.
+ * Module note: helpers over `Tab` records — no signals. Lives in its own
+ * module so test code can import just `tabKey` / `parseTabKey` / proto-to-tab
+ * converters without dragging in the store factory's reactive dependencies.
+ *
+ * Every export here is pure EXCEPT these, and each one takes the store it
+ * writes: `planOptimisticRepoGit` copies a branch onto a repo key when its
+ * caller commits, and `protoToAgentTabFields` writes the repo entry that
+ * matches the `gitToplevel` it returns (and primes the settings-label cache).
+ * Add no other one without naming it here.
  */
 
 type ProtoTerminal = Awaited<ReturnType<typeof listTerminals>>['terminals'][number]
@@ -167,9 +172,33 @@ export function setOptionValue(map: Record<string, string> | undefined, id: stri
  * catalogs on every tab read. (The pure `deriveOptionGroupTabFields` no longer does
  * this itself.)
  *
+ * `gitToplevel` is HALF of a tab's repo identity. The repo-keyed store holds
+ * the other half, and the sidebar reads one from each: it groups a tab by the
+ * row field and labels the group from the store. A caller that writes the row
+ * and not the store files the tab under a repo with no branch name.
+ *
+ * So this function writes BOTH halves, and takes the store to do it. The
+ * pairing used to be a rule in this comment that each caller had to remember,
+ * and two of them did not. Now a caller cannot obtain the row fields without
+ * supplying the store that takes the other half.
+ *
+ * `opts` carries the orphan-migration tip, which only a caller holding a LIVE
+ * tab can compute (`migrateErrorHintFromForResolvedRepo`). A local open has no
+ * tab yet and passes none.
  */
-export function protoToAgentTabFields(workerId: string, agent: AgentInfo): Partial<AgentTab> {
+export function protoToAgentTabFields(
+  store: Pick<RepoGitStore, 'get' | 'upsert' | 'clear'>,
+  workerId: string,
+  agent: AgentInfo,
+  opts?: UpsertRepoGitFromProtoOpts,
+): Partial<AgentTab> {
   updateSettingsLabelCache(agent.agentProvider, agent.optionGroups)
+  // The store write lives HERE, in the same call that produces `gitToplevel`,
+  // so the two halves of a tab's repo identity cannot be written apart. A
+  // caller cannot obtain the row fields without handing over the store that
+  // takes the other half. Both halves read the same status, so both are
+  // skipped together when it carries no toplevel.
+  upsertRepoGitFromProtoStatus(store, workerId, agent.gitStatus, opts)
   return {
     title: agent.title || undefined,
     workerId,
@@ -483,41 +512,111 @@ export function resolveOptimisticGitInfo(
   return { gitToplevel: activeTab.gitToplevel }
 }
 
+/** What {@link planOptimisticRepoGit} hands back to an open path. */
+export interface OptimisticRepoGitPlan {
+  /** Row fields for the new tab. Empty when the directories do not match. */
+  fields: { gitToplevel?: string }
+  /**
+   * Write the store copy. Call this ONLY once the tab exists.
+   *
+   * Placement can still be refused, and a caller that wrote the entry first
+   * left one behind that no tab reads. Nothing reclaims such an entry, and
+   * `hasHealthyRepoForProbe` then treats it as a real repo for one probe.
+   */
+  commit: () => void
+}
+
 /**
- * Copy branch/origin/worktree from the active tab's repo store entry onto the
- * new tab's key when both resolve to the same git directory. Same-worker opens
- * share a key and need no copy; different workerIds need this to avoid a
- * sidebar flash under "(no branch)".
+ * Plan the optimistic copy of branch/origin/worktree from the active tab's repo
+ * entry onto the new tab's key, for the case where both resolve to the same git
+ * directory. Same-worker opens share a key and need no copy; different worker
+ * ids need this to avoid a sidebar flash with no branch name.
+ *
+ * ONE evaluation feeds both halves. The row fields and the store copy used to
+ * be resolved by two calls, from two hand-built argument objects that had to
+ * agree on `shellStartDir` -- and a caller that built them differently decided
+ * the directory match against one tab and copied the branch from another.
+ *
+ * The copy is DEFERRED rather than done here, so an open that fails to place
+ * its tab writes nothing. See {@link OptimisticRepoGitPlan.commit}.
  */
-export function seedOptimisticRepoGit(
+export function planOptimisticRepoGit(
   store: Pick<RepoGitStore, 'get' | 'upsert'>,
   activeTab: Tab | null | undefined,
   newTab: { workerId?: string, shellStartDir?: string, workingDir?: string },
-): void {
-  const seed = resolveOptimisticGitInfo(activeTab, newTab)
+): OptimisticRepoGitPlan {
+  const fields = resolveOptimisticGitInfo(activeTab, newTab)
+  const noop = { fields, commit: () => {} }
+
   const workerId = newTab.workerId ?? ''
-  if (!seed.gitToplevel || !workerId || !activeTab?.workerId)
-    return
+  if (!fields.gitToplevel || !workerId || !activeTab?.workerId)
+    return noop
   const fromKey = repoKeyFromTab(activeTab)
   if (!fromKey)
-    return
-  const from = store.get(fromKey)
-  if (!from?.toplevel)
-    return
-  const toKey = repoKey(workerId, seed.gitToplevel)
+    return noop
+  const toKey = repoKey(workerId, fields.gitToplevel)
   if (toKey === fromKey)
-    return
-  const existing = store.get(toKey)
-  if (existing?.originUrl || existing?.branch)
-    return
-  store.upsert(toKey, {
-    workerId,
-    toplevel: seed.gitToplevel,
-    branch: from.branch,
-    originUrl: from.originUrl,
-    isWorktree: from.isWorktree,
-    gitStatusSeen: from.gitStatusSeen,
-  })
+    return noop
+
+  const toplevel = fields.gitToplevel
+  return {
+    fields,
+    commit: () => {
+      // Read at COMMIT time, not at plan time. The worker's own answer can
+      // land between the two, and it must win.
+      const from = store.get(fromKey)
+      if (!from?.toplevel)
+        return
+      const existing = store.get(toKey)
+      // `gitStatusSeen` is the difference between "nothing probed this key
+      // yet" and "the worker answered, and this repo genuinely has no branch"
+      // -- a detached HEAD, or a non-repo stub. Both leave `branch` and
+      // `originUrl` empty, so the emptiness alone cannot tell them apart, and
+      // a guess would overwrite the worker's own answer with another
+      // machine's branch.
+      if (existing?.gitStatusSeen || existing?.originUrl || existing?.branch)
+        return
+      store.upsert(toKey, {
+        workerId,
+        toplevel,
+        branch: from.branch,
+        originUrl: from.originUrl,
+        isWorktree: from.isWorktree,
+        gitStatusSeen: from.gitStatusSeen,
+      })
+    },
+  }
+}
+
+/**
+ * Tab fields for an agent this client just opened, from the `AgentInfo` that
+ * the OpenAgent response carried. The sibling of {@link openedTerminalMetadata}.
+ *
+ * `hydrated: true` belongs to the helper, not to the call site. The OpenAgent
+ * response IS the worker's answer for this tab, so `useTabHydrators` must not
+ * re-ask. Its reply arrives without the pending-axis suppression that the live
+ * settings path applies, and it overwrites an optimistic settings edit made
+ * during the round trip. Every local-open path needs the flag, so a fourth one
+ * cannot ship without it.
+ *
+ * This helper writes NO repo-keyed git entry, and it needs none. The response
+ * carries no git status: the worker computes the status in startup phase 1 and
+ * sends it on the STARTING broadcast, because the `git status` shell-out would
+ * otherwise block the RPC. `TestOpenAgent_ResponseHasNilGitStatus` holds the
+ * worker to that. `protoToAgentTabFields` therefore writes no `gitToplevel`
+ * either, so the row and the store stay consistent -- both empty -- until
+ * `applyAgentStatusTabUpdate` writes the pair from the broadcast.
+ */
+export function openedAgentTabFields(
+  store: Pick<RepoGitStore, 'get' | 'upsert' | 'clear'>,
+  agent: AgentInfo,
+) {
+  // No orphan-migration tip: a local open has no live tab to compute one from.
+  //
+  // The return type is inferred, like `openedTerminalMetadata`'s: `hydrated`
+  // lives on `TabMetadata`, not on `AgentTab`, so `Partial<AgentTab>` would
+  // drop it.
+  return { ...protoToAgentTabFields(store, agent.workerId, agent), hydrated: true }
 }
 
 /**

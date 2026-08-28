@@ -100,12 +100,16 @@ function setup(workspaceId = 'ws-test') {
     ...stores,
     repoGitStore,
     harness,
-    mount: (onlineWorkerIds?: () => ReadonlySet<string>) =>
+    mount: (
+      onlineWorkerIds?: () => ReadonlySet<string>,
+      settingsPendingAxes?: (agentId: string) => ReadonlySet<string>,
+    ) =>
       useTabHydrators({
         view: stores.view,
         metadata: stores.metadata,
         repoGitStore,
         onlineWorkerIds,
+        settingsPendingAxes,
       }),
     add(type: TabType, id: string, workerId = 'w1', tileId = harness.rootTileId) {
       seq += 1
@@ -658,6 +662,87 @@ describe('useTabHydrators', () => {
       await flush()
 
       expect(mockListTerminals).toHaveBeenCalledTimes(initial)
+      d()
+    })
+
+    /**
+     * An agent tab has no re-arm of its own. A terminal re-arms on DISCONNECTED,
+     * which is why a terminal repaired itself after an outage and an agent did
+     * not -- its title, status and option catalogs froze at whatever was true
+     * before the link dropped, for the life of the page.
+     */
+    it('re-asks for an already hydrated agent when its worker comes back', async () => {
+      const s = setup()
+      const [online, setOnline] = createSignal<ReadonlySet<string>>(new Set(['w1']))
+      mockListAgents.mockResolvedValue({ agents: [agentInfo('a1', { title: 'Before' })], verdicts: [] })
+      const d = createRoot((dispose) => {
+        s.add(TabType.AGENT, 'a1')
+        s.mount(() => online())
+        return dispose
+      })
+      await flush()
+      await flush()
+      expect(s.view.getAgentTab('a1')?.title).toBe('Before')
+      const hydrated = mockListAgents.mock.calls.length
+
+      // The link drops and returns. The tab set never changed, and the tab is
+      // still `hydrated`.
+      setOnline(new Set<string>())
+      await flush()
+      mockListAgents.mockResolvedValue({ agents: [agentInfo('a1', { title: 'After' })], verdicts: [] })
+      setOnline(new Set(['w1']))
+      await flush()
+      await flush()
+
+      expect(mockListAgents.mock.calls.length, 'coming back is worth one more ask')
+        .toBeGreaterThan(hydrated)
+      expect(s.view.getAgentTab('a1')?.title, 'the tab catches up on what it missed').toBe('After')
+      d()
+    })
+
+    /**
+     * The re-ask is what makes this reachable: the batch can now run for a tab
+     * that has an in-flight settings edit. The live status handler already
+     * routes every catalog through `resolveSettingsTabFields`, and this batch
+     * must too, or the worker's older answer lands over what the user just
+     * chose.
+     */
+    it('keeps an in-flight settings edit when a re-ask reply lands', async () => {
+      const s = setup()
+      const [online, setOnline] = createSignal<ReadonlySet<string>>(new Set(['w1']))
+      // `currentValue` is the field the mapper reads. With any other name the
+      // reply carries no `optionValues` at all, and the test cannot fail.
+      const groups = [{
+        id: 'model',
+        label: 'Model',
+        currentValue: 'sonnet',
+        options: [{ id: 'sonnet', label: 'Sonnet' }, { id: 'opus', label: 'Opus' }],
+      }]
+      mockListAgents.mockResolvedValue({
+        agents: [agentInfo('a1', { optionGroups: groups })],
+        verdicts: [],
+      })
+      const d = createRoot((dispose) => {
+        s.add(TabType.AGENT, 'a1')
+        // The user is changing the model right now.
+        s.mount(() => online(), () => new Set(['model']))
+        return dispose
+      })
+      await flush()
+      await flush()
+
+      // The optimistic edit the user made while the reply was on its way.
+      s.metadata.patch('a1', { optionValues: { model: 'opus' } })
+      setOnline(new Set<string>())
+      await flush()
+      setOnline(new Set(['w1']))
+      await flush()
+      await flush()
+
+      expect(
+        s.view.getAgentTab('a1')?.optionValues?.model,
+        'the worker\'s older answer must not land over the pending axis',
+      ).toBe('opus')
       d()
     })
 

@@ -26,7 +26,7 @@ import { createUpdatableDialogState } from '~/hooks/createDialogState'
 import { makeIdGenerator } from '~/lib/idGenerator'
 import { basename } from '~/lib/paths'
 import { MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.store'
-import { descendantAgentTabs, resolveOptimisticGitInfo, seedOptimisticRepoGit, tabKey } from '~/stores/tab.helpers'
+import { descendantAgentTabs, planOptimisticRepoGit, tabKey } from '~/stores/tab.helpers'
 import { emitRemoveTab } from '~/stores/tabOps'
 import { openTabInFocusedTile } from './openTabInFocusedTile'
 import { focusTile, removeEmptyFloatingWindow } from './tileLifecycle'
@@ -631,8 +631,11 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     // only seeds when the two resolve to the same directory. Without it the tab
     // renders ungrouped until the next git-status refresh reaches it, even
     // though the answer was on screen at the moment of the open.
-    const gitSeed = resolveOptimisticGitInfo(activeTab(), { workingDir: ctx.workingDir })
-    seedOptimisticRepoGit(opts.repoGitStore, activeTab(), {
+    //
+    // ONE read of the active tab, and ONE seed call. Read twice, a later edit
+    // can decide the directory match against one tab and copy the branch from
+    // another.
+    const gitSeed = planOptimisticRepoGit(opts.repoGitStore, activeTab(), {
       workerId: ctx.workerId,
       workingDir: ctx.workingDir,
     })
@@ -640,7 +643,7 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
       { view, layoutStore, selection, metadata },
       { type: TabType.FILE, id: tabId, workerId: ctx.workerId },
       {
-        ...gitSeed,
+        ...gitSeed.fields,
         filePath: path,
         workingDir: ctx.workingDir,
         title: fileName,
@@ -662,6 +665,8 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
       showWarnToast('Cannot open the file', new Error('The workspace is not ready for a new tab yet.'))
       return
     }
+    // The tab exists, so the optimistic repo copy now has a reader.
+    gitSeed.commit()
 
     // E2EE worker-side path registration. The hub never sees the path; the
     // worker persists `(user_id, tab_id, file_path, working_dir)` and emits

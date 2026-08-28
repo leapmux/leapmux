@@ -212,6 +212,14 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     // sweep effect still iterates it as a no-op on every offline-set change).
     if (!workerId)
       return
+    // The link came BACK. Release this worker's optimistic branch pins, keeping
+    // the branch values: a pin says "a branch change succeeded, so ignore a
+    // broadcast that still reports the old branch", and a dropped link ends
+    // that claim. Only an agreeing refresh clears a pin otherwise, and a
+    // background tab issues none -- so a stamp made just before the worker died
+    // would label the tab for the rest of the page.
+    if (online && untrack(offlineWorkers).has(workerId))
+      repoGitStore.releaseBranchPinsForWorker(workerId)
     setOfflineWorkers((prev) => {
       const next = new Set(prev)
       if (online)
@@ -462,6 +470,31 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
 
   // When a worker goes offline, mark its running terminals disconnected and
   // clear stale streaming state for its agents.
+  //
+  // This effect deliberately does NOT sweep the repo-keyed git store. An entry
+  // there is the last known state of a working tree. It is not a claim about
+  // the link. Every other worker-sourced field on the tab row survives an
+  // outage the same way, and `RepoGitStore.refresh` keeps last-good state on
+  // its own side.
+  //
+  // A sweep here removed the branch with no way back. `Tab.gitToplevel`
+  // outlives the outage, and `WorkspaceTabTree.repoKeyAndLabel` groups a tab by
+  // that field alone. The branch label comes from this store. A dropped entry
+  // therefore put every tab of that worker under its repo with no branch name.
+  //
+  // Three separate rules kept a BACKGROUND tab from recovering. An agent tab
+  // stays `hydrated` for the life of the page, so `useTabHydrators` never
+  // re-asks. The worker sends a git status only at that agent's own turn end.
+  // The catch-up replay after a reconnect carries one only for an agent that
+  // the client promotes to FULL. So the user clicked each tab, or the Files
+  // refresh button, once per tab, after every dropped link.
+  //
+  // Permanent removal is a different event with its own caller. Worker
+  // deregistration clears through `useWorkerSection`.
+  //
+  // Keeping an entry has its own cost, and `RepoGitState.nonRepoProbeIgnored`
+  // pays it: a repo deleted during the outage would otherwise suppress every
+  // later "not a git repository" answer.
   createEffect(() => {
     const offline = offlineWorkers()
     if (offline.size === 0)
@@ -483,7 +516,6 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
             if (tab.agentStatus === AgentStatus.ACTIVE)
               metadata.patch(tab.id, { agentStatus: AgentStatus.INACTIVE })
           }
-          repoGitStore.clearForWorker(workerId)
         })
       }
     })

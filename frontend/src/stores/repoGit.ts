@@ -43,6 +43,21 @@ export interface RepoGitState {
    * entry. Distinguishes a real status seed from an optimistic branch stamp.
    */
   gitStatusSeen?: boolean
+  /**
+   * Set when a probe answered "not a git repository" and this entry kept its
+   * last-good state instead. It makes that allowance ONE-SHOT: the next
+   * non-repo answer for the same path writes the stub.
+   *
+   * A single answer can be transient, so the first one is ignored. Two in a
+   * row are the worker's real report, and the repo is gone. Without the
+   * one-shot limit the first answer suppresses every later one for the life
+   * of the page, and the sidebar shows a branch and a diff badge for a
+   * directory that no longer exists.
+   *
+   * A real status clears the flag, so an entry that recovers gets its
+   * allowance back.
+   */
+  nonRepoProbeIgnored?: boolean
 }
 
 export interface RepoGitView {
@@ -313,9 +328,15 @@ export function isStampOnlyRepoGitState(state: RepoGitState | undefined): boolea
  * True when the entry is a real repo identity worth keeping across a
  * transient non-repo response. Stamp-only seeds are excluded so a first
  * probe can still write an `errorHint` stub.
+ *
+ * An entry that already ignored a non-repo answer is excluded too. That
+ * allowance covers ONE transient answer, never a repo the worker keeps
+ * reporting as gone. See {@link RepoGitState.nonRepoProbeIgnored}.
  */
 export function hasPreservableRepoGitState(state: RepoGitState | undefined): boolean {
   if (!state?.toplevel)
+    return false
+  if (state.nonRepoProbeIgnored)
     return false
   if (state.gitStatusSeen || hasHydratedRepoGitFields(state))
     return true
@@ -335,6 +356,28 @@ export function hasHealthyRepoForProbe(
   if (!canonical)
     return false
   return hasPreservableRepoGitState(store.get(canonical))
+}
+
+/**
+ * Record that a non-repo answer for `probePath` kept the last-good state.
+ * Marks every entry that {@link hasHealthyRepoForProbe} consults, so the next
+ * non-repo answer for the same path writes the stub instead.
+ *
+ * Call this ONLY on the branch that ignored the answer. The caller that writes
+ * the stub must not call it: that entry no longer claims to be a repo.
+ */
+export function markNonRepoProbeIgnored(
+  store: RepoGitLookup & Pick<RepoGitStore, 'upsert'>,
+  workerId: string,
+  probePath: string,
+  hintKey?: RepoKey,
+): void {
+  const mark = (key: RepoKey | undefined): void => {
+    if (key && hasPreservableRepoGitState(store.get(key)))
+      store.upsert(key, { nonRepoProbeIgnored: true })
+  }
+  mark(hintKey)
+  mark(findCanonicalRepoKey(store, workerId, probePath))
 }
 
 /**
@@ -363,6 +406,10 @@ export function applyFullGitStatusUpsert(
     branch,
     branchPinnedUntilRefresh,
     gitStatusSeen: true,
+    // The repo answered, so give back the one-shot allowance that a previous
+    // non-repo answer consumed. `upsert` merges, so this must be written and
+    // not omitted.
+    nonRepoProbeIgnored: false,
   })
   return mapped.key
 }
@@ -375,7 +422,10 @@ export function applyFullGitStatusUpsert(
  * keep a refresh-sourced hint on a hydrated entry.
  */
 export function upsertRepoGitFromProtoStatus(
-  store: RepoGitStore,
+  // The three methods it actually uses, like `applyFullGitStatusUpsert` next
+  // door. A narrower parameter says what the function touches, and lets a test
+  // pass a small fake instead of a reactive store.
+  store: Pick<RepoGitStore, 'get' | 'upsert' | 'clear'>,
   workerId: string,
   status: GitRepoStatus | undefined,
   opts?: UpsertRepoGitFromProtoOpts,
@@ -386,7 +436,9 @@ export function upsertRepoGitFromProtoStatus(
     return
 
   const prev = store.get(key)
-  let next: Partial<RepoGitState> = { ...patch, gitStatusSeen: true }
+  // `nonRepoProbeIgnored: false` for the same reason as in
+  // `applyFullGitStatusUpsert`: a real status restores the one-shot allowance.
+  let next: Partial<RepoGitState> = { ...patch, gitStatusSeen: true, nonRepoProbeIgnored: false }
 
   if (prev?.branchPinnedUntilRefresh)
     next.branch = prev.branch

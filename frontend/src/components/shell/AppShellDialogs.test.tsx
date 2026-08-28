@@ -10,9 +10,13 @@ import { showWarnToast } from '~/components/common/Toast'
 import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createDialogState, createToggleDialog, createUpdatableDialogState } from '~/hooks/createDialogState'
+import { repoKey } from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
+import { emitAddTab } from '~/stores/tabOps'
+import { installTestBridge } from '~/test-support/crdtBridge'
 import { makeInspectResp, makeWorktreeRemovalResp } from '~/test-support/gitBranchFixtures'
 import { pickMenuValue } from '~/test-support/menu'
+import { createTestTabStores } from '~/test-support/tabStores'
 import { AppShellDialogs } from './AppShellDialogs'
 
 // Replace the module wholesale, like the sibling DeleteBranchDialog suite.
@@ -38,11 +42,58 @@ vi.mock('~/components/common/Toast', () => ({
 // is (see below): this suite tests the PARENT's plumbing, not the dialogs' own
 // fields. The stubs surface the guard reason the parent computes so a test can
 // assert what the real dialog would disable submit on.
-vi.mock('~/components/shell/NewAgentDialog', () => ({
-  NewAgentDialog: (props: { blockedReason?: () => string | undefined, onClose: () => void }) => (
-    <div data-testid="new-agent-stub">{props.blockedReason?.() ?? ''}</div>
-  ),
-}))
+// The agent the stub reports as created, so a test can drive `onCreated`
+// without standing up the real dialog's worker and directory fields.
+//
+// Built with `create(AgentInfoSchema, ...)`, not as an object literal, so it
+// carries every field the wire supplies -- `status`, `agentProvider`,
+// `acceptsMessages` and the rest that `protoToAgentTabFields` reads. A literal
+// leaves them `undefined`, which no real response does.
+//
+// It is built inside the factory rather than in `vi.hoisted`, because
+// `vi.hoisted` runs before the static imports initialize and cannot name
+// `create`. The factory is async and runs lazily, so it can import both.
+vi.mock('~/components/shell/NewAgentDialog', async () => {
+  const { create } = await import('@bufbuild/protobuf')
+  const { AgentInfoSchema } = await import('~/generated/leapmux/v1/agent_pb')
+  // No `gitStatus`: the OpenAgent response carries none. The worker computes
+  // it in startup phase 1 and sends it on the STARTING broadcast, so the
+  // `git status` shell-out does not block the RPC.
+  const createdAgent = create(AgentInfoSchema, {
+    id: 'created-agent',
+    workerId: 'w1',
+    title: 'Agent Mimi',
+    workingDir: '/repo',
+  })
+  return {
+    // Two buttons, one for each answer the real dialog gives for
+    // `seedGitFromActiveTab`: the plain git mode may seed, every mode that
+    // redirects the working directory may not.
+    NewAgentDialog: (props: {
+      blockedReason?: () => string | undefined
+      onCreated: (agent: typeof createdAgent, opts: { seedGitFromActiveTab: boolean }) => void
+      onClose: () => void
+    }) => (
+      <>
+        <div data-testid="new-agent-stub">{props.blockedReason?.() ?? ''}</div>
+        <button
+          type="button"
+          data-testid="new-agent-created"
+          onClick={() => props.onCreated(createdAgent, { seedGitFromActiveTab: true })}
+        >
+          created
+        </button>
+        <button
+          type="button"
+          data-testid="new-agent-created-worktree"
+          onClick={() => props.onCreated(createdAgent, { seedGitFromActiveTab: false })}
+        >
+          created in a worktree
+        </button>
+      </>
+    ),
+  }
+})
 
 vi.mock('~/components/shell/NewTerminalDialog', () => ({
   NewTerminalDialog: (props: { blockedReason?: () => string | undefined, onClose: () => void }) => (
@@ -469,5 +520,134 @@ describe('appShellDialogs branch dialogs', () => {
 
       expect(await screen.findByTestId('new-agent-stub')).toHaveTextContent(/^$/)
     })
+  })
+})
+
+/**
+ * What the parent writes when the New Agent dialog reports a created agent.
+ *
+ * This one needs the operational stores the suite above deliberately leaves
+ * unfilled, because the assertion is about the tab that `openTabInFocusedTile`
+ * actually places. It gets its own render helper rather than widening
+ * `renderDialogs`, so the branch-dialog tests keep paying nothing for it.
+ */
+describe('appShellDialogs agent creation', () => {
+  function renderForCreate() {
+    const harness = installTestBridge({ workspaceId: 'ws1' })
+    const stores = createTestTabStores('ws1')
+    const repoGitStore = createRepoGitStore()
+    const dialogs = makeDialogs()
+    const props = {
+      dialogs,
+      activeWorkspace: () => ({ id: 'ws1' }),
+      isActiveWorkspaceMutatable: () => true,
+      layoutStore: stores.layoutStore,
+      view: stores.view,
+      metadata: stores.metadata,
+      selection: stores.selection,
+      repoGitStore,
+      // Called unguarded from the created-agent handler, on the next frame.
+      focusEditor: vi.fn(),
+      getCurrentTabContext: () => ({
+        workerId: 'w1',
+        workingDir: '/repo',
+        homeDir: '/home/u',
+        gitToplevel: '/repo',
+      }),
+    }
+    render(() => <AppShellDialogs {...(props as unknown as ComponentProps<typeof AppShellDialogs>)} />)
+    return { dialogs, repoGitStore, ...stores, rootTileId: harness.rootTileId }
+  }
+
+  /**
+   * An ACTIVE tab on a DIFFERENT worker, in the same directory the new agent
+   * opens in, with its repo already known.
+   *
+   * A different worker is what makes the seed observable: same-worker opens
+   * share a repo key and copy nothing. The directories must match, because
+   * `resolveOptimisticGitInfo` refuses to copy across a directory change.
+   */
+  function seedActiveTabOnOtherWorker(
+    stores: ReturnType<typeof renderForCreate>,
+  ) {
+    emitAddTab({
+      type: TabType.AGENT,
+      id: 'active',
+      tileId: stores.rootTileId,
+      position: 'p1',
+      workerId: 'w-other',
+    })
+    stores.metadata.patch('active', { workingDir: '/repo', gitToplevel: '/repo' })
+    stores.selection.setActive(stores.view.getAgentTab('active')!)
+    stores.repoGitStore.upsert(repoKey('w-other', '/repo'), {
+      workerId: 'w-other',
+      toplevel: '/repo',
+      branch: 'feature/sidebar',
+      gitStatusSeen: true,
+    })
+  }
+
+  // Both facts belong to `openedAgentTabFields`, whose doc comment states why:
+  // it carries `hydrated: true`, and it writes no repo entry because the
+  // OpenAgent response carries no git status.
+  it('marks the placed agent hydrated and writes no repo entry', async () => {
+    const { dialogs, repoGitStore, view, metadata } = renderForCreate()
+    dialogs.newAgent.open()
+
+    fireEvent.click(await screen.findByTestId('new-agent-created'))
+
+    await waitFor(() => expect(view.getAgentTab('created-agent')).toBeDefined())
+    // `isHydrated` reads the metadata row, not the assembled tab.
+    expect(
+      metadata.get('created-agent')?.hydrated,
+      'the hydrator must not re-ask for this tab',
+    ).toBe(true)
+    expect(view.getAgentTab('created-agent')?.gitToplevel, 'the response carries no repo identity').toBeUndefined()
+    expect(Object.keys(repoGitStore.repos())).toEqual([])
+  })
+
+  /**
+   * The OpenAgent response carries no git status, so without a seed the new tab
+   * renders outside its repository group for the whole of the agent's startup.
+   * The tab-bar path already seeds; this closes the gap for the dialog.
+   */
+  it('seeds the branch from the active tab when the agent opens in place', async () => {
+    const stores = renderForCreate()
+    seedActiveTabOnOtherWorker(stores)
+    stores.dialogs.newAgent.open()
+
+    fireEvent.click(await screen.findByTestId('new-agent-created'))
+
+    await waitFor(() => expect(stores.view.getAgentTab('created-agent')).toBeDefined())
+    expect(
+      stores.repoGitStore.get(repoKey('w1', '/repo'))?.branch,
+      'the sidebar can group the new tab before the worker reports',
+    ).toBe('feature/sidebar')
+  })
+
+  /**
+   * Every git mode except the plain one redirects the agent -- into a new or
+   * existing worktree, or onto a different branch. The active tab's branch is
+   * then the wrong answer for the directory the agent lands in, so a seed there
+   * would put a confidently wrong label on the tab rather than no label.
+   */
+  it('seeds nothing when the agent is redirected into a worktree', async () => {
+    const stores = renderForCreate()
+    seedActiveTabOnOtherWorker(stores)
+    stores.dialogs.newAgent.open()
+
+    fireEvent.click(await screen.findByTestId('new-agent-created-worktree'))
+
+    await waitFor(() => expect(stores.view.getAgentTab('created-agent')).toBeDefined())
+    expect(stores.repoGitStore.get(repoKey('w1', '/repo'))).toBeUndefined()
+  })
+
+  it('closes the dialog once the agent is placed', async () => {
+    const { dialogs } = renderForCreate()
+    dialogs.newAgent.open()
+
+    fireEvent.click(await screen.findByTestId('new-agent-created'))
+
+    await waitFor(() => expect(dialogs.newAgent.isOpen()).toBe(false))
   })
 })

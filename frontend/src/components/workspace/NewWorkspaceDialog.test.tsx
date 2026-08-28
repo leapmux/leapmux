@@ -226,6 +226,30 @@ describe('newWorkspaceDialog', () => {
     }))
   })
 
+  // Both facts belong to `openedAgentTabFields`, not to this call site; its
+  // doc comment states why each one holds.
+  //   - `hydrated: true` reaches the row.
+  //   - The row gets no `gitToplevel`, because the response carries no status.
+  it('marks the new agent hydrated and gives it no repo identity', async () => {
+    const props = renderDialog()
+
+    await submitDialog()
+
+    await waitFor(() => {
+      expect(props.onCreated).toHaveBeenCalledWith(NEW_WORKSPACE_ID)
+    })
+    expect(props.metadata.patch).toHaveBeenCalledWith('agent-1', expect.objectContaining({
+      hydrated: true,
+    }))
+    expect(props.metadata.patch).toHaveBeenCalledWith('agent-1', expect.not.objectContaining({
+      gitToplevel: expect.anything(),
+    }))
+    expect(
+      Object.keys(props.repoGitStore.repos()),
+      'no repo identity on the row, so none in the store either',
+    ).toEqual([])
+  })
+
   /**
    * Metadata BEFORE placement, the order `openTabInFocusedTile` documents and
    * every other open path follows. Placement is what makes the tab exist for
