@@ -74,7 +74,7 @@ describe('accountAppRegistrations', () => {
 
   it('names the administrator who vouched', async () => {
     mockList.mockResolvedValue({
-      apps: [{ ...app, verifiedAt: { seconds: 1767225600n, nanos: 0 }, verifiedByUsername: 'ada' }],
+      apps: [{ ...app, verified: true, verifiedAt: { seconds: 1767225600n, nanos: 0 }, verifiedByUsername: 'ada' }],
     })
     render(() => <AccountAppRegistrations />)
     expect(await screen.findByText('verified by ada')).toBeInTheDocument()
@@ -362,7 +362,7 @@ describe('accountAppRegistrations', () => {
       await screen.findByText('My integration')
 
       fireEvent.click(screen.getByRole('button', { name: 'Allow step-up' }))
-      const dialog = await screen.findByRole('dialog', { name: 'Allow the step-up leg?' })
+      const dialog = await screen.findByRole('dialog', { name: 'Allow the step-up stage?' })
       fireEvent.click(within(dialog).getByRole('button', { name: 'Allow' }))
 
       await waitFor(() => expect(mockSetElevation).toHaveBeenCalledWith({ clientId: 'app-1', allowed: true }))
@@ -417,7 +417,7 @@ describe('accountAppRegistrations', () => {
     it('withdraws an existing vouch', async () => {
       authState.admin = true
       mockList.mockResolvedValue({
-        apps: [{ ...app, verifiedAt: { seconds: 1767225600n, nanos: 0 }, verifiedByUsername: 'ada' }],
+        apps: [{ ...app, verified: true, verifiedAt: { seconds: 1767225600n, nanos: 0 }, verifiedByUsername: 'ada' }],
       })
       render(() => <AccountAppRegistrations />)
       await screen.findByText('verified by ada')
@@ -428,3 +428,49 @@ describe('accountAppRegistrations', () => {
     })
   })
 })
+
+// Two refreshes can overlap (the onMount load and one a write path fires),
+// and the one that started EARLIER can finish last -- adopting its pages
+// would drop a row the newer refresh already shows. Only the newest
+// generation may write its result.
+describe('refresh generation guard', () => {
+  it('a late-finishing older refresh does not clobber a row a write added', async () => {
+    const newerApp = { ...app, clientId: 'app-new', clientName: 'Newer registration' }
+    // onMount refresh: page one answers, page TWO stalls -- the older
+    // generation is parked mid-pagination.
+    const stalePageTwo = deferred<{ apps: typeof app[], nextCursor: string, openRegistrationEnabled: boolean }>()
+    mockList
+      .mockResolvedValueOnce({ apps: [app], nextCursor: 'cursor-2', openRegistrationEnabled: false })
+      .mockReturnValueOnce(stalePageTwo.promise)
+      // A write path then fires a NEWER refresh, which answers in one page.
+      .mockResolvedValueOnce({ apps: [newerApp], nextCursor: '', openRegistrationEnabled: false })
+    render(() => <AccountAppRegistrations />)
+
+    // The register form's success handler PREPENDS the row the response
+    // carries, with no re-page -- so the new registration shows while the
+    // older refresh is still parked, and must SURVIVE that refresh landing.
+    mockRegister.mockResolvedValue({ app: newerApp, clientSecret: '' })
+    fireEvent.click(screen.getByRole('button', { name: 'Register an app' }))
+    fireEvent.input(screen.getByLabelText(/Name/), { target: { value: 'CI bot' } })
+    fireEvent.click(screen.getByLabelText('workspace:read'))
+    fireEvent.click(screen.getByRole('button', { name: 'Register' }))
+    await waitFor(() => expect(mockRegister).toHaveBeenCalled())
+
+    // The NEWER refresh lands while the older one is still parked.
+    await waitFor(() => expect(screen.getByText('Newer registration')).toBeInTheDocument())
+
+    // The OLDER refresh's parked page resolves now, carrying the stale list.
+    stalePageTwo.resolve({ apps: [app], nextCursor: '', openRegistrationEnabled: false })
+    await new Promise(resolve => setTimeout(resolve, 20))
+
+    expect(screen.getByText('Newer registration')).toBeInTheDocument()
+  })
+})
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((res) => {
+    resolve = res
+  })
+  return { promise, resolve }
+}

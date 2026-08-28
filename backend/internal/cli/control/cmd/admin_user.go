@@ -536,7 +536,7 @@ func RunAdminAPITokenIssue(rawCtx any, args []string) error {
 			// and never the lifetime it was minted from.
 			fs.Int64Var(&ttlSeconds, "ttl", 0,
 				"fixed lifetime in seconds, with no refresh token (0 = the renewing credential: 1h access + refresh)")
-			// EMPTY grants everything except the four admin scopes, which is
+			// EMPTY grants everything except the admin scopes, which is
 			// the same default a `leapmux control auth login` takes: a service
 			// account that only needs to drive workspaces must not come out of
 			// this verb able to administer the hub.
@@ -550,7 +550,11 @@ func RunAdminAPITokenIssue(rawCtx any, args []string) error {
 			if installationName == "" {
 				return control.EmitError("invalid_request", "--installation-name is required")
 			}
-			scopeList = splitScopeFlag(scopeFlag)
+			var scopeErr error
+			scopeList, scopeErr = splitScopeFlag(scopeFlag)
+			if scopeErr != nil {
+				return scopeErr
+			}
 			return nil
 		},
 		Run: func(c *control.Client, _ adminArgs) error {
@@ -563,11 +567,12 @@ func RunAdminAPITokenIssue(rawCtx any, args []string) error {
 				return control.EmitErrorWith("issue_failed", err)
 			}
 			return control.EmitData(map[string]any{
-				"token_id":      resp.Msg.GetTokenId(),
-				"access_token":  resp.Msg.GetAccessToken(),
-				"refresh_token": resp.Msg.GetRefreshToken(),
-				"scopes":        scopeList,
-				"note":          "capture the tokens now; they cannot be retrieved later",
+				"token_id":       resp.Msg.GetTokenId(),
+				"access_token":   resp.Msg.GetAccessToken(),
+				"refresh_token":  resp.Msg.GetRefreshToken(),
+				"client_id":      resp.Msg.GetClientId(),
+				"granted_scopes": resp.Msg.GetGrantedScopes(),
+				"note":           "capture the tokens now; they cannot be retrieved later",
 			})
 		},
 	})
@@ -645,8 +650,20 @@ func RunAdminDelegationTokenRevoke(rawCtx any, args []string) error {
 //
 // An empty value yields nil, which every caller reads as "the default grant"
 // rather than as "no permissions at all".
-func splitScopeFlag(raw string) []string {
-	return strings.FieldsFunc(raw, func(r rune) bool {
+// splitScopeFlag splits a --scope value into its tokens. An EMPTY value is
+// the documented "take the default" and returns no tokens; a value that is
+// NOT empty but yields no tokens -- a stray comma, a shell-mangled
+// "${A},${B}" with empty variables -- is a REFUSAL rather than silence,
+// because every caller's hub reads an absent list as "unspecified" and
+// answers the widest default grant. Losing the operator's constraint that
+// way is the one outcome this parser exists to prevent.
+func splitScopeFlag(raw string) ([]string, error) {
+	tokens := strings.FieldsFunc(raw, func(r rune) bool {
 		return r == ',' || r == ' ' || r == '\t' || r == '\n'
 	})
+	if raw != "" && len(tokens) == 0 {
+		return nil, control.EmitError("invalid_request",
+			"--scope carried no permission names; pass real tokens or omit the flag for the default")
+	}
+	return tokens, nil
 }

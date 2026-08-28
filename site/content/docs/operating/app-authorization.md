@@ -10,7 +10,7 @@ weight: 6
 
 A LeapMux Hub is an OAuth 2.1 authorization server. Any program can ask an account holder for permission, and the account holder decides on a consent screen the Hub renders. The control CLI uses the same flow as everything else; it is registered like any other app.
 
-This chapter is for operators. If you want to see and disconnect the apps on **your own** account, see [Connected Apps](/docs/using/connected-apps/). If you are writing an app, the wire contract is [OAuth API](/docs/reference/oauth-api/).
+This chapter is for operators. If you want to see and disconnect the apps on **your own** account, see [Connected Apps](/docs/using/connected-apps/). If you write an app, the wire contract is [OAuth API](/docs/reference/oauth-api/).
 
 ## Who may register an app
 
@@ -37,7 +37,7 @@ leapmux control admin app register \
 
 The response carries the `client_id` and, for a confidential client, the `client_secret` **once**. The Hub stores only its hash and cannot show it again.
 
-**Every write to a registration needs a recently proven factor** — registering, editing, allowing the step-up leg, and vouching. Editing is why: rewriting a redirect list diverts an authorization code already in flight to an address the editor chose, which is the most dangerous write on this surface. In the browser the first such write in a sitting opens a **Verify your identity** dialog; on the CLI the refusal prints an address and a short code you approve in a browser (see [Verifying a command-line credential](/docs/operating/security/#verifying-a-command-line-credential)). **Retiring** an app and **deleting** an empty registration need none: both only reduce what the app can reach, and demanding a fresh factor from somebody who just realized an app is malicious is the wrong failure mode.
+**Every write to a registration needs a recently proven factor** — registering, editing, allowing the step-up ceremony, and vouching. Editing is why: rewriting a redirect list diverts an authorization code already in flight to an address the editor chose, which is the most dangerous write on this surface. In the browser the first such write in a sitting opens a **Verify your identity** dialog; on the CLI the refusal prints an address and a short code you approve in a browser (see [Verifying a command-line credential](/docs/operating/security/#verifying-a-command-line-credential)). **Retiring** an app and **deleting** an empty registration need none: both only reduce what the app can reach, and demanding a fresh factor from somebody who just realized an app is malicious is the wrong failure mode.
 
 ## Permissions
 
@@ -63,6 +63,7 @@ A grant is a set of named permissions. Each one is a sentence on the consent scr
 | `admin:users` | Administer every account on this hub, including resetting passwords. |
 | `admin:settings` | Change this hub's settings, including its security policy and its sign-in providers. |
 | `admin:workers` | Administer every worker on this hub. |
+| `admin:apps` | Register, edit, vouch, retire and delete the hub's app registrations. |
 
 Four rules bind the whole vocabulary.
 
@@ -86,13 +87,13 @@ An administrator vouches for an app once they know what it is:
 leapmux control admin app verify --client-id <client_id>
 ```
 
-The warning disappears and the screen names the administrator who vouched. `unverify` withdraws it.
+The warning disappears and the screen identifies the administrator who vouched. `unverify` withdraws it.
 
 ## Elevation
 
 A **sensitive** change — a password, a passkey, the recovery address — needs a recently proven factor. That proof is a *step-up*, and it happens in a browser.
 
-An app is refused the step-up leg by default. Its owner turns it on per app:
+An app is refused the step-up ceremony by default. Its owner turns it on per app:
 
 ```bash
 leapmux control admin app allow-elevation --client-id <client_id>
@@ -120,7 +121,7 @@ While it is off, `registration_endpoint` is absent from the Hub's metadata docum
 leapmux control admin app revoke --client-id <client_id>
 ```
 
-**Delete** removes a registration that never held a credential. The Hub refuses it otherwise and says how many credentials exist, so you can retire instead. A revoked credential still counts: it is history that the account's own list shows, and deleting the app it belonged to would leave that history naming nothing.
+**Delete** removes a registration that never held a credential. The Hub refuses it otherwise and says how many credentials exist, so you can retire instead. A revoked credential still counts: it is history that the account's own list shows, and deleting the app it belonged to would leave that history pointing at nothing.
 
 Two registrations ship with the Hub — the control CLI and the service account that holds administrator-issued credentials. Neither can be edited, retired, or deleted, because their fields are constants of the build. Their elevation setting is the one thing that moves, so an operator who does not want `leapmux control admin ...` to elevate can say so.
 

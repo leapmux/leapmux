@@ -32,7 +32,7 @@ func startQuery(extra url.Values) url.Values {
 		"code_challenge_method": {"S256"},
 		"redirect_uri":          {"http://127.0.0.1:54321/callback"},
 		"state":                 {"state-1"},
-		"code_challenge":        {"challenge-1"},
+		"code_challenge":        {strings.Repeat("c", 43)},
 		"installation_name":     {"laptop"},
 	}
 	for k, v := range extra {
@@ -92,7 +92,7 @@ func TestCLIConsent_UnelevatedGetBouncesThroughElevate(t *testing.T) {
 	back, err := url.Parse(loc.Query().Get("redirect"))
 	require.NoError(t, err)
 	assert.Equal(t, "/oauth/authorize", back.Path)
-	assert.Equal(t, "challenge-1", back.Query().Get("code_challenge"),
+	assert.Equal(t, strings.Repeat("c", 43), back.Query().Get("code_challenge"),
 		"the return address must carry every parameter the CLI supplied")
 	assert.Equal(t, "1", back.Query().Get("elevated"),
 		"the hub marks the return address so a second failure explains instead of looping")
@@ -133,7 +133,7 @@ func TestCLIConsent_UnelevatedPostIsRefusedNotRedirected(t *testing.T) {
 		"code_challenge_method": {"S256"},
 		"redirect_uri":          {"http://127.0.0.1:54321/callback"},
 		"state":                 {"state-1"},
-		"code_challenge":        {"challenge-1"},
+		"code_challenge":        {strings.Repeat("c", 43)},
 	}, cookie)
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
@@ -493,10 +493,30 @@ func TestDeviceActivation_RequiresElevationAndBindsTheScope(t *testing.T) {
 	// browser posts a DECISION and never a scope: the request and the consent
 	// happen on two machines, so taking the scope from this form would let
 	// whoever types the code widen what the app asked for.
+	//
+	// An admin-reaching ask takes TWO steps: the first Allow answers with the
+	// confirmation page and approves nothing; the Allow that carries
+	// admin_confirmed binds. A phished administrator's single click on a
+	// trusted app name mints nothing.
 	elevated := env.elevatedAdminCookie(t)
 	code = seedGrant(adminAsk)
-	resp, err = postForm(env.server.URL+"/oauth/device", url.Values{
+	first, err := postForm(env.server.URL+"/oauth/device", url.Values{
 		"user_code": {code}, "decision": {"allow"},
+	}, elevated)
+	require.NoError(t, err)
+	defer func() { _ = first.Body.Close() }()
+	require.Equal(t, http.StatusOK, first.StatusCode)
+	page, err := io.ReadAll(first.Body)
+	require.NoError(t, err)
+	assert.Contains(t, string(page), "hub administration",
+		"the first Allow must return the confirmation page")
+	row, err = env.store.DeviceAuthorizations().GetByUserCode(ctx, code)
+	require.NoError(t, err)
+	assert.EqualValues(t, 0, row.Approved,
+		"the unconfirmed Allow binds nothing; the grant stays pending")
+
+	resp, err = postForm(env.server.URL+"/oauth/device", url.Values{
+		"user_code": {code}, "decision": {"allow"}, "admin_confirmed": {"1"},
 	}, elevated)
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
@@ -505,6 +525,20 @@ func TestDeviceActivation_RequiresElevationAndBindsTheScope(t *testing.T) {
 	require.NoError(t, err)
 	assert.EqualValues(t, 1, row.Approved)
 	assert.Contains(t, row.GrantedScopes, "admin:settings", "the browser's consent is what the row records")
+
+	// A routine ask never meets the second step: its Allow binds on the first
+	// click, because the friction targets hub administration alone.
+	code = seedGrant("workspace:read")
+	resp, err = postForm(env.server.URL+"/oauth/device", url.Values{
+		"user_code": {code}, "decision": {"allow"},
+	}, elevated)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	row, err = env.store.DeviceAuthorizations().GetByUserCode(ctx, code)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, row.Approved,
+		"a non-admin ask binds with one click, exactly as every routine consent always did")
 }
 
 // TestDeviceActivation_GetBouncesThroughElevate covers the fourth consent

@@ -50,8 +50,8 @@ func TestGeneratedInterfaceParamsAreAllowlisted(t *testing.T) {
 			"ClientID":       "narg OR-chain over a text column (the app filter on every api-token listing)",
 			"CallerIsAdmin":  "the app-ownership predicate's administrator arm: a bare boolean parameter that no column types, and CASTing it would type it on postgres alone",
 			"IncludeRevoked": "the retired-row widening arm of the app listings: a bare boolean parameter that no column types, bound as bool by the dialect wrapper",
+			"IncludeHubWide": "the catalogue-widening arm of the one app listing: a bare boolean parameter that no column types, bound as bool by the dialect wrapper",
 			"IconBytes":      "COALESCE(LENGTH(icon_blob), 0) loses its decltype; read through sqlutil.CoerceInt64, never bound",
-			"UserID":         "the app-disconnect cascade's whole-set OR-chain, where empty means every user",
 			// The elevation slide's requested deadline sits inside min()
 			// in the SET clause, which carries no column type, and sqlc
 			// keeps that first inference even though the WHERE compares
@@ -66,13 +66,14 @@ func TestGeneratedInterfaceParamsAreAllowlisted(t *testing.T) {
 			"LeaseMillis":    "arithmetic expression param; not a timestamp",
 			"CallerIsAdmin":  "the app-ownership predicate's administrator arm: a bare boolean parameter that no column types, and CASTing it would type it on postgres alone",
 			"IncludeRevoked": "the retired-row widening arm of the app listings: a bare boolean parameter that no column types, bound as bool by the dialect wrapper",
+			"IncludeHubWide": "the catalogue-widening arm of the one app listing: a bare boolean parameter that no column types, bound as bool by the dialect wrapper",
 			"IconBytes":      "COALESCE(LENGTH(icon_blob), 0) loses its decltype; read through sqlutil.CoerceInt64, never bound",
 		},
 		postgresGenPkg: {
 			"CallerIsAdmin":  "the app-ownership predicate's administrator arm: a bare boolean parameter that no column types, and CASTing it would type it on postgres alone",
 			"IncludeRevoked": "the retired-row widening arm of the app listings: a bare boolean parameter that no column types, bound as bool by the dialect wrapper",
+			"IncludeHubWide": "the catalogue-widening arm of the one app listing: a bare boolean parameter that no column types, bound as bool by the dialect wrapper",
 			"IconBytes":      "COALESCE(LENGTH(icon_blob), 0) loses its decltype; read through sqlutil.CoerceInt64, never bound",
-			"UserID":         "the app-disconnect cascade's whole-set OR-chain, where empty means every user",
 		},
 		workerGenPkg: {},
 	}

@@ -135,6 +135,7 @@ func TestRegister_ConfidentialClientGetsItsSecretOnce(t *testing.T) {
 	resp := postRegistration(t, env, map[string]any{
 		"client_name":                "Server-side app",
 		"redirect_uris":              []string{"https://confidential.example.com/callback"},
+		"scope":                      "workspace:read",
 		"token_endpoint_auth_method": "client_secret_basic",
 	})
 	require.Equal(t, http.StatusCreated, resp.StatusCode)
@@ -257,10 +258,14 @@ func TestRegister_RefusesABodyPastTheCap(t *testing.T) {
 		"redirect_uris": []string{"https://a.example.com/cb"},
 		"client_uri":    "https://" + strings.Repeat("x", 32<<10) + ".example.com",
 	})
-	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	// 413, not a 400 that blames the document's shape: the body may be
+	// well-formed and merely larger than the endpoint admits, and the status
+	// is what tells the two apart. The reader still refuses BEFORE any field
+	// rule, so the oversized client_uri never reaches validation.
+	assert.Equal(t, http.StatusRequestEntityTooLarge, resp.StatusCode)
 	body := decodeJSONBody(t, resp)
 	assert.Equal(t, "invalid_client_metadata", body["error"])
-	assert.Contains(t, body["error_description"], "not a JSON object",
+	assert.Contains(t, body["error_description"], "larger than",
 		"the refusal must come from the capped reader, not from the client_uri length rule")
 }
 
@@ -282,7 +287,8 @@ func seedIconApp(t *testing.T, env *apiAuthEnv, mutate func(*store.CreateOAuthCl
 	if mutate != nil {
 		mutate(&params)
 	}
-	require.NoError(t, env.store.OAuthClients().Create(ctx, params))
+	_, createErr := env.store.OAuthClients().Create(ctx, params)
+	require.NoError(t, createErr)
 	_, err := env.store.OAuthClients().SetIcon(ctx, store.SetOAuthClientIconParams{
 		ClientID: params.ClientID, IconBlob: []byte("\x89PNG\r\n\x1a\nfake"), IconMediaType: "image/png",
 		CallerUserID: userid.MustNew(env.userID), CallerIsAdmin: true,
@@ -296,7 +302,7 @@ func vouch(t *testing.T, env *apiAuthEnv, clientID string) {
 	t.Helper()
 	now := time.Now().UTC()
 	_, err := env.store.OAuthClients().SetVerified(context.Background(), store.SetOAuthClientVerifiedParams{
-		ClientID: clientID, VerifiedAt: &now, VerifiedBy: env.userID,
+		ClientID: clientID, VerifiedAt: &now, VerifiedBy: env.userID, CallerIsAdmin: true,
 	})
 	require.NoError(t, err)
 }
@@ -428,6 +434,7 @@ func TestRegister_EchoesTheRequestedAuthMethod(t *testing.T) {
 	resp := postRegistration(t, env, map[string]any{
 		"client_name":                "Server app",
 		"redirect_uris":              []string{"https://server.example.com/callback"},
+		"scope":                      "workspace:read",
 		"token_endpoint_auth_method": "client_secret_post",
 	})
 	defer func() { _ = resp.Body.Close() }()

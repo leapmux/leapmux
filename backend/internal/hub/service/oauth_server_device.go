@@ -20,11 +20,11 @@ import (
 
 // handleDeviceAuthorization starts the device flow.
 //
-// It is no longer anonymous in the sense that mattered: the request must name a
-// registered client_id, because the activation page has to say WHICH app the
-// person is authorizing and the token leg has to refuse a redemption by a
-// different one. It still carries no user credential -- the whole point of this
-// flow is that the machine asking has no browser.
+// It is no longer anonymous in the sense that mattered: the request must
+// specify a registered client_id, because the activation page has to say WHICH
+// app the person authorizes and the token stage has to refuse a redemption by
+// a different one. It still carries no user credential -- the whole point of
+// this flow is that the machine that asks has no browser.
 func (h *OAuthServerHandler) handleDeviceAuthorization(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -34,18 +34,22 @@ func (h *OAuthServerHandler) handleDeviceAuthorization(w http.ResponseWriter, r 
 		http.Error(w, "bad form", http.StatusBadRequest)
 		return
 	}
-	// The viewer is nil: this leg carries no session, so it reaches HUB-WIDE
+	// RFC 8628 section 3.1 incorporates RFC 6749 section 3.2.1: the client
+	// AUTHENTICATES on this stage exactly as the token stages do. A CONFIDENTIAL
+	// app must present its secret; without this check anyone who learned a
+	// client_id could mint grants in that app's name and drive the hub's
+	// activation pages with flows the app never started.
+	app, clientErr, internalErr := h.authenticateClientOpts(r.Context(), r, "", false)
+	if respondClientAuthFailure(w, clientErr, internalErr, "device authorization client lookup failed") {
+		return
+	}
+	// The viewer is nil: this stage carries no session, so it reaches HUB-WIDE
 	// apps only. A user's PRIVATE app cannot start a device flow, and that is
-	// the honest consequence of a flow whose first leg has no identity -- the
+	// the honest consequence of a flow whose first stage has no identity -- the
 	// authorization-code flow, which runs in the owner's browser, is where a
 	// private app belongs.
-	app, err := h.resolveApp(r.Context(), r.FormValue("client_id"), nil)
-	if err != nil {
-		if errors.Is(err, errAppUnavailable) {
-			writeOAuthError(w, http.StatusBadRequest, "invalid_client", "unknown or unavailable client_id")
-			return
-		}
-		writeInternalError(w, "device authorization client lookup failed", err)
+	if !app.IsHubWide() {
+		writeOAuthErrorBody(w, http.StatusBadRequest, appUnavailableBody())
 		return
 	}
 	if !appAllowsGrantType(app, GrantTypeDeviceCode) {
@@ -67,6 +71,15 @@ func (h *OAuthServerHandler) handleDeviceAuthorization(w http.ResponseWriter, r 
 		writeInternalError(w, "device authorization produced an unstorable ask", err)
 		return
 	}
+	// The hub's address is resolved BEFORE the grant row is inserted: the
+	// response cannot state a verification URL without it, and a refusal after
+	// the insert would leave a pending grant nobody can ever poll, lingering
+	// until the sweep. Resolving first answers the same 503 with nothing
+	// written.
+	base, ok := h.metadataBase(w)
+	if !ok {
+		return
+	}
 	grant, err := h.createDeviceGrant(r.Context(), store.CreateDeviceAuthorizationParams{
 		DeviceName:      normalizeInstallationName(r.FormValue("installation_name")),
 		ClientID:        app.ClientID,
@@ -78,7 +91,7 @@ func (h *OAuthServerHandler) handleDeviceAuthorization(w http.ResponseWriter, r 
 		writeInternalError(w, "device authorization creation failed", err)
 		return
 	}
-	h.writeDeviceGrantResponse(w, grant)
+	h.writeDeviceGrantResponse(w, base, grant)
 }
 
 // deviceGrant is the code pair one created grant hands back: the secret the
@@ -114,7 +127,11 @@ func (h *OAuthServerHandler) createDeviceGrant(ctx context.Context, p store.Crea
 	var err error
 	for range DeviceGrantDrawLimit {
 		p.DeviceCode = id.Generate()
-		p.UserCode = generateUserCode()
+		// verifycode.Generate produces a 6-char alphanumeric from an
+		// unambiguous alphabet, which is the user-code shape this grant wants;
+		// verifycode.Format adds the display form (XXX-XXX) when the response
+		// builds verification_uri_complete.
+		p.UserCode = verifycode.Generate()
 		if err = h.store.DeviceAuthorizations().Create(ctx, p); err == nil {
 			return deviceGrant{DeviceCode: p.DeviceCode, UserCode: p.UserCode}, nil
 		}
@@ -128,12 +145,17 @@ func (h *OAuthServerHandler) createDeviceGrant(ctx context.Context, p store.Crea
 // writeDeviceGrantResponse writes the RFC 8628 section 3.2 authorization
 // response.
 //
-// ONE writer for the two grant legs -- an app login and a credential step-up --
+// ONE writer for the two grant stages -- an app login and a credential step-up --
 // because a client polls both with one code path, so the two bodies must carry
 // the same six fields and the same verification URLs. A shared function states
 // that rule; two copies would state it in prose and could drift silently.
-func (h *OAuthServerHandler) writeDeviceGrantResponse(w http.ResponseWriter, grant deviceGrant) {
-	verifyURI := locallisten.JoinPath(h.hubURL(), "/oauth/device")
+//
+// The callers resolve the hub's base URL -- through the SAME refusal the
+// metadata documents give -- BEFORE inserting the grant row, and pass it in:
+// a grant row whose response could not name a verification URL would sit
+// pending until the sweep, and a code the client never held cannot be polled.
+func (h *OAuthServerHandler) writeDeviceGrantResponse(w http.ResponseWriter, base string, grant deviceGrant) {
+	verifyURI := locallisten.JoinPath(base, "/oauth/device")
 	completeQuery := url.Values{"user_code": {verifycode.Format(grant.UserCode)}}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"device_code":               grant.DeviceCode,
@@ -149,9 +171,9 @@ func (h *OAuthServerHandler) writeDeviceGrantResponse(w http.ResponseWriter, gra
 // app displays. GET shows the form; POST processes it.
 //
 // Approving a device grant mints the same long-lived token pair the consent
-// form does, so it carries the same elevation gate: the GET leg bounces through
-// /elevate and comes back, the POST leg refuses (see requireElevatedSession on
-// why the two legs differ).
+// form does, so it carries the same elevation requirement: the GET stage bounces
+// through /elevate and comes back, the POST stage refuses (see
+// requireElevatedSession on why the two stages differ).
 //
 // This is the flow used from SSH and containers, so the elevation happens on a
 // DIFFERENT machine from the one it authorizes. That is the point -- the
@@ -226,7 +248,7 @@ func (h *OAuthServerHandler) approveOrDenyDevice(w http.ResponseWriter, r *http.
 	// DENY actually returns, and it is final: the approve statements match a
 	// pending row only, so a denied grant can never become approved. Without
 	// it the poller waited out the whole ten-minute expiry to learn that a
-	// person had refused.
+	// person refused.
 	//
 	// The nil check mirrors the allow branch, and so does the ROWS check: a
 	// code that is unknown, mistyped or already answered denies nothing, and
@@ -268,10 +290,29 @@ func (h *OAuthServerHandler) approveOrDenyDevice(w http.ResponseWriter, r *http.
 		}
 		// The ask is re-resolved against THIS user, which is where a
 		// non-administrator's request for an admin scope is refused: the
-		// anonymous first leg had no account to judge it against.
+		// anonymous first stage had no account to judge it against.
 		scopes, scopeErr := resolveRequestedScopes(grant.RequestedScopes, app, user)
 		if scopeErr != nil {
 			http.Error(w, scopeErr.ErrorDescription, http.StatusForbidden)
+			return
+		}
+		// An admin-reaching ask confirms ONCE before it binds. The device
+		// flow authorizes a machine the person typing the code cannot see,
+		// under an app name the phisher also chose how to run; the old flow's
+		// checkbox made a hand-typed code default to NON-admin, and losing
+		// that left one click on a trusted name between a phished
+		// administrator and the admin credential. The re-rendered page states
+		// the admin sentences beside the caution and carries
+		// admin_confirmed, so the second Allow binds exactly what the person
+		// confirmed -- a deliberate stop, never a silent narrowing.
+		if _, admin := firstAdminScope(scopes); admin && r.PostFormValue("admin_confirmed") == "" {
+			display := appDisplay(app)
+			writePage(w, http.StatusOK, devicePageTmpl, devicePageData{
+				UserCode:     normalized,
+				App:          &display,
+				Permissions:  describeScopes(scopes),
+				ConfirmAdmin: true,
+			}, "")
 			return
 		}
 		stored, storeErr := scopes.Storable()
@@ -285,7 +326,7 @@ func (h *OAuthServerHandler) approveOrDenyDevice(w http.ResponseWriter, r *http.
 	// A step-up happens HERE, inside the approval. There is nothing for the
 	// client to exchange -- the window is on its existing row -- so the
 	// approval writes it rather than leaving an approved grant for the token
-	// leg to mint from. The poll then sees the grant approved and retries the
+	// stage to mint from. The poll then sees the grant approved and retries the
 	// request the hub refused.
 	//
 	// This handler reads elevateTokenID from the GRANT, and only when the grant
@@ -314,12 +355,11 @@ func (h *OAuthServerHandler) approveOrDenyDevice(w http.ResponseWriter, r *http.
 	// credential still carries the OLD deadline, and this process may be the one
 	// serving the client's retry -- so the cache must be dropped through the lane
 	// whose contract is exactly "re-read the user without logging them out". The
-	// durable event the store emitted covers every other hub.
+	// durable event the store emitted covers the watcher's replay.
 	//
 	// It runs here rather than inside the transaction because RunInTransaction
 	// may run its callback more than once, and a lifecycle effect is state that
-	// ACCUMULATES: an attempt that lost its commit would still have invalidated
-	// the cache.
+	// ACCUMULATES: an attempt that lost its commit also invalidates the cache.
 	if elevating {
 		h.lifecycle.UserInfoInvalidated(user.ID.String())
 	}
@@ -337,7 +377,7 @@ func (h *OAuthServerHandler) approveOrDenyDevice(w http.ResponseWriter, r *http.
 // answered" rather than pretending the code is unknown.
 //
 // It states which of the five conditions applies only as far as the list
-// above, which discloses nothing: reaching this leg needs a signed-in session
+// above, which discloses nothing: reaching this stage needs a signed-in session
 // that already proved a factor.
 var errDeviceGrantNotApprovable = errors.New(
 	"that code cannot be authorized: it is unknown, expired, or already answered")
@@ -395,7 +435,7 @@ func isElevationGrant(row *store.DeviceAuthorization) bool {
 // a live grant and decide its verb from a missing one.
 //
 // A MISS is nil with no error, and it tells a caller nothing it could not
-// already learn: reaching this leg needs a signed-in and elevated session, and
+// already learn: reaching this stage needs a signed-in and elevated session, and
 // the POST beside it already answers "is this code live" by approving or
 // refusing. An expired or already-consumed grant is a miss for the same reason
 // -- neither can be approved.

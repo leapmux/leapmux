@@ -2,8 +2,11 @@ package sqlite
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/hub/oauthapp"
+	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -56,4 +59,39 @@ func TestMigrateDB_Idempotent(t *testing.T) {
 	m2, err := newMigrator(sqlDB)
 	require.NoError(t, err)
 	require.NoError(t, m2.Migrate(context.Background()))
+}
+
+// TestOpen_SecondBootReseedsTheBuiltIns pins the difference between a seed
+// and a migration INSERT: the second boot on an existing database has nothing
+// to migrate -- goose is at the latest version -- and must still reconcile the
+// built-in registrations. Without it, rows that vanished between boots (a
+// hand edit, a partial restore) stayed gone forever, which is the exact state
+// the old migration-seeded rows could never recover from.
+func TestOpen_SecondBootReseedsTheBuiltIns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hub.db")
+
+	// First boot: migrates and seeds.
+	first, err := Open(path, sqlitedb.Config{})
+	require.NoError(t, err)
+	require.NoError(t, first.Close())
+
+	// Damage between boots, written the way it actually happens -- raw SQL.
+	// No store verb can do it: every editing verb refuses a built-in, which
+	// is the point of those refusals.
+	raw, err := OpenDB(path, sqlitedb.Config{})
+	require.NoError(t, err)
+	_, err = raw.Exec("DELETE FROM oauth_clients WHERE registration_source = 'builtin'")
+	require.NoError(t, err)
+	require.NoError(t, raw.Close())
+
+	// Second boot: migration is a no-op, and the seed must restore the rows.
+	second, err := Open(path, sqlitedb.Config{})
+	require.NoError(t, err)
+	defer func() { _ = second.Close() }()
+
+	for _, clientID := range oauthapp.BuiltInClientIDs() {
+		app, err := second.OAuthClients().Get(context.Background(), clientID)
+		require.NoErrorf(t, err, "the second boot must reseed %s", clientID)
+		assert.Equal(t, store.OAuthClientSourceBuiltin, app.RegistrationSource)
+	}
 }

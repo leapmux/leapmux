@@ -2,29 +2,14 @@ import type { Component } from 'solid-js'
 import type { StatusMessage } from '~/components/common/StatusLine'
 import type { MyAPIToken } from '~/generated/leapmux/v1/user_pb'
 import { timestampDate } from '@bufbuild/protobuf/wkt'
-import { createSignal, For, onMount, Show } from 'solid-js'
+import { createMemo, createSignal, For, onMount, Show } from 'solid-js'
 import { userClient } from '~/api/clients'
 import { ConfirmDialog } from '~/components/common/ConfirmDialog'
 import { Spinner } from '~/components/common/Spinner'
 import { StatusLine } from '~/components/common/StatusLine'
 import { formatErrorMessage } from '~/lib/errors'
 import * as styles from './credentialList.css'
-
-/**
- * The hub's maximum page. Asked for explicitly, because an omitted limit
- * resolves to the hub's default of fifty: the loop below then took ten times
- * the round trips and covered a tenth of what MAX_PAGES claims.
- */
-const PAGE_SIZE = 500
-
-/**
- * How many pages the credential listing reads before it stops.
- *
- * At PAGE_SIZE this covers an account with a quarter of a million live
- * credentials -- which is to say it is a runaway guard, not a limit anybody
- * reaches.
- */
-const MAX_PAGES = 500
+import { fetchAllPages, MAX_PAGES, PAGE_SIZE } from './fetchAllPages'
 
 /**
  * One app and every credential this account holds for it.
@@ -97,22 +82,14 @@ export const AccountConnectedApps: Component = () => {
     setLoading(true)
     setLoadFailed(false)
     try {
-      // Keyed by id while assembling: a stalled cursor makes the last page
-      // arrive twice, and a keyset boundary can repeat a row across two
-      // pages. Neither should render the same credential twice with two
-      // Revoke buttons.
-      const byID = new Map<string, MyAPIToken>()
-      let cursor = ''
-      for (let page = 0; page < MAX_PAGES; page++) {
-        const resp = await userClient.listMyAPITokens({ cursor, limit: BigInt(PAGE_SIZE) })
-        for (const token of resp.tokens)
-          byID.set(token.id, token)
-        const next = resp.nextCursor ?? ''
-        if (next === '' || next === cursor)
-          break
-        cursor = next
-      }
-      setTokens([...byID.values()])
+      // The shared every-page loop owns the runaway cap, the stalled-cursor
+      // guard and the keyed dedupe this panel taught the codebase.
+      const tokens = await fetchAllPages(
+        async cursor => await userClient.listMyAPITokens({ cursor, limit: BigInt(PAGE_SIZE) })
+          .then(resp => ({ items: resp.tokens, nextCursor: resp.nextCursor ?? '' })),
+        { maxPages: MAX_PAGES, keyOf: token => token.id },
+      )
+      setTokens(tokens)
     }
     catch (e) {
       setLoadFailed(true)
@@ -217,7 +194,16 @@ export const AccountConnectedApps: Component = () => {
    * group. Every row of one app carries the same registration, so any row
    * answers; taking the first keeps the read at one place.
    */
-  const connectedApps = (): ConnectedApp[] => {
+  // createMemo hands its previous value to the function, and the grouping
+  // reads it to preserve wrapper identity (see the comment inside).
+  const connectedApps = createMemo((prev: ConnectedApp[] | undefined): ConnectedApp[] => {
+    // Build the groups fresh, then keep the PREVIOUS wrapper for a group
+    // whose installation ids are unchanged. <For> keys by reference, so a
+    // memo that rebuilt every wrapper disposed and re-created every group on
+    // each write -- O(total installations) of DOM churn for a one-row revoke.
+    // The token objects themselves keep their identity through a filter, so
+    // matching ids means matching rows.
+    const prevByClient = new Map((prev ?? []).map(g => [g.clientId, g]))
     const byClient = new Map<string, ConnectedApp>()
     for (const token of tokens()) {
       const existing = byClient.get(token.clientId)
@@ -232,8 +218,15 @@ export const AccountConnectedApps: Component = () => {
         installations: [token],
       })
     }
-    return [...byClient.values()]
-  }
+    return [...byClient.values()].map((group) => {
+      const prev = prevByClient.get(group.clientId)
+      if (!prev)
+        return group
+      const prevIds = prev.installations.map(t => t.id).join('\u0000')
+      const nextIds = group.installations.map(t => t.id).join('\u0000')
+      return prevIds === nextIds ? prev : group
+    })
+  })
 
   return (
     <>
@@ -250,6 +243,12 @@ export const AccountConnectedApps: Component = () => {
             to connect the command-line tool, or authorize an app from its own sign-in screen.
           </p>
         </Show>
+        {/*
+          Keyed by object identity, which the grouping below PRESERVES for a
+          group whose installations did not change: one revoke removes one row
+          from one group instead of disposing and re-creating every group on
+          the page.
+        */}
         <For each={connectedApps()}>
           {app => (
             <div class={styles.credentialGroup} data-testid={`connected-app-${app.clientId}`}>

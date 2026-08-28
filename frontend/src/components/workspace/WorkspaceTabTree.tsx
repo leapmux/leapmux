@@ -93,8 +93,10 @@ export function tabBuildKey(t: Tab, store: RepoGitStore): string {
     git.branchLabel ?? '',
     // The same resolution the tree itself uses, so the fingerprint matches
     // buildTree / tabBranchKey -- including when the store says "not a git
-    // repository" and the row's stale toplevel must not win.
-    tabGitToplevelForKey(t, store),
+    // repository" and the row's stale toplevel must not win. The view is
+    // already resolved above; passing it in saves the second resolution per
+    // key build.
+    tabGitToplevelForKey(t, store, git),
     git.isWorktree ? '1' : '0',
     git.originUrl ?? '',
     git.diffStats.added,
@@ -1006,8 +1008,9 @@ function repoKeyAndLabel(tab: Tab, store: RepoGitStore): { key: string, label: s
     return { key: git.originUrl, label: formatGitOriginUrl(git.originUrl) }
   // Through the shared helper, so the group key and the branch bucket resolve
   // the toplevel the same way. A second copy of the chain here is what let a
-  // stale row value override the worker's "not a git repository" answer.
-  const toplevel = tabGitToplevelForKey(tab, store)
+  // stale row value override the worker's "not a git repository" answer. The
+  // view resolved once at the top carries through.
+  const toplevel = tabGitToplevelForKey(tab, store, git)
   if (toplevel) {
     const label = basename(toplevel) || toplevel
     return { key: repoKeyForLocal(toplevel), label }
@@ -1036,7 +1039,9 @@ export function sumDiffStatsFromTabs(tabs: Tab[], store: RepoGitStore): { added:
     const { added: a, deleted: d, untracked: u } = git.diffStats
     if (a === 0 && d === 0 && u === 0)
       continue
-    const key = tabBranchKey(t, store)
+    // The view resolved once above and threads in: the branch key used to
+    // resolve it two more times per tab.
+    const key = tabBranchKey(t, store, git)
     if (seen.has(key))
       continue
     seen.add(key)
@@ -1089,13 +1094,14 @@ export function buildTree(
     const git = repoGitView(tab, store)
     const branchName = git.branchLabel || null
     const workerId = tab.workerId ?? ''
-    const gitToplevel = tabGitToplevelForKey(tab, store)
+    const gitToplevel = tabGitToplevelForKey(tab, store, git)
     // Through the shared function, not a second copy of its body. This IS the
     // "the sidebar groups its tree by it" caller tabBranchKey's own doc names,
     // and the composer's delete-branch dialog collects its tab list by the same
     // function -- a second membership test here would let the dialog report a
-    // different set of affected tabs than the tree shows.
-    const key = tabBranchKey(tab, store)
+    // different set of affected tabs than the tree shows. The resolved view
+    // passes in, so the loop's per-tab work is ONE resolution.
+    const key = tabBranchKey(tab, store, git)
     let bucket = entry.branches.get(key)
     if (!bucket) {
       // Tabs are bucketed by (branchName, workerId, gitToplevel), so
@@ -1177,6 +1183,9 @@ export function buildTree(
       let diffUntracked = 0
       for (const t of branchTabs) {
         const stats = repoGitView(t, store).diffStats
+        // NOTE: one resolution per tab here is the deliberate remaining cost
+        // -- the bucket's tabs share worker+toplevel but not necessarily the
+        // same store key (subdir agents), and diffStats are per-entry.
         if (stats.added > 0 || stats.deleted > 0 || stats.untracked > 0) {
           diffAdded = stats.added
           diffDeleted = stats.deleted

@@ -87,7 +87,7 @@ export type GitFilterTab = 'all' | 'changed' | 'staged' | 'unstaged'
 export type RepoGitStore = ReturnType<typeof createRepoGitStore>
 
 /** Minimal store surface for repo-key resolution helpers. */
-export type RepoGitLookup = Pick<RepoGitStore, 'get' | 'repos'> & {
+export type RepoGitLookup = Pick<RepoGitStore, 'get' | 'peek' | 'repos'> & {
   /** Optional per-worker key index; avoids a full-map scan when present. */
   keysForWorker?: (workerId: string) => readonly RepoKey[]
 }
@@ -267,14 +267,17 @@ export function findCanonicalRepoKey(
     return undefined
 
   const exactKey = repoKey(workerId, probePath)
-  const exact = store.get(exactKey)
+  const exact = store.peek(exactKey)
   if (exact?.toplevel === probePath)
     return exactKey
 
   let best: { key: RepoKey, len: number } | undefined
   const keys = store.keysForWorker?.(workerId)
+  // peek, never get: this scan reads every key the worker owns, and a
+  // touching read would mark them all equally recent -- collapsing the LRU
+  // order the cap's eviction depends on (see the store's peek discipline).
   const entries: Iterable<[string, RepoGitState | undefined]> = keys
-    ? keys.map(k => [k, store.get(k)] as [string, RepoGitState | undefined])
+    ? keys.map(k => [k, store.peek(k)] as [string, RepoGitState | undefined])
     : Object.entries(store.repos())
 
   for (const [key, state] of entries) {
@@ -499,7 +502,7 @@ export function focusedRepoKeyFromTab(
     if (canonical)
       return canonical
     const probeKey = repoKey(workerId, path)
-    const probeState = store.get(probeKey)
+    const probeState = store.peek(probeKey)
     if (probeState?.toplevel)
       return repoKey(workerId, probeState.toplevel)
   }

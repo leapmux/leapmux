@@ -306,14 +306,14 @@ For how apps are registered and what they may ask for, see [App Authorization](/
 |---|---|---|
 | The browser lands on a "not found" page | The address the app sent you to is not one the Hub serves | Check `public_url`. The app builds the authorization URL from the Hub's own metadata document, so a wrong `public_url` sends the browser somewhere the Hub does not answer. |
 | The page asks you to verify, then returns to the same prompt | The session did not elevate | Prove a factor. If the account has neither a password nor a passkey, it has nothing to prove -- set a password first. See [Session elevation](/docs/operating/security/#session-elevation). |
-| `invalid_client` | The `client_id` names no app this account may authorize | Another account's private app is invisible, so the Hub answers exactly as it does for one that does not exist. Ask the app's owner to register it hub-wide, or register your own. |
+| `invalid_client` | The `client_id` matches no app this account may authorize | Another account's private app is invisible, so the Hub answers exactly as it does for one that does not exist. Ask the app's owner to register it hub-wide, or register your own. |
 | `invalid_request` about `redirect_uri` | The address the app sent does not match one it registered | Compare them exactly. Only a **loopback** address ignores the port; everything else is literal. |
 | The app never gets a callback after you clicked **Deny** | Nothing is wrong | A refusal returns `error=access_denied` to the app, which is the app's cue to stop. If it keeps waiting, the app is not reading its own callback. |
 
 ### An app is refused a permission it thought it had
 
 **Symptom**
-An authorized app gets `permission_denied` naming a permission, such as *this app was not granted the terminal:write permission*.
+An authorized app gets `permission_denied` that states the permission, such as *this app was not granted the terminal:write permission*.
 
 **Cause and fix:**
 
@@ -327,11 +327,11 @@ Two refusals are permanent whatever you grant:
 ### A sensitive change is refused although the app is authorized
 
 **Symptom**
-The app reports that verification is required, and running the step-up leg is itself refused.
+The app reports that verification is required, and running the step-up ceremony is itself refused.
 
 **Cause and fix:**
 
-An app is refused the step-up leg unless its owner allowed it. An administrator turns it on per app:
+An app is refused the step-up ceremony unless its owner allowed it. An administrator turns it on per app:
 
 ```bash
 leapmux control admin app allow-elevation --client-id <client_id>

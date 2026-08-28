@@ -118,11 +118,11 @@ message TerminalInfo {
   bool exited = 5;
   string working_dir = 6;       // Tab's working directory context
   string shell_start_dir = 7;   // Where the shell started
-  string title = 10;            // User-visible tab title
-  TerminalStatus status = 11;   // Lifecycle state (starting/ready/failed)
-  string startup_error = 12;    // Populated when status=TERMINAL_STATUS_STARTUP_FAILED
-  string startup_message = 13;  // Populated when status=TERMINAL_STATUS_STARTING (e.g. "Starting zsh…")
-  GitRepoStatus git_status = 17;
+  string title = 8;             // User-visible tab title
+  TerminalStatus status = 9;    // Lifecycle state (starting/ready/failed)
+  string startup_error = 10;    // Populated when status=TERMINAL_STATUS_STARTUP_FAILED
+  string startup_message = 11;  // Populated when status=TERMINAL_STATUS_STARTING (e.g. "Starting zsh…")
+  GitRepoStatus git_status = 12;
   // Cumulative PTY byte offset at the end of `screen`. It counts PTY
   // bytes only, and `screen` leads with the synthesized escape sequences
   // that restore the sticky xterm modes. `screen` is therefore longer
@@ -130,9 +130,7 @@ message TerminalInfo {
   // start to fall off the retained window. Client seeds its WatchEvents
   // `after_offset` from this so a resubscribe picks up exactly where
   // the snapshot left off instead of replaying `screen`.
-  int64 screen_end_offset = 15;
-  reserved 8, 9, 14, 16;
-  reserved "git_branch", "git_origin_url", "git_toplevel", "git_is_worktree";
+  int64 screen_end_offset = 13;
 }
 
 message TerminalData {
@@ -203,9 +201,7 @@ message TerminalStatusChange {
   TerminalStatus status = 2;
   string startup_error = 3;   // Populated when status=TERMINAL_STATUS_STARTUP_FAILED
   string startup_message = 4; // Populated when status=TERMINAL_STATUS_STARTING (e.g. "Starting zsh…")
-  GitRepoStatus git_status = 9;
-  reserved 5, 6, 7, 8;
-  reserved "git_branch", "git_origin_url", "git_toplevel", "git_is_worktree";
+  GitRepoStatus git_status = 5;
 }
 
 message ListAvailableShellsRequest {

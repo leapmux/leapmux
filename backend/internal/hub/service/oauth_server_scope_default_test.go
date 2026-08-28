@@ -112,8 +112,16 @@ func TestOmittedScopeDefaultsBelowTheAdminFamily(t *testing.T) {
 		cookie := env.elevatedAdminCookie(t)
 
 		deviceCode, userCode := startDeviceAuthorization(t, env, url.Values{"scope": {"admin:read"}})
-		approve, err := postForm(env.server.URL+"/oauth/device",
+		// An admin-reaching ask takes the SECOND step the confirm flow adds:
+		// the first Allow answers with the confirmation page and binds
+		// nothing, and the Allow that carries admin_confirmed grants.
+		first, err := postForm(env.server.URL+"/oauth/device",
 			url.Values{"user_code": {userCode}, "decision": {"allow"}}, cookie)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, first.StatusCode)
+		_ = first.Body.Close()
+		approve, err := postForm(env.server.URL+"/oauth/device",
+			url.Values{"user_code": {userCode}, "decision": {"allow"}, "admin_confirmed": {"1"}}, cookie)
 		require.NoError(t, err)
 		defer func() { _ = approve.Body.Close() }()
 		require.Equal(t, http.StatusOK, approve.StatusCode)

@@ -125,7 +125,7 @@ func AuthenticateHTTP(ctx context.Context, r *http.Request, opts HTTPAuthOpts) (
 		}
 	}
 	if opts.ReadCookie {
-		token := sessionIDFromCookieHeader(r.Header.Get("Cookie"), opts.SecureCookies)
+		token := SessionIDFromCookieHeader(r.Header.Get("Cookie"), opts.SecureCookies)
 		if token != "" {
 			user, err := ValidateToken(ctx, opts.Store, token)
 			if err != nil {

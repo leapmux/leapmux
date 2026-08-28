@@ -168,7 +168,7 @@ func (h *WorkerDelegationHandler) handleMint(w http.ResponseWriter, r *http.Requ
 	// local literal: the set this mint writes and the set loadBearer narrows
 	// by at every validation are then one constant, so a scope added to the
 	// ceiling can never silently miss the mint.
-	delegationGrant, err := auth.CeilingFor(auth.BearerKindDelegation).Storable()
+	delegationGrant, err := auth.CeilingFor(auth.BearerKindDelegation).Close().Storable()
 	if err != nil {
 		http.Error(w, "delegation grant is not storable", http.StatusInternalServerError)
 		return

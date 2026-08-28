@@ -43,7 +43,8 @@ func seedTestApp(t *testing.T, env *apiAuthEnv, p store.CreateOAuthClientParams)
 	if p.RegistrationSource == "" {
 		p.RegistrationSource = store.OAuthClientSourceAdmin
 	}
-	require.NoError(t, env.store.OAuthClients().Create(context.Background(), p))
+	_, err := env.store.OAuthClients().Create(context.Background(), p)
+	require.NoError(t, err)
 	return p.ClientID
 }
 
@@ -666,7 +667,7 @@ func TestAuthorizationServer_AnUnknownScopeIsRefusedBeforeRendering(t *testing.T
 			"code_challenge_method": {"S256"},
 			"redirect_uri":          {redirect},
 			"state":                 {"state-1"},
-			"code_challenge":        {"challenge-1"},
+			"code_challenge":        {strings.Repeat("c", 43)},
 			"scope":                 {"workspace:read terminal:write"},
 		}
 		resp := getWithCookie(t, env.server.URL+"/oauth/authorize?"+query.Encode(), cookie)

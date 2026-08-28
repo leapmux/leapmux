@@ -413,18 +413,9 @@ CREATE TABLE oauth_clients (
 CREATE INDEX idx_oauth_clients_owner ON oauth_clients(owner_user_id, created_at DESC, client_id DESC);
 CREATE INDEX idx_oauth_clients_revoked_at ON oauth_clients(revoked_at) WHERE revoked_at IS NOT NULL;
 
--- The two built-in registrations; see the sqlite migration for why both state
--- elevation_allowed = TRUE explicitly against the column's FALSE default.
-INSERT INTO oauth_clients (client_id, client_name, redirect_uris, scopes, grant_types, elevation_allowed, registration_source, verified_at, verified_by_user_id)
-VALUES
-    ('leapmux-control-cli', 'LeapMux control CLI', 'http://127.0.0.1/callback',
-     'account:read account:write workspace:read workspace:write worker:read worker:admin agent:read agent:write terminal:read terminal:write file:read git:read git:write tunnel:open admin:read admin:users admin:settings admin:workers',
-     'authorization_code refresh_token urn:ietf:params:oauth:grant-type:device_code',
-     TRUE, 'builtin', NULL, NULL),
-    ('leapmux-service-account', 'Administrator-issued credential', '',
-     'account:read account:write workspace:read workspace:write worker:read worker:admin agent:read agent:write terminal:read terminal:write file:read git:read git:write tunnel:open admin:read admin:users admin:settings admin:workers',
-     '',
-     TRUE, 'builtin', NULL, NULL);
+-- The two built-in registrations are NOT seeded here; see the sqlite
+-- migration's note. store.SeedBuiltIns seeds and reconciles them on every
+-- store open, rewriting only the columns that are constants of the build.
 
 -- See sqlite migration for full rationale on api_tokens.
 CREATE TABLE api_tokens (

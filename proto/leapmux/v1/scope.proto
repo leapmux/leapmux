@@ -22,9 +22,13 @@ enum Scope {
   // a new procedure is unreachable by an app until somebody assigns it.
   SCOPE_UNSPECIFIED = 0;
 
-  // The recorded refusal. It marks the credential-lifecycle surface: minting,
-  // listing and revoking app credentials, and registering an app. No grant
-  // reaches it, so it can never appear in a request or on a consent screen.
+  // The recorded refusal. It marks the procedures NO grant reaches, whatever
+  // an account ticks on a consent screen: the account's own credential
+  // surface, which the enforcement table in
+  // internal/hub/auth/procedure_scopes.go states -- the one source of that
+  // classification, including which formerly refused surfaces ordinary scopes
+  // now reach (app registration sits behind admin:apps). It can never appear
+  // in a request or on a consent screen.
   //
   // It is a value rather than an absence because the alternative is a map miss,
   // and a miss cannot state a REASON. A reader of the map learns that the
@@ -89,7 +93,10 @@ enum Scope {
   //
   // There is no file:write scope, because the Worker registers no file-write
   // handler. An unused scope on a consent screen is a lie; a future write
-  // handler adds its own.
+  // handler adds its own. The one destructive leg the file-tab verbs can
+  // reach -- RevokeFileTabPath with WORKTREE_ACTION_REMOVE, which runs
+  // `git worktree remove` -- is gated under SCOPE_GIT_WRITE at the action,
+  // so file:read alone stays read-only.
   SCOPE_FILE_READ = 13;
 
   // --- Git -----------------------------------------------------------------
@@ -127,4 +134,10 @@ enum Scope {
   // Administer every worker on the hub, and the registration keys that admit
   // one.
   SCOPE_ADMIN_WORKERS = 20;
+  // Register, edit, vouch, retire and delete the hub's app registrations --
+  // the catalogue every consent screen draws from. Its own family rather than
+  // a fold into admin:settings, because a credential that may rewire where an
+  // authorization code redirects must be separable from one that may change
+  // the hub's own security policy.
+  SCOPE_ADMIN_APPS = 21;
 }

@@ -48,7 +48,7 @@ type providerCacheInvalidator interface {
 
 func NewAdminIdPService(st store.Store, ks *keystore.Keystore, cache providerCacheInvalidator) *AdminIdPService {
 	if cache == nil {
-		panic("admin oauth service requires a provider cache invalidator")
+		panic("admin idp service requires a provider cache invalidator")
 	}
 	return &AdminIdPService{store: st, ks: ks, cache: cache}
 }

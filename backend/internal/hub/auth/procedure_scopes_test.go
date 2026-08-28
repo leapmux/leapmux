@@ -100,13 +100,6 @@ var scopeRequirementRationale = map[string]string{
 	leapmuxv1connect.UserServiceDisconnectAppProcedure:             "ends every credential the account holds for one app, so an app could retire a rival",
 
 	// --- ScopeNever: the app registry itself ------------------------------
-	leapmuxv1connect.AppServiceRegisterAppProcedure:            "an app that registers an app writes the next consent screen",
-	leapmuxv1connect.AppServiceListAppsProcedure:               "the listing is the reconnaissance a forged registration would want",
-	leapmuxv1connect.AppServiceUpdateAppProcedure:              "editing a registration rewrites where a consent redirects",
-	leapmuxv1connect.AppServiceSetAppElevationAllowedProcedure: "an app must not grant itself the step-up leg",
-	leapmuxv1connect.AppServiceVerifyAppProcedure:              "an app must not vouch for one, least of all for itself",
-	leapmuxv1connect.AppServiceRevokeAppProcedure:              "retires an app and every credential it holds, for every account",
-	leapmuxv1connect.AppServiceDeleteAppProcedure:              "removes a registration other accounts authorize against",
 
 	// --- ScopeNotHubServed: not on the Hub's Connect mux -------------------
 	leapmuxv1connect.ControlIPCServiceCallInnerProcedure:                   "the Worker's local unix socket, not a Hub procedure",
@@ -370,4 +363,40 @@ func TestScopeDenialNamesNoInternalState(t *testing.T) {
 	}
 	assert.Len(t, messages, 1,
 		"every non-scope refusal must share one sentence, or the message discloses which kind it was")
+}
+
+// TestAppServiceProceduresRequireAdminApps pins the decision that made the
+// documented `control admin app` verbs reachable: the whole AppService sits
+// behind admin:apps. Before it, every verb was ScopeNever and a CLI credential
+// -- necessarily scoped -- was refused at this rung before requireElevatedOwner
+// could run, contradicting the flow the docs describe.
+func TestAppServiceProceduresRequireAdminApps(t *testing.T) {
+	for _, procedure := range []string{
+		leapmuxv1connect.AppServiceRegisterAppProcedure,
+		leapmuxv1connect.AppServiceListAppsProcedure,
+		leapmuxv1connect.AppServiceUpdateAppProcedure,
+		leapmuxv1connect.AppServiceSetAppElevationAllowedProcedure,
+		leapmuxv1connect.AppServiceVerifyAppProcedure,
+		leapmuxv1connect.AppServiceRevokeAppProcedure,
+		leapmuxv1connect.AppServiceDeleteAppProcedure,
+	} {
+		assert.Equalf(t, leapmuxv1.Scope_SCOPE_ADMIN_APPS,
+			ScopeRequirementFor(procedure).scope,
+			"%s must sit behind admin:apps", procedure)
+	}
+
+	// And a credential holding admin:apps passes the rung for exactly these.
+	holder := &UserInfo{IsAdmin: true, Scopes: mustScopeSet("admin:read admin:apps")}
+	assert.NoError(t, enforceScope(leapmuxv1connect.AppServiceListAppsProcedure, holder))
+	without := &UserInfo{IsAdmin: true, Scopes: mustScopeSet("admin:read")}
+	assert.Error(t, enforceScope(leapmuxv1connect.AppServiceListAppsProcedure, without),
+		"admin:read alone must not reach the app catalogue")
+}
+
+func mustScopeSet(tokens string) authscope.ScopeSet {
+	set, err := authscope.Parse(tokens)
+	if err != nil {
+		panic(err)
+	}
+	return set
 }

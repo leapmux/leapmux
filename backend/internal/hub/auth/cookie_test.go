@@ -42,32 +42,49 @@ func TestClearSessionCookie(t *testing.T) {
 	assert.True(t, c.HttpOnly)
 }
 
-func TestSessionIDFromHeader_ValidCookie(t *testing.T) {
+func TestSessionIDFromCookieHeader_ValidCookie(t *testing.T) {
 	header := auth.CookieName + "=my-session-id"
-	got := auth.SessionIDFromHeader(header, false)
+	got := auth.SessionIDFromCookieHeader(header, false)
 	assert.Equal(t, "my-session-id", got)
 }
 
-func TestSessionIDFromHeader_MultipleCookies(t *testing.T) {
+func TestSessionIDFromCookieHeader_MultipleCookies(t *testing.T) {
 	header := "other=value; " + auth.CookieName + "=correct-id; foo=bar"
-	got := auth.SessionIDFromHeader(header, false)
+	got := auth.SessionIDFromCookieHeader(header, false)
 	assert.Equal(t, "correct-id", got)
 }
 
-func TestSessionIDFromHeader_NoCookie(t *testing.T) {
-	got := auth.SessionIDFromHeader("other=value; foo=bar", false)
+func TestSessionIDFromCookieHeader_NoCookie(t *testing.T) {
+	got := auth.SessionIDFromCookieHeader("other=value; foo=bar", false)
 	assert.Empty(t, got)
 }
 
-func TestSessionIDFromHeader_EmptyHeader(t *testing.T) {
-	got := auth.SessionIDFromHeader("", false)
+func TestSessionIDFromCookieHeader_EmptyHeader(t *testing.T) {
+	got := auth.SessionIDFromCookieHeader("", false)
 	assert.Empty(t, got)
 }
 
-func TestSessionIDFromHeader_SecureCookie(t *testing.T) {
+func TestSessionIDFromCookieHeader_SecureCookie(t *testing.T) {
 	header := auth.SecureCookieName + "=secure-id"
-	got := auth.SessionIDFromHeader(header, true)
+	got := auth.SessionIDFromCookieHeader(header, true)
 	assert.Equal(t, "secure-id", got)
+}
+
+// The fallback reads the __Host- spelling even when secure_cookies is off, so
+// a browser that still holds the prefixed cookie from before the setting
+// changed signs out cleanly -- the same asymmetry the auth ladder applies.
+func TestSessionIDFromCookieHeader_PrefixedCookieWhileInsecure(t *testing.T) {
+	header := auth.SecureCookieName + "=leftover-id"
+	got := auth.SessionIDFromCookieHeader(header, false)
+	assert.Equal(t, "leftover-id", got)
+}
+
+// With secure_cookies on, the unprefixed spelling is never read: the hub does
+// not write it, so a caller that plants one reaches nothing.
+func TestSessionIDFromCookieHeader_IgnoresUnprefixedWhenSecure(t *testing.T) {
+	header := auth.CookieName + "=planted-id"
+	got := auth.SessionIDFromCookieHeader(header, true)
+	assert.Empty(t, got)
 }
 
 // The OAuth flow-binding cookie. Every handler test runs with secure

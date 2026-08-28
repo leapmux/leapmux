@@ -57,7 +57,7 @@ service UserService {
   // field, elevation_expires_at, so a client has one success shape. (The
   // two response messages are separate because a proto response type may
   // serve only one RPC.) An OAuth-only account elevates through the OAuth
-  // re-authentication leg at /auth/idp/<provider>/reauth, which is a
+  // re-authentication stage at /auth/idp/<provider>/reauth, which is a
   // browser redirect rather than an RPC.
   rpc ElevateSession(ElevateSessionRequest) returns (ElevateSessionResponse);
   rpc BeginPasskeyElevation(BeginPasskeyElevationRequest) returns (BeginPasskeyElevationResponse);
@@ -92,7 +92,6 @@ service UserService {
 message UpdateProfileRequest {
   string username = 1;
   string display_name = 2;
-  reserved 3; // was: email (use RequestEmailChange instead)
 }
 
 message UpdateProfileResponse {

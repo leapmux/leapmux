@@ -24,7 +24,7 @@ import (
 // registering an app for themself uses the same ones through the preferences
 // dialog. See control.Client.AppService.
 
-// appScopeFlagUsage names the whole grantable vocabulary in the flag's help, so
+// appScopeFlagUsage lists the whole grantable vocabulary in the flag's help, so
 // an operator does not have to find the documentation to learn what is sayable.
 var appScopeFlagUsage = "space-separated permissions this app may ask for, from: " +
 	strings.Join(authscope.EveryGrantableScope().SortedTokens(), ", ")
@@ -116,7 +116,7 @@ func RunAdminAppRegister(rawCtx any, args []string) error {
 			fs.StringVar(&visibility, "visibility", "hub-wide",
 				"hub-wide (every account may authorize it; administrators only) or private (yours alone)")
 			fs.BoolVar(&elevation, "allow-elevation", false,
-				"let this app run the step-up leg, which is what a sensitive change needs")
+				"let this app run the step-up stage, which is what a sensitive change needs")
 		},
 		BeforeDial: requireFlag(&name, "name"),
 		Run: func(c *control.Client, _ adminArgs) error {
@@ -169,24 +169,26 @@ func RunAdminAppUpdate(rawCtx any, args []string) error {
 			fs.StringVar(&grants, "grant-type", "", "replace the grant-type list (comma-separated)")
 		},
 		BeforeDial: requireFlag(&clientID, "client-id"),
-		Run: func(c *control.Client, _ adminArgs) error {
+		Run: func(c *control.Client, a adminArgs) error {
 			msg := &leapmuxv1.UpdateAppRequest{ClientId: clientID}
 			// An UNSET flag leaves the field alone, so a caller that changes a
 			// name does not send back a redirect list it read minutes ago and
-			// overwrite a concurrent edit with it. flag.Visit reports what the
-			// operator actually typed, which is the only way to tell an empty
-			// value from an absent one.
-			if name != "" {
+			// overwrite a concurrent edit with it. a.Passed reports what the
+			// operator actually typed (the scaffolding builds it from
+			// flag.Visit), which is the only way to tell an empty value from
+			// an absent one -- `--uri ""` CLEARS the field instead of being
+			// read as "leave it alone".
+			if a.Passed("name") {
 				msg.ClientName = &name
 			}
-			if uri != "" {
+			if a.Passed("uri") {
 				msg.ClientUri = &uri
 			}
-			if redirect != "" {
+			if a.Passed("redirect-uri") {
 				msg.ReplaceRedirectUris = true
 				msg.RedirectUris = splitCommaList(redirect)
 			}
-			if scope != "" {
+			if a.Passed("scope") {
 				scopes, err := parseAppScopes(scope)
 				if err != nil {
 					return err
@@ -194,7 +196,7 @@ func RunAdminAppUpdate(rawCtx any, args []string) error {
 				msg.ReplaceScopes = true
 				msg.Scopes = scopes
 			}
-			if grants != "" {
+			if a.Passed("grant-type") {
 				msg.ReplaceGrantTypes = true
 				msg.GrantTypes = splitCommaList(grants)
 			}
@@ -207,7 +209,7 @@ func RunAdminAppUpdate(rawCtx any, args []string) error {
 	})
 }
 
-// RunAdminAppSetElevation toggles the step-up leg.
+// RunAdminAppSetElevation toggles the step-up stage.
 //
 // It is its own verb because it is the ONE field a built-in registration may
 // still change: an operator who does not want `leapmux control admin` to
@@ -297,9 +299,17 @@ func RunAdminAppDelete(rawCtx any, args []string) error {
 func parseAppScopes(raw string) ([]leapmuxv1.Scope, error) {
 	if strings.TrimSpace(raw) == "" {
 		return nil, control.EmitError("invalid_request",
-			"--scope is required: an app must name the permissions it may ask for")
+			"--scope is required: an app must specify the permissions it may ask for")
 	}
-	set, err := authscope.Parse(raw)
+	// splitScopeFlag, the one splitter every --scope flag in this package
+	// uses: `file:read,git:read` succeeds here exactly as it does one verb
+	// over, rather than failing on the comma authscope.Parse alone would
+	// treat as part of a token.
+	tokens, err := splitScopeFlag(raw)
+	if err != nil {
+		return nil, err
+	}
+	set, err := authscope.Parse(strings.Join(tokens, " "))
 	if err != nil {
 		return nil, control.EmitErrorWith("invalid_request", err)
 	}

@@ -194,23 +194,21 @@ enum BatchRejectionReason {
   BATCH_REJECTION_TOMBSTONED_TARGET                 = 5;
   BATCH_REJECTION_OP_ID_COLLISION                   = 6;
   BATCH_REJECTION_OP_ID_COLLISION_UNAUTHORIZED      = 7;
-  reserved 8;
-  reserved "BATCH_REJECTION_INCONSISTENT_PARTIAL_COMMIT";
-  BATCH_REJECTION_HUB_ONLY_OP                       = 9;
-  BATCH_REJECTION_TAB_PLACEMENT_INVALID             = 10;
-  BATCH_REJECTION_INCOMPLETE_RECORD                 = 11;
-  BATCH_REJECTION_ROOT_NODE_PROTECTED               = 12;
-  BATCH_REJECTION_ROOT_NODE_NOT_UNIQUE              = 13;
-  BATCH_REJECTION_FLOATING_MOVE_WITH_DESCENDANTS    = 14;
-  BATCH_REJECTION_VALUE_DOMAIN                      = 15;
-  BATCH_REJECTION_PARENT_IMMUTABLE                  = 16;
-  BATCH_REJECTION_ROOT_IMMUTABLE                    = 17;
-  BATCH_REJECTION_TAB_ID_COLLISION_ACROSS_TYPES     = 18;
+  BATCH_REJECTION_HUB_ONLY_OP                       = 8;
+  BATCH_REJECTION_TAB_PLACEMENT_INVALID             = 9;
+  BATCH_REJECTION_INCOMPLETE_RECORD                 = 10;
+  BATCH_REJECTION_ROOT_NODE_PROTECTED               = 11;
+  BATCH_REJECTION_ROOT_NODE_NOT_UNIQUE              = 12;
+  BATCH_REJECTION_FLOATING_MOVE_WITH_DESCENDANTS    = 13;
+  BATCH_REJECTION_VALUE_DOMAIN                      = 14;
+  BATCH_REJECTION_PARENT_IMMUTABLE                  = 15;
+  BATCH_REJECTION_ROOT_IMMUTABLE                    = 16;
+  BATCH_REJECTION_TAB_ID_COLLISION_ACROSS_TYPES     = 17;
   // SetTabRegisterOp.worker_id refers to a worker the principal cannot
   // use (either no such worker exists or the principal has no
   // access grant). Caught at SubmitOps so a CRDT batch can't pin a
   // tab to a worker the user couldn't reach.
-  BATCH_REJECTION_INVALID_WORKER_REF                = 19;
+  BATCH_REJECTION_INVALID_WORKER_REF                = 18;
 }
 
 message BatchRejection {

@@ -468,21 +468,9 @@ CREATE TABLE oauth_clients (
 CREATE INDEX idx_oauth_clients_owner ON oauth_clients(owner_user_id, created_at DESC, client_id DESC);
 CREATE INDEX idx_oauth_clients_revoked_at ON oauth_clients(revoked_at);
 
--- The two built-in registrations; see the sqlite migration for why both state
--- elevation_allowed = TRUE explicitly against the column's FALSE default.
---
--- redirect_uris and scopes are TEXT, which MySQL refuses a DEFAULT on, so
--- every INSERT states them.
-INSERT INTO oauth_clients (client_id, client_name, redirect_uris, scopes, grant_types, elevation_allowed, registration_source, verified_at, verified_by_user_id)
-VALUES
-    ('leapmux-control-cli', 'LeapMux control CLI', 'http://127.0.0.1/callback',
-     'account:read account:write workspace:read workspace:write worker:read worker:admin agent:read agent:write terminal:read terminal:write file:read git:read git:write tunnel:open admin:read admin:users admin:settings admin:workers',
-     'authorization_code refresh_token urn:ietf:params:oauth:grant-type:device_code',
-     TRUE, 'builtin', NULL, NULL),
-    ('leapmux-service-account', 'Administrator-issued credential', '',
-     'account:read account:write workspace:read workspace:write worker:read worker:admin agent:read agent:write terminal:read terminal:write file:read git:read git:write tunnel:open admin:read admin:users admin:settings admin:workers',
-     '',
-     TRUE, 'builtin', NULL, NULL);
+-- The two built-in registrations are NOT seeded here; see the sqlite
+-- migration's note. store.SeedBuiltIns seeds and reconciles them on every
+-- store open, rewriting only the columns that are constants of the build.
 
 CREATE TABLE api_tokens (
     id                            VARCHAR(255) PRIMARY KEY,
@@ -521,6 +509,12 @@ CREATE TABLE api_tokens (
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (client_id) REFERENCES oauth_clients(client_id) ON DELETE RESTRICT
 ) COLLATE=utf8mb4_bin;
+-- Serves the app-connection statements ("which credentials does this app
+-- hold?"), the disconnect cascade and the RESTRICT check on deleting an app:
+-- without it every one of them scans api_tokens. The sqlite and postgres
+-- twins carry the same index; MySQL's InnoDB would derive one from the
+-- foreign key, but TiDB does not index an unenforced FK clause.
+CREATE INDEX idx_api_tokens_client ON api_tokens(client_id);
 CREATE INDEX idx_api_tokens_revoked_at ON api_tokens(revoked_at);
 -- Serves the DeleteExpiredAPITokensBefore sweep of live-but-dead rows: seek
 -- the tokens whose access expiry passed instead of scanning every live one.

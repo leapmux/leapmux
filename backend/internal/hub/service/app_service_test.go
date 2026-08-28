@@ -311,7 +311,8 @@ func TestAppService_AppShapeHasNoSecretField(t *testing.T) {
 	}
 }
 
-// The two rows the migration seeds are constants of the BUILD, so an edit would
+// The two rows the build seeds (store.SeedBuiltIns, at every store open) are
+// constants of the BUILD, so an edit would
 // leave the database disagreeing with the binary that reads it.
 //
 // elevation_allowed is the ONE exception, and it has to be: an operator who
@@ -1144,10 +1145,12 @@ func TestAppService_UpdateValidatesTheIconBeforeAnyWriteLands(t *testing.T) {
 	clientID := app.GetApp().GetClientId()
 
 	_, err := env.client.UpdateApp(ctx, authedReq(&leapmuxv1.UpdateAppRequest{
-		ClientId:      clientID,
-		ClientName:    proto.String("renamed-mid-flight"),
-		ReplaceIcon:   true,
-		Icon:          []byte(strings.Repeat("x", service.MaxIconBytes+1)),
+		ClientId:    clientID,
+		ClientName:  proto.String("renamed-mid-flight"),
+		ReplaceIcon: true,
+		// maxIconBytes is unexported; the literal states the cap this test
+		// overruns (64 KiB, maxIconBytes in register.go).
+		Icon:          []byte(strings.Repeat("x", 64<<10+1)),
 		IconMediaType: "image/png",
 	}, env.admin))
 	require.Error(t, err)
@@ -1158,4 +1161,99 @@ func TestAppService_UpdateValidatesTheIconBeforeAnyWriteLands(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "icon-order", row.ClientName,
 		"a refused icon must not leave a half-landed update behind")
+}
+
+// TestAppService_VouchOnARetiredAppAnswersNotFound pins the rows-affected
+// half of VerifyApp: the statement filters revoked_at IS NULL while load
+// deliberately reads a retired row, so a vouch on an app somebody retired a
+// moment ago must answer NOT FOUND rather than success and a projected vouch
+// the row never took -- the lie every sibling write verb refuses.
+func TestAppService_VouchOnARetiredAppAnswersNotFound(t *testing.T) {
+	t.Parallel()
+
+	env := setupAppService(t)
+	ctx := context.Background()
+	app := env.registerApp(t, env.user, "retire-then-vouch", nil)
+	clientID := app.GetApp().GetClientId()
+
+	// The OWNER retires their own registration; the ADMINISTRATOR's vouch then
+	// meets the retired row.
+	_, err := env.client.RevokeApp(ctx, authedReq(&leapmuxv1.RevokeAppRequest{ClientId: clientID}, env.user))
+	require.NoError(t, err)
+
+	_, err = env.client.VerifyApp(ctx, authedReq(&leapmuxv1.VerifyAppRequest{
+		ClientId: clientID, Verified: true,
+	}, env.admin))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err),
+		"a retired app takes no vouch, and the verb must say so rather than report success")
+
+	// And the row really is untouched.
+	row, err := env.store.OAuthClients().Get(ctx, clientID)
+	require.NoError(t, err)
+	assert.Nil(t, row.VerifiedAt, "no vouch landed")
+}
+
+// TestAppService_NoOpElevationToggleKeepsTheCachedWindow pins the skip half
+// of SetAppElevationAllowed: a toggle that does not move the flag must not
+// drop the cached credentials, because a cached UserInfo validated under the
+// current flag already agrees with the row. The cache is made observable by
+// flipping the flag out-of-band after warming it (the concurrent-opposite-
+// toggle race the handler's comment names): a surviving entry still answers
+// "elevated"; an invalidation forces a revalidation that reads the cleared
+// flag and answers "not-elevated".
+func TestAppService_NoOpElevationToggleKeepsTheCachedWindow(t *testing.T) {
+	t.Parallel()
+
+	env := setupAppService(t)
+	ctx := context.Background()
+	env.elevationProbe(t, env.interceptor)
+
+	app := env.registerApp(t, env.admin, "steady-app", nil)
+	clientID := app.GetApp().GetClientId()
+	_, err := env.client.SetAppElevationAllowed(ctx, authedReq(&leapmuxv1.SetAppElevationAllowedRequest{
+		ClientId: clientID, Allowed: true,
+	}, env.admin))
+	require.NoError(t, err)
+
+	tokenID := id.Generate()
+	secret := auth.MintAccessSecret()
+	require.NoError(t, env.store.APITokens().Create(ctx, store.CreateAPITokenParams{
+		ID: tokenID, UserID: userid.MustNew(env.adminID), ClientID: clientID,
+		InstallationName: "laptop", GrantedScopes: "workspace:read",
+		SecretHash: env.validator.HashSecret(secret),
+	}))
+	bearer := auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)
+	now := time.Now().UTC()
+	rows, err := env.store.APITokens().Elevate(ctx, store.ElevateAPITokenParams{
+		TokenID: tokenID, UserID: userid.MustNew(env.adminID),
+		ElevationProvenAt: now, ElevationExpiresAt: now.Add(auth.ElevationWindow),
+	}, now)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, rows)
+
+	// POPULATES the cache while the flag allows the window: without this
+	// request the assertion below would pass on a cache miss.
+	require.Equal(t, "elevated", env.probeElevation(t, bearer),
+		"precondition: the window is live and the cache holds it")
+
+	// The flag flips out-of-band -- a store write no handler runs, so no
+	// invalidation fires. The cached UserInfo is now stale in exactly the way
+	// the skip's comment describes.
+	flipped, err := env.store.OAuthClients().SetElevationAllowed(ctx, store.SetOAuthClientElevationAllowedParams{
+		ClientID: clientID, ElevationAllowed: false,
+		CallerUserID: userid.MustNew(env.adminID), CallerIsAdmin: true,
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, 1, flipped)
+
+	// The NO-OP: the request carries the value the row already holds, so the
+	// handler must treat the flag as unmoved and keep the cache.
+	_, err = env.client.SetAppElevationAllowed(ctx, authedReq(&leapmuxv1.SetAppElevationAllowedRequest{
+		ClientId: clientID, Allowed: false,
+	}, env.admin))
+	require.NoError(t, err)
+
+	require.Equal(t, "elevated", env.probeElevation(t, bearer),
+		"a toggle that changed nothing must not drop the cached UserInfo")
 }

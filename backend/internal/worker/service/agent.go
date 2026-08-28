@@ -1149,6 +1149,17 @@ func registerAgentHandlers(d registrar, svc *Service) {
 					return snapshot
 				},
 				func(evt *leapmuxv1.WorkerPrivateEvent) error {
+					// Per-EVENT-KIND gates, mirroring the partition WatchEvents
+					// applies: this bus multiplexes agent and terminal tab
+					// renames beside the file-tab events, and a rename's title
+					// is exactly what the agent:read / terminal:read scopes
+					// govern. A caller granted file:read alone keeps the
+					// file-tab events and the renames of file tabs, and hears
+					// nothing about agents or terminals it holds no scope to
+					// read.
+					if !privateEventVisible(caller, evt) {
+						return nil
+					}
 					data, err := proto.Marshal(evt)
 					if err != nil {
 						return err
@@ -1227,6 +1238,22 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	registerOwnerGated(d, "RevokeFileTabPath", leapmuxv1.Scope_SCOPE_FILE_READ, dispatchTracked, func(_ context.Context, caller channel.Caller, r *leapmuxv1.RevokeFileTabPathRequest, sender channel.ResponseWriter) {
 		if r.GetTabId() == "" {
 			sendInvalidArgument(sender, "tab_id is required")
+			return
+		}
+		// The method gate is file:read because the registry row is file-tab
+		// bookkeeping, but the WORKTREE_ACTION_REMOVE leg runs `git worktree
+		// remove --force` and `git branch -D` -- a destructive write that
+		// scope.proto places under git:write ("manage a worktree"), the same
+		// family rule every other destructive verb follows (CloseTerminal ->
+		// terminal:write, DeleteBranch -> git:write). A read consent must never
+		// delete a worktree, so the escalation is gated here, at the action,
+		// rather than re-scoping the whole method: registering and revoking the
+		// row itself is what any file-tab client needs, and the pre-existing
+		// precedent is WatchWorkerPrivateEvents, which applies per-kind checks
+		// inside a file:read gate (privateEventVisible).
+		if r.GetWorktreeAction() == leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE &&
+			!caller.Allows(leapmuxv1.Scope_SCOPE_GIT_WRITE) {
+			sendPermissionDenied(sender, "removing a worktree needs the git:write permission")
 			return
 		}
 		// Drive the shared closeTabCommon flow so the worktree-tab link
@@ -3436,5 +3463,24 @@ func messageToProto(m *db.Message) *leapmuxv1.AgentChatMessage {
 		SpanColor:          int32(m.SpanColor),
 		SpanLines:          m.SpanLines,
 		MarkType:           m.MarkType,
+	}
+}
+
+// privateEventVisible reports whether this stream's caller may see one
+// private event. File-tab events ride the stream's own file:read floor; a tab
+// rename is governed by the scope of the tab KIND it names, exactly as
+// WatchEvents partitions its agent and terminal sections.
+func privateEventVisible(caller channel.Caller, evt *leapmuxv1.WorkerPrivateEvent) bool {
+	renamed := evt.GetTabRenamed()
+	if renamed == nil {
+		return true
+	}
+	switch renamed.GetTabType() {
+	case leapmuxv1.TabType_TAB_TYPE_AGENT:
+		return caller.Allows(leapmuxv1.Scope_SCOPE_AGENT_READ)
+	case leapmuxv1.TabType_TAB_TYPE_TERMINAL:
+		return caller.Allows(leapmuxv1.Scope_SCOPE_TERMINAL_READ)
+	default:
+		return true
 	}
 }

@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"syscall"
-	"time"
 
 	"github.com/leapmux/leapmux/util/procutil"
 )
@@ -21,10 +20,7 @@ import (
 // leader fails with EPERM.
 func configureACPTerminalCmd(cmd *exec.Cmd) {
 	procutil.DetachFromTerminal(cmd)
-	cmd.Cancel = func() error {
-		return procutil.SignalProcessGroup(cmd, syscall.SIGTERM)
-	}
-	cmd.WaitDelay = 5 * time.Second
+	procutil.GracefulGroupCancel(cmd)
 }
 
 func exitStatusFromWaitStatus(ps *os.ProcessState) (exitCode *int, signal *string, ok bool) {

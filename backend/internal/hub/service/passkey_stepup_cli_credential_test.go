@@ -95,9 +95,9 @@ func TestChangePassword_FromAnElevatedCLICredentialKeepsThatCredentialUsable(t *
 		"the kept credential must sit at the account's new epoch, or validation reads it as revoked")
 
 	// And through the whole interceptor, which is what the user meets. The
-	// eviction is what the revocation watcher does on every other hub; doing
-	// it here keeps the assertion about the committed rows rather than about
-	// a cache entry minted before the change.
+	// eviction is what the revocation watcher's replay does; doing it here
+	// keeps the assertion about the committed rows rather than about a cache
+	// entry minted before the change.
 	env.contexts.EvictByUserID(env.userID)
 	_, err = env.client.GetTimeouts(ctx, bearerReq(&leapmuxv1.GetTimeoutsRequest{}, bearer))
 	require.NoError(t, err, "the acting credential must still authenticate after the change it made")

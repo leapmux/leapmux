@@ -254,8 +254,8 @@ var ErrInvalidElevationAssertion = errors.New("passkey verification failed")
 // RevokeAllUserCredentials revokes every active api_tokens and
 // delegation_tokens row for userID and, via RevokeUserTokens, bumps
 // users.tokens_revoked_at AND users.auth_generation, emitting the durable
-// user_tokens revocation event that carries the new generation to other Hub
-// processes (the backbone of cross-process teardown). Returns (apiCount,
+// user_tokens revocation event that carries the new generation through the
+// stream (the backbone of out-of-band teardown). Returns (apiCount,
 // delegationCount) so admin handlers can report what it revoked.
 //
 // Caller-side concerns:
@@ -394,8 +394,8 @@ func Login(ctx context.Context, st store.Store, username, password string, lifet
 
 	// Verify the password OUTSIDE the auth transaction. On the default
 	// SQLite backend RunInUserAuthTransaction promotes to a write
-	// transaction (LockUserAuthState), which serializes every other hub
-	// write for as long as it is held; argon2 verification (~50-200ms) has
+	// transaction (LockUserAuthState), which serializes every other
+	// writer for as long as it is held; argon2 verification (~50-200ms) has
 	// no need of that lock. Inside the transaction we recompute the
 	// (expensive) hash only when the stored hash changed between this read
 	// and the locked re-read, so a password rotated at the transaction

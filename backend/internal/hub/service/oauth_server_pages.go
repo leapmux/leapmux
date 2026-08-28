@@ -104,11 +104,15 @@ var devicePageTmpl = mustParsePage("device", `{{define "body"}}
 {{with .Credential}}<p>The credential is <strong>{{.Name}}</strong>, added {{.Added}} (UTC).{{if .Revoked}} It was revoked, so verifying it grants nothing.{{end}}</p>
 {{end}}{{else if .App}}{{if not .App.Verified}}<p style="padding:8px 12px;border:1px solid #c00;border-radius:4px;">Nobody verified this app on this hub. It says its name is &ldquo;{{.App.Name}}&rdquo;.</p>
 {{end}}{{template "appIdentity" .App}}
+{{if .ConfirmAdmin}}<p style="padding:8px 12px;border:1px solid #c00;border-radius:4px;">This code asks for <strong>hub administration</strong>. Authorizing it grants the app administrator authority over this hub. Continue only if you started this request yourself and meant to grant it.</p>
+{{end}}
 {{if .Permissions}}<p>It would be able to:</p>
 <ul>{{range .Permissions}}<li>{{.}}</li>{{end}}</ul>
 {{end}}{{end}}<p>Enter the code that the app shows:</p>
 <form method="POST" action="/oauth/device">
 <input name="user_code" value="{{.UserCode}}" pattern="[A-Za-z0-9-]{6,8}" autofocus required style="font-size:24px;letter-spacing:2px;text-align:center;width:100%;padding:8px;"/>
+{{if .ConfirmAdmin}}<input type="hidden" name="admin_confirmed" value="1"/>
+{{end}}
 <p style="margin-top:16px;"><button type="submit" name="decision" value="deny" style="padding:10px 16px;">Deny</button>
 <button type="submit" name="decision" value="allow" style="padding:10px 16px;margin-left:8px;">Authorize</button></p>
 </form>
@@ -127,7 +131,7 @@ type deviceDonePageData struct {
 	Denied    bool
 }
 
-// elevationRequiredPageTmpl is the refusal a consent leg writes when the
+// elevationRequiredPageTmpl is the refusal a consent endpoint writes when the
 // session proved no factor recently. See writeElevationRequiredPage.
 var elevationRequiredPageTmpl = mustParsePage("elevationRequired", `{{define "body"}}
 <h1>Verify your identity</h1>
@@ -235,6 +239,16 @@ type devicePageData struct {
 	UserCode    string
 	App         *appDisplayData
 	Permissions []string
+	// ConfirmAdmin re-renders the page as the SECOND step of an
+	// admin-reaching ask: the first Allow returned this page with the admin
+	// sentences stated beside a caution, and the form now carries
+	// admin_confirmed so the next Allow binds. The device flow is the
+	// phishing classic -- a code typed on a different machine from the one
+	// it authorizes -- and one click on a trusted app name is all a phished
+	// administrator ever needs to hand away. A deliberate second stop, never
+	// a silent narrowing: the page the person confirms shows exactly what
+	// will bind.
+	ConfirmAdmin bool
 	// Elevating re-labels the page for a grant that VERIFIES an existing
 	// credential rather than issuing one. The two flows share this page because
 	// they share the row and the ceremony; what they must not share is the
@@ -270,6 +284,7 @@ var scopeSentences = map[leapmuxv1.Scope]string{
 	leapmuxv1.Scope_SCOPE_ADMIN_USERS:     "Administer every account on this hub, including resetting passwords.",
 	leapmuxv1.Scope_SCOPE_ADMIN_SETTINGS:  "Change this hub's settings, including its security policy and its sign-in providers.",
 	leapmuxv1.Scope_SCOPE_ADMIN_WORKERS:   "Administer every worker on this hub.",
+	leapmuxv1.Scope_SCOPE_ADMIN_APPS:      "Register, edit, vouch, retire and delete the hub's app registrations.",
 }
 
 // describeScopes renders a grant as the sentences a consent screen lists.
@@ -295,14 +310,6 @@ func describeScopes(set authscope.ScopeSet) []string {
 	return out
 }
 
-// SortedScopeTokens renders a grant's tokens for a machine-facing surface (the
-// app list, the CLI).
-//
-// It delegates to authscope, which is where the vocabulary and its two
-// renderings live. The walk was duplicated here while ScopeSet had no accessor
-// for the list, and the CLI then needed a third copy.
-func SortedScopeTokens(set authscope.ScopeSet) []string { return set.SortedTokens() }
-
 // writePage renders one page as the whole response, with the security headers
 // every page here needs.
 //
@@ -320,7 +327,7 @@ func SortedScopeTokens(set authscope.ScopeSet) []string { return set.SortedToken
 //     `frame-ancestors 'none'` is the clickjacking defence for a page whose one
 //     button grants authority, and `base-uri 'none'` stops an injected <base>
 //     from re-pointing the form.
-//   - `form-action` names 'self' plus THIS grant's redirect origin, and nothing
+//   - `form-action` lists 'self' plus THIS grant's redirect origin, and nothing
 //     else. A browser matches form-action against every hop of a submission's
 //     redirect chain, so the consent POST's redirect to the app needs its
 //     origin stated -- and stating one origin per request is narrower than the

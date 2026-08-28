@@ -375,8 +375,8 @@ func TestAdminSettingsSet_ReportsThePropagationWithoutASecondRead(t *testing.T) 
 	require.Contains(t, data, "note_hot", "a hot key must say when the running hub applies the value")
 	assert.NotContains(t, data, "note_restart")
 	assert.Contains(t, data["note_hot"], "at once")
-	assert.Contains(t, data["note_hot"], "30 seconds",
-		"the other instances that share the database lag by the snapshot TTL")
+	assert.Contains(t, data["note_hot"], "30-second",
+		"an out-of-band write to the shared database lags by the snapshot TTL")
 
 	assert.Len(t, hub.takeUpdates(), 1)
 	assert.Zero(t, hub.listCallCount(), "the propagation class rides the write's reply, so no listing is needed")

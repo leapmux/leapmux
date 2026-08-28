@@ -38,8 +38,8 @@ const (
 // The distinction is load-bearing. `gateNone` exists (Ping), so a check that
 // lived inside the owner gate would be skippable by choosing registerUngated --
 // which is precisely how a method ends up unenforced by accident. Passing the
-// scope to register() means every registration states one, including an ungated
-// one, and a value nobody stated is the proto zero, which panics at boot.
+// scope to register() means every registration states one, including an
+// unguarded one, and a value nobody stated is the proto zero, which panics at boot.
 //
 // SCOPE_UNSPECIFIED PANICS, matching the duplicate-registration panic beside
 // it: a worker that cannot say what a method requires must not start serving
@@ -59,7 +59,7 @@ type registrar struct {
 	shapes map[string]methodShape
 }
 
-// methodShape names how a method ANSWERS, as methodGate names how it is
+// methodShape states how a method ANSWERS, as methodGate states how it is
 // guarded.
 //
 // Reply shape needs recording for the same reason access does. A method
@@ -71,7 +71,7 @@ type registrar struct {
 // anything and never errors.
 //
 // WatchWorkerPrivateEvents shipped exactly that way. The gate table
-// already turned "did the author remember to gate this?" into a test
+// already turned "did the author remember to guard this?" into a test
 // failure; this turns "did the author remember RegisterStream?" into one.
 type methodShape int
 
@@ -93,15 +93,15 @@ func newRegistrar(d *channel.Dispatcher, svc *Service) registrar {
 // dispatchMode selects which Dispatcher entry point a registration uses.
 //
 // It is the second axis of every registration, crossing the gate kind
-// above. Naming it lets the two vary independently instead of being
+// above. Passing it lets the two vary independently instead of being
 // enumerated as one named helper per combination, so a new pairing --
 // streaming + tracked, say -- costs an argument rather than another
 // exported function.
 //
-// Each gated helper therefore TAKES this rather than existing twice. It used to
-// be enumerated after all: three hand-written `*Tracked` twins sat beside their
-// siblings differing by one method call, which is exactly what the paragraph
-// above says the design avoids.
+// Each guarded helper therefore TAKES this rather than existing twice. It
+// used to be enumerated after all: three hand-written `*Tracked` twins sat
+// beside their siblings differing by one method call, which is exactly what
+// the paragraph above says the design avoids.
 //
 // dispatchStreaming is not reachable through that argument. The streaming
 // helpers call RegisterStream directly, because a streaming registration must
@@ -127,7 +127,7 @@ const (
 // shape table exists to catch.
 func (r registrar) register(method string, gate methodGate, scope leapmuxv1.Scope, mode dispatchMode, handler channel.HandlerFunc) {
 	// Dispatcher.Register silently overwrites, so a duplicate would
-	// otherwise replace a handler with no sign anything had happened.
+	// otherwise replace a handler with no sign that anything happened.
 	if _, exists := r.gates[method]; exists {
 		panic("duplicate method registration: " + method)
 	}
@@ -142,18 +142,18 @@ func (r registrar) register(method string, gate methodGate, scope leapmuxv1.Scop
 	r.scopes[method] = scope
 	r.shapes[method] = shape
 
-	gated := r.gateScope(method, scope, mode, handler)
+	guarded := r.scopeGuard(method, scope, mode, handler)
 	switch mode {
 	case dispatchTracked:
-		r.d.RegisterTracked(method, gated)
+		r.d.RegisterTracked(method, guarded)
 	case dispatchStreaming:
-		r.d.RegisterStream(method, gated)
+		r.d.RegisterStream(method, guarded)
 	case dispatchPlain:
-		r.d.Register(method, gated)
+		r.d.Register(method, guarded)
 	}
 }
 
-// gateScope wraps a handler with its scope check.
+// scopeGuard wraps a handler with its scope check.
 //
 // It runs BEFORE the owner gate, and the order is the same rule the Hub's
 // interceptor follows: an app is refused for its own grant rather than told
@@ -163,12 +163,11 @@ func (r registrar) register(method string, gate methodGate, scope leapmuxv1.Scop
 // does: a streaming method answers with a stream frame, because a unary
 // InnerRpcResponse on a correlation id the client holds as a stream is dropped
 // on arrival and leaves the caller waiting on something that never errors.
-func (r registrar) gateScope(method string, scope leapmuxv1.Scope, mode dispatchMode, handler channel.HandlerFunc) channel.HandlerFunc {
+func (r registrar) scopeGuard(method string, scope leapmuxv1.Scope, mode dispatchMode, handler channel.HandlerFunc) channel.HandlerFunc {
 	streaming := mode == dispatchStreaming
 	return func(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		if !caller.Allows(scope) {
-			token, _ := authscope.Token(scope)
-			msg := "this app was not granted the " + token + " permission"
+			msg := authscope.NotGrantedDenial(scope)
 			if streaming {
 				sendStreamError(sender, codes.PermissionDenied, msg)
 			} else {
@@ -202,7 +201,7 @@ type terminalScopedRequest[T any] interface {
 	GetTerminalId() string
 }
 
-// registerOwnerGated registers an owner-gated handler over a decoded request.
+// registerOwnerGated registers an owner-guarded handler for a decoded request.
 // Wrapper: owner gate → unmarshal → INVALID_ARGUMENT "invalid request" → fn
 // with the decoded request. The gate is a property of WHERE the handler is
 // registered.
@@ -216,7 +215,7 @@ func registerOwnerGated[T any, PT decodedRequest[T]](
 	r.ownerOnly().RegisterMode(method, scope, mode, decodeInto[T, PT](fn))
 }
 
-// decodeInto builds the unmarshal → fn wrapper shared by the owner-gated
+// decodeInto builds the unmarshal → fn wrapper shared by the owner-guarded
 // helpers. A decode failure answers InvalidArgument and never reaches fn.
 func decodeInto[T any, PT decodedRequest[T]](
 	fn func(ctx context.Context, caller channel.Caller, req PT, sender channel.ResponseWriter),
@@ -404,9 +403,9 @@ func registerOwnerGatedStreamRaw(r registrar, method string, scope leapmuxv1.Sco
 	r.ownerOnly().RegisterStream(method, scope, handler)
 }
 
-// registerOwnerOnly records gateOwnerOnly and gates the handler on the caller
-// being the worker's registered owner, reusing ownerOnlyRegistrar's gate. It
-// exists for methods that own their own unmarshal (the capability probes
+// registerOwnerOnly records gateOwnerOnly and restricts the handler to the
+// worker's registered owner, reusing ownerOnlyRegistrar's gate. It exists
+// for methods that own their own unmarshal (the capability probes
 // ListAvailableShells / ListAvailableProviders) rather than being registered
 // wholesale through ownerOnlyRegistrar as a family.
 func registerOwnerOnly(r registrar, method string, scope leapmuxv1.Scope, handler channel.HandlerFunc) {

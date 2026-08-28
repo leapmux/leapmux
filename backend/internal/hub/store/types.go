@@ -1322,7 +1322,8 @@ type APIToken struct {
 	// grant to it, so removing a permission from a registration takes it from
 	// every credential the app already holds.
 	ClientScopes string
-	// ClientElevationAllowed is the app's permission to run the step-up leg.
+	// ClientElevationAllowed is the app's permission to run the step-up
+	// ceremony.
 	// Validation re-reads it, so turning it off closes every live window on
 	// the next request rather than at the next write.
 	ClientElevationAllowed bool
@@ -1407,8 +1408,8 @@ type DeviceAuthorization struct {
 	// ClientID is the app that started the flow.
 	ClientID string
 	// RequestedScopes is what the APP asked for, written at creation.
-	// GrantedScopes is what the APPROVAL bound, written by the browser leg and
-	// read back by the token leg. The two are separate columns because the
+	// GrantedScopes is what the APPROVAL bound, written by the browser stage
+	// and read back by the token stage. The two are separate columns because the
 	// request and the consent happen on different machines: taken from the
 	// activation form instead, whoever types the code could widen the ask.
 	RequestedScopes string
@@ -1421,8 +1422,8 @@ type DeviceAuthorization struct {
 	//
 	// The two flows share the row, and with it the TTL, the poll throttle,
 	// the expiry sweep and the activation page -- they differ only in what
-	// the approval DOES. A second table would have been a second copy of
-	// every one of those rules.
+	// the approval DOES. A second table is a second copy of every one of
+	// those rules.
 	ElevateTokenID string
 }
 
@@ -1456,12 +1457,14 @@ type OAuthClient struct {
 	HasIcon   bool
 	ClientURI string
 	// RedirectURIs is the newline-delimited exact-match list, and Scopes and
-	// GrantTypes are space-delimited. Read them through the RedirectURIList,
-	// ScopeSet and GrantTypeList accessors rather than splitting by hand.
+	// GrantTypes are space-delimited. The service layer owns the one spelling
+	// of each split: ParseRedirectURIs for the redirect list, authscope.Parse
+	// for scopes, and appAllowsGrantType over strings.Fields for grant types --
+	// read them through those rather than splitting by hand at a new site.
 	RedirectURIs string
 	Scopes       string
 	GrantTypes   string
-	// ElevationAllowed is whether this app may run the step-up leg. It is NOT
+	// ElevationAllowed is whether this app may run the step-up ceremony. It is
 	// a trust tier and NOT a scope: the elevation window is orthogonal to the
 	// scope set and MULTIPLIES it, so no grant field could express it and mean
 	// anything.
@@ -1546,6 +1549,25 @@ type CreateOAuthClientParams struct {
 	VerifiedBy         string
 }
 
+// UpsertBuiltInClientParams seeds or reconciles one built-in registration.
+//
+// The fields it carries are exactly the columns that are constants of the
+// build; the upsert's conflict branch rewrites only these, so an operator's
+// elevation decision, a vouch, a revocation and the row's own dates are never
+// the seed's to touch. See SeedBuiltIns.
+type UpsertBuiltInClientParams struct {
+	ClientID           string
+	ClientName         string
+	ClientURI          string
+	RedirectURIs       string
+	Scopes             string
+	GrantTypes         string
+	ElevationAllowed   bool
+	RegistrationSource string
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+}
+
 // UpdateOAuthClientParams rewrites the editable half of a registration.
 //
 // CallerUserID and CallerIsAdmin are part of the STATEMENT, not a check the
@@ -1561,6 +1583,19 @@ type UpdateOAuthClientParams struct {
 	ElevationAllowed bool
 	CallerUserID     userid.UserID
 	CallerIsAdmin    bool
+}
+
+// ApplyTo writes the editable columns onto a row, so a response projected
+// from the params a handler just wrote states the same field list the write
+// did. The projection and the SQL SET list cannot drift apart when a column
+// is added: adding it to this type makes both carry it.
+func (p UpdateOAuthClientParams) ApplyTo(row *OAuthClient) {
+	row.ClientName = p.ClientName
+	row.ClientURI = p.ClientURI
+	row.RedirectURIs = p.RedirectURIs
+	row.Scopes = p.Scopes
+	row.GrantTypes = p.GrantTypes
+	row.ElevationAllowed = p.ElevationAllowed
 }
 
 // SetOAuthClientElevationAllowedParams toggles the one field the app list
@@ -1588,6 +1623,9 @@ type SetOAuthClientVerifiedParams struct {
 	ClientID   string
 	VerifiedAt *time.Time
 	VerifiedBy string
+	// CallerIsAdmin carries the vouch's authorization into the statement,
+	// beside every other write's caller bind on this table.
+	CallerIsAdmin bool
 }
 
 // OAuthClientOwnershipParams addresses one app for a caller-authorized write
@@ -1602,9 +1640,12 @@ type OAuthClientOwnershipParams struct {
 // ListOAuthClientsParams pages an app listing, keyset on
 // (created_at DESC, client_id DESC).
 type ListOAuthClientsParams struct {
-	// UserID selects whose apps. It is required for the visible-to and
-	// owned-by listings.
+	// UserID selects whose apps. It is required for every listing shape.
 	UserID userid.UserID
+	// IncludeHubWide widens the page with the hub-wide catalogue, which is
+	// what an administrator's listing reads; the default keeps the page to
+	// the user's own registrations.
+	IncludeHubWide bool
 	// IncludeRevoked widens the page to retired rows, which the "include
 	// retired" listing asks for. The default keeps the live-only shape every
 	// authorize surface reads.
@@ -1622,16 +1663,6 @@ type OAuthClientIcon struct {
 	VerifiedAt         *time.Time
 	RegistrationSource string
 	RevokedAt          *time.Time
-}
-
-// RevokeAPITokensForClientParams cascades an app revocation or a disconnect
-// onto the credentials it holds.
-//
-// An EMPTY UserID revokes across EVERY user, which is what retiring the app
-// itself means; a non-empty one is one account disconnecting.
-type RevokeAPITokensForClientParams struct {
-	ClientID string
-	UserID   string
 }
 
 // APITokenRef names one credential an app holds. The caller reads these BEFORE
@@ -1657,11 +1688,11 @@ type APITokenRef struct {
 type OAuthAuthorizationCode struct {
 	Code   string
 	UserID string
-	// ClientID is the app the code was issued TO. The token leg refuses a code
-	// presented by a different one (RFC 6749 section 4.1.3).
+	// ClientID is the app the code was issued TO. The token stage refuses a
+	// code presented by a different one (RFC 6749 section 4.1.3).
 	ClientID      string
 	CodeChallenge string
-	// RedirectURI is the address the authorization used. The token leg
+	// RedirectURI is the address the authorization used. The token stage
 	// compares it, so a code intercepted at one registered redirect cannot be
 	// redeemed as though it came from another.
 	RedirectURI string

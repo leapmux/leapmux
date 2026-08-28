@@ -15,6 +15,8 @@ import { Scope } from '~/generated/leapmux/v1/scope_pb'
 import { useCopyButton } from '~/hooks/useCopyButton'
 import { formatErrorMessage } from '~/lib/errors'
 import * as styles from './credentialList.css'
+import { fetchAllPages, MAX_PAGES, PAGE_SIZE } from './fetchAllPages'
+import { scopeToken } from './scopeToken'
 
 /**
  * The grantable vocabulary, in the order scope.proto declares it.
@@ -34,27 +36,6 @@ const GRANTABLE_SCOPES: readonly Scope[] = Object.values(Scope)
   .filter((v): v is Scope => typeof v === 'number')
   .filter(scope => !NON_GRANTABLE.includes(scope))
   .sort((a, b) => a - b)
-
-/**
- * One scope's RFC 6749 section 3.3 token, from the generated enum name.
- *
- * SCOPE_WORKSPACE_READ becomes workspace:read: the first underscore-separated
- * part is the family and the rest is the action. The Go side builds its tokens
- * from an explicit bijection (grantableTokens in internal/authscope) rather
- * than from the enum names, so this derivation matches it by convention, not
- * by construction -- and TestScopeTokenBijectionMatchesEnumNames pins the two
- * together on the Go side, failing the suite the moment a token stops
- * following the FAMILY_ACTION shape this function assumes.
- */
-function scopeToken(scope: Scope): string {
-  const name = Scope[scope]
-  if (typeof name !== 'string')
-    return ''
-  const parts = name.split('_')
-  if (parts.length < 2)
-    return ''
-  return `${parts[0]!.toLowerCase()}:${parts.slice(1).join('_').toLowerCase()}`
-}
 
 /**
  * The editable field set the register and edit forms share: name, home page,
@@ -146,7 +127,7 @@ function createAppFormFields(initial?: { name: string, uri: string, redirects: s
 const RegisterAppForm: Component<{
   busy: boolean
   onCancel: () => void
-  onRegistered: (message: string) => void
+  onRegistered: (message: string, app?: App) => void
   onError: (message: string) => void
   setBusy: (value: boolean) => void
 }> = (props) => {
@@ -156,6 +137,10 @@ const RegisterAppForm: Component<{
   // ONLY place it ever exists on this machine -- which is why the form stays
   // open showing it rather than closing on success like every other write.
   const [secret, setSecret] = createSignal('')
+  // The created row, kept so the Done button (which closes the form after the
+  // operator copied the secret) can hand it to the listing exactly like the
+  // no-secret path does.
+  const [created, setCreated] = createSignal<App | null>(null)
   const { copied, copy } = useCopyButton(() => secret())
 
   const submit = async () => {
@@ -175,9 +160,10 @@ const RegisterAppForm: Component<{
       })
       if (resp.clientSecret) {
         setSecret(resp.clientSecret)
+        setCreated(resp.app ?? null)
         return
       }
-      props.onRegistered('App registered.')
+      props.onRegistered('App registered.', resp.app)
     }
     catch (e) {
       props.onError(formatErrorMessage(e, 'Failed to register the app'))
@@ -229,7 +215,7 @@ const RegisterAppForm: Component<{
           <button type="button" onClick={() => void copy()}>{copied() ? 'Copied' : 'Copy'}</button>
         </div>
         <div>
-          <button type="button" onClick={() => props.onRegistered('App registered.')}>Done</button>
+          <button type="button" onClick={() => created() && props.onRegistered('App registered.', created()!)}>Done</button>
         </div>
       </Show>
     </div>
@@ -250,7 +236,7 @@ const EditAppForm: Component<{
   app: App
   busy: boolean
   onCancel: () => void
-  onSaved: (message: string) => void
+  onSaved: (message: string, app?: App) => void
   onError: (message: string) => void
   setBusy: (value: boolean) => void
 }> = (props) => {
@@ -266,7 +252,7 @@ const EditAppForm: Component<{
   const submit = async () => {
     props.setBusy(true)
     try {
-      await appClient.updateApp({
+      const resp = await appClient.updateApp({
         clientId: props.app.clientId,
         clientName: fields.name().trim(),
         clientUri: fields.uri().trim(),
@@ -275,7 +261,7 @@ const EditAppForm: Component<{
         replaceScopes: true,
         scopes: fields.scopes(),
       })
-      props.onSaved('App updated.')
+      props.onSaved('App updated.', resp.app)
     }
     catch (e) {
       props.onError(formatErrorMessage(e, 'Failed to update the app'))
@@ -335,45 +321,108 @@ export const AccountAppRegistrations: Component = () => {
   // and self-vouching is exactly the thing the vouch is not.
   const vouchAvailable = () => auth.user()?.isAdmin === true
 
+  // The generation a refresh started under. Two refreshes can overlap (the
+  // onMount load and one a write path fires), and the one that started EARLIER
+  // can finish last -- adopting its pages would drop a row the newer refresh
+  // already shows. Only the newest generation writes its result.
+  let refreshGeneration = 0
+
+  /**
+   * Rows a write path added, kept until the next refresh to complete absorbs
+   * them into the server's own ordering. A refresh that started BEFORE the
+   * write cannot name the row, so landing its list as-is deleted a
+   * registration the user just watched appear.
+   */
+  const pendingRows = new Map<string, App>()
   const refresh = async () => {
+    const generation = ++refreshGeneration
     setLoading(true)
     setLoadFailed(false)
     try {
-      // EVERY page, like the Connected-apps panel beside it: an administrator
-      // with open registration on can pass the default page size without
-      // lifting a finger, and a registration the panel never drew was one
-      // whose Edit and Retire controls did not exist.
-      const MAX_PAGES = 20
-      const collected: App[] = []
-      const seen = new Set<string>()
-      let cursor: string | undefined
-      for (let page = 0; page < MAX_PAGES; page++) {
-        const resp = await appClient.listApps({ cursor, limit: 100 })
-        for (const app of resp.apps) {
-          if (!seen.has(app.clientId)) {
-            seen.add(app.clientId)
-            collected.push(app)
+      // EVERY page through the shared fetchAllPages, at the sibling panel's
+      // constants: an administrator with open registration on can pass a
+      // smaller page size without lifting a finger, and a registration the
+      // panel never drew was one whose Edit and Retire controls did not exist.
+      // The hub's own switch rides the listing; the last page's value is the
+      // current one, so the fetchPage callback records it as a side effect.
+      let openRegistrationEnabled = false
+      const collected = await fetchAllPages(
+        async (cursor) => {
+          // includeRevoked: a retired app stays readable because a live
+          // credential on one must still be explainable (app.proto states the
+          // contract), and the retired badge and the gates below key on it --
+          // without the flag the row vanishes on the refresh that retires it.
+          const resp = await appClient.listApps({ cursor, limit: PAGE_SIZE, includeRevoked: true })
+          openRegistrationEnabled = resp.openRegistrationEnabled
+          return { items: resp.apps, nextCursor: resp.nextCursor }
+        },
+        { maxPages: MAX_PAGES, keyOf: app => app.clientId },
+      )
+      if (generation === refreshGeneration) {
+        setOpenRegistration(openRegistrationEnabled)
+        // PRESERVE the previous object for a row whose id came back: <For>
+        // keys by reference, so reusing the old object reconciles the row in
+        // place instead of disposing and remounting it -- which is what kept
+        // an open EditAppForm's typed edits through any other row's write.
+        //
+        // Rows a write path added WHILE this refresh was paginating ride on
+        // top: the refresh started before they existed, so its collected list
+        // cannot name them, and landing it as-is deleted a registration the
+        // user just watched appear.
+        setApps((prev) => {
+          const prevById = new Map(prev.map(a => [a.clientId, a]))
+          const merged = collected.map(a => prevById.get(a.clientId) ?? a)
+          const mergedIDs = new Set(merged.map(a => a.clientId))
+          for (const row of pendingRows.values()) {
+            if (!mergedIDs.has(row.clientId))
+              merged.unshift(row)
           }
-        }
-        setOpenRegistration(resp.openRegistrationEnabled)
-        cursor = resp.nextCursor === '' ? undefined : resp.nextCursor
-        if (cursor === undefined)
-          break
+          return merged
+        })
+        pendingRows.clear()
       }
-      setApps(collected)
     }
     catch (e) {
-      setLoadFailed(true)
-      setMessage({ type: 'error', text: formatErrorMessage(e, 'Failed to load app registrations') })
+      if (generation === refreshGeneration) {
+        setLoadFailed(true)
+        setMessage({ type: 'error', text: formatErrorMessage(e, 'Failed to load app registrations') })
+      }
     }
     finally {
-      setLoading(false)
+      if (generation === refreshGeneration)
+        setLoading(false)
     }
   }
 
   onMount(() => {
     void refresh()
   })
+
+  /**
+   * Replace ONE row with the row a mutation response carries.
+   *
+   * Every mutation except Retire answers with the updated `App`, so a write
+   * patches its own row instead of re-paging the listing: the full re-page is
+   * a mount-time cost, and paying it per click both showed the loading state
+   * over rows nobody touched and ran the whole listing's server work again.
+   */
+  const patchRow = (app: App | undefined) => {
+    if (!app) {
+      void refresh()
+      return
+    }
+    setApps(prev => prev.map(a => (a.clientId === app.clientId ? app : a)))
+  }
+
+  /** Prepend a row the panel just created. The listing orders newest first. */
+  const prependRow = (app: App | undefined) => {
+    if (!app) {
+      void refresh()
+      return
+    }
+    pendingRows.set(app.clientId, app)
+    setApps(prev => [app, ...prev])
+  }
 
   const revoke = async (app: App) => {
     setBusy(true)
@@ -404,7 +453,7 @@ export const AccountAppRegistrations: Component = () => {
    * It is what any consent screen MAY grant, never what one account granted:
    * that lives on the credential and is what Connected apps shows.
    */
-  const ceiling = (app: App) => app.scopes.map(scopeToken).filter(t => t !== '')
+  const ceiling = (app: App) => app.scopes.map(scopeToken)
 
   // SetAppElevationAllowed, from the list. It is the one field even a
   // built-in registration may change, so -- unlike Edit -- it is offered on
@@ -413,13 +462,17 @@ export const AccountAppRegistrations: Component = () => {
     setBusy(true)
     setMessage(null)
     try {
-      await appClient.setAppElevationAllowed({ clientId: app.clientId, allowed })
-      await refresh()
+      // The response carries the updated row, so the panel patches THAT row
+      // rather than re-paging the whole listing: one write is one row, and the
+      // full re-page cost (MAX_PAGES round trips plus the server work behind
+      // each) buys nothing a single-row patch does not already state.
+      const resp = await appClient.setAppElevationAllowed({ clientId: app.clientId, allowed })
+      patchRow(resp.app)
       setMessage({
         type: 'success',
         text: allowed
-          ? 'The app may now run the step-up leg.'
-          : 'The app can no longer run the step-up leg. Any live elevation window closes on its next request.',
+          ? 'The app may now run the step-up stage.'
+          : 'The app can no longer run the step-up stage. Any live elevation window closes on its next request.',
       })
     }
     catch (e) {
@@ -437,8 +490,8 @@ export const AccountAppRegistrations: Component = () => {
     setBusy(true)
     setMessage(null)
     try {
-      await appClient.verifyApp({ clientId: app.clientId, verified })
-      await refresh()
+      const resp = await appClient.verifyApp({ clientId: app.clientId, verified })
+      patchRow(resp.app)
       setMessage({ type: 'success', text: verified ? 'Vouch recorded.' : 'Vouch withdrawn.' })
     }
     catch (e) {
@@ -483,6 +536,12 @@ export const AccountAppRegistrations: Component = () => {
             administrator. Administrators turn it off under Administration, Apps.
           </p>
         </Show>
+        {/*
+          Keyed by object identity, which setApps PRESERVES for unchanged rows
+          (see refresh): <For> reconciles a refresh that changed nothing, and
+          an open EditAppForm keeps its row -- and its typed edits -- through
+          one.
+        */}
         <For each={apps()}>
           {app => (
             <div class="vstack gap-3">
@@ -492,11 +551,14 @@ export const AccountAppRegistrations: Component = () => {
                     {app.clientName || 'Unnamed app'}
                     {' '}
                     <Show
-                      when={app.verifiedAt}
+                      when={app.verified}
                       fallback={
                         // UNVERIFIED is the default and the consent screen warns
                         // about it, so the same fact appears here rather than
-                        // only where a stranger meets it.
+                        // only where a stranger meets it. The hub's one rule
+                        // (a vouch or a built-in) travels in this field, so a
+                        // built-in registration reads verified here exactly as
+                        // the consent page renders it.
                         <span class={styles.credentialBadgeWarning}>unverified</span>
                       }
                     >
@@ -591,10 +653,10 @@ export const AccountAppRegistrations: Component = () => {
                   <Show when={vouchAvailable()}>
                     <button
                       type="button"
-                      onClick={() => void setVerified(app, app.verifiedAt === undefined)}
+                      onClick={() => void setVerified(app, !app.verified)}
                       disabled={busy() || app.revokedAt !== undefined}
                     >
-                      {app.verifiedAt === undefined ? 'Vouch' : 'Withdraw vouch'}
+                      {!app.verified ? 'Vouch' : 'Withdraw vouch'}
                     </button>
                   </Show>
                   {/*
@@ -634,10 +696,10 @@ export const AccountAppRegistrations: Component = () => {
                   app={app}
                   busy={busy()}
                   onCancel={() => setEditing(null)}
-                  onSaved={(text) => {
+                  onSaved={(text, app) => {
                     setEditing(null)
                     setMessage({ type: 'success', text })
-                    void refresh()
+                    patchRow(app)
                   }}
                   onError={text => setMessage({ type: 'error', text })}
                   setBusy={setBusy}
@@ -660,12 +722,10 @@ export const AccountAppRegistrations: Component = () => {
           <RegisterAppForm
             busy={busy()}
             onCancel={() => setCreating(false)}
-            onRegistered={(text) => {
-              // NOT async: this is a tracked scope, and Solid's reactivity
-              // follows synchronous reads alone. The refresh runs detached.
+            onRegistered={(text, app) => {
               setCreating(false)
               setMessage({ type: 'success', text })
-              void refresh()
+              prependRow(app)
             }}
             onError={text => setMessage({ type: 'error', text })}
             setBusy={setBusy}
@@ -696,14 +756,14 @@ export const AccountAppRegistrations: Component = () => {
       </Show>
 
       {/*
-        Allowing the step-up leg is a widening write, so it asks first: a
+        Allowing the step-up stage is a widening write, so it asks first: a
         confirmed app can spend its whole grant on an elevated call, and that
         is a different decision from registering it.
       */}
       <Show when={elevating()}>
         {app => (
           <ConfirmDialog
-            title="Allow the step-up leg?"
+            title="Allow the step-up stage?"
             confirmLabel="Allow"
             busy={busy()}
             onCancel={() => setElevating(null)}

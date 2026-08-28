@@ -41,7 +41,7 @@ One account's live authorization of one **app**, across every machine that app r
 
 ### Consent screen
 
-The page a Hub renders when an app asks for access. It names the app, warns when no administrator vouched for it, and lists every permission as a sentence a person can act on -- *Type into your terminals, which runs any command on your machine*, never `terminal:write`. Approving needs a recently proven factor. See [Connected Apps](/docs/using/connected-apps/#authorizing-an-app).
+The page a Hub renders when an app asks for access. It states the app's name, warns when no administrator vouched for it, and lists every permission as a sentence a person can act on -- *Type into your terminals, which runs any command on your machine*, never `terminal:write`. Approving needs a recently proven factor. See [Connected Apps](/docs/using/connected-apps/#authorizing-an-app).
 
 ## D
 
@@ -129,7 +129,7 @@ The single-user, all-in-one mode (`leapmux solo`) that runs a Hub and a Worker i
 
 ### Step-up
 
-The ceremony that proves a factor for a credential rather than for a browser session. An app that needs one is refused with a marker, opens `/oauth/step-up`, and the account holder approves in a browser; the credential then holds a window for {{< duration elevation-window >}}. It issues nothing new. An app is refused this leg unless its owner allowed it per app. See [Session elevation](/docs/operating/security/#session-elevation).
+The ceremony that proves a factor for a credential rather than for a browser session. An app that needs one is refused with a marker, opens `/oauth/step-up`, and the account holder approves in a browser; the credential then holds a window for {{< duration elevation-window >}}. It issues nothing new. An app is refused this ceremony unless its owner allowed it per app. See [Session elevation](/docs/operating/security/#session-elevation).
 
 ## T
 

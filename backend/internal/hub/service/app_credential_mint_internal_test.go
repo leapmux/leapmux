@@ -137,3 +137,19 @@ func TestMintAuthorityClampTreatsSoloAsProven(t *testing.T) {
 	assert.True(t, clamped.Rotating, "a solo actor stands on the port, so nothing clamps the mint")
 	assert.Equal(t, time.Duration(0), clamped.AccessTTL, "the ordinary access window applies")
 }
+
+// The kind() classification is what assert and clamp both read; pin each
+// actor class to its side of the clamp so a new class cannot land on the
+// wrong one silently.
+func TestAuthorityKindClassifiesEveryActor(t *testing.T) {
+	require.Equal(t, consentGrantAuthority, mintedByConsentGrant("g1").kind())
+	require.Equal(t, missingAuthority, mintAuthority{}.kind())
+	require.Equal(t, sessionActorAuthority, mintedByActor(&auth.UserInfo{
+		Solo:       true,
+		Credential: auth.APICredential("t1"),
+	}).kind())
+	sessionCred := auth.UserInfo{Credential: auth.SessionCredential("s1")}
+	require.Equal(t, sessionActorAuthority, mintedByActor(&sessionCred).kind())
+	bearer := auth.UserInfo{Credential: auth.APICredential("t2")}
+	require.Equal(t, bearerActorAuthority, mintedByActor(&bearer).kind())
+}

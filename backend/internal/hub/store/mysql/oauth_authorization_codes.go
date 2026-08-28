@@ -8,6 +8,7 @@ import (
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
+	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
 type oauthAuthorizationCodeStore struct{ conn *mysqlConn }
@@ -88,6 +89,17 @@ func (s *oauthAuthorizationCodeStore) Get(ctx context.Context, code string) (*st
 	}
 	out := fromDBOAuthAuthorizationCode(row)
 	return &out, nil
+}
+
+func (s *oauthAuthorizationCodeStore) ConsumeActiveForUserClient(ctx context.Context, clientID string, user userid.UserID, now time.Time) (int64, error) {
+	if user.IsZero() {
+		return 0, store.ErrInvalidArgument
+	}
+	return rowsAffected(s.conn.q.ConsumeActiveAuthorizationCodesForUserClient(ctx, gendb.ConsumeActiveAuthorizationCodesForUserClientParams{
+		ClientID: clientID,
+		UserID:   user.String(),
+		Now:      sqltime.NewMySQLTime(now),
+	}))
 }
 
 func (s *oauthAuthorizationCodeStore) MarkMinted(ctx context.Context, code, tokenID string) error {

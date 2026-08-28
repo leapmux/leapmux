@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -73,7 +74,7 @@ func TestPersistTokenResponse_WritesCredentials(t *testing.T) {
 			"user_id": "user-1",
 			"username": "alice"
 		}`)
-		err := persistTokenResponse("https://hub.example", body, "admin:read")
+		err := persistTokenResponse("https://hub.example", body, oauthapp.ControlCLIClientID, "admin:read")
 		require.NoError(t, err)
 	})
 
@@ -108,7 +109,7 @@ func TestPersistTokenResponse_WarnsWhenAScopeWasNotGranted(t *testing.T) {
 			"user_id": "user-1",
 			"username": "alice"
 		}`)
-		require.NoError(t, persistTokenResponse("https://hub.example", body, "admin:read"))
+		require.NoError(t, persistTokenResponse("https://hub.example", body, oauthapp.ControlCLIClientID, "admin:read"))
 	})
 
 	var env struct {
@@ -157,7 +158,7 @@ func TestPersistTokenResponse_RevokesTheCredentialItReplaces(t *testing.T) {
 			"user_id": "user-1",
 			"username": "alice"
 		}`)
-		require.NoError(t, persistTokenResponse(srv.URL, body, ""))
+		require.NoError(t, persistTokenResponse(srv.URL, body, oauthapp.ControlCLIClientID, ""))
 	})
 
 	select {
@@ -206,7 +207,7 @@ func TestPersistTokenResponse_WarnsWhenTheOldCredentialSurvives(t *testing.T) {
 			"user_id": "user-1",
 			"username": "alice"
 		}`)
-		require.NoError(t, persistTokenResponse(srv.URL, body, ""))
+		require.NoError(t, persistTokenResponse(srv.URL, body, oauthapp.ControlCLIClientID, ""))
 	})
 
 	assert.Contains(t, string(out), "could not be revoked",
@@ -227,7 +228,7 @@ func TestPersistTokenResponse_RejectsMalformedJSON(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", dir)
 	out := withCapturedStdout(t, func() {
-		err := persistTokenResponse("https://hub.example", strings.NewReader(`{not json`), "")
+		err := persistTokenResponse("https://hub.example", strings.NewReader(`{not json`), oauthapp.ControlCLIClientID, "")
 		require.Error(t, err)
 		assert.True(t, control.IsEmitted(err))
 	})
@@ -781,7 +782,7 @@ func jsonTail(t *testing.T, out []byte) []byte {
 // TestRevokeBearer_NoOpOnEmptyBearer covers the safe-rerun path of
 // `auth logout` when no credentials existed in the first place.
 func TestRevokeBearer_NoOpOnEmptyBearer(t *testing.T) {
-	require.NoError(t, revokeBearer("https://hub.example", ""))
+	require.NoError(t, revokeBearer("https://hub.example", "", oauthapp.ControlCLIClientID))
 }
 
 // TestRevokeBearer_SendsAuthorizationHeader pins the wire format so
@@ -799,7 +800,7 @@ func TestRevokeBearer_SendsAuthorizationHeader(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	require.NoError(t, revokeBearer(srv.URL, "lmx_a_secret"))
+	require.NoError(t, revokeBearer(srv.URL, "lmx_a_secret", oauthapp.ControlCLIClientID))
 	assert.Equal(t, "Bearer lmx_a_secret", gotAuth)
 	assert.Contains(t, gotForm, "token=lmx_a_secret")
 	// The public client names itself, per RFC 7009 section 2.1, so the hub
@@ -812,7 +813,7 @@ func TestRevokeBearer_SendsAuthorizationHeader(t *testing.T) {
 // chooses to swallow this error itself, but the helper must still
 // report it so future callers can react.
 func TestRevokeBearer_PropagatesNetworkError(t *testing.T) {
-	err := revokeBearer("http://127.0.0.1:1", "lmx_a_secret")
+	err := revokeBearer("http://127.0.0.1:1", "lmx_a_secret", oauthapp.ControlCLIClientID)
 	require.Error(t, err)
 }
 
@@ -935,4 +936,103 @@ func TestRunAuthCredentials_AsksForTheHubsMaximumPage(t *testing.T) {
 	limits := stub.requestedLimits()
 	require.NotEmpty(t, limits)
 	assert.Equal(t, int64(service.MaxPageLimit), limits[0])
+}
+
+// TestCallbackHandlerNeverBlocksOnDuplicates pins the local-redirect login's
+// wedge fix: the browser can re-GET the success page (or a stale tab can
+// re-send a bad state) after the CLI already holds its one outcome. A
+// blocking send would park the handler goroutine and the deferred
+// srv.Shutdown would wait for it forever -- a login that already succeeded
+// hanging the CLI. Every duplicate here must answer within the timeout.
+func TestCallbackHandlerNeverBlocksOnDuplicates(t *testing.T) {
+	codeCh := make(chan string, 1)
+	errCh := make(chan error, 1)
+	// Pre-fill both channels: the CLI has consumed neither, so both buffers
+	// are full -- the exact state a duplicate arrival meets.
+	codeCh <- "code-1"
+	errCh <- errors.New("first error")
+
+	handler := callbackHandler("state-1", codeCh, errCh)
+	serve := func(path, state, code string) bool {
+		req := httptest.NewRequest(http.MethodGet, path+"?state="+state+"&code="+code, nil)
+		done := make(chan struct{})
+		go func() {
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			close(done)
+		}()
+		select {
+		case <-done:
+			return true
+		case <-time.After(2 * time.Second):
+			return false
+		}
+	}
+
+	require.True(t, serve("/callback", "state-1", "code-1"),
+		"a duplicate success callback must answer, not block")
+	require.True(t, serve("/callback", "wrong", "code-1"),
+		"a duplicate bad-state callback must answer, not block")
+	require.True(t, serve("/callback", "state-1", "code-1"),
+		"a third duplicate must still answer")
+	// The FIRST outcome survives; duplicates dropped rather than replaced it.
+	require.Equal(t, "code-1", <-codeCh)
+	require.EqualError(t, <-errCh, "first error")
+}
+
+// TestCallbackHandlerReportsTheServerErrorParameter pins the RFC 6749 section
+// 4.1.2.1 branch of the local-redirect callback: the hub redirects every
+// refusal it could validate back with `error` (a Deny, an invalid_scope, a
+// server error), and folding those into the state-mismatch branch told a user
+// who deliberately refused that the state check had failed -- a CSRF suspicion
+// they can neither check nor act on. The state check stays first: a mismatched
+// state is a mismatch whatever else the query carries.
+func TestCallbackHandlerReportsTheServerErrorParameter(t *testing.T) {
+	codeCh := make(chan string, 1)
+	errCh := make(chan error, 1)
+	handler := callbackHandler("state-1", codeCh, errCh)
+
+	serve := func(t *testing.T, query string) *httptest.ResponseRecorder {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/callback?"+query, nil))
+		return rec
+	}
+
+	// A refusal with the matching state reports the ACTUAL cause.
+	rec := serve(t, "state=state-1&error=access_denied&error_description=the+account+owner+refused")
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	select {
+	case err := <-errCh:
+		require.ErrorContains(t, err, "access_denied")
+		require.ErrorContains(t, err, "the account owner refused")
+	default:
+		t.Fatal("the refusal must reach the CLI's error channel")
+	}
+	select {
+	case code := <-codeCh:
+		t.Fatalf("a refused authorization must not carry a code: %q", code)
+	default:
+	}
+
+	// A mismatched state is reported as the mismatch even when an error rides
+	// along: the state check decides first.
+	rec = serve(t, "state=wrong&error=access_denied")
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	select {
+	case err := <-errCh:
+		require.ErrorContains(t, err, "callback state mismatch")
+	default:
+		t.Fatal("a mismatched state must reach the CLI's error channel")
+	}
+
+	// Neither a code nor an error is its own answer, not silence about which.
+	rec = serve(t, "state=state-1")
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	select {
+	case err := <-errCh:
+		require.ErrorContains(t, err, "neither a code nor an error")
+	default:
+		t.Fatal("an empty callback must reach the CLI's error channel")
+	}
 }

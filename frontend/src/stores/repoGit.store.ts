@@ -227,12 +227,15 @@ export function createRepoGitStore() {
     if (touchOrder.size <= MAX_REPO_ENTRIES)
       return
     const focused = untrack(focusedKey)
-    for (const key of [...touchOrder.keys()]) {
+    // Iterating the Map directly, without the snapshot a spread would copy:
+    // Map iteration tolerates deletion during iteration, and the copy
+    // allocated a fresh key array on every upsert past the cap.
+    for (const key of touchOrder.keys()) {
       if (touchOrder.size <= MAX_REPO_ENTRIES)
         return
       if (key === justWritten || key === focused)
         continue
-      if (untrack(() => repos[key])?.branchPinnedUntilRefresh)
+      if (peek(key)?.branchPinnedUntilRefresh)
         continue
       clear(key)
     }
@@ -269,7 +272,7 @@ export function createRepoGitStore() {
       pinKeys.add(hintKey)
     pinKeys.add(repoKey(workerId, path))
     const canonical = findCanonicalRepoKey(
-      { get: peek, repos: () => repos as Readonly<Record<RepoKey, RepoGitState>>, keysForWorker },
+      { get: peek, peek, repos: () => repos as Readonly<Record<RepoKey, RepoGitState>>, keysForWorker },
       workerId,
       path,
     )
@@ -356,9 +359,9 @@ export function createRepoGitStore() {
       // An earlier completed refresh already applied pin policy for this key.
       // A cancelled nested/canonical probe must not undo that keep.
       const completed = lastCompletedByKey.get(key)
-      if (completed?.keptPin && get(key)?.branchPinnedUntilRefresh)
+      if (completed?.keptPin && peek(key)?.branchPinnedUntilRefresh)
         continue
-      if (get(key)?.branchPinnedUntilRefresh)
+      if (peek(key)?.branchPinnedUntilRefresh)
         upsert(key, { branchPinnedUntilRefresh: false })
     }
   }
@@ -406,7 +409,7 @@ export function createRepoGitStore() {
     const recordCompletedApply = (appliedKey: RepoKey) => {
       lastCompletedByKey.set(appliedKey, {
         gen: mine,
-        keptPin: Boolean(get(appliedKey)?.branchPinnedUntilRefresh),
+        keptPin: Boolean(peek(appliedKey)?.branchPinnedUntilRefresh),
       })
     }
 
@@ -420,7 +423,7 @@ export function createRepoGitStore() {
       }
       const mapped = patchFromGetGitFileStatus(workerId, resp)
       if (!mapped) {
-        const lookup = { get: peek, repos: () => repos as Readonly<Record<RepoKey, RepoGitState>>, keysForWorker }
+        const lookup = { get: peek, peek, repos: () => repos as Readonly<Record<RepoKey, RepoGitState>>, keysForWorker }
         if (nonRepoKey && !hasHealthyRepoForProbe(lookup, workerId, path, nonRepoKey)) {
           const nonRepo = patchFromNonRepoGetGitFileStatus(workerId, resp, nonRepoKey)
           if (canApplyToKey(nonRepo.key)) {
@@ -622,6 +625,10 @@ export function createRepoGitStore() {
 
   return {
     get,
+    // peek is the non-touching read: internal scans (findCanonicalRepoKey,
+    // the pin bookkeeping) must not mark every key they walk as equally
+    // recent, which is what collapsing the LRU order looks like.
+    peek,
     upsert,
     clear,
     clearAll,

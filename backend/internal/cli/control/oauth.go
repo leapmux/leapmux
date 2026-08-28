@@ -14,7 +14,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 )
 
-// The pieces every `/oauth/...` leg shares.
+// The pieces every `/oauth/...` stage shares.
 //
 // Four flows post a form to that surface: the login (both the local-redirect
 // exchange and the device-code poll), the token rotation, the revoke, and
@@ -24,12 +24,12 @@ import (
 // so this one is where the shared answer belongs.
 
 // OAuth 2.0 grant-type wire identifiers (RFC 6749 sections 4.1.3 and 6,
-// RFC 8628 section 3.4). Stable per the specification, so the CLI's copy and
-// the hub's cannot drift.
+// RFC 8628 section 3.4), from oauthapp beside the built-in ids -- one home
+// for the hub's server and this client, rather than a copy per side.
 const (
-	GrantTypeAuthorizationCode = "authorization_code"
-	GrantTypeDeviceCode        = "urn:ietf:params:oauth:grant-type:device_code"
-	GrantTypeRefreshToken      = "refresh_token"
+	GrantTypeAuthorizationCode = oauthapp.GrantTypeAuthorizationCode
+	GrantTypeDeviceCode        = oauthapp.GrantTypeDeviceCode
+	GrantTypeRefreshToken      = oauthapp.GrantTypeRefreshToken
 )
 
 // ControlCLIClientID is the app this CLI authenticates as.
@@ -42,6 +42,12 @@ const (
 // already crossed elsewhere (cmd imports internal/hub/service and hub/ratelimit),
 // and oauthapp is a dependency-free constants package.
 const ControlCLIClientID = oauthapp.ControlCLIClientID
+
+// ControlCLIRedirectURI is the registered loopback redirect, re-exported for
+// the same reason and from the same one home: the local-redirect login binds
+// an ephemeral port of THIS address, and a local literal could drift from the
+// row the hub seeds.
+const ControlCLIRedirectURI = oauthapp.ControlCLIRedirectURI
 
 const (
 	// DeviceCodePollFallback is the poll cadence a device-flow client uses
@@ -126,7 +132,7 @@ func (g DeviceGrant) Poll(ctx context.Context, poll func(context.Context) error)
 }
 
 // OAuthErrorBody is the RFC 6749 section 5.2 error body that every refused
-// leg of the CLI auth surface returns.
+// stage of the CLI auth surface returns.
 type OAuthErrorBody struct {
 	Error            string `json:"error"`
 	ErrorDescription string `json:"error_description"`
@@ -183,7 +189,7 @@ func DeviceFlowError(resp *http.Response) error {
 
 // PostForm performs one form-encoded POST against the hub's auth surface.
 //
-// Every leg of that surface is this request: an
+// Every stage of that surface is this request: an
 // application/x-www-form-urlencoded body, an optional credential header,
 // and a response whose refusals carry an OAuth error body. decorate runs on
 // the request header, so a caller that must present a credential states

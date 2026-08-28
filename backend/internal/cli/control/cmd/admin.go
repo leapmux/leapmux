@@ -31,10 +31,11 @@ import (
 // hub refuses, and printed the same instruction twice on the refusal that
 // was genuine.
 //
-// The scoped refusal names the PERMISSION rather than a command, because the
+// The scoped refusal states the PERMISSION rather than a command, because the
 // same endpoint answers every registered app and `leapmux control auth login
-// --scope admin:read` means nothing to a third-party one. The CLI knows its own
-// remedy and prints it where it belongs.
+// --scope admin:read` means nothing to a third-party one. The remedy for the
+// CLI's own credential is the login flow's --scope flag, whose help states
+// it; a refusal is not the place to repeat it.
 
 // requireAdminClient is requireClient plus the admin exclusions: admin
 // commands NEVER use the worker-IPC transport. They talk to the hub
@@ -360,7 +361,7 @@ func RunAdminSettingsSet(rawCtx any, args []string) error {
 			if resp.Msg.GetRestart() {
 				out["note_restart"] = "this setting applies after a hub restart"
 			} else {
-				out["note_hot"] = "the hub that stored this setting applies it at once; other hub instances that share the database apply it within 30 seconds"
+				out["note_hot"] = "the hub that stored this setting applies it at once; a value written to the shared database outside the hub reaches it within its 30-second settings snapshot"
 			}
 			return control.EmitData(out)
 		},

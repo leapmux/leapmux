@@ -51,12 +51,8 @@ func Open(path string, cfg sqlitedb.Config) (store.Store, error) {
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("init sqlite migrator: %w", err)
 	}
-	if err := mig.Migrate(context.Background()); err != nil {
-		_ = sqlDB.Close()
-		return nil, fmt.Errorf("migrate sqlite: %w", err)
-	}
 
-	return &sqliteStore{
+	st := &sqliteStore{
 		conn: &sqliteConn{
 			shared: &sqliteShared{
 				db:       sqlDB,
@@ -65,7 +61,15 @@ func Open(path string, cfg sqlitedb.Config) (store.Store, error) {
 			exec: sqlDB,
 			q:    gendb.New(sqlDB),
 		},
-	}, nil
+	}
+	// One call is the whole boot: migrate, then seed and reconcile the
+	// built-in registrations. Migrator() wraps the raw migrator so every
+	// caller that migrates this store later completes the same sequence.
+	if err := st.Migrator().Migrate(context.Background()); err != nil {
+		_ = sqlDB.Close()
+		return nil, fmt.Errorf("migrate sqlite: %w", err)
+	}
+	return st, nil
 }
 
 func (s *sqliteStore) Users() store.UserStore       { return &userStore{conn: s.conn} }
@@ -138,7 +142,13 @@ func (s *sqliteStore) OAuthClients() store.OAuthClientStore {
 	return &oauthClientStore{conn: s.conn}
 }
 func (s *sqliteStore) Cleanup() store.CleanupStore { return &cleanupStore{conn: s.conn} }
-func (s *sqliteStore) Migrator() store.Migrator    { return s.conn.shared.migrator }
+
+// Migrator wraps the raw goose migrator so a completed migration also seeds
+// and reconciles the built-in registrations -- the boot sequence, wherever it
+// runs. See store.MigratorWithBuiltIns.
+func (s *sqliteStore) Migrator() store.Migrator {
+	return store.MigratorWithBuiltIns(s.conn.shared.migrator, s)
+}
 
 func (s *sqliteStore) RunInTransaction(ctx context.Context, fn func(tx store.Store) error) error {
 	if s.conn.inTx() {

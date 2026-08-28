@@ -69,7 +69,7 @@ const serviceDocumentationURL = "https://leapmux.com/docs/reference/oauth-api/"
 // and a conformant client failed somewhere unrelated, on a request it built
 // correctly from a document that was wrong.
 //
-// The refusal names the setting, and it lands at DISCOVERY, which is the first
+// The refusal states the setting, and it lands at DISCOVERY, which is the first
 // thing any client fetches -- so an operator meets it before an app does.
 //
 // TrimSuffix, not TrimRight: TrimRight cuts a RUN of slashes, which is what
@@ -162,5 +162,5 @@ func isMetadataRead(w http.ResponseWriter, r *http.Request) bool {
 // It is derived from authscope rather than written out here, so a scope added
 // to scope.proto appears in the document the day it lands.
 func metadataScopeTokens() []string {
-	return SortedScopeTokens(authscope.EveryGrantableScope())
+	return authscope.EveryGrantableScope().SortedTokens()
 }

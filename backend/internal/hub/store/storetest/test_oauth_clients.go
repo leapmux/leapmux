@@ -24,17 +24,17 @@ import (
 func (s *Suite) testOAuthClients(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("the migration seeds the built-in registrations", func(t *testing.T) {
+	t.Run("every store open seeds the built-in registrations", func(t *testing.T) {
 		st := s.NewStore(t)
 		for _, clientID := range oauthapp.BuiltInClientIDs() {
 			app, err := st.OAuthClients().Get(ctx, clientID)
-			require.NoErrorf(t, err, "the migration must seed %s", clientID)
+			require.NoErrorf(t, err, "the store open must seed %s", clientID)
 			assert.Equal(t, store.OAuthClientSourceBuiltin, app.RegistrationSource)
 			assert.Empty(t, app.OwnerUserID, "a built-in registration is hub-wide")
-			// Against the column's FALSE default, and stated in the migration
-			// on purpose: a seeded row that lost it would take
+			// Against the column's FALSE default, and stated by the seed on
+			// purpose: a seeded row that lost it would take
 			// `leapmux control admin ...` away with no error anybody could
-			// trace back to a schema edit.
+			// trace back to its source.
 			assert.Truef(t, app.ElevationAllowed,
 				"%s must ship with the step-up leg available", clientID)
 		}
@@ -64,6 +64,69 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 			"the service account's seeded ceiling is a constant of the build")
 	})
 
+	t.Run("a boot reconciles the constants and preserves the operator's decisions", func(t *testing.T) {
+		st := s.NewStore(t)
+		admin := SeedUser(t, st, "builtin-reconcile-admin")
+		adminUID, ok := userid.New(admin.ID)
+		require.True(t, ok)
+
+		// The operator's ONE decision on a built-in: turn the step-up leg off.
+		//
+		// Restore it on cleanup: TruncateAll preserves built-in rows, so on
+		// the shared-database dialects a flag this subtest leaves flipped
+		// survives into every later subtest.
+		rows, err := st.OAuthClients().SetElevationAllowed(ctx, store.SetOAuthClientElevationAllowedParams{
+			ClientID: oauthapp.ControlCLIClientID, ElevationAllowed: false,
+			CallerUserID: adminUID, CallerIsAdmin: true,
+		})
+		require.NoError(t, err)
+		require.Equal(t, int64(1), rows)
+		t.Cleanup(func() {
+			_, restoreErr := st.OAuthClients().SetElevationAllowed(context.Background(),
+				store.SetOAuthClientElevationAllowedParams{
+					ClientID: oauthapp.ControlCLIClientID, ElevationAllowed: true,
+					CallerUserID: adminUID, CallerIsAdmin: true,
+				})
+			require.NoError(t, restoreErr)
+		})
+
+		// Simulate a row an OLDER build seeded: stale constants, written the
+		// way only the seed itself can write them (every editing verb refuses
+		// a built-in, which is the point). The conflict branch leaves the
+		// existing row's created_at alone, so record it as it stands.
+		before, err := st.OAuthClients().Get(ctx, oauthapp.ControlCLIClientID)
+		require.NoError(t, err)
+		require.NoError(t, st.OAuthClients().UpsertBuiltIn(ctx, store.UpsertBuiltInClientParams{
+			ClientID: oauthapp.ControlCLIClientID, ClientName: "LeapMux control CLI (old)",
+			RedirectURIs:       oauthapp.ControlCLIRedirectURI,
+			Scopes:             "workspace:read",
+			GrantTypes:         "authorization_code",
+			RegistrationSource: store.OAuthClientSourceBuiltin,
+			ElevationAllowed:   true, // the older build's INSERT default; must NOT re-run
+			CreatedAt:          time.Now().UTC(),
+			UpdatedAt:          time.Now().UTC(),
+		}))
+
+		// The next boot reconciles today's constants.
+		require.NoError(t, store.SeedBuiltIns(ctx, st, time.Now().UTC()))
+
+		cli, err := st.OAuthClients().Get(ctx, oauthapp.ControlCLIClientID)
+		require.NoError(t, err)
+		assert.Equal(t, oauthapp.ControlCLIScopes, cli.Scopes, "a drifted ceiling is restored")
+		assert.Equal(t, oauthapp.ControlCLIGrantTypes, cli.GrantTypes, "a drifted flow set is restored")
+		// The OPERATOR's decision survives the boot. This is the property that
+		// kept the upsert out of the migration in the first place: a
+		// reconciliation that rewrote this column would silently re-enable
+		// the step-up leg on every hub that turned it off.
+		assert.False(t, cli.ElevationAllowed,
+			"the operator's step-up decision survives the seed")
+		// The row's own history survives too: a reconciliation that rewrote
+		// created_at would make the registration look brand new on every
+		// upgrade.
+		assert.WithinDuration(t, before.CreatedAt, cli.CreatedAt, time.Minute,
+			"the first boot's created_at survives the seed")
+	})
+
 	t.Run("visibility follows one column", func(t *testing.T) {
 		st := s.NewStore(t)
 		alice := SeedUser(t, st, "alice")
@@ -73,29 +136,29 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 		hubWide := seedApp(t, st, "everyone's app", "", store.OAuthClientSourceAdmin)
 
 		// Alice AUTHORIZES her own app plus the catalogue.
-		visible := listIDs(t, st.OAuthClients().ListVisibleTo, ctx, alice.ID)
+		visible := listIDs(t, st.OAuthClients().List, ctx, alice.ID, true)
 		assert.Contains(t, visible, private)
 		assert.Contains(t, visible, hubWide)
 
 		// Bob sees the catalogue and NOT Alice's app. This is the whole rule,
 		// and it is a NULL comparison rather than a flag: owner_user_id IS NULL
 		// means hub-wide, and there is no second column to disagree.
-		bobVisible := listIDs(t, st.OAuthClients().ListVisibleTo, ctx, bob.ID)
+		bobVisible := listIDs(t, st.OAuthClients().List, ctx, bob.ID, true)
 		assert.NotContains(t, bobVisible, private, "another user's private app must be invisible")
 		assert.Contains(t, bobVisible, hubWide)
 
-		// OWNED-BY answers a different question: what may this account EDIT.
-		// The catalogue is authorizable by everybody and editable by nobody
-		// through this listing.
-		owned := listIDs(t, st.OAuthClients().ListOwnedBy, ctx, alice.ID)
+		// WITHOUT the hub-wide flag the listing answers a different question:
+		// what may this account EDIT. The catalogue is authorizable by
+		// everybody and editable by nobody through this listing.
+		owned := listIDs(t, st.OAuthClients().List, ctx, alice.ID, false)
 		assert.Contains(t, owned, private)
 		assert.NotContains(t, owned, hubWide, "the hub-wide catalogue is not an account's own")
-		assert.Empty(t, listIDs(t, st.OAuthClients().ListOwnedBy, ctx, bob.ID))
+		assert.Empty(t, listIDs(t, st.OAuthClients().List, ctx, bob.ID, false))
 
 		// And a ZERO caller owns nothing. An unminted id unwraps to "", which
 		// would match every blank-owner row -- that is, the whole hub-wide
 		// catalogue -- if the owner filter were not there.
-		zero, err := st.OAuthClients().ListOwnedBy(ctx, store.ListOAuthClientsParams{
+		zero, err := st.OAuthClients().List(ctx, store.ListOAuthClientsParams{
 			PageParams: store.PageParams{Limit: 50},
 		})
 		require.NoError(t, err)
@@ -113,7 +176,7 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 
 		now := time.Now().UTC().Truncate(time.Second)
 		_, err = st.OAuthClients().SetVerified(ctx, store.SetOAuthClientVerifiedParams{
-			ClientID: clientID, VerifiedAt: &now, VerifiedBy: admin.ID,
+			ClientID: clientID, VerifiedAt: &now, VerifiedBy: admin.ID, CallerIsAdmin: true,
 		})
 		require.NoError(t, err)
 		app, err = st.OAuthClients().Get(ctx, clientID)
@@ -124,7 +187,7 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 		// Withdrawing clears BOTH. The CHECK constraint refuses a half-vouch,
 		// so a store that cleared one column would fail here on every dialect
 		// rather than leaving a row the consent page cannot describe.
-		_, err = st.OAuthClients().SetVerified(ctx, store.SetOAuthClientVerifiedParams{ClientID: clientID})
+		_, err = st.OAuthClients().SetVerified(ctx, store.SetOAuthClientVerifiedParams{ClientID: clientID, CallerIsAdmin: true})
 		require.NoError(t, err)
 		app, err = st.OAuthClients().Get(ctx, clientID)
 		require.NoError(t, err)
@@ -139,7 +202,7 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 
 		now := time.Now().UTC().Truncate(time.Second)
 		_, err := st.OAuthClients().SetVerified(ctx, store.SetOAuthClientVerifiedParams{
-			ClientID: clientID, VerifiedAt: &now, VerifiedBy: admin.ID,
+			ClientID: clientID, VerifiedAt: &now, VerifiedBy: admin.ID, CallerIsAdmin: true,
 		})
 		require.NoError(t, err)
 
@@ -204,7 +267,7 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 		// The refs are read BEFORE the cascade, which is what lets the caller
 		// apply each row's lifecycle effects after the commit -- effects
 		// accumulate, and a retried transaction would double-apply them.
-		refs, err := st.OAuthClients().ListTokenRefs(ctx, store.RevokeAPITokensForClientParams{ClientID: clientID})
+		refs, err := st.OAuthClients().ListTokenRefs(ctx, clientID)
 		require.NoError(t, err)
 		assert.Len(t, refs, 2)
 		// Each ref carries its own GRANT, because a caller that is NARROWING
@@ -216,7 +279,7 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 				"the ref for %s must carry the grant a ceiling change is measured against", ref.ID)
 		}
 
-		n, err := st.OAuthClients().RevokeTokens(ctx, store.RevokeAPITokensForClientParams{ClientID: clientID})
+		n, err := st.OAuthClients().RevokeTokens(ctx, clientID)
 		require.NoError(t, err)
 		assert.EqualValues(t, 2, n, "an app revocation reaches every account")
 
@@ -235,9 +298,7 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 				SecretHash: []byte("hash"),
 			}))
 		}
-		n, err = st.OAuthClients().RevokeTokens(ctx, store.RevokeAPITokensForClientParams{
-			ClientID: other, UserID: alice.ID,
-		})
+		n, err = st.OAuthClients().RevokeUserTokens(ctx, other, userid.MustNew(alice.ID))
 		require.NoError(t, err)
 		assert.EqualValues(t, 1, n, "a disconnect is one account's decision")
 	})
@@ -439,7 +500,7 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 func seedApp(t *testing.T, st store.Store, name, owner, source string) string {
 	t.Helper()
 	clientID := id.Generate()
-	require.NoError(t, st.OAuthClients().Create(context.Background(), store.CreateOAuthClientParams{
+	_, err := st.OAuthClients().Create(context.Background(), store.CreateOAuthClientParams{
 		ClientID:           clientID,
 		OwnerUserID:        owner,
 		CreatedBy:          owner,
@@ -448,7 +509,8 @@ func seedApp(t *testing.T, st store.Store, name, owner, source string) string {
 		Scopes:             "workspace:read",
 		GrantTypes:         "authorization_code refresh_token",
 		RegistrationSource: source,
-	}))
+	})
+	require.NoError(t, err)
 	return clientID
 }
 
@@ -459,14 +521,16 @@ func listIDs(
 	list func(context.Context, store.ListOAuthClientsParams) (store.Page[store.OAuthClient], error),
 	ctx context.Context,
 	userID string,
+	includeHubWide bool,
 ) []string {
 	t.Helper()
 	var out []string
 	cursor := ""
 	for {
 		page, err := list(ctx, store.ListOAuthClientsParams{
-			UserID:     userid.MustNew(userID),
-			PageParams: store.PageParams{Cursor: cursor, Limit: 50},
+			UserID:         userid.MustNew(userID),
+			IncludeHubWide: includeHubWide,
+			PageParams:     store.PageParams{Cursor: cursor, Limit: 50},
 		})
 		require.NoError(t, err)
 		for _, row := range page.Rows {

@@ -9,9 +9,9 @@ An app you authorize holds a credential on your account until you disconnect it.
 
 ## Authorizing an app
 
-When a program needs access, it sends you to a consent screen the Hub renders. The screen names the app and lists every permission in a sentence — *Type into your terminals, which runs any command on your machine*, not `terminal:write`.
+When a program needs access, it sends you to a consent screen the Hub renders. The screen states the app's name and lists every permission in a sentence — *Type into your terminals, which runs any command on your machine*, not `terminal:write`.
 
-Read the warning before the list. **Nobody has verified this app on this hub** means an administrator has not vouched for it, and the name below is the one the app claims for itself. An app you did not go looking for is one to deny.
+Read the warning before the list. **Nobody verified this app on this hub** means no administrator vouched for it, and the name below is the one the app claims for itself. An app you did not go looking for is one to deny.
 
 Authorizing needs a recently proven factor, so the screen may ask for your password or passkey first. That proof lasts {{< duration elevation-window >}}, so a second authorization in the same sitting does not ask again.
 
@@ -19,10 +19,10 @@ Authorizing needs a recently proven factor, so the screen may ask for your passw
 
 ## Reading the list
 
-The list is **grouped by app**. Each block names one app, and under it is one row per machine that app runs on.
+The list is **grouped by app**. Each block identifies one app, and under it is one row per machine that app runs on.
 
 - **The app name** heads the block, with **unverified** beside it when no administrator vouched for it — the same label the consent screen shows.
-- **The installation** names each row inside — *trustin's MacBook* — because one app holds one credential per machine, and the app name alone cannot tell two rows apart.
+- **The installation** identifies each row inside — *trustin's MacBook* — because one app holds one credential per machine, and the app name alone cannot tell two rows apart.
 - **hub administration** marks a credential that can administer the whole Hub. It is read from the permissions themselves, so it cannot disagree with the list below it.
 - **The permissions** are every one you granted, spelled out. Some are wider than they look: `terminal:write` runs commands, and `tunnel:open` reaches anything your machine can reach.
 
@@ -38,7 +38,7 @@ Two endings, because they answer different questions.
 
 Reach for **Disconnect** whenever the decision is about the app rather than about a machine. Ending one installation of an app you no longer trust leaves it working on every other one.
 
-Neither asks for a password. Both only ever reduce access, and asking somebody who has just realized an app is malicious to first find their password is the wrong way round — the delay is the attacker's gain.
+Neither asks for a password. Both only ever reduce access, and asking somebody who just realized an app is malicious to first find their password is the wrong way round — the delay is the attacker's gain.
 
 ## Registering your own app
 

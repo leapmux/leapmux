@@ -64,7 +64,7 @@ func NewAppService(
 	}
 }
 
-// requireElevatedOwner is this service's elevation gate, and its doc is the
+// requireElevatedOwner is this service's elevation check, and its doc is the
 // whole rule.
 //
 // FOUR verbs create or move authority and call it: RegisterApp, UpdateApp,
@@ -130,49 +130,19 @@ func (s *AppService) RegisterApp(
 	if buildErr != nil {
 		return nil, buildErr
 	}
-	if err := s.store.OAuthClients().Create(ctx, params); err != nil {
+	// The stored ROW, not a projection of the params: Create returns what the
+	// database wrote, so the response's created_at/updated_at are the DB's own
+	// values and no Go-side literal restates the column list. A brand-new
+	// client cannot hold a credential yet (the foreign key has nothing to
+	// point at), so the live count is zero and nobody has vouched for it.
+	row, err := s.store.OAuthClients().Create(ctx, params)
+	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create app: %w", err))
 	}
-	// The response is built from the params the handler itself assembled: the
-	// row Create just wrote holds exactly them, a brand-new client cannot
-	// hold a credential yet (the foreign key has nothing to reference), and
-	// nobody has vouched for it. Re-reading the row and counting its
-	// credentials paid two round trips for values this code already holds.
 	return connect.NewResponse(&leapmuxv1.RegisterAppResponse{
-		App:          registeredAppToProto(params, s.now()),
+		App:          appToProto(row, 0, ""),
 		ClientSecret: secret,
 	}), nil
-}
-
-// registeredAppToProto projects a registration the handler just wrote. It is
-// the pure half of appToProto, for the one moment every field is already in
-// hand: no credential can exist for a client_id minted one statement earlier,
-// and a fresh registration carries no vouch.
-func registeredAppToProto(params store.CreateOAuthClientParams, now time.Time) *leapmuxv1.App {
-	return appToProto(projectedClient(params, now), 0, "")
-}
-
-// projectedClient renders the store shape a fresh row holds, so the two
-// proto builders read one source rather than a second hand-assembled literal.
-func projectedClient(params store.CreateOAuthClientParams, now time.Time) *store.OAuthClient {
-	return &store.OAuthClient{
-		ClientID:           params.ClientID,
-		OwnerUserID:        params.OwnerUserID,
-		CreatedBy:          params.CreatedBy,
-		SecretHash:         params.SecretHash,
-		ClientName:         params.ClientName,
-		HasIcon:            len(params.IconBlob) > 0,
-		ClientURI:          params.ClientURI,
-		RedirectURIs:       params.RedirectURIs,
-		Scopes:             params.Scopes,
-		GrantTypes:         params.GrantTypes,
-		ElevationAllowed:   params.ElevationAllowed,
-		RegistrationSource: params.RegistrationSource,
-		VerifiedAt:         params.VerifiedAt,
-		VerifiedBy:         params.VerifiedBy,
-		CreatedAt:          now,
-		UpdatedAt:          now,
-	}
 }
 
 // ListApps pages the registrations the caller may EDIT.
@@ -197,14 +167,11 @@ func (s *AppService) ListApps(
 		PageParams:     NormalizePageParams(req.Msg.GetCursor(), int64(req.Msg.GetLimit())),
 		IncludeRevoked: req.Msg.GetIncludeRevoked(),
 	}
-	var page store.Page[store.OAuthClient]
-	if user.IsAdmin {
-		// An administrator edits the hub-wide catalogue AND their own private
-		// apps, which is exactly ListVisibleTo.
-		page, err = s.store.OAuthClients().ListVisibleTo(ctx, params)
-	} else {
-		page, err = s.store.OAuthClients().ListOwnedBy(ctx, params)
-	}
+	// An administrator edits the hub-wide catalogue AND their own private
+	// apps; everybody else sees what they registered. One statement answers
+	// both, on the IncludeHubWide flag.
+	params.IncludeHubWide = user.IsAdmin
+	page, err := s.store.OAuthClients().List(ctx, params)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list apps: %w", err))
 	}
@@ -228,7 +195,7 @@ func (s *AppService) ListApps(
 	for i := range page.Rows {
 		verifier := ""
 		if page.Rows[i].VerifiedAt != nil && page.Rows[i].VerifiedBy != "" {
-			verifier, verifiers = s.usernameOfMemoized(ctx, page.Rows[i].VerifiedBy, verifiers)
+			verifier = s.usernameOfMemoized(ctx, page.Rows[i].VerifiedBy, verifiers)
 		}
 		out = append(out, appToProto(&page.Rows[i], live[page.Rows[i].ClientID], verifier))
 	}
@@ -348,36 +315,44 @@ func (s *AppService) UpdateApp(
 			errors.New("the authorization_code grant needs at least one redirect URI"))
 	}
 
-	rows, err := s.store.OAuthClients().Update(ctx, next)
-	if err != nil {
+	// Update and the icon write run in ONE transaction, for the same reason
+	// RevokeApp runs its cascade in one: a SetIcon failure on a committed row
+	// rewrite would report a verb as failed after half of it landed -- the
+	// exact outcome the icon validation above exists to make unreachable.
+	// The ceiling effects stay AFTER the commit; see applyCeilingChange.
+	var rows int64
+	if err := s.store.RunInTransaction(ctx, func(tx store.Store) error {
+		var err error
+		rows, err = tx.OAuthClients().Update(ctx, next)
+		if err != nil {
+			return err
+		}
+		if rows == 0 {
+			return store.ErrNotFound
+		}
+		if msg.GetReplaceIcon() {
+			_, err = tx.OAuthClients().SetIcon(ctx, store.SetOAuthClientIconParams{
+				ClientID: app.ClientID, IconBlob: icon, IconMediaType: iconMediaType,
+				CallerUserID: user.ID, CallerIsAdmin: user.IsAdmin,
+			})
+		}
+		return err
+	}); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("no such app"))
+		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("update app: %w", err))
-	}
-	if rows == 0 {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("no such app"))
 	}
 
 	s.applyCeilingChange(ctx, app.ClientID, app.Scopes, next.Scopes)
 
-	if msg.GetReplaceIcon() {
-		if _, err := s.store.OAuthClients().SetIcon(ctx, store.SetOAuthClientIconParams{
-			ClientID: app.ClientID, IconBlob: icon, IconMediaType: iconMediaType,
-			CallerUserID: user.ID, CallerIsAdmin: user.IsAdmin,
-		}); err != nil {
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("set app icon: %w", err))
-		}
-	}
-
-	// The response projects the row this handler just wrote, field by field:
-	// every editable column is in `next`, the icon state is known from the
-	// validation above, and nothing else changed. Re-reading the row bought a
-	// second full-row fetch that could only echo these values back.
+	// The response projects the row this handler just wrote through the one
+	// statement of the editable field list (ApplyTo, beside the params type),
+	// the icon state is known from the validation above, and nothing else
+	// changed. Re-reading the row bought a second full-row fetch that could
+	// only echo these values back.
 	updated := *app
-	updated.ClientName = next.ClientName
-	updated.ClientURI = next.ClientURI
-	updated.RedirectURIs = next.RedirectURIs
-	updated.Scopes = next.Scopes
-	updated.GrantTypes = next.GrantTypes
-	updated.ElevationAllowed = next.ElevationAllowed
+	next.ApplyTo(&updated)
 	updated.UpdatedAt = s.now()
 	if msg.GetReplaceIcon() {
 		updated.HasIcon = len(icon) > 0
@@ -418,13 +393,17 @@ func (s *AppService) applyCeilingChange(ctx context.Context, clientID, oldScopes
 			"client_id", clientID, "before_err", beforeErr, "after_err", afterErr)
 		return
 	}
-	refs, err := s.store.OAuthClients().ListTokenRefs(ctx,
-		store.RevokeAPITokensForClientParams{ClientID: clientID})
+	refs, err := s.store.OAuthClients().ListTokenRefs(ctx, clientID)
 	if err != nil {
 		slog.WarnContext(ctx, "could not read the credentials of an app whose permission ceiling changed",
 			"client_id", clientID, "err", err)
 		return
 	}
+	// ONE batched effect for every credential the edit moved: the widen or
+	// narrow decision is stated once inside the batch, and the validation hot
+	// path's mutex pays two lock cycles for the whole set -- one per effect
+	// class -- rather than one per credential.
+	ops := make([]auth.RescopeOp, 0, len(refs))
 	for _, ref := range refs {
 		granted, err := authscope.Parse(ref.GrantedScopes)
 		if err != nil {
@@ -432,12 +411,16 @@ func (s *AppService) applyCeilingChange(ctx context.Context, clientID, oldScopes
 			// validation, so there is nothing live to withdraw.
 			continue
 		}
-		s.lifecycle.BearerRescoped(auth.BearerKindAPI, ref.ID,
-			granted.NarrowTo(before), granted.NarrowTo(after))
+		ops = append(ops, auth.RescopeOp{
+			TokenID: ref.ID,
+			Before:  granted.NarrowTo(before),
+			After:   granted.NarrowTo(after),
+		})
 	}
+	s.lifecycle.BearerRescopedBatch(auth.BearerKindAPI, ops)
 }
 
-// SetAppElevationAllowed toggles the step-up leg.
+// SetAppElevationAllowed toggles the step-up stage.
 //
 // It is its own verb, and a BUILT-IN registration accepts it although it
 // accepts no other edit: an operator who does not want `leapmux control admin`
@@ -489,14 +472,28 @@ func (s *AppService) SetAppElevationAllowed(
 	// flag is a property of the APP, so an owner turning it off withdraws the
 	// window from every account that authorized the app -- not only from the
 	// one making this call.
-	refs, refErr := s.store.OAuthClients().ListTokenRefs(ctx,
-		store.RevokeAPITokensForClientParams{ClientID: app.ClientID})
-	if refErr != nil {
-		slog.WarnContext(ctx, "could not drop the cached credentials of an app whose elevation policy changed",
-			"client_id", app.ClientID, "err", refErr)
-	}
-	for _, ref := range refs {
-		s.lifecycle.BearerElevationPolicyChanged(auth.BearerKindAPI, ref.ID)
+	//
+	// SKIPPED when the flag did not move: a cached UserInfo validated under
+	// the current flag already agrees with the row, so there is no window to
+	// withdraw and the loop below would pay one token-ref read and one lock
+	// cycle per credential for nothing. The one divergence is a concurrent
+	// opposite toggle landing between this handler's load and its write,
+	// whose cached UserInfo can then run one window stale -- the same
+	// one-cache-window delay a failed read above already costs, and the flag
+	// is re-read at the next miss.
+	if req.Msg.GetAllowed() != app.ElevationAllowed {
+		refs, refErr := s.store.OAuthClients().ListTokenRefs(ctx, app.ClientID)
+		if refErr != nil {
+			slog.WarnContext(ctx, "could not drop the cached credentials of an app whose elevation policy changed",
+				"client_id", app.ClientID, "err", refErr)
+		}
+		ids := make([]string, 0, len(refs))
+		for _, ref := range refs {
+			ids = append(ids, ref.ID)
+		}
+		// ONE batched invalidation: a single lock acquisition and generation
+		// bump for the whole app, rather than one lock cycle per credential.
+		s.lifecycle.BearerElevationPolicyChangedBatch(auth.BearerKindAPI, ids)
 	}
 
 	updated := *app
@@ -509,7 +506,7 @@ func (s *AppService) SetAppElevationAllowed(
 
 // VerifyApp records an administrator's vouch, or withdraws one.
 //
-// Administrators only, and the interceptor's admin gate does NOT cover this
+// Administrators only, and the interceptor's admin check does NOT cover this
 // service -- AppService is not an admin service, because an ordinary user
 // registers apps through it. So the check is here, stated rather than assumed.
 //
@@ -532,16 +529,31 @@ func (s *AppService) VerifyApp(
 	if err != nil {
 		return nil, err
 	}
+	// A built-in is verified by construction (ClientIsVerified answers true
+	// for the builtin source), so a vouch on one states nothing and a
+	// withdrawal contradicts it -- the same "constants of the build" rule
+	// every other write on these rows applies.
+	if err := refuseBuiltInEdit(app); err != nil {
+		return nil, err
+	}
 	// Both fields move together, which is what the half-vouch CHECK enforces
 	// at the column. Setting them from one branch is what keeps a caller from
 	// ever writing half of it.
-	params := store.SetOAuthClientVerifiedParams{ClientID: app.ClientID}
+	params := store.SetOAuthClientVerifiedParams{ClientID: app.ClientID, CallerIsAdmin: user.IsAdmin}
 	if req.Msg.GetVerified() {
 		now := s.now().UTC()
 		params.VerifiedAt, params.VerifiedBy = &now, user.ID.String()
 	}
-	if _, err := s.store.OAuthClients().SetVerified(ctx, params); err != nil {
+	// The statement filters revoked_at IS NULL, and s.load above deliberately
+	// reads a revoked row: without the rows check, a vouch on an app somebody
+	// retired a moment ago would answer success and project the vouch onto a
+	// row that never took it -- the exact lie the sibling write verbs refuse.
+	rows, err := s.store.OAuthClients().SetVerified(ctx, params)
+	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("set app verified: %w", err))
+	}
+	if rows == 0 {
+		return nil, connect.NewError(connect.CodeNotFound, errors.New("no such app"))
 	}
 	updated := *app
 	updated.UpdatedAt = s.now()
@@ -581,8 +593,7 @@ func (s *AppService) RevokeApp(
 		return nil, err
 	}
 
-	cascade := store.RevokeAPITokensForClientParams{ClientID: app.ClientID}
-	refs, err := s.store.OAuthClients().ListTokenRefs(ctx, cascade)
+	refs, err := s.store.OAuthClients().ListTokenRefs(ctx, app.ClientID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list app credentials: %w", err))
 	}
@@ -598,7 +609,7 @@ func (s *AppService) RevokeApp(
 		if rows == 0 {
 			return store.ErrNotFound
 		}
-		revoked, err = tx.OAuthClients().RevokeTokens(ctx, cascade)
+		revoked, err = tx.OAuthClients().RevokeTokens(ctx, app.ClientID)
 		return err
 	}); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -608,9 +619,13 @@ func (s *AppService) RevokeApp(
 	}
 
 	// AFTER the commit, so a retried transaction cannot apply these twice.
+	// ONE batched eviction for the whole set, with the channel sweep per row
+	// inside the batch.
+	ids := make([]string, 0, len(refs))
 	for _, ref := range refs {
-		s.lifecycle.BearerRevoked(auth.BearerKindAPI, ref.ID)
+		ids = append(ids, ref.ID)
 	}
+	s.lifecycle.BearerRevokedBatch(auth.BearerKindAPI, ids)
 	return connect.NewResponse(&leapmuxv1.RevokeAppResponse{RevokedCredentialCount: revoked}), nil
 }
 
@@ -641,7 +656,7 @@ func (s *AppService) DeleteApp(
 	// EVERY credential row, revoked ones included, because that is what the
 	// RESTRICT foreign key counts. Asking for the live count told an operator
 	// to revoke and then refused the delete anyway, with a constraint error
-	// naming a table they have no surface for.
+	// that states a table they have no surface for.
 	held, err := s.store.OAuthClients().CountTokens(ctx, app.ClientID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("count app credentials: %w", err))
@@ -672,10 +687,7 @@ func (s *AppService) DeleteApp(
 // --- helpers ---------------------------------------------------------------
 
 func (s *AppService) snapshot(ctx context.Context) *settings.Snapshot {
-	if s.settings == nil {
-		return nil
-	}
-	return s.settings.Snapshot(ctx)
+	return settingsSnapshotOf(s.settings, ctx)
 }
 
 // resolveOwnership turns the requested visibility into the two columns that
@@ -683,7 +695,7 @@ func (s *AppService) snapshot(ctx context.Context) *settings.Snapshot {
 //
 // APP_VISIBILITY_UNSPECIFIED means PRIVATE. The narrower answer is the safe
 // default for an omitted field, and it is the only one a non-administrator
-// could have meant.
+// can mean.
 func (s *AppService) resolveOwnership(
 	visibility leapmuxv1.AppVisibility, user *auth.UserInfo,
 ) (owner, source string, err error) {
@@ -700,7 +712,8 @@ func (s *AppService) resolveOwnership(
 }
 
 // buildAppParams turns a RegisterAppRequest into the row the shared core
-// validates and derives. The named surfaces differ from RFC 7591 in exactly
+// validates and derives. The identified surfaces differ from RFC 7591 in
+// exactly
 // three ways the spec carries: the icon the registrant uploaded, the
 // elevation flag the OWNER asked for, and a confidentiality the client type
 // states directly. Every validation rule is the core's, so a redirect-URI
@@ -788,12 +801,14 @@ func (s *AppService) loadOwned(
 	return app, nil
 }
 
-// refuseBuiltInEdit protects the two rows the migration seeds.
+// refuseBuiltInEdit protects the two rows the build itself seeds
+// (store.SeedBuiltIns, at every store open).
 //
 // Their fields are constants of the BUILD -- the control CLI's redirect address
 // and the service account's absent one -- so an edit would leave the database
-// disagreeing with the binary that reads it. SetAppElevationAllowed is the one
-// exception and does not call this.
+// disagreeing with the binary that re-states them on its next boot.
+// SetAppElevationAllowed is the one exception and does not call this: the seed
+// reconciles the constants and never the operator's flag.
 func refuseBuiltInEdit(app *store.OAuthClient) error {
 	if app.RegistrationSource != store.OAuthClientSourceBuiltin {
 		return nil
@@ -822,8 +837,7 @@ func firstAdminScope(set authscope.ScopeSet) (leapmuxv1.Scope, bool) {
 // registering the readable half hides that.
 func scopesFromProto(wire []leapmuxv1.Scope) (authscope.ScopeSet, error) {
 	if len(wire) == 0 {
-		return authscope.ScopeSet{}, connect.NewError(connect.CodeInvalidArgument,
-			errors.New("an app must ask for at least one permission"))
+		return authscope.ScopeSet{}, connect.NewError(connect.CodeInvalidArgument, errAppNeedsScope)
 	}
 	set, ok := authscope.ScopesFromWire(wire)
 	if !ok {
@@ -835,7 +849,7 @@ func scopesFromProto(wire []leapmuxv1.Scope) (authscope.ScopeSet, error) {
 		// may claim: an app's ceiling is what a consent screen shows, and
 		// "everything, including whatever is added later" cannot be shown.
 		return authscope.ScopeSet{}, connect.NewError(connect.CodeInvalidArgument,
-			errors.New("an app must name the permissions it wants"))
+			errors.New("an app must specify the permissions it wants"))
 	}
 	return set, nil
 }
@@ -875,7 +889,7 @@ func validateIcon(icon []byte, mediaType string) ([]byte, string, error) {
 // field that could.
 func appToProto(app *store.OAuthClient, liveCount int64, verifiedBy string) *leapmuxv1.App {
 	// An unreadable ceiling renders as NO permissions rather than as the raw
-	// string, the same answer appScopeCeiling gives on the consent leg: a set
+	// string, the same answer appScopeCeiling gives on the consent stage: a set
 	// a person cannot interpret must not appear as though it were one they
 	// can, and the drift is logged in that one helper rather than twice.
 	scopes := appScopeCeiling(app)
@@ -899,8 +913,11 @@ func appToProto(app *store.OAuthClient, liveCount int64, verifiedBy string) *lea
 		ElevationAllowed:   app.ElevationAllowed,
 		RegistrationSource: app.RegistrationSource,
 		HasIcon:            app.HasIcon,
-		CreatedAt:          timestamppb.New(app.CreatedAt),
-		UpdatedAt:          timestamppb.New(app.UpdatedAt),
+		// The one verified rule, stated through the same predicate the consent
+		// page and icon endpoint read: a vouch or a built-in of this build.
+		Verified:  app.IsVerified(),
+		CreatedAt: timestamppb.New(app.CreatedAt),
+		UpdatedAt: timestamppb.New(app.UpdatedAt),
 	}
 	if app.VerifiedAt != nil {
 		out.VerifiedAt = timestamppb.New(*app.VerifiedAt)
@@ -953,11 +970,15 @@ func (s *AppService) usernameOf(ctx context.Context, userID string) string {
 
 // usernameOfMemoized is usernameOf behind a page-sized memo, so a listing pays
 // one lookup per DISTINCT vouching administrator rather than one per row.
-func (s *AppService) usernameOfMemoized(ctx context.Context, userID string, memo map[string]string) (string, map[string]string) {
+//
+// It MUTATES the caller's map and returns only the name: the memo stays owned
+// by the loop that allocates it, and a caller cannot "re-initialize" what it
+// hands back per row.
+func (s *AppService) usernameOfMemoized(ctx context.Context, userID string, memo map[string]string) string {
 	if name, ok := memo[userID]; ok {
-		return name, memo
+		return name
 	}
 	name := s.usernameOf(ctx, userID)
 	memo[userID] = name
-	return name, memo
+	return name
 }

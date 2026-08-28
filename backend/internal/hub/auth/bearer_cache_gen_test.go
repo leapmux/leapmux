@@ -1344,3 +1344,58 @@ func TestBlankUserIDEvictionEvictsNothingAndBumpsNoGeneration(t *testing.T) {
 		assert.False(t, bearerExists, "control: the owner's cached bearer is evicted")
 	})
 }
+
+// TestBatchedBearerEvictionBumpsTheGenerationOnce pins the batching property
+// of EvictBearers/InvalidateBearers: a set of N rows is dropped with ONE
+// revocation-generation bump and one mark per row at that shared generation,
+// rather than one lock cycle and one bump per row. The shared generation must
+// behave exactly like a private one per row -- newer than every entry cached
+// before it -- or a warm entry would survive its own revocation mark.
+func TestBatchedBearerEvictionBumpsTheGenerationOnce(t *testing.T) {
+	refs := []BearerRef{
+		NewBearerRef(BearerKindAPI, "token-a"),
+		NewBearerRef(BearerKindAPI, "token-b"),
+		NewBearerRef(BearerKindAPI, "token-c"),
+	}
+
+	evict := func() uint64 {
+		state := &authState{}
+		sc := &AuthContextRegistry{state: state}
+		before := state.revocationGen.Load()
+		sc.EvictBearers(refs)
+		after := state.revocationGen.Load()
+		for _, ref := range refs {
+			assert.True(t, revocationMarkAfter(&state.bearerRevocations, ref, before),
+				"%s must carry a mark newer than every pre-batch generation", ref)
+		}
+		return after - before
+	}
+	require.Equal(t, uint64(1), evict(), "one EvictBearers call = one generation bump, however many rows")
+
+	invalidate := func() uint64 {
+		state := &authState{}
+		sc := &AuthContextRegistry{state: state}
+		before := state.revocationGen.Load()
+		sc.InvalidateBearers(refs)
+		after := state.revocationGen.Load()
+		for _, ref := range refs {
+			assert.True(t, revocationMarkAfter(&state.bearerInvalidations, ref, before),
+				"%s must carry an invalidation mark newer than every pre-batch generation", ref)
+		}
+		return after - before
+	}
+	require.Equal(t, uint64(1), invalidate(), "one InvalidateBearers call = one generation bump, however many rows")
+
+	// Duplicates and invalid refs cost nothing: the set is deduplicated
+	// before the lock, so a doubled row neither bumps twice nor marks twice,
+	// and a row the batch never named carries no mark at all.
+	state := &authState{}
+	sc := &AuthContextRegistry{state: state}
+	sc.InvalidateBearers([]BearerRef{refs[0], refs[0], {}})
+	require.Equal(t, uint64(1), state.revocationGen.Load(),
+		"a duplicate and an invalid ref must not bump the generation twice")
+	_, marked := state.bearerInvalidations.Load(refs[1])
+	assert.False(t, marked, "a row the batch never named must carry no mark")
+	_, marked = state.bearerInvalidations.Load(refs[0])
+	assert.True(t, marked, "the deduplicated row still carries its mark")
+}

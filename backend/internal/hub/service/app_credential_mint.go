@@ -16,12 +16,12 @@ import (
 )
 
 // Two surfaces mint an app credential, and they mint the SAME one: the
-// /oauth/* consent legs, and AdminUserService.IssueAPIToken for a headless
+// /oauth/* consent stages, and AdminUserService.IssueAPIToken for a headless
 // service account. This file is the one place that shape is decided.
 //
 // They were two literals before, and the drift a second copy invites
 // already happened twice: the admin path sent no issuance notice, and it
-// wrote an access expiry the refresh leg silently rewrote. One builder means
+// wrote an access expiry the refresh stage silently rewrote. One builder means
 // a change to the lifetime, the scope, or the row shape reaches both
 // surfaces or neither.
 
@@ -56,15 +56,52 @@ func mintedByConsentGrant(grantID string) mintAuthority {
 	return mintAuthority{grantID: grantID}
 }
 
-func (m mintAuthority) assert(now time.Time) error {
+// authorityKind classifies what stands behind a mint. ONE classification,
+// read by assert and clamp alike: the two used to re-derive sibling
+// classifications from the same booleans, and a new actor class could land on
+// the wrong side of clamp with nothing noticing.
+type authorityKind int
+
+const (
+	// consentGrantAuthority: a browser consent the caller redeemed. The
+	// consent leg itself demanded the elevated session, so the mint asserts
+	// nothing and clamps nothing.
+	consentGrantAuthority authorityKind = iota
+	// sessionActorAuthority: a signed-in session or a solo actor. A human
+	// proved the factor the credential ceiling is measured from, so assert
+	// demands it be recent and clamp clamps nothing.
+	sessionActorAuthority
+	// bearerActorAuthority: an api_tokens credential acting directly. Assert
+	// still demands the elevation, and clamp caps the child at the minter's
+	// remaining life without rotation.
+	bearerActorAuthority
+	// missingAuthority: neither an actor nor a grant. Nothing may mint.
+	missingAuthority
+)
+
+func (m mintAuthority) kind() authorityKind {
 	if m.grantID != "" {
-		return nil
+		return consentGrantAuthority
 	}
 	if m.actor == nil {
+		return missingAuthority
+	}
+	if m.actor.Solo || m.actor.Credential.SessionID() != "" {
+		return sessionActorAuthority
+	}
+	return bearerActorAuthority
+}
+
+func (m mintAuthority) assert(now time.Time) error {
+	switch m.kind() {
+	case consentGrantAuthority:
+		return nil
+	case sessionActorAuthority, bearerActorAuthority:
+		return assertElevatedActor(m.actor, now)
+	default:
 		return connect.NewError(connect.CodeInternal,
 			errors.New("refusing to mint a credential that states no authority"))
 	}
-	return assertElevatedActor(m.actor, now)
 }
 
 // clamp limits what this authority may mint, and it is what contains the one
@@ -89,7 +126,7 @@ func (m mintAuthority) assert(now time.Time) error {
 // hub's port -- which is the event the ceiling is measured from in the first
 // place.
 func (m mintAuthority) clamp(spec apiTokenMint, now time.Time) (apiTokenMint, error) {
-	if m.actor == nil || m.actor.Solo || m.actor.Credential.SessionID() != "" {
+	if m.kind() != bearerActorAuthority {
 		return spec, nil
 	}
 	remaining := auth.AccessTokenTTL
@@ -112,7 +149,7 @@ func (m mintAuthority) clamp(spec apiTokenMint, now time.Time) (apiTokenMint, er
 // strings -- is derived, which is the point.
 type apiTokenMint struct {
 	UserID userid.UserID
-	// ClientID names the registered app. Every mint states one; there is no
+	// ClientID identifies the registered app. Every mint states one; there is no
 	// NULL, and oauthapp.ServiceAccountClientID is the answer for a credential
 	// an administrator issued out of band.
 	ClientID string
@@ -123,9 +160,9 @@ type apiTokenMint struct {
 	// the unscoped grant.
 	GrantedScopes string
 	// AccessTTL is how long the access token authenticates. Zero means
-	// auth.AccessTokenTTL, the rotating default every consent leg uses.
+	// auth.AccessTokenTTL, the rotating default every consent stage uses.
 	AccessTTL time.Duration
-	// Rotating says whether the credential carries a refresh leg.
+	// Rotating says whether the credential carries a refresh stage.
 	//
 	// A rotating credential holds a short access token and renews itself,
 	// and auth.AbsoluteTokenLifetime caps its whole life. A NON-rotating one
@@ -134,7 +171,7 @@ type apiTokenMint struct {
 	//
 	// The two must not be combined, and that is what the field exists to
 	// make unsayable. An admin-issued credential with a year of access AND a
-	// refresh leg looked like a year-long service account, and the first
+	// refresh stage looked like a year-long service account, and the first
 	// rotation rewrote its expiry to one hour (auth.AccessWindowFor clips
 	// every rotation to the ordinary window), so the year the operator
 	// configured was unrecoverable -- the row records the expiry, never the
@@ -150,15 +187,16 @@ type mintedAPIToken struct {
 }
 
 // mintAPIToken derives one credential from a spec. It writes nothing: the
-// caller owns the store handle, because the consent legs create inside the
+// caller owns the store handle, because the consent stages create inside the
 // transaction that consumes their grant and the admin verb does not.
 //
 // It REFUSES a mint that states no authority, and that is the point of taking
 // one. Every surface applied this restriction as the first line of its own
 // handler, and nothing made it so: the classification tripwire in
 // user_procedures_internal_test.go cannot reach an Admin* procedure, and the
-// consent legs are mux routes rather than Connect procedures. So the omission
-// the gate exists to prevent was possible at exactly the place it mattered,
+// consent stages are mux routes rather than Connect procedures. So the
+// omission the check exists to prevent was possible at exactly the place it
+// mattered,
 // and it already happened once. Here a new mint site cannot compile without
 // stating its authority, and cannot state one that is absent.
 func mintAPIToken(v *auth.TokenValidator, by mintAuthority, now time.Time, spec apiTokenMint) (mintedAPIToken, error) {
@@ -221,8 +259,8 @@ func (m mintedAPIToken) RefreshExpiresIn(now time.Time) int {
 //
 // A struct rather than four positional arguments, two of which are adjacent
 // same-typed strings a call site can transpose in silence -- the notice would
-// then name the installation as the app and the app as the installation, which
-// reads as plausible and is exactly backwards.
+// then identify the installation as the app and the app as the
+// installation, which reads as plausible and is exactly backwards.
 type credentialNotice struct {
 	AppName          string
 	InstallationName string

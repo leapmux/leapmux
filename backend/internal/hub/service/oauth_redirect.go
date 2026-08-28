@@ -105,7 +105,7 @@ func ValidateRedirectURI(raw string) error {
 	// author forgot one.
 	if host == "" {
 		if scheme == "http" || scheme == "https" {
-			return fmt.Errorf("redirect URI %q must name a host", raw)
+			return fmt.Errorf("redirect URI %q must specify a host", raw)
 		}
 		if !strings.Contains(scheme, ".") {
 			return fmt.Errorf(
@@ -153,7 +153,7 @@ func ValidateRedirectURIs(uris []string) error {
 //
 // It returns the REGISTERED form rather than a bare bool, because two callers
 // need it: the consent page renders a label derived from the registration, and
-// the token leg compares what the authorization stored.
+// the token stage compares what the authorization stored.
 //
 // The comparison is exact, EXCEPT for a registered loopback address, where the
 // port is free (RFC 8252 section 7.3). Everything else about a loopback match
@@ -185,6 +185,14 @@ func MatchRedirectURI(registered []string, presented string) (string, bool) {
 // must agree exactly -- scheme, host, path, and the query, which a redirect URI
 // may legitimately carry and which the authorization response appends to.
 //
+// The PATH comparison reads EscapedPath, not Path. url.Parse decodes percent
+// escapes into Path, so a Path comparison would match "/call%62ack" against a
+// registered "/callback" -- the exact normalization the rule above refuses --
+// and hand the code to a raw spelling the registrant never wrote. EscapedPath
+// carries the spelling each side actually sent: it differs from Path only when
+// the sender percent-encoded it, which is precisely the case that must NOT
+// match an unencoded registration.
+//
 // The registered side is checked first and returns false for anything that is
 // not loopback, so this can only ever WIDEN a loopback registration. A remote
 // https registration is unaffected by it.
@@ -202,7 +210,7 @@ func loopbackPortInsensitiveMatch(registered, presented string) bool {
 	}
 	return strings.EqualFold(reg.Scheme, pres.Scheme) &&
 		httpsec.NormalizeHost(reg.Hostname()) == httpsec.NormalizeHost(pres.Hostname()) &&
-		reg.Path == pres.Path &&
+		reg.EscapedPath() == pres.EscapedPath() &&
 		reg.RawQuery == pres.RawQuery &&
 		pres.Fragment == "" &&
 		httpsec.IsLoopbackHost(pres.Hostname())
@@ -215,7 +223,8 @@ func loopbackPortInsensitiveMatch(registered, presented string) bool {
 // form-action against EVERY hop of a submission's redirect chain, so a consent
 // POST that redirects to https://app.example.com/callback is blocked on
 // Chromium and WebKit with no server-side error at all. The page therefore
-// carries its own policy naming exactly the origin THIS grant redirects to --
+// carries its own policy that states exactly the origin THIS grant redirects
+// to --
 // which is narrower than the global relaxation it replaces, because it admits
 // one origin for one request rather than a wildcard set for every page.
 //

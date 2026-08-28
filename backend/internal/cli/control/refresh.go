@@ -44,7 +44,7 @@ const (
 	// and the request arrives after the token died. A minute is far more
 	// than a LAN round trip and small against the hour-long access token.
 	refreshSkew = 60 * time.Second
-	// refreshTimeout caps one refresh leg. It is separate from the caller's
+	// refreshTimeout caps one refresh stage. It is separate from the caller's
 	// own deadline because a refresh that hangs must not consume the whole
 	// budget of the call that triggered it.
 	refreshTimeout = 30 * time.Second
@@ -110,9 +110,9 @@ func (c *Client) EnsureFreshBearer(ctx context.Context) error {
 	// From memory first. This runs before EVERY unary call and every
 	// stream open, and the file read below is an os.ReadFile plus a JSON
 	// decode under a process-wide mutex -- so a command that makes N calls
-	// paid N of them to re-learn an expiry that cannot have moved. The
-	// cached value moves only when this process rotates the token, and the
-	// reactive retry picks up an expiry another process wrote.
+	// paid N of them to re-learn an expiry that cannot move between calls.
+	// The cached value moves only when this process rotates the token, and
+	// the reactive retry picks up an expiry another process wrote.
 	if !c.bearerNeedsRenewal() {
 		return nil
 	}
@@ -222,7 +222,7 @@ func (c *Client) refreshBearer(ctx context.Context, presented *CredentialFile) e
 // doRefresh runs the rotation and rewrites the credential file.
 //
 // It re-reads the file even though the caller passed one, and that read is
-// the point rather than a duplicate: the flight may have queued this call
+// the point rather than a duplicate: the flight can queue this call
 // behind another goroutine's rotation, so the value on disk NOW is what
 // decides whether the caller's token is still the current one.
 func (c *Client) doRefresh(ctx context.Context, presented *CredentialFile) (*CredentialFile, error) {
@@ -253,16 +253,16 @@ func (c *Client) doRefresh(ctx context.Context, presented *CredentialFile) (*Cre
 	// out under errgroup.WithContext, so the FIRST sibling call to fail
 	// cancels the context of every other call in flight, one of which may be
 	// mid-rotation. Next, singleflight collapses concurrent callers onto one
-	// leg, so the leader's cancellation would abort the rotation for every
+	// flight, so the leader's cancellation would abort the rotation for every
 	// follower as well, including one whose own deadline had ample time
 	// left. Last, `control events` installs signal.NotifyContext, so a
 	// Ctrl-C there cancels the stream's context and the refresh under it.
 	refreshCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), refreshTimeout)
 	defer cancel()
-	body, err := c.postRefresh(refreshCtx, current.RefreshToken)
+	body, err := c.postRefresh(refreshCtx, current.RefreshToken, current.ClientIDOrBuiltIn())
 	if err != nil {
 		// A permanent rejection is what deletes the stored file, and this
-		// function deletes it HERE rather than the transport leg: it owns
+		// function deletes it HERE rather than the transport stage: it owns
 		// the read-modify-write of that file and holds credsMu around it,
 		// so the one place that writes it is the one place that removes it.
 		if errors.Is(err, ErrCredentialRejected) {
@@ -345,12 +345,15 @@ type TokenResponseBody = refreshBody
 // `control events` leaked one idle connection and its read goroutine per
 // hourly rotation. The 30-second budget of a rotation is enforced by the
 // request context's deadline, which refreshTimeout already sets.
-func (c *Client) postRefresh(ctx context.Context, refreshToken string) (refreshBody, error) {
+// clientID is the app the credential was issued to: the hub binds the refresh
+// stage to that app, so a credential minted to another registration must present
+// its own id and not the CLI's built-in one.
+func (c *Client) postRefresh(ctx context.Context, refreshToken, clientID string) (refreshBody, error) {
 	// One token endpoint, and grant_type is REQUIRED: the hub no longer infers
 	// which grant a request means from which field happens to be present.
 	form := url.Values{
 		"grant_type":    {GrantTypeRefreshToken},
-		"client_id":     {ControlCLIClientID},
+		"client_id":     {clientID},
 		"refresh_token": {refreshToken},
 	}
 	resp, err := PostForm(ctx, c.HTTPClient,

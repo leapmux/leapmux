@@ -8,6 +8,7 @@ import (
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
+	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
 type deviceAuthorizationStore struct{ conn *sqliteConn }
@@ -111,6 +112,20 @@ func (s *deviceAuthorizationStore) Consume(ctx context.Context, deviceCode strin
 	}))
 }
 
-func (s *deviceAuthorizationStore) TouchPoll(ctx context.Context, deviceCode string) error {
-	return mapErr(s.conn.q.TouchDeviceAuthorizationPoll(ctx, deviceCode))
+func (s *deviceAuthorizationStore) TouchPoll(ctx context.Context, deviceCode string, now time.Time) error {
+	return mapErr(s.conn.q.TouchDeviceAuthorizationPoll(ctx, gendb.TouchDeviceAuthorizationPollParams{
+		DeviceCode: deviceCode,
+		Now:        sqltime.NewSQLiteNullTime(&now),
+	}))
+}
+
+func (s *deviceAuthorizationStore) ConsumeApprovedForUserClient(ctx context.Context, clientID string, user userid.UserID, now time.Time) (int64, error) {
+	if user.IsZero() {
+		return 0, store.ErrInvalidArgument
+	}
+	return rowsAffected(s.conn.q.ConsumeApprovedDeviceAuthorizationsForUserClient(ctx, gendb.ConsumeApprovedDeviceAuthorizationsForUserClientParams{
+		ClientID: clientID,
+		UserID:   sqlutil.NullNonEmpty(user.String()),
+		Now:      sqltime.NewSQLiteTime(now),
+	}))
 }

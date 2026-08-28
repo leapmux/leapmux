@@ -27,10 +27,11 @@ import (
 // and an OAuth-only account uses the re-authentication leg at
 // /auth/idp/<provider>/reauth instead, because it holds neither.
 //
-// Elevation is per hub PROCESS in exactly one respect: the in-memory
-// UserInfo cache. The state itself is a pair of columns, so another hub
-// reads it from the row; but a hub that already cached this session serves
-// the old deadline until the grant's user_info event reaches it. Grant and
+// Elevation is per PROCESS in exactly one respect: the in-memory UserInfo
+// cache. The state itself is a pair of columns, so any later reader -- this
+// hub after a restart, or the watcher's replay -- reads it from the row; but
+// a process that already cached this session serves the old deadline until
+// the grant's user_info event reaches it. Grant and
 // drop both emit that event, and a slide deliberately does not -- a stale
 // SHORTER deadline fails closed.
 //
@@ -438,10 +439,11 @@ func commitUnderElevation(ctx context.Context, st store.Store, actor *auth.UserI
 // ceiling the whole design rests on.
 //
 // What this gate does NOT narrow is the credential's REACH. That is a separate
-// axis, and it is the scope rung one step earlier: admin:read, admin:users,
-// admin:settings and admin:workers are four scopes rather than one, so a
-// credential minted to administer users no longer reaches the hub's security
-// settings. See enforceScope and procedure_scopes.go.
+// axis, and it is the scope rung one step earlier: the admin family
+// (admin:read, admin:users, admin:settings, admin:workers, admin:apps) is
+// five scopes rather than one, so a credential minted to administer users no
+// longer reaches the hub's security settings. See enforceScope and
+// procedure_scopes.go.
 //
 // The two multiply and neither replaces the other: a scope says WHICH verbs a
 // credential reaches, and this window says whether somebody was recently at a
@@ -531,8 +533,8 @@ func writeUnderElevation(ctx context.Context, st store.Store, now func() time.Ti
 // immediately before an irreversible write, and refuses when it went away.
 //
 // The gate that admitted this request read a CACHED UserInfo -- the auth cache
-// holds an entry for its TTL, and a revoke raised on another hub reaches this
-// process only on the revocation watcher's next sweep -- so "elevated" can be
+// holds an entry for its TTL, and a revoke raised out of band (a store writer
+// beyond this process) reaches it only on the watcher's next sweep -- so "elevated" can be
 // true of a session an administrator already took away. Every mutation the
 // elevation window guards moves a credential or a recovery identity, so a
 // commit on authority that no longer exists is exactly the outcome the window
@@ -884,7 +886,7 @@ func grantSessionElevation(
 	// The cached UserInfo still carries the OLD deadline, and this process
 	// is the one serving the next request. Drop it through the lane whose
 	// contract is exactly "re-read the user without logging them out"; the
-	// durable event the store emitted covers every other hub.
+	// durable event the store emitted covers the watcher's replay.
 	lifecycle.UserInfoInvalidated(userID.String())
 	return until, nil
 }

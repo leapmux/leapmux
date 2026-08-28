@@ -74,16 +74,19 @@ func Open(ctx context.Context, cfg config.PostgresConfig) (store.Store, error) {
 		pool.Close()
 		return nil, fmt.Errorf("init postgres migrator: %w", err)
 	}
-	if err := mig.Migrate(ctx); err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("migrate postgres: %w", err)
-	}
-
-	return &pgStore{conn: newPoolConn(&pgShared{
+	st := &pgStore{conn: newPoolConn(&pgShared{
 		pool:        pool,
 		migrationDB: sqlDB,
 		migrator:    mig,
-	}, pool)}, nil
+	}, pool)}
+	// One call is the whole boot: migrate, then seed and reconcile the
+	// built-in registrations. Migrator() wraps the raw migrator so every
+	// caller that migrates this store later completes the same sequence.
+	if err := st.Migrator().Migrate(ctx); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("migrate postgres: %w", err)
+	}
+	return st, nil
 }
 
 // newFromPool wraps an existing pool (already migrated) into a Store.
@@ -197,7 +200,13 @@ func (s *pgStore) OAuthClients() store.OAuthClientStore {
 	return &oauthClientStore{conn: s.conn}
 }
 func (s *pgStore) Cleanup() store.CleanupStore { return &cleanupStore{conn: s.conn} }
-func (s *pgStore) Migrator() store.Migrator    { return s.conn.shared.migrator }
+
+// Migrator wraps the raw goose migrator so a completed migration also seeds
+// and reconciles the built-in registrations -- the boot sequence, wherever it
+// runs. See store.MigratorWithBuiltIns.
+func (s *pgStore) Migrator() store.Migrator {
+	return store.MigratorWithBuiltIns(s.conn.shared.migrator, s)
+}
 
 // RunInTransaction runs fn in one transaction. fn may run MORE THAN ONCE when
 // the backend aborts the transaction for a retryable conflict; see

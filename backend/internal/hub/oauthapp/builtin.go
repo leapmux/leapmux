@@ -1,10 +1,12 @@
 // Package oauthapp holds the identity of the apps LeapMux ships with.
 //
-// The values are constants of the BUILD, not configuration, so the migration
-// seeds their rows and this package is what every other package reads them
-// from. A store test asserts the seeded rows match these constants on all
-// three dialects, so a hand-edited migration cannot quietly retire a built-in
-// app.
+// The values are constants of the BUILD, not configuration, and this package
+// is what every other package reads them from. Every store open seeds and
+// reconciles their rows from here (store.SeedBuiltIns), rewriting only these
+// constant columns and leaving the operator's decisions -- the step-up flag
+// above all -- untouched across restarts. A store test asserts the seeded
+// rows match these constants on all three dialects, so a hand-edited row
+// cannot quietly retire or reshape a built-in app.
 package oauthapp
 
 // ControlCLIClientID is the built-in control CLI: `leapmux control auth login`.
@@ -26,8 +28,6 @@ const ControlCLIClientID = "leapmux-control-cli"
 // model carries perfectly well.
 const ServiceAccountClientID = "leapmux-service-account"
 
-// ControlCLIRedirectURI is the loopback redirect the control CLI registers.
-
 // ControlCLIScopes is the ceiling the control CLI's seeded registration
 // carries. It is a constant of the build for the same reason the redirect
 // address is: a credential minted for the built-in CLI authenticates against
@@ -36,11 +36,21 @@ const ServiceAccountClientID = "leapmux-service-account"
 // constants so it cannot.
 const ControlCLIScopes = "account:read account:write workspace:read workspace:write " +
 	"worker:read worker:admin agent:read agent:write terminal:read terminal:write " +
-	"file:read git:read git:write tunnel:open admin:read admin:users admin:settings admin:workers"
+	"file:read git:read git:write tunnel:open admin:read admin:users admin:settings admin:workers admin:apps"
 
 // ControlCLIGrantTypes is the flow set the CLI's seeded registration runs.
 // See ControlCLIScopes for why it is a constant.
 const ControlCLIGrantTypes = "authorization_code refresh_token urn:ietf:params:oauth:grant-type:device_code"
+
+// The three grant types /oauth/token serves, as RFC-defined wire identifiers.
+// They live in this package beside the built-in ids because it is the
+// dependency-free constants home both the hub's server and the CLI's client
+// already import -- one spelling instead of one per side of the wire.
+const (
+	GrantTypeAuthorizationCode = "authorization_code"
+	GrantTypeDeviceCode        = "urn:ietf:params:oauth:grant-type:device_code"
+	GrantTypeRefreshToken      = "refresh_token"
+)
 
 // ServiceAccountScopes is the ceiling the administrator-issued credential's
 // seeded registration carries: the whole grantable vocabulary, so an
@@ -48,6 +58,7 @@ const ControlCLIGrantTypes = "authorization_code refresh_token urn:ietf:params:o
 // ControlCLIScopes for why it is a constant.
 const ServiceAccountScopes = ControlCLIScopes
 
+// ControlCLIRedirectURI is the loopback redirect the control CLI registers.
 // The port is absent on purpose; see MatchRedirectURI.
 const ControlCLIRedirectURI = "http://127.0.0.1/callback"
 

@@ -58,27 +58,13 @@ message BranchGitState {
 }
 
 message InspectLastTabCloseResponse {
-  // Tags 7..15 used to carry the scalar int32/bool fields that were
-  // collapsed into BranchGitState (see `git_state` below). Tag 7 in
-  // particular changed wire type (int32 → LEN-delimited message), which
-  // is a hard proto3 backward-compat violation: a mixed-binary rolling
-  // upgrade would decode garbage if both versions ever shared the wire.
-  // Reserve 7..15 explicitly so future maintainers can't reuse a tag
-  // whose old wire form may still be alive in caches or proxies.
-  reserved 7 to 15;
-  reserved "diff_added", "diff_deleted", "diff_untracked",
-           "unpushed_commit_count", "has_uncommitted_changes",
-           "upstream_exists", "remote_branch_missing", "origin_exists",
-           "can_push";
   LastTabCloseTarget target = 1;
   bool should_prompt = 2;
   string repo_root = 3;
   string worktree_path = 4;
   string worktree_id = 5;
   string branch_name = 6;
-  // Fresh tag (16) for the BranchGitState bundle. Picking a new number
-  // avoids the wire-type-reuse hazard on tag 7 above.
-  BranchGitState git_state = 16;
+  BranchGitState git_state = 7;
   // Non-empty when the worker let the close proceed WITHOUT a prompt only
   // because git was unavailable (worktree dir gone, transient git failure,
   // corrupt repo). The close still succeeds — should_prompt is false and
@@ -87,12 +73,12 @@ message InspectLastTabCloseResponse {
   // check was skipped. Mirrors GetGitFileStatusResponse.error_hint's role
   // of turning a generic "Internal error" into an actionable diagnostic.
   // Empty on a normal (clean or genuinely promptable) close.
-  string error_hint = 17;
+  string error_hint = 8;
   // Directory the worker resolved this tab's git questions from, echoed back so
   // a client that goes on to push hands the SAME dir to PushBranch rather than
   // re-deriving one. Only populated on the responses that can prompt (the
   // fast paths answer should_prompt=false, where no push is offered).
-  string working_dir = 18;
+  string working_dir = 9;
   // Every subagent BELOW an AGENT tab, at any depth, in no particular order.
   // Empty for every other tab type.
   //
@@ -108,7 +94,7 @@ message InspectLastTabCloseResponse {
   // spawned -- not only the ones someone opened a tab for. A client MUST retire
   // only the ids it holds a live tab record for; tombstoning an id the CRDT has
   // never seen is rejected, and the rejection is fatal for the whole batch.
-  repeated string descendant_agent_ids = 19;
+  repeated string descendant_agent_ids = 10;
   // Why `git worktree remove` refuses this worktree, in the words
   // InspectWorktreeRemoval defines. Empty when nothing known refuses it.
   // The worker sets it on a WORKTREE prompt only, which is the one
@@ -122,7 +108,7 @@ message InspectLastTabCloseResponse {
   //
   // An asynchronous removal is what makes that necessary: once the tab
   // is gone, no client has a surface left to report a refusal.
-  string worktree_removal_blocked_reason = 20;
+  string worktree_removal_blocked_reason = 11;
 }
 
 message PushBranchRequest {
@@ -152,11 +138,9 @@ message GetGitFileStatusRequest {
 
 message GetGitFileStatusResponse {
   string repo_root = 1;
-  repeated GitFileStatusEntry files = 4;
-  string error_hint = 7;
-  GitRepoStatus status = 8;
-  reserved 2, 3, 5, 6;
-  reserved "origin_url", "current_branch", "is_worktree", "toplevel";
+  repeated GitFileStatusEntry files = 2;
+  string error_hint = 3;
+  GitRepoStatus status = 4;
 }
 
 // GitFileRef specifies which version of a file to read.

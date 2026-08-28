@@ -109,7 +109,7 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	// oauth_clients: verified_at via SetVerified, revoked_at via Revoke, and
 	// created_at / updated_at via their column DEFAULTs on Create.
 	verifiedApp := id.Generate()
-	require.NoError(t, st.OAuthClients().Create(ctx, store.CreateOAuthClientParams{
+	_, createErr := st.OAuthClients().Create(ctx, store.CreateOAuthClientParams{
 		ClientID:           verifiedApp,
 		OwnerUserID:        user.ID,
 		CreatedBy:          user.ID,
@@ -118,11 +118,13 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 		Scopes:             "workspace:read",
 		GrantTypes:         "authorization_code refresh_token",
 		RegistrationSource: store.OAuthClientSourceUser,
-	}))
+	})
+	require.NoError(t, createErr)
 	vouched, err := st.OAuthClients().SetVerified(ctx, store.SetOAuthClientVerifiedParams{
-		ClientID:   verifiedApp,
-		VerifiedAt: ptr(future),
-		VerifiedBy: user.ID,
+		ClientID:      verifiedApp,
+		VerifiedAt:    ptr(future),
+		VerifiedBy:    user.ID,
+		CallerIsAdmin: true,
 	})
 	require.NoError(t, err)
 	require.EqualValues(t, 1, vouched)
@@ -191,7 +193,7 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 		IntervalSeconds: 5,
 		ExpiresAt:       future,
 	}))
-	require.NoError(t, st.DeviceAuthorizations().TouchPoll(ctx, "canon-device-code"))
+	require.NoError(t, st.DeviceAuthorizations().TouchPoll(ctx, "canon-device-code", time.Now().UTC()))
 	approved, err := st.DeviceAuthorizations().Approve(ctx, store.ApproveDeviceAuthorizationParams{
 		DeviceCode: "canon-device-code",
 		UserID:     userid.MustNew(user.ID),

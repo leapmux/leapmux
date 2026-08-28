@@ -31,10 +31,10 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/httpsec"
 	"github.com/leapmux/leapmux/internal/hub/mail"
+	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/hub/ratelimit"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
-	"github.com/leapmux/leapmux/internal/util/verifycode"
 	"github.com/leapmux/leapmux/util/validate"
 )
 
@@ -67,14 +67,15 @@ const (
 )
 
 // OAuth 2.0 grant types accepted by /oauth/token. Values are RFC-defined wire
-// identifiers:
+// identifiers, from oauthapp (the dependency-free constants home both sides
+// of the wire already import):
 //   - GrantTypeAuthorizationCode: RFC 6749 section 4.1.3
 //   - GrantTypeDeviceCode: RFC 8628 section 3.4
 //   - GrantTypeRefreshToken: RFC 6749 section 6
 const (
-	GrantTypeAuthorizationCode = "authorization_code"
-	GrantTypeDeviceCode        = "urn:ietf:params:oauth:grant-type:device_code"
-	GrantTypeRefreshToken      = "refresh_token"
+	GrantTypeAuthorizationCode = oauthapp.GrantTypeAuthorizationCode
+	GrantTypeDeviceCode        = oauthapp.GrantTypeDeviceCode
+	GrantTypeRefreshToken      = oauthapp.GrantTypeRefreshToken
 )
 
 // OAuthServerDeps carries the handler's collaborators. A struct rather than a
@@ -86,7 +87,7 @@ type OAuthServerDeps struct {
 	// SoloUser is the account a SOLO hub authenticates every caller as. It is
 	// nil on an ordinary hub, and that nil is what keeps the rung off there.
 	//
-	// The consent legs need it because solo has no browser session at all: a
+	// The consent endpoints need it because solo has no browser session at all: a
 	// solo hub authenticates by having the port, not by a cookie, so without
 	// this rung a solo user could never reach a consent screen and could never
 	// authorize an app. The scope model would then be unreachable on exactly
@@ -95,10 +96,10 @@ type OAuthServerDeps struct {
 	//
 	// The BEARER rung stays off here whatever this is set to; see
 	// requireSession. An app credential must not be able to consent on its own
-	// behalf, which is the whole reason the step-up leg exists beside these.
+	// behalf, which is the whole reason the step-up endpoint exists beside these.
 	SoloUser *auth.UserInfo
 	// Settings reports the hub's own secure_cookies setting, which decides
-	// which session-cookie spelling the consent legs read, and
+	// which session-cookie spelling the consent endpoints read, and
 	// open_app_registration, which decides whether /oauth/register answers.
 	// Nil means "this hub does not write the __Host- prefix", which is the
 	// safe reading for a handler wired without it: it widens nothing, because
@@ -107,9 +108,11 @@ type OAuthServerDeps struct {
 	// HubURL builds the device-code verification URLs and the metadata
 	// documents' issuer.
 	HubURL func() string
-	// Limiter throttles the three ANONYMOUS legs -- device authorization, the
-	// token exchange and dynamic registration. Nil disables the throttle,
-	// which is what a unit test wants and what a hub never has.
+	// Limiter throttles the authorization server's ANONYMOUS endpoints -- every
+	// route mounted through anonymousLeg: device authorization, the token
+	// exchange, revocation, dynamic registration, step-up, and the app icons.
+	// Nil disables the throttle, which is what a unit test wants and what a
+	// hub never has.
 	Limiter *ratelimit.Manager
 	// Mail and Renderer send the "an app credential was issued" notice.
 	//
@@ -139,7 +142,7 @@ type OAuthServerHandler struct {
 
 	// The clock every instant the handler mints or compares comes from:
 	// grant expiry, the device-code slow_down throttle, token lifetimes,
-	// and the elevation gate.
+	// and the elevation window.
 	clockSeam
 }
 
@@ -168,7 +171,7 @@ func (h *OAuthServerHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/.well-known/oauth-authorization-server", h.handleAuthorizationServerMetadata)
 	mux.HandleFunc("/.well-known/oauth-protected-resource", h.handleProtectedResourceMetadata)
 
-	// The three CONSENT legs mount through consentLeg, so the gate is a
+	// The three CONSENT endpoints mount through consentLeg, so the check is a
 	// property of the route rather than the first line somebody remembered
 	// to write. The rest authenticate by grant, by bearer, or not at all.
 	mux.HandleFunc("/oauth/authorize", h.consentLeg([]string{http.MethodGet, http.MethodHead}, h.handleAuthorize))
@@ -180,27 +183,30 @@ func (h *OAuthServerHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/oauth/token", h.anonymousLeg(h.handleToken))
 	mux.HandleFunc("/oauth/revoke", h.anonymousLeg(h.handleRevoke))
 	mux.HandleFunc("/oauth/register", h.anonymousLeg(h.handleRegister))
-	// The step-up leg. It is NOT a consent leg: the caller is an app
+	// The step-up endpoint. It is NOT a consent endpoint: the caller is an app
 	// credential rather than a browser, and what it asks for is the right to
-	// prove a factor -- which is exactly what it does not have yet.
-	mux.HandleFunc("/oauth/step-up", h.handleStepUpAuthorization)
-	// Same-origin app icons, so the consent page's img-src stays 'self'.
-	mux.HandleFunc("/oauth/apps/", h.handleAppAsset)
+	// prove a factor -- which is exactly what it does not have yet. It mounts
+	// through anonymousLeg because every bearer it validates drives store
+	// reads an unauthenticated caller can loop.
+	mux.HandleFunc("/oauth/step-up", h.anonymousLeg(h.handleStepUpAuthorization))
+	// Same-origin app icons, so the consent page's img-src stays 'self'. Each
+	// request reads the app row, so this endpoint shares the anonymous budget too.
+	mux.HandleFunc("/oauth/apps/", h.anonymousLeg(h.handleAppAsset))
 }
 
-// anonymousLeg mounts one leg an unauthenticated caller can drive against the
-// store, with the shared budget applied.
+// anonymousLeg mounts one endpoint an unauthenticated caller can drive against
+// the store, with the shared budget applied.
 //
 // The budget used to be the first line of exactly three handlers -- and then a
-// fourth anonymous leg shipped unthrottled, because nothing recorded whether a
-// route carries the budget the way consentLeg records the elevation gate. A
-// leg that reaches this mux now cannot mount without the throttle, so the
-// fifth anonymous leg is protected by construction rather than by the author
-// remembering.
+// fourth anonymous endpoint shipped unthrottled, because nothing recorded
+// whether a route carries the budget the way consentLeg records the elevation
+// check. An endpoint that reaches this mux now cannot mount without the
+// throttle, so the fifth anonymous endpoint is protected by construction
+// rather than by the author remembering.
 //
 // It returns true when it already wrote the refusal, matching the helper it
-// wraps, so a leg that keeps an internal call for a sub-path reads the same
-// way.
+// wraps, so an endpoint that keeps an internal call for a sub-path reads the
+// same way.
 func (h *OAuthServerHandler) anonymousLeg(leg http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if h.throttleAnonymous(w, r) {
@@ -218,7 +224,7 @@ func (h *OAuthServerHandler) requireSession(r *http.Request) *auth.UserInfo {
 	// Leaving Validator nil is what unwires the bearer rung, and it is
 	// deliberate: an app credential presenting itself here would be consenting
 	// on its own behalf, which is the grant deciding its own width. The step-up
-	// leg exists beside these precisely because that is not allowed.
+	// endpoint exists beside these precisely because that is not allowed.
 	//
 	// SoloUser is nil on an ordinary hub, so the rung is off there. On a solo
 	// hub it is the only rung that can answer, because solo authenticates by
@@ -242,11 +248,19 @@ func (h *OAuthServerHandler) requireSession(r *http.Request) *auth.UserInfo {
 // snapshot reads the hub's settings once. A handler wired with no manager
 // reads the zero snapshot, which is the safe reading of every key this file
 // consults.
+//
+// Package-level (settingsSnapshotOf) rather than a method on each service,
+// because AppService and OAuthServerHandler answer the same question the same
+// way and two copies of the nil rule could drift after an edit to one.
 func (h *OAuthServerHandler) snapshot(ctx context.Context) *settings.Snapshot {
-	if h.set == nil {
+	return settingsSnapshotOf(h.set, ctx)
+}
+
+func settingsSnapshotOf(m *settings.Manager, ctx context.Context) *settings.Snapshot {
+	if m == nil {
 		return nil
 	}
-	return h.set.Snapshot(ctx)
+	return m.Snapshot(ctx)
 }
 
 // secureCookies reports whether this hub writes __Host- prefixed cookies.
@@ -255,7 +269,7 @@ func (h *OAuthServerHandler) secureCookies(ctx context.Context) bool {
 	return settings.KeySecureCookies.Of(h.snapshot(ctx))
 }
 
-// gateMode says how a leg answers a caller that is not signed in or not
+// gateMode says how an endpoint answers a caller that is not signed in or not
 // elevated.
 type gateMode int
 
@@ -275,10 +289,10 @@ const (
 // from its own URL; anything else carries parameters the redirect would
 // destroy.
 //
-// DERIVED rather than passed. Each of the consent legs used to choose its own
-// value, and every one of them chose it from its method -- so the caller could
-// only ever get the parameter wrong, never vary it usefully. A new leg now
-// cannot pick the mode that discards its own body.
+// DERIVED rather than passed. Each of the consent endpoints used to choose its
+// own value, and every one of them chose it from its method -- so the caller
+// could only ever get the parameter wrong, never vary it usefully. A new
+// endpoint now cannot pick the mode that discards its own body.
 func gateModeFor(r *http.Request) gateMode {
 	if r.Method == http.MethodGet || r.Method == http.MethodHead {
 		return gateBounce
@@ -286,19 +300,20 @@ func gateModeFor(r *http.Request) gateMode {
 	return gateRefuse
 }
 
-// consentLeg mounts one consent leg: it restricts the methods the leg answers,
-// and it demands an elevated session BEFORE the leg runs.
+// consentLeg mounts one consent endpoint: it restricts the methods the
+// endpoint answers, and it demands an elevated session BEFORE the endpoint
+// runs.
 //
-// The gate used to be the first statement of each handler, and nothing made
+// The check used to be the first statement of each handler, and nothing made
 // it so. user_procedures_internal_test.go's tripwire cannot reach here --
-// these are mux routes, not Connect procedures -- so a new leg that shipped
-// without its gate would mint a credential from an unproven session and no
-// suite would report it. A leg that needs the consenting identity now cannot
-// compile onto the mux without passing through this.
+// these are mux routes, not Connect procedures -- so a new endpoint that
+// shipped without its check would mint a credential from an unproven session
+// and no suite would report it. An endpoint that needs the consenting
+// identity now cannot compile onto the mux without passing through this.
 //
 // The METHOD check runs first, and the order is the rule: a wrong method on
-// a restricted leg must answer 405 rather than bounce an anonymous caller
-// through /elevate for a request the leg would refuse anyway.
+// a restricted endpoint must answer 405 rather than bounce an anonymous
+// caller through /elevate for a request the endpoint would refuse anyway.
 //
 // Elevation is required for EVERY grant, whatever the scope. Even a read-only
 // grant mints a row that outlives the session by months, so the session alone
@@ -309,15 +324,16 @@ func gateModeFor(r *http.Request) gateMode {
 // app is the most consequential thing a session can do, and it used to be the
 // one restricted action that did not count as use: the hub bounced a user who
 // elevated at 11:58 and consented at 11:59 through /elevate again at 12:01.
-// Sliding here rather than inside each leg keeps the property that a new leg
-// cannot mount without it.
+// Sliding here rather than inside each endpoint keeps the property that a new
+// endpoint cannot mount without it.
 //
-// The slide runs BEFORE the leg, deliberately. A leg writes its own response
-// -- a redirect, a consent page, a rendered form -- so there is no "after"
-// on this surface that is still safe to touch, and the slide is best-effort
-// anyway: it must never turn a served page into an error. What the ordering
-// costs is that a leg which then fails still extended the window, which is
-// the same answer the gate already gave by admitting the request.
+// The slide runs BEFORE the endpoint, deliberately. An endpoint writes its own
+// response -- a redirect, a consent page, a rendered form -- so there is no
+// "after" on this surface that is still safe to touch, and the slide is
+// best-effort anyway: it must never turn a served page into an error. What the
+// ordering costs is that an endpoint which then fails still extended the
+// window, which is the same answer the check already gave by admitting the
+// request.
 //
 // The slide REPORTS nothing here, although the Connect surface reports on
 // every slide (see ElevationExpiresAtHeader). Each route below renders a whole
@@ -325,8 +341,9 @@ func gateModeFor(r *http.Request) gateMode {
 // header to read the new deadline off.
 //
 // A request ANOTHER DOCUMENT started slides nothing, and the reason is the
-// one that guards the identity-provider re-authentication leg. Two of these
-// legs answer GET, the session cookie is SameSite=Lax, and a top-level
+// one that guards the identity-provider re-authentication endpoint. Two of
+// these endpoints answer GET, the session cookie is SameSite=Lax, and a
+// top-level
 // cross-site navigation carries it -- so without this an off-site page could
 // point a signed-in victim's browser at /oauth/authorize and re-arm their
 // elevation window for another two hours, as often as it liked, up to the
@@ -334,7 +351,8 @@ func gateModeFor(r *http.Request) gateMode {
 // the End now button and operating/security.md both rest on, and a third party
 // must not be able to extend it.
 //
-// The leg still RUNS. It only reads the session and renders a page; the POST
+// The endpoint still RUNS. It only reads the session and renders a page; the
+// POST
 // that actually grants is SameSite-protected already, and refusing the render
 // would break nothing an attacker can reach but would add a second rule to a
 // surface that needs one. What is refused is the WRITE.
@@ -359,7 +377,7 @@ func (h *OAuthServerHandler) consentLeg(methods []string, leg func(http.Response
 	}
 }
 
-// requireElevatedSession is the single gate on the consent legs.
+// requireElevatedSession is the single check on the consent endpoints.
 // It returns the acting user, or nil when it already wrote the response.
 //
 // Loop prevention is two INDEPENDENT layers, because a stale cache can defeat
@@ -389,7 +407,7 @@ func (h *OAuthServerHandler) requireElevatedSession(w http.ResponseWriter, r *ht
 	// model most helps, where one agent should hold file:read and nothing more.
 	//
 	// Authentication is not weakened by this: reaching a solo hub at all is the
-	// authentication, and there is no second factor for a gate to demand.
+	// authentication, and there is no second factor for a check to demand.
 	if user.SoloAuthenticated() || user.Elevated(h.now()) {
 		return user
 	}
@@ -425,12 +443,12 @@ func (h *OAuthServerHandler) redirectTo(w http.ResponseWriter, r *http.Request, 
 	http.Redirect(w, r, dest, http.StatusFound)
 }
 
-// writeElevationRequiredPage explains the refusal. A bounced GET leg gets an
-// HTML page, because a browser reads it; a refused POST leg gets plain text,
-// which is what the form post shows.
+// writeElevationRequiredPage explains the refusal. A bounced GET endpoint gets
+// an HTML page, because a browser reads it; a refused POST endpoint gets plain
+// text, which is what the form post shows.
 //
 // BOTH answer 403. The status is the machine-readable half of the same
-// answer, and the two legs refuse for one reason, so a page that said 200
+// answer, and the two endpoints refuse for one reason, so a page that said 200
 // told a proxy, a health check or a test that the consent succeeded.
 func (h *OAuthServerHandler) writeElevationRequiredPage(w http.ResponseWriter, mode gateMode) {
 	const explanation = "Verify your identity before you authorize an app. " +
@@ -454,7 +472,7 @@ const installationNameByteLimit = 128
 // normalizeInstallationName cleans an installation label at the boundary where
 // it ENTERS the hub.
 //
-// Whoever runs the app chooses the value, and on the device-code leg that
+// Whoever runs the app chooses the value, and on the device-code stage that
 // endpoint is anonymous -- so an attacker who persuades somebody to activate
 // their user code chooses this text. It then reaches the consent page, the
 // activation page, the account's connected-app list, the stored row, and the
@@ -493,7 +511,7 @@ func writeOAuthError(w http.ResponseWriter, status int, code, description string
 // RETURN their refusal rather than writing it, because one of them must
 // update last_polled_at between deciding and answering.
 func writeOAuthErrorBody(w http.ResponseWriter, status int, body oauthErrorResponse) {
-	// RFC 6750 section 3: a 401 from a protected resource names the scheme the
+	// RFC 6750 section 3: a 401 from a protected resource states the scheme the
 	// client should retry with. Without it a conformant client library has no
 	// way to tell "your token is wrong" from "this endpoint wants something
 	// else entirely".
@@ -520,25 +538,18 @@ func writeInternalError(w http.ResponseWriter, operation string, err error) {
 	http.Error(w, "internal server error", http.StatusInternalServerError)
 }
 
-func generateUserCode() string {
-	// Reuse verifycode.Generate which produces a 6-char alphanumeric
-	// from an unambiguous alphabet — exactly the user-code shape we
-	// want. verifycode.Format adds the display form (XXX-XXX) when we
-	// build verification_uri_complete.
-	return verifycode.Generate()
-}
-
-// throttleAnonymous applies the shared anonymous-leg budget, keyed by client
-// address.
+// throttleAnonymous applies the shared anonymous-endpoint budget, keyed by
+// client address.
 //
-// The four legs it guards -- device authorization, the token exchange,
-// revocation and dynamic registration -- were unrated: ratelimit.NewInterceptor
-// is a Connect interceptor, and none of these is a Connect procedure. They are
-// the only endpoints on the hub that an unauthenticated caller can drive in a
-// loop against the store.
+// EVERY endpoint mounted through anonymousLeg draws on it: device
+// authorization, the token exchange, revocation, dynamic registration,
+// step-up, and the app icons. All of them read the store for a caller that
+// carries no session, and no Connect interceptor sees them --
+// ratelimit.NewInterceptor is a Connect interceptor, and none of these is a
+// Connect procedure.
 //
 // It returns true when it already wrote the refusal. anonymousLeg calls it at
-// mounting, so no leg reaches the mux without it.
+// mounting, so no endpoint reaches the mux without it.
 func (h *OAuthServerHandler) throttleAnonymous(w http.ResponseWriter, r *http.Request) bool {
 	if h.limiter == nil {
 		return false
@@ -556,19 +567,29 @@ func (h *OAuthServerHandler) throttleAnonymous(w http.ResponseWriter, r *http.Re
 
 // --- App resolution -------------------------------------------------------
 
-// errAppUnavailable reports a client_id that names no app this request may
-// use: unknown, revoked, or a private app belonging to somebody else.
+// errAppUnavailable reports a client_id that identifies no app this request
+// may use: unknown, revoked, or a private app belonging to somebody else.
 //
 // ONE error for all three, because the caller must not disclose which. An app
 // list that answers "unknown" for one id and "not yours" for another lets any
 // anonymous caller enumerate the private registrations on the hub.
 var errAppUnavailable = errors.New("unknown or unavailable client_id")
 
-// resolveApp loads the app a request names, and refuses one this request may
-// not use.
+// appUnavailableBody is the refusal an unresolvable client_id answers with.
+// The sentinel's text is the one spelling: a call site that quoted the
+// sentence by hand could drift from it, and the anti-enumeration rule the
+// sentinel states is only as strong as every endpoint meaning the same thing
+// by it.
+func appUnavailableBody() oauthErrorResponse {
+	return oauthErrorBody("invalid_client", errAppUnavailable.Error())
+}
+
+// resolveApp loads the app a request identifies, and refuses one this request
+// may not use.
 //
 // `viewer` is the account the request acts for, or the zero id on an anonymous
-// leg. A HUB-WIDE app is available to everyone including an anonymous caller;
+// endpoint. A HUB-WIDE app is available to everyone including an anonymous
+// caller;
 // a PRIVATE one is available only to its owner, which is the whole of the
 // visibility rule and it lives here rather than at each call site.
 func (h *OAuthServerHandler) resolveApp(ctx context.Context, clientID string, viewer *auth.UserInfo) (*store.OAuthClient, error) {
@@ -636,7 +657,10 @@ func appScopeCeiling(app *store.OAuthClient) authscope.ScopeSet {
 // section 3.3 allows a server to do and what every client that omits `scope`
 // expects.
 func resolveRequestedScopes(raw string, app *store.OAuthClient, user *auth.UserInfo) (authscope.ScopeSet, *oauthErrorResponse) {
-	ceiling := appScopeCeiling(app)
+	// Closed, so the ceiling states every IMPLIED permission of the ones the
+	// registration lists: a row that names git:write carries git:read, and an
+	// ask checked against the unclosed string could be closed PAST the check.
+	ceiling := appScopeCeiling(app).Close()
 	// RFC 6749 section 3.3 lets the server pick a default for an omitted
 	// scope, and the default is NOT the ceiling.
 	//
@@ -658,25 +682,24 @@ func resolveRequestedScopes(raw string, app *store.OAuthClient, user *auth.UserI
 				"this app is not registered for every permission it asked for")
 			return authscope.ScopeSet{}, &body
 		}
-		requested = parsed
+		requested = parsed.Close()
 	}
 	if user != nil && !user.IsAdmin {
-		for _, scope := range adminScopeList {
-			if requested.Allows(scope) {
-				body := oauthErrorBody("access_denied",
-					"your account is not a hub administrator, so it cannot grant an admin permission")
-				return authscope.ScopeSet{}, &body
-			}
+		if _, found := firstAdminScope(requested); found {
+			body := oauthErrorBody("access_denied",
+				"your account is not a hub administrator, so it cannot grant an admin permission")
+			return authscope.ScopeSet{}, &body
 		}
 	}
 	// The closure runs at the MINT, so the stored set, the consent screen and
 	// the token response all show the same thing.
-	return requested.Close(), nil
+	return requested, nil
 }
 
 // adminScopeList is the hub-administration family, read from the one place
 // that owns it. Two refusals in this package ask the same question -- a
-// consent leg refusing a non-administrator, and the admin mint refusing to
+// consent endpoint refusing a non-administrator, and the admin mint refusing
+// to
 // issue an admin credential for somebody else -- and a local literal would be
 // a third copy of a list that must never disagree.
 var adminScopeList = authscope.AdminScopes()

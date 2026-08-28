@@ -95,7 +95,7 @@ func RefreshWindowFor(createdAt, now time.Time) time.Duration {
 // AccessTokenTTL past it, so the credential kept working for up to an hour
 // after the hub answered its next refresh with "this credential reached its
 // maximum lifetime". Clipping here makes the ceiling a property of the
-// credential rather than of the refresh leg that happens to notice it.
+// credential rather than of the refresh stage that happens to notice it.
 func AccessWindowFor(createdAt, now time.Time) time.Duration {
 	return min(AccessTokenTTL, RefreshWindowFor(createdAt, now))
 }
@@ -260,7 +260,7 @@ func (v *TokenValidator) newBearerPair(kind BearerKind, tokenID, access, refresh
 // DeriveRefreshBearerPair deterministically derives the next bearer pair from
 // the submitted refresh hash. Every Hub with the same pepper derives the same
 // pair, so a retry of a successfully rotated refresh can recover after process
-// failure or when load balancing sends it to another Hub.
+// failure, or after the hub stopped and its successor serves the retry.
 func (v *TokenValidator) DeriveRefreshBearerPair(
 	kind BearerKind,
 	tokenID string,
@@ -408,9 +408,14 @@ func (v *TokenValidator) loadBearer(ctx context.Context, kind BearerKind, tokenI
 		// part-way through a disconnect would otherwise leave a live
 		// credential on an app nobody can see any more; this refuses it at the
 		// next request rather than waiting for the cascade to be retried.
-		if api.ClientRevokedAt != nil {
-			return loadedBearer{}, connect.NewError(connect.CodeUnauthenticated, ErrTokenRevoked)
-		}
+		//
+		// It is carried as a FIELD and refused after the secret check in
+		// validateRow, exactly like the row's own Revoked: answering it here,
+		// before the secret verifies, let a caller holding only a victim's
+		// non-secret token_id distinguish a live row on a retired app from a
+		// missing one -- the probe validateRow's uniform ErrInvalidToken
+		// exists to refuse.
+		clientRevoked := api.ClientRevokedAt != nil
 		// The stored grant, NARROWED at the moment the row is READ by BOTH
 		// ceilings that govern it. A mint bug, a hand-edited row or a restored
 		// backup therefore cannot produce an over-scoped credential that
@@ -428,7 +433,7 @@ func (v *TokenValidator) loadBearer(ctx context.Context, kind BearerKind, tokenI
 			return loadedBearer{}, connect.NewError(connect.CodeUnauthenticated, ErrInvalidToken)
 		}
 		// The KIND's ceiling: a property of what kind of credential this is,
-		// at every validation rather than of the leg that happened to mint it.
+		// at every validation rather than of the stage that happened to mint it.
 		scopes = scopes.NarrowTo(CeilingFor(BearerKindAPI))
 		// The APP's ceiling: what its registration says it may ask for.
 		//
@@ -461,6 +466,10 @@ func (v *TokenValidator) loadBearer(ctx context.Context, kind BearerKind, tokenI
 		return loadedBearer{
 			fields: validateRowFields{
 				Revoked: api.RevokedAt != nil,
+				// ClientRevoked: the app's retirement, joined onto the row.
+				// Refused beside Revoked below -- after the secret verifies --
+				// so a wrong secret stays uniform across every row state.
+				ClientRevoked: clientRevoked,
 				// TWO deadlines, and the credential expires at whichever comes
 				// first: its own expires_at, and the ceiling
 				// AbsoluteTokenLifetime puts on created_at.
@@ -472,10 +481,10 @@ func (v *TokenValidator) loadBearer(ctx context.Context, kind BearerKind, tokenI
 				// there is one on the admin surface, put a row past the
 				// ceiling that nothing afterwards re-read. Reading it HERE
 				// makes the ceiling a property of the credential at every
-				// validation rather than of the leg that happens to compute a
+				// validation rather than of the stage that happens to compute a
 				// window, so no present or future issuer can write past it.
 				//
-				// The arithmetic stays as well: the refresh leg must still
+				// The arithmetic stays as well: the refresh stage must still
 				// answer "this credential reached its maximum lifetime" and
 				// revoke the row, which is a better answer than a silent
 				// expiry.
@@ -570,13 +579,16 @@ func IsExpired(now, expiresAt time.Time) bool {
 // delegation_tokens). loadBearer projects the per-table row into this
 // shape so validateRow can stay table-agnostic.
 type validateRowFields struct {
-	Revoked    bool
-	Expired    bool
-	SecretHash []byte
-	UserID     string
-	RowID      string
-	CreatedAt  time.Time
-	ExpiresAt  time.Time
+	Revoked bool
+	// ClientRevoked reports the APP's retirement (api_tokens rows only). The
+	// delegation branch leaves it false: a delegation bearer has no app.
+	ClientRevoked bool
+	Expired       bool
+	SecretHash    []byte
+	UserID        string
+	RowID         string
+	CreatedAt     time.Time
+	ExpiresAt     time.Time
 	// Scopes is the credential's grant, already narrowed to its kind's
 	// ceiling by loadBearer. The zero value reaches nothing, so a branch that
 	// forgets to fill it denies rather than grants.
@@ -605,6 +617,9 @@ func (v *TokenValidator) validateRow(ctx context.Context, f validateRowFields, s
 		return nil, connect.NewError(connect.CodeUnauthenticated, ErrInvalidToken)
 	}
 	if f.Revoked {
+		return nil, connect.NewError(connect.CodeUnauthenticated, ErrTokenRevoked)
+	}
+	if f.ClientRevoked {
 		return nil, connect.NewError(connect.CodeUnauthenticated, ErrTokenRevoked)
 	}
 	if f.Expired {

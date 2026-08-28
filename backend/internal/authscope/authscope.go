@@ -33,7 +33,7 @@ import (
 //
 // A scope added to scope.proto with no entry here fails
 // TestGrantableTokensCoverEveryScope, so the vocabulary cannot grow a value
-// that no surface can name.
+// that no surface can specify.
 var grantableTokens = map[leapmuxv1.Scope]string{
 	leapmuxv1.Scope_SCOPE_ACCOUNT_READ:    "account:read",
 	leapmuxv1.Scope_SCOPE_ACCOUNT_WRITE:   "account:write",
@@ -53,6 +53,7 @@ var grantableTokens = map[leapmuxv1.Scope]string{
 	leapmuxv1.Scope_SCOPE_ADMIN_USERS:     "admin:users",
 	leapmuxv1.Scope_SCOPE_ADMIN_SETTINGS:  "admin:settings",
 	leapmuxv1.Scope_SCOPE_ADMIN_WORKERS:   "admin:workers",
+	leapmuxv1.Scope_SCOPE_ADMIN_APPS:      "admin:apps",
 }
 
 // scopesByToken is the reverse of grantableTokens, built once at init so Parse
@@ -116,6 +117,7 @@ var impliedBy = map[leapmuxv1.Scope][]leapmuxv1.Scope{
 	leapmuxv1.Scope_SCOPE_ADMIN_USERS:     {leapmuxv1.Scope_SCOPE_ADMIN_READ},
 	leapmuxv1.Scope_SCOPE_ADMIN_SETTINGS:  {leapmuxv1.Scope_SCOPE_ADMIN_READ},
 	leapmuxv1.Scope_SCOPE_ADMIN_WORKERS:   {leapmuxv1.Scope_SCOPE_ADMIN_READ},
+	leapmuxv1.Scope_SCOPE_ADMIN_APPS:      {leapmuxv1.Scope_SCOPE_ADMIN_READ},
 }
 
 // IsGrantable reports whether an account may grant this scope to an app.
@@ -134,6 +136,15 @@ func IsGrantable(scope leapmuxv1.Scope) bool {
 func Token(scope leapmuxv1.Scope) (string, bool) {
 	token, ok := grantableTokens[scope]
 	return token, ok
+}
+
+// NotGrantedDenial is the one spelling of the scope-refusal message a caller
+// reads: the Hub's Connect enforcement and the Worker's inner-RPC gate both
+// answer an over-scoped app with it, and two hand-kept copies could drift
+// into disagreeing about the one sentence the docs quote.
+func NotGrantedDenial(scope leapmuxv1.Scope) string {
+	token, _ := Token(scope)
+	return fmt.Sprintf("this app was not granted the %s permission", token)
 }
 
 // ScopeFor resolves one wire token. An unknown token has no scope, and the
@@ -166,6 +177,14 @@ type ScopeSet struct {
 }
 
 func bit(scope leapmuxv1.Scope) uint32 {
+	// The set is a uint32 bitmask, so a scope numbered past 31 (or below 0)
+	// cannot be represented: Go shifts it to zero, and the scope would
+	// silently allow nothing everywhere -- grants, consent screens, the
+	// enforcement table. Panicking here turns the vocabulary's growth past
+	// the width into a loud failure at first use instead.
+	if scope < 0 || scope > 31 {
+		panic(fmt.Sprintf("authscope: scope %d does not fit the 32-bit set", scope))
+	}
 	return 1 << uint(scope)
 }
 
@@ -441,7 +460,7 @@ func (s ScopeSet) Contains(other ScopeSet) bool {
 // adminScopes is the hub-administration family.
 //
 // It lives HERE rather than beside the one refusal that reads it, because four
-// surfaces ask the same question -- the consent leg refusing a
+// surfaces ask the same question -- the consent stage refusing a
 // non-administrator, the admin mint's default, the control CLI's default
 // grant, and the credential-notice subject line -- and four literals is four
 // chances for a fifth admin scope to be missed by one of them.
@@ -450,6 +469,7 @@ var adminScopes = []leapmuxv1.Scope{
 	leapmuxv1.Scope_SCOPE_ADMIN_USERS,
 	leapmuxv1.Scope_SCOPE_ADMIN_SETTINGS,
 	leapmuxv1.Scope_SCOPE_ADMIN_WORKERS,
+	leapmuxv1.Scope_SCOPE_ADMIN_APPS,
 }
 
 // AdminScopes returns the hub-administration family, in canonical order.
@@ -464,7 +484,8 @@ func AdminScopes() []leapmuxv1.Scope {
 // NonAdminGrant is every grantable scope EXCEPT hub administration.
 //
 // It is the default an administrator's `api-token issue` mints with no --scope
-// stated. The consent leg reaches the same set by subtracting the admin family
+// stated. The consent stage reaches the same set by subtracting the admin
+// family
 // from the APP's registered ceiling rather than from every grantable scope --
 // a third-party app's default must stay inside what it registered -- so the
 // two surfaces agree on the rule (an admin permission is never granted by

@@ -10,7 +10,7 @@ import "leapmux/v1/scope.proto";
 //
 // It is the registration surface, not the authorization surface. Authorizing an
 // app, listing what a user authorized, and disconnecting one are the OAuth
-// endpoints under /oauth/ and the MyConnections RPCs -- this service is where an
+// endpoints under /oauth/ and the UserService's ListMyAPITokens and DisconnectApp RPCs -- this service is where an
 // app comes from.
 //
 // Every verb is SCOPE_NEVER. An app that could register an app would name its
@@ -32,9 +32,9 @@ service AppService {
   rpc ListApps(ListAppsRequest) returns (ListAppsResponse);
   // UpdateApp changes the editable fields of one registration.
   rpc UpdateApp(UpdateAppRequest) returns (UpdateAppResponse);
-  // SetAppElevationAllowed toggles whether the app may run the step-up leg. It
-  // is separate because it is the ONE field a built-in registration may still
-  // change, and because it is not part of the grant.
+  // SetAppElevationAllowed toggles whether the app may run the step-up
+  // ceremony. It is separate because it is the ONE field a built-in
+  // registration may still change, and because it is not part of the grant.
   rpc SetAppElevationAllowed(SetAppElevationAllowedRequest) returns (SetAppElevationAllowedResponse);
   // VerifyApp records an administrator's vouch, or withdraws it. An unverified
   // app is the default and the consent page says so.
@@ -108,6 +108,12 @@ message App {
   // live_credential_count is why a delete may be refused, so the surface can
   // say so instead of reporting a failure the user cannot read.
   int64 live_credential_count = 17;
+  // The ONE rule for whether a registration counts as verified: an
+  // administrator's vouch OR a built-in of this build (store.ClientIsVerified
+  // states it once). Every surface reads this field rather than deriving from
+  // verified_at, which is false for a built-in the consent page already
+  // treats as verified.
+  bool verified = 18;
 }
 
 message RegisterAppRequest {

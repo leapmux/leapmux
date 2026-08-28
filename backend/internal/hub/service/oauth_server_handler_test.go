@@ -519,7 +519,7 @@ func TestAPIAuth_LocalRedirect_RejectsBadVerifier(t *testing.T) {
 		"client_id":     {oauthapp.ControlCLIClientID},
 		"redirect_uri":  {"http://127.0.0.1:54321/callback"},
 		"code":          {code},
-		"code_verifier": {"definitely-not-the-verifier"},
+		"code_verifier": {"definitely-not-the-verifier-but-long-enough-to-pass-shape-checks"},
 	})
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
@@ -547,7 +547,7 @@ func TestAPIAuth_LocalRedirect_RejectsBadVerifier(t *testing.T) {
 		"client_id":     {oauthapp.ControlCLIClientID},
 		"redirect_uri":  {"http://127.0.0.1:54321/callback"},
 		"code":          {retryCode},
-		"code_verifier": {"wrong-verifier"},
+		"code_verifier": {"wrong-verifier-but-long-enough-to-pass-the-shape-checks-ok"},
 	})
 	require.NoError(t, err)
 	_ = bad.Body.Close()
@@ -1327,7 +1327,7 @@ type deviceAuthorizationOverride struct {
 	create        func(context.Context, store.CreateDeviceAuthorizationParams) error
 	get           func(context.Context, string) (*store.DeviceAuthorization, error)
 	getByUserCode func(context.Context, string) (*store.DeviceAuthorization, error)
-	touchPoll     func(context.Context, string) error
+	touchPoll     func(context.Context, string, time.Time) error
 	consume       func(context.Context, string) (int64, error)
 }
 
@@ -1352,11 +1352,11 @@ func (s deviceAuthorizationOverride) GetByUserCode(ctx context.Context, code str
 	return s.DeviceAuthorizationStore.GetByUserCode(ctx, code)
 }
 
-func (s deviceAuthorizationOverride) TouchPoll(ctx context.Context, code string) error {
+func (s deviceAuthorizationOverride) TouchPoll(ctx context.Context, code string, now time.Time) error {
 	if s.touchPoll != nil {
-		return s.touchPoll(ctx, code)
+		return s.touchPoll(ctx, code, now)
 	}
-	return s.DeviceAuthorizationStore.TouchPoll(ctx, code)
+	return s.DeviceAuthorizationStore.TouchPoll(ctx, code, now)
 }
 
 func (s deviceAuthorizationOverride) Consume(ctx context.Context, code string, now time.Time) (int64, error) {
@@ -1507,7 +1507,7 @@ func TestAPIAuth_DeviceCode_TouchPollFailureIsInternal(t *testing.T) {
 		DeviceCode: deviceCode, UserCode: verifycode.Generate(), ExpiresAt: time.Now().Add(time.Minute),
 	}))
 	forcedErr := errors.New("sensitive poll failure")
-	device := deviceAuthorizationOverride{DeviceAuthorizationStore: env.store.DeviceAuthorizations(), touchPoll: func(context.Context, string) error {
+	device := deviceAuthorizationOverride{DeviceAuthorizationStore: env.store.DeviceAuthorizations(), touchPoll: func(context.Context, string, time.Time) error {
 		return forcedErr
 	}}
 	wrapped := deviceAuthorizationOverrideStore{Store: env.store, device: device}

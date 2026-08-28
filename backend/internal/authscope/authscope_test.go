@@ -264,12 +264,7 @@ func TestContains(t *testing.T) {
 }
 
 func TestWithout(t *testing.T) {
-	set := authscope.EveryGrantableScope().Without(
-		leapmuxv1.Scope_SCOPE_ADMIN_READ,
-		leapmuxv1.Scope_SCOPE_ADMIN_USERS,
-		leapmuxv1.Scope_SCOPE_ADMIN_SETTINGS,
-		leapmuxv1.Scope_SCOPE_ADMIN_WORKERS,
-	)
+	set := authscope.EveryGrantableScope().Without(authscope.AdminScopes()...)
 	assert.False(t, set.Allows(leapmuxv1.Scope_SCOPE_ADMIN_READ))
 	assert.True(t, set.Allows(leapmuxv1.Scope_SCOPE_WORKSPACE_WRITE))
 	assert.NotContains(t, set.String(), "admin:")
@@ -333,7 +328,7 @@ func TestAdminScopesCoverEveryAdminToken(t *testing.T) {
 			assert.Truef(t, listed[scope], "%s carries the admin: prefix but AdminScopes does not list it", scope)
 		}
 	}
-	assert.Len(t, listed, 4)
+	assert.Len(t, listed, len(authscope.AdminScopes()))
 }
 
 // TestNonAdminGrantIsEverythingExceptAdministration pins the default both mint
@@ -372,10 +367,22 @@ func TestScopeTokenBijectionMatchesEnumNames(t *testing.T) {
 		}
 		parts := strings.Split(strings.TrimPrefix(name, "SCOPE_"), "_")
 		if len(parts) < 2 {
+			t.Errorf("%s's enum name does not follow the FAMILY_ACTION shape: the "+
+				"frontend scopeToken cannot derive a token from it and renders it raw "+
+				"on the consent-checkbox surface (scopeToken in frontend/src/components/"+
+				"settings/account/scopeToken.ts); name the scope FAMILY_ACTION", name)
 			continue
 		}
 		derived := strings.ToLower(parts[0]) + ":" + strings.ToLower(strings.Join(parts[1:], "_"))
 		assert.Equalf(t, derived, token,
 			"%s's token does not follow its enum name's FAMILY_ACTION shape; the frontend chip derivation and the hub's stored value have diverged", name)
 	}
+}
+
+// The one spelling of the denial both enforcement surfaces answer with: the
+// hub's Connect rung and the worker's inner-RPC gate quote it verbatim, and
+// the docs quote it too -- three readers that must not see two sentences.
+func TestNotGrantedDenial(t *testing.T) {
+	assert.Equal(t, "this app was not granted the admin:read permission",
+		authscope.NotGrantedDenial(leapmuxv1.Scope_SCOPE_ADMIN_READ))
 }

@@ -19,14 +19,19 @@ import (
 // CredentialFile is the per-hub credential payload stored under
 // ~/.config/leapmux/control/<hub-host>.json (mode 0600).
 //
-// TokenID and Scope are ADVISORY: they let the CLI say which row it holds and
-// what it was granted, without a round trip. The hub decides both -- a
-// hand-edited Scope grants nothing, because the grant lives in the api_tokens
-// row the bearer specifies.
+// TokenID, ClientID and Scope are ADVISORY: they let the CLI say which row it
+// holds, which app owns it and what it was granted, without a round trip. The
+// hub decides all three -- a hand-edited Scope grants nothing, because the
+// grant lives in the api_tokens row the bearer specifies.
 type CredentialFile struct {
-	HubURL       string    `json:"hub_url"`
-	HubID        string    `json:"hub_id"`
-	AccessToken  string    `json:"access_token"`
+	HubURL      string `json:"hub_url"`
+	AccessToken string `json:"access_token"`
+	// ClientID is the app this credential was issued to. The hub binds the
+	// refresh, revoke and step-up stages to the credential's own app, so the
+	// CLI must present this id on them; a file written before the field
+	// existed belongs to the control CLI's built-in registration, which is
+	// what the empty value falls back to (ClientIDOrBuiltIn).
+	ClientID     string    `json:"client_id,omitzero"`
 	RefreshToken string    `json:"refresh_token"`
 	ExpiresAt    time.Time `json:"expires_at"`
 	// RefreshExpiresAt is when the credential stops being able to renew
@@ -40,6 +45,19 @@ type CredentialFile struct {
 	// Scope is the canonical RFC 6749 section 3.3 grant the hub reported, so
 	// `auth status` can print what this credential may do.
 	Scope string `json:"scope,omitempty"`
+}
+
+// ClientIDOrBuiltIn answers which app this credential belongs to: the recorded
+// id, or the control CLI's built-in registration for a file written before the
+// field existed. Every stage that must identify the app reads this, so a credential
+// minted to another registration presents the right id instead of the CLI's
+// own -- the hub answers "this grant was issued to a different app" otherwise,
+// and the refresh path reads that refusal as a revoked credential.
+func (c *CredentialFile) ClientIDOrBuiltIn() string {
+	if c == nil || c.ClientID == "" {
+		return ControlCLIClientID
+	}
+	return c.ClientID
 }
 
 // HubHost extracts the hostname (or socket path) used for the on-disk

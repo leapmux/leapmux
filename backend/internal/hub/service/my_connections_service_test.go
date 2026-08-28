@@ -220,14 +220,15 @@ func TestRevokeMyAPIToken_TwiceIsNotFound(t *testing.T) {
 func registerSecondApp(t *testing.T, env *userTestEnv) string {
 	t.Helper()
 	clientID := id.Generate()
-	require.NoError(t, env.store.OAuthClients().Create(context.Background(), store.CreateOAuthClientParams{
+	_, createErr := env.store.OAuthClients().Create(context.Background(), store.CreateOAuthClientParams{
 		ClientID:           clientID,
 		ClientName:         "Other app",
 		RedirectURIs:       "https://other.example.com/callback",
 		Scopes:             "workspace:read",
 		GrantTypes:         "authorization_code refresh_token",
 		RegistrationSource: store.OAuthClientSourceAdmin,
-	}))
+	})
+	require.NoError(t, createErr)
 	return clientID
 }
 
@@ -384,7 +385,7 @@ func TestListMyAPITokens_StatesWhetherSomebodyVouchedForTheApp(t *testing.T) {
 	// A vouched third-party app.
 	vouchedApp := id.Generate()
 	vouchedAt := time.Now().UTC()
-	require.NoError(t, env.store.OAuthClients().Create(ctx, store.CreateOAuthClientParams{
+	_, createErr := env.store.OAuthClients().Create(ctx, store.CreateOAuthClientParams{
 		ClientID:           vouchedApp,
 		ClientName:         "Vouched app",
 		RedirectURIs:       "https://vouched.example.com/callback",
@@ -393,7 +394,8 @@ func TestListMyAPITokens_StatesWhetherSomebodyVouchedForTheApp(t *testing.T) {
 		RegistrationSource: store.OAuthClientSourceAdmin,
 		VerifiedAt:         &vouchedAt,
 		VerifiedBy:         env.userID,
-	}))
+	})
+	require.NoError(t, createErr)
 	// An UNvouched third-party app.
 	plainApp := registerSecondApp(t, env)
 
@@ -413,4 +415,54 @@ func TestListMyAPITokens_StatesWhetherSomebodyVouchedForTheApp(t *testing.T) {
 	assert.True(t, verifiedByClient[oauthapp.ControlCLIClientID],
 		"a built-in registration is verified by construction: the build is its author")
 	assert.False(t, verifiedByClient[plainApp], "nobody vouched; the badge stays")
+}
+
+// TestDisconnectApp_SpendsOutstandingOneShotGrants pins the disconnect's
+// second half: an authorization code the account allowed seconds before
+// disconnecting, and a device grant the account approved but the app had not
+// polled yet, must die with the authorization -- otherwise each stays
+// redeemable into a fresh credential for its whole TTL, for an app the
+// account just cut off.
+func TestDisconnectApp_SpendsOutstandingOneShotGrants(t *testing.T) {
+	t.Parallel()
+
+	env := setupUserTest(t)
+	ctx := context.Background()
+	uid := userid.MustNew(env.userID)
+
+	code := id.Generate()
+	require.NoError(t, env.store.OAuthAuthorizationCodes().Create(ctx, store.CreateOAuthAuthorizationCodeParams{
+		Code:          code,
+		UserID:        uid,
+		ClientID:      oauthapp.ControlCLIClientID,
+		CodeChallenge: "challenge",
+		RedirectURI:   "http://127.0.0.1:54321/callback",
+		GrantedScopes: "workspace:read",
+		ExpiresAt:     time.Now().Add(10 * time.Minute),
+	}))
+
+	deviceCode := id.Generate()
+	require.NoError(t, env.store.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
+		DeviceCode: deviceCode,
+		UserCode:   id.Generate(),
+		ClientID:   oauthapp.ControlCLIClientID,
+		ExpiresAt:  time.Now().Add(10 * time.Minute),
+	}))
+	_, err := env.store.DeviceAuthorizations().Approve(ctx, store.ApproveDeviceAuthorizationParams{
+		DeviceCode: deviceCode,
+		UserID:     uid,
+	}, time.Now().UTC())
+	require.NoError(t, err)
+
+	_, err = env.client.DisconnectApp(ctx, authedReq(&leapmuxv1.DisconnectAppRequest{
+		ClientId: oauthapp.ControlCLIClientID,
+	}, env.token))
+	require.NoError(t, err)
+
+	_, err = env.store.OAuthAuthorizationCodes().GetActive(ctx, code, time.Now().UTC())
+	assert.Error(t, err, "the outstanding authorization code must die with the disconnect")
+
+	row, err := env.store.DeviceAuthorizations().Get(ctx, deviceCode)
+	require.NoError(t, err)
+	assert.NotNil(t, row.ConsumedAt, "the approved-but-unpolled device grant must die with the disconnect")
 }

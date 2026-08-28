@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"errors"
 	"fmt"
 
 	"connectrpc.com/connect"
@@ -180,7 +181,7 @@ var procedureScopes = map[string]ScopeRequirement{
 	leapmuxv1connect.UserServiceDeletePasskeyProcedure:             ScopeNever,
 	leapmuxv1connect.UserServiceDeactivatePasskeyAuthProcedure:     ScopeNever,
 	// The SESSION step-up ceremony. An app credential holds no session and
-	// elevates through /oauth/step-up, which is the browser leg the
+	// elevates through /oauth/step-up, which is the browser stage the
 	// elevation_allowed flag governs.
 	leapmuxv1connect.UserServiceElevateSessionProcedure:         ScopeNever,
 	leapmuxv1connect.UserServiceBeginPasskeyElevationProcedure:  ScopeNever,
@@ -188,7 +189,7 @@ var procedureScopes = map[string]ScopeRequirement{
 	leapmuxv1connect.UserServiceDropElevationProcedure:          ScopeNever,
 	// Ends a credential the caller may not hold. An app disconnects ITSELF
 	// through /oauth/revoke, which needs no scope because it presents the
-	// token it is revoking.
+	// token it revokes.
 	leapmuxv1connect.UserServiceRevokeMyAPITokenProcedure: ScopeNever,
 	// The same refusal one level up: DisconnectApp ends EVERY credential the
 	// account holds for one app, so an app that reached it could retire a
@@ -197,21 +198,25 @@ var procedureScopes = map[string]ScopeRequirement{
 
 	// --- AppService ---------------------------------------------------------
 	//
-	// EVERY verb, without exception. An app that could register an app would
-	// choose its own redirect address and its own scope ceiling, and the next
-	// consent screen would be the attacker's -- so this is not a wide grant to
-	// withhold but a way out of the model, which is what ScopeNever marks.
+	// The whole service sits behind admin:apps: an app that could register an
+	// app would choose its own redirect address and its own scope ceiling, and
+	// the next consent screen would be the attacker's. Keeping it OUT of the
+	// app-reachable vocabulary was what ScopeNever marked here before; the
+	// separate admin family gives the same protection to ordinary grants
+	// (an app's ceiling may list admin:apps only if an administrator
+	// registered it that way) while letting a command-line credential reach
+	// the documented `control admin app` verbs.
 	//
-	// Reading is refused for the same reason rather than a weaker one: the
-	// listing carries every registration's redirect addresses and ceilings,
-	// which is the reconnaissance an app would want before it forged one.
-	leapmuxv1connect.AppServiceRegisterAppProcedure:            ScopeNever,
-	leapmuxv1connect.AppServiceListAppsProcedure:               ScopeNever,
-	leapmuxv1connect.AppServiceUpdateAppProcedure:              ScopeNever,
-	leapmuxv1connect.AppServiceSetAppElevationAllowedProcedure: ScopeNever,
-	leapmuxv1connect.AppServiceVerifyAppProcedure:              ScopeNever,
-	leapmuxv1connect.AppServiceRevokeAppProcedure:              ScopeNever,
-	leapmuxv1connect.AppServiceDeleteAppProcedure:              ScopeNever,
+	// Reading is the same scope rather than a weaker one: the listing carries
+	// every registration's redirect addresses and ceilings, which is the
+	// reconnaissance an app would want before it forged one.
+	leapmuxv1connect.AppServiceRegisterAppProcedure:            Requires(leapmuxv1.Scope_SCOPE_ADMIN_APPS),
+	leapmuxv1connect.AppServiceListAppsProcedure:               Requires(leapmuxv1.Scope_SCOPE_ADMIN_APPS),
+	leapmuxv1connect.AppServiceUpdateAppProcedure:              Requires(leapmuxv1.Scope_SCOPE_ADMIN_APPS),
+	leapmuxv1connect.AppServiceSetAppElevationAllowedProcedure: Requires(leapmuxv1.Scope_SCOPE_ADMIN_APPS),
+	leapmuxv1connect.AppServiceVerifyAppProcedure:              Requires(leapmuxv1.Scope_SCOPE_ADMIN_APPS),
+	leapmuxv1connect.AppServiceRevokeAppProcedure:              Requires(leapmuxv1.Scope_SCOPE_ADMIN_APPS),
+	leapmuxv1connect.AppServiceDeleteAppProcedure:              Requires(leapmuxv1.Scope_SCOPE_ADMIN_APPS),
 
 	// --- WorkspaceService ---------------------------------------------------
 	leapmuxv1connect.WorkspaceServiceListWorkspacesProcedure:  Requires(leapmuxv1.Scope_SCOPE_WORKSPACE_READ),
@@ -370,9 +375,8 @@ func enforceScope(procedure string, userInfo *UserInfo) error {
 			fmt.Errorf("this app's authorization does not cover %s", procedure))
 	}
 	if !userInfo.Scopes.Allows(scope) {
-		token, _ := authscope.Token(scope)
 		return connect.NewError(connect.CodePermissionDenied,
-			fmt.Errorf("this app was not granted the %s permission", token))
+			errors.New(authscope.NotGrantedDenial(scope)))
 	}
 	return nil
 }
@@ -415,15 +419,17 @@ func CeilingFor(kind BearerKind) authscope.ScopeSet {
 //
 // The terminal, file, git, agent and tunnel families widen it for the OTHER
 // door this credential opens: the cross-worker channel. A sibling worker's
-// dispatcher authenticates that channel with this bearer and gates every
-// inner method on the scope it declares, so a ceiling without them broke
+// dispatcher authenticates that channel with this bearer and restricts every
+// inner method to the scope it declares, so a ceiling without them broke
 // every cross-worker inner call -- a spawned agent could no longer close a
 // tab, read a file or push a branch on another worker, exactly the surface
 // the delegation path exists to serve. No hub Connect procedure declares any
 // of those scopes (procedureScopes above holds the hub surface alone), so
-// adding them widens no hub reach: delegation_procedures_test.go pins that by
-// asserting the procedures a delegation bearer may call stay within the old
-// allowlist's set.
+// they widen no hub reach. The families that DO widen it -- worker:read and
+// workspace:write, which reach the worker-management and workspace verbs --
+// are recorded in delegation_procedures_test.go's newlyDelegationReachable
+// table: the test pins the delegation surface as the old allowlist PLUS that
+// recorded widening, and nothing else.
 var delegationCeiling = authscope.MustNew(
 	leapmuxv1.Scope_SCOPE_WORKSPACE_READ,
 	leapmuxv1.Scope_SCOPE_WORKSPACE_WRITE,

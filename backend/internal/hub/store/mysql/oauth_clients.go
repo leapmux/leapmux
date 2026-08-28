@@ -17,8 +17,11 @@ var _ store.OAuthClientStore = (*oauthClientStore)(nil)
 
 // The full-row queries project every column except the icon BYTES, so each
 // maps through one of these; they state the same 17 fields because the
-// generated Row types are distinct per query and Go has no structural typing.
-// The icon reads HasIcon from the projected LENGTH, never the blob itself.
+// generated Row types are distinct per query (the listing folds both reader
+// shapes into ONE query, and Create returns the stored row, so exactly three
+// spellings remain: Get, the listing, and Create). The listing and Get read
+// HasIcon from the projected LENGTH; Create returns the blob itself once, at
+// registration, because sqlc honors no RETURNING alias for the expression.
 func fromGetOAuthClientRow(c gendb.GetOAuthClientRow) store.OAuthClient {
 	return store.OAuthClient{
 		ClientID:           c.ClientID,
@@ -41,7 +44,7 @@ func fromGetOAuthClientRow(c gendb.GetOAuthClientRow) store.OAuthClient {
 	}
 }
 
-func fromListVisibleToRow(c gendb.ListOAuthClientsVisibleToRow) store.OAuthClient {
+func fromListRow(c gendb.ListOAuthClientsRow) store.OAuthClient {
 	return store.OAuthClient{
 		ClientID:           c.ClientID,
 		OwnerUserID:        c.OwnerUserID.String,
@@ -63,30 +66,11 @@ func fromListVisibleToRow(c gendb.ListOAuthClientsVisibleToRow) store.OAuthClien
 	}
 }
 
-func fromListOwnedByRow(c gendb.ListOAuthClientsOwnedByRow) store.OAuthClient {
-	return store.OAuthClient{
-		ClientID:           c.ClientID,
-		OwnerUserID:        c.OwnerUserID.String,
-		CreatedBy:          c.CreatedByUserID.String,
-		SecretHash:         c.SecretHash,
-		ClientName:         c.ClientName,
-		HasIcon:            sqlutil.CoerceInt64(c.IconBytes) > 0,
-		ClientURI:          c.ClientUri,
-		RedirectURIs:       c.RedirectUris,
-		Scopes:             c.Scopes,
-		GrantTypes:         c.GrantTypes,
-		ElevationAllowed:   c.ElevationAllowed,
-		RegistrationSource: c.RegistrationSource,
-		VerifiedAt:         c.VerifiedAt.Ptr(),
-		VerifiedBy:         c.VerifiedByUserID.String,
-		CreatedAt:          c.CreatedAt.Time,
-		UpdatedAt:          c.UpdatedAt.Time,
-		RevokedAt:          c.RevokedAt.Ptr(),
-	}
-}
-
-func (s *oauthClientStore) Create(ctx context.Context, p store.CreateOAuthClientParams) error {
-	return mapErr(s.conn.q.CreateOAuthClient(ctx, gendb.CreateOAuthClientParams{
+func (s *oauthClientStore) Create(ctx context.Context, p store.CreateOAuthClientParams) (*store.OAuthClient, error) {
+	// MySQL has no INSERT ... RETURNING, so the stored row comes from the
+	// follow-up read this dialect's established idiom uses (see users.sql's
+	// Create). One extra indexed round trip on a rare elevated verb.
+	if err := mapErr(s.conn.q.CreateOAuthClient(ctx, gendb.CreateOAuthClientParams{
 		ClientID: p.ClientID,
 		// An EMPTY owner is SQL NULL, which is what makes the app hub-wide.
 		// Binding "" instead would create a row nobody owns and nobody sees,
@@ -105,7 +89,10 @@ func (s *oauthClientStore) Create(ctx context.Context, p store.CreateOAuthClient
 		RegistrationSource: p.RegistrationSource,
 		VerifiedAt:         sqltime.NewMySQLNullTime(p.VerifiedAt),
 		VerifiedByUserID:   sqlutil.NullNonEmpty(p.VerifiedBy),
-	}))
+	})); err != nil {
+		return nil, err
+	}
+	return s.Get(ctx, p.ClientID)
 }
 
 func (s *oauthClientStore) Get(ctx context.Context, clientID string) (*store.OAuthClient, error) {
@@ -131,31 +118,34 @@ func (s *oauthClientStore) GetIcon(ctx context.Context, clientID string) (*store
 	}, nil
 }
 
-func (s *oauthClientStore) ListVisibleTo(ctx context.Context, p store.ListOAuthClientsParams) (store.Page[store.OAuthClient], error) {
+func (s *oauthClientStore) UpsertBuiltIn(ctx context.Context, p store.UpsertBuiltInClientParams) error {
+	return mapErr(s.conn.q.UpsertBuiltInOAuthClient(ctx, gendb.UpsertBuiltInOAuthClientParams{
+		ClientID:           p.ClientID,
+		ClientName:         p.ClientName,
+		ClientUri:          p.ClientURI,
+		RedirectUris:       p.RedirectURIs,
+		Scopes:             p.Scopes,
+		GrantTypes:         p.GrantTypes,
+		ElevationAllowed:   p.ElevationAllowed,
+		RegistrationSource: p.RegistrationSource,
+		CreatedAt:          sqltime.NewMySQLTime(p.CreatedAt),
+		UpdatedAt:          sqltime.NewMySQLTime(p.UpdatedAt),
+	}))
+}
+
+func (s *oauthClientStore) List(ctx context.Context, p store.ListOAuthClientsParams) (store.Page[store.OAuthClient], error) {
 	owner, ok := userid.OwnerFilter(p.UserID)
 	if !ok {
 		// An unminted caller owns nothing. Binding "" would still list every
 		// hub-wide app, which is arguably harmless -- but this listing answers
-		// "what may THIS user authorize", and there is no such user.
+		// "what may THIS user see", and there is no such user.
 		return store.Page[store.OAuthClient]{}, nil
 	}
 	return queryPage(ctx, p.Limit,
-		func() (gendb.ListOAuthClientsVisibleToParams, error) {
-			return listOAuthClientsVisibleToParams(owner, p.Cursor, p.Limit, p.IncludeRevoked)
+		func() (gendb.ListOAuthClientsParams, error) {
+			return listOAuthClientsParams(owner, p.Cursor, p.Limit, p.IncludeRevoked, p.IncludeHubWide)
 		},
-		s.conn.q.ListOAuthClientsVisibleTo, fromListVisibleToRow)
-}
-
-func (s *oauthClientStore) ListOwnedBy(ctx context.Context, p store.ListOAuthClientsParams) (store.Page[store.OAuthClient], error) {
-	owner, ok := userid.OwnerFilter(p.UserID)
-	if !ok {
-		return store.Page[store.OAuthClient]{}, nil
-	}
-	return queryPage(ctx, p.Limit,
-		func() (gendb.ListOAuthClientsOwnedByParams, error) {
-			return listOAuthClientsOwnedByParams(owner, p.Cursor, p.Limit, p.IncludeRevoked)
-		},
-		s.conn.q.ListOAuthClientsOwnedBy, fromListOwnedByRow)
+		s.conn.q.ListOAuthClients, fromListRow)
 }
 
 func (s *oauthClientStore) Update(ctx context.Context, p store.UpdateOAuthClientParams) (int64, error) {
@@ -227,6 +217,7 @@ func (s *oauthClientStore) SetVerified(ctx context.Context, p store.SetOAuthClie
 		ClientID:         p.ClientID,
 		VerifiedAt:       sqltime.NewMySQLNullTime(p.VerifiedAt),
 		VerifiedByUserID: sqlutil.NullNonEmpty(p.VerifiedBy),
+		CallerIsAdmin:    p.CallerIsAdmin,
 	}))
 }
 
@@ -251,7 +242,7 @@ func (s *oauthClientStore) Revoke(ctx context.Context, p store.OAuthClientOwners
 //
 // It clears the app's DEVICE GRANTS and AUTHORIZATION CODES first, in the same
 // transaction. Those reference the app under the same RESTRICT key but are
-// one-shot artifacts of a flow -- ten minutes and one minute of life -- so an
+// one-shot artifacts of a flow -- ten minutes of life each -- so an
 // app that ran a single abandoned device flow would otherwise be undeletable,
 // and the operator met a foreign-key error naming a table they have no surface
 // for. api_tokens is deliberately not cleared: a revoked credential is history,
@@ -293,11 +284,24 @@ func (s *oauthClientStore) Delete(ctx context.Context, p store.OAuthClientOwners
 	return deleted, nil
 }
 
-func (s *oauthClientStore) ListTokenRefs(ctx context.Context, p store.RevokeAPITokensForClientParams) ([]store.APITokenRef, error) {
-	rows, err := s.conn.q.ListAPITokenIDsForOAuthClient(ctx, gendb.ListAPITokenIDsForOAuthClientParams{
-		ClientID: p.ClientID,
-		UserID:   p.UserID,
-	})
+func (s *oauthClientStore) ListTokenRefs(ctx context.Context, clientID string) ([]store.APITokenRef, error) {
+	return tokenRefsOf(s.conn.q.ListAPITokenIDsForOAuthClient(ctx, clientID))
+}
+
+func (s *oauthClientStore) ListUserTokenRefs(ctx context.Context, clientID string, user userid.UserID) ([]store.APITokenRef, error) {
+	if user.IsZero() {
+		return nil, store.ErrInvalidArgument
+	}
+	return userTokenRefsOf(s.conn.q.ListUserAPITokenIDsForOAuthClient(ctx, gendb.ListUserAPITokenIDsForOAuthClientParams{
+		ClientID: clientID,
+		UserID:   user.String(),
+	}))
+}
+
+// userTokenRefsOf is the per-user listing's mapper: the generated Row type is
+// distinct from the all-users one (Go has no structural typing), exactly as
+// the three full-row mappers above are distinct for the same reason.
+func userTokenRefsOf(rows []gendb.ListUserAPITokenIDsForOAuthClientRow, err error) ([]store.APITokenRef, error) {
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -308,11 +312,31 @@ func (s *oauthClientStore) ListTokenRefs(ctx context.Context, p store.RevokeAPIT
 	return out, nil
 }
 
-func (s *oauthClientStore) RevokeTokens(ctx context.Context, p store.RevokeAPITokensForClientParams) (int64, error) {
-	return rowsAffected(s.conn.q.RevokeAPITokensForOAuthClient(ctx, gendb.RevokeAPITokensForOAuthClientParams{
-		ClientID: p.ClientID,
-		UserID:   p.UserID,
+func (s *oauthClientStore) RevokeTokens(ctx context.Context, clientID string) (int64, error) {
+	return rowsAffected(s.conn.q.RevokeAPITokensForOAuthClient(ctx, clientID))
+}
+
+func (s *oauthClientStore) RevokeUserTokens(ctx context.Context, clientID string, user userid.UserID) (int64, error) {
+	if user.IsZero() {
+		return 0, store.ErrInvalidArgument
+	}
+	return rowsAffected(s.conn.q.RevokeUserAPITokensForOAuthClient(ctx, gendb.RevokeUserAPITokensForOAuthClientParams{
+		ClientID: clientID,
+		UserID:   user.String(),
 	}))
+}
+
+// tokenRefsOf maps the listing statements' rows onto the store shape both
+// cascades' callers read.
+func tokenRefsOf(rows []gendb.ListAPITokenIDsForOAuthClientRow, err error) ([]store.APITokenRef, error) {
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	out := make([]store.APITokenRef, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, store.APITokenRef{ID: r.ID, UserID: r.UserID, GrantedScopes: r.GrantedScopes})
+	}
+	return out, nil
 }
 
 // CountTokens counts EVERY credential row, revoked included, because that is

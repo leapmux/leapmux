@@ -221,7 +221,7 @@ These actions require elevation:
 - Changing your account email.
 - Removing a linked OAuth provider.
 - Authorizing an app.
-- Registering an app, editing its registration, allowing it the step-up leg, or vouching for it.
+- Registering an app, editing its registration, allowing it the step-up ceremony, or vouching for it.
 - Changing any **Hub setting**, from the Preferences dialog or from `leapmux control admin settings`.
 
 Your account email and a linked provider are on that list because both are recovery identities: the address receives the password-reset link, and a provider is a login method. Whoever can move either one can come back later without the session they started from.
@@ -297,7 +297,7 @@ Self-service **password reset** and admin **reset-password** both **delete every
 These rules limit what that credential can do:
 
 - **Authorizing one needs an elevated session.** The consent page sends you through a verification prompt first, and consenting slides the window forward like every other sensitive action. This holds for the device-code flow too, where the verification happens in a browser on a *different* machine from the machine to authorize — which is the point.
-- **Every credential carries a named set of permissions.** A grant only ever subtracts from what its owner can do; it never adds. The consent page states each permission as a sentence, and the credential is refused anything outside its grant — at the Hub, and again inside the encrypted channel at the Worker, which is where a file read or a terminal write actually happens.
+- **Every credential carries a set of named permissions.** A grant only ever subtracts from what its owner can do; it never adds. The consent page states each permission as a sentence, and the credential is refused anything outside its grant — at the Hub, and again inside the encrypted channel at the Worker, which is where a file read or a terminal write actually happens.
 - **Hub administration is opt-in per credential.** An ordinary credential can do everything you can do *except* administer the Hub, even when your account is an administrator. `leapmux control auth login --scope "admin:read admin:users"` asks for it, the browser consent page states plainly what it grants, and only an administrator may grant it. So a stolen credential file from a routine login cannot manage users, workers, or settings.
 - **The account's own authenticators are outside every grant.** Adding a passkey, changing the recovery address, unlinking a sign-in provider, and managing another app's credential are refused to any credential, whatever the consent screen offered. Each of those creates authority that outlives the app's connection, so disconnecting the app would no longer withdraw what it was given.
 - **The lifetime is capped.** Each refresh moves the refresh window forward, but never past **{{< duration absolute-cap >}}** from the day you authorized the credential. After that the device signs in again.
@@ -305,7 +305,7 @@ These rules limit what that credential can do:
 - **A credential issued by another credential does not renew, expires no later than its issuer, and is never wider than it.** So a chain of self-issued credentials gets shorter and narrower each time, and ends at the browser consent that started it instead of restarting the ceiling at each step.
 - **A credential either renews or has a fixed lifetime, never both.** `leapmux control auth login` and the default `admin api-token issue` mint the renewing kind. `admin api-token issue --ttl <seconds>` mints a service credential that lives exactly that long and carries no refresh token; see [API tokens](/docs/operating/control-cli/#api-tokens).
 
-If SMTP is configured and your address is verified, LeapMux emails you whenever a credential is issued for your account. The message names the app, the installation, and **every** permission granted — listed in full rather than counted, so an ordinary authorization is distinguishable from one that also administers the Hub. A credential an administrator issued for you says so, and does not read as a receipt for something you did.
+If SMTP is configured and your address is verified, LeapMux emails you whenever a credential is issued for your account. The message lists the app, the installation, and **every** permission granted — listed in full rather than counted, so an ordinary authorization is distinguishable from one that also administers the Hub. A credential an administrator issued for you says so, and does not read as a receipt for something you did.
 
 Review and end access under **Preferences → Account → Connected apps**, which groups the list by app. **Disconnect** ends the app's access on every machine it runs on at once; **Revoke** ends one machine and leaves the app connected elsewhere. Reach for the first whenever the decision is about the app, because ending one installation of an app you no longer trust leaves it working on the others. Neither requires elevation: both only reduce access, and somebody who believes an app is malicious should not have to find their password first. See [Connected Apps](/docs/using/connected-apps/).
 

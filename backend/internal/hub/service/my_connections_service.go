@@ -44,7 +44,7 @@ func myAPITokenToProto(row store.APIToken, currentTokenID string) *leapmuxv1.MyA
 	// What the credential REACHES, not what its column keeps: the consent
 	// intersected with the app's registered ceiling, exactly as validation
 	// computes it. This list is what a person reads to decide whether to
-	// disconnect, so naming a permission the app's next call is refused would
+	// disconnect, so listing a permission the app's next call is refused would
 	// be the one wrong answer here -- and an owner who has just narrowed the
 	// registration would see no effect at all.
 	//
@@ -58,7 +58,7 @@ func myAPITokenToProto(row store.APIToken, currentTokenID string) *leapmuxv1.MyA
 		ClientId:         row.ClientID,
 		ClientName:       row.ClientName,
 		InstallationName: row.InstallationName,
-		GrantedScopes:    SortedScopeTokens(granted),
+		GrantedScopes:    granted.SortedTokens(),
 		// The vouch, stated through the same rule the consent screen reads.
 		// The join carries it; leaving it out made the panel label EVERY app
 		// "unverified", including the ones an administrator vouched for.
@@ -66,19 +66,19 @@ func myAPITokenToProto(row store.APIToken, currentTokenID string) *leapmuxv1.MyA
 		CreatedAt:      timestamppb.New(row.CreatedAt),
 		Current:        currentTokenID != "" && row.ID == currentTokenID,
 	}
-	if row.LastUsedAt != nil {
-		out.LastUsedAt = timestamppb.New(*row.LastUsedAt)
-	}
+	// The optional timestamps go through optTimestamp, the nil-guarded
+	// accessor every other proto mapper in this package uses.
+	out.LastUsedAt = optTimestamp(row.LastUsedAt)
 	if row.RefreshExpiresAt != nil {
-		out.RefreshExpiresAt = timestamppb.New(*row.RefreshExpiresAt)
-	} else if row.ExpiresAt != nil {
+		out.RefreshExpiresAt = optTimestamp(row.RefreshExpiresAt)
+	} else {
 		// The fixed-lifetime kind. Its access expiry IS its whole life,
 		// because nothing renews it -- so reporting it here is the opposite
 		// of reporting a renewing credential's access expiry, which the
-		// field above deliberately withholds. The two branches are exclusive
+		// branch above deliberately withholds. The two branches are exclusive
 		// by construction: mintAPIToken writes a refresh deadline only for
 		// the rotating kind.
-		out.ExpiresAt = timestamppb.New(*row.ExpiresAt)
+		out.ExpiresAt = optTimestamp(row.ExpiresAt)
 	}
 	return out
 }
@@ -143,7 +143,8 @@ func (s *UserService) ListMyAPITokens(ctx context.Context, req *connect.Request[
 // ZERO retired rows is a SUCCESS, not a NotFound. The caller's goal -- "this
 // app holds nothing of mine" -- already holds, and answering NotFound would
 // make a client that raced a second tab report a failure for a state it wanted.
-// It also refuses to confirm whether an unknown client_id names a real app,
+// It also refuses to confirm whether an unknown client_id identifies a real
+// app,
 // which the app catalogue's own visibility rule already refuses.
 func (s *UserService) DisconnectApp(ctx context.Context, req *connect.Request[leapmuxv1.DisconnectAppRequest]) (*connect.Response[leapmuxv1.DisconnectAppResponse], error) {
 	userInfo, err := auth.MustGetUser(ctx)
@@ -154,21 +155,47 @@ func (s *UserService) DisconnectApp(ctx context.Context, req *connect.Request[le
 	if clientID == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("client_id is required"))
 	}
-	cascade := store.RevokeAPITokensForClientParams{ClientID: clientID, UserID: userInfo.ID.String()}
 	// The rows are READ before the cascade, because each one's lifecycle
 	// effects run AFTER the write commits: effects accumulate, and a retried
 	// transaction would apply some of them twice.
-	refs, err := s.store.OAuthClients().ListTokenRefs(ctx, cascade)
+	refs, err := s.store.OAuthClients().ListUserTokenRefs(ctx, clientID, userInfo.ID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list app credentials: %w", err))
 	}
-	revoked, err := s.store.OAuthClients().RevokeTokens(ctx, cascade)
+	// The three writes run in ONE transaction, like the equivalent cascade in
+	// AppService.RevokeApp: a failure or crash between them would leave the
+	// credentials revoked while an outstanding grant survives, and the grant's
+	// whole purpose below is that it must NOT outlive the disconnect.
+	var revoked int64
+	err = s.store.RunInTransaction(ctx, func(tx store.Store) error {
+		var err error
+		revoked, err = tx.OAuthClients().RevokeUserTokens(ctx, clientID, userInfo.ID)
+		if err != nil {
+			return fmt.Errorf("disconnect app: %w", err)
+		}
+		// The GRANTS this authorization produced die with it: outstanding
+		// authorization codes and approved-but-unpolled device grants stay
+		// redeemable for their TTL otherwise, and a consent the account allowed
+		// seconds before disconnecting would mint a fresh credential for the app
+		// the account just cut off.
+		now := s.now().UTC()
+		if _, err := tx.OAuthAuthorizationCodes().ConsumeActiveForUserClient(ctx, clientID, userInfo.ID, now); err != nil {
+			return fmt.Errorf("spend outstanding authorization codes: %w", err)
+		}
+		if _, err := tx.DeviceAuthorizations().ConsumeApprovedForUserClient(ctx, clientID, userInfo.ID, now); err != nil {
+			return fmt.Errorf("spend outstanding device grants: %w", err)
+		}
+		return nil
+	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("disconnect app: %w", err))
+		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	// ONE batched eviction, exactly as RevokeApp runs its cascade's effects.
+	ids := make([]string, 0, len(refs))
 	for _, ref := range refs {
-		s.lifecycle.BearerRevoked(auth.BearerKindAPI, ref.ID)
+		ids = append(ids, ref.ID)
 	}
+	s.lifecycle.BearerRevokedBatch(auth.BearerKindAPI, ids)
 	return connect.NewResponse(&leapmuxv1.DisconnectAppResponse{RevokedCredentialCount: revoked}), nil
 }
 

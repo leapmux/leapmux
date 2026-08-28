@@ -42,8 +42,8 @@ var identityComparisonSites = map[string]string{
 	"internal/hub/service.(*SectionService).requireOwnedSection": "TestMoveSectionDeniesZeroCallerOnBlankOwnedSection",
 	// Decides whether a request may see one registered app. A PRIVATE app is
 	// visible to its owner alone, so a zero caller must resolve none: an
-	// unauthenticated leg (the device-code first hop) reaches hub-wide apps and
-	// nothing else, which is exactly what a blank comparison would break.
+	// unauthenticated stage (the device-code first hop) reaches hub-wide apps
+	// and nothing else, which is exactly what a blank comparison would break.
 	"internal/hub/service.(*OAuthServerHandler).resolveApp": "TestResolveApp_ZeroCallerReachesNoPrivateApp",
 	// Decides whether a caller may EDIT one registered app. It is the early
 	// refusal with a message; the store statement carries the same predicate,
@@ -134,7 +134,7 @@ var identityComparisonSites = map[string]string{
 	// The relay-disconnect sweep. Not a grant: it selects which channels a
 	// disconnecting connection takes down with it. The polarity still matters
 	// and still points the same way -- a raw `ch.UserID != userID` counted
-	// blank-vs-blank as a match, so an unidentified caller would have swept
+	// blank-vs-blank as a match, so an unidentified caller would sweep
 	// every blank-owner channel; Matches refuses instead.
 	"internal/hub/channelmgr.(*Manager).UnbindUserAndCleanup": "TestUnbindUserAndCleanup_BlankUserClosesNothing",
 

@@ -100,22 +100,16 @@ message OpenAgentRequest {
   // Initial option selections keyed by option-group id (e.g. "model", "effort",
   // "permissionMode", and provider-specific axes). Missing well-known ids are
   // filled with provider defaults server-side.
-  map<string, string> options = 7;
+  map<string, string> options = 6;
 
   // Git worktree / branch selection (mutually exclusive modes).
-  bool create_worktree = 8;         // If true, create a git worktree before starting
-  string worktree_branch = 9;      // Branch name for the worktree
-  string worktree_base_branch = 10; // Base branch for "Create new worktree" (default: current branch)
-  string use_worktree_path = 11;    // "Use existing worktree" mode
-  string checkout_branch = 12;      // "Switch to branch" mode
-  string create_branch = 13;        // "Create new branch" mode -- branch name to create
-  string create_branch_base = 14;   // Base branch for "Create new branch" (default: current branch)
-
-  // Reserved: slots freed when the model/effort scalars, system_prompt, and the
-  // extra_settings map collapsed into the generic `options` map. The numbers are NOT
-  // reused -- a new field takes a fresh number (>= 15) -- and the names cannot return.
-  reserved 15, 16, 17;
-  reserved "model", "system_prompt", "effort", "extra_settings";
+  bool create_worktree = 7;         // If true, create a git worktree before starting
+  string worktree_branch = 8;      // Branch name for the worktree
+  string worktree_base_branch = 9; // Base branch for "Create new worktree" (default: current branch)
+  string use_worktree_path = 10;    // "Use existing worktree" mode
+  string checkout_branch = 11;      // "Switch to branch" mode
+  string create_branch = 12;        // "Create new branch" mode -- branch name to create
+  string create_branch_base = 13;   // Base branch for "Create new branch" (default: current branch)
 }
 
 message OpenAgentResponse {
@@ -199,49 +193,42 @@ message AgentInfo {
   string home_dir = 6;          // Worker's home directory for tilde path display
 
   // Agent configuration.
-  AgentProvider agent_provider = 8; // Coding agent provider
+  AgentProvider agent_provider = 7; // Coding agent provider
   // All agent configuration axes (model, effort, permission mode, and every
   // provider-specific option) reported by the agent process, each with its
   // current value, default, mutability, and display order.
-  repeated AvailableOptionGroup option_groups = 9;
+  repeated AvailableOptionGroup option_groups = 8;
 
   // Lifecycle / status.
-  AgentStatus status = 10;
-  string agent_session_id = 11; // Non-empty if agent session can be resumed
-  string created_at = 12;
-  string closed_at = 13;
-  string startup_error = 14;    // Populated when status=AGENT_STATUS_STARTUP_FAILED
-  string startup_message = 15;  // Populated when status=AGENT_STATUS_STARTING (e.g. "Checking Git status...")
+  AgentStatus status = 9;
+  string agent_session_id = 10; // Non-empty if agent session can be resumed
+  string created_at = 11;
+  string closed_at = 12;
+  string startup_error = 13;    // Populated when status=AGENT_STATUS_STARTUP_FAILED
+  string startup_message = 14;  // Populated when status=AGENT_STATUS_STARTING (e.g. "Checking Git status...")
 
   // Git.
-  GitRepoStatus git_status = 16; // Git status for the agent's working directory
-
-  // Reserved: slots freed when the model/effort/permission_mode scalars, the
-  // extra_settings map, and the available_models / available_option_groups lists collapsed
-  // into the generic `option_groups` list. 16 (supports_model_effort) was reused for
-  // git_status before this change; the rest are never reused, and the names cannot return.
-  reserved 17, 18, 19, 20, 21, 22;
-  reserved "model", "effort", "permission_mode", "extra_settings", "available_models", "available_option_groups", "supports_model_effort";
+  GitRepoStatus git_status = 15; // Git status for the agent's working directory
 
   // Subagent linkage. parent_agent_id is non-empty only for virtual child
   // agents (subagent transcripts fed by the parent provider's process); a
   // child never owns a process. spawn_span_id is the tool_use span in the
   // PARENT transcript that spawned this child (the tab/spawn correlation key).
-  string parent_agent_id = 23;
-  string spawn_span_id = 24;
+  string parent_agent_id = 16;
+  string spawn_span_id = 17;
   // Whether this agent accepts a user message sent directly to it. Roots:
   // always true. Children: true only when the feeding provider supports
   // steering a subagent conversation inside the same process (Codex); false
   // for read-only transcripts (Claude, ACP, Pi). The frontend gates the
   // composer on this.
-  bool accepts_messages = 25;
+  bool accepts_messages = 18;
   // The ROOT owner agent id (the top of the parent_agent_id chain). For a root
   // agent this equals its own id. The background-task registry and the root's
   // TodosChanged/BackgroundTasksChanged events are keyed by this id, so a child
   // tab resolves its registry owner and its NOTIFY subscription from this field
   // directly -- without walking a client-side parent chain that can be partially
   // hydrated and fall back to the wrong id.
-  string root_agent_id = 26;
+  string root_agent_id = 19;
 }
 
 // AvailableOption describes a single selectable value within an option group
@@ -362,13 +349,6 @@ message AgentStatusChange {
 
   // Git.
   GitRepoStatus git_status = 9; // Git status for the agent's working directory
-
-  // Reserved: slots freed when the model/effort/permission_mode scalars, the
-  // extra_settings map, and the available_models / available_option_groups lists collapsed
-  // into the generic `option_groups` list. The numbers are NOT reused -- a new field takes
-  // a fresh number (>= 10) -- and the names cannot return.
-  reserved 10, 11, 12, 13, 14, 15;
-  reserved "model", "effort", "permission_mode", "extra_settings", "available_models", "available_option_groups", "supports_model_effort";
 }
 
 // AgentGitStatus was replaced by GitRepoStatus in leapmux/v1/common.proto.

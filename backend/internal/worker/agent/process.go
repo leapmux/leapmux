@@ -12,7 +12,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/leapmux/leapmux/util/procutil"
@@ -384,10 +383,7 @@ func (p *processBase) startCmd(cmd *exec.Cmd, cancel func()) error {
 // setupProcessPipes configures the command's cancel/wait behavior and opens
 // stdin, stdout, and stderr pipes. On error it calls cancel() and returns.
 func setupProcessPipes(cmd *exec.Cmd, cancel func()) (stdin io.WriteCloser, stdout, stderr io.ReadCloser, err error) {
-	cmd.Cancel = func() error {
-		return procutil.SignalProcessGroup(cmd, syscall.SIGTERM)
-	}
-	cmd.WaitDelay = 5 * time.Second
+	procutil.GracefulGroupCancel(cmd)
 
 	stdin, err = cmd.StdinPipe()
 	if err != nil {

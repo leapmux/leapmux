@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -93,15 +94,19 @@ func (h *OAuthServerHandler) handleRegister(w http.ResponseWriter, r *http.Reque
 	// budget. That is the budget working as designed: the alternative ordering
 	// -- the setting checked first -- was a property only this handler stated,
 	// and it is what let the throttle stay a per-handler line that the next
-	// anonymous leg could forget.
+	// anonymous endpoint could forget.
 	if !settings.KeyOpenAppRegistration.Of(h.snapshot(r.Context())) {
 		writeOAuthError(w, http.StatusForbidden, "access_denied",
 			"this hub does not accept open app registration; ask an administrator to register the app")
 		return
 	}
 	var req registrationRequest
-	if err := decodeJSONBody(w, r, registrationRequestByteLimit, &req); err != nil {
-		writeOAuthError(w, http.StatusBadRequest, "invalid_client_metadata", err.Error())
+	if status, err := decodeJSONBody(w, r, registrationRequestByteLimit, &req); err != nil {
+		// 413 carries the code RFC 7591 gives no meaning to, and the status is
+		// the answer: a body over the cap may be a well-formed document that
+		// is merely too large, and an operator debugging open registration
+		// reads the status to tell that from malformed JSON.
+		writeOAuthError(w, status, "invalid_client_metadata", err.Error())
 		return
 	}
 	params, secret, method, body := h.buildRegistration(req, store.OAuthClientSourceDynamic, "", "")
@@ -109,7 +114,10 @@ func (h *OAuthServerHandler) handleRegister(w http.ResponseWriter, r *http.Reque
 		writeOAuthErrorBody(w, http.StatusBadRequest, *body)
 		return
 	}
-	if err := h.store.OAuthClients().Create(r.Context(), params); err != nil {
+	// The returned row is discarded here: an RFC 7591 response echoes the
+	// metadata the server ACCEPTED (below, from the params it validated),
+	// not a fresh read of the row.
+	if _, err := h.store.OAuthClients().Create(r.Context(), params); err != nil {
 		writeInternalError(w, "app registration failed", err)
 		return
 	}
@@ -154,7 +162,7 @@ const ErrRegistrationRedirectCode = "invalid_redirect_uri"
 // TO. One helper, because the register surfaces and UpdateApp each stated it
 // inline -- three copies of the one rule that most needs to agree.
 func authorizationCodeNeedsRedirect(grantTypes []string, redirectURIs []string) bool {
-	return containsAny(grantTypes, GrantTypeAuthorizationCode) && len(redirectURIs) == 0
+	return slices.Contains(grantTypes, GrantTypeAuthorizationCode) && len(redirectURIs) == 0
 }
 
 // buildOAuthClientRegistration validates one registration and derives the row
@@ -199,6 +207,15 @@ func buildOAuthClientRegistration(
 		return store.CreateOAuthClientParams{}, "", registrationErr(ErrRegistrationRedirectCode,
 			errors.New("the authorization_code grant needs at least one redirect URI"))
 	}
+	// The ONE statement of "an app must ask for at least one permission",
+	// beside the other registration rules rather than at each caller: a
+	// surface that forgot it would register an app whose consent screen reads
+	// "It asks for no permissions at all". scopesFromProto carries the same
+	// sentinel for the wire list the Connect surface validates before it
+	// reaches this core (and for UpdateApp, which never does).
+	if spec.scopes.IsEmpty() {
+		return store.CreateOAuthClientParams{}, "", registrationErr("invalid_client_metadata", errAppNeedsScope)
+	}
 	stored, err := spec.scopes.Close().Storable()
 	if err != nil {
 		return store.CreateOAuthClientParams{}, "", registrationErr("invalid_client_metadata", err)
@@ -241,6 +258,10 @@ func buildOAuthClientRegistration(
 	}, secret, nil
 }
 
+// errAppNeedsScope is the one message both registration surfaces answer an
+// empty permission list with.
+var errAppNeedsScope = errors.New("an app must ask for at least one permission")
+
 func registrationErr(code string, err error) error {
 	return &registrationError{code: code, err: err}
 }
@@ -248,8 +269,8 @@ func registrationErr(code string, err error) error {
 // buildRegistration validates one RFC 7591 registration. It translates the
 // wire document into an appRegistrationSpec and maps the core's refusals to
 // their OAuth error bodies; the admin-family refusal runs here because only
-// this surface is anonymous -- the named surfaces state their owner and let
-// RegisterApp refuse the same ask to a non-administrator.
+// this surface is anonymous -- the identified surfaces state their owner and
+// let RegisterApp refuse the same ask to a non-administrator.
 //
 // The third return value is the effective token_endpoint_auth_method to echo
 // back: the row stores no method (the token endpoint accepts both spellings a
@@ -282,20 +303,19 @@ func (h *OAuthServerHandler) buildRegistration(
 		return store.CreateOAuthClientParams{}, "", "", &body
 	}
 	// An anonymous registrant cannot state a ceiling that reaches hub
-	// administration. The named registration surfaces refuse the same ask to a
+	// administration. The identified registration surfaces refuse the same ask
+	// to a
 	// non-administrator (see refuseAdminCeilingToNonAdmin); dynamic
 	// registration is strictly less trusted -- it is anonymous -- yet without
 	// this refusal it accepted strictly more, and one elevated consent click
 	// handed an anonymous registrant's app the admin bullets. An
 	// administrator who wants an admin app registers it through the catalogue,
 	// where the owner is known.
-	for _, scope := range adminScopeList {
-		if scopes.Allows(scope) {
-			token, _ := authscope.Token(scope)
-			body := oauthErrorBody("invalid_client_metadata",
-				fmt.Sprintf("an open registration cannot ask for %s; an administrator registers an app that needs it", token))
-			return store.CreateOAuthClientParams{}, "", "", &body
-		}
+	if scope, found := firstAdminScope(scopes); found {
+		token, _ := authscope.Token(scope)
+		body := oauthErrorBody("invalid_client_metadata",
+			fmt.Sprintf("an open registration cannot ask for %s; an administrator registers an app that needs it", token))
+		return store.CreateOAuthClientParams{}, "", "", &body
 	}
 
 	params, secret, err := buildOAuthClientRegistration(h.validator, appRegistrationSpec{
@@ -320,6 +340,9 @@ func (h *OAuthServerHandler) buildRegistration(
 		body := oauthErrorBody(code, err.Error())
 		return store.CreateOAuthClientParams{}, "", "", &body
 	}
+	// The empty-scope refusal lives in the core (buildOAuthClientRegistration)
+	// with the rest of the registration rules, so every surface answers that
+	// question the same way without carrying its own copy.
 	return params, secret, method, nil
 }
 
@@ -361,15 +384,6 @@ func normalizeGrantTypes(requested []string) ([]string, error) {
 	return out, nil
 }
 
-func containsAny(haystack []string, needle string) bool {
-	for _, item := range haystack {
-		if item == needle {
-			return true
-		}
-	}
-	return false
-}
-
 // registrationResponseFor renders the one-time response, secret included.
 // method is the effective token_endpoint_auth_method buildRegistration
 // resolved: the registrant's own choice, which the endpoint honours, rather
@@ -392,7 +406,7 @@ func registrationResponseFor(p store.CreateOAuthClientParams, secret, method str
 
 // handleAppAsset serves /oauth/apps/<client_id>/icon.
 //
-// SAME ORIGIN, deliberately. A registration could have carried a logo URL
+// SAME ORIGIN, deliberately. A registration could carry a logo URL
 // instead, and that would be a beacon: it reports to the app operator when the
 // consent page rendered and from which IP, and its bytes are chosen by the
 // registrant, so nothing would stop an unverified app serving a well-known
@@ -449,7 +463,8 @@ func (h *OAuthServerHandler) handleAppAsset(w http.ResponseWriter, r *http.Reque
 // client ids exist.
 //
 // It reads the NARROW icon projection: the bytes, the media type, and the two
-// facts that gate serving them. The full-row Get carries only whether an icon
+// facts that control serving them. The full-row Get carries only whether an
+// icon
 // exists, so it cannot answer this question at all.
 func (h *OAuthServerHandler) appIcon(ctx context.Context, clientID string) (*store.OAuthClientIcon, error) {
 	icon, err := h.store.OAuthClients().GetIcon(ctx, clientID)
@@ -473,18 +488,8 @@ func (h *OAuthServerHandler) appIcon(ctx context.Context, clientID string) (*sto
 // page reads from.
 var allowedIconMediaTypes = []string{"image/png", "image/jpeg", "image/webp", "image/gif"}
 
-// IsAllowedIconMediaType reports whether an app icon may declare this type. It
-// is exported so the registration surfaces refuse an upload at intake, rather
-// than storing bytes that this endpoint will then never serve.
-func IsAllowedIconMediaType(mediaType string) bool { return isAllowedIconMediaType(mediaType) }
-
 func isAllowedIconMediaType(mediaType string) bool {
-	for _, allowed := range allowedIconMediaTypes {
-		if mediaType == allowed {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(allowedIconMediaTypes, mediaType)
 }
 
 // AllowedIconMediaTypes lists the accepted types, for an error message and for
@@ -499,9 +504,6 @@ func AllowedIconMediaTypes() []string {
 // reader nothing and costs the store. It is also a bound on what an
 // authenticated registrant can make the hub hold.
 const maxIconBytes = 64 << 10
-
-// MaxIconBytes is the cap the registration surfaces enforce.
-const MaxIconBytes = maxIconBytes
 
 // assertAppOwner reports whether a caller may write this app's registration.
 //
@@ -525,10 +527,21 @@ func assertAppOwner(app *store.OAuthClient, user *auth.UserInfo) bool {
 // arbitrary body. DisallowUnknownFields is deliberately NOT set -- RFC 7591
 // section 3.1 tells a server to ignore metadata it does not understand, so a
 // client library that sends its own extensions must still register.
-func decodeJSONBody(w http.ResponseWriter, r *http.Request, limit int64, into any) error {
+//
+// It returns the STATUS its error answers with: 413 when the body exceeded the
+// cap (the document may be well-formed and merely too large), 400 when the
+// decoder refused it. The decode CAUSE is wrapped rather than replaced, so the
+// answer states which input was wrong instead of one sentence covering three.
+func decodeJSONBody(w http.ResponseWriter, r *http.Request, limit int64, into any) (int, error) {
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit))
 	if err := decoder.Decode(into); err != nil {
-		return fmt.Errorf("the request body is not a JSON object this endpoint understands")
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			return http.StatusRequestEntityTooLarge,
+				fmt.Errorf("the request body is larger than the %d bytes this endpoint admits", limit)
+		}
+		return http.StatusBadRequest,
+			fmt.Errorf("the request body is not a JSON object this endpoint understands: %w", err)
 	}
-	return nil
+	return 0, nil
 }

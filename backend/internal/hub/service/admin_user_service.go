@@ -26,7 +26,7 @@ import (
 
 // AdminUserService implements the leapmux.v1.AdminUserService ConnectRPC
 // handler: thin adapters over the same store operations the offline admin
-// verbs used, behind the authenticated admin gate. The offline
+// verbs used, behind the authenticated admin check. The offline
 // break-glass variants (first-admin bootstrap, password reset with the
 // hub stopped) stay in `leapmux recover`.
 type AdminUserService struct {
@@ -414,7 +414,7 @@ func (s *AdminUserService) CreateUser(ctx context.Context, req *connect.Request[
 	// requests pass.
 	//
 	// Through auth.EmailVerificationFacts.Satisfied, which is the ONE derivation
-	// of the administrator exemption -- the interceptor, both login legs and
+	// of the administrator exemption -- the interceptor, both login stages and
 	// UpdateUser read it too. Spelled out here as a fourth copy, a later
 	// change to the exemption would reach those three and silently miss
 	// this one, and the two admin verbs would then disagree about which
@@ -448,7 +448,7 @@ func (s *AdminUserService) CreateUser(ctx context.Context, req *connect.Request[
 	// EmailVerified is what the operator asked for, and nothing forces it:
 	// the column records whether somebody confirmed the address, and an
 	// administrator's address is no more confirmed than anybody else's. The
-	// login gate takes its own exemption; see auth.EmailVerificationFacts.Satisfied.
+	// login check takes its own exemption; see auth.EmailVerificationFacts.Satisfied.
 	var user *store.User
 	if err := commitUnderElevation(ctx, s.store, actor, s.now, func() error {
 		var createErr error
@@ -488,7 +488,7 @@ func (s *AdminUserService) CreateUser(ctx context.Context, req *connect.Request[
 // There is NO administrator exception, and there used to be. The column now
 // records only whether somebody confirmed the address, so an administrator's
 // new address is exactly as unconfirmed as anybody else's; the exemption
-// that kept an administrator signed in lives at the login gate instead (see
+// that kept an administrator signed in lives at the login check instead (see
 // auth.EmailVerificationFacts.Satisfied). With the carve-out, an administrator
 // moved to a brand-new address kept a live self-service reset route to it.
 //
@@ -537,7 +537,7 @@ func resolveEmailVerified(user *store.User, msg *leapmuxv1.UpdateUserRequest) (v
 // gained nothing: an un-elevated administrator cookie reached the same
 // outcome by the longer route.
 //
-// TWO gates, because the verb writes two classes. The email fields take the
+// TWO checks, because the verb writes two classes. The email fields take the
 // strict session rule its sibling ResetPassword takes; a display-name edit or
 // a cleared pending address only needs the acting credential's own proven
 // factor, and refusing a bearer for those would break
@@ -582,7 +582,7 @@ func (s *AdminUserService) UpdateUser(ctx context.Context, req *connect.Request[
 	// Clearing the email must not strand an account that cannot sign in: an
 	// email-less unverified account on a hub that requires verification lands
 	// on /verify-email with no code that can ever arrive. An administrator is
-	// exempt because the LOGIN gate exempts them -- the same derivation, at
+	// exempt because the LOGIN check exempts them -- the same derivation, at
 	// the same altitude, rather than a forced column.
 	//
 	// The guard reads the flag this request RESOLVES, not the one already
@@ -628,7 +628,8 @@ func (s *AdminUserService) UpdateUser(ctx context.Context, req *connect.Request[
 			}
 			// A SEPARATE block, never the else-branch of the address update.
 			// UpdateEmailVerified is the FENCED verb: lowering email_verified
-			// reduces the user's auth gate, so it must bump auth_generation and
+			// weakens the user's authentication, so it must bump auth_generation
+			// and
 			// tear the user's leases and channels down. UpdateEmail is not
 			// fenced. As one else-if, `{email, email_verified:false}` took the
 			// unfenced path and left every token of a now-unverified account
@@ -828,7 +829,7 @@ func (s *AdminUserService) SetUserAdmin(ctx context.Context, req *connect.Reques
 	// somebody confirmed the address, which is a fact promotion does not
 	// change, so there is nothing to force and nothing to repair. The
 	// exemption that keeps an administrator signed in lives at the login
-	// gate; see auth.EmailVerificationFacts.Satisfied.
+	// check; see auth.EmailVerificationFacts.Satisfied.
 	if err := commitUnderElevation(ctx, s.store, actor, s.now, func() error {
 		if err := s.store.RunInTransaction(ctx, func(tx store.Store) error {
 			if err := tx.Users().UpdateAdmin(ctx, store.UpdateUserAdminParams{
@@ -1082,7 +1083,7 @@ func apiTokenToProto(t store.APITokenWithOwner) *leapmuxv1.AdminAPIToken {
 		LastUsedAt:       optTimestamp(t.LastUsedAt),
 		ExpiresAt:        optTimestamp(t.ExpiresAt),
 		RevokedAt:        optTimestamp(t.RevokedAt),
-		GrantedScopes:    SortedScopeTokens(granted),
+		GrantedScopes:    granted.SortedTokens(),
 	}
 }
 
@@ -1094,7 +1095,7 @@ func (s *AdminUserService) IssueAPIToken(ctx context.Context, req *connect.Reque
 	if err != nil {
 		return nil, err
 	}
-	// The SAME cleaning the consent legs apply at intake. This verb writes the
+	// The SAME cleaning the consent stages apply at intake. This verb writes the
 	// same api_tokens.installation_name column, and the value reaches the
 	// owner's connected-app list and the admin CLI's table -- so a newline here
 	// writes arbitrary lines into both, and a long name fails on MySQL's
@@ -1105,8 +1106,9 @@ func (s *AdminUserService) IssueAPIToken(ctx context.Context, req *connect.Reque
 	if installationName == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("installation_name is required"))
 	}
-	// EMPTY names the built-in service-account registration, which runs no
-	// flow. It exists so this out-of-band credential still names an app, which
+	// EMPTY identifies the built-in service-account registration, which runs no
+	// flow. It exists so this out-of-band credential still identifies an app,
+	// which
 	// is what keeps api_tokens.client_id NOT NULL and every listing, join and
 	// cascade free of a NULL branch.
 	clientID := msg.GetClientId()
@@ -1114,7 +1116,7 @@ func (s *AdminUserService) IssueAPIToken(ctx context.Context, req *connect.Reque
 		clientID = oauthapp.ServiceAccountClientID
 	}
 	// The registration must exist and be live BEFORE the mint, for the same
-	// reason every other leg resolves the app first: an unknown id used to die
+	// reason every other stage resolves the app first: an unknown id used to die
 	// on the foreign key inside Create and surface as a 500 for caller input,
 	// and a retired app's id minted a dead-on-arrival credential that reported
 	// itself as issued. Both are refusals here, where the operator can act on
@@ -1153,7 +1155,7 @@ func (s *AdminUserService) IssueAPIToken(ctx context.Context, req *connect.Reque
 		return nil, connect.NewError(connect.CodeInvalidArgument,
 			fmt.Errorf("ttl_seconds must be between 0 and %d (got %d)", MaxAPITokenTTLSeconds, secs))
 	}
-	// The grant. EMPTY means "everything except the four admin scopes", which
+	// The grant. EMPTY means "everything except the admin scopes", which
 	// is what a headless service account needs and what the control CLI's own
 	// default grant is -- so the two surfaces that mint a credential agree on
 	// what "unspecified" means.
@@ -1161,9 +1163,9 @@ func (s *AdminUserService) IssueAPIToken(ctx context.Context, req *connect.Reque
 	if err != nil {
 		return nil, err
 	}
-	// The APP's registered ceiling is the third bound, and it narrows nothing
-	// silently: the consent legs refuse an over-ceiling ask and so does the
-	// refresh leg, so an administrator's mint refuses too. Narrowing here
+	// The APP's registered ceiling is the third limit, and it narrows nothing
+	// silently: the consent stages refuse an over-ceiling ask and so does the
+	// refresh stage, so an administrator's mint refuses too. Narrowing here
 	// instead would email and store a grant loadBearer strips at every
 	// validation -- a credential that reports a width it does not have, which
 	// is the exact failure the other refusals exist to prevent.
@@ -1179,11 +1181,11 @@ func (s *AdminUserService) IssueAPIToken(ctx context.Context, req *connect.Reque
 	// are exclusive.
 	//
 	// Zero asks for the ordinary rotating one: an hour of access plus a
-	// refresh leg, exactly what a consent leg mints, capped for its whole
+	// refresh stage, exactly what a consent stage mints, capped for its whole
 	// life by auth.AbsoluteTokenLifetime.
 	//
 	// A positive value asks for a fixed-lifetime service credential, and it
-	// gets NO refresh leg. Handing back both was the defect: the row records
+	// gets NO refresh stage. Handing back both was the defect: the row records
 	// an expiry and never the TTL it was minted from, so the first rotation
 	// rewrote a year of access to one hour (auth.AccessWindowFor clips every
 	// rotation to the ordinary window) and the configured lifetime was
@@ -1193,7 +1195,7 @@ func (s *AdminUserService) IssueAPIToken(ctx context.Context, req *connect.Reque
 	// The kind this call mints, from the rule above.
 	rotating := secs <= 0
 	// commitUnderElevation re-reads the acting authority before the mint --
-	// the gate above answered from a cached UserInfo, and what this writes
+	// the check above answered from a cached UserInfo, and what this writes
 	// outlives the session by months -- and slides the window after it.
 	var minted mintedAPIToken
 	if err := commitUnderElevation(ctx, s.store, actor, s.now, func() error {
@@ -1217,7 +1219,7 @@ func (s *AdminUserService) IssueAPIToken(ctx context.Context, req *connect.Reque
 		return nil, err
 	}
 	// The owner learns about a credential minted on their account from the
-	// admin surface, exactly as they do from a consent leg. This surface is
+	// admin surface, exactly as they do from a consent stage. This surface is
 	// the one a stolen administrator cookie reaches, so it is the last one
 	// that should mint in silence.
 	noticeName := app.ClientName
@@ -1227,14 +1229,20 @@ func (s *AdminUserService) IssueAPIToken(ctx context.Context, req *connect.Reque
 	notifyCredentialIssued(ctx, s.mail, s.renderer, user, credentialNotice{
 		AppName:          noticeName,
 		InstallationName: installationName,
-		Scopes:           SortedScopeTokens(granted),
+		Scopes:           granted.SortedTokens(),
 		IssuedByAdmin:    issuedByAnotherPerson(actor, user),
 	})
-	// The secrets cross the wire exactly once; they cannot be retrieved.
+	// The secrets cross the wire exactly once; they cannot be retrieved. The
+	// client id and the granted scopes state what the hub DECIDED, not what
+	// was asked: the envelope is the one record an operator captures, and an
+	// empty request takes the non-admin default -- reporting the request made
+	// a ~14-permission credential read as `scopes: null`.
 	return connect.NewResponse(&leapmuxv1.IssueAPITokenResponse{
-		TokenId:      minted.TokenID,
-		AccessToken:  minted.Pair.AccessBearer,
-		RefreshToken: minted.RefreshBearer(),
+		TokenId:       minted.TokenID,
+		AccessToken:   minted.Pair.AccessBearer,
+		RefreshToken:  minted.RefreshBearer(),
+		ClientId:      clientID,
+		GrantedScopes: granted.SortedTokens(),
 	}), nil
 }
 
@@ -1296,7 +1304,7 @@ func (s *AdminUserService) RevokeDelegationToken(ctx context.Context, req *conne
 // resolveIssuedScopes decides the grant an administrator's out-of-band
 // credential carries.
 //
-// An EMPTY request means every scope EXCEPT the four admin ones. That is the
+// An EMPTY request means every scope EXCEPT the admin family. That is the
 // same default the control CLI's own login takes, so the two surfaces that mint
 // a credential agree on what "unspecified" means -- and it preserves the
 // property the deleted admin_scope column defended: an ordinary credential can
@@ -1316,15 +1324,22 @@ func resolveIssuedScopes(tokens []string, owner *store.User, actor *auth.UserInf
 		requested = parsed
 	}
 	if !owner.IsAdmin {
-		for _, scope := range adminScopeList {
-			if requested.Allows(scope) {
-				token, _ := authscope.Token(scope)
-				return authscope.ScopeSet{}, connect.NewError(connect.CodeFailedPrecondition,
-					fmt.Errorf("user %s is not an administrator, so a credential for them cannot carry %s",
-						owner.Username, token))
-			}
+		if scope, found := firstAdminScope(requested); found {
+			token, _ := authscope.Token(scope)
+			return authscope.ScopeSet{}, connect.NewError(connect.CodeFailedPrecondition,
+				fmt.Errorf("user %s is not an administrator, so a credential for them cannot carry %s",
+					owner.Username, token))
 		}
 	}
+	// Closed BEFORE the ceiling check, not only at the return. Close() adds the
+	// implied scopes (git:write carries git:read and worker:read), and the
+	// stored set is the closed one, so checking the unclosed request against
+	// the issuer and closing afterwards would let a mint gain every implied
+	// scope past the check that was supposed to bound it -- an issuer whose
+	// reachable set is unclosed, the hand-edited or restored row loadBearer
+	// defends against, could mint a credential wider than anything it could
+	// itself reach.
+	requested = requested.Close()
 	// The ISSUER's own grant is a ceiling, and it is the second bound this verb
 	// needs. The scope rung admits an app with admin:users; without this, such
 	// an app could mint ITSELF a credential carrying tunnel:open -- a total
@@ -1337,6 +1352,6 @@ func resolveIssuedScopes(tokens []string, owner *store.User, actor *auth.UserInf
 		return authscope.ScopeSet{}, connect.NewError(connect.CodePermissionDenied,
 			errors.New("this credential cannot issue a credential wider than itself"))
 	}
-	// Closed here, at the mint, so the stored set is the one every gate reads.
-	return requested.Close(), nil
+	// Closed here, at the mint, so the stored set is the one every check reads.
+	return requested, nil
 }

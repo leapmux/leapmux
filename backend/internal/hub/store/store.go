@@ -462,7 +462,7 @@ type APITokenStore interface {
 	Create(ctx context.Context, p CreateAPITokenParams) error
 	GetByID(ctx context.Context, id string) (*APIToken, error)
 	// Elevate grants the credential a fresh step-up window, replacing
-	// whatever it held, and emits a user_info event so another hub process
+	// whatever it held, and emits a user_info event so the watcher's replay
 	// re-reads the deadline. Returns the rows updated: 0 means the row is
 	// gone, revoked, expired, or owned by somebody else.
 	//
@@ -470,7 +470,7 @@ type APITokenStore interface {
 	// protects hub settings, the user surface and the mint would otherwise
 	// admit it unconditionally -- it had no row to stamp, so possession of
 	// the credential file was the whole of the check. The factor is proven
-	// in a browser (the /oauth/step-up consent leg), which is the only
+	// in a browser (the /oauth/step-up ceremony), which is the only
 	// place a person can answer a password or a passkey prompt.
 	//
 	// A DELEGATION token deliberately has no equivalent. It is minted by a
@@ -662,7 +662,7 @@ type RevocationEventStore interface {
 	// live. It keeps CursorSeq instead of fencing to the head of the stream, so
 	// no revocation published during the stall is skipped. It returns
 	// ErrHubAlreadyRunning while ANY other holder's row is present, live or
-	// expired: that holder may have consumed and compacted past this cursor.
+	// expired: that holder possibly consumed and compacted past this cursor.
 	// The caller's own row is released first, so a still-live own row becomes a
 	// force-renewal rather than a false rival.
 	ReacquireHubRuntimeLease(ctx context.Context, p ReacquireHubRuntimeLeaseParams) error
@@ -706,7 +706,14 @@ type DeviceAuthorizationStore interface {
 	// so an answered grant keeps its answer.
 	DenyByUserCode(ctx context.Context, userCode string) (int64, error)
 	Consume(ctx context.Context, deviceCode string, now time.Time) (int64, error)
-	TouchPoll(ctx context.Context, deviceCode string) error
+	// ConsumeApprovedForUserClient spends the approved-but-unpolled grants of
+	// one account's authorization of an app -- the DISCONNECT path, which ends
+	// the authorization and must not leave a redeemable grant behind.
+	ConsumeApprovedForUserClient(ctx context.Context, clientID string, user userid.UserID, now time.Time) (int64, error)
+	// TouchPoll records a poll with the HUB's clock: the slow_down throttle
+	// compares the value it writes against the same clock, and a database
+	// clock that drifts ahead of the hub's would stall the flow.
+	TouchPoll(ctx context.Context, deviceCode string, now time.Time) error
 }
 
 // OAuthAuthorizationCodeStore manages RFC 6749 section 4.1 one-shot codes.
@@ -722,6 +729,10 @@ type OAuthAuthorizationCodeStore interface {
 	// MarkMinted records which credential the exchange produced, so a later
 	// replay of the same code can revoke it.
 	MarkMinted(ctx context.Context, code, tokenID string) error
+	// ConsumeActiveForUserClient spends this account's outstanding codes for
+	// an app -- the DISCONNECT path, which must not leave a consent granted
+	// seconds before it redeemable into a fresh credential.
+	ConsumeActiveForUserClient(ctx context.Context, clientID string, user userid.UserID, now time.Time) (int64, error)
 }
 
 // OAuthClientStore manages registered apps.
@@ -730,24 +741,33 @@ type OAuthAuthorizationCodeStore interface {
 // check the service ran first: a read-then-write pair leaves a window in which
 // the row changes hands between the two. See UpdateOAuthClientParams.
 type OAuthClientStore interface {
-	Create(ctx context.Context, p CreateOAuthClientParams) error
+	// Create inserts the row and returns it AS THE DATABASE WROTE IT -- the
+	// DB-defaulted created_at/updated_at and the projected icon presence --
+	// so a registration response is the row's truth rather than a Go-side
+	// projection of the INSERT parameters. MySQL has no RETURNING; its
+	// adapter pays one follow-up read.
+	Create(ctx context.Context, p CreateOAuthClientParams) (*OAuthClient, error)
 	// Get returns the app WHATEVER its state, revoked included. A revoked app
 	// must still be readable: bearer validation joins it to refuse a live
-	// credential on a retired app, and the disconnect surface has to name what
-	// it revoked.
+	// credential on a retired app, and the disconnect surface has to identify
+	// what it revoked.
 	Get(ctx context.Context, clientID string) (*OAuthClient, error)
 	// GetIcon reads the icon bytes, their media type, and the facts that gate
 	// serving them, for the /oauth/apps/<id>/icon asset endpoint. It is a
 	// separate read because the full-row queries carry only whether an icon
 	// exists -- the bytes would put 64 KiB on every token exchange otherwise.
 	GetIcon(ctx context.Context, clientID string) (*OAuthClientIcon, error)
-	// ListVisibleTo pages every app this user may AUTHORIZE: their own private
-	// ones plus the whole hub-wide catalogue.
-	ListVisibleTo(ctx context.Context, p ListOAuthClientsParams) (Page[OAuthClient], error)
-	// ListOwnedBy pages the apps this user REGISTERED, which is what they can
-	// edit. It excludes the hub-wide catalogue, so it answers a different
-	// question from ListVisibleTo.
-	ListOwnedBy(ctx context.Context, p ListOAuthClientsParams) (Page[OAuthClient], error)
+	// UpsertBuiltIn inserts one built-in registration on a fresh database and
+	// reconciles the build's constants on an existing one. The conflict
+	// branch rewrites ONLY the constant columns, so elevation_allowed, the
+	// vouch, revocation and the row's own history survive every boot. See
+	// SeedBuiltIns, which is the only caller.
+	UpsertBuiltIn(ctx context.Context, p UpsertBuiltInClientParams) error
+	// List pages apps: the user's own registrations, plus the whole hub-wide
+	// catalogue when p.IncludeHubWide says the reader is an administrator --
+	// one statement for both questions, so the two listings cannot drift in
+	// what they select or how they order.
+	List(ctx context.Context, p ListOAuthClientsParams) (Page[OAuthClient], error)
 	Update(ctx context.Context, p UpdateOAuthClientParams) (int64, error)
 	// SetElevationAllowed toggles the one field the app list changes inline,
 	// and the ONE field a built-in registration may still change: an operator
@@ -776,10 +796,17 @@ type OAuthClientStore interface {
 	// ListTokenRefs reads the credentials RevokeTokens will revoke, before it
 	// runs, so the caller can apply each row's lifecycle effects after the
 	// transaction commits.
-	ListTokenRefs(ctx context.Context, p RevokeAPITokensForClientParams) ([]APITokenRef, error)
-	// RevokeTokens is the cascade of a disconnect (one user) or an app
-	// revocation (every user).
-	RevokeTokens(ctx context.Context, p RevokeAPITokensForClientParams) (int64, error)
+	ListTokenRefs(ctx context.Context, clientID string) ([]APITokenRef, error)
+	// RevokeTokens is the cascade of an APP REVOCATION: every user's
+	// credentials for the app.
+	RevokeTokens(ctx context.Context, clientID string) (int64, error)
+	// ListUserTokenRefs is ListTokenRefs for a DISCONNECT: this one account's
+	// credentials. The user argument is a typed id rather than an optional
+	// column value, so a caller cannot widen one account's disconnect to
+	// everybody by forgetting a field.
+	ListUserTokenRefs(ctx context.Context, clientID string, user userid.UserID) ([]APITokenRef, error)
+	// RevokeUserTokens is the per-user cascade a DISCONNECT runs.
+	RevokeUserTokens(ctx context.Context, clientID string, user userid.UserID) (int64, error)
 	// CountLiveTokens reports how many LIVE credentials the app holds across
 	// every user. It answers "what can this app still do", which is what the
 	// app listing shows.

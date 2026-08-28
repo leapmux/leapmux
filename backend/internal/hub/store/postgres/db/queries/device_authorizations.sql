@@ -68,9 +68,26 @@ WHERE device_code = $1 AND approved = 1 AND consumed_at IS NULL
   AND expires_at > sqlc.arg(now);
 
 -- name: TouchDeviceAuthorizationPoll :exec
+-- last_polled_at binds the HUB's clock, one deliberate exception to the
+-- header rule: the slow_down throttle subtracts this value from the hub's
+-- clock, and a database clock ahead of the hub's by more than a fudge factor
+-- answered every on-time poll with slow_down, stalling the flow for the skew.
 UPDATE device_authorizations
-SET last_polled_at = NOW()
-WHERE device_code = $1;
+SET last_polled_at = sqlc.arg(now)
+WHERE device_code = sqlc.arg(device_code);
+
+-- name: ConsumeApprovedDeviceAuthorizationsForUserClient :execresult
+-- A DISCONNECT ends the authorization this account gave the app, so the
+-- approved-but-unpolled grants that authorization produced are spent here:
+-- without this, a code approved seconds before the disconnect stayed
+-- redeemable into a fresh credential for its whole TTL.
+UPDATE device_authorizations
+SET consumed_at = NOW()
+WHERE client_id = sqlc.arg(client_id)
+  AND user_id = sqlc.arg(user_id)
+  AND approved = 1
+  AND consumed_at IS NULL
+  AND expires_at > sqlc.arg(now);
 
 -- name: DeleteExpiredDeviceAuthorizations :execrows
 DELETE FROM device_authorizations

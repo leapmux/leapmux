@@ -38,7 +38,7 @@ func TestResolveApp_ZeroCallerReachesNoPrivateApp(t *testing.T) {
 	h := &OAuthServerHandler{store: st}
 
 	privateID := id.Generate()
-	require.NoError(t, st.OAuthClients().Create(ctx, store.CreateOAuthClientParams{
+	_, createErr := st.OAuthClients().Create(ctx, store.CreateOAuthClientParams{
 		ClientID:           privateID,
 		OwnerUserID:        owner.ID,
 		CreatedBy:          owner.ID,
@@ -47,7 +47,8 @@ func TestResolveApp_ZeroCallerReachesNoPrivateApp(t *testing.T) {
 		Scopes:             "workspace:read",
 		GrantTypes:         "authorization_code refresh_token",
 		RegistrationSource: store.OAuthClientSourceUser,
-	}))
+	})
+	require.NoError(t, createErr)
 
 	// A hub-wide app: the built-in control CLI, seeded by the migration.
 	hubWide, err := h.resolveApp(ctx, oauthapp.ControlCLIClientID, nil)

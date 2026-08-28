@@ -1,9 +1,11 @@
 // Package revocationwatcher consumes the durable credential lifecycle stream
 // and drives matching cache eviction and revocation teardown.
 //
-// Admin tools and other hub processes can only mutate the database. Every
-// credential mutation therefore writes a durable pending event in the same
-// transaction as the row change. This watcher publishes pending events into
+// The hub holds a singleton runtime lease, so one hub serves at a time; the
+// writers that can still mutate the database without this process are admin
+// tools acting on the store directly and a predecessor that stopped mid-flight.
+// Every credential mutation therefore writes a durable pending event in the
+// same transaction as the row change. This watcher publishes pending events into
 // a gapless seq stream, then consumes published events by seq. The cursor is
 // not a timestamp, so late commits and same-clock ties cannot be skipped.
 //

@@ -73,9 +73,8 @@ message EmailVerificationStatus {
 }
 
 message LoginResponse {
-  reserved 1; // was: token (now delivered via Set-Cookie)
-  User user = 2;
-  EmailVerificationStatus email_verification = 3;
+  User user = 1;
+  EmailVerificationStatus email_verification = 2;
 }
 
 message LogoutRequest {}
@@ -114,9 +113,8 @@ message SignUpRequest {
 }
 
 message SignUpResponse {
-  reserved 1; // was: token (now delivered via Set-Cookie)
-  User user = 2;
-  EmailVerificationStatus email_verification = 3;
+  User user = 1;
+  EmailVerificationStatus email_verification = 2;
 }
 
 message User {

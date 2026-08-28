@@ -399,6 +399,16 @@ message IssueAPITokenResponse {
   // IssueAPITokenRequest.ttl_seconds for the rule. An empty value here is the
   // documented answer for that request, not a hub failure.
   string refresh_token = 3;
+  // The registration the credential was issued to, with the request's own
+  // default resolved (an empty request client_id mints to the built-in
+  // service account). The envelope is the one record an operator captures,
+  // so it states what the hub decided rather than what was asked.
+  string client_id = 4;
+  // The grant the hub minted, as canonical scope tokens. An empty request
+  // takes the non-admin default, which is a wider grant than "nothing" --
+  // reporting the request here made a ~14-permission credential read as
+  // `scopes: null` in the captured record.
+  repeated string granted_scopes = 5;
 }
 
 message RevokeAPITokenRequest {

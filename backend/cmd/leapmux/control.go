@@ -243,10 +243,10 @@ var controlTree = cmdGroup{
 						{Name: "unverify", Summary: "Withdraw a vouch", Run: func(c cmdCtx, args []string) error {
 							return cmdcontrol.RunAdminAppSetVerified(controlCmdCtxAdapter{PathStr: c.Path, DescriptionStr: c.Description}, args, false)
 						}},
-						{Name: "allow-elevation", Summary: "Let an app run the step-up leg", Run: func(c cmdCtx, args []string) error {
+						{Name: "allow-elevation", Summary: "Let an app run the step-up ceremony", Run: func(c cmdCtx, args []string) error {
 							return cmdcontrol.RunAdminAppSetElevation(controlCmdCtxAdapter{PathStr: c.Path, DescriptionStr: c.Description}, args, true)
 						}},
-						{Name: "deny-elevation", Summary: "Take the step-up leg away, closing every open window on the next call", Run: func(c cmdCtx, args []string) error {
+						{Name: "deny-elevation", Summary: "Take the step-up ceremony away, closing every open window on the next call", Run: func(c cmdCtx, args []string) error {
 							return cmdcontrol.RunAdminAppSetElevation(controlCmdCtxAdapter{PathStr: c.Path, DescriptionStr: c.Description}, args, false)
 						}},
 						{Name: "revoke", Summary: "Retire an app and revoke every credential it holds", Run: controlRun(cmdcontrol.RunAdminAppRevoke)},

@@ -59,10 +59,10 @@ var ownerColumns = []string{
 // normalizes BOTH the write and every read to that same empty string. The blank owner these
 // queries bind is therefore the value the row was written with, not an unminted
 // caller -- refusing it would make every agent/terminal tab close a silent no-op
-// and leak the worktree it should have released. FILE links, where the owner IS
+// and leak the worktree it was meant to release. FILE links, where the owner IS
 // load-bearing (file tab ids are unique only within a user), carry a real owner
 // through the same parameter, and checkOwnerScopedQueries independently requires
-// each of these queries to NAME user_id so that half stays scoped.
+// each of these queries to specify user_id so that half stays scoped.
 var unguardedOwnerFilterQueries = map[string]string{
 	"GetWorktreeForTab":         "worktree_tabs.user_id is '' by design for AGENT/TERMINAL links; see the block comment above",
 	"RemoveWorktreeTab":         "worktree_tabs.user_id is '' by design for AGENT/TERMINAL links; see the block comment above",
@@ -76,19 +76,20 @@ var unguardedOwnerFilterQueries = map[string]string{
 	// cannot widen anything: the correlation is column-to-column, so a row can
 	// only ever match its own user_state row.
 	"DeleteUserOpBatchesBeforePhysical": "cross-user retention sweep; its only user_id comparison correlates each batch to its own owner's compaction watermark, and it accepts no caller id to guard",
-	// The app-disconnect cascade. Its user_id is not a CALLER id at all: it
-	// names WHOSE credentials to retire, and an EMPTY value means "every
-	// user's", which is what retiring the app itself does. The statement says
-	// so explicitly -- `(sqlc.arg(user_id) = '' OR user_id = sqlc.arg(user_id))`
-	// -- so a blank value takes the whole-set arm rather than matching
-	// blank-owner rows, exactly as RevokeOtherUserAPITokens' empty keep_id does.
-	//
-	// Routing it through userid.OwnerFilter would REFUSE the whole-set case,
-	// which is the one an administrator retiring an app needs. The
-	// authorization that decides whether the caller may retire the app happened
-	// one statement earlier, in RevokeOAuthClient, which does carry the guard.
-	"RevokeAPITokensForOAuthClient": "the disconnect cascade; its user_id names WHOSE credentials to retire, and empty deliberately means every user's",
-	"ListAPITokenIDsForOAuthClient": "the read that pairs with RevokeAPITokensForOAuthClient, on the same whole-set convention",
+	// The per-user disconnect statements. Their user_id is not a CALLER id at
+	// all: it names WHOSE credentials to retire. The split from the whole-set
+	// cascade (RevokeAPITokensForOAuthClient, which carries no user_id and its
+	// own guard) exists precisely so a disconnect CANNOT be spelled as an
+	// empty sentinel (see the statements' own comments): these take a typed
+	// userid.UserID, and each Go wrapper refuses a zero id with
+	// ErrInvalidArgument before binding. The scanner recognizes
+	// userid.OwnerFilter/userid.New spellings, not the IsZero check on an
+	// already-typed value, so they are registered here with that reason
+	// rather than contorting the guard into a re-mint round trip.
+	"RevokeUserAPITokensForOAuthClient":                "per-user disconnect cascade; its wrapper refuses a zero typed userid.UserID before binding",
+	"ListUserAPITokenIDsForOAuthClient":                "the per-user read pairing RevokeUserAPITokensForOAuthClient; same zero-id refusal",
+	"ConsumeActiveAuthorizationCodesForUserClient":     "the disconnect's outstanding-code spend; same typed-id, zero refused in the wrapper",
+	"ConsumeApprovedDeviceAuthorizationsForUserClient": "the disconnect's outstanding-grant spend; same typed-id, zero refused in the wrapper",
 }
 
 // unscopedOwnerKeyedQueries are the queries that touch an owner-keyed table --

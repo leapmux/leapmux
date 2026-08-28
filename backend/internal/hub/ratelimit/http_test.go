@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -64,8 +65,33 @@ func TestAllowHTTPAdmitsWhenUnconfigured(t *testing.T) {
 		"a nil manager admits: a test wires none, and a hub always has one")
 
 	solo := newTestManager(t, true)
+	upsertLimit(t, solo, OpOAuthAnonymous, true, 1, 600)
 	assert.True(t, AllowHTTP(context.Background(), solo, OpOAuthAnonymous, req),
-		"solo mode has one user; there is nothing to throttle between")
+		"the first request of the window admits")
+	assert.False(t, AllowHTTP(context.Background(), solo, OpOAuthAnonymous, req),
+		"solo mode enforces the one ADDRESS-keyed budget: a solo hub that listens beyond the loopback serves anonymous addresses like any other")
+}
+
+// TestAllowHTTPWindowActuallyResets pins the fix for the never-released
+// reservation: the budget is a fixed window, so requests from one address are
+// admitted again once the window turns over. The old implementation counted
+// admissions into the IN-FLIGHT map that nothing on this path decremented,
+// which turned "2 per 10 minutes" into "2 per address per process lifetime".
+func TestAllowHTTPWindowActuallyResets(t *testing.T) {
+	m := newTestManager(t, false)
+	upsertLimit(t, m, OpOAuthAnonymous, true, 2, 600)
+
+	req := httptest.NewRequest(http.MethodPost, "/oauth/token", nil)
+	req.RemoteAddr = "203.0.113.7:51234"
+
+	assert.True(t, AllowHTTP(context.Background(), m, OpOAuthAnonymous, req))
+	assert.True(t, AllowHTTP(context.Background(), m, OpOAuthAnonymous, req))
+	assert.False(t, AllowHTTP(context.Background(), m, OpOAuthAnonymous, req),
+		"the window's budget is spent")
+
+	m.now = func() time.Time { return fakeNow.Add(601 * time.Second) }
+	assert.True(t, AllowHTTP(context.Background(), m, OpOAuthAnonymous, req),
+		"one window later the budget starts over")
 }
 
 // TestClientAddressKeyStripsThePortAndBracket pins the key shape. A client

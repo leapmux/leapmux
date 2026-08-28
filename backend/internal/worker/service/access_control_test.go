@@ -947,3 +947,60 @@ func TestEveryRegisteredMethodIsWithinTheDelegationGrant(t *testing.T) {
 			"%s requires %s, which the delegation grant does not carry: a sibling-worker call answers PermissionDenied", method, token)
 	}
 }
+
+// TestAccessControl_WorktreeRemoveNeedsGitWrite pins the action-level gate on
+// RevokeFileTabPath: the method rides file:read because the registry row is
+// file-tab bookkeeping, but the WORKTREE_ACTION_REMOVE leg runs
+// `git worktree remove --force` and `git branch -D` -- a destructive write
+// that scope.proto places under git:write, the same family rule every other
+// destructive verb follows. A read consent must never delete a worktree.
+func TestAccessControl_WorktreeRemoveNeedsGitWrite(t *testing.T) {
+	t.Parallel()
+
+	owner := userid.MustNew("user-1")
+	// file:read alone: what a read-only file-viewer consent holds. Its
+	// closure carries worker:read, so the channel opens; it must not carry
+	// git:write.
+	readOnly, err := authscope.Parse("file:read")
+	require.NoError(t, err)
+	require.False(t, readOnly.Close().Allows(leapmuxv1.Scope_SCOPE_GIT_WRITE),
+		"precondition: the read-only grant must not reach git:write")
+	readWrite, err := authscope.Parse("file:read git:write")
+	require.NoError(t, err)
+
+	dispatch := func(scopes authscope.ScopeSet, action leapmuxv1.WorktreeAction) *testResponseWriter {
+		svc, d, w := setupTestService(t)
+		// Per-OS absolute paths: the store refuses a file path that is not
+		// absolute on the running system, and a Unix literal is not one on
+		// Windows.
+		repo := filepath.Join(t.TempDir(), "repo")
+		require.NoError(t, svc.FileTabPaths.Register(context.Background(), RegisterFileTabPathParams{
+			UserID: owner.String(), TabID: "tab-1", FilePath: filepath.Join(repo, "file"), WorkingDir: repo,
+		}))
+		payload, err := proto.Marshal(&leapmuxv1.RevokeFileTabPathRequest{
+			TabId: "tab-1", WorktreeAction: action,
+		})
+		require.NoError(t, err)
+		d.DispatchWith(context.Background(), channel.NewCaller(owner, scopes), &leapmuxv1.InnerRpcRequest{
+			Method: "RevokeFileTabPath", Payload: payload,
+		}, w)
+		return w
+	}
+
+	// REMOVE under a read-only grant is refused before any row is touched.
+	w := dispatch(readOnly, leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE)
+	rejected := w.rejections()
+	require.Len(t, rejected, 1)
+	assert.Equal(t, codePermissionDenied, rejected[0].code)
+	assert.Contains(t, rejected[0].message, "git:write",
+		"the denial should name the permission the escalation needs")
+
+	// KEEP (the bookkeeping-only leg) stays reachable under file:read alone,
+	// and REMOVE stays reachable when the grant carries git:write.
+	w = dispatch(readOnly, leapmuxv1.WorktreeAction_WORKTREE_ACTION_KEEP)
+	assert.Empty(t, w.rejections(), "revoking the registry row is file:read work")
+
+	w = dispatch(readWrite, leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE)
+	assert.Empty(t, w.rejections(), "git:write covers worktree management")
+	assert.NotEmpty(t, w.responses, "the removal proceeds and answers")
+}

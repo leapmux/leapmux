@@ -490,26 +490,14 @@ CREATE TABLE oauth_clients (
 CREATE INDEX idx_oauth_clients_owner ON oauth_clients(owner_user_id, created_at DESC, client_id DESC);
 CREATE INDEX idx_oauth_clients_revoked_at ON oauth_clients(revoked_at) WHERE revoked_at IS NOT NULL;
 
--- The two built-in registrations. Their fields are constants of the build
--- (see internal/hub/oauthapp), so the migration seeds them rather than an
--- operator creating them.
---
--- Both state elevation_allowed = TRUE explicitly, AGAINST the column's FALSE
--- default: `leapmux control admin ...` needs it, and an administrator-issued
--- credential can elevate today, so seeding it off would take a working
--- capability away. The default governs every app somebody registers.
-INSERT INTO oauth_clients (client_id, client_name, redirect_uris, scopes, grant_types, elevation_allowed, registration_source, verified_at, verified_by_user_id)
-VALUES
-    ('leapmux-control-cli', 'LeapMux control CLI', 'http://127.0.0.1/callback',
-     'account:read account:write workspace:read workspace:write worker:read worker:admin agent:read agent:write terminal:read terminal:write file:read git:read git:write tunnel:open admin:read admin:users admin:settings admin:workers',
-     'authorization_code refresh_token urn:ietf:params:oauth:grant-type:device_code',
-     TRUE, 'builtin', NULL, NULL),
-    -- No redirect URI and no grant type, so it runs no flow: this row only
-    -- names WHO holds an out-of-band administrator-issued credential.
-    ('leapmux-service-account', 'Administrator-issued credential', '',
-     'account:read account:write workspace:read workspace:write worker:read worker:admin agent:read agent:write terminal:read terminal:write file:read git:read git:write tunnel:open admin:read admin:users admin:settings admin:workers',
-     '',
-     TRUE, 'builtin', NULL, NULL);
+-- The two built-in registrations are NOT seeded here. Their fields are
+-- constants of the build (see internal/hub/oauthapp), so every store open
+-- seeds and reconciles them through store.SeedBuiltIns -- an upsert whose
+-- conflict branch rewrites only the constant columns, leaving the operator's
+-- elevation decision, the vouch and the row's own dates as the last writer
+-- left them. That is also what makes this migration safe to have shipped
+-- with the seed rows inline: a database it seeded before the seed moved is
+-- reconciled on the next boot.
 
 -- Durable, low-churn API tokens used by the leapmux control CLI (and any
 -- future mobile / IDE / integration). Each row's id appears verbatim in

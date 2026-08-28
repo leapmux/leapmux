@@ -136,7 +136,7 @@ Name the permissions to ask for less, or to ask for administration:
 leapmux control auth login --hub https://leapmux.example.com --scope "file:read git:read"
 
 # A credential that administers the hub. Only an administrator may grant it.
-leapmux control auth login --hub https://leapmux.example.com --scope "admin:read admin:users admin:settings admin:workers"
+leapmux control auth login --hub https://leapmux.example.com --scope "admin:read admin:users admin:settings admin:workers admin:apps"
 ```
 
 Both separators work: the wire format is space-delimited, which a shell needs quoted, and a comma-separated list is what most people type.
@@ -159,7 +159,7 @@ Logging in again on the same machine **revokes the credential it replaces**, so 
 | --- | --- | --- |
 | `auth status` | `--hub` | `{hub_url, username, user_id, expires, expired, refresh_expires, scope, token_id}` for the specified Hub. Error `not_logged_in` if there is no credential. `expires` is the hour-long access token, which renews itself; `refresh_expires` is when the device must sign in again. |
 | `auth list` | none | An array of `{hub_url, username, user_id, expires, scope}` for every Hub you have credentials for. |
-| `auth credentials` | `--hub` | An array of `{id, client_id, client_name, installation_name, created_at, last_used_at, refresh_expires, expires, granted_scopes, current}` for every credential the account holds. `client_name` is the app and `installation_name` is which copy of it. `current` marks the one this command uses. Each credential carries exactly one deadline: a renewing credential reports `refresh_expires`, and one minted with `--ttl` reports `expires`. A row with neither never expires. |
+| `auth credentials` | `--hub` | An array of `{id, client_id, client_name, installation_name, created_at, last_used_at, refresh_expires, expires, granted_scopes, client_verified, current}` for every credential the account holds. `client_name` is the app and `installation_name` is which copy of it. `current` marks the one this command uses. Each credential carries exactly one deadline: a renewing credential reports `refresh_expires`, and one minted with `--ttl` reports `expires`. A row with neither never expires. |
 | `auth logout` | `--hub` | Best-effort revokes the token on the Hub, then deletes the local credential file. Emits `{hub_url}`. |
 
 **`list` and `credentials` answer different questions.** `list` reads this machine's credential files — which Hubs this box can reach. `credentials` asks the Hub what the whole account holds — what else can reach your account, from anywhere. It is the same list the browser shows under **Preferences → Account → Connected apps**, where you can also disconnect. See [Connected Apps](/docs/using/connected-apps/).
@@ -731,7 +731,7 @@ The `rate-limit` group is sugar over the `rate_limit.<operation>` settings keys.
 | Operation | Limits | Keyed by |
 |---|---|---|
 | `elevation` | Failed attempts to verify your identity for a sensitive change. | The user. Hidden in solo mode, which has one. |
-| `oauth_anonymous` | The authorization server's three anonymous legs — `/oauth/device-authorization`, `/oauth/token` and `/oauth/register`. | The client address. Enforced in solo mode too, because those endpoints are served there. |
+| `oauth_anonymous` | The authorization server's three anonymous endpoints — `/oauth/device-authorization`, `/oauth/token` and `/oauth/register`. | The client address. Enforced in solo mode too, because those endpoints are served there. |
 
 ```bash
 leapmux control admin rate-limit list
@@ -781,7 +781,7 @@ The two do not combine. A credential with both a long TTL and a refresh token lo
 
 The hub emails the owner whenever this verb issues a credential for them, on the same terms as a browser consent: only to a verified address, and only when SMTP is configured.
 
-`--scope` names the permissions the credential holds; omitting it grants everything the owner can do **except** administer the hub. The hub refuses an admin permission for an owner who is not an administrator, rather than minting a credential whose grant and authority disagree. It also refuses to issue a credential **wider than the one issuing it**, so a chain of self-issued credentials terminates at the browser consent that started it.
+`--scope` specifies the permissions the credential holds; omitting it grants everything the owner can do **except** administer the hub. The hub refuses an admin permission for an owner who is not an administrator, rather than minting a credential whose grant and authority disagree. It also refuses to issue a credential **wider than the one issuing it**, so a chain of self-issued credentials terminates at the browser consent that started it.
 
 `api-token list` reports `granted_scopes` on every row, so "which credentials can administer this hub" is answerable. The whole vocabulary is in [App Authorization](/docs/operating/app-authorization/#permissions).
 

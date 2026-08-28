@@ -14,13 +14,14 @@ import (
 
 // Step-up for an app credential.
 //
-// An app credential is minted once and lives for months, so the elevation gate
-// used to admit it with no check: it had no row to stamp and nobody at a
+// An app credential is minted once and lives for months, so the elevation
+// requirement used to admit it with no check: it had no row to stamp and
+// nobody at a
 // keyboard. That made possession of the credential file the whole of the check
 // for the hub's settings, the user surface and the mint. It has a row now, and
 // this is how a person proves the factor that stamps it.
 //
-// The leg is REFUSED to an app whose registration does not carry
+// The stage is REFUSED to an app whose registration does not carry
 // elevation_allowed, and that flag is off for every app somebody registers. The
 // two built-in registrations state it explicitly, because `leapmux control
 // admin ...` needs it and an administrator-issued credential can elevate today.
@@ -37,7 +38,7 @@ import (
 // polls. The two flows share the row, the TTL, the poll throttle, the
 // slow_down throttle, the expiry sweep and the activation page; they differ in
 // what the approval does, which is what device_authorizations.elevate_token_id
-// records. A second table would have been a second copy of every one of those
+// records. A second table would be a second copy of every one of those
 // rules.
 //
 // The browser is not an implementation detail. It is the only place a person
@@ -47,8 +48,8 @@ import (
 
 // handleStepUpAuthorization starts a step-up for the CALLING app credential.
 //
-// Authenticated by the bearer itself, and by nothing else. The caller is
-// asking to elevate the credential it already holds, so holding it is the
+// Authenticated by the bearer itself, and by nothing else. The caller asks
+// to elevate the credential it already holds, so holding it is the
 // right to ask; what it cannot do is APPROVE, which needs a browser session
 // that proves a factor.
 //
@@ -93,6 +94,14 @@ func (h *OAuthServerHandler) handleStepUpAuthorization(w http.ResponseWriter, r 
 	// the credential's own row there instead (see grantCredential). It is
 	// stored so the grant carries the label the caller sent, and normalized at
 	// intake like every other copy of it.
+	//
+	// The hub's address is resolved BEFORE the grant row is inserted, for the
+	// same reason the device-code stage states there: a refusal after the
+	// insert would leave a pending grant nobody can ever poll.
+	base, ok := h.metadataBase(w)
+	if !ok {
+		return
+	}
 	grant, err := h.createDeviceGrant(r.Context(), store.CreateDeviceAuthorizationParams{
 		DeviceName: normalizeInstallationName(r.FormValue("installation_name")),
 		ClientID:   row.ClientID,
@@ -107,9 +116,9 @@ func (h *OAuthServerHandler) handleStepUpAuthorization(w http.ResponseWriter, r 
 		writeInternalError(w, "elevation authorization creation failed", err)
 		return
 	}
-	// The SAME writer the device-code leg uses, because a client polls both
+	// The SAME writer the device-code stage uses, because a client polls both
 	// with one code path.
-	h.writeDeviceGrantResponse(w, grant)
+	h.writeDeviceGrantResponse(w, base, grant)
 }
 
 // errElevationGrantUnavailable reports an approved step-up whose credential is
@@ -150,7 +159,7 @@ func (h *OAuthServerHandler) elevateGrantedToken(ctx context.Context, tx store.S
 // credentialElevationIsCurrent reports whether the credential a step-up grant
 // identifies carries an elevation window that admits a sensitive action NOW.
 //
-// The token leg calls it before it answers "elevated", because the approval
+// The token stage calls it before it answers "elevated", because the approval
 // FLAG on the grant row is not enough to answer from. A row can be approved
 // with no window -- a hub that died between the two writes left exactly that
 // shape before the approval became one transaction -- and reporting success

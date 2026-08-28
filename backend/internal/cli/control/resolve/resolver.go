@@ -19,7 +19,7 @@
 // the hub limits with auth.CeilingFor(BearerKindDelegation). The RPCs
 // that could serve it -- WorkerManagementService.GetWorker and
 // ListWorkers -- need worker:read, which that ceiling does admit, but a
-// leg that adds a hub round trip to every agent command buys nothing
+// stage that adds a hub round trip to every agent command buys nothing
 // the command does not learn anyway when it opens the channel. The cmd
 // package's maybePreflightWorker keeps a best-effort check that
 // tolerates a denial instead of failing on it.
@@ -157,7 +157,7 @@ type Deps struct {
 	// server matches any type and returns the actual type in the
 	// first slot; the resolver records that back into Resolved.TabType.
 	LocateTab func(ctx context.Context, tabType leapmuxv1.TabType, tabID string) (matchedTabType leapmuxv1.TabType, workspaceID, tileID, workerID string, err error)
-	// GetWorkspace confirms the supplied workspace id names a
+	// GetWorkspace confirms the supplied workspace id identifies a
 	// workspace the caller can read. The hub conflates "no such
 	// workspace" with "not yours", so a bogus --workspace-id comes
 	// back as an error rather than a negative answer -- there is no
@@ -178,7 +178,7 @@ type Deps struct {
 // input is non-empty (in parallel), validates cross-source
 // agreement, and returns the consolidated Resolved struct. Conflict
 // errors and missing-required errors both surface as invalid_request
-// with the structured fields named in the message so scripts can
+// with the structured fields listed in the message so scripts can
 // grep for the conflicting flag.
 //
 // Tab-type handling:
@@ -368,7 +368,7 @@ func Resolve(ctx context.Context, deps Deps, need Need, in Inputs) (Resolved, er
 	}
 
 	// Validate required fields are populated. Each missing slot
-	// surfaces the names of the flags that would have satisfied it,
+	// surfaces the names of the flags that satisfy it,
 	// so the user sees one error envelope listing every fix.
 	if missing := missingRequired(need, out); len(missing) > 0 {
 		return Resolved{}, invalidArg("missing required ID(s): %s", strings.Join(missing, "; "))
@@ -500,7 +500,7 @@ func (a *aggregator) value(f field) string {
 // descriptions. A field is in conflict when:
 //   - two or more explicit inputs disagree on it (genuine user error
 //     — two flags pointing at different things), OR
-//   - no explicit input names it and two or more env-derived sources
+//   - no explicit input specifies it and two or more env-derived sources
 //     disagree.
 //
 // An explicit input that disagrees with an env-derived one for the
@@ -548,7 +548,7 @@ func (a *aggregator) conflicts() []string {
 
 // missingRequired returns the names of Need.* fields that the
 // resolver couldn't populate, paired with a hint listing the flags
-// that would have satisfied them. Empty when every required field
+// that satisfy them. Empty when every required field
 // is set.
 func missingRequired(need Need, r Resolved) []string {
 	var out []string

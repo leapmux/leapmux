@@ -49,3 +49,15 @@ RETURNING *;
 -- DeleteExpiredDelegationTokensBefore for the pattern.
 DELETE FROM oauth_authorization_codes
 WHERE expires_at < sqlc.arg(now);
+
+-- name: ConsumeActiveAuthorizationCodesForUserClient :execresult
+-- The sibling of ConsumeApprovedDeviceAuthorizationsForUserClient: a
+-- DISCONNECT spends this account's outstanding authorization codes, so a
+-- consent granted seconds before it cannot be redeemed into a credential for
+-- an app the account just cut off.
+UPDATE oauth_authorization_codes
+SET consumed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+WHERE client_id = sqlc.arg(client_id)
+  AND user_id = sqlc.arg(user_id)
+  AND consumed_at IS NULL
+  AND expires_at > sqlc.arg(now);

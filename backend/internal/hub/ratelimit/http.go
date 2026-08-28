@@ -11,8 +11,10 @@ import (
 // The plain-HTTP entry point.
 //
 // This package is reached everywhere else through a Connect interceptor, keyed
-// by procedure. The OAuth authorization server's three ANONYMOUS legs --
-// device authorization, the token exchange and dynamic registration -- are mux
+// by procedure. The OAuth authorization server's ANONYMOUS endpoints -- every
+// route
+// mounted through anonymousLeg: device authorization, the token exchange,
+// revocation, dynamic registration, step-up, and the app icons -- are mux
 // routes rather than Connect procedures, so no interceptor sees them, and they
 // were the only endpoints on the hub an unauthenticated caller could drive in
 // a loop against the store.
@@ -21,29 +23,25 @@ import (
 // an operator sets `rate_limit.oauth_anonymous` once, and it governs whichever
 // door the traffic came through.
 
-// AllowHTTP reports whether a plain-HTTP request may proceed, and reserves its
-// slot when it may.
+// AllowHTTP reports whether a plain-HTTP request may proceed.
 //
-// It does NOT return an attempt to complete, and the difference from the
-// interceptor is deliberate. The interceptor's reservation caps CONCURRENCY of
-// an expensive handler, so it must be released when the handler returns. This
-// budget caps the RATE at which one address may drive an anonymous endpoint, so
-// a request that finished still counts -- releasing it would let an attacker
-// with fast responses run without limit.
+// It counts the request in the fixed window the Manager already keeps
+// (allowWindowed), so the budget is genuinely windowed: 600 requests per ten
+// minutes, not 600 per address per process lifetime.
 //
-// A nil manager, solo mode, or an unreachable configuration all ADMIT. The two
-// former are deliberate (a test wires no manager; a solo hub has one user). The
-// latter differs from the interceptor's fail-closed choice on purpose: these
-// endpoints are how a client authenticates at all, so a settings-store blip
-// that locked every app out of every hub would be a worse outage than the
-// unthrottled window it prevents. The failure is logged so it is not silent.
+// A nil manager or an unreachable configuration ADMITS. The former is
+// deliberate (a test wires no manager). The latter differs from the
+// interceptor's fail-closed choice on purpose: these endpoints are how a
+// client authenticates at all, so a settings-store blip that locked every app
+// out of every hub would be a worse outage than the unthrottled window it
+// prevents. The failure is logged so it is not silent.
 func AllowHTTP(ctx context.Context, m *Manager, op Operation, r *http.Request) bool {
-	if m == nil || m.solo {
+	if m == nil {
 		return true
 	}
-	_, allowed, _, err := m.allow(ctx, procedureSpec{op: op}, clientAddressKey(r))
+	allowed, _, err := m.allowWindowed(ctx, op, clientAddressKey(r))
 	if err != nil {
-		slog.WarnContext(ctx, "rate limit unavailable for an anonymous OAuth leg; admitting",
+		slog.WarnContext(ctx, "rate limit unavailable for an anonymous OAuth endpoint; admitting",
 			"operation", string(op), "err", err)
 		return true
 	}

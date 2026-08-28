@@ -47,7 +47,7 @@ func run(ctx context.Context, st store.Store) {
 	cleanupStep("expired pending signups", func() (int64, error) { return cs.DeleteExpiredPendingOAuthSignups(ctx, now) })
 	cleanupStep("expired webauthn sessions", func() (int64, error) { return cs.DeleteExpiredWebAuthnSessions(ctx, now) })
 	cleanupStep("expired device authorizations", func() (int64, error) { return cs.DeleteExpiredDeviceAuthorizations(ctx, now) })
-	cleanupStep("expired CLI authorization codes", func() (int64, error) {
+	cleanupStep("expired OAuth authorization codes", func() (int64, error) {
 		return cs.DeleteExpiredOAuthAuthorizationCodes(ctx, now)
 	})
 	// Hard-delete API tokens whose revocation is older than the retention

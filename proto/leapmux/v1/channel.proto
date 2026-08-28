@@ -24,7 +24,7 @@ message GetWorkerHandshakeParamsRequest {
 }
 
 // GetWorkerHandshakeParamsResponse bundles the persisted key material (which
-// only makes sense once the worker has uploaded its keys) with the live
+// only makes sense once the worker uploads its keys) with the live
 // encryption mode from the worker's current connection. A successful response
 // therefore guarantees the worker is online and ready for OpenChannel.
 message GetWorkerHandshakeParamsResponse {
@@ -81,7 +81,7 @@ message ChannelOpenRequest {
   // The Worker enforces it on every inner method. Without it the Worker
   // restricted each method to `is this the registrant` alone -- one bit -- so a bearer
   // that could open a channel reached ReadFile, SendInput, PushBranch and
-  // OpenTunnelConn alike, and a hub-side scope check would have handed a
+  // OpenTunnelConn alike, and a hub-side scope check would hand a
   // read-only app a shell.
   //
   // It trusts nothing new, and the argument is the one InnerMessage already
@@ -119,7 +119,7 @@ message ChannelOpenResponse {
 // as Internal (retryable-looking) faults.
 enum ChannelOpenErrorCode {
   CHANNEL_OPEN_ERROR_CODE_UNSPECIFIED = 0;
-  // Hub announced a missing or out-of-bounds max_message_size (config / version skew).
+  // Hub announced a missing or out-of-range max_message_size (config / version skew).
   CHANNEL_OPEN_ERROR_CODE_INVALID_MAX_MESSAGE_SIZE = 1;
   // Channel id is already active on this Worker; Hub must Close before re-open.
   CHANNEL_OPEN_ERROR_CODE_CHANNEL_ALREADY_ACTIVE = 2;
@@ -173,7 +173,7 @@ message HubControlFrame {
 // HubControlEvent identifies a type of Hub-originated event.
 enum HubControlEvent {
   HUB_CONTROL_EVENT_UNSPECIFIED = 0;
-  // The worker list has changed (e.g. a worker was registered or
+  // The worker list changed (e.g. a worker was registered or
   // deregistered). The frontend should re-fetch via ListWorkers.
   HUB_CONTROL_EVENT_WORKERS_CHANGED = 1;
 }
@@ -225,7 +225,7 @@ message RekeyRequest {
   bytes mlkem_ct = 2;
 }
 
-// RekeyAck commits the rekey: sender has rotated receive, will rotate send
+// RekeyAck commits the rekey: sender rotated receive, will rotate send
 // after this frame; receiver rotates both directions on receipt. dh_pub carries
 // the responder's fresh ephemeral X25519 public key, which the initiator pairs
 // with its own ephemeral private key to complete the DH agreement.

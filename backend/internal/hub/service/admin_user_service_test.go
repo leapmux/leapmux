@@ -2292,13 +2292,14 @@ func TestListAPITokens_ReportsWhatEachCredentialReaches(t *testing.T) {
 
 	// A private app of the administrator's, registered with two permissions.
 	clientID := id.Generate()
-	require.NoError(t, env.st.OAuthClients().Create(ctx, store.CreateOAuthClientParams{
+	_, createErr := env.st.OAuthClients().Create(ctx, store.CreateOAuthClientParams{
 		ClientID: clientID, ClientName: "Audited app", OwnerUserID: env.adminID,
 		RedirectURIs:       "https://app.example.com/callback",
 		Scopes:             "workspace:read file:read worker:read",
 		GrantTypes:         "authorization_code refresh_token",
 		RegistrationSource: store.OAuthClientSourceUser,
-	}))
+	})
+	require.NoError(t, createErr)
 	tokenID := id.Generate()
 	require.NoError(t, env.st.APITokens().Create(ctx, store.CreateAPITokenParams{
 		ID: tokenID, UserID: userid.MustNew(env.adminID), ClientID: clientID,
@@ -2362,10 +2363,11 @@ func TestAdminUserService_IssueAPITokenResolvesTheRegistration(t *testing.T) {
 
 	t.Run("a retired app does not mint", func(t *testing.T) {
 		clientID := id.Generate()
-		require.NoError(t, env.st.OAuthClients().Create(ctx, store.CreateOAuthClientParams{
+		_, createErr := env.st.OAuthClients().Create(ctx, store.CreateOAuthClientParams{
 			ClientID: clientID, ClientName: "Retired", Scopes: "workspace:read",
 			RegistrationSource: store.OAuthClientSourceAdmin,
-		}))
+		})
+		require.NoError(t, createErr)
 		uid, ok := userid.New(env.adminID)
 		require.True(t, ok)
 		_, err := env.st.OAuthClients().Revoke(ctx, store.OAuthClientOwnershipParams{
@@ -2383,10 +2385,11 @@ func TestAdminUserService_IssueAPITokenResolvesTheRegistration(t *testing.T) {
 
 	t.Run("an ask beyond the registration's ceiling is refused", func(t *testing.T) {
 		clientID := id.Generate()
-		require.NoError(t, env.st.OAuthClients().Create(ctx, store.CreateOAuthClientParams{
+		_, createErr := env.st.OAuthClients().Create(ctx, store.CreateOAuthClientParams{
 			ClientID: clientID, ClientName: "Narrow", Scopes: "workspace:read",
 			RegistrationSource: store.OAuthClientSourceAdmin,
-		}))
+		})
+		require.NoError(t, createErr)
 
 		_, err := env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
 			// The default grant is everything except admin -- far past a

@@ -196,8 +196,8 @@ type LimitsValue struct {
 // QueueBudgetValue limits the three outbound queue memory pools. All
 // restart-class: the hub derives the pool minimum floors from them (and
 // from the max message size) at startup, before any pool exists. A zero field
-// means auto-size from the process's own memory limit, so multi-instance
-// hubs on heterogeneous machines keep per-process budgets.
+// means auto-size from the process's own memory limit, so the budget follows
+// the machine the hub runs on, not the one a predecessor ran on.
 //
 // The fields carry no omitempty: zero is the stored, meaningful value
 // "auto-size", and omitempty would drop it from the listing JSON so the

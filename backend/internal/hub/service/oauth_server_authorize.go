@@ -4,12 +4,13 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
-	"strings"
 
 	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/hub/auth"
+	"github.com/leapmux/leapmux/internal/hub/httpsec"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/pkce"
 )
 
 // --- RFC 6749 section 4.1: authorization code with PKCE ---
@@ -19,7 +20,7 @@ import (
 type authorizeRequest struct {
 	app *store.OAuthClient
 	// redirectURI is what the CLIENT presented, not what the app registered.
-	// RFC 6749 section 4.1.3 makes the token leg compare the presented value,
+	// RFC 6749 section 4.1.3 makes the token stage compare the presented value,
 	// so the presented value is what the grant row must store.
 	redirectURI string
 	// registeredURI is the entry redirectURI matched. The consent page derives
@@ -55,7 +56,7 @@ func (h *OAuthServerHandler) parseAuthorizeRequest(
 	app, err := h.resolveApp(r.Context(), values.Get("client_id"), user)
 	if err != nil {
 		if errors.Is(err, errAppUnavailable) {
-			return req, oauthErrorBody("invalid_client", "unknown or unavailable client_id"), false, false
+			return req, appUnavailableBody(), false, false
 		}
 		return req, oauthErrorBody("server_error", ""), false, false
 	}
@@ -96,8 +97,14 @@ func (h *OAuthServerHandler) parseAuthorizeRequest(
 			"code_challenge_method must be S256"), true, false
 	}
 	req.codeChallenge = values.Get("code_challenge")
-	if req.codeChallenge == "" {
-		return req, oauthErrorBody("invalid_request", "code_challenge is required"), true, false
+	// RFC 7636 section 4.1 limits the challenge as it limits the verifier:
+	// 43-128 characters of the unreserved set. The floor is what stops a
+	// challenge whose preimage an attacker brute-forces in a handful of
+	// guesses, so an authorize stage that accepted any non-empty string armed
+	// exactly the clients PKCE protects with a challenge they chose.
+	if !pkce.ValidChallenge(req.codeChallenge) {
+		return req, oauthErrorBody("invalid_request",
+			"code_challenge must be 43-128 characters from the unreserved set"), true, false
 	}
 	if req.state == "" {
 		// RFC 6749 calls state RECOMMENDED; OAuth 2.1 requires either it or
@@ -117,13 +124,13 @@ func (h *OAuthServerHandler) parseAuthorizeRequest(
 
 // handleAuthorize serves the consent page.
 //
-// A GET is replayable from its own URL, so the gate sends away a caller that
+// A GET is replayable from its own URL, so the check sends away a caller that
 // is not signed in or not elevated, and that caller comes back to exactly this
-// address. consentLeg runs that gate before this leg does.
+// address. consentLeg runs that check before this stage does.
 //
 // The page cannot run script: its enforced Content-Security-Policy has no hash
 // and no nonce, which is why a passkey ceremony is impossible HERE and the
-// elevation gate bounces to the SPA's /elevate route instead.
+// elevation check bounces to the SPA's /elevate route instead.
 func (h *OAuthServerHandler) handleAuthorize(w http.ResponseWriter, r *http.Request, user *auth.UserInfo) {
 	req, body, redirectable, ok := h.parseAuthorizeRequest(r, user, r.URL.Query())
 	if !ok {
@@ -150,7 +157,7 @@ func (h *OAuthServerHandler) handleAuthorize(w http.ResponseWriter, r *http.Requ
 // then the answer is a page on the hub's own origin, because RFC 6749 section
 // 4.1.2.1 forbids redirecting to an unregistered address -- and because that
 // page is the last place attacker-chosen text could reach a browser, so it
-// draws from hub-authored sentences alone.
+// draws from hub-written sentences alone.
 func (h *OAuthServerHandler) writeAuthorizationFailure(
 	w http.ResponseWriter, r *http.Request, req authorizeRequest, body oauthErrorResponse, redirectable bool,
 ) {
@@ -164,43 +171,62 @@ func (h *OAuthServerHandler) writeAuthorizationFailure(
 		}, "")
 		return
 	}
-	dest, err := url.Parse(req.redirectURI)
-	if err != nil {
+	if !redirectWithQuery(w, r, req.redirectURI, func(q url.Values) {
+		q.Set("error", body.Error)
+		if body.ErrorDescription != "" {
+			q.Set("error_description", body.ErrorDescription)
+		}
+		if req.state != "" {
+			q.Set("state", req.state)
+		}
+	}) {
+		// The address cannot parse any more. It parsed at authorization, so
+		// the grant row drifted; the honest answer is the hub's own page, not
+		// a Location header to somewhere the registration never stated.
 		writePage(w, http.StatusBadRequest, invalidRequestPageTmpl, invalidRequestPageData{
 			Reason: invalidRequestSentence("invalid_request"),
 		}, "")
-		return
+	}
+}
+
+// redirectWithQuery appends query parameters to the app's redirect address and
+// sends the browser there. It is the ONE sink the authorization server writes
+// an app-bound Location header through, so the query encoding and the status
+// cannot differ between the consent path and the failure path.
+//
+// It reports false when the address does not parse, and writes nothing then:
+// RFC 6749 section 4.1.2.1 forbids redirecting anywhere but a registered
+// address, and each caller keeps its own unredirectable failure answer.
+func redirectWithQuery(w http.ResponseWriter, r *http.Request, uri string, set func(q url.Values)) bool {
+	dest, err := url.Parse(uri)
+	if err != nil {
+		return false
 	}
 	q := dest.Query()
-	q.Set("error", body.Error)
-	if body.ErrorDescription != "" {
-		q.Set("error_description", body.ErrorDescription)
-	}
-	if req.state != "" {
-		q.Set("state", req.state)
-	}
+	set(q)
 	dest.RawQuery = q.Encode()
 	http.Redirect(w, r, dest.String(), http.StatusFound)
+	return true
 }
 
 // handleConsent accepts the consent POST and redirects to the app's registered
 // address with a one-shot authorization code.
 //
-// This leg REFUSES rather than bounces when the session is not elevated, and
-// the gate derives that from the method: the PKCE challenge, the state, the
+// This stage REFUSES rather than bounces when the session is not elevated, and
+// the check derives that from the method: the PKCE challenge, the state, the
 // scope and the redirect URI arrive in the form body, so a redirect would drop
 // them and the user would return to a consent page that forgot what it
 // consented to. Cross-site forgery is not the exposure here either way -- the
 // session cookie is SameSite=Lax, so a cross-site POST carries no cookie.
 //
-// consentLeg runs the method check and the gate BEFORE this leg, and before
-// ParseForm. The gate reads only the URL, the headers and the cookies, so
-// parsing first made the hub read and buffer an anonymous caller's body -- up
-// to Go's 10 MB form limit -- to decide it had no session.
+// consentLeg runs the method check and the session check BEFORE this stage, and
+// before ParseForm. The check reads only the URL, the headers and the cookies,
+// so parsing first made the hub read and buffer an anonymous caller's body --
+// up to Go's 10 MB form limit -- to decide it had no session.
 //
 // It RE-VALIDATES everything the page carried forward. The form is
 // attacker-writable: nothing about having rendered a page makes the values
-// that come back trustworthy, so this leg parses them exactly as the GET did.
+// that come back trustworthy, so this stage parses them exactly as the GET did.
 func (h *OAuthServerHandler) handleConsent(w http.ResponseWriter, r *http.Request, user *auth.UserInfo) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "bad form", http.StatusBadRequest)
@@ -242,16 +268,12 @@ func (h *OAuthServerHandler) handleConsent(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	dest, err := url.Parse(req.redirectURI)
-	if err != nil {
+	if !redirectWithQuery(w, r, req.redirectURI, func(q url.Values) {
+		q.Set("code", code)
+		q.Set("state", req.state)
+	}) {
 		http.Error(w, "invalid redirect", http.StatusBadRequest)
-		return
 	}
-	q := dest.Query()
-	q.Set("code", code)
-	q.Set("state", req.state)
-	dest.RawQuery = q.Encode()
-	http.Redirect(w, r, dest.String(), http.StatusFound)
 }
 
 // consentDecisionAllow is the form value that grants. Deny is EVERY other
@@ -283,9 +305,9 @@ func invalidRequestSentence(code string) string {
 // familiar-looking run of characters and stops -- so the page renders a label
 // derived from the REGISTERED entry instead.
 //
-// A loopback address names the port the client actually presented, because
+// A loopback address states the port the client actually presented, because
 // that is the fact a person can check against the program in front of them.
-// Anything else names the registered host alone, with no path and no query.
+// Anything else states the registered host alone, with no path and no query.
 func redirectLabel(registeredURI, presentedURI string) string {
 	u, err := url.Parse(registeredURI)
 	if err != nil {
@@ -297,15 +319,11 @@ func redirectLabel(registeredURI, presentedURI string) string {
 		// picks which program answers, and no host exists to state.
 		return "an app installed on this device"
 	}
-	if isLoopbackLabelHost(host) {
+	if httpsec.IsLoopbackHost(host) {
 		if p, perr := url.Parse(presentedURI); perr == nil && p.Port() != "" {
 			return "a program on this computer (" + host + ":" + p.Port() + ")"
 		}
 		return "a program on this computer (" + host + ")"
 	}
 	return host
-}
-
-func isLoopbackLabelHost(host string) bool {
-	return strings.EqualFold(host, "localhost") || host == "127.0.0.1" || host == "::1"
 }

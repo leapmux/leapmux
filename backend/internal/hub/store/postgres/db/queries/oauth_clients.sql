@@ -3,7 +3,14 @@
 -- NULL one is hub-wide. The rule lives in the WHERE clause rather than in a
 -- Go check the caller must remember.
 
--- name: CreateOAuthClient :exec
+-- name: CreateOAuthClient :one
+-- The stored row, so RegisterApp answers from what the database wrote -- the
+-- DB-defaulted created_at/updated_at and the projected icon presence -- rather
+-- than a Go-side projection of the INSERT parameters (see GetOAuthClient for
+-- GetOAuthClient's shape). The icon comes back as the BYTES themselves: sqlc
+-- does not honor a RETURNING alias on either dialect, and Create runs once per
+-- registration, so the blob's 64 KiB ceiling is not a hot-path cost the way
+-- Get's projection avoids.
 INSERT INTO oauth_clients (
     client_id, owner_user_id, created_by_user_id, secret_hash, client_name,
     icon_blob, icon_media_type, client_uri, redirect_uris, scopes, grant_types,
@@ -24,7 +31,11 @@ INSERT INTO oauth_clients (
     sqlc.arg(registration_source),
     sqlc.narg(verified_at),
     sqlc.narg(verified_by_user_id)
-);
+)
+RETURNING client_id, owner_user_id, created_by_user_id, secret_hash, client_name,
+       icon_blob, client_uri, redirect_uris,
+       scopes, grant_types, elevation_allowed, registration_source,
+       verified_at, verified_by_user_id, created_at, updated_at, revoked_at;
 
 -- name: GetOAuthClient :one
 -- The row WHATEVER its state, revoked included. A revoked app must still be
@@ -50,10 +61,12 @@ FROM oauth_clients WHERE client_id = sqlc.arg(client_id);
 SELECT icon_blob, icon_media_type, verified_at, registration_source, revoked_at
 FROM oauth_clients WHERE client_id = sqlc.arg(client_id);
 
--- name: ListOAuthClientsVisibleTo :many
--- Every app this user may authorize: their own private ones plus every
--- hub-wide one. Keyset on (created_at DESC, client_id DESC), riding
--- idx_oauth_clients_owner.
+-- name: ListOAuthClients :many
+-- The one app listing, answering both questions a reader can ask: their own
+-- private registrations, plus the hub-wide catalogue when include_hub_wide
+-- says the reader is an administrator. An administrator edits the catalogue
+-- AND their own apps; everybody else sees what they registered. Keyset on
+-- (created_at DESC, client_id DESC), riding idx_oauth_clients_owner.
 --
 -- include_revoked widens the page to retired rows, which the "include retired"
 -- listing asks for; the default keeps the live-only shape every authorize
@@ -65,24 +78,8 @@ SELECT client_id, owner_user_id, created_by_user_id, secret_hash, client_name,
        verified_at, verified_by_user_id, created_at, updated_at, revoked_at
 FROM oauth_clients
 WHERE (revoked_at IS NULL OR sqlc.arg(include_revoked))
-  AND (owner_user_id IS NULL OR owner_user_id = sqlc.arg(user_id))
-  AND (sqlc.narg(cursor_time)::timestamptz IS NULL
-       OR created_at < sqlc.narg(cursor_time)::timestamptz
-       OR (created_at = sqlc.narg(cursor_time)::timestamptz AND client_id < sqlc.narg(cursor_id)))
-ORDER BY created_at DESC, client_id DESC
-LIMIT sqlc.arg('limit');
-
--- name: ListOAuthClientsOwnedBy :many
--- The apps this user REGISTERED, which is a different question from the one
--- above: it excludes the hub-wide catalogue, so the "App registrations" row
--- shows what the user can edit rather than everything they can authorize.
-SELECT client_id, owner_user_id, created_by_user_id, secret_hash, client_name,
-       COALESCE(LENGTH(icon_blob), 0) AS icon_bytes, client_uri, redirect_uris,
-       scopes, grant_types, elevation_allowed, registration_source,
-       verified_at, verified_by_user_id, created_at, updated_at, revoked_at
-FROM oauth_clients
-WHERE (revoked_at IS NULL OR sqlc.arg(include_revoked))
-  AND owner_user_id = sqlc.arg(user_id)
+  AND (owner_user_id = sqlc.arg(user_id)
+       OR (owner_user_id IS NULL AND sqlc.arg(include_hub_wide)))
   AND (sqlc.narg(cursor_time)::timestamptz IS NULL
        OR created_at < sqlc.narg(cursor_time)::timestamptz
        OR (created_at = sqlc.narg(cursor_time)::timestamptz AND client_id < sqlc.narg(cursor_id)))
@@ -148,13 +145,16 @@ WHERE client_id = sqlc.arg(client_id)
 
 -- name: SetOAuthClientVerified :execresult
 -- Only an administrator vouches, and the two columns move together so the
--- half-vouch CHECK can never be violated.
+-- half-vouch CHECK can never be violated. The admin requirement lives in the
+-- WHERE clause beside every other write's authorization on this table: a
+-- caller that forgot the Go-side check must not reach the row.
 UPDATE oauth_clients
 SET verified_at = sqlc.narg(verified_at),
     verified_by_user_id = sqlc.narg(verified_by_user_id),
     updated_at = NOW()
 WHERE client_id = sqlc.arg(client_id)
-  AND revoked_at IS NULL;
+  AND revoked_at IS NULL
+  AND sqlc.arg(caller_is_admin);
 
 -- name: RevokeOAuthClient :execresult
 -- Revoke, not delete. It is the verb the surface offers, because a hard delete
@@ -173,13 +173,24 @@ WHERE client_id = sqlc.arg(client_id)
   );
 
 -- name: RevokeAPITokensForOAuthClient :execresult
--- The cascade of a disconnect or a revocation: every credential the app holds
--- for this user dies with it. An EMPTY user_id revokes across every user,
--- which is what retiring the app itself means.
+-- The cascade of an APP RETIREMENT: every credential the app holds, across
+-- every user. The per-user cascade of a disconnect lives in its own statement
+-- (RevokeUserAPITokensForOAuthClient) rather than in an EMPTY-string sentinel
+-- here, so a caller that forgets the user cannot widen one account's
+-- disconnect into everybody's.
 UPDATE api_tokens
 SET revoked_at = NOW()
 WHERE client_id = sqlc.arg(client_id)
-  AND (sqlc.arg(user_id) = '' OR user_id = sqlc.arg(user_id))
+  AND revoked_at IS NULL;
+
+-- name: RevokeUserAPITokensForOAuthClient :execresult
+-- The cascade of a DISCONNECT: this one account's credentials for the app.
+-- The user bind is NOT optional here, which is the point of the split -- see
+-- RevokeAPITokensForOAuthClient.
+UPDATE api_tokens
+SET revoked_at = NOW()
+WHERE client_id = sqlc.arg(client_id)
+  AND user_id = sqlc.arg(user_id)
   AND revoked_at IS NULL;
 
 -- name: ListAPITokenIDsForOAuthClient :many
@@ -196,7 +207,14 @@ WHERE client_id = sqlc.arg(client_id)
 -- grant never reached the removed permission.
 SELECT id, user_id, granted_scopes FROM api_tokens
 WHERE client_id = sqlc.arg(client_id)
-  AND (sqlc.arg(user_id) = '' OR user_id = sqlc.arg(user_id))
+  AND revoked_at IS NULL;
+
+-- name: ListUserAPITokenIDsForOAuthClient :many
+-- The per-user form of the listing above, paired with
+-- RevokeUserAPITokensForOAuthClient: the refs a DISCONNECT will revoke.
+SELECT id, user_id, granted_scopes FROM api_tokens
+WHERE client_id = sqlc.arg(client_id)
+  AND user_id = sqlc.arg(user_id)
   AND revoked_at IS NULL;
 
 -- name: CountLiveAPITokensForOAuthClient :one
@@ -247,3 +265,48 @@ WHERE client_id = sqlc.arg(client_id)
       (owner_user_id IS NULL AND sqlc.arg(caller_is_admin))
       OR owner_user_id = sqlc.arg(caller_user_id)
   );
+
+-- name: UpsertBuiltInOAuthClient :exec
+-- Seeds one built-in registration on a fresh database, and reconciles it on
+-- every boot: the SET list below names ONLY the columns that are constants of
+-- the build (see internal/hub/oauthapp). Everything else is deliberately
+-- absent from it, which is what preserves the operator's decisions across
+-- restarts:
+--
+--   * elevation_allowed -- the ONE field an operator may change on a built-in
+--     (SetAppElevationAllowed), so `control admin` keeps working after every
+--     restart. The INSERT branch states TRUE for the same reason the
+--     migration's seed rows did: the CLI needs it, and seeding it off would
+--     take a working capability away.
+--   * verified_at / verified_by_user_id -- ClientIsVerified answers true for
+--     a builtin by construction, so these stay NULL; a hand-set value is
+--     still an operator's row state and is not the seed's to clear.
+--   * revoked_at -- fail-safe: a row some path retired stays retired.
+--   * updated_at -- the row's own clock. A boot that changed no constant
+--     writes nothing observable, so "when did this app last change" keeps
+--     answering the operator's last edit rather than the last restart.
+--   * owner_user_id, created_by_user_id, created_at -- the row's own history
+--     from its first boot. A reconciliation that rewrote created_at would
+--     make the registration look brand new on every upgrade.
+INSERT INTO oauth_clients (
+    client_id, client_name, client_uri, redirect_uris, scopes, grant_types,
+    elevation_allowed, registration_source, created_at, updated_at
+) VALUES (
+    sqlc.arg(client_id),
+    sqlc.arg(client_name),
+    sqlc.arg(client_uri),
+    sqlc.arg(redirect_uris),
+    sqlc.arg(scopes),
+    sqlc.arg(grant_types),
+    sqlc.arg(elevation_allowed),
+    sqlc.arg(registration_source),
+    sqlc.arg(created_at),
+    sqlc.arg(updated_at)
+)
+ON CONFLICT (client_id) DO UPDATE SET
+    client_name = EXCLUDED.client_name,
+    client_uri = EXCLUDED.client_uri,
+    redirect_uris = EXCLUDED.redirect_uris,
+    scopes = EXCLUDED.scopes,
+    grant_types = EXCLUDED.grant_types,
+    registration_source = EXCLUDED.registration_source;

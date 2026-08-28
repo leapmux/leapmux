@@ -176,7 +176,7 @@ func (s *AuthService) Login(ctx context.Context, req *connect.Request[leapmuxv1.
 }
 
 func (s *AuthService) Logout(ctx context.Context, req *connect.Request[leapmuxv1.LogoutRequest]) (*connect.Response[leapmuxv1.LogoutResponse], error) {
-	token := auth.SessionIDFromHeader(req.Header().Get("Cookie"), s.secureCookies(ctx))
+	token := auth.SessionIDFromCookieHeader(req.Header().Get("Cookie"), s.secureCookies(ctx))
 	if token != "" {
 		if _, err := s.store.Sessions().Delete(ctx, token); err != nil {
 			connectErr := connect.NewError(connect.CodeInternal, fmt.Errorf("delete session: %w", err))

@@ -188,7 +188,7 @@ func ClearOAuthNonceCookie(state string) []*http.Cookie {
 //
 // A hub that runs without secure_cookies also accepts the __Host- spelling,
 // and the asymmetry is the point. secure_cookies is read once when the
-// login leg writes the cookie and again when the callback reads it, so an
+// login stage writes the cookie and again when the callback reads it, so an
 // operator who turns it OFF inside the five-minute window would otherwise
 // turn every in-flight login into "a different browser started this
 // sign-in" -- a
@@ -359,26 +359,16 @@ func ClearSessionCookie(secure bool) *http.Cookie {
 	return newCookie(cookieName(secure), "", -1, secure)
 }
 
-// SessionIDFromRequest extracts the session ID from a parsed http.Request's cookies.
-func SessionIDFromRequest(r *http.Request, secure bool) string {
-	return cookieValue(r, cookieName(secure))
-}
-
-// SessionIDFromHeader extracts the session ID from a raw Cookie header value.
-// ConnectRPC interceptors use this, because they hold only the header string.
-func SessionIDFromHeader(cookieHeader string, secure bool) string {
-	return cookieValueFromHeader(cookieHeader, cookieName(secure))
-}
-
-// sessionIDFromCookieHeader reads the session id with the asymmetric fallback
+// SessionIDFromCookieHeader reads the session id with the asymmetric fallback
 // BOTH auth ladders use: the __Host- spelling first, and the unprefixed one
 // only on a hub whose secure_cookies setting is off (so it never writes the
 // prefix). See AuthenticateHTTP for why the fallback direction is safe.
 //
-// ONE helper, because the Connect interceptor and AuthenticateHTTP answer the
-// same question for the same browser, and a caller that held only the header
-// string used to need a second spelling of the rule.
-func sessionIDFromCookieHeader(cookieHeader string, secureCookies bool) string {
+// ONE helper, because the Connect interceptor, AuthenticateHTTP and Logout all
+// answer the same question for the same browser, and a caller that spelled the
+// ladder by hand could read a cookie the ladder does not -- or miss one it
+// does, which is how a sign-out once cleared no row at all.
+func SessionIDFromCookieHeader(cookieHeader string, secureCookies bool) string {
 	token := cookieValueFromHeader(cookieHeader, cookieName(true))
 	if token == "" && !secureCookies {
 		token = cookieValueFromHeader(cookieHeader, cookieName(false))

@@ -255,18 +255,8 @@ func rowsAffected(tag pgconn.CommandTag, err error) (int64, error) {
 	return tag.RowsAffected(), nil
 }
 
-// The app listings share one keyset shape. The owner is bound as a
-// non-NULL value even though the column is nullable: a NULL owner is the
-// HUB-WIDE marker, and `owner_user_id = NULL` matches nothing, so binding NULL
-// here would silently return an empty page.
-func listOAuthClientsVisibleToParams(userID, cursor string, limit int64, includeRevoked bool) (gendb.ListOAuthClientsVisibleToParams, error) {
-	return withCursor(cursor, limit, func(ct pgtime.NullTime, cid pgtype.Text, fl int32) gendb.ListOAuthClientsVisibleToParams {
-		return gendb.ListOAuthClientsVisibleToParams{UserID: pgtype.Text{String: userID, Valid: true}, IncludeRevoked: includeRevoked, CursorTime: ct, CursorID: cid, Limit: fl}
-	})
-}
-
-func listOAuthClientsOwnedByParams(userID, cursor string, limit int64, includeRevoked bool) (gendb.ListOAuthClientsOwnedByParams, error) {
-	return withCursor(cursor, limit, func(ct pgtime.NullTime, cid pgtype.Text, fl int32) gendb.ListOAuthClientsOwnedByParams {
-		return gendb.ListOAuthClientsOwnedByParams{UserID: pgtype.Text{String: userID, Valid: true}, IncludeRevoked: includeRevoked, CursorTime: ct, CursorID: cid, Limit: fl}
+func listOAuthClientsParams(userID, cursor string, limit int64, includeRevoked, includeHubWide bool) (gendb.ListOAuthClientsParams, error) {
+	return withCursor(cursor, limit, func(ct pgtime.NullTime, cid pgtype.Text, fl int32) gendb.ListOAuthClientsParams {
+		return gendb.ListOAuthClientsParams{UserID: pgtype.Text{String: userID, Valid: true}, IncludeRevoked: includeRevoked, IncludeHubWide: includeHubWide, CursorTime: ct, CursorID: cid, Limit: fl}
 	})
 }

@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"sync/atomic"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -139,4 +140,15 @@ func SignalProcessGroup(cmd *exec.Cmd, sig syscall.Signal) error {
 		return nil
 	}
 	return cmd.Process.Signal(sig)
+}
+
+// GracefulGroupCancel configures one child's teardown on Windows: cancel kills
+// the job object's processes, and WaitDelay abandons the I/O pipes five
+// seconds later. It exists so the agent processes and the ACP terminal
+// sessions configure teardown through one name on every platform.
+func GracefulGroupCancel(cmd *exec.Cmd) {
+	cmd.Cancel = func() error {
+		return SignalProcessGroup(cmd, syscall.SIGTERM)
+	}
+	cmd.WaitDelay = 5 * time.Second
 }

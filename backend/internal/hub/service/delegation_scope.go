@@ -31,14 +31,14 @@ func workerScopePredicate(scope auth.DelegationWorkerScope) func(string) bool {
 }
 
 // submitWorkerBound is the ONE function that answers "may this caller bind a
-// tab to this worker" for SubmitOps, and it composes BOTH bounds.
+// tab to this worker" for SubmitOps, and it composes BOTH limits.
 //
 // SubmitOps is one procedure that mutates the whole layout document, so
 // workspace:write is the honest method scope -- every client-submittable op
 // body is layout. What a scope can still narrow is SetTabRegisterOp.worker_id,
 // which points a tab at a MACHINE, and two separate rules limit it:
 //
-//   - the delegation bound, which stops a bearer minted by worker A from
+//   - the delegation limit, which stops a bearer minted by worker A from
 //     binding a tab to worker B, and
 //   - worker:read, without which an app was never granted the right to reach
 //     a machine at all. An app given workspace:write alone could otherwise
@@ -60,7 +60,7 @@ func submitWorkerBound(user *auth.UserInfo, scope auth.DelegationWorkerScope) fu
 	}
 	if !user.Scopes.Allows(leapmuxv1.Scope_SCOPE_WORKER_READ) {
 		// The scope refuses EVERY worker, so the composition is the constant
-		// false rather than an intersection with the delegation bound.
+		// false rather than an intersection with the delegation limit.
 		return denyEveryWorker
 	}
 	return workerScopePredicate(scope)
