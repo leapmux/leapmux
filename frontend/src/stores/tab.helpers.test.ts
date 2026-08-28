@@ -9,7 +9,13 @@ import { GitRepoStatusSchema } from '~/generated/leapmux/v1/common_pb'
 import { TerminalInfoSchema, TerminalProgress_State, TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { clearSettingsLabelCache, getCachedSettingsGroupLabel } from '~/lib/settingsLabelCache'
-import { agentTabToInfo, deriveOptionGroupTabFields, descendantAgentTabs, isSameRepo, isSteerableAgentTab, isTabReadyForGitStatus, mruSteerableAgentTab, openedTerminalMetadata, protoToAgentTabFields, resolveOptimisticGitInfo, rootAgentIdFor, seedOptimisticRepoGit, setOptionValue, tabDisplayLabel, tabTooltipShowWhen, tabTooltipText, terminalMetadata, terminalProgressBarProps } from './tab.helpers'
+import { repoKey } from './repoGit'
+// Static, not `await import(...)` inside a test body. The dynamic form put the
+// module transform inside the test and charged it against `testTimeout`, which
+// failed a 5s test on a cold Vite cache. `./tab.helpers` already pulls
+// `./repoGit` into the static graph, so nothing here forces the dynamic form.
+import { createRepoGitStore } from './repoGit.store'
+import { agentTabToInfo, deriveOptionGroupTabFields, descendantAgentTabs, isSameRepo, isSteerableAgentTab, isTabReadyForGitStatus, mruSteerableAgentTab, openedAgentTabFields, openedTerminalMetadata, planOptimisticRepoGit, protoToAgentTabFields, resolveOptimisticGitInfo, rootAgentIdFor, setOptionValue, tabDisplayLabel, tabTooltipShowWhen, tabTooltipText, terminalMetadata, terminalProgressBarProps } from './tab.helpers'
 import { createTabMetadataStore } from './tabMetadata.store'
 
 // `tabDisplayLabel` is the shared "what should we render in the tab strip
@@ -202,16 +208,16 @@ describe('protoToAgentTabFields git status', () => {
   const status = () => create(GitRepoStatusSchema, { branch: 'main', toplevel: '/repo' })
 
   it('writes repo identity onto the tab when git status carries a toplevel', () => {
-    const fields = protoToAgentTabFields('wkr-1', agent(status()))
+    const fields = protoToAgentTabFields(createRepoGitStore(), 'wkr-1', agent(status()))
     expect(fields.gitToplevel).toBe('/repo')
   })
 
   it('reports no git identity for an agent with no status', () => {
-    expect(protoToAgentTabFields('wkr-1', agent(undefined)).gitToplevel).toBeUndefined()
+    expect(protoToAgentTabFields(createRepoGitStore(), 'wkr-1', agent(undefined)).gitToplevel).toBeUndefined()
   })
 
   it('leaves the rest of the payload alone', () => {
-    const fields = protoToAgentTabFields('wkr-1', agent(status()))
+    const fields = protoToAgentTabFields(createRepoGitStore(), 'wkr-1', agent(status()))
     expect(fields.workerId).toBe('wkr-1')
     expect(fields.workingDir).toBe('/repo')
   })
@@ -595,41 +601,146 @@ describe('resolveOptimisticGitInfo', () => {
   })
 })
 
-describe('seedOptimisticRepoGit', () => {
-  it('copies branch and origin onto a different worker key when dirs match', async () => {
-    const { createRepoGitStore } = await import('~/stores/repoGit.store')
-    const { repoKey } = await import('~/stores/repoGit')
-    const store = createRepoGitStore()
-    const active = agent({ workerId: 'w1', gitToplevel: '/r', workingDir: '/r' })
+describe('planOptimisticRepoGit', () => {
+  const activeOn = (workerId: string) => agent({ workerId, gitToplevel: '/r', workingDir: '/r' })
+  const seedSource = (store: ReturnType<typeof createRepoGitStore>, extra: Record<string, unknown> = {}) =>
     store.upsert(repoKey('w1', '/r'), {
       workerId: 'w1',
       toplevel: '/r',
       branch: 'main',
       originUrl: 'git@example.com:o/r.git',
       gitStatusSeen: true,
+      ...extra,
     })
 
-    seedOptimisticRepoGit(store, active, { workerId: 'w2', workingDir: '/r' })
+  it('copies branch and origin onto a different worker key when dirs match', () => {
+    const store = createRepoGitStore()
+    seedSource(store)
+
+    planOptimisticRepoGit(store, activeOn('w1'), { workerId: 'w2', workingDir: '/r' }).commit()
 
     expect(store.get(repoKey('w2', '/r'))?.branch).toBe('main')
     expect(store.get(repoKey('w2', '/r'))?.originUrl).toBe('git@example.com:o/r.git')
   })
 
-  it('does nothing when the new tab shares the active store key', async () => {
-    const { createRepoGitStore } = await import('~/stores/repoGit.store')
-    const { repoKey } = await import('~/stores/repoGit')
+  it('does nothing when the new tab shares the active store key', () => {
     const store = createRepoGitStore()
-    const active = agent({ workerId: 'w1', gitToplevel: '/r', workingDir: '/r' })
-    store.upsert(repoKey('w1', '/r'), {
-      workerId: 'w1',
-      toplevel: '/r',
-      branch: 'main',
-      originUrl: 'git@example.com:o/r.git',
-    })
+    seedSource(store)
 
-    seedOptimisticRepoGit(store, active, { workerId: 'w1', workingDir: '/r' })
+    planOptimisticRepoGit(store, activeOn('w1'), { workerId: 'w1', workingDir: '/r' }).commit()
 
     expect(store.get(repoKey('w1', '/r'))?.branch).toBe('main')
+  })
+
+  /**
+   * The plan resolves the row fields; only `commit` writes. An open whose tab
+   * placement is refused never commits, so it leaves no entry that no tab reads
+   * and nothing reclaims.
+   */
+  it('writes nothing until the caller commits', () => {
+    const store = createRepoGitStore()
+    seedSource(store)
+
+    const plan = planOptimisticRepoGit(store, activeOn('w1'), { workerId: 'w2', workingDir: '/r' })
+
+    expect(plan.fields.gitToplevel, 'the row half is ready immediately').toBe('/r')
+    expect(store.get(repoKey('w2', '/r')), 'the store half waits for the tab').toBeUndefined()
+  })
+
+  /**
+   * A confirmed answer and an unprobed key both leave `branch` and `originUrl`
+   * empty, so emptiness alone cannot tell them apart. `gitStatusSeen` can, and
+   * without it a guess from another machine overwrites what this worker said.
+   */
+  it('refuses to overwrite a worker-confirmed branchless repo', () => {
+    const store = createRepoGitStore()
+    seedSource(store)
+    // A detached HEAD on w2 whose short-SHA probe also failed: real repo, no
+    // branch name, and the worker said so.
+    store.upsert(repoKey('w2', '/r'), {
+      workerId: 'w2',
+      toplevel: '/r',
+      branch: '',
+      originUrl: '',
+      gitStatusSeen: true,
+    })
+
+    planOptimisticRepoGit(store, activeOn('w1'), { workerId: 'w2', workingDir: '/r' }).commit()
+
+    expect(store.get(repoKey('w2', '/r'))?.branch, 'the worker answered; a guess must not outrank it').toBe('')
+  })
+
+  it('still fills a key nothing has probed yet', () => {
+    const store = createRepoGitStore()
+    seedSource(store)
+    // An optimistic stamp with no status behind it: not a worker answer.
+    store.upsert(repoKey('w2', '/r'), { workerId: 'w2', toplevel: '/r', branch: '', originUrl: '' })
+
+    planOptimisticRepoGit(store, activeOn('w1'), { workerId: 'w2', workingDir: '/r' }).commit()
+
+    expect(store.get(repoKey('w2', '/r'))?.branch).toBe('main')
+  })
+})
+
+/**
+ * The tab fields for an agent this client just opened.
+ *
+ * The helper exists to carry `hydrated: true`, which every local-open path
+ * needs and each one used to write by hand. Without it `useTabHydrators` re-asks
+ * for an agent this client just created, and that reply lands without the
+ * pending-axis suppression, so it overwrites an in-flight settings edit.
+ */
+describe('openedAgentTabFields', () => {
+  const openedAgent = (gs: GitRepoStatus | undefined) => create(AgentInfoSchema, {
+    id: 'a1',
+    workerId: 'wkr-1',
+    workingDir: '/repo',
+    agentProvider: AgentProvider.CLAUDE_CODE,
+    gitStatus: gs,
+  })
+  const status = () => create(GitRepoStatusSchema, {
+    branch: 'main',
+    toplevel: '/repo',
+    originUrl: 'git@example.com:o/r.git',
+  })
+
+  // The flag is the reason the helper exists, so it is the one field the pure
+  // mapper must not supply and this helper must.
+  it('marks the tab hydrated, which the pure mapper does not', () => {
+    const agentInfo = openedAgent(undefined)
+
+    expect(openedAgentTabFields(createRepoGitStore(), agentInfo).hydrated).toBe(true)
+    expect(
+      protoToAgentTabFields(createRepoGitStore(), 'wkr-1', agentInfo),
+      'the mapper stays neutral: the hydrators set the flag centrally',
+    ).not.toHaveProperty('hydrated')
+  })
+
+  it('changes nothing else the pure mapper puts on the row', () => {
+    const agentInfo = openedAgent(status())
+
+    const { hydrated, ...rest } = openedAgentTabFields(createRepoGitStore(), agentInfo)
+
+    expect(hydrated).toBe(true)
+    expect(rest).toEqual(protoToAgentTabFields(createRepoGitStore(), 'wkr-1', agentInfo))
+  })
+
+  /**
+   * The OpenAgent response carries no git status. The worker computes it in
+   * startup phase 1 and sends it on the STARTING broadcast, so the `git status`
+   * shell-out does not block the RPC; `TestOpenAgent_ResponseHasNilGitStatus`
+   * holds it to that.
+   *
+   * So this is the shape every caller really passes, and the row must carry no
+   * repo identity. A `gitToplevel` with no matching store entry is what files a
+   * tab under a repo with no branch name.
+   */
+  it('puts no repo identity on the row for the status the response really carries', () => {
+    expect(openedAgentTabFields(createRepoGitStore(), openedAgent(undefined)).gitToplevel).toBeUndefined()
+  })
+
+  it('copies the toplevel onto the row when a status does resolve one', () => {
+    expect(openedAgentTabFields(createRepoGitStore(), openedAgent(status())).gitToplevel).toBe('/repo')
   })
 })
 

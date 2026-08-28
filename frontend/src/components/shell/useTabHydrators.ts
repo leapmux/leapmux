@@ -1,15 +1,19 @@
 import type { createRepoGitStore } from '~/stores/repoGit.store'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabView } from '~/stores/tabView'
-import { createEffect, createMemo, onCleanup, untrack } from 'solid-js'
+import { createEffect, createMemo, createSignal, onCleanup, untrack } from 'solid-js'
 import { getFileTabPath, listAgents, listTerminals } from '~/api/workerRpc'
 import { TabHydrationStatus } from '~/generated/leapmux/v1/common_pb'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { resolveSettingsTabFields } from '~/hooks/agentEvents'
 import { createExponentialBackoff } from '~/lib/retry'
 import { sameKeys } from '~/lib/sameKeys'
 import { migrateErrorHintFromForResolvedRepo, upsertRepoGitFromProtoStatus } from '~/stores/repoGit'
 import { protoToAgentTabFields, tabKey, terminalMetadata } from '~/stores/tab.helpers'
+
+/** No axis is in flight. Shared so the common case allocates nothing. */
+const EMPTY_PENDING_AXES: ReadonlySet<string> = new Set()
 
 /**
  * Per-tab-type hydration of CRDT-projected tabs that arrived without
@@ -42,6 +46,17 @@ export interface UseTabHydratorsOpts {
    * its startup spinner, for the life of the page.
    */
   onlineWorkerIds?: () => ReadonlySet<string>
+  /**
+   * In-flight settings axes for an agent, so a re-ask cannot overwrite an
+   * optimistic edit the user made while the reply was on its way.
+   *
+   * The live status handler routes every catalog it applies through
+   * `resolveSettingsTabFields` for this reason. The batch below applied the
+   * `ListAgents` reply RAW, which was safe only while the batch could never run
+   * twice for one tab. It can now (see the worker-online re-ask), so it routes
+   * through the same suppression.
+   */
+  settingsPendingAxes?: (agentId: string) => ReadonlySet<string>
 }
 
 export function useTabHydrators(opts: UseTabHydratorsOpts): void {
@@ -55,6 +70,34 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
    * fields happened to arrive.
    */
   const isHydrated = (tabId: string): boolean => opts.metadata.get(tabId)?.hydrated === true
+
+  /**
+   * Agent tabs whose worker came back and that must be asked again, although
+   * they are already `hydrated`.
+   *
+   * An agent tab has no other re-arm. A terminal tab re-arms on DISCONNECTED,
+   * which is why a terminal repaired itself after an outage and an agent did
+   * not: its title, status and option catalogs stayed at whatever was true
+   * before the link dropped, for the life of the page.
+   *
+   * The set is what makes the flag re-armable WITHOUT making `hydrated` itself
+   * mean something weaker. A re-ask is safe only because the batch now applies
+   * the reply through `resolveSettingsTabFields`; see `settingsPendingAxes`.
+   */
+  const [reaskAgentTabIds, setReaskAgentTabIds] = createSignal<ReadonlySet<string>>(new Set())
+
+  const dropReask = (tabIds: Iterable<string>) => {
+    setReaskAgentTabIds((prev) => {
+      let next: Set<string> | undefined
+      for (const id of tabIds) {
+        if (!prev.has(id))
+          continue
+        next ??= new Set(prev)
+        next.delete(id)
+      }
+      return next ?? prev
+    })
+  }
 
   interface BaseSpec {
     predicate: (tab: Tab) => boolean
@@ -352,6 +395,42 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
     }
   }
 
+  /**
+   * Arm a re-ask for every agent tab of a worker that just came back.
+   *
+   * The generic worker-online effect inside `createTabHydration` resets the
+   * retry budget, but it selects from the CANDIDATE set -- and a `hydrated` tab
+   * is not a candidate, so it could never reach one. This marks those tabs so
+   * the predicate admits them, and the same effect then dispatches the batch.
+   *
+   * Keyed on the OFF -> ON transition, not on membership: the hub re-pushes the
+   * worker list on every `WORKERS_CHANGED` frame, and a worker that stayed
+   * online through all of them has nothing to re-ask.
+   */
+  if (opts.onlineWorkerIds) {
+    let wasOnline: ReadonlySet<string> | undefined
+    createEffect(() => {
+      const online = opts.onlineWorkerIds!()
+      // The FIRST reading is not a transition. Treating it as one would re-ask
+      // for every agent tab on a page load, right after the initial hydration.
+      const previous = wasOnline
+      wasOnline = online
+      if (!previous)
+        return
+      const cameOnline = [...online].filter(id => !previous.has(id))
+      if (cameOnline.length === 0)
+        return
+      untrack(() => {
+        const ids = opts.view.all()
+          .filter(t => t.type === TabType.AGENT && t.workerId && cameOnline.includes(t.workerId))
+          .map(t => t.id)
+        if (ids.length === 0)
+          return
+        setReaskAgentTabIds(prev => new Set([...prev, ...ids]))
+      })
+    })
+  }
+
   // FILE: GetFileTabPath populates the path/title via worker E2EE. The
   // WatchWorkerPrivateEvents stream's bootstrap reply covers the
   // late-joiner case, but if a tab lands before the private-event
@@ -395,11 +474,16 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
   // call instead of N.
   createTabHydration({
     kind: 'batched',
-    predicate: tab => tab.type === TabType.AGENT && Boolean(tab.workerId) && !isHydrated(tab.id),
+    predicate: tab => tab.type === TabType.AGENT
+      && Boolean(tab.workerId)
+      && (!isHydrated(tab.id) || reaskAgentTabIds().has(tab.id)),
     fetchBatch: async (workerId, tabs) => {
       const resp = await listAgents(workerId, { tabIds: tabs.map(t => t.id) })
       const byId = new Map(resp.agents.map(a => [a.id, a]))
       const resolved = new Set<string>()
+      // The ask happened, so drop the re-ask marks whatever the reply says. A
+      // tab the worker no longer knows must not stay armed and re-ask forever.
+      dropReask(tabs.map(t => t.id))
       for (const tab of tabs) {
         const agent = byId.get(tab.id)
         if (!agent)
@@ -415,10 +499,24 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
         // the race it used to have: `listAgents` is awaited, and a live status
         // push landing meanwhile would have made the pre-await snapshot a stale
         // basis for the comparison.
-        opts.metadata.patch(tab.id, protoToAgentTabFields(workerId, agent))
-        upsertRepoGitFromProtoStatus(opts.repoGitStore, workerId, agent.gitStatus, {
+        // NOT the raw mapper's settings fields. `resolveSettingsTabFields` is
+        // the same path the live status handler uses, and it keeps a per-axis
+        // value the user is editing right now instead of overwriting it with
+        // the worker's older answer. A re-ask makes that reachable: this batch
+        // can run for a tab that already has in-flight edits.
+        // The mapper writes the repo entry itself, from the same status it
+        // reads `gitToplevel` from, so the two halves cannot be written apart.
+        // This caller holds a LIVE tab, so it is the one that can compute the
+        // orphan-migration tip.
+        const fields = protoToAgentTabFields(opts.repoGitStore, workerId, agent, {
           migrateErrorHintFrom: migrateErrorHintFromForResolvedRepo(workerId, tab, agent.gitStatus),
         })
+        const settingsFields = resolveSettingsTabFields(
+          opts.view.getAgentTab(tab.id),
+          agent.optionGroups,
+          opts.settingsPendingAxes?.(tab.id) ?? EMPTY_PENDING_AXES,
+        )
+        opts.metadata.patch(tab.id, { ...fields, ...settingsFields })
         resolved.add(tab.id)
       }
       return { resolved, verdicts: resp.verdicts }

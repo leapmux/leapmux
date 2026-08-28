@@ -116,7 +116,7 @@ function placeChildTab(
   label: 'opened' | 'revived',
 ): OpenSubagentTabResult {
   const { view, selection, metadata } = deps
-  metadata.patch(childAgentId, buildMetadata(deps, item))
+  metadata.patch(childAgentId, buildMetadata(deps, item, workerId))
   emit({
     type: TabType.AGENT,
     id: childAgentId,
@@ -172,6 +172,7 @@ function parentKey(deps: OpenSubagentTabDeps, item: { parentAgentId?: string }, 
 function buildMetadata(
   deps: OpenSubagentTabDeps,
   item: { parentAgentId?: string, title?: string },
+  workerId: string,
 ): TabMetadata {
   const parent = item.parentAgentId ? deps.view.getAgentTab(item.parentAgentId) : undefined
   // workerId is NOT a metadata field: it lives on the projection, and the
@@ -186,7 +187,17 @@ function buildMetadata(
   //
   // Seed only title/workingDir/agentProvider + the optimistic git fields the
   // sidebar groups by until hydration lands.
-  const git = parent ? resolveOptimisticGitInfo(parent, { workingDir: parent.workingDir }) : undefined
+  //
+  // Copy the git fields only from a parent on the SAME worker. `gitToplevel` is
+  // half of the repo key, and `workerId` is the other half; this child takes
+  // the caller's `workerId`, which falls back to the tile's active agent when
+  // the row carries no `parentAgentId`. A parent on a different worker would
+  // put its own toplevel under this worker's id, where no probe ever wrote an
+  // entry -- the tab would then sit under a repo with no branch name.
+  const sameWorker = parent?.workerId === workerId
+  const git = parent && sameWorker
+    ? resolveOptimisticGitInfo(parent, { workingDir: parent.workingDir })
+    : undefined
   return {
     title: item.title || undefined,
     workingDir: parent?.workingDir,

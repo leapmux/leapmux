@@ -58,16 +58,34 @@ export function branchKey(branchName: string | null, workerId: string, gitToplev
  * returned the "(no branch)" key, which is exactly the drift above.
  */
 /**
- * Repo toplevel for structural keys (branch buckets, delete-branch tab sets).
- * Prefer the store's canonical identity over tab metadata, which can lag on
- * probe-path orphans and subdir agents until the next status broadcast.
+ * Repo toplevel for structural keys (branch buckets, delete-branch tab sets)
+ * and for the sidebar's repository grouping. The ONE place that answers "which
+ * repository is this tab in", so a caller cannot re-add the row fallback below.
+ *
+ * `repoGitView` already resolves the two sources correctly, and this trusts it:
+ *
+ *  - No store entry yet: the view returns the row's `gitToplevel`, so a tab
+ *    stays grouped from the moment it is opened, before any probe lands.
+ *  - An entry that resolved a repo: the view returns the store's toplevel,
+ *    which wins over tab metadata that can lag on probe-path orphans and
+ *    subdir agents.
+ *  - An entry that says "not a git repository": the view returns undefined,
+ *    and so does this. That answer came FROM the worker, so a stale row value
+ *    must not override it -- doing so filed the tab under a repository that
+ *    does not exist there, with no branch name, until the page reloaded.
+ *
+ * The row IS the fallback when no store key resolves at all, which happens for
+ * a tab with no `workerId`. There is no entry to believe or disbelieve then,
+ * and the row is the only thing anyone knows.
  */
 export function tabGitToplevelForKey(
   tab: Pick<Tab, 'workerId' | 'gitToplevel' | 'workingDir'>,
   store: RepoGitStore,
 ): string {
   const git = repoGitView(tab, store)
-  return git.toplevel ?? tab.gitToplevel ?? ''
+  if (!git.key)
+    return tab.gitToplevel ?? ''
+  return git.toplevel ?? ''
 }
 
 export function tabBranchKey(tab: Pick<Tab, 'workerId' | 'gitToplevel' | 'workingDir'>, store: RepoGitStore): string {

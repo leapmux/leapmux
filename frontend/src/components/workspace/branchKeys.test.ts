@@ -9,6 +9,7 @@ import {
   repoKeyForLocal,
   repoKeyTooltip,
   tabBranchKey,
+  tabGitToplevelForKey,
 } from './branchKeys'
 
 describe('branchNameSegment', () => {
@@ -124,5 +125,36 @@ describe('tabBranchKey', () => {
     local.upsert(repoKey('w1', '/repo'), { workerId: 'w1', toplevel: '/repo', branch: 'feature' })
     expect(tabBranchKey({ workerId: 'w1', workingDir: '/repo/pkg' }, local))
       .toBe(branchKey('feature', 'w1', '/repo'))
+  })
+
+  /**
+   * The worker answered "not a git repository" for this path, and the row's
+   * `gitToplevel` is stale -- the repository was removed while the link was
+   * down. Believing the row files the tab under a repository that is not there,
+   * with no branch name, for the rest of the page.
+   */
+  it('believes an explicit non-repo answer over a stale row toplevel', () => {
+    const local = createRepoGitStore()
+    local.upsert(repoKey('w1', '/gone'), {
+      workerId: 'w1',
+      toplevel: '',
+      errorHint: 'not a git repository',
+      gitStatusSeen: true,
+    })
+
+    expect(tabGitToplevelForKey({ workerId: 'w1', gitToplevel: '/gone' }, local)).toBe('')
+  })
+
+  // No key resolves without a worker id, so there is no answer to believe and
+  // the row is the only thing anyone knows.
+  it('keeps the row toplevel when no store key resolves', () => {
+    const local = createRepoGitStore()
+    expect(tabGitToplevelForKey({ gitToplevel: '/repo' }, local)).toBe('/repo')
+  })
+
+  // An unprobed key is not an answer either.
+  it('keeps the row toplevel when the store has no entry yet', () => {
+    const local = createRepoGitStore()
+    expect(tabGitToplevelForKey({ workerId: 'w1', gitToplevel: '/repo' }, local)).toBe('/repo')
   })
 })

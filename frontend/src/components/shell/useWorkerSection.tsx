@@ -38,12 +38,8 @@ export interface UseWorkerSectionOpts {
    * that must be registered exactly once.
    */
   keyPinConfirmDialog: DialogState<KeyPinConfirmState>
-  /**
-   * Drop keyed git state for a worker that left the account. Called from the
-   * deregister success path so entries do not depend on the offline sweep
-   * (which may never run if the worker was already offline).
-   */
-  clearRepoGitForWorker?: (workerId: string) => void
+  // No `clearRepoGitForWorker`. See `onDeregistered` below for why the
+  // repo-keyed git store outlives a deregistration.
 }
 
 export interface WorkerSection {
@@ -130,9 +126,18 @@ export function useWorkerSection(opts: UseWorkerSectionOpts): WorkerSection {
           <WorkerSettingsDialog
             worker={target()}
             onClose={() => setDeregisterTarget(null)}
+            // The repo-keyed git store is NOT cleared here. Deregistration
+            // removes the worker from this list, and nothing removes that
+            // worker's tab rows: they keep `gitToplevel`, and the sidebar groups
+            // a tab by that field while it reads the branch label from the
+            // store. Clearing therefore left every tab of the worker under its
+            // repo with no branch name, for the life of the page, with no way
+            // back -- the same defect the worker-offline sweep used to cause.
+            //
+            // An entry is last-known working-tree state. The rows it labels
+            // outlive the deregistration, so it should too.
             onDeregistered={() => {
               const id = target().id
-              opts.clearRepoGitForWorker?.(id)
               setWorkers(prev => prev.filter(w => w.id !== id))
               setDeregisterTarget(null)
             }}

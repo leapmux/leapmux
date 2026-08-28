@@ -22,7 +22,7 @@ import { useAvailableShells } from '~/hooks/useAvailableShells'
 import { createInflightCache } from '~/lib/inflightCache'
 import { createSharedInputQueues } from '~/lib/inputQueue'
 import { DEFAULT_TERMINAL_COLS, DEFAULT_TERMINAL_ROWS, ENTER_KEY_CR } from '~/lib/terminal'
-import { openedTerminalMetadata, resolveOptimisticGitInfo, seedOptimisticRepoGit } from '~/stores/tab.helpers'
+import { openedTerminalMetadata, planOptimisticRepoGit } from '~/stores/tab.helpers'
 import { emitRemoveTab } from '~/stores/tabOps'
 import { openTabInFocusedTile } from './openTabInFocusedTile'
 import { warnUnlessPlaceableTab } from './placeableTabGuard'
@@ -172,20 +172,24 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
       // the active tab -- so the guard could never reject, and "open a
       // terminal here" on a sibling worktree inherited the wrong repo's
       // branch, origin and diff badges.
-      const seed = resolveOptimisticGitInfo(activeTab, {
-        shellStartDir: args.shellStartDir,
-        workingDir: ctx.workingDir,
-      })
-      seedOptimisticRepoGit(props.repoGitStore, activeTab, {
+      //
+      // ONE call, so the guard and the row seed cannot be given different
+      // directories. Two calls meant two hand-built argument objects that had
+      // to agree.
+      const seed = planOptimisticRepoGit(props.repoGitStore, activeTab, {
         workerId: ctx.workerId,
         shellStartDir: args.shellStartDir,
         workingDir: ctx.workingDir,
       })
-      openTabInFocusedTile(
+      const placedTileId = openTabInFocusedTile(
         props,
         { type: TabType.TERMINAL, id: resp.terminalId, workerId: ctx.workerId },
-        { ...meta, ...seed },
+        { ...meta, ...seed.fields },
       )
+      // Only once the tab exists. Placement can be refused, and a store entry
+      // written before it would be an orphan nothing reclaims.
+      if (placedTileId)
+        seed.commit()
     }
     catch (err) {
       showWarnToast('Failed to open terminal', err)

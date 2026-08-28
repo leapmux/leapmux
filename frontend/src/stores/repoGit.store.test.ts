@@ -664,6 +664,80 @@ describe('createRepoGitStore', () => {
       })
     })
 
+    /**
+     * The allowance above covers ONE answer, because one answer can be
+     * transient. Two in a row are the worker's real report.
+     *
+     * Without the limit the first non-repo answer suppresses every later one
+     * for the life of the page. A user whose worktree is removed while the
+     * link is down then keeps a branch label and a diff badge in the sidebar
+     * for a directory that does not exist, and the Files section never
+     * receives the "not a git repository" hint.
+     */
+    it('writes the non-repo stub on the second answer in a row', async () => {
+      await createRoot(async (dispose) => {
+        const store = createRepoGitStore()
+        const key = repoKey('worker1', '/repo')
+        store.upsert(key, { workerId: 'worker1', toplevel: '/repo', branch: 'main', gitStatusSeen: true })
+
+        const notARepo = {
+          repoRoot: '',
+          status: undefined,
+          files: [],
+          errorHint: 'not a git repository',
+        }
+
+        mockGetGitFileStatus.mockResolvedValueOnce(notARepo)
+        await store.refresh('worker1', '/repo', { repoKey: key })
+        expect(store.get(key)?.branch, 'one answer can be transient').toBe('main')
+
+        mockGetGitFileStatus.mockResolvedValueOnce(notARepo)
+        await store.refresh('worker1', '/repo', { repoKey: key })
+
+        const state = store.get(key)!
+        expect(state.toplevel, 'the second answer is believed').toBe('')
+        expect(state.branch).toBe('')
+        expect(state.errorHint).toBe('not a git repository')
+        dispose()
+      })
+    })
+
+    it('gives the allowance back after a real status lands between two non-repo answers', async () => {
+      await createRoot(async (dispose) => {
+        const store = createRepoGitStore()
+        const key = repoKey('worker1', '/repo')
+        store.upsert(key, { workerId: 'worker1', toplevel: '/repo', branch: 'main', gitStatusSeen: true })
+
+        const notARepo = {
+          repoRoot: '',
+          status: undefined,
+          files: [],
+          errorHint: 'not a git repository',
+        }
+
+        mockGetGitFileStatus.mockResolvedValueOnce(notARepo)
+        await store.refresh('worker1', '/repo', { repoKey: key })
+
+        // The repo answers, so the entry recovers and its allowance resets.
+        mockGetGitFileStatus.mockResolvedValueOnce({
+          repoRoot: '/repo',
+          status: { toplevel: '/repo', branch: 'main' },
+          files: [],
+          errorHint: '',
+        })
+        await store.refresh('worker1', '/repo', { repoKey: key })
+        expect(store.get(key)?.nonRepoProbeIgnored).toBe(false)
+
+        // A later single answer is transient again, so the branch survives it.
+        mockGetGitFileStatus.mockResolvedValueOnce(notARepo)
+        await store.refresh('worker1', '/repo', { repoKey: key })
+
+        expect(store.get(key)?.branch, 'the reset restores the allowance').toBe('main')
+        expect(store.get(key)?.toplevel).toBe('/repo')
+        dispose()
+      })
+    })
+
     it('persists errorHint on a non-repo probe using the path when repoKey is omitted', async () => {
       await createRoot(async (dispose) => {
         const store = createRepoGitStore()
@@ -892,15 +966,76 @@ describe('createRepoGitStore', () => {
     })
   })
 
-  describe('clearForWorker', () => {
-    it('removes every repo entry for the worker', () => {
+  /**
+   * The store exposes no per-worker clear, and must not grow one back.
+   *
+   * Dropping a worker's entries is never right while its tab rows survive. A
+   * row keeps `gitToplevel`, `WorkspaceTabTree.repoKeyAndLabel` groups the tab
+   * by that field, and the branch label comes from this store -- so a cleared
+   * entry puts every tab of that worker under its repo with no branch name.
+   * Neither event that used to call it removes the rows: a dropped link leaves
+   * them, and so does deregistration.
+   */
+  it('exposes no per-worker clear', () => {
+    expect(createRepoGitStore()).not.toHaveProperty('clearForWorker')
+  })
+
+  /**
+   * The cap is the store's only reclaim path, so it has to bite -- and it has
+   * to miss the entries a tab is reading, or it recreates the missing branch
+   * label that the removal of the sweeps exists to prevent.
+   */
+  describe('least-recently-used cap', () => {
+    const MAX = 256
+    const fill = (store: ReturnType<typeof createRepoGitStore>, from: number, to: number) => {
+      for (let i = from; i < to; i++)
+        store.upsert(repoKey('w1', `/r${i}`), { workerId: 'w1', toplevel: `/r${i}` })
+    }
+
+    // `get` is the tab-facing read and it MARKS the entry as recently used, so
+    // an assertion must not use it to look at an entry it is not pretending to
+    // render. `repos()` is the raw map and touches nothing.
+    const peek = (store: ReturnType<typeof createRepoGitStore>, key: string) => store.repos()[key as never]
+
+    it('drops the coldest entry once the cap is passed', () => {
       const store = createRepoGitStore()
-      store.upsert(repoKey('w1', '/a'), { workerId: 'w1', toplevel: '/a' })
-      store.upsert(repoKey('w1', '/b'), { workerId: 'w1', toplevel: '/b' })
-      store.upsert(repoKey('w2', '/c'), { workerId: 'w2', toplevel: '/c' })
-      store.clearForWorker('w1')
-      expect(store.keysForWorker('w1')).toEqual([])
-      expect(store.keysForWorker('w2')).toEqual([repoKey('w2', '/c')])
+      fill(store, 0, MAX)
+      expect(peek(store, repoKey('w1', '/r0')), 'still under the cap').toBeDefined()
+
+      // Written last, so /r0 is now the least recently used.
+      store.upsert(repoKey('w1', '/over'), { workerId: 'w1', toplevel: '/over' })
+
+      expect(peek(store, repoKey('w1', '/r0'))).toBeUndefined()
+      expect(peek(store, repoKey('w1', '/over'))).toBeDefined()
+      expect(store.keysForWorker('w1'), 'the index shrinks with the map').toHaveLength(MAX)
+    })
+
+    it('keeps an entry a tab keeps reading, however old the write', () => {
+      const store = createRepoGitStore()
+      const live = repoKey('w1', '/r0')
+      fill(store, 0, MAX)
+
+      // What the sidebar does for a tab on every render.
+      expect(store.get(live)).toBeDefined()
+      store.upsert(repoKey('w1', '/over'), { workerId: 'w1', toplevel: '/over' })
+
+      expect(peek(store, live), 'a read is what keeps a live tab\'s repo warm').toBeDefined()
+      expect(peek(store, repoKey('w1', '/r1')), 'the next-coldest went instead').toBeUndefined()
+    })
+
+    it('keeps a pinned entry, which holds in-flight optimistic state', () => {
+      const store = createRepoGitStore()
+      const pinned = repoKey('w1', '/r0')
+      store.upsert(pinned, {
+        workerId: 'w1',
+        toplevel: '/r0',
+        branch: 'feature/x',
+        branchPinnedUntilRefresh: true,
+      })
+      fill(store, 1, MAX + 1)
+
+      expect(peek(store, pinned)?.branch).toBe('feature/x')
+      expect(peek(store, repoKey('w1', '/r1')), 'the coldest unpinned entry went instead').toBeUndefined()
     })
   })
 })

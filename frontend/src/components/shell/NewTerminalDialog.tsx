@@ -13,6 +13,7 @@ import { DialogFormFooter, WorkerDialogShell } from '~/components/shell/WorkerDi
 import { WorkerSelector } from '~/components/shell/WorkerSelector'
 import { createDirectoryTreeState } from '~/hooks/createDirectoryTreeState'
 import { useAvailableShells } from '~/hooks/useAvailableShells'
+import { GitMode } from '~/hooks/useGitModeState'
 import { useWorkerDialog } from '~/hooks/useWorkerDialog'
 import { formatErrorMessage } from '~/lib/errors'
 import { DEFAULT_TERMINAL_COLS, DEFAULT_TERMINAL_ROWS } from '~/lib/terminal'
@@ -27,7 +28,21 @@ interface NewTerminalDialogProps {
    * pty first and refusing placement second would orphan it.
    */
   blockedReason?: () => string | undefined
-  onCreated: (terminalId: string, workerId: string, workingDir: string, title: string) => void
+  /**
+   * `seedGitFromActiveTab` says whether the caller may copy the active tab's
+   * branch onto the new tab until the worker's first status arrives.
+   *
+   * Only the plain "use this directory" mode may. Every other mode redirects
+   * the terminal into a worktree or onto another branch, where the active tab's
+   * branch is the wrong answer for the directory it lands in.
+   */
+  onCreated: (
+    terminalId: string,
+    workerId: string,
+    workingDir: string,
+    title: string,
+    opts: { seedGitFromActiveTab: boolean },
+  ) => void
   onClose: () => void
   repoGitStore: ReturnType<typeof createRepoGitStore>
 }
@@ -88,7 +103,9 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
       workerId: worker.workerId(),
       ...gitMode.toGitFields(),
     })
-    props.onCreated(resp.terminalId, worker.workerId(), worker.workingDir(), resp.title)
+    props.onCreated(resp.terminalId, worker.workerId(), worker.workingDir(), resp.title, {
+      seedGitFromActiveTab: gitMode.gitMode() === GitMode.Current,
+    })
   })
 
   return (

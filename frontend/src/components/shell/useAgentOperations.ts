@@ -26,8 +26,7 @@ import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { base64ToUint8Array } from '~/lib/base64'
 import { getInnerMessage, parseMessageContent } from '~/lib/messageParser'
 import { getMruProviders, touchMruProvider } from '~/lib/mruAgentProviders'
-import { migrateErrorHintFromForResolvedRepo, upsertRepoGitFromProtoStatus } from '~/stores/repoGit'
-import { protoToAgentTabFields, resolveOptimisticGitInfo, seedOptimisticRepoGit, setOptionValue } from '~/stores/tab.helpers'
+import { openedAgentTabFields, planOptimisticRepoGit, setOptionValue } from '~/stores/tab.helpers'
 import { emitRemoveTab, emitRemoveTabs, hasLiveTabRecord } from '~/stores/tabOps'
 import { openTabInFocusedTile } from './openTabInFocusedTile'
 import { warnUnlessPlaceableTab } from './placeableTabGuard'
@@ -172,39 +171,51 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
         ...(sessionId ? { agentSessionId: sessionId } : {}),
       })
       if (resp.agent) {
+        // Seed git branch / origin from the active tab when both resolve to
+        // the same directory. Agent tabs have no shellStartDir --
+        // effectiveGitDir collapses to workingDir for them.
+        //
+        // The worker resolves the real values later. The OpenAgent response
+        // carries no git status: the worker computes it in startup phase 1 and
+        // sends it on the STARTING broadcast, because the `git status`
+        // shell-out would otherwise block the RPC. So this seed is what the
+        // sidebar shows until that broadcast lands.
+        //
+        // ONE read of the active tab feeds both the dir-match guard and the
+        // branch copy. A second read would let a later edit give the two
+        // different tabs.
+        const activeTab = props.selection.activeTabForWorkspace(workspaceId)
+        const seed = planOptimisticRepoGit(
+          props.repoGitStore,
+          activeTab,
+          { workerId: resp.agent.workerId, workingDir: resp.agent.workingDir },
+        )
         // Everything the OpenAgent response carries that the CRDT does not:
         // title, provider, status, session, option catalogs. This also primes
         // the settings-label cache with the agent's catalogs.
-        const agentFields = protoToAgentTabFields(resp.agent.workerId, resp.agent)
-        // Seed git branch / origin from the active tab when both resolve to
-        // the same directory; the authoritative values arrive later on the
-        // agent's first status update. Agent tabs have no shellStartDir —
-        // effectiveGitDir collapses to workingDir for them.
-        const seed = resolveOptimisticGitInfo(props.selection.activeTabForWorkspace(workspaceId), {
-          workingDir: agentFields.workingDir,
-        })
-        seedOptimisticRepoGit(
-          props.repoGitStore,
-          props.selection.activeTabForWorkspace(workspaceId),
-          { workerId: resp.agent.workerId, workingDir: agentFields.workingDir },
-        )
-        upsertRepoGitFromProtoStatus(props.repoGitStore, resp.agent.workerId, resp.agent.gitStatus, {
-          migrateErrorHintFrom: migrateErrorHintFromForResolvedRepo(
-            resp.agent.workerId,
-            { workingDir: agentFields.workingDir, gitToplevel: agentFields.gitToplevel },
-            resp.agent.gitStatus,
-          ),
-        })
+        //
         // `hydrated`: the OpenAgent response IS the worker's answer for this
         // tab, so `useTabHydrators` must not immediately re-ask. Its reply
         // would land without the pending-axis suppression the live settings
         // path applies, overwriting an optimistic edit made during the
         // round-trip.
-        openTabInFocusedTile(
+        const agentFields = openedAgentTabFields(props.repoGitStore, resp.agent)
+        const placedTileId = openTabInFocusedTile(
           props,
           { type: TabType.AGENT, id: resp.agent.id, workerId: resp.agent.workerId },
-          { ...agentFields, ...seed, hydrated: true },
+          // `seed.fields` FIRST, so the worker's own answer wins on the row for
+          // the same reason it wins in the store. The two halves of a tab's
+          // repo identity must not resolve a conflict in opposite directions.
+          //
+          // Today the response carries no toplevel, so the seed is the only
+          // source and the order changes nothing. It matters if the response
+          // ever carries one and it differs from the active tab's guess.
+          { ...seed.fields, ...agentFields },
         )
+        // Only now, because placement can be refused. Writing the store first
+        // leaves an entry that no tab reads and nothing reclaims.
+        if (placedTileId)
+          seed.commit()
         // Focus the editor after the reactive updates propagate to the DOM.
         requestAnimationFrame(() => props.focusEditor?.())
         return true

@@ -22,7 +22,7 @@ import { ChangeBranchDialog } from '~/components/workspace/ChangeBranchDialog'
 import { DeleteBranchDialog } from '~/components/workspace/DeleteBranchDialog'
 import { NewWorkspaceDialog } from '~/components/workspace/NewWorkspaceDialog'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
-import { openedTerminalMetadata, protoToAgentTabFields } from '~/stores/tab.helpers'
+import { openedAgentTabFields, openedTerminalMetadata, planOptimisticRepoGit } from '~/stores/tab.helpers'
 import { LastTabCloseDialog } from './LastTabCloseDialog'
 import { NewAgentDialog } from './NewAgentDialog'
 import { NewTerminalDialog } from './NewTerminalDialog'
@@ -136,24 +136,70 @@ interface AppShellDialogsProps {
 }
 
 export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
-  // Full per-agent metadata lives on the Tab record now;
-  // protoToAgentTabFields also primes settingsLabelCache.
-  // `hydrated`: this `AgentInfo` came from the worker, so the hydrator has
-  // nothing to add and must not re-ask (see `TabMetadata.hydrated`).
-  const addAgentTabToFocusedTile = (agent: AgentInfo) => {
-    openTabInFocusedTile(
+  // Full per-agent metadata lives on the Tab record now. `openedAgentTabFields`
+  // also primes settingsLabelCache, and it carries `hydrated: true`: this
+  // `AgentInfo` came from the worker, so the hydrator has nothing to add and
+  // must not re-ask (see `TabMetadata.hydrated`).
+  //
+  // `seedGitFromActiveTab` copies the active tab's branch onto the new tab
+  // while the worker's own status is on its way. The OpenAgent response carries
+  // no git status -- the worker computes it in startup phase 1 and sends it on
+  // the STARTING broadcast -- so without the seed the tab renders outside its
+  // repository group for the whole startup. `useAgentOperations` already seeds
+  // on the tab-bar path.
+  //
+  // Only the caller knows whether the seed is safe. It is safe only when the
+  // agent lands in the directory the active tab is showing, which the plain
+  // git mode is the only one to guarantee.
+  /** The active tab to seed git from, or undefined when seeding is unsafe. */
+  const gitSeedSource = (seedGitFromActiveTab: boolean) =>
+    seedGitFromActiveTab
+      ? props.selection.activeTabForWorkspace(props.activeWorkspace()?.id ?? '')
+      : undefined
+
+  const addAgentTabToFocusedTile = (agent: AgentInfo, opts: { seedGitFromActiveTab: boolean }) => {
+    // `resolveOptimisticGitInfo`'s own guard still applies: it copies nothing
+    // unless the two tabs resolve to the same git directory.
+    const seed = planOptimisticRepoGit(
+      props.repoGitStore,
+      gitSeedSource(opts.seedGitFromActiveTab),
+      { workerId: agent.workerId, workingDir: agent.workingDir },
+    )
+    const placedTileId = openTabInFocusedTile(
       props,
       { type: TabType.AGENT, id: agent.id, workerId: agent.workerId },
-      { ...protoToAgentTabFields(agent.workerId, agent), hydrated: true },
+      // The seed first, so the worker's own answer wins wherever it has one.
+      { ...seed.fields, ...openedAgentTabFields(props.repoGitStore, agent) },
     )
+    // Placement can be refused, and a store entry written before it would be
+    // an orphan that no tab reads and nothing reclaims.
+    if (placedTileId)
+      seed.commit()
   }
 
-  const addTerminalTabToFocusedTile = (terminalId: string, workerId: string, workingDir: string, title: string) => {
-    openTabInFocusedTile(
+  // `shellStartDir` is what the worker was asked to start in, and it is what
+  // `effectiveGitDir` compares -- so it must reach the seed, exactly as it does
+  // in `useTerminalOperations`. Without it both sides collapse to `workingDir`
+  // and the directory guard can never reject.
+  const addTerminalTabToFocusedTile = (
+    terminalId: string,
+    workerId: string,
+    workingDir: string,
+    title: string,
+    opts: { seedGitFromActiveTab: boolean } = { seedGitFromActiveTab: false },
+  ) => {
+    const seed = planOptimisticRepoGit(
+      props.repoGitStore,
+      gitSeedSource(opts.seedGitFromActiveTab),
+      { workerId, workingDir },
+    )
+    const placedTileId = openTabInFocusedTile(
       props,
       { type: TabType.TERMINAL, id: terminalId, workerId },
-      openedTerminalMetadata({ title, workingDir }),
+      { ...seed.fields, ...openedTerminalMetadata({ title, workingDir }) },
     )
+    if (placedTileId)
+      seed.commit()
   }
 
   /**
@@ -183,9 +229,9 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
           onRefreshProviders={props.onRefreshProviders}
           blockedReason={newTabBlockedReason}
           repoGitStore={props.repoGitStore}
-          onCreated={(agent) => {
+          onCreated={(agent, opts) => {
             props.dialogs.newAgent.close()
-            addAgentTabToFocusedTile(agent)
+            addAgentTabToFocusedTile(agent, opts)
             requestAnimationFrame(() => props.focusEditor())
           }}
           onClose={() => props.dialogs.newAgent.close()}
@@ -198,11 +244,11 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
           defaultWorkingDir={props.getCurrentTabContext().workingDir}
           blockedReason={newTabBlockedReason}
           repoGitStore={props.repoGitStore}
-          onCreated={(terminalId, workerId, workingDir, title) => {
+          onCreated={(terminalId, workerId, workingDir, title, opts) => {
             props.dialogs.newTerminal.close()
             if (!props.activeWorkspace())
               return
-            addTerminalTabToFocusedTile(terminalId, workerId, workingDir, title)
+            addTerminalTabToFocusedTile(terminalId, workerId, workingDir, title, opts)
           }}
           onClose={() => props.dialogs.newTerminal.close()}
         />
@@ -342,8 +388,11 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
             // immediate local UI write is needed (and the user isn't
             // looking at that workspace's tile to feel the latency).
             onAgentCreated={(agent) => {
+              // No git seed. This dialog reaches the agent branch only in
+              // CreateWorktree mode, so the agent lands in a NEW worktree on a
+              // different branch than the active tab shows.
               if (state.workspaceId === props.activeWorkspace()?.id)
-                addAgentTabToFocusedTile(agent)
+                addAgentTabToFocusedTile(agent, { seedGitFromActiveTab: false })
             }}
             onTerminalCreated={(terminalId, workerId, workingDir, title) => {
               if (state.workspaceId === props.activeWorkspace()?.id)

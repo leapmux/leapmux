@@ -91,9 +91,10 @@ export function tabBuildKey(t: Tab, store: RepoGitStore): string {
     isAgentTab(t) ? t.parentAgentId ?? '' : '',
     t.workerId ?? '',
     git.branchLabel ?? '',
-    // Prefer store toplevel so the fingerprint matches buildTree / tabBranchKey
-    // when tab metadata still lags a resolved repo identity.
-    git.toplevel ?? t.gitToplevel ?? '',
+    // The same resolution the tree itself uses, so the fingerprint matches
+    // buildTree / tabBranchKey -- including when the store says "not a git
+    // repository" and the row's stale toplevel must not win.
+    tabGitToplevelForKey(t, store),
     git.isWorktree ? '1' : '0',
     git.originUrl ?? '',
     git.diffStats.added,
@@ -1003,7 +1004,10 @@ function repoKeyAndLabel(tab: Tab, store: RepoGitStore): { key: string, label: s
   const git = repoGitView(tab, store)
   if (git.originUrl)
     return { key: git.originUrl, label: formatGitOriginUrl(git.originUrl) }
-  const toplevel = git.toplevel ?? tab.gitToplevel
+  // Through the shared helper, so the group key and the branch bucket resolve
+  // the toplevel the same way. A second copy of the chain here is what let a
+  // stale row value override the worker's "not a git repository" answer.
+  const toplevel = tabGitToplevelForKey(tab, store)
   if (toplevel) {
     const label = basename(toplevel) || toplevel
     return { key: repoKeyForLocal(toplevel), label }

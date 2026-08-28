@@ -17,6 +17,7 @@ import { WorkerSelector } from '~/components/shell/WorkerSelector'
 import { createDirectoryTreeState } from '~/hooks/createDirectoryTreeState'
 import { createSessionIdState } from '~/hooks/createSessionIdState'
 import { useAgentProviderSelection } from '~/hooks/useAgentProviderSelection'
+import { GitMode } from '~/hooks/useGitModeState'
 import { useWorkerDialog } from '~/hooks/useWorkerDialog'
 
 interface NewAgentDialogProps {
@@ -32,7 +33,16 @@ interface NewAgentDialogProps {
    * agent first and refusing placement second would orphan the agent.
    */
   blockedReason?: () => string | undefined
-  onCreated: (agent: AgentInfo) => void
+  /**
+   * `seedGitFromActiveTab` says whether the caller may copy the active tab's
+   * branch onto the new tab while the worker's own status is on its way.
+   *
+   * Only the plain "use this directory" mode may. Every other mode redirects
+   * the agent -- a new or existing worktree, or a different branch -- so the
+   * active tab's branch would be the wrong answer for the directory the agent
+   * actually lands in. This dialog is the only place that knows which mode ran.
+   */
+  onCreated: (agent: AgentInfo, opts: { seedGitFromActiveTab: boolean }) => void
   onClose: () => void
   repoGitStore: ReturnType<typeof createRepoGitStore>
 }
@@ -87,7 +97,9 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
     })
     if (resp.agent) {
       recordProviderUse(provider)
-      props.onCreated(resp.agent)
+      props.onCreated(resp.agent, {
+        seedGitFromActiveTab: gitMode.gitMode() === GitMode.Current,
+      })
     }
   })
 

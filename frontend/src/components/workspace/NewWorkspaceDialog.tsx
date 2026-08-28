@@ -25,7 +25,7 @@ import { useAgentProviderSelection } from '~/hooks/useAgentProviderSelection'
 import { useWorkerDialog } from '~/hooks/useWorkerDialog'
 import { seedTabIntoNewWorkspace } from '~/lib/crdt'
 import { sanitizeName } from '~/lib/validate'
-import { protoToAgentTabFields } from '~/stores/tab.helpers'
+import { openedAgentTabFields } from '~/stores/tab.helpers'
 import { errorText } from '~/styles/shared.css'
 
 interface NewWorkspaceDialogProps {
@@ -122,18 +122,16 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
         // fan-out would otherwise be the first to supply them, and until it
         // landed the tab would render as a raw agent id.
         //
-        // `hydrated: true` for the same reason every other local-open path
-        // sets it: the OpenAgent response IS the worker's answer for this tab.
-        // Without it the tab matches `useTabHydrators`' `!isHydrated` predicate
-        // — which now runs over every workspace in the account, not just the
-        // active one — and a `ListAgents` round-trip fires immediately for an
-        // agent this client just created. That reply is applied raw, with none
-        // of the live handler's in-flight-settings suppression, so a settings
-        // edit made in the window before it lands is silently overwritten.
-        props.metadata.patch(agentResp.agent.id, {
-          ...protoToAgentTabFields(agentResp.agent.workerId, agentResp.agent),
-          hydrated: true,
-        })
+        // `openedAgentTabFields` carries `hydrated: true`, for the same reason
+        // every other local-open path needs it: the OpenAgent response IS the
+        // worker's answer for this tab. Without it the tab matches
+        // `useTabHydrators`' `!isHydrated` predicate — which now runs over every
+        // workspace in the account, not just the active one — and a `ListAgents`
+        // round-trip fires immediately for an agent this client just created.
+        // That reply is applied raw, with none of the live handler's
+        // in-flight-settings suppression, so a settings edit made in the window
+        // before it lands is silently overwritten.
+        props.metadata.patch(agentResp.agent.id, openedAgentTabFields(props.repoGitStore, agentResp.agent))
 
         // After the worker has spawned the agent, wait for the
         // `WorkspaceCreated` event to populate `WorkspaceContentsRecord
@@ -150,7 +148,13 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
           workspaceId: wsResp.workspaceId,
           tabType: TabType.AGENT,
           tabId: agentResp.agent.id,
-          workerId: wid,
+          // The RESPONSE's worker id, not the local `wid` the RPC was routed
+          // to. `tab.workerId` comes from this projection register, and it is
+          // half of the repo key the sidebar reads a tab's branch with. The
+          // other half comes from the response. One identity, one source, so
+          // the two cannot disagree. The other two open paths already pass
+          // `agent.workerId` here.
+          workerId: agentResp.agent.workerId,
         })
       }
 

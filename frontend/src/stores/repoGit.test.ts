@@ -189,6 +189,24 @@ describe('migrateErrorHintFromForResolvedRepo', () => {
     const status = create(GitRepoStatusSchema, { toplevel: '/repo', branch: 'main' })
     expect(migrateErrorHintFromForResolvedRepo('w1', tab, status)).toBeUndefined()
   })
+
+  // A tip needs a tab that the store wrote BEFORE this status resolved. Derive
+  // the tab from the response itself and the two cases exclude each other, so
+  // there is never anything to migrate. Both shapes below are what
+  // `protoToAgentTabFields` produces for one response.
+  it('has nothing to migrate for a tab derived from this very status', () => {
+    const resolved = create(GitRepoStatusSchema, { toplevel: '/repo', branch: 'main' })
+    expect(
+      migrateErrorHintFromForResolvedRepo('w1', { workingDir: '/repo/pkg', gitToplevel: '/repo' }, resolved),
+      'a resolved toplevel is on the tab too, so there is no orphan key',
+    ).toBeUndefined()
+
+    const unresolved = create(GitRepoStatusSchema, { branch: 'main' })
+    expect(
+      migrateErrorHintFromForResolvedRepo('w1', { workingDir: '/repo/pkg' }, unresolved),
+      'an unresolved toplevel leaves no key to migrate TO',
+    ).toBeUndefined()
+  })
 })
 
 describe('patchFromNonRepoGetGitFileStatus', () => {
