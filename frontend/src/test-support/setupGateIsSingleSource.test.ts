@@ -1,9 +1,8 @@
 import { readFileSync } from 'node:fs'
-import { dirname, join, relative, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { stripCommentLines } from '~/test-support/sourceScan'
-import { collectFiles } from '~/test-support/sourceTree'
+import { collectFiles, frontendRoot, posixRelative } from '~/test-support/sourceTree'
 
 // Routing guard: the "this hub still needs a first administrator" rule has
 // exactly ONE spelling, `SetupGate`, mounted ONCE around the router outlet.
@@ -22,7 +21,6 @@ import { collectFiles } from '~/test-support/sourceTree'
 // two answers disagree. So this file asserts both halves here, in the fast
 // suite, rather than leaves them to the E2E that boots an unseeded hub.
 
-const frontendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const srcRoot = join(frontendRoot, 'src')
 
 /** The component that owns the rule, and the module that defines the getter. */
@@ -54,7 +52,7 @@ function callers(): string[] {
     skipPaths: new Set(['test-support']),
   })
     .filter(file => /\bisSetupRequired\b/.test(stripCommentLines(readFileSync(file, 'utf8'))))
-    .map(file => relative(frontendRoot, file))
+    .map(file => posixRelative(frontendRoot, file))
     .sort()
 }
 

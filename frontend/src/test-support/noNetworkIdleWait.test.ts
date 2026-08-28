@@ -1,9 +1,8 @@
 import { readFileSync } from 'node:fs'
-import { dirname, relative, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { collectE2EFiles } from '~/test-support/e2eFiles'
 import { stripCommentLines } from '~/test-support/sourceScan'
+import { frontendRoot, posixRelative } from '~/test-support/sourceTree'
 
 // E2E guard: no spec or helper may wait for `networkidle`.
 //
@@ -31,8 +30,6 @@ import { stripCommentLines } from '~/test-support/sourceScan'
 // shell's own menu trigger. Playwright documents `networkidle` as
 // discouraged for exactly this class of reason.
 
-const frontendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
-
 /**
  * The string literal, in any quoting style. That covers
  * `waitForLoadState('networkidle')`, `waitUntil: 'networkidle'`, and any
@@ -50,7 +47,7 @@ describe('e2e load-state waits', () => {
       lines.forEach((text, index) => {
         if (!NETWORK_IDLE.test(text))
           return
-        offenders.push(`${relative(frontendRoot, file)}:${index + 1}  ${text.trim()}`)
+        offenders.push(`${posixRelative(frontendRoot, file)}:${index + 1}  ${text.trim()}`)
       })
     }
     const hint = [

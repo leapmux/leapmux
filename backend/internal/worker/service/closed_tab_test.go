@@ -714,6 +714,26 @@ func TestShutdown_BroadcastsDisconnectNoticeToLiveWatchers(t *testing.T) {
 		"Shutdown must broadcast the disconnect notice to live watchers, not only persist it")
 }
 
+func TestShutdown_StopsRunningAgents(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
+		AgentID:    "agent-1",
+		Options:    map[string]string{agent.OptionIDModel: "opus"},
+		WorkingDir: t.TempDir(),
+	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE))
+	require.NoError(t, err)
+	require.True(t, svc.Agents.HasAgent("agent-1"))
+
+	svc.Shutdown()
+
+	testutil.AssertEventually(t, func() bool {
+		return !svc.Agents.HasAgent("agent-1")
+	}, "Shutdown must StopAll agents; Setsid children do not die with the worker process group")
+}
+
 // TestShutdown_BroadcastsDisconnectNoticeBeforeDraining pins the ORDER, which
 // is the half that actually decides whether the user sees the notice.
 //

@@ -2,8 +2,10 @@ package agent
 
 import (
 	"context"
+	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -382,6 +384,42 @@ func TestProbeBinaryInconclusiveWhenTheShellCannotStart(t *testing.T) {
 	assert.False(t, cached, "an inconclusive probe must not be cached")
 }
 
+// A login profile that exits before the inner command used to look like
+// "binary absent": both are ExitError. The reached marker is what
+// distinguishes them, and the miss must not be cached.
+func TestProbeBinaryInconclusiveWhenTheShellExitsBeforeTheProbe(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shebang stub cannot exec on Windows")
+	}
+	stub := filepath.Join(t.TempDir(), "shell")
+	require.NoError(t, os.WriteFile(stub, []byte("#!/bin/sh\nexit 1\n"), 0o755))
+
+	available, conclusive := probeBinary(context.Background(), stub, true, "claude")
+	assert.False(t, available)
+	assert.False(t, conclusive, "a shell that exits before the inner command establishes nothing")
+
+	_, cached := binaryAvailabilityCache.Load(binaryAvailabilityKey{stub, true, "claude"})
+	assert.False(t, cached, "an inconclusive probe must not be cached")
+}
+
+// Exit 0 without the reached marker used to look like "binary present".
+// A login profile that `exit 0`s before the inner command, or a stub
+// that ignores argv, must stay inconclusive.
+func TestProbeBinaryInconclusiveWhenTheShellExitsZeroWithoutAMarker(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shebang stub cannot exec on Windows")
+	}
+	stub := filepath.Join(t.TempDir(), "shell")
+	require.NoError(t, os.WriteFile(stub, []byte("#!/bin/sh\nexit 0\n"), 0o755))
+
+	available, conclusive := probeBinary(context.Background(), stub, true, "claude")
+	assert.False(t, available)
+	assert.False(t, conclusive, "exit 0 without the reached marker establishes nothing")
+
+	_, cached := binaryAvailabilityCache.Load(binaryAvailabilityKey{stub, true, "claude"})
+	assert.False(t, cached, "an inconclusive probe must not be cached")
+}
+
 // A shell that runs and reports the binary absent IS an answer, and is
 // cached — that is the case the cache exists for.
 func TestProbeBinaryConclusiveWhenTheShellAnswers(t *testing.T) {
@@ -401,6 +439,17 @@ func TestProbeBinaryConclusiveWhenTheShellAnswers(t *testing.T) {
 	v, cached := binaryAvailabilityCache.Load(binaryAvailabilityKey{shell, false, absent})
 	require.True(t, cached, "a conclusive probe must be cached")
 	assert.Equal(t, false, v)
+}
+
+func TestProbeBinaryConclusiveWhenTheBinaryIsPresent(t *testing.T) {
+	shell, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("no POSIX shell on this machine")
+	}
+
+	available, conclusive := probeBinary(context.Background(), shell, false, "echo")
+	assert.True(t, conclusive, "the shell ran and answered")
+	assert.True(t, available, "echo is a POSIX builtin, so command -v must find it")
 }
 
 // A probe killed by an expired context reports an ExitError ("signal:

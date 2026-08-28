@@ -1,8 +1,7 @@
 import { readFileSync } from 'node:fs'
-import { dirname, join, relative, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { collectFiles } from '~/test-support/sourceTree'
+import { collectFiles, frontendRoot, posixRelative } from '~/test-support/sourceTree'
 
 // Repo hygiene guard: a NUL byte (0x00) anywhere in a tracked source file makes
 // Git classify that file as BINARY. Once it does, `git diff` and `git show`
@@ -21,7 +20,6 @@ import { collectFiles } from '~/test-support/sourceTree'
 // `noMirroredUnitTests.test.ts` is: it runs in CI on every change with no extra
 // tooling, and it fails loudly with the offending path and byte offset.
 
-const frontendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const SOURCE_ROOTS = ['src', 'tests']
 const SOURCE_FILE = /\.(?:ts|tsx|js|jsx|css|json|md)$/
 
@@ -43,7 +41,7 @@ describe('source hygiene', () => {
     for (const file of collectSourceFiles()) {
       const offset = readFileSync(file).indexOf(0x00)
       if (offset !== -1)
-        offenders.push({ path: relative(frontendRoot, file), offset })
+        offenders.push({ path: posixRelative(frontendRoot, file), offset })
     }
 
     const detail = offenders.map(o => `${o.path} (byte ${o.offset})`).join('\n  ')

@@ -29,6 +29,10 @@ func HideConsoleWindow(cmd *exec.Cmd) {
 	cmd.SysProcAttr.CreationFlags |= createNoWindow
 }
 
+// DetachFromTerminal is a no-op on Windows. Windows has no POSIX
+// controlling terminal and no job-control signalling (SIGTTIN).
+func DetachFromTerminal(*exec.Cmd) {}
+
 // JobObject wraps a Win32 job object configured with
 // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE. Assigning a process to the job puts
 // the process and its descendants under a single kill group: closing the
@@ -126,4 +130,13 @@ func (j *JobObject) Close() error {
 		return nil
 	}
 	return windows.CloseHandle(windows.Handle(raw))
+}
+
+// SignalProcessGroup signals the child process. Windows has no POSIX
+// process-group kill; the job object attached after Start reaps descendants.
+func SignalProcessGroup(cmd *exec.Cmd, sig syscall.Signal) error {
+	if cmd == nil || cmd.Process == nil {
+		return nil
+	}
+	return cmd.Process.Signal(sig)
 }

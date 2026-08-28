@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
-import { dirname, join, relative, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { frontendRoot, posixRelative } from '~/test-support/sourceTree'
 import { collectStyleFiles } from '~/test-support/styleFiles'
 
 // A colour that plays a palette ROLE must read the palette, never a literal.
@@ -18,7 +18,7 @@ import { collectStyleFiles } from '~/test-support/styleFiles'
 // if a new role needs one the catalogue grows it, which is what makes every
 // variant answer for it.
 
-const srcRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+const srcRoot = join(frontendRoot, 'src')
 
 /** `color`, `backgroundColor` or `borderColor` set to a bare hex literal. */
 const ROLE_COLOR_LITERAL = /(?:^|[^\w-])(color|backgroundColor|borderColor)\s*:\s*'#[0-9a-f]{3,8}'/gi
@@ -43,7 +43,7 @@ describe('palette role colours come from the palette', () => {
         continue
       const source = readFileSync(file, 'utf8')
       for (const match of source.matchAll(ROLE_COLOR_LITERAL))
-        offenders.push(`${relative(srcRoot, file)}: ${match[0].trim()}`)
+        offenders.push(`${posixRelative(srcRoot, file)}: ${match[0].trim()}`)
     }
     expect(offenders, `these hardcode a colour the palette owns; read the token instead:\n  ${offenders.join('\n  ')}`)
       .toEqual([])

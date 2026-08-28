@@ -1,8 +1,7 @@
 import { existsSync } from 'node:fs'
-import { dirname, join, relative, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { collectFiles } from '~/test-support/sourceTree'
+import { collectFiles, frontendRoot, posixRelative } from '~/test-support/sourceTree'
 
 // Repo layout guard: unit tests are co-located next to the code they test
 // (`foo.ts` -> `foo.test.ts` in the same directory). The old `tests/unit/`
@@ -19,7 +18,6 @@ import { collectFiles } from '~/test-support/sourceTree'
 // `testFileNaming.test.ts` enforces them -- a `.test.ts` there must name the
 // module beside it, so the exemption cannot become a second mirror.
 
-const frontendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const testsRoot = join(frontendRoot, 'tests')
 
 const UNIT_TEST_FILE = /\.test\.(?:ts|tsx)$/
@@ -33,7 +31,7 @@ function collectStrayUnitTests(): string[] {
     // `tests/unit/e2e/`, so the retired mirror this guard exists to keep
     // out could return under one directory name.
     skipPaths: new Set(['e2e']),
-  }).map(file => relative(frontendRoot, file))
+  }).map(file => posixRelative(frontendRoot, file))
 }
 
 describe('unit-test co-location', () => {

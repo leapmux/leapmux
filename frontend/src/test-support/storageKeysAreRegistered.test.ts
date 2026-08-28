@@ -1,12 +1,11 @@
 import { readFileSync } from 'node:fs'
-import { dirname, join, relative, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 import * as browserStorage from '~/lib/browserStorage'
 import { LOCAL_KEY_SPECS, SESSION_KEY_SPECS } from '~/lib/browserStorage'
 import { lineNumberAt, stripCommentLines } from '~/test-support/sourceScan'
-import { collectFiles } from '~/test-support/sourceTree'
+import { collectFiles, frontendRoot, posixRelative } from '~/test-support/sourceTree'
 
 // Guards the two rules `browserStorage` runs on that its types cannot reach.
 //
@@ -31,7 +30,6 @@ import { collectFiles } from '~/test-support/sourceTree'
 // Same shape as `stableContextUsage.test.ts`: a source scan, because what is
 // being guarded is a property of the source tree rather than of any runtime.
 
-const frontendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const srcRoot = join(frontendRoot, 'src')
 const gatewayPath = join(srcRoot, 'lib', 'browserStorage.ts')
 
@@ -79,7 +77,7 @@ describe('browser-storage keys', () => {
       // comment line of its own. See `sourceScan.ts`.
       const source = stripCommentLines(readFileSync(file, 'utf8'))
       for (const match of source.matchAll(DIRECT_ACCESS))
-        offenders.push(`${relative(frontendRoot, file)}:${lineNumberAt(source, match.index)}`)
+        offenders.push(`${posixRelative(frontendRoot, file)}:${lineNumberAt(source, match.index)}`)
     }
 
     expect(

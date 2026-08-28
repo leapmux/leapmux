@@ -1,8 +1,7 @@
 import { readFileSync } from 'node:fs'
-import { dirname, join, relative, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { collectE2EFiles, e2eRoot } from '~/test-support/e2eFiles'
+import { frontendRoot, posixRelative } from '~/test-support/sourceTree'
 
 // E2E guard: a page-rooted chat locator must be scoped to what the user can
 // SEE. ChatView keeps a hidden premeasure copy of every row whose height is
@@ -31,8 +30,6 @@ const CHAT_TEST_IDS = [
   'message-delete-button',
 ]
 
-const frontendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
-
 /** `page.locator('[data-testid="<chat id>"...]')` without a `:visible` filter. */
 const UNSCOPED = new RegExp(
   `page\\s*\\.\\s*locator\\(\\s*(['\`])\\[data-testid="(?:${CHAT_TEST_IDS.join('|')})"\\][^'\`]*\\1`,
@@ -45,14 +42,14 @@ describe('e2e chat locators', () => {
     for (const file of collectE2EFiles()) {
       // ui.ts is where the scoped helpers are DEFINED, so it holds the only
       // legitimate occurrences of the raw selectors.
-      if (relative(e2eRoot, file) === join('helpers', 'ui.ts'))
+      if (posixRelative(e2eRoot, file) === 'helpers/ui.ts')
         continue
       const source = readFileSync(file, 'utf-8')
       for (const match of source.matchAll(UNSCOPED)) {
         if (match[0].includes(':visible'))
           continue
         const line = source.slice(0, match.index).split('\n').length
-        offenders.push(`${relative(frontendRoot, file)}:${line}  ${match[0]}`)
+        offenders.push(`${posixRelative(frontendRoot, file)}:${line}  ${match[0]}`)
       }
     }
     const hint = [

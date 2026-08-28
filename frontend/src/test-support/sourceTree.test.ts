@@ -1,13 +1,12 @@
-import { dirname, join, resolve, sep } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { existsSync } from 'node:fs'
+import { isAbsolute, join, sep } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { collectFiles, SKIP_DIRS } from '~/test-support/sourceTree'
+import { collectFiles, frontendRoot, posixRelative, SKIP_DIRS } from '~/test-support/sourceTree'
 
 // Eight repo guards read their whole verdict through this walk, so a hole here
 // reads as a clean suite rather than as a failure. Pin the filter, the skip
 // set a caller cannot drop, and the absent-directory result.
 
-const frontendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const testSupportRoot = join(frontendRoot, 'src', 'test-support')
 
 /** The directory names on the way to `file`, so a skip test matches no substring. */
@@ -85,5 +84,40 @@ describe('collectFiles', () => {
 
   it('returns nothing for a directory that does not exist', () => {
     expect(collectFiles(join(frontendRoot, 'no-such-directory'), { matches: () => true })).toEqual([])
+  })
+})
+
+describe('posixRelative', () => {
+  // Windows CI failed five repo guards that compared path.relative output
+  // to literals like 'src/app.tsx'. path.relative uses '\' on Windows, so
+  // the walk found the file and the strings still disagreed. This case is
+  // that comparison: join() builds a native path, and the result must be
+  // the POSIX form every allow-list and toEqual() writes.
+  it('returns a slash-separated path so Windows matches POSIX literals', () => {
+    expect(posixRelative(frontendRoot, join(frontendRoot, 'src', 'app.tsx'))).toBe('src/app.tsx')
+    expect(posixRelative(frontendRoot, join(frontendRoot, 'src', 'lib', 'systemInfo.ts')))
+      .toBe('src/lib/systemInfo.ts')
+    expect(posixRelative(
+      frontendRoot,
+      join(frontendRoot, 'src', 'components', 'chat', 'results', 'CollapsibleContent.tsx'),
+    )).toBe('src/components/chat/results/CollapsibleContent.tsx')
+  })
+
+  it('returns an empty string when from and to are the same path', () => {
+    expect(posixRelative(frontendRoot, frontendRoot)).toBe('')
+  })
+
+  it('returns a parent-relative path with slashes', () => {
+    expect(posixRelative(join(frontendRoot, 'src'), join(frontendRoot, 'tests', 'e2e')))
+      .toBe('../tests/e2e')
+  })
+})
+
+describe('frontendRoot', () => {
+  it('is the frontend package directory', () => {
+    expect(isAbsolute(frontendRoot)).toBe(true)
+    expect(existsSync(join(frontendRoot, 'package.json'))).toBe(true)
+    expect(posixRelative(frontendRoot, join(frontendRoot, 'src', 'test-support', 'sourceTree.ts')))
+      .toBe('src/test-support/sourceTree.ts')
   })
 })

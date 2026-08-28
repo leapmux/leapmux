@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
-import { dirname, join, relative, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { frontendRoot, posixRelative } from '~/test-support/sourceTree'
 import { collectStyleFiles } from '~/test-support/styleFiles'
 
 // A highlighted surface is themed by TWO rules that must land on the same
@@ -24,7 +24,7 @@ import { collectStyleFiles } from '~/test-support/styleFiles'
 // directly could still pair them by hand on two different selectors, which a
 // text scan of a FILE cannot see.
 
-const srcRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+const srcRoot = join(frontendRoot, 'src')
 /** Publishes `--code-*` from the resolved syntax variant. */
 const PUBLISHER = join(srcRoot, 'styles', 'global.css.ts')
 
@@ -44,7 +44,7 @@ describe('code surfaces are paired with their token colours', () => {
         continue
       const source = readFileSync(file, 'utf8')
       if (source.includes('codeSurfaceTheme(') || source.includes('shikiDualThemeColors('))
-        direct.push(relative(srcRoot, file))
+        direct.push(posixRelative(srcRoot, file))
     }
     expect(direct, `these call a code-surface primitive directly; use codeSurface() so the selectors cannot separate:\n  ${direct.join('\n  ')}`)
       .toEqual([])

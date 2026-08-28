@@ -1,5 +1,7 @@
 import { existsSync, readdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join, relative, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { toPosixSeparators } from '~/lib/paths'
 
 // The file walk that every repo guard scanning the source tree runs.
 //
@@ -33,6 +35,17 @@ export const SKIP_DIRS: ReadonlySet<string> = new Set([
   'test-results',
 ])
 
+/**
+ * Absolute path of the frontend package root.
+ *
+ * Repo guards compare walk results against this directory. A file under
+ * `src/test-support/` used to recompute it with `../..` from
+ * `import.meta.url`. A file under `src/components/` used `../../..`.
+ * One hop that is wrong silently drops a file from a guard. This module
+ * sits in `src/test-support/`, so the hop lives here and nowhere else.
+ */
+export const frontendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
+
 /** The empty default for `skipPaths`: no location is exempt. */
 const NO_PATHS: ReadonlySet<string> = new Set()
 
@@ -51,6 +64,19 @@ export interface CollectFilesOptions {
    * retired unit mirror out could be defeated by one directory name.
    */
   skipPaths?: ReadonlySet<string>
+}
+
+/**
+ * `path.relative(from, to)` with `/` separators on every platform.
+ *
+ * Repo guards compare against POSIX literals (`src/app.tsx`). On Windows,
+ * `path.relative` returns backslashes, so those comparisons fail even when
+ * the walk found the right file. An allow-list keyed by slash paths never
+ * matches. `skipPaths` already uses `/`. This is that convention for a
+ * path the walk did not produce.
+ */
+export function posixRelative(from: string, to: string): string {
+  return toPosixSeparators(relative(from, to))
 }
 
 /**

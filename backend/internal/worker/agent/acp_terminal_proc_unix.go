@@ -7,19 +7,22 @@ import (
 	"os/exec"
 	"syscall"
 	"time"
+
+	"github.com/leapmux/leapmux/util/procutil"
 )
 
-// configureACPTerminalCmd puts the child in its own process group so later
-// kill/Stop can reap grandchildren that inherit the pipes (Setpgid + group
-// SIGTERM, then WaitDelay force-kill). Without this, Process.Kill only hits
-// /bin/sh and a still-running child holds stdout/stderr open forever.
+// configureACPTerminalCmd starts the child in a new session so it cannot
+// steal leapmux solo's foreground tty (the SIGTTIN class DetachFromTerminal
+// documents). Setsid also makes the child a process-group leader, so later
+// kill/Stop can reap grandchildren that inherit the pipes (group SIGTERM,
+// then WaitDelay force-kill). Without this, Process.Kill only hits /bin/sh
+// and a still-running child holds stdout/stderr open forever. Do not set
+// Setpgid as well: Go runs setsid then setpgid, and setpgid on a session
+// leader fails with EPERM.
 func configureACPTerminalCmd(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	procutil.DetachFromTerminal(cmd)
 	cmd.Cancel = func() error {
-		if cmd.Process == nil {
-			return nil
-		}
-		return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+		return procutil.SignalProcessGroup(cmd, syscall.SIGTERM)
 	}
 	cmd.WaitDelay = 5 * time.Second
 }

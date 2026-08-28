@@ -1,7 +1,6 @@
 import type { Component } from 'solid-js'
 import { readFileSync } from 'node:fs'
-import { dirname, join, relative, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { join } from 'node:path'
 import { Code, ConnectError } from '@connectrpc/connect'
 import { createMemoryHistory, MemoryRouter, Route } from '@solidjs/router'
 import { fireEvent, render, screen, within } from '@solidjs/testing-library'
@@ -12,7 +11,7 @@ import { elevationInterceptor } from '~/api/transport'
 import { Dialog } from '~/components/common/Dialog'
 import { ElevationPromptHost } from '~/components/common/ElevationPromptHost'
 import { elevationPrompting, promptForElevation, setElevationPrompter } from '~/lib/elevationPrompt'
-import { collectFiles } from '~/test-support/sourceTree'
+import { collectFiles, frontendRoot, posixRelative } from '~/test-support/sourceTree'
 
 // The account most of these tests run as: it holds a password, so the form
 // offers exactly one factor and the dialog is about the PROMPT rather than
@@ -428,7 +427,6 @@ describe('elevationPromptHost', () => {
   // mount, and such comments are exactly what the design needs: the surfaces
   // that stopped managing the modal stack say where that work went.
   it('mounts once, at the app root', () => {
-    const frontendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
     const srcRoot = join(frontendRoot, 'src')
     const MOUNTS = /from\s+'[^']*\/ElevationPromptHost'|<ElevationPromptHost[\s/>]/
     const mounts = collectFiles(srcRoot, {
@@ -436,7 +434,7 @@ describe('elevationPromptHost', () => {
       alsoSkip: new Set(['generated']),
     })
       .filter(file => MOUNTS.test(readFileSync(file, 'utf-8')))
-      .map(file => relative(frontendRoot, file))
+      .map(file => posixRelative(frontendRoot, file))
       .sort()
 
     expect(

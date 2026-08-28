@@ -1,10 +1,9 @@
 import { readFileSync } from 'node:fs'
-import { dirname, join, relative, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 import { installedCopies } from '~/test-support/installedCopies'
-import { collectFiles } from '~/test-support/sourceTree'
+import { collectFiles, frontendRoot, posixRelative } from '~/test-support/sourceTree'
 
 // Guards the two rules `createStableContext` runs on, both of which were
 // documented in a comment and enforced by nothing.
@@ -25,7 +24,6 @@ import { collectFiles } from '~/test-support/sourceTree'
 // Same shape as `noMirroredUnitTests.test.ts`: a source scan, because the thing
 // being guarded is a property of the source tree rather than of any runtime.
 
-const frontendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const srcRoot = join(frontendRoot, 'src')
 const helperPath = join(srcRoot, 'lib', 'createStableContext.ts')
 
@@ -42,7 +40,7 @@ describe('createStableContext usage', () => {
       // The helper is where the one legitimate `createContext` call lives.
       .filter(file => file !== helperPath)
       .filter(file => /\bcreateContext\b/.test(readFileSync(file, 'utf8')))
-      .map(file => relative(frontendRoot, file))
+      .map(file => posixRelative(frontendRoot, file))
 
     expect(
       offenders,
@@ -58,7 +56,7 @@ describe('createStableContext usage', () => {
       const source = readFileSync(file, 'utf8')
       for (const [, key] of source.matchAll(/createStableContext(?:\s*<[^>]*>)?\s*\(\s*'([^']+)'/g)) {
         const owners = byKey.get(key) ?? []
-        owners.push(relative(frontendRoot, file))
+        owners.push(posixRelative(frontendRoot, file))
         byKey.set(key, owners)
       }
     }
@@ -87,7 +85,7 @@ describe('createStableContext usage', () => {
   // starts exercising a patch ordering the dev server has stopped running --
   // silently, and still green.
   it('resolves one shared solid-refresh, not a second nested copy', () => {
-    const copies = installedCopies('solid-refresh').map(p => relative(frontendRoot, p))
+    const copies = installedCopies('solid-refresh').map(p => posixRelative(frontendRoot, p))
 
     // Zero is a different problem from two, and the bump advice does not apply
     // to it: nothing to align ranges with if the package is not there.

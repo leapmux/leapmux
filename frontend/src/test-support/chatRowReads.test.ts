@@ -1,8 +1,7 @@
 import { readFileSync } from 'node:fs'
-import { dirname, relative, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { collectE2EFiles } from '~/test-support/e2eFiles'
+import { frontendRoot, posixRelative } from '~/test-support/sourceTree'
 
 // E2E guard: read a chat row through `readAttached`, never through a bare
 // `locator.evaluate` / `locator.evaluateAll`.
@@ -52,8 +51,6 @@ const CHAT_LOCATOR_MARKERS = [
 
 /** The two-round-trip reads, as they appear after a receiver. */
 const RACY_READ = String.raw`\.\s*evaluate(?:All)?\s*\(`
-
-const frontendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 
 /** `const name = <expression>`, the only binding form the specs use for a locator. */
 const BINDING = /(?:const|let)\s+(\w+)\s*=\s*([^\n]*)/g
@@ -112,7 +109,7 @@ describe('e2e chat row reads', () => {
       const source = readFileSync(file, 'utf-8')
       for (const { index, text } of racyChatReads(source)) {
         const line = source.slice(0, index).split('\n').length
-        offenders.add(`${relative(frontendRoot, file)}:${line}  ${text}`)
+        offenders.add(`${posixRelative(frontendRoot, file)}:${line}  ${text}`)
       }
     }
     const hint = [

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
-import { dirname, relative, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { frontendRoot, posixRelative } from '~/test-support/sourceTree'
 import { collectStyleFiles } from '~/test-support/styleFiles'
 
 // A focus ring is drawn from `:focus-visible`, never from `:focus`.
@@ -27,7 +27,7 @@ import { collectStyleFiles } from '~/test-support/styleFiles'
 // guard can be absolute rather than carry an allowlist that a reader has to
 // argue with.
 
-const srcRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+const srcRoot = join(frontendRoot, 'src')
 
 /**
  * A style-object key that selects `:focus` but not `:focus-visible` or
@@ -78,7 +78,7 @@ describe('focus rings are drawn from :focus-visible', () => {
         if (drawn.length === 0)
           continue
         offenders.push(
-          `${relative(srcRoot, file)} ${enclosingStyle(source, key.index)} `
+          `${posixRelative(srcRoot, file)} ${enclosingStyle(source, key.index)} `
           + `'${key[2]}' draws ${drawn.map(d => d[1]).join(', ')}`,
         )
       }

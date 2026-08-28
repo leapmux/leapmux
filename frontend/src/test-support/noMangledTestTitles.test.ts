@@ -1,8 +1,8 @@
 import { readFileSync } from 'node:fs'
-import { dirname, join, relative, resolve } from 'node:path'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { collectFiles } from '~/test-support/sourceTree'
+import { collectFiles, frontendRoot, posixRelative } from '~/test-support/sourceTree'
 
 // Test-name guard: `test/prefer-lowercase-title` (from the antfu ESLint config)
 // rejects a suite or case title that starts with a capital, and its `--fix`
@@ -28,7 +28,6 @@ import { collectFiles } from '~/test-support/sourceTree'
 // runs in the `bun run test` everyone already runs, it needs no plugin
 // scaffolding, and it reports every offender in one message.
 
-const frontendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const SOURCE_ROOTS = ['src', 'tests']
 const TEST_FILE = /\.(?:test|spec)\.(?:ts|tsx)$/
 
@@ -204,7 +203,7 @@ describe('test-title casing', () => {
   it('has no title that the lint autofix mangled, under src/ or tests/', () => {
     const offenders: MangledTitle[] = []
     for (const file of collectTestFiles())
-      offenders.push(...findMangledTitles(readFileSync(file, 'utf8'), relative(frontendRoot, file)))
+      offenders.push(...findMangledTitles(readFileSync(file, 'utf8'), posixRelative(frontendRoot, file)))
 
     const detail = offenders.map(o => `${o.path}:${o.line}  ${JSON.stringify(o.title)}`).join('\n  ')
     expect(
@@ -215,7 +214,7 @@ describe('test-title casing', () => {
       + 'do not suppress the lint rule. Lead with a lowercase phrase and write the name in full after '
       + 'it, per the vitest rule in CLAUDE.md: '
       + '`describe(\'default mono font stack (DEFAULT_MONO_FONT_FAMILY)\')`. If the first word is a '
-      + `genuinely camelCase identifier, add it to CAMEL_CASE_IDENTIFIERS in ${relative(frontendRoot, fileURLToPath(import.meta.url))} `
+      + `genuinely camelCase identifier, add it to CAMEL_CASE_IDENTIFIERS in ${posixRelative(frontendRoot, fileURLToPath(import.meta.url))} `
       + `with the evidence:\n  ${detail}`,
     ).toEqual([])
   })
