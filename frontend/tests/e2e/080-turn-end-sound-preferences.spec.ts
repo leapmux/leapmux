@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures'
 import { armTurnEndSound, expectDoorbellCount, expectDoorbellQuiet } from './helpers/turnEndSound'
-import { getBrowserPref, loginViaToken, openAgentViaUI, openPreferencesDialog, sendMessage, waitForAgentIdle, waitForWorkspaceReady } from './helpers/ui'
+import { getBrowserPref, loginViaToken, openAgentViaUI, openSettingsAt, sendMessage, waitForAgentIdle, waitForWorkspaceReady } from './helpers/ui'
 
 /**
  * A prompt the agent cannot answer from the prompt alone, so the turn reports
@@ -25,8 +25,7 @@ test.describe('Turn End Sound Preferences', () => {
   test('should show the Turn End Sound row in the Notifications category', async ({ page, leapmuxServer }) => {
     await loginViaToken(page, leapmuxServer.adminToken)
     await page.goto('/')
-    await openPreferencesDialog(page, 'notifications')
-    const dialog = page.getByRole('dialog', { name: 'Preferences' })
+    const dialog = await openSettingsAt(page, 'notifications')
     await expect(dialog.getByText('Turn-end sound', { exact: true })).toBeVisible()
     await expect(dialog.getByRole('radio', { name: 'None' })).toBeVisible()
     await expect(dialog.getByRole('radio', { name: 'Ding Dong' })).toBeVisible()
@@ -35,8 +34,7 @@ test.describe('Turn End Sound Preferences', () => {
   test('should persist browser-level turn end sound in localStorage', async ({ page, leapmuxServer }) => {
     await loginViaToken(page, leapmuxServer.adminToken)
     await page.goto('/')
-    await openPreferencesDialog(page, 'notifications')
-    const dialog = page.getByRole('dialog', { name: 'Preferences' })
+    const dialog = await openSettingsAt(page, 'notifications')
     await expect(dialog.getByText('Turn-end sound', { exact: true })).toBeVisible()
 
     // The dual row edits whichever tier the scope chip selects; persisting to
@@ -61,8 +59,7 @@ test.describe('Turn End Sound Preferences', () => {
   test('should persist account-level turn end sound via API', async ({ page, leapmuxServer }) => {
     await loginViaToken(page, leapmuxServer.adminToken)
     await page.goto('/')
-    await openPreferencesDialog(page, 'notifications')
-    const dialog = page.getByRole('dialog', { name: 'Preferences' })
+    const dialog = await openSettingsAt(page, 'notifications')
     await expect(dialog.getByText('Turn-end sound', { exact: true })).toBeVisible()
     // Default scope: the row edits the ACCOUNT tier (the chip reads
     // "Account default" until an override exists).
@@ -78,8 +75,7 @@ test.describe('Turn End Sound Preferences', () => {
 
     // Reload and verify the account-level choice survived the round trip.
     await page.reload()
-    await openPreferencesDialog(page, 'notifications')
-    const reopened = page.getByRole('dialog', { name: 'Preferences' })
+    const reopened = await openSettingsAt(page, 'notifications')
     await expect(reopened.getByText('Turn-end sound', { exact: true })).toBeVisible()
     await expect(reopened.getByRole('radio', { name: 'Ding Dong' })).toBeChecked()
 
@@ -125,9 +121,9 @@ test.describe('Turn End Sound Preferences', () => {
     await expectDoorbellCount(page, 1)
 
     // Open and close the Preferences dialog (no full navigation)
-    await openPreferencesDialog(page)
-    await page.getByRole('dialog', { name: 'Preferences' }).getByLabel('Close').click()
-    await expect(page.getByRole('dialog', { name: 'Preferences' })).not.toBeVisible()
+    const dialog = await openSettingsAt(page)
+    await dialog.getByLabel('Close').click()
+    await expect(dialog).not.toBeVisible()
 
     await expectDoorbellQuiet(page, 1)
   })

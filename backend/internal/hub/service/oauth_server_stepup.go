@@ -86,7 +86,7 @@ func (h *OAuthServerHandler) handleStepUpAuthorization(w http.ResponseWriter, r 
 	}
 	if !row.ClientElevationAllowed {
 		writeOAuthError(w, http.StatusForbidden, "unauthorized_client",
-			"this app is not allowed to verify a factor; its owner can allow it under Preferences, Account, App registrations")
+			"this app is not allowed to verify a factor; its owner can allow it under Preferences › Apps › App registrations")
 		return
 	}
 	// The installation label is what the REQUESTER calls itself, and it

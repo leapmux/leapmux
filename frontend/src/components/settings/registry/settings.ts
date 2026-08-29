@@ -576,9 +576,15 @@ export const browserSettings: BrowserSettingDecl[] = [
     hidden: () => isSoloMode(),
     bind: () => CUSTOM_EDITOR_OWNS_ITS_VALUE,
   },
+  /*
+   * The APPS section, one errand in two halves: what this account AUTHORIZED
+   * first, then what it REGISTERED. The authorized half leads because it is
+   * the one an ordinary account returns to -- "what can reach my account" --
+   * while registering is the developer's afterthought.
+   */
   {
     id: 'account.connectedApps',
-    category: 'account',
+    category: 'apps',
     label: 'Connected apps',
     help: 'Apps you authorized, what each one may do, and how to disconnect it.',
     keywords: ['app', 'oauth', 'cli', 'token', 'device', 'revoke', 'disconnect', 'permission', 'scope'],
@@ -600,7 +606,7 @@ export const browserSettings: BrowserSettingDecl[] = [
     scope: 'account',
     control: { kind: 'custom', id: 'accountAppRegistrations' },
     sentinel: 'nullable',
-    // ELEVATED, unlike Connected apps beside it, and the asymmetry is the
+    // ELEVATED, unlike Connected apps above it, and the asymmetry is the
     // point. Disconnecting an app only reduces access. Editing a registration
     // rewrites where a consent redirects, so it diverts an in-flight
     // authorization code to an address the editor chose -- the most dangerous

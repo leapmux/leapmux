@@ -17,12 +17,12 @@ export const headerRow = style({
   minWidth: 0,
 })
 
+// Margin alone. The label is an <h3>, so Oat's heading rule owns the type:
+// size, weight, colour and break-word come from there, and restating them
+// here would only drift. The one thing a settings row must not take from a
+// page heading is its spacing, so the margins reset to zero.
 export const label = style({
-  fontSize: 'var(--text-6)',
-  fontWeight: 'var(--font-medium)',
-  color: 'var(--foreground)',
-  minWidth: 0,
-  overflowWrap: 'break-word',
+  margin: 0,
 })
 
 export const helpText = style({

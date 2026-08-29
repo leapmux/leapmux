@@ -499,6 +499,19 @@ func (c *Client) UserService() leapmuxv1connect.UserServiceClient {
 	)
 }
 
+// AuthService returns a ConnectRPC client for the session surface
+// (GetCurrentUser). `auth status` and `whoami` call it as their hub check:
+// one authenticated read settles whether the credential still opens the
+// hub, and the interceptor beneath it makes the check self-healing -- a
+// stale access token rotates on the way through, and a revoked one ends in
+// invalid_grant with the credential file already deleted.
+func (c *Client) AuthService() leapmuxv1connect.AuthServiceClient {
+	return leapmuxv1connect.NewAuthServiceClient(
+		c.HTTPClient, c.connectURL,
+		connect.WithInterceptors(c.AuthInterceptor()),
+	)
+}
+
 // AdminSettingsService returns a ConnectRPC client for the hub's
 // AdminSettingsService. Admin commands deliberately build a hub client
 // directly rather than routing through the worker-IPC bridge: the

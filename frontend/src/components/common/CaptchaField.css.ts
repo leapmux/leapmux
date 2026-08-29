@@ -19,7 +19,7 @@ globalStyle('altcha-widget', {
     '--altcha-color-error': 'var(--danger)',
     '--altcha-color-error-content': 'var(--danger-foreground)',
     '--altcha-border-color': 'var(--border)',
-    '--altcha-border-radius': 'var(--radius-2)',
+    '--altcha-border-radius': 'var(--radius-medium)',
     '--altcha-checkbox-outline-color': 'var(--ring)',
     '--altcha-padding': 'var(--space-3)',
     '--altcha-max-width': '100%',

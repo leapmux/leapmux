@@ -37,7 +37,7 @@ func TestConsentPagesEscapeEveryInterpolatedValue(t *testing.T) {
 			App:              appDisplayData{ClientID: payload, Name: payload, Monogram: payload},
 			Username:         payload,
 			RedirectLabel:    payload,
-			Permissions:      []string{payload},
+			Permissions:      []scopeCategoryView{{Label: payload, Entries: []scopeEntryView{{Token: payload, Sentence: payload}}}},
 			RedirectURI:      payload,
 			ClientID:         payload,
 			State:            payload,
@@ -58,7 +58,7 @@ func TestConsentPagesEscapeEveryInterpolatedValue(t *testing.T) {
 		writePage(w, 200, devicePageTmpl, devicePageData{
 			UserCode:    payload,
 			App:         &app,
-			Permissions: []string{payload},
+			Permissions: []scopeCategoryView{{Label: payload, Entries: []scopeEntryView{{Token: payload, Sentence: payload}}}},
 		}, "")
 		assertNoInjection(t, w.Body.String())
 	})
@@ -261,8 +261,11 @@ func TestEveryPageSharesOneChrome(t *testing.T) {
 		w := httptest.NewRecorder()
 		writePage(w, 200, tc.tmpl, tc.data, "")
 		page := w.Body.String()
-		assert.Truef(t, strings.HasPrefix(page, "<!doctype html><html><body style="), "page %q", tc.name)
-		assert.Truef(t, strings.HasSuffix(strings.TrimSpace(page), "</body></html>"), "page %q", tc.name)
+		// The chrome prefix now carries the shared <style> block; the suffix
+		// still closes the card, body and html the chrome opens.
+		assert.Truef(t, strings.HasPrefix(page, "<!doctype html><html><head>"), "page %q", tc.name)
+		assert.Truef(t, strings.Contains(page, "<style>"), "page %q carries the one stylesheet", tc.name)
+		assert.Truef(t, strings.HasSuffix(strings.TrimSpace(page), "</main>\n</body></html>"), "page %q", tc.name)
 	}
 }
 
@@ -284,23 +287,55 @@ func TestEveryGrantableScopeHasASentence(t *testing.T) {
 	}
 }
 
-// TestDescribeScopesUsesTheCanonicalOrder pins that two apps asking for the
-// same permissions show the same list.
-func TestDescribeScopesUsesTheCanonicalOrder(t *testing.T) {
+// TestScopeCategoriesCoverEveryGrantableScope is the catalogue's membership
+// pin: a scope added to the proto fails here until somebody states its
+// family, and one removed fails here rather than lingering as a row the page
+// renders for a permission no account can grant.
+func TestScopeCategoriesCoverEveryGrantableScope(t *testing.T) {
+	t.Parallel()
+
+	seen := map[leapmuxv1.Scope]int{}
+	for _, category := range scopeCategories {
+		assert.NotEmptyf(t, category.label, "a category carries a label")
+		for _, scope := range category.scopes {
+			seen[scope]++
+			_, hasToken := authscope.Token(scope)
+			assert.Truef(t, hasToken, "%s has no wire token", scope)
+			assert.NotEmptyf(t, scopeSentences[scope], "%s has no consent-screen sentence", scope)
+		}
+	}
+	for _, scope := range authscope.Grantable() {
+		assert.Equalf(t, 1, seen[scope], "%s must appear in exactly one category", scope)
+	}
+}
+
+// TestDescribeScopeCatalogue pins the two properties the page leans on: the
+// asked-for permissions are the ticked ones, and a family with nothing
+// granted is skipped rather than rendered as a wall of dimmed rows.
+func TestDescribeScopeCatalogue(t *testing.T) {
 	t.Parallel()
 
 	set := authscope.MustNew(
 		leapmuxv1.Scope_SCOPE_GIT_READ,
 		leapmuxv1.Scope_SCOPE_ACCOUNT_READ,
-		leapmuxv1.Scope_SCOPE_TERMINAL_READ,
 	)
-	assert.Equal(t, []string{
-		scopeSentences[leapmuxv1.Scope_SCOPE_ACCOUNT_READ],
-		scopeSentences[leapmuxv1.Scope_SCOPE_TERMINAL_READ],
-		scopeSentences[leapmuxv1.Scope_SCOPE_GIT_READ],
-	}, describeScopes(set))
+	out := describeScopeCatalogue(set)
 
-	assert.Empty(t, describeScopes(authscope.ScopeSet{}),
+	// Family order is the catalogue's own, and only the two touched families
+	// render.
+	require.Len(t, out, 2)
+	assert.Equal(t, "Account", out[0].Label)
+	assert.Equal(t, "Git", out[1].Label)
+
+	accountRead := out[0].Entries[0]
+	assert.True(t, accountRead.Granted)
+	assert.Equal(t, "account:read", accountRead.Token)
+	assert.Equal(t, scopeSentences[leapmuxv1.Scope_SCOPE_ACCOUNT_READ], accountRead.Sentence)
+	assert.False(t, out[0].Entries[1].Granted,
+		"the write half of the family is the NOT-GRANTED half the page dims")
+	assert.True(t, out[1].Entries[0].Granted)
+
+	assert.Empty(t, describeScopeCatalogue(authscope.ScopeSet{}),
 		"an empty grant lists nothing, and the page says so in prose instead")
 }
 

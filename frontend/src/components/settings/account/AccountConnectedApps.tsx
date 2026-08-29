@@ -4,6 +4,7 @@ import type { MyAPIToken } from '~/generated/leapmux/v1/user_pb'
 import { timestampDate } from '@bufbuild/protobuf/wkt'
 import { createMemo, createSignal, For, onMount, Show } from 'solid-js'
 import { userClient } from '~/api/clients'
+import { actionsFooter } from '~/components/common/actionsFooter.css'
 import { ConfirmDialog } from '~/components/common/ConfirmDialog'
 import { Spinner } from '~/components/common/Spinner'
 import { StatusLine } from '~/components/common/StatusLine'
@@ -252,26 +253,21 @@ export const AccountConnectedApps: Component = () => {
         <For each={connectedApps()}>
           {app => (
             <div class={styles.credentialGroup} data-testid={`connected-app-${app.clientId}`}>
-              <div class={styles.credentialGroupHeader}>
-                <div class={styles.credentialInfo}>
-                  <span class={styles.credentialName}>
-                    {app.clientName || 'Unnamed app'}
-                    <Show when={!app.verified}>
-                      {' '}
-                      <span class={styles.credentialBadgeWarning}>unverified</span>
-                    </Show>
-                  </span>
-                </div>
-                <div class={styles.credentialActions}>
-                  <button
-                    type="button"
-                    class={styles.credentialDanger}
-                    onClick={() => setDisconnectTarget(app)}
-                    disabled={busy()}
-                  >
-                    Disconnect
-                  </button>
-                </div>
+              {/*
+                The app's own line: its name and the vouch state, on the full
+                width. The Disconnect sits in a footer row under the
+                installations, so the app-level ending reads as the block's
+                closing action rather than as one more thing competing with
+                the name for the same line.
+              */}
+              <div class={styles.credentialInfo}>
+                <span class={styles.credentialName}>
+                  {app.clientName || 'Unnamed app'}
+                  <Show when={!app.verified}>
+                    {' '}
+                    <span class="badge" data-variant="warning">unverified</span>
+                  </Show>
+                </span>
               </div>
               <div class={styles.credentialGroupBody}>
                 <For each={app.installations}>
@@ -289,7 +285,7 @@ export const AccountConnectedApps: Component = () => {
                           {token.installationName || 'Unnamed installation'}
                           <Show when={administersHub(token)}>
                             {' '}
-                            <span class={styles.credentialBadgeWarning}>hub administration</span>
+                            <span class="badge" data-variant="warning">hub administration</span>
                           </Show>
                           {/*
                             This list deliberately does NOT render
@@ -312,10 +308,17 @@ export const AccountConnectedApps: Component = () => {
                           </span>
                         </Show>
                       </div>
-                      <div class={styles.credentialActions}>
+                      <div class={actionsFooter}>
+                        {/*
+                          An Oat danger OUTLINE: this control only OPENS the
+                          confirmation, whose primary carries the danger
+                          weight. Filling it here would paint the louder
+                          button on the step that still cancels.
+                        */}
                         <button
                           type="button"
-                          class={styles.credentialDanger}
+                          class="outline"
+                          data-variant="danger"
                           onClick={() => setRevokeTarget(token)}
                           disabled={busy()}
                         >
@@ -325,6 +328,17 @@ export const AccountConnectedApps: Component = () => {
                     </div>
                   )}
                 </For>
+              </div>
+              <div class={actionsFooter}>
+                <button
+                  type="button"
+                  class="outline"
+                  data-variant="danger"
+                  onClick={() => setDisconnectTarget(app)}
+                  disabled={busy()}
+                >
+                  Disconnect
+                </button>
               </div>
             </div>
           )}

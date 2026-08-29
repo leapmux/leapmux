@@ -4,7 +4,9 @@ import type { PasskeyInfo } from '~/generated/leapmux/v1/user_pb'
 import { timestampDate } from '@bufbuild/protobuf/wkt'
 import { createSignal, For, onMount, Show } from 'solid-js'
 import { userClient } from '~/api/clients'
+import { actionsFooter } from '~/components/common/actionsFooter.css'
 import { Alert } from '~/components/common/Alert'
+import { ConfirmButton } from '~/components/common/ConfirmButton'
 import { Dialog } from '~/components/common/Dialog'
 import { passwordCanSubmit, PasswordFields } from '~/components/common/PasswordFields'
 import { Spinner } from '~/components/common/Spinner'
@@ -388,7 +390,7 @@ export const AccountPasskeys: Component = () => {
                   {passkey.lastUsedAt ? `Last used ${formatPasskeyDate(passkey)}` : `Added ${formatPasskeyDate(passkey)}`}
                 </span>
               </div>
-              <div class={listStyles.credentialActions}>
+              <div class={actionsFooter}>
                 <Show when={renamingId() === passkey.id}>
                   <button type="button" onClick={() => void saveRename(passkey.id)} disabled={working()}>
                     Save
@@ -397,7 +399,11 @@ export const AccountPasskeys: Component = () => {
                 </Show>
                 <Show when={renamingId() !== passkey.id}>
                   <button type="button" onClick={() => startRename(passkey)} disabled={working()}>Rename</button>
-                  <button type="button" class={listStyles.credentialDanger} onClick={() => openDelete(passkey)} disabled={working()}>
+                  {/*
+                    An Oat danger OUTLINE: this control only OPENS the removal
+                    dialog, whose primary carries the danger weight.
+                  */}
+                  <button type="button" class="outline" data-variant="danger" onClick={() => openDelete(passkey)} disabled={working()}>
                     Remove
                   </button>
                 </Show>
@@ -413,7 +419,7 @@ export const AccountPasskeys: Component = () => {
           remedy where "Add passkey" belongs. The alert above carries the same
           reason for anybody who never hovers.
         */}
-        <div class={listStyles.passkeyButtons}>
+        <div class={actionsFooter}>
           <Tooltip text={blockedReason()}>
             <button
               type="button"
@@ -439,9 +445,11 @@ export const AccountPasskeys: Component = () => {
               <input type="text" value={friendlyName()} onInput={e => setFriendlyName(e.currentTarget.value)} />
             </label>
             <StatusLine message={modalMessage()} />
-            <button type="button" onClick={() => void handleAddPasskey()} disabled={working()}>
-              {busy() ? 'Adding…' : 'Continue'}
-            </button>
+            <div class={actionsFooter}>
+              <button type="button" onClick={() => void handleAddPasskey()} disabled={working()}>
+                {busy() ? 'Adding…' : 'Continue'}
+              </button>
+            </div>
           </div>
         </Dialog>
       </Show>
@@ -462,9 +470,22 @@ export const AccountPasskeys: Component = () => {
               />
             </Show>
             <StatusLine message={modalMessage()} />
-            <button type="button" class={listStyles.credentialDanger} onClick={() => void handleDeletePasskey()} disabled={deleteConfirmDisabled()}>
-              {busy() ? 'Removing…' : 'Remove passkey'}
-            </button>
+            {/*
+              The danger primary of the dialog it lives in, so it wears the
+              same two-click arming every ConfirmDialog danger primary does --
+              this dialog is a raw Dialog only because of the password fields
+              above, and its ending should not read quieter for that.
+              Right-aligned like an Oat dialog footer's primary.
+            */}
+            <div class={actionsFooter}>
+              <ConfirmButton
+                data-variant="danger"
+                onClick={() => void handleDeletePasskey()}
+                disabled={deleteConfirmDisabled()}
+              >
+                {busy() ? 'Removing…' : 'Remove passkey'}
+              </ConfirmButton>
+            </div>
           </div>
         </Dialog>
       </Show>
@@ -483,9 +504,11 @@ export const AccountPasskeys: Component = () => {
               />
             </Show>
             <StatusLine message={modalMessage()} />
-            <button type="button" onClick={() => void handleDeactivate()} disabled={deactivateConfirmDisabled()}>
-              {busy() ? 'Disabling…' : 'Disable passkey sign-in'}
-            </button>
+            <div class={actionsFooter}>
+              <button type="button" onClick={() => void handleDeactivate()} disabled={deactivateConfirmDisabled()}>
+                {busy() ? 'Disabling…' : 'Disable passkey sign-in'}
+              </button>
+            </div>
           </div>
         </Dialog>
       </Show>

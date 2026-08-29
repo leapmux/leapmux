@@ -1,6 +1,8 @@
 import type { Component } from 'solid-js'
 import { For, Show } from 'solid-js'
 import { userClient } from '~/api/clients'
+import { actionsFooter } from '~/components/common/actionsFooter.css'
+import { ConfirmButton } from '~/components/common/ConfirmButton'
 import { StatusLine } from '~/components/common/StatusLine'
 import { useAuth } from '~/context/AuthContext'
 import { elevationPrompting } from '~/lib/elevationPrompt'
@@ -50,7 +52,7 @@ export const AccountLinkedProviders: Component = () => {
       </Show>
       <For each={providers()}>
         {provider => (
-          <div class={styles.linkedAccount}>
+          <div class={listStyles.credentialRow}>
             <span class={styles.linkedAccountName}>{provider.name}</span>
             {/*
               This panel lists a DISABLED provider, and must say so. The hub
@@ -66,14 +68,23 @@ export const AccountLinkedProviders: Component = () => {
                 Turned off by an administrator — you cannot sign in with it
               </span>
             </Show>
-            <button
-              type="button"
-              class={styles.linkedAccountUnlink}
-              onClick={() => void detach(provider.id)}
-              disabled={action.busy() === provider.id || elevationPrompting()}
-            >
-              {action.busy() === provider.id ? 'Unlinking...' : 'Unlink'}
-            </button>
+            {/*
+              A danger-styled ConfirmButton: unlinking ends a login method in
+              one request, with no dialog of its own, so the two-click arming
+              IS the confirmation -- the same guard every row-level destructive
+              control in Preferences carries.
+            */}
+            <div class={actionsFooter}>
+              <ConfirmButton
+                class="outline"
+                data-variant="danger"
+                confirmLabel="Unlink?"
+                onClick={() => void detach(provider.id)}
+                disabled={action.busy() === provider.id || elevationPrompting()}
+              >
+                {action.busy() === provider.id ? 'Unlinking...' : 'Unlink'}
+              </ConfirmButton>
+            </div>
           </div>
         )}
       </For>

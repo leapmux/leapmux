@@ -10,7 +10,7 @@ export const pinRow = style({
   'color': 'var(--foreground)',
   'backgroundColor': 'var(--card)',
   'border': '1px solid var(--border)',
-  'borderRadius': 'var(--radius-2)',
+  'borderRadius': 'var(--radius-medium)',
   'minWidth': 0,
   '@media': {
     // Phone: id on its own row so it keeps the full card width; date +

@@ -1,9 +1,12 @@
 import type { Component, JSX } from 'solid-js'
 import type { StatusMessage } from '~/components/common/StatusLine'
 import type { App } from '~/generated/leapmux/v1/app_pb'
+import type { Scope } from '~/generated/leapmux/v1/scope_pb'
 import { timestampDate } from '@bufbuild/protobuf/wkt'
-import { createSignal, For, onMount, Show, untrack } from 'solid-js'
+import { createMemo, createSignal, For, onMount, Show, untrack } from 'solid-js'
 import { appClient } from '~/api/clients'
+import { RelativeTimeAgo } from '~/components/chat/RelativeTime'
+import { actionsFooter } from '~/components/common/actionsFooter.css'
 import { ConfirmDialog } from '~/components/common/ConfirmDialog'
 import { PillGroup } from '~/components/common/PillGroup'
 import { Spinner } from '~/components/common/Spinner'
@@ -11,31 +14,12 @@ import { StatusLine } from '~/components/common/StatusLine'
 import { Tooltip } from '~/components/common/Tooltip'
 import { useAuth } from '~/context/AuthContext'
 import { AppClientType, AppVisibility } from '~/generated/leapmux/v1/app_pb'
-import { Scope } from '~/generated/leapmux/v1/scope_pb'
 import { useCopyButton } from '~/hooks/useCopyButton'
 import { formatErrorMessage } from '~/lib/errors'
 import * as styles from './credentialList.css'
 import { fetchAllPages, MAX_PAGES, PAGE_SIZE } from './fetchAllPages'
+import { closeScopes, impliedScopes, SCOPE_CATEGORIES } from './scopeCatalogue'
 import { scopeToken } from './scopeToken'
-
-/**
- * The grantable vocabulary, in the order scope.proto declares it.
- *
- * It is derived from the generated enum rather than typed again: a scope added
- * to the proto appears here without an edit, and one removed cannot linger as
- * a checkbox that registers nothing.
- *
- * The three NON-grantable values are excluded by name, because each is a
- * construction rather than a permission: UNSPECIFIED is "nobody classified
- * this", NEVER is a recorded refusal, and ALL is the absence of a limit, which
- * no registration may claim.
- */
-const NON_GRANTABLE: readonly Scope[] = [Scope.UNSPECIFIED, Scope.NEVER, Scope.ALL]
-
-const GRANTABLE_SCOPES: readonly Scope[] = Object.values(Scope)
-  .filter((v): v is Scope => typeof v === 'number')
-  .filter(scope => !NON_GRANTABLE.includes(scope))
-  .sort((a, b) => a - b)
 
 /**
  * The editable field set the register and edit forms share: name, home page,
@@ -60,8 +44,27 @@ function createAppFormFields(initial?: { name: string, uri: string, redirects: s
       : [...current, scope])
   }
 
+  /**
+   * The scopes the ticked set implies, whether or not they were ticked.
+   *
+   * A memo, not a plain function: the checkbox list reads it twice per row
+   * (checked and disabled), so a plain function would re-run the fixed
+   * point for every attribute of every row on every tick -- one derivation
+   * per change is the whole point.
+   *
+   * The hub closes a grant at the mint (RegisterApp stores
+   * `scopes.Close()`), so an implied scope renders CHECKED and DISABLED --
+   * unticking it would state a boundary the hub cannot deliver -- and the
+   * submitted set carries it, so what the owner ticked is exactly what the
+   * next ListApps reads back.
+   */
+  const implied = createMemo(() => impliedScopes(scopes()))
+
   const redirectList = () =>
     redirects().split('\n').map(line => line.trim()).filter(line => line !== '')
+
+  /** The submitted ceiling: the ticked set, closed the way the hub stores it. */
+  const closedScopes = () => closeScopes(scopes())
 
   const Fields: Component<{ afterRedirects?: JSX.Element }> = props => (
     <>
@@ -95,26 +98,73 @@ function createAppFormFields(initial?: { name: string, uri: string, redirects: s
       {props.afterRedirects}
       <fieldset>
         <legend>Permissions this app may ask for</legend>
-        <div class={styles.credentialScopeLine}>
-          <For each={GRANTABLE_SCOPES}>
-            {scope => (
-              <label class={styles.credentialScope}>
-                <input
-                  type="checkbox"
-                  checked={scopes().includes(scope)}
-                  onChange={() => toggleScope(scope)}
-                />
-                {' '}
-                {scopeToken(scope)}
-              </label>
+        {/*
+          Grouped the way scope.proto's own sections group it, each scope with
+          the sentence its proto comment states: a ceiling is a decision, and a
+          bare list of tokens makes the reader guess at what "workspace:write"
+          reaches. The accessible name of each checkbox stays the bare token,
+          which is the name a consent screen and a stored grant both read.
+        */}
+        <ul class={styles.scopeChoiceList}>
+          <For each={SCOPE_CATEGORIES}>
+            {category => (
+              <li class={styles.scopeChoiceCategory}>
+                <span class={styles.scopeChoiceLabel}>{category.label}</span>
+                <ul class={styles.scopeChoiceEntries}>
+                  <For each={category.entries}>
+                    {({ scope, description }) => (
+                      <li class={styles.scopeChoiceEntry}>
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={scopes().includes(scope) || implied().has(scope)}
+                            disabled={implied().has(scope)}
+                            onChange={() => toggleScope(scope)}
+                          />
+                          {' '}
+                          <span class={styles.scopeChoiceToken}>{scopeToken(scope)}</span>
+                        </label>
+                        <span class={styles.scopeChoiceDescription}>{description}</span>
+                      </li>
+                    )}
+                  </For>
+                </ul>
+              </li>
             )}
           </For>
-        </div>
+        </ul>
       </fieldset>
     </>
   )
 
-  return { Fields, name, uri, scopes, redirectList, setName }
+  return { Fields, name, uri, scopes, closedScopes, redirectList, setName }
+}
+
+/**
+ * The shared register/edit footer: Cancel (outline, left) before the primary
+ * verb (right), matching every dialog footer in the frontend.
+ *
+ * One component, because the two forms' footers were a verbatim pair -- the
+ * shared disable rule included -- and a pair is where the next edit lands on
+ * one side. The gate stays the caller's: both forms disable the primary on
+ * the same empty-name-or-no-scopes condition, expressed once at each call
+ * site from the fields it owns.
+ */
+function FormActions(props: {
+  busy: boolean
+  disabled: boolean
+  label: string
+  onCancel: () => void
+  onSubmit: () => void
+}) {
+  return (
+    <div class={actionsFooter}>
+      <button type="button" class="outline" onClick={() => props.onCancel()} disabled={props.busy}>Cancel</button>
+      <button type="button" onClick={() => props.onSubmit()} disabled={props.busy || props.disabled}>
+        {props.label}
+      </button>
+    </div>
+  )
 }
 
 /**
@@ -126,6 +176,14 @@ function createAppFormFields(initial?: { name: string, uri: string, redirects: s
  */
 const RegisterAppForm: Component<{
   busy: boolean
+  /**
+   * What the registration reaches. PRIVATE is the user panel's constant; the
+   * administration panel passes HUB_WIDE. It is a prop rather than a control
+   * in the form because the hub refuses hub-wide for anybody but an
+   * administrator -- a chooser most accounts are refused would be worse than
+   * no chooser, so each panel states the one visibility its caller may mean.
+   */
+  visibility: AppVisibility
   onCancel: () => void
   onRegistered: (message: string, app?: App) => void
   onError: (message: string) => void
@@ -150,12 +208,11 @@ const RegisterAppForm: Component<{
         clientName: fields.name().trim(),
         clientUri: fields.uri().trim(),
         redirectUris: fields.redirectList(),
-        scopes: fields.scopes(),
-        // PRIVATE always, from this panel. A hub-wide registration needs an
-        // administrator, and offering a control that most accounts are
-        // refused would be a worse answer than not offering it: the CLI's
-        // `--visibility hub-wide` is where an administrator does it.
-        visibility: AppVisibility.PRIVATE,
+        // CLOSED, as the hub would close it anyway: the ceiling is stored
+        // expanded, so submitting the bare ticked set and submitting this
+        // differ only in who did the arithmetic.
+        scopes: fields.closedScopes(),
+        visibility: props.visibility,
         clientType: clientType(),
       })
       if (resp.clientSecret) {
@@ -198,12 +255,18 @@ const RegisterAppForm: Component<{
                 />
               )}
             />
-            <div class="hstack gap-2">
-              <button type="button" onClick={() => void submit()} disabled={props.busy || fields.name().trim() === '' || fields.scopes().length === 0}>
-                Register
-              </button>
-              <button type="button" onClick={props.onCancel} disabled={props.busy}>Cancel</button>
-            </div>
+            {/*
+              CANCEL then the primary, matching every dialog footer in the
+              frontend: the quiet outline escape on the left, the verb that
+              does the thing on the right.
+            */}
+            <FormActions
+              busy={props.busy}
+              disabled={fields.name().trim() === '' || fields.scopes().length === 0}
+              label="Register"
+              onCancel={props.onCancel}
+              onSubmit={() => void submit()}
+            />
           </>
         )}
       >
@@ -214,7 +277,7 @@ const RegisterAppForm: Component<{
           <code data-testid="new-client-secret">{secret()}</code>
           <button type="button" onClick={() => void copy()}>{copied() ? 'Copied' : 'Copy'}</button>
         </div>
-        <div>
+        <div class={actionsFooter}>
           <button type="button" onClick={() => created() && props.onRegistered('App registered.', created()!)}>Done</button>
         </div>
       </Show>
@@ -259,7 +322,11 @@ const EditAppForm: Component<{
         replaceRedirectUris: true,
         redirectUris: fields.redirectList(),
         replaceScopes: true,
-        scopes: fields.scopes(),
+        // CLOSED, for the same reason the register path closes: the hub
+        // stores the expanded ceiling, and the edit pre-fills from what it
+        // stored -- a bare ticked set here would strip the implied scopes on
+        // every round trip through this form.
+        scopes: fields.closedScopes(),
       })
       props.onSaved('App updated.', resp.app)
     }
@@ -274,12 +341,13 @@ const EditAppForm: Component<{
   return (
     <div class="vstack gap-3" data-testid={`edit-app-form-${props.app.clientId}`}>
       <fields.Fields />
-      <div class="hstack gap-2">
-        <button type="button" onClick={() => void submit()} disabled={props.busy || fields.name().trim() === '' || fields.scopes().length === 0}>
-          Save
-        </button>
-        <button type="button" onClick={() => props.onCancel()} disabled={props.busy}>Cancel</button>
-      </div>
+      <FormActions
+        busy={props.busy}
+        disabled={fields.name().trim() === '' || fields.scopes().length === 0}
+        label="Save"
+        onCancel={props.onCancel}
+        onSubmit={() => void submit()}
+      />
     </div>
   )
 }
@@ -295,9 +363,22 @@ const EditAppForm: Component<{
  * authorizable to that account alone. An administrator's is hub-wide. One
  * column on the hub carries that whole rule, so there is no second flag here
  * that could disagree with what the list shows.
+ *
+ * TWO panels render this one editor. The default (the user-level Apps
+ * section) registers PRIVATE and lists what the caller's own listing answers.
+ * The `hub-wide` variant (the administration section) registers HUB_WIDE and
+ * asks the hub for the catalogue alone -- the registrations that reach
+ * everybody -- so an administrator reads one catalogue, not their private
+ * apps twice.
  */
-export const AccountAppRegistrations: Component = () => {
+export interface AppRegistrationsProps {
+  /** `'hub-wide'` lists and registers the hub's own registrations. */
+  variant?: 'user' | 'hub-wide'
+}
+
+export const AppRegistrations: Component<AppRegistrationsProps> = (props) => {
   const auth = useAuth()
+  const hubWide = () => (props.variant ?? 'user') === 'hub-wide'
   const [apps, setApps] = createSignal<App[]>([])
   const [loading, setLoading] = createSignal(true)
   // Distinct from `message`, which the write paths also use. Without it a hub
@@ -346,13 +427,22 @@ export const AccountAppRegistrations: Component = () => {
       // The hub's own switch rides the listing; the last page's value is the
       // current one, so the fetchPage callback records it as a side effect.
       let openRegistrationEnabled = false
+      // The reach rides the request, read ONCE before the pagination: the
+      // variant is fixed for the panel's life, and a reactive read inside
+      // the untracked page callback would re-evaluate per page for nothing.
+      const reach = hubWide() ? AppVisibility.HUB_WIDE : undefined
       const collected = await fetchAllPages(
         async (cursor) => {
           // includeRevoked: a retired app stays readable because a live
           // credential on one must still be explainable (app.proto states the
           // contract), and the retired badge and the gates below key on it --
           // without the flag the row vanishes on the refresh that retires it.
-          const resp = await appClient.listApps({ cursor, limit: PAGE_SIZE, includeRevoked: true })
+          const resp = await appClient.listApps({
+            cursor,
+            limit: PAGE_SIZE,
+            includeRevoked: true,
+            visibility: reach,
+          })
           openRegistrationEnabled = resp.openRegistrationEnabled
           return { items: resp.apps, nextCursor: resp.nextCursor }
         },
@@ -502,38 +592,40 @@ export const AccountAppRegistrations: Component = () => {
     }
   }
 
-  const describe = (app: App) => {
-    const parts: string[] = []
-    if (app.createdAt)
-      parts.push(`Registered ${timestampDate(app.createdAt).toLocaleDateString()}`)
+  /**
+   * The live-credential count, the one fact the row states beside the date.
+   * Empty when there are none, so the meta line renders no bare separator.
+   */
+  const liveCredentialNote = (app: App) => {
     const live = Number(app.liveCredentialCount)
-    if (live > 0)
-      parts.push(`${live} live credential${live === 1 ? '' : 's'}`)
-    return parts.join(' · ')
+    return live > 0 ? `${live} live credential${live === 1 ? '' : 's'}` : ''
   }
 
   return (
     <>
-      <div class="vstack gap-4" data-testid="app-registrations">
+      <div class="vstack gap-4" data-testid={hubWide() ? 'hub-wide-app-registrations' : 'app-registrations'}>
         <Show when={loading()}>
           <div class={styles.credentialListLoading}><Spinner /></div>
         </Show>
         <Show when={!loading() && !loadFailed() && apps().length === 0 && !creating()}>
           <p class={styles.credentialListEmpty}>
-            No app registrations. Register one to let a program ask for access to accounts on this hub.
+            {hubWide()
+              ? 'No hub-wide app registrations. Register one to let every account on this hub authorize it.'
+              : 'No app registrations. Register one to let a program ask for access to accounts on this hub.'}
           </p>
         </Show>
         {/*
           The state of the hub-wide switch, stated where its effects land. It
-          is a fact an administrator changed under Administration, Apps -- but
-          reading it only there would put it beside no app at all, and the
-          hub-wide rows this panel already lists for an administrator are the
-          ones the switch admits company for.
+          is a fact an administrator changed under Administration › Hub-wide
+          Apps -- but reading it only there would put it beside no app at all,
+          and the rows a listing already carries are the ones the switch
+          admits company for. The path separator is ›, the same character the
+          Preferences search breadcrumb spells paths with.
         */}
         <Show when={!loading() && !loadFailed() && openRegistration()}>
           <p class={styles.credentialListEmpty} data-testid="open-registration-note">
             Open registration is on: an app can register itself at /oauth/register without an
-            administrator. Administrators turn it off under Administration, Apps.
+            administrator. Administrators turn it off under Administration › Hub-wide Apps.
           </p>
         </Show>
         {/*
@@ -547,6 +639,11 @@ export const AccountAppRegistrations: Component = () => {
             <div class="vstack gap-3">
               <div class={styles.credentialRow} data-testid={`app-registration-${app.clientId}`}>
                 <div class={styles.credentialInfo}>
+                  {/*
+                    The name's line carries every chip that QUALIFIES the name
+                    -- the vouch, the reach, the app's kind -- so one glance
+                    answers "what am I looking at" without a second line.
+                  */}
                   <span class={styles.credentialName}>
                     {app.clientName || 'Unnamed app'}
                     {' '}
@@ -559,34 +656,70 @@ export const AccountAppRegistrations: Component = () => {
                         // (a vouch or a built-in) travels in this field, so a
                         // built-in registration reads verified here exactly as
                         // the consent page renders it.
-                        <span class={styles.credentialBadgeWarning}>unverified</span>
+                        <span class="badge" data-variant="warning">unverified</span>
                       }
                     >
-                      <span class={styles.credentialBadge}>
+                      <span class="badge" data-variant="success">
                         verified
                         {app.verifiedByUsername ? ` by ${app.verifiedByUsername}` : ''}
                       </span>
                     </Show>
-                    <Show when={app.visibility === AppVisibility.HUB_WIDE}>
+                    {/*
+                      The reach badge, absent from the hub-wide panel: every
+                      row there reaches everybody, so the badge would repeat
+                      the section's own title once per row.
+                    */}
+                    <Show when={app.visibility === AppVisibility.HUB_WIDE && !hubWide()}>
                       {' '}
-                      <span class={styles.credentialBadge}>hub-wide</span>
+                      <span class="badge outline">hub-wide</span>
                     </Show>
                     <Show when={app.elevationAllowed}>
                       {' '}
-                      <span class={styles.credentialBadge}>step-up allowed</span>
+                      <span class="badge outline">step-up allowed</span>
                     </Show>
                     <Show when={app.revokedAt}>
                       {' '}
-                      <span class={styles.credentialBadgeWarning}>retired</span>
+                      <span class="badge" data-variant="danger">retired</span>
+                    </Show>
+                    {' '}
+                    <Show
+                      when={app.clientType === AppClientType.CONFIDENTIAL}
+                      fallback={<span class="badge outline">public app</span>}
+                    >
+                      <span class="badge outline">confidential app</span>
                     </Show>
                   </span>
-                  <span class={styles.credentialSubRow}>
+                  {/*
+                    The metadata line, every part delimited by a middot: when
+                    it was registered, the registration date in the app's
+                    relative form (the same <RelativeTimeAgo> the chat and the
+                    file tree render, with the full local date and time on
+                    hover), the client id a developer copies into a config,
+                    and the live-credential count. A bare toLocaleDateString
+                    answered "8/29/2026" to a reader whose real question was
+                    "how long has this been here".
+                  */}
+                  <span class={styles.credentialMeta}>
+                    <Show when={app.createdAt}>
+                      {ts => (
+                        <>
+                          Registered
+                          {' '}
+                          <RelativeTimeAgo timestamp={timestampDate(ts()).toISOString()} />
+                          {' · '}
+                        </>
+                      )}
+                    </Show>
                     <code>{app.clientId}</code>
-                    <Show when={app.clientType === AppClientType.CONFIDENTIAL} fallback={<span>public app</span>}>
-                      <span>confidential app</span>
+                    <Show when={liveCredentialNote(app)}>
+                      {note => (
+                        <>
+                          {' · '}
+                          {note()}
+                        </>
+                      )}
                     </Show>
                   </span>
-                  <span class={styles.credentialMeta}>{describe(app)}</span>
                   <Show when={ceiling(app).length > 0}>
                     <span class={styles.credentialScopeLine} data-testid={`app-ceiling-${app.clientId}`}>
                       <For each={ceiling(app)}>
@@ -595,7 +728,7 @@ export const AccountAppRegistrations: Component = () => {
                     </span>
                   </Show>
                 </div>
-                <div class={styles.credentialActions}>
+                <div class={actionsFooter}>
                   {/*
                     Edit rewrites where a consent redirects, which is the most
                     dangerous write in the feature -- so it sits behind the
@@ -664,7 +797,10 @@ export const AccountAppRegistrations: Component = () => {
                     so the hub refuses to retire one. The control says so rather
                     than being offered and then failing.
 
-                    The tooltip takes NO ariaLabel: the button already reads
+                    An Oat danger OUTLINE, not a filled button: retiring asks in
+                    a dialog of its own, and this control only opens it -- the
+                    dialog's primary is where the danger weight belongs. The
+                    tooltip takes NO ariaLabel: the button already reads
                     "Retire", and ariaLabel would REPLACE that name with the whole
                     sentence -- a screen reader would announce a reason where the
                     verb belongs, and every by-name lookup would stop matching.
@@ -676,13 +812,14 @@ export const AccountAppRegistrations: Component = () => {
                     when={app.registrationSource !== 'builtin'}
                     fallback={(
                       <Tooltip text="This app ships with the hub, so it cannot be retired.">
-                        <button type="button" class={styles.credentialDanger} disabled>Retire</button>
+                        <button type="button" class="outline" data-variant="danger" disabled>Retire</button>
                       </Tooltip>
                     )}
                   >
                     <button
                       type="button"
-                      class={styles.credentialDanger}
+                      class="outline"
+                      data-variant="danger"
                       onClick={() => setTarget(app)}
                       disabled={busy() || app.revokedAt !== undefined}
                     >
@@ -712,15 +849,16 @@ export const AccountAppRegistrations: Component = () => {
         <Show
           when={creating()}
           fallback={(
-            <div>
+            <div class={actionsFooter}>
               <button type="button" onClick={() => setCreating(true)} disabled={busy()}>
-                Register an app
+                {hubWide() ? 'Register a hub-wide app' : 'Register an app'}
               </button>
             </div>
           )}
         >
           <RegisterAppForm
             busy={busy()}
+            visibility={hubWide() ? AppVisibility.HUB_WIDE : AppVisibility.PRIVATE}
             onCancel={() => setCreating(false)}
             onRegistered={(text, app) => {
               setCreating(false)

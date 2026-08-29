@@ -1,7 +1,7 @@
 import type { Page } from '@playwright/test'
 import { accountStorageKeyPrefix, KEY_CHANNEL_RELAY_SEQ, KEY_USER_EVENTS_RELAY_SEQ } from '../../src/lib/browserStorage'
 import { expect, test } from './fixtures'
-import { loginViaToken, openPreferencesDialog, pickTheme } from './helpers/ui'
+import { loginViaToken, openSettingsAt, pickTheme } from './helpers/ui'
 
 /**
  * Two accounts sharing one browser must not share stored state.
@@ -34,8 +34,7 @@ async function storageKeys(page: Page): Promise<string[]> {
 
 /** Pin the theme to a device override and set the palette, through the dialog. */
 async function overrideThemeOnThisDevice(page: Page, palette: string) {
-  await openPreferencesDialog(page, 'appearance')
-  const dialog = page.getByRole('dialog', { name: 'Preferences' })
+  const dialog = await openSettingsAt(page, 'appearance')
 
   const chip = dialog.getByTestId('scope-chip-appearance.theme')
   await chip.click()
@@ -81,8 +80,7 @@ test.describe('account storage isolation', () => {
     // paints `data-ui-theme="default"` at import time, so asserting the
     // attribute alone would match the pre-auth boot frame and hold even if this
     // account HAD inherited the admin's override.
-    await openPreferencesDialog(page, 'appearance')
-    const dialog = page.getByRole('dialog', { name: 'Preferences' })
+    const dialog = await openSettingsAt(page, 'appearance')
     await expect(dialog.getByTestId('scope-chip-appearance.theme')).toHaveText(/Account default/)
     await expect(page.locator('html')).toHaveAttribute('data-ui-theme', 'default')
     await page.keyboard.press('Escape')

@@ -2,6 +2,7 @@ import type { Component } from 'solid-js'
 import { A } from '@solidjs/router'
 import { createSignal, Show } from 'solid-js'
 import { authClient } from '~/api/clients'
+import { actionsFooter } from '~/components/common/actionsFooter.css'
 import { CaptchaSection } from '~/components/common/CaptchaSection'
 import { Spinner } from '~/components/common/Spinner'
 import { createCaptchaForm } from '~/lib/captchaForm'
@@ -67,10 +68,12 @@ export const ForgotPasswordPage: Component = () => {
             <Show when={error()}>
               <div class={errorText}>{error()}</div>
             </Show>
-            <button type="submit" disabled={submitting() || !identifier().trim() || captcha.blocksSubmit()}>
-              <Show when={submitting()}><Spinner /></Show>
-              {submitting() ? 'Sending…' : 'Send reset link'}
-            </button>
+            <div class={actionsFooter}>
+              <button type="submit" disabled={submitting() || !identifier().trim() || captcha.blocksSubmit()}>
+                <Show when={submitting()}><Spinner /></Show>
+                {submitting() ? 'Sending…' : 'Send reset link'}
+              </button>
+            </div>
           </form>
           <div class={styles.authFooter}>
             <A href="/login">Back to login</A>

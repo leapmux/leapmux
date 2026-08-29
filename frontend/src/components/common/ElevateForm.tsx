@@ -1,6 +1,7 @@
 import type { Component } from 'solid-js'
 import type { LinkedOAuthProvider } from '~/generated/leapmux/v1/auth_pb'
 import { createSignal, For, Show } from 'solid-js'
+import { actionsFooter } from '~/components/common/actionsFooter.css'
 import { useAuth } from '~/context/AuthContext'
 import { oauthReauthUrl } from '~/lib/elevation'
 import { formatErrorMessage } from '~/lib/errors'
@@ -174,16 +175,20 @@ export const ElevateForm: Component<{
               data-testid="elevate-password"
             />
           </label>
-          <button type="submit" disabled={busy() || !password()} data-testid="elevate-password-submit">
-            {busy() ? 'Verifying…' : 'Verify'}
-          </button>
+          <div class={actionsFooter}>
+            <button type="submit" disabled={busy() || !password()} data-testid="elevate-password-submit">
+              {busy() ? 'Verifying…' : 'Verify'}
+            </button>
+          </div>
         </form>
       </Show>
 
       <Show when={passkeyAvailable()}>
-        <button type="button" onClick={submitPasskey} disabled={busy()} data-testid="elevate-passkey">
-          Verify with passkey
-        </button>
+        <div class={actionsFooter}>
+          <button type="button" onClick={submitPasskey} disabled={busy()} data-testid="elevate-passkey">
+            Verify with passkey
+          </button>
+        </div>
       </Show>
 
       <Show when={hasElevatingProvider()}>

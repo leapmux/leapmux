@@ -1,5 +1,6 @@
 import type { Component } from 'solid-js'
 import type { KeyPinDecision } from '~/lib/keyPinStore'
+import { actionsFooter } from '~/components/common/actionsFooter.css'
 import { ConfirmButton } from './ConfirmButton'
 import { Dialog } from './Dialog'
 
@@ -46,7 +47,7 @@ export const KeyPinMismatchDialog: Component<KeyPinMismatchDialogProps> = (props
           verify the worker's identity before accepting.
         </p>
       </section>
-      <footer>
+      <footer class={actionsFooter}>
         <button type="button" class="outline" onClick={handleReject} data-testid="key-pin-reject">
           Reject
         </button>

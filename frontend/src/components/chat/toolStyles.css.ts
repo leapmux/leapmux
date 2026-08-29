@@ -276,7 +276,7 @@ export const mcpImage = style({
   width: 'auto',
   height: 'auto',
   objectFit: 'contain',
-  borderRadius: 'var(--radius-2)',
+  borderRadius: 'var(--radius-medium)',
   border: '1px solid var(--border)',
   marginTop: 'var(--space-1)',
   marginBottom: 'var(--space-1)',

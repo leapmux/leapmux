@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures'
-import { openPreferencesDialog } from './helpers/ui'
+import { openSettingsAt } from './helpers/ui'
 
 /**
  * Runtime geometry for modal safe-area insets.
@@ -193,7 +193,7 @@ test.describe('dialog safe-area geometry (portrait)', () => {
   }) => {
     void authenticatedWorkspace
     await applySimulatedSafeArea(page, IPHONE_PORTRAIT)
-    await openPreferencesDialog(page)
+    await openSettingsAt(page)
 
     const geometry = await readDialogGeometry(page)
     expect(geometry, 'open Preferences dialog + close button').not.toBeNull()
@@ -244,7 +244,7 @@ test.describe('dialog safe-area geometry (landscape notch)', () => {
   }) => {
     void authenticatedWorkspace
     await applySimulatedSafeArea(page, IPHONE_LANDSCAPE_NOTCH_RIGHT)
-    await openPreferencesDialog(page)
+    await openSettingsAt(page)
 
     const geometry = await readDialogGeometry(page)
     expect(geometry, 'open Preferences dialog + close button').not.toBeNull()

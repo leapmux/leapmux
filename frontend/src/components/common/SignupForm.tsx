@@ -4,6 +4,7 @@ import type { Component, JSX } from 'solid-js'
 import type { EmailVerificationStatus, User } from '~/generated/leapmux/v1/auth_pb'
 import { createSignal, Show } from 'solid-js'
 import { authClient } from '~/api/clients'
+import { actionsFooter } from '~/components/common/actionsFooter.css'
 import { CaptchaSection } from '~/components/common/CaptchaSection'
 import { PillGroup } from '~/components/common/PillGroup'
 import { authMethodOptions, createAuthMethodSelection } from '~/lib/authMethodSelection'
@@ -215,12 +216,14 @@ export const SignupForm: Component<SignupFormProps> = (props) => {
         <Show when={error()}>
           <div class={errorText}>{error()}</div>
         </Show>
-        <button type="submit" disabled={submitting() || !canSubmit()}>
-          <Show when={submitting()}><Spinner /></Show>
-          {submitting()
-            ? props.submittingLabel
-            : effectiveMethod() === 'passkey' ? 'Sign up with passkey' : props.submitLabel}
-        </button>
+        <div class={actionsFooter}>
+          <button type="submit" disabled={submitting() || !canSubmit()}>
+            <Show when={submitting()}><Spinner /></Show>
+            {submitting()
+              ? props.submittingLabel
+              : effectiveMethod() === 'passkey' ? 'Sign up with passkey' : props.submitLabel}
+          </button>
+        </div>
       </form>
     </>
   )

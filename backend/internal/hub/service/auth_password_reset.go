@@ -75,7 +75,7 @@ func (s *AuthService) RequestPasswordReset(ctx context.Context, req *connect.Req
 	// credential-bearing reset link, and the hub never verified it.
 	//
 	// An unverified administrator self-recovers with ResendVerificationEmail
-	// plus VerifyEmail, which Preferences, Account offers beside the
+	// plus VerifyEmail, which Preferences › Account offers beside the
 	// "(unverified)" badge. Resend is the leg that seeds a pending row from
 	// the stored address; RequestEmailChange does NOT, because its
 	// administrator branch writes the new address straight to the email

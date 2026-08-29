@@ -25,6 +25,7 @@ export const CUSTOM_EDITOR_IDS = [
   'accountLinkedProviders',
   'accountConnectedApps',
   'accountAppRegistrations',
+  'hubWideAppRegistrations',
   'keyPins',
   'theme',
   'terminalTheme',

@@ -178,7 +178,9 @@ describe('accountPasskeys', () => {
     fireEvent.input(lastLabelled('Confirm Password'), { target: { value: 'newpass123' } })
     expect(screen.getByRole('button', { name: 'Remove passkey' })).toBeEnabled()
 
+    // The dialog's danger primary is a ConfirmButton: arm, then confirm.
     fireEvent.click(screen.getByRole('button', { name: 'Remove passkey' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm?' }))
     await vi.waitFor(() => {
       expect(mockDeletePasskey).toHaveBeenCalledWith({ id: 'pk-1', newPassword: 'newpass123' })
     })
@@ -257,6 +259,7 @@ describe('accountPasskeys', () => {
     expect(await screen.findByText('Laptop')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Remove passkey' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm?' }))
     await vi.waitFor(() => {
       expect(screen.queryByText('Laptop')).not.toBeInTheDocument()
     })
@@ -288,6 +291,7 @@ describe('accountPasskeys', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Remove passkey' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm?' }))
 
     await vi.waitFor(() => {
       expect(mockRefreshUser).toHaveBeenCalled()

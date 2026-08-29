@@ -144,6 +144,12 @@ message ListAppsRequest {
   // Include registrations that were revoked. They stay readable because a live
   // credential on a retired app must still be explainable.
   bool include_revoked = 3;
+  // Narrow the listing to one reach. APP_VISIBILITY_UNSPECIFIED keeps the
+  // caller's whole editable set -- an administrator's own apps beside the
+  // hub-wide catalogue. HUB_WIDE asks for the catalogue alone (administrators
+  // only), and PRIVATE for the caller's own registrations, so a surface that
+  // draws one reach does not fetch and discard the other.
+  AppVisibility visibility = 4;
 }
 
 message ListAppsResponse {

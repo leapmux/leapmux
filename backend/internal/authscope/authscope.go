@@ -102,6 +102,11 @@ var grantableOrder = func() []leapmuxv1.Scope {
 // Closing at enforcement instead would put the rule in every gate, including
 // the Worker's, and a gate that forgot it would refuse a grant the consent
 // screen promised.
+//
+// The frontend mirrors this table (frontend
+// src/components/settings/account/scopeCatalogue.ts) so the register form can
+// lock implied scopes before it submits; TestFrontendImpliedByMatchesTheHubGraph
+// pins the two together.
 var impliedBy = map[leapmuxv1.Scope][]leapmuxv1.Scope{
 	leapmuxv1.Scope_SCOPE_ACCOUNT_WRITE:   {leapmuxv1.Scope_SCOPE_ACCOUNT_READ},
 	leapmuxv1.Scope_SCOPE_WORKSPACE_WRITE: {leapmuxv1.Scope_SCOPE_WORKSPACE_READ},

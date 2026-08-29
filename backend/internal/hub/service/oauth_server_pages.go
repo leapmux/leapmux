@@ -31,10 +31,190 @@ import (
 //
 // The style is inline and plain on purpose: the Go mux serves these outside the
 // SPA and its stylesheet.
+//
+// WHAT the style says is the app's own look, restated: the token values below
+// are a copy of LeapMux's DEFAULT palette pair (frontend
+// src/styles/themes/default.ts), and the rules are Oat's component shapes in
+// the subset of CSS a script-free page needs. The palette cannot be LINKED
+// here -- `default-src 'none'` is the defence that makes these pages safe to
+// render for a stranger arriving from a terminal -- so it is stated in the
+// document, and a reader's chosen variant cannot follow them: that choice
+// lives in the SPA's per-account storage, which these pages have no script to
+// read. The page follows the DEFAULT pair and the system's light/dark
+// preference, which is as close as a server-rendered page can come. When the
+// default palette changes, change the copy with it.
+
+// pageCSS is every page's stylesheet: the default palette as custom
+// properties (light, then dark under the system preference) and the shared
+// component rules. One copy, inside the chrome, so no page can drift.
+const pageCSS = `
+:root {
+  color-scheme: light dark;
+  --background: rgb(255 254 252);
+  --foreground: rgb(34 32 30);
+  --card: rgb(247 245 242);
+  --border: rgb(221 217 211);
+  --input: rgb(213 209 203);
+  --muted: rgb(237 235 231);
+  --muted-foreground: rgb(120 117 111);
+  --primary: rgb(13 148 136);
+  --primary-foreground: rgb(255 255 255);
+  --accent: rgb(222 235 225);
+  --danger: rgb(220 74 68);
+  --danger-subtle: rgb(253 235 233);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: rgb(26 25 23);
+    --foreground: rgb(232 230 225);
+    --card: rgb(42 40 38);
+    --border: rgb(61 58 54);
+    --input: rgb(61 58 54);
+    --muted: rgb(46 43 40);
+    --muted-foreground: rgb(138 134 128);
+    --primary: rgb(20 184 166);
+    --primary-foreground: rgb(12 12 11);
+    --accent: rgb(45 62 50);
+    --danger: rgb(239 83 80);
+    --danger-subtle: rgb(50 30 28);
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  padding: 48px 16px;
+  background: var(--background);
+  color: var(--foreground);
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+main { max-width: 520px; margin: 0 auto; }
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 24px;
+}
+h1 { font-size: 20px; font-weight: 600; margin: 0 0 16px; }
+p { margin: 0 0 12px; }
+ul { margin: 0 0 12px; padding-left: 24px; }
+.alert {
+  border: 1px solid var(--danger);
+  background: var(--danger-subtle);
+  color: var(--danger);
+  padding: 8px 12px;
+  border-radius: 6px;
+  margin: 0 0 12px;
+}
+.identity { display: flex; align-items: center; gap: 12px; margin: 0 0 12px; }
+.identity img, .monogram { width: 48px; height: 48px; border-radius: 8px; flex: none; }
+.monogram {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--muted);
+  color: var(--muted-foreground);
+  font-size: 24px;
+}
+.identity strong { font-size: 18px; }
+.actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 24px; }
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 16px;
+  font: 500 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: var(--primary);
+  color: var(--primary-foreground);
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.btn:hover { background: color-mix(in srgb, var(--primary), white 25%); }
+.btn-outline { background: transparent; color: var(--foreground); border-color: var(--border); }
+.btn-outline:hover { background: var(--accent); }
+.code-input {
+  width: 100%;
+  font: 24px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  letter-spacing: 2px;
+  text-align: center;
+  padding: 8px;
+  background: var(--background);
+  color: var(--foreground);
+  border: 1px solid var(--input);
+  border-radius: 6px;
+}
+main.wide { max-width: 680px; }
+.scopes { list-style: none; margin: 0 0 12px; padding: 0; display: grid; gap: 10px; }
+.scope-category { display: block; font-weight: 600; margin-bottom: 4px; }
+.scopes ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+/*
+ * The ENTRY row alone, never the family <li> around it. A ".scopes li"
+ * selector styled both levels as one flex row, and a narrow family (File,
+ * one short row) then laid that row BESIDE its label while wide families
+ * wrapped theirs under -- the label must always stand on its own line.
+ *
+ * NOWRAP is what keeps a description beside its token: with flex-wrap, a
+ * browser places items by their FULL content width before shrinking ever
+ * applies, so a long sentence moved to a line of its own however small its
+ * min-width. Unwrapped, the sentence is the one item that may shrink, and
+ * its text wraps INSIDE its own box, always starting beside the token.
+ */
+.scopes ul > li { display: flex; align-items: flex-start; gap: 8px; }
+/*
+ * The tick mark, restating Oat's own checkbox rule piece for piece -- 1rem
+ * square, radius-small corners, primary fill, and the check drawn through
+ * the same SVG mask in the primary foreground -- so the mark a consent page
+ * draws is pixel-identical to the checkbox the Preferences dialog ticks.
+ * A native checkbox could not be used: the disabled state that makes it a
+ * mark instead of a control is the one state every browser paints in its
+ * own grey, accent-color or not, and a dimmed tick contradicted the legend.
+ */
+.tick {
+  flex: none;
+  width: 1rem;
+  height: 1rem;
+  margin-top: 2px;
+  position: relative;
+  background-color: var(--background);
+  border: 1px solid var(--input);
+  border-radius: 0.125rem;
+}
+.granted > .tick { background-color: var(--primary); border-color: var(--primary); }
+.granted > .tick::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-color: var(--primary-foreground);
+  mask-position: center;
+  mask-repeat: no-repeat;
+  mask-size: 100%;
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='4'%3E%3Cpolyline points='20 6 9 17 4 12'/%3E%3C/svg%3E");
+}
+.scope-token { flex: none; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
+.scope-sentence { flex: 1 1 0; min-width: 0; color: var(--muted-foreground); font-size: 13px; }
+.not-granted { opacity: 0.55; }
+/* The screen-reader spelling of the tick, for the mark itself is decorative. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+.scope-note { color: var(--muted-foreground); font-size: 12px; }
+`
 
 // pageChrome wraps each page's body, so the shell exists in one place.
-const pageChrome = `<!doctype html><html><body style="font-family:sans-serif;max-width:520px;margin:48px auto;line-height:1.5;">
+const pageChrome = `<!doctype html><html><head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>LeapMux</title>
+<style>` + pageCSS + `</style>
+</head><body>
+<main class="card {{block "pageClass" .}}{{end}}">
 {{block "body" .}}{{end}}
+</main>
 </body></html>`
 
 // consentPageTmpl is the authorization-code consent form.
@@ -52,15 +232,14 @@ const pageChrome = `<!doctype html><html><body style="font-family:sans-serif;max
 // The hidden fields carry the whole request back to handleConsent, which
 // re-validates every one of them: the form is attacker-writable, and having
 // rendered a page makes nothing that comes back trustworthy.
-var consentPageTmpl = mustParsePage("consent", `{{define "body"}}
+var consentPageTmpl = mustParsePage("consent", `{{define "pageClass"}} wide{{end}}{{define "body"}}
 {{if .App.Verified}}<h1>Authorize {{.App.Name}}?</h1>
 {{else}}<h1>Authorize an unverified app?</h1>
-<p style="padding:8px 12px;border:1px solid #c00;border-radius:4px;">Nobody verified this app on this hub. It says its name is &ldquo;{{.App.Name}}&rdquo;. Continue only if you started this yourself.</p>
+<p class="alert">Nobody verified this app on this hub. It says its name is &ldquo;{{.App.Name}}&rdquo;. Continue only if you started this yourself.</p>
 {{end}}
 {{template "appIdentity" .App}}
 <p>It asks to use your account (<strong>{{.Username}}</strong>) and will return to {{.RedirectLabel}}.</p>
-{{if .Permissions}}<p>It would be able to:</p>
-<ul>{{range .Permissions}}<li>{{.}}</li>{{end}}</ul>
+{{if .Permissions}}{{template "permissions" .Permissions}}
 {{else}}<p>It asks for no permissions at all, so it would be able to do nothing with your account.</p>
 {{end}}
 <form method="POST" action="/oauth/consent">
@@ -72,8 +251,10 @@ var consentPageTmpl = mustParsePage("consent", `{{define "body"}}
   <input type="hidden" name="code_challenge" value="{{.CodeChallenge}}"/>
   <input type="hidden" name="scope" value="{{.Scope}}"/>
   <input type="hidden" name="installation_name" value="{{.InstallationName}}"/>
-  <button type="submit" name="decision" value="deny" style="padding:10px 16px;font-size:14px;">Deny</button>
-  <button type="submit" name="decision" value="allow" style="padding:10px 16px;font-size:14px;margin-left:8px;">Allow</button>
+  <div class="actions">
+    <button type="submit" name="decision" value="deny" class="btn btn-outline">Deny</button>
+    <button type="submit" name="decision" value="allow" class="btn">Allow</button>
+  </div>
 </form>
 {{end}}`)
 
@@ -82,11 +263,30 @@ var consentPageTmpl = mustParsePage("consent", `{{define "body"}}
 // A VERIFIED app shows its stored icon, served from this origin so the page's
 // img-src stays 'self'. An UNVERIFIED one shows a MONOGRAM -- the first letter
 // of its name in a neutral square -- which fetches nothing at all, so an
-// unverified registrant can neither borrow a well-known icon nor learn when the
-// consent page rendered and from which address.
+// unverified registrant can neither borrow a well-known icon nor learn when
+// the consent page rendered and from which address.
 const appIdentityTmpl = `{{define "appIdentity"}}
-<p>{{if .HasIcon}}<img src="/oauth/apps/{{.ClientID}}/icon" alt="" width="48" height="48" style="vertical-align:middle;border-radius:8px;"/>{{else}}<span aria-hidden="true" style="display:inline-block;width:48px;height:48px;line-height:48px;text-align:center;border-radius:8px;background:#e5e5e5;font-size:24px;vertical-align:middle;">{{.Monogram}}</span>{{end}}
-<strong style="margin-left:12px;font-size:18px;">{{.Name}}</strong></p>
+<p class="identity">{{if .HasIcon}}<img src="/oauth/apps/{{.ClientID}}/icon" alt="" width="48" height="48"/>{{else}}<span aria-hidden="true" class="monogram">{{.Monogram}}</span>{{end}}
+<strong>{{.Name}}</strong></p>
+{{end}}`
+
+// permissionsTmpl renders a grant as the WHOLE grantable vocabulary grouped
+// by family, the same shape the Preferences dialog's "Permissions this app
+// may ask for" list uses: the asked-for permissions ticked, the rest dimmed.
+//
+// The tick is a CSS-DRAWN mark, not a disabled native checkbox: browsers
+// paint disabled controls in their own grey whatever accent-color says, and
+// a tick that reads dimmed contradicts the legend beneath it. The mark is
+// decorative (aria-hidden); the granted/not-granted fact reaches a screen
+// reader as visually-hidden words beside the sentence.
+const permissionsTmpl = `{{define "permissions"}}
+<p>It would be able to:</p>
+<ul class="scopes">{{range .}}
+<li><span class="scope-category">{{.Label}}</span><ul>{{range .Entries}}
+<li class="{{if .Granted}}granted{{else}}not-granted{{end}}"><span class="tick" aria-hidden="true"></span><span class="scope-token">{{.Token}}</span><span class="scope-sentence">{{.Sentence}}<span class="visually-hidden"> ({{if .Granted}}granted{{else}}not granted{{end}})</span></span></li>{{end}}
+</ul></li>{{end}}
+</ul>
+<p class="scope-note">The app asks only for the ticked permissions. The dimmed permissions are not granted.</p>
 {{end}}`
 
 // devicePageTmpl is the device-code entry form, for the flow that runs when the
@@ -98,23 +298,25 @@ const appIdentityTmpl = `{{define "appIdentity"}}
 // registration supplies. A step-up that fell back to a requester-chosen label
 // would let a stolen credential label its own step-up with the owner's laptop
 // name.
-var devicePageTmpl = mustParsePage("device", `{{define "body"}}
+var devicePageTmpl = mustParsePage("device", `{{define "pageClass"}} wide{{end}}{{define "body"}}
 <h1>{{if .Elevating}}Verify an app credential{{else}}Authorize an app{{end}}</h1>
 {{if .Elevating}}<p>This grants an existing app credential the right to make sensitive changes for the next two hours. It issues nothing new.</p>
 {{with .Credential}}<p>The credential is <strong>{{.Name}}</strong>, added {{.Added}} (UTC).{{if .Revoked}} It was revoked, so verifying it grants nothing.{{end}}</p>
-{{end}}{{else if .App}}{{if not .App.Verified}}<p style="padding:8px 12px;border:1px solid #c00;border-radius:4px;">Nobody verified this app on this hub. It says its name is &ldquo;{{.App.Name}}&rdquo;.</p>
+{{end}}{{else if .App}}{{if not .App.Verified}}<p class="alert">Nobody verified this app on this hub. It says its name is &ldquo;{{.App.Name}}&rdquo;.</p>
 {{end}}{{template "appIdentity" .App}}
-{{if .ConfirmAdmin}}<p style="padding:8px 12px;border:1px solid #c00;border-radius:4px;">This code asks for <strong>hub administration</strong>. Authorizing it grants the app administrator authority over this hub. Continue only if you started this request yourself and meant to grant it.</p>
+{{if .ConfirmAdmin}}<p class="alert">This code asks for <strong>hub administration</strong>. Authorizing it grants the app administrator authority over this hub. Continue only if you started this request yourself and meant to grant it.</p>
 {{end}}
-{{if .Permissions}}<p>It would be able to:</p>
-<ul>{{range .Permissions}}<li>{{.}}</li>{{end}}</ul>
+{{if .Permissions}}{{template "permissions" .Permissions}}
+{{else}}<p>It asks for no permissions at all, so it would be able to do nothing with your account.</p>
 {{end}}{{end}}<p>Enter the code that the app shows:</p>
 <form method="POST" action="/oauth/device">
-<input name="user_code" value="{{.UserCode}}" pattern="[A-Za-z0-9-]{6,8}" autofocus required style="font-size:24px;letter-spacing:2px;text-align:center;width:100%;padding:8px;"/>
+<input name="user_code" value="{{.UserCode}}" pattern="[A-Za-z0-9-]{6,8}" autofocus required class="code-input"/>
 {{if .ConfirmAdmin}}<input type="hidden" name="admin_confirmed" value="1"/>
 {{end}}
-<p style="margin-top:16px;"><button type="submit" name="decision" value="deny" style="padding:10px 16px;">Deny</button>
-<button type="submit" name="decision" value="allow" style="padding:10px 16px;margin-left:8px;">Authorize</button></p>
+<div class="actions">
+<button type="submit" name="decision" value="deny" class="btn btn-outline">Deny</button>
+<button type="submit" name="decision" value="allow" class="btn">Authorize</button>
+</div>
 </form>
 {{end}}`)
 
@@ -158,7 +360,7 @@ type invalidRequestPageData struct {
 // text is a constant, so a failure is a programming error present at every
 // start rather than a condition a request can reach.
 func mustParsePage(name, body string) *template.Template {
-	return template.Must(template.New(name).Parse(pageChrome + appIdentityTmpl + body))
+	return template.Must(template.New(name).Parse(pageChrome + appIdentityTmpl + permissionsTmpl + body))
 }
 
 // appDisplayData is what a page says about one app. Every field comes from the
@@ -210,7 +412,7 @@ type consentPageData struct {
 	App              appDisplayData
 	Username         string
 	RedirectLabel    string
-	Permissions      []string
+	Permissions      []scopeCategoryView
 	RedirectURI      string
 	ClientID         string
 	State            string
@@ -238,7 +440,7 @@ type deviceCredential struct {
 type devicePageData struct {
 	UserCode    string
 	App         *appDisplayData
-	Permissions []string
+	Permissions []scopeCategoryView
 	// ConfirmAdmin re-renders the page as the SECOND step of an
 	// admin-reaching ask: the first Allow returned this page with the admin
 	// sentences stated beside a caution, and the form now carries
@@ -287,25 +489,125 @@ var scopeSentences = map[leapmuxv1.Scope]string{
 	leapmuxv1.Scope_SCOPE_ADMIN_APPS:      "Register, edit, vouch, retire and delete the hub's app registrations.",
 }
 
-// describeScopes renders a grant as the sentences a consent screen lists.
+// scopeCategories groups the grantable vocabulary the way scope.proto's own
+// sections do -- the same families the Preferences dialog's "Permissions this
+// app may ask for" list renders. A consent screen that grouped by anything
+// else would answer a question nobody asked.
 //
-// The order is the SET's canonical order, so two apps asking for the same
-// permissions show the same list. A scope with no sentence is dropped rather
-// than rendered as a token: the suite already fails for a missing one, so
-// reaching this branch means the vocabulary grew between a release and a
-// deployment, and a bullet a person cannot read is worse than one fewer.
-func describeScopes(set authscope.ScopeSet) []string {
-	scopes := set.Scopes()
+// ORDER is render order, and the membership is pinned by test: every
+// grantable scope appears exactly once, so a scope added to the proto fails
+// the suite until somebody writes its family here.
+var scopeCategories = []struct {
+	label  string
+	scopes []leapmuxv1.Scope
+}{
+	{"Account", []leapmuxv1.Scope{
+		leapmuxv1.Scope_SCOPE_ACCOUNT_READ,
+		leapmuxv1.Scope_SCOPE_ACCOUNT_WRITE,
+	}},
+	{"Workspace", []leapmuxv1.Scope{
+		leapmuxv1.Scope_SCOPE_WORKSPACE_READ,
+		leapmuxv1.Scope_SCOPE_WORKSPACE_WRITE,
+	}},
+	{"Worker", []leapmuxv1.Scope{
+		leapmuxv1.Scope_SCOPE_WORKER_READ,
+		leapmuxv1.Scope_SCOPE_WORKER_ADMIN,
+	}},
+	{"Agent", []leapmuxv1.Scope{
+		leapmuxv1.Scope_SCOPE_AGENT_READ,
+		leapmuxv1.Scope_SCOPE_AGENT_WRITE,
+	}},
+	{"Terminal", []leapmuxv1.Scope{
+		leapmuxv1.Scope_SCOPE_TERMINAL_READ,
+		leapmuxv1.Scope_SCOPE_TERMINAL_WRITE,
+	}},
+	{"File", []leapmuxv1.Scope{
+		leapmuxv1.Scope_SCOPE_FILE_READ,
+	}},
+	{"Git", []leapmuxv1.Scope{
+		leapmuxv1.Scope_SCOPE_GIT_READ,
+		leapmuxv1.Scope_SCOPE_GIT_WRITE,
+	}},
+	{"Tunnel", []leapmuxv1.Scope{
+		leapmuxv1.Scope_SCOPE_TUNNEL_OPEN,
+	}},
+	{"Hub administration", []leapmuxv1.Scope{
+		leapmuxv1.Scope_SCOPE_ADMIN_READ,
+		leapmuxv1.Scope_SCOPE_ADMIN_USERS,
+		leapmuxv1.Scope_SCOPE_ADMIN_SETTINGS,
+		leapmuxv1.Scope_SCOPE_ADMIN_WORKERS,
+		leapmuxv1.Scope_SCOPE_ADMIN_APPS,
+	}},
+}
+
+// scopeEntryView is one permission on a decision page: the wire token a
+// developer knows, the sentence a person acts on, and whether THIS grant
+// carries it.
+type scopeEntryView struct {
+	Token    string
+	Sentence string
+	Granted  bool
+}
+
+// scopeCategoryView is one family of permissions, as the page renders it.
+type scopeCategoryView struct {
+	Label   string
+	Entries []scopeEntryView
+}
+
+// describeScopeCatalogue renders a grant as the whole grantable vocabulary,
+// grouped by family, with the asked-for permissions ticked and the rest
+// dimmed.
+//
+// The WHOLE catalogue, not only the ask, because "which permission is NOT
+// granted" is half of what a reader deciding needs: a list of granted
+// sentences answers "what does it do" while leaving "does it also administer
+// my hub" to the imagination. The dimmed rows close that question without a
+// sentence of prose per negative.
+//
+// Categories with nothing granted are SKIPPED: a consent screen that listed
+// "Tunnel -- none" for an app that asked to read files would spend the
+// reader's attention on families that carry no decision. The empty GRANT is
+// still the caller's to state in prose (the page says "no permissions at
+// all" rather than rendering nineteen dimmed rows).
+func describeScopeCatalogue(set authscope.ScopeSet) []scopeCategoryView {
+	granted := map[leapmuxv1.Scope]bool{}
+	// No app ever holds an unscoped grant, but a page that rendered one as
+	// "no permissions at all" would be a silent lie about what was asked for:
+	// unscoped is the absence of a limit, not the absence of permissions.
 	if set.IsUnscoped() {
-		// No app ever holds an unscoped grant, but a page that rendered one as
-		// "SCOPE_ALL" would be a silent lie about what was asked for.
-		scopes = authscope.Grantable()
-	}
-	out := make([]string, 0, len(scopes))
-	for _, scope := range scopes {
-		if sentence, ok := scopeSentences[scope]; ok {
-			out = append(out, sentence)
+		for _, scope := range authscope.Grantable() {
+			granted[scope] = true
 		}
+	}
+	for _, scope := range set.Scopes() {
+		granted[scope] = true
+	}
+	out := make([]scopeCategoryView, 0, len(scopeCategories))
+	for _, category := range scopeCategories {
+		entries := make([]scopeEntryView, 0, len(category.scopes))
+		familyGranted := false
+		for _, scope := range category.scopes {
+			sentence := scopeSentences[scope]
+			isGranted := granted[scope]
+			familyGranted = familyGranted || isGranted
+			// The catalogue's membership test pins every entry to a grantable
+			// scope, so Token always answers here; the enum-name fallback is
+			// what a future drift renders while that test fails the build.
+			token, ok := authscope.Token(scope)
+			if !ok {
+				token = scope.String()
+			}
+			entries = append(entries, scopeEntryView{
+				Token:    token,
+				Sentence: sentence,
+				Granted:  isGranted,
+			})
+		}
+		if !familyGranted {
+			continue
+		}
+		out = append(out, scopeCategoryView{Label: category.label, Entries: entries})
 	}
 	return out
 }

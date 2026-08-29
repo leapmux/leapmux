@@ -1,16 +1,28 @@
+import type { Component } from 'solid-js'
 import type { CustomEditorComponent, CustomEditorId } from '../types'
-import { AccountAppRegistrations } from '../account/AccountAppRegistrations'
 import { AccountConnectedApps } from '../account/AccountConnectedApps'
 import { AccountEmail } from '../account/AccountEmail'
 import { AccountLinkedProviders } from '../account/AccountLinkedProviders'
 import { AccountPasskeys } from '../account/AccountPasskeys'
 import { AccountPassword } from '../account/AccountPassword'
 import { AccountProfile } from '../account/AccountProfile'
+import { AppRegistrations } from '../account/AppRegistrations'
 import { KeybindingsControl } from './KeybindingsControl'
 import { KeyPinsControl } from './KeyPinsControl'
 import { SyntaxThemeControl } from './SyntaxThemeControl'
 import { TerminalThemeControl } from './TerminalThemeControl'
 import { ThemeControl } from './ThemeControl'
+
+/**
+ * The administration twin of the account registrations panel: the same editor
+ * with `variant="hub-wide"`, so a hub-wide registration is registered with the
+ * form an administrator already knows instead of the CLI alone.
+ *
+ * A wrapper rather than a second registration form: the fields a hub-wide
+ * registration states are the fields a private one states, and a copied form
+ * is a second place a new editable field must reach.
+ */
+const HubWideAppRegistrations: Component = () => <AppRegistrations variant="hub-wide" />
 
 /**
  * The bespoke whole-setting editors a `{ kind: 'custom' }` control dispatches
@@ -50,7 +62,13 @@ export const CUSTOM_EDITORS: Record<CustomEditorId, CustomEditorComponent> = {
    * an in-flight authorization code, so this row DOES demand an elevated
    * session, unlike its neighbour above.
    */
-  accountAppRegistrations: AccountAppRegistrations,
+  accountAppRegistrations: AppRegistrations,
+  /**
+   * The ADMINISTRATION-side registrations panel — the hub's own catalogue,
+   * registering HUB_WIDE. Reachable only through the row PreferencesDialog
+   * appends for administrators; the account side above never renders it.
+   */
+  hubWideAppRegistrations: HubWideAppRegistrations,
   keyPins: KeyPinsControl,
   /**
    * The palette drop-down and the light/dark tri-switch, as one control.

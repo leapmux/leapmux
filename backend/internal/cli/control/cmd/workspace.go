@@ -47,10 +47,47 @@ func RunWhoami(rawCtx any, args []string) error {
 			"tab_type":  tabTypeName(resp.Msg.GetTabType()),
 		})
 	}
+
+	/*
+		The hub check, for the same reason `auth status` runs one: printing the
+		client's cached identity answers what the credential FILE says, and a
+		revoked credential's file keeps its username until something asks the
+		hub. hubCheck (shared with `auth status`) settles it -- confirmed
+		answers carry the hub's own username and admin flag; a refusal is an
+		honest not-logged-in; an unreachable or account:read-less credential
+		falls back to the cached identity with a warning that states what was
+		not verified.
+
+		is_admin stays present on the fallback (as null): the hub-confirmed
+		and fallback endings carry the same identity fields, and null is the
+		honest value for the one this ending cannot know -- a fabricated
+		false would tell an administrator's own machine the wrong flag
+		during an outage. The worker-IPC ending is the exception, and states
+		so where it emits (above): it answers from the spawn context the
+		worker holds, which carries no hub_url and no admin flag.
+	*/
+	user, warning, outcome, err := hubCheck(c)
+	switch outcome {
+	case hubCheckRefused:
+		return control.EmitErrorWith("not_logged_in", err)
+	case hubCheckFailed:
+		return control.EmitErrorWith("rpc_failed", err)
+	case hubCheckLocalFallback:
+		return control.EmitData(map[string]any{
+			"hub_url":  c.HubURL,
+			"user_id":  c.UserID,
+			"username": c.Username,
+			"is_admin": nil,
+			"warning":  warning,
+		})
+	case hubCheckConfirmed:
+		// The confirmed emit below is this outcome's return.
+	}
 	return control.EmitData(map[string]any{
 		"hub_url":  c.HubURL,
-		"user_id":  c.UserID,
-		"username": c.Username,
+		"user_id":  user.GetId(),
+		"username": user.GetUsername(),
+		"is_admin": user.GetIsAdmin(),
 	})
 }
 

@@ -15,7 +15,7 @@
 
 import { expect, test } from './fixtures'
 import { elevateSessionViaAPI, listMyAPITokensViaAPI, signUpViaAPI } from './helpers/api'
-import { loginViaToken, openAccountSettings } from './helpers/ui'
+import { loginViaToken, openAccountSettings, openSettingsAt } from './helpers/ui'
 
 const APP_HOME_URL_RE = /\/$/
 const PASSWORD = 'password123'
@@ -87,7 +87,8 @@ test.describe('session elevation', () => {
 
     await loginViaToken(page, cookie)
     await page.goto('/')
-    const prefs = await openAccountSettings(page)
+    // Connected apps lives in the APPS section, not Account.
+    const prefs = await openSettingsAt(page, 'apps')
     await expect(prefs.getByTestId('connected-apps')).toBeVisible()
     await expect(prefs.getByText('No connected apps.', { exact: false })).toBeVisible()
     await expect(page.getByRole('dialog', { name: 'Verify your identity' })).toHaveCount(0)

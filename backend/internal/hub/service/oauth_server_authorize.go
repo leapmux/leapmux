@@ -141,7 +141,7 @@ func (h *OAuthServerHandler) handleAuthorize(w http.ResponseWriter, r *http.Requ
 		App:              appDisplay(req.app),
 		Username:         user.Username,
 		RedirectLabel:    redirectLabel(req.registeredURI, req.redirectURI),
-		Permissions:      describeScopes(req.scopes),
+		Permissions:      describeScopeCatalogue(req.scopes),
 		RedirectURI:      req.redirectURI,
 		ClientID:         req.app.ClientID,
 		State:            req.state,

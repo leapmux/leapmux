@@ -1,6 +1,8 @@
 import { fireEvent, render, screen, waitFor, within } from '@solidjs/testing-library'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { AccountAppRegistrations } from './AccountAppRegistrations'
+import { AppClientType, AppVisibility } from '~/generated/leapmux/v1/app_pb'
+import { Scope } from '~/generated/leapmux/v1/scope_pb'
+import { AppRegistrations } from './AppRegistrations'
 
 const mockList = vi.fn()
 const mockRegister = vi.fn()
@@ -34,10 +36,10 @@ const app = {
   clientId: 'app-1',
   clientName: 'My integration',
   clientUri: 'https://example.com',
-  visibility: 1, // PRIVATE
-  clientType: 1, // PUBLIC
+  visibility: AppVisibility.PRIVATE,
+  clientType: AppClientType.PUBLIC,
   redirectUris: ['https://example.com/callback'],
-  scopes: [5, 13], // WORKSPACE_READ, FILE_READ -- see scope.proto
+  scopes: [Scope.WORKSPACE_READ, Scope.FILE_READ],
   grantTypes: ['authorization_code', 'refresh_token'],
   elevationAllowed: false,
   registrationSource: 'user',
@@ -60,7 +62,7 @@ describe('accountAppRegistrations', () => {
   })
 
   it('lists the account registrations', async () => {
-    render(() => <AccountAppRegistrations />)
+    render(() => <AppRegistrations />)
     expect(await screen.findByText('My integration')).toBeInTheDocument()
   })
 
@@ -68,7 +70,7 @@ describe('accountAppRegistrations', () => {
   // it. The same fact appears here so the owner learns it before somebody else
   // meets it, rather than only where it is too late to act.
   it('marks an unverified registration', async () => {
-    render(() => <AccountAppRegistrations />)
+    render(() => <AppRegistrations />)
     expect(await screen.findByText('unverified')).toBeInTheDocument()
   })
 
@@ -76,7 +78,7 @@ describe('accountAppRegistrations', () => {
     mockList.mockResolvedValue({
       apps: [{ ...app, verified: true, verifiedAt: { seconds: 1767225600n, nanos: 0 }, verifiedByUsername: 'ada' }],
     })
-    render(() => <AccountAppRegistrations />)
+    render(() => <AppRegistrations />)
     expect(await screen.findByText('verified by ada')).toBeInTheDocument()
     expect(screen.queryByText('unverified')).not.toBeInTheDocument()
   })
@@ -85,7 +87,7 @@ describe('accountAppRegistrations', () => {
   // It renders as tokens derived from the generated enum, so a scope added to
   // the proto appears without an edit here.
   it('renders the permission ceiling as scope tokens', async () => {
-    render(() => <AccountAppRegistrations />)
+    render(() => <AppRegistrations />)
     const ceiling = await screen.findByTestId('app-ceiling-app-1')
     expect(ceiling).toHaveTextContent('workspace:read')
     expect(ceiling).toHaveTextContent('file:read')
@@ -107,7 +109,7 @@ describe('accountAppRegistrations', () => {
       nextCursor: '',
       openRegistrationEnabled: false,
     })
-    render(() => <AccountAppRegistrations />)
+    render(() => <AppRegistrations />)
     expect(await screen.findByText('Page one app')).toBeInTheDocument()
     await waitFor(() => expect(screen.getByText('Page two app')).toBeInTheDocument())
     expect(mockList).toHaveBeenCalledTimes(2)
@@ -116,7 +118,7 @@ describe('accountAppRegistrations', () => {
 
   it('reports an account with no registrations', async () => {
     mockList.mockResolvedValue({ apps: [] })
-    render(() => <AccountAppRegistrations />)
+    render(() => <AppRegistrations />)
     expect(await screen.findByText(/No app registrations/)).toBeInTheDocument()
   })
 
@@ -124,13 +126,13 @@ describe('accountAppRegistrations', () => {
   // way app.proto documents the field -- and only when it is ON, because the
   // off state is the default nobody needs told about.
   it('states open registration beside the list, only while it is on', async () => {
-    const { unmount } = render(() => <AccountAppRegistrations />)
+    const { unmount } = render(() => <AppRegistrations />)
     expect(await screen.findByText('My integration')).toBeInTheDocument()
     expect(screen.queryByTestId('open-registration-note')).not.toBeInTheDocument()
     unmount()
 
     mockList.mockResolvedValue({ apps: [app], openRegistrationEnabled: true })
-    render(() => <AccountAppRegistrations />)
+    render(() => <AppRegistrations />)
     expect(await screen.findByTestId('open-registration-note')).toHaveTextContent(/Open registration is on/)
   })
 
@@ -141,7 +143,7 @@ describe('accountAppRegistrations', () => {
     mockList.mockResolvedValue({
       apps: [{ ...app, registrationSource: 'builtin', clientName: 'LeapMux control CLI' }],
     })
-    render(() => <AccountAppRegistrations />)
+    render(() => <AppRegistrations />)
     await screen.findByText('LeapMux control CLI')
     expect(screen.getByRole('button', { name: 'Retire' })).toBeDisabled()
   })
@@ -151,7 +153,7 @@ describe('accountAppRegistrations', () => {
     mockList
       .mockResolvedValueOnce({ apps: [app] })
       .mockResolvedValueOnce({ apps: [] })
-    render(() => <AccountAppRegistrations />)
+    render(() => <AppRegistrations />)
     await screen.findByText('My integration')
 
     fireEvent.click(screen.getByRole('button', { name: 'Retire' }))
@@ -169,7 +171,7 @@ describe('accountAppRegistrations', () => {
 
   it('keeps the registration when the retire fails', async () => {
     mockRevoke.mockRejectedValue(new Error('the hub refused'))
-    render(() => <AccountAppRegistrations />)
+    render(() => <AppRegistrations />)
     await screen.findByText('My integration')
 
     fireEvent.click(screen.getByRole('button', { name: 'Retire' }))
@@ -186,14 +188,14 @@ describe('accountAppRegistrations', () => {
   // than saying nothing.
   it('does not report an empty account when the load failed', async () => {
     mockList.mockRejectedValue(new Error('the hub is down'))
-    render(() => <AccountAppRegistrations />)
+    render(() => <AppRegistrations />)
     expect(await screen.findByText(/the hub is down/)).toBeInTheDocument()
     expect(screen.queryByText(/No app registrations/)).not.toBeInTheDocument()
   })
 
   describe('registering', () => {
     it('registers a private app with the permissions ticked', async () => {
-      render(() => <AccountAppRegistrations />)
+      render(() => <AppRegistrations />)
       await screen.findByText('My integration')
 
       fireEvent.click(screen.getByRole('button', { name: 'Register an app' }))
@@ -215,7 +217,7 @@ describe('accountAppRegistrations', () => {
     // an app with no name has nothing for a consent screen to show, and one
     // with no permission asks for nothing.
     it('refuses to submit without a name and at least one permission', async () => {
-      render(() => <AccountAppRegistrations />)
+      render(() => <AppRegistrations />)
       await screen.findByText('My integration')
       fireEvent.click(screen.getByRole('button', { name: 'Register an app' }))
 
@@ -234,7 +236,7 @@ describe('accountAppRegistrations', () => {
     // stays open showing it instead of closing on success.
     it('shows a confidential app secret once and keeps the form open', async () => {
       mockRegister.mockResolvedValue({ app, clientSecret: 'the-secret-value' })
-      render(() => <AccountAppRegistrations />)
+      render(() => <AppRegistrations />)
       await screen.findByText('My integration')
 
       fireEvent.click(screen.getByRole('button', { name: 'Register an app' }))
@@ -253,7 +255,7 @@ describe('accountAppRegistrations', () => {
     // A PUBLIC client gets no secret at all, which is the honest answer for a
     // binary a user holds: PKCE is what protects it.
     it('shows no secret for a public app', async () => {
-      render(() => <AccountAppRegistrations />)
+      render(() => <AppRegistrations />)
       await screen.findByText('My integration')
 
       fireEvent.click(screen.getByRole('button', { name: 'Register an app' }))
@@ -267,7 +269,7 @@ describe('accountAppRegistrations', () => {
 
     it('reports a refused registration and keeps what was typed', async () => {
       mockRegister.mockRejectedValue(new Error('client_name is required'))
-      render(() => <AccountAppRegistrations />)
+      render(() => <AppRegistrations />)
       await screen.findByText('My integration')
 
       fireEvent.click(screen.getByRole('button', { name: 'Register an app' }))
@@ -284,7 +286,7 @@ describe('accountAppRegistrations', () => {
   // picker, ignores the app's theme, and renders text and nothing else -- so
   // the second line each choice needs would be impossible.
   it('offers the app type as a radiogroup', async () => {
-    render(() => <AccountAppRegistrations />)
+    render(() => <AppRegistrations />)
     await screen.findByText('My integration')
     fireEvent.click(screen.getByRole('button', { name: 'Register an app' }))
 
@@ -293,12 +295,67 @@ describe('accountAppRegistrations', () => {
     expect(document.querySelector('select')).toBeNull()
   })
 
+  describe('the permission ceiling', () => {
+    // The hub closes a grant at the mint, so a ceiling that states a write
+    // without its read states a boundary the hub cannot deliver. The form
+    // shows the closure: ticking the write implies the read, checked and
+    // locked, and the request carries it.
+    it('checks and locks the read a ticked write implies', async () => {
+      render(() => <AppRegistrations />)
+      await screen.findByText('My integration')
+      fireEvent.click(screen.getByRole('button', { name: 'Register an app' }))
+
+      fireEvent.click(screen.getByLabelText('workspace:write'))
+      expect(screen.getByLabelText('workspace:read')).toBeChecked()
+      expect(screen.getByLabelText('workspace:read')).toBeDisabled()
+
+      fireEvent.input(screen.getByLabelText(/Name/), { target: { value: 'CI bot' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Register' }))
+      await waitFor(() => expect(mockRegister).toHaveBeenCalled())
+      const sent = mockRegister.mock.calls[0]![0] as { scopes: number[] }
+      expect(sent.scopes).toEqual([Scope.WORKSPACE_READ, Scope.WORKSPACE_WRITE])
+    })
+
+    // The lock is derived from the ticked set, not stored beside it: untick
+    // the write and the read it dragged in goes with it, rather than lurking
+    // as a tick the owner never chose.
+    it('frees the implied read when the write is unticked', async () => {
+      render(() => <AppRegistrations />)
+      await screen.findByText('My integration')
+      fireEvent.click(screen.getByRole('button', { name: 'Register an app' }))
+
+      fireEvent.click(screen.getByLabelText('workspace:write'))
+      fireEvent.click(screen.getByLabelText('workspace:write'))
+
+      expect(screen.getByLabelText('workspace:read')).not.toBeChecked()
+      expect(screen.getByLabelText('workspace:read')).toBeEnabled()
+    })
+
+    // The catalogue groups by the families scope.proto itself sections into,
+    // and the checkbox's accessible name stays the bare token -- the name a
+    // consent screen and a stored grant both read.
+    it('groups the scopes by family with each token labelable', async () => {
+      render(() => <AppRegistrations />)
+      await screen.findByText('My integration')
+      fireEvent.click(screen.getByRole('button', { name: 'Register an app' }))
+
+      const fieldset = document.querySelector('fieldset')!
+      expect(within(fieldset).getByText('Account')).toBeInTheDocument()
+      expect(within(fieldset).getByText('Workspace')).toBeInTheDocument()
+      expect(within(fieldset).getByText('Hub administration')).toBeInTheDocument()
+      // The description sits OUTSIDE the label, so it cannot leak into the
+      // checkbox's accessible name.
+      const label = within(fieldset).getByText('workspace:read').closest('label')
+      expect(label?.textContent).not.toContain('Read workspaces')
+    })
+  })
+
   describe('editing', () => {
     // The form opens PRE-FILLED: an edit that started blank would let one
     // stray Save strip the redirect addresses and the permission ceiling the
     // registration already had.
     it('opens the form pre-filled and replaces the editable fields', async () => {
-      render(() => <AccountAppRegistrations />)
+      render(() => <AppRegistrations />)
       await screen.findByText('My integration')
 
       fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
@@ -320,7 +377,12 @@ describe('accountAppRegistrations', () => {
         replaceRedirectUris: true,
         redirectUris: ['https://example.com/callback'],
         replaceScopes: true,
-        scopes: [5, 14], // WORKSPACE_READ kept, FILE_READ dropped, GIT_READ added
+        // WORKSPACE_READ kept, FILE_READ dropped, GIT_READ added -- and
+        // WORKER_READ is implied by git:read. The hub stores the
+        // ceiling closed (RegisterApp runs scopes.Close()), so submitting the
+        // bare ticked set and submitting this differ only in who did the
+        // arithmetic.
+        scopes: [Scope.WORKSPACE_READ, Scope.WORKER_READ, Scope.GIT_READ],
       }))
       expect(await screen.findByText('App updated.')).toBeInTheDocument()
     })
@@ -331,7 +393,7 @@ describe('accountAppRegistrations', () => {
       mockList.mockResolvedValue({
         apps: [{ ...app, registrationSource: 'builtin', clientName: 'LeapMux control CLI' }],
       })
-      render(() => <AccountAppRegistrations />)
+      render(() => <AppRegistrations />)
       await screen.findByText('LeapMux control CLI')
       expect(screen.getByRole('button', { name: 'Edit' })).toBeDisabled()
     })
@@ -341,7 +403,7 @@ describe('accountAppRegistrations', () => {
     // the owner gets the hub's reason beside the values they chose.
     it('reports a refused edit and keeps what was typed', async () => {
       mockUpdate.mockRejectedValue(new Error('the hub refused'))
-      render(() => <AccountAppRegistrations />)
+      render(() => <AppRegistrations />)
       await screen.findByText('My integration')
 
       fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
@@ -358,7 +420,7 @@ describe('accountAppRegistrations', () => {
   describe('the step-up allowance', () => {
     // Allowing multiplies what the app's grant reaches, so it asks first.
     it('asks before allowing and then records it', async () => {
-      render(() => <AccountAppRegistrations />)
+      render(() => <AppRegistrations />)
       await screen.findByText('My integration')
 
       fireEvent.click(screen.getByRole('button', { name: 'Allow step-up' }))
@@ -371,7 +433,7 @@ describe('accountAppRegistrations', () => {
     // Refusing only reduces access, so it takes no dialog -- one click.
     it('refuses without a dialog and reports that live windows close', async () => {
       mockList.mockResolvedValue({ apps: [{ ...app, elevationAllowed: true }] })
-      render(() => <AccountAppRegistrations />)
+      render(() => <AppRegistrations />)
       await screen.findByText('My integration')
       expect(screen.getByText('step-up allowed')).toBeInTheDocument()
 
@@ -387,7 +449,7 @@ describe('accountAppRegistrations', () => {
       mockList.mockResolvedValue({
         apps: [{ ...app, registrationSource: 'builtin', clientName: 'LeapMux control CLI' }],
       })
-      render(() => <AccountAppRegistrations />)
+      render(() => <AppRegistrations />)
       await screen.findByText('LeapMux control CLI')
 
       expect(screen.getByRole('button', { name: 'Allow step-up' })).toBeEnabled()
@@ -399,14 +461,14 @@ describe('accountAppRegistrations', () => {
     // else's private apps from a non-admin, and self-vouching is exactly the
     // thing a vouch is not.
     it('offers no vouch control to an ordinary account', async () => {
-      render(() => <AccountAppRegistrations />)
+      render(() => <AppRegistrations />)
       await screen.findByText('My integration')
       expect(screen.queryByRole('button', { name: 'Vouch' })).not.toBeInTheDocument()
     })
 
     it('records an administrator\'s vouch', async () => {
       authState.admin = true
-      render(() => <AccountAppRegistrations />)
+      render(() => <AppRegistrations />)
       await screen.findByText('My integration')
 
       fireEvent.click(screen.getByRole('button', { name: 'Vouch' }))
@@ -419,12 +481,67 @@ describe('accountAppRegistrations', () => {
       mockList.mockResolvedValue({
         apps: [{ ...app, verified: true, verifiedAt: { seconds: 1767225600n, nanos: 0 }, verifiedByUsername: 'ada' }],
       })
-      render(() => <AccountAppRegistrations />)
+      render(() => <AppRegistrations />)
       await screen.findByText('verified by ada')
 
       fireEvent.click(screen.getByRole('button', { name: 'Withdraw vouch' }))
 
       await waitFor(() => expect(mockVerify).toHaveBeenCalledWith({ clientId: 'app-1', verified: false }))
+    })
+  })
+
+  // The ADMINISTRATION twin: the same editor wearing variant="hub-wide", the
+  // panel the Hub-wide Apps section renders. Its two differences are pinned
+  // here -- the registration it writes is HUB_WIDE, and the listing it asks
+  // for is the hub's own catalogue alone.
+  describe('the hub-wide variant', () => {
+    it('registers a hub-wide app', async () => {
+      render(() => <AppRegistrations variant="hub-wide" />)
+      await screen.findByTestId('hub-wide-app-registrations')
+
+      fireEvent.click(screen.getByRole('button', { name: 'Register a hub-wide app' }))
+      fireEvent.input(screen.getByLabelText(/Name/), { target: { value: 'Deploy bot' } })
+      fireEvent.click(screen.getByLabelText('workspace:read'))
+      fireEvent.click(screen.getByRole('button', { name: 'Register' }))
+
+      await waitFor(() => expect(mockRegister).toHaveBeenCalled())
+      const sent = mockRegister.mock.calls[0]![0] as { visibility: number, scopes: number[] }
+      // HUB_WIDE, the visibility only an administrator may send -- the row
+      // that renders this variant exists for administrators alone.
+      expect(sent.visibility).toBe(AppVisibility.HUB_WIDE)
+      expect(sent.scopes).toEqual([Scope.WORKSPACE_READ])
+    })
+
+    // The hub's own catalogue, not the administrator's second Apps list: the
+    // narrowing rides the REQUEST, so an administrator's private
+    // registrations never cross the wire to a panel that cannot draw them.
+    it('asks the hub for the hub-wide reach alone', async () => {
+      mockList.mockResolvedValue({
+        apps: [{ ...app, clientId: 'app-hub', clientName: 'Hub tool', visibility: 2 }],
+      })
+      render(() => <AppRegistrations variant="hub-wide" />)
+
+      expect(await screen.findByText('Hub tool')).toBeInTheDocument()
+      const sent = mockList.mock.calls[0]![0] as { visibility?: number }
+      expect(sent.visibility).toBe(AppVisibility.HUB_WIDE)
+      // The reach badge is the section's own title restated per row, so the
+      // variant does not draw it.
+      expect(screen.queryByText('hub-wide')).not.toBeInTheDocument()
+    })
+
+    it('asks for its whole editable set on the user panel', async () => {
+      mockList.mockResolvedValue({ apps: [app] })
+      render(() => <AppRegistrations />)
+
+      expect(await screen.findByTestId('app-registration-app-1')).toBeInTheDocument()
+      const sent = mockList.mock.calls[0]![0] as { visibility?: number }
+      expect(sent.visibility).toBeUndefined()
+    })
+
+    it('says so when the hub holds none', async () => {
+      mockList.mockResolvedValue({ apps: [] })
+      render(() => <AppRegistrations variant="hub-wide" />)
+      expect(await screen.findByText(/No hub-wide app registrations/)).toBeInTheDocument()
     })
   })
 })
@@ -444,7 +561,7 @@ describe('refresh generation guard', () => {
       .mockReturnValueOnce(stalePageTwo.promise)
       // A write path then fires a NEWER refresh, which answers in one page.
       .mockResolvedValueOnce({ apps: [newerApp], nextCursor: '', openRegistrationEnabled: false })
-    render(() => <AccountAppRegistrations />)
+    render(() => <AppRegistrations />)
 
     // The register form's success handler PREPENDS the row the response
     // carries, with no re-page -- so the new registration shows while the

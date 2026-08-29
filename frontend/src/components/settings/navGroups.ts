@@ -19,11 +19,11 @@ export const NAV_GROUPS: readonly NavGroup[] = [
   // preferences they adjust while they are already here, so a place under
   // seven of them put the errand behind the browsing.
   { id: 'account', title: 'Account', category: 'account', admin: false },
-  // Apps follows Account, because it is the same errand one step further out:
-  // Account holds the apps you AUTHORIZED, this holds the apps you REGISTERED.
-  // It is a user group, not an administration one -- an ordinary account may
-  // register an app for itself, and ownership rather than a role decides what
-  // each caller sees.
+  // Apps follows Account, and holds the whole app errand: what the account
+  // AUTHORIZED (Connected apps) and what it REGISTERED for others to
+  // authorize. It is a user group, not an administration one -- an ordinary
+  // account may register an app for itself, and ownership rather than a role
+  // decides what each caller sees.
   { id: 'apps', title: 'Apps', category: 'apps', admin: false },
   { id: 'appearance', title: 'Appearance', category: 'appearance', admin: false },
   { id: 'notifications', title: 'Notifications', category: 'notifications', admin: false },
@@ -35,15 +35,20 @@ export const NAV_GROUPS: readonly NavGroup[] = [
   { id: 'admin-general', title: 'General', category: 'general', admin: true },
   { id: 'admin-signup', title: 'Sign-up & Access', category: 'signup', admin: true },
   { id: 'admin-email', title: 'Email (SMTP)', category: 'email', admin: true },
-  { id: 'admin-captcha', title: 'Bot Protection', category: 'captcha', admin: true },
-  { id: 'admin-rate-limits', title: 'Rate Limits', category: 'rate-limits', admin: true },
-  { id: 'admin-limits', title: 'Limits & Timeouts', category: 'limits', admin: true },
   // The same category on the ADMINISTRATION side, which is where the hub's
   // own app settings live -- RFC 7591 open registration today. `advanced`
   // already appears on both sides for the same reason: one category can hold
   // a browser row and a hub row, and group.admin picks which source a group
   // draws from.
-  { id: 'admin-apps', title: 'Apps', category: 'apps', admin: true },
+  //
+  // TITLED "Hub-wide Apps" rather than "Apps": the user-level Apps section
+  // beside it holds what this ACCOUNT registered and authorized, and the two
+  // one-word titles read as the same list twice. The word the administration
+  // side adds is WHO the registration reaches -- every account on the hub.
+  { id: 'admin-apps', title: 'Hub-wide Apps', category: 'apps', admin: true },
+  { id: 'admin-captcha', title: 'Bot Protection', category: 'captcha', admin: true },
+  { id: 'admin-rate-limits', title: 'Rate Limits', category: 'rate-limits', admin: true },
+  { id: 'admin-limits', title: 'Limits & Timeouts', category: 'limits', admin: true },
   { id: 'admin-advanced', title: 'Advanced', category: 'advanced', admin: true },
 ]
 
@@ -56,9 +61,10 @@ export const NAV_GROUPS: readonly NavGroup[] = [
  * out, which is how the list and the landing section came to disagree.
  *
  * A deployment that HIDES that section still lands somewhere: solo mode hides
- * most Account rows, and the dialog resolves a requested id against the
- * visible groups (see `occupiedNavGroups`). Connected apps is the one Account
- * row solo KEEPS, because a solo hub authorizes apps like any other and its
- * owner must be able to disconnect one.
+ * every Account row, and the dialog resolves a requested id against the
+ * visible groups (see `occupiedNavGroups`). Connected apps -- now an Apps row,
+ * and the one solo keeps beside App registrations -- is why a solo hub still
+ * shows the section at all: it authorizes apps like any other and its owner
+ * must be able to disconnect one.
  */
 export const DEFAULT_NAV_GROUP_ID: string = NAV_GROUPS[0]!.id

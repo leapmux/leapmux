@@ -122,6 +122,14 @@ func SaveCredentials(hubURL string, creds CredentialFile) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
+	// One zone on disk: UTC. The writers mint deadlines with time.Now(),
+	// whose zone is the writer's, and a file that carries one machine's
+	// offset cannot be compared with the hub's own Z-ending timestamps
+	// (jq, a shell pipeline) without parsing zones first -- and every
+	// future command that prints a file deadline would otherwise have to
+	// remember a UTC conversion to keep its output honest.
+	creds.ExpiresAt = creds.ExpiresAt.UTC()
+	creds.RefreshExpiresAt = creds.RefreshExpiresAt.UTC()
 	data, err := json.MarshalIndent(creds, "", "  ")
 	if err != nil {
 		return err

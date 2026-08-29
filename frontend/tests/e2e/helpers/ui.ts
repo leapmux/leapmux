@@ -878,10 +878,21 @@ export async function loginWithPasskeyViaUI(page: Page, username: string) {
   await appMenuTrigger(page).waitFor({ state: 'visible' })
 }
 
+/**
+ * Open Preferences on the given section and return the dialog locator, so
+ * the dialog's accessible name is stated once. A spec that needs the dialog
+ * after opening it at a section reads `const dialog = await
+ * openSettingsAt(page, 'apps')` instead of re-deriving the role lookup at
+ * every call site -- a rename of the dialog could not be half-applied.
+ */
+export async function openSettingsAt(page: Page, category?: string) {
+  await openPreferencesDialog(page, category)
+  return page.getByRole('dialog', { name: 'Preferences' })
+}
+
 /** Open Preferences on the account / profile section. */
 export async function openAccountSettings(page: Page) {
-  await openPreferencesDialog(page, 'account')
-  return page.getByRole('dialog', { name: 'Preferences' })
+  return openSettingsAt(page, 'account')
 }
 
 /**

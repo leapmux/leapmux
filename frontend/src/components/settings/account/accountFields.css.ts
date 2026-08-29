@@ -36,38 +36,21 @@ export const unverifiedBadge = style({
   color: 'var(--warning)',
 })
 
-export const linkedAccount = style({
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'space-between',
-  padding: 'var(--space-2) var(--space-3)',
-  fontSize: 'var(--text-7)',
-  color: 'var(--foreground)',
-  backgroundColor: 'var(--card)',
-  border: '1px solid var(--border)',
-  borderRadius: 'var(--radius-2)',
-})
+/**
+ * One linked provider's card is a `credentialRow` (see
+ * `./credentialList.css.ts`): a COLUMN like every credential row, with the
+ * provider's name (and its disabled note) taking the full width and the
+ * Unlink in a footer row beneath them. The card style itself is shared, so
+ * the provider row and the credential row cannot drift apart.
+ */
 
 export const linkedAccountName = style({
-  flex: 1,
+  fontWeight: 'var(--font-medium)',
 })
 
 /** The note on a link whose provider an administrator turned off. */
 export const linkedAccountDisabled = style({
   fontSize: 'var(--text-8)',
   color: 'var(--muted-foreground)',
-  flex: 1,
   minWidth: 0,
-})
-
-export const linkedAccountUnlink = style({
-  'fontSize': 'var(--text-8)',
-  'color': 'var(--muted-foreground)',
-  'background': 'none',
-  'border': 'none',
-  'cursor': 'pointer',
-  'padding': 'var(--space-1) var(--space-2)',
-  ':hover': {
-    color: 'var(--danger)',
-  },
 })

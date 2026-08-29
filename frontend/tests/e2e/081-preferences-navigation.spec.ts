@@ -1,6 +1,6 @@
 import { motion } from '../../src/styles/tokens'
 import { expect, test } from './fixtures'
-import { loginViaToken, openPreferencesDialog } from './helpers/ui'
+import { loginViaToken, openSettingsAt } from './helpers/ui'
 
 test.describe('Preferences navigation', () => {
   test('opens via the menu and via Cmd/Ctrl+Comma', async ({ page, leapmuxServer }) => {
@@ -8,10 +8,10 @@ test.describe('Preferences navigation', () => {
     await page.goto('/')
 
     // Via the app menu.
-    await openPreferencesDialog(page)
+    const dialog = await openSettingsAt(page)
     await expect(page.getByTestId('preferences-nav-appearance')).toBeVisible()
-    await page.getByRole('dialog', { name: 'Preferences' }).getByLabel('Close').click()
-    await expect(page.getByRole('dialog', { name: 'Preferences' })).not.toBeVisible()
+    await dialog.getByLabel('Close').click()
+    await expect(dialog).not.toBeVisible()
 
     // Via the keyboard shortcut (the platform modifier + comma).
     const mod = process.platform === 'darwin' ? 'Meta' : 'Control'
@@ -22,8 +22,7 @@ test.describe('Preferences navigation', () => {
   test('walks categories through the tab list', async ({ page, leapmuxServer }) => {
     await loginViaToken(page, leapmuxServer.adminToken)
     await page.goto('/')
-    await openPreferencesDialog(page, 'appearance')
-    const dialog = page.getByRole('dialog', { name: 'Preferences' })
+    const dialog = await openSettingsAt(page, 'appearance')
 
     await dialog.getByTestId('preferences-nav-notifications').click()
     await expect(dialog.getByText('Turn-end sound', { exact: true })).toBeVisible()
@@ -60,8 +59,7 @@ test.describe('Preferences navigation', () => {
   test('returns to the requested section when asked for again while open', async ({ page, leapmuxServer }) => {
     await loginViaToken(page, leapmuxServer.adminToken)
     await page.goto('/')
-    await openPreferencesDialog(page, 'appearance')
-    const dialog = page.getByRole('dialog', { name: 'Preferences' })
+    const dialog = await openSettingsAt(page, 'appearance')
 
     await dialog.getByTestId('preferences-nav-advanced').click()
     await expect(dialog.getByTestId('preferences-nav-advanced')).toHaveAttribute('aria-selected', 'true')
@@ -79,8 +77,7 @@ test.describe('Preferences navigation', () => {
   test('opens on Account', async ({ page, leapmuxServer }) => {
     await loginViaToken(page, leapmuxServer.adminToken)
     await page.goto('/')
-    await openPreferencesDialog(page)
-    const dialog = page.getByRole('dialog', { name: 'Preferences' })
+    const dialog = await openSettingsAt(page)
 
     await expect(dialog.getByTestId('preferences-nav-account')).toHaveAttribute('aria-selected', 'true')
     await expect(dialog.locator('[data-setting-id="account.profile"]')).toBeVisible()
@@ -89,8 +86,7 @@ test.describe('Preferences navigation', () => {
   test('searching "volume" shows the two notifications rows with breadcrumbs', async ({ page, leapmuxServer }) => {
     await loginViaToken(page, leapmuxServer.adminToken)
     await page.goto('/')
-    await openPreferencesDialog(page, 'appearance')
-    const dialog = page.getByRole('dialog', { name: 'Preferences' })
+    const dialog = await openSettingsAt(page, 'appearance')
 
     const search = dialog.getByTestId('preferences-search')
     await search.fill('volume')
@@ -118,8 +114,7 @@ test.describe('Preferences navigation', () => {
   test('clears the search on Escape, and closes the dialog only once the query is empty', async ({ page, leapmuxServer }) => {
     await loginViaToken(page, leapmuxServer.adminToken)
     await page.goto('/')
-    await openPreferencesDialog(page, 'appearance')
-    const dialog = page.getByRole('dialog', { name: 'Preferences' })
+    const dialog = await openSettingsAt(page, 'appearance')
 
     const search = dialog.getByTestId('preferences-search')
     await search.fill('volume')

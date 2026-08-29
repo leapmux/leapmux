@@ -1,6 +1,7 @@
 import type { Component } from 'solid-js'
 import { createMemo, createSignal, onMount, Show } from 'solid-js'
 import { userClient } from '~/api/clients'
+import { actionsFooter } from '~/components/common/actionsFooter.css'
 import { StatusLine } from '~/components/common/StatusLine'
 import { UsernameField } from '~/components/common/UsernameField'
 import { useAuth } from '~/context/AuthContext'
@@ -87,7 +88,7 @@ export const AccountProfile: Component = () => {
         {err => <div class={errorText}>{err()}</div>}
       </Show>
       <StatusLine message={action.message()} />
-      <div>
+      <div class={actionsFooter}>
         <button type="button" onClick={() => void save()} disabled={action.running() || !dirty() || !!displayNameError()}>
           {action.running() ? 'Saving...' : 'Save Profile'}
         </button>

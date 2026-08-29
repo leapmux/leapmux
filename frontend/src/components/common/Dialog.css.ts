@@ -315,11 +315,11 @@ export const body = style({
   outline: 'none',
 })
 
-// Footer inside dialog body
+// Footer inside dialog body: the padding alone. The actions layout (flex,
+// right-aligned, wrapping, space-2 gap) is the shared actionsFooter style
+// every dialog footer element carries, so the dialog states only the chrome
+// it owns -- the gap between the body and its actions.
 globalStyle(`${standard} > .${body} > footer, ${standard} > .${body} > form > footer`, {
-  display: 'flex',
-  justifyContent: 'flex-end',
-  gap: 'var(--space-2)',
   paddingBlockStart: 'var(--space-6)',
 })
 

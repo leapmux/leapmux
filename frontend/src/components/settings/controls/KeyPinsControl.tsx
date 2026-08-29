@@ -1,5 +1,6 @@
 import type { Component } from 'solid-js'
 import { createMemo, createSignal, For, Show } from 'solid-js'
+import { actionsFooter } from '~/components/common/actionsFooter.css'
 import { ClippedText } from '~/components/common/ClippedText'
 import { ConfirmButton } from '~/components/common/ConfirmButton'
 import { Tooltip } from '~/components/common/Tooltip'
@@ -65,7 +66,7 @@ export const KeyPinsControl: Component = () => {
             </div>
           )}
         </For>
-        <div>
+        <div class={actionsFooter}>
           <ConfirmButton data-variant="danger" onClick={removeAll} data-testid="key-pins-remove-all">
             Remove all
           </ConfirmButton>
