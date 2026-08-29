@@ -4,10 +4,15 @@ import { style } from '@vanilla-extract/css'
  * The style vocabulary the account's CREDENTIAL LISTS share.
  *
  * Two surfaces render the same row shape -- a name, a line of metadata, and a
- * couple of actions on the right: the passkeys and the command-line
+ * couple of actions in a footer row: the passkeys and the command-line
  * credentials. They used to read these names out of one component's private
  * stylesheet, which made a sibling import a file named after something it does
  * not render.
+ *
+ * The chips a row carries (verified, hub-wide, retired) are Oat `badge`
+ * variants rather than styles here, and a destructive action is an Oat danger
+ * button -- a second spelling of either could drift from the one every other
+ * panel wears.
  *
  * `./accountFields.css.ts` keeps the FIELD vocabulary (labels, the email
  * value, the provider rows) that the other account editors share.
@@ -25,24 +30,31 @@ export const credentialListEmpty = style({
   margin: 0,
 })
 
+/**
+ * One credential's card.
+ *
+ * A COLUMN: the entry's text takes the full width, and the actions sit in a
+ * footer row beneath it. Sharing one line squeezed the text into whatever the
+ * buttons left -- three of them on an app registration left less than half
+ * the card -- while the metadata they act on is the part worth reading.
+ */
 export const credentialRow = style({
   display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'space-between',
-  gap: 'var(--space-3)',
-  padding: 'var(--space-2) var(--space-3)',
+  flexDirection: 'column',
+  alignItems: 'stretch',
+  gap: 'var(--space-2)',
+  padding: 'var(--space-3)',
   fontSize: 'var(--text-7)',
   color: 'var(--foreground)',
   backgroundColor: 'var(--card)',
   border: '1px solid var(--border)',
-  borderRadius: 'var(--radius-2)',
+  borderRadius: 'var(--radius-medium)',
 })
 
 export const credentialInfo = style({
   display: 'flex',
   flexDirection: 'column',
   gap: 'var(--space-1)',
-  flex: 1,
   minWidth: 0,
 })
 
@@ -54,62 +66,6 @@ export const credentialMeta = style({
   fontSize: 'var(--text-8)',
   color: 'var(--muted-foreground)',
 })
-
-export const credentialActions = style({
-  display: 'flex',
-  gap: 'var(--space-2)',
-  flexShrink: 0,
-})
-
-export const credentialDanger = style({
-  color: 'var(--danger)',
-})
-
-/** The row of buttons that opens a passkey ceremony. */
-export const passkeyButtons = style({
-  display: 'flex',
-  gap: 'var(--space-3)',
-  flexWrap: 'wrap',
-})
-
-/**
- * A second line under the credential name, for a fact that qualifies it
- * rather than identifies it -- which app holds the credential, and which
- * installation of that app.
- */
-export const credentialSubRow = style({
-  display: 'flex',
-  alignItems: 'center',
-  gap: 'var(--space-2)',
-  flexWrap: 'wrap',
-  fontSize: 'var(--text-8)',
-  color: 'var(--muted-foreground)',
-})
-
-/**
- * A short chip beside a credential's name: "unverified", "hub administration".
- *
- * It carries its own colours through a variant rather than a caller-supplied
- * class, so a warning and a neutral note cannot be spelled two ways.
- */
-export const credentialBadge = style({
-  display: 'inline-flex',
-  alignItems: 'center',
-  padding: '1px var(--space-2)',
-  borderRadius: 'var(--radius-1)',
-  fontSize: 'var(--text-8)',
-  fontWeight: 'var(--font-medium)',
-  backgroundColor: 'var(--muted)',
-  color: 'var(--muted-foreground)',
-  border: '1px solid var(--border)',
-})
-
-/** credentialBadge for a fact the reader should weigh before continuing. */
-export const credentialBadgeWarning = style([credentialBadge, {
-  backgroundColor: 'var(--danger-subtle, var(--muted))',
-  color: 'var(--danger)',
-  borderColor: 'var(--danger)',
-}])
 
 /**
  * The permission list under a credential.
@@ -129,14 +85,14 @@ export const credentialScopeLine = style({
 /** One permission inside credentialScopeLine. */
 export const credentialScope = style({
   padding: '0 var(--space-1)',
-  borderRadius: 'var(--radius-1)',
+  borderRadius: 'var(--radius-small)',
   backgroundColor: 'var(--muted)',
   fontFamily: 'var(--font-mono)',
 })
 
 /**
- * One APP's block in the connected-apps list: its name and its Disconnect on
- * one line, its installations stacked under them.
+ * One APP's block in the connected-apps list: its name, its installations
+ * stacked under it, and the app-level ending in a footer row.
  *
  * The grouping is the panel's whole shape. One app holds one credential per
  * machine, so a flat list of credentials made "stop this app reaching my
@@ -150,28 +106,87 @@ export const credentialGroup = style({
   padding: 'var(--space-3)',
   backgroundColor: 'var(--card)',
   border: '1px solid var(--border)',
-  borderRadius: 'var(--radius-2)',
-})
-
-/** The app's own line: its name and identity on the left, Disconnect right. */
-export const credentialGroupHeader = style({
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'space-between',
-  gap: 'var(--space-3)',
+  borderRadius: 'var(--radius-medium)',
 })
 
 /**
  * The installations inside a group.
  *
- * Indented and separated from the app line above, so the two levels read as
- * "this app" and "on these machines" rather than as one flat list whose rows
- * happen to share a name.
+ * A plain stack: each installation is itself a bordered row, so the nesting
+ * reads from the cards alone -- an indent or a rule down the left edge drew
+ * structure the inner cards had already stated.
  */
 export const credentialGroupBody = style({
   display: 'flex',
   flexDirection: 'column',
   gap: 'var(--space-2)',
-  paddingLeft: 'var(--space-3)',
-  borderLeft: '1px solid var(--border)',
+})
+
+/**
+ * The category list the permission-ceiling fieldset renders.
+ *
+ * Plain UL markers, one indent per level, no bullets on the outer level: the
+ * legend already states what the list is, and the outer entries carry their
+ * own weight as family names. The structure is the grouping -- Account,
+ * Workspace, Worker -- that scope.proto's own sections state.
+ */
+export const scopeChoiceList = style({
+  margin: 0,
+  padding: 0,
+  listStyle: 'none',
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 'var(--space-3)',
+})
+
+/** One family: its label and the scopes beneath it. */
+export const scopeChoiceCategory = style({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 'var(--space-1)',
+})
+
+export const scopeChoiceLabel = style({
+  fontSize: 'var(--text-7)',
+  fontWeight: 'var(--font-bold)',
+  color: 'var(--foreground)',
+})
+
+export const scopeChoiceEntries = style({
+  margin: 0,
+  paddingInlineStart: 'var(--space-5)',
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 'var(--space-1)',
+})
+
+/**
+ * One scope: a checkbox row and its description beside it.
+ *
+ * The description sits OUTSIDE the label, so the checkbox's accessible name
+ * stays the bare token (`workspace:read`) -- the name a consent screen and a
+ * stored grant both read -- rather than the sentence explaining it.
+ *
+ * CENTER-aligned, not baseline: the label is a flex row whose first item is
+ * the checkbox, and a checkbox has no text baseline of its own -- CSS
+ * synthesizes one from its bottom margin edge -- so the label's baseline sat
+ * a few pixels under the token's text and a baseline-aligned description
+ * landed visibly below it. Centering the two boxes puts the description's
+ * line level with the token it explains.
+ */
+export const scopeChoiceEntry = style({
+  display: 'flex',
+  alignItems: 'center',
+  flexWrap: 'wrap',
+  gap: 'var(--space-2)',
+})
+
+export const scopeChoiceToken = style({
+  fontFamily: 'var(--font-mono)',
+})
+
+export const scopeChoiceDescription = style({
+  fontSize: 'var(--text-8)',
+  color: 'var(--muted-foreground)',
+  minWidth: 0,
 })

@@ -164,7 +164,7 @@ func (s *oauthClientStore) List(ctx context.Context, p store.ListOAuthClientsPar
 	}
 	return queryPage(ctx, p.Limit,
 		func() (gendb.ListOAuthClientsParams, error) {
-			return listOAuthClientsParams(owner, p.Cursor, p.Limit, p.IncludeRevoked, p.IncludeHubWide)
+			return listOAuthClientsParams(owner, p)
 		},
 		s.conn.q.ListOAuthClients, fromListRow)
 }

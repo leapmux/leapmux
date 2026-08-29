@@ -89,3 +89,36 @@ func TestListCredentialFiles_IgnoresAnInterruptedWrite(t *testing.T) {
 	require.Len(t, files, 1)
 	assert.Equal(t, "lmx_a_access_0", files[0].AccessToken)
 }
+
+// TestSaveCredentials_WritesUTC pins the file's one-zone rule: the writers
+// mint deadlines in the writer's local zone, and the stored file must carry
+// UTC so a reader can compare it with the hub's own Z-ending timestamps
+// without parsing zones first. The fixed +02:00 zone makes the assertion
+// fail even on a UTC machine.
+func TestSaveCredentials_WritesUTC(t *testing.T) {
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+	hubURL := "https://zone.example"
+	plusTwo := time.FixedZone("plus-two", 2*60*60)
+	creds := CredentialFile{
+		HubURL:           hubURL,
+		AccessToken:      "lmx_a_at_zone",
+		RefreshToken:     "lmx_a_rt_zone",
+		ExpiresAt:        time.Date(2026, 1, 2, 3, 4, 5, 0, plusTwo),
+		RefreshExpiresAt: time.Date(2026, 4, 2, 3, 4, 5, 0, plusTwo),
+	}
+	require.NoError(t, SaveCredentials(hubURL, creds))
+
+	path, err := CredentialsPath(hubURL)
+	require.NoError(t, err)
+	raw, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Contains(t, string(raw), `"expires_at": "2026-01-02T01:04:05Z"`,
+		"the file carries UTC, not the writer's offset")
+	assert.Contains(t, string(raw), `"refresh_expires_at": "2026-04-02T01:04:05Z"`)
+
+	loaded, err := LoadCredentials(hubURL)
+	require.NoError(t, err)
+	assert.True(t, loaded.ExpiresAt.Equal(creds.ExpiresAt),
+		"normalizing the zone keeps the instant")
+	assert.True(t, loaded.RefreshExpiresAt.Equal(creds.RefreshExpiresAt))
+}

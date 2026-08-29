@@ -166,7 +166,7 @@ func (c *Client) startElevation(ctx context.Context) (*DeviceGrant, error) {
 	// the caller reports the remedy instead of retrying.
 	//
 	// 403 decodes the BODY, because the hub states the one-step remedy there
-	// (allow elevation under Preferences, Account, App registrations). The
+	// (allow elevation under Preferences › Apps › App registrations). The
 	// sentinel's own two causes are both wrong for this refusal, and an
 	// operator who reads them retries a browser ceremony the hub keeps
 	// refusing.

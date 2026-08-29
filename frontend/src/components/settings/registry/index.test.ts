@@ -5,7 +5,9 @@ import { createSignal } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { accountWireDescriptors, goldenAccountSchema } from '~/test-support/accountSchema'
 import { makeFakePrefs } from '~/test-support/preferencesFake'
+import { CUSTOM_EDITORS } from '../controls/customEditors'
 import { CATEGORY_IDS } from '../protoRegistry'
+import { ADMIN_ROWS } from './admin'
 import { CUSTOM_EDITOR_OWNS_ITS_VALUE } from './bindings'
 import { CLAIMED_PROTO_KEYS, createBrowserRows } from './index'
 import { browserSettings, buildBrowserReset } from './settings'
@@ -864,5 +866,33 @@ describe('createBrowserRows visibility', () => {
   it('yields one descriptor per entry, in declaration order', () => {
     expect(descriptorsOf(prefsWith({})).map(d => d.id))
       .toEqual(browserSettings.map(d => d.id))
+  })
+})
+
+// The ADMINISTRATION tier: rows that reach the Administration side alone and
+// have no hub setting behind them, so the browser registry cannot hold them
+// (its categories feed the USER sections). The same invariants the browser
+// registry's parity tests state hold here too — a known category, a registered
+// custom editor — because an admin row that escaped them would render a panel
+// the registry knows nothing about.
+describe('admin registry tier', () => {
+  it('has unique ids disjoint from the browser registry', () => {
+    const ids = ADMIN_ROWS.map(r => r.descriptor.id)
+    expect(new Set(ids).size).toBe(ids.length)
+    for (const id of ids)
+      expect(browserSettings.map(d => d.id), `admin row "${id}" must not also be a browser entry`).not.toContain(id)
+  })
+
+  it('places every row in a category the navigation knows', () => {
+    for (const row of ADMIN_ROWS)
+      expect(CATEGORY_IDS.has(row.descriptor.category), `row "${row.descriptor.id}" sits in "${row.descriptor.category}"`).toBe(true)
+  })
+
+  it('binds every custom control to a registered editor', () => {
+    for (const row of ADMIN_ROWS) {
+      const control = row.descriptor.control
+      if (control.kind === 'custom')
+        expect(CUSTOM_EDITORS, `row "${row.descriptor.id}"`).toHaveProperty(control.id)
+    }
   })
 })

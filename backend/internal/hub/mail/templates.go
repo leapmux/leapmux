@@ -233,13 +233,13 @@ func (r Renderer) AppCredentialIssuedEmail(to, appName, installationName string,
 	}
 	opening := "An app was authorized on your LeapMux account.\n"
 	action := "If this was you, nothing more is needed. If it was not, sign in and\n" +
-		"disconnect it under Preferences, Account, Connected apps:\n"
+		"disconnect it under Preferences › Apps › Connected apps:\n"
 	subject := "[LeapMux] An app was authorized on your account"
 	if byAdministrator {
 		opening = "An ADMINISTRATOR issued an app credential for your LeapMux account.\n" +
 			"You did not authorize this yourself.\n"
 		action = "If you did not expect it, revoke it and ask your administrator. Sign in\n" +
-			"and open Preferences, Account, Connected apps:\n"
+			"and open Preferences › Apps › Connected apps:\n"
 		subject = "[LeapMux] An administrator issued an app credential for you"
 	}
 	if administersHub {

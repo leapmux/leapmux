@@ -1,6 +1,7 @@
 import type { Component } from 'solid-js'
 import type { TunnelInfo } from '~/api/platformBridge'
 import { createMemo, createSignal, Show } from 'solid-js'
+import { actionsFooter } from '~/components/common/actionsFooter.css'
 import { Dialog } from '~/components/common/Dialog'
 import { Spinner } from '~/components/common/Spinner'
 import { useTunnel } from '~/context/TunnelContext'
@@ -202,7 +203,7 @@ export const AddTunnelDialog: Component<AddTunnelDialogProps> = (props) => {
           <div class={errorText}>{error()}</div>
         </Show>
 
-        <footer>
+        <footer class={actionsFooter}>
           <button type="button" class="outline" disabled={submitting.loading()} onClick={() => props.onClose()} data-testid="tunnel-cancel">
             Cancel
           </button>

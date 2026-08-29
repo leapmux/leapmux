@@ -1,13 +1,12 @@
 import { expect, test } from './fixtures'
 import { loginViaAPI, TEST_ADMIN_PASSWORD, TEST_ADMIN_USERNAME } from './helpers/api'
-import { loginViaToken, openPreferencesDialog } from './helpers/ui'
+import { loginViaToken, openSettingsAt } from './helpers/ui'
 
 test.describe('Preferences administration groups', () => {
   test('admin sees the administration groups and can change session duration', async ({ page, leapmuxServer }) => {
     await loginViaToken(page, leapmuxServer.adminToken)
     await page.goto('/')
-    await openPreferencesDialog(page)
-    const dialog = page.getByRole('dialog', { name: 'Preferences' })
+    const dialog = await openSettingsAt(page)
 
     await expect(dialog.getByText('ADMINISTRATION')).toBeVisible()
     await expect(dialog.getByTestId('preferences-nav-admin-general')).toBeVisible()
@@ -24,10 +23,9 @@ test.describe('Preferences administration groups', () => {
     await input.press('Enter') /* the control commits on the DOM change event */
     await expect(row.getByText('Customized')).toBeVisible()
 
-    await page.getByRole('dialog', { name: 'Preferences' }).getByLabel('Close').click()
-    await expect(page.getByRole('dialog', { name: 'Preferences' })).not.toBeVisible()
-    await openPreferencesDialog(page, 'admin-general')
-    const reopened = page.getByRole('dialog', { name: 'Preferences' })
+    await dialog.getByLabel('Close').click()
+    await expect(dialog).not.toBeVisible()
+    const reopened = await openSettingsAt(page, 'admin-general')
     await expect(reopened.locator('[data-setting-id="session_duration_seconds"] input[type="number"]')).toHaveValue('7200')
 
     // Reset back to the default so the change cannot leak into a later test
@@ -46,8 +44,7 @@ test.describe('Preferences administration groups', () => {
   test('states an enforced toggle in the words of its switch', async ({ page, leapmuxServer }) => {
     await loginViaToken(page, leapmuxServer.adminToken)
     await page.goto('/')
-    await openPreferencesDialog(page, 'admin-signup')
-    const dialog = page.getByRole('dialog', { name: 'Preferences' })
+    const dialog = await openSettingsAt(page, 'admin-signup')
 
     const row = dialog.locator('[data-setting-id="signup_enabled"]')
     await expect(row).toBeVisible()
@@ -67,8 +64,7 @@ test.describe('Preferences administration groups', () => {
   test('states an enforced number with the unit of its control', async ({ page, leapmuxServer }) => {
     await loginViaToken(page, leapmuxServer.adminToken)
     await page.goto('/')
-    await openPreferencesDialog(page, 'admin-advanced')
-    const dialog = page.getByRole('dialog', { name: 'Preferences' })
+    const dialog = await openSettingsAt(page, 'admin-advanced')
 
     const row = dialog.locator('[data-setting-id="queue_budget.relay_bytes"]')
     await expect(row).toBeVisible()
@@ -93,8 +89,7 @@ test.describe('Preferences administration groups', () => {
   test('a public URL change reaches the passkey affordance without a reload', async ({ page, leapmuxServer }) => {
     await loginViaToken(page, leapmuxServer.adminToken)
     await page.goto('/')
-    await openPreferencesDialog(page, 'account')
-    const dialog = page.getByRole('dialog', { name: 'Preferences' })
+    const dialog = await openSettingsAt(page, 'account')
 
     // Scoped to the passkeys row: the verified-session banner at the top of
     // the Account section is a `role="alert"` too, so an unscoped alert
@@ -133,8 +128,7 @@ test.describe('Preferences administration groups', () => {
   test('non-admins do not see the administration groups', async ({ page, leapmuxServer }) => {
     await loginViaToken(page, leapmuxServer.newuserToken)
     await page.goto('/')
-    await openPreferencesDialog(page)
-    const dialog = page.getByRole('dialog', { name: 'Preferences' })
+    const dialog = await openSettingsAt(page)
 
     await expect(dialog.getByText('ADMINISTRATION')).not.toBeVisible()
     await expect(dialog.getByTestId('preferences-nav-admin-general')).not.toBeVisible()
@@ -169,8 +163,7 @@ test.describe('administration settings need a verified session', () => {
   test('prompts on the first write and applies it once the user verifies', async ({ page, leapmuxServer }) => {
     await loginViaToken(page, await unelevatedAdminSession(leapmuxServer.hubUrl))
     await page.goto('/')
-    await openPreferencesDialog(page, 'admin-general')
-    const dialog = page.getByRole('dialog', { name: 'Preferences' })
+    const dialog = await openSettingsAt(page, 'admin-general')
 
     const row = dialog.locator('[data-setting-id="session_duration_seconds"]')
     await expect(row).toBeVisible()
@@ -208,8 +201,7 @@ test.describe('administration settings need a verified session', () => {
   test('ends the window from the administration panel', async ({ page, leapmuxServer }) => {
     await loginViaToken(page, leapmuxServer.adminToken)
     await page.goto('/')
-    await openPreferencesDialog(page, 'admin-general')
-    const dialog = page.getByRole('dialog', { name: 'Preferences' })
+    const dialog = await openSettingsAt(page, 'admin-general')
 
     await expect(dialog.getByTestId('elevation-status')).toBeVisible()
     await dialog.getByTestId('elevation-drop').click()

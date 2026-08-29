@@ -1646,6 +1646,12 @@ type ListOAuthClientsParams struct {
 	// what an administrator's listing reads; the default keeps the page to
 	// the user's own registrations.
 	IncludeHubWide bool
+	// HubWideOnly narrows the page to the hub-wide catalogue alone,
+	// dropping the user's own registrations. It is the administration
+	// panel's listing: an administrator's own rows must not ride along only
+	// for the caller to discard them. The caller owns the administrator
+	// check -- the store does not repeat it.
+	HubWideOnly bool
 	// IncludeRevoked widens the page to retired rows, which the "include
 	// retired" listing asks for. The default keeps the live-only shape every
 	// authorize surface reads.

@@ -15,7 +15,6 @@ import (
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/hub/ratelimit"
 	"github.com/leapmux/leapmux/internal/hub/service"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // An admin call reports the hub's refusal VERBATIM, through
@@ -104,15 +103,6 @@ func validateListLimit(limit int64) error {
 	return nil
 }
 
-// putTime writes one optional timestamp into an output row, omitting the
-// field when the hub sent none.
-func putTime(row map[string]any, key string, ts *timestamppb.Timestamp) {
-	if ts == nil {
-		return
-	}
-	row[key] = ts.AsTime().UTC().Format(timeFormat)
-}
-
 // settingValueJSON renders one SettingValue for the envelope.
 func settingValueJSON(v *leapmuxv1.SettingValue) map[string]any {
 	out := map[string]any{
@@ -173,8 +163,6 @@ func settingDescriptionText(key, summary string) string {
 	}
 	return summary
 }
-
-const timeFormat = "2006-01-02T15:04:05.000Z07:00"
 
 // RunAdminSettingsList implements `control admin settings list`.
 func RunAdminSettingsList(rawCtx any, args []string) error {

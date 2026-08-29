@@ -2,6 +2,7 @@ import type { Component } from 'solid-js'
 import type { SettingBinding, SettingControl, SettingDescriptor } from './types'
 import ChevronDown from 'lucide-solid/icons/chevron-down'
 import { createMemo, createSignal, Show } from 'solid-js'
+import { actionsFooter } from '~/components/common/actionsFooter.css'
 import { ConfirmButton } from '~/components/common/ConfirmButton'
 import { DropdownMenu, DropdownMenuCheckableItem } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
@@ -261,14 +262,26 @@ export const SettingRow: Component<SettingRowProps> = (props) => {
       }
       case 'action':
         return (
-          <ConfirmButton
-            class="small outline"
-            data-variant={c.danger ? 'danger' : undefined}
-            data-testid={`setting-action-${d().id}`}
-            onClick={() => void commit(true)}
-          >
-            {c.label}
-          </ConfirmButton>
+          // Right-aligned like every section action in the dialog: an action
+          // row is the closing line of its editor, and Oat's own dialog
+          // footers put their primaries there too.
+          <div class={actionsFooter}>
+            <ConfirmButton
+              /*
+                A danger action is the FILLED danger ConfirmButton, the same
+                chrome "Remove all" on the trusted-worker-keys panel wears: it
+                ends a whole feature in one request with no dialog of its own,
+                so the button itself is the confirmation and carries the weight.
+                A small outline here rendered a second danger idiom beside that
+                one, quieter than the ending it performs.
+              */
+              data-variant={c.danger ? 'danger' : undefined}
+              data-testid={`setting-action-${d().id}`}
+              onClick={() => void commit(true)}
+            >
+              {c.label}
+            </ConfirmButton>
+          </div>
         )
     }
   }
@@ -334,8 +347,17 @@ export const SettingRow: Component<SettingRowProps> = (props) => {
           reveal.observe(el)
       }}
     >
+      {/*
+        An H3, the Oat heading element a labelled block uses: the row is the
+        panel's one unit of structure, and a heading gives it a place in the
+        document outline a span cannot. The TYPE is Oat's own h3 rule,
+        deliberately -- the compact span size does not come back (the label
+        style's comment states the same rule). The zeroed margin alone is
+        stated here, because a settings row must not take a page heading's
+        spacing.
+      */}
       <div class={styles.headerRow}>
-        <span class={styles.label}>{d().label}</span>
+        <h3 class={styles.label}>{d().label}</h3>
         {scopeNote()}
       </div>
       <Show when={d().help}>

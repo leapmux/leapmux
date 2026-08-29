@@ -4,6 +4,7 @@ import type { Component } from 'solid-js'
 import type { OAuthProviderInfo } from '~/generated/leapmux/v1/auth_pb'
 import { A, useNavigate, useSearchParams } from '@solidjs/router'
 import { createEffect, createSignal, Show } from 'solid-js'
+import { actionsFooter } from '~/components/common/actionsFooter.css'
 import { CaptchaSection } from '~/components/common/CaptchaSection'
 import { OAuthProviderList } from '~/components/common/OAuthProviderList'
 import { PillGroup } from '~/components/common/PillGroup'
@@ -178,15 +179,17 @@ export const LoginPage: Component = () => {
           <Show when={auth.error()}>
             <div class={errorText}>{auth.error()}</div>
           </Show>
-          <button
-            type="submit"
-            disabled={submitting() || !canSubmit()}
-          >
-            <Show when={submitting()}><Spinner /></Show>
-            {submitting()
-              ? 'Signing in...'
-              : effectiveMethod() === 'passkey' ? 'Sign in with passkey' : 'Sign in'}
-          </button>
+          <div class={actionsFooter}>
+            <button
+              type="submit"
+              disabled={submitting() || !canSubmit()}
+            >
+              <Show when={submitting()}><Spinner /></Show>
+              {submitting()
+                ? 'Signing in...'
+                : effectiveMethod() === 'passkey' ? 'Sign in with passkey' : 'Sign in'}
+            </button>
+          </div>
           <Show when={isEmailEnabled() && effectiveMethod() === 'password'}>
             <div>
               <A href="/forgot-password">Forgot password?</A>

@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -21,6 +22,8 @@ import (
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
@@ -112,12 +115,9 @@ func TestPersistTokenResponse_WarnsWhenAScopeWasNotGranted(t *testing.T) {
 		require.NoError(t, persistTokenResponse("https://hub.example", body, oauthapp.ControlCLIClientID, "admin:read"))
 	})
 
-	var env struct {
-		Data map[string]any `json:"data"`
-	}
-	require.NoError(t, json.Unmarshal(out, &env))
-	assert.Equal(t, "workspace:read", env.Data["scope"])
-	assert.Contains(t, env.Data["warning"], "admin:read",
+	data := envelopeData(t, out)
+	assert.Equal(t, "workspace:read", data["scope"])
+	assert.Contains(t, data["warning"], "admin:read",
 		"the warning must NAME the permission that was refused")
 
 	loaded, err := control.LoadCredentials("https://hub.example")
@@ -126,99 +126,71 @@ func TestPersistTokenResponse_WarnsWhenAScopeWasNotGranted(t *testing.T) {
 		"the file must record what was GRANTED, not what was asked")
 }
 
-// TestPersistTokenResponse_RevokesTheCredentialItReplaces pins the
-// save-then-revoke ORDER. A crash between the two must leave the user
-// logged IN with one abandoned row, never logged out holding a file the hub
-// already refused.
-func TestPersistTokenResponse_RevokesTheCredentialItReplaces(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", dir)
+// TestRunAuthLogin_WarnsWhenTheRevokeFails pins the best-effort half of the
+// up-front cleanup. A hub that refuses the revoke must not fail the login,
+// but the refusal must be STATED, with the one place the operator can finish
+// the job -- and that place must be the row the Preferences dialog actually
+// draws (Apps, not the Account group it moved out of).
+func TestRunAuthLogin_WarnsWhenTheRevokeFails(t *testing.T) {
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
 
-	revoked := make(chan string, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, "/oauth/revoke", r.URL.Path)
-		require.NoError(t, r.ParseForm())
-		revoked <- r.FormValue("token")
-		w.WriteHeader(http.StatusOK)
+		switch r.URL.Path {
+		case "/oauth/revoke":
+			w.WriteHeader(http.StatusInternalServerError)
+		case "/oauth/device-authorization":
+			http.Error(w, "refused", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
 	}))
 	t.Cleanup(srv.Close)
+	liveCredentialFor(t, srv.URL)
 
-	require.NoError(t, control.SaveCredentials(srv.URL, control.CredentialFile{
-		HubURL:      srv.URL,
-		AccessToken: "lmx_a_old_secret",
-		UserID:      "user-1",
-		Username:    "alice",
-	}))
-
-	withCapturedStdout(t, func() {
-		body := strings.NewReader(`{
-			"access_token": "lmx_a_new_secret",
-			"refresh_token": "lmx_a_new_refresh",
-			"expires_in": 3600,
-			"user_id": "user-1",
-			"username": "alice"
-		}`)
-		require.NoError(t, persistTokenResponse(srv.URL, body, oauthapp.ControlCLIClientID, ""))
+	var runErr error
+	out := withCapturedStdout(t, func() {
+		runErr = RunAuthLogin(fakeCmdCtx{}, []string{"--hub", srv.URL, "--device-code"})
 	})
+	require.Error(t, runErr, "the failed authorization is the login's own error")
 
-	select {
-	case token := <-revoked:
-		assert.Equal(t, "lmx_a_old_secret", token, "the OUTGOING credential must be the one revoked")
-	case <-time.After(5 * time.Second):
-		t.Fatal("the replaced credential was never revoked")
-	}
-
-	loaded, err := control.LoadCredentials(srv.URL)
-	require.NoError(t, err)
-	assert.Equal(t, "lmx_a_new_secret", loaded.AccessToken, "the new credential must survive the revoke")
+	assert.Contains(t, string(out), "could not revoke",
+		"a revoke that did not happen must say so")
+	assert.Contains(t, string(out), "Preferences › Apps › Connected apps",
+		"the warning must name the group that holds the row, not the one a reorg removed")
+	_, err := control.LoadCredentials(srv.URL)
+	assert.ErrorIs(t, err, control.ErrNotLoggedIn,
+		"the local file goes either way: the cleanup stays locally idempotent")
 }
 
-// TestPersistTokenResponse_WarnsWhenTheOldCredentialSurvives pins the other
-// half of the retirement.
-//
-// The revoke is best-effort by design -- the new credential is already on
-// disk and the login succeeded -- but it must not be SILENT. revokeBearer
-// never read the status code, so a hub that refused the revoke produced a
-// clean result envelope while the old refresh secret stayed live for the
-// rest of its window, which is exactly what the retirement exists to stop.
-func TestPersistTokenResponse_WarnsWhenTheOldCredentialSurvives(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", dir)
+// TestRunAuthLogin_CleansUpAnUnreadableCredentialFile pins the corrupt-file
+// half of the cleanup. A file that does not parse carries tokens this CLI
+// cannot revoke, but the login must not leave it in place either: the file
+// goes, and the warning states that its grant may still live on the hub.
+func TestRunAuthLogin_CleansUpAnUnreadableCredentialFile(t *testing.T) {
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, "/oauth/revoke", r.URL.Path)
-		// The hub refuses. A 2xx-only reader would call this success.
-		w.WriteHeader(http.StatusInternalServerError)
+		http.Error(w, "refused", http.StatusInternalServerError)
 	}))
 	t.Cleanup(srv.Close)
 
-	require.NoError(t, control.SaveCredentials(srv.URL, control.CredentialFile{
-		HubURL:      srv.URL,
-		AccessToken: "lmx_a_old_secret",
-		UserID:      "user-1",
-		Username:    "alice",
-	}))
-
-	out := withCapturedStdout(t, func() {
-		body := strings.NewReader(`{
-			"access_token": "lmx_a_new_secret",
-			"refresh_token": "lmx_a_new_refresh",
-			"expires_in": 3600,
-			"user_id": "user-1",
-			"username": "alice"
-		}`)
-		require.NoError(t, persistTokenResponse(srv.URL, body, oauthapp.ControlCLIClientID, ""))
-	})
-
-	assert.Contains(t, string(out), "could not be revoked",
-		"a retirement that did not happen must say so")
-	assert.Contains(t, string(out), "Preferences",
-		"the warning must state where the operator can finish the job")
-
-	// The login still succeeded: the new credential is on disk.
-	loaded, err := control.LoadCredentials(srv.URL)
+	path, err := control.CredentialsPath(srv.URL)
 	require.NoError(t, err)
-	assert.Equal(t, "lmx_a_new_secret", loaded.AccessToken)
+	require.NoError(t, os.WriteFile(path, []byte("{not credential json"), 0o600))
+
+	var runErr error
+	out := withCapturedStdout(t, func() {
+		runErr = RunAuthLogin(fakeCmdCtx{}, []string{"--hub", srv.URL, "--device-code"})
+	})
+	require.Error(t, runErr, "the failed authorization is the login's own error")
+
+	assert.Contains(t, string(out), "does not parse",
+		"an unreadable file must be reported, not silently overwritten")
+	assert.Contains(t, string(out), "cannot revoke",
+		"the warning must state what the CLI could not do about the grant")
+	_, err = control.LoadCredentials(srv.URL)
+	assert.ErrorIs(t, err, control.ErrNotLoggedIn,
+		"the unreadable file must not survive the login attempt")
 }
 
 // TestPersistTokenResponse_RejectsMalformedJSON pins the failure path:
@@ -296,9 +268,9 @@ func TestRunAuthLogout_RevokesAndRemovesCreds(t *testing.T) {
 //
 // The hub hard-deletes an api_tokens row once both of its deadlines close,
 // and it answers a bearer whose row it cannot find with 401. Reporting that
-// as a failed revoke told the user to finish the job under Preferences,
-// Account, Connected apps -- where the row is already gone, so there is
-// nothing to act on and the warning can only worry them.
+// as a failed revoke told the user to finish the job under
+// Preferences › Apps › Connected apps -- where the row is already gone, so
+// there is nothing to act on and the warning can only worry them.
 // TestRunAuthLogout_WarnsWhereToFinishTheJob pins the REFUSAL warning's
 // destination. The warning once named "Command-line credentials", a
 // Preferences row that no longer exists -- so the one user who needed it was
@@ -327,7 +299,7 @@ func TestRunAuthLogout_WarnsWhereToFinishTheJob(t *testing.T) {
 		Data map[string]string `json:"data"`
 	}
 	require.NoError(t, json.Unmarshal(out, &env))
-	assert.Contains(t, env.Data["warning"], "could not be revoked",
+	assert.Contains(t, env.Data["warning"], "could not revoke",
 		"a logout whose revoke failed must say so")
 	assert.Contains(t, env.Data["warning"], "Preferences",
 		"the warning must state where the operator can finish the job")
@@ -392,7 +364,7 @@ func TestRunAuthLogout_WarnsWhenTheHubRefusesTheRevoke(t *testing.T) {
 	out := withCapturedStdout(t, func() {
 		require.NoError(t, RunAuthLogout(fakeCmdCtx{}, []string{"--hub", srv.URL}))
 	})
-	assert.Contains(t, string(out), "could not be revoked")
+	assert.Contains(t, string(out), "could not revoke")
 	assert.Contains(t, string(out), "Preferences")
 }
 
@@ -453,13 +425,10 @@ func TestRunAuthStatus_ReportsExpiry(t *testing.T) {
 		err := RunAuthStatus(fakeCmdCtx{}, []string{"--hub", "https://hub.example"})
 		require.NoError(t, err)
 	})
-	var env struct {
-		Data map[string]any `json:"data"`
-	}
-	require.NoError(t, json.Unmarshal(out, &env))
-	assert.Equal(t, "alice", env.Data["username"])
-	assert.Equal(t, "u1", env.Data["user_id"])
-	assert.Equal(t, false, env.Data["expired"])
+	data := envelopeData(t, out)
+	assert.Equal(t, "alice", data["username"])
+	assert.Equal(t, "u1", data["user_id"])
+	assert.Equal(t, false, data["expired"])
 }
 
 // TestRunAuthStatus_ReportsExpired covers the expired-credentials
@@ -479,11 +448,8 @@ func TestRunAuthStatus_ReportsExpired(t *testing.T) {
 		err := RunAuthStatus(fakeCmdCtx{}, []string{"--hub", "https://hub.example"})
 		require.NoError(t, err)
 	})
-	var env struct {
-		Data map[string]any `json:"data"`
-	}
-	require.NoError(t, json.Unmarshal(out, &env))
-	assert.Equal(t, true, env.Data["expired"])
+	data := envelopeData(t, out)
+	assert.Equal(t, true, data["expired"])
 }
 
 // TestRunAuthStatus_NotLoggedInWhenMissing covers the negative
@@ -1035,4 +1001,364 @@ func TestCallbackHandlerReportsTheServerErrorParameter(t *testing.T) {
 	default:
 		t.Fatal("an empty callback must reach the CLI's error channel")
 	}
+}
+
+// --- the hub check behind auth status / whoami ------------------------
+//
+// Both commands print what the hub would actually DO with the bearer, not
+// what the credential file says: one authenticated GetCurrentUser, with
+// three endings -- confirmed (the hub's own username and admin flag),
+// refused (not logged in; the refresh path already deleted the file), and
+// unreachable (the local answer with a warning naming what was not
+// verified).
+
+// currentUserServer answers the one Connect RPC the hub check makes. The
+// client speaks binary proto, so the body is a marshalled message, not JSON.
+func currentUserServer(t *testing.T, username string, isAdmin bool) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/leapmux.v1.AuthService/GetCurrentUser" {
+			http.NotFound(w, r)
+			return
+		}
+		body, err := proto.Marshal(&leapmuxv1.GetCurrentUserResponse{
+			User: &leapmuxv1.User{Id: "u-hub", Username: username, IsAdmin: isAdmin},
+		})
+		require.NoError(t, err)
+		w.Header().Set("Content-Type", "application/proto")
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// currentUserPermissionDeniedServer answers GetCurrentUser the way the hub
+// answers a credential minted without account:read (`auth login --scope`):
+// the credential is valid, but this one read sits beyond its ceiling.
+func currentUserPermissionDeniedServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/leapmux.v1.AuthService/GetCurrentUser" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"code": "permission_denied"}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// liveCredentialFor writes a credential whose access token has not lapsed,
+// so the check goes straight to the RPC without a rotation first.
+func liveCredentialFor(t *testing.T, hubURL string) {
+	t.Helper()
+	require.NoError(t, control.SaveCredentials(hubURL, control.CredentialFile{
+		HubURL:      hubURL,
+		AccessToken: "lmx_a_at_status",
+		// A refresh secret, so the refusal's repair can RUN: without one the
+		// 401 has nothing to rotate and nothing to delete, and the file
+		// survives a refusal that proved it worthless.
+		RefreshToken: "lmx_a_rt_status",
+		Username:     "local-name",
+		UserID:       "u-local",
+		ExpiresAt:    time.Now().Add(time.Hour),
+		// The deadline a real login always carries, so the UTC assertions
+		// cover both printed timestamps.
+		RefreshExpiresAt: time.Now().Add(90 * 24 * time.Hour),
+	}))
+}
+
+func TestRunAuthStatus_ConfirmsWithTheHub(t *testing.T) {
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+	srv := currentUserServer(t, "renamed-on-the-hub", true)
+	liveCredentialFor(t, srv.URL)
+
+	out := withCapturedStdout(t, func() {
+		require.NoError(t, RunAuthStatus(fakeCmdCtx{}, []string{"--hub", srv.URL}))
+	})
+
+	data := envelopeData(t, out)
+	assert.Equal(t, true, data["hub_checked"])
+	// The hub's username WINS: the local copy is stale the moment an account
+	// is renamed, and status is exactly where that must not mislead.
+	assert.Equal(t, "renamed-on-the-hub", data["username"])
+	assert.Equal(t, true, data["is_admin"])
+	// The credential file's zone is wherever it was written; the OUTPUT is
+	// always UTC, so every deadline the CLI prints ends in Z and sorts beside
+	// the hub's own timestamps.
+	for _, key := range []string{"expires", "refresh_expires"} {
+		assert.Truef(t, strings.HasSuffix(data[key].(string), "Z"), "%s must end in Z", key)
+	}
+}
+
+// TestRunAuthList_PrintsUTC pins the same rule for `auth list`: its rows
+// read the credential FILE, whose zone is the writer's, and the envelope
+// must not leak it.
+func TestRunAuthList_PrintsUTC(t *testing.T) {
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+	srv := currentUserServer(t, "unused", false)
+	liveCredentialFor(t, srv.URL)
+
+	out := withCapturedStdout(t, func() {
+		require.NoError(t, RunAuthList(fakeCmdCtx{}, nil))
+	})
+
+	var env struct {
+		Data []map[string]any `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(out, &env))
+	require.Len(t, env.Data, 1)
+	assert.True(t, strings.HasSuffix(env.Data[0]["expires"].(string), "Z"),
+		"auth list must print the file's deadline in UTC")
+}
+
+func TestRunAuthStatus_WarnsWhenTheHubCannotBeAsked(t *testing.T) {
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+	// A server that is already closed: the URL stays valid, the hub is gone.
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	srv.Close()
+	liveCredentialFor(t, srv.URL)
+
+	out := withCapturedStdout(t, func() {
+		require.NoError(t, RunAuthStatus(fakeCmdCtx{}, []string{"--hub", srv.URL}))
+	})
+
+	data := envelopeData(t, out)
+	// Offline stays USEFUL: the local answer prints, and the warning names
+	// exactly what was not verified.
+	assert.Equal(t, false, data["hub_checked"])
+	assert.Equal(t, "local-name", data["username"])
+	assert.Contains(t, data["warning"], "could not be reached")
+}
+
+func TestRunAuthStatus_RefusedMeansSignedOut(t *testing.T) {
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+	// The hub answers the RPC itself with 401, and the rotation the
+	// interceptor then attempts with invalid_grant -- which deletes the
+	// credential file on the way through.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/leapmux.v1.AuthService/GetCurrentUser":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"code":"unauthenticated"}`))
+		case "/oauth/token":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"invalid_grant"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	liveCredentialFor(t, srv.URL)
+
+	// An emitted error returns non-nil (it is what sets the exit code), so
+	// the assertion is on the envelope it wrote, not on NoError.
+	var runErr error
+	out := withCapturedStdout(t, func() {
+		runErr = RunAuthStatus(fakeCmdCtx{}, []string{"--hub", srv.URL})
+	})
+	require.Error(t, runErr)
+	assert.True(t, control.IsEmitted(runErr), "the refusal reached the user as an envelope")
+
+	env := envelopeError(t, out)
+	assert.Equal(t, "not_logged_in", env["code"],
+		"a credential the hub refused is a signed-out state, whatever the file said")
+	// And the file is GONE: the refusal cleaned up after itself, so the next
+	// command does not re-learn it.
+	_, err := control.LoadCredentials(srv.URL)
+	assert.ErrorIs(t, err, control.ErrNotLoggedIn)
+}
+
+func TestRunWhoami_ConfirmsWithTheHub(t *testing.T) {
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+	srv := currentUserServer(t, "hub-name", false)
+	liveCredentialFor(t, srv.URL)
+
+	out := withCapturedStdout(t, func() {
+		require.NoError(t, RunWhoami(fakeCmdCtx{}, []string{"--hub", srv.URL}))
+	})
+
+	data := envelopeData(t, out)
+	assert.Equal(t, "hub-name", data["username"])
+	assert.Equal(t, "u-hub", data["user_id"])
+	assert.Equal(t, false, data["is_admin"])
+}
+
+// TestRunAuthStatus_FallsBackWhenTheCredentialLacksAccountRead and the
+// whoami twin below pin the PermissionDenied classification: a valid
+// credential that merely lacks account:read is NOT a signed-out state and
+// NOT an rpc failure. The local answer stands with a warning that states
+// the permission the confirmation could not cross -- and whoami keeps
+// is_admin present (null, the honest unknown), so its direct endings carry
+// one shape.
+func TestRunAuthStatus_FallsBackWhenTheCredentialLacksAccountRead(t *testing.T) {
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+	srv := currentUserPermissionDeniedServer(t)
+	liveCredentialFor(t, srv.URL)
+
+	out := withCapturedStdout(t, func() {
+		require.NoError(t, RunAuthStatus(fakeCmdCtx{}, []string{"--hub", srv.URL}))
+	})
+
+	data := envelopeData(t, out)
+	assert.Equal(t, false, data["hub_checked"])
+	assert.Equal(t, "local-name", data["username"],
+		"a scope-limited credential still has a local identity to report")
+	assert.Contains(t, data["warning"], "account:read",
+		"the warning must name the permission the confirmation could not cross")
+}
+
+func TestRunWhoami_FallsBackWhenTheCredentialLacksAccountRead(t *testing.T) {
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+	srv := currentUserPermissionDeniedServer(t)
+	liveCredentialFor(t, srv.URL)
+
+	out := withCapturedStdout(t, func() {
+		require.NoError(t, RunWhoami(fakeCmdCtx{}, []string{"--hub", srv.URL}))
+	})
+
+	data := envelopeData(t, out)
+	assert.Equal(t, "local-name", data["username"])
+	assert.Nil(t, data["is_admin"],
+		"is_admin stays present on the fallback as null -- the one value this ending cannot know")
+	assert.Contains(t, data["warning"], "account:read")
+}
+
+// TestRunAuthLogin_CleansUpTheExistingLoginFirst pins the whole point of the
+// up-front cleanup: the old credential is revoked and deleted BEFORE the flow
+// starts, so a login that never completes still leaves no orphaned login
+// behind. The fake hub refuses the device authorization, which is exactly
+// the "attempting a login" that must not rescue the old credential.
+func TestRunAuthLogin_CleansUpTheExistingLoginFirst(t *testing.T) {
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+
+	revoked := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/oauth/revoke":
+			revoked = true
+			w.WriteHeader(http.StatusOK)
+		case "/oauth/device-authorization":
+			// The flow dies here; the cleanup must already have happened.
+			http.Error(w, "refused", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	liveCredentialFor(t, srv.URL)
+
+	var runErr error
+	out := withCapturedStdout(t, func() {
+		runErr = RunAuthLogin(fakeCmdCtx{}, []string{"--hub", srv.URL, "--device-code"})
+	})
+	require.Error(t, runErr, "the failed authorization is the login's own error")
+
+	assert.True(t, revoked, "the existing login must be revoked before the flow starts")
+	_, err := control.LoadCredentials(srv.URL)
+	assert.ErrorIs(t, err, control.ErrNotLoggedIn,
+		"a login that never completed must not leave the old credential on disk")
+	assert.Contains(t, string(out), "existing login", "the cleanup warns before it cleans")
+	assert.Contains(t, string(out), "local-name", "the warning identifies the login it removes")
+}
+
+// TestRunAuthLogin_RefusedFlagKeepsTheExistingLogin pins the ORDER around
+// the up-front cleanup: every input is validated first, so a flag the CLI
+// refuses must not cost the machine its working credential. The scope below
+// is exactly the value splitScopeFlag exists to refuse.
+func TestRunAuthLogin_RefusedFlagKeepsTheExistingLogin(t *testing.T) {
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+
+	revoked := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/oauth/revoke" {
+			revoked = true
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	liveCredentialFor(t, srv.URL)
+
+	var runErr error
+	out := withCapturedStdout(t, func() {
+		runErr = RunAuthLogin(fakeCmdCtx{}, []string{"--hub", srv.URL, "--scope", ","})
+	})
+	require.Error(t, runErr)
+	assert.True(t, control.IsEmitted(runErr))
+	assert.Equal(t, "invalid_request", envelopeError(t, out)["code"],
+		"the refused flag is the login's own error")
+	assert.False(t, revoked, "a refused flag must not revoke the working credential")
+	_, err := control.LoadCredentials(srv.URL)
+	require.NoError(t, err, "a refused flag must not delete the working credential either")
+}
+
+// TestRunAuthStatus_FallsBackWhenTheProxyDropsTheRoute pins the transport
+// ending a status command meets behind a reverse proxy: a 404 -- which
+// connect maps to Unimplemented -- is a hub that could not be ASKED, so the
+// local answer stands with a warning, not an rpc_failed exit that hides the
+// fields the file still answers.
+func TestRunAuthStatus_FallsBackWhenTheProxyDropsTheRoute(t *testing.T) {
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r) // a proxy that no longer routes the hub
+	}))
+	t.Cleanup(srv.Close)
+	liveCredentialFor(t, srv.URL)
+
+	out := withCapturedStdout(t, func() {
+		require.NoError(t, RunAuthStatus(fakeCmdCtx{}, []string{"--hub", srv.URL}))
+	})
+
+	data := envelopeData(t, out)
+	assert.Equal(t, false, data["hub_checked"])
+	assert.Equal(t, "local-name", data["username"])
+	assert.Contains(t, data["warning"], "could not be reached")
+}
+
+// TestRunAuthStatus_HungHubCannotHoldTheCommand pins the budget's promise:
+// the five-second cap bounds the WHOLE check, the interceptor's token
+// rotation included. A hub that accepts connections and never answers must
+// not hold `auth status` for the rotation's 30-second budget before the
+// local-answer fallback fires -- and a rotation that dies at the deadline
+// must read as unreachable, not as a refused credential, because the hub
+// never answered anything.
+func TestRunAuthStatus_HungHubCannotHoldTheCommand(t *testing.T) {
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+	hang := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-hang // accept, then stall every route the check touches
+	}))
+	// LIFO: unblock the stalled handlers BEFORE the server's Close waits
+	// for them.
+	t.Cleanup(srv.Close)
+	t.Cleanup(func() { close(hang) })
+	// The access token sits inside refreshSkew, so the check first tries to
+	// rotate it against the stalled hub.
+	require.NoError(t, control.SaveCredentials(srv.URL, control.CredentialFile{
+		HubURL:           srv.URL,
+		AccessToken:      "lmx_a_at_stale",
+		RefreshToken:     "lmx_a_rt_stale",
+		Username:         "local-name",
+		UserID:           "u-local",
+		ExpiresAt:        time.Now().Add(30 * time.Second),
+		RefreshExpiresAt: time.Now().Add(90 * 24 * time.Hour),
+	}))
+
+	started := time.Now()
+	out := withCapturedStdout(t, func() {
+		require.NoError(t, RunAuthStatus(fakeCmdCtx{}, []string{"--hub", srv.URL}))
+	})
+	assert.Less(t, time.Since(started).Seconds(), 15.0,
+		"a hung hub must not hold the command past the check's own budget")
+
+	data := envelopeData(t, out)
+	assert.Equal(t, false, data["hub_checked"])
+	assert.Equal(t, "local-name", data["username"],
+		"a rotation that could not run leaves the local identity, not a refusal")
 }

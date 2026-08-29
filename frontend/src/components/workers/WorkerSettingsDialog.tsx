@@ -2,6 +2,7 @@ import type { Component } from 'solid-js'
 import type { Worker } from '~/generated/leapmux/v1/worker_pb'
 import { Show } from 'solid-js'
 import { workerClient } from '~/api/clients'
+import { actionsFooter } from '~/components/common/actionsFooter.css'
 import { Dialog } from '~/components/common/Dialog'
 import { Spinner } from '~/components/common/Spinner'
 import { useDialogSubmit } from '~/hooks/useDialogSubmit'
@@ -37,7 +38,7 @@ export const WorkerSettingsDialog: Component<WorkerSettingsDialogProps> = (props
       <Show when={deregisterError()}>
         <div class={errorText}>{deregisterError()}</div>
       </Show>
-      <footer>
+      <footer class={actionsFooter}>
         <button class="outline" disabled={submitting.loading()} onClick={() => props.onClose()} data-testid="deregister-cancel">
           Cancel
         </button>

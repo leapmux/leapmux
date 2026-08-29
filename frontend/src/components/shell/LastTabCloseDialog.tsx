@@ -3,6 +3,7 @@ import type { InspectLastTabCloseResponse } from '~/generated/leapmux/v1/git_pb'
 import type { TabType as TabTypeT } from '~/generated/leapmux/v1/workspace_pb'
 import { createMemo, createUniqueId, Show } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
+import { actionsFooter } from '~/components/common/actionsFooter.css'
 import { ConfirmButton } from '~/components/common/ConfirmButton'
 import { Dialog } from '~/components/common/Dialog'
 import { showWarnToast } from '~/components/common/Toast'
@@ -160,7 +161,7 @@ export const LastTabCloseDialog: Component<LastTabCloseDialogProps> = (props) =>
           <div class={warningText}>{props.state.errorHint}</div>
         </Show>
       </section>
-      <footer>
+      <footer class={actionsFooter}>
         <button type="button" class="outline" onClick={handleCancel}>
           Cancel
         </button>

@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
-import { getBrowserPrefValue, loginViaToken, openPreferencesDialog, pickTheme } from './helpers/ui'
+import { getBrowserPrefValue, loginViaToken, openSettingsAt, pickTheme } from './helpers/ui'
 
 /**
  * Read a browser-prefs field as a JSON string, for the substring assertions
@@ -31,8 +31,7 @@ test.describe('Preferences scope overrides', () => {
   test('overrides the theme on this device and clears back to the account default', async ({ page, leapmuxServer }) => {
     await loginViaToken(page, leapmuxServer.adminToken)
     await page.goto('/')
-    await openPreferencesDialog(page, 'appearance')
-    const dialog = page.getByRole('dialog', { name: 'Preferences' })
+    const dialog = await openSettingsAt(page, 'appearance')
 
     const chip = dialog.getByTestId('scope-chip-appearance.theme')
     await expect(chip).toHaveText(/Account default/)
@@ -65,8 +64,7 @@ test.describe('Preferences scope overrides', () => {
     const before = await resolvedMonoFamily(page)
     await expect(before).toBeTruthy()
 
-    await openPreferencesDialog(page, 'appearance')
-    const dialog = page.getByRole('dialog', { name: 'Preferences' })
+    const dialog = await openSettingsAt(page, 'appearance')
 
     // The whole {enabled, fonts} object is the override unit: switching the
     // toggle row onto the device tier overrides both halves at once.

@@ -255,8 +255,8 @@ func rowsAffected(tag pgconn.CommandTag, err error) (int64, error) {
 	return tag.RowsAffected(), nil
 }
 
-func listOAuthClientsParams(userID, cursor string, limit int64, includeRevoked, includeHubWide bool) (gendb.ListOAuthClientsParams, error) {
-	return withCursor(cursor, limit, func(ct pgtime.NullTime, cid pgtype.Text, fl int32) gendb.ListOAuthClientsParams {
-		return gendb.ListOAuthClientsParams{UserID: pgtype.Text{String: userID, Valid: true}, IncludeRevoked: includeRevoked, IncludeHubWide: includeHubWide, CursorTime: ct, CursorID: cid, Limit: fl}
+func listOAuthClientsParams(userID string, p store.ListOAuthClientsParams) (gendb.ListOAuthClientsParams, error) {
+	return withCursor(p.Cursor, p.Limit, func(ct pgtime.NullTime, cid pgtype.Text, fl int32) gendb.ListOAuthClientsParams {
+		return gendb.ListOAuthClientsParams{UserID: pgtype.Text{String: userID, Valid: true}, IncludeRevoked: p.IncludeRevoked, IncludeHubWide: p.IncludeHubWide, HubWideOnly: p.HubWideOnly, CursorTime: ct, CursorID: cid, Limit: fl}
 	})
 }

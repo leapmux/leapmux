@@ -982,14 +982,16 @@ func TestAuthInterceptor_ReportsALocalDiskFailureAsSuchNotAsASignIn(t *testing.T
 		"a rotation the file cannot record must stop the call, not ride it")
 }
 
-// TestBearerErrorCode_SeparatesALocalDiskFromABadCredential: the code the
+// TestBearerErrorCode_SeparatesTheFaultFromTheCredential: the code the
 // caller reads must not send an operator to the login when the fault is a
-// full disk.
-func TestBearerErrorCode_SeparatesALocalDiskFromABadCredential(t *testing.T) {
+// full disk -- and must not read a network failure as a revoked credential,
+// which hubCheck would report as a signed-out state for a credential that
+// was fine.
+func TestBearerErrorCode_SeparatesTheFaultFromTheCredential(t *testing.T) {
 	assert.Equal(t, connect.CodeInternal, bearerErrorCode(
 		fmt.Errorf("%w: no space left on device", ErrCredentialsNotSaved)))
 	assert.Equal(t, connect.CodeUnauthenticated, bearerErrorCode(ErrCredentialRejected))
-	assert.Equal(t, connect.CodeUnauthenticated, bearerErrorCode(errors.New("dial tcp: refused")))
+	assert.Equal(t, connect.CodeUnavailable, bearerErrorCode(errors.New("dial tcp: refused")))
 }
 
 // --- the reactive repair ----------------------------------------------

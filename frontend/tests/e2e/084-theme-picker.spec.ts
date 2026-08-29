@@ -3,7 +3,7 @@ import { CODE_BLOCK_TINT_PERCENT } from '../../src/styles/codePalette'
 import { motion } from '../../src/styles/tokens'
 import { colorAlpha } from '../../src/test-support/color'
 import { expect, test } from './fixtures'
-import { getBrowserPrefValue, loginViaToken, openPreferencesDialog, pickTheme, resolvedColor } from './helpers/ui'
+import { getBrowserPrefValue, loginViaToken, openSettingsAt, pickTheme, resolvedColor } from './helpers/ui'
 
 /**
  * The palette actually reaches the page.
@@ -25,8 +25,7 @@ test.describe('Theme picker', () => {
   test('repaints the app and survives a reload', async ({ page, leapmuxServer }) => {
     await loginViaToken(page, leapmuxServer.adminToken)
     await page.goto('/')
-    await openPreferencesDialog(page, 'appearance')
-    const dialog = page.getByRole('dialog', { name: 'Preferences' })
+    const dialog = await openSettingsAt(page, 'appearance')
     const themeRow = dialog.locator('[data-setting-id="appearance.theme"]')
 
     const before = await backgroundVar(page)
@@ -58,7 +57,7 @@ test.describe('Theme picker', () => {
     // paired light and dark rule, and both halves need the positive statement.
     await loginViaToken(page, leapmuxServer.adminToken)
     await page.goto('/')
-    await openPreferencesDialog(page, 'appearance')
+    await openSettingsAt(page, 'appearance')
     const themeRow = page.locator('[data-setting-id="appearance.theme"]')
 
     await themeRow.getByRole('radiogroup', { name: 'Theme mode' }).getByRole('radio', { name: 'Light' }).click()
@@ -76,7 +75,7 @@ test.describe('Theme picker', () => {
     await expect(page.locator('html')).toHaveAttribute('data-ui-theme', 'gruvbox')
 
     // The dialog reads the same key, so it reports what the empty state wrote.
-    await openPreferencesDialog(page, 'appearance')
+    await openSettingsAt(page, 'appearance')
     const themeRow = page.locator('[data-setting-id="appearance.theme"]')
     await expect(themeRow.getByTestId('theme-chooser-name')).toHaveAttribute('data-value', 'gruvbox')
 
@@ -110,8 +109,7 @@ test.describe('Theme picker', () => {
   test('names the palettes Default borrows, per row', async ({ page, leapmuxServer }) => {
     await loginViaToken(page, leapmuxServer.adminToken)
     await page.goto('/')
-    await openPreferencesDialog(page, 'appearance')
-    const dialog = page.getByRole('dialog', { name: 'Preferences' })
+    const dialog = await openSettingsAt(page, 'appearance')
 
     // Each row's own menu names the palette Default borrows for that surface.
     // The option is keyed by theme id, so this reads the LABEL the picker chose.
@@ -133,8 +131,7 @@ test.describe('Theme picker', () => {
   test('previews the chosen palette in the chip beside its name', async ({ page, leapmuxServer }) => {
     await loginViaToken(page, leapmuxServer.adminToken)
     await page.goto('/')
-    await openPreferencesDialog(page, 'appearance')
-    const dialog = page.getByRole('dialog', { name: 'Preferences' })
+    const dialog = await openSettingsAt(page, 'appearance')
     const themeRow = dialog.locator('[data-setting-id="appearance.theme"]')
 
     await pickTheme(themeRow, 'gruvbox')
@@ -167,8 +164,7 @@ test.describe('Theme picker', () => {
   test('moves the terminal with the app while the terminal is left alone', async ({ page, leapmuxServer }) => {
     await loginViaToken(page, leapmuxServer.adminToken)
     await page.goto('/')
-    await openPreferencesDialog(page, 'appearance')
-    const dialog = page.getByRole('dialog', { name: 'Preferences' })
+    const dialog = await openSettingsAt(page, 'appearance')
     const themeRow = dialog.locator('[data-setting-id="appearance.theme"]')
     const terminalRow = dialog.locator('[data-setting-id="appearance.terminalTheme"]')
 
@@ -189,8 +185,7 @@ test.describe('Theme picker', () => {
   test('lets the terminal take its own palette and mode', async ({ page, leapmuxServer }) => {
     await loginViaToken(page, leapmuxServer.adminToken)
     await page.goto('/')
-    await openPreferencesDialog(page, 'appearance')
-    const dialog = page.getByRole('dialog', { name: 'Preferences' })
+    const dialog = await openSettingsAt(page, 'appearance')
     const themeRow = dialog.locator('[data-setting-id="appearance.theme"]')
     const terminalRow = dialog.locator('[data-setting-id="appearance.terminalTheme"]')
 
@@ -219,7 +214,7 @@ test.describe('Theme picker', () => {
     // change nothing on screen until the user adjusts it.
     await loginViaToken(page, leapmuxServer.adminToken)
     await page.goto('/')
-    await openPreferencesDialog(page, 'appearance')
+    await openSettingsAt(page, 'appearance')
     const themeRow = page.locator('[data-setting-id="appearance.theme"]')
     const terminalRow = page.locator('[data-setting-id="appearance.terminalTheme"]')
 
@@ -244,8 +239,7 @@ test.describe('Theme picker', () => {
   test('offers a syntax theme row that writes its own preference', async ({ page, leapmuxServer }) => {
     await loginViaToken(page, leapmuxServer.adminToken)
     await page.goto('/')
-    await openPreferencesDialog(page, 'appearance')
-    const dialog = page.getByRole('dialog', { name: 'Preferences' })
+    const dialog = await openSettingsAt(page, 'appearance')
     const syntaxRow = dialog.locator('[data-setting-id="appearance.syntaxTheme"]')
 
     const themeRow = dialog.locator('[data-setting-id="appearance.theme"]')
@@ -273,8 +267,7 @@ test.describe('Theme picker', () => {
   test('leaves the app and terminal alone when only the syntax theme changes', async ({ page, leapmuxServer }) => {
     await loginViaToken(page, leapmuxServer.adminToken)
     await page.goto('/')
-    await openPreferencesDialog(page, 'appearance')
-    const dialog = page.getByRole('dialog', { name: 'Preferences' })
+    const dialog = await openSettingsAt(page, 'appearance')
     const themeRow = dialog.locator('[data-setting-id="appearance.theme"]')
     const syntaxRow = dialog.locator('[data-setting-id="appearance.syntaxTheme"]')
 
@@ -291,8 +284,7 @@ test.describe('Theme picker', () => {
     // The two halves are one key, so a partial write must not reset the other.
     await loginViaToken(page, leapmuxServer.adminToken)
     await page.goto('/')
-    await openPreferencesDialog(page, 'appearance')
-    const dialog = page.getByRole('dialog', { name: 'Preferences' })
+    const dialog = await openSettingsAt(page, 'appearance')
     const themeRow = dialog.locator('[data-setting-id="appearance.theme"]')
 
     await pickTheme(themeRow, 'solarized')
@@ -327,7 +319,7 @@ test.describe('Theme picker', () => {
     // against a palette the syntax preference is no longer following.
     await loginViaToken(page, leapmuxServer.adminToken)
     await page.goto('/')
-    await openPreferencesDialog(page, 'appearance')
+    await openSettingsAt(page, 'appearance')
     const syntaxRow = page.locator('[data-setting-id="appearance.syntaxTheme"]')
 
     await pickTheme(syntaxRow, 'gruvbox')
@@ -349,7 +341,7 @@ test.describe('Theme picker', () => {
   async function openThemeMenu(page: Page, token: string) {
     await loginViaToken(page, token)
     await page.goto('/')
-    await openPreferencesDialog(page, 'appearance')
+    await openSettingsAt(page, 'appearance')
     const panel = page.locator('#preferences-panel')
     const trigger = panel.getByRole('button', { name: 'Theme', exact: true })
     const menu = panel.locator('[data-testid="theme-chooser-name-menu"][aria-label="Theme"]')
@@ -492,8 +484,7 @@ test.describe('Theme picker', () => {
     // in this file drives the same admin account.
     await loginViaToken(page, leapmuxServer.adminToken)
     await page.goto('/')
-    await openPreferencesDialog(page, 'appearance')
-    const dialog = page.getByRole('dialog', { name: 'Preferences' })
+    const dialog = await openSettingsAt(page, 'appearance')
     const themeRow = dialog.locator('[data-setting-id="appearance.theme"]')
     const syntaxRow = dialog.locator('[data-setting-id="appearance.syntaxTheme"]')
 
@@ -551,7 +542,7 @@ test.describe('color-scheme follows the app', () => {
     test('resolves light-dark() to the dark branch once the app is dark', async ({ page, leapmuxServer }) => {
       await loginViaToken(page, leapmuxServer.adminToken)
       await page.goto('/')
-      await openPreferencesDialog(page, 'appearance')
+      await openSettingsAt(page, 'appearance')
       const themeRow = page.locator('[data-setting-id="appearance.theme"]')
 
       await themeRow.getByRole('radiogroup', { name: 'Theme mode' }).getByRole('radio', { name: 'Dark' }).click()
@@ -569,7 +560,7 @@ test.describe('color-scheme follows the app', () => {
     test('resolves light-dark() to the light branch once the app is light', async ({ page, leapmuxServer }) => {
       await loginViaToken(page, leapmuxServer.adminToken)
       await page.goto('/')
-      await openPreferencesDialog(page, 'appearance')
+      await openSettingsAt(page, 'appearance')
       const themeRow = page.locator('[data-setting-id="appearance.theme"]')
 
       await themeRow.getByRole('radiogroup', { name: 'Theme mode' }).getByRole('radio', { name: 'Light' }).click()

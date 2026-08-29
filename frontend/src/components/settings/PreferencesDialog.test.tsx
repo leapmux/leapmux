@@ -17,6 +17,8 @@ const elevationExpiresAt = vi.hoisted(() => vi.fn((): { seconds: bigint, nanos: 
 vi.mock('~/api/clients', () => ({
   userClient: { listUserSettings, updateUserSetting: vi.fn(), resetUserSetting: vi.fn() },
   adminSettingsClient: { listSettings, updateSetting, updateSettingSecret: vi.fn(), resetSetting: vi.fn() },
+  // The hub-wide registrations row's custom editor lists apps through this.
+  appClient: { listApps: vi.fn().mockResolvedValue({ apps: [] }) },
   authClient: {},
 }))
 
@@ -69,6 +71,22 @@ afterEach(() => {
 })
 
 describe('preferencesDialog admin restriction', () => {
+  // The hub-wide register row reaches the ADMINISTRATION side alone (see
+  // ./registry/admin): an administrator gets it under Hub-wide Apps, and the
+  // user-level Apps section never lists it -- which is the whole reason the
+  // admin tier exists rather than a browser-registry entry.
+  it('renders the hub-wide registrations row for administrators alone', async () => {
+    isAdmin.mockReturnValue(true)
+    renderDialog('admin-apps')
+    await waitFor(() => expect(screen.getByText('Hub-wide app registrations')).toBeTruthy())
+
+    cleanup()
+    isAdmin.mockReturnValue(false)
+    renderDialog('admin-apps')
+    await waitFor(() => expect(screen.getByTestId('preferences-nav-appearance')).toBeTruthy())
+    expect(screen.queryByText('Hub-wide app registrations')).toBeNull()
+  })
+
   it('shows the administration groups only to admins', async () => {
     isAdmin.mockReturnValue(true)
     listSettings.mockResolvedValue({
@@ -272,11 +290,14 @@ describe('preferencesDialog solo mode', () => {
   // must be able to see what they authorized and disconnect it. Every row that
   // needs a factor to prove (a password, a passkey, an address) still hides,
   // because solo has no factor and no ceremony.
-  it('keeps Account for connected apps in solo, and hides the rows a factor would need', async () => {
+  it('hides Account in solo and keeps Apps for connected apps', async () => {
     solo.mockReturnValue(true)
     renderDialog()
     await waitFor(() => expect(screen.getByTestId('preferences-nav-appearance')).toBeTruthy())
-    expect(screen.getByTestId('preferences-nav-account')).toBeTruthy()
+    // Connected apps is an APPS row, so solo hides Account entirely and the
+    // app errand stays reachable.
+    expect(screen.queryByTestId('preferences-nav-account')).toBeNull()
+    expect(screen.getByTestId('preferences-nav-apps')).toBeTruthy()
     // Dual rows still render with the scope chip.
     expect(screen.getByTestId('scope-chip-appearance.theme')).toBeTruthy()
   })
@@ -356,9 +377,10 @@ describe('preferencesDialog solo mode', () => {
     renderDialog('admin-captcha')
     await waitFor(() => expect(screen.getByTestId('preferences-nav-appearance')).toBeTruthy())
     expect(screen.queryByTestId('preferences-nav-admin-captcha')).toBeNull()
-    // The FIRST visible group, which is Account: solo keeps it for connected
-    // apps, so the fallback stops there rather than at Appearance.
-    expect(screen.getByTestId('preferences-nav-account').getAttribute('aria-selected')).toBe('true')
+    // The FIRST visible group, which is Apps: solo hides Account entirely
+    // (connected apps is an Apps row), so the fallback stops there rather
+    // than at Appearance.
+    expect(screen.getByTestId('preferences-nav-apps').getAttribute('aria-selected')).toBe('true')
   })
 })
 
@@ -733,11 +755,11 @@ describe('preferencesDialog section order', () => {
   // The rows that need a factor still hide. Solo has no password, no passkey
   // and no address, so those editors would render controls whose ceremony
   // cannot run.
-  it('lands on Account in solo mode, which keeps its connected-apps row', async () => {
+  it('falls back from Account in solo mode, where Apps holds the connected-apps row', async () => {
     solo.mockReturnValue(true)
     renderDialog('account')
     await waitFor(() => expect(screen.getByTestId('preferences-nav-appearance')).toBeTruthy())
-    expect(screen.getByTestId('preferences-nav-account')).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByTestId('preferences-nav-apps')).toHaveAttribute('aria-selected', 'true')
   })
 })
 

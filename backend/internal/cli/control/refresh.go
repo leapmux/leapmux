@@ -154,15 +154,23 @@ func (c *Client) adoptStoredBearer(creds *CredentialFile) bool {
 // bearerErrorCode maps a pre-call credential failure onto the code the
 // caller reports.
 //
-// Almost every one means "this call cannot authenticate". A rotation that
-// the hub committed and this process could not SAVE is the exception: the
-// token in memory is live and the fault is a local disk, so Unauthenticated
-// would send the operator to the login rather than to the file.
+// A permanent rejection and an unsaved rotation are the two failures that
+// say what the operator must fix: Unauthenticated sends them to the login,
+// and ErrCredentialsNotSaved's CodeInternal sends them to the file. Every
+// other failure here is a rotation that did not happen -- the hub could not
+// be asked -- and stamping that Unauthenticated would let one transient
+// network failure read as a revoked credential (hubCheck would report a
+// signed-out state for a credential that was fine). Unavailable states what
+// happened: the renewal could not reach the hub.
 func bearerErrorCode(err error) connect.Code {
-	if errors.Is(err, ErrCredentialsNotSaved) {
+	switch {
+	case errors.Is(err, ErrCredentialsNotSaved):
 		return connect.CodeInternal
+	case errors.Is(err, ErrCredentialRejected):
+		return connect.CodeUnauthenticated
+	default:
+		return connect.CodeUnavailable
 	}
-	return connect.CodeUnauthenticated
 }
 
 // freshBearer renews the credential and returns the token to present.
@@ -239,7 +247,7 @@ func (c *Client) doRefresh(ctx context.Context, presented *CredentialFile) (*Cre
 		return current, nil
 	}
 
-	// DETACHED from the caller's context, and this is the same rule the
+	// DETACHED from the caller's cancellation, and this is the same rule the
 	// hub's own handleRefresh states for the same exchange. A refresh
 	// rotates the token single-use: once the request reaches the hub, the
 	// old secret is unusable whatever happens next, so a cancellation between
@@ -247,6 +255,11 @@ func (c *Client) doRefresh(ctx context.Context, presented *CredentialFile) (*Cre
 	// secret the hub already rotated away. Presenting it later reads as a
 	// reuse, which the hub answers by REVOKING the row -- a credential that
 	// nothing was wrong with would end.
+	//
+	// Detachment drops the CANCELLATION, never the CAP: the budget below is
+	// still limited by the caller's own deadline when that deadline is
+	// nearer than refreshTimeout, so a caller that armed a short budget
+	// (hubCheck's five seconds) is held no longer than it asked to be.
 	//
 	// Three cancellations reach here, and the commonest is not the one that
 	// reads as obvious. Any verb that resolves an entity fans its lookups
@@ -257,7 +270,13 @@ func (c *Client) doRefresh(ctx context.Context, presented *CredentialFile) (*Cre
 	// follower as well, including one whose own deadline had ample time
 	// left. Last, `control events` installs signal.NotifyContext, so a
 	// Ctrl-C there cancels the stream's context and the refresh under it.
-	refreshCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), refreshTimeout)
+	budget := refreshTimeout
+	if deadline, ok := ctx.Deadline(); ok {
+		if remaining := time.Until(deadline); remaining < budget {
+			budget = remaining
+		}
+	}
+	refreshCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), budget)
 	defer cancel()
 	body, err := c.postRefresh(refreshCtx, current.RefreshToken, current.ClientIDOrBuiltIn())
 	if err != nil {

@@ -53,7 +53,9 @@ describe('accountLinkedProviders', () => {
     render(() => <AccountLinkedProviders />)
     expect(await screen.findByText('GitHub')).toBeInTheDocument()
 
+    // A ConfirmButton: the first click arms it, the second detaches.
     fireEvent.click(screen.getByRole('button', { name: 'Unlink' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Unlink?' }))
     await vi.waitFor(() => {
       expect(mockUnlink).toHaveBeenCalledWith({ providerId: 'github-1' })
     })
@@ -78,6 +80,7 @@ describe('accountLinkedProviders', () => {
     expect(screen.getByTestId('linked-disabled-github-1')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Unlink' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Unlink?' }))
     await vi.waitFor(() => {
       expect(mockUnlink).toHaveBeenCalledWith({ providerId: 'github-1' })
     })
@@ -101,6 +104,7 @@ describe('accountLinkedProviders', () => {
 
     render(() => <AccountLinkedProviders />)
     fireEvent.click(await screen.findByRole('button', { name: 'Unlink' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Unlink?' }))
 
     expect(await screen.findByText(/only login method/)).toBeInTheDocument()
     expect(screen.queryByTestId('elevate-password')).not.toBeInTheDocument()
@@ -120,6 +124,7 @@ describe('accountLinkedProviders', () => {
     render(() => <AccountLinkedProviders />)
     const button = await screen.findByRole('button', { name: 'Unlink' })
     fireEvent.click(button)
+    fireEvent.click(screen.getByRole('button', { name: 'Unlink?' }))
 
     await vi.waitFor(() => {
       expect(mockRefreshUser).toHaveBeenCalledTimes(1)

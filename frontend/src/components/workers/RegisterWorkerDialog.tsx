@@ -5,6 +5,7 @@ import Copy from 'lucide-solid/icons/copy'
 import Mail from 'lucide-solid/icons/mail'
 import { createMemo, createSignal, onCleanup, onMount, Show } from 'solid-js'
 import { workerClient } from '~/api/clients'
+import { actionsFooter } from '~/components/common/actionsFooter.css'
 import { Dialog } from '~/components/common/Dialog'
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
@@ -150,7 +151,7 @@ export const RegisterWorkerDialog: Component<RegisterWorkerDialogProps> = (props
           {msg => <p class={errorText}>{msg()}</p>}
         </Show>
       </section>
-      <footer>
+      <footer class={actionsFooter}>
         <button type="button" class="outline" onClick={() => props.onClose()}>Cancel</button>
 
         <Show when={registrationKey()}>

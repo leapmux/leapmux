@@ -1,6 +1,7 @@
 import type { Component } from 'solid-js'
 import { createSignal } from 'solid-js'
 import { userClient } from '~/api/clients'
+import { actionsFooter } from '~/components/common/actionsFooter.css'
 import { passwordCanSubmit, PasswordFields } from '~/components/common/PasswordFields'
 import { StatusLine } from '~/components/common/StatusLine'
 import { useAuth } from '~/context/AuthContext'
@@ -53,7 +54,7 @@ export const AccountPassword: Component = () => {
         labelClass={styles.fieldLabel}
       />
       <StatusLine message={action.message()} />
-      <div>
+      <div class={actionsFooter}>
         <button
           type="button"
           onClick={() => void change()}

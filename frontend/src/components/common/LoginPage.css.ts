@@ -27,7 +27,7 @@ export const oauthButton = style({
   'alignItems': 'center',
   'justifyContent': 'center',
   'padding': 'var(--space-3) var(--space-4)',
-  'borderRadius': 'var(--radius-2)',
+  'borderRadius': 'var(--radius-medium)',
   'border': '1px solid var(--border)',
   'backgroundColor': 'var(--surface)',
   'color': 'var(--foreground)',

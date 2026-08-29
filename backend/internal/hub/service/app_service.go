@@ -169,8 +169,25 @@ func (s *AppService) ListApps(
 	}
 	// An administrator edits the hub-wide catalogue AND their own private
 	// apps; everybody else sees what they registered. One statement answers
-	// both, on the IncludeHubWide flag.
-	params.IncludeHubWide = user.IsAdmin
+	// every shape, on the IncludeHubWide and HubWideOnly flags. A request
+	// that names one reach narrows it: the administration panel asks for
+	// the catalogue alone, so an administrator's own private rows do not
+	// cross the wire only to be discarded by a panel that cannot draw them.
+	switch vis := req.Msg.GetVisibility(); vis {
+	case leapmuxv1.AppVisibility_APP_VISIBILITY_UNSPECIFIED:
+		params.IncludeHubWide = user.IsAdmin
+	case leapmuxv1.AppVisibility_APP_VISIBILITY_PRIVATE:
+		params.IncludeHubWide = false
+	case leapmuxv1.AppVisibility_APP_VISIBILITY_HUB_WIDE:
+		if !user.IsAdmin {
+			return nil, connect.NewError(connect.CodePermissionDenied,
+				errors.New("only an administrator may list the hub-wide catalogue"))
+		}
+		params.HubWideOnly = true
+	default:
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("unknown app visibility: %s", vis))
+	}
 	page, err := s.store.OAuthClients().List(ctx, params)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list apps: %w", err))

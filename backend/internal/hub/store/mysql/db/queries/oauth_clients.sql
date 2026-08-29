@@ -57,6 +57,10 @@ FROM oauth_clients WHERE client_id = sqlc.arg(client_id);
 -- AND their own apps; everybody else sees what they registered. Keyset on
 -- (created_at DESC, client_id DESC), riding idx_oauth_clients_owner.
 --
+-- hub_wide_only narrows the same statement to the catalogue alone: the
+-- administration panel's listing, which must not carry the administrator's
+-- own private rows only for the caller to discard them.
+--
 -- include_revoked widens the page to retired rows, which the "include retired"
 -- listing asks for; the default keeps the live-only shape every authorize
 -- surface reads. The explicit column list drops the icon bytes for the same
@@ -67,8 +71,11 @@ SELECT client_id, owner_user_id, created_by_user_id, secret_hash, client_name,
        verified_at, verified_by_user_id, created_at, updated_at, revoked_at
 FROM oauth_clients
 WHERE (revoked_at IS NULL OR sqlc.arg(include_revoked))
-  AND (owner_user_id = sqlc.arg(user_id)
-       OR (owner_user_id IS NULL AND sqlc.arg(include_hub_wide)))
+  AND (CASE WHEN sqlc.arg(hub_wide_only)
+       THEN owner_user_id IS NULL
+       ELSE (owner_user_id = sqlc.arg(user_id)
+             OR (owner_user_id IS NULL AND sqlc.arg(include_hub_wide)))
+       END)
   AND (sqlc.narg(cursor_time) IS NULL
        OR created_at < sqlc.narg(cursor_time)
        OR (created_at = sqlc.narg(cursor_time) AND client_id < sqlc.narg(cursor_id)))

@@ -15,10 +15,18 @@ import { PreferencesNav } from './PreferencesNav'
 import { PreferencesSearch } from './PreferencesSearch'
 import { buildProtoRows } from './protoRegistry'
 import { createBrowserRows } from './registry'
+import { ADMIN_ROWS } from './registry/admin'
 import { breadcrumb, buildSearchIndex, matchSettings } from './search'
 import { SettingsPanel } from './SettingsPanel'
 import { descriptorNeedsElevation } from './types'
 
+/**
+ * The Preferences dialog over every settings row the signed-in account can
+ * reach: the user sections from the browser registry, and -- for an
+ * administrator -- the Administration sections from the hub's proto rows
+ * plus the registry's ADMINISTRATION tier (`./registry/admin`, which also
+ * states why that tier sits apart from the browser registry).
+ */
 interface PreferencesDialogProps {
   /**
    * The category id to show (a NAV_GROUPS id). An id whose group is hidden
@@ -62,10 +70,15 @@ export const PreferencesDialog: Component<PreferencesDialogProps> = (props) => {
   // context's typed, browser-overridable one rather than a merge onto a
   // store's value map, so the registry builds those — see
   // `createBrowserRows`.
+  //
+  // The hub-wide register row rides AFTER them: it is an administration row
+  // with no hub setting behind it (see ./registry/admin), and the group's
+  // other rows — the open-registration switch — state the hub's policy before
+  // the panel offers to act on it.
   const adminRows = createMemo(() => {
     if (!isAdmin())
       return []
-    return buildProtoRows(adminStore.state.descriptors, adminStore)
+    return [...buildProtoRows(adminStore.state.descriptors, adminStore), ...ADMIN_ROWS]
   })
 
   /**

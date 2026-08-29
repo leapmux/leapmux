@@ -184,31 +184,69 @@ func RunAuthLogin(rawCtx any, args []string) error {
 	}
 	ctx := context.Background()
 
-	if deviceCode {
-		scope, scopeErr := requestedScope(scopeFlag)
-		if scopeErr != nil {
-			return scopeErr
-		}
-		return runDeviceCodeLogin(ctx, hub, deviceName, scope)
-	}
+	// Every input is validated BEFORE the destructive cleanup below: a
+	// refused flag must not cost the machine its working credential.
 	scope, scopeErr := requestedScope(scopeFlag)
 	if scopeErr != nil {
 		return scopeErr
+	}
+	if !deviceCode && locallisten.IsLocal(hub) {
+		// The local-redirect flow needs a browser to reach BOTH the hub (to
+		// load the consent page) and this CLI (the loopback callback). A
+		// socket hub URL gives the browser no hub origin to visit — solo
+		// deployments need no login at all, and a socket-reached multi-user
+		// hub has an http(s) origin derived from its settings. State the
+		// working alternative instead of failing mysteriously.
+		return control.EmitError("invalid_request",
+			"--hub unix:/npipe: URLs cannot use the local-redirect flow (no browser-reachable hub origin); pass --device-code to authenticate in a browser against the hub's public origin")
+	}
+
+	// A login REPLACES whatever this machine already holds for the hub: the
+	// new credential lands in the same file, and the old one would otherwise
+	// stay live at the hub with no local file left to revoke it from -- a
+	// credential the account's Connected-apps list still shows, reachable by
+	// anybody who copied it, for as long as its refresh window runs.
+	//
+	// So this CLI warns about the existing login, revokes it on the hub, and
+	// deletes it locally BEFORE the flow starts. The revoke is best-effort by
+	// the same reading as logout's: the hub may be unreachable, and proceeding
+	// with the login is the user's answer -- but this CLI states the refusal,
+	// with the place to fix it by hand, rather than silently leaving a live
+	// row. An UNREADABLE file cannot be revoked (its tokens do not parse),
+	// but it must not survive either: the file goes, and the warning
+	// identifies the grant that may still live on the hub.
+	switch creds, loadErr := control.LoadCredentials(hub); {
+	case loadErr == nil:
+		_, _ = fmt.Fprintln(control.Out, "This CLI revokes the existing login for this hub before it signs in again:")
+		_, _ = fmt.Fprintf(control.Out, "  %s on %s\n", creds.Username, creds.HubURL)
+		if revokeErr := revokeBearer(hub, creds.AccessToken, creds.ClientIDOrBuiltIn()); revokeErr != nil {
+			_, _ = fmt.Fprintln(control.Out, "  warning: this CLI could not revoke it on the hub ("+revokeErr.Error()+
+				"); "+disconnectInPreferences)
+		}
+		if delErr := control.DeleteCredentials(hub); delErr != nil {
+			return control.EmitErrorWith("delete_failed", delErr)
+		}
+	case errors.Is(loadErr, control.ErrNotLoggedIn):
+		// No credential file: nothing to clean up.
+	default:
+		_, _ = fmt.Fprintln(control.Out, "The existing credential file for this hub does not parse ("+loadErr.Error()+
+			"); this CLI deletes it and cannot revoke its grant on the hub, so "+
+			disconnectInPreferences+" if the hub still lists it")
+		if delErr := control.DeleteCredentials(hub); delErr != nil {
+			return control.EmitErrorWith("delete_failed", delErr)
+		}
+	}
+
+	if deviceCode {
+		return runDeviceCodeLogin(ctx, hub, deviceName, scope)
 	}
 	return runLocalRedirectLogin(ctx, hub, deviceName, scope)
 }
 
 func runLocalRedirectLogin(ctx context.Context, hubURL, deviceName, scope string) error {
-	// The local-redirect flow needs a browser to reach BOTH the hub (to
-	// load the consent page) and this CLI (the loopback callback). A
-	// socket hub URL gives the browser no hub origin to visit — solo
-	// deployments need no login at all, and a socket-reached multi-user
-	// hub has an http(s) origin derived from its settings. State the
-	// working alternative instead of failing mysteriously.
-	if locallisten.IsLocal(hubURL) {
-		return control.EmitError("invalid_request",
-			"--hub unix:/npipe: URLs cannot use the local-redirect flow (no browser-reachable hub origin); pass --device-code to authenticate in a browser against the hub's public origin")
-	}
+	// The socket-hub refusal this flow needs already ran in RunAuthLogin,
+	// before the destructive cleanup: a refused flag must not cost the
+	// machine its working credential.
 	verifier := oauth2.GenerateVerifier()
 	challenge := pkce.S256(verifier)
 	state := id.Generate()
@@ -354,14 +392,11 @@ func exchangeAuthorizationCode(ctx context.Context, hubURL, code, verifier, redi
 // persistTokenResponse writes the freshly minted credential and retires the
 // one it replaces.
 //
-// The ORDER is deliberate: save first, revoke second. A crash between the
-// two leaves the user logged in with one abandoned row on the hub, which the
-// device list shows and the expiry sweep eventually removes. The reverse
-// order would leave them logged OUT with a credential file the hub
-// already refused -- the failure the user cannot fix without a browser.
-//
-// The revoke is best-effort for the same reason: a hub that is briefly
-// unreachable must not turn a successful login into a failed one.
+// The credential this login REPLACED never reaches this function: both
+// flows run behind RunAuthLogin's up-front cleanup, which revokes the
+// outgoing credential and deletes its file before the flow starts (see
+// there). Retirement has ONE owner, so a second revoke here would be dead
+// code that only a direct unit test exercises.
 func persistTokenResponse(hubURL string, body io.Reader, clientID, requestedScope string) error {
 	var out struct {
 		control.TokenResponseBody
@@ -371,8 +406,6 @@ func persistTokenResponse(hubURL string, body io.Reader, clientID, requestedScop
 	if err := json.NewDecoder(body).Decode(&out); err != nil {
 		return control.EmitErrorWith("token_exchange_failed", err)
 	}
-	// Read the outgoing credential BEFORE the new one overwrites the file.
-	previous, previousErr := control.LoadCredentials(hubURL)
 
 	now := time.Now()
 	creds := control.CredentialFile{
@@ -392,21 +425,6 @@ func persistTokenResponse(hubURL string, body io.Reader, clientID, requestedScop
 	if err := control.SaveCredentials(hubURL, creds); err != nil {
 		return control.EmitErrorWith("save_credentials_failed", err)
 	}
-	// Retire the credential this login replaced. Without this, each re-login
-	// abandons a row nobody revoked, whose plaintext refresh secret stays
-	// live for months on this machine's disk history and in the hub's table.
-	retirementWarning := ""
-	if previousErr == nil && previous.AccessToken != "" && previous.AccessToken != creds.AccessToken {
-		if err := revokeBearer(hubURL, previous.AccessToken, previous.ClientIDOrBuiltIn()); err != nil {
-			// Best-effort by design: the new credential is already on disk
-			// and the login succeeded. But it must not be SILENT, or the
-			// retirement reads as done on exactly the runs where it did not
-			// happen -- and the old refresh secret then stays live for the
-			// rest of its window.
-			retirementWarning = "the previous credential could not be revoked (" + err.Error() +
-				"); disconnect it under Preferences, Account, Connected apps"
-		}
-	}
 
 	result := map[string]any{
 		"hub_url":  hubURL,
@@ -414,23 +432,10 @@ func persistTokenResponse(hubURL string, body io.Reader, clientID, requestedScop
 		"user_id":  out.UserID,
 		"scope":    out.Scope,
 	}
-	// EVERY warning, joined, not the first one that matches. A `switch`
-	// reported one and discarded the rest, so a login that was refused part of
-	// its scope AND could not retire its predecessor said nothing about the
-	// credential still live on the hub -- the exact silence the retirement
-	// warning exists to break.
-	var warnings []string
 	if missing := control.MissingScopes(requestedScope, out.Scope); len(missing) > 0 {
 		// Say so HERE rather than letting the first call that needs one fail
 		// with a permission error that specifies nothing the user did.
-		warnings = append(warnings,
-			"these permissions were requested but not granted: "+strings.Join(missing, ", "))
-	}
-	if retirementWarning != "" {
-		warnings = append(warnings, retirementWarning)
-	}
-	if len(warnings) > 0 {
-		result["warning"] = strings.Join(warnings, "; ")
+		result["warning"] = "these permissions were requested but not granted: " + strings.Join(missing, ", ")
 	}
 	return control.EmitData(result)
 }
@@ -452,8 +457,8 @@ func RunAuthLogout(rawCtx any, args []string) error {
 	creds, err := control.LoadCredentials(hub)
 	if err == nil {
 		if revokeErr := revokeBearer(hub, creds.AccessToken, creds.ClientIDOrBuiltIn()); revokeErr != nil {
-			warning = "the credential could not be revoked on the hub (" + revokeErr.Error() +
-				"); it is gone from this machine, so disconnect it under Preferences, Account, Connected apps"
+			warning = "this CLI could not revoke the credential on the hub (" + revokeErr.Error() +
+				"); it is gone from this machine, so " + disconnectInPreferences
 		}
 	}
 	if err := control.DeleteCredentials(hub); err != nil {
@@ -478,13 +483,14 @@ func RunAuthList(rawCtx any, args []string) error {
 	}
 	out := make([]map[string]any, 0, len(files))
 	for _, c := range files {
-		out = append(out, map[string]any{
+		row := map[string]any{
 			"hub_url":  c.HubURL,
 			"username": c.Username,
 			"user_id":  c.UserID,
-			"expires":  c.ExpiresAt,
 			"scope":    c.Scope,
-		})
+		}
+		putWallTime(row, "expires", c.ExpiresAt)
+		out = append(out, row)
 	}
 	return control.EmitData(out)
 }
@@ -581,6 +587,13 @@ const (
 	maxCredentialPages = 500
 )
 
+// RunAuthStatus answers "can this machine still reach my account" -- a
+// question about the HUB's truth, not the credential file's. The file's own
+// fields print either way, and one authenticated GetCurrentUser confirms
+// them: confirmed answers carry the hub's username and admin flag, a refusal
+// is a signed-out state (the rotation the interceptor attempts has already
+// deleted the file), and an unreachable hub keeps the local answer useful
+// with a warning that states exactly what was not verified.
 func RunAuthStatus(rawCtx any, args []string) error {
 	hub, err := parseHubOnly(rawCtx, args, nil)
 	if err != nil {
@@ -591,24 +604,165 @@ func RunAuthStatus(rawCtx any, args []string) error {
 		return control.EmitErrorWith("not_logged_in", err)
 	}
 	status := map[string]any{
-		"hub_url":  creds.HubURL,
-		"username": creds.Username,
-		"user_id":  creds.UserID,
-		"expires":  creds.ExpiresAt,
-		"expired":  time.Now().After(creds.ExpiresAt),
+		"hub_url": creds.HubURL,
+		"user_id": creds.UserID,
+		// The file's zone is wherever it was written; printed UTC so every
+		// timestamp in a CLI envelope ends in Z (see putWallTime).
+		"expired": time.Now().After(creds.ExpiresAt),
 		// The access token above renews itself; this is the deadline that
 		// actually sends the user back to a browser.
 		"scope":    creds.Scope,
 		"token_id": creds.TokenID,
 	}
+	putWallTime(status, "expires", creds.ExpiresAt)
 	// Included only when the credential carries one: the field is zero on a
-	// credential written before the hub reported it, and a hand-built map has
-	// no omitzero to keep "0001-01-01T00:00:00Z" -- a nonsense date on the one
-	// deadline a reader acts on -- out of the JSON envelope.
-	if !creds.RefreshExpiresAt.IsZero() {
-		status["refresh_expires"] = creds.RefreshExpiresAt
+	// credential written before the hub reported it, and putWallTime's own
+	// zero guard keeps "0001-01-01T00:00:00.000Z" -- a nonsense date on the
+	// one deadline a reader acts on -- out of the JSON envelope.
+	putWallTime(status, "refresh_expires", creds.RefreshExpiresAt)
+
+	/*
+		THE HUB CHECK. The fields above are this machine's credential file,
+		which answers what the file says -- and a revoked credential's file
+		keeps saying "valid" until its stored expiry. One authenticated read
+		settles what the hub would actually do with the bearer:
+
+		  - confirmed: the hub's own username and admin flag join the answer,
+		    and the hub's username WINS -- the local copy is stale the moment
+		    an account is renamed;
+		  - refused: the credential opens nothing. The interceptor's refresh
+		    already deleted the file on an invalid_grant, so not_logged_in is
+		    the honest code, with the hub's reason attached;
+			  - unreachable: the hub could not be asked, so the local file is
+			    stated with a warning rather than failing -- status must stay
+			    useful offline, and the warning states exactly what was not
+			    verified.
+	*/
+	c, err := control.NewClient(hub)
+	if err != nil {
+		return control.EmitErrorWith("not_logged_in", err)
+	}
+	user, warning, outcome, err := hubCheck(c)
+	switch outcome {
+	case hubCheckRefused:
+		return control.EmitErrorWith("not_logged_in", err)
+	case hubCheckFailed:
+		return control.EmitErrorWith("rpc_failed", err)
+	case hubCheckLocalFallback:
+		status["hub_checked"] = false
+		status["username"] = creds.Username
+		status["warning"] = warning
+	default:
+		status["hub_checked"] = true
+		status["username"] = user.GetUsername()
+		status["is_admin"] = user.GetIsAdmin()
 	}
 	return control.EmitData(status)
+}
+
+// disconnectInPreferences identifies the one place a user revokes a credential
+// by hand when this CLI could not: the account's Connected-apps list. It is a
+// constant because three CLI warnings state it and a Preferences
+// reorganisation must move one string, not three. The path separator is ›,
+// the same character the Preferences search breadcrumb spells paths with, so
+// one spelling of "drill down through these" reaches the user everywhere.
+const disconnectInPreferences = "disconnect it under Preferences › Apps › Connected apps"
+
+// hubRefusedCredential reports an error that is the hub ANSWERING: this
+// credential opens nothing, and no retry will change that. The sentinel
+// cases are the refresh path's (the file is already deleted when they
+// surface); the code case is the hub's own Unauthenticated on a bearer it
+// revoked or no longer holds.
+func hubRefusedCredential(err error) bool {
+	return errors.Is(err, control.ErrNotLoggedIn) ||
+		errors.Is(err, control.ErrCredentialRejected) ||
+		connect.CodeOf(err) == connect.CodeUnauthenticated
+}
+
+// hubUnreachable reports an error that says the hub could not be ASKED --
+// down, timing out, unresolvable, or answering through a broken reverse
+// proxy -- which is a fact about the network rather than about the
+// credential, so the caller reports the local answer with a warning instead
+// of a failure.
+func hubUnreachable(err error) bool {
+	switch connect.CodeOf(err) {
+	case connect.CodeUnavailable, connect.CodeDeadlineExceeded,
+		// connect-go maps a proxy's 404 to Unimplemented and a 500 to
+		// Unknown: a misrouted or crashed proxy is the same "could not be
+		// asked" as one that is down, and the 502/503/504 family already
+		// arrives as Unavailable.
+		connect.CodeUnimplemented, connect.CodeUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
+// hubCheckTimeout caps the whole confirmation read below, the token rotation
+// the interceptor performs beneath it included (doRefresh clamps its own
+// budget to this deadline). The local answer plus a warning is the designed
+// fallback, so a hung hub must not hold the command for the transport's full
+// 60-second default -- or the rotation's 30 -- before that fallback fires.
+const hubCheckTimeout = 5 * time.Second
+
+// hubUnconfirmedTail states, on every local-answer fallback, that the fields
+// the command printed are the file's, not the hub's. Both fallback warnings
+// end with it, so the two wordings cannot drift apart.
+const hubUnconfirmedTail = "the fields above are this machine's credential file, not the hub's answer"
+
+// hubUnconfirmedWarning states, on the unreachable fallback, exactly what
+// was not verified. One string, because `auth status` and `whoami` answer
+// the same question and must not word it differently.
+const hubUnconfirmedWarning = "the hub could not be reached to confirm this; " + hubUnconfirmedTail
+
+// hubCheckOutcome classifies what one authenticated GetCurrentUser read said
+// about this machine's credential.
+type hubCheckOutcome int
+
+const (
+	// hubCheckConfirmed: the hub answered with the account. The caller uses
+	// the hub's own username and admin flag.
+	hubCheckConfirmed hubCheckOutcome = iota
+	// hubCheckRefused: the credential opens nothing; the caller reports a
+	// signed-out state.
+	hubCheckRefused
+	// hubCheckLocalFallback: the hub could not be asked, or the credential
+	// lacks the account:read permission the read requires. The local answer
+	// stands with a warning.
+	hubCheckLocalFallback
+	// hubCheckFailed: an error this classification does not own.
+	hubCheckFailed
+)
+
+// hubCheck performs the one authenticated GetCurrentUser read that settles
+// whether the hub still honours this machine's credential. `auth status` and
+// `whoami` ask the same question through it, so the two commands classify a
+// refusal identically and word the fallback warning identically.
+//
+// A PermissionDenied answer is a LOCAL FALLBACK, not a refusal: the hub
+// answered, and the credential is valid for what it can do -- it merely
+// lacks the account:read permission GetCurrentUser requires (a credential
+// minted with `auth login --scope`). The identity fields it would confirm
+// come from the file instead.
+func hubCheck(c *control.Client) (user *leapmuxv1.User, warning string, outcome hubCheckOutcome, err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), hubCheckTimeout)
+	defer cancel()
+	me, callErr := c.AuthService().GetCurrentUser(ctx,
+		connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{}))
+	switch {
+	case callErr == nil:
+		return me.Msg.GetUser(), "", hubCheckConfirmed, nil
+	case hubRefusedCredential(callErr):
+		return nil, "", hubCheckRefused,
+			fmt.Errorf("the hub refused this credential: %w", callErr)
+	case connect.CodeOf(callErr) == connect.CodePermissionDenied:
+		return nil, "this credential lacks the account:read permission, so the hub could not confirm it; " +
+			hubUnconfirmedTail, hubCheckLocalFallback, nil
+	case hubUnreachable(callErr):
+		return nil, hubUnconfirmedWarning, hubCheckLocalFallback, nil
+	default:
+		return nil, "", hubCheckFailed, callErr
+	}
 }
 
 // --- helpers ----------------------------------------------------------

@@ -1,5 +1,6 @@
 import type { Component, JSX } from 'solid-js'
 import { Show } from 'solid-js'
+import { actionsFooter } from '~/components/common/actionsFooter.css'
 import { ConfirmButton } from './ConfirmButton'
 import { Dialog } from './Dialog'
 
@@ -51,7 +52,7 @@ export const ConfirmDialog: Component<ConfirmDialogProps> = (props) => {
     >
       <form onSubmit={handleSubmit}>
         <section>{props.children}</section>
-        <footer>
+        <footer class={actionsFooter}>
           <button
             type="button"
             class="outline"

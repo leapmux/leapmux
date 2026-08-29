@@ -2,6 +2,7 @@ import type { Component } from 'solid-js'
 import { useNavigate, useSearchParams } from '@solidjs/router'
 import { createEffect, createSignal, Show } from 'solid-js'
 import { userClient } from '~/api/clients'
+import { actionsFooter } from '~/components/common/actionsFooter.css'
 import { useAuth } from '~/context/AuthContext'
 import { formatErrorMessage } from '~/lib/errors'
 import { stringParam } from '~/lib/searchParam'
@@ -124,13 +125,15 @@ export const VerifyEmailPage: Component = () => {
             maxlength={16}
             required
           />
-          <button
-            type="submit"
-            data-testid="verify-email-submit"
-            disabled={submitting()}
-          >
-            {submitting() ? 'Verifying…' : 'Verify'}
-          </button>
+          <div class={actionsFooter}>
+            <button
+              type="submit"
+              data-testid="verify-email-submit"
+              disabled={submitting()}
+            >
+              {submitting() ? 'Verifying…' : 'Verify'}
+            </button>
+          </div>
         </form>
         <Show when={error()}>
           {msg => <div class={errorText}>{msg()}</div>}
@@ -141,21 +144,23 @@ export const VerifyEmailPage: Component = () => {
         <Show when={resend.status()}>
           {msg => <div data-testid="verify-email-resend-status">{msg()}</div>}
         </Show>
-        <button
-          type="button"
-          data-testid="verify-email-resend"
-          onClick={() => {
-            // Clear the code error first. resend() clears only its own
-            // signals, so a stale "invalid or expired verification code"
-            // would otherwise render beside "A fresh code has been sent",
-            // which reads as though the new code was rejected too.
-            setError(null)
-            void resend.resend()
-          }}
-          disabled={resend.disabled()}
-        >
-          {resend.buttonLabel()}
-        </button>
+        <div class={actionsFooter}>
+          <button
+            type="button"
+            data-testid="verify-email-resend"
+            onClick={() => {
+              // Clear the code error first. resend() clears only its own
+              // signals, so a stale "invalid or expired verification code"
+              // would otherwise render beside "A fresh code has been sent",
+              // which reads as though the new code was rejected too.
+              setError(null)
+              void resend.resend()
+            }}
+            disabled={resend.disabled()}
+          >
+            {resend.buttonLabel()}
+          </button>
+        </div>
       </div>
     </div>
   )

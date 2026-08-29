@@ -209,6 +209,54 @@ func TestAppService_HubWideAppNeedsAnAdministrator(t *testing.T) {
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
 }
 
+// The reach filter, on the listing question it answers: HUB_WIDE asks for
+// the catalogue alone -- the administration panel's listing -- and PRIVATE
+// for the caller's own registrations, so a surface that draws one reach
+// does not fetch and discard the other. The catalogue's listing is an
+// administrator's alone, like every other question about editing it.
+func TestAppService_ReachFilterNarrowsTheListing(t *testing.T) {
+	t.Parallel()
+
+	env := setupAppService(t)
+	ctx := context.Background()
+	mine := env.registerApp(t, env.admin, "admin-private", nil)
+	shared := env.registerApp(t, env.admin, "hub-app", func(m *leapmuxv1.RegisterAppRequest) {
+		m.Visibility = leapmuxv1.AppVisibility_APP_VISIBILITY_HUB_WIDE
+	})
+
+	ids := func(resp *connect.Response[leapmuxv1.ListAppsResponse]) map[string]bool {
+		out := map[string]bool{}
+		for _, a := range resp.Msg.GetApps() {
+			out[a.GetClientId()] = true
+		}
+		return out
+	}
+
+	catalogue, err := env.client.ListApps(ctx, authedReq(&leapmuxv1.ListAppsRequest{
+		Visibility: leapmuxv1.AppVisibility_APP_VISIBILITY_HUB_WIDE,
+	}, env.admin))
+	require.NoError(t, err)
+	assert.True(t, ids(catalogue)[shared.GetApp().GetClientId()],
+		"the hub-wide listing answers with the catalogue")
+	assert.False(t, ids(catalogue)[mine.GetApp().GetClientId()],
+		"an administrator's own private registration must not ride along")
+
+	private, err := env.client.ListApps(ctx, authedReq(&leapmuxv1.ListAppsRequest{
+		Visibility: leapmuxv1.AppVisibility_APP_VISIBILITY_PRIVATE,
+	}, env.admin))
+	require.NoError(t, err)
+	assert.True(t, ids(private)[mine.GetApp().GetClientId()])
+	assert.False(t, ids(private)[shared.GetApp().GetClientId()],
+		"the private listing is the caller's own registrations alone")
+
+	_, err = env.client.ListApps(ctx, authedReq(&leapmuxv1.ListAppsRequest{
+		Visibility: leapmuxv1.AppVisibility_APP_VISIBILITY_HUB_WIDE,
+	}, env.user))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err),
+		"an ordinary account asking for the catalogue's listing is refused")
+}
+
 // A non-administrator's app cannot even ASK for an admin permission.
 //
 // The ceiling is refused at REGISTRATION rather than at the consent screen. A

@@ -241,8 +241,8 @@ func rowsAffected(result sql.Result, err error) (int64, error) {
 	return sqlutil.RowsAffected(result, err, mapErr)
 }
 
-func listOAuthClientsParams(userID, cursor string, limit int64, includeRevoked, includeHubWide bool) (gendb.ListOAuthClientsParams, error) {
-	return withCursor(cursor, limit, func(ct sqltime.SQLiteNullTime, cid sql.NullString, fl int64) gendb.ListOAuthClientsParams {
-		return gendb.ListOAuthClientsParams{UserID: sql.NullString{String: userID, Valid: true}, IncludeRevoked: includeRevoked, IncludeHubWide: includeHubWide, CursorTime: ct, CursorID: cid, Limit: fl}
+func listOAuthClientsParams(userID string, p store.ListOAuthClientsParams) (gendb.ListOAuthClientsParams, error) {
+	return withCursor(p.Cursor, p.Limit, func(ct sqltime.SQLiteNullTime, cid sql.NullString, fl int64) gendb.ListOAuthClientsParams {
+		return gendb.ListOAuthClientsParams{UserID: sql.NullString{String: userID, Valid: true}, IncludeRevoked: p.IncludeRevoked, IncludeHubWide: p.IncludeHubWide, HubWideOnly: p.HubWideOnly, CursorTime: ct, CursorID: cid, Limit: fl}
 	})
 }

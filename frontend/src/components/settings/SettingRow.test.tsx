@@ -107,6 +107,10 @@ describe('settingRow control kinds', () => {
     ))
     const button = screen.getByTestId('setting-action-test.row')
     expect(button).toHaveAttribute('data-variant', 'danger')
+    // The FILLED danger chrome "Remove all" wears, not a small outline: a
+    // danger action ends a whole feature with no dialog of its own, so the
+    // button is the confirmation and carries the weight.
+    expect(button.getAttribute('class') ?? '').not.toContain('outline')
     fireEvent.click(button)
     expect(set).not.toHaveBeenCalled()
     expect(button).toHaveTextContent('Confirm?')

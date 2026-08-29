@@ -2,6 +2,7 @@ import type { Component } from 'solid-js'
 import type { CliInstallResult, CliPathStatus, CliPathTargetKind } from '~/api/platformBridge'
 import { createSignal, Match, Show, Switch } from 'solid-js'
 import { platformBridge } from '~/api/platformBridge'
+import { actionsFooter } from '~/components/common/actionsFooter.css'
 import { ConfirmButton } from '~/components/common/ConfirmButton'
 import { Dialog } from '~/components/common/Dialog'
 import { useCopyButton } from '~/hooks/useCopyButton'
@@ -122,7 +123,7 @@ export const CliPathDialog: Component<CliPathDialogProps> = (props) => {
                       <code>{status.resolved}</code>
                     </p>
                   </section>
-                  <footer>
+                  <footer class={actionsFooter}>
                     <button type="button" class="outline" disabled={busy()} onClick={props.onClose}>
                       Dismiss
                     </button>
@@ -179,7 +180,7 @@ export const CliPathDialog: Component<CliPathDialogProps> = (props) => {
                       </p>
                     </Show>
                   </section>
-                  <footer>
+                  <footer class={actionsFooter}>
                     <button type="button" class="outline" disabled={busy()} onClick={props.onClose}>
                       Not now
                     </button>
@@ -259,7 +260,7 @@ export const CliPathDialog: Component<CliPathDialogProps> = (props) => {
                 </Match>
               </Switch>
             </section>
-            <footer>
+            <footer class={actionsFooter}>
               <Show when={outcomeValue.kind === 'needs_sudo' || outcomeValue.kind === 'parent_missing'}>
                 <button type="button" class="outline" onClick={copy}>
                   {copied() ? 'Copied' : 'Copy command'}

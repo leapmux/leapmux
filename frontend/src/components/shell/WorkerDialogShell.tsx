@@ -1,5 +1,6 @@
 import type { Component, JSX } from 'solid-js'
 import { Show } from 'solid-js'
+import { actionsFooter } from '~/components/common/actionsFooter.css'
 import { Dialog } from '~/components/common/Dialog'
 import { Spinner } from '~/components/common/Spinner'
 import { errorText } from '~/styles/shared.css'
@@ -57,7 +58,7 @@ export const WorkerDialogShell: Component<WorkerDialogShellProps> = (props) => {
           <div class={errorText}>{props.error}</div>
         </Show>
       </section>
-      <footer>{props.footer}</footer>
+      <footer class={actionsFooter}>{props.footer}</footer>
     </>
   )
   return (

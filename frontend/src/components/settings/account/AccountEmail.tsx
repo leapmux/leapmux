@@ -2,6 +2,7 @@ import type { Component } from 'solid-js'
 import { A } from '@solidjs/router'
 import { createMemo, createSignal, Show } from 'solid-js'
 import { userClient } from '~/api/clients'
+import { actionsFooter } from '~/components/common/actionsFooter.css'
 import { StatusLine } from '~/components/common/StatusLine'
 import { useAuth } from '~/context/AuthContext'
 import { KEY_EMAIL_CHANGE_DRAFT, sessionStorageGet, sessionStorageRemove, sessionStorageSet } from '~/lib/browserStorage'
@@ -124,7 +125,7 @@ export const AccountEmail: Component = () => {
         address when there is none.
       */}
       <Show when={auth.user()?.email && !auth.user()?.emailVerified && isEmailEnabled()}>
-        <div class="hstack gap-2">
+        <div class={actionsFooter}>
           <button type="button" onClick={() => void verification.resend()} disabled={verification.disabled()}>
             {verification.buttonLabel()}
           </button>
@@ -159,7 +160,7 @@ export const AccountEmail: Component = () => {
       <Show when={sameAsCurrent()}>
         <div class={errorText}>This is already your current email.</div>
       </Show>
-      <div>
+      <div class={actionsFooter}>
         <button
           type="button"
           onClick={() => void requestChange()}

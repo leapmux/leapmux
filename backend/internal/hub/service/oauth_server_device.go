@@ -217,7 +217,7 @@ func (h *OAuthServerHandler) renderDevicePage(w http.ResponseWriter, r *http.Req
 			data.App = &display
 			asked, parseErr := authscope.Parse(grant.RequestedScopes)
 			if parseErr == nil {
-				data.Permissions = describeScopes(asked)
+				data.Permissions = describeScopeCatalogue(asked)
 			}
 		}
 	}
@@ -310,7 +310,7 @@ func (h *OAuthServerHandler) approveOrDenyDevice(w http.ResponseWriter, r *http.
 			writePage(w, http.StatusOK, devicePageTmpl, devicePageData{
 				UserCode:     normalized,
 				App:          &display,
-				Permissions:  describeScopes(scopes),
+				Permissions:  describeScopeCatalogue(scopes),
 				ConfirmAdmin: true,
 			}, "")
 			return
