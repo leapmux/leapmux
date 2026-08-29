@@ -57,7 +57,7 @@ service UserService {
   // field, elevation_expires_at, so a client has one success shape. (The
   // two response messages are separate because a proto response type may
   // serve only one RPC.) An OAuth-only account elevates through the OAuth
-  // re-authentication leg at /auth/oauth/<provider>/reauth, which is a
+  // re-authentication stage at /auth/idp/<provider>/reauth, which is a
   // browser redirect rather than an RPC.
   rpc ElevateSession(ElevateSessionRequest) returns (ElevateSessionResponse);
   rpc BeginPasskeyElevation(BeginPasskeyElevationRequest) returns (BeginPasskeyElevationResponse);
@@ -71,20 +71,27 @@ service UserService {
   rpc RenamePasskey(RenamePasskeyRequest) returns (RenamePasskeyResponse);
   rpc DeletePasskey(DeletePasskeyRequest) returns (DeletePasskeyResponse);
   rpc DeactivatePasskeyAuth(DeactivatePasskeyAuthRequest) returns (DeactivatePasskeyAuthResponse);
-  // The caller's own CLI credentials, and self-service revocation.
+  // The caller's own CONNECTIONS: which apps hold access to this account, and
+  // how to end that access.
   //
-  // Neither requires an elevated session, deliberately. Listing returns metadata
-  // only, and revoking a credential can only REDUCE access -- demanding a
-  // fresh factor from somebody who believes a token is stolen is the wrong
-  // failure mode.
+  // TWO verbs, because they answer different questions. DisconnectApp ends the
+  // account's whole authorization of one app; RevokeMyAPIToken ends ONE
+  // installation of it, which is how somebody signs a single laptop out and
+  // keeps the rest working. An app-level end that offered only the second
+  // would leave a credential live on every other machine, which is precisely
+  // the outcome that somebody who stopped trusting an app tries to prevent.
+  //
+  // NONE requires an elevated session, deliberately. Listing returns metadata
+  // only, and both endings can only REDUCE access -- demanding a fresh factor
+  // from somebody who believes a token is stolen is the wrong failure mode.
   rpc ListMyAPITokens(ListMyAPITokensRequest) returns (ListMyAPITokensResponse);
+  rpc DisconnectApp(DisconnectAppRequest) returns (DisconnectAppResponse);
   rpc RevokeMyAPIToken(RevokeMyAPITokenRequest) returns (RevokeMyAPITokenResponse);
 }
 
 message UpdateProfileRequest {
   string username = 1;
   string display_name = 2;
-  reserved 3; // was: email (use RequestEmailChange instead)
 }
 
 message UpdateProfileResponse {
@@ -270,8 +277,9 @@ message DeactivatePasskeyAuthResponse {}
 // metadata only -- no secret and no hash ever leaves the store layer.
 message MyAPIToken {
   string id = 1;
-  string client_type = 2;
-  string client_name = 3;
+  // Which APP holds this credential, and which INSTALLATION of it.
+  string client_id = 2;
+  string installation_name = 3;
   google.protobuf.Timestamp created_at = 4;
   google.protobuf.Timestamp last_used_at = 5;
   // When the token stops being able to refresh itself, which is when the
@@ -279,8 +287,10 @@ message MyAPIToken {
   // access-token expiry: it renews itself and would read as "expiring
   // today" on a credential with months left.
   google.protobuf.Timestamp refresh_expires_at = 6;
-  // Whether this credential may administer the hub.
-  bool admin_scope = 7;
+  // The permissions this credential was granted, as canonical scope tokens.
+  // The account's connected-app list renders them, so a person can see what
+  // each app can actually do.
+  repeated string granted_scopes = 7;
   // True for the credential making THIS call, so a client can warn before
   // the user revokes the device they are on. Always false when the caller
   // is a browser session.
@@ -298,6 +308,12 @@ message MyAPIToken {
   // the access expiry moves at every rotation and would read as "expiring
   // today" on a credential with months left.
   google.protobuf.Timestamp expires_at = 9;
+  // The app's registered display name, so the list can group by app rather
+  // than by installation.
+  string client_name = 10;
+  // Whether an administrator vouched for the app. An unverified one is
+  // labelled in the list, exactly as it is on the consent screen.
+  bool client_verified = 11;
 }
 
 message ListMyAPITokensRequest {
@@ -315,3 +331,17 @@ message RevokeMyAPITokenRequest {
 }
 
 message RevokeMyAPITokenResponse {}
+
+// DisconnectAppRequest ends this account's whole authorization of one app.
+message DisconnectAppRequest {
+  // Which app. The cascade is scoped to the CALLER's own credentials, so this
+  // never reaches another account's -- see RevokeAPITokensForOAuthClient.
+  string client_id = 1;
+}
+
+message DisconnectAppResponse {
+  // How many credentials the disconnect retired, so the surface can say what
+  // it did rather than only that it succeeded. Zero means the account held
+  // none, which is not an error: the caller's goal already holds.
+  int64 revoked_credential_count = 1;
+}

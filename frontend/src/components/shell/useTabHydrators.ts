@@ -409,13 +409,26 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
    */
   if (opts.onlineWorkerIds) {
     let wasOnline: ReadonlySet<string> | undefined
+    // Whether any reading BEFORE this one yet carried a worker. The workers
+    // signal starts EMPTY and fills from the first listWorkers reply, so the
+    // load's empty-to-populated step is the FIRST reading in disguise --
+    // treating it as a transition armed a re-ask for every agent tab on a
+    // page load, the exact outcome the first-reading rule exists to prevent.
+    // The guard therefore reads the flag BEFORE the current reading updates
+    // it: reading it after the update made `!seenWorkers` dead code, because
+    // `seenWorkers === false` implied `online.size === 0` implied an empty
+    // `cameOnline` anyway, and the empty-to-populated fill passed straight
+    // through. The flag LATCHES and never resets: a set that carried workers
+    // and then emptied is a real outage, and its refill IS a transition.
+    let seenWorkers = false
     createEffect(() => {
       const online = opts.onlineWorkerIds!()
-      // The FIRST reading is not a transition. Treating it as one would re-ask
-      // for every agent tab on a page load, right after the initial hydration.
       const previous = wasOnline
+      const seenBefore = seenWorkers
       wasOnline = online
-      if (!previous)
+      if (online.size > 0)
+        seenWorkers = true
+      if (!previous || !seenBefore)
         return
       const cameOnline = [...online].filter(id => !previous.has(id))
       if (cameOnline.length === 0)

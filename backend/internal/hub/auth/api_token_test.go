@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/util/userid"
 
 	"connectrpc.com/connect"
@@ -14,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/internal/hub/auth"
+	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -170,11 +172,12 @@ func TestTokenValidator_AcceptsValidAPIBearer(t *testing.T) {
 	tokenID := id.Generate()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID:         tokenID,
-		UserID:     userid.MustNew(userID),
-		ClientType: "cli",
-		ClientName: "test",
-		SecretHash: v.HashSecret(secret),
+		ID:               tokenID,
+		UserID:           userid.MustNew(userID),
+		ClientID:         oauthapp.ControlCLIClientID,
+		InstallationName: "test",
+		GrantedScopes:    authscope.NonAdminGrant().String(),
+		SecretHash:       v.HashSecret(secret),
 	}))
 
 	bearer := auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)
@@ -205,12 +208,13 @@ func TestTokenValidator_ReadsItsClockSeam(t *testing.T) {
 	secret := auth.MintAccessSecret()
 	expiresAt := time.Now().UTC().Add(time.Hour)
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID:         tokenID,
-		UserID:     userid.MustNew(userID),
-		ClientType: "cli",
-		ClientName: "test",
-		SecretHash: v.HashSecret(secret),
-		ExpiresAt:  &expiresAt,
+		ID:               tokenID,
+		UserID:           userid.MustNew(userID),
+		ClientID:         oauthapp.ControlCLIClientID,
+		InstallationName: "test",
+		GrantedScopes:    authscope.NonAdminGrant().String(),
+		SecretHash:       v.HashSecret(secret),
+		ExpiresAt:        &expiresAt,
 	}))
 	bearer := auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)
 
@@ -245,11 +249,12 @@ func TestTokenValidator_RejectsRevoked(t *testing.T) {
 	tokenID := id.Generate()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID:         tokenID,
-		UserID:     userid.MustNew(userID),
-		ClientType: "cli",
-		ClientName: "test",
-		SecretHash: v.HashSecret(secret),
+		ID:               tokenID,
+		UserID:           userid.MustNew(userID),
+		ClientID:         oauthapp.ControlCLIClientID,
+		InstallationName: "test",
+		GrantedScopes:    authscope.NonAdminGrant().String(),
+		SecretHash:       v.HashSecret(secret),
 	}))
 	_, err = st.APITokens().Revoke(context.Background(), tokenID)
 	require.NoError(t, err)
@@ -267,11 +272,12 @@ func TestTokenValidator_RejectsBearerIssuedBeforeUserRevocation(t *testing.T) {
 	tokenID := id.Generate()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID:         tokenID,
-		UserID:     userid.MustNew(userID),
-		ClientType: "cli",
-		ClientName: "test",
-		SecretHash: v.HashSecret(secret),
+		ID:               tokenID,
+		UserID:           userid.MustNew(userID),
+		ClientID:         oauthapp.ControlCLIClientID,
+		InstallationName: "test",
+		GrantedScopes:    authscope.NonAdminGrant().String(),
+		SecretHash:       v.HashSecret(secret),
 	}))
 	_, err = st.Users().RevokeUserTokens(context.Background(), userid.MustNew(userID))
 	require.NoError(t, err)
@@ -290,12 +296,13 @@ func TestTokenValidator_RejectsExpired(t *testing.T) {
 	secret := auth.MintAccessSecret()
 	past := time.Now().Add(-time.Minute)
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID:         tokenID,
-		UserID:     userid.MustNew(userID),
-		ClientType: "cli",
-		ClientName: "test",
-		SecretHash: v.HashSecret(secret),
-		ExpiresAt:  &past,
+		ID:               tokenID,
+		UserID:           userid.MustNew(userID),
+		ClientID:         oauthapp.ControlCLIClientID,
+		InstallationName: "test",
+		GrantedScopes:    authscope.NonAdminGrant().String(),
+		SecretHash:       v.HashSecret(secret),
+		ExpiresAt:        &past,
 	}))
 	_, err = v.ValidateBearer(context.Background(), auth.FormatBearer(auth.BearerKindAPI, tokenID, secret))
 	require.Error(t, err)
@@ -303,7 +310,7 @@ func TestTokenValidator_RejectsExpired(t *testing.T) {
 
 // TestTokenValidator_WrongSecretDoesNotLeakLifecycle pins the anti-enumeration
 // ordering in validateRow (the access/ValidateBearer path). token_id is non-secret
-// (it is returned in JSON to /auth/cli/token, /auth/cli/refresh, and the delegation
+// (it is returned in JSON to /oauth/token, /oauth/token, and the delegation
 // mint), so a caller holding a victim's token_id but NOT its secret must get a
 // uniform ErrInvalidToken -- never a distinguishable "revoked"/"expired" that leaks
 // the token's existence and lifecycle. The correct-secret holder still learns
@@ -321,12 +328,13 @@ func TestTokenValidator_WrongSecretDoesNotLeakLifecycle(t *testing.T) {
 		tokenID := id.Generate()
 		secret := auth.MintAccessSecret()
 		require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-			ID:         tokenID,
-			UserID:     userid.MustNew(userID),
-			ClientType: "cli",
-			ClientName: "test",
-			SecretHash: v.HashSecret(secret),
-			ExpiresAt:  expiresAt,
+			ID:               tokenID,
+			UserID:           userid.MustNew(userID),
+			ClientID:         oauthapp.ControlCLIClientID,
+			InstallationName: "test",
+			GrantedScopes:    authscope.NonAdminGrant().String(),
+			SecretHash:       v.HashSecret(secret),
+			ExpiresAt:        expiresAt,
 		}))
 		return tokenID, secret
 	}
@@ -419,12 +427,13 @@ func TestAPITokenRotateRefreshRejectsStalePreviousHash(t *testing.T) {
 	secondRefresh := auth.MintAccessSecret()
 	thirdRefresh := auth.MintAccessSecret()
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID:          tokenID,
-		UserID:      userid.MustNew(userID),
-		ClientType:  "cli",
-		ClientName:  "test",
-		SecretHash:  v.HashSecret(accessSecret),
-		RefreshHash: v.HashSecret(firstRefresh),
+		ID:               tokenID,
+		UserID:           userid.MustNew(userID),
+		ClientID:         oauthapp.ControlCLIClientID,
+		InstallationName: "test",
+		GrantedScopes:    authscope.NonAdminGrant().String(),
+		SecretHash:       v.HashSecret(accessSecret),
+		RefreshHash:      v.HashSecret(firstRefresh),
 	}))
 
 	rotated, err := st.APITokens().RotateRefresh(context.Background(), store.RotateAPITokenRefreshParams{
@@ -460,12 +469,13 @@ func TestValidateAPIRefresh_UserLookupFailureIsNotRevocation(t *testing.T) {
 	tokenID := id.Generate()
 	refreshSecret := auth.MintAccessSecret()
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID:          tokenID,
-		UserID:      userid.MustNew(userID),
-		ClientType:  "cli",
-		ClientName:  "test",
-		SecretHash:  issuer.HashSecret(auth.MintAccessSecret()),
-		RefreshHash: issuer.HashSecret(refreshSecret),
+		ID:               tokenID,
+		UserID:           userid.MustNew(userID),
+		ClientID:         oauthapp.ControlCLIClientID,
+		InstallationName: "test",
+		GrantedScopes:    authscope.NonAdminGrant().String(),
+		SecretHash:       issuer.HashSecret(auth.MintAccessSecret()),
+		RefreshHash:      issuer.HashSecret(refreshSecret),
 	}))
 
 	forcedErr := errors.New("forced user lookup failure")
@@ -494,11 +504,12 @@ func TestValidateBearer_UserLookupFailureIsInternal(t *testing.T) {
 	tokenID := id.Generate()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID:         tokenID,
-		UserID:     userid.MustNew(userID),
-		ClientType: "cli",
-		ClientName: "test",
-		SecretHash: issuer.HashSecret(secret),
+		ID:               tokenID,
+		UserID:           userid.MustNew(userID),
+		ClientID:         oauthapp.ControlCLIClientID,
+		InstallationName: "test",
+		GrantedScopes:    authscope.NonAdminGrant().String(),
+		SecretHash:       issuer.HashSecret(secret),
 	}))
 
 	forcedErr := errors.New("forced user lookup failure")
@@ -547,12 +558,13 @@ func TestValidateAPIRefresh_ReusedRefreshReturnsRevokeError(t *testing.T) {
 	currentSecret := auth.MintAccessSecret()
 	previousSecret := auth.MintAccessSecret()
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID:          tokenID,
-		UserID:      userid.MustNew(userID),
-		ClientType:  "cli",
-		ClientName:  "test",
-		SecretHash:  issuer.HashSecret(currentSecret),
-		RefreshHash: issuer.HashSecret(previousSecret),
+		ID:               tokenID,
+		UserID:           userid.MustNew(userID),
+		ClientID:         oauthapp.ControlCLIClientID,
+		InstallationName: "test",
+		GrantedScopes:    authscope.NonAdminGrant().String(),
+		SecretHash:       issuer.HashSecret(currentSecret),
+		RefreshHash:      issuer.HashSecret(previousSecret),
 	}))
 	expiredGrace := time.Now().Add(-time.Hour)
 	_, err = st.APITokens().RotateRefresh(context.Background(), store.RotateAPITokenRefreshParams{
@@ -590,12 +602,13 @@ func TestValidateAPIRefresh_GraceWindowReturnsRetry(t *testing.T) {
 	prevSecret := auth.MintAccessSecret()
 	prevExp := time.Now().Add(auth.RefreshReuseGrace)
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID:          tokenID,
-		UserID:      userid.MustNew(userID),
-		ClientType:  "cli",
-		ClientName:  "test",
-		SecretHash:  v.HashSecret(currentSecret),
-		RefreshHash: v.HashSecret(prevSecret),
+		ID:               tokenID,
+		UserID:           userid.MustNew(userID),
+		ClientID:         oauthapp.ControlCLIClientID,
+		InstallationName: "test",
+		GrantedScopes:    authscope.NonAdminGrant().String(),
+		SecretHash:       v.HashSecret(currentSecret),
+		RefreshHash:      v.HashSecret(prevSecret),
 	}))
 	_, err = st.APITokens().RotateRefresh(context.Background(), store.RotateAPITokenRefreshParams{
 		ID:                       tokenID,
@@ -631,12 +644,13 @@ func TestValidateAPIRefresh_ReuseAfterGraceRevokes(t *testing.T) {
 	prevSecret := auth.MintAccessSecret()
 	expiredGrace := time.Now().Add(-time.Hour)
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID:          tokenID,
-		UserID:      userid.MustNew(userID),
-		ClientType:  "cli",
-		ClientName:  "test",
-		SecretHash:  v.HashSecret(currentSecret),
-		RefreshHash: v.HashSecret(prevSecret),
+		ID:               tokenID,
+		UserID:           userid.MustNew(userID),
+		ClientID:         oauthapp.ControlCLIClientID,
+		InstallationName: "test",
+		GrantedScopes:    authscope.NonAdminGrant().String(),
+		SecretHash:       v.HashSecret(currentSecret),
+		RefreshHash:      v.HashSecret(prevSecret),
 	}))
 	_, err = st.APITokens().RotateRefresh(context.Background(), store.RotateAPITokenRefreshParams{
 		ID:                       tokenID,
@@ -666,12 +680,13 @@ func TestValidateAPIRefresh_UnknownHashDoesNotRevoke(t *testing.T) {
 	tokenID := id.Generate()
 	currentSecret := auth.MintAccessSecret()
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID:          tokenID,
-		UserID:      userid.MustNew(userID),
-		ClientType:  "cli",
-		ClientName:  "test",
-		SecretHash:  v.HashSecret(currentSecret),
-		RefreshHash: v.HashSecret(currentSecret),
+		ID:               tokenID,
+		UserID:           userid.MustNew(userID),
+		ClientID:         oauthapp.ControlCLIClientID,
+		InstallationName: "test",
+		GrantedScopes:    authscope.NonAdminGrant().String(),
+		SecretHash:       v.HashSecret(currentSecret),
+		RefreshHash:      v.HashSecret(currentSecret),
 	}))
 
 	// Random unknown secret: must NOT revoke the row (defensive against
@@ -697,8 +712,9 @@ func TestValidateAPIRefresh_RejectsExpiredCurrentRefresh(t *testing.T) {
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
 		ID:               tokenID,
 		UserID:           userid.MustNew(userID),
-		ClientType:       "cli",
-		ClientName:       "test",
+		ClientID:         oauthapp.ControlCLIClientID,
+		InstallationName: "test",
+		GrantedScopes:    authscope.NonAdminGrant().String(),
 		SecretHash:       v.HashSecret(auth.MintAccessSecret()),
 		RefreshHash:      v.HashSecret(currentSecret),
 		RefreshExpiresAt: &expired,
@@ -721,8 +737,9 @@ func TestValidateAPIRefresh_ExpiredCurrentRefreshDoesNotLoadUser(t *testing.T) {
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
 		ID:               tokenID,
 		UserID:           userid.MustNew(userID),
-		ClientType:       "cli",
-		ClientName:       "test",
+		ClientID:         oauthapp.ControlCLIClientID,
+		InstallationName: "test",
+		GrantedScopes:    authscope.NonAdminGrant().String(),
 		SecretHash:       issuer.HashSecret(auth.MintAccessSecret()),
 		RefreshHash:      issuer.HashSecret(currentSecret),
 		RefreshExpiresAt: &expired,
@@ -750,12 +767,13 @@ func TestValidateAPIRefresh_WrongSecretOnRevokedRowStaysInvalidToken(t *testing.
 
 	tokenID := id.Generate()
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID:          tokenID,
-		UserID:      userid.MustNew(userID),
-		ClientType:  "cli",
-		ClientName:  "test",
-		SecretHash:  v.HashSecret(auth.MintAccessSecret()),
-		RefreshHash: v.HashSecret(auth.MintAccessSecret()),
+		ID:               tokenID,
+		UserID:           userid.MustNew(userID),
+		ClientID:         oauthapp.ControlCLIClientID,
+		InstallationName: "test",
+		GrantedScopes:    authscope.NonAdminGrant().String(),
+		SecretHash:       v.HashSecret(auth.MintAccessSecret()),
+		RefreshHash:      v.HashSecret(auth.MintAccessSecret()),
 	}))
 	_, err = st.APITokens().Revoke(context.Background(), tokenID)
 	require.NoError(t, err)
@@ -774,11 +792,12 @@ func TestTokenValidator_AcceptsValidDelegationBearer(t *testing.T) {
 	tokenID := id.Generate()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, st.DelegationTokens().Create(context.Background(), store.CreateDelegationTokenParams{
-		ID:         tokenID,
-		UserID:     userid.MustNew(userID),
-		WorkerID:   workerID,
-		SecretHash: v.HashSecret(secret),
-		ExpiresAt:  time.Now().Add(time.Hour),
+		GrantedScopes: "workspace:read workspace:write worker:read",
+		ID:            tokenID,
+		UserID:        userid.MustNew(userID),
+		WorkerID:      workerID,
+		SecretHash:    v.HashSecret(secret),
+		ExpiresAt:     time.Now().Add(time.Hour),
 	}))
 
 	info, err := v.ValidateBearer(context.Background(), auth.FormatBearer(auth.BearerKindDelegation, tokenID, secret))
@@ -801,11 +820,12 @@ func TestTokenValidator_RejectsExpiredDelegation(t *testing.T) {
 	tokenID := id.Generate()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, st.DelegationTokens().Create(context.Background(), store.CreateDelegationTokenParams{
-		ID:         tokenID,
-		UserID:     userid.MustNew(userID),
-		WorkerID:   workerID,
-		SecretHash: v.HashSecret(secret),
-		ExpiresAt:  time.Now().Add(-time.Minute),
+		GrantedScopes: "workspace:read workspace:write worker:read",
+		ID:            tokenID,
+		UserID:        userid.MustNew(userID),
+		WorkerID:      workerID,
+		SecretHash:    v.HashSecret(secret),
+		ExpiresAt:     time.Now().Add(-time.Minute),
 	}))
 
 	_, err = v.ValidateBearer(context.Background(), auth.FormatBearer(auth.BearerKindDelegation, tokenID, secret))
@@ -822,11 +842,12 @@ func TestTokenValidator_RejectsRevokedDelegation(t *testing.T) {
 	tokenID := id.Generate()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, st.DelegationTokens().Create(context.Background(), store.CreateDelegationTokenParams{
-		ID:         tokenID,
-		UserID:     userid.MustNew(userID),
-		WorkerID:   workerID,
-		SecretHash: v.HashSecret(secret),
-		ExpiresAt:  time.Now().Add(time.Hour),
+		GrantedScopes: "workspace:read workspace:write worker:read",
+		ID:            tokenID,
+		UserID:        userid.MustNew(userID),
+		WorkerID:      workerID,
+		SecretHash:    v.HashSecret(secret),
+		ExpiresAt:     time.Now().Add(time.Hour),
 	}))
 	_, err = st.DelegationTokens().Revoke(context.Background(), tokenID)
 	require.NoError(t, err)
@@ -844,11 +865,12 @@ func TestTokenValidator_RejectsWrongSecret(t *testing.T) {
 	tokenID := id.Generate()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID:         tokenID,
-		UserID:     userid.MustNew(userID),
-		ClientType: "cli",
-		ClientName: "test",
-		SecretHash: v.HashSecret(secret),
+		ID:               tokenID,
+		UserID:           userid.MustNew(userID),
+		ClientID:         oauthapp.ControlCLIClientID,
+		InstallationName: "test",
+		GrantedScopes:    authscope.NonAdminGrant().String(),
+		SecretHash:       v.HashSecret(secret),
 	}))
 	_, err = v.ValidateBearer(context.Background(), auth.FormatBearer(auth.BearerKindAPI, tokenID, "wrong-secret"))
 	require.Error(t, err)
@@ -869,12 +891,13 @@ func TestVerifyBearerSecret(t *testing.T) {
 	secret := auth.MintAccessSecret()
 	refreshSecret := auth.MintAccessSecret()
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID:          tokenID,
-		UserID:      userid.MustNew(userID),
-		ClientType:  "cli",
-		ClientName:  "test",
-		SecretHash:  v.HashSecret(secret),
-		RefreshHash: v.HashSecret(refreshSecret),
+		ID:               tokenID,
+		UserID:           userid.MustNew(userID),
+		ClientID:         oauthapp.ControlCLIClientID,
+		InstallationName: "test",
+		GrantedScopes:    authscope.NonAdminGrant().String(),
+		SecretHash:       v.HashSecret(secret),
+		RefreshHash:      v.HashSecret(refreshSecret),
 	}))
 
 	// Match: returns the kind + canonical row id.
@@ -912,7 +935,7 @@ func TestVerifyBearerSecret(t *testing.T) {
 
 	// Unknown token_id: same ErrInvalidToken — response shape MUST NOT
 	// distinguish "row missing" from "row exists, secret wrong" or
-	// `/auth/cli/revoke` becomes a token-id existence oracle.
+	// `/oauth/revoke` becomes a token-id existence oracle.
 	_, _, err = v.VerifyBearerSecret(context.Background(), auth.FormatBearer(auth.BearerKindAPI, id.Generate(), auth.MintAccessSecret()))
 	assert.ErrorIs(t, err, auth.ErrInvalidToken)
 
@@ -947,12 +970,13 @@ func TestVerifyBearerSecret_DelegationToken(t *testing.T) {
 	secret := auth.MintAccessSecret()
 	refreshSecret := auth.MintAccessSecret()
 	require.NoError(t, st.DelegationTokens().Create(context.Background(), store.CreateDelegationTokenParams{
-		ID:          tokenID,
-		UserID:      userid.MustNew(userID),
-		WorkerID:    workerID,
-		SecretHash:  v.HashSecret(secret),
-		RefreshHash: v.HashSecret(refreshSecret),
-		ExpiresAt:   time.Now().Add(time.Hour),
+		GrantedScopes: "workspace:read workspace:write worker:read",
+		ID:            tokenID,
+		UserID:        userid.MustNew(userID),
+		WorkerID:      workerID,
+		SecretHash:    v.HashSecret(secret),
+		RefreshHash:   v.HashSecret(refreshSecret),
+		ExpiresAt:     time.Now().Add(time.Hour),
 	}))
 
 	gotKind, gotID, err := v.VerifyBearerSecret(context.Background(), auth.FormatBearer(auth.BearerKindDelegation, tokenID, secret))

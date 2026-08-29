@@ -78,17 +78,18 @@ test.describe('session elevation', () => {
     await expect(prefs.getByText('Password changed.')).toHaveCount(0)
   })
 
-  test('lists the account CLI credentials without a prompt', async ({ page, leapmuxServer }) => {
-    // Listing and revoking deliberately do NOT require elevation: revocation only
-    // reduces access, and waiting is the attacker's gain.
+  test('lists the connected apps without a prompt', async ({ page, leapmuxServer }) => {
+    // Listing and disconnecting deliberately do NOT require elevation:
+    // disconnecting only reduces access, and waiting is the attacker's gain.
+    // The rule gets STRONGER with third-party apps, not weaker.
     const cookie = await freshAccount(leapmuxServer.hubUrl, 'elev-devices')
     expect(await listMyAPITokensViaAPI(leapmuxServer.hubUrl, cookie)).toEqual([])
 
     await loginViaToken(page, cookie)
     await page.goto('/')
     const prefs = await openAccountSettings(page)
-    await expect(prefs.getByTestId('cli-tokens')).toBeVisible()
-    await expect(prefs.getByText('No command-line credentials.', { exact: false })).toBeVisible()
+    await expect(prefs.getByTestId('connected-apps')).toBeVisible()
+    await expect(prefs.getByText('No connected apps.', { exact: false })).toBeVisible()
     await expect(page.getByRole('dialog', { name: 'Verify your identity' })).toHaveCount(0)
   })
 

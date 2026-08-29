@@ -56,5 +56,5 @@ export async function dropElevation(): Promise<void> {
  * the browser back to the hub, which redirects it here.
  */
 export function oauthReauthUrl(providerId: string, redirect: string): string {
-  return `/auth/oauth/${encodeURIComponent(providerId)}/reauth?redirect=${encodeURIComponent(redirect)}`
+  return `/auth/idp/${encodeURIComponent(providerId)}/reauth?redirect=${encodeURIComponent(redirect)}`
 }

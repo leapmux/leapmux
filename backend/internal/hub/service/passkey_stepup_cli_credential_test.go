@@ -17,7 +17,7 @@ import (
 )
 
 // elevateAPITokenRow stamps the ordinary step-up window on a command-line
-// credential, through the REAL store write the /auth/cli/elevate-authorization
+// credential, through the REAL store write the /oauth/step-up
 // leg performs. The session twin is elevateSessionRow.
 //
 // Call it BEFORE the first RPC on that credential: there is no cached
@@ -95,9 +95,9 @@ func TestChangePassword_FromAnElevatedCLICredentialKeepsThatCredentialUsable(t *
 		"the kept credential must sit at the account's new epoch, or validation reads it as revoked")
 
 	// And through the whole interceptor, which is what the user meets. The
-	// eviction is what the revocation watcher does on every other hub; doing
-	// it here keeps the assertion about the committed rows rather than about
-	// a cache entry minted before the change.
+	// eviction is what the revocation watcher's replay does; doing it here
+	// keeps the assertion about the committed rows rather than about a cache
+	// entry minted before the change.
 	env.contexts.EvictByUserID(env.userID)
 	_, err = env.client.GetTimeouts(ctx, bearerReq(&leapmuxv1.GetTimeoutsRequest{}, bearer))
 	require.NoError(t, err, "the acting credential must still authenticate after the change it made")
@@ -146,12 +146,18 @@ func TestChangePassword_FromAnElevatedSessionStillRevokesEveryCredential(t *test
 	assert.NoError(t, err, "the acting session survives, as it always did")
 }
 
-// TestDeactivatePasskeyAuth_FromAnElevatedCLICredentialKeepsThatCredential
-// covers the OTHER caller of the same revocation. DeletePasskey and
+// The OTHER caller of the same revocation. DeletePasskey and
 // DeactivatePasskeyAuth reach it through commitPasskeyDeactivation on a
 // passkey-only account, where they set the replacement password, so the
 // acting credential must survive there for the same reason.
-func TestDeactivatePasskeyAuth_FromAnElevatedCLICredentialKeepsThatCredential(t *testing.T) {
+//
+// The caller is a SESSION, and it can only be a session. Both verbs are
+// ScopeNever: they manage the account's authenticators, which outlive any
+// app's connection, so no consent screen offers them and the scope rung
+// refuses an app credential before the elevation gate runs. The bearer twin of
+// this test therefore cannot exist -- see assertOutOfScope in
+// user_service_test.go, which pins that refusal.
+func TestDeactivatePasskeyAuth_FromAnElevatedSessionKeepsThatSession(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -168,20 +174,27 @@ func TestDeactivatePasskeyAuth_FromAnElevatedCLICredentialKeepsThatCredential(t 
 		FriendlyName: "Laptop",
 	}))
 
+	// An app credential on the account, elevated, so the revocation below
+	// cannot pass because the credential was weak.
 	bearer := env.bearerFor(t)
 	tokenID := tokenIDOf(t, bearer)
 	elevateAPITokenRow(t, env.store, tokenID, env.userID)
 
-	_, err := env.client.DeactivatePasskeyAuth(ctx, bearerReq(&leapmuxv1.DeactivatePasskeyAuthRequest{
+	elevateSession(t, env.store, env.token, env.userID)
+	_, err := env.client.DeactivatePasskeyAuth(ctx, authedReq(&leapmuxv1.DeactivatePasskeyAuthRequest{
 		NewPassword: "newpass123",
-	}, bearer))
+	}, env.token))
 	require.NoError(t, err)
+
+	_, err = auth.ValidateToken(ctx, env.store, env.token)
+	assert.NoError(t, err, "the credential that asked must survive its own success")
 
 	row, err := env.store.APITokens().GetByID(ctx, tokenID)
 	require.NoError(t, err)
-	assert.Nil(t, row.RevokedAt, "the credential that asked must survive its own success")
+	assert.NotNil(t, row.RevokedAt,
+		"every OTHER credential goes, because the account's factors just changed")
+
 	updatedUser, err := env.store.Users().GetByID(ctx, env.userID)
 	require.NoError(t, err)
-	assert.Equal(t, updatedUser.AuthGeneration, row.AuthGeneration)
 	assert.True(t, updatedUser.PasswordSet, "the replacement password committed")
 }

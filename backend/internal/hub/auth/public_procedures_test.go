@@ -85,15 +85,26 @@ func TestPublicProceduresAreRationaleClassified(t *testing.T) {
 // name the same procedure.
 //
 // They answer different questions -- "may an unauthenticated request through?"
-// versus "may a delegation bearer call this?" -- and the delegation check runs
-// only on the bearer path, which a public procedure short-circuits before
-// reaching. An entry in both would therefore read as a reviewed delegation
-// bound while the interceptor was already waving every caller through.
-func TestPublicAndDelegationListsAreDisjoint(t *testing.T) {
+// versus "what does a scoped credential need to call this?" -- and the scope
+// rung runs only for an AUTHENTICATED caller, which a public procedure
+// short-circuits before reaching. An entry in both would therefore read as a
+// reviewed scope requirement while the interceptor was already waving every
+// caller through.
+//
+// ScopePublic is exactly that record, and this asserts the two sets are the
+// SAME set rather than merely disjoint: a public procedure with a named scope
+// would document a bound nothing enforces, and a ScopePublic record for a
+// procedure that is not public would document a waiver that does not exist.
+func TestPublicProceduresAreRecordedAsScopePublic(t *testing.T) {
 	for procedure := range publicProcedures {
-		assert.Falsef(t, delegationAllowedProcedures[procedure],
-			"%q is both public and delegation-allowed; the delegation bound is dead code because the public check runs first",
-			procedure)
+		assert.Truef(t, ScopeRequirementFor(procedure).IsPublic(),
+			"%q is public but not recorded as ScopePublic in procedureScopes", procedure)
+	}
+	for procedure, requirement := range procedureScopes {
+		if requirement.IsPublic() {
+			assert.Truef(t, publicProcedures[procedure],
+				"%q is recorded as ScopePublic but the interceptor does not waive it", procedure)
+		}
 	}
 }
 

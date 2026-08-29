@@ -10,17 +10,25 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// replaceAttempts is how many times a sharing conflict is retried.
-// Concurrent writers of one credential file hit ERROR_ACCESS_DENIED or
-// ERROR_SHARING_VIOLATION because Windows will not replace a destination
-// that still has an open handle. The conflict is transient: the other
-// writer's rename finishes and this one can replace. A directory or a
-// read-only destination is permanent and is not retried.
-const replaceAttempts = 8
+// The sharing-conflict retry budget: a wall-clock deadline with a capped
+// per-attempt sleep, not a fixed attempt count. Concurrent writers of one
+// credential file hit ERROR_ACCESS_DENIED or ERROR_SHARING_VIOLATION because
+// Windows will not replace a destination that still has an open handle; the
+// conflict is transient, and an antivirus or search indexer holding the
+// destination routinely outlasts a short budget. The exponential backoff
+// starts at 1ms and caps at replaceSleepCap so the tail stays even, and the
+// whole window is capped by replaceDeadline. A directory or a read-only
+// destination is permanent and is not retried.
+const (
+	replaceDeadline = 2 * time.Second
+	replaceSleepCap = 100 * time.Millisecond
+)
 
 func replaceFile(oldpath, newpath string) error {
+	deadline := time.Now().Add(replaceDeadline)
+	sleep := time.Millisecond
 	var err error
-	for i := range replaceAttempts {
+	for {
 		err = os.Rename(oldpath, newpath)
 		if err == nil {
 			return nil
@@ -28,11 +36,17 @@ func replaceFile(oldpath, newpath string) error {
 		if destCannotReplace(newpath) || !isSharingConflict(err) {
 			return err
 		}
-		if i+1 < replaceAttempts {
-			time.Sleep(time.Millisecond << uint(i))
+		if !time.Now().Before(deadline) {
+			return err
+		}
+		time.Sleep(sleep)
+		if sleep < replaceSleepCap {
+			sleep *= 2
+			if sleep > replaceSleepCap {
+				sleep = replaceSleepCap
+			}
 		}
 	}
-	return err
 }
 
 func destCannotReplace(path string) bool {

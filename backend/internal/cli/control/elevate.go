@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"time"
 
 	"connectrpc.com/connect"
 	"golang.org/x/sync/singleflight"
@@ -82,7 +81,7 @@ func NeedsElevation(err error) bool {
 // interleaved URL and code triples, which a person cannot answer.
 //
 // The followers take the LEADER's answer, including its context. That costs
-// nothing to repair -- a step-up mints no credential, so a cancelled leg
+// nothing to repair -- a step-up mints no credential, so a cancelled stage
 // leaves no rotated-away secret behind and the next command asks again --
 // which is why this needs no detached context of its own, and the refresh
 // flight does.
@@ -122,6 +121,16 @@ func (c *Client) elevateOnce(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// Resolved ONCE, before the poll loop: the client id the hub bound the
+	// grant to cannot change during the ceremony -- the hub refuses a poll
+	// whose presented id differs from the grant row's -- and re-reading and
+	// re-parsing the credential file on every 5 s poll (~120 reads across a
+	// full ceremony) bought nothing. A missing or unreadable credential falls
+	// back to the built-in id, exactly as the per-poll read did.
+	pollClientID := ControlCLIClientID
+	if creds, err := LoadCredentials(c.HubURL); err == nil {
+		pollClientID = creds.ClientIDOrBuiltIn()
+	}
 	_, _ = fmt.Fprintln(Err, "This command needs you to verify your identity.")
 	_, _ = fmt.Fprintln(Err, "  1. Visit", grant.VerificationURI)
 	_, _ = fmt.Fprintln(Err, "  2. Enter the code:", grant.UserCode)
@@ -129,40 +138,48 @@ func (c *Client) elevateOnce(ctx context.Context) error {
 		_, _ = fmt.Fprintln(Err, "Or open:", grant.VerificationURIComplete)
 	}
 
-	interval := grant.PollInterval()
-	deadline := grant.Deadline(time.Now())
-	for time.Now().Before(deadline) {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(interval):
+	if err := grant.Poll(ctx, func(ctx context.Context) error {
+		return c.pollElevation(ctx, grant.DeviceCode, pollClientID)
+	}); err != nil {
+		if errors.Is(err, ErrDeviceGrantExpired) {
+			return errors.New("the verification request expired before it was approved")
 		}
-		err := c.pollElevation(ctx, grant.DeviceCode)
-		switch {
-		case errors.Is(err, ErrAuthorizationPending):
-			continue
-		case errors.Is(err, ErrSlowDown):
-			interval += DeviceCodeSlowDownStep
-			continue
-		case err != nil:
-			return err
-		}
-		return nil
+		return err
 	}
-	return errors.New("the verification request expired before it was approved")
+	return nil
 }
 
 func (c *Client) startElevation(ctx context.Context) (*DeviceGrant, error) {
-	form := url.Values{"device_name": {DefaultDeviceName()}}
+	form := url.Values{"installation_name": {DefaultDeviceName()}}
 	// The credential itself is the right to ASK. What it cannot do is
 	// approve, which needs a browser session that proves a factor.
 	resp, err := PostForm(ctx, c.HTTPClient,
-		locallisten.JoinPath(c.connectURL, "/auth/cli/elevate-authorization"),
+		locallisten.JoinPath(c.connectURL, "/oauth/step-up"),
 		form, c.ApplyAuth)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
+	// 403 is the app's own registration refusing the stage: its owner has not
+	// allowed it to verify a factor. 400 and 401 are the credential kinds that
+	// carry no window at all. All three are permanent for this credential, so
+	// the caller reports the remedy instead of retrying.
+	//
+	// 403 decodes the BODY, because the hub states the one-step remedy there
+	// (allow elevation under Preferences, Account, App registrations). The
+	// sentinel's own two causes are both wrong for this refusal, and an
+	// operator who reads them retries a browser ceremony the hub keeps
+	// refusing.
+	if resp.StatusCode == http.StatusForbidden {
+		var body struct {
+			ErrorDescription string `json:"error_description"`
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&body)
+		if body.ErrorDescription != "" {
+			return nil, errors.New(body.ErrorDescription)
+		}
+		return nil, ErrElevationUnsupported
+	}
 	if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnauthorized {
 		return nil, ErrElevationUnsupported
 	}
@@ -179,17 +196,18 @@ func (c *Client) startElevation(ctx context.Context) (*DeviceGrant, error) {
 	return grant, nil
 }
 
-// pollElevation performs one /auth/cli/token poll for a step-up grant. It is
+// pollElevation performs one /oauth/token poll for a step-up grant. It is
 // the login flow's poll without the credential handling: a step-up mints
 // nothing, so there is nothing to persist. The hub answers `{"elevated":true}`
 // once the window is stamped.
-func (c *Client) pollElevation(ctx context.Context, deviceCode string) error {
+func (c *Client) pollElevation(ctx context.Context, deviceCode, clientID string) error {
 	form := url.Values{
 		"grant_type":  {GrantTypeDeviceCode},
+		"client_id":   {clientID},
 		"device_code": {deviceCode},
 	}
 	resp, err := PostForm(ctx, c.HTTPClient,
-		locallisten.JoinPath(c.connectURL, "/auth/cli/token"), form)
+		locallisten.JoinPath(c.connectURL, "/oauth/token"), form)
 	if err != nil {
 		return err
 	}

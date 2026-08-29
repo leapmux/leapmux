@@ -5,6 +5,9 @@ import (
 	"testing"
 	"time"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/authscope"
+
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -98,7 +101,7 @@ func TestCredentialLifecycleEffectsEventMatrix(t *testing.T) {
 	}, rotationCancel)
 	require.Equal(t, LeaseGranted, outcome)
 	t.Cleanup(rotationRelease)
-	effects.BearerRotatedExtending(BearerKindAPI, "api-rotation", rotationExpiry)
+	effects.BearerRotated(BearerKindAPI, "api-rotation", rotationExpiry, false)
 	assert.NoError(t, rotationCtx.Err(), "rotation must preserve authenticated leases")
 	assert.Len(t, closer.bearers, 1, "rotation must not close bearer channels")
 	assert.Equal(t, []bearerRescheduleCall{{
@@ -129,10 +132,13 @@ func TestCredentialLifecycleEffectsRejectsIncompleteEventKeys(t *testing.T) {
 	effects.SessionRevoked("")
 	effects.BearerRevoked(0, "token")
 	effects.BearerRevoked(BearerKindAPI, "")
-	effects.BearerRotatedExtending(0, "token", time.Now().Add(time.Minute)) // invalid kind: no effect
-	effects.BearerRotatedCacheOnly(BearerKindAPI, "token")                  // cache-only: never reschedules
-	effects.BearerRotatedCacheOnly(0, "token")                              // invalid kind: no effect
-	effects.BearerRotatedCacheOnly(BearerKindAPI, "")                       // empty token id: no effect
+	effects.BearerRotated(0, "token", time.Now().Add(time.Minute), false) // invalid kind: no effect
+	effects.BearerRotatedCacheOnly(BearerKindAPI, "token")                // cache-only: never reschedules
+	effects.BearerRotatedCacheOnly(0, "token")                            // invalid kind: no effect
+	effects.BearerRotatedCacheOnly(BearerKindAPI, "")                     // empty token id: no effect
+	effects.BearerElevationPolicyChanged(BearerKindAPI, "token")          // cache-only: closes nothing
+	effects.BearerElevationPolicyChanged(0, "token")                      // invalid kind: no effect
+	effects.BearerElevationPolicyChanged(BearerKindAPI, "")               // empty token id: no effect
 	effects.UserRevoked("", 1)
 	// UserRevoked("user", 0) is intentionally NOT here: a non-positive generation
 	// with a real userID is no longer an "incomplete key" -- it fails SAFE and
@@ -417,4 +423,74 @@ func TestUserRevokedNonPositiveGenerationFailsSafe(t *testing.T) {
 		"a non-positive-generation user revocation must still cancel the user's leases (fail safe)")
 	assert.Equal(t, []userRevocationCall{{userID: "user", generation: 0}}, closer.users,
 		"the channel teardown must be invoked, not skipped, for a non-positive generation")
+}
+
+// TestBearerRotatedNarrowingTearsDownRatherThanExtends pins the half of a
+// refresh that a split API would let a caller forget.
+//
+// RFC 6749 section 6 lets a refresh NARROW its grant. An open Noise channel
+// carries the scope set announced at its handshake, and the hub cannot
+// renegotiate a session it cannot read -- so a narrowing that only evicted the
+// cache would leave every channel running at the authority its owner had just
+// withdrawn, and nothing would report it.
+func TestBearerRotatedNarrowingTearsDownRatherThanExtends(t *testing.T) {
+	closer := &recordingCredentialCloser{}
+	_, registry := NewInterceptor(InterceptorOptions{})
+	t.Cleanup(registry.Stop)
+	effects := NewCredentialLifecycleEffects(registry, closer, closer)
+
+	leaseCtx, leaseCancel := context.WithCancel(context.Background())
+	release, outcome := registry.RegisterAuthenticatedLease(context.Background(), &UserInfo{
+		ID: userid.MustNew("narrow-user"), Credential: APICredential("api-narrow"),
+	}, leaseCancel)
+	require.Equal(t, LeaseGranted, outcome)
+	t.Cleanup(release)
+
+	effects.BearerRotated(BearerKindAPI, "api-narrow", time.Now().Add(time.Hour), true)
+
+	assert.ErrorIs(t, leaseCtx.Err(), context.Canceled,
+		"a narrowing rotation must cancel the leases authorized under the wider grant")
+	assert.Equal(t, []BearerRef{{kind: BearerKindAPI, tokenID: "api-narrow"}}, closer.bearers,
+		"a narrowing rotation must close the bearer's channels")
+	assert.Empty(t, closer.rescheduledBearers,
+		"a narrowing rotation must not EXTEND anything; the authority is being withdrawn")
+}
+
+// TestBearerRescopedPicksItsEffectFromBothSets pins why BearerRescoped takes
+// the pair rather than the new set alone: whether a change withdraws authority
+// is a property of BOTH, and a method that took only `after` would make every
+// caller re-derive it.
+func TestBearerRescopedPicksItsEffectFromBothSets(t *testing.T) {
+	narrow := authscope.MustNew(leapmuxv1.Scope_SCOPE_WORKSPACE_READ)
+	wide := authscope.MustNew(leapmuxv1.Scope_SCOPE_WORKSPACE_READ, leapmuxv1.Scope_SCOPE_FILE_READ)
+
+	t.Run("widening is cache-only", func(t *testing.T) {
+		closer := &recordingCredentialCloser{}
+		_, registry := NewInterceptor(InterceptorOptions{})
+		t.Cleanup(registry.Stop)
+		effects := NewCredentialLifecycleEffects(registry, closer, closer)
+
+		effects.BearerRescoped(BearerKindAPI, "api-widen", narrow, wide)
+		assert.Empty(t, closer.bearers, "nothing already running exceeds the wider grant")
+	})
+
+	t.Run("narrowing tears down", func(t *testing.T) {
+		closer := &recordingCredentialCloser{}
+		_, registry := NewInterceptor(InterceptorOptions{})
+		t.Cleanup(registry.Stop)
+		effects := NewCredentialLifecycleEffects(registry, closer, closer)
+
+		effects.BearerRescoped(BearerKindAPI, "api-narrow", wide, narrow)
+		assert.Equal(t, []BearerRef{{kind: BearerKindAPI, tokenID: "api-narrow"}}, closer.bearers)
+	})
+
+	t.Run("an unchanged grant is cache-only", func(t *testing.T) {
+		closer := &recordingCredentialCloser{}
+		_, registry := NewInterceptor(InterceptorOptions{})
+		t.Cleanup(registry.Stop)
+		effects := NewCredentialLifecycleEffects(registry, closer, closer)
+
+		effects.BearerRescoped(BearerKindAPI, "api-same", wide, wide)
+		assert.Empty(t, closer.bearers)
+	})
 }

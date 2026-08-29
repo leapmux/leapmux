@@ -2,7 +2,7 @@
 title: "Control CLI"
 description: "Drive LeapMux from a script, CI job, or another agent with leapmux control: open tabs, message agents, type into terminals, reshape layouts, and stream events."
 type: docs
-weight: 8
+weight: 9
 ---
 
 `leapmux control` is a JSON-emitting command-line surface for driving LeapMux from outside the browser. It lets you open and close tabs, send messages to agents, type into terminals, reshape the tile layout, inspect files and git state on a Worker, and stream live workspace events — all from a script, a CI job, or another agent.
@@ -90,11 +90,13 @@ Authorizes the CLI against a Hub and writes a credential file to disk. The `--hu
 | Flag | Default | Purpose |
 | --- | --- | --- |
 | `--hub <url>` | `$LEAPMUX_HUB` | Hub base URL (required) |
-| `--device-name <name>` | `$USER@$hostname` | Human-visible name recorded with the credential |
+| `--device-name <name>` | `$USER@$hostname` | Label for this copy of the CLI, shown in the account's connected-apps list |
 | `--device-code` | `false` | Force the RFC 8628 device-code flow (headless / SSH / container) |
-| `--admin` | `false` | Also request hub administration for this credential |
+| `--scope <permissions>` | everything except `admin:*` | The permissions to ask for, space- or comma-separated |
 
-**You verify your identity in the browser, not in the terminal.** Authorizing a CLI credential needs an elevated session, so the consent page sends you through a verification prompt (password, passkey, or your identity provider) before it hands anything back. That elevation lasts {{< duration elevation-window >}}, so a second login in the same sitting does not ask again. See [Session elevation](/docs/operating/security/#session-elevation).
+The CLI is a registered app like any other, so a login is an ordinary OAuth 2.1 authorization. See [App Authorization](/docs/operating/app-authorization/) for how apps are registered and what they may ask for, and [OAuth API](/docs/reference/oauth-api/) for the wire contract.
+
+**You verify your identity in the browser, not in the terminal.** Authorizing a credential needs an elevated session, so the consent page sends you through a verification prompt (password, passkey, or your identity provider) before it hands anything back. That elevation lasts {{< duration elevation-window >}}, so a second login in the same sitting does not ask again. See [Session elevation](/docs/operating/security/#session-elevation).
 
 **Default flow (PKCE local redirect).** The CLI opens a loopback listener on `127.0.0.1`, prints the authorization URL with an instruction to open it in your browser, and tries to launch your browser automatically (`open` on macOS, `xdg-open` on Linux, the shell handler on Windows). You sign in on the Hub's web page; the Hub redirects back to the loopback listener to complete the exchange. The CLI waits up to **10 minutes** for the callback before failing with `{"error":{"code":"timeout",...}}`.
 
@@ -108,7 +110,7 @@ leapmux control auth login --hub https://leapmux.example.com
 leapmux control auth login --hub https://leapmux.example.com --device-code
 ```
 
-The output holds three things: the verification URL (`https://<hub>/auth/cli/activate`), the user code, and a second link that carries the code in its query string.
+The output holds three things: the verification URL (`https://<hub>/oauth/device`), the user code, and a second link that carries the code in its query string.
 
 The user code is six characters from an ambiguity-free alphabet (no `0`/`1`/`I`/`O`/`L`), displayed as `XXX-XXX`. You open the verification URL on any device, enter the code, and the CLI (which polls in the background) completes once you approve. The second link pre-fills the code so you can skip the typing. On success, both flows persist a credential file and emit:
 
@@ -118,20 +120,30 @@ The user code is six characters from an ambiguity-free alphabet (no `0`/`1`/`I`/
     "hub_url": "https://leapmux.example.com",
     "username": "alice",
     "user_id": "usr_...",
-    "admin_scope": false
+    "scope": "account:read account:write workspace:read workspace:write worker:read worker:admin agent:read agent:write terminal:read terminal:write file:read git:read git:write tunnel:open"
   }
 }
 ```
 
-### `--admin`: hub administration is opt-in
+### `--scope`: what the credential may do
 
-A credential minted without `--admin` can do everything you can do **except** administer the hub. `leapmux control admin ...` refuses it even when your account is an administrator. So a routine login leaves no hub-administration credential on disk.
+An omitted `--scope` asks for everything you can do **except** administer the hub. So a routine login leaves no hub-administration credential on disk, and `leapmux control admin ...` refuses it even when your account is an administrator.
+
+Name the permissions to ask for less, or to ask for administration:
 
 ```bash
-leapmux control auth login --hub https://leapmux.example.com --admin
+# A credential that reads files and git state, and nothing else.
+leapmux control auth login --hub https://leapmux.example.com --scope "file:read git:read"
+
+# A credential that administers the hub. Only an administrator may grant it.
+leapmux control auth login --hub https://leapmux.example.com --scope "admin:read admin:users admin:settings admin:workers admin:apps"
 ```
 
-Only an administrator may grant the scope, and the browser decides: the PKCE consent page states what the credential will be able to do, and the device-code activation page offers a checkbox. Both pages show the device name the CLI reported, so you approve something you can identify. Because the checkbox can be left clear, the CLI reports the scope it actually received rather than the one you asked for.
+Both separators work: the wire format is space-delimited, which a shell needs quoted, and a comma-separated list is what most people type.
+
+The **browser** decides. The consent page states in sentences what the credential will be able to do, and you approve or refuse there. The permission list in the response is what you actually granted, which is what the CLI records — and it may be wider than you asked for, because some permissions imply others. `file:read` implies `worker:read`, since reading a file means reaching the machine that holds it.
+
+The whole vocabulary is in [App Authorization](/docs/operating/app-authorization/#permissions).
 
 ### Renewal and lifetime
 
@@ -145,12 +157,12 @@ Logging in again on the same machine **revokes the credential it replaces**, so 
 
 | Command | Flags | Output |
 | --- | --- | --- |
-| `auth status` | `--hub` | `{hub_url, username, user_id, expires, expired, refresh_expires, admin_scope, token_id}` for the specified Hub. Error `not_logged_in` if there is no credential. `expires` is the hour-long access token, which renews itself; `refresh_expires` is when the device must sign in again. |
-| `auth list` | none | An array of `{hub_url, username, user_id, expires, admin_scope}` for every Hub you have credentials for. |
-| `auth credentials` | `--hub` | An array of `{id, client_type, client_name, created_at, last_used_at, refresh_expires, expires, admin_scope, current}` for every credential the account holds. `current` marks the one this command uses. Each credential carries exactly one deadline: a renewing credential reports `refresh_expires`, and one minted with `--ttl` reports `expires`. A row with neither never expires. |
+| `auth status` | `--hub` | `{hub_url, username, user_id, expires, expired, refresh_expires, scope, token_id}` for the specified Hub. Error `not_logged_in` if there is no credential. `expires` is the hour-long access token, which renews itself; `refresh_expires` is when the device must sign in again. |
+| `auth list` | none | An array of `{hub_url, username, user_id, expires, scope}` for every Hub you have credentials for. |
+| `auth credentials` | `--hub` | An array of `{id, client_id, client_name, installation_name, created_at, last_used_at, refresh_expires, expires, granted_scopes, client_verified, current}` for every credential the account holds. `client_name` is the app and `installation_name` is which copy of it. `current` marks the one this command uses. Each credential carries exactly one deadline: a renewing credential reports `refresh_expires`, and one minted with `--ttl` reports `expires`. A row with neither never expires. |
 | `auth logout` | `--hub` | Best-effort revokes the token on the Hub, then deletes the local credential file. Emits `{hub_url}`. |
 
-**`list` and `credentials` answer different questions.** `list` reads this machine's credential files — which Hubs this box can reach. `credentials` asks the Hub what the whole account holds — what else can reach your account, from anywhere. It is the same list the browser shows under **Preferences → Account → Command-line credentials**, where you can also revoke.
+**`list` and `credentials` answer different questions.** `list` reads this machine's credential files — which Hubs this box can reach. `credentials` asks the Hub what the whole account holds — what else can reach your account, from anywhere. It is the same list the browser shows under **Preferences → Account → Connected apps**, where you can also disconnect. See [Connected Apps](/docs/using/connected-apps/).
 
 ```bash
 leapmux control auth list
@@ -173,7 +185,7 @@ Credentials are written one file per Hub:
 2. `$XDG_CONFIG_HOME/leapmux/control`
 3. `~/.config/leapmux/control`
 
-`<hub-host>` is the Hub's hostname, with `_<port>` appended when the URL carries a port (for example `leapmux.example.com_8443`). The file is written atomically with mode `0600`, in a directory created with mode `0700`. It contains the access token, the refresh token, both expiries, your user identity, the token id, and the admin scope.
+`<hub-host>` is the Hub's hostname, with `_<port>` appended when the URL carries a port (for example `leapmux.example.com_8443`). The file is written atomically with mode `0600`, in a directory created with mode `0700`. It contains the access token, the refresh token, both expiries, your user identity, the token id, and the permissions the credential holds.
 
 > **Tip:** Point `LEAPMUX_CONTROL_CONFIG_DIR` at a per-job directory to keep CI credentials isolated and easy to discard.
 
@@ -187,11 +199,16 @@ leapmux control admin api-token issue --user-id usr_... --client-name "ci-bot"
 
 This prints an `access_token` of the form `lmx_a<id>_<secret>` exactly once. Supply it to the CLI by setting it as the bearer for the Hub transport. Issuing, listing, and revoking these tokens is covered under [API tokens](#api-tokens) below.
 
-A service account that must run `leapmux control admin ...` needs the admin scope too. Pass `--admin`, and only to an owner who is already an administrator:
+A credential issued this way belongs to the built-in **service account** registration rather than to the control CLI, because "an administrator issued this out of band" is an answer to which app holds it. It appears in the owner's connected-apps list under that name.
+
+A service account that must run `leapmux control admin ...` needs the admin permissions too. Name them, and only for an owner who is already an administrator:
 
 ```bash
-leapmux control admin api-token issue --user-id usr_... --client-name "ci-bot" --admin
+leapmux control admin api-token issue --user-id usr_... --installation-name "ci-bot" \
+  --scope "admin:read admin:users"
 ```
+
+A credential can never issue one wider than itself. An administrator running this from a credential that holds `admin:users` alone is refused a request for `tunnel:open`, so the chain terminates at the browser consent that started it.
 
 **What an admin-scoped credential cannot do.** One rule decides it, rather than a list of verb names: **an admin verb that creates a new way into an account needs a browser session that verified recently.** A command-line credential is refused there however recently it verified, because the verb hands out authority the credential itself did not have, and the session that would verify it is the granting one.
 
@@ -202,7 +219,7 @@ Today the rule covers four things:
 - `user grant-admin` **and** `user revoke-admin` — one hub procedure carries both directions, so the refusal covers the demotion as well as the promotion. Plan an emergency demotion from a browser; a CI credential cannot run it.
 - `user update --email` and `user update --email-verified` — the address receives the password-reset link, so writing one hands over a way in.
 
-Every other admin write that needs verification accepts a **command-line credential that verified recently**: `api-token issue`, `user delete`, `user update --display-name` and `--clear-pending-email`, `settings set` / `set-secret` / `reset` with the `captcha` and `rate-limit` sugar over them, and the `oauth-provider` add, remove, enable and disable verbs. Reads need no verification at all.
+Every other admin write that needs verification accepts a **command-line credential that verified recently**: `api-token issue`, `user delete`, `user update --display-name` and `--clear-pending-email`, `settings set` / `set-secret` / `reset` with the `captcha` and `rate-limit` sugar over them, and the `idp` add, remove, enable and disable verbs. Reads need no verification at all.
 
 `api-token issue` is on that second list because a headless service account has to be able to renew. What limits it instead is the credential it mints: **a credential issued by another credential does not renew, and it expires no later than the one that issued it.** So a chain of self-issued credentials gets shorter each time and ends at the browser consent that started it. To issue one that renews, run the verb from a browser-backed session.
 
@@ -632,7 +649,7 @@ leapmux control admin user         list | get | create | update | delete | grant
 leapmux control admin session      list | revoke | revoke-user | purge-expired
 leapmux control admin worker       list | get | deregister
 leapmux control admin worker reg-key  list | revoke | purge-expired
-leapmux control admin oauth-provider  add | list | remove | enable | disable
+leapmux control admin idp  add | list | remove | enable | disable
 leapmux control admin captcha      show | set | enable | disable | reset
 leapmux control admin rate-limit   list | set | enable | disable | reset
 leapmux control admin api-token    list | issue | revoke
@@ -709,7 +726,12 @@ Four refusals are worth knowing before you type the command:
 
 ### Rate limits
 
-The `rate-limit` group is sugar over the `rate_limit.<operation>` settings keys. `elevation` is the one catalogued operation today; a typo answers with the known names before the CLI dials the hub.
+The `rate-limit` group is sugar over the `rate_limit.<operation>` settings keys. Two operations are catalogued, and a typo answers with the known names before the CLI dials the hub:
+
+| Operation | Limits | Keyed by |
+|---|---|---|
+| `elevation` | Failed attempts to verify your identity for a sensitive change. | The user. Hidden in solo mode, which has one. |
+| `oauth_anonymous` | The authorization server's three anonymous endpoints — `/oauth/device-authorization`, `/oauth/token` and `/oauth/register`. | The client address. Enforced in solo mode too, because those endpoints are served there. |
 
 ```bash
 leapmux control admin rate-limit list
@@ -721,7 +743,7 @@ leapmux control admin rate-limit reset   --operation elevation
 
 | Flag | Applies to | Meaning |
 | --- | --- | --- |
-| `--operation` | `set`, `enable`, `disable`, `reset` | The operation to limit. Required; known value: `elevation`. |
+| `--operation` | `set`, `enable`, `disable`, `reset` | The operation to limit. Required; known values: `elevation`, `oauth_anonymous`. |
 | `--max-attempts` | `set` | Failed attempts allowed per window (1–1000). |
 | `--window` | `set` | Window length in seconds (60–86400). |
 
@@ -745,7 +767,7 @@ The offline twin is [`leapmux recover password reset`](/docs/operating/recover/#
 ### API tokens
 
 ```bash
-leapmux control admin api-token issue --user-id usr_... --client-name "ci-bot" --ttl 3600
+leapmux control admin api-token issue --user-id usr_... --installation-name "ci-bot" --ttl 3600
 ```
 
 Address the owner with `--user-id` or `--username`, the selector every other user-addressing verb takes. The envelope carries the secrets exactly once; they cannot be retrieved later. Use the access token as the bearer for a headless `LEAPMUX_HUB=...` control CLI.
@@ -759,7 +781,9 @@ The two do not combine. A credential with both a long TTL and a refresh token lo
 
 The hub emails the owner whenever this verb issues a credential for them, on the same terms as a browser consent: only to a verified address, and only when SMTP is configured.
 
-`--admin` grants the token hub administration; without it the token can do everything its owner can do **except** reach an admin verb. The hub refuses the flag when the owner is not an administrator, rather than minting a credential whose scope and authority disagree. `api-token list` reports `admin_scope` on every row, so "which credentials can administer this hub" is answerable.
+`--scope` specifies the permissions the credential holds; omitting it grants everything the owner can do **except** administer the hub. The hub refuses an admin permission for an owner who is not an administrator, rather than minting a credential whose grant and authority disagree. It also refuses to issue a credential **wider than the one issuing it**, so a chain of self-issued credentials terminates at the browser consent that started it.
+
+`api-token list` reports `granted_scopes` on every row, so "which credentials can administer this hub" is answerable. The whole vocabulary is in [App Authorization](/docs/operating/app-authorization/#permissions).
 
 ## Sockets, `--hub unix:`/`npipe:`, and login
 
@@ -767,7 +791,7 @@ A `--hub` value may be a hub IPC listener (`unix:$HOME/.config/leapmux/hub/hub.s
 
 Login rules:
 
-- **Solo needs no login.** Solo mode authenticates every request as the local user; there is nothing to log in with (and the device-code flow cannot complete there — CLI activation is cookies-only and solo has no cookie session).
+- **Solo needs no login to use.** Solo mode authenticates every request as the local user, so ordinary commands need no credential. It still **authorizes apps**: a login there mints a scoped credential, and the Hub binds that credential's permissions rather than the solo account's. Both flows complete, because the consent pages accept the solo account. See [App Authorization](/docs/operating/app-authorization/#solo-mode).
 - A **non-solo hub over a socket** uses `--device-code`: `leapmux control auth login --hub unix:...hub.sock --device-code` dials the socket for the token exchange while you approve in a browser against the hub's **public** origin (which the hub derives itself from its settings — not from `--hub`). The PKCE local-redirect flow is refused for socket URLs with a message pointing at `--device-code`, because a browser cannot reach a socket hub origin.
 
 ```bash

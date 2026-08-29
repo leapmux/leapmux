@@ -1,5 +1,6 @@
 import { createClient } from '@connectrpc/connect'
 import { AdminSettingsService, AdminUserService } from '~/generated/leapmux/v1/admin_pb'
+import { AppService } from '~/generated/leapmux/v1/app_pb'
 import { AuthService } from '~/generated/leapmux/v1/auth_pb'
 import { ChannelService } from '~/generated/leapmux/v1/channel_pb'
 import { SectionService } from '~/generated/leapmux/v1/section_pb'
@@ -9,6 +10,7 @@ import { WorkerManagementService } from '~/generated/leapmux/v1/worker_pb'
 import { WorkspaceService } from '~/generated/leapmux/v1/workspace_pb'
 import { transport, unloadTransport } from './transport'
 
+export const appClient = createClient(AppService, transport)
 export const authClient = createClient(AuthService, transport)
 export const workerClient = createClient(WorkerManagementService, transport)
 export const userClient = createClient(UserService, transport)

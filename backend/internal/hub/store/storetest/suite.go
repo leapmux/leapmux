@@ -58,6 +58,8 @@ func (s *Suite) Run(t *testing.T) {
 	t.Run("cleanup", s.testCleanup)
 	t.Run("cleanup_boundaries", s.testCleanupBoundaries)
 	t.Run("time_floor", s.testTimeFloor)
+	t.Run("oauth_clients", s.testOAuthClients)
+	t.Run("credential_roundtrip", s.testCredentialRoundTrip)
 	t.Run("token_revocation", s.testTokenRevocation)
 	t.Run("token_listing", s.testTokenListing)
 	// `migrator` runs last because its `migrate to zero` subtest leaves

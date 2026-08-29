@@ -27,7 +27,7 @@ import (
 // months, so without this the credential a login mints is usable for
 // exactly one hour and then demands a browser again.
 
-// refreshServer stands in for /auth/cli/refresh. It records every request
+// refreshServer stands in for the /oauth/token refresh grant. It records every request
 // and answers from `respond`.
 type refreshServer struct {
 	mu        sync.Mutex
@@ -40,7 +40,7 @@ func newRefreshServer(t *testing.T, respond func(w http.ResponseWriter, presente
 	t.Helper()
 	rs := &refreshServer{respond: respond}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/auth/cli/refresh", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/oauth/token", func(w http.ResponseWriter, r *http.Request) {
 		require.NoError(t, r.ParseForm())
 		presented := r.FormValue("refresh_token")
 		rs.mu.Lock()
@@ -254,6 +254,79 @@ func TestEnsureFreshBearer_RenewsInsideTheSkew(t *testing.T) {
 		"the deadline that sends the device back to a browser must be recorded")
 }
 
+// TestRefresh_AdoptsTheReportedScope pins that a rotation updates the stored
+// grant, not only the token pair.
+//
+// The hub names the credential's REACHABLE scope on every rotation -- the
+// stored grant narrowed to the app registration's ceiling -- so an owner
+// removing a permission from the registration reaches this file on the next
+// renewal. Ignoring the field kept `auth status` printing a grant the hub
+// stopped honoring, which is exactly the drift a reporting surface must not
+// have.
+func TestRefresh_AdoptsTheReportedScope(t *testing.T) {
+	rs := newRefreshServer(t, func(w http.ResponseWriter, _ string) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token":       "lmx_a_access_1",
+			"refresh_token":      "lmx_a_refresh_1",
+			"expires_in":         3600,
+			"refresh_expires_in": 7776000,
+			"token_id":           "tok-1",
+			"scope":              "workspace:read worker:read file:read",
+		})
+	})
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+	require.NoError(t, SaveCredentials(rs.server.URL, CredentialFile{
+		HubURL:       rs.server.URL,
+		AccessToken:  "lmx_a_access_0",
+		RefreshToken: "lmx_a_refresh_0",
+		ExpiresAt:    time.Now().Add(refreshSkew / 2),
+		Scope:        "workspace:read worker:read terminal:write file:read",
+	}))
+
+	c, err := NewClient(rs.server.URL)
+	require.NoError(t, err)
+	require.NoError(t, c.EnsureFreshBearer(context.Background()))
+
+	stored, err := LoadCredentials(rs.server.URL)
+	require.NoError(t, err)
+	assert.Equal(t, "workspace:read worker:read file:read", stored.Scope,
+		"a narrowed grant the hub reports must replace the stored one")
+}
+
+// TestRefresh_KeepsTheStoredScopeWhenTheHubAnswersNone is the silence guard:
+// an empty field is a hub that did not answer, and wiping the stored grant on
+// silence would make every credential look unscoped-or-empty to `auth status`.
+func TestRefresh_KeepsTheStoredScopeWhenTheHubAnswersNone(t *testing.T) {
+	rs := newRefreshServer(t, func(w http.ResponseWriter, _ string) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token":       "lmx_a_access_1",
+			"refresh_token":      "lmx_a_refresh_1",
+			"expires_in":         3600,
+			"refresh_expires_in": 7776000,
+			"token_id":           "tok-1",
+		})
+	})
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+	require.NoError(t, SaveCredentials(rs.server.URL, CredentialFile{
+		HubURL:       rs.server.URL,
+		AccessToken:  "lmx_a_access_0",
+		RefreshToken: "lmx_a_refresh_0",
+		ExpiresAt:    time.Now().Add(refreshSkew / 2),
+		Scope:        "workspace:read",
+	}))
+
+	c, err := NewClient(rs.server.URL)
+	require.NoError(t, err)
+	require.NoError(t, c.EnsureFreshBearer(context.Background()))
+
+	stored, err := LoadCredentials(rs.server.URL)
+	require.NoError(t, err)
+	assert.Equal(t, "workspace:read", stored.Scope,
+		"a hub that answers no scope must not wipe the stored one")
+}
+
 // TestRefresh_InvalidGrantDeletesTheCredential pins the permanent case. A
 // revoked, reused, or lifetime-expired credential can never work again, so
 // retrying it achieves nothing; deleting it makes the next command answer
@@ -459,7 +532,7 @@ func TestAuthInterceptor_RetriesOnceAfterUnauthenticated(t *testing.T) {
 	path, h := leapmuxv1connect.NewChannelServiceHandler(handler)
 	mux.Handle(path, h)
 	// Serve the refresh endpoint from the SAME origin the credential specifies.
-	mux.HandleFunc("/auth/cli/refresh", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/oauth/token", func(w http.ResponseWriter, r *http.Request) {
 		require.NoError(t, r.ParseForm())
 		rotatingResponder(&counter)(w, r.FormValue("refresh_token"))
 	})
@@ -496,7 +569,7 @@ func TestAuthInterceptor_DoesNotRetryTwice(t *testing.T) {
 	mux := http.NewServeMux()
 	path, h := leapmuxv1connect.NewChannelServiceHandler(handler)
 	mux.Handle(path, h)
-	mux.HandleFunc("/auth/cli/refresh", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/oauth/token", func(w http.ResponseWriter, r *http.Request) {
 		require.NoError(t, r.ParseForm())
 		rotatingResponder(&counter)(w, r.FormValue("refresh_token"))
 	})
@@ -582,8 +655,11 @@ func newRepairHub(t *testing.T, expiresIn int, answers ...error) *repairHub {
 	mux := http.NewServeMux()
 	path, handler := leapmuxv1connect.NewChannelServiceHandler(h.rpc)
 	mux.Handle(path, handler)
-	h.elevation.register(mux)
-	mux.HandleFunc("/auth/cli/refresh", func(w http.ResponseWriter, r *http.Request) {
+	// ONE token endpoint for both grants, routed by grant_type, because that
+	// is what the hub serves: the refresh leg and the device-code poll no
+	// longer have addresses of their own.
+	mux.HandleFunc("/oauth/step-up", h.elevation.startLeg())
+	mux.HandleFunc("/oauth/token", h.elevation.tokenEndpoint(func(w http.ResponseWriter, r *http.Request) {
 		require.NoError(t, r.ParseForm())
 		n := h.rotations.Add(1)
 		w.Header().Set("Content-Type", "application/json")
@@ -594,7 +670,7 @@ func newRepairHub(t *testing.T, expiresIn int, answers ...error) *repairHub {
 			"refresh_expires_in": 7776000,
 			"token_id":           "tok-1",
 		})
-	})
+	}))
 	h.server = httptest.NewServer(mux)
 	t.Cleanup(h.server.Close)
 	return h

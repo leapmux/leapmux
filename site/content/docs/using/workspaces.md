@@ -2,7 +2,7 @@
 title: "Workspaces"
 description: "The top-level container in LeapMux for tiled agent, terminal, and file tabs: create, rename, delete, organize, and switch between workspaces."
 type: docs
-weight: 3
+weight: 4
 ---
 
 A **workspace** is the top-level container you work inside. It holds a tiling layout of tabs — coding agents, terminals, and file browsers — each tab tied to a Worker (machine), a working directory, and (usually) a git branch. Every workspace is owned by the user who created it (you see only your own), and persists across restarts (see [Coding Agents](/docs/using/coding-agents/) and [Terminals](/docs/using/terminals/) for how agent and terminal sessions are restored). This chapter covers creating, renaming, deleting, organizing, and switching between workspaces.

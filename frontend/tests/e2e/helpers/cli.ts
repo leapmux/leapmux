@@ -67,6 +67,43 @@ export interface CLITokenSource {
 }
 
 /**
+ * Every permission the E2E CLI credential asks for, in the RFC 6749 §3.3
+ * spelling the hub stores.
+ *
+ * The specs that drive `control admin ...` need the admin permissions: the hub
+ * refuses an ordinary credential every Admin* procedure, even for an
+ * administrator. See operating/security.md on why that is the default. The
+ * rest is what an omitted scope would have granted anyway, and it is named
+ * because the ISSUER CEILING refuses a credential wider than the one issuing
+ * it — an elevated session is unscoped, so this asks for exactly what the
+ * specs use.
+ *
+ * ONE list, read by both the mint request and the credential file the fixture
+ * writes beside it. Two copies would let the file claim a grant the row does
+ * not carry, which is precisely what `auth status` would then print.
+ */
+const E2E_CLI_SCOPES = [
+  'account:read',
+  'account:write',
+  'workspace:read',
+  'workspace:write',
+  'worker:read',
+  'worker:admin',
+  'agent:read',
+  'agent:write',
+  'terminal:read',
+  'terminal:write',
+  'file:read',
+  'git:read',
+  'git:write',
+  'tunnel:open',
+  'admin:read',
+  'admin:users',
+  'admin:settings',
+  'admin:workers',
+]
+
+/**
  * Mint an api_tokens row for the test hub's admin user over the hub's own
  * RPC surface, then write a credential file under a fresh per-test config
  * dir. Returns the dir + bearer so subsequent `runCLI` calls can
@@ -91,10 +128,10 @@ export async function mintCLITokenForAdmin(source: CLITokenSource, options?: {
   const cookie = source.adminPassword && source.adminUsername
     ? await loginForMint(source.hubUrl, source.adminUsername, source.adminPassword)
     : source.adminToken
-  // Issuing an admin-scoped CLI credential is an elevated-only action, the
-  // same as every /auth/cli/* consent leg: it mints a bearer that outlives
-  // the browser session by a year. So the mint elevates first, exactly as a
-  // person at the verification screen does.
+  // Issuing an admin-scoped credential is an elevated-only action, the same as
+  // every /oauth/ consent leg: it mints a bearer that outlives the browser
+  // session by a year. So the mint elevates first, exactly as a person at the
+  // verification screen does.
   //
   // BOTH branches, and that is the point: the fallback branch reuses a
   // fixture cookie minted by sign-up, which is no more elevated than a fresh
@@ -113,13 +150,12 @@ export async function mintCLITokenForAdmin(source: CLITokenSource, options?: {
     headers: { 'Content-Type': 'application/json', 'Cookie': cookie },
     body: JSON.stringify({
       userId: userID,
-      clientType: 'cli',
-      clientName: `e2e-${Date.now()}`,
+      // WHICH COPY of the app this credential is for. One app holds one per
+      // machine, so the app itself cannot tell two rows apart.
+      installationName: `e2e-${Date.now()}`,
       ttlSeconds: '3600',
-      // The specs that drive `control admin ...` need it: the hub refuses an
-      // ordinary CLI credential every Admin* procedure, even for an
-      // administrator. See operating/security.md on why that is the default.
-      adminScope: true,
+      // See E2E_CLI_SCOPES.
+      scopes: E2E_CLI_SCOPES,
     }),
   })
   if (!res.ok) {
@@ -157,7 +193,10 @@ export async function mintCLITokenForAdmin(source: CLITokenSource, options?: {
     expires_at: new Date(Date.now() + 3_600_000).toISOString(),
     user_id: userID,
     username: 'admin',
-    admin_scope: true,
+    // ADVISORY, exactly as the CLI writes it: the hub decides the grant, and
+    // this only lets `auth status` say what the credential was given without a
+    // round trip. It must match what the mint above asked for.
+    scope: E2E_CLI_SCOPES.join(' '),
   }
   writeFileSync(credPath, JSON.stringify(cred, null, 2), { mode: 0o600 })
 
@@ -178,23 +217,22 @@ export async function mintCLITokenForAdmin(source: CLITokenSource, options?: {
  * Run the browser step-up ceremony for a freshly minted CLI credential.
  *
  * The REAL leg, end to end, because a fixture that stamped the row directly
- * would let the ceremony rot: the CLI posts
- * `/auth/cli/elevate-authorization` for a user code, and the person approves
- * that code at `/auth/cli/activate` from an already elevated browser session.
- * This does both halves with `fetch`, which is what a person does with a
- * browser.
+ * would let the ceremony rot: the app posts `/oauth/step-up` for a user code,
+ * and the person approves that code at `/oauth/device` from an already
+ * elevated browser session. This does both halves with `fetch`, which is what
+ * a person does with a browser.
  *
  * The approving session must itself be elevated, which is why the caller
  * elevates it before the mint and this reuses that cookie.
  */
 async function elevateMintedCredential(hubUrl: string, bearer: string, cookie: string): Promise<void> {
-  const started = await fetch(`${hubUrl}/auth/cli/elevate-authorization`, {
+  const started = await fetch(`${hubUrl}/oauth/step-up`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded',
       'Authorization': `Bearer ${bearer}`,
     },
-    body: new URLSearchParams({ device_name: 'e2e-fixture' }).toString(),
+    body: new URLSearchParams({ installation_name: 'e2e-fixture' }).toString(),
   })
   if (!started.ok) {
     throw new Error(`mintCLITokenForAdmin: elevate-authorization ${started.status}: ${await started.text()}`)
@@ -204,10 +242,10 @@ async function elevateMintedCredential(hubUrl: string, bearer: string, cookie: s
     throw new Error('mintCLITokenForAdmin: elevate-authorization returned no user_code')
   }
 
-  const approved = await fetch(`${hubUrl}/auth/cli/activate`, {
+  const approved = await fetch(`${hubUrl}/oauth/device`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Cookie': cookie },
-    body: new URLSearchParams({ user_code: grant.user_code }).toString(),
+    body: new URLSearchParams({ user_code: grant.user_code, decision: 'allow' }).toString(),
     redirect: 'manual',
   })
   // The page answers 200 with the "verified" body. Anything else means the
@@ -222,8 +260,8 @@ async function elevateMintedCredential(hubUrl: string, bearer: string, cookie: s
  * Prove a factor on the session the mint is about to use.
  *
  * Signing in is not enough: the hub refuses IssueAPIToken from a session that
- * did not prove a factor recently, which is the same rule every
- * `/auth/cli/*` consent leg applies. Elevating here is the honest fixture —
+ * did not prove a factor recently, which is the same rule every `/oauth/`
+ * consent leg applies. Elevating here is the honest fixture —
  * it is the step the browser takes before the same screen appears.
  *
  * Re-elevating an already-elevated session is harmless: the grant replaces

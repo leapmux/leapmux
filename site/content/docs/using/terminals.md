@@ -2,7 +2,7 @@
 title: "Terminals"
 description: "Full shell terminals in LeapMux that run on a Worker and stream over the end-to-end-encrypted channel: open one, use it, and keep it across reconnects."
 type: docs
-weight: 7
+weight: 8
 ---
 
 LeapMux gives you full shell terminals that run on a Worker and stream into your Frontend (browser or desktop app) over the same end-to-end-encrypted channel as your agents. A terminal is a tab, just like an agent or a file viewer — you can tile it, float it, move it between workspaces, and it survives page refreshes and reconnects.

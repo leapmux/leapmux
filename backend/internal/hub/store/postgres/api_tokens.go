@@ -16,12 +16,36 @@ type apiTokenStore struct{ conn *pgConn }
 
 var _ store.APITokenStore = (*apiTokenStore)(nil)
 
-func fromDBAPIToken(t gendb.ApiToken) store.APIToken {
+// joinedClient carries the four oauth_clients columns every api_tokens read
+// selects alongside the row. It is a PARAMETER of the converter rather than a
+// later assignment, so a query that forgets the join fails to compile instead
+// of producing a credential whose app is silently blank -- which would read as
+// "not revoked", "may not elevate" and, worse, "reaches nothing", since an
+// empty ceiling narrows every grant to the empty set.
+type joinedClient struct {
+	Name             string
+	Scopes           string
+	ElevationAllowed bool
+	RevokedAt        *time.Time
+}
+
+// joinedClientOf adapts the generated row's three client columns. See the
+// sqlite twin.
+func joinedClientOf(name, scopes string, elevationAllowed bool, revokedAt pgtime.NullTime) joinedClient {
+	return joinedClient{Name: name, Scopes: scopes, ElevationAllowed: elevationAllowed, RevokedAt: revokedAt.Ptr()}
+}
+
+func fromDBAPIToken(t gendb.ApiToken, c joinedClient) store.APIToken {
 	return store.APIToken{
+		ClientName:               c.Name,
+		ClientScopes:             c.Scopes,
+		ClientElevationAllowed:   c.ElevationAllowed,
+		ClientRevokedAt:          c.RevokedAt,
 		ID:                       t.ID,
 		UserID:                   t.UserID,
-		ClientType:               t.ClientType,
-		ClientName:               t.ClientName,
+		ClientID:                 t.ClientID,
+		InstallationName:         t.InstallationName,
+		GrantedScopes:            t.GrantedScopes,
 		SecretHash:               t.SecretHash,
 		RefreshHash:              t.RefreshHash,
 		PreviousRefreshHash:      t.PreviousRefreshHash,
@@ -33,7 +57,6 @@ func fromDBAPIToken(t gendb.ApiToken) store.APIToken {
 		ExpiresAt:                t.ExpiresAt.Ptr(),
 		RefreshExpiresAt:         t.RefreshExpiresAt.Ptr(),
 		RevokedAt:                t.RevokedAt.Ptr(),
-		AdminScope:               t.AdminScope,
 		ElevationProvenAt:        t.ElevationProvenAt.Ptr(),
 		ElevationExpiresAt:       t.ElevationExpiresAt.Ptr(),
 	}
@@ -44,13 +67,13 @@ func (s *apiTokenStore) Create(ctx context.Context, p store.CreateAPITokenParams
 		return mapErr(tx.(*pgStore).conn.q.CreateAPIToken(ctx, gendb.CreateAPITokenParams{
 			ID:               p.ID,
 			UserID:           p.UserID.String(),
-			ClientType:       p.ClientType,
-			ClientName:       p.ClientName,
+			ClientID:         p.ClientID,
+			InstallationName: p.InstallationName,
+			GrantedScopes:    p.GrantedScopes,
 			SecretHash:       p.SecretHash,
 			RefreshHash:      p.RefreshHash,
 			ExpiresAt:        pgtime.NewNull(p.ExpiresAt),
 			RefreshExpiresAt: pgtime.NewNull(p.RefreshExpiresAt),
-			AdminScope:       p.AdminScope,
 		}))
 	})
 }
@@ -60,7 +83,7 @@ func (s *apiTokenStore) GetByID(ctx context.Context, id string) (*store.APIToken
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	out := fromDBAPIToken(t)
+	out := fromDBAPIToken(t.ApiToken, joinedClientOf(t.ClientName, t.ClientScopes, t.ClientElevationAllowed, t.ClientRevokedAt))
 	return &out, nil
 }
 
@@ -75,16 +98,26 @@ func (s *apiTokenStore) ListByUser(ctx context.Context, p store.ListAPITokensByU
 	}
 	return queryPage(ctx, p.Limit,
 		func() (gendb.ListAPITokensByUserParams, error) {
-			return listAPITokensByUserParams(owner, p.ClientType, p.Cursor, p.Limit)
+			return listAPITokensByUserParams(owner, p.ClientID, p.Cursor, p.Limit)
 		},
-		s.conn.q.ListAPITokensByUser, fromDBAPIToken)
+		s.conn.q.ListAPITokensByUser,
+		func(r gendb.ListAPITokensByUserRow) store.APIToken {
+			out := fromDBAPIToken(r.ApiToken, joinedClientOf(r.ClientName, r.ClientScopes, r.ClientElevationAllowed, r.ClientRevokedAt))
+			// Only this listing joins the vouch columns; every other
+			// reader of an api_tokens row asks validation questions, and
+			// the connected-app list is the one surface that labels rows
+			// with whether somebody vouched for the app.
+			out.ClientVerifiedAt = r.ClientVerifiedAt.Ptr()
+			out.ClientRegistrationSource = r.ClientRegistrationSource
+			return out
+		})
 }
 
 // apiTokenWithOwner assembles the JOINed listing row shared by the ListAll and
 // ListAllByUser query twins (mirroring workerWithOwner), so a field addition
 // to APITokenWithOwner edits one site instead of one closure per query.
-func apiTokenWithOwner(t gendb.ApiToken, ownerUsername string, ownerDeleted bool) store.APITokenWithOwner {
-	return store.APITokenWithOwner{APIToken: fromDBAPIToken(t), OwnerUsername: ownerUsername, OwnerDeleted: ownerDeleted}
+func apiTokenWithOwner(t gendb.ApiToken, c joinedClient, ownerUsername string, ownerDeleted bool) store.APITokenWithOwner {
+	return store.APITokenWithOwner{APIToken: fromDBAPIToken(t, c), OwnerUsername: ownerUsername, OwnerDeleted: ownerDeleted}
 }
 
 func (s *apiTokenStore) ListAll(ctx context.Context, p store.ListAllAPITokensParams) (store.Page[store.APITokenWithOwner], error) {
@@ -100,38 +133,38 @@ func (s *apiTokenStore) ListAll(ctx context.Context, p store.ListAllAPITokensPar
 	case p.UserID != nil && p.IncludeRevoked:
 		return queryPage(ctx, p.Limit,
 			func() (gendb.ListAllAPITokensByUserIncludingRevokedParams, error) {
-				return listAllAPITokensByUserIncludingRevokedParams(*p.UserID, p.ClientType, p.Cursor, p.Limit)
+				return listAllAPITokensByUserIncludingRevokedParams(*p.UserID, p.ClientID, p.Cursor, p.Limit)
 			},
 			s.conn.q.ListAllAPITokensByUserIncludingRevoked,
 			func(r gendb.ListAllAPITokensByUserIncludingRevokedRow) store.APITokenWithOwner {
-				return apiTokenWithOwner(r.ApiToken, r.OwnerUsername, r.OwnerDeleted)
+				return apiTokenWithOwner(r.ApiToken, joinedClientOf(r.ClientName, r.ClientScopes, r.ClientElevationAllowed, r.ClientRevokedAt), r.OwnerUsername, r.OwnerDeleted)
 			})
 	case p.UserID != nil:
 		return queryPage(ctx, p.Limit,
 			func() (gendb.ListAllAPITokensByUserParams, error) {
-				return listAllAPITokensByUserParams(*p.UserID, p.ClientType, p.Cursor, p.Limit)
+				return listAllAPITokensByUserParams(*p.UserID, p.ClientID, p.Cursor, p.Limit)
 			},
 			s.conn.q.ListAllAPITokensByUser,
 			func(r gendb.ListAllAPITokensByUserRow) store.APITokenWithOwner {
-				return apiTokenWithOwner(r.ApiToken, r.OwnerUsername, r.OwnerDeleted)
+				return apiTokenWithOwner(r.ApiToken, joinedClientOf(r.ClientName, r.ClientScopes, r.ClientElevationAllowed, r.ClientRevokedAt), r.OwnerUsername, r.OwnerDeleted)
 			})
 	case p.IncludeRevoked:
 		return queryPage(ctx, p.Limit,
 			func() (gendb.ListAllAPITokensIncludingRevokedParams, error) {
-				return listAllAPITokensIncludingRevokedParams(p.ClientType, p.Cursor, p.Limit)
+				return listAllAPITokensIncludingRevokedParams(p.ClientID, p.Cursor, p.Limit)
 			},
 			s.conn.q.ListAllAPITokensIncludingRevoked,
 			func(r gendb.ListAllAPITokensIncludingRevokedRow) store.APITokenWithOwner {
-				return apiTokenWithOwner(r.ApiToken, r.OwnerUsername, r.OwnerDeleted)
+				return apiTokenWithOwner(r.ApiToken, joinedClientOf(r.ClientName, r.ClientScopes, r.ClientElevationAllowed, r.ClientRevokedAt), r.OwnerUsername, r.OwnerDeleted)
 			})
 	default:
 		return queryPage(ctx, p.Limit,
 			func() (gendb.ListAllAPITokensParams, error) {
-				return listAllAPITokensParams(p.ClientType, p.Cursor, p.Limit)
+				return listAllAPITokensParams(p.ClientID, p.Cursor, p.Limit)
 			},
 			s.conn.q.ListAllAPITokens,
 			func(r gendb.ListAllAPITokensRow) store.APITokenWithOwner {
-				return apiTokenWithOwner(r.ApiToken, r.OwnerUsername, r.OwnerDeleted)
+				return apiTokenWithOwner(r.ApiToken, joinedClientOf(r.ClientName, r.ClientScopes, r.ClientElevationAllowed, r.ClientRevokedAt), r.OwnerUsername, r.OwnerDeleted)
 			})
 	}
 }
@@ -144,6 +177,7 @@ func (s *apiTokenStore) RotateRefresh(ctx context.Context, p store.RotateAPIToke
 	return store.RunCredentialMutation(ctx, s.conn.withTransaction, func(ctx context.Context, conn *pgConn) (*store.CredentialEvent, error) {
 		n, err := conn.q.RotateAPITokenRefresh(ctx, gendb.RotateAPITokenRefreshParams{
 			ID:                   p.ID,
+			NewGrantedScopes:     p.NewGrantedScopes,
 			NewSecretHash:        p.NewSecretHash,
 			NewExpiresAt:         pgtime.NewNull(p.NewExpiresAt),
 			NewRefreshHash:       p.NewRefreshHash,
@@ -161,11 +195,11 @@ func (s *apiTokenStore) RotateRefresh(ctx context.Context, p store.RotateAPIToke
 		if err != nil {
 			return nil, mapErr(err)
 		}
-		rotatedAt, err := sqlutil.RequireTime(row.LastRotatedAt.Time, row.LastRotatedAt.Valid, "last_rotated_at")
+		rotatedAt, err := sqlutil.RequireTime(row.ApiToken.LastRotatedAt.Time, row.ApiToken.LastRotatedAt.Valid, "last_rotated_at")
 		if err != nil {
 			return nil, err
 		}
-		return &store.CredentialEvent{Kind: store.RevocationEventKindAPITokenRotation, SubjectID: row.ID, UserID: row.UserID, At: rotatedAt}, nil
+		return &store.CredentialEvent{Kind: store.RevocationEventKindAPITokenRotation, SubjectID: row.ApiToken.ID, UserID: row.ApiToken.UserID, At: rotatedAt}, nil
 	}, emitCredentialEvent)
 }
 

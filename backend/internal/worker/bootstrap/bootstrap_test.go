@@ -17,7 +17,19 @@ import (
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/hub"
+
+	"github.com/leapmux/leapmux/internal/authscope"
 )
+
+// testChannelGrant is the grant a channel-open fixture announces.
+//
+// The Hub sends the opening credential's scopes on the wire, and a worker that
+// receives NONE refuses the handshake -- the zero grant reaches nothing, so an
+// omitted field denies rather than admits. Every fixture here is about what
+// happens AFTER the channel opens, so each announces the ordinary
+// non-administrative grant. A test that means to exercise a narrower one says
+// so at its own call site.
+var testChannelGrant = authscope.ScopesToWire(authscope.NonAdminGrant())
 
 func setupTestDB(t *testing.T) *db.Queries {
 	t.Helper()
@@ -418,6 +430,7 @@ func TestWire_PropagatesMaxMessageSize(t *testing.T) {
 		UserId:           "user-1",
 		HandshakePayload: msg1,
 		MaxMessageSize:   uint64(4 << 20), // hub larger than worker → worker wins
+		GrantedScopes:    testChannelGrant,
 	})
 	require.Empty(t, resp.GetError())
 	assert.Equal(t, uint64(configured), resp.GetMaxMessageSize(),

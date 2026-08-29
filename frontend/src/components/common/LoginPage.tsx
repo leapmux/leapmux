@@ -84,7 +84,7 @@ export const LoginPage: Component = () => {
       return
     }
     // Through postAuthNavigate, not navigate: a CLI login bounces here with
-    // `?redirect=/auth/cli/start...`, and that address belongs to the hub's
+    // `?redirect=/oauth/authorize...`, and that address belongs to the hub's
     // mux. A client-side transition would render the SPA's 404 page while
     // the CLI waits for a consent screen nobody ever sees.
     postAuthNavigate(navigate, stringParam(searchParams.redirect), '/')

@@ -8,6 +8,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/internal/authscope"
+	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
@@ -299,7 +301,7 @@ func TestRun_DeletesAPITokensPastBothDeadlines(t *testing.T) {
 	seed := func(name string, expiresAt, refreshExpiresAt *time.Time) string {
 		tokenID := id.Generate()
 		require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
-			ID: tokenID, UserID: owner, ClientType: "cli", ClientName: name,
+			ID: tokenID, UserID: owner, ClientID: oauthapp.ControlCLIClientID, InstallationName: name, GrantedScopes: authscope.NonAdminGrant().String(),
 			SecretHash: []byte("s-" + tokenID), RefreshHash: []byte("r-" + tokenID),
 			ExpiresAt: expiresAt, RefreshExpiresAt: refreshExpiresAt,
 		}))

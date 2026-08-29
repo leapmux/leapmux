@@ -281,7 +281,7 @@ OAuth buttons don't appear on the login page, or clicking one ends in an error. 
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| No OAuth buttons at all | No enabled OAuth provider configured | Add one with `leapmux control admin oauth-provider add` (see [Authentication Providers](/docs/operating/authentication-providers/)). |
+| No OAuth buttons at all | No enabled OAuth provider configured | Add one with `leapmux control admin idp add` (see [Sign-in Providers](/docs/operating/sign-in-providers/)). |
 | The error says the provider returned no email address | The provider config does not have the email scope | Grant the `email`/`user:email` scope; reconfigure the provider's `--scopes`. |
 | Stuck on "Complete Sign Up" then rejected | New OAuth user but sign-up is disabled | `leapmux control admin settings set signup_enabled true`, or link the OAuth identity to an existing account by signing in and verifying the matching email. |
 | The **Complete Sign Up** page says the signup link is invalid or expired | The pending OAuth signup expired or the `?token=` link was reused | Start the OAuth sign-in over from the login page (see note below). |
@@ -289,7 +289,84 @@ OAuth buttons don't appear on the login page, or clicking one ends in an error. 
 
 > **Note:** An invalid or expired signup link means the pending OAuth signup ran past its 5-minute window, or the `?token=` link was reused or already completed. Start the OAuth sign-in over from the login page to mint a fresh pending signup, then pick a username promptly. A blank **Complete Sign Up** page that reports a missing signup token means you opened the URL without its `?token=` — restart from the login page.
 
-Operators configuring providers should also confirm the OIDC issuer is reachable and the `public_url` setting is set so redirect/login URLs are built correctly. See [Authentication Providers](/docs/operating/authentication-providers/).
+Operators configuring providers should also confirm the OIDC issuer is reachable and the `public_url` setting is set so redirect/login URLs are built correctly. See [Sign-in Providers](/docs/operating/sign-in-providers/).
+
+## An app can't get in
+
+For how apps are registered and what they may ask for, see [App Authorization](/docs/operating/app-authorization/); for the wire contract, [OAuth API](/docs/reference/oauth-api/).
+
+### The consent page never appears, and the app waits
+
+**Symptom**
+`leapmux control auth login` opens a browser and nothing happens, or a third-party app hangs after you clicked its sign-in button.
+
+**Cause and fix:**
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| The browser lands on a "not found" page | The address the app sent you to is not one the Hub serves | Check `public_url`. The app builds the authorization URL from the Hub's own metadata document, so a wrong `public_url` sends the browser somewhere the Hub does not answer. |
+| The page asks you to verify, then returns to the same prompt | The session did not elevate | Prove a factor. If the account has neither a password nor a passkey, it has nothing to prove -- set a password first. See [Session elevation](/docs/operating/security/#session-elevation). |
+| `invalid_client` | The `client_id` matches no app this account may authorize | Another account's private app is invisible, so the Hub answers exactly as it does for one that does not exist. Ask the app's owner to register it hub-wide, or register your own. |
+| `invalid_request` about `redirect_uri` | The address the app sent does not match one it registered | Compare them exactly. Only a **loopback** address ignores the port; everything else is literal. |
+| The app never gets a callback after you clicked **Deny** | Nothing is wrong | A refusal returns `error=access_denied` to the app, which is the app's cue to stop. If it keeps waiting, the app is not reading its own callback. |
+
+### An app is refused a permission it thought it had
+
+**Symptom**
+An authorized app gets `permission_denied` that states the permission, such as *this app was not granted the terminal:write permission*.
+
+**Cause and fix:**
+
+The credential holds what the consent screen granted, not what the app asked for. Open **Preferences → Account → Connected apps** and read the row: the permissions listed there are exactly what it can do. Authorize the app again to grant more; a refresh can only ever narrow a grant, never widen one.
+
+Two refusals are permanent whatever you grant:
+
+- **The account's own authenticators.** Adding a passkey, changing the recovery address, unlinking a sign-in provider, and managing another app's credential are outside every grant. No consent screen offers them.
+- **An admin permission on an ordinary account.** A grant subtracts from what the owner can do and never adds, so `admin:users` on a non-administrator reaches nothing.
+
+### A sensitive change is refused although the app is authorized
+
+**Symptom**
+The app reports that verification is required, and running the step-up ceremony is itself refused.
+
+**Cause and fix:**
+
+An app is refused the step-up ceremony unless its owner allowed it. An administrator turns it on per app:
+
+```bash
+leapmux control admin app allow-elevation --client-id <client_id>
+```
+
+Turning it off closes every open window on the next request, so a credential that worked a moment ago stops immediately. That is the intended behaviour, not a stale cache.
+
+### `invalid_grant`, and the app must be authorized again
+
+**Symptom**
+A credential that worked yesterday is refused with `invalid_grant`.
+
+**Cause and fix:**
+
+| Description | Cause | Fix |
+|---|---|---|
+| *token revoked* | Somebody disconnected the app, an administrator retired it, or the owner's password was reset | Authorize the app again. |
+| *refresh reuse detected; token revoked* | A retired refresh token was presented after the grace window | The credential leaked, or two copies of the app share one credential file. Authorize again, and give each machine its own. |
+| *this credential reached its maximum lifetime* | {{< duration absolute-cap >}} passed since the consent that created it | Authorize the app again. Nothing renews past this. |
+| *code expired or already consumed* | The authorization code was exchanged twice, or more than {{< duration authorization-code-ttl >}} passed | Start the flow again. A code presented twice also revokes the credential the first exchange minted, which is deliberate. |
+
+### Dynamic registration is refused
+
+**Symptom**
+`POST /oauth/register` answers `403`, or a client library reports that the Hub does not support registration.
+
+**Cause and fix:**
+
+RFC 7591 open registration is off by default. While it is off, `registration_endpoint` is absent from the metadata document, which is what a conformant library reports. An administrator turns it on:
+
+```bash
+leapmux control admin settings set open_app_registration true
+```
+
+Consider registering the app yourself instead. An anonymous caller who can create a registration can create one that appears on a consent screen, which is why the default is off.
 
 ## Agents won't start
 

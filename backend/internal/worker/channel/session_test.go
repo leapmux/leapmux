@@ -21,7 +21,19 @@ import (
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
+
+	"github.com/leapmux/leapmux/internal/authscope"
 )
+
+// testChannelGrant is the grant a channel-open fixture announces.
+//
+// The Hub sends the opening credential's scopes on the wire, and a worker that
+// receives NONE refuses the handshake -- the zero grant reaches nothing, so an
+// omitted field denies rather than admits. Every fixture here is about what
+// happens AFTER the channel opens, so each announces the ordinary
+// non-administrative grant. A test that means to exercise a narrower one says
+// so at its own call site.
+var testChannelGrant = authscope.ScopesToWire(authscope.NonAdminGrant())
 
 // collectSender collects all ConnectRequest messages sent by the channel manager.
 type collectSender struct {
@@ -102,6 +114,7 @@ func performHandshake(t *testing.T, mgr *Manager, ck *noiseutil.CompositeKeypair
 		UserId:           userID,
 		HandshakePayload: msg1,
 		MaxMessageSize:   uint64(channelwire.MaxMessageSize),
+		GrantedScopes:    testChannelGrant,
 	})
 	require.Empty(t, resp.GetError(), "handshake should succeed")
 	require.NotEmpty(t, resp.GetHandshakePayload())
@@ -175,6 +188,7 @@ func performClassicalHandshake(t *testing.T, mgr *Manager, ck *noiseutil.Composi
 		UserId:           userID,
 		HandshakePayload: msg1,
 		MaxMessageSize:   uint64(channelwire.MaxMessageSize),
+		GrantedScopes:    testChannelGrant,
 	})
 	require.Empty(t, resp.GetError(), "classical handshake should succeed")
 	require.NotEmpty(t, resp.GetHandshakePayload())
@@ -217,6 +231,7 @@ func TestHandleOpen_NegotiatesMinOfHubAndWorker(t *testing.T) {
 		UserId:           "user-1",
 		HandshakePayload: msg1,
 		MaxMessageSize:   uint64(hubMax),
+		GrantedScopes:    testChannelGrant,
 	})
 	require.Empty(t, resp.GetError())
 	assert.Equal(t, uint64(workerMax), resp.GetMaxMessageSize(),
@@ -248,6 +263,7 @@ func TestHandleOpen_TakesHubWhenHubSmallerThanWorker(t *testing.T) {
 		UserId:           "user-1",
 		HandshakePayload: msg1,
 		MaxMessageSize:   uint64(hubMax),
+		GrantedScopes:    testChannelGrant,
 	})
 	require.Empty(t, resp.GetError())
 	assert.Equal(t, uint64(hubMax), resp.GetMaxMessageSize(),
@@ -287,6 +303,7 @@ func TestHandleOpen_NotifiesNegotiatedMaxMessageSize(t *testing.T) {
 		UserId:           "user-1",
 		HandshakePayload: msg1,
 		MaxMessageSize:   uint64(hubMax),
+		GrantedScopes:    testChannelGrant,
 	})
 	require.Empty(t, resp.GetError())
 	assert.Equal(t, "ch-notify", seenID)
@@ -309,6 +326,7 @@ func TestHandleOpen_ReassembledOverrideClampsMaxPayloadBudget(t *testing.T) {
 		UserId:           "user-1",
 		HandshakePayload: msg1,
 		MaxMessageSize:   uint64(channelwire.MaxMessageSize),
+		GrantedScopes:    testChannelGrant,
 	})
 	require.Empty(t, resp.GetError())
 	mgr.mu.RLock()
@@ -337,6 +355,7 @@ func TestCloseAll_UsesReleasedAllCallback(t *testing.T) {
 			UserId:           "user-1",
 			HandshakePayload: msg1,
 			MaxMessageSize:   uint64(channelwire.MaxMessageSize),
+			GrantedScopes:    testChannelGrant,
 		})
 		require.Empty(t, resp.GetError())
 		_, msg1, err = noiseutil.InitiatorHandshake1(ck.X25519Public, ck.MlkemPublicKeyBytes())
@@ -363,6 +382,7 @@ func TestCloseAll_FallsBackToPerIDRelease(t *testing.T) {
 			UserId:           "user-1",
 			HandshakePayload: msg1,
 			MaxMessageSize:   uint64(channelwire.MaxMessageSize),
+			GrantedScopes:    testChannelGrant,
 		})
 		require.Empty(t, resp.GetError())
 		_, msg1, err = noiseutil.InitiatorHandshake1(ck.X25519Public, ck.MlkemPublicKeyBytes())
@@ -387,6 +407,7 @@ func TestHandleOpen_RejectsOutOfBoundsHubMax(t *testing.T) {
 			UserId:           "user-1",
 			HandshakePayload: msg1,
 			MaxMessageSize:   1,
+			GrantedScopes:    testChannelGrant,
 		})
 		assert.NotEmpty(t, resp.GetError())
 		assert.Contains(t, resp.GetError(), "max_message_size")
@@ -403,6 +424,7 @@ func TestHandleOpen_RejectsOutOfBoundsHubMax(t *testing.T) {
 			UserId:           "user-1",
 			HandshakePayload: msg1,
 			MaxMessageSize:   uint64(channelwire.MaxConfigurableMessageSize + 1),
+			GrantedScopes:    testChannelGrant,
 		})
 		assert.NotEmpty(t, resp.GetError())
 		assert.Contains(t, resp.GetError(), "max_message_size")
@@ -507,6 +529,7 @@ func TestHandleOpen_DuplicateChannelIdRejected(t *testing.T) {
 		UserId:           "user-1",
 		HandshakePayload: msg1,
 		MaxMessageSize:   uint64(channelwire.MaxMessageSize),
+		GrantedScopes:    testChannelGrant,
 	})
 	assert.NotEmpty(t, resp.GetError(), "re-open must return an error response")
 	assert.Contains(t, resp.GetError(), "already active")
@@ -544,6 +567,7 @@ func TestHandleOpen_RefusesEmptyUserID(t *testing.T) {
 		ChannelId:        "ch-anon",
 		UserId:           "",
 		HandshakePayload: msg1,
+		GrantedScopes:    testChannelGrant,
 	})
 	assert.NotEmpty(t, resp.GetError(), "an open naming no user must be refused")
 	assert.Contains(t, resp.GetError(), "no authenticated user id")
@@ -566,6 +590,7 @@ func TestHandleOpen_BadHandshake(t *testing.T) {
 		UserId:           "user-1",
 		HandshakePayload: []byte("not a valid handshake message"),
 		MaxMessageSize:   uint64(channelwire.MaxMessageSize),
+		GrantedScopes:    testChannelGrant,
 	})
 	assert.NotEmpty(t, resp.GetError())
 	assert.Contains(t, resp.GetError(), "handshake failed")
@@ -586,7 +611,7 @@ func TestHandleMessage_DispatchAndResponse(t *testing.T) {
 
 	// Set up a dispatcher with a test handler.
 	dispatcher := NewDispatcher()
-	dispatcher.Register("echo", func(_ context.Context, userID userid.UserID, req *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
+	dispatcher.Register("echo", func(_ context.Context, caller Caller, req *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
 		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{
 			Payload: req.GetPayload(),
 		})
@@ -631,7 +656,7 @@ func TestHandleMessage_OutOfSpecFlagsDroppedWithoutNonceDesync(t *testing.T) {
 	mgr, kp, sender := setupTestManager(t)
 
 	dispatcher := NewDispatcher()
-	dispatcher.Register("echo", func(_ context.Context, userID userid.UserID, req *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
+	dispatcher.Register("echo", func(_ context.Context, caller Caller, req *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
 		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: req.GetPayload()})
 	})
 	mgr.SetDispatcher(dispatcher)
@@ -731,8 +756,8 @@ func TestHandleMessage_RequestNeedsNoIdentityClaim(t *testing.T) {
 
 	gotUserID := make(chan userid.UserID, 1)
 	dispatcher := NewDispatcher()
-	dispatcher.Register("whoami", func(_ context.Context, userID userid.UserID, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
-		gotUserID <- userID
+	dispatcher.Register("whoami", func(_ context.Context, caller Caller, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
+		gotUserID <- caller.UserID
 		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: []byte("ok")})
 	})
 	mgr.SetDispatcher(dispatcher)
@@ -773,7 +798,7 @@ func TestHandleMessage_CorrelationIdSurvivesAbove32Bits(t *testing.T) {
 	mgr, kp, sender := setupTestManager(t)
 
 	dispatcher := NewDispatcher()
-	dispatcher.Register("echo", func(_ context.Context, _ userid.UserID, req *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
+	dispatcher.Register("echo", func(_ context.Context, _ Caller, req *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
 		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: req.GetPayload()})
 	})
 	mgr.SetDispatcher(dispatcher)
@@ -917,7 +942,7 @@ func TestHandleMessage_DispatchesUnderSessionCtx(t *testing.T) {
 
 	gotCtxC := make(chan context.Context, 1)
 	dispatcher := NewDispatcher()
-	dispatcher.Register("inspect", func(ctx context.Context, _ userid.UserID, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
+	dispatcher.Register("inspect", func(ctx context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
 		gotCtxC <- ctx
 		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{})
 	})
@@ -977,7 +1002,7 @@ func TestHandleMessage_NonBlocking(t *testing.T) {
 
 	// Set up a dispatcher with a handler that sends a response.
 	dispatcher := NewDispatcher()
-	dispatcher.Register("slow", func(_ context.Context, userID userid.UserID, req *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
+	dispatcher.Register("slow", func(_ context.Context, caller Caller, req *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
 		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{
 			Payload: []byte("done"),
 		})
@@ -1037,9 +1062,9 @@ func TestMultipleChannels(t *testing.T) {
 	mgr, kp, sender := setupTestManager(t)
 
 	dispatcher := NewDispatcher()
-	dispatcher.Register("ping", func(_ context.Context, userID userid.UserID, req *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
+	dispatcher.Register("ping", func(_ context.Context, caller Caller, req *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
 		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{
-			Payload: []byte("pong-" + userID.String()),
+			Payload: []byte("pong-" + caller.UserID.String()),
 		})
 	})
 	mgr.SetDispatcher(dispatcher)
@@ -1095,7 +1120,7 @@ func TestSendEncrypted_SingleChunk(t *testing.T) {
 	mgr, kp, sender := setupTestManager(t)
 
 	dispatcher := NewDispatcher()
-	dispatcher.Register("echo", func(_ context.Context, _ userid.UserID, req *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
+	dispatcher.Register("echo", func(_ context.Context, _ Caller, req *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
 		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: req.GetPayload()})
 	})
 	mgr.SetDispatcher(dispatcher)
@@ -1135,7 +1160,7 @@ func TestSendEncrypted_MultiChunk(t *testing.T) {
 	}
 
 	dispatcher := NewDispatcher()
-	dispatcher.Register("big", func(_ context.Context, _ userid.UserID, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
+	dispatcher.Register("big", func(_ context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
 		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: largePayload})
 	})
 	mgr.SetDispatcher(dispatcher)
@@ -1218,7 +1243,7 @@ func TestSendEncrypted_ExactBoundary(t *testing.T) {
 	exactPayloadSize := findPayloadSize(channelwire.MaxPlaintextPerChunk)
 	require.Greater(t, exactPayloadSize, 0)
 
-	dispatcher.Register("exact", func(_ context.Context, _ userid.UserID, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
+	dispatcher.Register("exact", func(_ context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
 		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: make([]byte, exactPayloadSize)})
 	})
 
@@ -1238,7 +1263,7 @@ func TestSendEncrypted_ExactBoundary(t *testing.T) {
 	assert.Equal(t, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, chMsg.GetFlags())
 
 	// Now add 1 more byte to the payload, which should cause it to overflow.
-	dispatcher.Register("overflow", func(_ context.Context, _ userid.UserID, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
+	dispatcher.Register("overflow", func(_ context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
 		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: make([]byte, exactPayloadSize+1)})
 	})
 
@@ -1263,7 +1288,7 @@ func TestReassembly_E2E(t *testing.T) {
 
 	var receivedPayload []byte
 	dispatcher := NewDispatcher()
-	dispatcher.Register("echo", func(_ context.Context, _ userid.UserID, req *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
+	dispatcher.Register("echo", func(_ context.Context, _ Caller, req *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
 		receivedPayload = req.GetPayload()
 		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: []byte("ok")})
 	})
@@ -1442,7 +1467,7 @@ func TestSendEncrypted_MaxMessageSizeExceeded(t *testing.T) {
 	// and one that arrives after the test finishes asserts on a dead *T.
 	sendErr := make(chan error, 1)
 	dispatcher := NewDispatcher()
-	dispatcher.Register("big", func(_ context.Context, _ userid.UserID, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
+	dispatcher.Register("big", func(_ context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
 		sendErr <- s.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: make([]byte, 200)})
 	})
 	mgr.SetDispatcher(dispatcher)
@@ -2221,7 +2246,7 @@ func TestDispatchAsyncUnknownMethodIsQueued(t *testing.T) {
 
 	d := NewDispatcher()
 	w := &queueTrackingWriter{}
-	d.DispatchAsync(context.Background(), userid.MustNew("u"),
+	d.DispatchAsync(context.Background(), LocalAgentCaller(userid.MustNew("u")),
 		&leapmuxv1.InnerRpcRequest{Method: "no-such-method"}, w)
 	assert.Equal(t, int32(1), w.queued.Load(), "unknown method must go through QueueError")
 	assert.Zero(t, w.sent.Load(), "unknown method must not SendError inline on an errorQueuer")
@@ -2377,7 +2402,7 @@ func TestHandleMessage_RekeyAcceptAndReject(t *testing.T) {
 
 	// Post-rekey RPC still works.
 	dispatcher := NewDispatcher()
-	dispatcher.Register("echo", func(_ context.Context, _ userid.UserID, req *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
+	dispatcher.Register("echo", func(_ context.Context, _ Caller, req *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
 		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: req.GetPayload()})
 	})
 	mgr.SetDispatcher(dispatcher)
@@ -2727,7 +2752,7 @@ func TestHandleMessage_RekeyUnderLoad(t *testing.T) {
 	require.NotNil(t, sess)
 
 	dispatcher := NewDispatcher()
-	dispatcher.Register("echo", func(_ context.Context, _ userid.UserID, req *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
+	dispatcher.Register("echo", func(_ context.Context, _ Caller, req *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
 		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: req.GetPayload()})
 	})
 	mgr.SetDispatcher(dispatcher)
@@ -2789,7 +2814,7 @@ func TestHandleMessage_StreamRequestRoutesToBoundController(t *testing.T) {
 	ready := make(chan struct{})
 
 	dispatcher := NewDispatcher()
-	dispatcher.Register("stream", func(_ context.Context, _ userid.UserID, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
+	dispatcher.Register("stream", func(_ context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
 		release, _ := s.BindStream(ctrl)
 		defer release()
 		close(ready)
@@ -2863,7 +2888,7 @@ func TestHandleClose_CallsOnCancelBeforeSessionCtxCancel(t *testing.T) {
 	order := make(chan string, 2)
 
 	dispatcher := NewDispatcher()
-	dispatcher.Register("stream", func(ctx context.Context, _ userid.UserID, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
+	dispatcher.Register("stream", func(ctx context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
 		release, _ := s.BindStream(ctrl)
 		defer release()
 		close(ready)
@@ -2913,7 +2938,7 @@ func TestCloseAll_CallsOnCancelBeforeSessionCtxCancel(t *testing.T) {
 	order := make(chan string, 2)
 
 	dispatcher := NewDispatcher()
-	dispatcher.Register("stream", func(ctx context.Context, _ userid.UserID, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
+	dispatcher.Register("stream", func(ctx context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
 		release, _ := s.BindStream(ctrl)
 		defer release()
 		close(ready)
@@ -2962,7 +2987,7 @@ func TestHandleMessage_ChunkedStreamRequestReassembles(t *testing.T) {
 	ready := make(chan struct{})
 
 	dispatcher := NewDispatcher()
-	dispatcher.Register("stream", func(_ context.Context, _ userid.UserID, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
+	dispatcher.Register("stream", func(_ context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
 		release, _ := s.BindStream(ctrl)
 		defer release()
 		close(ready)

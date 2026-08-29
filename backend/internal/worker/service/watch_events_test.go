@@ -718,7 +718,7 @@ func TestWatchEvents_BindStreamRefusalReleasesOwnership(t *testing.T) {
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
 	})
 	require.NoError(t, err)
-	d.DispatchWith(context.Background(), userid.MustNew("user-1"), &leapmuxv1.InnerRpcRequest{
+	d.DispatchWith(context.Background(), channel.LocalAgentCaller(userid.MustNew("user-1")), &leapmuxv1.InnerRpcRequest{
 		Method: "WatchEvents", Payload: payload,
 	}, refusing)
 

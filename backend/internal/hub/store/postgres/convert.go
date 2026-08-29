@@ -168,33 +168,33 @@ func listUserSessionsParams(userID, cursor string, limit int64, now time.Time) (
 	})
 }
 
-func listAllAPITokensParams(clientType, cursor string, limit int64) (gendb.ListAllAPITokensParams, error) {
+func listAllAPITokensParams(clientID, cursor string, limit int64) (gendb.ListAllAPITokensParams, error) {
 	return withCursor(cursor, limit, func(ct pgtime.NullTime, cid pgtype.Text, fl int32) gendb.ListAllAPITokensParams {
-		return gendb.ListAllAPITokensParams{ClientType: clientType, CursorTime: ct, CursorID: cid, Limit: fl}
+		return gendb.ListAllAPITokensParams{ClientID: clientID, CursorTime: ct, CursorID: cid, Limit: fl}
 	})
 }
 
-func listAPITokensByUserParams(userID, clientType, cursor string, limit int64) (gendb.ListAPITokensByUserParams, error) {
+func listAPITokensByUserParams(userID, clientID, cursor string, limit int64) (gendb.ListAPITokensByUserParams, error) {
 	return withCursor(cursor, limit, func(ct pgtime.NullTime, cid pgtype.Text, fl int32) gendb.ListAPITokensByUserParams {
-		return gendb.ListAPITokensByUserParams{UserID: userID, ClientType: clientType, CursorTime: ct, CursorID: cid, Limit: fl}
+		return gendb.ListAPITokensByUserParams{UserID: userID, ClientID: clientID, CursorTime: ct, CursorID: cid, Limit: fl}
 	})
 }
 
-func listAllAPITokensByUserParams(userID, clientType, cursor string, limit int64) (gendb.ListAllAPITokensByUserParams, error) {
+func listAllAPITokensByUserParams(userID, clientID, cursor string, limit int64) (gendb.ListAllAPITokensByUserParams, error) {
 	return withCursor(cursor, limit, func(ct pgtime.NullTime, cid pgtype.Text, fl int32) gendb.ListAllAPITokensByUserParams {
-		return gendb.ListAllAPITokensByUserParams{UserID: userID, ClientType: clientType, CursorTime: ct, CursorID: cid, Limit: fl}
+		return gendb.ListAllAPITokensByUserParams{UserID: userID, ClientID: clientID, CursorTime: ct, CursorID: cid, Limit: fl}
 	})
 }
 
-func listAllAPITokensIncludingRevokedParams(clientType, cursor string, limit int64) (gendb.ListAllAPITokensIncludingRevokedParams, error) {
+func listAllAPITokensIncludingRevokedParams(clientID, cursor string, limit int64) (gendb.ListAllAPITokensIncludingRevokedParams, error) {
 	return withCursor(cursor, limit, func(ct pgtime.NullTime, cid pgtype.Text, fl int32) gendb.ListAllAPITokensIncludingRevokedParams {
-		return gendb.ListAllAPITokensIncludingRevokedParams{ClientType: clientType, CursorTime: ct, CursorID: cid, Limit: fl}
+		return gendb.ListAllAPITokensIncludingRevokedParams{ClientID: clientID, CursorTime: ct, CursorID: cid, Limit: fl}
 	})
 }
 
-func listAllAPITokensByUserIncludingRevokedParams(userID, clientType, cursor string, limit int64) (gendb.ListAllAPITokensByUserIncludingRevokedParams, error) {
+func listAllAPITokensByUserIncludingRevokedParams(userID, clientID, cursor string, limit int64) (gendb.ListAllAPITokensByUserIncludingRevokedParams, error) {
 	return withCursor(cursor, limit, func(ct pgtime.NullTime, cid pgtype.Text, fl int32) gendb.ListAllAPITokensByUserIncludingRevokedParams {
-		return gendb.ListAllAPITokensByUserIncludingRevokedParams{UserID: userID, ClientType: clientType, CursorTime: ct, CursorID: cid, Limit: fl}
+		return gendb.ListAllAPITokensByUserIncludingRevokedParams{UserID: userID, ClientID: clientID, CursorTime: ct, CursorID: cid, Limit: fl}
 	})
 }
 
@@ -253,4 +253,10 @@ func rowsAffected(tag pgconn.CommandTag, err error) (int64, error) {
 		return 0, mapErr(err)
 	}
 	return tag.RowsAffected(), nil
+}
+
+func listOAuthClientsParams(userID, cursor string, limit int64, includeRevoked, includeHubWide bool) (gendb.ListOAuthClientsParams, error) {
+	return withCursor(cursor, limit, func(ct pgtime.NullTime, cid pgtype.Text, fl int32) gendb.ListOAuthClientsParams {
+		return gendb.ListOAuthClientsParams{UserID: pgtype.Text{String: userID, Valid: true}, IncludeRevoked: includeRevoked, IncludeHubWide: includeHubWide, CursorTime: ct, CursorID: cid, Limit: fl}
+	})
 }

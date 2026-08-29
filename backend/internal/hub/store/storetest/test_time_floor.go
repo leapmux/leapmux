@@ -4,8 +4,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/util/userid"
 
+	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/stretchr/testify/assert"
@@ -72,6 +74,7 @@ func (s *Suite) testTimeFloor(t *testing.T) {
 		expiresAt := floorProbe(base, 0)
 		refreshExpiresAt := floorProbe(base, 1)
 		require.NoError(t, st.DelegationTokens().Create(ctx, store.CreateDelegationTokenParams{
+			GrantedScopes:    "workspace:read workspace:write worker:read",
 			ID:               tokenID,
 			UserID:           userid.MustNew(user.ID),
 			WorkerID:         worker.ID,
@@ -98,8 +101,9 @@ func (s *Suite) testTimeFloor(t *testing.T) {
 		require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
 			ID:               tokenID,
 			UserID:           userid.MustNew(user.ID),
-			ClientType:       "cli",
-			ClientName:       "floor-client",
+			ClientID:         oauthapp.ControlCLIClientID,
+			InstallationName: "floor-client",
+			GrantedScopes:    authscope.NonAdminGrant().String(),
 			SecretHash:       []byte("secret"),
 			ExpiresAt:        &expiresAt,
 			RefreshExpiresAt: &refreshExpiresAt,
@@ -175,14 +179,16 @@ func (s *Suite) testTimeFloor(t *testing.T) {
 		user := SeedUser(t, st, "floor-user")
 
 		expiresAt := floorProbe(floorProbeBase(), 0)
-		require.NoError(t, st.CLIAuthorizationCodes().Create(ctx, store.CreateCLIAuthorizationCodeParams{
+		require.NoError(t, st.OAuthAuthorizationCodes().Create(ctx, store.CreateOAuthAuthorizationCodeParams{
+			ClientID:      oauthapp.ControlCLIClientID,
+			GrantedScopes: authscope.NonAdminGrant().String(),
 			Code:          "floor-code",
 			UserID:        userid.MustNew(user.ID),
 			CodeChallenge: "challenge",
 			ExpiresAt:     expiresAt,
 		}))
 
-		code, err := st.CLIAuthorizationCodes().GetActive(ctx, "floor-code", time.Now().UTC())
+		code, err := st.OAuthAuthorizationCodes().GetActive(ctx, "floor-code", time.Now().UTC())
 		require.NoError(t, err)
 		assertStoredInstant(t, "expires_at", expiresAt, code.ExpiresAt)
 	})
@@ -192,6 +198,7 @@ func (s *Suite) testTimeFloor(t *testing.T) {
 
 		expiresAt := floorProbe(floorProbeBase(), 0)
 		require.NoError(t, st.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
+			ClientID:        oauthapp.ControlCLIClientID,
 			DeviceCode:      "floor-device",
 			UserCode:        "FLOOR-USER",
 			IntervalSeconds: 5,

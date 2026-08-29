@@ -73,7 +73,7 @@ func (h *mysqlTestHelper) TruncateAll(ctx context.Context) error {
 	}
 	defer func() { _, _ = h.db.ExecContext(ctx, "SET FOREIGN_KEY_CHECKS = 1") }()
 	for _, t := range sqlutil.SQLTruncateTableOrder {
-		if _, err := h.db.ExecContext(ctx, "TRUNCATE TABLE "+t); err != nil {
+		if _, err := h.db.ExecContext(ctx, sqlutil.TruncateStatement(t)); err != nil {
 			return fmt.Errorf("truncate %s: %w", t, err)
 		}
 	}

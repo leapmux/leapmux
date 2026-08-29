@@ -185,55 +185,75 @@ func (r Renderer) PasswordResetEmail(to, token string, ttl time.Duration) Messag
 	}
 }
 
-// CLICredentialIssuedEmail tells the account owner that a `leapmux control
-// auth login` minted a credential on their account.
+// AppCredentialIssuedEmail tells the account owner that an app was authorized
+// on their account and now holds a credential.
 //
-// It is the only signal that does not require the user to open Preferences
-// and look, which is what makes it worth sending: a credential minted from a
-// replayed browser session is otherwise silent until somebody uses it. The message
-// specifies the device the CLI reported and says what to do about it.
+// It is the only signal that does not require the user to open Preferences and
+// look, which is what makes it worth sending: a credential minted from a
+// replayed browser session is otherwise silent until somebody uses it. The
+// message lists the app, the installation the app reported, and every
+// permission the account granted -- and says what to do about it.
 //
-// adminScope changes the body because the two credentials are not the same
-// thing: one acts as the user, the other administers the hub.
+// PERMISSIONS are listed in full rather than summarized. The scope set is
+// exactly the permissions that the message tells the recipient they granted, so a message that
+// said "some permissions" would leave them no way to tell an ordinary
+// authorization from one that also administers the hub.
 //
 // byAdministrator changes it for a more important reason. TWO surfaces mint
 // this credential: a browser consent the recipient performed, and an
 // administrator's `api-token issue` for somebody else's account. "If this was
 // you, nothing more is needed" is correct for the first surface and misleading
-// for the second -- the recipient did nothing, the device name is
+// for the second -- the recipient did nothing, the installation label is
 // administrator-chosen, and the sentence invites them to conclude they
 // authorized it. The notice exists because this is the surface a stolen
 // administrator cookie reaches, so it must not read as a receipt.
-func (r Renderer) CLICredentialIssuedEmail(to, deviceName string, adminScope, byAdministrator bool) Message {
-	if deviceName == "" {
-		deviceName = "an unnamed device"
+func (r Renderer) AppCredentialIssuedEmail(to, appName, installationName string, scopes []string, byAdministrator bool) Message {
+	if appName == "" {
+		appName = "an unnamed app"
 	}
-	scopeLine := "It can do anything you can do in LeapMux.\n"
-	if adminScope {
-		scopeLine = "It was also granted HUB ADMINISTRATION: it can manage every user, worker, and setting.\n"
+	if installationName == "" {
+		installationName = "an unnamed installation"
 	}
-	opening := "A command-line credential was issued for your LeapMux account.\n"
+	permissionLines := "    (none)\n"
+	if len(scopes) > 0 {
+		var b strings.Builder
+		for _, scope := range scopes {
+			b.WriteString("    - ")
+			b.WriteString(scope)
+			b.WriteString("\n")
+		}
+		permissionLines = b.String()
+	}
+	administersHub := false
+	for _, scope := range scopes {
+		if strings.HasPrefix(scope, "admin:") {
+			administersHub = true
+			break
+		}
+	}
+	opening := "An app was authorized on your LeapMux account.\n"
 	action := "If this was you, nothing more is needed. If it was not, sign in and\n" +
-		"revoke it under Preferences, Account, Command-line credentials:\n"
-	subject := "[LeapMux] A command-line credential was issued"
+		"disconnect it under Preferences, Account, Connected apps:\n"
+	subject := "[LeapMux] An app was authorized on your account"
 	if byAdministrator {
-		opening = "An ADMINISTRATOR issued a command-line credential for your LeapMux\n" +
-			"account. You did not authorize this yourself.\n"
+		opening = "An ADMINISTRATOR issued an app credential for your LeapMux account.\n" +
+			"You did not authorize this yourself.\n"
 		action = "If you did not expect it, revoke it and ask your administrator. Sign in\n" +
-			"and open Preferences, Account, Command-line credentials:\n"
-		subject = "[LeapMux] An administrator issued a command-line credential for you"
+			"and open Preferences, Account, Connected apps:\n"
+		subject = "[LeapMux] An administrator issued an app credential for you"
 	}
-	if adminScope {
-		subject = "[LeapMux] An ADMIN command-line credential was issued"
+	if administersHub {
+		subject = "[LeapMux] An app that ADMINISTERS THE HUB was authorized"
 		if byAdministrator {
-			subject = "[LeapMux] An administrator issued an ADMIN command-line credential for you"
+			subject = "[LeapMux] An administrator issued an app credential that ADMINISTERS THE HUB"
 		}
 	}
 	body := fmt.Sprintf(
-		"%s\n    Device: %s\n\n%s\n%s\n    %s\n\n%s",
+		"%s\n    App: %s\n    Installation: %s\n\nIt was granted these permissions:\n\n%s\n%s\n    %s\n\n%s",
 		opening,
-		deviceName,
-		scopeLine,
+		appName,
+		installationName,
+		permissionLines,
 		action,
 		r.hubURL(),
 		r.footer(),

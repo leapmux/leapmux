@@ -63,7 +63,12 @@ func NewChannelRelayHandler(
 		panic("service: NewChannelRelayHandler requires a queue pool")
 	}
 	return &ChannelRelayHandler{
-		wsAuthenticator: newWSAuthenticator(st, authContexts, soloUser, secureCookie),
+		// worker:read is what OPENING a channel needs: the socket carries a
+		// Noise tunnel to a machine. Every inner method then states its own
+		// scope, which the Worker enforces from the grant the Hub announces at
+		// the handshake -- see ChannelOpenRequest.granted_scopes.
+		wsAuthenticator: newWSAuthenticator(st, authContexts, soloUser, secureCookie,
+			leapmuxv1.Scope_SCOPE_WORKER_READ),
 		workerMgr:       wMgr,
 		channelMgr:      cMgr,
 		closeDispatcher: newWorkerCloseDispatcher(wMgr),

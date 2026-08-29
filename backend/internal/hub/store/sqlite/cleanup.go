@@ -58,8 +58,8 @@ func (s *cleanupStore) DeleteExpiredDeviceAuthorizations(ctx context.Context, no
 	return rowsAffected(s.conn.q.DeleteExpiredDeviceAuthorizations(ctx, sqltime.NewSQLiteTime(now)))
 }
 
-func (s *cleanupStore) DeleteExpiredCLIAuthorizationCodes(ctx context.Context, now time.Time) (int64, error) {
-	return rowsAffected(s.conn.q.DeleteExpiredCLIAuthorizationCodes(ctx, sqltime.NewSQLiteTime(now)))
+func (s *cleanupStore) DeleteExpiredOAuthAuthorizationCodes(ctx context.Context, now time.Time) (int64, error) {
+	return rowsAffected(s.conn.q.DeleteExpiredOAuthAuthorizationCodes(ctx, sqltime.NewSQLiteTime(now)))
 }
 
 func (s *cleanupStore) DeleteExpiredAPITokensBefore(ctx context.Context, cutoff time.Time) (int64, error) {

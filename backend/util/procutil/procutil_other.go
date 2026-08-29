@@ -52,7 +52,7 @@ func DetachFromTerminal(cmd *exec.Cmd) {
 // to its jobs), waits briefly, then SIGKILLs the group. Methods are safe on
 // a nil receiver and idempotent.
 type JobObject struct {
-	pgid atomic.Int32 // 0 once Terminate/Close has consumed it
+	pgid atomic.Int32 // 0 once Terminate/Close consumes it
 }
 
 // AssignCmd records cmd.Process as a process-group leader to tear down
@@ -86,9 +86,25 @@ func (j *JobObject) Terminate() error {
 		return nil
 	}
 	_ = syscall.Kill(-int(pgid), syscall.SIGHUP)
-	time.Sleep(sighupGrace)
-	// Darwin returns EPERM for kill(-pgid) after the group has exited,
-	// not ESRCH. The group is gone either way.
+	// Poll for the group's exit instead of sleeping the whole grace: an
+	// already-exited group paid the full 200ms for nothing on every agent
+	// teardown, while a group that needs the grace still gets all of it.
+	deadline := time.Now().Add(sighupGrace)
+	for time.Now().Before(deadline) {
+		// Signal 0 probes existence without delivering anything. ESRCH means
+		// the group is gone; Darwin answers EPERM for a group that has
+		// exited, which means the same thing here.
+		if err := syscall.Kill(-int(pgid), 0); err != nil {
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	// The SIGKILL backstop for whatever the grace did not take. Darwin
+	// returns EPERM for kill(-pgid) after the group exits, not ESRCH.
+	// The group is gone either way. On Linux EPERM means a group member is
+	// not signalable (a setuid descendant): the kill still reached every
+	// member that is, so reporting success is the honest answer -- the
+	// alternative would tell a caller that the whole tree survived.
 	if err := syscall.Kill(-int(pgid), syscall.SIGKILL); err != nil && err != syscall.ESRCH && err != syscall.EPERM {
 		return err
 	}
@@ -109,4 +125,17 @@ func SignalProcessGroup(cmd *exec.Cmd, sig syscall.Signal) error {
 		return nil
 	}
 	return syscall.Kill(-cmd.Process.Pid, sig)
+}
+
+// GracefulGroupCancel configures one child's teardown: cancel sends SIGTERM
+// to the child's whole process group, and WaitDelay abandons the I/O pipes
+// five seconds later so os/exec does not block forever on a descendant that
+// inherited them. The pair is one contract, stated once for the agent
+// processes and the ACP terminal sessions that had each spelled it by hand
+// -- and could then drift, leaving one path torn down differently.
+func GracefulGroupCancel(cmd *exec.Cmd) {
+	cmd.Cancel = func() error {
+		return SignalProcessGroup(cmd, syscall.SIGTERM)
+	}
+	cmd.WaitDelay = 5 * time.Second
 }

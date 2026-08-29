@@ -84,16 +84,57 @@ describe('browserSettings registry', () => {
   // The assertion is IDENTITY, not behavior: two hand-written no-op literals
   // behave alike, so a test that called `value()` and compared to null would
   // pass for a re-typed copy and catch nothing. Sharing the one constant is
-  // what this pins, so the eighth such row reuses it instead of inventing a
-  // ninth spelling.
+  // what this pins, so the ninth such row reuses it instead of inventing a
+  // tenth spelling.
   it('binds every custom-editor row to the one shared no-op binding', () => {
     const prefs = makeFakePrefs() as unknown as PreferencesState
     const customRows = browserSettings.filter(
       decl => decl.protoKey === undefined && decl.control.kind === 'custom',
     )
-    expect(customRows.length).toBe(7)
+    expect(customRows.length).toBe(8)
     for (const decl of customRows)
       expect(decl.bind(prefs), `row "${decl.id}"`).toBe(CUSTOM_EDITOR_OWNS_ITS_VALUE)
+  })
+
+  // WHICH account-scoped rows demand a proven factor, stated as a set.
+  //
+  // The asymmetry between the two app rows is the decision worth pinning, and
+  // it runs in both directions:
+  //
+  // - `apps.registrations` DOES, because editing a registration rewrites where
+  //   a consent redirects — it diverts an authorization code already in flight
+  //   to an address the editor chose, which is the most dangerous write in the
+  //   feature. The Hub enforces the same rule on every AppService write verb.
+  // - `account.connectedApps` does NOT, because disconnecting only ever
+  //   reduces access, and demanding a password from somebody who has just
+  //   realized an app is malicious is the wrong failure mode.
+  //
+  // A `hub`-scoped row needs no flag: descriptorNeedsElevation answers true for
+  // the whole scope, which is why the set below is drawn from account rows only.
+  it('demands a proven factor on exactly the account rows that create authority', () => {
+    // Narrowed on `protoKey === undefined`, which is the union's discriminant
+    // and the reason only these can carry the flag at all: an account-BACKED
+    // entry states none of the descriptor's shape, so the hub's own descriptor
+    // would have to carry it. Every row below is a custom account editor, which
+    // is a browser-only entry.
+    const elevated = browserSettings
+      .filter(decl => decl.protoKey === undefined && decl.needsElevation === true)
+      .map(decl => decl.id)
+      .sort()
+
+    expect(elevated).toEqual([
+      'account.email',
+      'account.linkedProviders',
+      'account.passkeys',
+      'account.password',
+      'apps.registrations',
+    ])
+    // Stated separately, because reading it off the list above only says it is
+    // absent — not that its absence is the decision rather than an omission.
+    const connectedApps = browserSettings.find(d => d.id === 'account.connectedApps')
+    expect(connectedApps?.protoKey).toBeUndefined()
+    expect(connectedApps && connectedApps.protoKey === undefined && connectedApps.needsElevation)
+      .toBeFalsy()
   })
 
   it('derives its descriptors from the same entries (same ids, no duplicates)', () => {

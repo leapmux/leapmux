@@ -5,9 +5,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/util/userid"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -55,6 +57,7 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	// the Touch/Revoke fixtures further down.
 	delegationID := id.Generate()
 	require.NoError(t, st.DelegationTokens().Create(ctx, store.CreateDelegationTokenParams{
+		GrantedScopes:    "workspace:read workspace:write worker:read",
 		ID:               delegationID,
 		UserID:           userid.MustNew(user.ID),
 		WorkerID:         worker.ID,
@@ -70,8 +73,9 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
 		ID:               rotatedID,
 		UserID:           userid.MustNew(user.ID),
-		ClientType:       "cli",
-		ClientName:       "canon-client",
+		ClientID:         oauthapp.ControlCLIClientID,
+		InstallationName: "canon-client",
+		GrantedScopes:    authscope.NonAdminGrant().String(),
 		SecretHash:       []byte("at-secret"),
 		RefreshHash:      []byte("at-refresh"),
 		ExpiresAt:        ptr(future),
@@ -90,16 +94,46 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	require.EqualValues(t, 1, rotated)
 	revokedID := id.Generate()
 	require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
-		ID:         revokedID,
-		UserID:     userid.MustNew(user.ID),
-		ClientType: "cli",
-		ClientName: "canon-client-revoked",
-		SecretHash: []byte("at-secret-3"),
-		ExpiresAt:  ptr(future),
+		ID:               revokedID,
+		UserID:           userid.MustNew(user.ID),
+		ClientID:         oauthapp.ControlCLIClientID,
+		InstallationName: "canon-client-revoked",
+		GrantedScopes:    authscope.NonAdminGrant().String(),
+		SecretHash:       []byte("at-secret-3"),
+		ExpiresAt:        ptr(future),
 	}))
 	revoked, err := st.APITokens().Revoke(ctx, revokedID)
 	require.NoError(t, err)
 	require.EqualValues(t, 1, revoked)
+
+	// oauth_clients: verified_at via SetVerified, revoked_at via Revoke, and
+	// created_at / updated_at via their column DEFAULTs on Create.
+	verifiedApp := id.Generate()
+	_, createErr := st.OAuthClients().Create(ctx, store.CreateOAuthClientParams{
+		ClientID:           verifiedApp,
+		OwnerUserID:        user.ID,
+		CreatedBy:          user.ID,
+		ClientName:         "canon-app",
+		RedirectURIs:       "https://app.example.com/cb",
+		Scopes:             "workspace:read",
+		GrantTypes:         "authorization_code refresh_token",
+		RegistrationSource: store.OAuthClientSourceUser,
+	})
+	require.NoError(t, createErr)
+	vouched, err := st.OAuthClients().SetVerified(ctx, store.SetOAuthClientVerifiedParams{
+		ClientID:      verifiedApp,
+		VerifiedAt:    ptr(future),
+		VerifiedBy:    user.ID,
+		CallerIsAdmin: true,
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, 1, vouched)
+	retired, err := st.OAuthClients().Revoke(ctx, store.OAuthClientOwnershipParams{
+		ClientID:     verifiedApp,
+		CallerUserID: userid.MustNew(user.ID),
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, 1, retired)
 
 	// oauth_states.expires_at.
 	require.NoError(t, st.OAuthStates().Create(ctx, store.CreateOAuthStateParams{
@@ -139,24 +173,27 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	}))
 
 	// cli_authorization_codes: expires_at on Create, consumed_at on Consume.
-	require.NoError(t, st.CLIAuthorizationCodes().Create(ctx, store.CreateCLIAuthorizationCodeParams{
+	require.NoError(t, st.OAuthAuthorizationCodes().Create(ctx, store.CreateOAuthAuthorizationCodeParams{
+		ClientID:      oauthapp.ControlCLIClientID,
+		GrantedScopes: authscope.NonAdminGrant().String(),
 		Code:          "canon-code",
 		UserID:        userid.MustNew(user.ID),
 		CodeChallenge: "challenge",
 		ExpiresAt:     future,
 	}))
-	_, err = st.CLIAuthorizationCodes().Consume(ctx, "canon-code", time.Now().UTC())
+	_, err = st.OAuthAuthorizationCodes().Consume(ctx, "canon-code", time.Now().UTC())
 	require.NoError(t, err)
 
 	// device_authorizations: expires_at on Create, last_polled_at on
 	// TouchPoll, consumed_at on Consume.
 	require.NoError(t, st.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
+		ClientID:        oauthapp.ControlCLIClientID,
 		DeviceCode:      "canon-device-code",
 		UserCode:        "CANON-USER-CODE",
 		IntervalSeconds: 5,
 		ExpiresAt:       future,
 	}))
-	require.NoError(t, st.DeviceAuthorizations().TouchPoll(ctx, "canon-device-code"))
+	require.NoError(t, st.DeviceAuthorizations().TouchPoll(ctx, "canon-device-code", time.Now().UTC()))
 	approved, err := st.DeviceAuthorizations().Approve(ctx, store.ApproveDeviceAuthorizationParams{
 		DeviceCode: "canon-device-code",
 		UserID:     userid.MustNew(user.ID),

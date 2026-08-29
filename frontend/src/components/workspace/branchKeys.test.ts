@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { repoKey } from '~/stores/repoGit'
+import { repoGitView, repoKey } from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 import {
   branchKey,
@@ -156,5 +156,26 @@ describe('tabBranchKey', () => {
   it('keeps the row toplevel when the store has no entry yet', () => {
     const local = createRepoGitStore()
     expect(tabGitToplevelForKey({ workerId: 'w1', gitToplevel: '/repo' }, local)).toBe('/repo')
+  })
+})
+
+// Passing the already-resolved view must be equivalent to letting the helper
+// resolve it: the tree hoists one resolution per tab and threads it through
+// every key, and a divergence here would mis-key the sidebar's groups.
+describe('branchKeys accept a precomputed view', () => {
+  it('tabGitToplevelForKey returns the same answer with and without the view', () => {
+    const store = createRepoGitStore()
+    const tab = { workerId: 'w1', gitToplevel: '/repo', workingDir: '/repo' }
+    const view = repoGitView(tab, store)
+    expect(tabGitToplevelForKey(tab, store, view))
+      .toBe(tabGitToplevelForKey(tab, store))
+  })
+
+  it('tabBranchKey returns the same key with and without the view', () => {
+    const store = createRepoGitStore()
+    const tab = { workerId: 'w1', gitToplevel: '/repo', workingDir: '/repo' }
+    const view = repoGitView(tab, store)
+    expect(tabBranchKey(tab, store, view))
+      .toBe(tabBranchKey(tab, store))
   })
 })

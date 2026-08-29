@@ -265,11 +265,18 @@ describe('preferencesDialog deep link', () => {
 })
 
 describe('preferencesDialog solo mode', () => {
-  it('hides the Account category but keeps browser rows and their scope chip', async () => {
+  // Solo hides MOST of Account, not all of it, and the survivor is the point.
+  //
+  // A solo hub authorizes apps like any other -- the solo rung yields to a
+  // presented bearer, so a scoped credential binds there too -- so its owner
+  // must be able to see what they authorized and disconnect it. Every row that
+  // needs a factor to prove (a password, a passkey, an address) still hides,
+  // because solo has no factor and no ceremony.
+  it('keeps Account for connected apps in solo, and hides the rows a factor would need', async () => {
     solo.mockReturnValue(true)
     renderDialog()
     await waitFor(() => expect(screen.getByTestId('preferences-nav-appearance')).toBeTruthy())
-    expect(screen.queryByTestId('preferences-nav-account')).toBeNull()
+    expect(screen.getByTestId('preferences-nav-account')).toBeTruthy()
     // Dual rows still render with the scope chip.
     expect(screen.getByTestId('scope-chip-appearance.theme')).toBeTruthy()
   })
@@ -349,7 +356,9 @@ describe('preferencesDialog solo mode', () => {
     renderDialog('admin-captcha')
     await waitFor(() => expect(screen.getByTestId('preferences-nav-appearance')).toBeTruthy())
     expect(screen.queryByTestId('preferences-nav-admin-captcha')).toBeNull()
-    expect(screen.getByTestId('preferences-nav-appearance').getAttribute('aria-selected')).toBe('true')
+    // The FIRST visible group, which is Account: solo keeps it for connected
+    // apps, so the fallback stops there rather than at Appearance.
+    expect(screen.getByTestId('preferences-nav-account').getAttribute('aria-selected')).toBe('true')
   })
 })
 
@@ -716,15 +725,19 @@ describe('preferencesDialog section order', () => {
     expect(tabs).toContain('preferences-nav-appearance')
   })
 
-  // Opening with no category lands on the first VISIBLE group, which is now
-  // Account -- except in solo mode, where every account row is hidden and the
-  // fallback must move on rather than render an empty panel.
-  it('falls back past Account in solo mode', async () => {
+  // Account SURVIVES solo, because connected apps survives it: a solo hub
+  // authorizes apps like any other, and its owner must be able to disconnect
+  // one. So the fallback has nothing to move past, and the deep link lands
+  // where it asked.
+  //
+  // The rows that need a factor still hide. Solo has no password, no passkey
+  // and no address, so those editors would render controls whose ceremony
+  // cannot run.
+  it('lands on Account in solo mode, which keeps its connected-apps row', async () => {
     solo.mockReturnValue(true)
     renderDialog('account')
     await waitFor(() => expect(screen.getByTestId('preferences-nav-appearance')).toBeTruthy())
-    expect(screen.queryByTestId('preferences-nav-account')).toBeNull()
-    expect(screen.getByTestId('preferences-nav-appearance')).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByTestId('preferences-nav-account')).toHaveAttribute('aria-selected', 'true')
   })
 })
 

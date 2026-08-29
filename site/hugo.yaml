@@ -130,3 +130,11 @@ params:
     absolute-cap:
       words: one year
       digits: 1 year
+    # How long an authorization code may be exchanged for a credential.
+    authorization-code-ttl:
+      words: ten minutes
+      digits: 10 minutes
+    # How long a device-code grant waits for somebody to answer it.
+    device-code-ttl:
+      words: ten minutes
+      digits: 10 minutes

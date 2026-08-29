@@ -197,7 +197,7 @@ type Server struct {
 	store             store.Store
 	keystore          *keystore.Keystore
 	settings          *settings.Manager
-	oauthHandler      *service.OAuthHandler
+	idpHandler        *service.IdPHandler
 	server            *http.Server
 	tcpLn             net.Listener
 	localLn           net.Listener
@@ -568,12 +568,15 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		WithChannelCloseEnqueuer(channelSvc)
 	mux.Handle("/ws/channel", channelRelay)
 
-	// OAuth HTTP endpoints.
-	oauthHandler := service.NewOAuthHandler(st, cfg, setMgr, lifecycle, ks)
-	oauthHandler.RegisterRoutes(mux)
+	// INBOUND OAuth: the hub as a client of an identity provider, at
+	// /auth/idp/*.
+	idpHandler := service.NewIdPHandler(st, cfg, setMgr, lifecycle, ks)
+	idpHandler.RegisterRoutes(mux)
 
-	// CLI auth HTTP endpoints (PKCE local-redirect + RFC 8628 device code).
-	apiAuthHandler := service.NewAPIAuthHandler(service.APIAuthHandlerDeps{
+	// OUTBOUND OAuth: the hub as an OAuth 2.1 authorization server, at
+	// /oauth/* plus the two well-known metadata documents.
+	oauthServer := service.NewOAuthServerHandler(service.OAuthServerDeps{
+		SoloUser:  soloUser,
 		Store:     st,
 		Validator: tokenValidator,
 		Lifecycle: lifecycle,
@@ -581,10 +584,13 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		HubURL: func() string {
 			return settings.BaseURL(setMgr.Snapshot(context.Background()), cfg.Listen)
 		},
+		// The three anonymous legs share the interceptor's budget table; see
+		// ratelimit.AllowHTTP.
+		Limiter:  rateLimitMgr,
 		Mail:     mailSender,
 		Renderer: mailRenderer,
 	})
-	apiAuthHandler.RegisterRoutes(mux)
+	oauthServer.RegisterRoutes(mux)
 
 	// Worker-issued delegation token mint/revoke endpoints. The credential
 	// lifecycle effects are wired so revoking a delegation token evicts its
@@ -673,9 +679,18 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	adminWorkerPath, adminWorkerHandler := leapmuxv1connect.NewAdminWorkerServiceHandler(adminWorkerSvc, connectOpts)
 	mux.Handle(adminWorkerPath, adminWorkerHandler)
 
-	adminOAuthSvc := service.NewAdminOAuthService(st, ks, oauthHandler)
-	adminOAuthPath, adminOAuthHandler := leapmuxv1connect.NewAdminOAuthServiceHandler(adminOAuthSvc, connectOpts)
-	mux.Handle(adminOAuthPath, adminOAuthHandler)
+	adminIdPSvc := service.NewAdminIdPService(st, ks, idpHandler)
+	adminIdPPath, adminIdPHandler := leapmuxv1connect.NewAdminIdPServiceHandler(adminIdPSvc, connectOpts)
+	mux.Handle(adminIdPPath, adminIdPHandler)
+
+	// AppService is the app REGISTRATION surface, and it is deliberately NOT an
+	// admin service: an ordinary user registers apps for themself through it,
+	// and the ownership rule -- not a role -- decides what each caller sees.
+	// The two verbs that do need an administrator (a hub-wide registration and
+	// a vouch) say so in their own handlers.
+	appSvc := service.NewAppService(st, setMgr, tokenValidator, lifecycle)
+	appPath, appHandler := leapmuxv1connect.NewAppServiceHandler(appSvc, connectOpts)
+	mux.Handle(appPath, appHandler)
 
 	sectionSvc := service.NewSectionService(st)
 	sectionPath, sectionHandler := leapmuxv1connect.NewSectionServiceHandler(sectionSvc, connectOpts)
@@ -718,6 +733,11 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	if frontendErr != nil {
 		return nil, acquired.close(frontendErr)
 	}
+	// The one application route that lives UNDER a Go subtree, mounted with an
+	// EXACT pattern so http.ServeMux prefers it to idpHandler's `/auth/idp/`.
+	// See service.IdPCompleteSignupPath: without this line the subtree swallows
+	// the page every provider sign-up redirects to, and answers 400.
+	mux.Handle(service.IdPCompleteSignupPath, frontendHandler)
 	mux.Handle("/", frontendHandler)
 
 	protocols := &http.Protocols{}
@@ -781,7 +801,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		store:             st,
 		keystore:          ks,
 		settings:          setMgr,
-		oauthHandler:      oauthHandler,
+		idpHandler:        idpHandler,
 		server:            server,
 		tcpLn:             tcpLn,
 		localLn:           localLn,
@@ -935,7 +955,7 @@ func (s *Server) Serve(ctx context.Context) error {
 	}
 
 	// Start background OAuth token refresh.
-	s.oauthHandler.StartTokenRefresh(serveCtx)
+	s.idpHandler.StartTokenRefresh(serveCtx)
 
 	// Start periodic cleanup of soft-deleted records.
 	cleanup.StartLoop(serveCtx, s.store)

@@ -482,9 +482,10 @@ function effectiveGitDir(tab: { shellStartDir?: string, workingDir?: string }): 
 /**
  * Optimistic `gitToplevel` to seed on a freshly-opened tab of ANY kind --
  * agent, terminal, or file. Branch/origin/worktree live in the repo-keyed git
- * store; only the toplevel identity travels on the tab row. Call
- * {@link seedOptimisticRepoGit} alongside this so the store has branch/origin
- * for sidebar grouping before the first status broadcast.
+ * store; only the toplevel identity travels on the tab row. The branch copy
+ * that goes with it is {@link planOptimisticRepoGit}, which now owns both
+ * halves and defers the store write behind tab placement -- do not write the
+ * entry directly beside this.
  *
  * Only safe to seed when the active tab and the new tab resolve to the same
  * git directory — otherwise the seeded value would be wrong for the new tab's

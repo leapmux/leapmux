@@ -18,7 +18,7 @@
  * rather than concatenating control bytes inline.
  */
 
-import type { RepoGitStore } from '~/stores/repoGit'
+import type { RepoGitStore, RepoGitView } from '~/stores/repoGit'
 import type { Tab } from '~/stores/tab.types'
 import { repoGitView } from '~/stores/repoGit'
 
@@ -81,16 +81,23 @@ export function branchKey(branchName: string | null, workerId: string, gitToplev
 export function tabGitToplevelForKey(
   tab: Pick<Tab, 'workerId' | 'gitToplevel' | 'workingDir'>,
   store: RepoGitStore,
+  // Callers that already resolved the view pass it; the default resolves it,
+  // so a one-off caller keeps the two-argument form. Resolving twice per call
+  // was the sidebar's hottest redundant work -- each resolution may run the
+  // canonical-repo-key scan for a toplevel-less tab.
+  git: RepoGitView = repoGitView(tab, store),
 ): string {
-  const git = repoGitView(tab, store)
   if (!git.key)
     return tab.gitToplevel ?? ''
   return git.toplevel ?? ''
 }
 
-export function tabBranchKey(tab: Pick<Tab, 'workerId' | 'gitToplevel' | 'workingDir'>, store: RepoGitStore): string {
-  const git = repoGitView(tab, store)
-  return branchKey(git.branchLabel || null, tab.workerId ?? '', tabGitToplevelForKey(tab, store))
+export function tabBranchKey(
+  tab: Pick<Tab, 'workerId' | 'gitToplevel' | 'workingDir'>,
+  store: RepoGitStore,
+  git: RepoGitView = repoGitView(tab, store),
+): string {
+  return branchKey(git.branchLabel || null, tab.workerId ?? '', tabGitToplevelForKey(tab, store, git))
 }
 
 /** Repo key for an origin-less local repo, identified by its toplevel. */

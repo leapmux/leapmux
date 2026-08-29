@@ -1,0 +1,143 @@
+syntax = "proto3";
+package leapmux.v1;
+
+// Scope is one named permission an account grants to an app.
+//
+// The vocabulary lives in the proto because five surfaces must agree on it and
+// they do not share a Go package: the consent screen, the stored grant, the
+// Hub's Connect interceptor, the Worker's inner-RPC gate, and the wire field
+// that carries a grant into a Noise channel. A second copy of the list is a
+// second source of truth, and the two would drift the first time somebody
+// added a scope to one of them.
+//
+// Three values are NOT grantable. They carry the fail-closed construction, and
+// every producer refuses them: none has a wire token, so none can appear in a
+// `scope` parameter, in a stored grant, or on a consent screen.
+//
+// Everything else is grantable. A grant SUBTRACTS from the account's own
+// authority and never adds to it, so a scope can only ever deny.
+enum Scope {
+  // The zero. Never grantable and never stored. A procedure that maps to it is
+  // one nobody classified, and it is refused to every scoped credential -- so
+  // a new procedure is unreachable by an app until somebody assigns it.
+  SCOPE_UNSPECIFIED = 0;
+
+  // The recorded refusal. It marks the procedures NO grant reaches, whatever
+  // an account ticks on a consent screen: the account's own credential
+  // surface, which the enforcement table in
+  // internal/hub/auth/procedure_scopes.go states -- the one source of that
+  // classification, including which formerly refused surfaces ordinary scopes
+  // now reach (app registration sits behind admin:apps). It can never appear
+  // in a request or on a consent screen.
+  //
+  // It is a value rather than an absence because the alternative is a map miss,
+  // and a miss cannot state a REASON. A reader of the map learns that the
+  // procedure was considered and refused, not that somebody forgot it.
+  SCOPE_NEVER = 1;
+
+  // The absence of a limit, carried EXPLICITLY.
+  //
+  // A first-party credential (a session cookie, the control CLI's own grant,
+  // solo mode) is unscoped, and it says so with this value rather than with an
+  // empty set. An empty set is what a producer that FAILED to state the grant
+  // also produces, and the two must not read the same: a hub that dropped the
+  // field would otherwise promote a narrow app to full authority in silence.
+  SCOPE_ALL = 2;
+
+  // --- Account -------------------------------------------------------------
+
+  // Read the signed-in account's profile: username, email, verification state,
+  // administrator flag.
+  SCOPE_ACCOUNT_READ = 3;
+  // Change the account's profile and preferences. Does NOT reach the
+  // credential surface, which is SCOPE_NEVER for every app.
+  SCOPE_ACCOUNT_WRITE = 4;
+
+  // --- Workspace -----------------------------------------------------------
+
+  // Read workspaces, tabs and the layout document.
+  SCOPE_WORKSPACE_READ = 5;
+  // Create, rename, move and close workspaces and tabs, and submit layout
+  // operations.
+  SCOPE_WORKSPACE_WRITE = 6;
+
+  // --- Worker --------------------------------------------------------------
+
+  // List the account's workers and OPEN a channel to one. Every other
+  // worker-surface scope implies it, because the channel each of them needs
+  // cannot be opened without it.
+  SCOPE_WORKER_READ = 7;
+  // Administer the account's own workers: rename, deregister, and manage the
+  // registration keys that let a machine join.
+  SCOPE_WORKER_ADMIN = 8;
+
+  // --- Agent ---------------------------------------------------------------
+
+  // Read coding-agent sessions: messages, plans, settings, todos.
+  SCOPE_AGENT_READ = 9;
+  // Drive a coding agent: send a prompt, answer a permission request, start,
+  // stop, or change its settings.
+  SCOPE_AGENT_WRITE = 10;
+
+  // --- Terminal ------------------------------------------------------------
+
+  // Read terminal output and metadata. This is a monitoring dashboard.
+  SCOPE_TERMINAL_READ = 11;
+  // Type into a terminal. This is arbitrary code execution on the account's
+  // machine, which is why it is a separate scope from reading the output.
+  SCOPE_TERMINAL_WRITE = 12;
+
+  // --- File ----------------------------------------------------------------
+
+  // Browse directories and read files on a worker.
+  //
+  // There is no file:write scope, because the Worker registers no file-write
+  // handler. An unused scope on a consent screen is a lie; a future write
+  // handler adds its own. The one destructive leg the file-tab verbs can
+  // reach -- RevokeFileTabPath with WORKTREE_ACTION_REMOVE, which runs
+  // `git worktree remove` -- is gated under SCOPE_GIT_WRITE at the action,
+  // so file:read alone stays read-only.
+  SCOPE_FILE_READ = 13;
+
+  // --- Git -----------------------------------------------------------------
+
+  // Read git state: status, branches, diffs, log.
+  SCOPE_GIT_READ = 14;
+  // Mutate a repository: commit, push, create or delete a branch, manage a
+  // worktree.
+  SCOPE_GIT_WRITE = 15;
+
+  // --- Tunnel --------------------------------------------------------------
+
+  // Open a TCP tunnel through a worker.
+  //
+  // It stands alone rather than folding into SCOPE_FILE_READ, because it is not
+  // "worker access": it is arbitrary TCP egress from inside the account's
+  // private network. Folding it in would hide a network pivot behind "read my
+  // files".
+  SCOPE_TUNNEL_OPEN = 16;
+
+  // --- Hub administration --------------------------------------------------
+  //
+  // Four scopes rather than one. A credential minted to administer USERS must
+  // not also be able to rewrite the hub's security settings.
+
+  // Read the hub's administrative inventory: users, settings, workers,
+  // sessions, credentials.
+  SCOPE_ADMIN_READ = 17;
+  // Administer accounts: create, update, delete, reset a password, revoke
+  // sessions and credentials.
+  SCOPE_ADMIN_USERS = 18;
+  // Change the hub's settings, including its security policy and its identity
+  // providers.
+  SCOPE_ADMIN_SETTINGS = 19;
+  // Administer every worker on the hub, and the registration keys that admit
+  // one.
+  SCOPE_ADMIN_WORKERS = 20;
+  // Register, edit, vouch, retire and delete the hub's app registrations --
+  // the catalogue every consent screen draws from. Its own family rather than
+  // a fold into admin:settings, because a credential that may rewire where an
+  // authorization code redirects must be separable from one that may change
+  // the hub's own security policy.
+  SCOPE_ADMIN_APPS = 21;
+}

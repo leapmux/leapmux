@@ -77,6 +77,27 @@ sql:
             go_type:
               type: "byte"
               slice: true
+          # An app's client secret and its stored icon. NULL means "public
+          # client" and "no icon", and both must read as a nil slice rather
+          # than an empty string in a NullString.
+          - column: "oauth_clients.secret_hash"
+            go_type:
+              type: "byte"
+              slice: true
+          - column: "oauth_clients.secret_hash"
+            nullable: true
+            go_type:
+              type: "byte"
+              slice: true
+          - column: "oauth_clients.icon_blob"
+            go_type:
+              type: "byte"
+              slice: true
+          - column: "oauth_clients.icon_blob"
+            nullable: true
+            go_type:
+              type: "byte"
+              slice: true
           # Keystore ciphertext: a NULL secret is a nil slice, not an empty
           # string in a NullString.
           - column: "hub_settings.secret"

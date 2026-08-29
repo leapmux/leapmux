@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 	"github.com/leapmux/leapmux/internal/hub/service"
@@ -289,7 +290,7 @@ func TestCRDTService_SubmitOps_StampsPrincipalAndOrigin(t *testing.T) {
 	t.Parallel()
 
 	env := setupCRDTService(t)
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(env.userID)})
+	ctx := auth.WithUser(context.Background(), sessionCaller(env.userID))
 
 	req := connect.NewRequest(&leapmuxv1.SubmitOpsRequest{
 		Epoch:   env.mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch(),
@@ -318,7 +319,7 @@ func TestCRDTService_SubmitOps_OriginClientIdSpoofingRejected(t *testing.T) {
 	t.Parallel()
 
 	env := setupCRDTService(t)
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(env.userID)})
+	ctx := auth.WithUser(context.Background(), sessionCaller(env.userID))
 
 	spoofed := addTabOps("op2", "tB", "root1", "wkr1", "p1")
 	for _, op := range spoofed {
@@ -379,7 +380,7 @@ func TestCRDTService_SubmitOps_TabOutsideAnyWorkspaceRejected(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(env.userID)})
+	ctx := auth.WithUser(context.Background(), sessionCaller(env.userID))
 	req := connect.NewRequest(&leapmuxv1.SubmitOpsRequest{
 		Epoch:   env.mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch(),
 		Batches: []*leapmuxv1.OpBatch{{BatchId: "b-orphan", Ops: addTabOps("opX", "tOrphan", "orphan-root", "wkr1", "p1")}},
@@ -447,7 +448,7 @@ func TestCRDTService_UpdatePresence_RequiresCanonicalWorkspaceReadAccess(t *test
 		user := storetest.SeedUser(t, st, "presence-owner")
 		svc := service.NewCRDTService(st, env.registry, nil, nil)
 
-		ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(user.ID)})
+		ctx := auth.WithUser(context.Background(), sessionCaller(user.ID))
 		_, err := svc.UpdatePresence(ctx, connect.NewRequest(&leapmuxv1.UpdatePresenceRequest{
 			WorkspaceId: "does-not-exist",
 		}))
@@ -682,4 +683,16 @@ func TestResolveAllowedWorkspaces_ZeroUserIDRefusesUnderBothArms(t *testing.T) {
 			assert.Nil(t, allowed)
 		})
 	}
+}
+
+// sessionCaller is the browser caller these tests model: an authenticated user
+// with an UNSCOPED grant.
+//
+// The grant is explicit because the zero ScopeSet reaches nothing, which is what
+// makes an unconverted construction deny rather than admit. SubmitOps reads it:
+// binding a tab to a worker needs worker:read, so a fixture that left Scopes at
+// the zero value would find every SetTabRegisterOp refused and would be
+// measuring the fixture rather than the handler.
+func sessionCaller(userID string) *auth.UserInfo {
+	return &auth.UserInfo{ID: userid.MustNew(userID), Scopes: authscope.UnscopedGrant()}
 }

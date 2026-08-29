@@ -78,6 +78,7 @@ func newDelegationBearer(t *testing.T, st store.Store, userID string) delegation
 	tokenID := id.Generate()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, st.DelegationTokens().Create(context.Background(), store.CreateDelegationTokenParams{
+		GrantedScopes:    "workspace:read workspace:write worker:read",
 		ID:               tokenID,
 		UserID:           userid.MustNew(userID),
 		WorkerID:         workerID,

@@ -46,7 +46,7 @@ func ElevateSession(t *testing.T, st store.Store, sessionID, userID string) {
 //
 // Elevate BEFORE the credential authenticates anything. The production leg
 // evicts the cached UserInfo after it stamps the row (see
-// APIAuthHandler.elevateGrantedToken); this writes the row alone, so a
+// OAuthServerHandler.elevateGrantedToken); this writes the row alone, so a
 // credential that already made a request in the same process keeps serving
 // the deadline it was cached with. A test that needs both paths mints two
 // credentials rather than reusing one.

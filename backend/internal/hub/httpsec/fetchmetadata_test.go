@@ -30,7 +30,7 @@ func TestStartedByAnotherDocument(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			r := httptest.NewRequest(http.MethodGet, "/auth/oauth/gh/reauth", nil)
+			r := httptest.NewRequest(http.MethodGet, "/auth/idp/gh/reauth", nil)
 			if tc.set {
 				r.Header.Set("Sec-Fetch-Site", tc.header)
 			}

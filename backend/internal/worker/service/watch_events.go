@@ -7,7 +7,6 @@ import (
 	"log/slog"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"google.golang.org/grpc/codes"
@@ -114,13 +113,13 @@ func (s *replaySink) alive() bool { return s.dead == nil }
 // Dispatcher ctx is intentionally not threaded: the live stream outlives the
 // handler via watchSession.
 func handleWatchEvents(svc *Service) channel.HandlerFunc {
-	return func(_ context.Context, _ userid.UserID, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
+	return func(_ context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.WatchEventsRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendStreamError(sender, codes.InvalidArgument, "invalid request")
 			return
 		}
-		s := newWatchSession(svc, sender)
+		s := newWatchSession(svc, caller, sender)
 		release, ok := sender.BindStream(s)
 		if !ok {
 			// BindStream refused — the transport has no revise/cancel path for

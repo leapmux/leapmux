@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"flag"
+	"strings"
 
 	"connectrpc.com/connect"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -362,12 +363,14 @@ func tokenLifecycleJSON(
 func adminAPITokenJSON(t *leapmuxv1.AdminAPIToken) map[string]any {
 	row := tokenLifecycleJSON(t.GetId(), t.GetUserId(), t.GetUsername(), t.GetOwnerDeleted(),
 		t.GetCreatedAt(), t.GetLastUsedAt(), t.GetExpiresAt(), t.GetRevokedAt())
-	row["client_type"] = t.GetClientType()
+	row["client_id"] = t.GetClientId()
 	row["client_name"] = t.GetClientName()
-	// This field always appears, including when it is false: "which credentials can administer
-	// the hub" is the question this listing exists to answer, and an omitted
-	// key reads as "unknown" rather than "no".
-	row["admin_scope"] = t.GetAdminScope()
+	row["installation_name"] = t.GetInstallationName()
+	// This field always appears, including when it is empty: "what can this
+	// credential do" is the question the listing exists to answer, and an
+	// omitted key reads as "unknown" rather than "nothing". An audit of "which
+	// credentials administer the hub" reads it for an "admin:" prefix.
+	row["granted_scopes"] = t.GetGrantedScopes()
 	return row
 }
 
@@ -479,19 +482,19 @@ func RunAdminSessionPurgeExpired(rawCtx any, args []string) error {
 // RunAdminAPITokenList implements `control admin api-token list`.
 func RunAdminAPITokenList(rawCtx any, args []string) error {
 	var page adminPageFlags
-	var userID, username, clientType string
+	var userID, username, clientID string
 	var includeRevoked bool
 	return adminVerb(rawCtx, args, adminVerbSpec{
 		Page: &page,
 		Flags: func(fs *flag.FlagSet) {
 			fs.StringVar(&userID, "user-id", "", "filter by user ID (soft-deleted users included; empty = all users)")
 			fs.StringVar(&username, "username", "", "filter by username")
-			fs.StringVar(&clientType, "client-type", "", "filter by client type (empty = all)")
+			fs.StringVar(&clientID, "client-id", "", "filter by app (empty = all apps)")
 			fs.BoolVar(&includeRevoked, "include-revoked", false, "include revoked tokens (forensics; default lists live tokens only)")
 		},
 		Run: func(c *control.Client, _ adminArgs) error {
 			resp, err := c.AdminUserService().ListAPITokens(context.Background(), connect.NewRequest(&leapmuxv1.ListAPITokensRequest{
-				UserId: userID, Username: username, ClientType: clientType,
+				UserId: userID, Username: username, ClientId: clientID,
 				IncludeRevoked: includeRevoked, Limit: page.Limit, Cursor: page.Cursor,
 			}))
 			if err != nil {
@@ -510,9 +513,9 @@ func RunAdminAPITokenList(rawCtx any, args []string) error {
 // secrets cross the envelope exactly once; they cannot be retrieved.
 func RunAdminAPITokenIssue(rawCtx any, args []string) error {
 	var sel userSelectorFlags
-	var clientType, clientName string
+	var clientID, installationName, scopeFlag string
 	var ttlSeconds int64
-	var adminScope bool
+	var scopeList []string
 	return adminVerb(rawCtx, args, adminVerbSpec{
 		Flags: func(fs *flag.FlagSet) {
 			// The SAME selector the six sibling verbs take, spelled
@@ -521,8 +524,10 @@ func RunAdminAPITokenIssue(rawCtx any, args []string) error {
 			// The verb that MINTS a credential is the last one on which
 			// specifying the wrong account should be easy.
 			sel.bind(fs, "user-id", "username of the token owner")
-			fs.StringVar(&clientType, "client-type", "cli", "client type (cli|integration|...)")
-			fs.StringVar(&clientName, "client-name", "", "human-visible client name (required)")
+			fs.StringVar(&clientID, "client-id", "",
+				"the app this credential belongs to (empty = the built-in service-account registration)")
+			fs.StringVar(&installationName, "installation-name", "",
+				"human-visible name for this installation, e.g. ci-runner-3 (required)")
 			// The flag picks WHICH KIND of credential, and the help says so:
 			// zero mints the renewing one, and a positive value mints a
 			// fixed-lifetime service credential with no refresh token. The
@@ -531,34 +536,43 @@ func RunAdminAPITokenIssue(rawCtx any, args []string) error {
 			// and never the lifetime it was minted from.
 			fs.Int64Var(&ttlSeconds, "ttl", 0,
 				"fixed lifetime in seconds, with no refresh token (0 = the renewing credential: 1h access + refresh)")
-			// Off by default, like every other credential this hub mints: a
-			// service account that only needs to drive workspaces must not
-			// come out of this verb able to administer the hub.
-			fs.BoolVar(&adminScope, "admin", false, "grant hub administration (the owner must be an administrator)")
+			// EMPTY grants everything except the admin scopes, which is
+			// the same default a `leapmux control auth login` takes: a service
+			// account that only needs to drive workspaces must not come out of
+			// this verb able to administer the hub.
+			fs.StringVar(&scopeFlag, "scope", "",
+				"space- or comma-separated permissions, e.g. \"file:read git:read\" (empty = everything except admin:*)")
 		},
 		BeforeDial: func(a adminArgs) error {
 			if err := sel.resolve(a); err != nil {
 				return err
 			}
-			if clientName == "" {
-				return control.EmitError("invalid_request", "--client-name is required")
+			if installationName == "" {
+				return control.EmitError("invalid_request", "--installation-name is required")
+			}
+			var scopeErr error
+			scopeList, scopeErr = splitScopeFlag(scopeFlag)
+			if scopeErr != nil {
+				return scopeErr
 			}
 			return nil
 		},
 		Run: func(c *control.Client, _ adminArgs) error {
 			resp, err := c.AdminUserService().IssueAPIToken(context.Background(), connect.NewRequest(&leapmuxv1.IssueAPITokenRequest{
-				UserId: sel.ID, Username: sel.Username, ClientType: clientType, ClientName: clientName,
-				TtlSeconds: ttlSeconds, AdminScope: adminScope,
+				UserId: sel.ID, Username: sel.Username, ClientId: clientID,
+				InstallationName: installationName,
+				TtlSeconds:       ttlSeconds, Scopes: scopeList,
 			}))
 			if err != nil {
 				return control.EmitErrorWith("issue_failed", err)
 			}
 			return control.EmitData(map[string]any{
-				"token_id":      resp.Msg.GetTokenId(),
-				"access_token":  resp.Msg.GetAccessToken(),
-				"refresh_token": resp.Msg.GetRefreshToken(),
-				"admin_scope":   adminScope,
-				"note":          "capture the tokens now; they cannot be retrieved later",
+				"token_id":       resp.Msg.GetTokenId(),
+				"access_token":   resp.Msg.GetAccessToken(),
+				"refresh_token":  resp.Msg.GetRefreshToken(),
+				"client_id":      resp.Msg.GetClientId(),
+				"granted_scopes": resp.Msg.GetGrantedScopes(),
+				"note":           "capture the tokens now; they cannot be retrieved later",
 			})
 		},
 	})
@@ -624,4 +638,32 @@ func RunAdminDelegationTokenRevoke(rawCtx any, args []string) error {
 			return control.EmitData(map[string]any{"revoked": id})
 		},
 	})
+}
+
+// splitScopeFlag reads a --scope value.
+//
+// It accepts BOTH separators. The wire format is space-delimited (RFC 6749
+// section 3.3), which a shell needs quoted; a comma-separated list is what
+// somebody types without thinking about quoting. Accepting both costs one
+// FieldsFunc and removes a failure whose only symptom is a scope named
+// "file:read,git:read", which the hub then refuses as unknown.
+//
+// An empty value yields nil, which every caller reads as "the default grant"
+// rather than as "no permissions at all".
+// splitScopeFlag splits a --scope value into its tokens. An EMPTY value is
+// the documented "take the default" and returns no tokens; a value that is
+// NOT empty but yields no tokens -- a stray comma, a shell-mangled
+// "${A},${B}" with empty variables -- is a REFUSAL rather than silence,
+// because every caller's hub reads an absent list as "unspecified" and
+// answers the widest default grant. Losing the operator's constraint that
+// way is the one outcome this parser exists to prevent.
+func splitScopeFlag(raw string) ([]string, error) {
+	tokens := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ' ' || r == '\t' || r == '\n'
+	})
+	if raw != "" && len(tokens) == 0 {
+		return nil, control.EmitError("invalid_request",
+			"--scope carried no permission names; pass real tokens or omit the flag for the default")
+	}
+	return tokens, nil
 }

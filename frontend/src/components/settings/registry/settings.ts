@@ -577,15 +577,37 @@ export const browserSettings: BrowserSettingDecl[] = [
     bind: () => CUSTOM_EDITOR_OWNS_ITS_VALUE,
   },
   {
-    id: 'account.cliTokens',
+    id: 'account.connectedApps',
     category: 'account',
-    label: 'Command-line credentials',
-    help: 'Devices signed in with the control CLI, and how to revoke one.',
-    keywords: ['cli', 'token', 'device', 'revoke', 'api'],
+    label: 'Connected apps',
+    help: 'Apps you authorized, what each one may do, and how to disconnect it.',
+    keywords: ['app', 'oauth', 'cli', 'token', 'device', 'revoke', 'disconnect', 'permission', 'scope'],
     scope: 'account',
-    control: { kind: 'custom', id: 'accountCliTokens' },
+    control: { kind: 'custom', id: 'accountConnectedApps' },
     sentinel: 'nullable',
-    hidden: () => isSoloMode(),
+    // NOT hidden in solo. A solo hub authorizes apps like any other -- the
+    // solo rung yields to a presented bearer, so a scoped credential binds
+    // there too -- and hiding this would leave a solo user unable to see or
+    // disconnect what they authorized.
+    bind: () => CUSTOM_EDITOR_OWNS_ITS_VALUE,
+  },
+  {
+    id: 'apps.registrations',
+    category: 'apps',
+    label: 'App registrations',
+    help: 'Apps registered on this hub. Yours are visible to you alone; an administrator\'s are visible to everybody.',
+    keywords: ['app', 'oauth', 'register', 'client', 'redirect', 'secret', 'developer'],
+    scope: 'account',
+    control: { kind: 'custom', id: 'accountAppRegistrations' },
+    sentinel: 'nullable',
+    // ELEVATED, unlike Connected apps beside it, and the asymmetry is the
+    // point. Disconnecting an app only reduces access. Editing a registration
+    // rewrites where a consent redirects, so it diverts an in-flight
+    // authorization code to an address the editor chose -- the most dangerous
+    // write in the feature. The hub enforces the same rule on every write verb
+    // (see appWriteGate); this makes the dialog ask for the factor first,
+    // instead of letting somebody fill a form and lose it to a refusal.
+    needsElevation: true,
     bind: () => CUSTOM_EDITOR_OWNS_ITS_VALUE,
   },
 ]

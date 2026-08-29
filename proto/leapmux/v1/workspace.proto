@@ -273,6 +273,17 @@ enum WatchRejectionReason {
   // NOTHING about whether the entity exists. Whatever the channel already had
   // registered for it was left untouched. The client retries.
   WATCH_REJECTION_REASON_LOOKUP_FAILED = 2;
+  // DURABLE. The credential that opened this channel was not granted the
+  // permission this entity kind needs: agent:read for an agent, terminal:read
+  // for a terminal. The client stops asking, and asking again with the same
+  // credential can never succeed.
+  //
+  // It is a PER-ENTITY reason rather than a whole-stream refusal because
+  // WatchEvents is a multiplexer: one request carries agents and terminals
+  // together, so a grant that covers one kind and not the other must subscribe
+  // what it covers and say precisely what it did not. Refusing the whole
+  // request would take away the half the account did grant.
+  WATCH_REJECTION_REASON_FORBIDDEN = 3;
 }
 
 // WatchRejection names one entity the worker did not subscribe, and why.

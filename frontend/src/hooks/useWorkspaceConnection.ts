@@ -490,7 +490,9 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
   // refresh button, once per tab, after every dropped link.
   //
   // Permanent removal is a different event with its own caller. Worker
-  // deregistration clears through `useWorkerSection`.
+  // deregistration deliberately does NOT clear the repo store
+  // (`useWorkerSection` states why: the entries should outlive the link), so
+  // nothing here sweeps them either.
   //
   // Keeping an entry has its own cost, and `RepoGitState.nonRepoProbeIgnored`
   // pays it: a repo deleted during the outage would otherwise suppress every

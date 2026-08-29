@@ -335,7 +335,7 @@ func TestCategoriesAreKnown(t *testing.T) {
 	known := map[string]bool{
 		// instance scope
 		"general": true, "signup": true, "email": true, "captcha": true,
-		"rate-limits": true, "limits": true, "advanced": true,
+		"rate-limits": true, "limits": true, "advanced": true, "apps": true,
 		// user scope
 		"appearance": true, "notifications": true, "shortcuts": true,
 	}

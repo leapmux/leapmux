@@ -3,6 +3,8 @@ package auth
 import (
 	"log/slog"
 	"time"
+
+	"github.com/leapmux/leapmux/internal/authscope"
 )
 
 // warnBlankRevocationTarget records that an eviction-lane call was skipped for
@@ -67,33 +69,77 @@ func (e *CredentialLifecycleEffects) SessionRevoked(sessionID string) {
 }
 
 // BearerRevoked invalidates the bearer and terminates work authenticated by
-// that exact table-qualified bearer row.
+// that exact table-qualified bearer row. A batch of one through
+// BearerRevokedBatch, so the single and the batch share one implementation.
 func (e *CredentialLifecycleEffects) BearerRevoked(kind BearerKind, tokenID string) {
-	if e == nil || !kind.IsValid() || tokenID == "" {
+	e.BearerRevokedBatch(kind, []string{tokenID})
+}
+
+// BearerRevokedBatch is BearerRevoked for a SET of rows: the registry
+// eviction runs as ONE lock acquisition and ONE revocation-generation bump
+// for the whole set, instead of one lock cycle per credential a revoking
+// admin edit touched. The channel sweep stays per row -- the channel manager
+// has no set-shaped close, and a revoked app's channels must each receive
+// their own teardown and worker close-notification.
+func (e *CredentialLifecycleEffects) BearerRevokedBatch(kind BearerKind, tokenIDs []string) {
+	if e == nil || !kind.IsValid() || len(tokenIDs) == 0 {
 		return
 	}
-	ref := NewBearerRef(kind, tokenID)
+	refs := make([]BearerRef, 0, len(tokenIDs))
+	for _, tokenID := range tokenIDs {
+		if tokenID == "" {
+			continue
+		}
+		refs = append(refs, NewBearerRef(kind, tokenID))
+	}
+	if len(refs) == 0 {
+		return
+	}
 	if e.contexts != nil {
-		e.contexts.EvictBearer(ref)
+		e.contexts.EvictBearers(refs)
 	}
 	if e.channels != nil {
-		e.channels.CloseChannelsByBearer(ref)
+		for _, ref := range refs {
+			e.channels.CloseChannelsByBearer(ref)
+		}
 	}
 }
 
-// BearerRotatedExtending invalidates the cached secret for a rotated bearer and
-// extends its leases and open-channel expiries to newExpiresAt. The durable
-// bearer row remains valid under a new secret, so its leases and channels are
-// preserved (not closed) and re-armed at the prolonged deadline instead of the
-// old one. Used by the in-process refresh path, which knows that deadline.
+// BearerRotated applies the whole effect of one refresh rotation: the cache, the
+// leases, the channel expiries, and -- when the grant NARROWED -- the teardown
+// a withdrawal of authority requires.
+//
+// ONE method taking `narrowed`, rather than a rotation call plus a separate
+// rescope call. Split, a narrowing refresh whose caller made only the first
+// call would leave every open channel running at the authority its owner had
+// just withdrawn, and nothing would report it. Here the caller cannot express
+// the rotation without also answering the question.
+//
+// A NARROWING closes the bearer's channels. An open Noise channel carries the
+// scope set announced at its handshake, and the hub cannot renegotiate a session
+// it cannot read, so closing it is the only way to take the authority back. The
+// client reconnects immediately with the new grant, which costs a round trip;
+// the alternative costs the guarantee.
+//
+// A WIDENING or an unchanged grant extends instead: the durable row remains
+// valid under a new secret, so its leases and channels are preserved and
+// re-armed at the prolonged deadline rather than the old one.
 //
 // Split from the watcher's cache-only path (BearerRotatedCacheOnly) so the
 // "extend" versus "invalidate only" intent is explicit at each call site rather
 // than selected by a zero-time sentinel -- the same zero value means
 // "never-expires" in the lease/channel layer, so overloading it here conflated
 // two orthogonal meanings.
-func (e *CredentialLifecycleEffects) BearerRotatedExtending(kind BearerKind, tokenID string, newExpiresAt time.Time) {
+func (e *CredentialLifecycleEffects) BearerRotated(kind BearerKind, tokenID string, newExpiresAt time.Time, narrowed bool) {
 	if e == nil || !kind.IsValid() || tokenID == "" {
+		return
+	}
+	if narrowed {
+		// The full teardown, which is BearerRevoked's effect: the row is still
+		// live, but every holder authorized under the wider grant must go.
+		// Evicting the cache alone would leave an open channel serving the old
+		// scope set for the rest of its life.
+		e.BearerRevoked(kind, tokenID)
 		return
 	}
 	ref := NewBearerRef(kind, tokenID)
@@ -115,10 +161,21 @@ func (e *CredentialLifecycleEffects) BearerRotatedExtending(kind BearerKind, tok
 
 // BearerRotatedCacheOnly invalidates only the cached secret for a rotated
 // bearer, leaving its leases and open channels untouched. Used by the
-// cross-process watcher backstop replaying a rotation performed on another Hub:
-// the affected leases and channels live on the Hub that rotated (which already
-// extended them in-process via BearerRotatedExtending), so this Hub only needs
-// to drop its own stale cache entry for the bearer id.
+// watcher's idempotent replay of a rotation: the rotation already ran the
+// full in-process effect (via BearerRotated) in the process that committed
+// it, so a replay -- whether the same process catching a commit whose effect
+// never landed, or the successor hub draining the stream -- only needs to
+// drop its own stale cache entry for the bearer id.
+//
+// A NARROWING rotation replays through here exactly as a plain one does: the
+// rotation event carries no widened/narrowed distinction, so the replay drops
+// the cache and nothing else. That is sufficient under the singleton runtime
+// lease, because only one hub serves at a time and a hub that loses the lease
+// tears down with its channels. The residual gap is a rotation written to the
+// store OUT OF BAND (a tool, or a predecessor): the serving hub's cache
+// refreshes on the replay while its already-open channels ride to their close,
+// limited by the channel's own lifetime. Making that immediate needs an event
+// kind the watcher replays as a teardown, which this change does not add.
 func (e *CredentialLifecycleEffects) BearerRotatedCacheOnly(kind BearerKind, tokenID string) {
 	if e == nil || !kind.IsValid() || tokenID == "" {
 		return
@@ -206,6 +263,125 @@ func (e *CredentialLifecycleEffects) RevokeUserPreservingSession(userID, session
 	}
 	e.preserveSession(sessionID, generation)
 	e.UserRevoked(userID, generation)
+}
+
+// BearerRescoped applies a grant change made OUTSIDE a rotation.
+//
+// It takes BOTH sets rather than the new one alone, so the caller cannot pick
+// the wrong effect: whether a change is a widening or a narrowing is a property
+// of the pair, and a method that took only `after` would make every caller
+// re-derive it, which is where the two would disagree.
+//
+// A WIDENING is cache-only: nothing already running exceeds the new grant.
+// A NARROWING is the full teardown, for the reason BearerRotated gives -- an
+// open Noise channel carries the scope set announced at its handshake, and the
+// Hub cannot renegotiate a session it cannot read, so closing it is the only
+// way to withdraw authority.
+//
+// The one write that narrows a stored grant today is the REFRESH leg, and it
+// goes through BearerRotated instead, which folds this effect into the
+// rotation so a narrowing refresh cannot leave channels running at the
+// withdrawn authority. An app registration's `scopes` edit reaches this method
+// through applyCeilingChange, which passes the grant NARROWED TO the ceiling
+// either side of the edit: the stored consent column is untouched, so
+// restoring the permission restores what the account already agreed to, and
+// only each credential's reachable set moves. This is the effect rule for any
+// write that moves one, kept beside the rotation it mirrors so the two cannot
+// answer differently.
+func (e *CredentialLifecycleEffects) BearerRescoped(kind BearerKind, tokenID string, before, after authscope.ScopeSet) {
+	e.BearerRescopedBatch(kind, []RescopeOp{{TokenID: tokenID, Before: before, After: after}})
+}
+
+// RescopeOp pairs one credential's row id with the grant either side of the
+// edit that moved it. Both sets, for the reason BearerRescoped states:
+// widening-versus-narrowing is a property of the pair.
+type RescopeOp struct {
+	TokenID string
+	Before  authscope.ScopeSet
+	After   authscope.ScopeSet
+}
+
+// BearerRescopedBatch applies ONE ceiling edit to every credential it moved,
+// with the widen-or-narrow decision stated once: the set is partitioned by the
+// same `after.Contains(before)` rule the single states, the cache-only rows
+// invalidate as one batch, and the narrowed rows take the full teardown as one
+// batch. An edit touching N credentials therefore costs the validation hot
+// path's mutex twice -- once per effect class -- rather than N times, and a
+// future edit to the partition rule lands here alone.
+func (e *CredentialLifecycleEffects) BearerRescopedBatch(kind BearerKind, ops []RescopeOp) {
+	if e == nil || !kind.IsValid() || len(ops) == 0 {
+		return
+	}
+	var cacheOnly, revoked []BearerRef
+	for _, op := range ops {
+		if op.TokenID == "" {
+			continue
+		}
+		ref := NewBearerRef(kind, op.TokenID)
+		if op.After.Contains(op.Before) {
+			cacheOnly = append(cacheOnly, ref)
+		} else {
+			revoked = append(revoked, ref)
+		}
+	}
+	if e.contexts != nil {
+		if len(cacheOnly) > 0 {
+			e.contexts.InvalidateBearers(cacheOnly)
+		}
+		if len(revoked) > 0 {
+			e.contexts.EvictBearers(revoked)
+		}
+	}
+	if e.channels != nil {
+		for _, ref := range revoked {
+			e.channels.CloseChannelsByBearer(ref)
+		}
+	}
+}
+
+// BearerElevationPolicyChanged drops the cached UserInfo of one credential
+// after its APP's elevation_allowed flag moved.
+//
+// The flag is read at VALIDATION -- loadBearer zeroes the credential's
+// elevation window when the app lacks it -- so turning it off is meant to
+// close every live window on the next request. That is only true if the next
+// request actually reaches loadBearer, and validateTokenCached holds the whole
+// UserInfo for 30 seconds. Without this call the property the column's own
+// comment states is off by up to that window, on exactly the write an owner
+// makes because they no longer trust the app.
+//
+// CACHE-ONLY in both directions, and that is the difference from
+// BearerRescoped. An elevation window controls Hub-side writes; it is not
+// announced into a Noise channel and no open channel carries it, so there is
+// nothing to tear down -- withdrawing it needs the next validation to read the
+// row, and nothing more.
+//
+// Its body coincides with BearerRotatedCacheOnly's today, and it is a separate
+// method rather than a call to it because the two answer different questions:
+// that one is the watcher's idempotent replay of a rotation, and a change to
+// either reason must not silently move the other.
+func (e *CredentialLifecycleEffects) BearerElevationPolicyChanged(kind BearerKind, tokenID string) {
+	e.BearerElevationPolicyChangedBatch(kind, []string{tokenID})
+}
+
+// BearerElevationPolicyChangedBatch is BearerElevationPolicyChanged for a SET
+// of rows, as one registry invalidation: one lock acquisition and one
+// generation bump for the whole flag change, instead of one lock cycle per
+// credential of the app whose flag moved.
+func (e *CredentialLifecycleEffects) BearerElevationPolicyChangedBatch(kind BearerKind, tokenIDs []string) {
+	if e == nil || !kind.IsValid() || len(tokenIDs) == 0 {
+		return
+	}
+	refs := make([]BearerRef, 0, len(tokenIDs))
+	for _, tokenID := range tokenIDs {
+		if tokenID == "" {
+			continue
+		}
+		refs = append(refs, NewBearerRef(kind, tokenID))
+	}
+	if len(refs) > 0 && e.contexts != nil {
+		e.contexts.InvalidateBearers(refs)
+	}
 }
 
 // UserInfoInvalidated drops cached profile data without revoking credentials,

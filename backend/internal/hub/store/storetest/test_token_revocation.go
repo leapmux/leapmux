@@ -5,9 +5,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/util/userid"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/stretchr/testify/assert"
@@ -28,7 +30,7 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 		tokenID := id.Generate()
 		oldRefreshHash := []byte("old-refresh-hash")
 		require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
-			ID: tokenID, UserID: userid.MustNew(user.ID), ClientType: "cli", ClientName: "test",
+			ID: tokenID, UserID: userid.MustNew(user.ID), ClientID: oauthapp.ControlCLIClientID, InstallationName: "test", GrantedScopes: authscope.NonAdminGrant().String(),
 			SecretHash: []byte("old-access-hash"), RefreshHash: oldRefreshHash,
 		}))
 		expiresAt := time.Now().Add(time.Hour)
@@ -1059,11 +1061,12 @@ func seedAPIToken(t *testing.T, st store.Store, userID string) string {
 	t.Helper()
 	tokenID := id.Generate()
 	require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
-		ID:         tokenID,
-		UserID:     userid.MustNew(userID),
-		ClientType: "cli",
-		ClientName: "test",
-		SecretHash: []byte("hash"),
+		ID:               tokenID,
+		UserID:           userid.MustNew(userID),
+		ClientID:         oauthapp.ControlCLIClientID,
+		InstallationName: "test",
+		GrantedScopes:    authscope.NonAdminGrant().String(),
+		SecretHash:       []byte("hash"),
 	}))
 	return tokenID
 }
@@ -1084,6 +1087,7 @@ func seedDelegationToken(t *testing.T, st store.Store, userID string) string {
 	}))
 	tokenID := id.Generate()
 	require.NoError(t, st.DelegationTokens().Create(ctx, store.CreateDelegationTokenParams{
+		GrantedScopes:    "workspace:read workspace:write worker:read",
 		ID:               tokenID,
 		UserID:           userid.MustNew(userID),
 		WorkerID:         worker.ID,

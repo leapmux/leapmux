@@ -2,7 +2,7 @@
 title: "Coding Agents"
 description: "Run coding-assistant CLIs like Claude Code and Codex in LeapMux: open an agent, chat, read tool calls, answer permission prompts, and switch models mid-session."
 type: docs
-weight: 5
+weight: 6
 ---
 
 Coding agents are the heart of LeapMux. Each agent is a real coding-assistant CLI (Claude Code, Codex, and others) running on a Worker, wrapped in a chat tab so you can talk to it, watch its tool calls, approve its actions, and steer it without leaving the browser. This chapter covers which agents are supported, how to open one, how to chat with it, how tool calls render, how to answer permission prompts, and how to change models and settings mid-session.

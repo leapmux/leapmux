@@ -164,7 +164,17 @@ func (h *WorkerDelegationHandler) handleMint(w http.ResponseWriter, r *http.Requ
 	}
 	tokenID := id.Generate()
 	pair := h.validator.MintBearerPair(auth.BearerKindDelegation, tokenID, time.Now(), ttl, auth.RefreshTokenTTL)
+	// The grant is the ceiling itself, stated through CeilingFor rather than a
+	// local literal: the set this mint writes and the set loadBearer narrows
+	// by at every validation are then one constant, so a scope added to the
+	// ceiling can never silently miss the mint.
+	delegationGrant, err := auth.CeilingFor(auth.BearerKindDelegation).Close().Storable()
+	if err != nil {
+		http.Error(w, "delegation grant is not storable", http.StatusInternalServerError)
+		return
+	}
 	if err := h.store.DelegationTokens().Create(r.Context(), store.CreateDelegationTokenParams{
+		GrantedScopes:    delegationGrant,
 		ID:               tokenID,
 		UserID:           uid,
 		WorkerID:         worker.ID,

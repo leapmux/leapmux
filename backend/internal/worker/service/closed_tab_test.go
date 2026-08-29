@@ -28,7 +28,19 @@ import (
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 	"google.golang.org/grpc/codes"
+
+	"github.com/leapmux/leapmux/internal/authscope"
 )
+
+// testChannelGrant is the grant a channel-open fixture announces.
+//
+// The Hub sends the opening credential's scopes on the wire, and a worker that
+// receives NONE refuses the handshake -- the zero grant reaches nothing, so an
+// omitted field denies rather than admits. Every fixture here is about what
+// happens AFTER the channel opens, so each announces the ordinary
+// non-administrative grant. A test that means to exercise a narrower one says
+// so at its own call site.
+var testChannelGrant = authscope.ScopesToWire(authscope.NonAdminGrant())
 
 // testResponseWriter captures responses and stream messages sent by handlers.
 //
@@ -252,6 +264,7 @@ func setupTestService(t *testing.T, opts ...setupOption) (*Service, *channel.Dis
 		UserId:           "user-1",
 		HandshakePayload: msg1,
 		MaxMessageSize:   uint64(channelwire.MaxMessageSize),
+		GrantedScopes:    testChannelGrant,
 	})
 
 	// Built through service.New, not by hand.
@@ -428,7 +441,7 @@ func dispatchAs(d *channel.Dispatcher, caller userid.UserID, method string, req 
 	if err != nil {
 		panic(err)
 	}
-	d.DispatchWith(context.Background(), caller, &leapmuxv1.InnerRpcRequest{
+	d.DispatchWith(context.Background(), channel.LocalAgentCaller(caller), &leapmuxv1.InnerRpcRequest{
 		Method:  method,
 		Payload: payload,
 	}, w)

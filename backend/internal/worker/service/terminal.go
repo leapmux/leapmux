@@ -10,7 +10,6 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/id"
-	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/gitutil"
@@ -51,8 +50,8 @@ func (svc *Service) beginTerminalStartup(terminalID, shell string, gs *leapmuxv1
 // registerTerminalHandlers registers all terminal-related RPC handlers.
 func registerTerminalHandlers(d registrar, svc *Service) {
 	// OpenTerminal starts a new PTY terminal session.
-	registerOwnerGated(d, "OpenTerminal", dispatchPlain,
-		func(ctx context.Context, userID userid.UserID, r *leapmuxv1.OpenTerminalRequest, sender channel.ResponseWriter) {
+	registerOwnerGated(d, "OpenTerminal", leapmuxv1.Scope_SCOPE_TERMINAL_WRITE, dispatchPlain,
+		func(ctx context.Context, caller channel.Caller, r *leapmuxv1.OpenTerminalRequest, sender channel.ResponseWriter) {
 			if svc.refuseIfShuttingDown(sender) {
 				return
 			}
@@ -142,7 +141,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 			// unusually slow factory doesn't stretch the synchronous RPC
 			// latency the user sees.
 			spawnInfo := TerminalSpawnInfo{
-				UserID:     userID,
+				UserID:     caller.UserID,
 				WorkerID:   svc.WorkerID,
 				TabID:      terminalID,
 				WorkingDir: plan.PlannedWorkingDir,
@@ -163,8 +162,8 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 	// existing screen buffer (including the "[Terminal process exited
 	// (N) - Press Enter to restart]" notice) is preserved so the new
 	// shell's prompt lands directly below the notice.
-	registerTerminalForRestartGated(d, "RestartTerminal",
-		func(_ context.Context, userID userid.UserID, r *leapmuxv1.RestartTerminalRequest, dbTerm db.GetTerminalForRestartRow, sender channel.ResponseWriter) {
+	registerTerminalForRestartGated(d, "RestartTerminal", leapmuxv1.Scope_SCOPE_TERMINAL_WRITE,
+		func(_ context.Context, caller channel.Caller, r *leapmuxv1.RestartTerminalRequest, dbTerm db.GetTerminalForRestartRow, sender channel.ResponseWriter) {
 			terminalID := r.GetTerminalId()
 
 			if svc.refuseIfShuttingDown(sender) {
@@ -227,7 +226,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 				fallbackOffset = dbTerm.ScreenLength.Int64
 			}
 			spawnInfo := TerminalSpawnInfo{
-				UserID:     userID,
+				UserID:     caller.UserID,
 				WorkerID:   svc.WorkerID,
 				TabID:      terminalID,
 				WorkingDir: dbTerm.WorkingDir,
@@ -243,8 +242,8 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 		})
 
 	// CloseTerminal stops and removes a terminal session.
-	registerTerminalGatedByID(d, "CloseTerminal", dispatchTracked,
-		func(_ context.Context, userID userid.UserID, r *leapmuxv1.CloseTerminalRequest, sender channel.ResponseWriter) {
+	registerTerminalGatedByID(d, "CloseTerminal", leapmuxv1.Scope_SCOPE_TERMINAL_WRITE, dispatchTracked,
+		func(_ context.Context, caller channel.Caller, r *leapmuxv1.CloseTerminalRequest, sender channel.ResponseWriter) {
 			terminalID := r.GetTerminalId()
 
 			// Tracked via dispatcher RegisterTracked above so Shutdown
@@ -254,13 +253,13 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 			// the tab from the UI. The TerminalStartup goroutine's
 			// trailing rollback work is tracked separately by
 			// TerminalStartup.WaitForInFlight and drained in Shutdown.
-			result := svc.closeTerminalTabCommon(userID.String(), terminalID, r.GetWorktreeAction(), dropWorktreeLink)
+			result := svc.closeTerminalTabCommon(caller.UserID.String(), terminalID, r.GetWorktreeAction(), dropWorktreeLink)
 			sendProtoResponse(sender, &leapmuxv1.CloseTerminalResponse{Result: result})
 		})
 
 	// SendInput sends input data to a terminal.
-	registerTerminalGatedByID(d, "SendInput", dispatchPlain,
-		func(_ context.Context, _ userid.UserID, r *leapmuxv1.SendInputRequest, sender channel.ResponseWriter) {
+	registerTerminalGatedByID(d, "SendInput", leapmuxv1.Scope_SCOPE_TERMINAL_WRITE, dispatchPlain,
+		func(_ context.Context, _ channel.Caller, r *leapmuxv1.SendInputRequest, sender channel.ResponseWriter) {
 			terminalID := r.GetTerminalId()
 
 			if svc.WakeLock != nil {
@@ -277,8 +276,8 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 		})
 
 	// ResizeTerminal changes a terminal's dimensions.
-	registerTerminalGatedByID(d, "ResizeTerminal", dispatchPlain,
-		func(_ context.Context, _ userid.UserID, r *leapmuxv1.ResizeTerminalRequest, sender channel.ResponseWriter) {
+	registerTerminalGatedByID(d, "ResizeTerminal", leapmuxv1.Scope_SCOPE_TERMINAL_WRITE, dispatchPlain,
+		func(_ context.Context, _ channel.Caller, r *leapmuxv1.ResizeTerminalRequest, sender channel.ResponseWriter) {
 			terminalID := r.GetTerminalId()
 
 			cols := r.GetCols()
@@ -328,8 +327,8 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 	// The worker never persists a PTY-driven OSC title. It broadcasts that
 	// title as a live overlay instead -- see the SignalTitle case in this
 	// file for the reason.
-	registerTerminalGated(d, "UpdateTerminalTitle",
-		func(_ context.Context, userID userid.UserID, r *leapmuxv1.UpdateTerminalTitleRequest, dbTerm db.Terminal, sender channel.ResponseWriter) {
+	registerTerminalGated(d, "UpdateTerminalTitle", leapmuxv1.Scope_SCOPE_TERMINAL_WRITE,
+		func(_ context.Context, caller channel.Caller, r *leapmuxv1.UpdateTerminalTitleRequest, dbTerm db.Terminal, sender channel.ResponseWriter) {
 			terminalID := r.GetTerminalId()
 
 			// Clean the title, never refuse it -- the same rule OpenAgent,
@@ -379,7 +378,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 
 			if svc.PrivateEvents != nil {
 				svc.PrivateEvents.PublishTabRenamed(
-					userID, terminalID, leapmuxv1.TabType_TAB_TYPE_TERMINAL,
+					caller.UserID, terminalID, leapmuxv1.TabType_TAB_TYPE_TERMINAL,
 					title, sender.ChannelID(),
 				)
 			}
@@ -391,7 +390,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 	// Uses the in-memory terminal manager for running terminals and falls
 	// back to saved terminal records for terminals that have already exited
 	// and been removed from the manager.
-	registerOwnerGated(d, "ListTerminals", dispatchPlain, func(ctx context.Context, _ userid.UserID, r *leapmuxv1.ListTerminalsRequest, sender channel.ResponseWriter) {
+	registerOwnerGated(d, "ListTerminals", leapmuxv1.Scope_SCOPE_TERMINAL_READ, dispatchPlain, func(ctx context.Context, _ channel.Caller, r *leapmuxv1.ListTerminalsRequest, sender channel.ResponseWriter) {
 		tabIDs := r.GetTabIds()
 		if len(tabIDs) == 0 {
 			sendProtoResponse(sender, &leapmuxv1.ListTerminalsResponse{})
@@ -491,7 +490,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 	// notably a delegation bearer minted for a different user -- must not
 	// reach it. The worker owner's own agents (via the local-IPC remote CLI,
 	// which dispatches with the owner's user id) still pass this gate.
-	registerOwnerOnly(d, "ListAvailableShells", func(ctx context.Context, userID userid.UserID, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
+	registerOwnerOnly(d, "ListAvailableShells", leapmuxv1.Scope_SCOPE_TERMINAL_READ, func(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.ListAvailableShellsRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")

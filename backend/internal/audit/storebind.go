@@ -11,7 +11,24 @@ package audit
 // once. It used to be restated inside that regex, and the rule's one silent
 // failure mode is a column the scan does not know -- the query is simply never
 // classified as an ownership predicate, and nothing anywhere reports a gap.
-var ownerColumns = []string{"user_id", "owner_user_id", "registered_by", "created_by"}
+// ownerColumns are the column names that name a row's OWNER.
+//
+// created_by_user_id is PROVENANCE rather than ownership -- who registered an
+// app -- but it is listed anyway, and the reason is the rule's polarity: this
+// list decides which WHERE clauses get classified at all, so a column left off
+// it is silently outside every check. A provenance column that no query filters
+// on costs one line here and nothing else; one that a query starts filtering on
+// later is then classified from the first day rather than from the day somebody
+// notices.
+//
+// verified_by_user_id is NOT here, and the tripwire below is why: it is the one
+// provenance column that carries no foreign key onto users, so listing it would
+// be a stale entry rather than early coverage. See the oauth_clients migration
+// for why it cannot have one.
+var ownerColumns = []string{
+	"user_id", "owner_user_id", "registered_by", "created_by",
+	"created_by_user_id",
+}
 
 // unguardedOwnerFilterQueries are the queries whose WHERE clause names an owner
 // column but whose caller deliberately does NOT route the bind through
@@ -42,10 +59,10 @@ var ownerColumns = []string{"user_id", "owner_user_id", "registered_by", "create
 // normalizes BOTH the write and every read to that same empty string. The blank owner these
 // queries bind is therefore the value the row was written with, not an unminted
 // caller -- refusing it would make every agent/terminal tab close a silent no-op
-// and leak the worktree it should have released. FILE links, where the owner IS
+// and leak the worktree it was meant to release. FILE links, where the owner IS
 // load-bearing (file tab ids are unique only within a user), carry a real owner
 // through the same parameter, and checkOwnerScopedQueries independently requires
-// each of these queries to NAME user_id so that half stays scoped.
+// each of these queries to specify user_id so that half stays scoped.
 var unguardedOwnerFilterQueries = map[string]string{
 	"GetWorktreeForTab":         "worktree_tabs.user_id is '' by design for AGENT/TERMINAL links; see the block comment above",
 	"RemoveWorktreeTab":         "worktree_tabs.user_id is '' by design for AGENT/TERMINAL links; see the block comment above",
@@ -59,6 +76,20 @@ var unguardedOwnerFilterQueries = map[string]string{
 	// cannot widen anything: the correlation is column-to-column, so a row can
 	// only ever match its own user_state row.
 	"DeleteUserOpBatchesBeforePhysical": "cross-user retention sweep; its only user_id comparison correlates each batch to its own owner's compaction watermark, and it accepts no caller id to guard",
+	// The per-user disconnect statements. Their user_id is not a CALLER id at
+	// all: it names WHOSE credentials to retire. The split from the whole-set
+	// cascade (RevokeAPITokensForOAuthClient, which carries no user_id and its
+	// own guard) exists precisely so a disconnect CANNOT be spelled as an
+	// empty sentinel (see the statements' own comments): these take a typed
+	// userid.UserID, and each Go wrapper refuses a zero id with
+	// ErrInvalidArgument before binding. The scanner recognizes
+	// userid.OwnerFilter/userid.New spellings, not the IsZero check on an
+	// already-typed value, so they are registered here with that reason
+	// rather than contorting the guard into a re-mint round trip.
+	"RevokeUserAPITokensForOAuthClient":                "per-user disconnect cascade; its wrapper refuses a zero typed userid.UserID before binding",
+	"ListUserAPITokenIDsForOAuthClient":                "the per-user read pairing RevokeUserAPITokensForOAuthClient; same zero-id refusal",
+	"ConsumeActiveAuthorizationCodesForUserClient":     "the disconnect's outstanding-code spend; same typed-id, zero refused in the wrapper",
+	"ConsumeApprovedDeviceAuthorizationsForUserClient": "the disconnect's outstanding-grant spend; same typed-id, zero refused in the wrapper",
 }
 
 // unscopedOwnerKeyedQueries are the queries that touch an owner-keyed table --

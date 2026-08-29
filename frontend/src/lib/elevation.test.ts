@@ -79,7 +79,7 @@ describe('elevation ceremonies', () => {
 
 describe('oauthReauthUrl', () => {
   it('escapes both the provider and the return address', () => {
-    expect(oauthReauthUrl('git hub', '/auth/cli/start?state=a b'))
-      .toBe('/auth/oauth/git%20hub/reauth?redirect=%2Fauth%2Fcli%2Fstart%3Fstate%3Da%20b')
+    expect(oauthReauthUrl('git hub', '/oauth/authorize?state=a b'))
+      .toBe('/auth/idp/git%20hub/reauth?redirect=%2Foauth%2Fauthorize%3Fstate%3Da%20b')
   })
 })

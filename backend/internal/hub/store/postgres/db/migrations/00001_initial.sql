@@ -367,12 +367,66 @@ CREATE TABLE hub_runtime_lease (
     lease_expires_at TIMESTAMPTZ NOT NULL
 );
 
+-- Registered apps. See the sqlite migration for the full rationale on each
+-- column; the shape is identical.
+CREATE TABLE oauth_clients (
+    client_id             TEXT COLLATE "C" PRIMARY KEY,
+    -- NULL = hub-wide; non-NULL = that user's private app. One column carries
+    -- the whole visibility rule.
+    owner_user_id         TEXT COLLATE "C" REFERENCES users(id) ON DELETE CASCADE,
+    created_by_user_id    TEXT COLLATE "C" REFERENCES users(id) ON DELETE SET NULL,
+    -- NULL is a PUBLIC client and non-NULL is a CONFIDENTIAL one.
+    secret_hash           BYTEA,
+    client_name           TEXT NOT NULL,
+    icon_blob             BYTEA,
+    icon_media_type       TEXT NOT NULL DEFAULT '',
+    client_uri            TEXT NOT NULL DEFAULT '',
+    -- Newline-delimited exact-match list.
+    redirect_uris         TEXT NOT NULL DEFAULT '',
+    -- Space-delimited RFC 6749 section 3.3: the ceiling on what this app may
+    -- reach. LIVE rather than consent-time, and narrowing only; see the sqlite
+    -- twin.
+    scopes                TEXT NOT NULL DEFAULT '',
+    grant_types           TEXT NOT NULL DEFAULT 'authorization_code refresh_token',
+    elevation_allowed     BOOLEAN NOT NULL DEFAULT FALSE,
+    registration_source   TEXT COLLATE "C" NOT NULL
+        CHECK (registration_source IN ('builtin', 'admin', 'user', 'dynamic')),
+    -- WHO vouched, and WHEN. The two move together, which the CHECK below
+    -- enforces: a row with one and not the other describes a vouch nobody can
+    -- read.
+    --
+    -- verified_by_user_id carries NO foreign key, and that is what makes the
+    -- CHECK possible. ON DELETE SET NULL would clear this column while
+    -- verified_at stayed set, which violates the CHECK -- so deleting a
+    -- vouching administrator would fail, and TiDB refuses the schema outright
+    -- rather than at that moment. The column is an ATTRIBUTION rather than a
+    -- live reference: an administrator vouched for this app on this date, and
+    -- deleting their account does not unmake that. The surface renders a name
+    -- it cannot resolve as no name, which is the honest reading.
+    verified_at           TIMESTAMPTZ,
+    verified_by_user_id   TEXT COLLATE "C",
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    revoked_at            TIMESTAMPTZ,
+    CHECK ((verified_at IS NULL) = (verified_by_user_id IS NULL))
+);
+CREATE INDEX idx_oauth_clients_owner ON oauth_clients(owner_user_id, created_at DESC, client_id DESC);
+CREATE INDEX idx_oauth_clients_revoked_at ON oauth_clients(revoked_at) WHERE revoked_at IS NOT NULL;
+
+-- The two built-in registrations are NOT seeded here; see the sqlite
+-- migration's note. store.SeedBuiltIns seeds and reconciles them on every
+-- store open, rewriting only the columns that are constants of the build.
+
 -- See sqlite migration for full rationale on api_tokens.
 CREATE TABLE api_tokens (
     id                            TEXT COLLATE "C" PRIMARY KEY,
     user_id                       TEXT COLLATE "C" NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    client_type                   TEXT NOT NULL,
-    client_name                   TEXT NOT NULL,
+    -- RESTRICT, not CASCADE: deleting an app with live credentials is refused;
+    -- the surface offers revoke, which cascades with lifecycle effects.
+    client_id                     TEXT COLLATE "C" NOT NULL REFERENCES oauth_clients(client_id) ON DELETE RESTRICT,
+    installation_name             TEXT NOT NULL,
+    -- No DEFAULT: an INSERT that omits the grant must fail at the schema.
+    granted_scopes                TEXT NOT NULL,
     secret_hash                   BYTEA NOT NULL,
     refresh_hash                  BYTEA,
     previous_refresh_hash         BYTEA,
@@ -384,17 +438,12 @@ CREATE TABLE api_tokens (
     expires_at                    TIMESTAMPTZ,
     refresh_expires_at            TIMESTAMPTZ,
     revoked_at                    TIMESTAMPTZ,
-    -- admin_scope is opt-in hub administration, chosen at consent time
-    -- (`leapmux control auth login --admin`) and refused unless the session
-    -- that consents is elevated. A CLI token without it authenticates as an
-    -- administrator but is refused on every Admin* procedure, so a stolen
-    -- credential file cannot administer the hub.
-    admin_scope                   BOOLEAN NOT NULL DEFAULT FALSE,
-    -- Elevation ("sudo mode") for a command-line credential, the same pair
-    -- user_sessions carries and enforced by the same rule. A CLI token proves
-    -- a factor through the browser step-up leg (/auth/cli/elevate), and every
-    -- restricted action slides elevation_expires_at forward, clamped to
-    -- elevation_proven_at + the maximum total window.
+    -- Elevation ("sudo mode") for an app credential, the same pair
+    -- user_sessions carries and enforced by the same rule. The credential
+    -- proves a factor through the browser step-up leg (/oauth/step-up), and
+    -- every restricted action slides elevation_expires_at forward, clamped to
+    -- elevation_proven_at + the maximum total window. The leg and the write
+    -- both require oauth_clients.elevation_allowed.
     --
     -- Without it a stolen credential file administered the hub outright: the
     -- gate that protects the settings, the user surface and the mint admitted
@@ -404,10 +453,12 @@ CREATE TABLE api_tokens (
     elevation_expires_at          TIMESTAMPTZ,
     CHECK ((elevation_proven_at IS NULL) = (elevation_expires_at IS NULL))
 );
--- user_id only: the client_type filters are the optional OR-form and never
--- seek; the remaining job is the user_id seek for the ByUserIncludingRevoked
--- listing, which the partial idx_api_tokens_user_created cannot serve.
+-- user_id only: the remaining job is the user_id seek for the
+-- ByUserIncludingRevoked listing, which the partial
+-- idx_api_tokens_user_created cannot serve.
 CREATE INDEX idx_api_tokens_user ON api_tokens(user_id);
+-- Serves the app-connection listing and the RESTRICT check on deleting an app.
+CREATE INDEX idx_api_tokens_client ON api_tokens(client_id);
 CREATE INDEX idx_api_tokens_revoked_at ON api_tokens(revoked_at) WHERE revoked_at IS NOT NULL;
 -- Keyset index for the admin ListAllAPITokens listing: partial on
 -- revoked_at IS NULL to match the query's live-token filter, with the trailing
@@ -434,6 +485,9 @@ CREATE TABLE delegation_tokens (
     terminal_id                   TEXT COLLATE "C" NOT NULL DEFAULT '',
     issued_for_tab_id             TEXT COLLATE "C" NOT NULL DEFAULT '',
     issued_for_tab_type           INTEGER NOT NULL DEFAULT 0,
+    -- What the minting worker delegated, already narrowed to the delegation
+    -- ceiling. No DEFAULT, as on api_tokens.
+    granted_scopes                TEXT NOT NULL,
     secret_hash                   BYTEA NOT NULL,
     refresh_hash                  BYTEA,
     created_at                    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -460,6 +514,13 @@ CREATE TABLE device_authorizations (
     device_code           TEXT COLLATE "C" PRIMARY KEY,
     user_code             TEXT COLLATE "C" NOT NULL UNIQUE,
     device_name           TEXT NOT NULL DEFAULT '',
+    -- Which app started the flow; see the sqlite migration.
+    client_id             TEXT COLLATE "C" NOT NULL REFERENCES oauth_clients(client_id) ON DELETE RESTRICT,
+    -- What the app asked for; the row is the only carrier across the two
+    -- machines this flow spans.
+    requested_scopes      TEXT NOT NULL DEFAULT '',
+    -- What the approval granted. It binds at the consent.
+    granted_scopes        TEXT NOT NULL DEFAULT '',
     user_id               TEXT COLLATE "C" REFERENCES users(id) ON DELETE CASCADE,
     approved              INTEGER NOT NULL DEFAULT 0,        -- 0 pending, 1 approved, 2 denied
     last_polled_at        TIMESTAMPTZ,
@@ -467,11 +528,7 @@ CREATE TABLE device_authorizations (
     created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     expires_at            TIMESTAMPTZ NOT NULL,
     consumed_at           TIMESTAMPTZ,
-    -- The admin scope the user granted at activation. It binds HERE, at the
-    -- consent, and the exchange reads it back: taken from the exchange form
-    -- instead, any holder of a device code could upgrade the grant.
-    admin_scope           BOOLEAN NOT NULL DEFAULT FALSE,
-    -- The command-line credential this grant ELEVATES, when it elevates one
+    -- The app credential this grant ELEVATES, when it elevates one
     -- rather than minting one. NULL for a login: those two flows differ only
     -- in what the approval does, so they share the row, the TTL, the poll
     -- throttle, the expiry sweep and the activation page.
@@ -485,18 +542,21 @@ CREATE TABLE device_authorizations (
 );
 CREATE INDEX idx_device_authorizations_expires_at ON device_authorizations(expires_at);
 
-CREATE TABLE cli_authorization_codes (
+-- One-shot RFC 6749 section 4.1 authorization codes; see the sqlite migration.
+CREATE TABLE oauth_authorization_codes (
     code                  TEXT COLLATE "C" PRIMARY KEY,
     user_id               TEXT COLLATE "C" NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    client_id             TEXT COLLATE "C" NOT NULL REFERENCES oauth_clients(client_id) ON DELETE RESTRICT,
     code_challenge        TEXT NOT NULL,
-    device_name           TEXT NOT NULL DEFAULT '',
+    redirect_uri          TEXT NOT NULL DEFAULT '',
+    granted_scopes        TEXT NOT NULL DEFAULT '',
+    installation_name     TEXT NOT NULL DEFAULT '',
     created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     expires_at            TIMESTAMPTZ NOT NULL,
     consumed_at           TIMESTAMPTZ,
-    -- See device_authorizations.admin_scope: the scope binds at consent.
-    admin_scope           BOOLEAN NOT NULL DEFAULT FALSE
+    minted_token_id       TEXT COLLATE "C"
 );
-CREATE INDEX idx_cli_authorization_codes_expires_at ON cli_authorization_codes(expires_at);
+CREATE INDEX idx_oauth_authorization_codes_expires_at ON oauth_authorization_codes(expires_at);
 
 -- OAuth identity providers (admin-configured)
 CREATE TABLE oauth_providers (
@@ -643,10 +703,11 @@ CREATE TABLE altcha_used_salts (
 CREATE INDEX idx_altcha_used_salts_expires_at ON altcha_used_salts(expires_at);
 
 -- +goose Down
-DROP TABLE IF EXISTS cli_authorization_codes;
+DROP TABLE IF EXISTS oauth_authorization_codes;
 DROP TABLE IF EXISTS device_authorizations;
 DROP TABLE IF EXISTS delegation_tokens;
 DROP TABLE IF EXISTS api_tokens;
+DROP TABLE IF EXISTS oauth_clients;
 DROP TABLE IF EXISTS hub_runtime_lease;
 DROP TABLE IF EXISTS revocation_events;
 DROP TABLE IF EXISTS revocation_event_sequence;

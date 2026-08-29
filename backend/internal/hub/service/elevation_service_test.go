@@ -14,8 +14,10 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/mail"
+	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/servicetest"
@@ -293,7 +295,7 @@ func TestElevateSession_RefusesABearer(t *testing.T) {
 	secret := auth.MintAccessSecret()
 	expires := time.Now().Add(time.Hour)
 	require.NoError(t, env.store.APITokens().Create(ctx, store.CreateAPITokenParams{
-		ID: tokenID, UserID: userid.MustNew(env.userID), ClientType: "cli", ClientName: "laptop",
+		ID: tokenID, UserID: userid.MustNew(env.userID), ClientID: oauthapp.ControlCLIClientID, InstallationName: "laptop", GrantedScopes: authscope.NonAdminGrant().String(),
 		SecretHash: tv.HashSecret(secret), ExpiresAt: &expires,
 	}))
 

@@ -4,9 +4,9 @@ import { isServerRoute, postAuthNavigate } from './postAuthNavigate'
 
 describe('isServerRoute', () => {
   it('claims the hub-served /auth/ family', () => {
-    expect(isServerRoute('/auth/cli/start?state=s')).toBe(true)
-    expect(isServerRoute('/auth/cli/activate')).toBe(true)
-    expect(isServerRoute('/auth/oauth/github/reauth')).toBe(true)
+    expect(isServerRoute('/oauth/authorize?state=s')).toBe(true)
+    expect(isServerRoute('/oauth/device')).toBe(true)
+    expect(isServerRoute('/auth/idp/github/reauth')).toBe(true)
   })
 
   // The hand-written list this replaced held `/auth/` alone, so each of these
@@ -32,7 +32,7 @@ describe('isServerRoute', () => {
     expect(isServerRoute('/setup')).toBe(false)
     expect(isServerRoute('/forgot-password')).toBe(false)
     expect(isServerRoute('/reset-password?token=abc')).toBe(false)
-    expect(isServerRoute('/oauth/complete-signup')).toBe(false)
+    expect(isServerRoute('/auth/idp/complete-signup')).toBe(false)
   })
 
   // The route matcher trims a trailing slash before it matches, so these are
@@ -53,7 +53,7 @@ describe('isServerRoute', () => {
   // absolute URL would turn the full-document branch into an off-origin
   // navigation for a caller that did not filter its input first.
   it('claims nothing that leaves the origin', () => {
-    expect(isServerRoute('https://evil.example/auth/cli/start')).toBe(false)
+    expect(isServerRoute('https://evil.example/oauth/authorize')).toBe(false)
     expect(isServerRoute('//evil.example/metrics')).toBe(false)
     expect(isServerRoute('javascript:alert(1)')).toBe(false)
     expect(isServerRoute('')).toBe(false)
@@ -78,8 +78,8 @@ describe('postAuthNavigate', () => {
   })
 
   it('hands a hub route back to the server with a full-document load', () => {
-    postAuthNavigate(navigate, '/auth/cli/start?state=s', '/')
-    expect(assign).toHaveBeenCalledWith('/auth/cli/start?state=s')
+    postAuthNavigate(navigate, '/oauth/authorize?state=s', '/')
+    expect(assign).toHaveBeenCalledWith('/oauth/authorize?state=s')
     expect(navigate).not.toHaveBeenCalled()
   })
 
@@ -102,5 +102,44 @@ describe('postAuthNavigate', () => {
       expect(navigate).toHaveBeenCalledWith('/', { replace: true })
       expect(assign).not.toHaveBeenCalled()
     }
+  })
+})
+
+/**
+ * The authorization server's own addresses belong to the Go mux.
+ *
+ * `/oauth/authorize` and `/oauth/device` are consent pages the hub renders,
+ * and both BOUNCE an un-elevated caller to `/elevate?redirect=...` — so the
+ * address comes back here as a redirect target after the ceremony. Taking the
+ * client-side branch would render the SPA's 404 page while the app that
+ * started the flow waits for a consent screen nobody ever sees.
+ *
+ * This is a consequence of the inverted rule rather than a list: no route file
+ * declares `/oauth/...`, so it is a server route by construction. The test
+ * exists because the failure is silent and the fix would be to add a route
+ * file, which is exactly the thing that would break it.
+ */
+describe('isServerRoute for the authorization server', () => {
+  it.each([
+    '/oauth/authorize',
+    '/oauth/authorize?client_id=x&state=y',
+    '/oauth/consent',
+    '/oauth/device',
+    '/oauth/device?user_code=ABC-DEF',
+    '/oauth/token',
+    '/oauth/revoke',
+    '/oauth/register',
+    '/oauth/step-up',
+    '/.well-known/oauth-authorization-server',
+    '/.well-known/oauth-protected-resource',
+  ])('sends %s to the server', (target) => {
+    expect(isServerRoute(target)).toBe(true)
+  })
+
+  // The INBOUND direction is the SPA's. `/auth/idp/complete-signup` is a real
+  // route file, so it must take the client-side branch -- the two directions
+  // are one letter apart in the URL and opposite here.
+  it('keeps the sign-in provider completion page client-side', () => {
+    expect(isServerRoute('/auth/idp/complete-signup')).toBe(false)
   })
 })

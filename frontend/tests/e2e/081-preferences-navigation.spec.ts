@@ -35,13 +35,19 @@ test.describe('Preferences navigation', () => {
     await expect(dialog.getByText('Debug logging')).toBeVisible()
 
     // Arrow keys move through the tab list (roving tabindex contract).
-    // Advanced is the LAST user category -- Account leads the list now -- so
-    // the next tab is the first ADMINISTRATION one for this admin session.
+    // Advanced is the LAST user category, so the next tab is the first
+    // ADMINISTRATION one for this admin session.
     await page.keyboard.press('ArrowDown')
     await expect(dialog.getByTestId('preferences-nav-admin-general')).toHaveAttribute('aria-selected', 'true')
 
-    // And Account leads: ArrowUp from Appearance wraps onto it.
+    // ArrowUp from Appearance lands on APPS, and Apps on Account: the two
+    // lead the list in that order, because Account holds the apps you
+    // AUTHORIZED and Apps the ones you REGISTERED — the same errand one step
+    // further out. Walking both steps is what pins the order rather than only
+    // the head of the list.
     await dialog.getByTestId('preferences-nav-appearance').click()
+    await page.keyboard.press('ArrowUp')
+    await expect(dialog.getByTestId('preferences-nav-apps')).toHaveAttribute('aria-selected', 'true')
     await page.keyboard.press('ArrowUp')
     await expect(dialog.getByTestId('preferences-nav-account')).toHaveAttribute('aria-selected', 'true')
   })

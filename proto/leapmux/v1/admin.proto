@@ -324,21 +324,29 @@ message AdminAPIToken {
   string user_id = 2;
   string username = 3;
   bool owner_deleted = 4;
-  string client_type = 5;
-  string client_name = 6;
+  // Which APP holds this credential, and which INSTALLATION of it. The two
+  // used to be one field, which fused an identity the hub registered with a
+  // label the caller asserted about itself.
+  string client_id = 5;
+  string installation_name = 6;
   google.protobuf.Timestamp created_at = 7;
   google.protobuf.Timestamp last_used_at = 8;
   google.protobuf.Timestamp expires_at = 9;
   google.protobuf.Timestamp revoked_at = 10;
-  // Whether this credential may reach the Admin* procedures. An audit of
-  // "who can administer the hub" is unanswerable without it.
-  bool admin_scope = 11;
+  // The permissions this credential was granted, as canonical scope tokens.
+  // An audit of "who can administer the hub" reads them for an "admin:"
+  // prefix, which is unanswerable without the list.
+  repeated string granted_scopes = 11;
+  // The app's registered display name, so a listing can group by app without
+  // a second lookup per row.
+  string client_name = 12;
 }
 
 message ListAPITokensRequest {
   string user_id = 1;
   string username = 2;
-  string client_type = 3;
+  // Narrow to ONE app; empty lists every app.
+  string client_id = 3;
   bool include_revoked = 4;
   int64 limit = 5;
   string cursor = 6;
@@ -353,8 +361,12 @@ message ListAPITokensResponse {
 // AdminUserService verb takes.
 message IssueAPITokenRequest {
   string user_id = 1;
-  string client_type = 2;
-  string client_name = 3;
+  // The app this credential belongs to. Empty means the built-in
+  // "leapmux-service-account" registration, which runs no flow and exists so
+  // this out-of-band credential still names an app.
+  string client_id = 2;
+  // Which installation this credential is for ("ci-runner-3").
+  string installation_name = 3;
   // Access-token TTL seconds; 0 = the default (1h). At most 31536000 (one
   // year): a larger value overflows the nanosecond duration the hub mints
   // from it.
@@ -368,11 +380,15 @@ message IssueAPITokenRequest {
   // it, and the first rotation clips the access window back to one hour.
   int64 ttl_seconds = 4;
   string username = 5;
-  // Grant this credential hub administration. Without it the token can do
-  // everything its owner can do EXCEPT reach an Admin* procedure, which is
-  // the right default for the headless service accounts this verb exists
-  // for. The owner must be an administrator; the hub refuses otherwise.
-  bool admin_scope = 6;
+  // The permissions to grant, as canonical scope tokens ("file:read",
+  // "admin:settings"). EMPTY grants everything except the four admin scopes,
+  // which is the right default for the headless service accounts this verb
+  // exists for.
+  //
+  // An admin scope needs an administrator OWNER: granting one to somebody
+  // else would mint a credential whose grant says one thing and whose every
+  // admin call is refused for another.
+  repeated string scopes = 6;
 }
 
 message IssueAPITokenResponse {
@@ -383,6 +399,16 @@ message IssueAPITokenResponse {
   // IssueAPITokenRequest.ttl_seconds for the rule. An empty value here is the
   // documented answer for that request, not a hub failure.
   string refresh_token = 3;
+  // The registration the credential was issued to, with the request's own
+  // default resolved (an empty request client_id mints to the built-in
+  // service account). The envelope is the one record an operator captures,
+  // so it states what the hub decided rather than what was asked.
+  string client_id = 4;
+  // The grant the hub minted, as canonical scope tokens. An empty request
+  // takes the non-admin default, which is a wider grant than "nothing" --
+  // reporting the request here made a ~14-permission credential read as
+  // `scopes: null` in the captured record.
+  repeated string granted_scopes = 5;
 }
 
 message RevokeAPITokenRequest {
@@ -512,12 +538,12 @@ message PurgeExpiredRegistrationKeysResponse {
 }
 
 // ---------------------------------------------------------------------------
-// AdminOAuthService — OAuth provider administration
+// AdminIdPService — OAuth provider administration
 // ---------------------------------------------------------------------------
 
-// AdminOAuthService is called BY administrators on Hub via ConnectRPC.
+// AdminIdPService is called BY administrators on Hub via ConnectRPC.
 // Every RPC requires an authenticated admin user.
-service AdminOAuthService {
+service AdminIdPService {
   rpc AddOAuthProvider(AddOAuthProviderRequest) returns (AddOAuthProviderResponse);
   rpc ListOAuthProviders(ListOAuthProvidersRequest) returns (ListOAuthProvidersResponse);
   rpc RemoveOAuthProvider(RemoveOAuthProviderRequest) returns (RemoveOAuthProviderResponse);

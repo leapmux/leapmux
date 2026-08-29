@@ -79,15 +79,18 @@ func Open(cfg config.MySQLConfig) (store.Store, error) {
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("init mysql migrator: %w", err)
 	}
-	if err := mig.Migrate(context.Background()); err != nil {
+	st := &mysqlStore{conn: newPoolConn(&mysqlShared{
+		db:       sqlDB,
+		migrator: mig,
+	}, sqlDB)}
+	// One call is the whole boot: migrate, then seed and reconcile the
+	// built-in registrations. Migrator() wraps the raw migrator so every
+	// caller that migrates this store later completes the same sequence.
+	if err := st.Migrator().Migrate(context.Background()); err != nil {
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("migrate mysql: %w", err)
 	}
-
-	return &mysqlStore{conn: newPoolConn(&mysqlShared{
-		db:       sqlDB,
-		migrator: mig,
-	}, sqlDB)}, nil
+	return st, nil
 }
 
 // newPoolConn builds the NON-transactional conn, and it is the only way to
@@ -311,11 +314,21 @@ func (s *mysqlStore) RevocationEvents() store.RevocationEventStore {
 func (s *mysqlStore) DeviceAuthorizations() store.DeviceAuthorizationStore {
 	return &deviceAuthorizationStore{conn: s.conn}
 }
-func (s *mysqlStore) CLIAuthorizationCodes() store.CLIAuthorizationCodeStore {
-	return &cliAuthorizationCodeStore{conn: s.conn}
+func (s *mysqlStore) OAuthAuthorizationCodes() store.OAuthAuthorizationCodeStore {
+	return &oauthAuthorizationCodeStore{conn: s.conn}
+}
+
+func (s *mysqlStore) OAuthClients() store.OAuthClientStore {
+	return &oauthClientStore{conn: s.conn}
 }
 func (s *mysqlStore) Cleanup() store.CleanupStore { return &cleanupStore{conn: s.conn} }
-func (s *mysqlStore) Migrator() store.Migrator    { return s.conn.shared.migrator }
+
+// Migrator wraps the raw goose migrator so a completed migration also seeds
+// and reconciles the built-in registrations -- the boot sequence, wherever it
+// runs. See store.MigratorWithBuiltIns.
+func (s *mysqlStore) Migrator() store.Migrator {
+	return store.MigratorWithBuiltIns(s.conn.shared.migrator, s)
+}
 
 func (s *mysqlStore) RunInTransaction(ctx context.Context, fn func(tx store.Store) error) error {
 	if s.conn.inTx() {

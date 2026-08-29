@@ -6,6 +6,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/util/userid"
 
+	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/verifycode"
@@ -24,6 +25,7 @@ func (s *Suite) testCLIAuthorizations(t *testing.T) {
 			expiresAt = time.Now().UTC().Truncate(time.Second).Add(950 * time.Millisecond)
 		}
 		require.NoError(t, st.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
+			ClientID:   oauthapp.ControlCLIClientID,
 			DeviceCode: deviceCode, UserCode: verifycode.Generate(), ExpiresAt: expiresAt,
 		}))
 		rows, err := st.DeviceAuthorizations().Approve(ctx, store.ApproveDeviceAuthorizationParams{DeviceCode: deviceCode, UserID: userid.MustNew(user.ID)}, time.Now().UTC())
@@ -41,6 +43,7 @@ func (s *Suite) testCLIAuthorizations(t *testing.T) {
 		deviceCode := id.Generate()
 		userCode := verifycode.Generate()
 		require.NoError(t, st.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
+			ClientID:   oauthapp.ControlCLIClientID,
 			DeviceCode: deviceCode, UserCode: userCode, ExpiresAt: time.Now().Add(time.Hour),
 		}))
 		afterExpiry := time.Now().UTC().Add(48 * time.Hour)
@@ -71,6 +74,7 @@ func (s *Suite) testCLIAuthorizations(t *testing.T) {
 		deviceCode := id.Generate()
 		expiresAt := time.Now().Add(1500 * time.Millisecond)
 		require.NoError(t, st.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
+			ClientID:   oauthapp.ControlCLIClientID,
 			DeviceCode: deviceCode, UserCode: verifycode.Generate(), ExpiresAt: expiresAt,
 		}))
 		rows, err := st.DeviceAuthorizations().Approve(ctx, store.ApproveDeviceAuthorizationParams{
@@ -100,6 +104,7 @@ func (s *Suite) testCLIAuthorizations(t *testing.T) {
 		deviceCode := id.Generate()
 		userCode := verifycode.Generate()
 		require.NoError(t, st.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
+			ClientID:   oauthapp.ControlCLIClientID,
 			DeviceCode: deviceCode, UserCode: userCode, ExpiresAt: time.Now().Add(time.Hour),
 		}))
 
@@ -130,7 +135,7 @@ func (s *Suite) testCLIAuthorizations(t *testing.T) {
 	// who received the code -- changes nothing.
 	//
 	// Without that guard the second approval overwrote user_id and
-	// admin_scope on a grant nobody consumed yet, so the credential reached
+	// granted_scopes on a grant nobody consumed yet, so the credential reached
 	// whoever approved LAST while the first approver read "Device
 	// authorized". The window is one poll interval normally, and the whole
 	// grant TTL for a code nobody polls.
@@ -141,6 +146,7 @@ func (s *Suite) testCLIAuthorizations(t *testing.T) {
 		deviceCode := id.Generate()
 		userCode := verifycode.Generate()
 		require.NoError(t, st.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
+			ClientID:   oauthapp.ControlCLIClientID,
 			DeviceCode: deviceCode, UserCode: userCode, ExpiresAt: time.Now().Add(time.Hour),
 		}))
 		rows, err := st.DeviceAuthorizations().ApproveByUserCode(ctx, store.ApproveDeviceAuthorizationByUserCodeParams{
@@ -150,13 +156,13 @@ func (s *Suite) testCLIAuthorizations(t *testing.T) {
 		require.Equal(t, int64(1), rows)
 
 		rows, err = st.DeviceAuthorizations().ApproveByUserCode(ctx, store.ApproveDeviceAuthorizationByUserCodeParams{
-			UserCode: userCode, UserID: userid.MustNew(second.ID), AdminScope: true,
+			UserCode: userCode, UserID: userid.MustNew(second.ID), GrantedScopes: "admin:read",
 		}, time.Now().UTC())
 		require.NoError(t, err)
 		assert.Zero(t, rows, "ApproveByUserCode must refuse a grant that is already approved")
 
 		rows, err = st.DeviceAuthorizations().Approve(ctx, store.ApproveDeviceAuthorizationParams{
-			DeviceCode: deviceCode, UserID: userid.MustNew(second.ID), AdminScope: true,
+			DeviceCode: deviceCode, UserID: userid.MustNew(second.ID), GrantedScopes: "admin:read",
 		}, time.Now().UTC())
 		require.NoError(t, err)
 		assert.Zero(t, rows, "Approve must refuse a grant that is already approved")
@@ -164,7 +170,7 @@ func (s *Suite) testCLIAuthorizations(t *testing.T) {
 		row, err := st.DeviceAuthorizations().Get(ctx, deviceCode)
 		require.NoError(t, err)
 		assert.Equal(t, first.ID, row.UserID, "the first approver keeps the grant")
-		assert.False(t, row.AdminScope, "a refused approval must not widen the scope")
+		assert.Empty(t, row.GrantedScopes, "a refused approval must not widen the grant")
 	})
 
 	// A denial is final. The approve statements match a pending row only, so
@@ -175,9 +181,10 @@ func (s *Suite) testCLIAuthorizations(t *testing.T) {
 		deviceCode := id.Generate()
 		userCode := verifycode.Generate()
 		require.NoError(t, st.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
+			ClientID:   oauthapp.ControlCLIClientID,
 			DeviceCode: deviceCode, UserCode: userCode, ExpiresAt: time.Now().Add(time.Hour),
 		}))
-		denied, err := st.DeviceAuthorizations().Deny(ctx, deviceCode)
+		denied, err := st.DeviceAuthorizations().DenyByUserCode(ctx, userCode)
 		require.NoError(t, err)
 		require.Equal(t, int64(1), denied)
 

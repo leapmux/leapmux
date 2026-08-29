@@ -23,7 +23,7 @@ import (
 // Mirrors the existing dispatcher's DispatchWith signature so the
 // router can inject local-IPC ResponseWriters.
 type LocalDispatcher interface {
-	DispatchWith(ctx context.Context, userID userid.UserID, req *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter)
+	DispatchWith(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter)
 }
 
 // CrossWorkerClient sends a unary inner RPC to a sibling worker via the
@@ -45,6 +45,11 @@ type CrossWorkerClient interface {
 // HubClient is the subset of the worker's hub-bound client the router
 // uses. Lets the router make user-scoped calls to hub services on
 // behalf of the spawning user (with a delegation token, when minted).
+//
+// It carries a userid rather than a channel.Caller, deliberately. What limits a
+// HUB call is the delegation token this worker mints for that user, and the
+// hub applies its own ceiling to it (auth.CeilingFor) -- so a grant announced
+// here would be a second, unenforced statement of the same limit.
 type HubClient interface {
 	CallInner(ctx context.Context, userID userid.UserID, method string, payload []byte) ([]byte, error)
 }
@@ -207,7 +212,7 @@ func (r *Router) dispatchLocal(ctx context.Context, info TokenInfo, method strin
 	collector := &responseCollector{}
 	r.withLocalStream(info, func(streamID string) {
 		collector.streamID = streamID
-		r.LocalDispatcher.DispatchWith(ctx, r.UserID, &leapmuxv1.InnerRpcRequest{Method: method, Payload: payload}, collector)
+		r.LocalDispatcher.DispatchWith(ctx, r.caller(), &leapmuxv1.InnerRpcRequest{Method: method, Payload: payload}, collector)
 	})
 	return collector.toResponse()
 }
@@ -277,7 +282,7 @@ func (r *Router) streamLocal(ctx context.Context, info TokenInfo, method string,
 		collector = newStreamCollector(ctx, streamID, onMsg)
 		collector.router = r
 		collector.clientReqID = clientReqID
-		r.LocalDispatcher.DispatchWith(ctx, r.UserID, &leapmuxv1.InnerRpcRequest{Method: method, Payload: payload}, collector)
+		r.LocalDispatcher.DispatchWith(ctx, r.caller(), &leapmuxv1.InnerRpcRequest{Method: method, Payload: payload}, collector)
 		collector.wait()
 	})
 	return collector.outcome()
@@ -689,4 +694,15 @@ func tokenIdentitySegment(info TokenInfo) string {
 	default:
 		return "anon"
 	}
+}
+
+// caller is the identity AND authority every LOCAL dispatch runs under.
+//
+// It is UNSCOPED, and this is the one site that legitimately is: the socket is
+// reachable by a process on this machine running as the worker's own user,
+// which is already the authority every scope subdivides. Saying so explicitly
+// rather than leaving the zero value is what keeps every other construction
+// fail-closed -- see channel.LocalAgentCaller.
+func (r *Router) caller() channel.Caller {
+	return channel.LocalAgentCaller(r.UserID)
 }

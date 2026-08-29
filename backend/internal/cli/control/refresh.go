@@ -44,7 +44,7 @@ const (
 	// and the request arrives after the token died. A minute is far more
 	// than a LAN round trip and small against the hour-long access token.
 	refreshSkew = 60 * time.Second
-	// refreshTimeout caps one refresh leg. It is separate from the caller's
+	// refreshTimeout caps one refresh stage. It is separate from the caller's
 	// own deadline because a refresh that hangs must not consume the whole
 	// budget of the call that triggered it.
 	refreshTimeout = 30 * time.Second
@@ -110,9 +110,9 @@ func (c *Client) EnsureFreshBearer(ctx context.Context) error {
 	// From memory first. This runs before EVERY unary call and every
 	// stream open, and the file read below is an os.ReadFile plus a JSON
 	// decode under a process-wide mutex -- so a command that makes N calls
-	// paid N of them to re-learn an expiry that cannot have moved. The
-	// cached value moves only when this process rotates the token, and the
-	// reactive retry picks up an expiry another process wrote.
+	// paid N of them to re-learn an expiry that cannot move between calls.
+	// The cached value moves only when this process rotates the token, and
+	// the reactive retry picks up an expiry another process wrote.
 	if !c.bearerNeedsRenewal() {
 		return nil
 	}
@@ -222,7 +222,7 @@ func (c *Client) refreshBearer(ctx context.Context, presented *CredentialFile) e
 // doRefresh runs the rotation and rewrites the credential file.
 //
 // It re-reads the file even though the caller passed one, and that read is
-// the point rather than a duplicate: the flight may have queued this call
+// the point rather than a duplicate: the flight can queue this call
 // behind another goroutine's rotation, so the value on disk NOW is what
 // decides whether the caller's token is still the current one.
 func (c *Client) doRefresh(ctx context.Context, presented *CredentialFile) (*CredentialFile, error) {
@@ -253,16 +253,16 @@ func (c *Client) doRefresh(ctx context.Context, presented *CredentialFile) (*Cre
 	// out under errgroup.WithContext, so the FIRST sibling call to fail
 	// cancels the context of every other call in flight, one of which may be
 	// mid-rotation. Next, singleflight collapses concurrent callers onto one
-	// leg, so the leader's cancellation would abort the rotation for every
+	// flight, so the leader's cancellation would abort the rotation for every
 	// follower as well, including one whose own deadline had ample time
 	// left. Last, `control events` installs signal.NotifyContext, so a
 	// Ctrl-C there cancels the stream's context and the refresh under it.
 	refreshCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), refreshTimeout)
 	defer cancel()
-	body, err := c.postRefresh(refreshCtx, current.RefreshToken)
+	body, err := c.postRefresh(refreshCtx, current.RefreshToken, current.ClientIDOrBuiltIn())
 	if err != nil {
 		// A permanent rejection is what deletes the stored file, and this
-		// function deletes it HERE rather than the transport leg: it owns
+		// function deletes it HERE rather than the transport stage: it owns
 		// the read-modify-write of that file and holds credsMu around it,
 		// so the one place that writes it is the one place that removes it.
 		if errors.Is(err, ErrCredentialRejected) {
@@ -289,6 +289,12 @@ func (c *Client) doRefresh(ctx context.Context, presented *CredentialFile) (*Cre
 	if body.TokenID != "" {
 		next.TokenID = body.TokenID
 	}
+	// The hub states the reachable grant on every rotation; an empty value is
+	// a hub that did not answer the field, and the stored one stays rather
+	// than being wiped by silence.
+	if body.Scope != "" {
+		next.Scope = body.Scope
+	}
 	if err := SaveCredentials(c.HubURL, next); err != nil {
 		// doRefresh returns the pair WITH the error, and the caller adopts
 		// it. The hub rotated already, so the old access token is unusable
@@ -300,14 +306,28 @@ func (c *Client) doRefresh(ctx context.Context, presented *CredentialFile) (*Cre
 	return &next, nil
 }
 
-// refreshBody is the /auth/cli/refresh success payload.
+// refreshBody is the /oauth/token refresh-grant success payload.
+//
+// scope is what the credential REACHES after this rotation, not what it asked
+// for: the hub reports the stored grant narrowed to the app registration's
+// ceiling, so an owner removing a permission from the registration reaches
+// this file on the next rotation. Leaving it out would keep `auth status`
+// printing a grant the hub stopped honoring.
 type refreshBody struct {
 	AccessToken      string `json:"access_token"`
 	RefreshToken     string `json:"refresh_token"`
 	ExpiresIn        int    `json:"expires_in"`
 	RefreshExpiresIn int    `json:"refresh_expires_in"`
 	TokenID          string `json:"token_id"`
+	Scope            string `json:"scope"`
 }
+
+// TokenResponseBody is refreshBody, exported for the login's decode: the
+// authorization-code exchange and the rotation read the SAME endpoint's
+// success payload, and the login embeds this shape plus its two one-time
+// fields rather than restating six fields whose drift already happened once
+// (scope reached the rotation's copy one commit before the login's).
+type TokenResponseBody = refreshBody
 
 // postRefresh performs the token rotation request.
 //
@@ -325,10 +345,19 @@ type refreshBody struct {
 // `control events` leaked one idle connection and its read goroutine per
 // hourly rotation. The 30-second budget of a rotation is enforced by the
 // request context's deadline, which refreshTimeout already sets.
-func (c *Client) postRefresh(ctx context.Context, refreshToken string) (refreshBody, error) {
-	form := url.Values{"refresh_token": {refreshToken}}
+// clientID is the app the credential was issued to: the hub binds the refresh
+// stage to that app, so a credential minted to another registration must present
+// its own id and not the CLI's built-in one.
+func (c *Client) postRefresh(ctx context.Context, refreshToken, clientID string) (refreshBody, error) {
+	// One token endpoint, and grant_type is REQUIRED: the hub no longer infers
+	// which grant a request means from which field happens to be present.
+	form := url.Values{
+		"grant_type":    {GrantTypeRefreshToken},
+		"client_id":     {clientID},
+		"refresh_token": {refreshToken},
+	}
 	resp, err := PostForm(ctx, c.HTTPClient,
-		locallisten.JoinPath(c.connectURL, "/auth/cli/refresh"), form)
+		locallisten.JoinPath(c.connectURL, "/oauth/token"), form)
 	if err != nil {
 		return refreshBody{}, err
 	}

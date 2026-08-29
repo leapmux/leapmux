@@ -10,7 +10,9 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/hubrpc"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/reflect/protoregistry"
 )
@@ -59,10 +61,10 @@ var adminProcedureRationale = map[string]string{
 
 	// Authentication infrastructure: a rogue provider row is a credential
 	// harvesting endpoint.
-	leapmuxv1connect.AdminOAuthServiceAddOAuthProviderProcedure:        "installs an OAuth trust anchor (client secret custody)",
-	leapmuxv1connect.AdminOAuthServiceListOAuthProvidersProcedure:      "reads the provider inventory including client ids",
-	leapmuxv1connect.AdminOAuthServiceRemoveOAuthProviderProcedure:     "removes a login method for every user",
-	leapmuxv1connect.AdminOAuthServiceSetOAuthProviderEnabledProcedure: "toggles a login method for every user",
+	leapmuxv1connect.AdminIdPServiceAddOAuthProviderProcedure:        "installs an OAuth trust anchor (client secret custody)",
+	leapmuxv1connect.AdminIdPServiceListOAuthProvidersProcedure:      "reads the provider inventory including client ids",
+	leapmuxv1connect.AdminIdPServiceRemoveOAuthProviderProcedure:     "removes a login method for every user",
+	leapmuxv1connect.AdminIdPServiceSetOAuthProviderEnabledProcedure: "toggles a login method for every user",
 }
 
 // TestAdminProceduresAreRationaleClassified is the bidirectional tripwire
@@ -124,16 +126,29 @@ func TestAdminGateCoversEveryAdminProtoMethod(t *testing.T) {
 	}
 }
 
-// TestAdminProceduresDisjointFromOtherGates pins that no admin procedure
-// is reachable through the public or delegation waivers. The delegation
-// refusal runs BEFORE the admin gate, so a delegation entry here would be
-// a direct privilege-escalation path for worker-spawned agents.
+// TestAdminProceduresDisjointFromOtherGates pins that no admin procedure is
+// reachable through the public waiver or by a delegation bearer.
+//
+// The delegation half used to read an allowlist. It now reads the CEILING that
+// replaced it, which is a stronger statement: an allowlist bounded the
+// procedures a delegation bearer could call and left the grant on its row
+// unbounded, so a mint bug produced an over-scoped credential that still
+// authenticated. The ceiling bounds the GRANT at every validation, so a
+// delegation bearer cannot hold an admin scope at all.
 func TestAdminProceduresDisjointFromOtherGates(t *testing.T) {
+	delegated := &UserInfo{
+		ID:         userid.MustNew("u-delegation"),
+		IsAdmin:    true,
+		Credential: DelegationCredential("d-1", "w-1"),
+		// The widest grant a delegation row could ever carry, after the
+		// read-time narrowing loadBearer applies.
+		Scopes: authscope.UnscopedGrant().NarrowTo(CeilingFor(BearerKindDelegation)),
+	}
 	for procedure := range adminProcedures {
 		assert.Falsef(t, publicProcedures[procedure],
 			"admin procedure %q is also public; that is an auth bypass", procedure)
-		assert.Falsef(t, delegationAllowedProcedures[procedure],
-			"admin procedure %q is also delegation-allowed; any spawned agent would reach it", procedure)
+		assert.Errorf(t, enforceScope(procedure, delegated),
+			"admin procedure %q is reachable by a delegation bearer; any spawned agent would reach it", procedure)
 		assert.Falsef(t, unverifiedAllowedProcedures[procedure],
 			"admin procedure %q is on the unverified allowlist; it stays behind the admin gate only", procedure)
 	}
@@ -147,7 +162,7 @@ func TestAdminProtoServicesAreExactlyFour(t *testing.T) {
 		"leapmux.v1.AdminSettingsService": true,
 		"leapmux.v1.AdminUserService":     true,
 		"leapmux.v1.AdminWorkerService":   true,
-		"leapmux.v1.AdminOAuthService":    true,
+		"leapmux.v1.AdminIdPService":      true,
 	}
 	got := map[protoreflect.FullName]bool{}
 	services := leapmuxv1.File_leapmux_v1_admin_proto.Services()

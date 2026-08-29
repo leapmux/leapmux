@@ -99,7 +99,7 @@ func (h *pgTestHelper) TruncateAll(ctx context.Context) error {
 	// where TRUNCATE is a slow distributed operation. For small test
 	// datasets DELETE is fast on all PostgreSQL-compatible backends.
 	for _, t := range sqlutil.SQLTruncateTableOrder {
-		if _, err := h.pool.Exec(ctx, "DELETE FROM "+t); err != nil {
+		if _, err := h.pool.Exec(ctx, sqlutil.TruncateStatement(t)); err != nil {
 			return err
 		}
 	}

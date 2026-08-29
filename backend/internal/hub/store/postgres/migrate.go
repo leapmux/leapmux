@@ -19,11 +19,25 @@ var migrations embed.FS
 
 func newMigrator(db *sql.DB) (store.Migrator, error) {
 	sub, _ := fs.Sub(migrations, "db/migrations")
-	crdb, err := isCockroachDB(db)
+	flavor, err := detectFlavor(db)
 	if err != nil {
 		return nil, fmt.Errorf("detect backend flavor: %w", err)
 	}
-	if crdb {
+	if flavor == flavorYugabyte {
+		// YugabyteDB does not run DDL inside a transaction: each statement
+		// commits as it executes, whatever the surrounding BEGIN says. So
+		// goose's wrapping transaction protects nothing there, and it does
+		// active harm -- the schema lands, then the version INSERT hits the
+		// transaction that the DDL invalidated, and the migrator reports a
+		// failure over a database that is fully migrated and recorded as
+		// version 0. A retry then fails on tables that already exist.
+		//
+		// Running without the transaction makes the outcome match what the
+		// database actually did. It is not a weaker guarantee, because the
+		// guarantee was never there.
+		sub = transformFS{inner: sub, transform: addNoTransaction}
+	}
+	if flavor == flavorCockroach {
 		// CockroachDB parses collation names as BCP-47 language tags and
 		// rejects the C locale outright ("invalid locale C"). Stripping the
 		// clause is semantics-preserving there: CRDB compares STRING values
@@ -35,14 +49,62 @@ func newMigrator(db *sql.DB) (store.Migrator, error) {
 	return sqlutil.NewGooseMigrator(goose.DialectPostgres, db, sub)
 }
 
-// isCockroachDB reports whether the connected backend is CockroachDB
-// masquerading behind the PostgreSQL wire protocol.
-func isCockroachDB(db *sql.DB) (bool, error) {
+// sqlFlavor is which PostgreSQL-compatible backend answered.
+//
+// Three of them speak the same wire protocol and differ in what the SQL means,
+// so the migrator asks ONCE and both dialect decisions read the answer. Asking
+// twice was the shape that let a second flavor be added without the first
+// question noticing.
+type sqlFlavor int
+
+const (
+	flavorPostgres sqlFlavor = iota
+	flavorCockroach
+	flavorYugabyte
+)
+
+// detectFlavor reports which backend is behind the PostgreSQL wire protocol.
+//
+// version() is the one probe all three answer. CockroachDB and YugabyteDB each
+// name themselves in it; a plain PostgreSQL names neither.
+func detectFlavor(db *sql.DB) (sqlFlavor, error) {
 	var version string
 	if err := db.QueryRow(`SELECT version()`).Scan(&version); err != nil {
-		return false, err
+		return flavorPostgres, err
 	}
-	return strings.Contains(version, "CockroachDB"), nil
+	return flavorOf(version), nil
+}
+
+// flavorOf classifies a version() string. It is separate from the query so a
+// test can pin the classification without a container for each backend.
+//
+// An unrecognised string is flavorPostgres, which is the STRICT path: it keeps
+// the wrapping transaction and the COLLATE "C" clause. A backend nobody
+// classified therefore gets the standard behaviour and fails loudly if it
+// cannot, rather than silently losing a guarantee.
+func flavorOf(version string) sqlFlavor {
+	switch {
+	case strings.Contains(version, "CockroachDB"):
+		return flavorCockroach
+	case strings.Contains(version, "YB-"):
+		return flavorYugabyte
+	}
+	return flavorPostgres
+}
+
+// gooseNoTransaction is the annotation that tells goose to run a migration's
+// statements outside a transaction. It must precede the Up marker.
+const gooseNoTransaction = "-- +goose NO TRANSACTION\n"
+
+// addNoTransaction prefixes a migration with the no-transaction annotation.
+//
+// It is idempotent: a file that already carries the annotation is returned
+// unchanged, so this stays correct if a migration is written with it.
+func addNoTransaction(data []byte) []byte {
+	if bytes.Contains(data, []byte(gooseNoTransaction)) {
+		return data
+	}
+	return append([]byte(gooseNoTransaction), data...)
 }
 
 func stripCollateC(data []byte) []byte {

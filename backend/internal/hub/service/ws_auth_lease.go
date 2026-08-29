@@ -2,12 +2,15 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"sync"
 
 	"github.com/coder/websocket"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/metrics"
@@ -28,6 +31,9 @@ type wsAuthenticator struct {
 	// per handler rather than read from a package variable so parallel tests
 	// cannot race each other's pace; see wsKeepalivePace.
 	keepalive wsKeepalivePace
+	// requiredScope is the one scope a credential must hold to open this
+	// endpoint at all. See newWSAuthenticator.
+	requiredScope leapmuxv1.Scope
 }
 
 // Endpoint names, and the only producer of these values.
@@ -49,18 +55,34 @@ const (
 // stronger than two literals that a person kept identical by hand, and adding
 // the keepalive field needed the identical hunk in both. A constructor makes
 // the next field an edit neither endpoint can miss.
+//
+// requiredScope is a PARAMETER rather than a field a handler may fill later,
+// for the reason the scope argument on the Worker's registrar.register gives:
+// a value nobody stated is the proto zero, and a new WebSocket endpoint must
+// not be CONSTRUCTIBLE without stating what its caller has to hold. These two
+// sockets carry the account's whole event feed and its channels to every
+// machine it owns, and the Connect interceptor's scope rung does not see
+// either of them -- neither is a Connect procedure.
+//
+// A non-grantable value PANICS at construction, matching that registrar: a bad
+// entry is a boot failure rather than a refusal in production nobody notices.
 func newWSAuthenticator(
 	st store.Store,
 	authContexts *auth.AuthContextRegistry,
 	soloUser *auth.UserInfo,
 	secureCookie func() bool,
+	requiredScope leapmuxv1.Scope,
 ) wsAuthenticator {
+	if !authscope.IsGrantable(requiredScope) {
+		panic("service: WebSocket endpoint states no grantable scope: " + requiredScope.String())
+	}
 	return wsAuthenticator{
-		store:        st,
-		authLease:    newWebSocketAuthLease(authContexts),
-		soloUser:     soloUser,
-		secureCookie: secureCookie,
-		keepalive:    wsKeepaliveProduction(),
+		store:         st,
+		authLease:     newWebSocketAuthLease(authContexts),
+		soloUser:      soloUser,
+		secureCookie:  secureCookie,
+		keepalive:     wsKeepaliveProduction(),
+		requiredScope: requiredScope,
 	}
 }
 
@@ -68,12 +90,17 @@ func newWSAuthenticator(
 // endpoint stays interchangeable for credential plumbing. The token validator
 // is optional (nil accepts cookie auth only), and the caller wires it after
 // construction, so this reads it at call time.
+//
+// It also runs the SCOPE rung, which is the whole reason this endpoint takes a
+// required scope. An unscoped credential -- a browser session, solo mode, the
+// control CLI's own grant -- passes unconditionally, because a scope subtracts
+// from the account's authority and never adds to it.
 func (a wsAuthenticator) authenticate(r *http.Request) (*auth.UserInfo, error) {
 	secureCookie := false
 	if a.secureCookie != nil {
 		secureCookie = a.secureCookie()
 	}
-	return auth.AuthenticateHTTP(r.Context(), r, auth.HTTPAuthOpts{
+	user, err := auth.AuthenticateHTTP(r.Context(), r, auth.HTTPAuthOpts{
 		Store:         a.store,
 		Validator:     a.tokenValidator,
 		SoloUser:      a.soloUser,
@@ -81,6 +108,14 @@ func (a wsAuthenticator) authenticate(r *http.Request) (*auth.UserInfo, error) {
 		SecureCookies: secureCookie,
 		Contexts:      a.authLease.registry,
 	})
+	if err != nil {
+		return nil, err
+	}
+	if !user.Scopes.Allows(a.requiredScope) {
+		token, _ := authscope.Token(a.requiredScope)
+		return nil, fmt.Errorf("%w: this credential was not granted %s", auth.ErrHTTPForbidden, token)
+	}
+	return user, nil
 }
 
 // acceptWS upgrades an authenticated request and installs everything a

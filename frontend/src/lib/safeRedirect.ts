@@ -7,7 +7,7 @@
  * the open-redirect guard.
  *
  * The three rules match `sanitizeRedirectURI` in
- * `backend/internal/hub/service/oauth_handler.go`, which guards the same
+ * `backend/internal/hub/service/idp_handler.go`, which guards the same
  * value at the stronger sink (a Location header). Keep them together: the
  * hub forwards this parameter into the OAuth start URL, so a spelling one
  * side refuses and the other accepts is an open redirect.

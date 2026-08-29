@@ -214,6 +214,7 @@ Changes fall into two classes, shown by `settings list`:
 | `limits` | `{max_connections_per_user, max_workers_per_user}` | 32 / 64 | hot (`0` = unlimited) |
 | `max_message_size_bytes` | integer | `16777216` (16 MiB) | restart (64 KiB–64 MiB) |
 | `queue_budget` | `{relay_bytes, worker_bytes, userevents_bytes}` | `0` = auto-size | restart |
+| `open_app_registration` | boolean | `false` | hot |
 | `captcha.*`, `rate_limit.*` | see below | see below | hot |
 
 Solo mode omits the settings a single-user Hub has no use for, from `settings list` and from the preferences dialog alike:
@@ -223,11 +224,12 @@ Solo mode omits the settings a single-user Hub has no use for, from `settings li
 | `signup_enabled`, `smtp` | Solo has no sign-up and no outbound mail. |
 | `session_duration_seconds`, `secure_cookies` | Solo has no login, so there is no session and no cookie. |
 | `smtp` | Solo has nowhere to send mail. |
-| `captcha.*`, `rate_limit.*` | Solo enforces neither. |
+| `captcha.*` | Solo has no sign-up and no login to protect. |
+| `rate_limit.elevation` | Keyed by USER, and solo has one. |
 
-`public_url` stays: it sets the URL in the startup banner, and the `--hub` address you give a remote Worker.
+`public_url` stays: it sets the URL in the startup banner, and the `--hub` address you give a remote Worker. `rate_limit.oauth_anonymous` stays too, and for the reason the omissions above give: it is keyed by client ADDRESS on endpoints a solo Hub also serves. `open_app_registration` stays because a solo Hub authorizes apps like any other — see [App Authorization](/docs/operating/app-authorization/).
 
-See [Accounts & Authentication](/docs/using/accounts/) for sign-up, passkeys, verification, and password-reset flows, and [Authentication Providers](/docs/operating/authentication-providers/) for OAuth/OIDC.
+See [Accounts & Authentication](/docs/using/accounts/) for sign-up, passkeys, verification, and password-reset flows, and [Sign-in Providers](/docs/operating/sign-in-providers/) for OAuth/OIDC.
 
 > **Note:** Email verification is not a separate setting. Once the `smtp` block is fully configured (`host` **and** `from_address`), the hub requires verification for new non-admin sign-ups and exposes forgot-password / worker registration email features. Removing or disabling SMTP turns verification off at runtime.
 >
@@ -244,7 +246,7 @@ leapmux control admin captcha set --provider turnstile --site-key 0x4AAAA... --s
 leapmux control admin rate-limit list
 ```
 
-With no configuration at all: captcha is **enabled** with the built-in ALTCHA provider at `PBKDF2/SHA-256` cost `10000` (challenges expire after 20 minutes), and `elevation` — failed attempts to verify your identity for a sensitive account change, see [Session elevation](/docs/operating/security/#session-elevation) — is limited to 5 failed attempts per 15 minutes per user. Solo mode enforces neither, and ALTCHA runs only where a browser can solve it and somebody other than you can reach the Hub — see **When ALTCHA runs** below.
+With no configuration at all: captcha is **enabled** with the built-in ALTCHA provider at `PBKDF2/SHA-256` cost `10000` (challenges expire after 20 minutes), and `elevation` — failed attempts to verify your identity for a sensitive account change, see [Session elevation](/docs/operating/security/#session-elevation) — is limited to 5 failed attempts per 15 minutes per user. A second limit, `oauth_anonymous`, caps the authorization server's three anonymous endpoints per client address; see [App Authorization](/docs/operating/app-authorization/). Solo mode enforces no captcha and no per-user limit, but it does enforce `oauth_anonymous`. ALTCHA runs only where a browser can solve it and somebody other than you can reach the Hub — see **When ALTCHA runs** below.
 
 Selecting Google reCAPTCHA v3 or Cloudflare Turnstile needs its site key and its secret, because the Hub refuses a selected provider whose key pair is incomplete. Pass both in the same `captcha set` invocation, as the example above does, or store them first and select the provider after. The Preferences dialog's Bot Protection panel shows every provider's key fields at all times for the same reason: an operator fills a provider in, then switches to it.
 
@@ -660,6 +662,6 @@ The bare `version` subcommand is a **top-level** command (`leapmux version`), no
 - [Running LeapMux](/docs/operating/running-leapmux/) — run modes, ports, data dirs, Docker, reverse proxy.
 - [Encryption & Data](/docs/operating/encryption-and-data/) — encryption key ring, rotation, DB migrations, backup/restore.
 - [Managing Workers](/docs/operating/managing-workers/) — registration keys, approval, Worker selection.
-- [Authentication Providers](/docs/operating/authentication-providers/) — configuring OAuth/OIDC as an operator.
+- [Sign-in Providers](/docs/operating/sign-in-providers/) — configuring OAuth/OIDC as an operator.
 - [Security & Threat Model](/docs/operating/security/) — E2EE protocol, encryption modes, trust boundaries.
 - [CLI Reference](/docs/reference/cli-reference/) — consolidated command and flag cheat-sheet.

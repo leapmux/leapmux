@@ -16,7 +16,7 @@ import (
 // procedure that nobody wired to a gate satisfied every test.
 //
 // That omission happened, and it happened five times in one change:
-// AdminOAuthService's three write verbs, AdminUserService.DeleteUser and
+// AdminIdPService's three write verbs, AdminUserService.DeleteUser and
 // AdminUserService.UpdateUser all shipped with NO gate while the sign-up
 // toggle beside them had one. This record is the tripwire for the next one.
 //
@@ -111,15 +111,15 @@ var adminProcedureElevation = map[string]struct {
 	leapmuxv1connect.AdminWorkerServiceRevokeRegistrationKeyProcedure:        {adminNeedsNoElevation, "only reduces access"},
 	leapmuxv1connect.AdminWorkerServicePurgeExpiredRegistrationKeysProcedure: {adminNeedsNoElevation, "deletes rows that already expired; it grants nothing"},
 
-	// --- AdminOAuthService ---
+	// --- AdminIdPService ---
 	//
 	// A provider row installs a sign-in route for the WHOLE hub, and one with
 	// trust_email set links an incoming identity to any account whose verified
 	// address it presents. writeUnderElevation states the rest.
-	leapmuxv1connect.AdminOAuthServiceAddOAuthProviderProcedure:        {adminNeedsElevatedCredential, "installs an identity provider, which is a sign-in route for every account"},
-	leapmuxv1connect.AdminOAuthServiceListOAuthProvidersProcedure:      {adminNeedsNoElevation, "a read of the provider inventory; the client secret stays encrypted in the store"},
-	leapmuxv1connect.AdminOAuthServiceRemoveOAuthProviderProcedure:     {adminNeedsElevatedCredential, "removes a login method for every user"},
-	leapmuxv1connect.AdminOAuthServiceSetOAuthProviderEnabledProcedure: {adminNeedsElevatedCredential, "turns a login method on or off for every user"},
+	leapmuxv1connect.AdminIdPServiceAddOAuthProviderProcedure:        {adminNeedsElevatedCredential, "installs an identity provider, which is a sign-in route for every account"},
+	leapmuxv1connect.AdminIdPServiceListOAuthProvidersProcedure:      {adminNeedsNoElevation, "a read of the provider inventory; the client secret stays encrypted in the store"},
+	leapmuxv1connect.AdminIdPServiceRemoveOAuthProviderProcedure:     {adminNeedsElevatedCredential, "removes a login method for every user"},
+	leapmuxv1connect.AdminIdPServiceSetOAuthProviderEnabledProcedure: {adminNeedsElevatedCredential, "turns a login method on or off for every user"},
 }
 
 // TestEveryAdminProcedureIsElevationClassified is the tripwire: a new admin
@@ -127,7 +127,7 @@ var adminProcedureElevation = map[string]struct {
 // on and why.
 //
 // It checks the RECORD, not the handler. The other half is behavioral --
-// TestAdminOAuthService_WritesNeedAnElevatedSession,
+// TestAdminIdPService_WritesNeedAnElevatedSession,
 // TestAdminUserService_DurableAuthorityVerbsNeedAnElevatedSession,
 // TestAdminUserService_CredentialGatedVerbsNeedAProvenFactor and
 // TestAdminSettingsService_WriteGate drive the protected verbs through a real

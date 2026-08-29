@@ -10,7 +10,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/hub/auth"
+	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -117,8 +119,7 @@ func TestAdminUserService_RevokeAPITokenClosesThatBearer(t *testing.T) {
 
 	userID := seedRevocableUser(t, env, "carol")
 	issued, err := env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
-		UserId: userID, ClientName: "carols-laptop", ClientType: "cli",
-	}, env.token))
+		UserId: userID, InstallationName: "carols-laptop"}, env.token))
 	require.NoError(t, err)
 
 	_, err = env.client.RevokeAPIToken(ctx, authedReq(&leapmuxv1.RevokeAPITokenRequest{
@@ -152,6 +153,7 @@ func TestAdminUserService_RevokeDelegationTokenClosesThatBearer(t *testing.T) {
 	worker := storetest.SeedWorker(t, env.st, userID)
 	tokenID := id.Generate()
 	require.NoError(t, env.st.DelegationTokens().Create(ctx, store.CreateDelegationTokenParams{
+		GrantedScopes:    "workspace:read workspace:write worker:read",
 		ID:               tokenID,
 		UserID:           userid.MustNew(userID),
 		WorkerID:         worker.ID,
@@ -198,14 +200,16 @@ func TestAdminUserService_RevokeUserSessionsReportsTheCommittedGeneration(t *tes
 
 	apiTokenID := id.Generate()
 	require.NoError(t, env.st.APITokens().Create(ctx, store.CreateAPITokenParams{
-		ID:         apiTokenID,
-		UserID:     userid.MustNew(userID),
-		ClientType: "cli",
-		ClientName: "carols-laptop",
-		SecretHash: []byte("hash"),
+		ID:               apiTokenID,
+		UserID:           userid.MustNew(userID),
+		ClientID:         oauthapp.ControlCLIClientID,
+		InstallationName: "carols-laptop",
+		GrantedScopes:    authscope.NonAdminGrant().String(),
+		SecretHash:       []byte("hash"),
 	}))
 	worker := storetest.SeedWorker(t, env.st, userID)
 	require.NoError(t, env.st.DelegationTokens().Create(ctx, store.CreateDelegationTokenParams{
+		GrantedScopes:    "workspace:read workspace:write worker:read",
 		ID:               id.Generate(),
 		UserID:           userid.MustNew(userID),
 		WorkerID:         worker.ID,

@@ -129,6 +129,7 @@ func (e *bearerChannelEnv) mintDelegation(t *testing.T, userID, workerID, worksp
 	tokenID = id.Generate()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, e.store.DelegationTokens().Create(context.Background(), store.CreateDelegationTokenParams{
+		GrantedScopes:    "workspace:read workspace:write worker:read",
 		ID:               tokenID,
 		UserID:           userid.MustNew(userID),
 		WorkerID:         workerID,
@@ -259,7 +260,7 @@ func TestGetWorkerHandshakeParams_DelegationReachesItsMintingWorker(t *testing.T
 	_, err := env.channelClient.GetWorkerHandshakeParams(context.Background(), req)
 
 	assert.NotEqual(t, connect.CodePermissionDenied, connect.CodeOf(err),
-		"the minting worker's own params must remain readable")
+		"the minting worker's own params must remain readable: %v", err)
 }
 
 // The same token MUST still open a channel back to the worker that minted it --

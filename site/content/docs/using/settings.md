@@ -2,7 +2,7 @@
 title: "Settings & Preferences"
 description: "Every setting in the Preferences dialog: appearance, notifications, chat, terminal, files, keyboard shortcuts, account, fonts, and the hub administration panels."
 type: docs
-weight: 10
+weight: 11
 ---
 
 LeapMux keeps your settings in one **Preferences** dialog reached from the user (avatar) menu. It is a large, searchable, categorized dialog covering every user, browser, and (for hub administrators) instance setting in one place. This chapter covers every category, the additional in-context toggles, and how each preference is stored and resolved.
@@ -35,7 +35,8 @@ The categories:
 
 | Category | Covers |
 |---|---|
-| **Account** | Profile name, email, password, passkeys, linked accounts, command-line credentials. The section the dialog opens on, and hidden in solo mode. |
+| **Account** | Profile name, email, password, passkeys, linked accounts, connected apps. The section the dialog opens on. Solo mode hides every row but **Connected apps**, because a solo Hub authorizes apps like any other and its owner must be able to disconnect one. |
+| **Apps** | The app registrations you own. An ordinary account may register an app for itself; an administrator's registrations are visible to everybody. See [App Authorization](/docs/operating/app-authorization/). |
 | **Appearance** | Theme (palette + light/dark), terminal theme, syntax theme, diff view, UI fonts, monospace fonts. |
 | **Notifications** | Turn-end sound and volume, terminal OS notifications. |
 | **Chat & Composer** | Expand agent thoughts, show hidden messages, Enter key behavior, composer status bar. |
@@ -52,8 +53,9 @@ Administrators additionally see an **ADMINISTRATION** section in the navigation.
 | **Sign-up & Access** | Open sign-up, require verified email. | Hidden |
 | **Email (SMTP)** | Relay host and port, credentials, sender address, TLS mode. | Hidden |
 | **Bot Protection** | Captcha provider and its parameters. | Hidden |
-| **Rate Limits** | Failed-attempt limits, per operation. | Hidden |
+| **Rate Limits** | Failed-attempt limits, per operation. | The anonymous authorization-server limit only |
 | **Limits & Timeouts** | API, agent-startup, and worktree-create timeouts; per-user connection and worker caps. | Shown |
+| **Apps** | Open app registration (RFC 7591), off by default. | Shown |
 | **Advanced** | Maximum message size, queue budgets. Both apply only after a hub restart, and both rows carry a **Requires Restart** badge. | Shown |
 
 See [Configuration](/docs/operating/configuration/) for what each instance setting does, and [`admin` — hub administration over RPC](/docs/operating/control-cli/#admin--hub-administration-over-rpc) for the CLI surface over the same settings.
@@ -152,16 +154,24 @@ The **Keyboard Shortcuts** category is a table of every command with its default
 
 ## Account
 
-The Account category carries what the old Profile dialog managed, as one row per concern. It leads the navigation, and it is **not available in solo mode** (a solo deployment has one local identity). For the broader account lifecycle — sign-up, login, OAuth, email verification, sessions — see [Accounts & Authentication](/docs/using/accounts/).
+The Account category carries what the old Profile dialog managed, as one row per concern. It leads the navigation. Solo mode hides every row here but **Connected apps** — a solo deployment has one local identity, so there is no password, address or provider to manage, but it authorizes apps like any other Hub. For the broader account lifecycle — sign-up, login, OAuth, email verification, sessions — see [Accounts & Authentication](/docs/using/accounts/).
 
 - **Profile** — your username and display name, saved together. A username is a lowercase slug, and `solo` is always reserved. A display name falls back to the username when empty.
 - **Email** — changing it may require verification (an operator-configured policy); a pending change shows a notice until confirmed.
-- **Password** — 8–128 printable ASCII characters, spaces included (see [Password requirements](/docs/using/accounts/#password-requirements)) with a live strength meter. Changing it signs out all your *other* sessions and revokes API/delegation tokens; your current session stays signed in. OAuth-only accounts can set a first password here.
+- **Password** — 8–128 printable ASCII characters, spaces included (see [Password requirements](/docs/using/accounts/#password-requirements)) with a live strength meter. Changing it signs out all your *other* sessions and disconnects every app; your current session stays signed in. OAuth-only accounts can set a first password here.
 - **Passkeys** — the credentials registered to this account, with add, rename and remove. See [Managing passkeys in your profile](/docs/using/accounts/#managing-passkeys-in-your-profile).
 - **Linked accounts** — your linked OAuth/OIDC providers, each with an **Unlink** button. You cannot detach your only sign-in method without a password set.
-- **Command-line credentials** — every device signed in with `leapmux control auth login`, and **Revoke**.
+- **Connected apps** — every app holding access to your account, grouped by app, with the permissions each was granted. **Disconnect** on the app's line ends every machine it runs on; **Revoke** on one row ends that machine alone. See [Connected Apps](/docs/using/connected-apps/).
 
-Four of those six rows need a **verified session**: email, password, passkeys, and linked accounts. Your profile name and your command-line credentials do not. While the session is verified, a panel at the top of the section says so and offers **End now**. Every **ADMINISTRATION** section takes the same rule and shows the same panel. See [Session elevation](/docs/operating/security/#session-elevation).
+Four of those six rows need a **verified session**: email, password, passkeys, and linked accounts. Your profile name and your connected apps do not. Disconnecting an app only ever *reduces* what it can reach, and demanding a fresh factor from somebody who just realized an app is malicious is the wrong failure mode. While the session is verified, a panel at the top of the section says so and offers **End now**. Every **ADMINISTRATION** section takes the same rule and shows the same panel. See [Session elevation](/docs/operating/security/#session-elevation).
+
+## Apps
+
+**App registrations** lists the apps you registered, with **Register app**, and per row the permission ceiling it may ask for, whether an administrator vouched for it, **Edit** (the name, home page, redirect addresses and that ceiling), **Allow step-up** or **Refuse step-up**, and **Retire**. Narrowing that ceiling takes the permission from every credential the app already holds, so it is the lever to reach for short of retiring the app outright. Yours are visible to you alone; an administrator's are visible to everybody and only an administrator can edit them. Administrators also get **Vouch** and **Withdraw vouch** on every row. See [App Authorization](/docs/operating/app-authorization/) for what each field decides.
+
+This row needs a **verified session**, and **Connected apps** one category up does not. The asymmetry is the point: disconnecting reduces access, while editing a registration rewrites **where a consent redirects** — the single most dangerous write in the feature, because it diverts an authorization code already in flight to an address the editor chose. Registering an app, allowing it the step-up ceremony, and vouching for it take the same rule.
+
+Administrators additionally see **Apps** under **ADMINISTRATION**, which holds the Hub's own app setting: whether [RFC 7591 open registration](/docs/operating/app-authorization/#open-registration) accepts anonymous callers. It is off by default.
 
 ## How preferences persist
 

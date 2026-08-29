@@ -342,7 +342,7 @@ func TestOIDC_Exchange_InvalidIDTokenSignature(t *testing.T) {
 }
 
 // The Hub limits the token exchange with a context deadline (see
-// service.OAuthHandler's callback), because golang.org/x/oauth2 otherwise runs
+// service.IdPHandler's callback), because golang.org/x/oauth2 otherwise runs
 // it on http.DefaultClient, which has no timeout. That limit is only worth
 // anything if Exchange actually honours the context: an identity provider that
 // accepts the connection and never answers must fail here rather than park the

@@ -16,6 +16,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -358,7 +359,7 @@ func TestStreamingDenialArrivesAsAStreamFrame(t *testing.T) {
 	t.Parallel()
 
 	svc, d, _ := setupTestService(t)
-	_, shapes := registerAllClassified(channel.NewDispatcher(), svc)
+	_, shapes, _ := registerAllClassified(channel.NewDispatcher(), svc)
 
 	var streaming []string
 	for method, shape := range shapes {
@@ -371,7 +372,7 @@ func TestStreamingDenialArrivesAsAStreamFrame(t *testing.T) {
 	for _, method := range streaming {
 		t.Run(method, func(t *testing.T) {
 			w := newTestWriter()
-			d.DispatchWith(context.Background(), userid.MustNew("user-2"), &leapmuxv1.InnerRpcRequest{
+			d.DispatchWith(context.Background(), channel.LocalAgentCaller(userid.MustNew("user-2")), &leapmuxv1.InnerRpcRequest{
 				Method: method,
 			}, w)
 
@@ -475,7 +476,7 @@ func TestMachineScopedFamiliesAreOwnerOnly(t *testing.T) {
 		t.Run(method+" denies a non-owner", func(t *testing.T) {
 			w := newTestWriter()
 			// "user-2" holds a valid channel but does not own this worker.
-			d.DispatchWith(context.Background(), userid.MustNew("user-2"), &leapmuxv1.InnerRpcRequest{
+			d.DispatchWith(context.Background(), channel.LocalAgentCaller(userid.MustNew("user-2")), &leapmuxv1.InnerRpcRequest{
 				Method: method,
 			}, w)
 
@@ -557,7 +558,7 @@ func TestEveryStreamingMethodIsRegisteredAsStreaming(t *testing.T) {
 	t.Parallel()
 
 	svc, _, _ := setupTestService(t)
-	_, shapes := registerAllClassified(channel.NewDispatcher(), svc)
+	_, shapes, _ := registerAllClassified(channel.NewDispatcher(), svc)
 
 	var streaming []string
 	for method, shape := range shapes {
@@ -904,4 +905,102 @@ func registrationMethodAndHandler(call *ast.CallExpr) (method, handler string, l
 		}
 	}
 	return method, handler, lit, method != ""
+}
+
+// TestEveryRegisteredMethodIsWithinTheDelegationGrant pins the cross-worker
+// half of the delegation ceiling: the channel a sibling worker opens
+// authenticates with the delegation bearer the hub mints, and the gate below
+// refuses any method whose declared scope the grant does not carry. When the
+// ceiling carried only its hub-side scopes, every cross-worker inner call --
+// a tab close, a file read, a branch push from a spawned agent -- answered
+// PermissionDenied where it worked the day before. This test fails the suite
+// the moment a new worker method states a scope the delegation grant lacks,
+// which is the earliest point that breakage can be caught.
+func TestEveryRegisteredMethodIsWithinTheDelegationGrant(t *testing.T) {
+	t.Parallel()
+
+	svc, d, _ := setupTestService(t)
+	gates, _, scopes := registerAllClassified(d, svc)
+
+	// The delegation grant, spelled exactly as the hub's mint writes it
+	// (worker_delegation_handler.go derives it from CeilingFor). The literal
+	// here is a test PIN: a scope added to the worker surface without the
+	// ceiling following fails right below, and a ceiling edit that drops a
+	// scope the worker needs fails the same assertion from the other side.
+	grant, err := authscope.Parse("workspace:read workspace:write worker:read " +
+		"agent:read agent:write terminal:read terminal:write file:read git:read git:write tunnel:open")
+	require.NoError(t, err)
+
+	methods := d.Methods()
+	require.NotEmpty(t, methods)
+	for _, method := range methods {
+		_, gated := gates[method]
+		scope, stated := scopes[method]
+		if !gated || !stated {
+			// The ungated local probe records no scope; a sibling never sees
+			// it, because the cross-worker path authenticates as a caller and
+			// the gate reads the caller's grant.
+			continue
+		}
+		token, _ := authscope.Token(scope)
+		assert.Truef(t, grant.Allows(scope),
+			"%s requires %s, which the delegation grant does not carry: a sibling-worker call answers PermissionDenied", method, token)
+	}
+}
+
+// TestAccessControl_WorktreeRemoveNeedsGitWrite pins the action-level gate on
+// RevokeFileTabPath: the method rides file:read because the registry row is
+// file-tab bookkeeping, but the WORKTREE_ACTION_REMOVE leg runs
+// `git worktree remove --force` and `git branch -D` -- a destructive write
+// that scope.proto places under git:write, the same family rule every other
+// destructive verb follows. A read consent must never delete a worktree.
+func TestAccessControl_WorktreeRemoveNeedsGitWrite(t *testing.T) {
+	t.Parallel()
+
+	owner := userid.MustNew("user-1")
+	// file:read alone: what a read-only file-viewer consent holds. Its
+	// closure carries worker:read, so the channel opens; it must not carry
+	// git:write.
+	readOnly, err := authscope.Parse("file:read")
+	require.NoError(t, err)
+	require.False(t, readOnly.Close().Allows(leapmuxv1.Scope_SCOPE_GIT_WRITE),
+		"precondition: the read-only grant must not reach git:write")
+	readWrite, err := authscope.Parse("file:read git:write")
+	require.NoError(t, err)
+
+	dispatch := func(scopes authscope.ScopeSet, action leapmuxv1.WorktreeAction) *testResponseWriter {
+		svc, d, w := setupTestService(t)
+		// Per-OS absolute paths: the store refuses a file path that is not
+		// absolute on the running system, and a Unix literal is not one on
+		// Windows.
+		repo := filepath.Join(t.TempDir(), "repo")
+		require.NoError(t, svc.FileTabPaths.Register(context.Background(), RegisterFileTabPathParams{
+			UserID: owner.String(), TabID: "tab-1", FilePath: filepath.Join(repo, "file"), WorkingDir: repo,
+		}))
+		payload, err := proto.Marshal(&leapmuxv1.RevokeFileTabPathRequest{
+			TabId: "tab-1", WorktreeAction: action,
+		})
+		require.NoError(t, err)
+		d.DispatchWith(context.Background(), channel.NewCaller(owner, scopes), &leapmuxv1.InnerRpcRequest{
+			Method: "RevokeFileTabPath", Payload: payload,
+		}, w)
+		return w
+	}
+
+	// REMOVE under a read-only grant is refused before any row is touched.
+	w := dispatch(readOnly, leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE)
+	rejected := w.rejections()
+	require.Len(t, rejected, 1)
+	assert.Equal(t, codePermissionDenied, rejected[0].code)
+	assert.Contains(t, rejected[0].message, "git:write",
+		"the denial should name the permission the escalation needs")
+
+	// KEEP (the bookkeeping-only leg) stays reachable under file:read alone,
+	// and REMOVE stays reachable when the grant carries git:write.
+	w = dispatch(readOnly, leapmuxv1.WorktreeAction_WORKTREE_ACTION_KEEP)
+	assert.Empty(t, w.rejections(), "revoking the registry row is file:read work")
+
+	w = dispatch(readWrite, leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE)
+	assert.Empty(t, w.rejections(), "git:write covers worktree management")
+	assert.NotEmpty(t, w.responses, "the removal proceeds and answers")
 }

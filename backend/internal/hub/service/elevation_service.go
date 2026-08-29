@@ -25,12 +25,13 @@ import (
 // auth.ElevationMaxTotal measured from the proof. Two factors can prove it --
 // a password (ElevateSession) and a passkey (Begin/FinishPasskeyElevation) --
 // and an OAuth-only account uses the re-authentication leg at
-// /auth/oauth/<provider>/reauth instead, because it holds neither.
+// /auth/idp/<provider>/reauth instead, because it holds neither.
 //
-// Elevation is per hub PROCESS in exactly one respect: the in-memory
-// UserInfo cache. The state itself is a pair of columns, so another hub
-// reads it from the row; but a hub that already cached this session serves
-// the old deadline until the grant's user_info event reaches it. Grant and
+// Elevation is per PROCESS in exactly one respect: the in-memory UserInfo
+// cache. The state itself is a pair of columns, so any later reader -- this
+// hub after a restart, or the watcher's replay -- reads it from the row; but
+// a process that already cached this session serves the old deadline until
+// the grant's user_info event reaches it. Grant and
 // drop both emit that event, and a slide deliberately does not -- a stale
 // SHORTER deadline fails closed.
 //
@@ -404,7 +405,7 @@ func commitUnderElevation(ctx context.Context, st store.Store, actor *auth.UserI
 // ADMIN surface:
 //
 //   - The mint that creates a credential outliving the session that asked for
-//     it. The four /auth/cli/* consent legs already demand an elevated
+//     it. The three /oauth/* consent legs already demand an elevated
 //     session, on the reasoning requireElevatedSession states -- minting a
 //     command-line credential is the most consequential thing a session can
 //     do. The same mint through AdminUserService.IssueAPIToken asked for
@@ -425,7 +426,7 @@ func commitUnderElevation(ctx context.Context, st store.Store, actor *auth.UserI
 //
 // It has a row now (api_tokens.elevation_proven_at / _expires_at) and it
 // proves its factor where a person can answer: the browser, through
-// /auth/cli/elevate-authorization. The refusal carries
+// /oauth/step-up. The refusal carries
 // ElevationRequiredHeader, so the CLI knows to run that leg and retry rather
 // than reporting a refusal it cannot act on -- see EnsureElevated in
 // internal/cli/control.
@@ -437,12 +438,17 @@ func commitUnderElevation(ctx context.Context, st store.Store, actor *auth.UserI
 // renew itself for ever, with a fresh created_at each time, past the one-year
 // ceiling the whole design rests on.
 //
-// What this gate does NOT narrow is the credential's REACH: one admin scope
-// still admits every verb on the admin surface, so a credential minted for
-// user administration can also rewrite the hub's security settings. Splitting
-// a settings scope out of it, and recording on the audit trail which writes a
-// person verified, are tracked in
-// https://github.com/leapmux/leapmux/issues/418.
+// What this gate does NOT narrow is the credential's REACH. That is a separate
+// axis, and it is the scope rung one step earlier: the admin family
+// (admin:read, admin:users, admin:settings, admin:workers, admin:apps) is
+// five scopes rather than one, so a credential minted to administer users no
+// longer reaches the hub's security settings. See enforceScope and
+// procedure_scopes.go.
+//
+// The two multiply and neither replaces the other: a scope says WHICH verbs a
+// credential reaches, and this window says whether somebody was recently at a
+// keyboard. What remains unrecorded is the AUDIT TRAIL -- which writes a person
+// verified -- and https://github.com/leapmux/leapmux/issues/418 tracks it.
 func requireElevatedActor(ctx context.Context, now time.Time) (*auth.UserInfo, error) {
 	userInfo, err := auth.MustGetUser(ctx)
 	if err != nil {
@@ -503,7 +509,7 @@ func assertElevatedActor(userInfo *auth.UserInfo, now time.Time) error {
 //
 // A FREE FUNCTION, not a method, for the reason slideElevation is one: TWO
 // services write the hub's configuration. AdminSettingsService held the only
-// copy, so AdminOAuthService -- which adds, removes and disables identity
+// copy, so AdminIdPService -- which adds, removes and disables identity
 // providers -- shipped with no gate at all while the sign-up toggle beside it
 // had one.
 //
@@ -527,8 +533,8 @@ func writeUnderElevation(ctx context.Context, st store.Store, now func() time.Ti
 // immediately before an irreversible write, and refuses when it went away.
 //
 // The gate that admitted this request read a CACHED UserInfo -- the auth cache
-// holds an entry for its TTL, and a revoke raised on another hub reaches this
-// process only on the revocation watcher's next sweep -- so "elevated" can be
+// holds an entry for its TTL, and a revoke raised out of band (a store writer
+// beyond this process) reaches it only on the watcher's next sweep -- so "elevated" can be
 // true of a session an administrator already took away. Every mutation the
 // elevation window guards moves a credential or a recovery identity, so a
 // commit on authority that no longer exists is exactly the outcome the window
@@ -614,7 +620,7 @@ func refuseIfActingAuthorityMovedFrom(ctx context.Context, st store.Store, locke
 //
 // A FREE FUNCTION, not a UserService method, because THREE surfaces require
 // the window and all three must extend it. It was a method, so only
-// UserService procedures slid: the four /auth/cli/* consent legs and
+// UserService procedures slid: the three /oauth/* consent legs and
 // AdminUserService.IssueAPIToken enforced the window and left it where it
 // was. The most consequential action the gate protects was the one action
 // that did not count as use, so a user who elevated at 11:58 and consented at
@@ -736,7 +742,7 @@ func rejectSoloElevation(solo bool) error {
 // It is the ONE place that decides that shape, because two rules must agree
 // on it: the first-credential branch of stepUpMutationAuth reads it to
 // know that an account has nothing to elevate WITH, and
-// OAuthHandler.providerMayElevateAccount calls it, so the OAuth
+// IdPHandler.providerMayElevateAccount calls it, so the OAuth
 // re-authentication leg reaches the same answer rather than a second copy of
 // it.
 //
@@ -781,7 +787,7 @@ func accountShapeElevatesOnlyThroughAProvider(passwordSet bool, passkeyCount int
 // elevation at all.
 //
 // TWO kinds can: a session cookie, and a command-line credential, which
-// proves its factor in a browser through the /auth/cli/elevate-authorization
+// proves its factor in a browser through the /oauth/step-up
 // leg. Each has a row to stamp and a person who can be prompted. A
 // DELEGATION bearer has neither -- a worker mints it for an agent that reads
 // untrusted input -- and neither does solo mode, which authenticates a
@@ -880,7 +886,7 @@ func grantSessionElevation(
 	// The cached UserInfo still carries the OLD deadline, and this process
 	// is the one serving the next request. Drop it through the lane whose
 	// contract is exactly "re-read the user without logging them out"; the
-	// durable event the store emitted covers every other hub.
+	// durable event the store emitted covers the watcher's replay.
 	lifecycle.UserInfoInvalidated(userID.String())
 	return until, nil
 }

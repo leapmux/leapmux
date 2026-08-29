@@ -412,6 +412,93 @@ CREATE TABLE hub_runtime_lease (
     lease_expires_at DATETIME NOT NULL
 );
 
+-- Registered apps: everything that may ask an account for access.
+--
+-- The control CLI is one row here rather than a special case in the code. So
+-- is the administrator-issued service credential, which runs no flow at all
+-- and exists so api_tokens.client_id can stay NOT NULL.
+CREATE TABLE oauth_clients (
+    client_id             TEXT PRIMARY KEY,
+    -- NULL = hub-wide (an administrator registered it, or it self-registered);
+    -- non-NULL = that user's private app. ONE column carries the whole
+    -- visibility rule, so no second flag can disagree with it.
+    owner_user_id         TEXT REFERENCES users(id) ON DELETE CASCADE,
+    created_by_user_id    TEXT REFERENCES users(id) ON DELETE SET NULL,
+    -- NULL is a PUBLIC client and non-NULL is a CONFIDENTIAL one. There is no
+    -- second column, so "public client with a secret" is unsayable.
+    secret_hash           BLOB,
+    client_name           TEXT NOT NULL,
+    -- Stored at registration and served from /oauth/apps/<id>/icon, same
+    -- origin. A REMOTE logo URL would be a beacon: it tells the app operator
+    -- when the consent page rendered and from which IP, and its bytes are
+    -- chosen by the registrant, so nothing would stop an unverified app
+    -- serving a well-known icon.
+    icon_blob             BLOB,
+    icon_media_type       TEXT NOT NULL DEFAULT '',
+    client_uri            TEXT NOT NULL DEFAULT '',
+    -- Newline-delimited exact-match list. A URI cannot contain a raw newline,
+    -- so the delimiter is unambiguous by the grammar of the values.
+    redirect_uris         TEXT NOT NULL DEFAULT '',
+    -- Space-delimited, the RFC 6749 section 3.3 wire format: the ceiling on
+    -- what this app may reach.
+    --
+    -- LIVE, not consent-time. loadBearer narrows every stored grant to it at
+    -- validation, so removing a permission here takes it from the credentials
+    -- the app already holds -- the same argument elevation_allowed makes just
+    -- below, over the same registration. Applied only at the consent it would
+    -- make that edit a silent no-op for every credential already issued, whose
+    -- owner's only remedy would be to disconnect the app entirely.
+    --
+    -- It only ever NARROWS: the stored granted_scopes is the other half of the
+    -- intersection, so putting a permission back does not hand it to a
+    -- credential whose owner never consented to it.
+    scopes                TEXT NOT NULL DEFAULT '',
+    grant_types           TEXT NOT NULL DEFAULT 'authorization_code refresh_token',
+    -- Whether this app may run the step-up leg. NOT a trust tier and NOT a
+    -- scope: the elevation window is orthogonal to the scope set and
+    -- MULTIPLIES it, so no grant field could express it and mean anything.
+    -- The owner sets it; ElevateAPIToken carries the same condition, and
+    -- loadBearer re-reads it, so turning it off closes every live window on
+    -- the next request rather than at the next write.
+    elevation_allowed     BOOLEAN NOT NULL DEFAULT FALSE,
+    registration_source   TEXT NOT NULL
+        CHECK (registration_source IN ('builtin', 'admin', 'user', 'dynamic')),
+    -- An administrator vouched. NULL is the unverified marker the consent page
+    -- renders, and it is what keeps a self-registered app out of the hub-wide
+    -- catalogue.
+    -- WHO vouched, and WHEN. The two move together, which the CHECK below
+    -- enforces: a row with one and not the other describes a vouch nobody can
+    -- read.
+    --
+    -- verified_by_user_id carries NO foreign key, and that is what makes the
+    -- CHECK possible. ON DELETE SET NULL would clear this column while
+    -- verified_at stayed set, which violates the CHECK -- so deleting a
+    -- vouching administrator would fail, and TiDB refuses the schema outright
+    -- rather than at that moment. The column is an ATTRIBUTION rather than a
+    -- live reference: an administrator vouched for this app on this date, and
+    -- deleting their account does not unmake that. The surface renders a name
+    -- it cannot resolve as no name, which is the honest reading.
+    verified_at           DATETIME,
+    verified_by_user_id   TEXT,
+    created_at            DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    updated_at            DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    revoked_at            DATETIME,
+    CHECK ((verified_at IS NULL) = (verified_by_user_id IS NULL))
+);
+-- Serves the per-user app list (a user's own private apps) and the hub-wide
+-- one (owner_user_id IS NULL), which is the same seek with a NULL key.
+CREATE INDEX idx_oauth_clients_owner ON oauth_clients(owner_user_id, created_at DESC, client_id DESC);
+CREATE INDEX idx_oauth_clients_revoked_at ON oauth_clients(revoked_at) WHERE revoked_at IS NOT NULL;
+
+-- The two built-in registrations are NOT seeded here. Their fields are
+-- constants of the build (see internal/hub/oauthapp), so every store open
+-- seeds and reconciles them through store.SeedBuiltIns -- an upsert whose
+-- conflict branch rewrites only the constant columns, leaving the operator's
+-- elevation decision, the vouch and the row's own dates as the last writer
+-- left them. That is also what makes this migration safe to have shipped
+-- with the seed rows inline: a database it seeded before the seed moved is
+-- reconciled on the next boot.
+
 -- Durable, low-churn API tokens used by the leapmux control CLI (and any
 -- future mobile / IDE / integration). Each row's id appears verbatim in
 -- the bearer string ("lmx_<id>_<secret>") so verification is a single
@@ -426,8 +513,22 @@ CREATE TABLE hub_runtime_lease (
 CREATE TABLE api_tokens (
     id                            TEXT PRIMARY KEY,
     user_id                       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    client_type                   TEXT NOT NULL,                 -- 'cli', future: 'mobile', 'desktop', 'integration'
-    client_name                   TEXT NOT NULL,                 -- user-visible (hostname, etc.)
+    -- WHICH APP holds this credential. NOT NULL, and RESTRICT rather than
+    -- CASCADE: a hard delete of an app with live credentials is refused, and
+    -- the surface offers REVOKE instead, which cascades with each row's
+    -- lifecycle effects (cache eviction, lease drain, channel close).
+    client_id                     TEXT NOT NULL REFERENCES oauth_clients(client_id) ON DELETE RESTRICT,
+    -- ONE APP, MANY INSTALLATIONS: the app is client_id, and this is which
+    -- copy of it ("trustin's MacBook"). It was client_name, which fused the
+    -- two facts into one column that the consent page then had to trust the
+    -- caller for.
+    installation_name             TEXT NOT NULL,
+    -- The canonical RFC 6749 section 3.3 scope string the consent granted.
+    -- NO DEFAULT, deliberately: an INSERT that omits it fails at the schema
+    -- rather than storing a silent empty grant that nobody notices until an
+    -- app stops working. The empty string is a legitimate value (a credential
+    -- that reaches nothing) and a caller must state it.
+    granted_scopes                TEXT NOT NULL,
     secret_hash                   BLOB NOT NULL,
     refresh_hash                  BLOB,
     previous_refresh_hash         BLOB,
@@ -439,17 +540,15 @@ CREATE TABLE api_tokens (
     expires_at                    DATETIME,
     refresh_expires_at            DATETIME,
     revoked_at                    DATETIME,
-    -- admin_scope is opt-in hub administration, chosen at consent time
-    -- (`leapmux control auth login --admin`) and refused unless the session
-    -- that consents is elevated. A CLI token without it authenticates as an
-    -- administrator but is refused on every Admin* procedure, so a stolen
-    -- credential file cannot administer the hub.
-    admin_scope                   BOOLEAN NOT NULL DEFAULT FALSE,
-    -- Elevation ("sudo mode") for a command-line credential, the same pair
-    -- user_sessions carries and enforced by the same rule. A CLI token proves
-    -- a factor through the browser step-up leg (/auth/cli/elevate), and every
-    -- restricted action slides elevation_expires_at forward, clamped to
+    -- Elevation ("sudo mode") for an app credential, the same pair
+    -- user_sessions carries and enforced by the same rule. The credential
+    -- proves a factor through the browser step-up leg (/oauth/step-up), and
+    -- every restricted action slides elevation_expires_at forward, clamped to
     -- elevation_proven_at + the maximum total window.
+    --
+    -- The leg is refused outright unless the app carries
+    -- oauth_clients.elevation_allowed, and the WRITE re-reads that column, so
+    -- an app without the flag has no window to slide.
     --
     -- Without it a stolen credential file administered the hub outright: the
     -- gate that protects the settings, the user surface and the mint admitted
@@ -459,10 +558,14 @@ CREATE TABLE api_tokens (
     elevation_expires_at          DATETIME,
     CHECK ((elevation_proven_at IS NULL) = (elevation_expires_at IS NULL))
 );
--- user_id only: the client_type filters are the optional OR-form and never
--- seek; the remaining job is the user_id seek for the ByUserIncludingRevoked
--- listing, which the partial idx_api_tokens_user_created cannot serve.
+-- user_id only: the remaining job is the user_id seek for the
+-- ByUserIncludingRevoked listing, which the partial
+-- idx_api_tokens_user_created cannot serve.
 CREATE INDEX idx_api_tokens_user ON api_tokens(user_id);
+-- Serves the app-connection listing ("which credentials does this app hold?")
+-- and, more importantly, the RESTRICT check on deleting an app: without it
+-- every delete scans api_tokens.
+CREATE INDEX idx_api_tokens_client ON api_tokens(client_id);
 CREATE INDEX idx_api_tokens_revoked_at ON api_tokens(revoked_at) WHERE revoked_at IS NOT NULL;
 -- Keyset index for the admin ListAllAPITokens listing: partial on
 -- revoked_at IS NULL to match the query's live-token filter, with the trailing
@@ -498,6 +601,10 @@ CREATE TABLE delegation_tokens (
     terminal_id                   TEXT NOT NULL DEFAULT '',
     issued_for_tab_id             TEXT NOT NULL DEFAULT '',
     issued_for_tab_type           INTEGER NOT NULL DEFAULT 0,
+    -- What the minting worker delegated, already narrowed to the delegation
+    -- ceiling. NO DEFAULT, for the same reason api_tokens.granted_scopes has
+    -- none: an unstated grant must fail the INSERT, not authenticate.
+    granted_scopes                TEXT NOT NULL,
     secret_hash                   BLOB NOT NULL,
     refresh_hash                  BLOB,
     created_at                    DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
@@ -528,6 +635,21 @@ CREATE TABLE device_authorizations (
     device_code           TEXT PRIMARY KEY,
     user_code             TEXT NOT NULL UNIQUE,
     device_name           TEXT NOT NULL DEFAULT '',
+    -- WHICH APP started the flow. The device leg is anonymous no longer: the
+    -- activation page has to name the app it is about, and the token leg has
+    -- to refuse a redemption by a different one.
+    client_id             TEXT NOT NULL REFERENCES oauth_clients(client_id) ON DELETE RESTRICT,
+    -- What the app ASKED for. The request and the consent happen on two
+    -- machines with a six-character code between them, so the row is the only
+    -- carrier: nothing the browser posts could state the ask, and taking it
+    -- from the activation form would let whoever types the code widen it.
+    requested_scopes      TEXT NOT NULL DEFAULT '',
+    -- What the approval GRANTED. It binds HERE, at the consent, and the
+    -- exchange reads it back. Written as its own column rather than inferred
+    -- from requested_scopes, so the leg that mints reads a value named for
+    -- what it means -- and a pending row is distinguishable from one approved
+    -- for nothing.
+    granted_scopes        TEXT NOT NULL DEFAULT '',
     user_id               TEXT REFERENCES users(id) ON DELETE CASCADE,
     approved              INTEGER NOT NULL DEFAULT 0,        -- 0 pending, 1 approved, 2 denied
     last_polled_at        DATETIME,
@@ -535,11 +657,7 @@ CREATE TABLE device_authorizations (
     created_at            DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     expires_at            DATETIME NOT NULL,
     consumed_at           DATETIME,
-    -- The admin scope the user granted at activation. It binds HERE, at the
-    -- consent, and the exchange reads it back: taken from the exchange form
-    -- instead, any holder of a device code could upgrade the grant.
-    admin_scope           BOOLEAN NOT NULL DEFAULT FALSE,
-    -- The command-line credential this grant ELEVATES, when it elevates one
+    -- The app credential this grant ELEVATES, when it elevates one
     -- rather than minting one. NULL for a login: those two flows differ only
     -- in what the approval does, so they share the row, the TTL, the poll
     -- throttle, the expiry sweep and the activation page.
@@ -553,20 +671,37 @@ CREATE TABLE device_authorizations (
 );
 CREATE INDEX idx_device_authorizations_expires_at ON device_authorizations(expires_at);
 
--- One-shot authorization codes for the local-redirect CLI flow. Each row
--- is consumed exactly once during /auth/cli/token exchange.
-CREATE TABLE cli_authorization_codes (
+-- One-shot RFC 6749 section 4.1 authorization codes. Each row is consumed
+-- exactly once during the /oauth/token exchange.
+CREATE TABLE oauth_authorization_codes (
     code                  TEXT PRIMARY KEY,
     user_id               TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    -- WHICH APP the code was issued to. RFC 6749 section 4.1.3 requires the
+    -- token leg to refuse a code presented by a different client, and there
+    -- was no such check while every code belonged to the CLI.
+    client_id             TEXT NOT NULL REFERENCES oauth_clients(client_id) ON DELETE RESTRICT,
     code_challenge        TEXT NOT NULL,
-    device_name           TEXT NOT NULL DEFAULT '',
+    -- The redirect_uri the authorization used. RFC 6749 section 4.1.3 requires
+    -- the token leg to COMPARE it, so a code intercepted at one registered
+    -- redirect cannot be redeemed as though it came from another.
+    redirect_uri          TEXT NOT NULL DEFAULT '',
+    -- What the consent granted, canonical RFC 6749 section 3.3 form. It binds
+    -- HERE: read from the exchange form instead, any holder of a code could
+    -- upgrade what the user consented to.
+    granted_scopes        TEXT NOT NULL DEFAULT '',
+    installation_name     TEXT NOT NULL DEFAULT '',
     created_at            DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     expires_at            DATETIME NOT NULL,
     consumed_at           DATETIME,
-    -- See device_authorizations.admin_scope: the scope binds at consent.
-    admin_scope           BOOLEAN NOT NULL DEFAULT FALSE
+    -- The credential the exchange minted, stamped at consumption.
+    --
+    -- It is what makes a code REPLAY destructive rather than merely refused:
+    -- RFC 6749 section 4.1.2 requires the server to revoke the token a
+    -- replayed code already produced, and without this column there was
+    -- nothing to name it.
+    minted_token_id       TEXT
 );
-CREATE INDEX idx_cli_authorization_codes_expires_at ON cli_authorization_codes(expires_at);
+CREATE INDEX idx_oauth_authorization_codes_expires_at ON oauth_authorization_codes(expires_at);
 
 -- OAuth identity providers (admin-configured)
 CREATE TABLE oauth_providers (
@@ -713,10 +848,11 @@ CREATE TABLE altcha_used_salts (
 CREATE INDEX idx_altcha_used_salts_expires_at ON altcha_used_salts(expires_at);
 
 -- +goose Down
-DROP TABLE IF EXISTS cli_authorization_codes;
+DROP TABLE IF EXISTS oauth_authorization_codes;
 DROP TABLE IF EXISTS device_authorizations;
 DROP TABLE IF EXISTS delegation_tokens;
 DROP TABLE IF EXISTS api_tokens;
+DROP TABLE IF EXISTS oauth_clients;
 DROP TABLE IF EXISTS hub_runtime_lease;
 DROP TABLE IF EXISTS revocation_events;
 DROP TABLE IF EXISTS revocation_event_sequence;

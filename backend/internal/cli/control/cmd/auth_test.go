@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +15,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
@@ -67,11 +70,11 @@ func TestPersistTokenResponse_WritesCredentials(t *testing.T) {
 			"expires_in": 3600,
 			"refresh_expires_in": 7776000,
 			"token_id": "tok-1",
-			"admin_scope": true,
+			"scope": "admin:read",
 			"user_id": "user-1",
 			"username": "alice"
 		}`)
-		err := persistTokenResponse("https://hub.example", body, true)
+		err := persistTokenResponse("https://hub.example", body, oauthapp.ControlCLIClientID, "admin:read")
 		require.NoError(t, err)
 	})
 
@@ -83,18 +86,18 @@ func TestPersistTokenResponse_WritesCredentials(t *testing.T) {
 	assert.Equal(t, "user-1", loaded.UserID)
 	assert.Equal(t, "alice", loaded.Username)
 	assert.Equal(t, "tok-1", loaded.TokenID)
-	assert.True(t, loaded.AdminScope)
+	assert.Equal(t, "admin:read", loaded.Scope)
 	// expires_at = now + expires_in; allow 1m skew for slow CI.
 	assert.WithinDuration(t, time.Now().Add(time.Hour), loaded.ExpiresAt, time.Minute)
 	assert.WithinDuration(t, time.Now().Add(90*24*time.Hour), loaded.RefreshExpiresAt, time.Minute)
 }
 
-// TestPersistTokenResponse_WarnsWhenAdminScopeWasNotGranted pins the
-// device-code case the CLI cannot control: the browser decides the scope, so
-// a `--admin` login that comes back without it must SAY so, rather than let
-// the first admin verb fail with a permission error that specifies nothing
-// the user did.
-func TestPersistTokenResponse_WarnsWhenAdminScopeWasNotGranted(t *testing.T) {
+// TestPersistTokenResponse_WarnsWhenAScopeWasNotGranted pins the device-code
+// case the CLI cannot control: the person at the browser decides, and they may
+// hold an account that cannot grant part of the ask -- so a login that comes
+// back narrower must SAY so, rather than let the first call that needs the
+// missing permission fail with an error that specifies nothing the user did.
+func TestPersistTokenResponse_WarnsWhenAScopeWasNotGranted(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", dir)
 	out := withCapturedStdout(t, func() {
@@ -102,23 +105,25 @@ func TestPersistTokenResponse_WarnsWhenAdminScopeWasNotGranted(t *testing.T) {
 			"access_token": "lmx_a_at_xyz",
 			"refresh_token": "lmx_a_rt_xyz",
 			"expires_in": 3600,
-			"admin_scope": false,
+			"scope": "workspace:read",
 			"user_id": "user-1",
 			"username": "alice"
 		}`)
-		require.NoError(t, persistTokenResponse("https://hub.example", body, true))
+		require.NoError(t, persistTokenResponse("https://hub.example", body, oauthapp.ControlCLIClientID, "admin:read"))
 	})
 
 	var env struct {
 		Data map[string]any `json:"data"`
 	}
 	require.NoError(t, json.Unmarshal(out, &env))
-	assert.Equal(t, false, env.Data["admin_scope"])
-	assert.Contains(t, env.Data["warning"], "--admin")
+	assert.Equal(t, "workspace:read", env.Data["scope"])
+	assert.Contains(t, env.Data["warning"], "admin:read",
+		"the warning must NAME the permission that was refused")
 
 	loaded, err := control.LoadCredentials("https://hub.example")
 	require.NoError(t, err)
-	assert.False(t, loaded.AdminScope, "the file must record what was GRANTED, not what was asked")
+	assert.Equal(t, "workspace:read", loaded.Scope,
+		"the file must record what was GRANTED, not what was asked")
 }
 
 // TestPersistTokenResponse_RevokesTheCredentialItReplaces pins the
@@ -131,7 +136,7 @@ func TestPersistTokenResponse_RevokesTheCredentialItReplaces(t *testing.T) {
 
 	revoked := make(chan string, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, "/auth/cli/revoke", r.URL.Path)
+		require.Equal(t, "/oauth/revoke", r.URL.Path)
 		require.NoError(t, r.ParseForm())
 		revoked <- r.FormValue("token")
 		w.WriteHeader(http.StatusOK)
@@ -153,7 +158,7 @@ func TestPersistTokenResponse_RevokesTheCredentialItReplaces(t *testing.T) {
 			"user_id": "user-1",
 			"username": "alice"
 		}`)
-		require.NoError(t, persistTokenResponse(srv.URL, body, false))
+		require.NoError(t, persistTokenResponse(srv.URL, body, oauthapp.ControlCLIClientID, ""))
 	})
 
 	select {
@@ -181,7 +186,7 @@ func TestPersistTokenResponse_WarnsWhenTheOldCredentialSurvives(t *testing.T) {
 	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", dir)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, "/auth/cli/revoke", r.URL.Path)
+		require.Equal(t, "/oauth/revoke", r.URL.Path)
 		// The hub refuses. A 2xx-only reader would call this success.
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
@@ -202,7 +207,7 @@ func TestPersistTokenResponse_WarnsWhenTheOldCredentialSurvives(t *testing.T) {
 			"user_id": "user-1",
 			"username": "alice"
 		}`)
-		require.NoError(t, persistTokenResponse(srv.URL, body, false))
+		require.NoError(t, persistTokenResponse(srv.URL, body, oauthapp.ControlCLIClientID, ""))
 	})
 
 	assert.Contains(t, string(out), "could not be revoked",
@@ -223,7 +228,7 @@ func TestPersistTokenResponse_RejectsMalformedJSON(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", dir)
 	out := withCapturedStdout(t, func() {
-		err := persistTokenResponse("https://hub.example", strings.NewReader(`{not json`), false)
+		err := persistTokenResponse("https://hub.example", strings.NewReader(`{not json`), oauthapp.ControlCLIClientID, "")
 		require.Error(t, err)
 		assert.True(t, control.IsEmitted(err))
 	})
@@ -241,7 +246,7 @@ func TestPersistTokenResponse_RejectsMalformedJSON(t *testing.T) {
 
 // TestRunAuthLogout_RevokesAndRemovesCreds exercises the full logout
 // path: with credentials on disk, RunAuthLogout posts to the hub's
-// /auth/cli/revoke endpoint with the bearer in both the form body and
+// /oauth/revoke endpoint with the bearer in both the form body and
 // the Authorization header, then removes the local credential file.
 func TestRunAuthLogout_RevokesAndRemovesCreds(t *testing.T) {
 	dir := t.TempDir()
@@ -250,7 +255,7 @@ func TestRunAuthLogout_RevokesAndRemovesCreds(t *testing.T) {
 	revoked := false
 	gotAuth := ""
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/auth/cli/revoke" {
+		if r.URL.Path == "/oauth/revoke" {
 			revoked = true
 			gotAuth = r.Header.Get("Authorization")
 			w.WriteHeader(http.StatusOK)
@@ -272,7 +277,7 @@ func TestRunAuthLogout_RevokesAndRemovesCreds(t *testing.T) {
 		require.NoError(t, err)
 	})
 
-	assert.True(t, revoked, "logout must hit /auth/cli/revoke")
+	assert.True(t, revoked, "logout must hit /oauth/revoke")
 	assert.Equal(t, "Bearer lmx_a_at_logout", gotAuth)
 
 	// Credentials must be gone from disk.
@@ -292,8 +297,48 @@ func TestRunAuthLogout_RevokesAndRemovesCreds(t *testing.T) {
 // The hub hard-deletes an api_tokens row once both of its deadlines close,
 // and it answers a bearer whose row it cannot find with 401. Reporting that
 // as a failed revoke told the user to finish the job under Preferences,
-// Account, Command-line credentials -- where the row is already gone, so
-// there is nothing to act on and the warning can only worry them.
+// Account, Connected apps -- where the row is already gone, so there is
+// nothing to act on and the warning can only worry them.
+// TestRunAuthLogout_WarnsWhereToFinishTheJob pins the REFUSAL warning's
+// destination. The warning once named "Command-line credentials", a
+// Preferences row that no longer exists -- so the one user who needed it was
+// sent hunting for a panel the rename had already taken away. The row it
+// names must be the one the Preferences dialog actually draws.
+func TestRunAuthLogout_WarnsWhereToFinishTheJob(t *testing.T) {
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/oauth/revoke", r.URL.Path)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+
+	require.NoError(t, control.SaveCredentials(srv.URL, control.CredentialFile{
+		HubURL:      srv.URL,
+		AccessToken: "lmx_a_at_live",
+		Username:    "alice",
+		ExpiresAt:   time.Now().Add(time.Hour),
+	}))
+
+	out := withCapturedStdout(t, func() {
+		require.NoError(t, RunAuthLogout(fakeCmdCtx{}, []string{"--hub", srv.URL}))
+	})
+
+	var env struct {
+		Data map[string]string `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(out, &env))
+	assert.Contains(t, env.Data["warning"], "could not be revoked",
+		"a logout whose revoke failed must say so")
+	assert.Contains(t, env.Data["warning"], "Preferences",
+		"the warning must state where the operator can finish the job")
+	assert.Contains(t, env.Data["warning"], "Connected apps",
+		"and it must name the Preferences row that exists, not one a rename removed")
+
+	// The local file goes either way: logout stays locally idempotent.
+	_, err := control.LoadCredentials(srv.URL)
+	assert.ErrorIs(t, err, control.ErrNotLoggedIn)
+}
+
 func TestRunAuthLogout_SucceedsWhenTheRowIsAlreadyGone(t *testing.T) {
 	for name, status := range map[string]int{
 		"the hub hard-deleted the row": http.StatusUnauthorized,
@@ -302,7 +347,7 @@ func TestRunAuthLogout_SucceedsWhenTheRowIsAlreadyGone(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				require.Equal(t, "/auth/cli/revoke", r.URL.Path)
+				require.Equal(t, "/oauth/revoke", r.URL.Path)
 				w.WriteHeader(status)
 			}))
 			t.Cleanup(srv.Close)
@@ -510,7 +555,7 @@ func TestRunAuthList_ToleratesMissingConfigDir(t *testing.T) {
 
 // TestRunAuthLogin_DeviceCodeFlowFinishesOnAuthorizedPoll exercises
 // the full RFC 8628 path against a fake hub: the CLI requests a
-// device code, waits for the polling interval, hits /auth/cli/token,
+// device code, waits for the polling interval, hits /oauth/token,
 // and persists the issued tokens. Pinned at the smallest interval
 // the hub server allows so the test isn't slow.
 func TestRunAuthLogin_DeviceCodeFlowFinishesOnAuthorizedPoll(t *testing.T) {
@@ -520,7 +565,7 @@ func TestRunAuthLogin_DeviceCodeFlowFinishesOnAuthorizedPoll(t *testing.T) {
 	tokenHits := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/auth/cli/device-authorization":
+		case "/oauth/device-authorization":
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"device_code":      "dev-code-1",
@@ -529,7 +574,7 @@ func TestRunAuthLogin_DeviceCodeFlowFinishesOnAuthorizedPoll(t *testing.T) {
 				"expires_in":       60,
 				"interval":         1,
 			})
-		case "/auth/cli/token":
+		case "/oauth/token":
 			tokenHits++
 			if tokenHits == 1 {
 				w.Header().Set("Content-Type", "application/json")
@@ -574,7 +619,7 @@ func TestRunAuthLogin_DeviceCodeFlowSurfacesAccessDenied(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/auth/cli/device-authorization":
+		case "/oauth/device-authorization":
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"device_code":      "dev-code-deny",
@@ -583,7 +628,7 @@ func TestRunAuthLogin_DeviceCodeFlowSurfacesAccessDenied(t *testing.T) {
 				"expires_in":       60,
 				"interval":         1,
 			})
-		case "/auth/cli/token":
+		case "/oauth/token":
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": "access_denied"})
@@ -633,7 +678,7 @@ func TestRunAuthLogin_DeviceCodeFlowDialsSocketHub(t *testing.T) {
 		tokenHits int
 	)
 	mux := http.NewServeMux()
-	mux.HandleFunc("/auth/cli/device-authorization", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/oauth/device-authorization", func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		seenHost = r.Host
 		authHits++
@@ -647,7 +692,7 @@ func TestRunAuthLogin_DeviceCodeFlowDialsSocketHub(t *testing.T) {
 			"interval":         1,
 		})
 	})
-	mux.HandleFunc("/auth/cli/token", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/oauth/token", func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		tokenHits++
 		mu.Unlock()
@@ -737,12 +782,12 @@ func jsonTail(t *testing.T, out []byte) []byte {
 // TestRevokeBearer_NoOpOnEmptyBearer covers the safe-rerun path of
 // `auth logout` when no credentials existed in the first place.
 func TestRevokeBearer_NoOpOnEmptyBearer(t *testing.T) {
-	require.NoError(t, revokeBearer("https://hub.example", ""))
+	require.NoError(t, revokeBearer("https://hub.example", "", oauthapp.ControlCLIClientID))
 }
 
 // TestRevokeBearer_SendsAuthorizationHeader pins the wire format so
 // the hub's revoke handler can authenticate the caller. Token in the
-// form body alone wouldn't satisfy the interceptor since /auth/cli/revoke
+// form body alone wouldn't satisfy the interceptor since /oauth/revoke
 // also requires Bearer to identify the caller.
 func TestRevokeBearer_SendsAuthorizationHeader(t *testing.T) {
 	gotAuth := ""
@@ -755,9 +800,12 @@ func TestRevokeBearer_SendsAuthorizationHeader(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	require.NoError(t, revokeBearer(srv.URL, "lmx_a_secret"))
+	require.NoError(t, revokeBearer(srv.URL, "lmx_a_secret", oauthapp.ControlCLIClientID))
 	assert.Equal(t, "Bearer lmx_a_secret", gotAuth)
 	assert.Contains(t, gotForm, "token=lmx_a_secret")
+	// The public client names itself, per RFC 7009 section 2.1, so the hub
+	// can bind the revocation to the app the credential was issued to.
+	assert.Contains(t, gotForm, "client_id="+oauthapp.ControlCLIClientID)
 }
 
 // TestRevokeBearer_PropagatesNetworkError documents that
@@ -765,7 +813,7 @@ func TestRevokeBearer_SendsAuthorizationHeader(t *testing.T) {
 // chooses to swallow this error itself, but the helper must still
 // report it so future callers can react.
 func TestRevokeBearer_PropagatesNetworkError(t *testing.T) {
-	err := revokeBearer("http://127.0.0.1:1", "lmx_a_secret")
+	err := revokeBearer("http://127.0.0.1:1", "lmx_a_secret", oauthapp.ControlCLIClientID)
 	require.Error(t, err)
 }
 
@@ -822,8 +870,10 @@ func TestRunAuthCredentials_ListsTheAccountCredentials(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(out, &env))
 	require.Len(t, env.Data, 2)
-	assert.Equal(t, "alice@laptop", env.Data[0]["client_name"])
-	assert.Equal(t, true, env.Data[0]["admin_scope"])
+	assert.Equal(t, "alice@laptop", env.Data[0]["installation_name"])
+	assert.Equal(t, oauthapp.ControlCLIClientID, env.Data[0]["client_id"])
+	assert.Contains(t, env.Data[0]["granted_scopes"], "workspace:read",
+		"the listing prints the GRANT, so a reader can see what each app can do")
 	assert.Equal(t, true, env.Data[0]["current"], "the credential making the request must be marked")
 	assert.Equal(t, false, env.Data[1]["current"])
 	// An unset timestamp reads as null, not as the Unix epoch.
@@ -847,8 +897,8 @@ func (s *stubMyTokensService) ListMyAPITokens(
 	s.mu.Unlock()
 	return connect.NewResponse(&leapmuxv1.ListMyAPITokensResponse{
 		Tokens: []*leapmuxv1.MyAPIToken{
-			{Id: "tok-1", ClientType: "cli", ClientName: "alice@laptop", AdminScope: true, Current: true},
-			{Id: "tok-2", ClientType: "cli", ClientName: "ci"},
+			{Id: "tok-1", ClientId: oauthapp.ControlCLIClientID, InstallationName: "alice@laptop", GrantedScopes: []string{"account:read", "account:write", "agent:read", "agent:write", "file:read", "git:read", "git:write", "terminal:read", "terminal:write", "tunnel:open", "worker:admin", "worker:read", "workspace:read", "workspace:write"}, Current: true},
+			{Id: "tok-2", ClientId: oauthapp.ControlCLIClientID, InstallationName: "ci"},
 		},
 	}), nil
 }
@@ -886,4 +936,103 @@ func TestRunAuthCredentials_AsksForTheHubsMaximumPage(t *testing.T) {
 	limits := stub.requestedLimits()
 	require.NotEmpty(t, limits)
 	assert.Equal(t, int64(service.MaxPageLimit), limits[0])
+}
+
+// TestCallbackHandlerNeverBlocksOnDuplicates pins the local-redirect login's
+// wedge fix: the browser can re-GET the success page (or a stale tab can
+// re-send a bad state) after the CLI already holds its one outcome. A
+// blocking send would park the handler goroutine and the deferred
+// srv.Shutdown would wait for it forever -- a login that already succeeded
+// hanging the CLI. Every duplicate here must answer within the timeout.
+func TestCallbackHandlerNeverBlocksOnDuplicates(t *testing.T) {
+	codeCh := make(chan string, 1)
+	errCh := make(chan error, 1)
+	// Pre-fill both channels: the CLI has consumed neither, so both buffers
+	// are full -- the exact state a duplicate arrival meets.
+	codeCh <- "code-1"
+	errCh <- errors.New("first error")
+
+	handler := callbackHandler("state-1", codeCh, errCh)
+	serve := func(path, state, code string) bool {
+		req := httptest.NewRequest(http.MethodGet, path+"?state="+state+"&code="+code, nil)
+		done := make(chan struct{})
+		go func() {
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			close(done)
+		}()
+		select {
+		case <-done:
+			return true
+		case <-time.After(2 * time.Second):
+			return false
+		}
+	}
+
+	require.True(t, serve("/callback", "state-1", "code-1"),
+		"a duplicate success callback must answer, not block")
+	require.True(t, serve("/callback", "wrong", "code-1"),
+		"a duplicate bad-state callback must answer, not block")
+	require.True(t, serve("/callback", "state-1", "code-1"),
+		"a third duplicate must still answer")
+	// The FIRST outcome survives; duplicates dropped rather than replaced it.
+	require.Equal(t, "code-1", <-codeCh)
+	require.EqualError(t, <-errCh, "first error")
+}
+
+// TestCallbackHandlerReportsTheServerErrorParameter pins the RFC 6749 section
+// 4.1.2.1 branch of the local-redirect callback: the hub redirects every
+// refusal it could validate back with `error` (a Deny, an invalid_scope, a
+// server error), and folding those into the state-mismatch branch told a user
+// who deliberately refused that the state check had failed -- a CSRF suspicion
+// they can neither check nor act on. The state check stays first: a mismatched
+// state is a mismatch whatever else the query carries.
+func TestCallbackHandlerReportsTheServerErrorParameter(t *testing.T) {
+	codeCh := make(chan string, 1)
+	errCh := make(chan error, 1)
+	handler := callbackHandler("state-1", codeCh, errCh)
+
+	serve := func(t *testing.T, query string) *httptest.ResponseRecorder {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/callback?"+query, nil))
+		return rec
+	}
+
+	// A refusal with the matching state reports the ACTUAL cause.
+	rec := serve(t, "state=state-1&error=access_denied&error_description=the+account+owner+refused")
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	select {
+	case err := <-errCh:
+		require.ErrorContains(t, err, "access_denied")
+		require.ErrorContains(t, err, "the account owner refused")
+	default:
+		t.Fatal("the refusal must reach the CLI's error channel")
+	}
+	select {
+	case code := <-codeCh:
+		t.Fatalf("a refused authorization must not carry a code: %q", code)
+	default:
+	}
+
+	// A mismatched state is reported as the mismatch even when an error rides
+	// along: the state check decides first.
+	rec = serve(t, "state=wrong&error=access_denied")
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	select {
+	case err := <-errCh:
+		require.ErrorContains(t, err, "callback state mismatch")
+	default:
+		t.Fatal("a mismatched state must reach the CLI's error channel")
+	}
+
+	// Neither a code nor an error is its own answer, not silence about which.
+	rec = serve(t, "state=state-1")
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	select {
+	case err := <-errCh:
+		require.ErrorContains(t, err, "neither a code nor an error")
+	default:
+		t.Fatal("an empty callback must reach the CLI's error channel")
+	}
 }

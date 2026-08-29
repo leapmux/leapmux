@@ -203,12 +203,12 @@ func (f *Factory) newRouter(userID userid.UserID) *Router {
 // dispatcherAdapter satisfies LocalDispatcher.
 type dispatcherAdapter struct{ d *channel.Dispatcher }
 
-func (a dispatcherAdapter) DispatchWith(ctx context.Context, userID userid.UserID, req *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter) {
+func (a dispatcherAdapter) DispatchWith(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter) {
 	if a.d == nil {
 		_ = w.SendError(2, "no dispatcher")
 		return
 	}
-	a.d.DispatchWith(ctx, userID, req, w)
+	a.d.DispatchWith(ctx, caller, req, w)
 }
 
 // crossWorkerAdapter satisfies CrossWorkerClient.

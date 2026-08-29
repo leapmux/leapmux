@@ -65,11 +65,11 @@ func preflightTileKind(state *leapmuxv1.UserMaterialized, tileID string, want le
 // $LEAPMUX_CONTROL_WORKER_ID, which BindEntityFlags binds as the
 // --worker-id default -- so this preflight runs on essentially every
 // `leapmux control` command an agent issues, over a delegation bearer
-// the hub restricts to `auth.delegationAllowedProcedures`. No
-// WorkerManagementService procedure is on that list, and ListWorkers
-// must NOT be added: a leaked worker delegation token would then be
-// able to enumerate the user's whole fleet. Denial here is the
-// designed outcome, and tolerating it is the fix.
+// the hub limits with `auth.CeilingFor(BearerKindDelegation)`. That
+// ceiling admits worker:read, so ListWorkers usually answers -- but the
+// grant is a property of the bearer rather than of this code, and a
+// narrower one refuses. Tolerating the denial is what keeps the command
+// working under either.
 //
 // The tolerance is scoped to the DENIAL, not to every error. It used to be
 // "tolerate anything", because controlipc.Router.CallInner flattened every hub

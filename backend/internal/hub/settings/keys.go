@@ -196,8 +196,8 @@ type LimitsValue struct {
 // QueueBudgetValue limits the three outbound queue memory pools. All
 // restart-class: the hub derives the pool minimum floors from them (and
 // from the max message size) at startup, before any pool exists. A zero field
-// means auto-size from the process's own memory limit, so multi-instance
-// hubs on heterogeneous machines keep per-process budgets.
+// means auto-size from the process's own memory limit, so the budget follows
+// the machine the hub runs on, not the one a predecessor ran on.
 //
 // The fields carry no omitempty: zero is the stored, meaningful value
 // "auto-size", and omitempty would drop it from the listing JSON so the
@@ -392,10 +392,9 @@ var (
 
 	// Solo sets and reads no cookie -- the solo rung precedes the cookie
 	// rung in every auth ladder. Its other job, the scheme that BaseURL
-	// derives, reaches only the mail renderer and the /auth/cli/*
-	// endpoints, and both are unreachable in solo (no mail recipient, and
-	// the CLI endpoints accept cookies only). KeyPublicURL below does NOT
-	// go through BaseURL, so hiding this one cannot affect it.
+	// derives, reaches only the mail renderer and the /oauth/* endpoints,
+	// and the mail one is unreachable in solo (no recipient). KeyPublicURL
+	// below does NOT go through BaseURL, so hiding this one cannot affect it.
 	KeySecureCookies = NewKey[bool]("secure_cookies").
 				WithUI(UIMeta{
 			Category:     "general",
@@ -424,6 +423,28 @@ var (
 				Name: "", Label: "Public base URL", Kind: FieldString,
 				Placeholder: "https://hub.example.com",
 			}},
+		})
+
+	// Open app registration (RFC 7591). OFF by default, and the default is
+	// the decision: an anonymous caller who can create a registration can
+	// create a row that appears on a consent screen, which is a phishing
+	// surface as much as a convenience.
+	//
+	// It is NOT hidden in solo. A solo hub authorizes apps like any other --
+	// the solo rung yields to a presented bearer, so a scoped credential
+	// binds there too -- and an operator who runs `leapmux solo -listen
+	// 0.0.0.0:4327` on a LAN has exactly the same decision to make.
+	//
+	// The metadata document reads it: with the setting off,
+	// registration_endpoint is ABSENT from
+	// /.well-known/oauth-authorization-server, so a conformant client library
+	// does not try and does not report the refusal as a hub failure.
+	KeyOpenAppRegistration = NewKey[bool]("open_app_registration").
+				WithUI(UIMeta{
+			Category: "apps",
+			Title:    "Open app registration",
+			Summary:  "let any caller register an app through RFC 7591 dynamic registration",
+			Fields:   []Field{{Name: "", Label: "Open app registration", Kind: FieldBool}},
 		})
 
 	// Solo can send no mail at all, so the relay has nothing to carry.
@@ -536,6 +557,7 @@ func CoreDescriptors() []Descriptor {
 		KeyPublicURL,
 		KeySecureCookies,
 		KeySessionDurationSeconds,
+		KeyOpenAppRegistration,
 		KeySMTP,
 		KeyTimeouts,
 		KeyLimits,

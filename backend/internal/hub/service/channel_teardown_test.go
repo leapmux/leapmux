@@ -129,6 +129,7 @@ func (e *teardownEnv) seedDelegationRow(t *testing.T) (tokenID string) {
 	tokenID = id.Generate()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, e.store.DelegationTokens().Create(context.Background(), store.CreateDelegationTokenParams{
+		GrantedScopes:    "workspace:read workspace:write worker:read",
 		ID:               tokenID,
 		UserID:           userid.MustNew(e.userID),
 		WorkerID:         e.workerID,

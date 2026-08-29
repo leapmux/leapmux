@@ -177,10 +177,13 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
       seed.commit()
   }
 
-  // `shellStartDir` is what the worker was asked to start in, and it is what
-  // `effectiveGitDir` compares -- so it must reach the seed, exactly as it does
-  // in `useTerminalOperations`. Without it both sides collapse to `workingDir`
-  // and the directory guard can never reject.
+  // This path seeds from `workingDir` alone. It differs from
+  // `useTerminalOperations`, whose open RPC reports a `shellStartDir` the
+  // seed receives: the dialog's openTerminal RPC sends no start directory, so
+  // there is none to thread, and the seed's directory guard compares against
+  // the working directory on both sides. `seedGitFromActiveTab` is true only
+  // in the plain use-this-directory mode, whose seed fields are empty, so
+  // nothing is seeded from a mismatched directory today.
   const addTerminalTabToFocusedTile = (
     terminalId: string,
     workerId: string,

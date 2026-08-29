@@ -45,10 +45,10 @@ func (f *fakeDelegationLifecycle) Acquire(userID userid.UserID) {
 	f.acquires = append(f.acquires, scopedKey{UserID: userID.String()})
 }
 
-func (f *fakeDelegationLifecycle) Release(_ context.Context, userID userid.UserID) error {
+func (f *fakeDelegationLifecycle) Release(_ context.Context, caller userid.UserID) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.releases = append(f.releases, scopedKey{UserID: userID.String()})
+	f.releases = append(f.releases, scopedKey{UserID: caller.String()})
 	return nil
 }
 

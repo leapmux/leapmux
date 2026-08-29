@@ -59,11 +59,44 @@ const (
 	//     repeat: an Argon2 hash (ElevateSession, ChangePassword, and the
 	//     replacement password that DeletePasskey and DeactivatePasskeyAuth
 	//     accept) or a ceremony write that takes SQLite's single writer lock
-	//     (every Begin leg).
+	//     (every Begin stage).
 	//
 	// One operation rather than several, so the two budgets cannot drift
 	// apart and an operator has one number to set.
 	OpElevation Operation = "elevation"
+
+	// OpOAuthAnonymous limits the authorization server's ANONYMOUS endpoints --
+	// every route mounted through anonymousLeg: device authorization, the
+	// token exchange, revocation, dynamic registration, step-up, and the app
+	// icons.
+	//
+	// They are the only endpoints on the hub an unauthenticated caller can
+	// drive in a loop against the store, and no interceptor sees them: they
+	// are mux routes rather than Connect procedures, so they reach this
+	// package through AllowHTTP instead.
+	//
+	// It is keyed by CLIENT ADDRESS rather than by user, because there is no
+	// user. See clientAddressKey for what that costs behind a proxy, and why
+	// the budget is sized the way it is.
+	//
+	// The budget is deliberately generous: a device-code client polls every
+	// five seconds for up to ten minutes, which is 120 requests for ONE
+	// authorization, and several clients legitimately share one address. What
+	// it stops is the unbounded case -- a script minting device grants or
+	// registrations as fast as the hub answers.
+	//
+	// It counts ADMITTED REQUESTS in a fixed window (allowWindowed), not
+	// credential failures: a wrong device_code is not a guess at a secret (the
+	// code is 128 bits of entropy the hub issued), and counting only failures
+	// would let an attacker exhaust a shared address's budget with garbage.
+	//
+	// It stays ENFORCED in solo mode, unlike every per-user operation. The
+	// per-user stand-down reasons about the thing counted ("one user, so no
+	// per-user abuse surface"); this budget counts addresses, and a solo hub
+	// that listens beyond the loopback interface serves anonymous addresses
+	// like any other -- which is exactly why its settings key stays visible
+	// there.
+	OpOAuthAnonymous Operation = "oauth_anonymous"
 )
 
 // Limits is one operation's effective budget.
@@ -103,6 +136,18 @@ type LimitValue struct {
 type opSpec struct {
 	limits              Limits
 	isCredentialFailure func(error) bool
+	// hiddenInSolo drops the operation's settings key from ListSettings on a
+	// solo hub, and it is a PER-OPERATION answer rather than a property of
+	// rate limiting.
+	//
+	// The question it asks is whether the thing counted still happens with one
+	// user and no sign-up. For a per-user credential ceremony the answer is no,
+	// so the key is inert clutter. For a limit keyed by client ADDRESS on an
+	// endpoint solo also serves, the answer is yes -- and hiding the key would
+	// take it out of the preferences dialog AND out of `leapmux control admin
+	// settings`, leaving an operator who runs `leapmux solo -listen
+	// 0.0.0.0:4327` no way to reach it.
+	hiddenInSolo bool
 }
 
 // defaults is the code-side source of truth applied when no settings row
@@ -112,12 +157,25 @@ type opSpec struct {
 var defaults = map[Operation]opSpec{
 	OpElevation: {
 		limits: Limits{MaxAttempts: 5, WindowSeconds: 900},
+		// One user, and elevation is keyed by that user.
+		hiddenInSolo: true,
 		isCredentialFailure: func(err error) bool {
 			// The two factors a user may present to elevate share one
 			// budget, so an attacker cannot double their attempts by
 			// alternating between the password and the passkey path.
 			return errors.Is(err, auth.ErrInvalidCurrentPassword) || errors.Is(err, auth.ErrInvalidElevationAssertion)
 		},
+	},
+	OpOAuthAnonymous: {
+		// 600 in ten minutes: five device-code polls' worth of headroom on one
+		// shared address, and still a hard ceiling on a loop.
+		limits: Limits{MaxAttempts: 600, WindowSeconds: 600},
+		// Nothing here presents a secret the caller had to guess, so no error
+		// counts against the failure window. See OpOAuthAnonymous.
+		isCredentialFailure: func(error) bool { return false },
+		// A solo hub authorizes apps like any other -- the solo rung yields to
+		// a presented bearer -- and these endpoints are anonymous there too.
+		hiddenInSolo: false,
 	},
 }
 
@@ -139,7 +197,7 @@ var limitKeys = func() map[Operation]*settings.Key[LimitValue] {
 				Category:     "rate-limits",
 				Title:        "Rate limit - " + string(op),
 				Summary:      fmt.Sprintf("rate limit for %s (failed attempts per window)", op),
-				HiddenInSolo: true,
+				HiddenInSolo: spec.hiddenInSolo,
 				Fields: []settings.Field{
 					{Name: "enabled", Label: "Enabled", Kind: settings.FieldBool},
 					{Name: "max_attempts", Label: "Max attempts", Kind: settings.FieldInt,
@@ -214,7 +272,7 @@ var procedureOperations = map[string]procedureSpec{
 	// The two factor paths. A wrong answer counts, and a right one clears.
 	leapmuxv1connect.UserServiceElevateSessionProcedure:         {op: OpElevation, provesCredential: true},
 	leapmuxv1connect.UserServiceFinishPasskeyElevationProcedure: {op: OpElevation, provesCredential: true},
-	// The Begin leg of the passkey path proves nothing: it mints assertion
+	// The Begin stage of the passkey path proves nothing: it mints assertion
 	// options for the caller's own session and succeeds for any account
 	// that holds a passkey. It is routed for the ceremony write it performs,
 	// never for the budget.
@@ -239,8 +297,9 @@ type effectiveLimit struct {
 
 // Manager tracks fixed-window failure counters per (operation, user).
 //
-// Counters are in-memory per hub instance: restarting clears them and
-// multi-instance deployments count independently. The window limits the
+// Counters are in-memory per process: a restart clears them, and the
+// singleton runtime lease means a successor hub starts from zero rather than
+// inheriting anybody's window. The window limits the
 // exposure both ways — an attacker cannot inherit a lockout, and a victim
 // is never locked out for longer than one window.
 type Manager struct {
@@ -277,9 +336,10 @@ type windowState struct {
 var errHandlerPanicked = errors.New("handler panicked")
 
 // NewManager creates a rate-limit manager over the shared settings
-// snapshot (its TTL is the admin-CLI propagation limit). Solo mode never
-// limits: it is a local single-user deployment whose only "attacker" is
-// the local user.
+// snapshot (its TTL is the admin-CLI propagation limit). Solo mode stands
+// down every PER-USER budget: it is a local single-user deployment whose
+// only "attacker" is the local user. The one ADDRESS-keyed budget
+// (OpOAuthAnonymous) still enforces there; see its catalogue entry.
 func NewManager(set *settings.Manager, soloMode bool) *Manager {
 	return &Manager{
 		set:      set,
@@ -388,6 +448,56 @@ func (m *Manager) allow(ctx context.Context, spec procedureSpec, userID string) 
 	m.inFlight[key]++
 	a.reserved = true
 	return a, true, 0, nil
+}
+
+// allowWindowed reports whether userID may drive op right now, counting the
+// request in the SAME fixed window the failure path keeps.
+//
+// It exists for the anonymous HTTP endpoints, where no handler completion
+// exists to close an in-flight reservation. Reusing allow() there was not an
+// option: allow() reserves an in-flight slot that only complete() releases,
+// and an endpoint with no completion would turn the concurrency counter into a
+// monotone lifetime counter -- after MaxAttempts requests from one address,
+// ever, every later request 429s until the hub restarts, and the in-flight
+// map retains one entry per address for the process lifetime.
+//
+// The window semantics are the same ones complete() writes: anchored at the
+// first request, self-expiring one window later through the prune sweep.
+func (m *Manager) allowWindowed(ctx context.Context, op Operation, userID string) (bool, time.Duration, error) {
+	limit, err := m.resolve(ctx, op)
+	if err != nil {
+		return false, 0, err
+	}
+	if !limit.enabled {
+		return true, 0, nil
+	}
+	now := m.now()
+	m.windowMu.Lock()
+	defer m.windowMu.Unlock()
+	m.pruneExpiredLocked(now)
+	key := windowKey{op, userID}
+	w := m.windows[key]
+	if w != nil && now.After(w.resetAt) {
+		// The window expired: drop the entry instead of leaving it inert
+		// in the map.
+		delete(m.windows, key)
+		w = nil
+	}
+	if w != nil && w.failures >= limit.limits.MaxAttempts {
+		return false, w.resetAt.Sub(now), nil
+	}
+	if w == nil {
+		w = &windowState{resetAt: now.Add(time.Duration(limit.limits.WindowSeconds) * time.Second)}
+		m.windows[key] = w
+		if m.minResetAt.IsZero() || w.resetAt.Before(m.minResetAt) {
+			m.minResetAt = w.resetAt
+		}
+	}
+	// The counter field is named failures for the credential-guess path;
+	// for a windowed operation it counts admitted requests, which is the
+	// quantity this budget limits.
+	w.failures++
+	return true, 0, nil
 }
 
 // complete closes the reservation allow() made and records the handler's

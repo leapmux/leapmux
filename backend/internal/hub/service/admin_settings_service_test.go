@@ -21,6 +21,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/password"
+	"github.com/leapmux/leapmux/internal/hub/ratelimit"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/settingsregistry"
@@ -63,7 +64,7 @@ type adminSettingsEnv struct {
 func (e *adminSettingsEnv) adminBearer(t *testing.T) (bearer, tokenID string) {
 	t.Helper()
 	issued, err := e.userClient.IssueAPIToken(context.Background(), authedReq(&leapmuxv1.IssueAPITokenRequest{
-		UserId: e.adminID, ClientName: "admin-cli", ClientType: "cli", AdminScope: true,
+		UserId: e.adminID, InstallationName: "admin-cli", Scopes: []string{"admin:read", "admin:users", "admin:settings", "admin:workers"},
 	}, e.token))
 	require.NoError(t, err)
 	return issued.Msg.GetAccessToken(), issued.Msg.GetTokenId()
@@ -459,6 +460,13 @@ func TestAdminSettingsService_SoloOmitsHiddenInSolo(t *testing.T) {
 // per key: public_url stays live in solo (the banner URL, and
 // worker_hub_url for a remote worker dialing a LAN or Tailscale address),
 // so that section survives although its two siblings hide.
+//
+// `rate-limits` is the second such case, and it arrived when the answer stopped
+// being uniform. Elevation is keyed by USER and solo has one, so that key
+// hides; the anonymous authorization-server limit is keyed by client ADDRESS on
+// endpoints solo also serves, so it stays. A blanket rule for the section would
+// take it out of the preferences dialog AND out of `leapmux control admin
+// settings`, which is the whole reach an operator has.
 func TestAdminSettingsService_SoloSectionsGeneralSurvivesWithPublicURL(t *testing.T) {
 	solo := listedKeysByCategory(t, &config.Config{SoloMode: true})
 
@@ -467,7 +475,8 @@ func TestAdminSettingsService_SoloSectionsGeneralSurvivesWithPublicURL(t *testin
 	assert.Empty(t, solo["signup"], "the sign-up section must vanish in solo")
 	assert.Empty(t, solo["email"], "the email section must vanish in solo")
 	assert.Empty(t, solo["captcha"], "the bot-protection section must vanish in solo")
-	assert.Empty(t, solo["rate-limits"], "the rate-limits section must vanish in solo")
+	assert.Equal(t, []string{ratelimit.SettingKeyPrefix + string(ratelimit.OpOAuthAnonymous)}, solo["rate-limits"],
+		"solo keeps the address-keyed anonymous limit and drops the per-user one")
 
 	// The sections that solo keeps whole. Without this, hiding every
 	// remaining key would still satisfy the assertions above.
