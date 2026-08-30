@@ -1,14 +1,15 @@
 ---
 title: "Reference"
-description: "Look-it-up material for LeapMux: the command-line cheat-sheet, troubleshooting fixes, an FAQ, a glossary of terms, and legal notices."
+description: "Reference material for LeapMux: the command-line cheat-sheet, troubleshooting fixes, an FAQ, a glossary of terms, the OAuth API for app authors, and legal notices."
 type: docs
 weight: 4
 sidebar:
   open: true
 ---
 
-Look-it-up material: the full command-line cheat-sheet, fixes for common
-problems, quick answers, term definitions, and legal notices.
+Reference material: the full command-line cheat-sheet, fixes for common problems,
+quick answers, term definitions, the OAuth wire contract for app authors, and
+legal notices.
 
 {{< cards >}}
   {{< card link="/docs/reference/cli-reference/" title="CLI Reference" icon="terminal" subtitle="A consolidated command-line cheat-sheet." >}}

@@ -5,7 +5,7 @@ type: docs
 weight: 3
 ---
 
-Coding agents are the heart of LeapMux. Each agent is a real coding-assistant CLI (Claude Code, Codex, and others) running on a Worker, wrapped in a chat tab so you can talk to it, watch its tool calls, approve its actions, and steer it without leaving the browser. This chapter covers which agents are supported, how to open one, how to chat with it, how tool calls render, how to answer permission prompts, and how to change models and settings mid-session.
+Coding agents are the core feature of LeapMux. Each agent is a real coding-assistant CLI (Claude Code, Codex, and others) running on a Worker, wrapped in a chat tab so you can talk to it, watch its tool calls, and approve its actions. This chapter covers which agents are supported and how to open, chat with, and configure one.
 
 For where agents live in the workspace layout, see [Tabs & Layout](/docs/using/tabs-and-layout/). For the git side of opening an agent in a branch or worktree, see [Worktrees & Branches](/docs/using/worktrees-and-branches/). To drive agents from a script instead of the browser, see [Control CLI](/docs/using/control-cli/).
 
@@ -25,7 +25,7 @@ LeapMux integrates nine coding-agent providers:
 | Pi | `pi` |
 | Reasonix | `reasonix` |
 
-All nine are first-class: each one supports the core workflow — chat, streamed tool calls, permission prompts, and session resume. How much of that workflow you see still depends on what each provider's CLI exposes. The plan/todo sidebar, for example, only appears for agents whose CLI emits task or todo updates, and resume falls back to a fresh session when the agent's own resume can't pick up the prior conversation. The available models, settings, and prompt styles vary from provider to provider (each CLI exposes its own); the rest of this chapter covers those per-provider details.
+All nine are first-class: each one supports the core workflow — chat, streamed tool calls, permission prompts, and session resume. The plan/todo sidebar only appears for agents whose CLI emits task or todo updates. Resume falls back to a fresh session when the agent's own resume can't pick up the prior conversation. The available models, settings, and prompt styles vary from provider to provider (each CLI exposes its own); the rest of this chapter covers those per-provider details.
 
 ### Which agents you can actually open
 
@@ -104,7 +104,7 @@ Your messages appear immediately (optimistically) and are reconciled when the se
 
 ### Interrupting a turn
 
-While the agent is actively working — and there is no pending permission prompt — an **Interrupt** button (a square icon) appears. Click it to stop the current turn. LeapMux asks the agent to stop via its native interrupt/cancel mechanism rather than killing the process, so it can wind down gracefully.
+While the agent is actively working — and there is no pending permission prompt — an **Interrupt** button (a square icon) appears. Click it to stop the current turn. LeapMux asks the agent to stop via its native interrupt mechanism rather than killing the process.
 
 > **Note:** The **Interrupt** button is hidden whenever the agent is waiting on you with a permission or question prompt — answer the prompt instead (see [Permission and approval prompts](#permission-and-approval-prompts)).
 
@@ -130,7 +130,9 @@ When an agent produces a task plan or todo list, LeapMux shows it in a persisten
 
 ### Subagents and the Background tasks sidebar
 
-When an agent spawns a subagent (Claude Code's Task tool) or runs a background shell, LeapMux tracks it in a **Background tasks** sidebar section. Each row shows the task's live status and, for subagents that own a transcript, is clickable to open the subagent in its own tab alongside its parent. A small chip on the thinking indicator shows the active count and opens the same list as a popover. Closing a subagent tab is tab-only — the transcript and registry survive, and the tab can be reopened from the section later. Only providers whose CLIs expose subagent activity appear here; the registry lives in the worker's local database and never reaches the hub.
+When an agent spawns a subagent (Claude Code's Task tool) or runs a background shell, LeapMux tracks it in a **Background tasks** sidebar section. Each row shows the task's live status and, for subagents that own a transcript, is clickable to open the subagent in its own tab alongside its parent. A small chip on the thinking indicator shows the active count and opens the same list as a popover.
+
+Closing a subagent tab closes only the tab. The transcript and registry survive, and you can reopen the tab from the section later. Only providers whose CLIs expose subagent activity appear here; the registry lives in the worker's local database and never reaches the hub.
 
 
 ### Turn boundaries and notifications
@@ -156,7 +158,7 @@ The exact buttons depend on the provider.
 - **Allow** — approve this one request.
 - **& Bypass Permissions** — allow this request *and* switch the agent into its bypass mode (tooltip: "Allow this request and stop asking for permissions").
 
-**Plan review** — when Claude Code finishes planning, the banner is titled **Plan Ready for Review** and lists requested permissions grouped by tool. Buttons are **Reject** / **Send Feedback** and **Approve**. The Approve action includes checkboxes to clear context or switch out of bypass permission mode.
+**Plan review** — when Claude Code finishes planning, the banner is titled **Plan Ready for Review** and lists requested permissions grouped by tool. Buttons are **Reject** / **Send Feedback** and **Approve**. The Approve action includes checkboxes to clear context or switch the agent into its bypass mode.
 
 **Questions** — when the agent asks you something, the banner is titled **Agent Question**. Single questions show options as radio buttons (single-select, auto-advancing) or checkboxes (multi-select); multi-question prompts show **Question N of M** with pagination dots. You can also type a custom answer. Footer buttons:
 
@@ -183,15 +185,15 @@ Pi shows method-specific dialogs: **confirm** (Deny / Approve), **input** (an in
 
 ### Other providers
 
-Cursor, GitHub Copilot, Goose, OpenCode, Kilo, and Reasonix render a permission banner whose title comes from the tool call (default **Permission Request**) and whose buttons come from the options the agent offered. An **& Bypass Permissions** option appears when the provider declares a bypass mode (Reasonix declares none). Cursor, OpenCode, and Kilo plug in their own richer question handling where they support it.
+Cursor, GitHub Copilot, Goose, OpenCode, Kilo, and Reasonix render a permission banner whose title comes from the tool call (default **Permission Request**) and whose buttons come from the options the agent offered. An **& Bypass Permissions** option appears only for Goose and GitHub Copilot, which declare a bypass mode; Cursor, OpenCode, Kilo, and Reasonix declare none. Cursor, OpenCode, and Kilo plug in their own richer question handling where they support it.
 
 ## Changing settings mid-session
 
-Beneath the editor box is a status bar with one chip per setting axis - the git branch, and the agent's current model, reasoning effort, and mode. Click a chip to change that axis.
+Beneath the editor box is a status bar with one chip per setting axis — the git branch, and the agent's current model, reasoning effort, and mode. Click a chip to change that axis.
 
 The **[+]** menu holds every axis, including the provider-specific options that get no chip, each as a submenu. It also holds **Agent info** (context usage, rate limits, session). You can hide the status bar with **[+] > Show status bar**; the **[+]** menu still reaches everything the bar shows.
 
-> **Note:** Most settings changes apply **live**, without a restart: a concrete model or effort change and a permission-mode change take effect in place (the change is optimistic and rolls back if it fails). A restart happens when the provider can't apply the change to the running process — typically switching effort back to **Auto**, which must relaunch the CLI without an effort flag — and for providers that fix the model at launch (Reasonix).
+> **Note:** Most settings changes apply **live**, without a restart: a concrete model or effort change and a permission-mode change take effect in place (the change is optimistic and rolls back if it fails). A restart happens when the provider can't apply the change to the running process — typically switching effort back to **Auto** or the Claude Code model back to **Default (recommended)**, which must relaunch the CLI without the flag — and for providers that fix the model at launch (Reasonix).
 
 A picker shows radio items for up to 7 options and switches to a searchable list above that.
 
@@ -201,7 +203,7 @@ For the providers whose effort LeapMux manages — Claude Code, Codex, and Pi �
 
 ### Plan mode shortcut
 
-For providers that support a plan mode, **Shift+Tab** in the editor toggles between plan mode and the previous mode. (Goose has no plan mode and doesn't wire this.)
+For providers that support a plan mode, **Shift+Tab** in the editor toggles between plan mode and the previous mode. (Goose has no plan mode.)
 
 ### Per-provider settings
 
@@ -213,7 +215,7 @@ For providers that support a plan mode, **Shift+Tab** in the editor toggles betw
   - **Haiku** has no effort tiers at all — the effort selector is hidden entirely when Haiku is the model, and the Worker never sends an effort flag for Haiku.
 - Permission modes: **Default** (the default), **Plan Mode**, **Accept Edits**, **Bypass Permissions**, **Don't Ask**, **Auto Mode**.
 
-**Codex** — Fast Mode, Reasoning Effort, Model, Workflow, Network Access, Sandbox, Approval Policy, plus a **Bypass permissions** item.
+**Codex** — Fast Mode, Effort, Model, Workflow, Network Access, Sandbox Policy, Approval Policy, plus a **Bypass permissions** item.
 
 - Default model **GPT-5.4** (`gpt-5.4`); also offered: gpt-5.4-mini, gpt-5.3-codex, gpt-5.2-codex, gpt-5.2, gpt-5.1-codex-max, gpt-5.1-codex-mini.
 - Effort tiers: Auto, Ultra, Max, Extra High, High, Medium, Low, Minimal, None.
@@ -229,11 +231,11 @@ For providers that support a plan mode, **Shift+Tab** in the editor toggles betw
 | --- | --- | --- | --- |
 | Cursor | `auto` | `agent` | Has plan mode. |
 | GitHub Copilot | (CLI default) | `agent` | Has plan and autopilot. |
-| Goose | (CLI default) | `auto` | Bypass = `auto` — Goose's default mode already is its bypass mode (it has no separate ask-first mode); **no plan mode**. |
+| Goose | (CLI default) | `auto` | Bypass = `auto` — Goose's default mode already is its bypass mode; **no plan mode**. |
 | OpenCode | (CLI default) | Primary Agent `build` | Has plan mode. |
 | Kilo | (CLI default) | Primary Agent `code` | Has plan mode. |
 
-In the UI you pick these as named radio options (**Auto**, **YOLO**, **Build**, **Code**, and so on); the literal mode IDs above are only typed directly when driving an agent with `leapmux control agent set --permission-mode`.
+In the UI you pick these as named radio options (**Auto**, **Agent**, **Autopilot**, **Build**, **Code**, and so on); the literal mode IDs above are only typed directly when driving an agent with `leapmux control agent set --permission-mode`.
 
 **Reasonix** — a **Model** selector only; it has no permission mode, no plan mode, and no bypass. Default model **DeepSeek Flash** (`deepseek-flash`); also offered: DeepSeek Pro, MiMo Pro, MiMo Flash (the MiMo models need `MIMO_API_KEY`). Reasonix fixes its model at launch, so switching the model restarts the agent. It is text-only — image, PDF, and binary attachments aren't supported — and still shows per-request approval banners.
 
@@ -249,7 +251,7 @@ Once you submit, the Worker resumes the prior session using that provider's own 
 
 ### Resume across restarts and reconnects
 
-Pasting a Session ID is the manual path; most resumption happens automatically. Agent sessions are durable: they resume across Hub restarts, Worker restarts, and client reconnects without you doing anything. When an agent's process has to be respawned — for example after a Worker restarts or after a model/effort change — LeapMux reconnects it to the prior session using that provider's own resume mechanism, and the transcript continues where it left off. As with manual resume, if the agent's own resume fails the Worker falls back to a fresh session rather than dropping the conversation.
+Pasting a Session ID is the manual path; most resumption happens automatically. Agent sessions are durable: they resume across Hub restarts, Worker restarts, and client reconnects without you doing anything. When an agent's process has to be respawned — for example after a Worker restarts or after a model/effort change — LeapMux reconnects it to the prior session using that provider's own resume mechanism, and the transcript continues where it left off. As with manual resume, if the agent's own resume fails, the Worker falls back to a fresh session rather than dropping the conversation.
 
 ## Per-provider differences worth knowing
 

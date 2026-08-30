@@ -11,7 +11,7 @@ Short definitions of the terms you will meet throughout the LeapMux manual. Each
 
 ### Active client (presence)
 
-The single client connection that "owns" the turn-end notification sound for a workspace at any moment. The slot is not a fixed assignment: it follows wherever you last typed, going to the client that most recently received your input (and stays empty if two clients tie or none has reported input yet). When an agent finishes a turn, only the client that currently holds the slot plays the ding — so opening the same workspace on a laptop and a phone does not double-ding. The active client is broadcast over the per-user events stream and is not the same thing as the layout sync. See [Device Sync](/docs/using/device-sync/).
+The client connection that owns the turn-end notification sound for a workspace. The role follows your most recent input and is broadcast on the per-user events stream. When an agent finishes a turn, only that client plays the sound; if no client is active, every client plays it. See [Device Sync](/docs/using/device-sync/).
 
 ### Agent
 
@@ -19,15 +19,15 @@ A coding agent: a CLI assistant (Claude Code, Codex, Cursor, GitHub Copilot, Ope
 
 ### App
 
-A program that asks a LeapMux Hub for access to an account on it. Every app is a registration the Hub holds -- a name, the addresses an authorization may return to, and a ceiling on the permissions it may ask for. An ordinary user's app is visible and authorizable to that user alone; an administrator's is visible to everybody on the Hub. The control CLI is an app, registered like any other. See [App Authorization](/docs/admin/app-authorization/) and [Connected Apps](/docs/using/connected-apps/).
+A program that asks a LeapMux Hub for access to an account on it. Every app is a registration the Hub holds — a name, the addresses an authorization may return to, and a ceiling on the permissions it may ask for. A private app is visible to its registering user alone; a hub-wide app is visible to everybody. The control CLI is an app, registered like any other. See [App Authorization](/docs/admin/app-authorization/) and [Connected Apps](/docs/using/connected-apps/).
 
 ### App credential
 
-One token pair a **connection** holds: an access token that renews itself and a refresh token behind it. An app holds one per machine it runs on, labelled by its **installation name**, so signing one laptop out leaves the rest working. A credential is **minted** when the app is authorized and **revoked** from its own row in **Preferences → Account → Connected apps**. See [Connected Apps](/docs/using/connected-apps/#ending-an-apps-access) and [App credentials](/docs/admin/security/#app-credentials).
+One token pair a **connection** holds: an access token that renews itself and a refresh token behind it. An app holds one per machine it runs on, labelled by its **installation name**, so signing one laptop out leaves the rest working. A credential is **minted** when the app is authorized and **revoked** from its own row in **Preferences → Apps → Connected apps**. See [Connected Apps](/docs/using/connected-apps/#ending-an-apps-access) and [App credentials](/docs/admin/security/#app-credentials).
 
 ### App registration
 
-The Hub's record of one **app**: its name, its redirect addresses, the permission ceiling it may ask for, whether an administrator vouched for it, and whether it may run the **step-up** ceremony. The ceiling and the step-up flag are read at every request rather than only at the consent, so removing either takes it from the credentials the app already holds. It is **registered** and **deleted** from **Preferences → Apps**, and every write to it needs a recently proven factor. A registration is not access: an account still authorizes the app separately. See [App Authorization](/docs/admin/app-authorization/).
+The Hub's record of one **app**: its name, its redirect addresses, the permission ceiling it may ask for, whether an administrator vouched for it, and whether it may run the **step-up** ceremony. The ceiling and the step-up flag are read at every request rather than only at the consent, so removing either takes it from the credentials the app already holds. It is **registered** and **deleted** from **Preferences → Apps**, and every write to it needs a recently proven factor. See [App Authorization](/docs/admin/app-authorization/).
 
 ## C
 
@@ -37,7 +37,7 @@ The end-to-end-encrypted connection between your browser (or CLI) and a single W
 
 ### Connection (app authorization)
 
-One account's live authorization of one **app**, across every machine that app runs on. It begins at the **consent screen** and ends with **Disconnect** in **Preferences → Account → Connected apps**, which retires every **app credential** the connection holds at once. Revoking a single credential ends one machine instead and leaves the connection standing. Not to be confused with **active client (presence)**, which is a browser tab. See [Connected Apps](/docs/using/connected-apps/).
+One account's live authorization of one **app**, across every machine that app runs on. It begins at the **consent screen** and ends with **Disconnect** in **Preferences → Apps → Connected apps**, which retires every **app credential** the connection holds at once. Not to be confused with **active client (presence)**, which is a connected client, not an authorization. See [Connected Apps](/docs/using/connected-apps/).
 
 ### Consent screen
 
@@ -45,15 +45,19 @@ The page a Hub renders when an app asks for access. It states the app's name, wa
 
 ## D
 
+### Delegation token
+
+A short-lived credential a Worker mints for the agent or terminal running in one of its tabs, so it can call `leapmux control` with no login. It carries the Worker owner's identity, reaches only that owner's Workers, holds no elevation, and is revoked when the tab closes. See [What a delegation token can reach](/docs/admin/security/#what-a-delegation-token-can-reach).
+
 ### Distributed mode
 
-Running LeapMux with the Hub and one or more Workers as separate processes — typically the Hub on a shared server and Workers on your dev machines — instead of the single all-in-one `solo` process. In this mode the Hub is treated as an authenticated relay that cannot read content, which is what makes it safe for a teammate or platform team to operate. Contrast with **solo mode**. See [Running LeapMux](/docs/admin/running-leapmux/) and [Security & Threat Model](/docs/admin/security/).
+Running LeapMux with the Hub and one or more Workers as separate processes — the Hub on a shared server and Workers on your dev machines — instead of the single all-in-one `solo` process. In this mode the Hub is treated as an authenticated relay that cannot read content, which is what makes it safe for a teammate or platform team to operate. Contrast with **solo mode**. See [Running LeapMux](/docs/admin/running-leapmux/) and [Security & Threat Model](/docs/admin/security/).
 
 ## E
 
 ### Effort (reasoning level)
 
-A per-agent setting that controls how much reasoning the agent applies. The available tiers are model-dependent — each model advertises its own supported set — and the default is `auto`, which lets the CLI pick. Common tiers are `low`, `medium`, and `high`, with some models adding `minimal`, `xhigh`, or `max` (Claude models, for example, expose tiers up to `max` and an `ultracode` tier; Codex models offer `auto`, `ultra`, `max`, `xhigh`, `high`, `medium`, `low`, `minimal`, and `none`). You can set effort when you open an agent and change it later from the composer's Effort chip or its **[+]** menu. See [Coding Agents](/docs/using/coding-agents/).
+A per-agent setting that controls how much reasoning the agent applies. The available tiers are model-dependent — each model advertises its own supported set — and for the providers LeapMux manages the default is `auto`, which lets the CLI pick. You change effort after opening the agent, from the composer's Effort chip or its **[+]** menu. See [Coding Agents](/docs/using/coding-agents/).
 
 ## F
 
@@ -77,6 +81,12 @@ A tile turned into a fixed `rows × cols` matrix of panes (up to 20 × 20), with
 
 The central service (`leapmux hub`) that authenticates users, stores accounts, workspaces, and layout geometry, mints Worker registration keys, and relays encrypted traffic between Frontends and Workers. The Hub is an **authenticated relay, not a trusted peer**: it routes opaque ciphertext and sees metadata (who talks to whom, message sizes, timing) but never the plaintext of agent transcripts, terminal I/O, or file contents. Its default listen address is `:4327`. See [Concepts & Architecture](/docs/getting-started/concepts/) and [Running LeapMux](/docs/admin/running-leapmux/).
 
+## I
+
+### Installation name
+
+The per-machine label of one **app credential** — for example *trustin's MacBook*. An app holds one credential per machine it runs on; the installation name tells two rows of the same app apart. See [Connected Apps](/docs/using/connected-apps/).
+
 ## L
 
 ### LexoRank
@@ -93,11 +103,15 @@ The Noise-protocol handshake pattern behind the E2EE channel: the Worker has a k
 
 ### Permission (scope)
 
-One named thing an app may do, such as `file:read` or `terminal:write`. A grant is a set of them, and it only ever **subtracts** from what its owner can already do -- an app granted `admin:users` on an ordinary account administers nothing. Some permissions imply others: `file:read` implies `worker:read`, because reading a file means reaching the machine that holds it. The Hub enforces a grant at its own boundary and the Worker enforces it again inside the encrypted channel. See [App Authorization](/docs/admin/app-authorization/#permissions).
+One named thing an app may do, such as `file:read` or `terminal:write`. A grant is a set of them, and it only ever **subtracts** from what its owner can already do — an app granted `admin:users` on an ordinary account administers nothing. The Hub enforces a grant at its own boundary and the Worker enforces it again inside the encrypted channel. See [App Authorization](/docs/admin/app-authorization/#permissions).
+
+### Permission mode
+
+A per-agent setting that controls how often the agent asks before it acts — for example Claude Code's **Default**, **Plan Mode**, and **Bypass Permissions**, or Codex's approval policies. Change it from the composer's mode chip or its **[+]** menu. See [Coding Agents](/docs/using/coding-agents/).
 
 ### Post-quantum encryption
 
-The default E2EE mode (`post-quantum`), a hybrid handshake combining classical and post-quantum cryptography so the channel stays secure even if one algorithm is later broken: **X25519 + ML-KEM-1024 (FIPS 203)** for key exchange, **SLH-DSA-SHAKE-256f (FIPS 205)** for Worker static-key authentication, and ChaCha20-Poly1305 + BLAKE2b for transport. The alternative `classic` mode is X25519-only. Set it on the Worker with `--encryption-mode`. See [Encryption & Data](/docs/admin/encryption-and-data/) and [Security & Threat Model](/docs/admin/security/).
+The default E2EE mode (`post-quantum`): a hybrid handshake that combines classical and post-quantum cryptography, so the channel stays secure if one algorithm is later broken. The alternative `classic` mode is X25519-only. Set it on the Worker with `--encryption-mode`. See [Encryption & Data](/docs/admin/encryption-and-data/) and [Security & Threat Model](/docs/admin/security/).
 
 ### Presence
 
@@ -111,9 +125,9 @@ A pseudo-terminal — the operating-system primitive behind a terminal tab. Each
 
 ### Registration key
 
-A short-lived, single-use secret (5-minute TTL) that authorizes a Worker to join a Hub. You mint one from the Hub's "Register worker" dialog (or via the CLI), then run the Worker with `--registration-key`. Presenting a valid key immediately creates an active Worker — there is no separate approval queue; the gate is possessing the key. See [Managing Workers](/docs/admin/managing-workers/).
+A short-lived, single-use secret (5-minute TTL) that authorizes a Worker to join a Hub. You mint one from the Hub's "Register worker" dialog, then run the Worker with `--registration-key`. Presenting a valid key immediately creates an active Worker — there is no separate approval queue; the gate is possessing the key. See [Managing Workers](/docs/admin/managing-workers/).
 
-### Remote CLI
+### Control CLI
 
 `leapmux control`: a JSON-emitting command-line surface for driving a running Hub from a script or from inside an agent — creating workspaces and tabs, sending agent and terminal input, mutating the tile layout, inspecting files and git, and watching events. External users authorize it with `leapmux control auth login`; agents are handed credentials automatically through `LEAPMUX_CONTROL_*` environment variables. See [Control CLI](/docs/using/control-cli/).
 
@@ -153,7 +167,7 @@ A long-running daemon (`leapmux worker`) that runs on a developer machine and ho
 
 ### Workspace
 
-A named container for one tiling layout of tabs, owned by its creator. Workspaces appear in the sidebar tree and persist their layout (CRDT-synced through the Hub); you see exactly the workspaces you own, with no sharing. Each workspace's tabs run agents and terminals on a Worker you pick. One workspace is open at a time, and the one you were last on is remembered between visits. See [Workspaces](/docs/using/workspaces/).
+A named container for one tiling layout of tabs, owned by its creator. Workspaces appear in the sidebar tree and persist their layout (CRDT-synced through the Hub); you see exactly the workspaces you own, with no sharing. See [Workspaces](/docs/using/workspaces/).
 
 ### Worktree
 

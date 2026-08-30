@@ -5,15 +5,19 @@ type: docs
 weight: 2
 ---
 
-This chapter is the map of the territory. It explains the three pieces LeapMux is built from, the two shapes you can deploy it in, and the objects you will work with every day — workspaces, layouts, tiles, tabs, worktrees, Workers, and the encrypted channels that connect them. Read it once and the rest of the manual will make sense. Every concept here links to the chapter that covers it in depth, so use this as a hub: skim it, then jump.
+This chapter is the overview. It explains the three components LeapMux is built from, the two shapes you can deploy it in, and the objects you work with every day — workspaces, layouts, tiles, tabs, worktrees, Workers, and the encrypted channels that connect them. Every concept links to the chapter that covers it in depth.
 
 ## The three components
 
-LeapMux is a single Go binary, `leapmux`, that can play three roles. In a running system you always have all three present — what changes between deployment shapes is whether they live in one process or several.
+LeapMux has three components. The Hub and the Worker are roles of a single Go binary, `leapmux`. The Frontend is a web app that runs in your browser or the desktop app. In a running system all three are present; what changes between deployment shapes is whether the Hub and the Worker share one process.
 
-- **Frontend** — the SolidJS web app that renders the workspace UI: the tiling layout, agent chats, terminals, and the file browser. It runs in your browser or inside the native desktop app. The Frontend is where you click, type, and read; it holds no agent state of its own.
-- **Hub** — a Go service that handles login, workspace management, and Worker registration, and **relays** encrypted Frontend↔Worker traffic. It owns the central database (pluggable: SQLite by default, or PostgreSQL, MySQL, CockroachDB, YugabyteDB, TiDB). The Hub is a coordinator and a relay, not a place where your code or conversations live.
-- **Worker** — a Go process that actually runs your coding agents, PTY/terminal sessions, file browsing, and git operations. Each Worker keeps its own local SQLite database and auto-reconnects to the Hub if the connection drops. **Your agent transcripts, terminal output, and file contents live on the Worker, never on the Hub.**
+| Component | Responsibility | Runs where | State it holds |
+|---|---|---|---|
+| **Frontend** | Renders the workspace UI: the tiling layout, agent chats, terminals, and the file browser. It is where you click, type, and read. | Your browser or the native desktop app. | None of its own. |
+| **Hub** | Handles login, workspace management, and Worker registration, and **relays** encrypted Frontend↔Worker traffic. It is a coordinator and a relay, not a place where your code or conversations live. | A central Go service. | The central database (pluggable: SQLite by default, or PostgreSQL, MySQL, CockroachDB, YugabyteDB, TiDB). |
+| **Worker** | Runs your coding agents, PTY/terminal sessions, file browsing, and git operations. | A Go process, usually on the machine that holds your repos. It auto-reconnects to the Hub if the connection drops. | Its own local SQLite database. |
+
+**Your agent transcripts, terminal output, and file contents live on the Worker, never on the Hub.**
 
 The division is deliberate: the Hub knows *who is talking to whom* but never *what they say*. That property is what makes it safe to let a teammate or platform team operate the Hub while your agents run on your own machine.
 
@@ -50,7 +54,7 @@ LeapMux runs in two shapes. They use the same components and the same end-to-end
 
 Solo mode is ideal for one person on one machine. Because it auto-authenticates and binds loopback, the security model **reduces to local trust**: any local process that can reach the port can drive the Worker. The end-to-end encryption between Frontend and Worker still operates inside the process, but it offers no protection against an attacker who is already on your machine.
 
-> **Warning:** If you point solo mode at a non-loopback address, it logs a warning that anyone who can reach the port gets full admin access without credentials, and recommends restricting access (firewall, Tailscale/WireGuard, SSH tunnel) or running `leapmux hub` for real authentication. The desktop app avoids the issue entirely by listening on a Unix socket / named pipe instead of TCP.
+> **Warning:** If you point solo mode at a non-loopback address, it logs a warning. The warning states that anyone who can reach the port gets full admin access without credentials. It recommends restricting access with a firewall, Tailscale/WireGuard, or an SSH tunnel, or running `leapmux hub` for real authentication. The desktop app avoids the issue entirely by listening on a Unix socket / named pipe instead of TCP.
 
 ### Distributed mode
 
@@ -72,7 +76,7 @@ For multi-user and remote setups, run `leapmux hub` and `leapmux worker` as sepa
                                                                └──────────────────┘
 ```
 
-One Hub coordinates one-or-more Workers. Each Worker is a separate machine (a dev box, a build server, your laptop) running `leapmux worker`. You pick which Worker hosts each tab, so you can keep an agent's filesystem and git operations local to the machine that holds the repo.
+One Hub coordinates one-or-more Workers. Each Worker is a separate process, usually on its own machine (a dev box, a build server, your laptop), running `leapmux worker`. You pick which Worker hosts each tab, so you can keep an agent's filesystem and git operations local to the machine that holds the repo.
 
 There is also `leapmux dev` — the same Hub+Worker-in-one-process runner as solo, but it binds all interfaces (`:4327`), requires real password auth, and bootstraps the first admin through the `/setup` flow. It is meant for development, not production.
 
@@ -108,7 +112,7 @@ You own everything you create — workspaces, agents, and terminals. There is no
 
 ### Workspace
 
-A **workspace** is the unit of work and the top-level container you actually spend time in. It owns a tiling layout of tabs. One workspace is open at a time, and the one you were last on is remembered between visits. The left sidebar groups your workspaces into sections — "In progress", any custom sections you create, and "Archived". Each workspace has a single **owner** (its creator). See [Workspaces](/docs/using/workspaces/).
+A **workspace** is the unit of work and the top-level container you work in. It owns a tiling layout of tabs. One workspace is open at a time, and the one you were last on is remembered between visits. The left sidebar groups your workspaces into sections — "In progress", any custom sections you create, and "Archived". Each workspace has a single **owner** (its creator). See [Workspaces](/docs/using/workspaces/).
 
 ### Layout, tiles, and floating windows
 
@@ -129,11 +133,11 @@ A **tab** is one piece of content, and there are exactly three kinds:
 - **Terminal** — a PTY/shell session.
 - **File** — a file viewer / diff.
 
-Every tab lives in a tile, carries an ordering position, and — this is the key architectural fact — **is hosted on a specific Worker** and may be **bound to a git worktree and branch**. The Worker is where the agent process or shell actually runs; the worktree/branch determines which checkout it operates on. See [Coding Agents](/docs/using/coding-agents/), [Terminals](/docs/using/terminals/), and [File Browser](/docs/using/file-browser/) for each tab type, and [Worktrees & Branches](/docs/using/worktrees-and-branches/) for the git binding.
+Every tab lives in a tile and carries an ordering position. Each tab is hosted on a specific Worker and may be **bound to a git worktree and branch**. The Worker is where the agent process or shell runs. The worktree and branch select the checkout it operates on. See [Coding Agents](/docs/using/coding-agents/), [Terminals](/docs/using/terminals/), and [File Browser](/docs/using/file-browser/) for each tab type, and [Worktrees & Branches](/docs/using/worktrees-and-branches/) for the git binding.
 
-## Workers: where work actually runs
+## Workers: where the work runs
 
-A **Worker** is a machine (or, in solo mode, an in-process component) that runs your agents, terminals, file browsing, and git operations. When you open a tab you pick which Worker hosts it, so an agent's filesystem access and git commands happen on the machine that holds the repo — your laptop, a remote dev box, a build server.
+A **Worker** is a process (or, in solo mode, an in-process component) that runs your agents, terminals, file browsing, and git operations. When you open a tab you pick which Worker hosts it, so an agent's filesystem access and git commands happen on the machine that holds the repo — your laptop, a remote dev box, a build server.
 
 Key properties:
 
@@ -153,9 +157,9 @@ Conceptually:
 
 - When the Frontend needs to talk to a Worker, it opens an **encrypted channel** to that Worker, multiplexed through the Hub. The Hub routes the ciphertext but cannot decrypt it.
 - The encryption is a hybrid post-quantum handshake (classical + post-quantum key exchange, with authenticated encryption). A **classic** (non-PQ) mode is also available; the default is **post-quantum**. The specific algorithms are listed in [Security & Threat Model](/docs/admin/security/).
-- After the handshake the Frontend proves its identity to the Worker (so a channel is bound to the authenticated user). The Worker refuses any request before this verification.
+- The Hub authenticates the channel open and names the user on the channel. The Frontend checks that name against the signed-in user. The Worker refuses any channel that carries no user identity.
 
-So the Hub sees *who talks to whom* plus the control-plane metadata it needs to route — but never the *content*: agent transcripts, tool calls, terminal I/O, and file contents all travel inside the encrypted channel. This is what "the Hub is an **authenticated relay, not a trusted peer**" means in practice, and it is load-bearing in distributed mode, where the Hub may be operated by someone other than you. For the authoritative breakdown of exactly what the Hub can and cannot see, see [Security & Threat Model](/docs/admin/security/).
+So the Hub sees *who talks to whom* plus the control-plane metadata it needs to route. It never sees the *content*: agent transcripts, tool calls, terminal I/O, and file contents travel inside the encrypted channel. This is what "the Hub is an **authenticated relay, not a trusted peer**" means in practice. It matters most in distributed mode, where the Hub may be operated by someone other than you. For the authoritative breakdown of exactly what the Hub can and cannot see, see [Security & Threat Model](/docs/admin/security/).
 
 ### Worker identity is pinned (TOFU)
 

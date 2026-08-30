@@ -46,12 +46,12 @@ Any command name can be shortened as far as it stays unambiguous.
 Notes on dispatch:
 
 - The default TCP port for every mode is **4327**.
-- `-h`, `-help`, `--help`, and `help` are all recognized as help tokens (help prints to stdout, exit 0).
+- `-h`, `-help`, and `--help` are recognized at every level (help prints to stdout, exit 0). The bare `help` token works only at the top level.
 - `-version`, `--version`, and the `version` command all print the same version string.
 - Daemon flags must follow the command keyword — `leapmux solo -listen ...`, not `leapmux -listen ... solo`. LeapMux rejects an unknown leading `-flag` because it is not a top-level flag.
-- Help tokens are recognized at every level; LeapMux rejects an unexpected positional argument and points you at `--help`.
+- LeapMux rejects an unexpected positional argument and points you at `--help`.
 
-> **Tip:** Flags accept both single- and double-hyphen forms (`-listen` and `--listen` are equivalent). This chapter uses the single-hyphen form, matching the binary's help output.
+> **Tip:** Flags accept both single- and double-hyphen forms (`-listen` and `--listen` are equivalent). The daemon-mode flag tables below use the single-hyphen form, matching the binary's help output; the `control` and `recover` sections keep the double-hyphen form used by their chapters.
 
 > **Durations.** Every flag whose default is shown as a duration (`1h`, `5m`, …) takes a unit suffix — `ns`, `us`, `ms`, `s`, `m`, `h`, `d`, `w` — and combines parts. A bare number is a count of **seconds**. See [Duration values](/docs/admin/configuration/#duration-values).
 
@@ -70,14 +70,18 @@ leapmux solo [flags]
 | `-data-dir` | `.` (resolves to `~/.config/leapmux/solo`) | Data directory (split into `<data-dir>/hub` and `<data-dir>/worker`) |
 | `-dev-frontend` | empty | Frontend dev-server URL for the local reverse proxy |
 | `-storage-sqlite-max-conns` | `4` | SQLite max open connections |
-| `-max-incomplete-chunked` | `4` | Max in-flight chunked sequences per channel (for the bundled Worker) |
+| `-storage-sqlite-cache-size` | `0` | Page cache: positive = pages, negative = KiB (e.g. `-65536` = 64 MiB) |
+| `-storage-sqlite-mmap-size` | `0` | Memory-mapped I/O size in bytes (0 = disabled) |
+| `-max-incomplete-chunked` | `0` (= 4) | Max in-flight chunked sequences per channel (for the bundled Worker) |
 | `-encryption-mode` | `post-quantum` | `classic` or `post-quantum` (for the bundled Worker) |
 | `-use-login-shell` | `true` | Wrap the agent invocation in the user's login shell (for the bundled Worker) |
 | `-log-level` | `info` | `debug`, `info`, `warn`, `error` |
 | `-config` | `~/.config/leapmux/solo/solo.yaml` | Config file path |
 | `-version` | — | Print version and exit |
 
-> **Note:** Binding solo to a non-loopback address logs a warning because every request is auto-authenticated as the admin — use `hub` or `dev` for network-exposed deployments. The `public_url` setting applies in solo: it sets the URL in the startup banner, and the `--hub` address in the command that the **Register worker** dialog prints.
+> **Note:** Binding solo to a non-loopback address logs a warning because every request is auto-authenticated as the admin — use `hub` or `dev` for network-exposed deployments.
+
+> **Note:** The `public_url` setting applies in solo: it sets the URL in the startup banner, and the `--hub` address in the command that the **Register worker** dialog prints.
 
 ## hub
 
@@ -113,7 +117,14 @@ This table lists the most common flags. The full set — including all PostgreSQ
 | `-storage-postgres-dsn` | empty | PostgreSQL connection string (required when `storage.type` is `postgres`) |
 | `-storage-mysql-dsn` | empty | MySQL connection string (required when `storage.type` is `mysql`) |
 
-The Postgres family (`-storage-postgres-*`, `-storage-cockroachdb-*`, `-storage-yugabytedb-*`) defaults to `max-conns 25`, `min-conns 5`, `conn-max-lifetime-seconds 3600`, `max-conn-idle-time-seconds 300`, `health-check-period-seconds 30`. The MySQL family (`-storage-mysql-*`, `-storage-tidb-*`) defaults to `max-conns 25`, `max-idle-conns 5`, `conn-max-lifetime-seconds 3600`, `conn-max-idle-time-seconds 300`. CockroachDB/YugabyteDB use the Postgres driver; TiDB uses the MySQL driver. See [Configuration](/docs/admin/configuration/) for every storage flag and DSN format.
+The Postgres family (`-storage-postgres-*`, `-storage-cockroachdb-*`, `-storage-yugabytedb-*`) and the MySQL family (`-storage-mysql-*`, `-storage-tidb-*`) share pool defaults:
+
+| Family | `max-conns` | `min-conns` | `max-idle-conns` | `conn-max-lifetime` | `conn-max-idle-time` | `health-check-period` |
+|---|---|---|---|---|---|---|
+| Postgres (`postgres`, `cockroachdb`, `yugabytedb`) | 25 | 5 | — | 3600 | 300 | 30 |
+| MySQL (`mysql`, `tidb`) | 25 | — | 5 | 3600 | 300 | — |
+
+CockroachDB/YugabyteDB use the Postgres driver; TiDB uses the MySQL driver. See [Configuration](/docs/admin/configuration/) for every storage flag and DSN format.
 
 **Common options**
 
@@ -202,7 +213,7 @@ leapmux dev [flags]
 
 Dev mode uses the **same flag set as solo**.
 
-The other differences from solo: dev seeds `signup_enabled=true`; the runtime knobs (`session_duration_seconds`, `limits`, `timeouts`, …) are `leapmux control admin settings` keys; the default `-listen` is `:4327` (all interfaces); the config/data location is `~/.config/leapmux/dev/`; and the bundled Worker's auto-registration is deferred until the first admin completes `/setup`.
+The other differences from solo: dev enables `signup_enabled=true` by default, and the bundled Worker's auto-registration is deferred until the first admin completes `/setup`. The runtime knobs (`session_duration_seconds`, `limits`, `timeouts`, …) are `leapmux control admin settings` keys. The default `-listen` is `:4327` (all interfaces), and the config/data location is `~/.config/leapmux/dev/`.
 
 ## version
 
@@ -230,7 +241,9 @@ leapmux recover <group> <command> [flags]
 | `encryption-key` | `rotate`, `remove`, `reencrypt`, `rotate-pepper` |
 | `db` | `path`, `migrate`, `version` |
 
-Recover commands accept `--data-dir` to locate the data directory. The commands that open the database also accept `--config`, which loads the Hub's storage settings; pass it whenever the Hub runs on Postgres or MySQL. Three leaves need no database connection and therefore accept `--data-dir` only: `db path`, `encryption-key rotate`, and `encryption-key rotate-pepper`. Commands that take `--password` prompt interactively when you omit the flag. Every other administration task is online — see [Admin CLI](/docs/admin/admin-cli/). See [Recovery](/docs/admin/recover/) and [Encryption & Data](/docs/admin/encryption-and-data/).
+Recover commands accept `--data-dir` to locate the data directory. The commands that open the database also accept `--config`, which loads the Hub's storage settings; pass it whenever the Hub runs on Postgres or MySQL. Three leaves need no database connection and take no `--config`: `db path`, `encryption-key rotate`, and `encryption-key rotate-pepper` (which also takes `--yes`).
+
+Commands that take `--password` prompt interactively when you omit the flag. Every other administration task is online — see [Admin CLI](/docs/admin/admin-cli/), and [Recovery](/docs/admin/recover/) for the full per-command reference.
 
 ## control (command-group outline)
 
@@ -275,6 +288,10 @@ Hub-family modes (`hub`, `solo`, `dev`) read variables prefixed `LEAPMUX_HUB_`; 
 | `LEAPMUX_HUB_LOG_LEVEL` | hub `log_level` | `info` |
 | `LEAPMUX_HUB_ENCRYPTION_KEY_PATH` | hub `encryption_key_path` (no CLI flag) | `/etc/leapmux/encryption.key` |
 
+The Worker reads:
+
+| Variable | Sets | Example |
+|----------|------|---------|
 | `LEAPMUX_WORKER_HUB` | worker `hub` | `https://hub.example.com` |
 | `LEAPMUX_WORKER_NAME` | worker `name` | `build-box-1` |
 | `LEAPMUX_WORKER_DATA_DIR` | worker `data_dir` | `/var/lib/leapmux/worker` |
@@ -298,11 +315,11 @@ The prefix strip lowercases the remainder but does **not** translate `_` into `.
 | `LEAPMUX_CONTROL_WORKING_DIR` | spawned agents | Working directory at spawn |
 | `LEAPMUX_CONTROL_AGENT_PROVIDER` | spawned agents | Agent provider (agents only) |
 
-The `LEAPMUX_CONTROL_*` variables (the `_SOCK` / `_TOKEN` / `_*_ID` / `_TAB_*` family) are injected automatically by the Worker into the agents and terminals it spawns; you do not set them by hand. See [Control CLI](/docs/using/control-cli/) for how they drive entity-ID resolution.
+The `LEAPMUX_CONTROL_*` variables other than `_CONFIG_DIR` are injected automatically by the Worker into the agents and terminals it spawns; you do not set them by hand. See [Control CLI](/docs/using/control-cli/) for how they drive entity-ID resolution.
 
 ## Config and data locations
 
-Each mode reads an optional YAML config named after the mode, and stores data, under its own directory. LeapMux skips a missing config file without a message.
+Each mode reads an optional YAML config file named after the mode. Each mode stores data under its own directory. LeapMux skips a missing config file without a message.
 
 | Mode | Config file | Default data dir |
 |------|-------------|------------------|

@@ -1,5 +1,5 @@
 ---
-title: "Recovery (offline break-glass)"
+title: "Recovery"
 description: "Use leapmux recover to bootstrap the first admin, reset a password with the hub stopped, rotate encryption keys, and inspect the database directly."
 type: docs
 weight: 10
@@ -41,20 +41,26 @@ Commands that need only the key file or config path — not a live database conn
 
 ## `bootstrap create-admin`
 
-Creates the **first administrator** on an empty hub — the one identity operation that cannot require an authenticated admin to already exist.
+Creates the **first administrator** on a hub that has no administrator yet — the one identity operation that cannot require an authenticated admin to already exist.
 
 ```bash
 leapmux recover bootstrap create-admin --username alice
 # (prompts for the password)
 ```
 
-The created user is always an administrator. The command **refuses once any admin exists**, and it points you at [`control admin user create --admin`](/docs/using/control-cli/) instead.
+| Flag | Description |
+| --- | --- |
+| `--username` | Required. |
+| `--password` | Prompted with no echo when omitted; fails when stdin is not a terminal. |
+| `--display-name` | Optional display name. |
 
-Every later user — admin included — is created online through [`control admin user create`](/docs/using/control-cli/).
+The created user is always an administrator. The command **refuses once any admin exists**, and it points you at [`control admin user create --admin`](/docs/admin/admin-cli/) instead.
+
+Every later user — admin included — is created online through [`control admin user create`](/docs/admin/admin-cli/).
 
 ## `password reset`
 
-Resets a user's password with the hub stopped — the break-glass path for a hub whose only admin forgot their password. Reach for it when the hub cannot serve; while the hub runs, [`leapmux control admin user reset-password`](/docs/admin/admin-cli/#user-passwords) does the same work over RPC and needs an administrator login.
+Resets any user's password with the hub stopped — the break-glass path when no administrator can sign in. Use it when the hub cannot serve; while the hub runs, [`leapmux control admin user reset-password`](/docs/admin/admin-cli/#user-passwords) does the same work over RPC and needs an administrator login.
 
 ```bash
 leapmux recover password reset --username alice
@@ -66,7 +72,7 @@ leapmux recover password reset --username alice
 | `--id` / `--username` | Exactly one is required. |
 | `--password` | New password; prompted (no echo) when omitted. Fails when you omit the flag and stdin is not a terminal, because there is nothing to prompt. |
 
-On success the password is updated, **every session for the user is revoked**, and all their API and delegation tokens die with them (durable revocation events are written in the same transaction, so a running hub picks the revocation up on its next watcher sweep). The command reports the user it reset, by username and by ID, and states that it revoked the sessions.
+On success the password is updated, **every passkey on the account is deleted**, every session for the user is revoked, and all their API and delegation tokens are revoked. The revocations are written in the same transaction, so a running hub applies them automatically. The command reports the user it reset, by username and by ID, and states that it revoked the sessions and passkeys.
 
 Passwords are 8–128 printable ASCII characters, spaces included (see [Password requirements](/docs/using/accounts/#password-requirements)).
 
@@ -84,7 +90,7 @@ Generate a new key version and make it active. It does **not** re-encrypt existi
 
 ### `encryption-key reencrypt`
 
-Re-encrypts every secret not already under the active key version — OAuth provider client secrets, OAuth access/refresh tokens, and hub-settings secret halves. Run after `rotate` and a hub restart.
+Re-encrypts every secret not already under the active key version — OAuth provider client secrets, OAuth access/refresh tokens, hub-settings secret halves, and passkey public keys. Run after `rotate` and a hub restart.
 
 ### `encryption-key remove`
 

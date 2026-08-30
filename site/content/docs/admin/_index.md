@@ -1,15 +1,15 @@
 ---
 title: "Administration"
-description: "Host LeapMux for a team: run modes, configuration, Worker and account administration, encryption, the security model, and hub administration from the terminal."
+description: "Host LeapMux for a team: run modes, configuration, Worker and account administration, encryption, the security model, offline recovery, and Hub administration from the terminal."
 type: docs
 weight: 3
 sidebar:
   open: true
 ---
 
-For administrators hosting LeapMux for a team: run modes, configuration, worker and
-account administration, encryption, the security model, and hub administration
-from the terminal.
+For administrators hosting LeapMux for a team: run modes, configuration, Worker and
+account administration, encryption, the security model, offline recovery, and Hub
+administration from the terminal.
 
 {{< cards >}}
   {{< card link="/docs/admin/running-leapmux/" title="Running LeapMux" icon="server" subtitle="Run modes, ports, data directories, and Docker." >}}

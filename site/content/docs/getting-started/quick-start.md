@@ -19,7 +19,7 @@ This is the simplest path on macOS, Linux, or Windows.
 
 1. Install **LeapMux Desktop** for your platform (see [Installation](/docs/getting-started/installation/) for download details).
 2. Launch the app. On first launch it shows a launcher titled **"LeapMux"** with the subtitle **"Choose how you'd like to connect"** and two cards:
-   - **Solo** — "Run LeapMux entirely on this machine. A Hub and Worker start together in a single process — no network setup required. Your data stays local. Ideal for personal use, local development, or trying out LeapMux."
+   - **Solo** — run everything on this machine, as described above.
    - **Distributed** — connect to a remote Hub by URL (covered in [Running LeapMux](/docs/admin/running-leapmux/)).
 3. Select **Solo** and click **Connect**.
 
@@ -64,7 +64,7 @@ Once the app or browser tab is open, you'll see the LeapMux UI. The rest of this
 
 The window has a **titlebar** across the top, a **sidebar** down each side, and the **tiling area** in the middle:
 
-- **Titlebar** — the **app menu** (account and app controls) is on the left; **"Open in…"** (open the working directory in an external editor) and the **left/right sidebar toggles** are on the right.
+- **Titlebar** — the **app menu** (account and app controls) is on the left; **"Open in …"** (open the working directory in an external editor) and the **left/right sidebar toggles** are on the right.
 - **Left sidebar** — your **workspaces**, grouped into **In progress**, any custom sections, and **Archived**, plus a **Workers** section. Each workspace expands into a tree of its open tabs, grouped by **Repo** then **Branch**.
 - **Tiling area** — the center, where tabs (agents, terminals, file viewers) are laid out under a **tab bar**; tiles can be split, gridded, and resized (see [Tabs & Layout](/docs/using/tabs-and-layout/)). For an agent, the **input area** (message composer) sits at the bottom.
 - **Right sidebar** — the **Files** browser for the active tab (see [File Browser](/docs/using/file-browser/)).
@@ -73,7 +73,7 @@ The window has a **titlebar** across the top, a **sidebar** down each side, and 
 
 ```text
 ┌─────────────────────────────────────────────────────────────────┐
-│ App menu                   Titlebar         Open in… · sidebars │
+│ App menu                   Titlebar       Open in … · sidebars │
 ├──────────────┬───────────────────────────────┬──────────────────┤
 │              │            Tab bar            │                  │
 │              ├───────────────────────────────┤                  │
@@ -85,7 +85,7 @@ The window has a **titlebar** across the top, a **sidebar** down each side, and 
 └──────────────┴───────────────────────────────┴──────────────────┘
 ```
 
-> **Note:** The **"Open in…"** button is only available in the desktop app running in solo mode — it launches an editor on your local machine, which only applies when the files are local. Everything else is identical in the browser: the web app renders the same titlebar, sidebars, and tiling area inside the browser tab, just with the browser's own chrome around the page.
+> **Note:** The **"Open in …"** button is only available in the desktop app running in solo mode. It launches an editor on your local machine, which only applies when the files are local. Everything else is identical in the browser: the web app renders the same titlebar, sidebars, and tiling area inside the browser tab.
 
 ### 2. Create or open a workspace
 
@@ -116,16 +116,16 @@ Click **"Create"** (it shows **"Creating..."** while the agent starts).
 
 ### 4. (Optional) Choose model and effort after the agent starts
 
-Once the agent is running, the status bar under the composer shows one chip per axis: branch, model, effort, and mode. Click a chip to pick a different **Model**, an **Effort** tier, or a **Permission Mode**. The composer's **[+]** menu holds every axis, including the per-provider options that have no chip, and it stays available when you hide the status bar. Most changes apply live; a change that the provider can't apply to the running process (typically switching effort back to **Auto**) restarts the agent. Details and the per-provider option matrix are in [Coding Agents](/docs/using/coding-agents/).
+Once the agent is running, the status bar under the composer shows one chip per axis: branch, model, effort, and mode. Click a chip to pick a different **Model**, an **Effort** tier, or a **Permission Mode**. The composer's **[+]** menu holds every axis, including the per-provider options that have no chip. It stays available when you hide the status bar. Most changes apply live; a change that the provider can't apply to the running process (typically switching effort back to **Auto**) restarts the agent. Details and the per-provider option matrix are in [Coding Agents](/docs/using/coding-agents/).
 
 ### 5. (Optional) Work in a branch or worktree
 
-The **Git options** panel (header **"Git options"**) lets you decide where the agent runs relative to git. For your first session, two modes cover the common cases:
+The **Git options** panel lets you decide where the agent runs relative to git. For your first session, two modes cover the common cases:
 
 - **Use current state** — run against the working directory as-is. This is the default.
-- **Create new worktree** — spin up a fresh linked git worktree on its own branch so this agent works in isolation.
+- **Create new worktree** — create a fresh linked git worktree on its own branch so this agent works in isolation.
 
-Worktrees keep each agent's changes on their own branch and directory, so several agents can work on the same repo at once without stepping on each other. The full set of modes, the worktree path layout, and branch operations — switching, pushing (**"Push"** / **"Commit and Push"**), and deletion — are covered in [Worktrees & Branches](/docs/using/worktrees-and-branches/).
+Worktrees keep each agent's changes on their own branch and directory, so several agents can work on the same repo at once without affecting each other's changes. The full set of modes, the worktree path layout, and branch operations — switching, pushing (**"Push"** / **"Commit and Push"**), and deletion — are covered in [Worktrees & Branches](/docs/using/worktrees-and-branches/).
 
 ### 6. Send your first message
 

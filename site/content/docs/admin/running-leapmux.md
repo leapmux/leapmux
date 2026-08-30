@@ -22,9 +22,9 @@ The modes that accept inbound connections — `solo`, `hub`, and `dev` — all d
 
 Each mode reads a YAML config file named after the mode inside its config directory — for example `~/.config/leapmux/hub/hub.yaml` for the Hub. The file is optional; a missing config file is silently skipped. The default data directory for each mode is the same as its config directory.
 
-> **Note:** `solo` and `dev` are the same program internally — both run a Hub and a Worker together in one process. The differences are that `solo` binds loopback only and skips login (it injects an admin user into every request), while `dev` binds all interfaces, uses real password authentication, and bootstraps its first admin through the `/setup` flow.
+> **Note:** `solo` and `dev` are the same program internally — both run a Hub and a Worker together in one process. Solo binds loopback only and skips login: it injects an admin user into every request. Dev binds all interfaces and uses password authentication. Dev bootstraps its first admin through the `/setup` flow.
 
-> **Warning:** Because solo mode auto-authenticates every request as the admin, anyone who can reach its port has full admin access with no credentials. That is safe on `127.0.0.1`, but if you bind solo to a non-loopback address LeapMux logs a startup warning telling you to restrict access externally or switch to `leapmux hub` (see [Security & Threat Model](/docs/admin/security/#solo-mode-a-reduced-threat-model) for the full warning text). For a multi-user or network-exposed deployment, run `leapmux hub` (with separate Workers) or `leapmux dev` instead, both of which require a real login.
+> **Warning:** Because solo mode auto-authenticates every request as the admin, anyone who can reach its port has full admin access with no credentials. That is safe on `127.0.0.1`. If you bind solo to a non-loopback address, LeapMux logs a startup warning telling you to restrict access externally or switch to `leapmux hub` (see [Security & Threat Model](/docs/admin/security/#solo-mode-a-reduced-threat-model) for the full warning text). For a multi-user or network-exposed deployment, run `leapmux hub` (with separate Workers) or `leapmux dev` instead, both of which require a real login.
 
 ## Solo mode
 
@@ -37,7 +37,7 @@ leapmux solo
 
 Inside the solo data directory, the single `data_dir` is split into two subdirectories: the Hub stores its database and encryption key under `<data_dir>/hub/`, and the in-process Worker stores its state under `<data_dir>/worker/`. The Worker auto-registers itself and persists its credentials and end-to-end-encryption keypair to `<data_dir>/worker/state.json`, so your session survives restarts.
 
-Solo mode accepts a subset of the Hub's flags plus an `--encryption-mode` flag for the bundled Worker. The most important solo flags:
+Solo mode accepts a subset of the Hub's flags plus the Worker flags `-encryption-mode` and `-use-login-shell`. The most important solo flags:
 
 | Flag | Default | Meaning |
 |------|---------|---------|
@@ -47,7 +47,7 @@ Solo mode accepts a subset of the Hub's flags plus an `--encryption-mode` flag f
 | `-encryption-mode` | `post-quantum` | `classic` or `post-quantum` |
 | `-config` | `~/.config/leapmux/solo/solo.yaml` | Config file path |
 
-Solo also accepts the SQLite and chunked-reassembly tuning flags (`-storage-sqlite-max-conns`, `-max-incomplete-chunked`) plus `-dev-frontend`; see [Configuration](/docs/admin/configuration/) for those. The message-size and timeout settings are instance settings now: change them with `leapmux control admin settings` instead of launch flags.
+Solo also accepts the SQLite tuning flags (`-storage-sqlite-max-conns`, `-storage-sqlite-cache-size`, `-storage-sqlite-mmap-size`), the chunked-reassembly cap (`-max-incomplete-chunked`), and `-dev-frontend`; see [Configuration](/docs/admin/configuration/) for those. The message-size and timeout settings are instance settings now: change them with `leapmux control admin settings` instead of launch flags.
 
 The desktop app runs solo mode under the hood, but with no TCP port at all — it serves the Hub only over a local IPC socket (a Unix domain socket or Windows named pipe). See [Installation](/docs/getting-started/installation/) for the desktop app.
 
@@ -59,7 +59,9 @@ The desktop app runs solo mode under the hood, but with no TCP port at all — i
 leapmux hub -listen :4327
 ```
 
-A fresh Hub has no users and (by default) sign-up disabled. Open it in a browser and the root path sends you to the `/setup` form — the first person to register becomes the administrator (see [Accounts & Authentication](/docs/using/accounts/)). You can also create that first admin offline with [`leapmux recover bootstrap create-admin`](/docs/admin/recover/), which refuses once any admin exists. Then log in as that administrator. Enable sign-up with `leapmux control admin settings set signup_enabled true`, or create each account with `leapmux control admin user create`. The most important Hub flags:
+A fresh Hub has no users and (by default) sign-up disabled. Open it in a browser and every path shows the `/setup` form — the first person to register becomes the administrator (see [Accounts & Authentication](/docs/using/accounts/)). You can also create that first admin offline with [`leapmux recover bootstrap create-admin`](/docs/admin/recover/), which refuses once any admin exists. Then log in as that administrator.
+
+Enable sign-up with `leapmux control admin settings set signup_enabled true`, or create each account with `leapmux control admin user create`. The most important Hub flags:
 
 | Flag | Default | Meaning |
 |------|---------|---------|
@@ -77,7 +79,7 @@ leapmux control admin settings set signup_enabled true
 leapmux control admin settings set smtp '{"host":"smtp.example.com","port":587,"from_address":"no-reply@example.com"}'
 ```
 
-By default the Hub uses an embedded SQLite database at `<data_dir>/hub.db` with its encryption key ring at `<data_dir>/encryption.key`. For a shared, durable deployment you will usually point it at an external database via `-storage-type` and the matching `*-dsn` flag. The full reference — every flag, every storage backend, the YAML layout, and the settings table — is in [Configuration](/docs/admin/configuration/) and the [Hub settings](/docs/admin/admin-cli/#hub-settings) section of the Admin CLI chapter.
+By default the Hub uses an embedded SQLite database at `<data_dir>/hub.db` with its encryption key ring at `<data_dir>/encryption.key`. For a shared, durable deployment you will usually point it at an external database via `-storage-type` and the matching `*-dsn` flag. The full reference is in [Configuration](/docs/admin/configuration/); the [Hub settings](/docs/admin/admin-cli/#hub-settings) section of the Admin CLI chapter covers the settings table.
 
 > **Note:** The Hub does not terminate TLS itself. For HTTPS you put a reverse proxy in front of it; see [Reverse proxy and public URL](#reverse-proxy-and-public-url) below.
 
@@ -88,10 +90,10 @@ A Worker runs your agents and terminals and connects **out** to a Hub — it nev
 On first run, point the Worker at the Hub and supply a registration key:
 
 ```bash
-leapmux worker --hub https://hub.example.com --registration-key <key>
+leapmux worker -hub https://hub.example.com -registration-key <key>
 ```
 
-After a successful registration, the Worker saves its credentials and keypair to `<data_dir>/state.json` and reconnects automatically on every subsequent start — you do **not** pass `--registration-key` again.
+After a successful registration, the Worker saves its credentials and keypair to `<data_dir>/state.json` and reconnects automatically on every subsequent start — you do **not** pass `-registration-key` again.
 
 | Flag | Default | Meaning |
 |------|---------|---------|
@@ -104,9 +106,7 @@ After a successful registration, the Worker saves its credentials and keypair to
 | `-log-level` | `info` | Log level |
 | `-config` | `~/.config/leapmux/worker/worker.yaml` | Config file path |
 
-If a Worker has no saved credentials and no key, it refuses to start, and the error tells you to pass a registration key from the Hub UI.
-
-And if you pass `--registration-key` to a Worker that is already registered, it stops rather than burning the key by accident. The error tells you to remove `--registration-key` or to wipe the local state.
+If a Worker has no saved credentials and no key, it refuses to start, and the error tells you to pass a registration key from the Hub UI. If you pass `-registration-key` to a Worker that is already registered, it stops rather than consuming the key by accident; the error tells you to remove `-registration-key` or to wipe the local state.
 
 Minting registration keys, approving Workers, the trust-on-first-use (TOFU) pinning of Worker keys, and choosing which Worker a tab runs on are all covered in [Managing Workers](/docs/admin/managing-workers/).
 
@@ -118,9 +118,9 @@ Minting registration keys, approving Workers, the trust-on-first-use (TOFU) pinn
 leapmux dev -listen :4327
 ```
 
-Because dev mode uses real authentication, it bootstraps its first admin through the `/setup` flow rather than auto-authenticating. The in-process Worker's auto-registration is deferred until that first admin signs up; until then the log says that dev mode defers the auto-registration until the first admin signs up through `/setup`. Open the URL, complete `/setup` to create the admin, and the bundled Worker comes online.
+Because dev mode uses real authentication, it bootstraps its first admin through the `/setup` flow rather than auto-authenticating. The in-process Worker's auto-registration is deferred until the first admin signs up through `/setup`. Until then, the log says `deferring worker auto-registration until first admin signs up via /setup`. Open the URL, complete `/setup` to create the admin, and the bundled Worker comes online.
 
-Dev mode accepts the same flags as solo, plus `-encryption-mode`. The most important dev flags:
+Dev mode accepts the same flags as solo. The most important dev flags:
 
 | Flag | Default | Meaning |
 |------|---------|---------|
@@ -132,7 +132,7 @@ Dev mode accepts the same flags as solo, plus `-encryption-mode`. The most impor
 
 Like solo, dev also accepts the SQLite tuning flags plus `-dev-frontend` (see [Configuration](/docs/admin/configuration/)).
 
-Dev mode seeds `signup_enabled=true` (it runs the full multi-user path), and the runtime knobs are settings rather than flags — a short session for exercising the signed-out path is:
+Dev mode enables `signup_enabled=true` by default, because it runs the full multi-user path (a stored setting overrides it). The runtime knobs are settings rather than flags — a short session for exercising the signed-out path is:
 
 ```bash
 leapmux control admin settings set session_duration_seconds 300   # the 5-minute minimum
@@ -164,10 +164,12 @@ The image declares a single `/data` volume. Each mode keeps its files under `/da
 | Path | Contents |
 |------|----------|
 | `/data/<mode>/<mode>.yaml` | Config file (e.g. `/data/hub/hub.yaml`) |
-| `/data/hub/hub.db` | Hub SQLite database (when using the default SQLite backend) |
-| `/data/hub/encryption.key` | Hub encryption key ring |
-| `/data/worker/state.json` | Worker registration credentials and E2EE keypair |
-| `/data/worker/worker.db` | Worker SQLite database |
+| `/data/<mode>/hub/hub.db` | Hub SQLite database (when using the default SQLite backend) |
+| `/data/<mode>/hub/encryption.key` | Hub encryption key ring |
+| `/data/<mode>/worker/state.json` | Worker registration credentials and E2EE keypair |
+| `/data/<mode>/worker/worker.db` | Worker SQLite database |
+
+In a `hub` or `worker` container the mode directory is the top level, so the files sit directly at `/data/hub/…` and `/data/worker/…`. In a `dev` or `solo` container the single process runs both sides, and the Hub and Worker subdirectories nest one level deeper (`/data/dev/hub/…`, `/data/dev/worker/…`).
 
 Mount a named volume (or a host path) at `/data` so this state survives container recreation.
 
@@ -175,15 +177,17 @@ Mount a named volume (or a host path) at `/data` so this state survives containe
 
 ```text
 /data                          ← mounted volume (-v leapmux-data:/data)
-├── hub/                       ← LEAPMUX_MODE=hub (also dev, solo)
+├── hub/                       ← LEAPMUX_MODE=hub
 │   ├── hub.yaml               ← config file
 │   ├── hub.db                 ← Hub SQLite database (default backend)
 │   └── encryption.key         ← Hub encryption key ring
-└── worker/                    ← LEAPMUX_MODE=worker (also dev, solo)
+└── worker/                    ← LEAPMUX_MODE=worker
     ├── worker.yaml            ← config file
     ├── worker.db              ← Worker SQLite database
     └── state.json             ← registration credentials + E2EE keypair
 ```
+
+In a `dev` or `solo` container the same files nest under `/data/dev/` or `/data/solo/`: `dev.yaml`, `hub/hub.db`, `hub/encryption.key`, `worker/state.json`, `worker/worker.db`.
 
 ### Exposing the port
 

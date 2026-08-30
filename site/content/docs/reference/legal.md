@@ -2,7 +2,7 @@
 title: Legal
 description: "License, trademark, third-party attribution, and privacy information for LeapMux, including a summary of the FSL-1.1-ALv2 license terms."
 type: docs
-weight: 5
+weight: 6
 ---
 
 License, trademark, third-party attribution, and privacy information for LeapMux. This page is informational and does not replace the full license text or professional legal advice.
@@ -12,10 +12,10 @@ License, trademark, third-party attribution, and privacy information for LeapMux
 LeapMux is licensed under the **Functional Source License, Version 1.1, Apache 2.0 Future License (FSL-1.1-ALv2)**. In short:
 
 - You can use, modify, and distribute the software.
-- There are certain limitations on competitive use.
+- You may not use it for a **Competing Use** — making it available to others in a commercial product or service that competes with it.
 - The license automatically converts to Apache 2.0 two years after each release is first made available.
 
-This summary is not a substitute for the license itself — see the full [`LICENSE.md`](https://github.com/leapmux/leapmux/blob/main/LICENSE.md) for the authoritative terms.
+For the authoritative terms, see the full [`LICENSE.md`](https://github.com/leapmux/leapmux/blob/main/LICENSE.md).
 
 LeapMux is © Event Loop, Inc.
 
@@ -25,16 +25,16 @@ All product names, logos, and trademarks are the property of their respective ow
 
 ## Third-party licenses
 
-LeapMux bundles open-source components, each under its own license. The complete list of dependencies and their license texts is generated into [`NOTICE.md`](https://github.com/leapmux/leapmux/blob/main/NOTICE.md) in the repository. It is also rendered as `NOTICE.html`, which is embedded in the app and viewable in-product; `NOTICE.md` is bundled as a standalone file in the release artifacts.
+LeapMux bundles open-source components, each under its own license. The complete list of dependencies and their license texts is generated into [`NOTICE.md`](https://github.com/leapmux/leapmux/blob/main/NOTICE.md) in the repository. It is also rendered as `NOTICE.html`: the app embeds it, and you can view it in-product. Release artifacts bundle `NOTICE.md` as a standalone file.
 
 ## Privacy
 
-LeapMux is **self-hosted software**, not a hosted service. You — or your organization — run the Hub and Workers; the LeapMux project does not operate a central service that receives your data, and the software contains no third-party analytics or "phone-home" telemetry. The only metrics LeapMux emits are exposed on a Prometheus `/metrics` endpoint on the Hub. The endpoint is unauthenticated, so restrict network access to it to infrastructure you control.
+LeapMux is **self-hosted software**, not a hosted service. You — or your organization — run the Hub and Workers. The LeapMux project does not operate a central service that receives your data. The software contains no third-party analytics or "phone-home" telemetry. The only metrics LeapMux emits are exposed on a Prometheus `/metrics` endpoint on the Hub. The endpoint is unauthenticated; restrict its network access to infrastructure you control.
 
-What data is stored, where it lives, and what is end-to-end encrypted is described in [Security & Threat Model](/docs/admin/security/) and [Encryption & Data](/docs/admin/encryption-and-data/). Because LeapMux is self-hosted, the privacy and data-handling practices of any particular deployment are determined by whoever operates that Hub.
+What data is stored, where it lives, and what is end-to-end encrypted are described in [Security & Threat Model](/docs/admin/security/) and [Encryption & Data](/docs/admin/encryption-and-data/). Because LeapMux is self-hosted, the privacy and data-handling practices of any particular deployment are determined by whoever operates the Hub.
 
 ### This documentation website
 
-The pages you are reading (hosted at leapmux.dev) use Cloudflare's Real User Monitoring (RUM) to collect anonymous, aggregate performance and usage metrics — for example page-load timing and which pages are visited. It does not set tracking cookies or identify you individually, and visitors in the EU are excluded from measurement. This applies only to the website; the LeapMux software you run yourself emits no analytics, as described above.
+The pages you are reading (hosted at leapmux.dev) use Cloudflare's Real User Monitoring (RUM) to collect anonymous, aggregate performance and usage metrics — for example page-load timing and which pages are visited. RUM does not set tracking cookies or identify you individually, and visitors in the EU are excluded from measurement. This applies only to the website; the LeapMux software you run yourself emits no analytics, as described above.
 
 > **Note:** If [Event Loop, Inc.](https://eventloop.io/) offers a hosted version of LeapMux, that service's privacy policy is provided separately and governs data you submit to it. This page describes the self-hosted open-source software.

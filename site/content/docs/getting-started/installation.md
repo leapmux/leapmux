@@ -5,7 +5,7 @@ type: docs
 weight: 3
 ---
 
-There are several ways to get LeapMux. Pick the one that matches how you want to run it:
+Pick the way to get LeapMux that matches how you want to run it:
 
 - **Desktop app** — the fastest way to try LeapMux on your own machine. Download a single installer, run it, and you have a Hub and Worker running together locally with no network setup.
 - **Docker** — the recommended way to run a Hub (or a Hub plus Worker) as a long-lived service for a team or on a server.
@@ -52,7 +52,7 @@ Download the installer for your platform from the [Releases page](https://github
 |----------|----------|
 | macOS (arm64)        | `LeapMuxDesktop_<version>_arm64.dmg` |
 | Windows (amd64)      | `LeapMuxDesktop_<version>_x64.msi` |
-| Linux (amd64)        | `leapmux-desktop_<version>_amd64.AppImage`, `leapmux-desktop_<version>_amd64.deb` |
+| Linux (amd64)        | `leapmux-desktop_<version>_x86_64.AppImage`, `leapmux-desktop_<version>_amd64.deb` |
 | Linux (arm64)        | `leapmux-desktop_<version>_aarch64.AppImage`, `leapmux-desktop_<version>_arm64.deb` |
 
 ### macOS
@@ -63,7 +63,7 @@ Download the installer for your platform from the [Releases page](https://github
 
 The macOS build is signed with a Developer ID and notarized, so it opens without Gatekeeper warnings.
 
-> **Note:** Solo mode on macOS requires **Full Disk Access** so LeapMux can traverse directories in your home folder. The first time you select **Solo**, the launcher shows a **Full Disk Access Required** card with an **Open System Settings** button. Grant access there; the app detects the change and restarts itself automatically. Distributed mode does not require Full Disk Access.
+> **Note:** Solo mode on macOS requires **Full Disk Access** so LeapMux can traverse directories in your home folder. The first time you select **Solo**, the launcher shows a **Full Disk Access Required** card with an **Open System Settings** button. Grant access there. The app detects the change and restarts itself. Distributed mode does not require Full Disk Access.
 
 > **Tip:** On macOS the desktop app can install a `leapmux` command-line symlink at `/usr/local/bin/leapmux` so you can use the [Remote control CLI](/docs/using/control-cli/) from a terminal. When you enter a Solo workspace and the CLI isn't on your `PATH`, LeapMux offers to install it. This integration is macOS-only.
 
@@ -82,11 +82,11 @@ Two formats are provided; pick the one that suits your distribution:
 - **`.AppImage`** — a portable, single-file executable that needs no installation:
 
   ```bash
-  chmod +x leapmux-desktop_<version>_amd64.AppImage
-  ./leapmux-desktop_<version>_amd64.AppImage
+  chmod +x leapmux-desktop_<version>_x86_64.AppImage
+  ./leapmux-desktop_<version>_x86_64.AppImage
   ```
 
-After installing the `.deb`, launch **LeapMux Desktop** from your application menu (the desktop entry's command is `leapmux-desktop`).
+After installing the `.deb`, launch **LeapMux Desktop** from your application menu.
 
 ### Windows
 
@@ -100,7 +100,7 @@ The installer also ships the `leapmux.exe` command-line tool in a `cli\` subdire
 
 ## Docker
 
-Pre-built multi-arch images (`linux/amd64` + `linux/arm64`) are published to [GHCR](https://github.com/leapmux/leapmux/pkgs/container/leapmux) at `ghcr.io/leapmux/leapmux`. The image is configured through two environment variables and the `/data` volume:
+Pre-built multi-arch images (`linux/amd64` + `linux/arm64`) are published to [GHCR](https://github.com/leapmux/leapmux/pkgs/container/leapmux) at `ghcr.io/leapmux/leapmux`. The image is configured as follows:
 
 - **`LEAPMUX_MODE`** — **required.** Selects the subcommand and must be one of `hub`, `worker`, `dev`, or `solo`.
 - **`LEAPMUX_DATA_DIR`** — data directory inside the container. Default `/data`.
@@ -125,7 +125,7 @@ For the full image-tag matrix (Alpine vs. Ubuntu variants, version pinning, the 
 
 ### Running a Worker container
 
-A `worker` container connects out to a Hub and must be registered with a registration key minted in the Hub UI. The container doesn't pass any Hub URL or key flags on your behalf, so supply them via the Worker config (`/data/worker/worker.yaml`) or via `LEAPMUX_WORKER_HUB` and `LEAPMUX_WORKER_REGISTRATION_KEY` environment variables. An unregistered Worker with no key exits, and the error tells you to pass a registration key from the hub UI. See [Managing Workers](/docs/admin/managing-workers/) for the full registration flow.
+A `worker` container connects out to a Hub. It must be registered with a registration key minted in the Hub UI. The container's start script passes no Hub URL or key for you. Supply them via the Worker config (`/data/worker/worker.yaml`), or via the `LEAPMUX_WORKER_HUB` and `LEAPMUX_WORKER_REGISTRATION_KEY` environment variables. An unregistered Worker with no key exits, and the error tells you to pass a registration key from the hub UI. See [Managing Workers](/docs/admin/managing-workers/) for the full registration flow.
 
 ### Upgrading
 

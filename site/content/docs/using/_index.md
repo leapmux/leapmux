@@ -8,8 +8,9 @@ sidebar:
 ---
 
 The day-to-day in-app experience, in the order you meet it: organizing your
-work, running coding agents and terminals, browsing files — then the control
-CLI, your shortcuts and preferences, your account, and connected apps.
+work, running coding agents and terminals, browsing files, and what syncs live
+across your devices — then the control CLI, your shortcuts and preferences, your
+account, and connected apps.
 
 {{< cards >}}
   {{< card link="/docs/using/workspaces/" title="Workspaces" icon="collection" subtitle="Create, organize, and archive workspaces." >}}

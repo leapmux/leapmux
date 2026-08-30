@@ -15,6 +15,7 @@ leapmux control admin user         list | get | create | update | delete | grant
 leapmux control admin session      list | revoke | revoke-user | purge-expired
 leapmux control admin worker       list | get | deregister
 leapmux control admin worker reg-key  list | revoke | purge-expired
+leapmux control admin app         list | register | update | verify | unverify | allow-elevation | deny-elevation | revoke | delete
 leapmux control admin idp  add | list | remove | enable | disable
 leapmux control admin captcha      show | set | enable | disable | reset
 leapmux control admin rate-limit   list | set | enable | disable | reset
@@ -44,9 +45,11 @@ leapmux control admin settings reset smtp
 
 **Every write here needs an admin-scoped credential that verified recently.** Several of these keys are the hub's own security controls, so `set`, `set-secret` and `reset` each require a proven factor — from a command-line credential exactly as from a browser session.
 
-You do not run anything extra for it. A refused command prints an address and a short code, waits while you approve it in a browser, and then runs. The credential stays verified for {{< duration elevation-window >}}, and every write slides that window forward. Reads (`list`, `get`) need no verification at all. See [Verifying a command-line credential](/docs/admin/security/#verifying-a-command-line-credential).
+You do not run a separate command. A refused command prints an address and a short code, waits while you approve it in a browser, and then runs. The credential stays verified for {{< duration elevation-window >}}, and every write slides that window forward. Reads (`list`, `get`) need no verification at all. See [Verifying a command-line credential](/docs/admin/security/#verifying-a-command-line-credential).
 
-**When a write takes effect** depends on the key's propagation class. A `hot` key reaches the hub instance that serves the write at once, because that instance replaces its cached settings snapshot right after the commit. Another hub instance on the same database picks the same change up within ~30 seconds, the lifetime of its own settings cache. A `restart` key applies only after a hub restart. Every verb that reports one key states the class: `list`, `get`, and `set` each carry a `propagation` field of `hot` or `restart`, and the Preferences dialog's administration panels show a "Requires Restart" badge.
+**When a write takes effect** depends on the key's propagation class. A `hot` key reaches the hub instance that serves the write at once, because that instance replaces its cached settings snapshot right after the commit. Another hub instance on the same database picks the same change up within ~30 seconds, the lifetime of its own settings cache. A `restart` key applies only after a hub restart.
+
+Every verb that reports one key states the class: `list`, `get`, and `set` each carry a `propagation` field of `hot` or `restart`, and the Preferences dialog's administration panels show a "Requires Restart" badge.
 
 [Configuration](/docs/admin/configuration/) documents what each key does. The [`captcha`](#captcha) and [`rate-limit`](#rate-limits) groups are sugar over the same settings keys; each composes the partial documents for you.
 
@@ -79,7 +82,7 @@ leapmux control admin captcha reset [--provider altcha|recaptcha_v3|turnstile]
 | `--secret` | `recaptcha_v3`, `turnstile` | Provider secret. The hub stores it encrypted. |
 | `--min-score` | `recaptcha_v3` | Minimum score, greater than 0 and not greater than 1. |
 
-Four refusals are worth knowing before you type the command:
+The CLI refuses four mistakes:
 
 - A tuning flag whose owning provider is not the target is **refused**, never dropped and never applied to a different key. The error identifies the flag and the target provider.
 - An empty `--site-key` or `--secret` is refused, because an empty half fails every verification.
@@ -97,7 +100,7 @@ The `rate-limit` group is sugar over the `rate_limit.<operation>` settings keys.
 | Operation | Limits | Keyed by |
 |---|---|---|
 | `elevation` | Failed attempts to verify your identity for a sensitive change. | The user. Hidden in solo mode, which has one. |
-| `oauth_anonymous` | The authorization server's three anonymous endpoints — `/oauth/device-authorization`, `/oauth/token` and `/oauth/register`. | The client address. Enforced in solo mode too, because those endpoints are served there. |
+| `oauth_anonymous` | The authorization server's anonymous endpoints — `/oauth/device-authorization`, `/oauth/token`, `/oauth/revoke`, `/oauth/register`, `/oauth/step-up`, and the app icons. | The client address. Enforced in solo mode too, because those endpoints are served there. |
 
 ```bash
 leapmux control admin rate-limit list
@@ -136,12 +139,12 @@ The offline twin is [`leapmux recover password reset`](/docs/admin/recover/#pass
 leapmux control admin api-token issue --user-id usr_... --installation-name "ci-bot" --ttl 3600
 ```
 
-Address the owner with `--user-id` or `--username`, the selector every other user-addressing verb takes. The envelope carries the secrets exactly once; they cannot be retrieved later. Use the access token as the bearer for a headless `LEAPMUX_HUB=...` control CLI.
+Address the owner with `--user-id` or `--username`; the `user` verbs spell the first flag `--id`. The envelope carries the secrets exactly once; they cannot be retrieved later. Use the access token as the bearer for a headless `LEAPMUX_HUB=...` control CLI.
 
 `--ttl` picks **which kind of credential** this is, and the two kinds are exclusive:
 
 - **Omit it** (or pass `0`) for the ordinary renewing credential: an access token that lives {{< duration access-token >}} plus a refresh token, exactly what `auth login` mints. The envelope carries `access_token`, `refresh_token` and `token_id`.
-- **Pass a number of seconds** for a fixed-lifetime service credential. It lives exactly that long, up to {{< duration absolute-cap >}}, and it carries **no refresh token** — the envelope's `refresh_token` is empty. Nothing renews it, and nothing can shorten it either.
+- **Pass a number of seconds** for a fixed-lifetime service credential. It lives exactly that long, up to {{< duration absolute-cap >}}, and it carries **no refresh token** — the envelope's `refresh_token` is empty. Nothing renews it. When the issuer is itself a command-line credential, its remaining life caps the TTL (see [Headless service accounts](#headless-service-accounts)).
 
 The two do not combine. A credential with both a long TTL and a refresh token loses the TTL the first time it renews, because the row records an expiry and never the lifetime it was minted from.
 
@@ -156,12 +159,12 @@ The hub emails the owner whenever this verb issues a credential for them, on the
 The interactive `leapmux control auth login` flows ([Control CLI](/docs/using/control-cli/#authentication)) are for humans. For unattended scripts and integrations, mint a durable bearer token with `leapmux control admin` instead:
 
 ```bash
-leapmux control admin api-token issue --user-id usr_... --client-name "ci-bot"
+leapmux control admin api-token issue --user-id usr_... --installation-name "ci-bot"
 ```
 
-This prints an `access_token` of the form `lmx_a<id>_<secret>` exactly once. Supply it to the CLI by setting it as the bearer for the Hub transport. Issuing, listing, and revoking these tokens is covered under [API tokens](#api-tokens) below.
+This prints an `access_token` of the form `lmx_a<id>_<secret>` exactly once. Write it into a credential file under `LEAPMUX_CONTROL_CONFIG_DIR` — see [Credential file location](/docs/using/control-cli/#credential-file-location) — or send it yourself as the `Authorization: Bearer` header. Issuing, listing, and revoking these tokens is covered under [API tokens](#api-tokens) below.
 
-A credential issued this way belongs to the built-in **service account** registration rather than to the control CLI, because "an administrator issued this out of band" is an answer to which app holds it. It appears in the owner's connected-apps list under that name.
+A credential issued this way belongs to the built-in **service account** registration rather than to the control CLI. It appears in the owner's connected-apps list under that name.
 
 A service account that must run `leapmux control admin ...` needs the admin permissions too. Name them, and only for an owner who is already an administrator:
 

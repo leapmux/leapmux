@@ -31,7 +31,9 @@ GitHub uses plain OAuth2, not OpenID Connect, so it has no issuer URL or discove
 
 You configure every provider with the `leapmux control admin idp` command group. Each verb is an RPC call to a **running** Hub: the CLI sends your control credential, and the Hub writes its own database and encrypts the client secret with its own key file. There is **no UI** for adding providers — it is an administrative task. For the full command surface, see [`admin` — hub administration over RPC](/docs/admin/admin-cli/).
 
-> **Note:** These commands take no `--data-dir` and no `--config`; the flags do not exist, and the CLI refuses them. Run the commands from any machine, and select the Hub with `--hub <url>` or the `LEAPMUX_HUB` environment variable. Authorize the CLI first with `leapmux control auth login --hub <url>`, and use an administrator account: the Hub answers `permission_denied` for every other caller. A `leapmux dev` instance is a separate Hub, so point `--hub` at its own address. See [Authentication](/docs/using/control-cli/#authentication) for the credential rules.
+> **Note:** These commands take no `--data-dir` and no `--config`; the flags do not exist, and the CLI refuses them. Run the commands from any machine, and select the Hub with `--hub <url>` or the `LEAPMUX_HUB` environment variable.
+
+Authorize the CLI first with `leapmux control auth login --hub <url>`, and use an administrator account: the Hub answers `permission_denied` for every other caller. A `leapmux dev` instance is a separate Hub, so point `--hub` at its own address. See [Authentication](/docs/using/control-cli/#authentication) for the credential rules.
 
 ## Prerequisites
 
@@ -39,7 +41,7 @@ Before you add a provider, get two things in order.
 
 ### 1. Sign-up must be enabled for new OAuth users
 
-When a user signs in with OAuth and **no** existing account is linked to that identity, LeapMux treats it as a new sign-up and sends them to a "Complete Sign Up" page to choose a username. That path requires the **`signup_enabled`** setting (default **false**; `leapmux control admin settings set signup_enabled true`).
+When a user signs in with OAuth and **no** existing account is linked to that identity, LeapMux treats it as a new sign-up and sends them to a "Complete Sign Up" page to choose a username. That path requires the **`signup_enabled`** setting (default **false** on a `leapmux hub`; `leapmux dev` enables it unless you set it explicitly; `leapmux control admin settings set signup_enabled true`).
 
 - With `signup_enabled=false`, LeapMux rejects an OAuth sign-in for an unknown identity, and the error says that sign-up is disabled. Only users whose OAuth identity is already linked (or auto-linked by verified email — see [Trusting the provider's email](#trusting-the-providers-email)) can sign in.
 - With `signup_enabled=true`, new OAuth users can self-register through the completion page.
@@ -164,7 +166,7 @@ The Hub computes its base URL as follows:
 | Local dev, no proxy | (unset) | `false` | `:4327` | `http://localhost:4327` |
 | Direct TLS, no proxy | (unset) | `true` | `:4327` | `https://localhost:4327` |
 
-So if your provider's callback URL is `https://hub.example.com`, set `public_url` accordingly: `leapmux control admin settings set public_url "https://hub.example.com"`. For a Google provider created with id `prov_abc123`, the value you register with Google would be:
+If your Hub's public address is `https://hub.example.com`, set `public_url` accordingly: `leapmux control admin settings set public_url "https://hub.example.com"`. For a Google provider created with id `prov_abc123`, the value you register with Google would be:
 
 ```text
 https://hub.example.com/auth/idp/prov_abc123/callback
@@ -178,7 +180,7 @@ https://hub.example.com/auth/idp/prov_abc123/callback
 
 The `--trust-email` flag controls **account auto-linking** by verified email:
 
-- **`--trust-email=true`** — when an OAuth sign-in returns a verified email that matches an existing LeapMux account's verified email, the OAuth identity is linked to that account automatically and the user is logged in. This lets a user who already signed up with a password later "Sign in with GitHub" and land in the same account without manual linking.
+- **`--trust-email=true`** — when an OAuth sign-in returns a verified email that matches an existing LeapMux account's verified email, the OAuth identity is linked to that account automatically and the user is signed in. This lets a user who already signed up with a password later "Sign in with GitHub" and land in the same account without manual linking.
 - **`--trust-email=false`** — no auto-linking. A new OAuth identity always goes through the "Complete Sign Up" flow (or is rejected if sign-up is disabled), even if the email matches an existing account.
 
 > **Warning:** Set `--trust-email=true` only for providers you control or fully trust to assert email ownership. Auto-linking grants access to an existing account based solely on a matching verified email; an identity provider that lets users set an arbitrary verified email could be used to take over accounts. For a public, multi-tenant IdP, prefer `--trust-email=false`. Regardless of this flag, LeapMux still requires the provider to mark the email as verified (OIDC `email_verified=true`; GitHub's primary verified email).
@@ -212,9 +214,11 @@ This deletes the provider configuration (including the stored client secret) per
 
 The Hub refuses such a removal. The error carries the `failed_precondition` code, identifies the provider, and counts the accounts that the removal would lock out.
 
-Give each of those users another login method, then run `remove` again. They can set a password themselves under **Preferences → Account → Password**, or link a second enabled provider — see [Accounts & Authentication](/docs/using/accounts/). An admin can also set a password offline with `leapmux recover password reset` (see [Recovery](/docs/admin/recover/)), which needs the Hub host and the Hub stopped.
+Give each of those users another login method, then run `remove` again. They can set a password themselves under **Preferences → Account → Password**, or link a second enabled provider — see [Accounts & Authentication](/docs/using/accounts/). An admin can also set a password with `leapmux recover password reset` (see [Recovery](/docs/admin/recover/)), which runs offline with the Hub stopped.
 
-> **Warning:** `--force` removes the provider even when accounts lose their last login method. Those users cannot sign in again through a provider. A user whose email address is verified can still recover the account alone with **Can't sign in?** — recovery sets the account's first password (see [Accounts & Authentication](/docs/using/accounts/#recovering-your-account)); for anyone else, only `leapmux recover password reset` restores their access. Give them another login method first.
+> **Warning:** `--force` removes the provider even when accounts lose their last login method. Those users cannot sign in again through a provider.
+>
+> A user whose email address is verified can still recover the account alone with **Can't sign in?** — recovery sets the account's first password (see [Accounts & Authentication](/docs/using/accounts/#recovering-your-account)). For anyone else, an administrator restores access with `leapmux recover password reset` (or `leapmux control admin user reset-password` while the Hub runs). Give them another login method first.
 
 ```bash
 leapmux control admin idp remove --id <providerID> --force
@@ -248,7 +252,7 @@ All of this UI is covered in detail in [Accounts & Authentication](/docs/using/a
 | `add` requires `--trust-email` | Generic `oidc` with no `--trust-email`. | Pass `--trust-email=true` or `--trust-email=false` (read [Trusting the provider's email](#trusting-the-providers-email) first). |
 | `remove` fails and counts the users who keep no other login method | Removing the provider would delete the last login method of those accounts. | Give each of those users a password or a link to another enabled provider, then remove the provider again. Pass `--force` to remove it anyway and lock them out — see [Remove](#remove). |
 | Sign-in fails because the provider returned no email address | The provider returned no email, usually because the email scope is missing. | Include an email scope (`user:email` for GitHub; `email`/`openid` for OIDC) and grant it in the provider's app settings. |
-| OAuth login is rejected because sign-up is disabled | `signup_enabled=false` and no account is linked to that identity. | Enable sign-up (`leapmux control admin settings set signup_enabled true`), or have the user link the identity from their Profile after a password login. |
+| OAuth login is rejected because sign-up is disabled | `signup_enabled=false` and no account is linked to that identity. | Enable sign-up (`leapmux control admin settings set signup_enabled true`), or have the user link the identity under **Preferences → Account → Linked accounts** after a password login. |
 | Button doesn't appear | Provider is disabled, or not created. | `leapmux control admin idp list`; if `enabled` is `false`, run `enable --id <id>`. |
 | Changed scopes/secret but behavior is unchanged | The Hub caches provider config as immutable. | `remove` and re-`add` the provider, then update the registered callback URL to the new id, and restart the Hub if needed. |
 

@@ -7,7 +7,7 @@ weight: 5
 
 LeapMux gives you full shell terminals that run on a Worker and stream into your Frontend (browser or desktop app) over the same end-to-end-encrypted channel as your agents. A terminal is a tab, just like an agent or a file viewer — you can tile it, float it, move it between workspaces, and it survives page refreshes and reconnects.
 
-This chapter covers how to open a terminal, how the shell list is built, how to use the terminal view, how persistence works, and how every terminal is automatically wired for remote control.
+This chapter covers how to open a terminal, how the shell list is built, how to use the terminal view, and how persistence works. It also covers the automatic remote control wired into every terminal.
 
 For the bigger picture of tabs, tiling, and layout, see [Tabs & Layout](/docs/using/tabs-and-layout/). For the git side of opening a terminal in a worktree or branch, see [Worktrees & Branches](/docs/using/worktrees-and-branches/).
 
@@ -29,7 +29,7 @@ There are three ways to open a terminal from the UI, plus a CLI path.
 
 ### Quick action: the New terminal button
 
-The tab bar has a terminal icon button (the Lucide `Terminal` glyph). Its tooltip depends on context:
+The tab bar has a terminal icon button. Its tooltip depends on context:
 
 - **"New terminal at the current working directory"** when there is an active tab to inherit a Worker and working directory from.
 - **"New terminal..."** otherwise.
@@ -46,13 +46,13 @@ The button is context-aware:
 The tab bar's overflow ("More options") menu has a **"Terminals"** section. It contains:
 
 - **"New terminal..."** — opens the full dialog.
-- One entry per shell that the current Worker reports as available, each shown as a `<code>` path. The Worker's default shell is annotated with **"(default)"**.
+- One entry per shell that the current Worker reports as available, each shown as its path. The Worker's default shell is annotated with **"(default)"**.
 
 Clicking a specific shell opens a terminal with exactly that shell, skipping the dialog.
 
 ### The full New terminal dialog
 
-Open the dialog with **`Cmd/Ctrl+Shift+T`** (command `app.newTerminalDialog`, active only when no dialog is open) or via either **"New terminal..."** menu item. Its title is **"New terminal"**.
+Open the dialog with **`Cmd/Ctrl+Shift+T`** (command `app.newTerminalDialog`, active only when no dialog is open), via the overflow menu's **"New terminal..."** item, or with the quick-action button when it shows **"New terminal..."**. Its title is **"New terminal"**.
 
 The dialog has these fields:
 
@@ -60,8 +60,10 @@ The dialog has these fields:
 | --- | --- |
 | **"Worker"** | Selects which Worker spawns the shell. Options show `name (version, os, arch)`. A **"Refresh workers"** button re-queries online Workers. When none are connected: **"No workers online"**. |
 | **"Shell"** | Picks the shell binary. See [Shell selection](#shell-selection). |
-| **"Working Directory"** | Browses the Worker's filesystem (tree root is `~`). A text box above the tree shows the selected path, abbreviated with `~` for your home directory; type a path and press Enter (or click away) to go there. If the path style does not match the Worker's OS, a hint appears below the box. Includes a show/hide-hidden-files toggle and a **"Refresh directory tree"** button. When no Worker is selected: **"No workers online. Connect a worker to browse directories."** |
+| **"Working Directory"** | Browses the Worker's filesystem from `~`. Type a path and press Enter (or click away) to go there. |
 | **"Git options"** | Appears in the right column when the selected path is (or becomes) a git repository. Lets you open the terminal in a branch or worktree. See [Git options](#git-options-open-a-terminal-in-a-branch-or-worktree). |
+
+The directory box abbreviates your home directory as `~`. If the path style does not match the Worker's OS, a hint appears below the box. The tree includes a show/hide-hidden-files toggle and a **"Refresh directory tree"** button, and shows **"No workers online. Connect a worker to browse directories."** when no Worker is selected.
 
 Submit with the **"Create"** button (it reads **"Creating..."** while in flight); cancel with **"Cancel"**. The Create button stays disabled until you have a Worker, a non-blank working directory, a selected shell, a valid git-mode choice, and a workspace. If creation fails, the dialog reports the failure.
 
@@ -105,7 +107,7 @@ When you don't choose a shell explicitly, the Worker uses its default, resolved 
    - **Windows:** `pwsh`, then `powershell`, falling back to the bundled Windows PowerShell.
    - **Other platforms:** `/bin/sh`.
 
-> **Tip:** To force a specific default shell for every terminal a Worker spawns, set `LEAPMUX_DEFAULT_SHELL` in the Worker's environment. See [Configuration](/docs/admin/configuration/).
+> **Tip:** To force a specific default shell for every terminal a Worker spawns, set `LEAPMUX_DEFAULT_SHELL` in the Worker's environment. See [Troubleshooting](/docs/reference/troubleshooting/) for the resolution order in full.
 
 ### Login-shell flags
 
@@ -145,11 +147,11 @@ On macOS, when a terminal is focused, these shortcuts send the correct escape se
 
 ### Resizing
 
-The terminal automatically fits its tile. When you resize the tile or window, LeapMux tells the Worker, which resizes the PTY so the running program re-flows correctly. For a terminal whose shell has already exited, the view simply re-flows the preserved output locally so it stays readable.
+The terminal automatically fits its tile. When you resize the tile or window, LeapMux tells the Worker, which resizes the PTY so the running program re-flows correctly. For a terminal whose shell has already exited, the view re-flows the preserved output locally so it stays readable.
 
 ### Appearance
 
-The terminal follows your appearance preferences. The default monospace font is `"Hack NF", Hack, "SF Mono", Consolas, monospace` at size 13, and follows your monospace-font preference.
+The terminal uses your monospace-font preference. The default font is `"Hack NF", Hack, "SF Mono", Consolas, monospace` at size 13.
 
 The **Terminal theme** row in Appearance settings has two halves, and a third control appears for a palette that offers more than one look per side:
 
@@ -158,11 +160,11 @@ The **Terminal theme** row in Appearance settings has two halves, and a third co
 | Palette | **Match UI** (default), or any palette the app itself offers | Which colors the terminal paints |
 | Mode | **System**, **Light**, **Dark** | Which variant of that palette |
 
-**Match UI** follows whatever theme the app is wearing — palette, variant and light/dark together — and keeps following it after you switch. It governs the rest of the row, which greys out and reports what the app resolved to. Any other palette detaches the row: the controls become live, starting from the app's own mode, and **System** then reads your OS directly, which differs from the app when the app itself is pinned.
+**Match UI** follows the app theme — palette, variant, and light/dark — and keeps following it after you switch. It governs the rest of the row, which greys out and reports what the app resolved to. Any other palette detaches the row. The controls become live and start from the app's own mode. **System** then reads your OS directly; this differs from the app only when the app theme is pinned.
 
 Some palettes offer more than one look, and a variant menu appears beside the palette when one is chosen. It lists both sides at once, under a **Light** and a **Dark** heading, and a pick applies to the side that look belongs to.
 
-Each palette supplies the sixteen ANSI colors; the background, foreground, cursor and selection come from that same palette, so a terminal set to a different theme than the app is still coherent in itself. Where a palette's ANSI set belongs to another project, the entry names that project beside the palette, so the scheme is findable under its own name.
+Each palette supplies the sixteen ANSI colors. The background, foreground, cursor, and selection colors come from the same palette. A terminal set to a different theme than the app therefore stays consistent. When a palette comes from another project, the entry names that project beside the palette.
 
 See [Settings & Preferences](/docs/using/settings/) for fonts, themes, and other appearance options.
 
@@ -185,7 +187,7 @@ How each state appears:
 - **Disconnected:** the tab label is faded.
 - **Exited:** the tab label is faded **and** struck through.
 
-If a program in a background (non-active) terminal rings the terminal bell, that tab gets a notification indicator so you notice it.
+If a program in a background (non-active) terminal rings the terminal bell, that tab gets a notification indicator.
 
 ## Persistence and reattachment
 
@@ -197,7 +199,7 @@ This works because the Worker keeps a rolling **100 KB screen buffer** for each 
 - **Workspace switch:** the on-screen contents (viewport plus scrollback) are captured when you switch away, so switching back restores exactly what was showing.
 - **Worker restart:** the running shell cannot survive the Worker going down, but because the terminal and its last screen are persisted to the database, the terminal is still listed when the Worker returns — showing its final screen — and pressing **Enter** restarts the shell.
 
-> **Note:** Restored output is replayed byte-for-byte, so full-screen apps redraw correctly; a few transient style attributes self-correct as the program next repaints. Content older than the 100 KB window scrolls off.
+> **Note:** Restored output is replayed byte-for-byte, so full-screen apps redraw correctly. Content older than the 100 KB window scrolls off.
 
 ### When a shell exits
 

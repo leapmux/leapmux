@@ -14,16 +14,16 @@ This chapter is for administrators. If you want to see and disconnect the apps o
 
 ## Who may register an app
 
-Both an administrator and an ordinary user can register one, and the difference is who sees it:
+Both an administrator and an ordinary user can register one. Visibility is a choice at registration, with one rule: only an administrator may make an app hub-wide.
 
-| Registered by | Visible to | Editable by |
+| Visibility | Visible to | Editable by |
 |---|---|---|
-| An ordinary user | That user alone | That user |
-| An administrator | Everybody on the Hub | Administrators |
+| `private` (anyone) | The registering user alone | That user |
+| `hub-wide` (administrators only) | Everybody on the Hub | Administrators |
 
-A private app is invisible in every sense. Another account does not see it in a listing, and a consent screen for it does not render even for somebody handed the link — the Hub answers as though the app does not exist. That is deliberate: telling a stranger "that app exists but is not yours" answers the question the rule exists to refuse.
+A private app is invisible in every sense. Another account does not see it in a listing, and a consent screen for it does not render even for somebody handed the link — the Hub answers as though the app does not exist. That is deliberate. A refusal that names the app would tell a stranger that the app exists.
 
-A user registers an app from **Preferences → Apps**. An administrator uses the CLI:
+A user registers an app from **Preferences → Apps**. An administrator can register from **Preferences → Hub-wide Apps**, or from the CLI:
 
 ```bash
 leapmux control admin app register \
@@ -37,7 +37,9 @@ leapmux control admin app register \
 
 The response carries the `client_id` and, for a confidential client, the `client_secret` **once**. The Hub stores only its hash and cannot show it again.
 
-**Every write to a registration needs a recently proven factor** — registering, editing, allowing the step-up ceremony, and vouching. Editing is why: rewriting a redirect list diverts an authorization code already in flight to an address the editor chose, which is the most dangerous write on this surface. In the browser the first such write in a sitting opens a **Verify your identity** dialog; on the CLI the refusal prints an address and a short code you approve in a browser (see [Verifying a command-line credential](/docs/admin/security/#verifying-a-command-line-credential)). **Retiring** an app and **deleting** an empty registration need none: both only reduce what the app can reach, and demanding a fresh factor from somebody who just realized an app is malicious is the wrong failure mode.
+**Every write to a registration needs a recently proven factor** — registering, editing, allowing the step-up ceremony, and vouching. Editing is why: rewriting a redirect list diverts an authorization code already in flight to an address the editor chose, which is the most dangerous write on this surface.
+
+In the browser the first such write opens a **Verify your identity** dialog; on the CLI the refusal prints an address and a short code you approve in a browser (see [Verifying a command-line credential](/docs/admin/security/#verifying-a-command-line-credential)). **Retiring** an app and **deleting** an empty registration need none: both only reduce what the app can reach, and demanding a fresh factor from somebody who just realized an app is malicious is the wrong failure mode.
 
 ## Permissions
 
@@ -71,9 +73,9 @@ Four rules bind the whole vocabulary.
 
 **Some permissions imply others.** `file:read` implies `worker:read`, because reading a file means reaching the machine that holds it. The Hub closes the set when it stores the grant, so the credential, the consent screen, and the token response all show the same list.
 
-**The registration is a LIVE ceiling.** `--scope` sets what the app may *ask* for, and the Hub applies it at every request rather than only at the consent — so narrowing it takes the permission from the credentials the app already holds, at their next call. Use that when an app should keep working with less; **Retire** is for when it should not keep working at all. The ceiling only narrows: the account's consent is untouched, so restoring the permission on the registration restores what the account already agreed to, with no fresh authorization. Editing a registration needs a recently proven factor.
+**The registration is a LIVE ceiling.** `--scope` sets what the app may *ask* for, and the Hub applies it at every request rather than only at the consent — so narrowing it takes the permission from the credentials the app already holds, at their next call. Use that when an app should keep working with less; **Retire** is for when it should not keep working at all. The ceiling narrows the grant only: the account's consent is untouched, so restoring a permission on the registration restores what the account already agreed to, with no fresh authorization.
 
-**An admin permission needs an administrator on both sides.** A non-administrator cannot register an app that *asks* for one, and cannot grant one on a consent screen. The refusal lands at registration, so an administrator learns it before the app ships rather than when a user meets it.
+**An admin permission needs an administrator on both sides.** A non-administrator cannot register an app that *asks* for one, and cannot grant one on a consent screen. The registration refusal is the early one: the registrant learns it before the app ships, not when a user meets the consent screen.
 
 Nothing an app holds reaches the account's own authenticators. Adding a passkey, changing the recovery address, unlinking a sign-in provider, and managing another app's credential are outside every grant, whatever the consent screen offered — those create authority that outlives the app's connection, so disconnecting the app would no longer withdraw what it was given.
 
@@ -87,7 +89,7 @@ An administrator vouches for an app once they know what it is:
 leapmux control admin app verify --client-id <client_id>
 ```
 
-The warning disappears and the screen identifies the administrator who vouched. `unverify` withdraws it.
+The warning disappears, and the app's row under **Preferences → Apps** names the administrator who vouched. `unverify` withdraws it.
 
 ## Elevation
 
@@ -101,11 +103,11 @@ leapmux control admin app allow-elevation --client-id <client_id>
 
 Turning it off closes every open window on the next request, because the Hub re-reads the flag each time it validates a credential rather than trusting what was true when the window opened.
 
-The setting is not a trust tier and not a permission. The elevation window multiplies whatever the grant already allows, so no permission could express it and mean anything.
+The setting is not a trust tier and not a permission. The elevation window multiplies whatever the grant already allows, so no permission can express it.
 
 ## Open registration
 
-RFC 7591 dynamic registration lets a program register itself with no account at all. It is **off by default**, and the default is the decision: an anonymous caller who can create a registration can create a row that appears on a consent screen, which is a phishing surface as much as a convenience.
+RFC 7591 dynamic registration lets a program register itself with no account at all. It is **off by default**: an anonymous caller who can create a registration can create a row that appears on a consent screen, which is a phishing surface as much as a convenience.
 
 ```bash
 leapmux control admin settings set open_app_registration true
@@ -121,13 +123,13 @@ While it is off, `registration_endpoint` is absent from the Hub's metadata docum
 leapmux control admin app revoke --client-id <client_id>
 ```
 
-**Delete** removes a registration that never held a credential. The Hub refuses it otherwise and says how many credentials exist, so you can retire instead. A revoked credential still counts: it is history that the account's own list shows, and deleting the app it belonged to would leave that history pointing at nothing.
+**Delete** removes a registration that never held a credential. The Hub refuses it otherwise and says how many credentials exist, so you can retire instead. A revoked credential still counts: the Hub keeps it as history that an administrator can list with `leapmux control admin api-token list --include-revoked`, and deleting the app it belonged to would leave that history pointing at nothing.
 
 Two registrations ship with the Hub — the control CLI and the service account that holds administrator-issued credentials. Neither can be edited, retired, or deleted, because their fields are constants of the build. Their elevation setting is the one thing that moves, so an administrator who does not want `leapmux control admin ...` to elevate can say so.
 
 ## Solo mode
 
-A solo Hub authorizes apps like any other. Reaching the port is the authentication there, so a request with no credential is the solo account with no limits — but a request that presents a credential asks to be its **app**, and the Hub binds that credential's permissions instead.
+A solo Hub authorizes apps like any other. Reaching the port is the authentication there, so a request with no credential is the solo account with no limits — but a request that presents a credential speaks for that app, and the Hub applies the credential's permissions instead.
 
 That is what makes the model useful on one machine: hand a local agent a credential with `file:read` and it reads files, nothing else, and the Worker enforces it inside the encrypted channel where the Hub cannot see.
 

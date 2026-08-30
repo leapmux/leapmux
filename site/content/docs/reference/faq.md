@@ -43,7 +43,13 @@ See [Configuration](/docs/admin/configuration/) and [Encryption & Data](/docs/ad
 
 No — all Frontend-to-Worker traffic is end-to-end encrypted, and the Hub is an **authenticated relay, not a trusted peer**: it forwards opaque ciphertext and never holds the session keys.
 
-The Hub **can** see connection metadata — channel IDs, ciphertext sizes, and timing (traffic analysis is in scope) — plus account and workspace records and Worker public keys. The Hub **cannot** see agent transcripts, tool-call arguments or outputs, terminal I/O, file contents, diffs, or git status. Even the Worker's hostname and filesystem paths travel inside the encrypted application stream, so they are not exposed to the relay. See [Security & Threat Model](/docs/admin/security/) for the authoritative scope of what the Hub does and does not see.
+The Hub **can** see connection metadata — channel IDs, ciphertext sizes, and timing (traffic analysis is in scope) — plus account and workspace records and Worker public keys. Even the Worker's hostname and filesystem paths travel inside the encrypted application stream, so they are not exposed to the relay.
+
+| The Hub can see | The Hub cannot see |
+|---|---|
+| Connection metadata (channel IDs, ciphertext sizes, timing), account and workspace records, Worker public keys | Agent transcripts, tool-call arguments and outputs, terminal I/O, file contents, diffs, git status |
+
+See [Security & Threat Model](/docs/admin/security/) for the authoritative scope of what the Hub does and does not see.
 
 > **Note:** In solo mode the Hub and Worker run in the same process, so the E2EE protocol is still in effect but provides no protection against a local attacker who can reach the loopback port. The threat model there reduces to local-host trust.
 
@@ -51,7 +57,7 @@ The Hub **can** see connection metadata — channel IDs, ciphertext sizes, and t
 
 LeapMux supports nine agent providers: **Claude Code**, **Codex**, **Cursor**, **GitHub Copilot**, **Kilo**, **OpenCode**, **Goose**, **Pi**, and **Reasonix**. All nine are first-class, and LeapMux gives each the same core surface where the underlying CLI supports it: chat, tool calls, permission prompts, plan tracking, and session resume.
 
-A provider only appears in the picker when its CLI binary is detected on the Worker (LeapMux probes the shell for the binary — `command -v` on POSIX shells, `Get-Command` on PowerShell, `which` on nushell and csh). So if `claude` or `codex` isn't installed on the machine running the Worker, that provider won't show up.
+A provider only appears in the picker when LeapMux detects its CLI binary on the Worker. If `claude` or `codex` is not installed on the machine that runs the Worker, that provider does not appear.
 
 For what each provider can do, see [Coding Agents](/docs/using/coding-agents/).
 
@@ -80,15 +86,15 @@ See [Configuration](/docs/admin/configuration/) and [Encryption & Data](/docs/ad
 
 ## How do multiple agents avoid clobbering each other?
 
-Through **git worktrees**. When you open an agent (or terminal), you can have LeapMux create a dedicated worktree and branch for it, so each agent works in its own checkout. When each agent gets its own worktree, they never touch the same working tree or branch — one agent refactoring, another on tests, and a third chasing a build failure stay fully isolated.
+Through **git worktrees**. When you open an agent or a terminal, you can have LeapMux create a dedicated worktree and branch for it. Agents in separate worktrees never touch the same working tree or branch. One agent can refactor, a second can write tests, and a third can fix a build failure, all fully isolated.
 
-The sidebar groups tabs by repository and branch so you always know which agent owns which branch, and LeapMux protects you against losing uncommitted work in a dirty worktree.
+The sidebar groups tabs by repository and branch, so you know which agent owns which branch. When you close the last tab of a worktree that has uncommitted changes, LeapMux asks you to confirm.
 
 See [Worktrees & Branches](/docs/using/worktrees-and-branches/).
 
 ## Do my sessions survive a restart or reboot?
 
-Agent sessions do. Agent state persists in the Worker's local SQLite database, so when the Worker process or the machine comes back and reconnects to the Hub, your agent sessions are still there — no need to relaunch each agent by hand. You can also resume a prior agent session by entering its session ID in the **New agent** dialog (it resumes the underlying agent session — Claude Code's `--resume` flag, or the equivalent resume method for other providers).
+Agent sessions do. Agent state persists in the Worker's local SQLite database, so when the Worker process or the machine comes back and reconnects to the Hub, your agent sessions are still there — no need to relaunch each agent. You can also resume a prior agent session by entering its session ID in the **New agent** dialog. LeapMux resumes the provider's own session — Claude Code's `--resume` flag, or the equivalent for other providers.
 
 Terminals are a partial exception: a shell process cannot outlive a Worker restart. LeapMux persists each terminal's last screen, so after the Worker comes back the terminal tab reappears exactly where it left off — but its shell has exited, and you press **Enter** to restart it in the same working directory. (A transient disconnect, where the Worker process itself never went down, keeps the live shell attached.)
 
@@ -119,7 +125,9 @@ See [Installation](/docs/getting-started/installation/) and [Running LeapMux](/d
 
 ## Is it free? What's the license?
 
-LeapMux is source-available under the **Functional Source License, Version 1.1, with an Apache 2.0 future grant** (FSL-1.1-ALv2), Copyright Event Loop, Inc. In short, you may use, modify, and redistribute it for any **Permitted Purpose** — including your own internal use, non-commercial education, and non-commercial research — but not for a **Competing Use** (making it available to others in a commercial product or service that substitutes for, or offers substantially similar functionality to, LeapMux). Each version converts to Apache 2.0 on a future date — see [Legal](/docs/reference/legal/) for the conversion date and the full terms.
+LeapMux is source-available under the **Functional Source License, Version 1.1, with an Apache 2.0 future grant** (FSL-1.1-ALv2), Copyright Event Loop, Inc.
+
+You may use, modify, and redistribute it for any **Permitted Purpose** — including your own internal use, non-commercial education, and non-commercial research — but not for a **Competing Use**. A Competing Use makes LeapMux available to others in a commercial product or service that substitutes for, or offers substantially similar functionality to, LeapMux. Each version converts to Apache 2.0 on a future date — see [Legal](/docs/reference/legal/) for the conversion date and the full terms.
 
 > **Note:** This FAQ summarizes the license for convenience and is not legal advice. The `LICENSE.md` file in the repository is the authoritative text.
 

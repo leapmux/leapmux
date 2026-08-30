@@ -5,7 +5,7 @@ type: docs
 weight: 2
 ---
 
-This chapter is the complete reference for configuring the LeapMux **Hub** and **Worker** services: how settings are layered and resolved, where config files live, every config key with its default and meaning, the supported storage backends, listen-address formats, encryption mode, and the timeout/limit knobs.
+This chapter is the complete configuration reference for the LeapMux **Hub** and **Worker** services. It covers how settings are layered and resolved, where config files live, every config key with its default and meaning, the supported storage backends, listen-address formats, encryption mode, and the timeout/limit knobs.
 
 For *how to launch* each mode (solo, hub, worker, dev) and what each is for, see [Running LeapMux](/docs/admin/running-leapmux/). For key management, encryption at rest, and database operations, see [Encryption & Data](/docs/admin/encryption-and-data/).
 
@@ -221,9 +221,9 @@ Solo mode omits the settings a single-user Hub has no use for, from `settings li
 
 | Omitted in solo | Because |
 | --- | --- |
-| `signup_enabled`, `smtp` | Solo has no sign-up and no outbound mail. |
+| `signup_enabled` | Solo has no sign-up. |
 | `session_duration_seconds`, `secure_cookies` | Solo has no login, so there is no session and no cookie. |
-| `smtp` | Solo has nowhere to send mail. |
+| `smtp` | Solo has no sign-up and no outbound mail. |
 | `captcha.*` | Solo has no sign-up and no login to protect. |
 | `rate_limit.elevation` | Keyed by USER, and solo has one. |
 
@@ -246,13 +246,15 @@ leapmux control admin captcha set --provider turnstile --site-key 0x4AAAA... --s
 leapmux control admin rate-limit list
 ```
 
-With no configuration at all: captcha is **enabled** with the built-in ALTCHA provider at `PBKDF2/SHA-256` cost `10000` (challenges expire after 20 minutes), and `elevation` — failed attempts to verify your identity for a sensitive account change, see [Session elevation](/docs/admin/security/#session-elevation) — is limited to 5 failed attempts per 15 minutes per user. A second limit, `oauth_anonymous`, caps the authorization server's three anonymous endpoints per client address; see [App Authorization](/docs/admin/app-authorization/). Solo mode enforces no captcha and no per-user limit, but it does enforce `oauth_anonymous`. ALTCHA runs only where a browser can solve it and somebody other than you can reach the Hub — see **When ALTCHA runs** below.
+With no configuration at all: captcha is **enabled** with the built-in ALTCHA provider at `PBKDF2/SHA-256` cost `10000` (challenges expire after 20 minutes), and `elevation` — failed attempts to verify your identity for a sensitive account change, see [Session elevation](/docs/admin/security/#session-elevation) — is limited to 5 failed attempts per 15 minutes per user.
+
+A second limit, `oauth_anonymous`, caps the authorization server's anonymous endpoints (`/oauth/device-authorization`, `/oauth/token`, `/oauth/revoke`, `/oauth/register`, `/oauth/step-up`, and the app icons) per client address; see [App Authorization](/docs/admin/app-authorization/). Solo mode enforces no captcha and no per-user limit, but it does enforce `oauth_anonymous`. ALTCHA runs only where a browser can solve it and somebody other than you can reach the Hub — see **When ALTCHA runs** below.
 
 Selecting Google reCAPTCHA v3 or Cloudflare Turnstile needs its site key and its secret, because the Hub refuses a selected provider whose key pair is incomplete. Pass both in the same `captcha set` invocation, as the example above does, or store them first and select the provider after. The Preferences dialog's Bot Protection panel shows every provider's key fields at all times for the same reason: an administrator fills a provider in, then switches to it.
 
 A few caveats before you change defaults:
 
-- **Captcha cost** is the per-derivation iteration count, and the browser performs ~256 derivations per solve — total work scales as ~256 × cost. Raising it multiplies bot cost and your users' wait time equally, so large values mostly punish humans. The challenge-issuing endpoint is itself unauthenticated and costs the Hub one HMAC per challenge (the solver does the expensive side), so issuance stays cheap even at high costs.
+- **Captcha cost** is the per-derivation iteration count, and the browser performs ~256 derivations per solve — total work scales as ~256 × cost. Raising it multiplies bot cost and your users' wait time equally, so large values mostly punish humans. The challenge-issuing endpoint is itself unauthenticated and costs the Hub one HMAC per challenge (the solver does the expensive side). Issuance therefore stays cheap even at high costs.
 - **External providers verify online and uncapped**: every login/signup attempt with a non-empty token makes one siteverify call to Google or Cloudflare with no per-client throttle, so scripted garbage tokens can spend the administrator's siteverify quota. Disabling captcha removes that egress but leaves the unauthenticated procedures limited only by Argon2 cost and the honeypot. The built-in ALTCHA provider has no egress and self-throttles through the client-side proof-of-work.
 
 **When ALTCHA runs.** The Hub requires the built-in provider only where it can both work and matter. Two conditions, and both must hold:
@@ -267,7 +269,9 @@ The Hub checks both conditions against its own configuration, reading two settin
 
 With neither setting the Hub serves plain HTTP, so an **unpublished Hub runs no ALTCHA** — including the first-run setup form. When ALTCHA is off, the Hub issues no challenge, and sign-in and sign-up skip verification, but the Hub does not write `captcha.enabled`: the stored setting keeps its value, so publishing the Hub restores protection with no admin re-enable. The honeypot check still runs. The gate never restricts reCAPTCHA v3 or Turnstile, which both work on plain HTTP pages.
 
-**Set `public_url` on a Hub that browsers really reach by a LAN address or a hostname.** It is a recommendation, not a requirement, and rung 2 above says why: a Hub with `secure_cookies` set and no `public_url` already runs ALTCHA. What `public_url` adds is the deployment where the Hub itself speaks plain HTTP behind a TLS-terminating reverse proxy — there `secure_cookies` describes the Hub's own listener rather than the browser's page, and the published URL is the only setting that states what the browser sees. Set it to the URL your users type, and serve that URL over HTTPS. `public_url` is already what mail links, the CLI login endpoints, and passkey sign-in need on such a deployment. Publish a plain-HTTP LAN URL and the Hub keeps ALTCHA down by itself, because no browser there could solve a challenge.
+**Set `public_url` on a Hub that browsers really reach by a LAN address or a hostname.** It is a recommendation, not a requirement, and rung 2 above says why: a Hub with `secure_cookies` set and no `public_url` already runs ALTCHA. What `public_url` adds is the deployment where the Hub itself speaks plain HTTP behind a TLS-terminating reverse proxy — there `secure_cookies` describes the Hub's own listener rather than the browser's page, and the published URL is the only setting that states what the browser sees.
+
+Set it to the URL your users type, and serve that URL over HTTPS. `public_url` is already what mail links, the CLI login endpoints, and passkey sign-in need on such a deployment. Publish a plain-HTTP LAN URL and the Hub keeps ALTCHA down by itself, because no browser there could solve a challenge.
 
 **How you find out that the Hub disabled ALTCHA.** The Hub disables it silently to the browser — a message there would tell a bot which control is off — so it reports the change to its own log instead. When the stored `captcha.enabled` is `true` and the gate disables the widget, the Hub logs once at `WARN`:
 
@@ -294,7 +298,9 @@ For the sign-in and sign-up flows, see [Accounts & Authentication](/docs/using/a
 
 ### Outbound queue memory
 
-Every long-lived stream the Hub writes to — one per browser tab on `/ws/channel`, one per connected Worker, one per browser tab on `/ws/userevents` — buffers outbound frames, so that one slow reader cannot stall the others. The three fields of the `queue_budget` setting limit how much memory those buffers may hold, as one budget per connection kind: **channel relays**, **Worker streams**, and **user-event subscribers**. The split is deliberate, because the cheapest recovery differs by kind — a dropped relay or Worker connection simply reconnects, while a user-event subscriber can resynchronize from its cursor instead of being disconnected at all — so a backlog on one kind never costs the others.
+Every long-lived stream the Hub writes to — one per browser tab on `/ws/channel`, one per connected Worker, one per browser tab on `/ws/userevents` — buffers outbound frames, so that one slow reader cannot stall the others. The three fields of the `queue_budget` setting limit how much memory those buffers may hold, as one budget per connection kind: **channel relays**, **Worker streams**, and **user-event subscribers**.
+
+The split is deliberate, because the cheapest recovery differs by kind — a dropped relay or Worker connection simply reconnects, while a user-event subscriber can resynchronize from its cursor instead of being disconnected at all — so a backlog on one kind never costs the others.
 
 Left at `0` (the default), each budget is a share of the memory the process may use — four thirty-seconds for channel relays, two for Workers, two for user events, together a quarter, and never above 8 GiB. Channel relays get the largest share because they carry the bulk of the traffic. The Hub derives that memory figure from `GOMEMLIMIT` when set, otherwise the cgroup memory limit on Linux (which is what makes the default correct inside a container), otherwise total physical memory, and 512 MiB when none of these can be read. The basis and all three resolved figures are logged at startup, so a wrong basis is visible; a Linux host whose cgroup limit could not be read also logs a one-time warning.
 
@@ -306,11 +312,13 @@ leapmux control admin settings set queue_budget '{"relay_bytes":1073741824}'
 
 Three facts matter when you pick numbers:
 
-- **Each budget has a floor.** It must be able to hold one largest frame of its kind plus a small guaranteed working set per connection, and the Hub refuses to start on a configured value below it rather than failing at runtime. `max_message_size_bytes` does **not** move this floor: the Hub is a relay on that path and its queues only ever carry individual encrypted chunks, never a reassembled message.
+- **Each budget has a floor.** It must be able to hold one largest frame of its kind plus a small guaranteed working set per connection, and a configured value below it is rejected when you write it, rather than failing at runtime. `max_message_size_bytes` does **not** move this floor: the Hub is a relay on that path and its queues only ever carry individual encrypted chunks, never a reassembled message.
 - **A frame does not cost its wire size.** A user-event frame is charged at twice its encoded size, so size a budget against `leapmux_sendq_pool_used_bytes` — what the process really holds — not against observed network traffic.
 - **What the budgets do not cover.** They limit *queued* frames, not the moment the Hub builds a frame, so a reconnect storm on large accounts peaks above the budget for as long as those snapshots take to build.
 
-**When a budget runs out**, the Hub disconnects that budget's largest holder and the peer reconnects, reported as `pool_pressure`. User-event subscribers instead drop the frame they cannot fit and resynchronize; those drops are counted by `leapmux_userevents_frames_dropped_total`. The one *permanent* failure is an account whose opening user-events frame — the snapshot of its whole visible state — is larger than the entire `userevents_bytes` budget: such a connect is refused as final, the browser reports that the workspace exceeds the server's limit, and the fix is to raise that field. On the dropped-frames metric, `bound="capacity"` marks exactly this case, while a merely full budget is the transient `bound="bytes"` one that resolves itself as connections drain.
+**When a budget runs out**, the Hub disconnects that budget's largest holder and the peer reconnects, reported as `pool_pressure`. User-event subscribers instead drop the frame they cannot fit and resynchronize; those drops are counted by `leapmux_userevents_frames_dropped_total`.
+
+The one *permanent* failure is an account whose opening user-events frame — the snapshot of its whole visible state — is larger than the entire `userevents_bytes` budget: such a connect is refused as final, the browser reports that the workspace exceeds the server's limit, and the fix is to raise that field. On the dropped-frames metric, `bound="capacity"` marks exactly this case, while a merely full budget is the transient `bound="bytes"` one that resolves itself as connections drain.
 
 `leapmux_sendq_pool_overcommits_total` increments whenever the Hub granted a per-connection working set the budget had no room for. Sustained growth means the deployment has more connections of that kind than its budget can honour — raise the budget (or run more Hubs). What keeps the connection count from growing without limit in the first place is [`max_connections_per_user`](#connections-per-user).
 
@@ -331,7 +339,9 @@ And, unlabelled by pool:
 | --- | --- |
 | `leapmux_connections_refused_total{reason="too_many_connections"}` | Connections refused because a user was at [`max_connections_per_user`](#connections-per-user). Steady growth is either a client leaking sockets or a cap below the way your users actually work. |
 | `leapmux_connections_refused_total{reason="credential"}` | Connections refused because the credential expired or was revoked between authenticating and being served. |
-| `leapmux_userevents_frames_dropped_total{phase,bound}` | User-event frames a subscriber could not take. `bound="frames"` means the client was too far behind; `bound="bytes"` means the shared budget was full at that moment, which is the deployment's to fix; `bound="capacity"` means the frame was larger than the whole budget, which no occupancy would have admitted — only raising the budget clears it. `phase="park"` costs a snapshot instead of a delta, `phase="live"` costs a reconnect, and `phase="bootstrap"` refused the connect — with `bound="bytes"` the client retries, with `bound="capacity"` the Hub tells it to stop. |
+| `leapmux_userevents_frames_dropped_total{phase,bound}` | User-event frames a subscriber could not take. `bound="frames"` means the client was too far behind; `bound="bytes"` means the shared budget was full at that moment, which is the deployment's to fix; `bound="capacity"` means the frame was larger than the whole budget, which no occupancy would have admitted — only raising the budget clears it. |
+
+On that last metric, the `phase` label says what the drop cost: `phase="park"` a snapshot instead of a delta, `phase="live"` a reconnect, and `phase="bootstrap"` a refused connect — with `bound="bytes"` the client retries, with `bound="capacity"` the Hub tells it to stop.
 
 ### Solo and dev extras (worker-scoped)
 
@@ -357,7 +367,9 @@ When a user is at the limit the Hub refuses the **newest** connection and everyt
 
 ### Workers per user
 
-`max_workers_per_user` (default `64`) is the same limit for the Worker pool: a Worker's Connect stream draws on the Worker queue budget and carries the same guaranteed working set, but it is not a *lease*, so the connection cap does not see it. The limit applies at both **registration** and **connection** — a registered Worker and a live pool member are not the same thing, and counting only registrations would let an account cycle register and deregister to accumulate pool members. Either refusal returns a `resource_exhausted` error that names the key; the Hub counts it in `leapmux_worker_admissions_refused_total` (labelled `stage="register"` or `stage="connect"`) and logs it with the owner and the limit. The default is far past what an account plausibly runs; it exists so the pool whose eviction costs the most — dropping a Worker takes every user's channels on that machine — cannot be oversubscribed.
+`max_workers_per_user` (default `64`) is the same limit for the Worker pool: a Worker's Connect stream draws on the Worker queue budget and carries the same guaranteed working set, but it is not a *lease*, so the connection cap does not see it. The limit applies at both **registration** and **connection** — a registered Worker and a live pool member are not the same thing, and counting only registrations would let an account cycle register and deregister to accumulate pool members.
+
+Either refusal returns a `resource_exhausted` error that names the key; the Hub counts it in `leapmux_worker_admissions_refused_total` (labelled `stage="register"` or `stage="connect"`) and logs it with the owner and the limit. The default is far past what an account plausibly runs; it exists so the pool whose eviction costs the most — dropping a Worker takes every user's channels on that machine — cannot be oversubscribed.
 
 ### Idle connections
 
@@ -417,7 +429,7 @@ The Worker keeps its own SQLite database (`<data_dir>/worker.db`) for transient 
 
 ### Worker state file
 
-After registration, a Worker persists its identity to `<data_dir>/state.json` (mode `0600`): its Worker ID, Hub auth token, who registered it, and its private E2EE keypair (auto-generated on first run). For the underlying key primitives, see [Encryption & Data](/docs/admin/encryption-and-data/) and [Security & Threat Model](/docs/admin/security/).
+After registration, a Worker persists its identity to `<data_dir>/state.json` (mode `0600`): its Worker ID, Hub auth token, and its private E2EE keypairs (auto-generated on first run). For the underlying key primitives, see [Encryption & Data](/docs/admin/encryption-and-data/) and [Security & Threat Model](/docs/admin/security/).
 
 > **Warning:** `state.json` holds the Worker's private E2EE keys and Hub auth token, and it is **not encrypted**. Treat it as a secret and back it up. Losing it forces re-registration with a new registration key and a new key identity.
 
@@ -604,7 +616,7 @@ leapmux worker
 
 Every mode supports the standard help tokens, and each mode honors `--version`:
 
-- `-h`, `-help`, `--help`, or `help` prints categorized usage to stdout.
+- `-h`, `-help`, or `--help` prints categorized usage to stdout. The bare `help` token works only at the top level (`leapmux help`).
 - `--version` (or `-version`) prints the build version and exits.
 
 The bare `version` subcommand is a **top-level** command (`leapmux version`), not a per-mode token. Passing it inside a mode — `leapmux hub version` — is rejected as an unexpected positional argument. LeapMux rejects an unexpected positional argument, identifies it, and points you at `--help`.

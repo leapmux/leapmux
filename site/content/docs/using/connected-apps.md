@@ -9,17 +9,19 @@ An app you authorize holds a credential on your account until you disconnect it.
 
 ## Authorizing an app
 
-When a program needs access, it sends you to a consent screen the Hub renders. The heading states the verdict, not the app's claim: **"Authorize {name}?"** for an app an administrator vouched for, and **"Authorize an unverified app?"** for one nobody did — an unverified name never enters the heading, and an unverified app shows a monogram of its name instead of an icon. The warning is plain:
+When a program needs access, it sends you to a consent screen the Hub renders. The heading states the verdict, not the app's claim: **"Authorize {name}?"** for an app an administrator vouched for. Nobody vouched for the other kind, so its heading is **"Authorize an unverified app?"** and the name never enters it. An unverified app also shows a monogram of its name instead of an icon. The warning is plain:
 
 > **Nobody verified this app on this hub.** It says its name is "{name}". Continue only if you started this yourself.
 
 An app you did not go looking for is one to deny.
 
-The screen says whose account it asks to use, and where it will return you — the redirect shown as a label, never a bare address. The permission list is the Hub's whole vocabulary, grouped by family: the permissions this app asks for are ticked, the rest are dimmed, and each carries its wire token beside a sentence in plain words — *Type into your terminals, which runs any command on your machine*, not `terminal:write`. An app that asks for nothing at all is one that could do nothing with your account, and the screen says that too.
+The screen says whose account it asks to use, and where it will return you — the redirect shown as a label, never a bare address.
 
-Two rules guard the widest permissions. An app must **name** a hub-administration permission to ask for one — a request that omits its permission list never includes any — and only an administrator can grant it; anybody else's consent is refused outright. On the headless [device-code flow](/docs/using/control-cli/#leapmux-control-auth-login) an admin-reaching ask stops twice: the first **Authorize** returns the page with the caution stated beside it, and only the second one binds.
+The permission list shows every family the app reaches into, and each family in full: the permissions this app asks for are ticked, the rest are dimmed, and each carries its wire token beside a sentence in plain words — *Type into your terminals, which runs any command on your machine*, not `terminal:write`. An app that asks for nothing at all is one that could do nothing with your account, and the screen says that too.
 
-Authorizing needs a verified session, so the screen may ask for your password or passkey first. That proof lasts {{< duration elevation-window >}}, so a second authorization in the same sitting does not ask again.
+Two rules guard the widest permissions. An app must **name** a hub-administration permission to ask for one — a request that omits its permission list never includes any — and only an administrator can grant it; anybody else's consent is refused outright. On the headless [device-code flow](/docs/using/control-cli/#leapmux-control-auth-login) a request that includes a hub-administration permission stops twice: the first **Authorize** returns the page with the caution stated beside it, and only the second one binds.
+
+Authorizing needs a verified session, so the screen may ask you to prove a factor first — a password, a passkey, or a linked provider. That proof lasts {{< duration elevation-window >}}, so a second authorization in the same sitting does not ask again.
 
 **Allow** returns you to the app. **Deny** returns you to it too, with a refusal, so it stops waiting rather than hanging until the request expires.
 
@@ -29,10 +31,10 @@ The list is **grouped by app**. Each block identifies one app, and under it is o
 
 - **The app name** heads the block, with an **unverified** badge beside it when no administrator vouched for it — the same verdict the consent screen states.
 - **The installation** names each row — *trustin's MacBook* — because one app holds one credential per machine, and the app name alone cannot tell two rows apart.
-- **hub administration** marks a credential that can administer the whole Hub. It is read from the permissions themselves, so it cannot disagree with the chips beside it.
+- **hub administration** marks a credential that can administer the whole Hub.
 - **The permissions** are the ones you granted, one chip each (`terminal:write`, `git:read`, …). Some are wider than they look: `terminal:write` runs commands, and `tunnel:open` reaches anything your machine can reach.
 
-Each row also says when it was **last used** — or **added**, if it never was — and exactly one deadline: a renewing credential says when its machine must **sign in again**, a fixed-lifetime one (minted by an administrator with a TTL) says when it **expires**, and a row with neither never expires.
+Each row also says when it was **last used** — or **added**, if it never was. A renewing credential says when its machine must **sign in again**. A fixed-lifetime one (minted by an administrator with a TTL) says when it **expires**. A row with neither never expires.
 
 An empty list says how to start one: run `leapmux control auth login` to connect the command-line tool, or authorize an app from its own sign-in screen.
 
@@ -44,13 +46,13 @@ Two endings, because they answer different questions.
 
 **Revoke**, on one installation's row, ends that machine only. The app keeps working everywhere else. This is how you sign one laptop out; the confirmation says so and points at **Disconnect** for the all-of-them ending.
 
-Reach for **Disconnect** whenever the decision is about the app rather than about a machine. Ending one installation of an app you no longer trust leaves it working on every other one.
+Choose **Disconnect** whenever the decision is about the app rather than about a machine. Ending one installation of an app you no longer trust leaves it working on every other one.
 
-Neither asks for a password. Both only ever reduce access, and asking somebody who just realized an app is malicious to first find their password is the wrong way round — the delay is the attacker's gain.
+Neither asks for a password. Both only ever reduce access. Somebody who just found an app is malicious should not have to find a password first; the delay helps the attacker.
 
 ## Registering your own app
 
-**Preferences → Apps → App registrations** registers an app of your own. Yours is private: nobody else sees it, and nobody else can authorize it. An administrator's app is visible to everybody on the Hub.
+**Preferences → Apps → App registrations** registers an app of your own. Yours is private: nobody else sees it, and nobody else can authorize it. An app registered under **Administration** is hub-wide: everybody on the Hub sees it and can authorize it.
 
 You choose a name, the addresses the authorization may return to, and the permissions the app may **ask** for. That last set is a ceiling, not a grant — the consent screen still asks, and you can grant less.
 

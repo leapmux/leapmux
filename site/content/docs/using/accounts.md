@@ -1,11 +1,11 @@
 ---
 title: "Accounts & Authentication"
-description: "Getting into LeapMux as a user: when you need an account, creating the first one, signing up and logging in, email verification, OAuth, account recovery, and your profile."
+description: "Getting into LeapMux as a user: when you need an account, creating the first one, signing up and signing in, email verification, OAuth, account recovery, and your profile."
 type: docs
 weight: 11
 ---
 
-This chapter covers everything you need to get into LeapMux as a user: when you need an account at all, how to create the very first one, how to sign up and log in, how email verification and OAuth sign-in work, how to recover an account you are locked out of, and how to manage your profile and password once you are in.
+This chapter covers everything you need to get into LeapMux as a user: when you need an account at all, how to create the very first one, how to sign up and sign in, how email verification and OAuth sign-in work, how to recover an account you are locked out of, and how to manage your profile and password once you are in.
 
 Whether you ever see a login screen depends on the mode LeapMux runs in. The first section makes that distinction; the rest assumes a multi-user deployment where accounts apply.
 
@@ -19,7 +19,7 @@ LeapMux runs in several modes (see [Running LeapMux](/docs/admin/running-leapmux
 | **Dev** (`leapmux dev`) | Yes | Real password authentication. The first admin is created through the `/setup` flow. |
 | **Hub** (`leapmux hub`) | Yes | Full authentication: signup, password login, sessions, OAuth, API tokens. |
 
-In **solo mode** there is nothing to sign up for and nothing to log out of. If you navigate to `/login` or `/signup`, LeapMux redirects you straight into the app. Solo mode intentionally disables account-related actions: it refuses a change to your profile, your email, or your password, and it refuses to unlink an OAuth provider. Each refusal identifies the action that solo mode does not support.
+In **solo mode** there is nothing to sign up for and nothing to sign out of. If you navigate to `/login` or `/signup`, LeapMux redirects you straight into the app. Solo mode intentionally disables account-related actions: it refuses a change to your profile, your email, or your password, and it refuses to unlink an OAuth provider. Each refusal identifies the action that solo mode does not support.
 
 > **Note:** Solo mode auto-authenticates *every* request as the admin. If you bind it to a non-loopback address, anyone who can reach the port has full admin access without credentials. LeapMux warns you about this at startup. For a shared or networked deployment, run `leapmux hub` (or `leapmux dev`) so real authentication applies. See [Security & Threat Model](/docs/admin/security/).
 
@@ -30,7 +30,7 @@ The rest of this chapter applies to **hub** and **dev** mode, where accounts are
 When a hub or dev instance has no users yet, it is in *setup mode*. The first person to register becomes the administrator.
 
 1. Open the instance in your browser. With no users present, the root path sends you to **`/setup`**.
-2. You see the heading **"Welcome to LeapMux"** and the intro **"Create the first administrator account to get started."**
+2. You see the heading **"Welcome to LeapMux"** and the intro **"Create the first administrator account."**
 3. Fill in the form, top to bottom:
    - **Username**
    - **Display Name**
@@ -41,7 +41,7 @@ When a hub or dev instance has no users yet, it is in *setup mode*. The first pe
 
 On success you are signed in and taken to the app home at `/`.
 
-A few things are special about this first account:
+This first account differs in three ways:
 
 - It is **always created as an administrator**.
 - Its email is **unverified**, like every other new address. That never blocks you, because administrators are exempt from the verification gate. It does mean [account recovery](#recovering-your-account) will not send a link to that address, so verify it from **Preferences → Account** once you configure SMTP. See [Email verification](#email-verification).
@@ -62,12 +62,12 @@ The form fields are the same as setup:
 | --- | --- |
 | **Username** | Required. Lowercase slug, 1–32 characters. See [Username rules](#username-rules). |
 | **Display Name** | Optional; falls back to your username if left blank. |
-| **Email** | Required. |
+| **Email** | Required when the hub has SMTP configured; otherwise optional. |
 | **New Password** | 8–128 printable ASCII characters, spaces included. See [Password requirements](#password-requirements). |
 | **Confirm Password** | Must match. |
 | **Sign-up method** | **Password** (default) or **Passkey**. Passkey sign-up registers a WebAuthn credential instead of setting a password. |
 
-The submit button reads **Sign up** or **Sign up with passkey**. It stays disabled until you enter a username, a valid email, and (for password sign-up) a valid, matching password. A footer link, **"Already have an account? Sign in"**, takes you to the login page.
+The submit button reads **Sign up** or **Sign up with passkey**. It stays disabled until you enter a username, an email (required only when the hub has SMTP configured), and (for password sign-up) a valid, matching password. A footer link, **"Already have an account? Sign in"**, takes you to the login page.
 
 If your administrator configures OAuth/OIDC providers, a list of provider buttons appears above the form under the verb **"Sign up with"** (for example, **"Sign up with GitHub"**), followed by the divider **"or create an account with email"**. See [Signing in with OAuth / OIDC](#signing-in-with-oauth--oidc).
 
@@ -78,11 +78,11 @@ What happens after you submit depends on whether the hub has SMTP configured (se
 
 > **Note:** The username `solo` is rejected in all signup paths, and `admin` is additionally reserved for public signup and OAuth completion (it is allowed only in `/setup`). Self-service signups are never administrators.
 
-## Logging in
+## Signing in
 
 Visit `/login`. The page is headed **"LeapMux"** and starts with a **Username** field.
 
-A **Sign-in method** chooser always offers **Password** and **Passkey** (LeapMux does not reveal which methods an account supports before you submit):
+A **Sign-in method** chooser offers **Password** and **Passkey** (the **Passkey** option is disabled or absent where ceremonies cannot run — see [Passkeys](#passkeys)):
 
 | Method | What you do |
 | --- | --- |
@@ -133,7 +133,7 @@ The code alphabet deliberately omits look-alike characters (no `0`, `1`, `I`, `O
 
 > **Tip:** If you wait too long and your code expires, press **Resend code** to get a fresh one. The screen confirms that a fresh code went to your inbox.
 
-> **Warning:** While verification applies and you are an unverified non-admin user, you can only view your own account, log out, change/verify your email, and resend the code. LeapMux refuses every other action until you verify. Administrators are exempt.
+> **Warning:** While verification applies and you are an unverified non-admin user, you can only view your own account, sign out, change/verify your email, and resend the code. LeapMux refuses every other action until you verify. Administrators are exempt.
 
 ## Passkeys
 
@@ -180,11 +180,11 @@ If your administrator configures one or more external identity providers — Git
 2. Your browser is handed off to the provider, where you authorize LeapMux.
 3. The provider sends you back to LeapMux, which finishes the sign-in.
 
-In short, the redirect chain is: Browser -> Hub (starts sign-in) -> Provider (you authorize) -> Hub callback (finishes sign-in, establishes session).
+The redirect chain is: Browser -> Hub (starts sign-in) -> Provider (you authorize) -> Hub callback (finishes sign-in, establishes session).
 
 What happens at step 3 depends on whether the identity is already known:
 
-- **Already linked** to a LeapMux account → you are logged straight in.
+- **Already linked** to a LeapMux account → you are signed in at once.
 - **Not linked, but the verified email matches an existing account** → LeapMux may link the identity automatically and log you in. This only happens when the administrator marked that provider as one that trusts emails.
 - **A brand-new identity** → if self-service signup is enabled, you are taken to a short completion page; otherwise sign-in is refused because there is no account to attach the identity to.
 
@@ -198,7 +198,7 @@ For a new identity, you land on the **"Complete Sign Up"** page. It greets you w
 | --- | --- |
 | **Username** | Required. Same slug rules as everywhere else; `solo` and `admin` are both reserved here. |
 | **Display Name** | Pre-filled from the provider; editable. |
-| **Email** | Read-only, shown only if the provider supplied one. |
+| **Email** | Read-only when the provider supplied one; otherwise editable, and required when the hub has SMTP configured. |
 
 Click **Create account**. On success you are signed in. If your email still needs verification, you are routed to the verification screen first; otherwise you go straight to `/`.
 
@@ -212,7 +212,7 @@ When the hub has SMTP configured, the login page offers **Can't sign in?** under
 2. Enter your **email or username** and click **Send recovery link**.
 3. Open the emailed link (or paste the token from `/recover-account/complete?token=…`) and choose a new password — the account's **first** one if it never had a password.
 
-The link is **single-use** and **expires after one hour**, and it stays unspent until you actually submit a new password. If the browser is already signed in when you open it, the page says so and offers **Sign out and continue** — sign out, and the same address shows the form. The hub answers the request identically whether or not the identifier matched, so the flow cannot be used to probe which accounts exist.
+The link is **single-use** and **expires after one hour**, and it stays unspent until you submit a new password. If the browser is already signed in when you open it, the page says so and offers **Sign out and continue** — sign out, and the same address shows the form. The hub answers the request identically whether or not the identifier matched, so the flow cannot be used to probe which accounts exist.
 
 Completing recovery **clears every passkey** on the account, revokes other sessions, and revokes API/delegation tokens — the same break-glass posture as an admin password reset. Linked providers stay linked. Sign in with the new password and add a passkey again if you still want passwordless sign-in.
 
@@ -246,7 +246,7 @@ Every account owns its own workspaces, agents, and terminals. There is no sharin
 
 ## Sessions and signing out
 
-When you log in, LeapMux issues a session and stores it in a secure, `HttpOnly` cookie that your browser sends on every request. Key facts:
+When you sign in, LeapMux issues a session and stores it in a secure, `HttpOnly` cookie that your browser sends on every request. Key facts:
 
 | Property | Value |
 | --- | --- |
@@ -256,9 +256,9 @@ When you log in, LeapMux issues a session and stores it in a secure, `HttpOnly` 
 
 **The clock runs from your last activity, not from your login.** Each action you take in the app slides the expiry forward and refreshes the cookie, so a session you keep using does not run out. The lifetime is an idle timeout: stay away for the whole period without touching LeapMux and you are signed out.
 
-**Staying signed in.** As long as your session did not expire, a page reload keeps you logged in — LeapMux restores your session on load. If your session expired, or somebody revoked it, a failed request signs you out without a message; log in again.
+**Staying signed in.** As long as your session did not expire, a page reload keeps you signed in — LeapMux restores your session on load. If your session expired, or somebody revoked it, a failed request signs you out without a message; sign in again.
 
-**Signing out.** Use the log-out action in the app. It ends your session on the server and clears the cookie. (In solo mode, "log out" does nothing — there is no session to end.)
+**Signing out.** Use **Log out** in the user menu. It ends your session on the server and clears the cookie. (Solo mode offers no **Log out** item — there is no session to end.)
 
 **Changing your password signs out your other sessions.** When you change your password, LeapMux invalidates every *other* active session (the current one stays signed in) and revokes your API and delegation tokens. This is a security feature: if someone else had a session, changing your password locks them out. See [Control CLI](/docs/using/control-cli/) for administrator-side session management.
 
@@ -294,9 +294,11 @@ See [Passkeys](#passkeys) above for the full passkey management surface in this 
 
 ### Connected apps
 
-This row sits one category over, in the dialog's **Apps** section, beside **App registrations**. Every app that holds access to your account appears here, **grouped by app**: one block per app, and under it one row per machine that app runs on, with every permission you granted, when it was last used, and when it stops working. A credential that can administer the Hub says so.
+This row sits one category over, in the dialog's **Apps** section, beside **App registrations**. Every app that holds access to your account appears here, **grouped by app**: one block per app, and under it one row per machine that app runs on. Each row lists every permission you granted, when it was last used, and when it stops working. A credential that can administer the Hub says so.
 
-**Disconnect**, on the app's line, ends your whole authorization of it — every machine at once. **Revoke**, on one row, ends that machine only and leaves the app working elsewhere. Either way the app must be authorized again to come back. Both are among the few account changes that need no verification, so you can act the moment you suspect an app is malicious. `leapmux control auth credentials` prints the same list from a terminal.
+**Disconnect**, on the app's line, ends your whole authorization of it — every machine at once. **Revoke**, on one row, ends that machine only and leaves the app working elsewhere. Either way the app must be authorized again to come back. Both are among the few account changes that need no verification, so you can act the moment you suspect an app is malicious.
+
+`leapmux control auth credentials` prints the same list from a terminal.
 
 See [Connected Apps](/docs/using/connected-apps/) for how to read a row and what registering your own app involves, and [App credentials](/docs/admin/security/#app-credentials) for what a credential can do, how long it lives, and the email notice you get when one is issued.
 

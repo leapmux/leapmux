@@ -28,7 +28,7 @@ Mint a key in the Hub UI: open the sidebar **Workers** section, click the **+** 
 leapmux worker --hub https://hub.example.com --registration-key <key>
 ```
 
-The key is only valid while the **Register worker** dialog stays open (5-minute TTL, auto-extended while open). If you close the dialog, the key is destroyed — reopen it to mint a fresh one. See [Managing Workers](/docs/admin/managing-workers/) for minting keys via the UI, email, or the CLI.
+The key is only valid while the **Register worker** dialog stays open (5-minute TTL, auto-extended while open). If you close the dialog, the key is destroyed — reopen it to mint a fresh one. See [Managing Workers](/docs/admin/managing-workers/) for minting keys via the UI or email, and for listing or revoking keys from the CLI.
 
 ### The Hub rejects the registration because the key is invalid or already used
 
@@ -126,7 +126,7 @@ leapmux worker cross-worker-pins list                              # see all pin
 leapmux worker cross-worker-pins remove --target-worker-id <id>    # clear one pin
 ```
 
-There is no UI for clearing key pins — pin removal is CLI-only. See [Control CLI](/docs/using/control-cli/) and [Managing Workers](/docs/admin/managing-workers/).
+The browser clears its own pins under **Preferences → Advanced → Trusted worker keys**. The control CLI's pins and a Worker's cross-worker pins have no UI; clear them with the commands above. See [Control CLI](/docs/using/control-cli/) and [Managing Workers](/docs/admin/managing-workers/).
 
 ## Ports, listen address, and reaching the UI
 
@@ -240,7 +240,9 @@ Sign-in is refused, and the form says only that the credentials are invalid.
 For security, the Hub returns the identical error for both an unknown username and a wrong password — there's no way to tell which from the message. Usernames are lowercase slugs; passwords are 8-128 printable ASCII characters, and a password may hold spaces.
 
 **Fix**
-Double-check the exact username (lowercase, hyphens, no spaces). If you've lost the password, have an admin reset it with `leapmux control admin user reset-password` (see [User passwords](/docs/admin/admin-cli/#user-passwords)), which runs over RPC against the live Hub. When the Hub is stopped, `leapmux recover password reset` does the same work offline (see [Recovery](/docs/admin/recover/)); that command opens the Hub's database directly, so run it on the Hub host with the Hub stopped. Either way, every session, token, **and passkey** the account holds is revoked. Note: solo mode has no login at all — if you expected a login page in solo mode, you won't get one; it auto-authenticates.
+Double-check the exact username (lowercase, hyphens, no spaces). If you've lost the password, have an admin reset it with `leapmux control admin user reset-password` (see [User passwords](/docs/admin/admin-cli/#user-passwords)), which runs over RPC against the live Hub. When the Hub is stopped, `leapmux recover password reset` does the same work offline (see [Recovery](/docs/admin/recover/)); that command opens the Hub's database directly, so run it on the Hub host with the Hub stopped.
+
+Either way, every session, token, **and passkey** the account holds is revoked. Solo mode has no login at all — it auto-authenticates every request.
 
 ### Passkey sign-in fails or the authenticator never appears
 
@@ -251,8 +253,8 @@ Choosing **Passkey** on the login or signup form does nothing useful, the browse
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| The **Passkey** option is still on the login page but **disabled**, and its reason identifies an insecure page; **Add passkey** carries the same reason | The page is plain HTTP away from `localhost`, so the browser exposes no WebAuthn API at all | Serve the Hub over HTTPS, or open it at a `localhost` address. This is the browser's rule, not the Hub's: no value of `public_url` changes it. A Hub published at a plain-HTTP LAN address hits exactly this, and the ceremony used to fail with the browser's own "WebAuthn is not supported in this browser". |
-| The login page offers **no Passkey option at all**, and **Add passkey** is disabled with a reason that identifies the address | The page origin is not one the Hub serves, so no ceremony can run there. The forms drop the option rather than disabling it, because this refusal is the same for every visitor | Set `public_url` to the exact origin users open in the browser (`leapmux control admin settings set public_url https://hub.example.com`), or open the Hub at the address it already publishes. Localhost and `127.0.0.1` are different RPIDs, and so are two ports of one host. The Hub reports this per request, so the affordances state the reason instead of failing after the click. A change made in **Preferences → Administration** reaches the affordance at once; you need no page reload. |
+| The **Passkey** option is still on the login page but **disabled**, and its reason identifies an insecure page; **Add passkey** carries the same reason | The page is plain HTTP away from `localhost`, so the browser exposes no WebAuthn API at all | Serve the Hub over HTTPS, or open it at a `localhost` address. This is the browser's rule, not the Hub's: no value of `public_url` changes it. A Hub published at a plain-HTTP LAN address hits exactly this. |
+| The login page offers **no Passkey option at all**, and **Add passkey** is disabled with a reason that identifies the address | The page origin is not one the Hub serves, so no ceremony can run there. The forms drop the option rather than disabling it, because this refusal is the same for every visitor | Set `public_url` to the exact origin users open in the browser (`leapmux control admin settings set public_url https://hub.example.com`), or open the Hub at the address it already publishes. `localhost` and `127.0.0.1` count as different origins, and so do two ports of one host. A change made in **Preferences → Administration** reaches the option at once; you need no page reload. |
 | The **Passkey** option is disabled and its reason identifies the browser | This browser has no WebAuthn support at all, whatever the page is served over | Use a browser that supports passkeys. This is the browser's rule too, so no Hub setting changes it. The option stays visible and disabled, exactly as the insecure-page case does. |
 | "origin header is required" / ceremony fails immediately | The browser request omitted `Origin` | Use a normal browser navigation to the Hub UI; do not strip `Origin` in a reverse proxy for `/leapmux.v1.*` RPCs. |
 | A passkey-only account cannot verify its identity for any account change | The page cannot run a passkey ceremony at all | The **Verify your identity** form states which reason applies and what to do. Fix that one: serve the Hub over HTTPS, or set `public_url` as in the rows above. An account with a passkey and no password has no other way to verify: elevation does not fall back to a linked provider. See [Session elevation](/docs/admin/security/#session-elevation). |
@@ -260,7 +262,7 @@ Choosing **Passkey** on the login or signup form does nothing useful, the browse
 | After account recovery, passkey login fails | Expected: recovery clears all passkeys | Sign in with the new password, then add passkeys again under **Preferences → Account → Passkeys**. |
 | The passkey is gone with the device, or the provider account is lost, and there is no password | The account holds no usable sign-in method | Recover it with **Can't sign in?** on the login page (or `/recover-account`): the emailed link lets you set a password regardless of how the account used to sign in. Requires a verified email and SMTP; otherwise an admin resets the password (see above). |
 
-Self-service account recovery (`/recover-account`) also clears every passkey on the account when it completes — the same break-glass rule as admin and offline password reset.
+Self-service account recovery (`/recover-account`) also clears every passkey on the account when it completes — the same rule as admin and offline password reset.
 
 ### Almost every action is refused until you verify your email
 
@@ -268,7 +270,7 @@ Self-service account recovery (`/recover-account`) also clears every passkey on 
 After signing up you're stuck — almost every action is refused because your email is unverified, and you land on the **"Verify your email"** page.
 
 **Cause**
-The hub has SMTP configured, so non-admin users with an unverified email may only verify, log out, or change their email until they verify. Verification uses a 6-character code (display form `XXX-XXX`) that expires in 30 minutes with a 5-attempt budget.
+The hub has SMTP configured, so non-admin users with an unverified email may only verify, sign out, or change their email until they verify. Verification uses a 6-character code (display form `XXX-XXX`) that expires in 30 minutes with a 5-attempt budget.
 
 **Fix**
 Enter the code from the verification email, or click the link in it. If you didn't receive it, use **Resend code** (60-second cooldown between resends). Email features require SMTP to be configured on the Hub — if the administrator hasn't configured SMTP (`leapmux control admin settings set smtp …`), verification is off and this requirement does not apply. See [Configuration](/docs/admin/configuration/).
@@ -318,11 +320,11 @@ An authorized app gets `permission_denied` that states the permission, such as *
 
 **Cause and fix:**
 
-The credential holds what the consent screen granted, not what the app asked for. Open **Preferences → Account → Connected apps** and read the row: the permissions listed there are exactly what it can do. Authorize the app again to grant more; a refresh can only ever narrow a grant, never widen one.
+The credential holds what the consent screen granted, not what the app asked for. Open **Preferences → Apps → Connected apps** and read the row: the permissions listed there are exactly what it can do. Authorize the app again to grant more; a refresh can only ever narrow a grant, never widen one.
 
 Two refusals are permanent whatever you grant:
 
-- **The account's own authenticators.** Adding a passkey, changing the recovery address, unlinking a sign-in provider, and managing another app's credential are outside every grant. No consent screen offers them.
+- **The account's own sign-in settings.** Adding a passkey, changing the recovery address, unlinking a sign-in provider, and managing another app's credential are outside every grant. No consent screen offers them.
 - **An admin permission on an ordinary account.** A grant subtracts from what the owner can do and never adds, so `admin:users` on a non-administrator reaches nothing.
 
 ### A sensitive change is refused although the app is authorized
@@ -338,7 +340,7 @@ An app is refused the step-up ceremony unless its owner allowed it. An administr
 leapmux control admin app allow-elevation --client-id <client_id>
 ```
 
-Turning it off closes every open window on the next request, so a credential that worked a moment ago stops immediately. That is the intended behaviour, not a stale cache.
+Turning it off closes every open window on the next request, so a credential that worked a moment ago stops immediately. That is the intended behavior, not a stale cache.
 
 ### `invalid_grant`, and the app must be authorized again
 
@@ -382,7 +384,7 @@ The **Agent Provider** selector shows **"No agents available"**, or the provider
 A provider only appears if **its CLI binary is detected on the Worker**. The Worker probes the shell for each provider's binary (`claude`, `codex`, `cursor-agent`, `copilot`, `kilo`, `opencode`, `goose`, `pi`, `reasonix`) and lists only the ones it finds on `PATH`.
 
 **Fix**
-Install the agent's own CLI on the **Worker** machine (not where the browser runs) and make sure it's on the Worker's `PATH`. Then click the refresh button (**"Refresh available providers"**) in the selector, or reopen the dialog. Note: Pi only ever shows when the `pi` binary is actually detected.
+Install the agent's own CLI on the **Worker** machine (not where the browser runs) and make sure it's on the Worker's `PATH`. Then click the refresh button (**"Refresh available providers"**) in the selector, or reopen the dialog.
 
 ### The agent fails to start
 
@@ -395,7 +397,7 @@ The agent subprocess couldn't be launched or didn't complete its startup handsha
 **Fix**
 - Read the error text shown in the pane — it comes straight from the Worker and usually identifies the cause.
 - On the Worker, run the agent's CLI directly (e.g. `claude --version`) to confirm it works and is authenticated.
-- If startup is legitimately slow, raise the timeout: `leapmux worker --agent-startup-timeout 10m` (or the equivalent key in config). This flag exists on the Worker and on `hub`/`solo`/`dev` modes. See [Configuration](/docs/admin/configuration/).
+- If startup is legitimately slow, raise the timeout: `leapmux worker --agent-startup-timeout 10m` (or the equivalent key in config). The flag exists on the Worker only; in solo/dev the embedded worker reads the timeout from the `timeouts` setting: `leapmux control admin settings set timeouts '{"agent_startup_seconds":600}'`. See [Configuration](/docs/admin/configuration/).
 - Reopen the agent once the underlying CLI issue is fixed.
 
 ### A model, effort, or permission-mode change seems to "reset" the agent
@@ -404,7 +406,9 @@ The agent subprocess couldn't be launched or didn't complete its startup handsha
 Changing the model or effort from a composer chip or the **[+]** menu restarts the agent.
 
 **Cause**
-Most settings changes are applied **live**, without a restart: switching effort to a concrete level (e.g. high → xhigh) and changing the permission mode are applied in place for both Claude Code and Codex. A restart only happens when you switch effort back to **Auto** (the CLI has to relaunch without an `--effort` flag to hand the default back to the CLI), or — implicitly — when you change the model, which resets effort to Auto and trips the same relaunch. The change is applied optimistically and rolled back on failure.
+Most settings changes are applied **live**, without a restart: switching effort to a concrete level (e.g. high → xhigh) and changing the permission mode are applied in place for both Claude Code and Codex.
+
+A restart happens only when you switch effort back to **Auto** — the CLI must relaunch without an `--effort` flag. Changing the model resets effort to Auto, so it restarts too. The change is applied optimistically and rolled back on failure.
 
 **Fix**
 No action needed — wait for the agent to come back up. If it fails to restart, you'll see the start failure described above; resolve that.

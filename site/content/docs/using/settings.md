@@ -16,7 +16,7 @@ The dialog opens from the **user menu** — the avatar dropdown in the app shell
 | macOS | `⌘,` |
 | Windows / Linux | `Ctrl+,` |
 
-This is the `app.openPreferences` command (default binding `$mod+Comma`). In the Tauri desktop app the native menu also has a **Preferences...** item that opens the same dialog.
+This is the `app.openPreferences` command (default binding `$mod+Comma`). On macOS, the desktop app's native menu also has a **Preferences...** item that opens the same dialog.
 
 > **Note:** The dialog is a tall modal with a titled header. Press `Escape` to close, or click outside the dialog body.
 
@@ -36,7 +36,7 @@ The user categories, in navigation order:
 | Category | Covers |
 |---|---|
 | **Account** | Profile name, email, password, passkeys, linked accounts. The section the dialog opens on. Solo mode hides every row, and the category disappears from the dialog. |
-| **Apps** | The app errand in two rows: **Connected apps** (what your account authorized) and the app registrations you own. An ordinary account may register an app for itself; an administrator's registrations are visible to everybody. Both rows stay in solo mode, because a solo Hub authorizes apps like any other. See [App Authorization](/docs/admin/app-authorization/). |
+| **Apps** | The apps feature in two rows: **Connected apps** (what your account authorized) and the app registrations you own. An ordinary account may register an app for itself; an administrator's registrations are visible to everybody. Both rows stay in solo mode, because a solo Hub authorizes apps like any other. See [App Authorization](/docs/admin/app-authorization/). |
 | **Appearance** | Theme (palette + light/dark), terminal theme, syntax theme, diff view, UI fonts, monospace fonts. |
 | **Notifications** | Turn-end sound and volume, terminal OS notifications. |
 | **Chat & Composer** | Expand agent thoughts, show hidden messages, Enter key behavior, composer status bar. |
@@ -52,7 +52,7 @@ Administrators additionally see an **ADMINISTRATION** group in the navigation, b
 The Account category carries your account settings, as one row per concern. It leads the navigation. Solo mode hides every row here — a solo deployment has one local identity, so there is no password, address or provider to manage — and the category disappears from the dialog. For the broader account lifecycle — sign-up, login, OAuth, email verification, sessions — see [Accounts & Authentication](/docs/using/accounts/).
 
 - **Profile** — your username and display name, saved together. A username is a lowercase slug, and `solo` is always reserved. A display name falls back to the username when empty.
-- **Email** — changing it may require verification (an administrator-configured policy); a pending change shows a notice until confirmed.
+- **Email** — changing it requires verification when the Hub has a mail relay configured (see [Email (SMTP)](#email-smtp) below); a pending change shows a notice until confirmed.
 - **Password** — 8–128 printable ASCII characters, spaces included (see [Password requirements](/docs/using/accounts/#password-requirements)) with a live strength meter. Changing it signs out all your *other* sessions and disconnects every app; your current session stays signed in. OAuth-only accounts can set a first password here.
 - **Passkeys** — the credentials registered to this account, with add, rename and remove. See [Managing passkeys in your profile](/docs/using/accounts/#managing-passkeys-in-your-profile).
 - **Linked accounts** — your linked OAuth/OIDC providers, each with an **Unlink** button. You cannot detach your only sign-in method without a password set.
@@ -61,13 +61,15 @@ Four of those five rows need a **verified session**: email, password, passkeys, 
 
 ## Apps
 
-The category holds the whole app errand in two rows, authorization first.
+The category holds the whole apps feature in two rows, authorization first.
 
 **Connected apps** lists every app holding access to your account, grouped by app, with the permissions each was granted. **Disconnect** on the app's line ends every machine it runs on; **Revoke** on one row ends that machine alone. See [Connected Apps](/docs/using/connected-apps/).
 
-**App registrations** lists the apps you registered, with **Register app**, and per row the permission ceiling it may ask for, whether an administrator vouched for it, **Edit** (the name, home page, redirect addresses and that ceiling), **Allow step-up** or **Refuse step-up**, and **Retire**. Narrowing that ceiling takes the permission from every credential the app already holds, so it is the lever to reach for short of retiring the app outright. Yours are visible to you alone; an administrator's are visible to everybody and only an administrator can edit them. Administrators also get **Vouch** and **Withdraw vouch** on every row. See [App Authorization](/docs/admin/app-authorization/) for what each field decides.
+**App registrations** lists the apps you registered, with **Register an app**, and per row the permission ceiling it may ask for, whether an administrator vouched for it, **Edit** (the name, home page, redirect addresses and that ceiling), **Allow step-up** or **Refuse step-up**, and **Retire**.
 
-**App registrations** needs a **verified session**; **Connected apps**, the row above it, does not. The asymmetry is the point: disconnecting reduces access, while editing a registration rewrites **where a consent redirects** — the single most dangerous write in the feature, because it diverts an authorization code already in flight to an address the editor chose. Registering an app, allowing it the step-up ceremony, and vouching for it take the same rule.
+Narrowing that ceiling also removes that permission from every credential the app already holds; retiring the app is the only stronger action. Yours are visible to you alone; an administrator's are visible to everybody and only an administrator can edit them. Administrators also get **Vouch** and **Withdraw vouch** on every row. See [App Authorization](/docs/admin/app-authorization/) for what each field decides.
+
+**App registrations** needs a **verified session**; **Connected apps**, the row above it, does not. Disconnecting reduces access. Editing a registration rewrites **where a consent redirects**, so it can divert an authorization code already in flight to an address the editor chose — which is why that row needs the proof. Registering an app, allowing it the step-up ceremony, and vouching for it take the same rule.
 
 Administrators additionally see the **Hub-wide Apps** category under **ADMINISTRATION** — see [Hub-wide Apps](#hub-wide-apps) below.
 
@@ -89,9 +91,9 @@ The screens shown *before* you sign in carry no theme control: the desktop launc
 
 ### Terminal theme
 
-The same two choices, for terminal tabs, plus one more palette: **Match UI**. Choosing it hands the whole row to the app, so the mode pills grey out and report the mode the app is on. Choosing any other palette detaches the row and hands the pills back, starting from the app's own mode — so the terminal looks the same until you change it.
+The same two choices, for terminal tabs, plus one more palette: **Match UI**. Choosing **Match UI** links the row to the app theme: the mode pills are disabled and show the app's mode. Choosing any other palette unlinks the row. The pills then start from the app's mode, so the terminal keeps its current look.
 
-The palettes are the same ones the app offers. Each supplies its own sixteen ANSI colors, and the terminal's background, foreground, cursor and selection come from that same palette, so a terminal on a theme other than the app's is still coherent in itself. Where a palette's ANSI set belongs to another project, the entry identifies that project beside the palette, so the scheme that you already see stays findable under its own name.
+The palettes are the same ones the app offers. Each supplies its own sixteen ANSI colors, and the terminal's background, foreground, cursor and selection come from that same palette, so a terminal on a theme other than the app's stays consistent. Where a palette's ANSI set belongs to another project, the entry names that project beside the palette.
 
 A dual-tier setting; the built-in default is **Match UI**. That default is why the theme picker on the empty state moves the terminal too — there is only one choice to make until you come here and detach it. See [Terminals](/docs/using/terminals/).
 
@@ -101,7 +103,7 @@ Colors for highlighted code, in chat, the editor, diffs and file views. The same
 
 Each palette highlights with its own project's editor theme, credited in `NOTICE`. Where a palette has no editor theme of its own, its entry identifies the one it borrows, the same way the terminal list does.
 
-Unlike the palette and the mode, this one is not free to change: highlighting bakes each color into the code as it is tokenized, so switching re-highlights and code repaints as you scroll back through it.
+Unlike the palette and the mode, this one costs more to change: highlighting stores each token's color, so a switch re-highlights the code and it repaints as you scroll back through it.
 
 ### Diff view
 
@@ -128,11 +130,11 @@ A family holds up to 32 names, and the panel reports a name it cannot use. For m
 
 ### Turn-end sound
 
-Plays a notification sound when a coding agent finishes a turn: **None** or **Ding dong** (the built-in default). The sound is intentionally restrained — only the focused client plays it, so it does not double across tabs or devices, and it is skipped for single-exchange turns and rate-limited to at most one chime per minute. See [Device Sync](/docs/using/device-sync/).
+Plays a notification sound when a coding agent finishes a turn: **None** or **Ding dong** (the built-in default). The sound is intentionally restrained. Only the focused client plays it, so it does not double across tabs or devices. Single-exchange turns are skipped, and it plays at most once per minute. See [Device Sync](/docs/using/device-sync/).
 
 ### Turn-end volume
 
-A 0–100% slider (built-in default 100%), shown when the turn-end sound is not **None**. A dual-tier setting.
+A 0–100% slider (built-in default 100%), shown unless the sound is **None** on both this device and the account. A dual-tier setting.
 
 ### Terminal OS notifications
 
@@ -146,7 +148,7 @@ Per-device toggles for the chat surface. The in-context controls — the tab-bar
 |---|---|---|---|
 | **Expand agent thoughts** | On | Tab bar menu | Whether agent thinking/reasoning bubbles start expanded. |
 | **Show hidden messages** | Off | Tab bar menu | Developer view that reveals hidden chat messages. |
-| **Enter key behavior** | **Cmd/Ctrl+Enter sends** | Composer **[+]** menu (**Send with ⌘⏎**) | Whether plain Enter sends a chat message or inserts a newline. The other choice is **Enter sends**. |
+| **Enter key behavior** | **Cmd/Ctrl+Enter sends** | Composer **[+]** menu (**Send with ⌘/Ctrl+⏎**) | Whether plain Enter sends a chat message or inserts a newline. The other choice is **Enter sends**. |
 | **Composer status bar** | On | Composer **[+]** menu | Whether the branch/model/effort/mode chips show beneath the editor box. |
 
 ## Terminal
@@ -157,11 +159,11 @@ Per-device toggles for the chat surface. The in-context controls — the tab-bar
 
 ## Files & Editors
 
-Per-device toggles for files and external editors. As with the chat toggles, the in-context controls — the editor menu on **Open in Editor**, the file viewer's save action, the directory picker — change the same stored value as these rows.
+Per-device toggles for files and external editors. As with the chat toggles, the in-context controls — the editor menu on **Open in …**, the file viewer's save action, the directory picker — change the same stored value as these rows.
 
 | Setting | Default | Also toggled from | What it does |
 |---|---|---|---|
-| **Preferred editor** | First detected (desktop only) | The editor menu on **Open in Editor** | Which external editor opens files. |
+| **Preferred editor** | First detected (desktop only) | The editor menu on **Open in …** | Which external editor opens files. |
 | **Reveal after download** | On (desktop only) | The file viewer's save action | Reveals a downloaded file in Finder / Explorer / Files after saving. |
 | **Hidden files in directory picker** | On | The directory picker itself | Whether the directory picker lists dotfiles. |
 
@@ -173,13 +175,13 @@ The **Keyboard Shortcuts** category is a table of every command with its default
 
 - **Debug logging** — verbose client-side logging in the browser console; a dual-tier setting, off by default.
 - **Trusted worker keys** — the list of worker keys that your browser trusts (TOFU). Remove individual pins or clear them all; the next connect re-prompts.
-- **Reset all browser overrides** — the **Reset overrides** button removes every **This device** override at once, returning every dual-tier setting to its account default.
+- **Reset all browser overrides** — the **Reset overrides** button removes every **This device** override at once. Dual-tier settings return to their account default, and browser-only settings return to their built-in default. Trusted worker keys are kept.
 
 ## Administration
 
 Administrators see a second group in the navigation, **ADMINISTRATION**, below the user categories. Its rows are the Hub's own instance settings: the Hub authenticates and validates every write, and every write needs a **verified session** — several of these keys are the Hub's own security controls. The first change in a sitting opens a **Verify your identity** dialog and then lands on its own; see [Session elevation](/docs/admin/security/#session-elevation).
 
-Most rows apply without a restart. The Hub that serves the write applies the change at once, and another Hub on the same database picks it up within ~30 seconds. The dialog re-reads the Hub's own state after every accepted write, so a key that decides what the rest of the app offers converges immediately: publish the Hub's URL and **Add passkey** in the **Account** category stops being disabled, with no page reload. The two rows that apply only after a Hub restart carry a **Requires Restart** badge. Solo mode omits the categories a single-user Hub has no use for; each category below states what stays.
+Most rows apply without a restart. The Hub that serves the write applies the change at once, and another Hub on the same database picks it up within ~30 seconds. The dialog re-reads the Hub's state after every accepted write. For example, publish the Hub's URL and **Add passkey** in the **Account** category stops being disabled, with no page reload. The two rows that apply only after a Hub restart carry a **Requires Restart** badge. Solo mode omits the categories a single-user Hub has no use for; each category below states what stays.
 
 ### General
 
