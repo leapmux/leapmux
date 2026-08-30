@@ -51,7 +51,7 @@ Each branch row has a **`...`** context menu with exactly two items:
 
 Both items act through the Worker that hosts the repository. LeapMux greys them out, with the reason on hover, while that Worker is offline. The `(no branch)` row carries no menu at all, because it has no branch to change or delete.
 
-> **Note:** A detached-HEAD row keeps its menu, because its short-SHA label is a real label. **Delete branch** fails there: the row names a commit and not a branch, so the Worker has no branch to force-delete. It reports that failure only after it already switched the working directory to the branch you picked. Use **Create new branch** first to get onto a real branch.
+> **Note:** A detached-HEAD row keeps its menu, because its short-SHA label is a real label. **Delete branch** fails there — the row names a commit, not a branch — and only after the working directory has already been switched to the branch you picked. Use **Create new branch** first to get onto a real branch.
 
 ### The branch chip in the composer
 
@@ -216,7 +216,7 @@ LeapMux removes a worktree only as part of closing the tabs that point at it, so
 
 > **Warning:** **Close anyway** does not push and does not delete. It closes the tab. Any uncommitted changes stay on disk in the worktree, but you lose the tab that points at it. Use **Push** / **Commit and Push** first if the status block shows work you want to keep.
 
-> **Note:** This dialog needs the Worker, because only the Worker reads the branch's git state. With that Worker offline the tab closes without the dialog, and the worktree stays on disk while the Worker is down. This is **not** the same as **Close anyway**: that choice keeps the worktree whatever its state, but a close made while the Worker was offline leaves the worktree unreferenced. When the Worker returns, its housekeeping pass reclaims an unreferenced worktree — including the directory and the branch. It leaves any worktree that holds uncommitted or unpushed work for you, so your work is safe either way.
+> **Note:** This dialog needs the Worker, because only the Worker reads the branch's git state. With that Worker offline, the tab closes without the dialog and the worktree is left unreferenced; when the Worker returns, its housekeeping pass reclaims it — directory and branch — unless it holds uncommitted or unpushed work, which is always left for you.
 
 ## Where git operations run
 

@@ -59,7 +59,7 @@ The desktop app runs solo mode under the hood, but with no TCP port at all — i
 leapmux hub -listen :4327
 ```
 
-A fresh Hub has no users and (by default) sign-up disabled. Create the first administrator offline with [`leapmux recover bootstrap create-admin`](/docs/operating/recover/). That command refuses once any admin exists. Then log in as that administrator. Enable sign-up with `leapmux control admin settings set signup_enabled true`, or create each account with `leapmux control admin user create`. The most important Hub flags:
+A fresh Hub has no users and (by default) sign-up disabled. Open it in a browser and the root path sends you to the `/setup` form — the first person to register becomes the administrator (see [Accounts & Authentication](/docs/using/accounts/)). You can also create that first admin offline with [`leapmux recover bootstrap create-admin`](/docs/operating/recover/), which refuses once any admin exists. Then log in as that administrator. Enable sign-up with `leapmux control admin settings set signup_enabled true`, or create each account with `leapmux control admin user create`. The most important Hub flags:
 
 | Flag | Default | Meaning |
 |------|---------|---------|

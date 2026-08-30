@@ -212,7 +212,7 @@ This deletes the provider configuration (including the stored client secret) per
 
 The Hub refuses such a removal. The error carries the `failed_precondition` code, identifies the provider, and counts the accounts that the removal would lock out.
 
-Give each of those users another login method, then run `remove` again. They can set a password themselves under **Password** in the Profile dialog, or link a second enabled provider — see [Accounts & Authentication](/docs/using/accounts/). An admin can also set a password offline with `leapmux recover password reset` (see [Recovery](/docs/operating/recover/)), which needs the Hub host and the Hub stopped.
+Give each of those users another login method, then run `remove` again. They can set a password themselves under **Preferences → Account → Password**, or link a second enabled provider — see [Accounts & Authentication](/docs/using/accounts/). An admin can also set a password offline with `leapmux recover password reset` (see [Recovery](/docs/operating/recover/)), which needs the Hub host and the Hub stopped.
 
 > **Warning:** `--force` removes the provider even when accounts lose their last login method. Those users cannot sign in again, and only `leapmux recover password reset` restores their access. Give them another login method first.
 
@@ -231,7 +231,7 @@ Once at least one provider is enabled, LeapMux shows the buttons automatically:
 - The **login** page shows a "Sign in with …" section above the username/password form (e.g. "Sign in with GitHub"), separated by an "or" divider.
 - The **sign-up** page (when `signup_enabled=true`) shows a "Sign up with …" section above the form, separated by an "or create an account with email" divider.
 - A first-time OAuth user is taken to a **"Complete Sign Up"** page to choose a username; the email (if the provider supplied one) is shown read-only.
-- Users can link and unlink OAuth identities from the **Profile** dialog's "Linked Accounts" section. A user cannot unlink their only login method without first setting a password.
+- Users can link and unlink OAuth identities from **Preferences → Account → Linked accounts**. A user cannot unlink their only login method without first setting a password.
 
 All of this UI is covered in detail in [Accounts & Authentication](/docs/using/accounts/); it requires no extra configuration beyond enabling the provider.
 

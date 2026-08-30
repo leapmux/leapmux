@@ -257,7 +257,7 @@ Choosing **Passkey** on the login or signup form does nothing useful, the browse
 | "origin header is required" / ceremony fails immediately | The browser request omitted `Origin` | Use a normal browser navigation to the Hub UI; do not strip `Origin` in a reverse proxy for `/leapmux.v1.*` RPCs. |
 | A passkey-only account cannot verify its identity for any account change | The page cannot run a passkey ceremony at all | The **Verify your identity** form states which reason applies and what to do. Fix that one: serve the Hub over HTTPS, or set `public_url` as in the rows above. An account with a passkey and no password has no other way to verify: elevation does not fall back to a linked provider. See [Session elevation](/docs/operating/security/#session-elevation). |
 | Passkey login works but app access is blocked | SMTP is configured and the email is still unverified | Complete `/verify-email` (or use **Resend code**). Passkey login does not skip email verification. |
-| After password reset, passkey login fails | Expected: reset clears all passkeys | Sign in with the new password, then add passkeys again under **Profile → Passkeys**. |
+| After password reset, passkey login fails | Expected: reset clears all passkeys | Sign in with the new password, then add passkeys again under **Preferences → Account → Passkeys**. |
 
 Self-service password reset (`/forgot-password`) also clears every passkey on the account when the reset completes — the same break-glass rule as admin and offline password reset.
 
@@ -285,7 +285,7 @@ OAuth buttons don't appear on the login page, or clicking one ends in an error. 
 | The error says the provider returned no email address | The provider config does not have the email scope | Grant the `email`/`user:email` scope; reconfigure the provider's `--scopes`. |
 | Stuck on "Complete Sign Up" then rejected | New OAuth user but sign-up is disabled | `leapmux control admin settings set signup_enabled true`, or link the OAuth identity to an existing account by signing in and verifying the matching email. |
 | The **Complete Sign Up** page says the signup link is invalid or expired | The pending OAuth signup expired or the `?token=` link was reused | Start the OAuth sign-in over from the login page (see note below). |
-| OAuth user logs in but can't unlink | It's their only login method | Set a password first in the **Profile** dialog, then unlink. |
+| OAuth user logs in but can't unlink | It's their only login method | Set a password first under **Preferences → Account → Password**, then unlink. |
 
 > **Note:** An invalid or expired signup link means the pending OAuth signup ran past its 5-minute window, or the `?token=` link was reused or already completed. Start the OAuth sign-in over from the login page to mint a fresh pending signup, then pick a username promptly. A blank **Complete Sign Up** page that reports a missing signup token means you opened the URL without its `?token=` — restart from the login page.
 

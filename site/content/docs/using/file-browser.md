@@ -69,7 +69,7 @@ The menu stays open while you set both, and closes on `Esc` or a click outside i
 Two rules hold under every order:
 
 - **Directories come first**, and files follow.
-- **Directories sort by path, ascending**, unless the criterion is **Name**. A directory has no size and no type, and its modification time moves only when its direct children are added or removed — so ordering folders by any of those three would read as arbitrary.
+- **Directories sort by path, ascending**, unless the criterion is **Name** (size, type, and modification time don't describe a folder's contents in a stable way).
 
 Name and type comparisons ignore case. Type means the file extension, and a dotfile such as `.gitignore` counts as having none, so dotfiles group with the other extensionless files.
 
@@ -83,7 +83,7 @@ The tree shows the active tab's working directory and its contents.
 - **Directories and files.** Directories show a chevron that rotates when expanded. Clicking a directory expands or collapses it; clicking a file selects it and opens it as a file tab.
 - **Single-child folding.** Long single-child chains like `src/main/java` are collapsed into one row to save space. Row labels always use `/` separators regardless of the Worker's OS.
 - **Lazy loading.** A directory's children are fetched the first time you expand it. While fetching, the row shows `Loading...`; an empty directory shows `Empty`.
-- **Large directories.** A directory with more than 256 entries is truncated, and the tree shows an inline `<N>+ entries, listing truncated` row. The Worker picks those 256 by name before it reads any file sizes, so under any other sort order the row reads `<N>+ entries, truncated by name before sorting` — the order you chose applies within that window, not across the whole directory.
+- **Large directories.** A directory with more than 256 entries is truncated, and the tree shows an inline `<shown> of <total> entries, listing truncated` row. The Worker picks those 256 by name before it reads any file sizes, so under any other sort order the row reads `<shown>+ entries, truncated by name before sorting` — the order you chose applies within that window, not across the whole directory.
 
 The tree refreshes itself automatically: it silently re-fetches expanded directories whenever an agent finishes a turn, and reloads in full when you click **Refresh**. Old contents stay visible during the refresh so the view never flickers blank.
 

@@ -12,6 +12,7 @@ coding agents and terminals, browsing files, and syncing across your devices.
 
 {{< cards >}}
   {{< card link="/docs/using/accounts/" title="Accounts & Authentication" icon="user" subtitle="Sign up, sign in, and link OAuth providers." >}}
+  {{< card link="/docs/using/connected-apps/" title="Connected Apps" icon="shield-check" subtitle="See which apps hold access to your account, and disconnect them." >}}
   {{< card link="/docs/using/workspaces/" title="Workspaces" icon="collection" subtitle="Create, organize, and archive workspaces." >}}
   {{< card link="/docs/using/tabs-and-layout/" title="Tabs & Layout" icon="view-grid" subtitle="Tabs, tiling, splits, grids, and floating windows." >}}
   {{< card link="/docs/using/coding-agents/" title="Coding Agents" icon="cube" subtitle="Open agents, pick models, chat, and answer permission prompts." >}}

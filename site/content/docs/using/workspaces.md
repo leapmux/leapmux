@@ -107,9 +107,7 @@ Archiving asks for confirmation:
 > **Archive workspace**
 > Are you sure you want to archive this workspace? All active agents and terminals will be stopped.
 
-Archiving is a purely per-user organization of your sidebar: it moves the workspace into your **Archived** section. The workspace itself is not deleted; it stays available and can be unarchived at any time. (While a workspace is archived its context menu shows **Unarchive** in place of **Move to**.)
-
-> **Note:** Despite what the confirmation dialog says, archiving does **not** stop the workspace's agents or terminals in the current implementation. They keep running on their Workers. Archiving only relocates the workspace in *your* sidebar (a per-user section move) and, for the active workspace, clears your client's local pending control state for its agent tabs — it does not free Worker-side resources. To actually stop and reclaim resources, delete the workspace, or close its individual agent and terminal tabs.
+Archiving is a purely per-user organization of your sidebar: it moves the workspace into your **Archived** section. The workspace itself is not deleted, and you can unarchive it at any time. (While a workspace is archived its context menu shows **Unarchive** in place of **Move to**.) Note that the dialog's wording overstates what happens — archiving does not actually stop the workspace's agents or terminals; they keep running on their Workers. To stop an agent or terminal, close its tab; to stop everything a workspace holds, delete the workspace.
 
 ## Deleting a workspace
 

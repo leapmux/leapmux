@@ -15,5 +15,6 @@ problems, quick answers, term definitions, and legal notices.
   {{< card link="/docs/reference/troubleshooting/" title="Troubleshooting" icon="puzzle" subtitle="Symptoms, causes, and fixes for common problems." >}}
   {{< card link="/docs/reference/faq/" title="FAQ" icon="question-mark-circle" subtitle="Quick answers to common questions." >}}
   {{< card link="/docs/reference/glossary/" title="Glossary" icon="book-open" subtitle="Definitions of LeapMux terms." >}}
+  {{< card link="/docs/reference/oauth-api/" title="OAuth API" icon="shield-check" subtitle="The OAuth 2.1 wire contract for app authors." >}}
   {{< card link="/docs/reference/legal/" title="Legal" icon="scale" subtitle="License, trademarks, third-party notices, and privacy." >}}
 {{< /cards >}}

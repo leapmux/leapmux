@@ -65,8 +65,6 @@ The dialog has these fields:
 
 Submit with the **"Create"** button (it reads **"Creating..."** while in flight); cancel with **"Cancel"**. The Create button stays disabled until you have a Worker, a non-blank working directory, a selected shell, a valid git-mode choice, and a workspace. If creation fails, the dialog reports the failure.
 
-> **Note:** The dialog sends placeholder terminal dimensions of 80 columns by 25 rows. The real size is sent to the Worker the moment the terminal view mounts and measures itself, so the placeholder size is replaced before you see it.
-
 ### Opening a terminal from the CLI
 
 You can create a terminal from a script or another agent with the [Remote Control CLI](/docs/operating/control-cli/):
@@ -147,7 +145,7 @@ On macOS, when a terminal is focused, these shortcuts send the correct escape se
 
 ### Resizing
 
-The terminal automatically fits its tile. When you resize the tile or window, LeapMux measures the new dimensions and tells the Worker, which resizes the PTY so the running program re-flows correctly. A resize is only sent when the column or row count actually changes, so you won't see spurious prompt redraws from minor pixel shifts. The Worker-side resize is skipped for terminals that have exited, disconnected, or failed to start — there is no live PTY to notify — but the view still re-flows the existing buffer locally so dead output stays readable.
+The terminal automatically fits its tile. When you resize the tile or window, LeapMux tells the Worker, which resizes the PTY so the running program re-flows correctly. For a terminal whose shell has already exited, the view simply re-flows the preserved output locally so it stays readable.
 
 ### Appearance
 
