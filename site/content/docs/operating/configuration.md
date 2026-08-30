@@ -9,7 +9,7 @@ This chapter is the complete reference for configuring the LeapMux **Hub** and *
 
 For *how to launch* each mode (solo, hub, worker, dev) and what each is for, see [Running LeapMux](/docs/operating/running-leapmux/). For key management, encryption at rest, and database operations, see [Encryption & Data](/docs/operating/encryption-and-data/).
 
-> **Note:** Everything here applies to the long-running daemons. `solo` and `dev` modes reuse the Hub's configuration loader with a restricted flag set; the differences are called out where relevant. The desktop app, the `leapmux control` CLI, and the `leapmux recover` CLI are configured separately — see [Running LeapMux](/docs/operating/running-leapmux/), [Remote Control CLI](/docs/operating/control-cli/), and [Recovery](/docs/operating/recover/).
+> **Note:** Everything here applies to the long-running daemons. `solo` and `dev` modes reuse the Hub's configuration loader with a restricted flag set; the differences are called out where relevant. The desktop app, the `leapmux control` CLI, and the `leapmux recover` CLI are configured separately — see [Running LeapMux](/docs/operating/running-leapmux/), [Control CLI](/docs/operating/control-cli/), and [Recovery](/docs/operating/recover/).
 
 ## Configuration precedence
 
@@ -117,7 +117,7 @@ Every config-file key that holds a duration — each database pool setting and t
 
 Parts combine, in any order: `1h30m`, `1w2d`, `2d12h`.
 
-**A bare number is a count of seconds.** That is what these keys took before they had units, so `api_timeout: 10` still means ten seconds and an existing config file keeps working. A number only means seconds when it is the whole value — `1d30` is rejected rather than read as a day and thirty seconds.
+**A bare number is a count of seconds**: `api_timeout: 10` means ten seconds. A number only means seconds when it is the whole value — `1d30` is rejected rather than read as a day and thirty seconds.
 
 The same spellings work everywhere a key can be set: the config file, the environment variable, and the CLI flag. `0` means "use the default" for the Worker timeouts, and "leave the database driver's own default alone" for the pool settings.
 
@@ -277,68 +277,29 @@ WARN captcha is enabled in the settings but verifies nothing reason="the selecte
 
 It logs on the transition, not per request, so a busy Hub prints one line rather than one per sign-in. Set `public_url` (or `secure_cookies`) and the Hub logs `captcha enforcement restored: this hub publishes a secure browser address` at `INFO`. So a Hub whose settings read `captcha.enabled = true` while the browser shows no widget has one place to look for the reason.
 
-See [Captcha](/docs/operating/control-cli/#captcha) and [Rate limits](/docs/operating/control-cli/#rate-limits) in the Remote Control CLI chapter for the full flag reference.
+See [Captcha](/docs/operating/admin-cli/#captcha) and [Rate limits](/docs/operating/admin-cli/#rate-limits) in the Admin CLI chapter for the full flag reference.
 
 ### Outbound queue memory
 
-Every long-lived stream the Hub writes to — one per browser tab on `/ws/channel`, one per connected Worker, one per browser tab on `/ws/userevents` — buffers outbound frames, so that one slow reader cannot stall the goroutine serving everyone else. The three fields of the `queue_budget` setting limit how much those buffers may hold. They are totals rather than per-connection figures because a per-connection number tells you nothing without a connection count, and nothing limits how many browser tabs a fleet has open.
+Every long-lived stream the Hub writes to — one per browser tab on `/ws/channel`, one per connected Worker, one per browser tab on `/ws/userevents` — buffers outbound frames, so that one slow reader cannot stall the others. The three fields of the `queue_budget` setting limit how much memory those buffers may hold, as one budget per connection kind: **channel relays**, **Worker streams**, and **user-event subscribers**. The split is deliberate, because the cheapest recovery differs by kind — a dropped relay or Worker connection simply reconnects, while a user-event subscriber can resynchronize from its cursor instead of being disconnected at all — so a backlog on one kind never costs the others.
 
-**Each kind of connection has its own budget.** When a budget runs out it is that budget's own connections that pay, so a browser tab's backlog can only ever cost another connection of the same kind. That matters because the three failures are not comparable:
+Left at `0` (the default), each budget is a share of the memory the process may use — four thirty-seconds for channel relays, two for Workers, two for user events, together a quarter, and never above 8 GiB. Channel relays get the largest share because they carry the bulk of the traffic. The Hub derives that memory figure from `GOMEMLIMIT` when set, otherwise the cgroup memory limit on Linux (which is what makes the default correct inside a container), otherwise total physical memory, and 512 MiB when none of these can be read. The basis and all three resolved figures are logged at startup, so a wrong basis is visible; a Linux host whose cgroup limit could not be read also logs a one-time warning.
 
-- A dropped **channel relay** reconnects and re-establishes an encrypted session per channel.
-- A dropped **Worker** discards every user's channels on that machine, and the Frontend-to-Worker direction has no replay at all.
-- A dropped **user-event subscriber** reconnects and resumes from its cursor, replaying only what it missed. Before its first frame is even on the wire it is not disconnected at all — it receives a full snapshot instead of a delta.
+Set the fields explicitly whenever your fleet's shape differs from that assumption — many Workers and few tabs, or the reverse:
 
-Separate budgets make the blast radius structural rather than a matter of which connection happened to be largest at the time.
-
-Left at `0` (the default), each budget is a share of the memory the process may use — four thirty-seconds for channel relays, two for Workers, two for user events, together a quarter — never below what one largest frame of its kind needs, and never above 8 GiB. Channel relays get the largest share because they carry the bulk direction: terminal output is one frame per PTY read, where a Worker stream carries keystrokes, RPCs and control frames.
-
-User events gets an equal share to Workers despite carrying the least traffic, because throughput is not what limits it. Its ongoing frames are the smallest in the Hub and are held once however many tabs wait on them, but the frame that *opens* a connection carries an account's whole visible state and is unique to that tab — so a Hub restart, when every tab reconnects at once, is the case that sizes this budget rather than the traffic that follows. The memory figure comes from the first of these that applies:
-
-1. `GOMEMLIMIT`, when set. Setting it is the most direct way to state the budget, and it is what the Go runtime holds the heap to anyway.
-2. The cgroup memory limit, on Linux. This is what makes the default correct in a container, where the machine's physical memory is the host's and can be two orders of magnitude larger than what the container may use. The Hub resolves its own cgroup and takes the tightest limit on the chain up to the root, so a limit set on a parent — a `systemd` unit's `MemoryMax=`, say — binds as it should rather than being missed.
-3. Total physical memory.
-4. 512 MiB, if none of the above can be read. This is a guess rather than a probe — a platform with no memory-limit API, or a container without `/proc` mounted — and it says so in the log as `source=fallback`. Seeing that on a large host means the budgets are a fraction of a number the Hub could not determine, and it is the one case where you should set the fields explicitly (`leapmux control admin settings set queue_budget`, then restart).
-
-The basis and all three resolved figures are logged at startup, the basis once:
-
-```
-outbound queue memory budgets basis="8.0 GiB (source=gomemlimit)" relay="1.0 GiB (source=auto, 4/32 of basis)" worker="512.0 MiB (source=auto, 2/32 of basis)" userevents="512.0 MiB (source=auto, 2/32 of basis)"
+```bash
+leapmux control admin settings set queue_budget '{"relay_bytes":1073741824}'
 ```
 
-A budget you set explicitly says so in place of its share: `relay="1.0 GiB (source=config)"`.
+Three facts matter when you pick numbers:
 
-On Linux, when the cgroup limit could not be read at all — so the basis may be the host's memory rather than the limit that actually binds this process — a warning follows that line, once. The warning states that the cgroup memory limit could not be read, that the queue budgets may be sized off a figure that does not bind this process, and it carries the underlying read error. That warning is the one signal separating a confined machine the probe could not read from a genuinely unconfined one; both otherwise report `source=physical`.
+- **Each budget has a floor.** It must be able to hold one largest frame of its kind plus a small guaranteed working set per connection, and the Hub refuses to start on a configured value below it rather than failing at runtime. `max_message_size_bytes` does **not** move this floor: the Hub is a relay on that path and its queues only ever carry individual encrypted chunks, never a reassembled message.
+- **A frame does not cost its wire size.** A user-event frame is charged at twice its encoded size, so size a budget against `leapmux_sendq_pool_used_bytes` — what the process really holds — not against observed network traffic.
+- **What the budgets do not cover.** They limit *queued* frames, not the moment the Hub builds a frame, so a reconnect storm on large accounts peaks above the budget for as long as those snapshots take to build.
 
-Every budget also has to be able to hold one largest frame of its kind, and enough guaranteed per-connection working sets for the sharing rule to have anything to decide — a frame bigger than the whole budget could never be admitted at any occupancy, and a budget the size of a single working set caps every connection at that figure regardless of how idle the Hub is. Those two together are the minimum, and the Hub refuses to start on a configured value below it rather than failing at runtime. It is derived per class, not a flat number, so the shares still hold on a small host: a 512 MiB container gets its quarter rather than having the floor quietly claim 40% of the machine. Set the keys explicitly whenever your fleet's shape differs from the assumption, such as many Workers and few tabs, or the reverse. The metrics below tell you which budget is actually binding.
+**When a budget runs out**, the Hub disconnects that budget's largest holder and the peer reconnects, reported as `pool_pressure`. User-event subscribers instead drop the frame they cannot fit and resynchronize; those drops are counted by `leapmux_userevents_frames_dropped_total`. The one *permanent* failure is an account whose opening user-events frame — the snapshot of its whole visible state — is larger than the entire `userevents_bytes` budget: such a connect is refused as final, the browser reports that the workspace exceeds the server's limit, and the fix is to raise that field. On the dropped-frames metric, `bound="capacity"` marks exactly this case, while a merely full budget is the transient `bound="bytes"` one that resolves itself as connections drain.
 
-Note that `max_message_size_bytes` does **not** move any of these minimums. That key limits the reassembled application message the two endpoints rebuild; the Hub is a relay on that path and never holds one, so its queues only ever carry individual encrypted chunks.
-
-**How a budget is shared.** A connection's share is not a fixed slice. Each one may queue up to whatever is still free, so a single backed-up connection on an otherwise-idle Hub can use up to half the budget, while many backed-up connections settle at an even split with a reserve still held back for connections that did not arrive yet. The Hub also guarantees each connection a small working set of its own, so it keeps serving a connection whose queue is near empty while others are backed up.
-
-Frames that the Hub sends to several connections at once — a user-event broadcast reaches every tab the user has open — are held once and counted once, however many queues wait to send them. `leapmux_sendq_pool_used_bytes` is therefore memory that the process really holds, not a sum inflated by fan-out.
-
-**When a budget runs out**, what happens depends on what the cheapest recovery is:
-
-- For channel relays and Workers, the Hub disconnects that budget's largest holder — not whichever connection happened to send next — and the peer reconnects. A connection dropped this way is reported as `pool_pressure` rather than `over_budget`.
-- For user events the subscriber that cannot fit a frame drops it and resynchronises, rather than taking a peer down: its own recovery is already the cheapest outcome available. Those drops are counted by `leapmux_userevents_frames_dropped_total`.
-- A user-event **connect** that arrives when the budget cannot hold its opening frame is closed with a retry-later status rather than served. The frame that opens such a connection carries the account's whole visible state, so a reconnect storm is exactly when the Hub would otherwise hold one per tab at once; the browser retries, and the connect succeeds as soon as there is room.
-
-**What the numbers do and do not limit.** They limit queued frames, and — for user events — the opening frame of each connection while the Hub writes it. What they do not cover is the moment when the Hub *builds* that frame, before there is a size to charge: tabs that reconnect together really do build their snapshots at the same time, so a reconnect storm on large accounts peaks above the budget for as long as that takes.
-
-**A frame does not cost its wire size.** How much it costs differs by pool, so sizing a budget from observed network traffic will under-provision it:
-
-| Pool | Charged per frame |
-| --- | --- |
-| `relay` | the ciphertext, plus 256 bytes of framing |
-| `worker` | the encoded message, plus 256 bytes of framing |
-| `userevents` | **twice** the encoded size, and no framing term |
-
-User events are charged double because the queue holds the decoded message tree alongside the bytes to be written, and both are live until the frame is sent. `leapmux_sendq_pool_used_bytes` reports what is charged, which is what the process is really holding — so it is the figure to size against, and it will read about twice the traffic you can see on the wire for that pool.
-
-Resident memory can exceed a budget, and by how much depends on the connection count. Up to roughly one connection per megabyte of budget, the overshoot stays limited and twice the sum is a fair provisioning figure. Past that the per-connection guaranteed working set stops shrinking, and the promised floors alone grow with the number of connections — a Hub can then hold several times a budget without any single connection misbehaving. `leapmux_sendq_pool_overcommits_total` counts exactly that: it increments whenever the Hub granted a working set that the budget had no room for, so sustained growth means the deployment has more connections of that kind than its budget can honour, and the fix is to raise the budget (or run more Hubs), not to wait for a reclaim that will not come.
-
-What keeps that from growing without limit is [`max_connections_per_user`](#connections-per-user): the count these budgets are exposed to is at most your user count times that cap, rather than whatever a client decides to open.
+`leapmux_sendq_pool_overcommits_total` increments whenever the Hub granted a per-connection working set the budget had no room for. Sustained growth means the deployment has more connections of that kind than its budget can honour — raise the budget (or run more Hubs). What keeps the connection count from growing without limit in the first place is [`max_connections_per_user`](#connections-per-user).
 
 **Metrics.** `/metrics` exposes, labelled `pool="relay"`, `pool="worker"` and `pool="userevents"`:
 
@@ -373,43 +334,21 @@ And, unlabelled by pool:
 
 ### Connections per user
 
-`max_connections_per_user` limits how many long-lived connections one account may hold at once. It is a guard against a client that leaks sockets, and against one account that crowds out the rest — not a quota anyone should meet in normal use.
+`max_connections_per_user` (default `32`) caps how many long-lived connections one account may hold at once — a guard against a client that leaks sockets, or one account crowding out the rest. It is not a quota anyone should meet in normal use; it exists because the queue budgets above guarantee every connection a small working set, so an unlimited connection count would add up to unlimited memory.
 
-It exists because the queue budgets above cannot limit themselves. Those are shared by *class* of connection, and each connection in a class is guaranteed a small working set it cannot be refused. Guarantee that to an unlimited number of connections and the total grows without limit, however carefully you size the budget. This is the number that stops it.
+**It counts sockets, not tabs, and an active browser tab holds two** — one for live updates, and one more once it opens its first terminal or agent. Everything authenticated as the same account draws on the one allowance: browser tabs, the desktop app, and any `leapmux control` CLI session. At the default of `32` that is roughly sixteen active tabs alongside a CLI session or two. Tunnels are cheaper than they look — all of a machine's tunnels to one Worker share a single connection, so what counts is how many *distinct Workers* you hold tunnels to.
 
-**It counts sockets, not tabs, and an active browser tab holds two** — one for live updates, and one more once it opens its first terminal or agent. Everything authenticated as the same account draws on the one allowance: browser tabs, the desktop app, and any `leapmux control` CLI session. At the default of `32` that is roughly sixteen active tabs alongside a CLI session or two.
+When a user is at the limit the Hub refuses the **newest** connection and everything already open keeps working; the refused tab says so and stops retrying, so the remedy is to close another tab and reload. Set the key to `0` to turn the cap off entirely. Refusals are counted in `leapmux_connections_refused_total{reason="too_many_connections"}` and logged with the user id and the limit — steady growth is either a client leaking sockets or a cap set below the way your users actually work.
 
-**Tunnels are cheaper than they look.** All of a machine's tunnels to the same Worker share one encrypted channel, and the individual forwarded connections inside them share it too, so what counts is how many *distinct Workers* you hold tunnels to — not how many tunnels, and not how much traffic they carry. Twenty tunnels to one Worker cost one connection; one tunnel each to three Workers costs three.
-
-> **Note:** in solo and desktop mode *everything* authenticates as the single local user, so all of the above shares one allowance. It is generous enough that this is unlikely to bite, but it is the first key to raise if it does — and because it is the mode where it binds soonest, `solo` and `dev` document it in `leapmux control admin settings list`. The queue budgets size themselves from the machine; `settings set queue_budget '{"relay_bytes":...}'` covers the rare case that is wrong.
-
-When a user is at the limit the Hub refuses the **newest** connection and everything already open keeps working. The Hub evicts nothing: the alternative moves the failure to a window that the user does not look at, and a connection dropped to make room for a new one would be dropped again on the next reconnect. In the browser the refused tab says so and stops retrying — for either socket, so opening a terminal while at the limit explains itself rather than failing as a generic connection error. You only need to close another tab and reload. Set the key to `0` to turn the cap off entirely.
-
-The Hub counts refusals in `leapmux_connections_refused_total{reason="too_many_connections"}` and logs them with the user id and the limit, so you can tell a client that leaks connections from a cap set too low for the way your users actually work.
+> **Note:** In solo and desktop mode *everything* authenticates as the single local user, so all of the above shares one allowance. It is generous enough that this is unlikely to bite, but it is the first key to raise if it does.
 
 ### Workers per user
 
-`max_workers_per_user` is the same limit for the third pool. A Worker's Connect stream draws on the Worker queue budget and is guaranteed the same working set the Hub may not reclaim — but it is not a *lease*, so the connection cap above does not see it, and registration keys carry no quota of their own. Without this key, one account could register Workers until the Worker pool promised more guaranteed memory than it has.
-
-The limit applies twice, to two different populations, because neither one alone is the number that matters. **Registering** a Worker past the limit is refused, which is where an operator gets an error they can act on. **Connecting** past it is refused as well, which is where the pool member is actually created.
-
-Both are needed because a registered Worker and a live pool member are not the same thing. The registration count sees only *active* Workers, while the Hub serves a Connect stream for any Worker that nobody deleted yet — including one that deregisters, which keeps its stream because that stream is how the Hub tells it to stop. Counting registrations alone, an account could cycle register and deregister to accumulate pool members without ever exceeding the limit.
-
-Either refusal returns a `resource_exhausted` error that specifies the key. The Hub counts it in `leapmux_worker_admissions_refused_total` (labelled `stage="register"` or `stage="connect"`) and logs it with the owner and the limit. The default of `64` is far past what an account plausibly runs; it exists so the pool whose eviction costs the most — dropping a Worker takes every user's channels on that machine — cannot be oversubscribed.
+`max_workers_per_user` (default `64`) is the same limit for the Worker pool: a Worker's Connect stream draws on the Worker queue budget and carries the same guaranteed working set, but it is not a *lease*, so the connection cap does not see it. The limit applies at both **registration** and **connection** — a registered Worker and a live pool member are not the same thing, and counting only registrations would let an account cycle register and deregister to accumulate pool members. Either refusal returns a `resource_exhausted` error that names the key; the Hub counts it in `leapmux_worker_admissions_refused_total` (labelled `stage="register"` or `stage="connect"`) and logs it with the owner and the limit. The default is far past what an account plausibly runs; it exists so the pool whose eviction costs the most — dropping a Worker takes every user's channels on that machine — cannot be oversubscribed.
 
 ### Idle connections
 
-Both long-lived sockets are probed every 30 seconds. Every other limit on them fires on a *write*, so a peer that stops receiving without sending a close frame — a suspended laptop, a dropped mobile link, a middlebox that forgot the flow — would otherwise hold its connections until the operating system's own keepalive gave up, which is on the order of ten minutes and behind some proxies is never. Those connections count against `max_connections_per_user` for the whole time, and closing a tab does not release a socket that is already gone.
-
-Probes only ever *establish* liveness; they cannot be used to fake it. Each one carries an identifier that the Hub waits for, and the Hub ignores a reply that does not match an outstanding probe — so a client cannot keep a dead connection alive by replaying or pre-sending acknowledgements.
-
-The reverse direction has a limit too. A WebSocket peer may send its own pings, and the answer is a frame the Hub has to write, so an unlimited ping rate would be a cheap way to make the Hub do expensive work on the same lock its real traffic needs. The Hub therefore rate-limits inbound control frames per connection — two per second sustained, with a burst allowance far above anything a working client produces — and closes a connection that continues to flood past that. Nothing an ordinary client does comes close: a browser answers one probe every thirty seconds.
-
-### When one account's state outgrows the budget
-
-The frame that opens a `/ws/userevents` connection carries the account's whole visible state, so a large enough account can produce one bigger than the entire user-events budget. Such a frame cannot be admitted at *any* occupancy, so there is nothing to wait for: the Hub closes the connection as final rather than asking the client to retry, the browser says the workspace exceeds the server's limit, and the Hub logs the frame size and the budget at error level.
-
-Raising the `userevents_bytes` field of `queue_budget` is the fix. It is worth distinguishing from ordinary pressure, which looks similar from the client: a *merely full* budget produces a retry-later close and resolves itself as other connections drain. The `bound` label separates them outright — `leapmux_userevents_frames_dropped_total{phase="bootstrap",bound="bytes"}` is the transient one, and `bound="capacity"` is the permanent one. Do not read occupancy to tell them apart: a frame larger than the whole budget is refused on an *empty* pool just as readily, so `leapmux_sendq_pool_used_bytes` near capacity is evidence for the transient case and its absence is no evidence at all.
+Both long-lived sockets are probed every 30 seconds. Without the probe, a peer that stops receiving without sending a close frame — a suspended laptop, a dropped mobile link, a middlebox that forgot the flow — would hold its connections (counting against `max_connections_per_user`) until the operating system's own keepalive gave up, which is on the order of ten minutes and behind some proxies never. A probe only ever establishes liveness; a reply that does not match an outstanding probe is ignored, so a client cannot fake it. The Hub also rate-limits inbound WebSocket control frames per connection, so a client cannot make it do expensive work with a ping flood; nothing an ordinary client does comes close.
 
 ### Keys with no CLI flag
 

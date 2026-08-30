@@ -51,10 +51,16 @@ site/
 │   ├── _index.md       # Home page (https://leapmux.dev/)
 │   └── docs/           # User manual (https://leapmux.dev/docs/)
 │       ├── _index.md   # Manual landing page
-│       └── NN-*.md     # Manual chapters (ordered by `weight`)
+│       └── <section>/  # getting-started / using / operating / reference,
+│           ├── _index.md   # section index (cards)
+│           └── *.md        # chapters, ordered by `weight`
 └── static/             # Logo and favicon
 ```
 
-To add or edit a chapter, drop a Markdown file in `content/docs/` with front
-matter that sets `title`, `type: docs`, and a `weight` (controls sidebar order).
-Internal links use absolute paths, e.g. `[Configuration](/docs/18-configuration/)`.
+To add or edit a chapter, drop a Markdown file in the right `content/docs/<section>/`
+directory with front matter that sets `title`, `type: docs`, and a `weight`
+(controls sidebar order), then add a card for it in the section's `_index.md`
+and a mention in the introduction's "How this manual is organized" list.
+Internal links use absolute paths, e.g. `[Configuration](/docs/operating/configuration/)`.
+If you move or rename a page, update every inbound link (the project is
+pre-release: old URLs are not kept working).

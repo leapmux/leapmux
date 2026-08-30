@@ -2,7 +2,7 @@
 title: "Accounts & Authentication"
 description: "Getting into LeapMux as a user: when you need an account, creating the first one, signing up and logging in, email verification, OAuth, and your profile."
 type: docs
-weight: 1
+weight: 8
 ---
 
 This chapter covers everything you need to get into LeapMux as a user: when you need an account at all, how to create the very first one, how to sign up and log in, how email verification and OAuth sign-in work, and how to manage your profile and password once you are in.
@@ -151,7 +151,7 @@ You can still choose **Password** when your account has a password, even if pass
 
 ### Managing passkeys in your profile
 
-Open **Preferences → Account** (or **Profile** from the app menu) — it is the first section, and the one the dialog opens on. The **Passkeys** row lists every credential, when it was last used, and actions to rename or remove one.
+Open **Preferences → Account** — it is the first section, and the one the dialog opens on. The **Passkeys** row lists every credential, when it was last used, and actions to rename or remove one.
 
 | Action | What it requires |
 | --- | --- |
@@ -240,7 +240,7 @@ LeapMux enforces a character set and a length on passwords:
 
 A password holds printable ASCII characters only — every character from the space (0x20) through the tilde (0x7E): unaccented letters, digits, spaces, and the punctuation on a US keyboard. **Spaces count**, at the start and at the end of the password as well, so a passphrase such as `correct horse battery staple` is taken exactly as you type it. An accented letter, a CJK character, and an emoji are each refused, and so is a control character — the tab or newline a paste sometimes carries. The refusal identifies the character set that a password must stay inside.
 
-The two ends of the range answer two different problems. The upper end keeps one character equal to one byte, so the browser and the Hub measure the length identically and a password the form accepts is one the Hub accepts. The lower end keeps out a character you cannot type again, which would leave you locked out of the account.
+The ASCII-only rule keeps the browser and the Hub measuring length identically — one character equals one byte, so a password the form accepts is one the Hub accepts — and it guarantees every character in the password is one you can type again on any keyboard.
 
 There is **no** mandatory mix of character types. The signup, setup, and password-change forms show a live **strength meter** with the labels **Weak**, **Fair**, **Good**, and **Strong**, but this is advisory only — it never blocks you. The form also warns you when your confirmation does not match the password.
 
@@ -279,11 +279,11 @@ When you log in, LeapMux issues a session and stores it in a secure, `HttpOnly` 
 
 **Signing out.** Use the log-out action in the app. It ends your session on the server and clears the cookie. (In solo mode, "log out" does nothing — there is no session to end.)
 
-**Changing your password signs out your other sessions.** When you change your password, LeapMux invalidates every *other* active session (the current one stays signed in) and revokes your API and delegation tokens. This is a security feature: if someone else had a session, changing your password locks them out. See [Remote Control CLI](/docs/operating/control-cli/) for operator-side session management.
+**Changing your password signs out your other sessions.** When you change your password, LeapMux invalidates every *other* active session (the current one stays signed in) and revokes your API and delegation tokens. This is a security feature: if someone else had a session, changing your password locks them out. See [Control CLI](/docs/operating/control-cli/) for operator-side session management.
 
 ## Managing your profile
 
-Open the **"Profile"** dialog from the app to manage your account. Preferences opens on **Account**, its first section, and each heading below is one row of it; the details of each field and persistence behavior live in [Settings & Preferences](/docs/using/settings/), so this is a summary.
+Manage your account from the **Preferences** dialog (the user menu's **Preferences...**, or `⌘,`), in its **Account** section — the section the dialog opens on. Each heading below is one row of it; the details of each field and persistence behavior live in [Settings & Preferences](/docs/using/settings/), so this is a summary.
 
 While the session is verified, a panel at the top of the section says so and offers **End now** — see [Session elevation](/docs/operating/security/#session-elevation).
 
@@ -329,7 +329,7 @@ See [Connected Apps](/docs/using/connected-apps/) for how to read a row and what
 
 ## Where to go next
 
-- [Settings & Preferences](/docs/using/settings/) — the full Profile dialog and other preferences.
+- [Settings & Preferences](/docs/using/settings/) — the full Preferences dialog and every other setting.
 - [Sign-in Providers](/docs/operating/sign-in-providers/) — configuring OAuth/OIDC as an operator.
 - [Running LeapMux](/docs/operating/running-leapmux/) and [Configuration](/docs/operating/configuration/) — choosing a run mode, the `signup_enabled` setting, and SMTP (which controls email verification and password reset).
 - [Security & Threat Model](/docs/operating/security/) — what authentication does and does not protect.

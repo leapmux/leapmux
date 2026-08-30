@@ -181,7 +181,7 @@ All of those clients are yours, and any of them can edit the layout — open, mo
 
 The one presence signal LeapMux exposes is a per-workspace "active client", used solely so that only the client you are actually looking at plays the agent turn-end notification sound. There are **no avatars, "who is viewing" badges, remote cursors, or typing indicators.**
 
-See [Device Sync & Presence](/docs/using/collaboration/) for exactly what does and doesn't sync, and [Settings & Preferences](/docs/using/settings/) for the turn-end sound preference.
+See [Device Sync](/docs/using/device-sync/) for exactly what does and doesn't sync, and [Settings & Preferences](/docs/using/settings/) for the turn-end sound preference.
 
 ## Putting it together
 

@@ -2,12 +2,12 @@
 title: "Tabs & Layout"
 description: "Build a workspace layout in LeapMux: divide the canvas into tiles, fill them with agent, terminal, and file tabs, arrange splits and grids, and float panes."
 type: docs
-weight: 5
+weight: 2
 ---
 
 The center of every workspace is a tiling canvas. You divide it into **tiles** (rectangular panes), fill each tile with **tabs** (agents, terminals, or files), arrange those tiles as splits or grids, and — when you need a pane to float above everything else — pop a tab out into a movable, resizable **floating window**. This chapter explains every part of that workflow.
 
-The layout you build is part of the workspace, not just your local view: the tile tree is synced across reloads and across all of your devices. (Focus and floating-window stacking order stay local to your client.) See [Device Sync & Presence](/docs/using/collaboration/) for what does and doesn't sync.
+The layout you build is part of the workspace, not just your local view: the tile tree is synced across reloads and across all of your devices. (Focus and floating-window stacking order stay local to your client.) See [Device Sync](/docs/using/device-sync/) for what does and doesn't sync.
 
 For the concept-level model of workspaces, tiles, and tabs, see [Concepts & Architecture](/docs/getting-started/concepts/). For the content that lives *inside* tabs, see [Coding Agents](/docs/using/coding-agents/), [Terminals](/docs/using/terminals/), and [File Browser](/docs/using/file-browser/).
 
@@ -270,4 +270,4 @@ Splitting, gridding, and floating windows are desktop features — on mobile you
 
 ## Keyboard shortcuts
 
-The shortcuts referenced throughout this chapter — for opening, switching, and closing tabs, splitting tiles, toggling floating windows and sidebars — are collected with the rest of LeapMux's bindings in [Keyboard Shortcuts](/docs/using/keyboard-shortcuts/), the single source of truth for the full reference and how to customize bindings. To drive tabs, tiles, and layouts from a script, see [Remote Control CLI](/docs/operating/control-cli/).
+The shortcuts referenced throughout this chapter — for opening, switching, and closing tabs, splitting tiles, toggling floating windows and sidebars — are collected with the rest of LeapMux's bindings in [Keyboard Shortcuts](/docs/using/keyboard-shortcuts/), the single source of truth for the full reference and how to customize bindings. To drive tabs, tiles, and layouts from a script, see [Control CLI](/docs/operating/control-cli/).

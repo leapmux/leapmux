@@ -2,12 +2,12 @@
 title: "Coding Agents"
 description: "Run coding-assistant CLIs like Claude Code and Codex in LeapMux: open an agent, chat, read tool calls, answer permission prompts, and switch models mid-session."
 type: docs
-weight: 6
+weight: 3
 ---
 
 Coding agents are the heart of LeapMux. Each agent is a real coding-assistant CLI (Claude Code, Codex, and others) running on a Worker, wrapped in a chat tab so you can talk to it, watch its tool calls, approve its actions, and steer it without leaving the browser. This chapter covers which agents are supported, how to open one, how to chat with it, how tool calls render, how to answer permission prompts, and how to change models and settings mid-session.
 
-For where agents live in the workspace layout, see [Tabs & Layout](/docs/using/tabs-and-layout/). For the git side of opening an agent in a branch or worktree, see [Worktrees & Branches](/docs/using/worktrees-and-branches/). To drive agents from a script instead of the browser, see [Remote Control CLI](/docs/operating/control-cli/).
+For where agents live in the workspace layout, see [Tabs & Layout](/docs/using/tabs-and-layout/). For the git side of opening an agent in a branch or worktree, see [Worktrees & Branches](/docs/using/worktrees-and-branches/). To drive agents from a script instead of the browser, see [Control CLI](/docs/operating/control-cli/).
 
 ## Supported agents
 
@@ -191,13 +191,13 @@ Beneath the editor box is a status bar with one chip per setting axis - the git 
 
 The **[+]** menu holds every axis, including the provider-specific options that get no chip, each as a submenu. It also holds **Agent info** (context usage, rate limits, session). You can hide the status bar with **[+] > Show status bar**; the **[+]** menu still reaches everything the bar shows.
 
-> **Note:** Changing the **model** or **effort** restarts the agent process (the change is optimistic and rolls back if it fails). Changing Claude Code's **permission mode** is live — no restart. For Codex and the other providers, a permission-mode change restarts the agent.
+> **Note:** Most settings changes apply **live**, without a restart: a concrete model or effort change and a permission-mode change take effect in place (the change is optimistic and rolls back if it fails). A restart happens when the provider can't apply the change to the running process — typically switching effort back to **Auto**, which must relaunch the CLI without an effort flag — and for providers that fix the model at launch (Reasonix).
 
 A picker shows radio items for up to 7 options and switches to a searchable list above that.
 
 ### Reasoning effort and the "Auto" default
 
-Every effort-capable provider defaults effort to **Auto** — "let the CLI pick." When effort is Auto, LeapMux omits the effort flag entirely, so older CLI versions that don't recognize newer effort names still work. You only need to set effort explicitly if you want to force a particular tier.
+For the providers whose effort LeapMux manages — Claude Code, Codex, and Pi — effort defaults to **Auto**, meaning "let the CLI pick." When effort is Auto, LeapMux omits the effort flag entirely, so older CLI versions that don't recognize newer effort names still work. You only need to set effort explicitly if you want to force a particular tier.
 
 ### Plan mode shortcut
 
@@ -207,7 +207,7 @@ For providers that support a plan mode, **Shift+Tab** in the editor toggles betw
 
 **Claude Code** — Extended Thinking, Effort, Model, Fast Mode, Output Style, Permission Mode.
 
-- Default model **Opus (1M context)** (`opus[1m]`); also offered: Fable 5, Sonnet, Sonnet (1M context), Haiku.
+- Default model **Default (recommended)** (the CLI's own pick); also offered: Fable 5, Opus (1M context), Sonnet, Sonnet (1M context), Haiku.
 - Effort tiers depend on the model:
   - **Fable 5**, **Opus (1M context)**, **Sonnet**, and **Sonnet (1M context)** offer the full set: Auto, Ultracode, Max, Extra High, High, Medium, Low.
   - **Haiku** has no effort tiers at all — the effort selector is hidden entirely when Haiku is the model, and the Worker never sends an effort flag for Haiku.
@@ -281,4 +281,4 @@ leapmux control tab open --type agent --worker-id <id> --provider "Claude Code" 
 leapmux control agent send-control-response --tab-id <id> --content '<raw JSON>'
 ```
 
-See [Remote Control CLI](/docs/operating/control-cli/) for the full command tree, entity-ID resolution, and the JSON output contract.
+See [Control CLI](/docs/operating/control-cli/) for the full command tree, entity-ID resolution, and the JSON output contract.

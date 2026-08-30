@@ -2,7 +2,7 @@
 title: "Encryption & Data"
 description: "What LeapMux stores and encrypts at rest, how to rotate encryption keys, how database migrations work, and how to back up and restore a Hub safely."
 type: docs
-weight: 7
+weight: 6
 ---
 
 This chapter is for operators who run a LeapMux **Hub** (or a solo-mode instance) and need to understand what data is stored, what is encrypted at rest, how to rotate encryption keys, how database migrations work, and how to back up and restore everything safely.
@@ -51,7 +51,7 @@ The keystore loads its versioned key ring from `encryption.key` (highest version
 
 The key lives in a separate file from the database, so a copy of the database alone leaves the encrypted OAuth secrets readable only as ciphertext — which is why the two must be backed up together.
 
-API-token and delegation-token secrets are **not** encrypted — they are HMAC-SHA256 hashed with a dedicated, stable pepper that is independent of the encryption key ring, so the database never contains a recoverable token. See [Accounts & Authentication](/docs/using/accounts/) and the [Remote Control CLI](/docs/operating/control-cli/) for token management.
+API-token and delegation-token secrets are **not** encrypted — they are HMAC-SHA256 hashed with a dedicated, stable pepper that is independent of the encryption key ring, so the database never contains a recoverable token. See [Accounts & Authentication](/docs/using/accounts/) and the [Control CLI](/docs/operating/control-cli/) for token management.
 
 ## The encryption key file (`encryption.key`)
 
@@ -155,7 +155,7 @@ Follow these steps in order. The `remove` step is guarded — it refuses to dele
 
 Pepper rotation is **not** part of the key-rotation runbook above, and you should not add it there — encryption-key rotation deliberately leaves API and delegation tokens working.
 
-The pepper used to hash API-token and delegation-token secrets is a **dedicated, stable secret**. It lives alongside the encryption keys in `encryption.key` but is **independent** of the encryption key ring: rotating, re-encrypting, or removing encryption keys never changes it, so existing API and delegation tokens keep validating across key rotation. (An `encryption.key` file created before this behavior is seeded with a pepper automatically the next time it is loaded.)
+The pepper used to hash API-token and delegation-token secrets is a **dedicated, stable secret**. It lives alongside the encryption keys in `encryption.key` but is **independent** of the encryption key ring: rotating, re-encrypting, or removing encryption keys never changes it, so API and delegation tokens keep validating across key rotation.
 
 To deliberately invalidate **every** API token and delegation token — for example after a suspected keystore compromise — regenerate the pepper:
 
@@ -166,7 +166,7 @@ leapmux recover encryption-key rotate-pepper --yes
 # Restart the hub to apply, then re-issue API tokens with: leapmux control admin api-token issue
 ```
 
-Token hashes are one-way, so regenerating the pepper cannot migrate existing tokens — it invalidates them all at once, and they must be reissued (`leapmux control admin api-token issue`) or re-authenticated. The command requires `--yes` and takes effect on the next Hub restart. See the [Remote Control CLI](/docs/operating/control-cli/) for `api-token` and `delegation-token` management.
+Token hashes are one-way, so regenerating the pepper cannot migrate existing tokens — it invalidates them all at once, and they must be reissued (`leapmux control admin api-token issue`) or re-authenticated. The command requires `--yes` and takes effect on the next Hub restart. See the [Control CLI](/docs/operating/control-cli/) for `api-token` and `delegation-token` management.
 
 ## Databases
 
@@ -302,5 +302,5 @@ The handshake primitives, Worker identity pinning (TOFU), and the key-change dia
 - [Configuration](/docs/operating/configuration/) — config precedence, the full storage-key reference, data directories, and listen addresses.
 - [Security & Threat Model](/docs/operating/security/) — the E2EE protocol, the Hub-as-relay trust boundary, Worker TOFU pinning, and the solo-mode caveat.
 - [Recovery](/docs/operating/recover/) — the offline break-glass commands (`bootstrap`, `password`, `encryption-key`, `db`).
-- [Remote Control CLI](/docs/operating/control-cli/) — the online `control admin` reference, including token commands.
+- [Control CLI](/docs/operating/control-cli/) — the online `control admin` reference, including token commands.
 - [Managing Workers](/docs/operating/managing-workers/) — registering and approving Workers, registration keys, and key-pin handling.

@@ -2,7 +2,7 @@
 title: "Connected Apps"
 description: "See which apps hold access to your LeapMux account, exactly what each one can do, and disconnect any of them without a password prompt."
 type: docs
-weight: 2
+weight: 9
 ---
 
 An app you authorize holds a credential on your account until you disconnect it. **Preferences → Account → Connected apps** lists them, and each row says what that one can actually do.

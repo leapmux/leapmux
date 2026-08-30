@@ -1,13 +1,13 @@
 ---
 title: "Recovery (offline break-glass)"
-description: "Use leapmux recover to bootstrap the first admin, reset a password with the hub stopped, inspect the schema, and rotate encryption keys — directly against the database."
+description: "Use leapmux recover to bootstrap the first admin, reset a password with the hub stopped, rotate encryption keys, and inspect the database directly."
 type: docs
-weight: 4
+weight: 10
 ---
 
 `leapmux recover` is the **offline break-glass** command tree. It operates **directly against the Hub's database and on-disk encryption key file** — no running Hub, no network call, no login. You run it on the machine that holds the Hub's data directory, typically as the same OS user that runs the Hub.
 
-Every other administration task — users, sessions, workers, OAuth providers, captcha, rate limits, instance settings, API tokens, delegation tokens — runs **online, authenticated, over RPC** with [`leapmux control admin ...`](/docs/operating/control-cli/#admin--hub-administration-over-rpc), or from the Preferences dialog's administration panels.
+Every other administration task — users, sessions, workers, OAuth providers, captcha, rate limits, instance settings, API tokens, delegation tokens — runs **online, authenticated, over RPC** with [`leapmux control admin ...`](/docs/operating/admin-cli/), or from the Preferences dialog's administration panels.
 
 > **Warning:** Because `leapmux recover` writes straight to the database, anyone who can run it has full control over the Hub's data. That is exactly its purpose — break-glass — and its entire surface is four groups. Protect the data directory and the hosts that can reach it. There is no per-command authentication.
 
@@ -54,7 +54,7 @@ Every later user — admin included — is created online through [`control admi
 
 ## `password reset`
 
-Resets a user's password with the hub stopped — the break-glass path for a hub whose only admin forgot their password. Reach for it when the hub cannot serve; while the hub runs, [`leapmux control admin user reset-password`](/docs/operating/control-cli/#user-passwords) does the same work over RPC and needs an administrator login.
+Resets a user's password with the hub stopped — the break-glass path for a hub whose only admin forgot their password. Reach for it when the hub cannot serve; while the hub runs, [`leapmux control admin user reset-password`](/docs/operating/admin-cli/#user-passwords) does the same work over RPC and needs an administrator login.
 
 ```bash
 leapmux recover password reset --username alice
@@ -140,6 +140,6 @@ leapmux recover db migrate --config /etc/leapmux/hub.yaml
 
 ## Related chapters
 
-- [Remote Control CLI](/docs/operating/control-cli/) — the online `control admin` surface (users, sessions, tokens, workers, OAuth, settings).
+- [Admin CLI](/docs/operating/admin-cli/) — the online `control admin` surface (users, sessions, tokens, workers, OAuth, settings).
 - [Configuration](/docs/operating/configuration/) — what each instance setting does.
 - [Encryption & Data](/docs/operating/encryption-and-data/) — the keystore model.

@@ -39,7 +39,7 @@ The Worker prints an error and exits. The error says that the Hub rejected the r
 Registration keys are **consumed atomically** on first use and live only 5 minutes. This error means the key was already used by another Worker, was revoked, or expired. These are permanent errors — the Worker does **not** retry them (unlike a transient network failure, which it does retry with backoff).
 
 **Fix**
-Mint a brand-new key from the **Register worker** dialog and run the Worker with it. Never reuse a key across machines. If you mint keys via the CLI, check live keys with `leapmux control admin worker reg-key list` and revoke stale ones with `leapmux control admin worker reg-key revoke --id <id>` (see [Remote Control CLI](/docs/operating/control-cli/)).
+Mint a brand-new key from the **Register worker** dialog and run the Worker with it. Never reuse a key across machines. If you mint keys via the CLI, check live keys with `leapmux control admin worker reg-key list` and revoke stale ones with `leapmux control admin worker reg-key revoke --id <id>` (see [Control CLI](/docs/operating/control-cli/)).
 
 ### The Worker refuses `--registration-key` because it is already registered
 
@@ -126,7 +126,7 @@ leapmux worker cross-worker-pins list                              # see all pin
 leapmux worker cross-worker-pins remove --target-worker-id <id>    # clear one pin
 ```
 
-There is no UI for clearing key pins — pin removal is CLI-only. See [Remote Control CLI](/docs/operating/control-cli/) and [Managing Workers](/docs/operating/managing-workers/).
+There is no UI for clearing key pins — pin removal is CLI-only. See [Control CLI](/docs/operating/control-cli/) and [Managing Workers](/docs/operating/managing-workers/).
 
 ## Ports, listen address, and reaching the UI
 
@@ -225,11 +225,11 @@ Complete the **/setup** form (Username, Display Name, Email, Password). The firs
 Visiting **/signup** shows a page titled **"Sign-up disabled"**, which states that new account registration is not available.
 
 **Cause**
-Public sign-up is controlled by the `signup_enabled` setting, which defaults to **false**. The first-admin **/setup** flow still works even when sign-up is disabled; only public self-registration is blocked.
+Public sign-up is controlled by the `signup_enabled` setting, which defaults to **false**. The first-admin **/setup** flow works even when sign-up is disabled; only public self-registration is blocked.
 
 **Fix**
 - To allow self-service sign-up: `leapmux control admin settings set signup_enabled true`.
-- Otherwise have an admin create the account with `leapmux control admin user create` (see [Remote Control CLI](/docs/operating/control-cli/)).
+- Otherwise have an admin create the account with `leapmux control admin user create` (see [Control CLI](/docs/operating/control-cli/)).
 
 ### Login is refused although the username and the password look right
 
@@ -240,7 +240,7 @@ Sign-in is refused, and the form says only that the credentials are invalid.
 For security, the Hub returns the identical error for both an unknown username and a wrong password — there's no way to tell which from the message. Usernames are lowercase slugs; passwords are 8-128 printable ASCII characters, and a password may hold spaces.
 
 **Fix**
-Double-check the exact username (lowercase, hyphens, no spaces). If you've lost the password, have an admin reset it with `leapmux control admin user reset-password` (see [User passwords](/docs/operating/control-cli/#user-passwords)), which runs over RPC against the live Hub. When the Hub is stopped, `leapmux recover password reset` does the same work offline (see [Recovery](/docs/operating/recover/)); that command opens the Hub's database directly, so run it on the Hub host with the Hub stopped. Either way, every session, token, **and passkey** the account holds is revoked. Note: solo mode has no login at all — if you expected a login page in solo mode, you won't get one; it auto-authenticates.
+Double-check the exact username (lowercase, hyphens, no spaces). If you've lost the password, have an admin reset it with `leapmux control admin user reset-password` (see [User passwords](/docs/operating/admin-cli/#user-passwords)), which runs over RPC against the live Hub. When the Hub is stopped, `leapmux recover password reset` does the same work offline (see [Recovery](/docs/operating/recover/)); that command opens the Hub's database directly, so run it on the Hub host with the Hub stopped. Either way, every session, token, **and passkey** the account holds is revoked. Note: solo mode has no login at all — if you expected a login page in solo mode, you won't get one; it auto-authenticates.
 
 ### Passkey sign-in fails or the authenticator never appears
 
@@ -257,7 +257,7 @@ Choosing **Passkey** on the login or signup form does nothing useful, the browse
 | "origin header is required" / ceremony fails immediately | The browser request omitted `Origin` | Use a normal browser navigation to the Hub UI; do not strip `Origin` in a reverse proxy for `/leapmux.v1.*` RPCs. |
 | A passkey-only account cannot verify its identity for any account change | The page cannot run a passkey ceremony at all | The **Verify your identity** form states which reason applies and what to do. Fix that one: serve the Hub over HTTPS, or set `public_url` as in the rows above. An account with a passkey and no password has no other way to verify: elevation does not fall back to a linked provider. See [Session elevation](/docs/operating/security/#session-elevation). |
 | Passkey login works but app access is blocked | SMTP is configured and the email is still unverified | Complete `/verify-email` (or use **Resend code**). Passkey login does not skip email verification. |
-| After password reset, passkey login fails | Expected: reset clears all passkeys | Sign in with the new password, then add passkeys again under **Profile → Passkeys**. |
+| After password reset, passkey login fails | Expected: reset clears all passkeys | Sign in with the new password, then add passkeys again under **Preferences → Account → Passkeys**. |
 
 Self-service password reset (`/forgot-password`) also clears every passkey on the account when the reset completes — the same break-glass rule as admin and offline password reset.
 
@@ -285,7 +285,7 @@ OAuth buttons don't appear on the login page, or clicking one ends in an error. 
 | The error says the provider returned no email address | The provider config does not have the email scope | Grant the `email`/`user:email` scope; reconfigure the provider's `--scopes`. |
 | Stuck on "Complete Sign Up" then rejected | New OAuth user but sign-up is disabled | `leapmux control admin settings set signup_enabled true`, or link the OAuth identity to an existing account by signing in and verifying the matching email. |
 | The **Complete Sign Up** page says the signup link is invalid or expired | The pending OAuth signup expired or the `?token=` link was reused | Start the OAuth sign-in over from the login page (see note below). |
-| OAuth user logs in but can't unlink | It's their only login method | Set a password first in the **Profile** dialog, then unlink. |
+| OAuth user logs in but can't unlink | It's their only login method | Set a password first under **Preferences → Account → Password**, then unlink. |
 
 > **Note:** An invalid or expired signup link means the pending OAuth signup ran past its 5-minute window, or the `?token=` link was reused or already completed. Start the OAuth sign-in over from the login page to mint a fresh pending signup, then pick a username promptly. A blank **Complete Sign Up** page that reports a missing signup token means you opened the URL without its `?token=` — restart from the login page.
 
@@ -502,7 +502,7 @@ Restore the `encryption.key` from the same backup as the database. For planned k
 
 ## Terminals and `leapmux control`
 
-For terminal behavior, see [Terminals](/docs/using/terminals/); for the CLI, see [Remote Control CLI](/docs/operating/control-cli/).
+For terminal behavior, see [Terminals](/docs/using/terminals/); for the CLI, see [Control CLI](/docs/operating/control-cli/).
 
 ### `leapmux control` inside a terminal/agent says it can't find the Hub
 

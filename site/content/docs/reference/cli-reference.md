@@ -5,9 +5,9 @@ type: docs
 weight: 1
 ---
 
-This is the quick-lookup cheat-sheet for the `leapmux` command line. It covers the top-level command list, a synopsis and flag table for each daemon mode (`solo`, `hub`, `worker`, `dev`), the `version` command, the environment variables LeapMux reads, and outlines of the two large command groups — `recover` (offline break-glass) and `control` (which contains the online `control admin` administration groups) — which have their own dedicated chapters.
+This is the quick-lookup cheat-sheet for the `leapmux` command line. It covers the top-level command list, a synopsis and flag table for each daemon mode (`solo`, `hub`, `worker`, `dev`), the `version` command, the environment variables LeapMux reads, and outlines of the three large command groups — `recover` (offline break-glass), `control` (user-facing scripting), and `control admin` (hub administration) — which have their own dedicated chapters.
 
-For task-oriented walkthroughs rather than reference tables, see [Running LeapMux](/docs/operating/running-leapmux/) (run modes, ports, data dirs, Docker), [Configuration](/docs/operating/configuration/) (full config-key reference and storage backends), [Recovery](/docs/operating/recover/), and [Remote Control CLI](/docs/operating/control-cli/).
+For task-oriented walkthroughs rather than reference tables, see [Running LeapMux](/docs/operating/running-leapmux/) (run modes, ports, data dirs, Docker), [Configuration](/docs/operating/configuration/) (full config-key reference and storage backends), [Recovery](/docs/operating/recover/), and [Control CLI](/docs/operating/control-cli/).
 
 ## Top-level usage
 
@@ -40,7 +40,7 @@ Any command name can be shortened as far as it stays unambiguous.
 | `worker` | Worker only; connects out to a Hub | [Managing Workers](/docs/operating/managing-workers/) |
 | `dev` | Hub + Worker in one process with real auth (development) | [Running LeapMux](/docs/operating/running-leapmux/) |
 | `recover` | Offline break-glass: first-admin bootstrap, password reset, keys, db | [Recovery](/docs/operating/recover/) |
-| `control` | Drive a running Hub over RPC (scripts / spawned agents) | [Remote Control CLI](/docs/operating/control-cli/) |
+| `control` | Drive a running Hub over RPC (scripts / spawned agents) | [Control CLI](/docs/operating/control-cli/) |
 | `version` | Print the build version and exit | [below](#version) |
 
 Notes on dispatch:
@@ -99,7 +99,7 @@ This table lists the most common flags. The full set — including all PostgreSQ
 | `-dev-frontend` | empty | Frontend dev-server URL for the reverse proxy |
 | `-log-level` | `info` | `debug`, `info`, `warn`, `error` |
 
-**Behavioral settings.** Auth policy (sign-up, verification, sessions), SMTP, timeouts, and per-user limits are not flags: they are instance settings in the Hub's database, managed by `leapmux control admin settings` (see [Configuration](/docs/operating/configuration/) and the [`control admin` section](/docs/operating/control-cli/#admin--hub-administration-over-rpc)).
+**Behavioral settings.** Auth policy (sign-up, verification, sessions), SMTP, timeouts, and per-user limits are not flags: they are instance settings in the Hub's database, managed by `leapmux control admin settings` (see [Configuration](/docs/operating/configuration/) and the [`control admin` section](/docs/operating/admin-cli/)).
 
 **Storage options**
 
@@ -122,7 +122,7 @@ The Postgres family (`-storage-postgres-*`, `-storage-cockroachdb-*`, `-storage-
 | `-config` | `~/.config/leapmux/hub/hub.yaml` | Config file path |
 | `-version` | — | Print version and exit |
 
-> **Note:** One hub config key has **no** CLI flag and is set only via YAML or env var: `encryption_key_path` (`LEAPMUX_HUB_ENCRYPTION_KEY_PATH`, default `<data-dir>/encryption.key`). Runtime settings such as `secure_cookies` are database settings managed with `leapmux control admin settings` — see [Remote Control CLI](/docs/operating/control-cli/). See also [Configuration](/docs/operating/configuration/) and [Encryption & Data](/docs/operating/encryption-and-data/).
+> **Note:** One hub config key has **no** CLI flag and is set only via YAML or env var: `encryption_key_path` (`LEAPMUX_HUB_ENCRYPTION_KEY_PATH`, default `<data-dir>/encryption.key`). Runtime settings such as `secure_cookies` are database settings managed with `leapmux control admin settings` — see [Admin CLI](/docs/operating/admin-cli/). See also [Configuration](/docs/operating/configuration/) and [Encryption & Data](/docs/operating/encryption-and-data/).
 
 ## worker
 
@@ -230,11 +230,11 @@ leapmux recover <group> <command> [flags]
 | `encryption-key` | `rotate`, `remove`, `reencrypt`, `rotate-pepper` |
 | `db` | `path`, `migrate`, `version` |
 
-Recover commands accept `--data-dir` to locate the data directory. The commands that open the database also accept `--config`, which loads the Hub's storage settings; pass it whenever the Hub runs on Postgres or MySQL. Three leaves need no database connection and therefore accept `--data-dir` only: `db path`, `encryption-key rotate`, and `encryption-key rotate-pepper`. Commands that take `--password` prompt interactively when you omit the flag. Every other administration task is online — see `control admin` below. See [Recovery](/docs/operating/recover/) and [Encryption & Data](/docs/operating/encryption-and-data/).
+Recover commands accept `--data-dir` to locate the data directory. The commands that open the database also accept `--config`, which loads the Hub's storage settings; pass it whenever the Hub runs on Postgres or MySQL. Three leaves need no database connection and therefore accept `--data-dir` only: `db path`, `encryption-key rotate`, and `encryption-key rotate-pepper`. Commands that take `--password` prompt interactively when you omit the flag. Every other administration task is online — see [Admin CLI](/docs/operating/admin-cli/). See [Recovery](/docs/operating/recover/) and [Encryption & Data](/docs/operating/encryption-and-data/).
 
 ## control (command-group outline)
 
-`leapmux control` drives a **running** Hub over RPC — it does not touch the database. It is used both by external scripts (which authorize with `leapmux control auth login`) and by agents/terminals that LeapMux spawns (which inherit `LEAPMUX_CONTROL_*` env vars). Every command emits a JSON envelope — `{"data": ...}` on success, `{"error": {"code", "message"}}` on failure (both on stdout) — with a non-zero exit on failure. For full per-command flags, entity-ID resolution, and output shapes, see [Remote Control CLI](/docs/operating/control-cli/).
+`leapmux control` drives a **running** Hub over RPC — it does not touch the database. It is used both by external scripts (which authorize with `leapmux control auth login`) and by agents/terminals that LeapMux spawns (which inherit `LEAPMUX_CONTROL_*` env vars). Every command emits a JSON envelope — `{"data": ...}` on success, `{"error": {"code", "message"}}` on failure (both on stdout) — with a non-zero exit on failure. For full per-command flags, entity-ID resolution, and output shapes, see [Control CLI](/docs/operating/control-cli/).
 
 ```bash
 leapmux control <group> <command> [flags]
@@ -245,7 +245,7 @@ leapmux control auth login --hub https://hub.example.com   # authorize first
 |-------|----------|
 | *(top level)* | `whoami`, `version` |
 | `auth` | `login` (add `--scope` to ask for particular permissions), `logout`, `list`, `status`, `credentials` — `list` reads this machine's credential files, `credentials` asks the Hub what the whole account holds |
-| `admin` | subgroups `settings`, `user`, `session`, `worker` (with `reg-key`), `app`, `idp`, `captcha`, `rate-limit`, `api-token`, `delegation-token` — the online hub administration surface (requires an admin login; never available over the worker-IPC transport). `app` registers the apps a consent screen authorizes; `idp` configures the providers users sign in *with*. |
+| `admin` | subgroups `settings`, `user`, `session`, `worker` (with `reg-key`), `app`, `idp`, `captcha`, `rate-limit`, `api-token`, `delegation-token` — the online hub administration surface (requires an admin login; never available over the worker-IPC transport), covered in [Admin CLI](/docs/operating/admin-cli/). `app` registers the apps a consent screen authorizes; `idp` configures the providers users sign in *with*. |
 | `workspace` | `list`, `get`, `create`, `rename`, `delete` |
 | `tab` | `list`, `get`, `open`, `close`, `rename`, `move` |
 | `worker` | `list`, `get`; subgroup `pins`: `list`, `show`, `remove` |
@@ -298,7 +298,7 @@ The prefix strip lowercases the remainder but does **not** translate `_` into `.
 | `LEAPMUX_CONTROL_WORKING_DIR` | spawned agents | Working directory at spawn |
 | `LEAPMUX_CONTROL_AGENT_PROVIDER` | spawned agents | Agent provider (agents only) |
 
-The `LEAPMUX_CONTROL_*` variables (the `_SOCK` / `_TOKEN` / `_*_ID` / `_TAB_*` family) are injected automatically by the Worker into the agents and terminals it spawns; you do not set them by hand. See [Remote Control CLI](/docs/operating/control-cli/) for how they drive entity-ID resolution.
+The `LEAPMUX_CONTROL_*` variables (the `_SOCK` / `_TOKEN` / `_*_ID` / `_TAB_*` family) are injected automatically by the Worker into the agents and terminals it spawns; you do not set them by hand. See [Control CLI](/docs/operating/control-cli/) for how they drive entity-ID resolution.
 
 ## Config and data locations
 

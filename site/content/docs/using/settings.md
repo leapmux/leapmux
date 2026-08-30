@@ -1,8 +1,8 @@
 ---
 title: "Settings & Preferences"
-description: "Every setting in the Preferences dialog: appearance, notifications, chat, terminal, files, keyboard shortcuts, account, fonts, and the hub administration panels."
+description: "Every Preferences dialog setting: appearance, notifications, chat, terminal, files, fonts, keyboard shortcuts, account, apps, and hub administration panels."
 type: docs
-weight: 11
+weight: 10
 ---
 
 LeapMux keeps your settings in one **Preferences** dialog reached from the user (avatar) menu. It is a large, searchable, categorized dialog covering every user, browser, and (for hub administrators) instance setting in one place. This chapter covers every category, the additional in-context toggles, and how each preference is stored and resolved.
@@ -58,7 +58,7 @@ Administrators additionally see an **ADMINISTRATION** section in the navigation.
 | **Apps** | Open app registration (RFC 7591), off by default. | Shown |
 | **Advanced** | Maximum message size, queue budgets. Both apply only after a hub restart, and both rows carry a **Requires Restart** badge. | Shown |
 
-See [Configuration](/docs/operating/configuration/) for what each instance setting does, and [`admin` — hub administration over RPC](/docs/operating/control-cli/#admin--hub-administration-over-rpc) for the CLI surface over the same settings.
+See [Configuration](/docs/operating/configuration/) for what each instance setting does, and [`admin` — hub administration over RPC](/docs/operating/admin-cli/) for the CLI surface over the same settings.
 
 ## Appearance
 
@@ -117,7 +117,7 @@ A family holds up to 32 names, and the panel reports a name it cannot use. For m
 
 ### Turn-end sound
 
-Plays a notification sound when a coding agent finishes a turn: **None** or **Ding dong** (the built-in default). The sound is intentionally restrained — only the focused client plays it, so it does not double across tabs or devices, and it is skipped for single-exchange turns and rate-limited to at most one chime per minute. See [Device Sync & Presence](/docs/using/collaboration/).
+Plays a notification sound when a coding agent finishes a turn: **None** or **Ding dong** (the built-in default). The sound is intentionally restrained — only the focused client plays it, so it does not double across tabs or devices, and it is skipped for single-exchange turns and rate-limited to at most one chime per minute. See [Device Sync](/docs/using/device-sync/).
 
 ### Turn-end volume
 
@@ -129,7 +129,7 @@ Whether terminal alerts raise OS-level notifications (browser-only; the browser 
 
 ## Chat & Composer, Terminal, Files & Editors
 
-These categories hold the per-device toggles that used to be scattered across in-app menus. The in-context controls stay exactly where they were — the tab-bar **Advanced** menu, the composer **[+]** menu, the file viewer's save action — and both routes change the same stored value, so a toggle in one place is reflected everywhere.
+These categories hold the per-device toggles. The in-context controls — the tab-bar **Advanced** menu, the composer **[+]** menu, the file viewer's save action — change the same stored value, so a toggle in one place is reflected everywhere.
 
 | Setting | Default | Also toggled from | What it does |
 |---|---|---|---|
@@ -154,7 +154,7 @@ The **Keyboard Shortcuts** category is a table of every command with its default
 
 ## Account
 
-The Account category carries what the old Profile dialog managed, as one row per concern. It leads the navigation. Solo mode hides every row here but **Connected apps** — a solo deployment has one local identity, so there is no password, address or provider to manage, but it authorizes apps like any other Hub. For the broader account lifecycle — sign-up, login, OAuth, email verification, sessions — see [Accounts & Authentication](/docs/using/accounts/).
+The Account category carries your account settings, as one row per concern. It leads the navigation. Solo mode hides every row here but **Connected apps** — a solo deployment has one local identity, so there is no password, address or provider to manage, but it authorizes apps like any other Hub. For the broader account lifecycle — sign-up, login, OAuth, email verification, sessions — see [Accounts & Authentication](/docs/using/accounts/).
 
 - **Profile** — your username and display name, saved together. A username is a lowercase slug, and `solo` is always reserved. A display name falls back to the username when empty.
 - **Email** — changing it may require verification (an operator-configured policy); a pending change shows a notice until confirmed.
@@ -177,7 +177,7 @@ Administrators additionally see **Apps** under **ADMINISTRATION**, which holds t
 
 ### Per-key account storage
 
-Account settings are stored on the Hub **one key at a time**. Each change sends only the changed key, and the Hub merges it under a row lock — so **two devices (or two tabs) editing different settings no longer overwrite each other**, and a rejected change never partially applies. A value the Hub considers invalid is refused with the row's error; your other settings are untouched.
+Account settings are stored on the Hub **one key at a time**. Each change sends only the changed key, and the Hub merges it under a row lock — so **two devices (or two tabs) can edit different settings without overwriting each other**, and a rejected change never partially applies. A value the Hub considers invalid is refused with the row's error; your other settings are untouched.
 
 ### Device overrides
 

@@ -2,12 +2,12 @@
 title: "Control CLI"
 description: "Drive LeapMux from a script, CI job, or another agent with leapmux control: open tabs, message agents, type into terminals, reshape layouts, and stream events."
 type: docs
-weight: 9
+weight: 8
 ---
 
 `leapmux control` is a JSON-emitting command-line surface for driving LeapMux from outside the browser. It lets you open and close tabs, send messages to agents, type into terminals, reshape the tile layout, inspect files and git state on a Worker, and stream live workspace events — all from a script, a CI job, or another agent.
 
-This chapter covers authentication, the universal entity-ID flags, the output envelope, and every command group with its subcommands and key flags. The online administration groups (`leapmux control admin ...`) are documented under [`admin` — hub administration over RPC](#admin--hub-administration-over-rpc) below. For the offline break-glass tree (`bootstrap`, `password`, `encryption-key`, `db`), see [Recovery](/docs/operating/recover/). For the agent and terminal features these commands drive, see [Coding Agents](/docs/using/coding-agents/) and [Terminals](/docs/using/terminals/).
+This chapter covers authentication, the universal entity-ID flags, the output envelope, and every command group with its subcommands and key flags. The online administration groups (`leapmux control admin ...`) are documented in the companion [Admin CLI](/docs/operating/admin-cli/) chapter. For the offline break-glass tree (`bootstrap`, `password`, `encryption-key`, `db`), see [Recovery](/docs/operating/recover/). For the agent and terminal features these commands drive, see [Coding Agents](/docs/using/coding-agents/) and [Terminals](/docs/using/terminals/).
 
 ## Two callers, one CLI
 
@@ -159,7 +159,7 @@ Logging in again on the same machine **revokes the credential it replaces**, so 
 | --- | --- | --- |
 | `auth status` | `--hub` | `{hub_url, username, user_id, expires, expired, refresh_expires, scope, token_id}` for the specified Hub. Error `not_logged_in` if there is no credential. `expires` is the hour-long access token, which renews itself; `refresh_expires` is when the device must sign in again. |
 | `auth list` | none | An array of `{hub_url, username, user_id, expires, scope}` for every Hub you have credentials for. |
-| `auth credentials` | `--hub` | An array of `{id, client_id, client_name, installation_name, created_at, last_used_at, refresh_expires, expires, granted_scopes, client_verified, current}` for every credential the account holds. `client_name` is the app and `installation_name` is which copy of it. `current` marks the one this command uses. Each credential carries exactly one deadline: a renewing credential reports `refresh_expires`, and one minted with `--ttl` reports `expires`. A row with neither never expires. |
+| `auth credentials` | `--hub` | An array of `{id, client_id, client_name, installation_name, created_at, last_used_at, refresh_expires, expires, granted_scopes, client_verified, current}` for every credential the account holds. `client_name` is the app and `installation_name` is which copy of it. `current` marks the one this command uses. Each credential carries exactly one deadline: a renewing credential reports `refresh_expires`, and one minted with `--ttl` (an [Admin CLI](/docs/operating/admin-cli/#api-tokens) issuance) reports `expires`. A row with neither never expires. |
 | `auth logout` | `--hub` | Best-effort revokes the token on the Hub, then deletes the local credential file. Emits `{hub_url}`. |
 
 **`list` and `credentials` answer different questions.** `list` reads this machine's credential files — which Hubs this box can reach. `credentials` asks the Hub what the whole account holds — what else can reach your account, from anywhere. It is the same list the browser shows under **Preferences → Account → Connected apps**, where you can also disconnect. See [Connected Apps](/docs/using/connected-apps/).
@@ -188,40 +188,6 @@ Credentials are written one file per Hub:
 `<hub-host>` is the Hub's hostname, with `_<port>` appended when the URL carries a port (for example `leapmux.example.com_8443`). The file is written atomically with mode `0600`, in a directory created with mode `0700`. It contains the access token, the refresh token, both expiries, your user identity, the token id, and the permissions the credential holds.
 
 > **Tip:** Point `LEAPMUX_CONTROL_CONFIG_DIR` at a per-job directory to keep CI credentials isolated and easy to discard.
-
-### Headless service accounts
-
-The interactive login flows above are for humans. For unattended scripts and integrations, mint a durable bearer token with `leapmux control admin` instead:
-
-```bash
-leapmux control admin api-token issue --user-id usr_... --client-name "ci-bot"
-```
-
-This prints an `access_token` of the form `lmx_a<id>_<secret>` exactly once. Supply it to the CLI by setting it as the bearer for the Hub transport. Issuing, listing, and revoking these tokens is covered under [API tokens](#api-tokens) below.
-
-A credential issued this way belongs to the built-in **service account** registration rather than to the control CLI, because "an administrator issued this out of band" is an answer to which app holds it. It appears in the owner's connected-apps list under that name.
-
-A service account that must run `leapmux control admin ...` needs the admin permissions too. Name them, and only for an owner who is already an administrator:
-
-```bash
-leapmux control admin api-token issue --user-id usr_... --installation-name "ci-bot" \
-  --scope "admin:read admin:users"
-```
-
-A credential can never issue one wider than itself. An administrator running this from a credential that holds `admin:users` alone is refused a request for `tunnel:open`, so the chain terminates at the browser consent that started it.
-
-**What an admin-scoped credential cannot do.** One rule decides it, rather than a list of verb names: **an admin verb that creates a new way into an account needs a browser session that verified recently.** A command-line credential is refused there however recently it verified, because the verb hands out authority the credential itself did not have, and the session that would verify it is the granting one.
-
-Today the rule covers four things:
-
-- `user create` — a new account, optionally an administrator, with a password the caller picks.
-- `user reset-password` — a password on any account, without the old one.
-- `user grant-admin` **and** `user revoke-admin` — one hub procedure carries both directions, so the refusal covers the demotion as well as the promotion. Plan an emergency demotion from a browser; a CI credential cannot run it.
-- `user update --email` and `user update --email-verified` — the address receives the password-reset link, so writing one hands over a way in.
-
-Every other admin write that needs verification accepts a **command-line credential that verified recently**: `api-token issue`, `user delete`, `user update --display-name` and `--clear-pending-email`, `settings set` / `set-secret` / `reset` with the `captcha` and `rate-limit` sugar over them, and the `idp` add, remove, enable and disable verbs. Reads need no verification at all.
-
-`api-token issue` is on that second list because a headless service account has to be able to renew. What limits it instead is the credential it mints: **a credential issued by another credential does not renew, and it expires no later than the one that issued it.** So a chain of self-issued credentials gets shorter each time and ends at the browser consent that started it. To issue one that renews, run the verb from a browser-backed session.
 
 ## Worker-spawned environment variables
 
@@ -639,152 +605,6 @@ leapmux control tile split --tile-id "$TILE" --direction vertical
 leapmux control layout set --workspace-id "$WS" --file before.json
 ```
 
-## `admin` — hub administration over RPC
-
-`leapmux control admin ...` is the online, authenticated face of hub administration. Every group calls the hub's Admin RPCs with your normal control credential. The hub itself checks that the caller is an administrator, and answers `permission_denied` to every other login.
-
-```text
-leapmux control admin settings     list | get KEY | set KEY VALUE | set-secret KEY JSON | reset KEY
-leapmux control admin user         list | get | create | update | delete | grant-admin | revoke-admin | reset-password | list-sessions
-leapmux control admin session      list | revoke | revoke-user | purge-expired
-leapmux control admin worker       list | get | deregister
-leapmux control admin worker reg-key  list | revoke | purge-expired
-leapmux control admin idp  add | list | remove | enable | disable
-leapmux control admin captcha      show | set | enable | disable | reset
-leapmux control admin rate-limit   list | set | enable | disable | reset
-leapmux control admin api-token    list | issue | revoke
-leapmux control admin delegation-token  list | revoke
-```
-
-These verbs are RPC calls, so there is no `--data-dir` and no `--config`; neither flag exists on any admin leaf. `--hub` behaves like every other control group. Output uses the control JSON envelope (`{"data": ...}`) — pipe it through `jq`.
-
-> **Offline break-glass is `leapmux recover`.** First-admin bootstrap, password reset with the hub stopped, `db`, and `encryption-key` surgery stay offline — see [Recovery](/docs/operating/recover/). Everything else is here.
-
-### The admin gate and the worker-IPC transport
-
-Admin commands **never** use the worker-IPC transport: they refuse when `LEAPMUX_CONTROL_SOCK` is set, because the worker's IPC bridge is a typing device, not a security boundary. From inside a spawned agent there is no way to reach the admin surface; run these from your own machine with an admin login.
-
-### Hub settings
-
-```bash
-leapmux control admin settings list
-leapmux control admin settings get smtp
-leapmux control admin settings set smtp '{"port":465}'
-leapmux control admin settings set-secret smtp '{"password":"..."}'
-leapmux control admin settings reset smtp
-```
-
-`set` merges a partial JSON document (or a bare scalar) onto the key's current value. The hub validates the merged value and commits it in one transaction. The CLI refuses a value that opens a JSON document but does not parse; that check runs locally, before the CLI contacts the hub.
-
-**Every write here needs an admin-scoped credential that verified recently.** Several of these keys are the hub's own security controls, so `set`, `set-secret` and `reset` each require a proven factor — from a command-line credential exactly as from a browser session.
-
-You do not run anything extra for it. A refused command prints an address and a short code, waits while you approve it in a browser, and then runs. The credential stays verified for {{< duration elevation-window >}}, and every write slides that window forward. Reads (`list`, `get`) need no verification at all. See [Verifying a command-line credential](/docs/operating/security/#verifying-a-command-line-credential).
-
-**When a write takes effect** depends on the key's propagation class. A `hot` key reaches the hub instance that serves the write at once, because that instance replaces its cached settings snapshot right after the commit. Another hub instance on the same database picks the same change up within ~30 seconds, the lifetime of its own settings cache. A `restart` key applies only after a hub restart. Every verb that reports one key states the class: `list`, `get`, and `set` each carry a `propagation` field of `hot` or `restart`, and the Preferences dialog's administration panels show a "Requires Restart" badge.
-
-[Configuration](/docs/operating/configuration/) documents what each key does. The [`captcha`](#captcha) and [`rate-limit`](#rate-limits) groups are sugar over the same settings keys; each composes the partial documents for you.
-
-### Captcha
-
-The `captcha` group is client-side sugar over the `captcha.*` settings keys: each verb composes the partial JSON documents for you and sends them in one atomic write.
-
-```bash
-leapmux control admin captcha show
-leapmux control admin captcha set --provider turnstile --site-key 0x4AAAA... --secret 0x4AAAA...
-leapmux control admin captcha set --cost 20000            # tune the active provider in place
-leapmux control admin captcha enable
-leapmux control admin captcha disable
-leapmux control admin captcha reset [--provider altcha|recaptcha_v3|turnstile]
-```
-
-`show` reports every captcha settings key (`captcha.enabled`, `captcha.selected`, `captcha.altcha`, `captcha.recaptcha_v3`, `captcha.turnstile`). `enable` and `disable` take no flags, and `disable` leaves the honeypot check active.
-
-`set` flags, and the provider that owns each one:
-
-| Flag | Owning provider | Meaning |
-| --- | --- | --- |
-| `--provider` | any | Target and select `altcha`, `recaptcha_v3`, or `turnstile`. Omit it to tune the active provider in place. |
-| `--algorithm` | `altcha` | ALTCHA algorithm. |
-| `--cost` | `altcha` | Algorithm cost parameter. |
-| `--memory-cost` | `altcha` | Algorithm memory cost. |
-| `--parallelism` | `altcha` | Algorithm parallelism. |
-| `--expires` | `altcha` | Challenge expiry in seconds. |
-| `--site-key` | `recaptcha_v3`, `turnstile` | Provider site key. |
-| `--secret` | `recaptcha_v3`, `turnstile` | Provider secret. The hub stores it encrypted. |
-| `--min-score` | `recaptcha_v3` | Minimum score, greater than 0 and not greater than 1. |
-
-Four refusals are worth knowing before you type the command:
-
-- A tuning flag whose owning provider is not the target is **refused**, never dropped and never applied to a different key. The error identifies the flag and the target provider.
-- An empty `--site-key` or `--secret` is refused, because an empty half fails every verification.
-- An invocation that passes no flag at all is refused; pass `--provider` or a tuning flag.
-- The hub refuses a selected external provider whose key pair is incomplete, so pass `--site-key` and `--secret` in the same invocation that selects `recaptcha_v3` or `turnstile`.
-
-`--provider` also **enables** captcha when it switches provider, so a hub you disabled for debugging does not stay undefended through a provider change. Tuning in place leaves the switch alone.
-
-`reset` with no flag returns every captcha key to its default. `reset --provider X` resets that provider's row only; when X is the selected provider, the command returns the selection to its ALTCHA default first, so every intermediate state stays legal.
-
-### Rate limits
-
-The `rate-limit` group is sugar over the `rate_limit.<operation>` settings keys. Two operations are catalogued, and a typo answers with the known names before the CLI dials the hub:
-
-| Operation | Limits | Keyed by |
-|---|---|---|
-| `elevation` | Failed attempts to verify your identity for a sensitive change. | The user. Hidden in solo mode, which has one. |
-| `oauth_anonymous` | The authorization server's three anonymous endpoints — `/oauth/device-authorization`, `/oauth/token` and `/oauth/register`. | The client address. Enforced in solo mode too, because those endpoints are served there. |
-
-```bash
-leapmux control admin rate-limit list
-leapmux control admin rate-limit set --operation elevation --max-attempts 5 --window 900
-leapmux control admin rate-limit enable  --operation elevation
-leapmux control admin rate-limit disable --operation elevation
-leapmux control admin rate-limit reset   --operation elevation
-```
-
-| Flag | Applies to | Meaning |
-| --- | --- | --- |
-| `--operation` | `set`, `enable`, `disable`, `reset` | The operation to limit. Required; known values: `elevation`, `oauth_anonymous`. |
-| `--max-attempts` | `set` | Failed attempts allowed per window (1–1000). |
-| `--window` | `set` | Window length in seconds (60–86400). |
-
-`list` takes no flags and reports every `rate_limit.*` key. `set` needs `--max-attempts`, `--window`, or both; it merges the field you pass and keeps the other. `set` never writes the switch — `enable` and `disable` own it — so adjusting a window cannot re-arm a limiter that you deliberately turned off.
-
-### User passwords
-
-```bash
-leapmux control admin user reset-password --username alice
-# New password: (no echo)
-```
-
-Address the user with `--id` or `--username`. The CLI prompts for the password when `--password` is omitted, so the secret stays out of the shell history and out of the process table.
-
-This verb needs a **browser session that verified recently**, and an API token cannot run it — see [Headless service accounts](#headless-service-accounts). With the Hub stopped, `leapmux recover` resets a password offline.
-
-A reset destroys every credential the old password authenticated: all of the user's sessions are deleted, and all of their API and delegation tokens are revoked. The envelope reports the two token counts. Resetting your **own** password ends your own sessions and tokens too, including the credential that made the call — log in again with the new password.
-
-The offline twin is [`leapmux recover password reset`](/docs/operating/recover/#password-reset), for a hub that is stopped.
-
-### API tokens
-
-```bash
-leapmux control admin api-token issue --user-id usr_... --installation-name "ci-bot" --ttl 3600
-```
-
-Address the owner with `--user-id` or `--username`, the selector every other user-addressing verb takes. The envelope carries the secrets exactly once; they cannot be retrieved later. Use the access token as the bearer for a headless `LEAPMUX_HUB=...` control CLI.
-
-`--ttl` picks **which kind of credential** this is, and the two kinds are exclusive:
-
-- **Omit it** (or pass `0`) for the ordinary renewing credential: an access token that lives {{< duration access-token >}} plus a refresh token, exactly what `auth login` mints. The envelope carries `access_token`, `refresh_token` and `token_id`.
-- **Pass a number of seconds** for a fixed-lifetime service credential. It lives exactly that long, up to {{< duration absolute-cap >}}, and it carries **no refresh token** — the envelope's `refresh_token` is empty. Nothing renews it, and nothing can shorten it either.
-
-The two do not combine. A credential with both a long TTL and a refresh token loses the TTL the first time it renews, because the row records an expiry and never the lifetime it was minted from.
-
-The hub emails the owner whenever this verb issues a credential for them, on the same terms as a browser consent: only to a verified address, and only when SMTP is configured.
-
-`--scope` specifies the permissions the credential holds; omitting it grants everything the owner can do **except** administer the hub. The hub refuses an admin permission for an owner who is not an administrator, rather than minting a credential whose grant and authority disagree. It also refuses to issue a credential **wider than the one issuing it**, so a chain of self-issued credentials terminates at the browser consent that started it.
-
-`api-token list` reports `granted_scopes` on every row, so "which credentials can administer this hub" is answerable. The whole vocabulary is in [App Authorization](/docs/operating/app-authorization/#permissions).
-
 ## Sockets, `--hub unix:`/`npipe:`, and login
 
 A `--hub` value may be a hub IPC listener (`unix:$HOME/.config/leapmux/hub/hub.sock` on Unix, `npipe:...` on Windows) as well as an http(s) URL. A socket hub URL is still the HUB peer: the CLI presents the same `Authorization: Bearer` credential as over http(s) — only the worker-IPC transport uses the internal `X-LeapMux-Token` header.
@@ -829,6 +649,7 @@ For the full trust model, what the Hub can and cannot see, and the encryption pr
 - [Coding Agents](/docs/using/coding-agents/) — providers, models, effort, control prompts, and resume that `agent` commands drive.
 - [Terminals](/docs/using/terminals/) — PTY sessions, shells, and the automatic `LEAPMUX_CONTROL_*` injection.
 - [Managing Workers](/docs/operating/managing-workers/) — Worker registration, approval, and TOFU pinning.
+- [Admin CLI](/docs/operating/admin-cli/) — the `control admin` surface for hub administration.
 - [Recovery](/docs/operating/recover/) — the offline break-glass tree.
 - [Tabs and Layout](/docs/using/tabs-and-layout/) — the tile/split/grid model that `tile` and `layout` manipulate.
 - [Worktrees and Branches](/docs/using/worktrees-and-branches/) — the worktree dispositions used by `tab close --worktree`.

@@ -2,7 +2,7 @@
 title: "Sign-in Providers"
 description: "Configure OAuth/OIDC single sign-on for a LeapMux Hub so users can log in with GitHub, Google, Apple, or any standards-compliant OpenID Connect provider."
 type: docs
-weight: 5
+weight: 4
 ---
 
 > **Not this chapter:** apps that ask **your Hub** for access to an account on it are [App Authorization](/docs/operating/app-authorization/).
@@ -29,7 +29,7 @@ Internally there are only **two** stored provider types — `github` and `oidc`.
 
 GitHub uses plain OAuth2, not OpenID Connect, so it has no issuer URL or discovery document — its endpoints are fixed. The issuer URL applies only to the `oidc`-stored providers, where the Hub uses it for discovery and ID-token verification.
 
-You configure every provider with the `leapmux control admin idp` command group. Each verb is an RPC call to a **running** Hub: the CLI sends your control credential, and the Hub writes its own database and encrypts the client secret with its own key file. There is **no UI** for adding providers — it is an operator task. For the full command surface, see [`admin` — hub administration over RPC](/docs/operating/control-cli/#admin--hub-administration-over-rpc).
+You configure every provider with the `leapmux control admin idp` command group. Each verb is an RPC call to a **running** Hub: the CLI sends your control credential, and the Hub writes its own database and encrypts the client secret with its own key file. There is **no UI** for adding providers — it is an operator task. For the full command surface, see [`admin` — hub administration over RPC](/docs/operating/admin-cli/).
 
 > **Note:** These commands take no `--data-dir` and no `--config`; the flags do not exist, and the CLI refuses them. Run the commands from any machine, and select the Hub with `--hub <url>` or the `LEAPMUX_HUB` environment variable. Authorize the CLI first with `leapmux control auth login --hub <url>`, and use an administrator account: the Hub answers `permission_denied` for every other caller. A `leapmux dev` instance is a separate Hub, so point `--hub` at its own address. See [Authentication](/docs/operating/control-cli/#authentication) for the credential rules.
 
@@ -212,7 +212,7 @@ This deletes the provider configuration (including the stored client secret) per
 
 The Hub refuses such a removal. The error carries the `failed_precondition` code, identifies the provider, and counts the accounts that the removal would lock out.
 
-Give each of those users another login method, then run `remove` again. They can set a password themselves under **Password** in the Profile dialog, or link a second enabled provider — see [Accounts & Authentication](/docs/using/accounts/). An admin can also set a password offline with `leapmux recover password reset` (see [Recovery](/docs/operating/recover/)), which needs the Hub host and the Hub stopped.
+Give each of those users another login method, then run `remove` again. They can set a password themselves under **Preferences → Account → Password**, or link a second enabled provider — see [Accounts & Authentication](/docs/using/accounts/). An admin can also set a password offline with `leapmux recover password reset` (see [Recovery](/docs/operating/recover/)), which needs the Hub host and the Hub stopped.
 
 > **Warning:** `--force` removes the provider even when accounts lose their last login method. Those users cannot sign in again, and only `leapmux recover password reset` restores their access. Give them another login method first.
 
@@ -231,7 +231,7 @@ Once at least one provider is enabled, LeapMux shows the buttons automatically:
 - The **login** page shows a "Sign in with …" section above the username/password form (e.g. "Sign in with GitHub"), separated by an "or" divider.
 - The **sign-up** page (when `signup_enabled=true`) shows a "Sign up with …" section above the form, separated by an "or create an account with email" divider.
 - A first-time OAuth user is taken to a **"Complete Sign Up"** page to choose a username; the email (if the provider supplied one) is shown read-only.
-- Users can link and unlink OAuth identities from the **Profile** dialog's "Linked Accounts" section. A user cannot unlink their only login method without first setting a password.
+- Users can link and unlink OAuth identities from **Preferences → Account → Linked accounts**. A user cannot unlink their only login method without first setting a password.
 
 All of this UI is covered in detail in [Accounts & Authentication](/docs/using/accounts/); it requires no extra configuration beyond enabling the provider.
 
@@ -257,7 +257,7 @@ All of this UI is covered in detail in [Accounts & Authentication](/docs/using/a
 ## Related chapters
 
 - [Accounts & Authentication](/docs/using/accounts/) — the end-user sign-in, sign-up, and account-linking experience.
-- [Remote Control CLI](/docs/operating/control-cli/) — the full `leapmux control admin` reference, including login and the `--hub` flag.
+- [Control CLI](/docs/operating/control-cli/) — the full `leapmux control admin` reference, including login and the `--hub` flag.
 - [Running LeapMux](/docs/operating/running-leapmux/) — run modes, listen addresses, `public_url`, and reverse-proxy setup.
 - [Configuration](/docs/operating/configuration/) — config precedence and the full key reference (`signup_enabled`, `public_url`, `secure_cookies`, …).
 - [Encryption & Data](/docs/operating/encryption-and-data/) — how client secrets are encrypted at rest, key rotation, and re-encryption.

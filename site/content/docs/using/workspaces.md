@@ -2,7 +2,7 @@
 title: "Workspaces"
 description: "The top-level container in LeapMux for tiled agent, terminal, and file tabs: create, rename, delete, organize, and switch between workspaces."
 type: docs
-weight: 4
+weight: 1
 ---
 
 A **workspace** is the top-level container you work inside. It holds a tiling layout of tabs — coding agents, terminals, and file browsers — each tab tied to a Worker (machine), a working directory, and (usually) a git branch. Every workspace is owned by the user who created it (you see only your own), and persists across restarts (see [Coding Agents](/docs/using/coding-agents/) and [Terminals](/docs/using/terminals/) for how agent and terminal sessions are restored). This chapter covers creating, renaming, deleting, organizing, and switching between workspaces.
@@ -55,7 +55,7 @@ Beyond the defaults, LeapMux also supports your own **custom sections** for orga
 
 In addition to the default sections, your sidebar can hold **custom sections** that you use to group workspaces. A custom section behaves like **In progress**: it is expanded by default, it carries a **+** button to create a workspace directly in it, and it is a valid drag target and a **Move to** target (see [Moving and archiving](#moving-and-archiving) below). Each section is per-user, so creating, renaming, or deleting a section changes only *your* sidebar.
 
-> **Note:** Custom sections may appear if they already exist, but the current UI provides no way to **create**, **rename**, or **delete** them — so the only sections you will normally see are the two defaults.
+> **Note:** The current UI provides no way to **create**, **rename**, or **delete** custom sections, so the only sections you will see are the two defaults.
 
 ### Workspace rows
 
@@ -107,9 +107,7 @@ Archiving asks for confirmation:
 > **Archive workspace**
 > Are you sure you want to archive this workspace? All active agents and terminals will be stopped.
 
-Archiving is a purely per-user organization of your sidebar: it moves the workspace into your **Archived** section. The workspace itself is not deleted; it stays available and can be unarchived at any time. (While a workspace is archived its context menu shows **Unarchive** in place of **Move to**.)
-
-> **Note:** Despite what the confirmation dialog says, archiving does **not** stop the workspace's agents or terminals in the current implementation. They keep running on their Workers. Archiving only relocates the workspace in *your* sidebar (a per-user section move) and, for the active workspace, clears your client's local pending control state for its agent tabs — it does not free Worker-side resources. To actually stop and reclaim resources, delete the workspace, or close its individual agent and terminal tabs.
+Archiving is a purely per-user organization of your sidebar: it moves the workspace into your **Archived** section. The workspace itself is not deleted, and you can unarchive it at any time. (While a workspace is archived its context menu shows **Unarchive** in place of **Move to**.) Note that the dialog's wording overstates what happens — archiving does not actually stop the workspace's agents or terminals; they keep running on their Workers. To stop an agent or terminal, close its tab; to stop everything a workspace holds, delete the workspace.
 
 ## Deleting a workspace
 
@@ -134,12 +132,12 @@ Your active workspace is remembered in the browser, per account, so a reload or 
 
 ## Live updates across clients
 
-Workspace lifecycle changes — create, rename, delete — are broadcast to all of your connected clients near-real-time over the user event stream, so the sidebar stays in sync without a manual refresh. The tiling layout *inside* a workspace also syncs live across your devices; see [Device Sync & Presence](/docs/using/collaboration/).
+Workspace lifecycle changes — create, rename, delete — are broadcast to all of your connected clients near-real-time over the user event stream, so the sidebar stays in sync without a manual refresh. The tiling layout *inside* a workspace also syncs live across your devices; see [Device Sync](/docs/using/device-sync/).
 
 ## Related chapters
 
 - [Tabs & Layout](/docs/using/tabs-and-layout/) — working inside a workspace: tabs, splits, grids, floating windows.
 - [Coding Agents](/docs/using/coding-agents/) — opening and using agents in a workspace.
 - [Worktrees & Branches](/docs/using/worktrees-and-branches/) — the git side of workspace tabs.
-- [Device Sync & Presence](/docs/using/collaboration/) — live layout sync across your devices.
+- [Device Sync](/docs/using/device-sync/) — live layout sync across your devices.
 - [Security & Threat Model](/docs/operating/security/) — what the Hub can and cannot see.

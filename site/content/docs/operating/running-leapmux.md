@@ -59,7 +59,7 @@ The desktop app runs solo mode under the hood, but with no TCP port at all — i
 leapmux hub -listen :4327
 ```
 
-A fresh Hub has no users and (by default) sign-up disabled. Create the first administrator offline with [`leapmux recover bootstrap create-admin`](/docs/operating/recover/). That command refuses once any admin exists. Then log in as that administrator. Enable sign-up with `leapmux control admin settings set signup_enabled true`, or create each account with `leapmux control admin user create`. The most important Hub flags:
+A fresh Hub has no users and (by default) sign-up disabled. Open it in a browser and the root path sends you to the `/setup` form — the first person to register becomes the administrator (see [Accounts & Authentication](/docs/using/accounts/)). You can also create that first admin offline with [`leapmux recover bootstrap create-admin`](/docs/operating/recover/), which refuses once any admin exists. Then log in as that administrator. Enable sign-up with `leapmux control admin settings set signup_enabled true`, or create each account with `leapmux control admin user create`. The most important Hub flags:
 
 | Flag | Default | Meaning |
 |------|---------|---------|
@@ -77,7 +77,7 @@ leapmux control admin settings set signup_enabled true
 leapmux control admin settings set smtp '{"host":"smtp.example.com","port":587,"from_address":"no-reply@example.com"}'
 ```
 
-By default the Hub uses an embedded SQLite database at `<data_dir>/hub.db` with its encryption key ring at `<data_dir>/encryption.key`. For a shared, durable deployment you will usually point it at an external database via `-storage-type` and the matching `*-dsn` flag. The full reference — every flag, every storage backend, the YAML layout, and the settings table — is in [Configuration](/docs/operating/configuration/) and the [Hub settings](/docs/operating/control-cli/#hub-settings) section of the Remote Control CLI chapter.
+By default the Hub uses an embedded SQLite database at `<data_dir>/hub.db` with its encryption key ring at `<data_dir>/encryption.key`. For a shared, durable deployment you will usually point it at an external database via `-storage-type` and the matching `*-dsn` flag. The full reference — every flag, every storage backend, the YAML layout, and the settings table — is in [Configuration](/docs/operating/configuration/) and the [Hub settings](/docs/operating/admin-cli/#hub-settings) section of the Admin CLI chapter.
 
 > **Note:** The Hub does not terminate TLS itself. For HTTPS you put a reverse proxy in front of it; see [Reverse proxy and public URL](#reverse-proxy-and-public-url) below.
 
@@ -132,7 +132,7 @@ Dev mode accepts the same flags as solo, plus `-encryption-mode`. The most impor
 
 Like solo, dev also accepts the SQLite tuning flags plus `-dev-frontend` (see [Configuration](/docs/operating/configuration/)).
 
-Dev mode seeds `signup_enabled=true` (it runs the full multi-user path), and the runtime knobs the old flags carried are settings now — a short session for exercising the signed-out path is:
+Dev mode seeds `signup_enabled=true` (it runs the full multi-user path), and the runtime knobs are settings rather than flags — a short session for exercising the signed-out path is:
 
 ```bash
 leapmux control admin settings set session_duration_seconds 300   # the 5-minute minimum
@@ -257,7 +257,7 @@ leapmux --version
 - [Configuration](/docs/operating/configuration/) — full flag and config-key reference, storage backends, listen addresses, env-var precedence.
 - [Managing Workers](/docs/operating/managing-workers/) — registration keys, Worker approval, TOFU pinning, Worker selection.
 - [Recovery](/docs/operating/recover/) — the offline break-glass tree: first-admin bootstrap, password reset, schema migrations, and encryption-key surgery.
-- [Remote Control CLI](/docs/operating/control-cli/) — [`leapmux control admin`](/docs/operating/control-cli/#admin--hub-administration-over-rpc) for users, sessions, workers, OAuth providers, instance settings, and tokens on a running Hub.
+- [Control CLI](/docs/operating/control-cli/) and [Admin CLI](/docs/operating/admin-cli/) — users, sessions, workers, OAuth providers, instance settings, and tokens on a running Hub.
 - [Installation](/docs/getting-started/installation/) — desktop app, Docker images, and building from source.
 - [Security & Threat Model](/docs/operating/security/) — trust boundaries, the E2EE relay, and solo-mode caveats.
 - [CLI Reference](/docs/reference/cli-reference/) — consolidated cheat-sheet for every subcommand.
