@@ -169,7 +169,7 @@ Building from source is for contributors and operators who want to compile the b
 
 - **Go** 1.26.5 or later
 - **Node.js** 24 or later
-- **Bun** (latest) — JavaScript runtime and package manager
+- **Bun** 1.3.14 or later — JavaScript runtime and package manager
 - **Task** — the build runner
 - **buf** CLI — Protocol Buffer code generation
 - **protobuf** (`protoc`) — required by Tauri's `prost-build`

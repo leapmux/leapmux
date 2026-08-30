@@ -78,7 +78,7 @@ Before you begin, ensure you have the following installed:
 
 - **Go** 1.26.5 or later
 - **Node.js** 24 or later
-- **Bun** (latest version) - JavaScript runtime and package manager
+- **Bun** 1.3.14 or later - JavaScript runtime and package manager
 - **Task** - Task runner (replaces Make)
 - **buf** CLI - Protocol Buffer code generation ([authentication](https://buf.build/docs/bsr/authentication/) recommended to avoid rate-limit errors)
 - **protobuf** (`protoc`) - Protocol Buffer compiler (required by Tauri's `prost-build`)
@@ -88,7 +88,7 @@ Before you begin, ensure you have the following installed:
 - **Rust toolchain** - For the Tauri desktop app (built by `task build`)
 - **Tauri desktop prerequisites** - WebView/system packages required by Tauri on your platform
 
-Go-based build tools — `sqlc`, `golangci-lint`, and `gotestsum` — are declared as `tool` dependencies in `backend/go.mod` and `desktop/go/go.mod`, and invoked automatically via `go tool <name>`. You don't need to install them separately.
+Go-based build tools are declared as `tool` dependencies and invoked automatically via `go tool <name>` — `sqlc` in `backend/go.mod`, and `golangci-lint` and `gotestsum` in both `backend/go.mod` and `desktop/go/go.mod`. You don't need to install them separately.
 
 ### macOS
 
@@ -404,7 +404,7 @@ task dev-site    # Live-reload dev server at http://localhost:1313
 
 ### Worker (Agent Wrapper)
 
-- **[CIRCL](https://github.com/cloudflare/circl)** - Post-quantum cryptographic primitives (ML-KEM, SLH-DSA) for E2EE channel handling
+- **[CIRCL](https://github.com/cloudflare/circl)** - SLH-DSA post-quantum signatures for E2EE channel handling (ML-KEM comes from Go's standard library)
 - **[Git](https://git-scm.com/)** - Repository info and worktree management
 - **[Go](https://go.dev/)** - Primary language
 - **[gRPC](https://grpc.io/)** - Communication with Hub
@@ -446,6 +446,7 @@ leapmux/
 ├── scripts/             # Build scripts: contracts/proto generation, JSON-schema validation, NOTICE, icons
 ├── site/                # Hugo + Hextra documentation site (leapmux.dev)
 │   └── content/docs/    # The user manual
+├── testdata/            # Cross-language conformance corpora (JSON + JSON Schema), replayed by the Go and TS suites
 ├── go.work              # Go workspace (backend + desktop/go)
 ├── Taskfile.yaml        # Build orchestration (go-task.dev)
 └── versions.env         # Version string and tool/image versions
