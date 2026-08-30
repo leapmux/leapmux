@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 
 // Importing the registry side-effect-registers the Codex plugin so the thread
 // renderer can dispatch into `notificationThreadEntry`.

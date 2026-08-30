@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { registerACPProvider } from './registerACPProvider'
 
 describe('registerACPProvider', () => {

@@ -3,7 +3,7 @@ import type { PasskeyBlocker } from '~/lib/systemInfo'
 import { createSignal } from 'solid-js'
 import { vi } from 'vitest'
 
-import { CaptchaProvider } from '~/generated/leapmux/v1/auth_pb'
+import { CaptchaProvider } from '~/generated/proto/leapmux/v1/auth_pb'
 
 /**
  * The one shared mock of `~/lib/systemInfo`. Every getter reads through a

@@ -1,7 +1,7 @@
-import type { AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
+import type { AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
 import { create } from '@bufbuild/protobuf'
 import { beforeEach, describe, expect, it } from 'vitest'
-import { AgentProvider, AvailableOptionGroupSchema, AvailableOptionSchema } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider, AvailableOptionGroupSchema, AvailableOptionSchema } from '~/generated/proto/leapmux/v1/agent_pb'
 import { clearSettingsLabelCache, getCachedSettingsGroupLabel, getCachedSettingsLabel, updateSettingsLabelCache } from './settingsLabelCache'
 
 const CLAUDE = AgentProvider.CLAUDE_CODE

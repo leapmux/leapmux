@@ -1,4 +1,4 @@
-import type { Worker } from '~/generated/leapmux/v1/worker_pb'
+import type { Worker } from '~/generated/proto/leapmux/v1/worker_pb'
 import { describe, expect, it } from 'vitest'
 import { isWorkerKnownOffline, isWorkerKnownOnline, onlineWorkerIdSet, workerOnlineState } from '~/lib/workerLiveness'
 

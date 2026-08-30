@@ -1,7 +1,7 @@
 import { create, toBinary } from '@bufbuild/protobuf'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { WorkerPrivateEventSchema } from '~/generated/leapmux/v1/worker_private_pb'
-import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { WorkerPrivateEventSchema } from '~/generated/proto/leapmux/v1/worker_private_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 
 // Mock the E2EE channel transport so we can drive connect / message / error
 // entirely from the test.

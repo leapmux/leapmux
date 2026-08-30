@@ -1,5 +1,5 @@
 import type { Component } from 'solid-js'
-import type { LinkedOAuthProvider } from '~/generated/leapmux/v1/auth_pb'
+import type { LinkedOAuthProvider } from '~/generated/proto/leapmux/v1/auth_pb'
 import { createSignal, For, Show } from 'solid-js'
 import { actionsFooter } from '~/components/common/actionsFooter.css'
 import { useAuth } from '~/context/AuthContext'

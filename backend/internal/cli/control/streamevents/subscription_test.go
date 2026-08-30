@@ -208,7 +208,7 @@ func protoInt32(v int32) *int32 { return &v }
 // — but keeping them tiny and un-jittered makes the ladder an exact,
 // assertable sequence rather than a fuzzed one.
 func fastRetry() *backoffutil.Retry {
-	r, err := backoffutil.NewRetry(10*time.Millisecond, 30*time.Millisecond, 0, 3)
+	r, err := backoffutil.NewRetry(10*time.Millisecond, 30*time.Millisecond, 2, 0, 3)
 	if err != nil {
 		panic(err) // constants are known-valid
 	}
@@ -699,7 +699,7 @@ func TestSubscription_DefaultSystemClockDrivesTheRetry(t *testing.T) {
 		"NewSubscription must wire the real clock, not leave the seam empty")
 
 	// 1ms so the real wait is negligible; the ladder shape is pinned elsewhere.
-	r, err := backoffutil.NewRetry(time.Millisecond, 2*time.Millisecond, 0, 3)
+	r, err := backoffutil.NewRetry(time.Millisecond, 2*time.Millisecond, 2, 0, 3)
 	require.NoError(t, err)
 	sub.retry = r
 
@@ -934,25 +934,6 @@ func TestSubscription_ErrSubscriptionClosedIsExported(t *testing.T) {
 	err := sub.Update(context.Background(), &leapmuxv1.WatchEventsRequest{})
 	require.ErrorIs(t, err, ErrSubscriptionClosed,
 		"post-Cancel Update must return the exported ErrSubscriptionClosed sentinel")
-}
-
-// TestSubscription_LookupRetryPolicyMirrorsFrontend pins the LOOKUP_FAILED
-// retry policy values against the documented frontend shape
-// (frontend/src/hooks/useWatchEventsStreams.ts rejectionBackoff over
-// createExponentialBackoff: initialMs=500, maxMs=15000, multiplier=2,
-// jitterFactor=0.2, maxAttempts=8). Cross-language constant sharing is
-// impractical, so this test is the drift alarm: a change to the values here
-// without a matching frontend change (or a deliberate divergence documented in
-// the constant block) fails the suite.
-func TestSubscription_LookupRetryPolicyMirrorsFrontend(t *testing.T) {
-	assert.Equal(t, 500*time.Millisecond, lookupRetryInitial,
-		"initial must mirror frontend initialMs=500")
-	assert.Equal(t, 15*time.Second, lookupRetryMaxInterval,
-		"maxInterval must mirror frontend maxMs=15000")
-	assert.InDelta(t, 0.2, lookupRetryJitter, 1e-9,
-		"jitter must mirror frontend jitterFactor=0.2")
-	assert.Equal(t, 8, lookupRetryMaxAttempts,
-		"maxAttempts must mirror frontend maxAttempts=8")
 }
 
 // TestSubscription_LookupFailedAckWithNilLastReqDoesNotConsumeBudget pins the

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/channelwire"
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
 )
@@ -435,7 +436,7 @@ func (ch *Channel) resolveRekey(outcome rekeyOutcome) {
 	if !outcome.accepted && outcome.err == nil {
 		backoff := outcome.retryAfter
 		if backoff <= 0 {
-			backoff = channelwire.DefaultRejectBackoff
+			backoff = contracts.DefaultRejectBackoff
 		}
 		rk.rekeyMu.Lock()
 		rk.rekeyNotBefore = time.Now().Add(backoff)

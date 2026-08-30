@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -62,7 +63,7 @@ func TestSendGateSingleChunkOvertakesMultiChunk(t *testing.T) {
 		holdFirst: make(chan struct{}),
 		started:   make(chan struct{}),
 	}
-	big := make([]byte, MaxPlaintextPerChunk+100)
+	big := make([]byte, contracts.MaxPlaintextPerChunk+100)
 	small := []byte("hi")
 
 	var wg sync.WaitGroup
@@ -126,7 +127,7 @@ func TestSendGateConcurrentMultiChunkNeverOverlapMORERuns(t *testing.T) {
 		return nil
 	}
 
-	big := make([]byte, 2*MaxPlaintextPerChunk+1)
+	big := make([]byte, 2*contracts.MaxPlaintextPerChunk+1)
 	var wg sync.WaitGroup
 	for range 2 {
 		wg.Add(1)
@@ -193,7 +194,7 @@ func TestSendGateCtxCancelBeforeFirstChunkEmitsNothing(t *testing.T) {
 func TestSendGateCtxCancelAfterFirstChunkDoesNotAbandon(t *testing.T) {
 	var gate SendGate
 	ctx, cancel := context.WithCancel(context.Background())
-	big := make([]byte, MaxPlaintextPerChunk+10)
+	big := make([]byte, contracts.MaxPlaintextPerChunk+10)
 	var calls atomic.Int32
 
 	err := gate.Send(ctx, nil, big, func([]byte, leapmuxv1.ChannelMessageFlags) error {
@@ -328,7 +329,7 @@ func TestSendGateWithFrameLifetimeAbortsParkedAcquire(t *testing.T) {
 // second multi-chunk send completes without parking.
 func TestSendGateSendChunkErrorReleasesBothPermits(t *testing.T) {
 	var gate SendGate
-	multiChunk := make([]byte, 2*MaxPlaintextPerChunk) // forces the chunked permit + >1 frame
+	multiChunk := make([]byte, 2*contracts.MaxPlaintextPerChunk) // forces the chunked permit + >1 frame
 
 	boom := errors.New("write failed")
 	err := gate.Send(context.Background(), nil, multiChunk,

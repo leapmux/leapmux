@@ -7,11 +7,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/leapmux/leapmux/channelwire"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/util/userid"
@@ -64,7 +64,7 @@ func TestDispatcher_RegisterAndDispatch(t *testing.T) {
 		channelID:      "test-ch",
 		session:        workerSession,
 		sendFn:         sender.send,
-		maxReassembled: channelwire.DefaultMaxReassembledMessageSize,
+		maxReassembled: contracts.DefaultMaxReassembledMessageSize,
 	}
 
 	d.Dispatch(context.Background(), LocalAgentCaller(userid.MustNew("user-1")), &leapmuxv1.InnerRpcRequest{
@@ -110,7 +110,7 @@ func TestDispatcher_PanicRecovery(t *testing.T) {
 		channelID:      "test-ch",
 		session:        workerSession,
 		sendFn:         sender.send,
-		maxReassembled: channelwire.DefaultMaxReassembledMessageSize,
+		maxReassembled: contracts.DefaultMaxReassembledMessageSize,
 	}
 
 	// Dispatch should not panic — the panic should be recovered and
@@ -154,7 +154,7 @@ func TestDispatcher_UnknownMethod(t *testing.T) {
 		channelID:      "test-ch",
 		session:        workerSession,
 		sendFn:         sender.send,
-		maxReassembled: channelwire.DefaultMaxReassembledMessageSize,
+		maxReassembled: contracts.DefaultMaxReassembledMessageSize,
 	}
 
 	d.Dispatch(context.Background(), LocalAgentCaller(userid.MustNew("user-1")), &leapmuxv1.InnerRpcRequest{
@@ -206,7 +206,7 @@ func TestDispatcher_CtxPropagated(t *testing.T) {
 		channelID:      "test-ch",
 		session:        workerSession,
 		sendFn:         sender.send,
-		maxReassembled: channelwire.DefaultMaxReassembledMessageSize,
+		maxReassembled: contracts.DefaultMaxReassembledMessageSize,
 	}
 
 	parent, cancel := context.WithCancel(context.Background())
@@ -255,7 +255,7 @@ func TestDispatcher_CtxAlreadyCancelled(t *testing.T) {
 		channelID:      "test-ch",
 		session:        workerSession,
 		sendFn:         sender.send,
-		maxReassembled: channelwire.DefaultMaxReassembledMessageSize,
+		maxReassembled: contracts.DefaultMaxReassembledMessageSize,
 	}
 
 	parent, cancel := context.WithCancel(context.Background())

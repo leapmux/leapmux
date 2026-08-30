@@ -10,6 +10,7 @@
  */
 
 import { parseRelayClosePayload, platformBridge } from '~/api/platformBridge'
+import { TAURI_EVENT_CHANNEL_CLOSE, TAURI_EVENT_CHANNEL_MESSAGE } from '~/generated/contracts/desktop'
 import { arrayBufferToBase64, base64ToArrayBuffer } from '~/lib/base64'
 import { createLogger } from '~/lib/logger'
 import { relayClaim } from '~/lib/relayClaim'
@@ -56,7 +57,7 @@ export class TauriRelayWebSocket {
 
   constructor() {
     Promise.all([
-      platformBridge.onEvent('channel:message', (payload: unknown) => {
+      platformBridge.onEvent(TAURI_EVENT_CHANNEL_MESSAGE, (payload: unknown) => {
         // Decode inside a guard: this callback runs straight off the raw Tauri
         // event (no promise chain to catch for it), and atob throws on a
         // malformed payload -- an unguarded throw would escape uncaught AND
@@ -73,7 +74,7 @@ export class TauriRelayWebSocket {
         this.invokeHandler('onmessage', this.onmessage, ev)
         this.dispatch('message', ev)
       }),
-      platformBridge.onEvent('channel:close', (payload: unknown) => {
+      platformBridge.onEvent(TAURI_EVENT_CHANNEL_CLOSE, (payload: unknown) => {
         this.handleClose(parseRelayClosePayload(payload) as CloseEvent)
       }),
     ]).then(async ([unlistenMessage, unlistenClose]) => {

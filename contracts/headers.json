@@ -1,0 +1,6 @@
+{
+  "_readme": "HTTP headers that cross the hub<->client boundary as raw strings. The hub sets these, and the CLI and the browser read them; before this file existed each side carried its own copy of the spelling, pinned by comments and literal-restating tests. Codegen replaces the copies without creating an import edge: the generated constants depend on no internal package of either program.",
+  "elevationRequired": "Leapmux-Elevation-Required",
+  "elevationExpiresAt": "Leapmux-Elevation-Expires-At",
+  "credentialRejected": "Leapmux-Credential-Rejected"
+}

@@ -1,8 +1,8 @@
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
-import { HLCSchema, NodeKind } from '~/generated/leapmux/v1/user_crdt_pb'
-import { CrdtOpSchema, SetNodeRegisterOpSchema, SetTabRegisterOpSchema, SetWorkspaceRootNodeOpSchema, TombstoneNodeOpSchema } from '~/generated/leapmux/v1/user_ops_pb'
-import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { HLCSchema, NodeKind } from '~/generated/proto/leapmux/v1/user_crdt_pb'
+import { CrdtOpSchema, SetNodeRegisterOpSchema, SetTabRegisterOpSchema, SetWorkspaceRootNodeOpSchema, TombstoneNodeOpSchema } from '~/generated/proto/leapmux/v1/user_ops_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { applyOp, HLCClock, hlcCmp, hlcIsZero, newState, project } from '~/lib/crdt'
 
 function hlc(physical: bigint, logical: bigint, clientId: string) {

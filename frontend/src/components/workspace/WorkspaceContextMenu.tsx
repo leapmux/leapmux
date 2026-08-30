@@ -1,6 +1,6 @@
 import type { Component } from 'solid-js'
 import type { ContextMenuTargetProps } from '~/components/common/DropdownMenu'
-import type { Section } from '~/generated/leapmux/v1/section_pb'
+import type { Section } from '~/generated/proto/leapmux/v1/section_pb'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
 import { For, Show } from 'solid-js'
 import { DropdownMenu } from '~/components/common/DropdownMenu'

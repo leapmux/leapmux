@@ -1,5 +1,5 @@
 /// <reference types="vitest/globals" />
-import type { InspectBranchDeletionResponse } from '~/generated/leapmux/v1/git_pb'
+import type { InspectBranchDeletionResponse } from '~/generated/proto/leapmux/v1/git_pb'
 import { createRoot } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as workerRpc from '~/api/workerRpc'

@@ -1,9 +1,9 @@
 import type { GitFilterTab, RepoGitRefreshOpts, RepoGitState, RepoKey } from './repoGit'
-import type { GitFileStatusEntry } from '~/generated/leapmux/v1/common_pb'
+import type { GitFileStatusEntry } from '~/generated/proto/leapmux/v1/common_pb'
 import { createMemo, createSignal, untrack } from 'solid-js'
 import { createStore, produce, reconcile } from 'solid-js/store'
 import * as workerRpc from '~/api/workerRpc'
-import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'
+import { GitFileStatusCode } from '~/generated/proto/leapmux/v1/common_pb'
 import { createLogger } from '~/lib/logger'
 import { detectFlavor, relativeUnder, toPosixSeparators } from '~/lib/paths'
 import {

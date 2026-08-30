@@ -11,76 +11,24 @@ import (
 	"testing"
 
 	"github.com/coder/websocket"
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 )
 
-// TestChannelWireLimitsMatchCrossLanguageFixture pins the chunk/message/sequence
-// limits against the shared testdata/channelwire_limits.json fixture that the
-// TypeScript browser client (frontend/src/lib/channel.wire-limits.test.ts) asserts too. Both
-// ends chunk and reassemble the same encrypted channel messages, so a retune on
-// one side that is not mirrored on the other would silently reject or mis-split a
-// legitimate message at the un-updated receiver; keeping both constant sets tied
-// to one fixture turns that drift into a red build here instead. See the fixture's
-// _readme.
-func TestChannelWireLimitsMatchCrossLanguageFixture(t *testing.T) {
-	data, err := os.ReadFile("../../testdata/channelwire_limits.json")
-	require.NoError(t, err)
-
-	var limits struct {
-		MaxPlaintextPerChunk        int    `json:"maxPlaintextPerChunk"`
-		MaxMessageSize              int    `json:"maxMessageSize"`
-		InnerEnvelopeHeadroom       int    `json:"innerEnvelopeHeadroom"`
-		MaxReassembledMessageSize   int    `json:"maxReassembledMessageSize"`
-		MaxConfigurableMessageSize  int    `json:"maxConfigurableMessageSize"`
-		MaxIncompleteChunked        int    `json:"maxIncompleteChunked"`
-		PingMethod                  string `json:"pingMethod"`
-		SessionKeyMaxAgeMs          int64  `json:"sessionKeyMaxAgeMs"`
-		MinRekeyIntervalMs          int64  `json:"minRekeyIntervalMs"`
-		SessionKeyHardCeilingMs     int64  `json:"sessionKeyHardCeilingMs"`
-		CloseReasonTooManyConns     string `json:"closeReasonTooManyConnections"`
-		CloseReasonSnapshotTooLarge string `json:"closeReasonSnapshotTooLarge"`
-		CloseReasonForbidden        string `json:"closeReasonForbidden"`
-		CloseReasonControlFlood     string `json:"closeReasonControlFlood"`
-	}
-	require.NoError(t, json.Unmarshal(data, &limits))
-
-	assert.Equal(t, limits.MaxPlaintextPerChunk, MaxPlaintextPerChunk,
-		"MaxPlaintextPerChunk must match the cross-language fixture")
-	assert.Equal(t, limits.MaxMessageSize, MaxMessageSize,
-		"MaxMessageSize must match the cross-language fixture")
-	assert.Equal(t, limits.InnerEnvelopeHeadroom, InnerEnvelopeHeadroom,
-		"InnerEnvelopeHeadroom must match the cross-language fixture")
-	assert.Equal(t, limits.MaxReassembledMessageSize, DefaultMaxReassembledMessageSize,
-		"DefaultMaxReassembledMessageSize must match the cross-language fixture")
-	assert.Equal(t, limits.MaxConfigurableMessageSize, MaxConfigurableMessageSize,
-		"MaxConfigurableMessageSize must match the cross-language fixture")
-	assert.Equal(t, limits.MaxIncompleteChunked, DefaultMaxIncompleteChunked,
-		"DefaultMaxIncompleteChunked must match the cross-language fixture")
-	assert.Equal(t, limits.PingMethod, PingMethod,
-		"PingMethod must match the cross-language fixture the browser client opens the channel with")
-	assert.Equal(t, limits.SessionKeyMaxAgeMs, SessionKeyMaxAge.Milliseconds(),
-		"SessionKeyMaxAge must match the cross-language fixture")
-	assert.Equal(t, limits.MinRekeyIntervalMs, MinRekeyInterval.Milliseconds(),
-		"MinRekeyInterval must match the cross-language fixture")
-	assert.Equal(t, limits.SessionKeyHardCeilingMs, SessionKeyHardCeiling.Milliseconds(),
-		"SessionKeyHardCeiling must match the cross-language fixture")
-	assert.Equal(t, limits.CloseReasonTooManyConns, CloseReasonTooManyConnections,
-		"CloseReasonTooManyConnections must match the cross-language fixture the browser branches on")
-	assert.Equal(t, limits.CloseReasonSnapshotTooLarge, CloseReasonSnapshotTooLarge,
-		"CloseReasonSnapshotTooLarge must match the cross-language fixture the browser branches on")
-	assert.Equal(t, limits.CloseReasonForbidden, CloseReasonForbidden,
-		"CloseReasonForbidden must match the cross-language fixture the browser branches on")
-	assert.Equal(t, limits.CloseReasonControlFlood, CloseReasonControlFlood,
-		"CloseReasonControlFlood must match the cross-language fixture the browser branches on")
-	// RFC 6455 caps a close reason at 123 bytes and coder/websocket rejects a
-	// longer one on send, so a token that outgrew it would not be a worse
-	// message -- it would be no close frame at all.
+// TestCloseReasonsFitTheCloseFrame guards an RFC 6455 constraint the wire
+// format itself imposes: a close reason longer than 123 bytes cannot be sent
+// (coder/websocket rejects it on send), so a token that outgrew it would not
+// be a worse message -- it would be no close frame at all. The values come
+// from contracts/wire.json via the generator; this test is the wire-format
+// backstop, not a cross-language pin (none is needed: both sides are
+// generated from the same file).
+func TestCloseReasonsFitTheCloseFrame(t *testing.T) {
 	for _, reason := range []string{
-		CloseReasonTooManyConnections, CloseReasonSnapshotTooLarge,
-		CloseReasonForbidden, CloseReasonControlFlood,
+		contracts.CloseReasonTooManyConnections, contracts.CloseReasonSnapshotTooLarge,
+		contracts.CloseReasonForbidden, contracts.CloseReasonControlFlood,
 	} {
 		assert.LessOrEqual(t, len(reason), 123,
 			"a close reason longer than 123 bytes cannot be sent: %q", reason)
@@ -136,9 +84,9 @@ func TestSendChannelFrames(t *testing.T) {
 		assert.Equal(t, []byte("abc"), frames[0].chunk)
 	})
 
-	t.Run("a multi-chunk payload splits at MaxPlaintextPerChunk with MORE on all but the last", func(t *testing.T) {
+	t.Run("a multi-chunk payload splits at contracts.MaxPlaintextPerChunk with MORE on all but the last", func(t *testing.T) {
 		// Two full chunks plus a ragged tail.
-		plaintext := make([]byte, 2*MaxPlaintextPerChunk+MaxPlaintextPerChunk/2)
+		plaintext := make([]byte, 2*contracts.MaxPlaintextPerChunk+contracts.MaxPlaintextPerChunk/2)
 		for i := range plaintext {
 			plaintext[i] = byte(i % 251)
 		}
@@ -155,7 +103,7 @@ func TestSendChannelFrames(t *testing.T) {
 	})
 
 	t.Run("an exact-multiple payload has no empty trailing frame", func(t *testing.T) {
-		plaintext := make([]byte, 2*MaxPlaintextPerChunk)
+		plaintext := make([]byte, 2*contracts.MaxPlaintextPerChunk)
 		frames := run(t, plaintext)
 		require.Len(t, frames, 2, "an exact two-chunk payload is exactly two frames")
 		assert.Equal(t, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE, frames[0].flags)
@@ -175,7 +123,7 @@ func TestSendChannelFrames(t *testing.T) {
 
 	t.Run("a mid-message sendChunk error leaves earlier chunks emitted", func(t *testing.T) {
 		boom := errors.New("write ws")
-		plaintext := make([]byte, MaxPlaintextPerChunk+1)
+		plaintext := make([]byte, contracts.MaxPlaintextPerChunk+1)
 		var calls int
 		err := SendChannelFrames(plaintext, func([]byte, leapmuxv1.ChannelMessageFlags) error {
 			calls++
@@ -289,88 +237,88 @@ func (e assertError) Error() string { return string(e) }
 // TestWidestEnvelopeFitsUnderHeadroom pins that a max-sized application
 // payload wrapped in the real WatchEvents fan-out
 // (AgentChatMessage -> AgentEvent -> WatchEventsResponse -> InnerStreamMessage
-// -> InnerMessage) still fits under MaxReassembledMessageSize(MaxMessageSize),
-// and that the overhead stays under half of InnerEnvelopeHeadroom so CI
+// -> InnerMessage) still fits under MaxReassembledMessageSize(contracts.MaxMessageSize),
+// and that the overhead stays under half of contracts.InnerEnvelopeHeadroom so CI
 // reddens long before a mid-stream drop. A tautological
-// DefaultMaxReassembledMessageSize > MaxMessageSize assert would prove nothing.
+// contracts.DefaultMaxReassembledMessageSize > contracts.MaxMessageSize assert would prove nothing.
 func TestWidestEnvelopeFitsUnderHeadroom(t *testing.T) {
-	encoded := widestWatchEventsEnvelope(t, MaxMessageSize)
-	ceiling := MaxReassembledMessageSize(MaxMessageSize)
+	encoded := widestWatchEventsEnvelope(t, contracts.MaxMessageSize)
+	ceiling := MaxReassembledMessageSize(contracts.MaxMessageSize)
 	assert.LessOrEqual(t, len(encoded), ceiling,
 		"a max-sized payload in the widest WatchEvents fan-out must fit under the reassembled ceiling; "+
 			"while payload and ceiling were equal it did not, and the drop had no recovery path")
-	overhead := len(encoded) - MaxMessageSize
+	overhead := len(encoded) - contracts.MaxMessageSize
 	assert.Greater(t, overhead, 0, "the envelope must actually cost something, or this proves nothing")
-	assert.Less(t, overhead, InnerEnvelopeHeadroom/2,
+	assert.Less(t, overhead, contracts.InnerEnvelopeHeadroom/2,
 		"envelope overhead has grown into over half the headroom (%d of %d bytes); "+
-			"raise InnerEnvelopeHeadroom rather than letting it converge", overhead, InnerEnvelopeHeadroom)
+			"raise contracts.InnerEnvelopeHeadroom rather than letting it converge", overhead, contracts.InnerEnvelopeHeadroom)
 }
 
 // TestInnerRpcEnvelopeFitsUnderHeadroom is the file-read / unary-RPC twin of
 // TestWidestEnvelopeFitsUnderHeadroom: a non-WatchEvents producer must not
 // silently be the wider case.
 func TestInnerRpcEnvelopeFitsUnderHeadroom(t *testing.T) {
-	encoded := widestInnerRpcEnvelope(t, MaxMessageSize)
-	ceiling := MaxReassembledMessageSize(MaxMessageSize)
+	encoded := widestInnerRpcEnvelope(t, contracts.MaxMessageSize)
+	ceiling := MaxReassembledMessageSize(contracts.MaxMessageSize)
 	assert.LessOrEqual(t, len(encoded), ceiling)
-	overhead := len(encoded) - MaxMessageSize
+	overhead := len(encoded) - contracts.MaxMessageSize
 	assert.Greater(t, overhead, 0)
-	assert.Less(t, overhead, InnerEnvelopeHeadroom/2,
+	assert.Less(t, overhead, contracts.InnerEnvelopeHeadroom/2,
 		"InnerRpc envelope overhead has grown into over half the headroom (%d of %d bytes); "+
-			"raise InnerEnvelopeHeadroom rather than letting it converge", overhead, InnerEnvelopeHeadroom)
+			"raise contracts.InnerEnvelopeHeadroom rather than letting it converge", overhead, contracts.InnerEnvelopeHeadroom)
 }
 
 // TestHeadroomCoversConfiguredMaxMessageSize pins that headroom is enough at
 // non-default payload sizes too -- not only at the 16 MiB default -- so a
 // varint-length growth or nesting change cannot leave larger configs short.
 func TestHeadroomCoversConfiguredMaxMessageSize(t *testing.T) {
-	for _, size := range []int{1024 * 1024, 4 * 1024 * 1024, MaxConfigurableMessageSize} {
+	for _, size := range []int{1024 * 1024, 4 * 1024 * 1024, contracts.MaxConfigurableMessageSize} {
 		t.Run(fmt.Sprintf("%d", size), func(t *testing.T) {
 			encoded := widestWatchEventsEnvelope(t, size)
 			assert.LessOrEqual(t, len(encoded), MaxReassembledMessageSize(size),
 				"widest fan-out at payload %d must fit under MaxReassembledMessageSize", size)
 			overhead := len(encoded) - size
-			assert.Less(t, overhead, InnerEnvelopeHeadroom/2,
-				"overhead at payload %d (%d) ate half of headroom %d", size, overhead, InnerEnvelopeHeadroom)
+			assert.Less(t, overhead, contracts.InnerEnvelopeHeadroom/2,
+				"overhead at payload %d (%d) ate half of headroom %d", size, overhead, contracts.InnerEnvelopeHeadroom)
 		})
 	}
 }
 
 func TestResolveAndValidateMaxMessageSize(t *testing.T) {
-	assert.Equal(t, MaxMessageSize, ResolveMaxMessageSize(0))
-	assert.Equal(t, MaxMessageSize, ResolveMaxMessageSize(-1))
+	assert.Equal(t, contracts.MaxMessageSize, ResolveMaxMessageSize(0))
+	assert.Equal(t, contracts.MaxMessageSize, ResolveMaxMessageSize(-1))
 	assert.Equal(t, 32*1024*1024, ResolveMaxMessageSize(32*1024*1024))
-	assert.Equal(t, MaxMessageSize+InnerEnvelopeHeadroom, MaxReassembledMessageSize(MaxMessageSize))
+	assert.Equal(t, contracts.MaxMessageSize+contracts.InnerEnvelopeHeadroom, MaxReassembledMessageSize(contracts.MaxMessageSize))
 
-	require.NoError(t, ValidateMaxMessageSize(MaxMessageSize))
-	require.NoError(t, ValidateMaxMessageSize(MaxPlaintextPerChunk))
-	require.NoError(t, ValidateMaxMessageSize(MaxConfigurableMessageSize))
-	assert.Error(t, ValidateMaxMessageSize(MaxPlaintextPerChunk-1))
-	assert.Error(t, ValidateMaxMessageSize(MaxConfigurableMessageSize+1))
+	require.NoError(t, ValidateMaxMessageSize(contracts.MaxMessageSize))
+	require.NoError(t, ValidateMaxMessageSize(contracts.MaxPlaintextPerChunk))
+	require.NoError(t, ValidateMaxMessageSize(contracts.MaxConfigurableMessageSize))
+	assert.Error(t, ValidateMaxMessageSize(contracts.MaxPlaintextPerChunk-1))
+	assert.Error(t, ValidateMaxMessageSize(contracts.MaxConfigurableMessageSize+1))
 
 	require.NoError(t, ValidateConfiguredMaxMessageSize(0))
 	require.NoError(t, ValidateConfiguredMaxMessageSize(-1))
-	require.NoError(t, ValidateConfiguredMaxMessageSize(MaxMessageSize))
+	require.NoError(t, ValidateConfiguredMaxMessageSize(contracts.MaxMessageSize))
 	assert.Error(t, ValidateConfiguredMaxMessageSize(1))
 
-	got, err := IntFromUint64(uint64(MaxMessageSize))
+	got, err := IntFromUint64(uint64(contracts.MaxMessageSize))
 	require.NoError(t, err)
-	assert.Equal(t, MaxMessageSize, got)
+	assert.Equal(t, contracts.MaxMessageSize, got)
 	_, err = IntFromUint64(^uint64(0))
 	require.Error(t, err)
 
 	assert.Equal(t, 8*1024*1024, NegotiatePayloadBudget(16*1024*1024, 8*1024*1024))
 	assert.Equal(t, 8*1024*1024, NegotiatePayloadBudget(8*1024*1024, 16*1024*1024))
-	assert.Equal(t, MaxMessageSize, NegotiatePayloadBudget(MaxMessageSize, MaxMessageSize))
+	assert.Equal(t, contracts.MaxMessageSize, NegotiatePayloadBudget(contracts.MaxMessageSize, contracts.MaxMessageSize))
 
-	adopted, err := AdoptWireMaxMessageSize(uint64(MaxMessageSize))
+	adopted, err := AdoptWireMaxMessageSize(uint64(contracts.MaxMessageSize))
 	require.NoError(t, err)
-	assert.Equal(t, MaxMessageSize, adopted)
+	assert.Equal(t, contracts.MaxMessageSize, adopted)
 	_, err = AdoptWireMaxMessageSize(0)
 	require.ErrorContains(t, err, "no max_message_size")
-	_, err = AdoptWireMaxMessageSize(uint64(MaxPlaintextPerChunk - 1))
+	_, err = AdoptWireMaxMessageSize(uint64(contracts.MaxPlaintextPerChunk - 1))
 	require.Error(t, err)
-	_, err = AdoptWireMaxMessageSize(uint64(MaxConfigurableMessageSize + 1))
+	_, err = AdoptWireMaxMessageSize(uint64(contracts.MaxConfigurableMessageSize + 1))
 	require.Error(t, err)
 	_, err = AdoptWireMaxMessageSize(^uint64(0))
 	require.Error(t, err)
@@ -478,6 +426,26 @@ func TestUserEventsURL_ResumeParams(t *testing.T) {
 		assert.NotContains(t, got, "resume_after_hlc")
 		assert.NotContains(t, got, "resume_epoch")
 	})
+}
+
+// TestUserEventsURL_RoundTripsThroughTheHubReader proves the client's writer
+// and the hub's reader agree on the query vocabulary: both spell the param
+// names through contracts.WSParam*, and this test reddens the day one side
+// stops. A desync does not fail loudly on its own -- an absent param is a
+// legal first connect, so every reconnect would silently degrade to a full
+// snapshot with no 400 and no log.
+func TestUserEventsURL_RoundTripsThroughTheHubReader(t *testing.T) {
+	hlc := &leapmuxv1.HLC{Physical: 1754100000000, Logical: 3, ClientId: "c-abc"}
+	raw := UserEventsURL("https://hub", []string{"w1"}, hlc, 7)
+	u, err := url.Parse(raw)
+	require.NoError(t, err)
+	cursor, epoch, err := ParseResumeCursorFromQuery(u.Query())
+	require.NoError(t, err)
+	require.NotNil(t, cursor)
+	assert.Equal(t, hlc.GetPhysical(), cursor.GetPhysical())
+	assert.Equal(t, hlc.GetLogical(), cursor.GetLogical())
+	assert.Equal(t, hlc.GetClientId(), cursor.GetClientId())
+	assert.Equal(t, int64(7), epoch)
 }
 
 // TestEncodeDecodeResumeHLC covers the round-trip and the malformed-input

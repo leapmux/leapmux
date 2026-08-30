@@ -1,7 +1,7 @@
 import type { CategoryId, SettingControl, SettingDescriptor, SettingRowModel } from '../types'
 import type { AccountSettingDecl, BrowserOnlySettingDecl } from './settings'
 import type { PreferencesState } from '~/context/PreferencesContext'
-import type { SettingDescriptor as ProtoSettingDescriptor, SettingField } from '~/generated/leapmux/v1/settings_pb'
+import type { SettingDescriptor as ProtoSettingDescriptor, SettingField } from '~/generated/proto/leapmux/v1/settings_pb'
 import { isSoloMode } from '~/lib/systemInfo'
 import { CATEGORY_IDS, controlForField } from '../protoRegistry'
 import { browserSettings } from './settings'

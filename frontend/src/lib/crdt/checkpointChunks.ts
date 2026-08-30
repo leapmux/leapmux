@@ -1,8 +1,8 @@
 import type { DescMessage, Message } from '@bufbuild/protobuf'
 import type { CheckpointDelta } from './checkpointStore'
 import type { OpEntityKind } from './ops'
-import type { UserCrdtState } from '~/generated/leapmux/v1/user_crdt_pb'
-import type { CrdtOp, EntityMaterialized, EntityRemoved, WatchUserEvent } from '~/generated/leapmux/v1/user_ops_pb'
+import type { UserCrdtState } from '~/generated/proto/leapmux/v1/user_crdt_pb'
+import type { CrdtOp, EntityMaterialized, EntityRemoved, WatchUserEvent } from '~/generated/proto/leapmux/v1/user_ops_pb'
 import { fromBinary, toBinary } from '@bufbuild/protobuf'
 import {
   FloatingWindowRecordSchema,
@@ -10,7 +10,7 @@ import {
   TabRecordSchema,
   UserCrdtStateSchema,
   WorkspaceContentsRecordSchema,
-} from '~/generated/leapmux/v1/user_crdt_pb'
+} from '~/generated/proto/leapmux/v1/user_crdt_pb'
 import { opTarget } from './ops'
 
 // ---------------------------------------------------------------------------

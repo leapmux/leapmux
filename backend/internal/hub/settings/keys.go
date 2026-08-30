@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/channelwire"
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/httpsec"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
@@ -215,7 +216,7 @@ type QueueBudgetValue struct {
 // DefaultMaxMessageSizeBytes is the default application payload budget;
 // channelwire owns the number and channelwire.ResolveMaxMessageSize stays
 // the one resolver.
-const DefaultMaxMessageSizeBytes = channelwire.MaxMessageSize
+const DefaultMaxMessageSizeBytes = contracts.MaxMessageSize
 
 // validatePublicURL ports the old canonical public_url rule: scheme+host
 // only, nothing else — the hub appends its own routes. The validator
@@ -517,8 +518,8 @@ var (
 			Summary:  "maximum application payload size (64 KiB - 64 MiB); applies after restart",
 			Fields: []Field{{
 				Name: "", Label: "Maximum message size", Kind: FieldInt,
-				Min: ptrconv.Ptr(int64(channelwire.MaxPlaintextPerChunk)),
-				Max: ptrconv.Ptr(int64(channelwire.MaxConfigurableMessageSize)), Unit: "bytes",
+				Min: ptrconv.Ptr(int64(contracts.MaxPlaintextPerChunk)),
+				Max: ptrconv.Ptr(int64(contracts.MaxConfigurableMessageSize)), Unit: "bytes",
 			}},
 		}).Restart()
 

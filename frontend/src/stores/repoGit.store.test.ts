@@ -1,7 +1,7 @@
-import type { GitFileStatusEntry } from '~/generated/leapmux/v1/common_pb'
+import type { GitFileStatusEntry } from '~/generated/proto/leapmux/v1/common_pb'
 import { createMemo, createRoot } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'
+import { GitFileStatusCode } from '~/generated/proto/leapmux/v1/common_pb'
 import { repoKey } from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 

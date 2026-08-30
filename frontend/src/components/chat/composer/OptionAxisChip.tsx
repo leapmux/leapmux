@@ -1,6 +1,6 @@
 import type { JSX } from 'solid-js'
 import type { ProviderSettingChange } from '~/components/chat/providers/registry'
-import type { AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
+import type { AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
 import ChevronDown from 'lucide-solid/icons/chevron-down'
 import { Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'

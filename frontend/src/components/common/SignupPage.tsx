@@ -1,5 +1,5 @@
 import type { Component } from 'solid-js'
-import type { OAuthProviderInfo } from '~/generated/leapmux/v1/auth_pb'
+import type { OAuthProviderInfo } from '~/generated/proto/leapmux/v1/auth_pb'
 
 import { A, useNavigate, useSearchParams } from '@solidjs/router'
 import { createSignal, onMount, Show } from 'solid-js'

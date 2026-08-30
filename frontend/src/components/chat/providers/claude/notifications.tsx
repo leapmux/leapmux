@@ -1,4 +1,5 @@
 import type { NotificationThreadEntry } from '../registry'
+import { NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
 import { isObject } from '~/lib/jsonPick'
 import { formatRateLimitMessage } from '~/lib/rateLimitUtils'
 
@@ -7,7 +8,7 @@ export function claudeNotificationThreadEntry(
   m: Record<string, unknown>,
 ): NotificationThreadEntry[] | null {
   const t = m.type as string | undefined
-  if (t === 'rate_limit_event') {
+  if (t === NOTIFICATION_TYPE.RateLimitEvent) {
     const info = m.rate_limit_info
     if (!isObject(info))
       // A malformed payload (non-object rate_limit_info) still surfaces a

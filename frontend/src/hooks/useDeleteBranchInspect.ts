@@ -1,5 +1,5 @@
 import type { Accessor } from 'solid-js'
-import type { InspectBranchDeletionResponse } from '~/generated/leapmux/v1/git_pb'
+import type { InspectBranchDeletionResponse } from '~/generated/proto/leapmux/v1/git_pb'
 import { createSignal, onMount } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { createGuardedFetch } from '~/hooks/createGuardedFetch'

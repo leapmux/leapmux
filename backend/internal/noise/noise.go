@@ -16,6 +16,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+
 	"github.com/cloudflare/circl/sign/slhdsa"
 	"golang.org/x/crypto/blake2b"
 	"golang.org/x/crypto/chacha20poly1305"
@@ -23,11 +25,17 @@ import (
 
 const (
 	// SoftNonceLimit triggers re-handshake when exceeded.
-	SoftNonceLimit = uint64(1<<31 - 1) // 2^31-1
-	// HardNonceLimit refuses to encrypt/decrypt when exceeded.
-	HardNonceLimit = uint64(1<<32 - 1) // 2^32-1
-	// MaxPlaintextSize is the Noise spec transport message limit minus auth tag.
-	MaxPlaintextSize = 65535 - 16
+	SoftNonceLimit = contracts.SoftNonceLimit
+	// HardNonceLimit refuses to encrypt/decrypt when exceeded. It is the
+	// uint32 wrap bound: past it the counter would silently reuse nonce 0,
+	// so the session refuses instead. The TS twin reads the same
+	// contracts/wire.json value.
+	HardNonceLimit = contracts.HardNonceLimit
+	// MaxPlaintextSize is the Noise spec transport message limit minus auth
+	// tag -- the same derivation contracts/wire.json single-sources as
+	// MaxPlaintextPerChunk, so retuning the ciphertext cap or the AEAD tag
+	// size moves this limit with it.
+	MaxPlaintextSize = contracts.MaxPlaintextPerChunk
 
 	protocolName = "Noise_NK_25519_ChaChaPoly_BLAKE2b"
 	hashLen      = 64 // BLAKE2b output length

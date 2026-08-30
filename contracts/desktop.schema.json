@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "desktop.schema.json",
+  "title": "desktop shell cross-language contract",
+  "description": "Tauri event names (Rust emits, webview listens) and the env vars Rust passes to the Go sidecar. Event names are Tauri namespace:name tokens; env vars are UPPER_SNAKE.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["_readme", "envVars", "tauriEvents", "maxFrameSizeBytes"],
+  "properties": {
+    "_readme": { "type": "string", "minLength": 1 },
+    "envVars": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["devEndpoint", "binaryHash"],
+      "properties": {
+        "devEndpoint": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" },
+        "binaryHash": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" }
+      }
+    },
+    "tauriEvents": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["channelMessage", "channelClose", "userEventsMessage", "userEventsClose", "sidecarLog", "menuShowAbout", "menuShowPreferences"],
+      "properties": {
+        "channelMessage": { "$ref": "#/$defs/tauriEvent" },
+        "channelClose": { "$ref": "#/$defs/tauriEvent" },
+        "userEventsMessage": { "$ref": "#/$defs/tauriEvent" },
+        "userEventsClose": { "$ref": "#/$defs/tauriEvent" },
+        "sidecarLog": { "$ref": "#/$defs/tauriEvent" },
+        "menuShowAbout": { "$ref": "#/$defs/tauriEvent" },
+        "menuShowPreferences": { "$ref": "#/$defs/tauriEvent" }
+      }
+    },
+    "maxFrameSizeBytes": {
+      "type": "integer",
+      "minimum": 1048576,
+      "description": "The frame cap the Go sidecar and the Rust shell both enforce on the sidecar IPC wire. Must exceed channelwire.UserEventsReadLimit plus the Frame/Event envelope."
+    }
+  },
+  "$defs": {
+    "tauriEvent": { "type": "string", "pattern": "^[a-z][a-z0-9]*:[a-z][a-z0-9-]*$" }
+  }
+}

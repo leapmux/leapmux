@@ -1,4 +1,4 @@
-import type { CrdtOp } from '~/generated/leapmux/v1/user_ops_pb'
+import type { CrdtOp } from '~/generated/proto/leapmux/v1/user_ops_pb'
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
 import {
@@ -7,8 +7,8 @@ import {
   TabRecordSchema,
   UserCrdtStateSchema,
   WorkspaceContentsRecordSchema,
-} from '~/generated/leapmux/v1/user_crdt_pb'
-import { SplitDirection, TabType } from '~/generated/leapmux/v1/workspace_pb'
+} from '~/generated/proto/leapmux/v1/user_crdt_pb'
+import { SplitDirection, TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { applyOp, newState } from '~/lib/crdt/apply'
 import { HLCClock } from '~/lib/crdt/hlc'
 import {

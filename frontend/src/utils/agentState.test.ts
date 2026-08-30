@@ -1,7 +1,7 @@
-import type { AgentInfo } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentInfo } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { AgentSessionInfo } from '~/stores/agentSession.store'
 import { describe, expect, it } from 'vitest'
-import { AgentProvider, AgentStatus, MessageSource } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider, AgentStatus, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { makeMessage, rawContent, wrapContent } from '~/test-support/messageFactory'
 import { isAgentWorking, shouldShowThinkingIndicator } from '~/utils/agentState'
 

@@ -1,10 +1,10 @@
 import type { CheckpointDelta } from './checkpointStore'
-import type { UserCrdtState } from '~/generated/leapmux/v1/user_crdt_pb'
+import type { UserCrdtState } from '~/generated/proto/leapmux/v1/user_crdt_pb'
 import { create, toBinary } from '@bufbuild/protobuf'
 import { IDBFactory, IDBKeyRange } from 'fake-indexeddb'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { NodeRecordSchema, TabRecordSchema, UserCrdtStateSchema } from '~/generated/leapmux/v1/user_crdt_pb'
-import { WatchUserEventSchema } from '~/generated/leapmux/v1/user_ops_pb'
+import { NodeRecordSchema, TabRecordSchema, UserCrdtStateSchema } from '~/generated/proto/leapmux/v1/user_crdt_pb'
+import { WatchUserEventSchema } from '~/generated/proto/leapmux/v1/user_ops_pb'
 import { createOpLogAppender } from '~/test-support/opLog'
 import { fullCheckpointDelta, serializeHeader } from './checkpointChunks'
 import {

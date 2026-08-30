@@ -2,7 +2,7 @@ import { create } from '@bufbuild/protobuf'
 import { render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { WorkspaceContextMenu } from '~/components/workspace/WorkspaceContextMenu'
-import { SectionSchema, SectionType, Sidebar } from '~/generated/leapmux/v1/section_pb'
+import { SectionSchema, SectionType, Sidebar } from '~/generated/proto/leapmux/v1/section_pb'
 
 /**
  * Records what the mocked DropdownMenu last received for `contextMenuFor`. A

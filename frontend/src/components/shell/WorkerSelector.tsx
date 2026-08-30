@@ -1,5 +1,5 @@
 import type { Accessor, Component } from 'solid-js'
-import type { Worker } from '~/generated/leapmux/v1/worker_pb'
+import type { Worker } from '~/generated/proto/leapmux/v1/worker_pb'
 import { createMemo } from 'solid-js'
 import { labelRow } from '~/components/common/Dialog.css'
 import { LoadingMenu } from '~/components/common/LoadingMenu'

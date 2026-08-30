@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { bubbleRunsToRightEdge, classifyMessage, isMirroredMessageRow, messageBubbleClass, messageRowChrome, messageRowChromeClass, messageRowClass, rowIsWidened } from '~/components/chat/messageClassification'
 import * as chatStyles from '~/components/chat/messageStyles.css'
 import { input } from '~/components/chat/providers/testUtils'
-import { AgentProvider, MessageSource } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 
 /**
  * Every kind the classifier can produce. The `satisfies Record<...>` annotation is

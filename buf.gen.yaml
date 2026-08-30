@@ -15,9 +15,9 @@ plugins:
     opt: paths=source_relative
   # TypeScript protobuf message types
   - remote: buf.build/bufbuild/es
-    out: frontend/src/generated
+    out: frontend/src/generated/proto
     opt: target=ts
   # TypeScript ConnectRPC service client stubs
   - remote: buf.build/connectrpc/es
-    out: frontend/src/generated
+    out: frontend/src/generated/proto
     opt: target=ts

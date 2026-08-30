@@ -5,7 +5,7 @@ import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { CaptchaProvider } from '~/generated/leapmux/v1/auth_pb'
+import { CaptchaProvider } from '~/generated/proto/leapmux/v1/auth_pb'
 import { mockLoadSystemInfo, resetSystemInfoMock, setSystemInfoMock } from '~/test-support/systemInfoMock'
 
 import { ResetPasswordPage } from './ResetPasswordPage'

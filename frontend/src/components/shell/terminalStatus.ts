@@ -1,4 +1,4 @@
-import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
+import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import * as styles from './terminalStatus.css'
 
 // Static classList objects — avoids per-render allocation from tab rendering.

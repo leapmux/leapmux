@@ -1,5 +1,5 @@
 import type { Accessor } from 'solid-js'
-import type { GitBranchEntry, InspectBranchChangeResponse } from '~/generated/leapmux/v1/git_pb'
+import type { GitBranchEntry, InspectBranchChangeResponse } from '~/generated/proto/leapmux/v1/git_pb'
 import type { GitInfoFields, GitPathInfo } from '~/hooks/useGitPathInfo'
 import { createMemo, createSignal, onMount } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'

@@ -2,7 +2,7 @@ import type { MessageCategory } from '../messageClassification'
 import type { RenderContext } from '../messageRenderers'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
-import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { claudeToolResultMeta } from './claude/toolResult'
 import './testMocks'
 

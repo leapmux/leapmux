@@ -1,5 +1,5 @@
 import type { ChatScrollVirtualizer } from './useChatScroll'
-import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { batch, createRoot, createSignal } from 'solid-js'
 import { describe, expect, it } from 'vitest'
 

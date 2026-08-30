@@ -30,19 +30,11 @@ func TestFrame_MaxUserEventsMessageFitsBudget(t *testing.T) {
 		"a full-size userevents bootstrap must fit within the frame budget")
 }
 
-// maxFrameSize is DERIVED on the Go side (UserEventsReadLimit + margin) but
-// HARDCODED as MAX_FRAME_SIZE in desktop/rust/src/main.rs. The frame.go comment
-// says the two "must stay in sync"; this guard makes that mechanical for the
-// likely drift direction. If a future UserEventsReadLimit bump changes the Go
-// ceiling, this fails and forces updating the Rust constant too -- otherwise the
-// Go sidecar would emit frames the Rust proxy layer silently rejects, truncating
-// a full-size bootstrap at the Rust hop.
-func TestFrame_maxFrameSizeMatchesRustConstant(t *testing.T) {
-	// Mirror of MAX_FRAME_SIZE in desktop/rust/src/main.rs.
-	const rustMaxFrameSize = 20 * 1024 * 1024
-	assert.Equal(t, rustMaxFrameSize, maxFrameSize,
-		"maxFrameSize (Go, frame.go) and MAX_FRAME_SIZE (Rust, main.rs) must stay in sync")
-}
+// The frame cap itself is single-sourced in contracts/desktop.json (both the
+// Go sidecar and the Rust shell read a generated constant from it), so there
+// is no cross-language mirror left to pin. TestFrame_MaxUserEventsMessageFitsBudget
+// above is the floor guard: a UserEventsReadLimit bump that outgrows the
+// contract value fails that case.
 
 func TestFrame_roundTrip_request(t *testing.T) {
 	frame := &desktoppb.Frame{

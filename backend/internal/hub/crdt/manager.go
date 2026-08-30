@@ -103,7 +103,7 @@ const (
 	// onto the delta AFTER buildResumeDelta has sized it. Real overhead is a few
 	// tags, two varint lengths and two ids -- a few hundred bytes. 64 KiB is
 	// deliberate slack (the same figure, for the same reason, as
-	// channelwire.InnerEnvelopeHeadroom) so that adding a field to ResumeDelta or
+	// contracts.InnerEnvelopeHeadroom) so that adding a field to ResumeDelta or
 	// to the bootstrap stamping cannot quietly push a passing delta over the
 	// read limit.
 	resumeDeltaEnvelopeHeadroom = 64 << 10 // 64 KiB

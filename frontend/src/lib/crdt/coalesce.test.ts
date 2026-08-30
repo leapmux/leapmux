@@ -1,4 +1,4 @@
-import type { CrdtOp, OpBatch } from '~/generated/leapmux/v1/user_ops_pb'
+import type { CrdtOp, OpBatch } from '~/generated/proto/leapmux/v1/user_ops_pb'
 import { describe, expect, it } from 'vitest'
 import { coalesceQueuedBatches, REGISTER_POLICIES, registerKey, supersededParkedBatchIds } from './coalesce'
 

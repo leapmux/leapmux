@@ -35,11 +35,12 @@ import type { Session } from './noise'
 import type { Reassembler } from './reassembler'
 import type { WorkerKeyBundle } from './workerKeyBundle'
 import type { FatalCloseInfo } from './wsCloseCodes'
-import type { ChannelMessage, EncryptionMode, HubControlFrame, InnerRpcResponse, InnerStreamMessage } from '~/generated/leapmux/v1/channel_pb'
+import type { ChannelMessage, EncryptionMode, HubControlFrame, InnerRpcResponse, InnerStreamMessage } from '~/generated/proto/leapmux/v1/channel_pb'
 import { create, fromBinary, toBinary, toJsonString } from '@bufbuild/protobuf'
+import { IDLE_REKEY_INTERVAL_MS, PING_METHOD } from '~/generated/contracts/wire'
 import {
   HubControlFrameSchema,
-} from '~/generated/leapmux/v1/channel_pb'
+} from '~/generated/proto/leapmux/v1/channel_pb'
 import { abortError, ChannelError, channelNotOpenError } from './channelError'
 import { ChannelInbound } from './channelInbound'
 import { ChannelOpen } from './channelOpen'
@@ -55,11 +56,6 @@ import { createLogger } from './logger'
 export type { ChannelErrorSource } from './channelError'
 export { abortError, ChannelError } from './channelError'
 export type { ChannelSocket } from './channelRelay'
-export {
-  MIN_REKEY_INTERVAL_MS,
-  SESSION_KEY_HARD_CEILING_MS,
-  SESSION_KEY_MAX_AGE_MS,
-} from './channelSession'
 export type { KeyPinDecision } from './keyPinStore'
 export { clearAllKeyPins, clearKeyPin, KeyPinRejectedError, KeyPinStore } from './keyPinStore'
 export type { WorkerKeyBundle } from './workerKeyBundle'
@@ -85,15 +81,11 @@ function safeCall(fn: () => void, description: string): void {
 /**
  * The no-op inner RPC openChannel round-trips to prove the E2EE session decrypts
  * in both directions before returning the channel. Must match the worker's
- * registered handler — the Go side keeps this name in `channelwire.PingMethod`,
- * and both sides pin it to the cross-language fixture
- * (testdata/channelwire_limits.json) so a rename on one reddens CI here instead
- * of desyncing the open-time Ping the other end expects.
+ * registered handler — both sides take the name from contracts/wire.json
+ * (generated as channelwire.PingMethod and PING_METHOD in
+ * ~/generated/contracts/wire), so a rename in the contract reddens both
+ * builds instead of desyncing the open-time Ping.
  */
-export const PING_METHOD = 'Ping'
-
-/** Idle rekey poll interval, matching Go tunnel rekeyIdleLoop. */
-const DEFAULT_IDLE_REKEY_INTERVAL_MS = 60_000
 
 /** Worker key bundle returned by transport. */
 export interface ChannelTransport {
@@ -290,7 +282,7 @@ export class ChannelManager {
     this.testReassembledCeiling = opts?.testReassembledCeiling
     this.rpcTimeoutFn = opts?.rpcTimeoutFn ?? (() => FALLBACK_RPC_TIMEOUT_MS)
     this.expectedUserIdFn = opts?.expectedUserId ?? (() => undefined)
-    this.idleRekeyIntervalMs = opts?.idleRekeyIntervalMs ?? DEFAULT_IDLE_REKEY_INTERVAL_MS
+    this.idleRekeyIntervalMs = opts?.idleRekeyIntervalMs ?? IDLE_REKEY_INTERVAL_MS
     this.keyPins = opts?.keyPins ?? new KeyPinStore({ confirmKeyPin: async () => 'reject' })
 
     this.relay = new ChannelRelay({

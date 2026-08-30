@@ -15,6 +15,7 @@ import { UserMenuDialogs } from '~/components/shell/UserMenu'
 import { openPreferences, PreferencesAddress, setShowAboutDialog, showAboutDialog } from '~/components/shell/UserMenuState'
 import { AuthProvider } from '~/context/AuthContext'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
+import { TAURI_EVENT_MENU_SHOW_ABOUT, TAURI_EVENT_MENU_SHOW_PREFERENCES } from '~/generated/contracts/desktop'
 import { useCoreShortcuts } from '~/hooks/useCoreShortcuts'
 import { usePreferencesForIdentity } from '~/hooks/usePreferencesForIdentity'
 import { initStorageCleanup } from '~/lib/browserStorage'
@@ -205,8 +206,8 @@ export default function App() {
           })
           .catch(err => log.warn(`onEvent(${event}) failed`, err))
       }
-      registerListener('menu:show-about', () => setShowAboutDialog(true))
-      registerListener('menu:show-preferences', () => openPreferences())
+      registerListener(TAURI_EVENT_MENU_SHOW_ABOUT, () => setShowAboutDialog(true))
+      registerListener(TAURI_EVENT_MENU_SHOW_PREFERENCES, () => openPreferences())
 
       getRuntimeState()
         .then((state) => {

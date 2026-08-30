@@ -1,6 +1,6 @@
 import type { CategoryId, HubBinding, SettingControl, SettingRowModel } from './types'
-import type { SettingDescriptor as ProtoSettingDescriptor, SettingField, SettingValue } from '~/generated/leapmux/v1/settings_pb'
-import { SettingFieldKind } from '~/generated/leapmux/v1/settings_pb'
+import type { SettingDescriptor as ProtoSettingDescriptor, SettingField, SettingValue } from '~/generated/proto/leapmux/v1/settings_pb'
+import { SettingFieldKind } from '~/generated/proto/leapmux/v1/settings_pb'
 import { parseSettingJson } from '~/lib/settingJson'
 import { isSoloMode } from '~/lib/systemInfo'
 import { NAV_GROUPS } from './navGroups'

@@ -31,7 +31,7 @@ test.describe('file-tab E2EE worker round-trip', () => {
       GetFileTabPathResponseSchema,
       RevokeFileTabPathRequestSchema,
       RevokeFileTabPathResponseSchema,
-    } = await import('../../src/generated/leapmux/v1/worker_private_pb')
+    } = await import('../../src/generated/proto/leapmux/v1/worker_private_pb')
 
     try {
       const tabId = `t-${Date.now()}`

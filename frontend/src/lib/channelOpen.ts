@@ -12,12 +12,13 @@ import type { ChannelSession } from './channelSession'
 import type { KeyPinStore } from './keyPinStore'
 import type { Session } from './noise'
 import type { WorkerKeyBundle } from './workerKeyBundle'
-import { EncryptionMode } from '~/generated/leapmux/v1/channel_pb'
+import { MAX_CHUNK_SIZE, MAX_CONFIGURABLE_MESSAGE_SIZE } from '~/generated/contracts/wire'
+import { EncryptionMode } from '~/generated/proto/leapmux/v1/channel_pb'
 import { ChannelError } from './channelError'
 import { formatErrorMessage } from './errors'
 import { KeyPinRejectedError } from './keyPinStore'
 import { monotonicNow } from './monotonicNow'
-import { MAX_CHUNK_SIZE, MAX_CONFIGURABLE_MESSAGE_SIZE, maxReassembledMessageSize, Reassembler } from './reassembler'
+import { maxReassembledMessageSize, Reassembler } from './reassembler'
 
 /** Transport slice the open path needs (matches ChannelTransport). */
 export interface ChannelOpenTransport {

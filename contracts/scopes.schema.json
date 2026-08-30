@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "scopes.schema.json",
+  "title": "OAuth scope vocabulary contract",
+  "description": "Keys are proto enum value names. The generator cross-checks: scopes + nonGrantable partition the Scope enum exactly; categories cover each grantable scope exactly once; impliedBy references grantable scopes only and is acyclic; tokens are unique. `description` addresses a developer registering an app (Preferences dialog); `consentSentence` addresses a person granting access (hub consent screen) -- deliberately different audiences, both owned here.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["_readme", "nonGrantable", "scopes", "categories", "impliedBy"],
+  "properties": {
+    "_readme": { "type": "string", "minLength": 1 },
+    "nonGrantable": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^SCOPE_[A-Z0-9_]+$" }
+    },
+    "scopes": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": { "pattern": "^SCOPE_[A-Z0-9_]+$" },
+      "additionalProperties": { "$ref": "#/$defs/scope" }
+    },
+    "categories": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["label", "scopes"],
+        "properties": {
+          "label": { "type": "string", "minLength": 1 },
+          "scopes": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": { "type": "string", "pattern": "^SCOPE_[A-Z0-9_]+$" }
+          }
+        }
+      }
+    },
+    "impliedBy": {
+      "type": "object",
+      "propertyNames": { "pattern": "^SCOPE_[A-Z0-9_]+$" },
+      "additionalProperties": {
+        "type": "array",
+        "minItems": 1,
+        "uniqueItems": true,
+        "items": { "type": "string", "pattern": "^SCOPE_[A-Z0-9_]+$" }
+      }
+    }
+  },
+  "$defs": {
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["token", "description", "consentSentence"],
+      "properties": {
+        "token": { "type": "string", "pattern": "^[a-z][a-z0-9_]*:[a-z][a-z0-9_]*$" },
+        "description": { "type": "string", "minLength": 1 },
+        "consentSentence": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

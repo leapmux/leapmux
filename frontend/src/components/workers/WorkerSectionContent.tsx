@@ -1,6 +1,6 @@
 import type { Component } from 'solid-js'
 import type { TunnelInfo } from '~/api/platformBridge'
-import type { Worker } from '~/generated/leapmux/v1/worker_pb'
+import type { Worker } from '~/generated/proto/leapmux/v1/worker_pb'
 import type { WorkerInfo } from '~/lib/workerInfoCache'
 import type { ChannelStatus } from '~/stores/workerChannelStatus.store'
 import ArrowBigRightDash from 'lucide-solid/icons/arrow-big-right-dash'

@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "expected.schema.json",
+  "title": "dependency license override",
+  "description": "scripts/license-overrides/{go,js,rust}/<dependency>/expected.json, consumed by scripts/generate-notice.mjs when a dependency's detected license must be overridden.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["license"],
+  "properties": {
+    "license": { "type": "string", "minLength": 1 }
+  }
+}

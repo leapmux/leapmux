@@ -1,4 +1,4 @@
-import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { registerACPProvider } from './acp/registerACPProvider'
 import { extractOpenCodeQuestions, OpenCodeControlActions, OpenCodeControlContent, sendOpenCodeQuestionResponse } from './opencode/OpenCodeControlRequest'
 import { opencodeControlResponseDisplay } from './opencode/questionAnswers'

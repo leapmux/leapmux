@@ -1,8 +1,8 @@
-import type { AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
+import type { AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
 import { create } from '@bufbuild/protobuf'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
-import { AvailableOptionGroupSchema, AvailableOptionSchema } from '~/generated/leapmux/v1/agent_pb'
+import { AvailableOptionGroupSchema, AvailableOptionSchema } from '~/generated/proto/leapmux/v1/agent_pb'
 import { buildPlanMode, currentModeFor, currentValueOrDefault, effectiveCurrent, mergeStableOptionGroupRefs, optionGroupDefaultValue, resolvedCurrent, valueValidForGroup } from './settingsGroups'
 import { OptionGroupMenuItems } from './settingsShared'
 

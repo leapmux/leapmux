@@ -1,6 +1,6 @@
 import type { JSX } from 'solid-js'
 import type { ProviderSettingChange, ProviderSettingsAction } from '~/components/chat/providers/registry'
-import type { AgentProvider, AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentProvider, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { EnterKeyMode } from '~/lib/browserStorage'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
 import GitBranch from 'lucide-solid/icons/git-branch'

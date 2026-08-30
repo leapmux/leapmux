@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/config"
@@ -51,7 +52,7 @@ const DefaultAPITimeout = config.DefaultAPITimeout
 // default reasoning effort". When an agent's Effort is this value, the
 // provider layer omits the CLI flag / wire field entirely so older CLIs
 // that don't recognize newer effort names (e.g. "xhigh") still work.
-const EffortAuto = "auto"
+const EffortAuto = contracts.EffortAuto
 
 // DefaultModelSentinel is the model id meaning "let the CLI pick the account's
 // own default model". Claude Code reports it as a distinct entry in the
@@ -59,7 +60,7 @@ const EffortAuto = "auto"
 // the provider omit --model at launch (and relaunch on a live switch) so the CLI
 // resolves it to the concrete model, which get_settings then reports back -- the
 // model-side analogue of EffortAuto.
-const DefaultModelSentinel = "default"
+const DefaultModelSentinel = contracts.DefaultModelSentinel
 
 // UsesAccountDefaultModel reports whether a (normalized) model id means "no concrete
 // model -- let the CLI pick the account default": an empty id or the

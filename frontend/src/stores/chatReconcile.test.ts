@@ -1,6 +1,6 @@
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
-import { AgentChatMessageSchema, ContentCompression, MessageSource } from '~/generated/leapmux/v1/agent_pb'
+import { AgentChatMessageSchema, ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { isOptimisticLocal, isReconcilableLocal, priorServerIds, reconcileEchoedLocals, userMessageSignature } from '~/stores/chatReconcile'
 
 function userMsg(id: string, seq: bigint, content: string, deliveryError = '') {

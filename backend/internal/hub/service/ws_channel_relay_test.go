@@ -21,6 +21,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/channelmgr"
@@ -680,7 +681,7 @@ func TestChannelRelay_RefusesBeyondThePerUserConnectionCap(t *testing.T) {
 
 	var closeErr websocket.CloseError
 	require.ErrorAs(t, err, &closeErr)
-	assert.Equal(t, channelwire.CloseReasonTooManyConnections, closeErr.Reason,
+	assert.Equal(t, contracts.CloseReasonTooManyConnections, closeErr.Reason,
 		"the same token both endpoints send, so one client mapping covers both")
 
 	// ...and the slot is a slot, not a latch: once the occupant lets go, the

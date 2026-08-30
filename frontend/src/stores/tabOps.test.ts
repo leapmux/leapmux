@@ -9,8 +9,8 @@ import {
   LWWStringSchema,
   NodeKind,
   NodeRecordSchema,
-} from '~/generated/leapmux/v1/user_crdt_pb'
-import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+} from '~/generated/proto/leapmux/v1/user_crdt_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { withTestBridge } from '~/test-support/crdtBridge'
 import { tabKey } from './tab.helpers'
 import {

@@ -1,6 +1,6 @@
 import { cleanup, render } from '@solidjs/testing-library'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { executeCommand, getCommand, resetCommands } from '~/lib/shortcuts/commands'
 import { evaluateWhen } from '~/lib/shortcuts/context'
 import { registerPanelSend, unregisterPanelSend } from '~/stores/focusedChatSend.store'

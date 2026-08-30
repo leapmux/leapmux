@@ -1,13 +1,13 @@
 import type { applyOp } from './apply'
-import type { UserCrdtState } from '~/generated/leapmux/v1/user_crdt_pb'
+import type { UserCrdtState } from '~/generated/proto/leapmux/v1/user_crdt_pb'
 import { create, toBinary } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
 import {
   NodeRecordSchema,
   UserCrdtStateSchema,
   WorkspaceContentsRecordSchema,
-} from '~/generated/leapmux/v1/user_crdt_pb'
-import { WatchUserEventSchema } from '~/generated/leapmux/v1/user_ops_pb'
+} from '~/generated/proto/leapmux/v1/user_crdt_pb'
+import { WatchUserEventSchema } from '~/generated/proto/leapmux/v1/user_ops_pb'
 import {
   applyChunk,
   CHUNK_KINDS,

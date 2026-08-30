@@ -1,5 +1,5 @@
 import type { Projection } from './project'
-import type { UserCrdtState } from '~/generated/leapmux/v1/user_crdt_pb'
+import type { UserCrdtState } from '~/generated/proto/leapmux/v1/user_crdt_pb'
 import { createMemo } from 'solid-js'
 import { project, ProjectionCache } from './project'
 

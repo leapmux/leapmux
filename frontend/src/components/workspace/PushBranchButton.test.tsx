@@ -1,4 +1,4 @@
-import type { BranchGitState } from '~/generated/leapmux/v1/git_pb'
+import type { BranchGitState } from '~/generated/proto/leapmux/v1/git_pb'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as workerRpc from '~/api/workerRpc'

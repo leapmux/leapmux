@@ -1,0 +1,47 @@
+{
+  "_readme": "Single source of truth for the channel-wire transport limits the Go hub/worker/CLI (backend/channelwire) and the TypeScript browser client (frontend/src/lib) both compile in. task generate-contracts emits true constants into backend/generated/contracts/wire.go and frontend/src/generated/contracts/wire.ts; the derived values (maxPlaintextPerChunkBytes, maxReassembledMessageSizeBytes, sessionKeyHardCeilingMs) are computed by the generator, not re-derived per language. Retuning any number here is a one-file change that reddens neither side's build -- there is nothing left to drift.",
+  "noiseAeadTagSizeBytes": 16,
+  "maxCiphertextForChunkBytes": 65535,
+  "maxMessageSizeBytes": 16777216,
+  "innerEnvelopeHeadroomBytes": 65536,
+  "maxConfigurableMessageSizeBytes": 67108864,
+  "maxIncompleteChunked": 4,
+  "pingMethod": "Ping",
+  "protocolVersion": 1,
+  "sessionKey": {
+    "maxAgeMs": 3600000,
+    "minRekeyIntervalMs": 3000000,
+    "hardCeilingOverrunMs": 600000,
+    "rejectBackoffMs": 60000,
+    "verifyTimeoutMs": 10000,
+    "idleRekeyIntervalMs": 60000
+  },
+  "closeReasons": {
+    "tooManyConnections": "too_many_connections",
+    "snapshotTooLarge": "snapshot_too_large",
+    "forbidden": "forbidden",
+    "controlFlood": "too_many_control_frames"
+  },
+  "ws": {
+    "routes": {
+      "userEvents": "/ws/userevents",
+      "channel": "/ws/channel"
+    },
+    "queryParams": {
+      "workspaceIds": "workspace_ids",
+      "resumeAfterHlc": "resume_after_hlc",
+      "resumeEpoch": "resume_epoch"
+    },
+    "subprotocols": {
+      "userEventsRelay": "userevents-relay",
+      "channelRelay": "channel-relay"
+    }
+  },
+  "noise": {
+    "softNonceLimit": 2147483647,
+    "hardNonceLimit": 4294967295
+  },
+  "framing": {
+    "lengthPrefixBytes": 4
+  }
+}

@@ -1,4 +1,4 @@
-import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createStore, produce, reconcile } from 'solid-js/store'
 import { parseMessageContent } from '~/lib/messageParser'
 import { truncatePreview } from '~/lib/textTruncate'

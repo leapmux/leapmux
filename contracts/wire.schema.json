@@ -1,0 +1,246 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "wire.schema.json",
+  "title": "channel-wire transport contract",
+  "description": "See the _readme in wire.json. Byte counts are decimal integers; timings are integer milliseconds; close reasons are snake_case tokens the browser branches on. Derived values (plaintext per chunk, reassembled ceiling, hard ceiling) are NOT stored here -- the generator computes them and checks the arithmetic.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "_readme",
+    "noiseAeadTagSizeBytes",
+    "maxCiphertextForChunkBytes",
+    "maxMessageSizeBytes",
+    "innerEnvelopeHeadroomBytes",
+    "maxConfigurableMessageSizeBytes",
+    "maxIncompleteChunked",
+    "pingMethod",
+    "protocolVersion",
+    "sessionKey",
+    "closeReasons",
+    "ws",
+    "noise",
+    "framing"
+  ],
+  "properties": {
+    "_readme": {
+      "type": "string",
+      "minLength": 1
+    },
+    "noiseAeadTagSizeBytes": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Noise transport AEAD auth-tag overhead appended to every ciphertext. Broken out from maxCiphertextForChunk so a transport change (e.g. a post-quantum AEAD with a different tag size) is one edit instead of a tag-and-cap pair each receiver re-derives."
+    },
+    "maxCiphertextForChunkBytes": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Maximum ciphertext per Noise transport message. The Noise spec caps a transport message at 65535 bytes of ciphertext (a 2-byte length prefix's range); paired with noiseAeadTagSizeBytes it derives maxPlaintextPerChunkBytes."
+    },
+    "maxMessageSizeBytes": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Default operator-facing message size: the largest application payload a sender may hand the channel layer. Operators may raise or lower it via max_message_size; the effective per-channel value is min(hub, worker), announced at open. Producers that clamp input bound by THIS, not the reassembled ceiling: what the receiver caps is the payload plus every envelope around it. When the payload budget equalled the reassembled ceiling, a producer that filled its budget exactly built an inner message the receiver refused mid-stream -- and the ordered, encrypted stream has no resync path."
+    },
+    "innerEnvelopeHeadroomBytes": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "What maxReassembledMessageSizeBytes adds on top of a payload budget, covering the envelopes a payload is wrapped in before the wire -- the widest fan-out is AgentChatMessage -> AgentEvent -> WatchEventsResponse -> InnerStreamMessage -> InnerMessage. Real overhead is field tags, varint lengths and ids: kilobytes, not hundreds; the slack is deliberate so adding a field to any envelope cannot quietly reintroduce a mid-stream drop."
+    },
+    "maxConfigurableMessageSizeBytes": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Largest max_message_size an operator may configure. Caps worst-case per-channel reassembly memory (maxIncompleteChunked * maxReassembledMessageSizeBytes)."
+    },
+    "maxIncompleteChunked": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "pingMethod": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The no-op inner RPC a client issues once, before OpenChannel returns, to prove the E2EE session works end to end. Noise_NK's handshake only proves the client can encrypt to the worker's static key; without a round trip at open time a session broken in either direction opens 'successfully' and fails later on the first real call -- and pooled channels cache that broken session. It carries no payload: the proof is that the round trip decrypts at both ends."
+    },
+    "protocolVersion": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "The ChannelMessage envelope version every sender stamps (NewChannelMessage, the bypassing Go senders, and the browser's channelSession)."
+    },
+    "sessionKey": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maxAgeMs",
+        "minRekeyIntervalMs",
+        "hardCeilingOverrunMs",
+        "rejectBackoffMs",
+        "verifyTimeoutMs",
+        "idleRekeyIntervalMs"
+      ],
+      "properties": {
+        "maxAgeMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "minRekeyIntervalMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "hardCeilingOverrunMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "rejectBackoffMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "verifyTimeoutMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "idleRekeyIntervalMs": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "closeReasons": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tooManyConnections",
+        "snapshotTooLarge",
+        "forbidden",
+        "controlFlood"
+      ],
+      "properties": {
+        "tooManyConnections": {
+          "allOf": [{ "$ref": "#/$defs/closeReason" }],
+          "description": "Sent when a user already holds as many long-lived connections as max_connections_per_user allows. A client branches on it: every other policy-violation close means 're-authenticate', this one means 'close a tab' -- opposite advice."
+        },
+        "snapshotTooLarge": {
+          "allOf": [{ "$ref": "#/$defs/closeReason" }],
+          "description": "Sent when a /ws/userevents subscriber's opening snapshot exceeds the whole queue budget. A frame bigger than the pool's capacity is refused at EVERY occupancy, so retry-later advice would loop forever rebuilding the same oversized snapshot; only an operator can fix it (raise userevents_queue_memory_budget), so the close is final and says so."
+        },
+        "forbidden": {
+          "allOf": [{ "$ref": "#/$defs/closeReason" }],
+          "description": "Sent when the authenticated user may not have what they asked for -- an ACL check that said no, not a credential that expired. Re-authenticating does not grant a permission and reloading asks again, so neither advice helps."
+        },
+        "controlFlood": {
+          "allOf": [{ "$ref": "#/$defs/closeReason" }],
+          "description": "Sent when a peer keeps sending control frames past what its allowance absorbs. A misbehaving or misconfigured client, not a user error: nothing about the account, workspace, or credential is wrong. Clears on reload because the new socket starts with a full allowance."
+        }
+      }
+    },
+    "ws": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "routes",
+        "queryParams",
+        "subprotocols"
+      ],
+      "properties": {
+        "routes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "userEvents",
+            "channel"
+          ],
+          "properties": {
+            "userEvents": {
+              "type": "string",
+              "pattern": "^/ws/[a-z-]+$"
+            },
+            "channel": {
+              "type": "string",
+              "pattern": "^/ws/[a-z-]+$"
+            }
+          }
+        },
+        "queryParams": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "workspaceIds",
+            "resumeAfterHlc",
+            "resumeEpoch"
+          ],
+          "properties": {
+            "workspaceIds": {
+              "type": "string",
+              "pattern": "^[a-z_]+$"
+            },
+            "resumeAfterHlc": {
+              "type": "string",
+              "pattern": "^[a-z_]+$"
+            },
+            "resumeEpoch": {
+              "type": "string",
+              "pattern": "^[a-z_]+$"
+            }
+          }
+        },
+        "subprotocols": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "userEventsRelay",
+            "channelRelay"
+          ],
+          "properties": {
+            "userEventsRelay": {
+              "type": "string",
+              "pattern": "^[a-z-]+$"
+            },
+            "channelRelay": {
+              "type": "string",
+              "pattern": "^[a-z-]+$"
+            }
+          }
+        }
+      }
+    },
+    "noise": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "softNonceLimit",
+        "hardNonceLimit"
+      ],
+      "properties": {
+        "softNonceLimit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "hardNonceLimit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295,
+          "description": "The uint32 wrap bound: the last nonce value the counter may hold before a rekey is mandatory. 2^32-1; the generator checks hardNonceLimit > softNonceLimit."
+        }
+      }
+    },
+    "framing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lengthPrefixBytes"
+      ],
+      "properties": {
+        "lengthPrefixBytes": {
+          "type": "integer",
+          "const": 4,
+          "description": "Pinned to 4: both framers (Go WriteFramedBytes/ReadFramedBytes, TS frameBytes/unframeBytes) write a big-endian uint32. The constant documents the width; it does not parameterize it."
+        }
+      }
+    }
+  },
+  "$defs": {
+    "closeReason": {
+      "type": "string",
+      "pattern": "^[a-z0-9_]+$"
+    }
+  }
+}

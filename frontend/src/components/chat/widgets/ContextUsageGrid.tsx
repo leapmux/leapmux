@@ -1,5 +1,5 @@
 import type { Component } from 'solid-js'
-import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ContextUsageInfo } from '~/stores/agentSession.store'
 import Info from 'lucide-solid/icons/info'
 import { createMemo, Show } from 'solid-js'

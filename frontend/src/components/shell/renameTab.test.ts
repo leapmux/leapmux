@@ -1,7 +1,7 @@
 import type { RenameTabDeps } from './renameTab'
 import type { AgentTab, Tab, TerminalTab } from '~/stores/tab.types'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { renameTab } from './renameTab'
 
 const mockRenameAgent = vi.fn().mockResolvedValue({})

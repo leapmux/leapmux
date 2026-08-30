@@ -2,7 +2,7 @@ import { create } from '@bufbuild/protobuf'
 import ListTree from 'lucide-solid/icons/list-tree'
 import { describe, expect, it } from 'vitest'
 import { getSectionIcon, isMoveTargetSection, isWorkspaceMutatable, isWorkspaceSection, sectionTypeTestId } from '~/components/shell/sectionUtils'
-import { SectionSchema, SectionType } from '~/generated/leapmux/v1/section_pb'
+import { SectionSchema, SectionType } from '~/generated/proto/leapmux/v1/section_pb'
 
 describe('isMoveTargetSection', () => {
   it('returns true for IN_PROGRESS', () => {

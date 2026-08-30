@@ -1,7 +1,7 @@
 import type { Component } from 'solid-js'
 import type { BranchRef } from './WorkspaceTabTree'
-import type { Section } from '~/generated/leapmux/v1/section_pb'
-import type { TabType, Workspace } from '~/generated/leapmux/v1/workspace_pb'
+import type { Section } from '~/generated/proto/leapmux/v1/section_pb'
+import type { TabType, Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
 import type { WorkerInfo } from '~/lib/workerInfoCache'
 
 import type { createRepoGitStore } from '~/stores/repoGit.store'

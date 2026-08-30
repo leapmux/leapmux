@@ -1,6 +1,6 @@
 import type { AuthState } from '~/context/AuthContext'
 import type { PreferencesState } from '~/context/PreferencesContext'
-import type { User } from '~/generated/leapmux/v1/auth_pb'
+import type { User } from '~/generated/proto/leapmux/v1/auth_pb'
 import type { BrowserPreferences } from '~/lib/browserStorage'
 import { Code, ConnectError } from '@connectrpc/connect'
 import { cleanup, render, waitFor } from '@solidjs/testing-library'

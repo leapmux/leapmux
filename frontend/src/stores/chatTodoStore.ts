@@ -1,5 +1,5 @@
 import type { TodoItem } from './chatTodos'
-import type { TodoItem as ProtoTodoItem } from '~/generated/leapmux/v1/agent_pb'
+import type { TodoItem as ProtoTodoItem } from '~/generated/proto/leapmux/v1/agent_pb'
 import { shallowEqualArraysDeep } from '~/lib/shallowEqual'
 import { createPerAgentStore } from './chatPerAgentStore'
 import { protoTodoToStore } from './chatTodos'

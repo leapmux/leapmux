@@ -1,7 +1,7 @@
-import type { SettingDescriptor, SettingField } from '~/generated/leapmux/v1/settings_pb'
+import type { SettingDescriptor, SettingField } from '~/generated/proto/leapmux/v1/settings_pb'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { SettingFieldKind } from '~/generated/leapmux/v1/settings_pb'
+import { SettingFieldKind } from '~/generated/proto/leapmux/v1/settings_pb'
 
 /** One key of the hub's golden account schema, as the file records it. */
 export interface GoldenOption { value: string }

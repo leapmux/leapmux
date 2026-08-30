@@ -1,12 +1,12 @@
 /// <reference types="vitest/globals" />
 import type { LastTabCloseChoice, LastTabConfirmState } from './LastTabCloseDialog'
-import type { InspectLastTabCloseResponse } from '~/generated/leapmux/v1/git_pb'
+import type { InspectLastTabCloseResponse } from '~/generated/proto/leapmux/v1/git_pb'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import * as workerRpc from '~/api/workerRpc'
-import { LastTabCloseTarget } from '~/generated/leapmux/v1/git_pb'
-import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { LastTabCloseTarget } from '~/generated/proto/leapmux/v1/git_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { LastTabCloseDialog } from './LastTabCloseDialog'
 
 vi.mock('~/api/workerRpc', () => ({

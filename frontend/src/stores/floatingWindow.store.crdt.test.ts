@@ -722,7 +722,7 @@ describe('createFloatingWindowStore (projection-driven)', () => {
       // see zero additional fires across N drag frames.
       await withTestBridge(async (harness) => {
         const store = createTestFloatingWindowStore()
-        const { TabType } = await import('~/generated/leapmux/v1/workspace_pb')
+        const { TabType } = await import('~/generated/proto/leapmux/v1/workspace_pb')
         const { emitAddTab } = await import('~/stores/tabOps')
         const { createTestTabStores } = await import('~/test-support/tabStores')
         const { view } = createTestTabStores(harness.workspaceId)

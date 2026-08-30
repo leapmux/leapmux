@@ -1,5 +1,6 @@
 import type { ChannelTransport } from './channel'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { DEFAULT_MAX_MESSAGE_SIZE } from '~/generated/contracts/wire'
 import { ChannelManager } from './channel'
 import {
   acceptingKeyPins,
@@ -20,7 +21,6 @@ import {
   simulatePingAcceptOnWs,
   waitForPendingChannel,
 } from './channel.test-support'
-import { DEFAULT_MAX_MESSAGE_SIZE } from './reassembler'
 
 describe('channelManager getOrOpenChannel', () => {
   const h = new ChannelManagerTestHarness()

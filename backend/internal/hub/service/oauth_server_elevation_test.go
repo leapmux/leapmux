@@ -938,20 +938,6 @@ func TestRefresh_ReportsTheRefreshDeadlineAndTheScope(t *testing.T) {
 	}
 }
 
-// TestElevationRequiredHeaderValueIsPinned keeps the Go constant and the
-// frontend's copy from drifting silently. The frontend cannot import this
-// package, so only the literal below and the comment on each side join the
-// two; a rename that changes one and not the other turns every step-up
-// prompt into an unexplained failure the user cannot act on.
-//
-// This test writes the literal out rather than compares it to the constant,
-// so renaming the constant alone does not make this pass.
-func TestElevationRequiredHeaderValueIsPinned(t *testing.T) {
-	t.Parallel()
-	assert.Equal(t, "Leapmux-Elevation-Required", service.ElevationRequiredHeader,
-		"frontend/src/lib/elevation.ts keys on the lowercased form of this value")
-}
-
 // TestElevationFactorRefusalIsMarkedAsACredentialRejection is the guard on
 // the failure the E2E suite found: a mistyped step-up password answered
 // Unauthenticated, the browser's unconditional "Unauthenticated means signed

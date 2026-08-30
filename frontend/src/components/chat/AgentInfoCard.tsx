@@ -1,4 +1,4 @@
-import type { AgentInfo, AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentInfo, AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { AgentSessionInfo } from '~/stores/agentSession.store'
 import type { RepoGitView } from '~/stores/repoGit'
 import Check from 'lucide-solid/icons/check'

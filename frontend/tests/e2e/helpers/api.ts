@@ -607,7 +607,7 @@ export async function openAgentViaAPI(
     title?: string
   },
 ): Promise<string> {
-  const { OpenAgentRequestSchema, OpenAgentResponseSchema } = await import('../../../src/generated/leapmux/v1/agent_pb')
+  const { OpenAgentRequestSchema, OpenAgentResponseSchema } = await import('../../../src/generated/proto/leapmux/v1/agent_pb')
   const channel = await getTestChannel(hubUrl, cookie)
 
   // No workspace announcement. A channel carries no workspace set at all, so a
@@ -651,7 +651,7 @@ export async function openAgentViaAPI(
   // here as an `awaitRootNodeId` timeout — same diagnostic the user
   // would see in production (empty workspace, missing agent tab).
   const { seedTabIntoWorkspace, getUserEventsSubscription } = await import('./crdt')
-  const { TabType } = await import('../../../src/generated/leapmux/v1/workspace_pb')
+  const { TabType } = await import('../../../src/generated/proto/leapmux/v1/workspace_pb')
   const userEvents = await getUserEventsSubscription(hubUrl, cookie)
   await seedTabIntoWorkspace({
     hubUrl,
@@ -731,7 +731,7 @@ export async function cleanupWorkspaceViaAPI(
   workerId: string,
   workspaceId: string,
 ): Promise<void> {
-  const { CleanupWorkspaceRequestSchema, CleanupWorkspaceResponseSchema } = await import('../../../src/generated/leapmux/v1/workspace_pb')
+  const { CleanupWorkspaceRequestSchema, CleanupWorkspaceResponseSchema } = await import('../../../src/generated/proto/leapmux/v1/workspace_pb')
   const channel = await getTestChannel(hubUrl, cookie)
   // The worker tracks no workspace id, so the CALLER supplies the tab list --
   // read from the hub here, exactly as the browser reads it from its projection.
@@ -770,7 +770,7 @@ async function listTabsViaAPI(
   cookie: string,
   workspaceId: string,
 ): Promise<{ tabType: number, tabId: string, workerId: string }[]> {
-  const { TabType } = await import('../../../src/generated/leapmux/v1/workspace_pb')
+  const { TabType } = await import('../../../src/generated/proto/leapmux/v1/workspace_pb')
   const tabTypeByName: Record<string, number> = {
     TAB_TYPE_UNSPECIFIED: TabType.UNSPECIFIED,
     TAB_TYPE_AGENT: TabType.AGENT,

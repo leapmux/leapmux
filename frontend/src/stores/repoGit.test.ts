@@ -1,7 +1,7 @@
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
-import { GitRepoStatusSchema } from '~/generated/leapmux/v1/common_pb'
-import { GetGitFileStatusResponseSchema } from '~/generated/leapmux/v1/git_pb'
+import { GitRepoStatusSchema } from '~/generated/proto/leapmux/v1/common_pb'
+import { GetGitFileStatusResponseSchema } from '~/generated/proto/leapmux/v1/git_pb'
 import {
   applyFullGitStatusUpsert,
   findCanonicalRepoKey,

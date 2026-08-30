@@ -1,7 +1,7 @@
 import type { TodoItem } from '~/stores/chatTodos'
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
-import { TodoItemSchema, TodoStatus } from '~/generated/leapmux/v1/agent_pb'
+import { TodoItemSchema, TodoStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { isFinishedTodoStatus, normalizeTodoStatus, protoTodoToStore, rawTodosToItems, sortTodos, todoDisplayLabel, todoProgress } from '~/stores/chatTodos'
 
 describe('chatTodos', () => {

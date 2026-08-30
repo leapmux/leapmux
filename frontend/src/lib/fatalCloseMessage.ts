@@ -1,19 +1,19 @@
 import type { FatalCloseInfo } from './wsCloseCodes'
-import { ChannelError } from './channelError'
 import {
   CLOSE_REASON_CONTROL_FLOOD,
   CLOSE_REASON_FORBIDDEN,
   CLOSE_REASON_SNAPSHOT_TOO_LARGE,
   CLOSE_REASON_TOO_MANY_CONNECTIONS,
-} from './wsCloseCodes'
+} from '~/generated/contracts/wire'
+import { ChannelError } from './channelError'
 
 /**
- * Copy for a long-lived hub stream that closed with a terminal code, keyed on
+ * Copy for a long-lived hub stream that closed with a final code, keyed on
  * the hub's close reason.
  *
  * A pure function rather than an `if` inside a hook: the branches are then
  * testable without standing up the CRDT runtime, and the fallback stays a
- * fallback. Every terminal close used to produce one message — "reload the page"
+ * fallback. Every final close used to produce one message — "reload the page"
  * — which is right for an expired credential and actively WRONG for the
  * connection cap, where a reload just produces another refused connection.
  *
@@ -40,7 +40,7 @@ export function fatalCloseMessage(info: FatalCloseInfo): string {
       + 'Ask an administrator to grant it, then reload this page.'
   }
   if (info.reason === CLOSE_REASON_CONTROL_FLOOD) {
-    // The one terminal reason a plain reload really does fix, because the new
+    // The one final reason a plain reload really does fix, because the new
     // socket starts with a full allowance.
     return 'This tab was disconnected for sending too many keepalive messages. '
       + 'Reload the page to reconnect.'
@@ -49,7 +49,7 @@ export function fatalCloseMessage(info: FatalCloseInfo): string {
 }
 
 /**
- * The channel-transport error a terminal close produces, carrying both the copy
+ * The channel-transport error a final close produces, carrying both the copy
  * and the `fatal` marker.
  *
  * One factory so every site that fails a caller because of a refused connection

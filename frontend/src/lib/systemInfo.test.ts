@@ -1,7 +1,7 @@
 /// <reference types="vitest/globals" />
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { CaptchaProvider } from '~/generated/leapmux/v1/auth_pb'
+import { CaptchaProvider } from '~/generated/proto/leapmux/v1/auth_pb'
 import { captchaProviderNeedsSecureContext, getAltchaAlgorithm, getCaptchaProvider, getCaptchaSiteKey, isCaptchaEnabled, isCaptchaUnsolvableHere, isSignupEnabled, isSoloMode, isSystemInfoLoaded, loadSystemInfo, passkeyBlocker, passkeysUsableHere, refreshSnapshot } from './systemInfo'
 
 const mockGetSystemInfo = vi.fn()

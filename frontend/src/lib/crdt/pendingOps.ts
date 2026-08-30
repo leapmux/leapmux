@@ -1,7 +1,7 @@
 import type { MessageInitShape } from '@bufbuild/protobuf'
 import type { HLCClock } from './hlc'
 import type { HydrationPayload } from './hydrate'
-import type { FloatingWindowRecord, HLC, NodeRecord, TabRecord, UserCrdtState, WorkspaceContentsRecord } from '~/generated/leapmux/v1/user_crdt_pb'
+import type { FloatingWindowRecord, HLC, NodeRecord, TabRecord, UserCrdtState, WorkspaceContentsRecord } from '~/generated/proto/leapmux/v1/user_crdt_pb'
 import type {
   BatchCommitted,
   BatchRejection,
@@ -12,7 +12,7 @@ import type {
   OpBatch,
   ResumeDelta,
   WatchUserEvent,
-} from '~/generated/leapmux/v1/user_ops_pb'
+} from '~/generated/proto/leapmux/v1/user_ops_pb'
 import { clone, create } from '@bufbuild/protobuf'
 import {
   FloatingWindowRecordSchema,
@@ -20,8 +20,8 @@ import {
   TabRecordSchema,
   UserCrdtStateSchema,
   WorkspaceContentsRecordSchema,
-} from '~/generated/leapmux/v1/user_crdt_pb'
-import { BatchRejectionReason, WatchUserEventSchema } from '~/generated/leapmux/v1/user_ops_pb'
+} from '~/generated/proto/leapmux/v1/user_crdt_pb'
+import { BatchRejectionReason, WatchUserEventSchema } from '~/generated/proto/leapmux/v1/user_ops_pb'
 import { applyOp, newState } from './apply'
 import { entityKey, entityMapFor, TOMBSTONED_CHUNK_KINDS } from './checkpointChunks'
 import { hlcClone, hlcCmp, hlcIsZero, hlcMax } from './hlc'

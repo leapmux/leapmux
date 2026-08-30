@@ -1,4 +1,4 @@
-import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createRoot } from 'solid-js'
 import { describe, expect, it } from 'vitest'
 import { createScrollBufferFiller } from './chatScrollBufferFiller'

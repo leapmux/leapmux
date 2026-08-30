@@ -8,20 +8,20 @@ import {
   CloseAgentResponseSchema,
   ListAgentsRequestSchema,
   ListAgentsResponseSchema,
-} from '../../../src/generated/leapmux/v1/agent_pb'
-import { WorktreeAction } from '../../../src/generated/leapmux/v1/common_pb'
+} from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { WorktreeAction } from '../../../src/generated/proto/leapmux/v1/common_pb'
 import {
   InspectLastTabCloseRequestSchema,
   InspectLastTabCloseResponseSchema,
   PushBranchRequestSchema,
   PushBranchResponseSchema,
-} from '../../../src/generated/leapmux/v1/git_pb'
+} from '../../../src/generated/proto/leapmux/v1/git_pb'
 import {
   CloseTerminalRequestSchema,
   CloseTerminalResponseSchema,
   ListTerminalsRequestSchema,
   ListTerminalsResponseSchema,
-} from '../../../src/generated/leapmux/v1/terminal_pb'
+} from '../../../src/generated/proto/leapmux/v1/terminal_pb'
 import { expect } from '../fixtures'
 import { API_POLL_INTERVAL_MS, authedHeaders, createWorkspaceViaAPI, getTestChannel, openAgentViaAPI } from './api'
 import { expectAnyVisible, isMaybeVisible } from './ui'

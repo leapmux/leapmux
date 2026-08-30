@@ -6,23 +6,15 @@
 import type { JSX } from 'solid-js'
 import Bot from 'lucide-solid/icons/bot'
 import { createUniqueId, Match, Switch } from 'solid-js'
-import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import { PROVIDER_DISPLAY_NAME } from '~/generated/contracts/providers'
+import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { iconStyle } from './iconStyle'
 
-// Keep in sync with backend/internal/worker/agent/agent.go DisplayName().
+// The labels are generated from contracts/providers.json -- the same file the
+// Go side's agentlabels.DisplayName reads -- so the CLI envelope, the log
+// lines, and this picker render one vocabulary.
 export function agentProviderLabel(provider?: AgentProvider): string {
-  switch (provider) {
-    case AgentProvider.CLAUDE_CODE: return 'Claude Code'
-    case AgentProvider.CODEX: return 'Codex'
-    case AgentProvider.OPENCODE: return 'OpenCode'
-    case AgentProvider.GITHUB_COPILOT: return 'GitHub Copilot'
-    case AgentProvider.CURSOR: return 'Cursor'
-    case AgentProvider.GOOSE: return 'Goose'
-    case AgentProvider.KILO: return 'Kilo'
-    case AgentProvider.PI: return 'Pi'
-    case AgentProvider.REASONIX: return 'Reasonix'
-    default: return 'Unknown'
-  }
+  return PROVIDER_DISPLAY_NAME[provider ?? AgentProvider.UNSPECIFIED] ?? 'Unknown'
 }
 
 function ClaudeCodeIcon(props: { size: number, class?: string }): JSX.Element {

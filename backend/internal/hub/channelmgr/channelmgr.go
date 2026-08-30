@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/userid"
 
 	"github.com/leapmux/leapmux/channelwire"
@@ -1077,7 +1078,7 @@ func sendCloseNotification(sender SendFunc, channelID string) {
 		return
 	}
 	closeMsg := &leapmuxv1.ChannelMessage{
-		ProtocolVersion: 1,
+		ProtocolVersion: contracts.ProtocolVersion,
 		ChannelId:       channelID,
 		Flags:           leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_CLOSE,
 	}

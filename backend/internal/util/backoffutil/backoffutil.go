@@ -33,10 +33,11 @@ import (
 )
 
 // Backoff is a capped, jittered exponential backoff that owns its interval
-// math. It starts at initial, doubles on each advance, and never exceeds
-// maxInterval. jitter fuzzes each sampled delay by ±jitter (0 disables it).
+// math. It starts at initial, scales the interval by multiplier on each
+// advance (2 = doubling), and never exceeds maxInterval. jitter fuzzes each
+// sampled delay by ±jitter (0 disables it).
 //
-// The doubling sequence advances on the UN-jittered base interval, and jitter
+// The multiplier sequence advances on the UN-jittered base interval, and jitter
 // only fuzzes the sampled value — matching the frontend's
 // createExponentialBackoff and cenkalti/v6's shape. Unlike cenkalti's
 // ExponentialBackOff (which couples get-delay with advance inside NextBackOff),
@@ -51,13 +52,16 @@ type Backoff struct {
 	initial     time.Duration
 	maxInterval time.Duration
 	jitter      float64
+	multiplier  float64
 
 	base    time.Duration // un-jittered interval the next sample is drawn from
 	pending time.Duration // the most recent Peek result, awaiting Commit; 0 = none
 }
 
 // NewBackoff returns a capped, jittered exponential backoff that starts at
-// initial, doubles, and never exceeds maxInterval.
+// initial, doubles, and never exceeds maxInterval. Callers that need a
+// multiplier other than 2 use NewRetry, whose multiplier comes from
+// contracts/retry.json.
 //
 // jitter is the randomization factor (0 disables it entirely, which makes the
 // sequence exactly initial, 2×initial, 4×initial, … capped). Reserve 0 for
@@ -81,6 +85,7 @@ func NewBackoff(initial, maxInterval time.Duration, jitter float64) *Backoff {
 		initial:     initial,
 		maxInterval: maxInterval,
 		jitter:      jitter,
+		multiplier:  2,
 		base:        initial,
 	}
 }
@@ -143,11 +148,11 @@ func (b *Backoff) sample(base time.Duration) time.Duration {
 	return time.Duration(lo + rand.Float64()*(hi-lo+1))
 }
 
-// advance doubles the base interval, capping at maxInterval.
+// advance scales the base interval by the multiplier, capping at maxInterval.
 func (b *Backoff) advance() {
-	next := time.Duration(float64(b.base) * 2)
+	next := time.Duration(float64(b.base) * b.multiplier)
 	if next > b.maxInterval || next < b.base {
-		// Overflow guard: a doubling that wraps negative or exceeds the cap
+		// Overflow guard: a scaling that wraps negative or exceeds the cap
 		// pins to the cap.
 		next = b.maxInterval
 	}
@@ -159,7 +164,7 @@ func (b *Backoff) advance() {
 // adds a per-loop attempt budget, which cenkalti's ExponentialBackOff has not
 // carried since v5 dropped MaxElapsedTime from it. The behavior mirrors the
 // frontend's
-// createExponentialBackoff: the doubling sequence advances on the un-jittered
+// createExponentialBackoff: the multiplier sequence advances on the un-jittered
 // base interval, and jitter only fuzzes the value Peek returns.
 //
 // The budget is consumed only when an attempt actually fires: Peek samples a
@@ -185,32 +190,41 @@ type Retry struct {
 	attempt int
 }
 
-// NewRetry returns a bounded exponential backoff: starting at initial, doubling,
-// capped at maxInterval, with symmetric jitter of `jitter` (0 disables it; see
-// NewBackoff's jitter doc for why shared-peer loops want jitter). After
-// maxAttempts successful Next calls the budget is spent and Next returns ok=false.
-// Pass maxAttempts == 0 for an unbounded loop.
+// NewRetry returns a capped exponential backoff: starting at initial, scaled
+// by `multiplier` on each advance, capped at maxInterval, with symmetric jitter
+// of `jitter` (0 disables it; see NewBackoff's jitter doc for why shared-peer
+// loops want jitter). After maxAttempts successful Next calls the budget is
+// spent and Next returns ok=false. Pass maxAttempts == 0 for an unbounded loop.
+//
+// The multiplier is the contracts/retry.json value on the one cross-language
+// caller (the LOOKUP_FAILED retry), so the CLI and the browser advance on the
+// same schedule; the contract's checkRetry rejects a multiplier below 1, and so
+// does this constructor.
 //
 // Returns an error for invalid inputs: initial <= 0, maxInterval < initial,
-// jitter outside [0,1), or negative maxAttempts. These mirror the frontend's
-// createExponentialBackoff rejections with one deliberate exception: the
-// backend accepts maxAttempts == 0 as a first-class "unbounded" mode (see
-// Retry.max above), while the frontend rejects maxAttempts < 1. An out-of-range
-// value otherwise silently turns a bounded caller into an unbounded one
-// (negative maxAttempts) or produces zero/negative delays (initial <= 0,
-// jitter >= 1), the latter of which panic in time.NewTimer.
-func NewRetry(initial, maxInterval time.Duration, jitter float64, maxAttempts int) (*Retry, error) {
+// multiplier < 1, jitter outside [0,1), or negative maxAttempts. These mirror
+// the frontend's createExponentialBackoff rejections with one deliberate
+// exception: the backend accepts maxAttempts == 0 as a first-class "unbounded"
+// mode (see Retry.max above), while the frontend rejects maxAttempts < 1. An
+// out-of-range value otherwise silently turns a capped caller into an
+// unbounded one (negative maxAttempts) or produces zero/negative delays
+// (initial <= 0, jitter >= 1), the latter of which panic in time.NewTimer.
+func NewRetry(initial, maxInterval time.Duration, multiplier float64, jitter float64, maxAttempts int) (*Retry, error) {
 	switch {
 	case initial <= 0:
 		return nil, fmt.Errorf("backoffutil: initial must be > 0 (got %v)", initial)
 	case maxInterval < initial:
 		return nil, fmt.Errorf("backoffutil: maxInterval (%v) must be >= initial (%v)", maxInterval, initial)
+	case multiplier < 1:
+		return nil, fmt.Errorf("backoffutil: multiplier must be >= 1 (got %v)", multiplier)
 	case jitter < 0 || jitter >= 1:
 		return nil, fmt.Errorf("backoffutil: jitter must be in [0, 1) (got %v)", jitter)
 	case maxAttempts < 0:
 		return nil, fmt.Errorf("backoffutil: maxAttempts must be >= 0 (got %d)", maxAttempts)
 	}
-	return &Retry{b: NewBackoff(initial, maxInterval, jitter), max: maxAttempts}, nil
+	b := NewBackoff(initial, maxInterval, jitter)
+	b.multiplier = multiplier
+	return &Retry{b: b, max: maxAttempts}, nil
 }
 
 // Peek samples the delay for the next attempt WITHOUT consuming a slot or

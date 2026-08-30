@@ -9,7 +9,7 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/leapmux/leapmux/channelwire"
+	"github.com/leapmux/leapmux/generated/contracts"
 )
 
 const (
@@ -130,7 +130,7 @@ func (l *wsControlLimiter) closeAbusive(refused int) {
 	slog.Warn("closing a websocket that flooded control frames",
 		"endpoint", l.endpoint, "user_id", l.userID, "refused", refused)
 	if c := l.conn.Load(); c != nil {
-		_ = c.Close(websocket.StatusPolicyViolation, channelwire.CloseReasonControlFlood)
+		_ = c.Close(websocket.StatusPolicyViolation, contracts.CloseReasonControlFlood)
 	}
 }
 

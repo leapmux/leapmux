@@ -2,9 +2,12 @@ package validate
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/leapmux/leapmux/generated/contracts"
 )
 
 // SessionIDByteLimit is the maximum size of an agent session ID, in UTF-8
@@ -13,37 +16,20 @@ import (
 // The number matches NameByteLimit today, and the two are NOT linked on
 // purpose. A session ID is a token, a name is text a user reads, and a change
 // to what one may hold must not move the other.
-const SessionIDByteLimit = 128
+const SessionIDByteLimit = contracts.SessionIDByteLimit
 
 // sessionIDInvisible holds the invisible characters that a session ID may not
 // hold. The list repeats invisibleFormat, and the repetition is the point:
 // this rule is FROZEN, so a later change to what a NAME may hold cannot widen
-// or narrow what a TOKEN may hold. TestSessionIDInvisibleMatchesNameRule
-// reports the day the two lists stop agreeing, and a human then decides which
-// one moves.
+// or narrow what a TOKEN may hold. The generator's checkValidate enforces the
+// repetition and fails generation the day the two lists stop agreeing, and a
+// human then decides which one moves.
 //
 // A token carries no visible text, so every one of these can only travel
 // through a copy and a paste unseen. A session ID that carries one names no
 // session that the agent knows, and the resume then starts a new conversation
 // with no report of why.
-var sessionIDInvisible = &unicode.RangeTable{
-	R16: []unicode.Range16{
-		{Lo: 0x00AD, Hi: 0x00AD, Stride: 1}, // SOFT HYPHEN
-		{Lo: 0x061C, Hi: 0x061C, Stride: 1}, // ARABIC LETTER MARK
-		{Lo: 0x180E, Hi: 0x180E, Stride: 1}, // MONGOLIAN VOWEL SEPARATOR
-		{Lo: 0x200B, Hi: 0x200B, Stride: 1}, // ZERO WIDTH SPACE
-		{Lo: 0x200E, Hi: 0x200F, Stride: 1}, // LEFT-TO-RIGHT MARK, RIGHT-TO-LEFT MARK
-		// LEFT-TO-RIGHT EMBEDDING, RIGHT-TO-LEFT EMBEDDING, POP DIRECTIONAL
-		// FORMATTING, LEFT-TO-RIGHT OVERRIDE, RIGHT-TO-LEFT OVERRIDE
-		{Lo: 0x202A, Hi: 0x202E, Stride: 1},
-		{Lo: 0x2060, Hi: 0x2060, Stride: 1}, // WORD JOINER
-		// LEFT-TO-RIGHT ISOLATE, RIGHT-TO-LEFT ISOLATE, FIRST STRONG ISOLATE,
-		// POP DIRECTIONAL ISOLATE
-		{Lo: 0x2066, Hi: 0x2069, Stride: 1},
-		{Lo: 0xFEFF, Hi: 0xFEFF, Stride: 1}, // ZERO WIDTH NO-BREAK SPACE
-	},
-	LatinOffset: 1,
-}
+var sessionIDInvisible = contracts.SessionInvisibleFormat
 
 // ValidateSessionID validates a session ID for resuming an agent session.
 // It accepts the empty value, which means "no resume".
@@ -82,8 +68,8 @@ func ValidateSessionID(sessionID string) error {
 		return fmt.Errorf("session ID must be valid UTF-8")
 	}
 	for _, r := range sessionID {
-		if unicode.IsControl(r) || unicode.Is(sessionIDInvisible, r) ||
-			r == '"' || r == '\\' || r == '$' || r == '%' {
+		if unicode.Is(contracts.SessionRefusedControl, r) || unicode.Is(sessionIDInvisible, r) ||
+			slices.Contains(contracts.SessionRefusedASCII, r) {
 			return fmt.Errorf("session ID contains invalid characters")
 		}
 	}

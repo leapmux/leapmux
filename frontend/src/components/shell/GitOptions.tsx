@@ -1,5 +1,5 @@
 import type { Accessor, Component, JSX } from 'solid-js'
-import type { GitBranchEntry } from '~/generated/leapmux/v1/git_pb'
+import type { GitBranchEntry } from '~/generated/proto/leapmux/v1/git_pb'
 import type { GitModeIntent } from '~/hooks/useGitModeState'
 import type { GitPathInfo } from '~/hooks/useGitPathInfo'
 import { generateSlug } from 'random-word-slugs'

@@ -1,5 +1,5 @@
 import type { LucideIcon } from 'lucide-solid'
-import type { Section } from '~/generated/leapmux/v1/section_pb'
+import type { Section } from '~/generated/proto/leapmux/v1/section_pb'
 import Archive from 'lucide-solid/icons/archive'
 import Folder from 'lucide-solid/icons/folder'
 import FolderTree from 'lucide-solid/icons/folder-tree'
@@ -7,7 +7,7 @@ import Layers from 'lucide-solid/icons/layers'
 import ListChecks from 'lucide-solid/icons/list-checks'
 import ListTree from 'lucide-solid/icons/list-tree'
 import Monitor from 'lucide-solid/icons/monitor'
-import { SectionType } from '~/generated/leapmux/v1/section_pb'
+import { SectionType } from '~/generated/proto/leapmux/v1/section_pb'
 
 /** Whether the section type is a workspace section (can contain workspaces). */
 export function isWorkspaceSection(sectionType: SectionType): boolean {

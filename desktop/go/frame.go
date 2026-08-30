@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/leapmux/leapmux/channelwire"
+	"github.com/leapmux/leapmux/generated/contracts"
 	desktoppb "github.com/leapmux/leapmux/generated/proto/leapmux/desktop/v1"
 	"google.golang.org/protobuf/encoding/protodelim"
 	"google.golang.org/protobuf/proto"
@@ -14,9 +14,10 @@ import (
 // payload the sidecar relays -- a userevents UserMaterialized bootstrap up to
 // channelwire.UserEventsReadLimit -- PLUS its Frame/Event proto envelope, so a
 // full-size bootstrap is forwarded rather than silently dropped by
-// validateFrameSize. The 4 MiB margin covers the envelope with generous
-// headroom. MAX_FRAME_SIZE in desktop/rust/src/main.rs must stay in sync.
-const maxFrameSize = channelwire.UserEventsReadLimit + 4*1024*1024 // 20 MiB
+// validateFrameSize. The value is single-sourced in contracts/desktop.json;
+// the Rust shell enforces the same cap on read (frame_test.go's
+// full-size-bootstrap test pins the floor this must clear).
+const maxFrameSize = contracts.MaxFrameSizeBytes
 
 func WriteFrame(w io.Writer, frame *desktoppb.Frame) error {
 	if err := validateFrameSize(frame); err != nil {

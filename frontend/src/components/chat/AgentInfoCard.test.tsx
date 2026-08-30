@@ -1,9 +1,9 @@
-import type { AgentInfo } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentInfo } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { AgentSessionInfo } from '~/stores/agentSession.store'
 import type { RepoGitView } from '~/stores/repoGit'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { formatAgentSessionIdForDisplay, useAgentInfoCard } from './AgentInfoCard'
 
 // Side-effect imports: register the Claude and Pi plugins so the session-id

@@ -7,7 +7,7 @@ import {
   HLCSchema,
   NodeKind,
   WorkspaceContentsRecordSchema,
-} from '~/generated/leapmux/v1/user_crdt_pb'
+} from '~/generated/proto/leapmux/v1/user_crdt_pb'
 import {
   CrdtOpSchema,
   SetFloatingWindowRegisterOpSchema,
@@ -19,8 +19,8 @@ import {
   TombstoneNodeOpSchema,
   TombstoneTabOpSchema,
   TombstoneWorkspaceOpSchema,
-} from '~/generated/leapmux/v1/user_ops_pb'
-import { SplitDirection, TabType } from '~/generated/leapmux/v1/workspace_pb'
+} from '~/generated/proto/leapmux/v1/user_ops_pb'
+import { SplitDirection, TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { applyOp, newState } from './apply'
 import { project, ProjectionCache } from './project'
 

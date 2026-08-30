@@ -1,7 +1,7 @@
 import type { Component } from 'solid-js'
 import { Match, Switch } from 'solid-js'
 import { StartupErrorBody, StartupSpinner } from '~/components/common/StartupPanel'
-import { AgentStatus } from '~/generated/leapmux/v1/agent_pb'
+import { AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 
 export interface AgentStartupBannerProps {
   status: AgentStatus | undefined

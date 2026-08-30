@@ -1,7 +1,7 @@
-import type { CrdtOp } from '~/generated/leapmux/v1/user_ops_pb'
+import type { CrdtOp } from '~/generated/proto/leapmux/v1/user_ops_pb'
 import type { CRDTBridge } from '~/lib/crdt'
-import { NodeKind } from '~/generated/leapmux/v1/user_crdt_pb'
-import { SplitDirection } from '~/generated/leapmux/v1/workspace_pb'
+import { NodeKind } from '~/generated/proto/leapmux/v1/user_crdt_pb'
+import { SplitDirection } from '~/generated/proto/leapmux/v1/workspace_pb'
 import {
   ctxFromBridge,
   equalRatios,

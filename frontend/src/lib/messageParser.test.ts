@@ -1,7 +1,8 @@
 import type { ParsedMessageContent } from './messageParser'
 import type { ContextUsageInfo } from '~/stores/agentSession.store'
 import { describe, expect, it } from 'vitest'
-import { MessageSource } from '~/generated/leapmux/v1/agent_pb'
+import { NOTIFICATION_THREAD_TYPE } from '~/generated/contracts/worker-vocab'
+import { MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { makeMessage, rawContent } from '~/test-support/messageFactory'
 import {
   extractCompactionContextTokens,
@@ -13,7 +14,6 @@ import {
   getInnerMessage,
   getInnerMessageType,
   messageUsage,
-  NOTIFICATION_THREAD_TYPE,
   parseMessageContent,
 } from './messageParser'
 

@@ -290,20 +290,30 @@ describe('cipherState limits', () => {
     expect(new TextDecoder().decode(peer.decrypt(ctNew))).toBe('after')
   })
 
-  it('rekeyWithSecret should match the Go fresh-DH interop vector', () => {
-    // Fixed vector shared with backend/internal/noise/noise_test.go so Go and TS
-    // stay on the same fresh-DH rekey derivation:
+  it('rekeyWithSecret should match the Go fresh-DH interop vector', async () => {
+    // Fixed vectors from testdata/noise_rekey_vectors.json, shared with
+    // backend/internal/noise/noise_test.go so Go and TS stay on the same
+    // fresh-DH rekey derivation:
     //   ck1 = HKDF(k, dhSecret); k' = HKDF(ck1, nil)[0:32]
-    const key = new Uint8Array(32)
-    for (let i = 0; i < 32; i++) key[i] = i + 1
-    const dh = new Uint8Array(32)
-    for (let i = 0; i < 32; i++) dh[i] = 0xA0 + i
-    const cs = new CipherState(key)
-    cs.encrypt(new TextEncoder().encode('x'))
-    cs.rekeyWithSecret(dh, null, true)
-    const ct = cs.encrypt(new TextEncoder().encode('hello-rekey'))
-    const hex = Array.from(ct, b => b.toString(16).padStart(2, '0')).join('')
-    expect(hex).toBe('2c0f3a3f9a452bfe1bdfec4bf4fcfc412c28dc17be6865a3048d46')
+    // Resolved from this file like ipAddress.test.ts, since the fixture lives
+    // at the repo root outside vite's root.
+    const { readFileSync } = await import('node:fs')
+    const { dirname, resolve } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+    const fixture = JSON.parse(readFileSync(
+      resolve(dirname(fileURLToPath(import.meta.url)), '../../../testdata/noise_rekey_vectors.json'),
+      'utf8',
+    )) as { vectors: { name: string, keyHex: string, dhSecretHex: string, warmupPlaintext: string, plaintext: string, expectedCiphertextHex: string }[] }
+    expect(fixture.vectors.length).toBeGreaterThan(0)
+    const fromHex = (hex: string) => new Uint8Array(hex.match(/../g)!.map(b => Number.parseInt(b, 16)))
+    for (const v of fixture.vectors) {
+      const cs = new CipherState(fromHex(v.keyHex))
+      cs.encrypt(new TextEncoder().encode(v.warmupPlaintext))
+      cs.rekeyWithSecret(fromHex(v.dhSecretHex), null, true)
+      const ct = cs.encrypt(new TextEncoder().encode(v.plaintext))
+      const hex = Array.from(ct, b => b.toString(16).padStart(2, '0')).join('')
+      expect(hex).toBe(v.expectedCiphertextHex)
+    }
   })
 
   it('grace window: an old-key straddling frame decrypts via prev after rekey', () => {

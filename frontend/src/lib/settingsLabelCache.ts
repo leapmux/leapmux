@@ -1,4 +1,4 @@
-import type { AgentProvider, AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentProvider, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
 import { getOrCreate } from '~/lib/getOrCreate'
 
 /**

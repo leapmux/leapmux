@@ -106,9 +106,13 @@ pub(crate) const DEV_SIDECAR_CONNECT_TIMEOUT: Duration = Duration::from_secs(60)
 pub(crate) const DEV_SIDECAR_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 const SIDECAR_INITIAL_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 
-// Cross-language env-var contract; see desktop/go/main.go for semantics.
-pub(crate) const ENV_DEV_ENDPOINT: &str = "LEAPMUX_DESKTOP_DEV_ENDPOINT";
-pub(crate) const ENV_BINARY_HASH: &str = "LEAPMUX_DESKTOP_BINARY_HASH";
+// Cross-language env-var contract, generated from contracts/desktop.json
+// (the Go sidecar reads the same names from its generated contracts package;
+// the Tauri event names live in the same generated module).
+mod contracts_generated {
+    include!("generated/contracts.rs");
+}
+pub(crate) use contracts_generated::{ENV_BINARY_HASH, ENV_DEV_ENDPOINT, MAX_FRAME_SIZE_BYTES};
 
 /// The shell's own record of the dev sidecar it last bootstrapped, written for
 /// human/debug inspection and read back by nothing.
@@ -613,11 +617,11 @@ fn handle_sidecar_event(app_handle: &AppHandle, event: proto::Event) {
     match payload {
         proto::event::Payload::ChannelMessage(msg) => {
             let b64 = base64::engine::general_purpose::STANDARD.encode(&msg.data);
-            let _ = app_handle.emit("channel:message", b64);
+            let _ = app_handle.emit(contracts_generated::EVENT_CHANNEL_MESSAGE, b64);
         }
         proto::event::Payload::ChannelClose(close) => {
             let _ = app_handle.emit(
-                "channel:close",
+                contracts_generated::EVENT_CHANNEL_CLOSE,
                 json!({ "code": close.code, "reason": close.reason, "wasClean": close.was_clean }),
             );
         }
@@ -626,11 +630,11 @@ fn handle_sidecar_event(app_handle: &AppHandle, event: proto::Event) {
             // verbatim to the webview. The frontend's `useUserEvents`
             // hook decodes identically to native WS frames.
             let b64 = base64::engine::general_purpose::STANDARD.encode(&msg.data);
-            let _ = app_handle.emit("userevents:message", b64);
+            let _ = app_handle.emit(contracts_generated::EVENT_USER_EVENTS_MESSAGE, b64);
         }
         proto::event::Payload::UserEventsClose(close) => {
             let _ = app_handle.emit(
-                "userevents:close",
+                contracts_generated::EVENT_USER_EVENTS_CLOSE,
                 json!({ "code": close.code, "reason": close.reason, "wasClean": close.was_clean }),
             );
         }
@@ -641,7 +645,7 @@ fn handle_sidecar_event(app_handle: &AppHandle, event: proto::Event) {
               "message": log.message,
               "attrs": log.attrs,
             });
-            let _ = app_handle.emit("sidecar:log", payload);
+            let _ = app_handle.emit(contracts_generated::EVENT_SIDECAR_LOG, payload);
         }
     }
 }
@@ -1536,9 +1540,9 @@ fn main() {
         .on_menu_event(|app, event| {
             #[cfg(target_os = "macos")]
             if event.id() == SHOW_ABOUT_MENU_ID {
-                let _ = app.emit("menu:show-about", ());
+                let _ = app.emit(contracts_generated::EVENT_MENU_SHOW_ABOUT, ());
             } else if event.id() == SHOW_PREFERENCES_MENU_ID {
-                let _ = app.emit("menu:show-preferences", ());
+                let _ = app.emit(contracts_generated::EVENT_MENU_SHOW_PREFERENCES, ());
             } else if event.id() == OPEN_WEB_INSPECTOR_MENU_ID {
                 open_main_web_inspector(app);
             }

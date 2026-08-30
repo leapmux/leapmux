@@ -1,7 +1,7 @@
 import type { RailRangeInputs } from '~/stores/chatMessageMarks'
 import { createRoot } from 'solid-js'
 import { describe, expect, it } from 'vitest'
-import { MarkType } from '~/generated/leapmux/v1/agent_pb'
+import { MarkType } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createMessageMarksStore, insertMarkSorted, removeMarkAt, resolveRailRange } from '~/stores/chatMessageMarks'
 
 /** Run a body with a fresh store inside a reactive root (its store needs an owner). */

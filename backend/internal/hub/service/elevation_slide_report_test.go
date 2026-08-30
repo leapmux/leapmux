@@ -204,18 +204,3 @@ func TestElevationSlideReportsNothingOnARefusal(t *testing.T) {
 	assert.Empty(t, connectErr.Meta().Get(service.ElevationExpiresAtHeader),
 		"a refused request slid nothing, so it must report no deadline")
 }
-
-// TestElevationExpiresAtHeaderValueIsPinned keeps the Go constant and the
-// frontend's copy from drifting silently, for the reason
-// TestElevationRequiredHeaderValueIsPinned states: the frontend cannot import
-// this package, so only the literal below and the comment on each side join
-// the two. A rename that changes one and not the other leaves every client
-// showing a deadline up to two hours early again, with nothing failing.
-//
-// It writes the literal out rather than compares it to the constant, so
-// renaming the constant alone does not make this pass.
-func TestElevationExpiresAtHeaderValueIsPinned(t *testing.T) {
-	t.Parallel()
-	assert.Equal(t, "Leapmux-Elevation-Expires-At", service.ElevationExpiresAtHeader,
-		"frontend/src/api/transport.ts keys on the lowercased form of this value")
-}

@@ -20,66 +20,33 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
 // grantableTokens is the total bijection between a grantable Scope and its
-// RFC 6749 section 3.3 wire token.
+// RFC 6749 section 3.3 wire token. Generated from contracts/scopes.json,
+// cross-checked against the Scope proto enum at generation time: a scope
+// added to scope.proto without a contracts entry fails `task
+// generate-contracts`, so the vocabulary cannot grow a value that no surface
+// can specify.
 //
 // The three non-grantable values are ABSENT by construction, which is what
 // makes them unsayable: Parse can only produce what this map lists, so
 // SCOPE_UNSPECIFIED, SCOPE_NEVER and SCOPE_ALL have no spelling a request, a
 // stored row or a consent screen could carry.
-//
-// A scope added to scope.proto with no entry here fails
-// TestGrantableTokensCoverEveryScope, so the vocabulary cannot grow a value
-// that no surface can specify.
-var grantableTokens = map[leapmuxv1.Scope]string{
-	leapmuxv1.Scope_SCOPE_ACCOUNT_READ:    "account:read",
-	leapmuxv1.Scope_SCOPE_ACCOUNT_WRITE:   "account:write",
-	leapmuxv1.Scope_SCOPE_WORKSPACE_READ:  "workspace:read",
-	leapmuxv1.Scope_SCOPE_WORKSPACE_WRITE: "workspace:write",
-	leapmuxv1.Scope_SCOPE_WORKER_READ:     "worker:read",
-	leapmuxv1.Scope_SCOPE_WORKER_ADMIN:    "worker:admin",
-	leapmuxv1.Scope_SCOPE_AGENT_READ:      "agent:read",
-	leapmuxv1.Scope_SCOPE_AGENT_WRITE:     "agent:write",
-	leapmuxv1.Scope_SCOPE_TERMINAL_READ:   "terminal:read",
-	leapmuxv1.Scope_SCOPE_TERMINAL_WRITE:  "terminal:write",
-	leapmuxv1.Scope_SCOPE_FILE_READ:       "file:read",
-	leapmuxv1.Scope_SCOPE_GIT_READ:        "git:read",
-	leapmuxv1.Scope_SCOPE_GIT_WRITE:       "git:write",
-	leapmuxv1.Scope_SCOPE_TUNNEL_OPEN:     "tunnel:open",
-	leapmuxv1.Scope_SCOPE_ADMIN_READ:      "admin:read",
-	leapmuxv1.Scope_SCOPE_ADMIN_USERS:     "admin:users",
-	leapmuxv1.Scope_SCOPE_ADMIN_SETTINGS:  "admin:settings",
-	leapmuxv1.Scope_SCOPE_ADMIN_WORKERS:   "admin:workers",
-	leapmuxv1.Scope_SCOPE_ADMIN_APPS:      "admin:apps",
-}
+var grantableTokens = contracts.ScopeToken
 
-// scopesByToken is the reverse of grantableTokens, built once at init so Parse
-// is a map lookup rather than a scan. Built FROM the forward map, so the two
-// directions cannot disagree.
-var scopesByToken = func() map[string]leapmuxv1.Scope {
-	out := make(map[string]leapmuxv1.Scope, len(grantableTokens))
-	for scope, token := range grantableTokens {
-		out[token] = scope
-	}
-	return out
-}()
+// scopesByToken is the reverse of grantableTokens. Generated alongside it,
+// so the two directions cannot disagree.
+var scopesByToken = contracts.ScopeByToken
 
 // grantableOrder lists every grantable scope in enum order, which is the
 // canonical order this package sorts by. Enum order groups the families
 // (account, workspace, worker, agent, terminal, file, git, tunnel, admin), so
 // one order serves the stored string, the token response and the consent
 // screen -- and a second ordering cannot drift from it.
-var grantableOrder = func() []leapmuxv1.Scope {
-	out := make([]leapmuxv1.Scope, 0, len(grantableTokens))
-	for scope := range grantableTokens {
-		out = append(out, scope)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
-	return out
-}()
+var grantableOrder = contracts.GrantableScopes
 
 // impliedBy states what a grant EXPANDS to at the mint.
 //
@@ -103,27 +70,10 @@ var grantableOrder = func() []leapmuxv1.Scope {
 // the Worker's, and a gate that forgot it would refuse a grant the consent
 // screen promised.
 //
-// The frontend mirrors this table (frontend
-// src/components/settings/account/scopeCatalogue.ts) so the register form can
-// lock implied scopes before it submits; TestFrontendImpliedByMatchesTheHubGraph
-// pins the two together.
-var impliedBy = map[leapmuxv1.Scope][]leapmuxv1.Scope{
-	leapmuxv1.Scope_SCOPE_ACCOUNT_WRITE:   {leapmuxv1.Scope_SCOPE_ACCOUNT_READ},
-	leapmuxv1.Scope_SCOPE_WORKSPACE_WRITE: {leapmuxv1.Scope_SCOPE_WORKSPACE_READ},
-	leapmuxv1.Scope_SCOPE_WORKER_ADMIN:    {leapmuxv1.Scope_SCOPE_WORKER_READ},
-	leapmuxv1.Scope_SCOPE_AGENT_READ:      {leapmuxv1.Scope_SCOPE_WORKER_READ},
-	leapmuxv1.Scope_SCOPE_AGENT_WRITE:     {leapmuxv1.Scope_SCOPE_WORKER_READ, leapmuxv1.Scope_SCOPE_AGENT_READ},
-	leapmuxv1.Scope_SCOPE_TERMINAL_READ:   {leapmuxv1.Scope_SCOPE_WORKER_READ},
-	leapmuxv1.Scope_SCOPE_TERMINAL_WRITE:  {leapmuxv1.Scope_SCOPE_WORKER_READ, leapmuxv1.Scope_SCOPE_TERMINAL_READ},
-	leapmuxv1.Scope_SCOPE_FILE_READ:       {leapmuxv1.Scope_SCOPE_WORKER_READ},
-	leapmuxv1.Scope_SCOPE_GIT_READ:        {leapmuxv1.Scope_SCOPE_WORKER_READ},
-	leapmuxv1.Scope_SCOPE_GIT_WRITE:       {leapmuxv1.Scope_SCOPE_WORKER_READ, leapmuxv1.Scope_SCOPE_GIT_READ},
-	leapmuxv1.Scope_SCOPE_TUNNEL_OPEN:     {leapmuxv1.Scope_SCOPE_WORKER_READ},
-	leapmuxv1.Scope_SCOPE_ADMIN_USERS:     {leapmuxv1.Scope_SCOPE_ADMIN_READ},
-	leapmuxv1.Scope_SCOPE_ADMIN_SETTINGS:  {leapmuxv1.Scope_SCOPE_ADMIN_READ},
-	leapmuxv1.Scope_SCOPE_ADMIN_WORKERS:   {leapmuxv1.Scope_SCOPE_ADMIN_READ},
-	leapmuxv1.Scope_SCOPE_ADMIN_APPS:      {leapmuxv1.Scope_SCOPE_ADMIN_READ},
-}
+// The graph is generated from contracts/scopes.json (the browser's
+// scopeCatalogue IMPLIED_BY is generated from the same file), and the
+// generator checks it references grantable scopes only and stays acyclic.
+var impliedBy = contracts.ScopeImpliedBy
 
 // IsGrantable reports whether an account may grant this scope to an app.
 //

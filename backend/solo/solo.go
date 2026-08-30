@@ -850,7 +850,7 @@ func bringUpLocalWorker(ctx context.Context, p workerBringUp) error {
 			DBMaxConns:   p.hubCfg.Storage.SQLite.MaxConns,
 			DBCacheSize:  p.hubCfg.Storage.SQLite.CacheSize,
 			DBMmapSize:   p.hubCfg.Storage.SQLite.MmapSize,
-			// 0 (the default) lets the worker apply channelwire.DefaultMaxIncompleteChunked.
+			// 0 (the default) lets the worker apply contracts.DefaultMaxIncompleteChunked.
 			MaxIncompleteChunked: parseInt(p.hubCfg.Extras["max_incomplete_chunked"], 0),
 			MaxMessageSize:       int(settings.KeyMaxMessageSizeBytes.Of(snap)),
 			AgentStartupTimeout:  workerTimeouts.Of(snap).AgentStartupTimeout(),

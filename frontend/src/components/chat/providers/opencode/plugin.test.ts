@@ -1,6 +1,6 @@
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
-import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { acpResultDivider } from '../acp/renderers'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
@@ -269,7 +269,7 @@ describe('opencode classify', () => {
     expect(plugin.classify(input(undefined, wrapper))).toEqual({ kind: 'hidden' })
   })
 
-  it('hides a terminal (non-compacting) system status standalone', () => {
+  it('hides a final (non-compacting) system status standalone', () => {
     // Parity with Claude/Codex: the trailing {subtype:status, status:null} that
     // ends a compaction carries nothing to render, so it must not surface as a
     // notification (which would fall back to a raw-JSON bubble).

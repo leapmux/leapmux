@@ -1,4 +1,4 @@
-import type { GitBranchEntry } from '~/generated/leapmux/v1/git_pb'
+import type { GitBranchEntry } from '~/generated/proto/leapmux/v1/git_pb'
 import { stripRemotePrefix } from '~/lib/validate'
 
 /**

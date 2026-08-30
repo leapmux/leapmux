@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/leapmux/leapmux/channelwire"
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -70,8 +71,8 @@ func TestSetChannelMaxMessageSize_NoopsWhenChannelGone(t *testing.T) {
 func TestNew_ResolvesMaxMessageSize(t *testing.T) {
 	m := New(0)
 	require.NotNil(t, m.ChunkTracker)
-	assert.Equal(t, channelwire.MaxMessageSize, m.MaxMessageSize())
-	assert.Equal(t, channelwire.DefaultMaxReassembledMessageSize, m.ChunkTracker.defaultReassembledMax,
+	assert.Equal(t, contracts.MaxMessageSize, m.MaxMessageSize())
+	assert.Equal(t, contracts.DefaultMaxReassembledMessageSize, m.ChunkTracker.defaultReassembledMax,
 		"ChunkTracker default must be MaxReassembledMessageSize of the hub payload budget")
 }
 
@@ -106,7 +107,7 @@ func TestChunkTracker_PerChannelMax(t *testing.T) {
 // validChunkSize returns a ciphertext length that fits within one Noise
 // transport message and whose estimated plaintext fits within the given budget.
 func validChunkSize(plaintextBytes int) int {
-	return plaintextBytes + channelwire.NoiseAEADAuthTagSize
+	return plaintextBytes + contracts.NoiseAEADAuthTagSize
 }
 
 // TestTrack_SingleChunkMessage verifies that a non-chunked (flags=UNSPECIFIED,

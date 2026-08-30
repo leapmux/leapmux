@@ -1,0 +1,265 @@
+{
+  "_readme": "Single source of truth for the validation POLICY PARAMETERS the hub (backend/util/validate, internal/worker/gitutil) and the browser (frontend/src/lib/validate.ts) both enforce: byte limits, the character classes a title loses or folds, the session-ID refusals, the password limits, and the git branch-name rules. The ALGORITHMS stay hand-written per language (each side's scanner, trim, and error wording are its own); testdata/*_conformance.json remains the behavioral differential between them. What this file kills is the hand-copied parameter set: a class edited here regenerates both sides' tables, and the conformance fixtures prove the algorithms still agree. Code points are decimal; each range is a [lo, hi, name] triple identifying its character(s) -- the generator emits the name as a trailing comment in the Go tables and ignores it on the TS side (a regex class has nowhere to put it), and the name is required so no entry ships as a bare number pair. session.invisibleFormat repeats name.invisibleFormat on purpose: the session rule is FROZEN, so a later change to what a NAME may hold cannot move what a TOKEN may hold. The generator enforces the repetition -- edit one list and generation fails until a human decides both move.",
+  "name": {
+    "byteLimit": 128,
+    "invisibleFormat": [
+      [
+        173,
+        173,
+        "SOFT HYPHEN"
+      ],
+      [
+        1564,
+        1564,
+        "ARABIC LETTER MARK"
+      ],
+      [
+        6158,
+        6158,
+        "MONGOLIAN VOWEL SEPARATOR"
+      ],
+      [
+        8203,
+        8203,
+        "ZERO WIDTH SPACE"
+      ],
+      [
+        8206,
+        8207,
+        "LEFT-TO-RIGHT MARK, RIGHT-TO-LEFT MARK"
+      ],
+      [
+        8234,
+        8238,
+        "LEFT-TO-RIGHT EMBEDDING, RIGHT-TO-LEFT EMBEDDING, POP DIRECTIONAL FORMATTING, LEFT-TO-RIGHT OVERRIDE, RIGHT-TO-LEFT OVERRIDE"
+      ],
+      [
+        8288,
+        8288,
+        "WORD JOINER"
+      ],
+      [
+        8294,
+        8297,
+        "LEFT-TO-RIGHT ISOLATE, RIGHT-TO-LEFT ISOLATE, FIRST-STRONG ISOLATE, POP DIRECTIONAL ISOLATE"
+      ],
+      [
+        65279,
+        65279,
+        "ZERO WIDTH NO-BREAK SPACE"
+      ]
+    ],
+    "whitespaceFold": [
+      [
+        9,
+        13,
+        "TAB, LF, VERTICAL TAB, FORM FEED, CARRIAGE RETURN"
+      ],
+      [
+        32,
+        32,
+        "SPACE"
+      ],
+      [
+        133,
+        133,
+        "NEXT LINE"
+      ],
+      [
+        160,
+        160,
+        "NO-BREAK SPACE"
+      ],
+      [
+        5760,
+        5760,
+        "OGHAM SPACE MARK"
+      ],
+      [
+        8192,
+        8202,
+        "EN QUAD through HAIR SPACE"
+      ],
+      [
+        8232,
+        8232,
+        "LINE SEPARATOR"
+      ],
+      [
+        8233,
+        8233,
+        "PARAGRAPH SEPARATOR"
+      ],
+      [
+        8239,
+        8239,
+        "NARROW NO-BREAK SPACE"
+      ],
+      [
+        8287,
+        8287,
+        "MEDIUM MATHEMATICAL SPACE"
+      ],
+      [
+        12288,
+        12288,
+        "IDEOGRAPHIC SPACE"
+      ]
+    ]
+  },
+  "session": {
+    "byteLimit": 128,
+    "invisibleFormat": [
+      [
+        173,
+        173,
+        "SOFT HYPHEN"
+      ],
+      [
+        1564,
+        1564,
+        "ARABIC LETTER MARK"
+      ],
+      [
+        6158,
+        6158,
+        "MONGOLIAN VOWEL SEPARATOR"
+      ],
+      [
+        8203,
+        8203,
+        "ZERO WIDTH SPACE"
+      ],
+      [
+        8206,
+        8207,
+        "LEFT-TO-RIGHT MARK, RIGHT-TO-LEFT MARK"
+      ],
+      [
+        8234,
+        8238,
+        "LEFT-TO-RIGHT EMBEDDING, RIGHT-TO-LEFT EMBEDDING, POP DIRECTIONAL FORMATTING, LEFT-TO-RIGHT OVERRIDE, RIGHT-TO-LEFT OVERRIDE"
+      ],
+      [
+        8288,
+        8288,
+        "WORD JOINER"
+      ],
+      [
+        8294,
+        8297,
+        "LEFT-TO-RIGHT ISOLATE, RIGHT-TO-LEFT ISOLATE, FIRST-STRONG ISOLATE, POP DIRECTIONAL ISOLATE"
+      ],
+      [
+        65279,
+        65279,
+        "ZERO WIDTH NO-BREAK SPACE"
+      ]
+    ],
+    "refusedControl": [
+      [
+        0,
+        31,
+        "ASCII C0 controls"
+      ],
+      [
+        127,
+        159,
+        "DEL and the C1 controls"
+      ]
+    ],
+    "refusedAscii": [
+      [
+        34,
+        34,
+        "QUOTATION MARK"
+      ],
+      [
+        36,
+        36,
+        "DOLLAR SIGN"
+      ],
+      [
+        37,
+        37,
+        "PERCENT SIGN"
+      ],
+      [
+        92,
+        92,
+        "REVERSE SOLIDUS"
+      ]
+    ]
+  },
+  "password": {
+    "minLength": 8,
+    "maxLength": 128,
+    "printableAsciiMin": 32,
+    "printableAsciiMax": 126
+  },
+  "branch": {
+    "byteLimit": 256,
+    "refusedControl": [
+      [
+        0,
+        31,
+        "ASCII C0 controls"
+      ],
+      [
+        127,
+        127,
+        "DEL"
+      ]
+    ],
+    "refusedAscii": [
+      [
+        32,
+        32,
+        "SPACE"
+      ],
+      [
+        42,
+        42,
+        "ASTERISK"
+      ],
+      [
+        58,
+        58,
+        "COLON"
+      ],
+      [
+        63,
+        63,
+        "QUESTION MARK"
+      ],
+      [
+        91,
+        91,
+        "LEFT SQUARE BRACKET"
+      ],
+      [
+        92,
+        92,
+        "REVERSE SOLIDUS"
+      ],
+      [
+        94,
+        94,
+        "CIRCUMFLEX ACCENT"
+      ],
+      [
+        126,
+        126,
+        "TILDE"
+      ]
+    ]
+  },
+  "usernames": {
+    "systemReserved": {
+      "solo": "the single passwordless user auto-created and auto-authenticated in solo mode"
+    },
+    "publicReserved": {
+      "admin": "the conventional first administrator; squat-protected in anonymous public signup, claimable by the first admin"
+    }
+  }
+}

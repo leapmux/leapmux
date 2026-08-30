@@ -3,7 +3,7 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
-import { HLCSchema } from '~/generated/leapmux/v1/user_crdt_pb'
+import { HLCSchema } from '~/generated/proto/leapmux/v1/user_crdt_pb'
 import { formatHlcWire, HLCClock, hlcCmp, hlcIsZero, parseHlcWire } from './hlc'
 
 function hlc(physical: bigint, logical: bigint, clientId: string) {
@@ -142,7 +142,7 @@ describe('formatHlcWire / parseHlcWire', () => {
 // never leaves the browser (otherwise: non-terminal 1006 close → tight reconnect
 // loop). A rule added/tightened on one side but not the other reddens CI here
 // (and in backend/channelwire/wire_test.go) instead of drifting back into that
-// storm. Mirrors the cross-language pattern channel.wire-limits.test.ts uses.
+// storm. Resolved from this file like the other repo-root fixtures, since
 describe('parseHlcWire cross-language corpus', () => {
   const data = JSON.parse(
     readFileSync(

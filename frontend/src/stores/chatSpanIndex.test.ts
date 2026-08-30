@@ -1,7 +1,7 @@
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
 import { providerFor } from '~/components/chat/providers/registry'
-import { AgentChatMessageSchema, AgentProvider, ContentCompression, MessageSource } from '~/generated/leapmux/v1/agent_pb'
+import { AgentChatMessageSchema, AgentProvider, ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createSpanIndex } from '~/stores/chatSpanIndex'
 // Register the provider plugins: createSpanIndex resolves span roles through pluginFor (Claude
 // reads Anthropic tool_use/tool_result blocks, Pi routes by envelope type).

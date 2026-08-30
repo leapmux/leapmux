@@ -1,6 +1,6 @@
 import type { Accessor } from 'solid-js'
 import type { SettingsStore } from './settingsStore'
-import type { SettingValue } from '~/generated/leapmux/v1/settings_pb'
+import type { SettingValue } from '~/generated/proto/leapmux/v1/settings_pb'
 import { adminSettingsClient } from '~/api/clients'
 import { loadSystemInfo } from '~/lib/systemInfo'
 import { createSettingsStore } from './settingsStore'

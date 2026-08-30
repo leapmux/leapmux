@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/leapmux/leapmux/channelwire"
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -27,8 +27,8 @@ func resetStdoutLimitsForTest(t *testing.T) {
 	prevNeg := stdoutNegotiatedMax
 	stdoutOpenChannels = map[string]struct{}{}
 	stdoutNegotiatedMax = 0
-	stdoutConfiguredMax = channelwire.MaxMessageSize
-	stdoutMaxTokenSize.Store(int64(channelwire.MaxMessageSize))
+	stdoutConfiguredMax = contracts.MaxMessageSize
+	stdoutMaxTokenSize.Store(int64(contracts.MaxMessageSize))
 	stdoutMu.Unlock()
 	t.Cleanup(func() {
 		stdoutMu.Lock()
@@ -61,7 +61,7 @@ func TestConfigureMaxMessageSize_RaisesStdoutScannerCeiling(t *testing.T) {
 	assert.Len(t, scanner.Bytes(), len(oversized))
 
 	ConfigureMaxMessageSize(0)
-	assert.Equal(t, channelwire.MaxMessageSize, liveStdoutMaxTokenSize(),
+	assert.Equal(t, contracts.MaxMessageSize, liveStdoutMaxTokenSize(),
 		"0 must resolve back to the protocol default")
 }
 

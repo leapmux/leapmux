@@ -1,5 +1,5 @@
-import type { UserCrdtState } from '~/generated/leapmux/v1/user_crdt_pb'
-import type { WatchUserEvent } from '~/generated/leapmux/v1/user_ops_pb'
+import type { UserCrdtState } from '~/generated/proto/leapmux/v1/user_crdt_pb'
+import type { WatchUserEvent } from '~/generated/proto/leapmux/v1/user_ops_pb'
 import type { Projection } from '~/lib/crdt'
 import type { CheckpointRecorder, CheckpointRecorderOptions, HydratedBase } from '~/lib/crdt/checkpointRecorder'
 import type { HydrationPayload, PersistedBase } from '~/lib/crdt/hydrate'

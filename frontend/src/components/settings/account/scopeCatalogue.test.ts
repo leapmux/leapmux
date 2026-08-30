@@ -1,15 +1,17 @@
 import { describe, expect, it } from 'vitest'
-import { Scope } from '~/generated/leapmux/v1/scope_pb'
+import { NON_GRANTABLE } from '~/generated/contracts/scopes'
+import { Scope } from '~/generated/proto/leapmux/v1/scope_pb'
 import { closeScopes, impliedScopes, SCOPE_CATEGORIES } from './scopeCatalogue'
 import { scopeToken } from './scopeToken'
 
 /**
- * The three NON-grantable values, by name rather than number: each is a
- * construction rather than a permission (UNSPECIFIED is "nobody classified
- * this", NEVER a recorded refusal, ALL the absence of a limit), and a
- * catalogue entry for one would be a checkbox that registers nothing.
+ * The three NON-grantable values come from the generated contract twin (the
+ * same contracts/scopes.json partition the generator proves against the proto
+ * enum). Each is a construction rather than a permission (UNSPECIFIED is
+ * "nobody classified this", NEVER a recorded refusal, ALL the absence of a
+ * limit), and a catalogue entry for one would be a checkbox that registers
+ * nothing.
  */
-const NON_GRANTABLE: readonly Scope[] = [Scope.UNSPECIFIED, Scope.NEVER, Scope.ALL]
 
 const GRANTABLE: Scope[] = Object.values(Scope)
   .filter((v): v is Scope => typeof v === 'number')

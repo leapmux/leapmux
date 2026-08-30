@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
@@ -22,7 +23,7 @@ import (
 //   - chunked is held across a whole MULTI-chunk message. The Hub relay admits
 //     at most ONE chunked sequence per channel+direction and tears the channel
 //     down on a second (internal/hub/channelmgr.chunkTracker.Track), and both
-//     peer receivers bound live reassembly by DefaultMaxIncompleteChunked. A
+//     peer receivers bound live reassembly by contracts.DefaultMaxIncompleteChunked. A
 //     single-chunk message never takes it, which is exactly what lets a 32 KiB
 //     tunnel frame or a flow-control grant overtake a multi-megabyte message.
 //
@@ -132,7 +133,7 @@ func (g *SendGate) WithFrame(ctx, lifetime context.Context, fn func() error) err
 // ctx gates ENTRY ONLY -- the chunked-permit acquire and the FIRST chunk's
 // frame-permit acquire. Once a chunk is on the wire the message is COMMITTED:
 // abandoning it midway leaves the peer holding a partial reassembly it can never
-// complete (pinning its bytes, burning one of its DefaultMaxIncompleteChunked
+// complete (pinning its bytes, burning one of its contracts.DefaultMaxIncompleteChunked
 // slots, and occupying the Hub's single in-flight chunked sequence) for the
 // channel's life. So every chunk after the first waits on lifetime alone.
 //
@@ -141,7 +142,7 @@ func (g *SendGate) WithFrame(ctx, lifetime context.Context, fn func() error) err
 func (g *SendGate) Send(ctx, lifetime context.Context, plaintext []byte,
 	sendChunk func(chunk []byte, flags leapmuxv1.ChannelMessageFlags) error) error {
 	g.init()
-	if len(plaintext) > MaxPlaintextPerChunk {
+	if len(plaintext) > contracts.MaxPlaintextPerChunk {
 		if err := acquire(g.chunked, nil, ctx, lifetime); err != nil {
 			return err
 		}

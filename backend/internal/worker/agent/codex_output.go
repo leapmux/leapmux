@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
@@ -906,7 +907,7 @@ const (
 // lifts on the rolling-window timer and is therefore safe to auto-resume. The
 // others ("workspace_*_credits_depleted", "workspace_*_usage_limit_reached") are
 // billing/usage caps a reset timer won't clear, so they must not auto-continue.
-const codexRateLimitReachedTimeWindow = "rate_limit_reached"
+const codexRateLimitReachedTimeWindow = contracts.CodexRateLimitReachedTimeWindow
 
 // codexTierStatus classifies a window's usedPercent into the synthesized status
 // vocabulary shared with the frontend.

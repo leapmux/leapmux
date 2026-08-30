@@ -1,0 +1,50 @@
+{
+  "_readme": "Single source of truth for the AgentProvider proto enum's human-facing vocabulary: the display name each side renders, the kebab-case CLI alias, and the extra parse aliases the CLI and admin RPCs accept. task generate-contracts cross-checks the keys against the proto enum (every non-UNSPECIFIED value MUST appear here, no extras) and emits Go tables (agentlabels consumes them) and the TS record (AgentProviderIcon's agentProviderLabel consumes it). Adding a provider is now: add the enum value, add this entry, run task generate -- a value without metadata fails the build instead of rendering blank on one side.",
+  "providers": {
+    "AGENT_PROVIDER_CLAUDE_CODE": {
+      "displayName": "Claude Code",
+      "cliAlias": "claude-code",
+      "parseAliases": ["claude"]
+    },
+    "AGENT_PROVIDER_CODEX": {
+      "displayName": "Codex",
+      "cliAlias": "codex",
+      "parseAliases": []
+    },
+    "AGENT_PROVIDER_CURSOR": {
+      "displayName": "Cursor",
+      "cliAlias": "cursor",
+      "parseAliases": []
+    },
+    "AGENT_PROVIDER_GITHUB_COPILOT": {
+      "displayName": "GitHub Copilot",
+      "cliAlias": "copilot",
+      "parseAliases": ["Copilot"]
+    },
+    "AGENT_PROVIDER_KILO": {
+      "displayName": "Kilo",
+      "cliAlias": "kilo",
+      "parseAliases": []
+    },
+    "AGENT_PROVIDER_OPENCODE": {
+      "displayName": "OpenCode",
+      "cliAlias": "opencode",
+      "parseAliases": []
+    },
+    "AGENT_PROVIDER_GOOSE": {
+      "displayName": "Goose",
+      "cliAlias": "goose",
+      "parseAliases": []
+    },
+    "AGENT_PROVIDER_PI": {
+      "displayName": "Pi",
+      "cliAlias": "pi",
+      "parseAliases": []
+    },
+    "AGENT_PROVIDER_REASONIX": {
+      "displayName": "Reasonix",
+      "cliAlias": "reasonix",
+      "parseAliases": []
+    }
+  }
+}

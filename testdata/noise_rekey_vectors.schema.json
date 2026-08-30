@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "noise_rekey_vectors.schema.json",
+  "title": "Noise fresh-DH rekey fixed vectors",
+  "description": "Shared by backend/internal/noise/noise_test.go and frontend/src/lib/noise.test.ts. Hex fields are lowercase hex strings; the key and DH secret are 32 bytes each.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["_readme", "vectors"],
+  "properties": {
+    "_readme": { "type": "string", "minLength": 1 },
+    "vectors": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "keyHex", "dhSecretHex", "warmupPlaintext", "plaintext", "expectedCiphertextHex"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "keyHex": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "dhSecretHex": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "warmupPlaintext": { "type": "string", "minLength": 1 },
+          "plaintext": { "type": "string", "minLength": 1 },
+          "expectedCiphertextHex": { "type": "string", "pattern": "^[0-9a-f]+$" }
+        }
+      }
+    }
+  }
+}

@@ -1,10 +1,10 @@
 import type { OpBuilderCtx } from './bridge'
-import type { UserCrdtState } from '~/generated/leapmux/v1/user_crdt_pb'
-import type { CrdtOp, OpBatch, SetFloatingWindowRegisterOp, SetNodeRegisterOp, SetTabRegisterOp } from '~/generated/leapmux/v1/user_ops_pb'
-import type { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import type { UserCrdtState } from '~/generated/proto/leapmux/v1/user_crdt_pb'
+import type { CrdtOp, OpBatch, SetFloatingWindowRegisterOp, SetNodeRegisterOp, SetTabRegisterOp } from '~/generated/proto/leapmux/v1/user_ops_pb'
+import type { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { create } from '@bufbuild/protobuf'
 import { customAlphabet } from 'nanoid'
-import { DoubleListSchema } from '~/generated/leapmux/v1/user_crdt_pb'
+import { DoubleListSchema } from '~/generated/proto/leapmux/v1/user_crdt_pb'
 import {
   CrdtOpSchema,
   OpBatchSchema,
@@ -15,7 +15,7 @@ import {
   TombstoneFloatingWindowOpSchema,
   TombstoneNodeOpSchema,
   TombstoneTabOpSchema,
-} from '~/generated/leapmux/v1/user_ops_pb'
+} from '~/generated/proto/leapmux/v1/user_ops_pb'
 import { after, first } from '~/lib/lexorank'
 import { hlcIsZero } from './hlc'
 import { cmpStr } from './project'

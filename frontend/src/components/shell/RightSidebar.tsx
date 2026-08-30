@@ -1,7 +1,7 @@
 import type { Component } from 'solid-js'
 import type { SidebarCommonProps } from './useSidebarCore'
 
-import { Sidebar } from '~/generated/leapmux/v1/section_pb'
+import { Sidebar } from '~/generated/proto/leapmux/v1/section_pb'
 import { CollapsibleSidebar } from './CollapsibleSidebar'
 import { useSidebarCore } from './useSidebarCore'
 

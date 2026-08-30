@@ -1,12 +1,15 @@
 // The shapes every theme in this directory is written to.
 //
-// PLAIN DATA, NO IMPORTS OUTSIDE THIS DIRECTORY. Two consumers need these
-// values and only one of them can execute CSS: ~/styles/global.css.ts spreads
-// each palette into its theme selectors, and scripts/generate-notice.mjs
-// inlines the default palette into the standalone NOTICE.html page. That
-// script runs under bun with no Vite and no vanilla-extract, so it resolves
-// neither a `.css.ts` module nor the `~/` alias -- hence plain `.ts` files
-// that import only their siblings by relative path.
+// PLAIN DATA, NO IMPORTS OUTSIDE THIS DIRECTORY (one sanctioned exception:
+// default.ts's palettes come from ../../generated/contracts/theme-default,
+// which is itself plain data with no imports -- the alias-free relative chain
+// still resolves under bare bun). Two consumers need these values and only
+// one of them can execute CSS: ~/styles/global.css.ts spreads each palette
+// into its theme selectors, and scripts/generate-notice.mjs inlines the
+// default palette into the standalone NOTICE.html page. That script runs
+// under bun with no Vite and no vanilla-extract, so it resolves neither a
+// `.css.ts` module nor the `~/` alias -- hence plain `.ts` files that import
+// only by relative path.
 //
 // Typography is deliberately NOT here. The app wires --font-sans/--font-mono
 // through `var(--ui-font-family, ...)` so a user preference can override them;

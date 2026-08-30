@@ -1,4 +1,4 @@
-import type { GetGitInfoResponse } from '~/generated/leapmux/v1/git_pb'
+import type { GetGitInfoResponse } from '~/generated/proto/leapmux/v1/git_pb'
 import { createRoot } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { workerClient } from '~/api/clients'

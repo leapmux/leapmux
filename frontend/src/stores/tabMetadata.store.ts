@@ -1,7 +1,7 @@
 import type { FileDiffBase, FileOpenSource, FileViewMode } from './tab.types'
-import type { AgentProvider, AgentStatus, AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
-import type { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
-import type { HLC, UserCrdtState } from '~/generated/leapmux/v1/user_crdt_pb'
+import type { AgentProvider, AgentStatus, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
+import type { HLC, UserCrdtState } from '~/generated/proto/leapmux/v1/user_crdt_pb'
 import { createEffect, createMemo } from 'solid-js'
 import { createStore, produce, unwrap } from 'solid-js/store'
 import { KEY_TAB_MRU, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
@@ -143,7 +143,7 @@ export interface TerminalMeta {
   /** PTY-driven title from OSC 0/2; does not replace a user rename (`title`). */
   ptyTitle?: string
   /** Task progress from OSC 9;4 (ConEmu / Windows Terminal protocol). */
-  progressState?: import('~/generated/leapmux/v1/terminal_pb').TerminalProgress_State
+  progressState?: import('~/generated/proto/leapmux/v1/terminal_pb').TerminalProgress_State
   progressPercent?: number
   cols?: number
   rows?: number

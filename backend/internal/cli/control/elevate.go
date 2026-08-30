@@ -11,6 +11,7 @@ import (
 	"connectrpc.com/connect"
 	"golang.org/x/sync/singleflight"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/locallisten"
 )
 
@@ -35,11 +36,12 @@ import (
 // factor and retry". It mirrors the constant the hub sets; the value is
 // always "1" and only its presence is meaningful.
 //
-// Duplicated rather than imported, and the duplication is the point: the
-// CLI must not depend on the hub's internal packages, and this is a WIRE
-// contract between two programs that a user can upgrade separately.
-// service.ElevationRequiredHeader carries the same note.
-const ElevationRequiredHeader = "Leapmux-Elevation-Required"
+// The name is owned by contracts/headers.json and generated for the hub, this
+// CLI, and the browser alike -- which keeps the ORIGINAL intent of the old
+// hand copy: the CLI still depends on no hub-internal package (generated/
+// is not one), and the two programs can still be upgraded separately while
+// the wire spelling can no longer drift between them.
+const ElevationRequiredHeader = contracts.ElevationRequiredHeader
 
 // ErrElevationUnsupported reports a credential the hub will not elevate: a
 // worker-minted delegation token, or an IPC client with no bearer at all.

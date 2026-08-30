@@ -1,8 +1,8 @@
-import type { UserCrdtState } from '~/generated/leapmux/v1/user_crdt_pb'
+import type { UserCrdtState } from '~/generated/proto/leapmux/v1/user_crdt_pb'
 import type { CRDTBridge } from '~/lib/crdt'
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
-import { UserCrdtStateSchema } from '~/generated/leapmux/v1/user_crdt_pb'
+import { UserCrdtStateSchema } from '~/generated/proto/leapmux/v1/user_crdt_pb'
 import { ctxFromBridge, HLCClock, withBridgeAndState } from '~/lib/crdt'
 
 /**

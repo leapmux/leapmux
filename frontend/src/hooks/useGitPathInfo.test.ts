@@ -1,4 +1,4 @@
-import type { GetGitInfoResponse } from '~/generated/leapmux/v1/git_pb'
+import type { GetGitInfoResponse } from '~/generated/proto/leapmux/v1/git_pb'
 import { createEffect, createRoot, createSignal } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { deferred, flush } from '~/test-support/async'

@@ -1,6 +1,6 @@
 import type { PermissionMode } from '~/utils/controlResponse'
 import { createMemo, Show } from 'solid-js'
-import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { ACPControlActions, ACPControlContent } from '../acp/ACPControlRequest'
 import { registerACPProvider } from '../acp/registerACPProvider'
 import { CursorControlActions, CursorControlContent, getCursorQuestions, isCursorAskQuestionPayload, isCursorControlPayload, sendCursorQuestionResponse } from './CursorControlRequest'

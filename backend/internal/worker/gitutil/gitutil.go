@@ -8,9 +8,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
+	"unicode"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/leapmux/leapmux/util/procutil"
@@ -561,7 +564,7 @@ func branchNameErrorf(format string, args ...any) *BranchNameError {
 
 // BranchNameByteLimit is the maximum size of a git branch name, in UTF-8
 // bytes. The browser copy states the same number and counts the same unit.
-const BranchNameByteLimit = 256
+const BranchNameByteLimit = contracts.BranchByteLimit
 
 // ValidateBranchName validates a git branch name according to
 // git-check-ref-format rules.
@@ -599,12 +602,13 @@ func ValidateBranchName(name string) error {
 		// git refuses the ASCII controls and DEL. The C1 block U+0080-U+009F is
 		// NOT a git rule -- `unicode.IsControl` reports the whole Cc category,
 		// which made this refuse names git creates and `for-each-ref` lists.
-		if r < 0x20 || r == 0x7f {
-			return branchNameErrorf("must not contain control characters")
-		}
-		switch r {
-		// `]` is absent on purpose: git forbids `[` and not `]`.
-		case ' ', '~', '^', ':', '?', '*', '[', '\\':
+		// Both the control ranges and the refused printable set come from
+		// contracts/validate.json (the browser's validateBranchName reads the
+		// same tables); `]` is absent on purpose: git forbids `[` and not `]`.
+		if unicode.Is(contracts.BranchRefusedControl, r) || slices.Contains(contracts.BranchForbiddenASCII, r) {
+			if unicode.Is(contracts.BranchRefusedControl, r) {
+				return branchNameErrorf("must not contain control characters")
+			}
 			return branchNameErrorf("must not contain '%c'", r)
 		}
 	}

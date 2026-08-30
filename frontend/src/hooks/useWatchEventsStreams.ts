@@ -1,12 +1,13 @@
 import type { WatchPlan } from './watchPlan'
 import type { WatchEventsHandle } from '~/api/workerRpc'
-import type { WatchEventsResponse, WatchRejection } from '~/generated/leapmux/v1/workspace_pb'
+import type { WatchEventsResponse, WatchRejection } from '~/generated/proto/leapmux/v1/workspace_pb'
 import type { TabView } from '~/stores/tabView'
 import { createEffect, onCleanup } from 'solid-js'
 import { isDisconnectError } from '~/api/workerErrors'
 import { channelManager, watchEventsViaChannel } from '~/api/workerRpc'
 import { showWarnToastWithLoggedCause } from '~/components/common/Toast'
-import { WatchMode } from '~/generated/leapmux/v1/workspace_pb'
+import { EVENTS_REJECTION_RETRY } from '~/generated/contracts/retry'
+import { WatchMode } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { ChannelError } from '~/lib/channel'
 import { emitDevEvent } from '~/lib/devInstrument'
 import { createLogger } from '~/lib/logger'
@@ -14,8 +15,6 @@ import { createExponentialBackoff } from '~/lib/retry'
 import { shouldRetryRejection, watchPlanKey } from './watchPlan'
 
 const log = createLogger('watchEventsStreams')
-
-const REJECTION_RETRY_MAX = 8
 
 /**
  * How many consecutive redials must fail before the app announces the outage.
@@ -87,13 +86,10 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
     // Desynchronize multi-worker reconnect after a correlated hub blip.
     jitterFactor: 0.2,
   })
-  const rejectionBackoff = createExponentialBackoff<string>({
-    initialMs: 500,
-    maxMs: 15000,
-    multiplier: 2,
-    jitterFactor: 0.2,
-    maxAttempts: REJECTION_RETRY_MAX,
-  })
+  // The rejection policy is the eventsRejection contract (contracts/retry.json):
+  // the CLI's streamevents LOOKUP_FAILED retry uses the SAME generated values,
+  // so both sides advance on one schedule under a flapping worker.
+  const rejectionBackoff = createExponentialBackoff<string>(EVENTS_REJECTION_RETRY)
 
   function getOrCreate(workerId: string): WorkerStream {
     let s = streams.get(workerId)

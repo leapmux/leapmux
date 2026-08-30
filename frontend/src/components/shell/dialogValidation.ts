@@ -1,7 +1,7 @@
 /** Shared validation logic for New Workspace / Agent / Terminal dialogs. */
 
 import type { GitModeIntent } from '~/hooks/useGitModeState'
-import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { GitMode, isChangeBranchMode } from '~/hooks/useGitModeState'
 
 interface BaseDialogState {

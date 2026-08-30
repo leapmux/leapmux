@@ -1,4 +1,4 @@
-import { MarkType } from '~/generated/leapmux/v1/agent_pb'
+import { MarkType } from '~/generated/proto/leapmux/v1/agent_pb'
 import { lowerBoundBySeq } from '~/lib/binarySearch'
 import { createPerAgentStore } from './chatPerAgentStore'
 import { isOptimisticLocalSeq } from './chatReconcile'

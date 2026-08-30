@@ -1,4 +1,4 @@
-import type { AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
+import type { AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'

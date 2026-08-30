@@ -303,9 +303,12 @@ var handMountedRoutes = map[string]struct {
 	// --- The two long-lived sockets: the only hand-mounted routes that take
 	// a scoped bearer, and each states its scope at construction. See
 	// newWSAuthenticator.
-	"/ws/channel": {routeRequiresScope, leapmuxv1.Scope_SCOPE_WORKER_READ,
+	// Recorded by its CONSTANT spelling, which is how server.go mounts it:
+	// the route is a wire contract owned by contracts/wire.json (the browser
+	// and every dialer spell it from the same file).
+	"contracts.WSRouteChannel": {routeRequiresScope, leapmuxv1.Scope_SCOPE_WORKER_READ,
 		"the socket carries a Noise tunnel to a machine; each inner method then states its own scope"},
-	"/ws/userevents": {routeRequiresScope, leapmuxv1.Scope_SCOPE_WORKSPACE_READ,
+	"contracts.WSRouteUserEvents": {routeRequiresScope, leapmuxv1.Scope_SCOPE_WORKSPACE_READ,
 		"the stream is the account's layout document and every change to it"},
 
 	// --- The authorization server. Every leg here either runs before any

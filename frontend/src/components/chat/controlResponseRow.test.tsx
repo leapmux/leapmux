@@ -1,7 +1,7 @@
 import type { ControlResponseDisplay, PersistedControlResponse } from './persistedControlResponse'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
-import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { renderControlResponseRow, renderMessageContent } from './messageRenderers'
 // Register provider plugins so renderMessageContent can resolve a plugin's controlResponseDisplay.
 import '~/components/chat/providers'

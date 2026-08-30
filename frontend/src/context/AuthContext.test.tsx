@@ -1,6 +1,6 @@
 import type { AuthState } from './AuthContext'
 /// <reference types="vitest/globals" />
-import type { User } from '~/generated/leapmux/v1/auth_pb'
+import type { User } from '~/generated/proto/leapmux/v1/auth_pb'
 import { timestampDate, timestampFromDate } from '@bufbuild/protobuf/wkt'
 import { Code, ConnectError } from '@connectrpc/connect'
 import { render, screen } from '@solidjs/testing-library'

@@ -1,6 +1,6 @@
 import type { Tab } from './tab.types'
-import type { CrdtOp } from '~/generated/leapmux/v1/user_ops_pb'
-import type { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import type { CrdtOp } from '~/generated/proto/leapmux/v1/user_ops_pb'
+import type { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import type { OpBuilderCtx } from '~/lib/crdt'
 import {
   ctxFromBridge,

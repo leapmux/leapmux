@@ -1,6 +1,6 @@
 import type { Accessor } from 'solid-js'
 import type { SpanLine } from './widgets/SpanLines'
-import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { SpanMessageRevision } from '~/stores/chatTypes'
 import { createMemo } from 'solid-js'
 import { shallowEqual } from '~/lib/shallowEqual'

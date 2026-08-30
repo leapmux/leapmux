@@ -1,10 +1,10 @@
 import type { ChunkKind } from './checkpointChunks'
 import type { CheckpointRead } from './checkpointStore'
 import type { HlcShape } from './hlc'
-import type { UserCrdtState } from '~/generated/leapmux/v1/user_crdt_pb'
-import type { WatchUserEvent } from '~/generated/leapmux/v1/user_ops_pb'
+import type { UserCrdtState } from '~/generated/proto/leapmux/v1/user_crdt_pb'
+import type { WatchUserEvent } from '~/generated/proto/leapmux/v1/user_ops_pb'
 import { fromBinary } from '@bufbuild/protobuf'
-import { WatchUserEventSchema } from '~/generated/leapmux/v1/user_ops_pb'
+import { WatchUserEventSchema } from '~/generated/proto/leapmux/v1/user_ops_pb'
 import { createLogger } from '~/lib/logger'
 import { applyChunk, isChunkKind, parseHeader } from './checkpointChunks'
 import {

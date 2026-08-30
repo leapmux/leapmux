@@ -4,7 +4,7 @@ import type { CaptchaFieldProps } from './CaptchaField'
 import { render } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { CaptchaProvider } from '~/generated/leapmux/v1/auth_pb'
+import { CaptchaProvider } from '~/generated/proto/leapmux/v1/auth_pb'
 import { CaptchaField } from './CaptchaField'
 
 // The provider getter is backed by a real signal so the dispatcher's

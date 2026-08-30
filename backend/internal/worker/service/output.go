@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
@@ -85,7 +86,7 @@ type notifThreadRef struct {
 // discriminator. The frontend's content-shape probe keys on this string
 // alone, so it must never collide with any inner-envelope `type` value
 // produced by an agent provider.
-const notifThreadWrapperType = "notification_thread"
+const notifThreadWrapperType = contracts.NotificationThreadWrapperType
 
 // notifThreadWrapper is the content envelope stored in the DB for notification
 // thread messages. It consolidates multiple notifications into a single DB row.

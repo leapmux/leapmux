@@ -1,4 +1,4 @@
-import type { Worker } from '~/generated/leapmux/v1/worker_pb'
+import type { Worker } from '~/generated/proto/leapmux/v1/worker_pb'
 
 /**
  * The hub's last-known liveness for one worker, as three states rather than

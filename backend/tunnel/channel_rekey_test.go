@@ -15,6 +15,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/leapmux/leapmux/channelwire"
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
 )
@@ -127,7 +128,7 @@ func pairedRekeyChannel(t *testing.T, opts ...rekeyChannelOption) (ch *Channel, 
 		ws:             client,
 		ctx:            ctx,
 		cancel:         cancel,
-		maxReassembled: channelwire.DefaultMaxReassembledMessageSize,
+		maxReassembled: contracts.DefaultMaxReassembledMessageSize,
 		pending:        make(map[uint64]chan<- *leapmuxv1.InnerRpcResponse),
 		streamCbs:      make(map[uint64]*streamCallback),
 		reassembly:     make(map[uint64]*channelwire.ChunkBuffer),
@@ -220,7 +221,7 @@ func TestChannelRekeyAcceptSurvivesLiveConn(t *testing.T) {
 	tc := newConn(ch, "conn-rekey", "example.test", 443)
 	t.Cleanup(func() { _ = tc.Close() })
 
-	ch.rekey.lastRekeyAt = time.Now().Add(-channelwire.SessionKeyMaxAge - time.Second)
+	ch.rekey.lastRekeyAt = time.Now().Add(-contracts.SessionKeyMaxAge - time.Second)
 
 	done := make(chan error, 1)
 	go func() {
@@ -271,7 +272,7 @@ func TestChannelRekeyAcceptSurvivesWatchdog(t *testing.T) {
 	ch, peer, peerWS := pairedRekeyChannel(t)
 	defer func() { _ = peerWS.CloseNow() }()
 
-	ch.rekey.lastRekeyAt = time.Now().Add(-channelwire.SessionKeyMaxAge - time.Second)
+	ch.rekey.lastRekeyAt = time.Now().Add(-contracts.SessionKeyMaxAge - time.Second)
 
 	done := make(chan error, 1)
 	go func() { done <- ch.ensureRekeyed(context.Background()) }()
@@ -308,7 +309,7 @@ func TestChannelRekeyAcceptSurvivesWatchdog(t *testing.T) {
 // the RTT, so a second sender arriving mid-rekey must not start a second one.
 func TestChannelRekeyConcurrentCallersShareOneRequest(t *testing.T) {
 	ch, peer, peerWS := pairedRekeyChannel(t)
-	ch.rekey.lastRekeyAt = time.Now().Add(-channelwire.SessionKeyMaxAge - time.Second)
+	ch.rekey.lastRekeyAt = time.Now().Add(-contracts.SessionKeyMaxAge - time.Second)
 
 	// Two concurrent callers. Both should block on the in-flight rekey.
 	done := make(chan error, 2)
@@ -344,7 +345,7 @@ func TestChannelRekeyConcurrentCallersShareOneRequest(t *testing.T) {
 // covered by TestChannelRekeyConcurrentCallersShareOneRequest).
 func TestChannelRekeyConcurrentCallersShareReject(t *testing.T) {
 	ch, peer, peerWS := pairedRekeyChannel(t)
-	ch.rekey.lastRekeyAt = time.Now().Add(-channelwire.SessionKeyMaxAge - time.Second)
+	ch.rekey.lastRekeyAt = time.Now().Add(-contracts.SessionKeyMaxAge - time.Second)
 
 	done := make(chan error, 2)
 	go func() { done <- ch.ensureRekeyed(context.Background()) }()
@@ -385,7 +386,7 @@ func TestChannelRekeyConcurrentCallersShareReject(t *testing.T) {
 // sessionVerifyTimeout watchdog fired and cancelled the whole channel.
 func TestChannelRekeyRejectArmsBackoffBeforeWakingWaiters(t *testing.T) {
 	ch, _, _ := pairedRekeyChannel(t)
-	ch.rekey.lastRekeyAt = time.Now().Add(-channelwire.SessionKeyMaxAge - time.Second)
+	ch.rekey.lastRekeyAt = time.Now().Add(-contracts.SessionKeyMaxAge - time.Second)
 
 	// Stand in for an in-flight rekey whose starter has not woken yet: a
 	// registered waiter nobody is reading. This is exactly the state
@@ -423,7 +424,7 @@ func TestChannelRekeyRejectLeavesChannelOpen(t *testing.T) {
 
 	sendNonceBefore := ch.session.Send.Nonce()
 	recvNonceBefore := ch.session.Receive.Nonce()
-	ch.rekey.lastRekeyAt = time.Now().Add(-channelwire.SessionKeyMaxAge - time.Second)
+	ch.rekey.lastRekeyAt = time.Now().Add(-contracts.SessionKeyMaxAge - time.Second)
 
 	done := make(chan error, 1)
 	go func() {
@@ -454,7 +455,7 @@ func TestChannelRekeyTimeoutCancelsChannel(t *testing.T) {
 	t.Parallel()
 
 	ch, peer, peerWS := pairedRekeyChannel(t, withRekeyWatchdog(testRekeyWatchdog))
-	ch.rekey.lastRekeyAt = time.Now().Add(-channelwire.SessionKeyMaxAge - time.Second)
+	ch.rekey.lastRekeyAt = time.Now().Add(-contracts.SessionKeyMaxAge - time.Second)
 
 	done := make(chan error, 1)
 	go func() {
@@ -580,8 +581,8 @@ func TestChannelRekeyAwaitPrefersTerminalOutcomeOverCancel(t *testing.T) {
 
 func TestChannelRekeyRejectSuppressesAgeOnlyRetry(t *testing.T) {
 	ch, _, peerWS := pairedRekeyChannel(t)
-	ch.rekey.lastRekeyAt = time.Now().Add(-channelwire.SessionKeyMaxAge - time.Second)
-	ch.rekey.rekeyNotBefore = time.Now().Add(channelwire.MinRekeyInterval)
+	ch.rekey.lastRekeyAt = time.Now().Add(-contracts.SessionKeyMaxAge - time.Second)
+	ch.rekey.rekeyNotBefore = time.Now().Add(contracts.MinRekeyInterval)
 
 	require.NoError(t, ch.ensureRekeyed(context.Background()))
 
@@ -593,7 +594,7 @@ func TestChannelRekeyRejectSuppressesAgeOnlyRetry(t *testing.T) {
 
 func TestChannelRekeyRejectFallsBackToDefaultBackoff(t *testing.T) {
 	ch, peer, peerWS := pairedRekeyChannel(t)
-	ch.rekey.lastRekeyAt = time.Now().Add(-channelwire.SessionKeyMaxAge - time.Second)
+	ch.rekey.lastRekeyAt = time.Now().Add(-contracts.SessionKeyMaxAge - time.Second)
 
 	done := make(chan error, 1)
 	go func() {
@@ -613,12 +614,12 @@ func TestChannelRekeyRejectFallsBackToDefaultBackoff(t *testing.T) {
 
 	remain := time.Until(ch.rekey.rekeyNotBefore)
 	assert.Greater(t, remain, 50*time.Second, "fallback must be ~DefaultRejectBackoff")
-	assert.LessOrEqual(t, remain, channelwire.DefaultRejectBackoff)
+	assert.LessOrEqual(t, remain, contracts.DefaultRejectBackoff)
 }
 
 func TestChannelRekeyRejectHonorsRetryAfter(t *testing.T) {
 	ch, peer, peerWS := pairedRekeyChannel(t)
-	ch.rekey.lastRekeyAt = time.Now().Add(-channelwire.SessionKeyMaxAge - time.Second)
+	ch.rekey.lastRekeyAt = time.Now().Add(-contracts.SessionKeyMaxAge - time.Second)
 
 	done := make(chan error, 1)
 	go func() {
@@ -648,7 +649,7 @@ func TestChannelRekeyCallerCtxCancelKeepsChannelOpen(t *testing.T) {
 	// Ack wait is bound to ch.ctx + sessionVerifyTimeout; once Ack arrives,
 	// ensureRekeyed succeeds and the caller sees its cancel on the subsequent send.
 	ch, peer, peerWS := pairedRekeyChannel(t)
-	ch.rekey.lastRekeyAt = time.Now().Add(-channelwire.SessionKeyMaxAge - time.Second)
+	ch.rekey.lastRekeyAt = time.Now().Add(-contracts.SessionKeyMaxAge - time.Second)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -671,7 +672,7 @@ func TestChannelRekeyCallerCtxCancelKeepsChannelOpen(t *testing.T) {
 
 func TestChannelRekeyDuplicateAckDoesNotDoubleRotate(t *testing.T) {
 	ch, peer, peerWS := pairedRekeyChannel(t)
-	ch.rekey.lastRekeyAt = time.Now().Add(-channelwire.SessionKeyMaxAge - time.Second)
+	ch.rekey.lastRekeyAt = time.Now().Add(-contracts.SessionKeyMaxAge - time.Second)
 
 	done := make(chan error, 1)
 	go func() {
@@ -716,7 +717,7 @@ func TestChannelRekeyDuplicateAckDoesNotDoubleRotate(t *testing.T) {
 // than a retryable Reject.
 func TestChannelRekeyAckWithBadResponderEphemeralCancels(t *testing.T) {
 	ch, peer, peerWS := pairedRekeyChannel(t)
-	ch.rekey.lastRekeyAt = time.Now().Add(-channelwire.SessionKeyMaxAge - time.Second)
+	ch.rekey.lastRekeyAt = time.Now().Add(-contracts.SessionKeyMaxAge - time.Second)
 
 	done := make(chan error, 1)
 	go func() {
@@ -761,7 +762,7 @@ func TestChannelRekeyAckWithBadResponderEphemeralCancels(t *testing.T) {
 // snapshot-without-claim shape fails here (and -race catches the rest).
 func TestChannelRekeyAckClaimsMaterial(t *testing.T) {
 	ch, peer, peerWS := pairedRekeyChannel(t)
-	ch.rekey.lastRekeyAt = time.Now().Add(-channelwire.SessionKeyMaxAge - time.Second)
+	ch.rekey.lastRekeyAt = time.Now().Add(-contracts.SessionKeyMaxAge - time.Second)
 
 	done := make(chan error, 1)
 	go func() {
@@ -801,7 +802,7 @@ func TestChannelRekeyConcurrentCallersShareTerminalFailure(t *testing.T) {
 	t.Parallel()
 
 	ch, peer, peerWS := pairedRekeyChannel(t, withRekeyWatchdog(testRekeyWatchdog))
-	ch.rekey.lastRekeyAt = time.Now().Add(-channelwire.SessionKeyMaxAge - time.Second)
+	ch.rekey.lastRekeyAt = time.Now().Add(-contracts.SessionKeyMaxAge - time.Second)
 
 	done := make(chan error, 2)
 	go func() { done <- ch.ensureRekeyed(context.Background()) }()
@@ -843,7 +844,7 @@ func TestChannelRekeyConcurrentCallersShareTerminalFailure(t *testing.T) {
 
 func TestChannelRekeyPastHardCeilingCancels(t *testing.T) {
 	ch, _, peerWS := pairedRekeyChannel(t)
-	ch.rekey.lastRekeyAt = time.Now().Add(-channelwire.SessionKeyHardCeiling - time.Second)
+	ch.rekey.lastRekeyAt = time.Now().Add(-contracts.SessionKeyHardCeiling - time.Second)
 
 	err := ch.ensureRekeyed(context.Background())
 	require.Error(t, err)
@@ -862,7 +863,7 @@ func TestChannelRekeyPastHardCeilingCancels(t *testing.T) {
 // on the wire between chunks.
 func TestChannelRekeyMuSerializesEnsureAndSend(t *testing.T) {
 	ch, peer, peerWS := pairedRekeyChannel(t)
-	ch.rekey.lastRekeyAt = time.Now().Add(-channelwire.SessionKeyMaxAge - time.Second)
+	ch.rekey.lastRekeyAt = time.Now().Add(-contracts.SessionKeyMaxAge - time.Second)
 
 	ch.rekey.rekeyMu.Lock() // simulate sendInnerContext mid multi-chunk send
 
@@ -893,7 +894,7 @@ func TestChannelRekeyMuSerializesEnsureAndSend(t *testing.T) {
 
 func TestChannelRekeyRejectPastHardCeilingCancels(t *testing.T) {
 	ch, peer, peerWS := pairedRekeyChannel(t)
-	ch.rekey.lastRekeyAt = time.Now().Add(-channelwire.SessionKeyMaxAge - time.Second)
+	ch.rekey.lastRekeyAt = time.Now().Add(-contracts.SessionKeyMaxAge - time.Second)
 
 	done := make(chan error, 1)
 	go func() {
@@ -906,7 +907,7 @@ func TestChannelRekeyRejectPastHardCeilingCancels(t *testing.T) {
 	// lock in awaitRekeyOutcome (which runs on the ensureRekeyed goroutine
 	// across the RTT), so take the lock here to avoid a data race.
 	ch.rekey.rekeyMu.Lock()
-	ch.rekey.lastRekeyAt = time.Now().Add(-channelwire.SessionKeyHardCeiling)
+	ch.rekey.lastRekeyAt = time.Now().Add(-contracts.SessionKeyHardCeiling)
 	ch.rekey.rekeyMu.Unlock()
 	sendRekeyOutcome(t, peer, peerWS, corr, initiatorPub, false)
 
@@ -923,7 +924,7 @@ func TestChannelRekeyRejectPastHardCeilingCancels(t *testing.T) {
 func TestChannelRekeySoftNonceBypassesRejectBackoff(t *testing.T) {
 	ch, peer, peerWS := pairedRekeyChannel(t)
 	ch.rekey.lastRekeyAt = time.Now()
-	ch.rekey.rekeyNotBefore = time.Now().Add(channelwire.MinRekeyInterval)
+	ch.rekey.rekeyNotBefore = time.Now().Add(contracts.MinRekeyInterval)
 	ch.session.Send.SetNonceForTest(noiseutil.SoftNonceLimit + 1)
 	peer.Receive.SetNonceForTest(noiseutil.SoftNonceLimit + 1)
 

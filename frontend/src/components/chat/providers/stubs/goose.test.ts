@@ -1,6 +1,6 @@
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
-import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
 import { gooseSubagentToolRequestName, isGooseSubagentToolRequest } from './goose'

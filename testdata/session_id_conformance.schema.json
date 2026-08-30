@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "session_id_conformance.schema.json",
+  "title": "agent session-ID rule conformance corpus",
+  "description": "Shared by backend/util/validate/sessionid_test.go and frontend/src/lib/validate.test.ts. `refusal` is a stable token, not a message.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["_readme", "cases"],
+  "properties": {
+    "_readme": { "$ref": "#/$defs/readme" },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["input", "valid", "refusal", "why"],
+        "properties": {
+          "input": { "$ref": "#/$defs/builtText" },
+          "valid": { "type": "boolean" },
+          "refusal": { "type": "string" },
+          "why": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "builtText": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text"],
+      "properties": {
+        "text": { "type": "string" },
+        "repeat": { "type": "integer", "minimum": 2 },
+        "tail": { "type": "string" }
+      }
+    },
+    "readme": {
+      "oneOf": [
+        { "type": "string" },
+        { "type": "array", "items": { "type": "string" } }
+      ]
+    }
+  }
+}

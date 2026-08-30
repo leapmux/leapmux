@@ -1,6 +1,6 @@
 import type { Component } from 'solid-js'
 import type { DirectoryTreeHandle } from './DirectoryTree'
-import type { GitFileStatusEntry } from '~/generated/leapmux/v1/common_pb'
+import type { GitFileStatusEntry } from '~/generated/proto/leapmux/v1/common_pb'
 import type { FileSortFields, FileSortOrder } from '~/lib/fileSort'
 import type { PathFlavor } from '~/lib/paths'
 import type { createRepoGitStore, GitFilterTab } from '~/stores/repoGit.store'

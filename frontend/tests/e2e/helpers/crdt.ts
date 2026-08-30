@@ -19,7 +19,7 @@
 
 import { fromBinary } from '@bufbuild/protobuf'
 import { customAlphabet } from 'nanoid'
-import { WatchUserEventSchema } from '../../../src/generated/leapmux/v1/user_ops_pb'
+import { WatchUserEventSchema } from '../../../src/generated/proto/leapmux/v1/user_ops_pb'
 import { authedHeaders } from './api'
 
 const HTTP_TO_WS_RE = /^http/i

@@ -1,6 +1,6 @@
 import type { JSX } from 'solid-js'
 import type { ProviderSettingChange } from '~/components/chat/providers/registry'
-import type { AgentInfo } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentInfo } from '~/generated/proto/leapmux/v1/agent_pb'
 import { Show } from 'solid-js'
 import { pluginFor } from '~/components/chat/providers/registry'
 import { groupHasOptions, OPTION_ID_EFFORT, OPTION_ID_MODEL } from '~/components/chat/settingsGroups'

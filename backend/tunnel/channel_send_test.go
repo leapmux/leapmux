@@ -15,6 +15,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/leapmux/leapmux/channelwire"
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
 )
@@ -120,7 +121,7 @@ func pairedSendChannel(t *testing.T) (ch *Channel, frames <-chan recordedFrame) 
 		ws:             client,
 		ctx:            ctx,
 		cancel:         cancel,
-		maxReassembled: channelwire.DefaultMaxReassembledMessageSize,
+		maxReassembled: contracts.DefaultMaxReassembledMessageSize,
 		pending:        make(map[uint64]chan<- *leapmuxv1.InnerRpcResponse),
 		streamCbs:      make(map[uint64]*streamCallback),
 		reassembly:     make(map[uint64]*channelwire.ChunkBuffer),
@@ -134,7 +135,7 @@ func pairedSendChannel(t *testing.T) (ch *Channel, frames <-chan recordedFrame) 
 func TestChannelSendConcurrentMixedSizeInterleavesAndDecrypts(t *testing.T) {
 	ch, frames := pairedSendChannel(t)
 
-	bigPayload := make([]byte, channelwire.MaxPlaintextPerChunk+2048)
+	bigPayload := make([]byte, contracts.MaxPlaintextPerChunk+2048)
 	for i := range bigPayload {
 		bigPayload[i] = byte(i)
 	}
@@ -271,7 +272,7 @@ func TestDeliverResponseDropsOrphanedPartial(t *testing.T) {
 	ch := &Channel{
 		ctx:            ctx,
 		cancel:         cancel,
-		maxReassembled: channelwire.DefaultMaxReassembledMessageSize,
+		maxReassembled: contracts.DefaultMaxReassembledMessageSize,
 		pending:        make(map[uint64]chan<- *leapmuxv1.InnerRpcResponse),
 		streamCbs:      make(map[uint64]*streamCallback),
 		reassembly:     make(map[uint64]*channelwire.ChunkBuffer),

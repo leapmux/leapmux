@@ -2,8 +2,8 @@ import type { OpenSubagentTabDeps } from './openSubagentTab'
 /// <reference types="vitest/globals" />
 import type { AgentTab } from '~/stores/tab.types'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
-import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { tabKey } from '~/stores/tab.helpers'
 // `vi.mock` below is hoisted above this import by vitest, so the imported
 // values are the mocked ones. The emit payloads are read back out of these.

@@ -1,5 +1,5 @@
 import { decompress as fzstdDecompress } from 'fzstd'
-import { ContentCompression } from '~/generated/leapmux/v1/agent_pb'
+import { ContentCompression } from '~/generated/proto/leapmux/v1/agent_pb'
 
 const textDecoder = new TextDecoder()
 

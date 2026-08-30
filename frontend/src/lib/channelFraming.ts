@@ -6,7 +6,7 @@
  * Encode lives next to decode so a framing change cannot desync send vs receive.
  */
 
-export const LENGTH_PREFIX_BYTES = 4
+import { LENGTH_PREFIX_BYTES } from '~/generated/contracts/wire'
 
 /** Prefix `payload` with its big-endian length. */
 export function frameBytes(payload: Uint8Array): Uint8Array {

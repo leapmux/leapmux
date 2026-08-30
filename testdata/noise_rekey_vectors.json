@@ -1,0 +1,13 @@
+{
+  "_readme": "Cross-language fixed vectors for the Noise fresh-DH rekey, read by backend/internal/noise/noise_test.go and frontend/src/lib/noise.test.ts. The rekey mixes a fresh X25519 DH secret into the current key: ck1 = HKDF(k, dhSecret); k' = HKDF(ck1, nil)[0:32]. One warmup encryption advances the nonce (rekey resets it), then the plaintext is encrypted under the derived key and must produce expectedCiphertextHex on BOTH sides -- a derivation that drifts reddens both suites on the same bytes.",
+  "vectors": [
+    {
+      "name": "fresh-dh-rekey",
+      "keyHex": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+      "dhSecretHex": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+      "warmupPlaintext": "x",
+      "plaintext": "hello-rekey",
+      "expectedCiphertextHex": "2c0f3a3f9a452bfe1bdfec4bf4fcfc412c28dc17be6865a3048d46"
+    }
+  ]
+}

@@ -1,5 +1,5 @@
 import type { Component } from 'solid-js'
-import type { AgentInfo, AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentInfo, AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { createRepoGitStore } from '~/stores/repoGit.store'
 import { createMemo, Show } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'

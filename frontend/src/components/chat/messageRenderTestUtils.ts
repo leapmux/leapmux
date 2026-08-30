@@ -1,5 +1,5 @@
 import type { JSXElement } from 'solid-js'
-import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { render } from '@solidjs/testing-library'
 import { renderNotificationThread } from './notificationRenderers'
 import { renderResultDivider } from './resultDividerRenderers'

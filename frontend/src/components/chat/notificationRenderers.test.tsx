@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { clearSettingsLabelCache, updateSettingsLabelCache } from '~/lib/settingsLabelCache'
 import { elementText, renderThreadHasIcon, renderThreadText } from './messageRenderTestUtils'
 import { notificationThreadMetrics, renderNotificationThread } from './notificationRenderers'

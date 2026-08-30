@@ -11,6 +11,7 @@ import (
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/password"
@@ -84,8 +85,10 @@ func elevationRequiredErrorSaying(message string) error {
 
 // ElevationRequiredHeader marks a refusal whose remedy is "prove a factor
 // and retry". Exported because the frontend and the E2E suite both key on
-// it; the value is always "1" and only its presence is meaningful.
-const ElevationRequiredHeader = "Leapmux-Elevation-Required"
+// it; the value is always "1" and only its presence is meaningful. The name
+// is owned by contracts/headers.json, generated into the hub, the CLI, and
+// the browser alike.
+const ElevationRequiredHeader = contracts.ElevationRequiredHeader
 
 // ElevationExpiresAtHeader reports the elevation deadline the hub holds NOW,
 // on the response to the request that SLID the window. Exported for the same
@@ -102,8 +105,8 @@ const ElevationRequiredHeader = "Leapmux-Elevation-Required"
 // unit, so a client that reads milliseconds where the hub wrote seconds is
 // wrong by a factor of 1000 and nothing reports the mistake. RFC 3339 carries
 // its own unit and its own zone, JavaScript's Date parses it directly, and Go
-// parses it with time.Parse.
-const ElevationExpiresAtHeader = "Leapmux-Elevation-Expires-At"
+// parses it with time.Parse. The name is owned by contracts/headers.json.
+const ElevationExpiresAtHeader = contracts.ElevationExpiresAtHeader
 
 // formatElevationDeadline renders one deadline for the header.
 //

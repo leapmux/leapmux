@@ -1,4 +1,5 @@
 import type { RateLimitInfo } from '~/stores/agentSession.store'
+import { CODEX_RATE_LIMIT_REACHED_TIME_WINDOW } from '~/generated/contracts/worker-vocab'
 import { formatLocalDateTime } from '~/lib/dateFormat'
 import { pickObject } from '~/lib/jsonPick'
 
@@ -49,19 +50,18 @@ export function* iterCodexRateLimitTiers(payload: Record<string, unknown> | null
 
 /**
  * The one Codex `rateLimitReachedType` that lifts on the rolling-window timer
- * (the others are billing/usage caps). Mirrors the backend constant of the same
- * name; used to elevate a rounded-under-100 window to "exceeded".
+ * (the others are billing/usage caps). Contracts/worker-vocab.json owns the
+ * token; used to elevate a rounded-under-100 window to "exceeded".
  */
-export const CODEX_RATE_LIMIT_REACHED_TIME_WINDOW = 'rate_limit_reached'
 
 /**
  * Codex `rateLimitReachedType` values (snake_case, from the v2 RateLimitSnapshot)
- * mapped to display labels. `rate_limit_reached` is the time-windowed limit that
- * lifts on its own; the others are billing/usage caps that a reset timer won't
- * clear. Newer Codex builds emit this snapshot-level field; older builds omit it.
+ * mapped to display labels. The time-window key reads the contract constant;
+ * the others are billing/usage caps that a reset timer won't clear. Newer
+ * Codex builds emit this snapshot-level field; older builds omit it.
  */
 export const CODEX_RATE_LIMIT_REACHED_LABELS: Record<string, string> = {
-  rate_limit_reached: 'Rate limit reached',
+  [CODEX_RATE_LIMIT_REACHED_TIME_WINDOW]: 'Rate limit reached',
   workspace_owner_credits_depleted: 'Out of credits',
   workspace_member_credits_depleted: 'Out of credits',
   workspace_owner_usage_limit_reached: 'Usage limit reached',

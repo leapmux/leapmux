@@ -1,8 +1,8 @@
 import type { createRepoGitStore } from './repoGit.store'
 import type { Tab } from './tab.types'
-import type { GitFileStatusEntry, GitRepoStatus } from '~/generated/leapmux/v1/common_pb'
-import type { GetGitFileStatusResponse } from '~/generated/leapmux/v1/git_pb'
-import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'
+import type { GitFileStatusEntry, GitRepoStatus } from '~/generated/proto/leapmux/v1/common_pb'
+import type { GetGitFileStatusResponse } from '~/generated/proto/leapmux/v1/git_pb'
+import { GitFileStatusCode } from '~/generated/proto/leapmux/v1/common_pb'
 import { detectFlavor, relativeUnder } from '~/lib/paths'
 
 export type RepoKey = `${string}\0${string}`

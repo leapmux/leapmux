@@ -14,6 +14,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/leapmux/leapmux/channelwire"
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
@@ -309,7 +310,7 @@ func parseUserEventsRequest(r *http.Request) (userEventsRequest, error) {
 	// id would let any authenticated user drive registry.Get (which performs no
 	// authorization) into bootstrapping an arbitrary tenant's CRDT Manager.
 	var req userEventsRequest
-	if raw := r.URL.Query().Get("workspace_ids"); raw != "" {
+	if raw := r.URL.Query().Get(contracts.WSParamWorkspaceIDs); raw != "" {
 		for _, w := range strings.Split(raw, ",") {
 			if w = strings.TrimSpace(w); w != "" {
 				req.workspaceIDs = append(req.workspaceIDs, w)
@@ -389,7 +390,7 @@ func (h *UserEventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// than repeated as a literal so this socket and the subscribers reading from
 	// it cannot drift apart: the two matching was previously only a claim in a
 	// comment.
-	wsConn, ok := h.acceptWS(w, r, endpointUserEvents, "userevents-relay", channelwire.UserEventsReadLimit, user)
+	wsConn, ok := h.acceptWS(w, r, endpointUserEvents, contracts.WSSubprotocolUserEventsRelay, channelwire.UserEventsReadLimit, user)
 	if !ok {
 		countConnectWithoutBootstrap()
 		return
@@ -503,7 +504,7 @@ func (h *UserEventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	metrics.UserEventsSubscribeDuration.WithLabelValues(mode).Observe(elapsed.Seconds())
 	if err != nil {
 		if connect.CodeOf(err) == connect.CodePermissionDenied {
-			_ = wsConn.Close(websocket.StatusPolicyViolation, channelwire.CloseReasonForbidden)
+			_ = wsConn.Close(websocket.StatusPolicyViolation, contracts.CloseReasonForbidden)
 		} else {
 			slog.Error("userevents: resume setup failed", "user_id", user.ID, "error", err)
 			_ = wsConn.Close(websocket.StatusTryAgainLater, "temporarily unavailable, retry")
@@ -592,7 +593,7 @@ func (h *UserEventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// Counted by AdmitBootstrap, from the same admission outcome that chose
 		// this arm. Re-deriving the label here was a second derivation of one
 		// event, which is the split refuseFrame exists to close.
-		_ = wsConn.Close(websocket.StatusPolicyViolation, channelwire.CloseReasonSnapshotTooLarge)
+		_ = wsConn.Close(websocket.StatusPolicyViolation, contracts.CloseReasonSnapshotTooLarge)
 		return
 	case bootstrapPoolFull:
 		slog.Warn("userevents: shared queue memory is full, asking the client to retry the connect",

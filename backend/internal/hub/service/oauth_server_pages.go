@@ -8,6 +8,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/hub/store"
@@ -32,53 +33,25 @@ import (
 // The style is inline and plain on purpose: the Go mux serves these outside the
 // SPA and its stylesheet.
 //
-// WHAT the style says is the app's own look, restated: the token values below
-// are a copy of LeapMux's DEFAULT palette pair (frontend
-// src/styles/themes/default.ts), and the rules are Oat's component shapes in
-// the subset of CSS a script-free page needs. The palette cannot be LINKED
-// here -- `default-src 'none'` is the defence that makes these pages safe to
-// render for a stranger arriving from a terminal -- so it is stated in the
-// document, and a reader's chosen variant cannot follow them: that choice
-// lives in the SPA's per-account storage, which these pages have no script to
-// read. The page follows the DEFAULT pair and the system's light/dark
-// preference, which is as close as a server-rendered page can come. When the
-// default palette changes, change the copy with it.
+// WHAT the style says is the app's own look: the palette half below is
+// GENERATED from contracts/theme-default.json (see pageCSS), and the rules
+// are Oat's component shapes in the subset of CSS a script-free page needs.
+// The palette cannot be LINKED here -- `default-src 'none'` is the defence
+// that makes these pages safe to render for a stranger arriving from a
+// terminal -- so it is stated in the document, and a reader's chosen variant
+// cannot follow them: that choice lives in the SPA's per-account storage,
+// which these pages have no script to read. The page follows the DEFAULT
+// pair and the system's light/dark preference, which is as close as a
+// server-rendered page can come.
 
 // pageCSS is every page's stylesheet: the default palette as custom
 // properties (light, then dark under the system preference) and the shared
-// component rules. One copy, inside the chrome, so no page can drift.
+// component rules. One copy, inside the chrome, so no page can drift. The
+// palette half is generated from contracts/theme-default.json (the same file
+// the SPA's default theme is generated from), so the authorization screens
+// cannot fall a release behind the app.
 const pageCSS = `
-:root {
-  color-scheme: light dark;
-  --background: rgb(255 254 252);
-  --foreground: rgb(34 32 30);
-  --card: rgb(247 245 242);
-  --border: rgb(221 217 211);
-  --input: rgb(213 209 203);
-  --muted: rgb(237 235 231);
-  --muted-foreground: rgb(120 117 111);
-  --primary: rgb(13 148 136);
-  --primary-foreground: rgb(255 255 255);
-  --accent: rgb(222 235 225);
-  --danger: rgb(220 74 68);
-  --danger-subtle: rgb(253 235 233);
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: rgb(26 25 23);
-    --foreground: rgb(232 230 225);
-    --card: rgb(42 40 38);
-    --border: rgb(61 58 54);
-    --input: rgb(61 58 54);
-    --muted: rgb(46 43 40);
-    --muted-foreground: rgb(138 134 128);
-    --primary: rgb(20 184 166);
-    --primary-foreground: rgb(12 12 11);
-    --accent: rgb(45 62 50);
-    --danger: rgb(239 83 80);
-    --danger-subtle: rgb(50 30 28);
-  }
-}
+` + contracts.OAuthPagePaletteCSS + `
 * { box-sizing: border-box; }
 body {
   margin: 0;
@@ -463,82 +436,18 @@ type devicePageData struct {
 }
 
 // scopeSentences is what each permission means in a sentence a person can act
-// on. It is the consent screen's whole vocabulary.
-//
-// A scope with no sentence would render as its wire token, which tells a reader
-// nothing; TestEveryGrantableScopeHasASentence fails the suite instead.
-var scopeSentences = map[leapmuxv1.Scope]string{
-	leapmuxv1.Scope_SCOPE_ACCOUNT_READ:    "Read your profile: your username, your email address and whether you are an administrator.",
-	leapmuxv1.Scope_SCOPE_ACCOUNT_WRITE:   "Change your profile and your account settings, including your password.",
-	leapmuxv1.Scope_SCOPE_WORKSPACE_READ:  "Read your workspaces, your tabs and your layout.",
-	leapmuxv1.Scope_SCOPE_WORKSPACE_WRITE: "Create, rename, move and close your workspaces and tabs.",
-	leapmuxv1.Scope_SCOPE_WORKER_READ:     "List your workers and connect to one.",
-	leapmuxv1.Scope_SCOPE_WORKER_ADMIN:    "Rename and deregister your workers, and manage the keys that let a machine join.",
-	leapmuxv1.Scope_SCOPE_AGENT_READ:      "Read your coding-agent sessions, including every message in them.",
-	leapmuxv1.Scope_SCOPE_AGENT_WRITE:     "Send prompts to your coding agents and answer their permission requests.",
-	leapmuxv1.Scope_SCOPE_TERMINAL_READ:   "Read the output of your terminals.",
-	leapmuxv1.Scope_SCOPE_TERMINAL_WRITE:  "Type into your terminals, which runs any command on your machine.",
-	leapmuxv1.Scope_SCOPE_FILE_READ:       "Browse and read files on your machines.",
-	leapmuxv1.Scope_SCOPE_GIT_READ:        "Read the git state of your repositories: status, branches, diffs and history.",
-	leapmuxv1.Scope_SCOPE_GIT_WRITE:       "Commit, push, and create or delete branches in your repositories.",
-	leapmuxv1.Scope_SCOPE_TUNNEL_OPEN:     "Open network connections from inside your private network to any address it can reach.",
-	leapmuxv1.Scope_SCOPE_ADMIN_READ:      "Read this hub's administration: every account, setting, worker and credential.",
-	leapmuxv1.Scope_SCOPE_ADMIN_USERS:     "Administer every account on this hub, including resetting passwords.",
-	leapmuxv1.Scope_SCOPE_ADMIN_SETTINGS:  "Change this hub's settings, including its security policy and its sign-in providers.",
-	leapmuxv1.Scope_SCOPE_ADMIN_WORKERS:   "Administer every worker on this hub.",
-	leapmuxv1.Scope_SCOPE_ADMIN_APPS:      "Register, edit, vouch, retire and delete the hub's app registrations.",
-}
+// on. It is the consent screen's whole vocabulary, generated from
+// contracts/scopes.json -- where a scope with no sentence fails `task
+// generate-contracts` instead of rendering as its wire token.
+var scopeSentences = contracts.ScopeConsentSentence
 
 // scopeCategories groups the grantable vocabulary the way scope.proto's own
 // sections do -- the same families the Preferences dialog's "Permissions this
-// app may ask for" list renders. A consent screen that grouped by anything
-// else would answer a question nobody asked.
-//
-// ORDER is render order, and the membership is pinned by test: every
-// grantable scope appears exactly once, so a scope added to the proto fails
-// the suite until somebody writes its family here.
-var scopeCategories = []struct {
-	label  string
-	scopes []leapmuxv1.Scope
-}{
-	{"Account", []leapmuxv1.Scope{
-		leapmuxv1.Scope_SCOPE_ACCOUNT_READ,
-		leapmuxv1.Scope_SCOPE_ACCOUNT_WRITE,
-	}},
-	{"Workspace", []leapmuxv1.Scope{
-		leapmuxv1.Scope_SCOPE_WORKSPACE_READ,
-		leapmuxv1.Scope_SCOPE_WORKSPACE_WRITE,
-	}},
-	{"Worker", []leapmuxv1.Scope{
-		leapmuxv1.Scope_SCOPE_WORKER_READ,
-		leapmuxv1.Scope_SCOPE_WORKER_ADMIN,
-	}},
-	{"Agent", []leapmuxv1.Scope{
-		leapmuxv1.Scope_SCOPE_AGENT_READ,
-		leapmuxv1.Scope_SCOPE_AGENT_WRITE,
-	}},
-	{"Terminal", []leapmuxv1.Scope{
-		leapmuxv1.Scope_SCOPE_TERMINAL_READ,
-		leapmuxv1.Scope_SCOPE_TERMINAL_WRITE,
-	}},
-	{"File", []leapmuxv1.Scope{
-		leapmuxv1.Scope_SCOPE_FILE_READ,
-	}},
-	{"Git", []leapmuxv1.Scope{
-		leapmuxv1.Scope_SCOPE_GIT_READ,
-		leapmuxv1.Scope_SCOPE_GIT_WRITE,
-	}},
-	{"Tunnel", []leapmuxv1.Scope{
-		leapmuxv1.Scope_SCOPE_TUNNEL_OPEN,
-	}},
-	{"Hub administration", []leapmuxv1.Scope{
-		leapmuxv1.Scope_SCOPE_ADMIN_READ,
-		leapmuxv1.Scope_SCOPE_ADMIN_USERS,
-		leapmuxv1.Scope_SCOPE_ADMIN_SETTINGS,
-		leapmuxv1.Scope_SCOPE_ADMIN_WORKERS,
-		leapmuxv1.Scope_SCOPE_ADMIN_APPS,
-	}},
-}
+// app may ask for" list renders (both surfaces read the generated table from
+// contracts/scopes.json). A consent screen that grouped by anything else
+// would answer a question nobody asked. ORDER is render order, and the
+// generator cross-checks that every grantable scope appears exactly once.
+var scopeCategories = contracts.ScopeCategories
 
 // scopeEntryView is one permission on a decision page: the wire token a
 // developer knows, the sentence a person acts on, and whether THIS grant
@@ -585,9 +494,9 @@ func describeScopeCatalogue(set authscope.ScopeSet) []scopeCategoryView {
 	}
 	out := make([]scopeCategoryView, 0, len(scopeCategories))
 	for _, category := range scopeCategories {
-		entries := make([]scopeEntryView, 0, len(category.scopes))
+		entries := make([]scopeEntryView, 0, len(category.Scopes))
 		familyGranted := false
-		for _, scope := range category.scopes {
+		for _, scope := range category.Scopes {
 			sentence := scopeSentences[scope]
 			isGranted := granted[scope]
 			familyGranted = familyGranted || isGranted
@@ -607,7 +516,7 @@ func describeScopeCatalogue(set authscope.ScopeSet) []scopeCategoryView {
 		if !familyGranted {
 			continue
 		}
-		out = append(out, scopeCategoryView{Label: category.label, Entries: entries})
+		out = append(out, scopeCategoryView{Label: category.Label, Entries: entries})
 	}
 	return out
 }

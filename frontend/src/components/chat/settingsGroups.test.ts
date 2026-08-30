@@ -1,4 +1,4 @@
-import type { AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
+import type { AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
 import { describe, expect, it } from 'vitest'
 import { groupHasOptions, hasOptions } from './settingsGroups'
 

@@ -286,7 +286,7 @@ func TestDefaultExtraFlagsCarryWorkerScopedKnobs(t *testing.T) {
 	assert.Equal(t, "max_incomplete_chunked", chunked.KoanfKey,
 		"the koanf key is what bringUpLocalWorker reads out of Extras")
 	assert.Equal(t, "0", chunked.StrDefault,
-		"0 must be the default so the worker applies channelwire.DefaultMaxIncompleteChunked")
+		"0 must be the default so the worker applies contracts.DefaultMaxIncompleteChunked")
 	assert.Equal(t, "Timeout and limit options", chunked.Category,
 		"it is a limit, not a server option -- the help output groups it accordingly")
 

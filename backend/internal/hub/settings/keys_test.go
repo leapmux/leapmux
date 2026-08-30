@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/leapmux/leapmux/channelwire"
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
@@ -216,11 +216,11 @@ func TestQueueBudgetDefaultMarshalsZeros(t *testing.T) {
 func TestValidateMaxMessageSizeDelegates(t *testing.T) {
 	require.ErrorContains(t, validateMaxMessageSize(0), "positive")
 	require.ErrorContains(t, validateMaxMessageSize(-1), "positive")
-	require.Error(t, validateMaxMessageSize(int64(channelwire.MaxPlaintextPerChunk)-1), "just under the floor must be refused")
-	require.NoError(t, validateMaxMessageSize(int64(channelwire.MaxPlaintextPerChunk)))
-	require.NoError(t, validateMaxMessageSize(int64(channelwire.MaxMessageSize)))
-	require.NoError(t, validateMaxMessageSize(int64(channelwire.MaxConfigurableMessageSize)))
-	require.Error(t, validateMaxMessageSize(int64(channelwire.MaxConfigurableMessageSize)+1))
+	require.Error(t, validateMaxMessageSize(int64(contracts.MaxPlaintextPerChunk)-1), "just under the floor must be refused")
+	require.NoError(t, validateMaxMessageSize(int64(contracts.MaxPlaintextPerChunk)))
+	require.NoError(t, validateMaxMessageSize(int64(contracts.MaxMessageSize)))
+	require.NoError(t, validateMaxMessageSize(int64(contracts.MaxConfigurableMessageSize)))
+	require.Error(t, validateMaxMessageSize(int64(contracts.MaxConfigurableMessageSize)+1))
 }
 
 // TestTimeoutsRefuseAValueTheWireCannotCarry pins the ceiling that makes

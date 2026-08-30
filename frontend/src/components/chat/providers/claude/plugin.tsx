@@ -3,7 +3,8 @@ import type { MessageCategory } from '../../messageClassification'
 import type { ClassificationContext, ClassificationInput, Provider, SpanRole } from '../registry'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { ContextUsageInfo, RateLimitInfo } from '~/stores/agentSession.store'
-import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import { NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
+import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { getMessageContent, joinContentParagraphs } from '~/lib/contentBlocks'
 import { randomUUID } from '~/lib/idGenerator'
 import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
@@ -13,7 +14,7 @@ import { CLAUDE_TOOL } from '~/types/toolMessages'
 import { buildAllowResponse, buildDenyResponse, getToolInput, getToolName } from '~/utils/controlResponse'
 import { buildAskAnswers } from '../../controls/AskUserQuestionControl'
 import { defaultMarkPreview } from '../../markPreviewShared'
-import { isNotificationThreadWrapper, isTerminalCompactingStatus } from '../../messageUtils'
+import { isFinalCompactingStatus, isNotificationThreadWrapper } from '../../messageUtils'
 import { controlBehaviorDisplay } from '../../persistedControlResponse'
 import { buildPlanMode } from '../../settingsGroups'
 import { registerProvider } from '../registry'
@@ -33,7 +34,7 @@ function buildInterruptRequest(): string {
 }
 
 /** Extra notification types for Claude Code (plan_execution, system subtypes). */
-const CLAUDE_EXTRA_TYPES = new Set(['plan_execution'])
+const CLAUDE_EXTRA_TYPES = new Set([NOTIFICATION_TYPE.PlanExecution])
 /**
  * System message subtypes that should never surface in the UI.
  * task_notification / task_updated are legacy guards for pre-migration
@@ -103,7 +104,7 @@ function isHiddenClaudeNotification(m: Record<string, unknown>): boolean {
     const subtype = m.subtype as string | undefined
     if (HIDDEN_SYSTEM_SUBTYPES.has(subtype ?? ''))
       return true
-    if (isTerminalCompactingStatus(m))
+    if (isFinalCompactingStatus(m))
       return true
   }
   return false
@@ -134,10 +135,10 @@ const CLAUDE_NOTIFICATION_CLASSIFIERS: Record<string, ClaudeTypeClassifier> = {
       return { kind: 'hidden' }
     return { kind: 'notification', messages: [parent] }
   },
-  interrupted: parent => ({ kind: 'notification', messages: [parent] }),
-  context_cleared: parent => ({ kind: 'notification', messages: [parent] }),
-  settings_changed: parent => ({ kind: 'notification', messages: [parent] }),
-  plan_updated: parent => ({ kind: 'notification', messages: [parent] }),
+  [NOTIFICATION_TYPE.Interrupted]: parent => ({ kind: 'notification', messages: [parent] }),
+  [NOTIFICATION_TYPE.ContextCleared]: parent => ({ kind: 'notification', messages: [parent] }),
+  [NOTIFICATION_TYPE.SettingsChanged]: parent => ({ kind: 'notification', messages: [parent] }),
+  [NOTIFICATION_TYPE.PlanUpdated]: parent => ({ kind: 'notification', messages: [parent] }),
   result: () => ({ kind: 'result_divider' }),
 }
 

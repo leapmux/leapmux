@@ -1,6 +1,6 @@
 import type { SettingBinding, SettingDescriptor } from '../types'
 import type { PreferencesState } from '~/context/PreferencesContext'
-import type { SettingDescriptor as ProtoSettingDescriptor } from '~/generated/leapmux/v1/settings_pb'
+import type { SettingDescriptor as ProtoSettingDescriptor } from '~/generated/proto/leapmux/v1/settings_pb'
 import { createSignal } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { accountWireDescriptors, goldenAccountSchema } from '~/test-support/accountSchema'

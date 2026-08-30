@@ -9,6 +9,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/leapmux/leapmux/channelwire"
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/channelmgr"
@@ -101,7 +102,7 @@ func (h *ChannelRelayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	wsConn, ok := h.acceptWS(w, r, endpointChannel, "channel-relay", channelwire.WSReadLimit, user)
+	wsConn, ok := h.acceptWS(w, r, endpointChannel, contracts.WSSubprotocolChannelRelay, channelwire.WSReadLimit, user)
 	if !ok {
 		return
 	}

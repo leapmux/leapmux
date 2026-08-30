@@ -5,7 +5,6 @@ import (
 	"os"
 	"strings"
 	"testing"
-	"unicode"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -209,27 +208,6 @@ func TestValidateSessionIDRefusesInvalidUTF8(t *testing.T) {
 	// so the rule accepts it. That is what makes the case above a real test:
 	// the rule tells the two apart by the ENCODING, not by the rune.
 	assert.NoError(t, ValidateSessionID("abc\ufffddef"))
-}
-
-// TestSessionIDInvisibleMatchesNameRule reports the day the two frozen lists
-// stop agreeing.
-//
-// sessionIDInvisible repeats invisibleFormat on purpose, so that a change to
-// what a NAME may hold cannot widen or narrow what a TOKEN may hold. The
-// repetition is only safe while somebody notices it: without this test, a
-// code point added to one table and not the other is invisible until a user
-// reports a resume that started a fresh conversation.
-//
-// A failure here is NOT automatically a bug. It means a human must decide
-// which list moves, and then update this test's expectation with the reason.
-func TestSessionIDInvisibleMatchesNameRule(t *testing.T) {
-	for r := rune(0); r <= 0x10FFFF; r++ {
-		if r >= 0xD800 && r <= 0xDFFF {
-			continue // a surrogate is not a character
-		}
-		assert.Equalf(t, unicode.Is(invisibleFormat, r), unicode.Is(sessionIDInvisible, r),
-			"U+%04X is in one frozen invisible list and not the other", r)
-	}
 }
 
 // sessionIDConformanceFixture mirrors testdata/session_id_conformance.json.

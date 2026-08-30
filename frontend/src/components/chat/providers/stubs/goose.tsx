@@ -1,6 +1,6 @@
 import type { MessageCategory } from '../../messageClassification'
 import type { PermissionMode } from '~/utils/controlResponse'
-import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { registerACPProvider } from '../acp/registerACPProvider'
 import { isGooseSubagentToolRequest } from './gooseShape'
 

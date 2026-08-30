@@ -49,9 +49,9 @@ export function isNotificationThreadWrapper(
  * `status:"compacting"` row is visible. Every provider that surfaces this shape
  * (Claude, Codex, ACP) hides it on BOTH the standalone classifier and the
  * consolidated-thread filter, so a status hidden on its own stays hidden once Hub
- * threads it. Centralized here so "what counts as a terminal status" can't drift
+ * threads it. Centralized here so "what counts as a final status" can't drift
  * between providers or between the two paths.
  */
-export function isTerminalCompactingStatus(m: Record<string, unknown>): boolean {
+export function isFinalCompactingStatus(m: Record<string, unknown>): boolean {
   return m.type === 'system' && m.subtype === 'status' && m.status !== 'compacting'
 }

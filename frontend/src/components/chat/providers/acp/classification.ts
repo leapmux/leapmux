@@ -1,10 +1,11 @@
 import type { MessageCategory } from '../../messageClassification'
 import type { ClassificationContext, ClassificationInput } from '../registry'
 import type { ParsedMessageContent } from '~/lib/messageParser'
+import { NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
 import { isObject } from '~/lib/jsonPick'
 import { ACP_SESSION_UPDATE } from '~/types/toolMessages'
 import { buildAllowResponse, buildDenyResponse, getToolInput } from '~/utils/controlResponse'
-import { isNotificationThreadWrapper, isTerminalCompactingStatus } from '../../messageUtils'
+import { isFinalCompactingStatus, isNotificationThreadWrapper } from '../../messageUtils'
 import { extractAgentText } from './renderers/helpers'
 
 export function buildACPInterruptContent(agentSessionId: string): string | null {
@@ -33,7 +34,7 @@ export function acpBuildControlResponse(
     : buildAllowResponse(requestId, getToolInput(payload))
 }
 
-const ACP_EXTRA_NOTIF_TYPES = new Set(['agent_error'])
+const ACP_EXTRA_NOTIF_TYPES = new Set([NOTIFICATION_TYPE.AgentError])
 
 export function isACPNotifThread(wrapper: { messages: unknown[] } | null): boolean {
   return isNotificationThreadWrapper(wrapper, ACP_EXTRA_NOTIF_TYPES, (t, st) =>
@@ -46,7 +47,7 @@ export function isACPNotifThread(wrapper: { messages: unknown[] } | null): boole
  * notification hidden on its own stays hidden once Hub threads it into a
  * `notification_thread` wrapper -- the same standalone/thread parity Claude and
  * Codex enforce. Hides the `init` and `task_notification` system lifecycle
- * messages and a terminal (non-compacting) system status, none of which the
+ * messages and a final (non-compacting) system status, none of which the
  * shared notification renderer draws; without the filter a thread of only such
  * messages surfaced as a `notification` that renders nothing and fell back to a
  * raw-JSON bubble.
@@ -57,7 +58,7 @@ function isHiddenACPNotification(m: unknown): boolean {
   const subtype = m.subtype as string | undefined
   if (subtype === 'init' || subtype === 'task_notification')
     return true
-  return isTerminalCompactingStatus(m)
+  return isFinalCompactingStatus(m)
 }
 
 /**
@@ -187,8 +188,8 @@ export function classifyACPMessage(config: ACPClassifyConfig = {}): (input: Clas
       return { kind: 'notification', messages: [parent] }
     }
 
-    if (type === 'settings_changed' || type === 'context_cleared'
-      || type === 'interrupted' || type === 'agent_error' || type === 'plan_updated' || type === 'compacting') {
+    if (type === NOTIFICATION_TYPE.SettingsChanged || type === NOTIFICATION_TYPE.ContextCleared
+      || type === NOTIFICATION_TYPE.Interrupted || type === NOTIFICATION_TYPE.AgentError || type === NOTIFICATION_TYPE.PlanUpdated || type === NOTIFICATION_TYPE.Compacting) {
       return { kind: 'notification', messages: [parent] }
     }
 

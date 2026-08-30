@@ -1,7 +1,7 @@
 import type { Tab } from './tab.types'
 import type { TabMetadataStore } from './tabMetadata.store'
 import type { TabView } from './tabView'
-import type { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import type { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import type { Projection } from '~/lib/crdt'
 import { createEffect, createMemo } from 'solid-js'
 import { createStore, produce } from 'solid-js/store'

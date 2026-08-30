@@ -1,5 +1,5 @@
-import type { Section, SectionItem, Sidebar } from '~/generated/leapmux/v1/section_pb'
-import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
+import type { Section, SectionItem, Sidebar } from '~/generated/proto/leapmux/v1/section_pb'
+import type { Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
 import type { createSectionStore } from '~/stores/section.store'
 import type { createWorkspaceStore } from '~/stores/workspace.store'
 import { onMount } from 'solid-js'

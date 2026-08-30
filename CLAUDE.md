@@ -13,7 +13,65 @@ Use `task` (`Taskfile.yaml`) targets, not the underlying tools directly.
 
 - Frontend package manager: `bun` (lock: `bun.lock`)
 - Proto generation: `buf generate` (via `task generate-proto`)
+- Contracts generation: `scripts/generate-contracts.mjs` (via `task generate-contracts`)
 - SQL generation: `sqlc generate` (via `task generate-sqlc`)
+
+### Contracts: single source of truth for cross-language values
+
+Any constant, string, limit, or table consumed on BOTH sides of a language
+boundary (Go hub/CLI/worker and the TS browser client) lives in
+`contracts/<name>.json` — never hand-written twice. `task generate-contracts`
+validates each contract against its sibling `<name>.schema.json`, runs the
+semantic cross-checks (derived arithmetic, enum coverage via `buf build`
+descriptors, graph acyclicity), and emits Go into `backend/generated/contracts/`
+and TS into `frontend/src/generated/contracts/` (both gitignored; CI generates
+before building).
+
+- `wire.json` — channelwire limits, timing, close reasons, the WS route /
+  query-param / subprotocol vocabulary, the Noise nonce limits (soft rekey
+  trigger and hard wrap bound), and the frame length prefix. `headers.json` —
+  cross-program HTTP headers (both elevation headers,
+  credential-rejected). `retry.json` — the events-rejection retry policy.
+  `worker-vocab.json` — notification-type tokens, the notification-thread
+  discriminator, the Codex rate-limit token, and the model sentinels.
+  `providers.json` — AgentProvider display names / CLI aliases / parse
+  aliases (agentlabels and agentProviderLabel consume the generated tables).
+  `scopes.json` — the scope vocabulary: wire tokens, Preferences
+  descriptions, consent-screen sentences, categories, implied-by graph.
+  `theme-default.json` — the default palette + the OAuth pages' subset.
+  `validate.json` — validation policy parameters (byte limits, strip/fold/
+  refused character classes, reserved usernames). `desktop.json` — the Tauri
+  event names (Rust shell emits, webview listens — all seven of them,
+  including the sidecar-log and menu events) and the env vars Rust passes
+  the Go sidecar; it also emits a RUST module
+  (`desktop/rust/src/generated/contracts.rs`, include!d from main.rs), so
+  `prepare-desktop` depends on `generate-contracts`.
+- Go consumers import `generated/contracts` directly: one Go spelling per
+  contract constant (`contracts.MaxMessageSize`, `contracts.WSRouteChannel`).
+  `channelwire` keeps only the Go-owned limits no contract holds
+  (`WSReadLimit`, `UserEventsReadLimit`) and the wire helpers; it does not
+  alias generated constants. The frontend likewise imports
+  `~/generated/contracts/*` directly (no re-export shims).
+- To change a value: edit `contracts/<name>.json`, run `task generate`, use.
+  Adding a proto enum value fails `generate-contracts` until its contract
+  entry exists — metadata cannot be forgotten.
+- What does NOT go in contracts: values consumed by one side only (Go-only
+  limits stay in `wire.go`; FE-only retry policies stay in the frontend), and
+  dual-implemented ALGORITHMS — those stay differential: the
+  `testdata/*_conformance.json` corpora (and `noise_rekey_vectors.json`)
+  remain the executable spec both suites replay.
+
+### JSON Schema validation (no schemaless JSON)
+
+Every project-written JSON file must validate against a JSON Schema: run
+`task validate-json` (also part of `task lint`, `task test`, and
+`task test-no-docker`, so every CI OS job enforces it). Scope and rules live
+in `scripts/validate-json.mjs`: `contracts/`, `testdata/` (root and package
+fixtures) resolve a SIBLING `<name>.schema.json`; the vendored syntax themes
+and license-override metadata use shared schemas named on their rule. An
+in-scope file with no schema is a hard failure — a new fixture cannot appear
+without a schema stating its shape. Tool-owned JSON (package.json, tsconfig,
+tauri configs, lockfiles) is out of scope on purpose.
 
 ### vanilla-extract `.css.ts` files
 

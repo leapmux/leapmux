@@ -2,7 +2,9 @@ package noise
 
 import (
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"os"
 	"testing"
 	"time"
 
@@ -344,47 +346,65 @@ func TestSessionNeedsRekeyEither(t *testing.T) {
 }
 
 func TestCipherStateRekeyMatchesHKDF(t *testing.T) {
-	// Fixed vector shared with frontend/src/lib/noise.test.ts so Go and TS stay
-	// on the same fresh-DH rekey derivation. The rekey mixes a fresh X25519 DH
-	// secret (and optional ML-KEM secret) into the current key:
+	// Fixed vectors from testdata/noise_rekey_vectors.json, shared with
+	// frontend/src/lib/noise.test.ts so Go and TS stay on the same fresh-DH
+	// rekey derivation. The rekey mixes a fresh X25519 DH secret (and
+	// optional ML-KEM secret) into the current key:
 	//
 	//	ck1 = HKDF(k, dhSecret)
 	//	k'  = HKDF(ck1, pqSecret)[0:32]   (pqSecret == nil here ⇒ degenerate 2nd stage)
-	key := [keyLen]byte{
-		0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-		0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
-		0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
-		0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20,
+	data, err := os.ReadFile("../../../testdata/noise_rekey_vectors.json")
+	require.NoError(t, err, "the rekey vectors are shared with frontend/src/lib/noise.test.ts")
+	var fixture struct {
+		Vectors []struct {
+			Name                  string `json:"name"`
+			KeyHex                string `json:"keyHex"`
+			DhSecretHex           string `json:"dhSecretHex"`
+			WarmupPlaintext       string `json:"warmupPlaintext"`
+			Plaintext             string `json:"plaintext"`
+			ExpectedCiphertextHex string `json:"expectedCiphertextHex"`
+		} `json:"vectors"`
 	}
-	// A fixed 32-byte DH secret (must match the TS vector).
-	dhSecret := [dhLen]byte{
-		0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7,
-		0xa8, 0xa9, 0xaa, 0xab, 0xac, 0xad, 0xae, 0xaf,
-		0xb0, 0xb1, 0xb2, 0xb3, 0xb4, 0xb5, 0xb6, 0xb7,
-		0xb8, 0xb9, 0xba, 0xbb, 0xbc, 0xbd, 0xbe, 0xbf,
+	require.NoError(t, json.Unmarshal(data, &fixture))
+	require.NotEmpty(t, fixture.Vectors)
+
+	for _, v := range fixture.Vectors {
+		t.Run(v.Name, func(t *testing.T) {
+			keyBytes, err := hex.DecodeString(v.KeyHex)
+			require.NoError(t, err)
+			require.Len(t, keyBytes, keyLen)
+			dhBytes, err := hex.DecodeString(v.DhSecretHex)
+			require.NoError(t, err)
+			require.Len(t, dhBytes, dhLen)
+			var key [keyLen]byte
+			copy(key[:], keyBytes)
+			var dhSecret [dhLen]byte
+			copy(dhSecret[:], dhBytes)
+
+			// Compute the expected derived key from a separate copy: rekeyWithSecret
+			// zeroes its dhSecret input, so deriving afterwards would use all-zeros.
+			ck1, _ := noiseHKDF(key[:], dhSecret[:])
+			expectedK, _ := noiseHKDF(ck1[:], nil)
+			var want [keyLen]byte
+			copy(want[:], expectedK[:keyLen])
+
+			cs := &CipherState{k: key}
+			_, err = cs.Encrypt([]byte(v.WarmupPlaintext)) // nonce advances, but rekey resets it
+			require.NoError(t, err)
+			cs.rekeyWithSecret(dhSecret[:], nil, true)
+			assert.Equal(t, want, cs.k)
+
+			ct, err := cs.Encrypt([]byte(v.Plaintext))
+			require.NoError(t, err)
+			assert.Equal(t, v.ExpectedCiphertextHex, hex.EncodeToString(ct),
+				"post-rekey ciphertext must match the TypeScript interop vector")
+
+			peer := &CipherState{k: want}
+			pt, err := peer.Decrypt(ct)
+			require.NoError(t, err)
+			assert.Equal(t, []byte(v.Plaintext), pt)
+		})
 	}
-	// Compute the expected derived key from a separate copy: rekeyWithSecret
-	// zeroes its dhSecret input, so deriving afterwards would use all-zeros.
-	ck1, _ := noiseHKDF(key[:], dhSecret[:])
-	expectedK, _ := noiseHKDF(ck1[:], nil)
-	var want [keyLen]byte
-	copy(want[:], expectedK[:keyLen])
-
-	cs := &CipherState{k: key}
-	_, err := cs.Encrypt([]byte("x")) // nonce advances to 1, but rekey resets it
-	require.NoError(t, err)
-	cs.rekeyWithSecret(dhSecret[:], nil, true)
-	assert.Equal(t, want, cs.k)
-
-	ct, err := cs.Encrypt([]byte("hello-rekey"))
-	require.NoError(t, err)
-	assert.Equal(t, "2c0f3a3f9a452bfe1bdfec4bf4fcfc412c28dc17be6865a3048d46", hex.EncodeToString(ct),
-		"post-rekey ciphertext must match the TypeScript interop vector")
-
-	peer := &CipherState{k: want}
-	pt, err := peer.Decrypt(ct)
-	require.NoError(t, err)
-	assert.Equal(t, []byte("hello-rekey"), pt)
 }
 
 func TestTamperedMlkemCiphertextCausesAEADFailure(t *testing.T) {
@@ -534,7 +554,10 @@ func TestNonceLimitsConst(t *testing.T) {
 	// is caught here rather than only by downstream behavior.
 	assert.Equal(t, uint64(2147483647), SoftNonceLimit, "SoftNonceLimit should be 2^31-1")
 	assert.Equal(t, uint64(4294967295), HardNonceLimit, "HardNonceLimit should be 2^32-1")
-	assert.Equal(t, 65519, MaxPlaintextSize, "MaxPlaintextSize should be 65535-16")
+	// MaxPlaintextSize now aliases contracts.MaxPlaintextPerChunk; the pin
+	// keeps the frozen derivation (65535 ciphertext cap - 16 tag bytes) red if
+	// wire.json retunes either primitive without this suite noticing.
+	assert.Equal(t, 65519, MaxPlaintextSize, "MaxPlaintextSize should be contracts.MaxPlaintextPerChunk (65535-16)")
 }
 
 func TestMessageSizes(t *testing.T) {
