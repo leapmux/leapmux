@@ -404,7 +404,7 @@ task dev-site    # Live-reload dev server at http://localhost:1313
 
 ### Worker (Agent Wrapper)
 
-- **[CIRCL](https://github.com/cloudflare/circl)** - SLH-DSA post-quantum signatures for E2EE channel handling (ML-KEM comes from Go's standard library)
+- **[CIRCL](https://github.com/cloudflare/circl)** - SLH-DSA post-quantum signatures for E2EE channel handling
 - **[Git](https://git-scm.com/)** - Repository info and worktree management
 - **[Go](https://go.dev/)** - Primary language
 - **[gRPC](https://grpc.io/)** - Communication with Hub
