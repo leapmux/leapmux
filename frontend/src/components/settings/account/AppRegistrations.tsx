@@ -1,7 +1,7 @@
 import type { Component, JSX } from 'solid-js'
 import type { StatusMessage } from '~/components/common/StatusLine'
-import type { App } from '~/generated/leapmux/v1/app_pb'
-import type { Scope } from '~/generated/leapmux/v1/scope_pb'
+import type { App } from '~/generated/proto/leapmux/v1/app_pb'
+import type { Scope } from '~/generated/proto/leapmux/v1/scope_pb'
 import { timestampDate } from '@bufbuild/protobuf/wkt'
 import { createMemo, createSignal, For, onMount, Show, untrack } from 'solid-js'
 import { appClient } from '~/api/clients'
@@ -13,7 +13,8 @@ import { Spinner } from '~/components/common/Spinner'
 import { StatusLine } from '~/components/common/StatusLine'
 import { Tooltip } from '~/components/common/Tooltip'
 import { useAuth } from '~/context/AuthContext'
-import { AppClientType, AppVisibility } from '~/generated/leapmux/v1/app_pb'
+import { isGrantableScope } from '~/generated/contracts/scopes'
+import { AppClientType, AppVisibility } from '~/generated/proto/leapmux/v1/app_pb'
 import { useCopyButton } from '~/hooks/useCopyButton'
 import { formatErrorMessage } from '~/lib/errors'
 import * as styles from './credentialList.css'
@@ -541,9 +542,16 @@ export const AppRegistrations: Component<AppRegistrationsProps> = (props) => {
    * The registration's permission ceiling, as tokens.
    *
    * It is what any consent screen MAY grant, never what one account granted:
-   * that lives on the credential and is what Connected apps shows.
+   * that lives on the credential and is what Connected apps shows. The hub
+   * mints ceilings from grantable scopes only, so a value the guard drops is
+   * hub corruption worth a loud log, not a row to render raw.
    */
-  const ceiling = (app: App) => app.scopes.map(scopeToken)
+  const ceiling = (app: App) => {
+    const grantable = app.scopes.filter(isGrantableScope)
+    if (grantable.length !== app.scopes.length)
+      console.error(`registration ${app.clientId} carries a non-grantable scope`, app.scopes)
+    return grantable.map(scopeToken)
+  }
 
   // SetAppElevationAllowed, from the list. It is the one field even a
   // built-in registration may change, so -- unlike Edit -- it is offered on

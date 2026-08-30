@@ -1,6 +1,6 @@
-import type { CloseTabResult } from '~/generated/leapmux/v1/common_pb'
+import type { CloseTabResult } from '~/generated/proto/leapmux/v1/common_pb'
 import { showWarnToast } from '~/components/common/Toast'
-import { WorktreeAction, WorktreeRemovalOutcome } from '~/generated/leapmux/v1/common_pb'
+import { WorktreeAction, WorktreeRemovalOutcome } from '~/generated/proto/leapmux/v1/common_pb'
 
 // WorktreeCloseSummary folds the per-tab WorktreeRemovalOutcome of a whole
 // branch group's REMOVE closes (see closeWorktreeTabs) into one verdict the

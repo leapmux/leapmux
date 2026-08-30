@@ -7,13 +7,13 @@
  * else: status and git fields drive the SIDEBAR, which renders every workspace
  * at once. Re-stating a subset in one arm is how the status half went missing.
  */
-import type { TerminalNotification, TerminalProgress, TerminalStatusChange, TerminalTitleChanged } from '~/generated/leapmux/v1/terminal_pb'
+import type { TerminalNotification, TerminalProgress, TerminalStatusChange, TerminalTitleChanged } from '~/generated/proto/leapmux/v1/terminal_pb'
 import type { createRepoGitStore } from '~/stores/repoGit.store'
 import type { TerminalTab } from '~/stores/tab.types'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
-import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
-import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { isTabOnScreen } from '~/hooks/watchPlan'
 import { notifyOs } from '~/lib/osNotification'
 import { migrateErrorHintFromForResolvedRepo, upsertRepoGitFromProtoStatus } from '~/stores/repoGit'

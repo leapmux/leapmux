@@ -11,9 +11,9 @@ import type { Reassembler } from './reassembler'
  *
  * See https://github.com/leapmux/leapmux/issues/292.
  */
-import type { InnerRpcResponse, InnerStreamMessage } from '~/generated/leapmux/v1/channel_pb'
+import type { InnerRpcResponse, InnerStreamMessage } from '~/generated/proto/leapmux/v1/channel_pb'
 import { create, toBinary } from '@bufbuild/protobuf'
-import { InnerMessageSchema, InnerRpcRequestSchema, InnerStreamRequestSchema } from '~/generated/leapmux/v1/channel_pb'
+import { InnerMessageSchema, InnerRpcRequestSchema, InnerStreamRequestSchema } from '~/generated/proto/leapmux/v1/channel_pb'
 import { abortError, ChannelError } from './channelError'
 import { formatErrorMessage } from './errors'
 import { createLogger } from './logger'

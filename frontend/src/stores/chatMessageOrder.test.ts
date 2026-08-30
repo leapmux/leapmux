@@ -1,6 +1,6 @@
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it, vi } from 'vitest'
-import { AgentChatMessageSchema } from '~/generated/leapmux/v1/agent_pb'
+import { AgentChatMessageSchema } from '~/generated/proto/leapmux/v1/agent_pb'
 import {
   applyFreshMessage,
   firstServerSeq,

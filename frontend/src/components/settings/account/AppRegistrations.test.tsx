@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from '@solidjs/testing-library'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { AppClientType, AppVisibility } from '~/generated/leapmux/v1/app_pb'
-import { Scope } from '~/generated/leapmux/v1/scope_pb'
+import { AppClientType, AppVisibility } from '~/generated/proto/leapmux/v1/app_pb'
+import { Scope } from '~/generated/proto/leapmux/v1/scope_pb'
 import { AppRegistrations } from './AppRegistrations'
 
 const mockList = vi.fn()
@@ -91,6 +91,22 @@ describe('accountAppRegistrations', () => {
     const ceiling = await screen.findByTestId('app-ceiling-app-1')
     expect(ceiling).toHaveTextContent('workspace:read')
     expect(ceiling).toHaveTextContent('file:read')
+  })
+
+  // The hub mints ceilings from grantable scopes only, so a non-grantable
+  // value in app.scopes is hub corruption: the panel drops it from the
+  // rendered ceiling and logs loudly rather than rendering an invented token
+  // (scopeToken's type no longer accepts the value at all).
+  it('drops a non-grantable scope from the ceiling and logs it', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    mockList.mockResolvedValue({ apps: [{ ...app, scopes: [Scope.WORKSPACE_READ, Scope.NEVER] }] })
+    render(() => <AppRegistrations />)
+    const ceiling = await screen.findByTestId('app-ceiling-app-1')
+    expect(ceiling).toHaveTextContent('workspace:read')
+    expect(ceiling).not.toHaveTextContent('never')
+    // The getter runs per render, so assert the payload, not a call count.
+    expect(error).toHaveBeenCalledWith('registration app-1 carries a non-grantable scope', [Scope.WORKSPACE_READ, Scope.NEVER])
+    error.mockRestore()
   })
 
   // The listing is keyset-paginated, and an administrator on a hub with open

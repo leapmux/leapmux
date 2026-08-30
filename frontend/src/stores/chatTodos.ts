@@ -1,5 +1,5 @@
-import type { TodoItem as ProtoTodoItem } from '~/generated/leapmux/v1/agent_pb'
-import { TodoStatus } from '~/generated/leapmux/v1/agent_pb'
+import type { TodoItem as ProtoTodoItem } from '~/generated/proto/leapmux/v1/agent_pb'
+import { TodoStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 
 // ---------------------------------------------------------------------------
 // Provider-neutral to-do list model + conversions

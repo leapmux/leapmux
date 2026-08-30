@@ -1,4 +1,4 @@
-import type { ListAvailableShellsResponse } from '~/generated/leapmux/v1/terminal_pb'
+import type { ListAvailableShellsResponse } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { createRoot, createSignal } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { deferred, flush } from '~/test-support/async'

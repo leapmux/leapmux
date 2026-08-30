@@ -13,7 +13,7 @@ import {
 } from './helpers/api'
 import { loginViaToken, openWorkspace } from './helpers/ui'
 
-export { AgentProvider } from '../../src/generated/leapmux/v1/agent_pb'
+export { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 
 export interface ACPFixtureConfig {
   agentProvider: number

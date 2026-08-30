@@ -10,14 +10,14 @@
  * See https://github.com/leapmux/leapmux/issues/292.
  */
 import type { FatalCloseInfo } from './wsCloseCodes'
-import type { ChannelMessage } from '~/generated/leapmux/v1/channel_pb'
+import type { ChannelMessage } from '~/generated/proto/leapmux/v1/channel_pb'
 import { fromBinary } from '@bufbuild/protobuf'
-import { ChannelMessageSchema } from '~/generated/leapmux/v1/channel_pb'
+import { ChannelMessageSchema } from '~/generated/proto/leapmux/v1/channel_pb'
 import { ChannelError } from './channelError'
 import { unframeBytes } from './channelFraming'
 import { fatalCloseError } from './fatalCloseMessage'
 import { createLogger } from './logger'
-import { isTerminalCloseCode } from './wsCloseCodes'
+import { isFinalCloseCode } from './wsCloseCodes'
 
 const log = createLogger('channel')
 
@@ -53,7 +53,7 @@ export interface ChannelRelayDeps {
    * Tear down every live channel after the current socket closes.
    * `successorDialing` is true when a newer ensureWebSocket owns wsPromise —
    * the coordinator must NOT clear the per-worker open dedup in that case.
-   * `fatal` is set when the close was terminal (see `isTerminalCloseCode`), so
+   * `fatal` is set when the close was final (see `isFinalCloseCode`), so
    * the coordinator can drain with the real reason instead of a generic one.
    */
   onCloseDrain: (successorDialing: boolean, fatal?: FatalCloseInfo) => void
@@ -78,7 +78,7 @@ export class ChannelRelay {
   /** Bumped by closeWebSocket / superseded dials so a stale onOpen cannot install this.ws. */
   private dialGeneration = 0
   /**
-   * Set once the Hub closes us with a terminal code. Every redial path above
+   * Set once the Hub closes us with a final code. Every redial path above
    * this class is an unbounded retry loop (`workerPrivateEvents`' `while
    * (!stopped)` and `useWatchEventsStreams`' scheduleReconnect), and none of
    * them can tell "the network blipped" from "the Hub refused this account
@@ -91,7 +91,7 @@ export class ChannelRelay {
     this.deps = deps
   }
 
-  /** The terminal close that latched this relay, if any. */
+  /** The final close that latched this relay, if any. */
   fatalCloseInfo(): FatalCloseInfo | null {
     return this.fatalClose
   }
@@ -229,7 +229,7 @@ export class ChannelRelay {
   }
 
   closeWebSocket(): void {
-    // Clearing the terminal-close latch here is safe because this is only ever
+    // Clearing the final-close latch here is safe because this is only ever
     // reached from closeAll(), i.e. logout or app teardown -- never from a
     // retry path. Those are exactly the deliberate acts after which a refusal
     // may no longer apply: signing in as another user, or a fresh session.
@@ -327,7 +327,7 @@ export class ChannelRelay {
     // optional only because the Tauri bridge and older test doubles may deliver
     // a bare close; an unclassifiable close stays recoverable, as it was.
     let fatal: FatalCloseInfo | undefined
-    if (ev && typeof ev.code === 'number' && isTerminalCloseCode(ev.code)) {
+    if (ev && typeof ev.code === 'number' && isFinalCloseCode(ev.code)) {
       fatal = { code: ev.code, reason: ev.reason ?? '' }
       // Latch before draining: onCloseDrain synchronously re-enters
       // ensureWebSocket via stream onError handlers, and that dial has to see

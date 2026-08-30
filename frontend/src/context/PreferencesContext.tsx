@@ -1,10 +1,11 @@
 import type { Accessor, ParentComponent } from 'solid-js'
-import type { SettingDescriptor, SettingValue } from '~/generated/leapmux/v1/settings_pb'
+import type { SettingDescriptor, SettingValue } from '~/generated/proto/leapmux/v1/settings_pb'
 import type { BrowserPreferences, BrowserPrefValue, EnterKeyMode, TerminalRendererPreference } from '~/lib/browserStorage'
 import type { UserKeybindingOverride } from '~/lib/shortcuts/types'
 import type { TerminalThemeValue, ThemeValue } from '~/styles/themes'
 import { createEffect, createSignal, onCleanup, onMount, useContext } from 'solid-js'
 import { userClient } from '~/api/clients'
+import { NAME_BYTE_LIMIT } from '~/generated/contracts/validate'
 import {
   batchBrowserPrefWrites,
   hasStorageAccount,
@@ -28,7 +29,7 @@ import { createLogger, setDebugEnabled } from '~/lib/logger'
 import { parseSettingJson } from '~/lib/settingJson'
 import { getTerminalRendererPreference } from '~/lib/terminal'
 import { applyTheme, DEFAULT_TERMINAL_THEME_VALUE, DEFAULT_THEME_VALUE, parseTerminalThemeValue, parseThemeValue } from '~/lib/themeStore'
-import { NAME_BYTE_LIMIT, sanitizeName } from '~/lib/validate'
+import { sanitizeName } from '~/lib/validate'
 
 const log = createLogger('PreferencesContext')
 

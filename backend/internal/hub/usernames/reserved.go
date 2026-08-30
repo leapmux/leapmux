@@ -3,18 +3,27 @@
 // sits below service/auth/bootstrap in the import graph so all of them can
 // reference a single source of truth. Named in the plural to avoid shadowing
 // common `username` variables in callers.
+//
+// The names and the two sets are owned by contracts/validate.json and arrive
+// through the generated contracts package; the browser's
+// SYSTEM_RESERVED_USERNAMES / PUBLIC_RESERVED_USERNAMES are generated from
+// the same file.
 package usernames
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/leapmux/leapmux/generated/contracts"
+)
 
 // Solo is the reserved username for the single passwordless user auto-created
 // and auto-authenticated in solo mode.
-const Solo = "solo"
+const Solo = contracts.UsernameSolo
 
 // Admin is the conventional username for the first administrator. Reserved in
 // anonymous public signup but allowed in the /setup flow and admin-initiated
 // creation paths.
-const Admin = "admin"
+const Admin = contracts.UsernameAdmin
 
 func normalize(u string) string {
 	return strings.ToLower(strings.TrimSpace(u))
@@ -26,7 +35,7 @@ func normalize(u string) string {
 // database for every request, if an operator later opened the same data-dir in
 // solo mode (see auth/interceptor.go).
 func IsReservedSystem(u string) bool {
-	return normalize(u) == Solo
+	return contracts.UsernamesSystemReserved[normalize(u)]
 }
 
 // IsReservedForSignup reports whether a sign-up may not claim a username.
@@ -45,5 +54,5 @@ func IsReservedSystem(u string) bool {
 // and not with a passkey.
 func IsReservedForSignup(u string, setupMode bool) bool {
 	n := normalize(u)
-	return n == Solo || (!setupMode && n == Admin)
+	return contracts.UsernamesSystemReserved[n] || (!setupMode && contracts.UsernamesPublicReserved[n])
 }

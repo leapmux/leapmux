@@ -1,6 +1,6 @@
-import type { BackgroundTaskItem as ProtoBackgroundTaskItem } from '~/generated/leapmux/v1/agent_pb'
+import type { BackgroundTaskItem as ProtoBackgroundTaskItem } from '~/generated/proto/leapmux/v1/agent_pb'
 import { describe, expect, it } from 'vitest'
-import { BackgroundTaskKind, BackgroundTaskStatus } from '~/generated/leapmux/v1/agent_pb'
+import { BackgroundTaskKind, BackgroundTaskStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createBackgroundTaskStore } from '~/stores/chatBackgroundTaskStore'
 
 function proto(id: string, status: BackgroundTaskStatus, activeForm = ''): ProtoBackgroundTaskItem {

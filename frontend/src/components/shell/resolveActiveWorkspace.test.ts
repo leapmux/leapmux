@@ -1,9 +1,9 @@
 import type { ResolveActiveWorkspaceArgs } from './resolveActiveWorkspace'
 /// <reference types="vitest/globals" />
-import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
+import type { Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
-import { WorkspaceSchema } from '~/generated/leapmux/v1/workspace_pb'
+import { WorkspaceSchema } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { createWorkspaceStore } from '~/stores/workspace.store'
 import { resolveActiveWorkspace } from './resolveActiveWorkspace'
 

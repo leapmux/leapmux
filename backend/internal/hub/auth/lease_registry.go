@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/leapmux/leapmux/channelwire"
+	"github.com/leapmux/leapmux/generated/contracts"
 )
 
 type authenticatedLease struct {
@@ -81,7 +81,7 @@ func (o LeaseOutcome) Label() string {
 		// The token channelwire already defines for this close, not a second
 		// copy of the same string: nothing checked that the two agreed, and the
 		// frontend asserts against channelwire's pinned testdata.
-		return channelwire.CloseReasonTooManyConnections
+		return contracts.CloseReasonTooManyConnections
 	default:
 		return "unknown"
 	}

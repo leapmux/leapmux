@@ -2,7 +2,7 @@ import type { createLayoutStore } from '~/stores/layout.store'
 import type { TabMetadata, TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
-import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { parseTabKey, resolveOptimisticGitInfo, tabKey } from '~/stores/tab.helpers'
 import { emitAddTab, emitReviveTab, positionAfterKey } from '~/stores/tabOps'
 

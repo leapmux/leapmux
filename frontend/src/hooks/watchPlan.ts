@@ -2,7 +2,7 @@ import type {
   WatchAgentEntry,
   WatchRejection,
   WatchTerminalEntry,
-} from '~/generated/leapmux/v1/workspace_pb'
+} from '~/generated/proto/leapmux/v1/workspace_pb'
 /**
  * What this client asks each worker to watch, and how much of each entity's
  * traffic it wants.
@@ -12,12 +12,12 @@ import type {
  * badges and rings without paying for chat deltas / terminal bytes.
  */
 import type { AgentTab, Tab } from '~/stores/tab.types'
-import { WatchReplayMode } from '~/generated/leapmux/v1/agent_pb'
+import { WatchReplayMode } from '~/generated/proto/leapmux/v1/agent_pb'
 import {
   TabType,
   WatchMode,
   WatchRejectionReason,
-} from '~/generated/leapmux/v1/workspace_pb'
+} from '~/generated/proto/leapmux/v1/workspace_pb'
 import { rootAgentIdFor } from '~/stores/tab.helpers'
 
 export interface WatchPlan {

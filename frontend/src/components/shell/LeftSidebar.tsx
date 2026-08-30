@@ -3,7 +3,7 @@ import type { SidebarCommonProps } from './useSidebarCore'
 
 import { onCleanup } from 'solid-js'
 import { dragOverlay as wsDragOverlay } from '~/components/workspace/workspaceList.css'
-import { Sidebar } from '~/generated/leapmux/v1/section_pb'
+import { Sidebar } from '~/generated/proto/leapmux/v1/section_pb'
 import { CollapsibleSidebar } from './CollapsibleSidebar'
 import { useSectionDrag } from './SectionDragContext'
 import { useSidebarCore } from './useSidebarCore'

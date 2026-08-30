@@ -1,12 +1,12 @@
 import { execSync } from 'node:child_process'
 import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { WorktreeAction } from '../../src/generated/leapmux/v1/common_pb'
+import { WorktreeAction } from '../../src/generated/proto/leapmux/v1/common_pb'
 import {
   OpenTerminalRequestSchema,
   OpenTerminalResponseSchema,
-} from '../../src/generated/leapmux/v1/terminal_pb'
-import { TabType } from '../../src/generated/leapmux/v1/workspace_pb'
+} from '../../src/generated/proto/leapmux/v1/terminal_pb'
+import { TabType } from '../../src/generated/proto/leapmux/v1/workspace_pb'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, getTestChannel, openAgentViaAPI } from './helpers/api'
 import { loginViaToken, openWorkspace, waitForWorkspaceReady } from './helpers/ui'

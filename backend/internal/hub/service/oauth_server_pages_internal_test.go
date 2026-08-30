@@ -296,8 +296,8 @@ func TestScopeCategoriesCoverEveryGrantableScope(t *testing.T) {
 
 	seen := map[leapmuxv1.Scope]int{}
 	for _, category := range scopeCategories {
-		assert.NotEmptyf(t, category.label, "a category carries a label")
-		for _, scope := range category.scopes {
+		assert.NotEmptyf(t, category.Label, "a category carries a label")
+		for _, scope := range category.Scopes {
 			seen[scope]++
 			_, hasToken := authscope.Token(scope)
 			assert.Truef(t, hasToken, "%s has no wire token", scope)

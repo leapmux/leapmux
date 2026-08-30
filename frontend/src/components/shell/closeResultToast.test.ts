@@ -1,7 +1,7 @@
 /// <reference types="vitest/globals" />
-import type { CloseTabResult } from '~/generated/leapmux/v1/common_pb'
+import type { CloseTabResult } from '~/generated/proto/leapmux/v1/common_pb'
 import { describe, expect, it } from 'vitest'
-import { WorktreeRemovalOutcome } from '~/generated/leapmux/v1/common_pb'
+import { WorktreeRemovalOutcome } from '~/generated/proto/leapmux/v1/common_pb'
 import { summarizeWorktreeCloses, worktreeRemovalToast } from './closeResultToast'
 
 // The fold and the message it feeds. Both worktree-removal surfaces read them

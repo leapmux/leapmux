@@ -1,6 +1,6 @@
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { describe, expect, it, vi } from 'vitest'
-import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { renderDivider } from '../../messageRenderTestUtils'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'

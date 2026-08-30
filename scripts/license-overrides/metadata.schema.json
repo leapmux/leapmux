@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "metadata.schema.json",
+  "title": "vendored-asset license metadata",
+  "description": "scripts/license-overrides/extra/<asset>/metadata.json, consumed by scripts/generate-notice.mjs when attributing manually vendored assets.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "license", "url", "description"],
+  "properties": {
+    "name": { "type": "string", "minLength": 1 },
+    "license": { "type": "string", "minLength": 1 },
+    "url": { "type": "string", "pattern": "^https?://" },
+    "description": { "type": "string", "minLength": 1 },
+    "version": { "type": "string", "minLength": 1 }
+  }
+}

@@ -1,5 +1,5 @@
-import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
-import { ContentCompression, MessageSource } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
+import { ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { localStorageGet, localStorageRemove, localStorageSet, PREFIX_LOCAL_MESSAGES } from '~/lib/browserStorage'
 
 // ---------------------------------------------------------------------------

@@ -1,9 +1,9 @@
 import type { HydrationPayload } from './hydrate'
-import type { UserCrdtState } from '~/generated/leapmux/v1/user_crdt_pb'
-import type { WatchUserEvent } from '~/generated/leapmux/v1/user_ops_pb'
+import type { UserCrdtState } from '~/generated/proto/leapmux/v1/user_crdt_pb'
+import type { WatchUserEvent } from '~/generated/proto/leapmux/v1/user_ops_pb'
 import { create } from '@bufbuild/protobuf'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { HLCSchema, NodeKind, NodeRecordSchema, UserCrdtStateSchema } from '~/generated/leapmux/v1/user_crdt_pb'
+import { HLCSchema, NodeKind, NodeRecordSchema, UserCrdtStateSchema } from '~/generated/proto/leapmux/v1/user_crdt_pb'
 import {
   BatchCommittedSchema,
   BatchRejectionReason,
@@ -15,8 +15,8 @@ import {
   ResumeDeltaSchema,
   TabIdentSchema,
   WatchUserEventSchema,
-} from '~/generated/leapmux/v1/user_ops_pb'
-import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+} from '~/generated/proto/leapmux/v1/user_ops_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { HLCClock } from './hlc'
 import { newBatch, setNodeKind, setTabTileId, tombstoneTab } from './ops'
 import { MAX_OWN_ECHO_BATCH_IDS, PendingOpsManager, pruneTombstonesAtOrBelow } from './pendingOps'

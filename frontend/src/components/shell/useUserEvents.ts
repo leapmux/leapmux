@@ -1,12 +1,14 @@
-import type { HLC, UserMaterialized } from '~/generated/leapmux/v1/user_crdt_pb'
-import type { WatchUserEvent } from '~/generated/leapmux/v1/user_ops_pb'
+import type { HLC, UserMaterialized } from '~/generated/proto/leapmux/v1/user_crdt_pb'
+import type { WatchUserEvent } from '~/generated/proto/leapmux/v1/user_ops_pb'
 import type { HLCClock, PendingOpsManager } from '~/lib/crdt'
 import type { ActiveClientStore } from '~/lib/presence/activeClient'
 import type { FatalCloseInfo } from '~/lib/wsCloseCodes'
 import { fromBinary } from '@bufbuild/protobuf'
 import { createEffect, createSignal, on, onCleanup } from 'solid-js'
 import { isTauriApp, parseRelayClosePayload, platformBridge } from '~/api/platformBridge'
-import { WatchUserEventSchema } from '~/generated/leapmux/v1/user_ops_pb'
+import { TAURI_EVENT_USER_EVENTS_CLOSE, TAURI_EVENT_USER_EVENTS_MESSAGE } from '~/generated/contracts/desktop'
+import { WS_PARAM_RESUME_AFTER_HLC, WS_PARAM_RESUME_EPOCH, WS_PARAM_WORKSPACE_IDS, WS_SUBPROTOCOL_USER_EVENTS_RELAY, WS_USER_EVENTS_ROUTE } from '~/generated/contracts/wire'
+import { WatchUserEventSchema } from '~/generated/proto/leapmux/v1/user_ops_pb'
 import { base64ToUint8Array } from '~/lib/base64'
 import { KEY_USER_EVENTS_RELAY_SEQ } from '~/lib/browserStorage'
 import { unframeBytes } from '~/lib/channelFraming'
@@ -14,7 +16,7 @@ import { formatHlcWire, parseHlcWire } from '~/lib/crdt/hlc'
 import { createLogger } from '~/lib/logger'
 import { createPersistedSeq } from '~/lib/persistedSeq'
 import { createExponentialBackoff } from '~/lib/retry'
-import { isTerminalCloseCode } from '~/lib/wsCloseCodes'
+import { isFinalCloseCode } from '~/lib/wsCloseCodes'
 
 const log = createLogger('useUserEvents')
 
@@ -412,7 +414,7 @@ export function useUserEvents(opts: UseUserEventsOpts): UserEventsHook {
     // Apply the close policy for one relay close. Shared by the desktop-bridge
     // and native WebSocket transports for the same reason handleFrame is: the
     // rule for a terminal code -- stop retrying, release the transport, tell the
-    // caller -- is one policy, and isTerminalCloseCode now spans BOTH endpoints'
+    // caller -- is one policy, and isFinalCloseCode now spans BOTH endpoints'
     // close vocabulary, so two hand-copied spellings of it are two places for
     // that vocabulary to be honoured differently.
     //
@@ -434,7 +436,7 @@ export function useUserEvents(opts: UseUserEventsOpts): UserEventsHook {
     // runs.
     const handleClose = (code: number, reason: string) => {
       setBootstrapped(false)
-      if (isTerminalCloseCode(code)) {
+      if (isFinalCloseCode(code)) {
         tearDown()
         opts.onFatalClose?.({ code, reason })
         return
@@ -472,14 +474,14 @@ export function useUserEvents(opts: UseUserEventsOpts): UserEventsHook {
       // still safer because the initial UserMaterialized fires
       // immediately after Subscribe.
       Promise.all([
-        platformBridge.onEvent('userevents:message', (b64) => {
+        platformBridge.onEvent(TAURI_EVENT_USER_EVENTS_MESSAGE, (b64) => {
           if (isStaleAttempt())
             return
           if (typeof b64 !== 'string')
             return
           handleFrame(base64ToUint8Array(b64))
         }),
-        platformBridge.onEvent('userevents:close', (payload: unknown) => {
+        platformBridge.onEvent(TAURI_EVENT_USER_EVENTS_CLOSE, (payload: unknown) => {
           if (isStaleAttempt())
             return
           const close = parseRelayClosePayload(payload)
@@ -515,7 +517,7 @@ export function useUserEvents(opts: UseUserEventsOpts): UserEventsHook {
     const url = builder(workspaceIds, resume)
     let ws: WebSocket
     try {
-      ws = new WebSocket(url, ['userevents-relay'])
+      ws = new WebSocket(url, [WS_SUBPROTOCOL_USER_EVENTS_RELAY])
     }
     catch {
       scheduleReconnect(userId, generation)
@@ -578,9 +580,9 @@ export function useUserEvents(opts: UseUserEventsOpts): UserEventsHook {
 // defaultBuildWsUrl mirrors the /ws/userevents query-string shape that Go's
 // channelwire.UserEventsURL (backend/channelwire/wire.go) is the source of
 // truth for: optional comma-joined `workspace_ids` only. The authenticated
-// session implies the user — no user_id query parameter. The browser cannot
-// import Go, so it keeps its own copy -- like channel.ts's channel framing --
-// and the two must stay in lockstep.
+// session implies the user — no user_id query parameter. The URL vocabulary
+// (route and query-parameter names) is generated from contracts/wire.json on
+// both sides, so a rename reddens both builds instead of drifting per side.
 //
 // `resume`, when present, appends `resume_after_hlc=<physical>.<logical>.<client_id>`
 // (via the shared formatHlcWire so the wire shape is authored once per language)
@@ -591,13 +593,13 @@ function defaultBuildWsUrl(workspaceIds: string[], resume: ResumeToken | null): 
   const base = window.location.origin.replace(/^http/, 'ws')
   const params = new URLSearchParams()
   if (workspaceIds.length > 0)
-    params.set('workspace_ids', workspaceIds.join(','))
+    params.set(WS_PARAM_WORKSPACE_IDS, workspaceIds.join(','))
   if (resume) {
-    params.set('resume_after_hlc', formatHlcWire(resume.hlc))
-    params.set('resume_epoch', resume.epoch.toString())
+    params.set(WS_PARAM_RESUME_AFTER_HLC, formatHlcWire(resume.hlc))
+    params.set(WS_PARAM_RESUME_EPOCH, resume.epoch.toString())
   }
   const qs = params.toString()
-  return `${base}/ws/userevents${qs ? `?${qs}` : ''}`
+  return `${base}${WS_USER_EVENTS_ROUTE}${qs ? `?${qs}` : ''}`
 }
 
 function dispatchEvent(

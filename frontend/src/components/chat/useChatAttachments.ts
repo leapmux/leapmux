@@ -1,7 +1,7 @@
 import type { Accessor } from 'solid-js'
 import type { FileAttachment, PendingAttachmentFile } from './attachments'
 import type { AttachmentCapabilities } from './providers/registry'
-import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createEffect, createMemo, createSignal, on } from 'solid-js'
 import { showWarnToast } from '~/components/common/Toast'
 import {

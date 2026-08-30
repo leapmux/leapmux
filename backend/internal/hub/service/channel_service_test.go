@@ -23,6 +23,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/channelmgr"
 	"github.com/leapmux/leapmux/internal/hub/mail"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/servicetest"
 	"github.com/leapmux/leapmux/internal/hub/settings"
@@ -307,7 +308,7 @@ func TestOpenChannel_WithMockWorker(t *testing.T) {
 	case sentMsg := <-sentCh:
 		assert.NotNil(t, sentMsg.GetChannelOpen())
 		assert.Equal(t, []byte("handshake-msg-1"), sentMsg.GetChannelOpen().GetHandshakePayload())
-		assert.Equal(t, uint64(channelwire.MaxMessageSize), sentMsg.GetChannelOpen().GetMaxMessageSize(),
+		assert.Equal(t, uint64(contracts.MaxMessageSize), sentMsg.GetChannelOpen().GetMaxMessageSize(),
 			"hub must announce its resolved max_message_size on ChannelOpenRequest")
 	case <-time.After(time.Second):
 		require.Fail(t, "expected a message to be sent to worker")
@@ -620,7 +621,7 @@ func TestOpenChannel_RejectsErrorCodeOnlyWithoutErrorString(t *testing.T) {
 					ChannelOpenResp: &leapmuxv1.ChannelOpenResponse{
 						ChannelId:        open.GetChannelId(),
 						ErrorCode:        leapmuxv1.ChannelOpenErrorCode_CHANNEL_OPEN_ERROR_CODE_CHANNEL_ALREADY_ACTIVE,
-						MaxMessageSize:   uint64(channelwire.MaxMessageSize),
+						MaxMessageSize:   uint64(contracts.MaxMessageSize),
 						HandshakePayload: []byte("should-not-matter"),
 					},
 				},
@@ -773,7 +774,7 @@ func TestOpenChannel_RejectsWorkerEchoInvalidMaxMessageSize(t *testing.T) {
 	}{
 		{name: "zero", echo: 0},
 		{name: "below floor", echo: 1},
-		{name: "above ceiling", echo: uint64(channelwire.MaxConfigurableMessageSize + 1)},
+		{name: "above ceiling", echo: uint64(contracts.MaxConfigurableMessageSize + 1)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			env := setupDirectOpenChannelEnv(t)
@@ -863,7 +864,7 @@ func TestOpenChannel_AdoptsWorkerLoweredMaxMessageSize(t *testing.T) {
 	channelID := resp.Msg.GetChannelId()
 	ceiling := channelwire.MaxReassembledMessageSize(lowered)
 	chunkCiphertext := func(plaintext int) int {
-		return plaintext + channelwire.NoiseAEADAuthTagSize
+		return plaintext + contracts.NoiseAEADAuthTagSize
 	}
 	const dir = "fe2w"
 	const piece = 40_000
@@ -920,7 +921,7 @@ func TestOpenChannel_ReturnsNegotiatedMaxMessageSize(t *testing.T) {
 		HandshakePayload: []byte("handshake"),
 	}))
 	require.NoError(t, err)
-	assert.Equal(t, uint64(channelwire.MaxMessageSize), resp.Msg.GetMaxMessageSize(),
+	assert.Equal(t, uint64(contracts.MaxMessageSize), resp.Msg.GetMaxMessageSize(),
 		"OpenChannelResponse must return the effective payload budget")
 	assert.True(t, env.channels.Exists(resp.Msg.GetChannelId()))
 }

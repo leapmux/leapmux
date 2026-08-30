@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/leapmux/leapmux/channelwire"
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 )
@@ -639,7 +639,7 @@ func TestMaxReadLimit_UsesConfiguredMaxMessageSize(t *testing.T) {
 	assert.Equal(t, int64(2<<20), svc.maxReadLimit(nil))
 
 	svc.MaxMessageSize = 0
-	assert.Equal(t, int64(channelwire.MaxMessageSize), svc.maxReadLimit(nil),
+	assert.Equal(t, int64(contracts.MaxMessageSize), svc.maxReadLimit(nil),
 		"0 must resolve to the protocol default payload budget")
 }
 

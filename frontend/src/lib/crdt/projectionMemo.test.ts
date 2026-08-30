@@ -1,9 +1,9 @@
-import type { UserCrdtState } from '~/generated/leapmux/v1/user_crdt_pb'
+import type { UserCrdtState } from '~/generated/proto/leapmux/v1/user_crdt_pb'
 import { create } from '@bufbuild/protobuf'
 import { createRoot, createSignal } from 'solid-js'
 import { describe, expect, it } from 'vitest'
-import { HLCSchema, NodeKind, WorkspaceContentsRecordSchema } from '~/generated/leapmux/v1/user_crdt_pb'
-import { CrdtOpSchema, SetNodeRegisterOpSchema } from '~/generated/leapmux/v1/user_ops_pb'
+import { HLCSchema, NodeKind, WorkspaceContentsRecordSchema } from '~/generated/proto/leapmux/v1/user_crdt_pb'
+import { CrdtOpSchema, SetNodeRegisterOpSchema } from '~/generated/proto/leapmux/v1/user_ops_pb'
 import { applyOp, newState } from './apply'
 import { createProjectionMemo } from './projectionMemo'
 

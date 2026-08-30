@@ -1,7 +1,7 @@
 import type { RenderTree } from './project'
 import type { LayoutNodeLocal } from '~/stores/layout.store'
-import { NodeKind } from '~/generated/leapmux/v1/user_crdt_pb'
-import { SplitDirection } from '~/generated/leapmux/v1/workspace_pb'
+import { NodeKind } from '~/generated/proto/leapmux/v1/user_crdt_pb'
+import { SplitDirection } from '~/generated/proto/leapmux/v1/workspace_pb'
 
 /**
  * Converted trees, keyed by the `RenderTree` node they came from.

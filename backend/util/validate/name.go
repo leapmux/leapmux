@@ -5,6 +5,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/leapmux/leapmux/generated/contracts"
 )
 
 // NameByteLimit is the maximum size of a name or a title, in UTF-8 bytes.
@@ -14,7 +16,7 @@ import (
 // browser copy in `frontend/src/lib/validate.ts` counts the same bytes and
 // states the same limit. A name that the field accepts is therefore a name
 // that this package accepts.
-const NameByteLimit = 128
+const NameByteLimit = contracts.NameByteLimit
 
 // cleanScanLimit is where CleanNameChars stops appending.
 //
@@ -30,7 +32,7 @@ const NameByteLimit = 128
 // holds only whitespace, control characters, and invisible characters never
 // grows the builder, so the loop reads every byte of it. The callers that
 // accept such a title are bounded elsewhere -- the hub caps a request body at
-// 4 MiB, and the worker caps one provider line at channelwire.MaxMessageSize.
+// 4 MiB, and the worker caps one provider line at contracts.MaxMessageSize.
 const cleanScanLimit = NameByteLimit + 1
 
 // invisibleFormat holds the invisible characters that a name loses. The set
@@ -73,31 +75,10 @@ const cleanScanLimit = NameByteLimit + 1
 // a name may hold them: the invisible math operators U+2061-U+2064, the
 // interlinear annotation controls U+FFF9-U+FFFB, and the blank-glyph
 // characters U+115F, U+1160, U+2800 and U+3164 all survive today. Add a code
-// point HERE and in the browser copy together, and add a case to the shared
-// fixture, or the two sides drift.
-var invisibleFormat = &unicode.RangeTable{
-	R16: []unicode.Range16{
-		{Lo: 0x00AD, Hi: 0x00AD, Stride: 1}, // SOFT HYPHEN
-		{Lo: 0x061C, Hi: 0x061C, Stride: 1}, // ARABIC LETTER MARK
-		{Lo: 0x180E, Hi: 0x180E, Stride: 1}, // MONGOLIAN VOWEL SEPARATOR
-		{Lo: 0x200B, Hi: 0x200B, Stride: 1}, // ZERO WIDTH SPACE
-		{Lo: 0x200E, Hi: 0x200F, Stride: 1}, // LEFT-TO-RIGHT MARK, RIGHT-TO-LEFT MARK
-		// LEFT-TO-RIGHT EMBEDDING, RIGHT-TO-LEFT EMBEDDING, POP DIRECTIONAL
-		// FORMATTING, LEFT-TO-RIGHT OVERRIDE, RIGHT-TO-LEFT OVERRIDE
-		{Lo: 0x202A, Hi: 0x202E, Stride: 1},
-		{Lo: 0x2060, Hi: 0x2060, Stride: 1}, // WORD JOINER
-		// LEFT-TO-RIGHT ISOLATE, RIGHT-TO-LEFT ISOLATE, FIRST STRONG ISOLATE,
-		// POP DIRECTIONAL ISOLATE
-		{Lo: 0x2066, Hi: 0x2069, Stride: 1},
-		{Lo: 0xFEFF, Hi: 0xFEFF, Stride: 1}, // ZERO WIDTH NO-BREAK SPACE
-	},
-	// `unicode.Is` reads the whole R16 slice and never reads LatinOffset. Only
-	// the unexported `isExcludingLatin` reads it, and no exported API routes a
-	// caller's table through that. The field stays at its correct value for
-	// the data -- the SOFT HYPHEN is the one entry at or below U+00FF -- so a
-	// later move to `unicode.In` or to a stdlib helper finds it already right.
-	LatinOffset: 1,
-}
+// point to contracts/validate.json and a case to the shared fixture; both
+// sides' tables regenerate from the contract, and the fixture proves the
+// algorithms still agree.
+var invisibleFormat = contracts.NameInvisibleFormat
 
 // nameWhitespace holds the characters that a name rule folds to one space.
 //
@@ -124,27 +105,7 @@ var invisibleFormat = &unicode.RangeTable{
 // TOKEN may hold are separate policies, and sessionid.go keeps its own frozen
 // character class for that reason -- but "which characters are whitespace" is
 // a fact about Unicode rather than a policy, so both rules read one answer.
-var nameWhitespace = &unicode.RangeTable{
-	R16: []unicode.Range16{
-		// TAB, LF, VERTICAL TAB, FORM FEED, CARRIAGE RETURN
-		{Lo: 0x0009, Hi: 0x000D, Stride: 1},
-		{Lo: 0x0020, Hi: 0x0020, Stride: 1}, // SPACE
-		{Lo: 0x0085, Hi: 0x0085, Stride: 1}, // NEXT LINE
-		{Lo: 0x00A0, Hi: 0x00A0, Stride: 1}, // NO-BREAK SPACE
-		{Lo: 0x1680, Hi: 0x1680, Stride: 1}, // OGHAM SPACE MARK
-		// EN QUAD through HAIR SPACE
-		{Lo: 0x2000, Hi: 0x200A, Stride: 1},
-		// LINE SEPARATOR, PARAGRAPH SEPARATOR
-		{Lo: 0x2028, Hi: 0x2029, Stride: 1},
-		{Lo: 0x202F, Hi: 0x202F, Stride: 1}, // NARROW NO-BREAK SPACE
-		{Lo: 0x205F, Hi: 0x205F, Stride: 1}, // MEDIUM MATHEMATICAL SPACE
-		{Lo: 0x3000, Hi: 0x3000, Stride: 1}, // IDEOGRAPHIC SPACE
-	},
-	// The first four entries are at or below U+00FF. `unicode.Is` never reads
-	// this field (see invisibleFormat), so it is inert here too, and it stays
-	// correct for the data.
-	LatinOffset: 4,
-}
+var nameWhitespace = contracts.NameWhitespaceFold
 
 // IsNameWhitespace reports whether a name rule folds r to one space.
 //

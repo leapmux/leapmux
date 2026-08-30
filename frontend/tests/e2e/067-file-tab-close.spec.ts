@@ -1,7 +1,7 @@
 import { execSync } from 'node:child_process'
 import { existsSync, realpathSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { TabType } from '../../src/generated/leapmux/v1/workspace_pb'
+import { TabType } from '../../src/generated/proto/leapmux/v1/workspace_pb'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
 import { clearRecordedToasts, getRecordedToasts, installToastRecorder } from './helpers/toast'

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/channelwire"
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
@@ -33,14 +34,14 @@ const stdoutScannerStartBuf = 1024 * 1024
 // ScanLines wrapper without holding stdoutMu.
 var (
 	stdoutMu            sync.Mutex
-	stdoutConfiguredMax = channelwire.MaxMessageSize
+	stdoutConfiguredMax = contracts.MaxMessageSize
 	stdoutOpenChannels  = map[string]struct{}{}
 	stdoutNegotiatedMax int // meaningful only while len(stdoutOpenChannels) > 0
 	stdoutMaxTokenSize  atomic.Int64
 )
 
 func init() {
-	stdoutMaxTokenSize.Store(int64(channelwire.MaxMessageSize))
+	stdoutMaxTokenSize.Store(int64(contracts.MaxMessageSize))
 }
 
 func recomputeStdoutMaxLocked() {

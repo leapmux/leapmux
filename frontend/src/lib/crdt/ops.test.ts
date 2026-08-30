@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { HLCClock, hlcCmp } from './hlc'
 import {
   generateId,
@@ -139,7 +139,7 @@ describe('floating window op builders', () => {
 describe('liveTabsOnTile', () => {
   it('returns tabs in user-visible (position ascending, tab_id tiebreak) order, not state.tabs insertion order', async () => {
     const { create } = await import('@bufbuild/protobuf')
-    const { UserCrdtStateSchema, TabRecordSchema, LWWStringSchema } = await import('~/generated/leapmux/v1/user_crdt_pb')
+    const { UserCrdtStateSchema, TabRecordSchema, LWWStringSchema } = await import('~/generated/proto/leapmux/v1/user_crdt_pb')
     const { liveTabsOnTile } = await import('./ops')
 
     // Build a state where three live tabs share a tile but their

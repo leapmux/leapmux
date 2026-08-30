@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "providers.schema.json",
+  "title": "AgentProvider label contract",
+  "description": "Keys are proto enum value names; the generator cross-checks them against the AgentProvider enum from `buf build` (every non-UNSPECIFIED value exactly once). The reverse parse map is displayName + cliAlias + parseAliases per provider, so the CLI alias always round-trips.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["_readme", "providers"],
+  "properties": {
+    "_readme": { "type": "string", "minLength": 1 },
+    "providers": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": { "pattern": "^AGENT_PROVIDER_[A-Z0-9_]+$" },
+      "additionalProperties": { "$ref": "#/$defs/provider" }
+    }
+  },
+  "$defs": {
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["displayName", "cliAlias", "parseAliases"],
+      "properties": {
+        "displayName": { "type": "string", "minLength": 1 },
+        "cliAlias": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+        "parseAliases": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        }
+      }
+    }
+  }
+}

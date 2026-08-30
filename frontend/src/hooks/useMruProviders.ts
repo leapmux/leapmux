@@ -1,15 +1,15 @@
 import type { Accessor } from 'solid-js'
-import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createSignal } from 'solid-js'
 import { getMruProviders, touchMruProvider } from '~/lib/mruAgentProviders'
 
 interface UseMruProvidersResult {
-  mruProviders: Accessor<AgentProvider[]>
+  mruProviders: Accessor<readonly AgentProvider[]>
   recordProviderUse: (provider: AgentProvider) => void
 }
 
 export function useMruProviders(
-  availableProviders: Accessor<AgentProvider[]>,
+  availableProviders: Accessor<readonly AgentProvider[]>,
   maxCount = 2,
 ): UseMruProvidersResult {
   const [version, setVersion] = createSignal(0)

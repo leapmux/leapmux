@@ -1,5 +1,6 @@
 import type { BuildInfo } from '~/lib/buildEnv'
 import type { TrailingDebounced } from '~/lib/debounce'
+import { TAURI_EVENT_SIDECAR_LOG } from '~/generated/contracts/desktop'
 import { arrayBufferToBase64, base64ToArrayBuffer } from '~/lib/base64'
 import { formatHlcWire } from '~/lib/crdt/hlc'
 import { trailingDebounce } from '~/lib/debounce'
@@ -306,7 +307,7 @@ function installSidecarLogListener(): void {
   sidecarLogListening = true
 
   loadTauriEvents().then(({ listen }) => {
-    listen<SidecarLogPayload>('sidecar:log', (event) => {
+    listen<SidecarLogPayload>(TAURI_EVENT_SIDECAR_LOG, (event) => {
       const { level, time, message, attrs } = event.payload
       const args: unknown[] = [time, message]
       if (attrs)

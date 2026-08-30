@@ -1,9 +1,9 @@
 import type { SetStoreFunction } from 'solid-js/store'
 import type { ChatStoreState } from './chat.store'
 import type { LiveTailTracker } from './chatLiveTail'
-import type { AgentChatMessage, BackgroundTaskItem as ProtoBackgroundTaskItem, TodoItem as ProtoTodoItem } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentChatMessage, BackgroundTaskItem as ProtoBackgroundTaskItem, TodoItem as ProtoTodoItem } from '~/generated/proto/leapmux/v1/agent_pb'
 import { listAgentMessages } from '~/api/workerRpc'
-import { MessagePageAnchor } from '~/generated/leapmux/v1/agent_pb'
+import { MessagePageAnchor } from '~/generated/proto/leapmux/v1/agent_pb'
 
 /** Per-page size for the windowed history fetch (the hub caps the page at 50). */
 export const MESSAGE_PAGE_SIZE = 50

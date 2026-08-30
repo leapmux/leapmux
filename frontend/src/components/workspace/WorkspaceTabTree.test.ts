@@ -1,7 +1,7 @@
 import type { Tab } from '~/stores/tab.types'
 import { describe, expect, it } from 'vitest'
 import { SIDEBAR_TAB_PREFIX } from '~/components/shell/TabDragContext'
-import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { repoKey } from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 import { repoKeyForLocal } from './branchKeys'

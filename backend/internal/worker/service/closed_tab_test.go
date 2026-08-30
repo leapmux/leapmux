@@ -15,7 +15,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
@@ -29,6 +28,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 	"google.golang.org/grpc/codes"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/authscope"
 )
 
@@ -263,7 +263,7 @@ func setupTestService(t *testing.T, opts ...setupOption) (*Service, *channel.Dis
 		ChannelId:        testChannelID,
 		UserId:           "user-1",
 		HandshakePayload: msg1,
-		MaxMessageSize:   uint64(channelwire.MaxMessageSize),
+		MaxMessageSize:   uint64(contracts.MaxMessageSize),
 		GrantedScopes:    testChannelGrant,
 	})
 

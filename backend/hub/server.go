@@ -14,6 +14,7 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/leapmux/leapmux/channelwire"
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/h2cdeadline"
 	"github.com/leapmux/leapmux/internal/hub/auth"
@@ -82,7 +83,7 @@ const httpDrainTimeout = 10 * time.Second
 // onto a full snapshot, so accepting it buys nothing. It is far above any
 // legitimate message on this surface -- the largest are a worker's whole-machine
 // tab inventory (identity fields only) and a relayed ChannelMessage, itself
-// chunk-capped at channelwire.MaxCiphertextForChunk (64 KiB).
+// chunk-capped at contracts.MaxCiphertextForChunk (64 KiB).
 //
 // READS only; this option set deliberately caps no response (no
 // WithSendMaxBytes), because GetMaterialized legitimately returns a multi-MB snapshot for a large
@@ -566,7 +567,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	channelRelay := service.NewChannelRelayHandler(st, wMgr, cMgr, authContexts, soloUser, secureCookies, relayQueuePool).
 		WithTokenValidator(tokenValidator).
 		WithChannelCloseEnqueuer(channelSvc)
-	mux.Handle("/ws/channel", channelRelay)
+	mux.Handle(contracts.WSRouteChannel, channelRelay)
 
 	// INBOUND OAuth: the hub as a client of an identity provider, at
 	// /auth/idp/*.
@@ -714,7 +715,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// motivated retiring the streaming RPC.
 	userEventsHandler := service.NewUserEventsHandler(st, crdtRegistry, authContexts, soloUser, secureCookies, userEventsQueuePool).
 		WithTokenValidator(tokenValidator)
-	mux.Handle("/ws/userevents", userEventsHandler)
+	mux.Handle(contracts.WSRouteUserEvents, userEventsHandler)
 
 	reconcilerSvc := service.NewWorkerReconcilerService(st)
 	reconcilerPath, reconcilerHandler := leapmuxv1connect.NewWorkerReconcilerServiceHandler(reconcilerSvc, connectOpts)

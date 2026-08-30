@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 
 const CC = AgentProvider.CLAUDE_CODE
 const CODEX = AgentProvider.CODEX

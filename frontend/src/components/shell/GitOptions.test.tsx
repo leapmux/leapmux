@@ -1,5 +1,5 @@
 /// <reference types="vitest/globals" />
-import type { GitBranchEntry } from '~/generated/leapmux/v1/git_pb'
+import type { GitBranchEntry } from '~/generated/proto/leapmux/v1/git_pb'
 import type { GitInfoFields, GitPathInfo } from '~/hooks/useGitPathInfo'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'

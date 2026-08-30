@@ -1,7 +1,7 @@
 /// <reference types="vitest/globals" />
 import { createRoot } from 'solid-js'
 import { afterEach, describe, expect, it } from 'vitest'
-import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { setCRDTBridge } from '~/lib/crdt'
 import { flush } from '~/test-support/async'
 import { installTestBridge, seedWorkspace } from '~/test-support/crdtBridge'

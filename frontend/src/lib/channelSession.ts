@@ -11,12 +11,20 @@ import type { Session } from './noise'
 import type { WorkerKeyBundle } from './workerKeyBundle'
 import { create, toBinary } from '@bufbuild/protobuf'
 import {
+  DEFAULT_REJECT_BACKOFF_MS,
+  MAX_CHUNK_SIZE,
+  PROTOCOL_VERSION,
+  SESSION_KEY_HARD_CEILING_MS,
+  SESSION_KEY_MAX_AGE_MS,
+  SESSION_VERIFY_TIMEOUT_MS,
+} from '~/generated/contracts/wire'
+import {
   ChannelMessageFlags,
   ChannelMessageSchema,
   EncryptionMode,
   InnerMessageSchema,
   RekeyRequestSchema,
-} from '~/generated/leapmux/v1/channel_pb'
+} from '~/generated/proto/leapmux/v1/channel_pb'
 import { ChannelError } from './channelError'
 import { frameBytes } from './channelFraming'
 import { formatErrorMessage } from './errors'
@@ -30,34 +38,11 @@ import {
   initiatorHandshake1,
   initiatorHandshake2,
 } from './noise-hybrid'
-import { MAX_CHUNK_SIZE } from './reassembler'
 
 const log = createLogger('channel')
 
-/**
- * How long a Noise transport key may live before the initiator should request
- * an in-band rekey. Must match channelwire.SessionKeyMaxAge / the fixture.
- */
-export const SESSION_KEY_MAX_AGE_MS = 60 * 60 * 1000 // 1 hour
-
-/**
- * Earliest another age-only rekey may be accepted after a successful one.
- * Ten minutes of headroom under SESSION_KEY_MAX_AGE_MS; soft nonce bypasses.
- * Must match channelwire.MinRekeyInterval / the fixture.
- */
-export const MIN_REKEY_INTERVAL_MS = 50 * 60 * 1000 // 50 minutes
-
-/**
- * Absolute age past which the channel must close and re-handshake instead of
- * serving under the old key. Matches channelwire.SessionKeyHardCeiling.
- */
-export const SESSION_KEY_HARD_CEILING_MS = SESSION_KEY_MAX_AGE_MS + 10 * 60 * 1000 // 70 minutes
-
-/** Open-time Ping Ack/Reject budget, matching Go sessionVerifyTimeout. */
-const REKEY_TIMEOUT_MS = 10_000
-
-/** Fallback when RekeyReject.retry_after_ms is unset (legacy peers). Matches channelwire.DefaultRejectBackoff. */
-const DEFAULT_REJECT_BACKOFF_MS = 60_000
+/** Open-time Ping Ack/Reject budget: the open-time round trip is the Go side's channelwire.SessionVerifyTimeout. */
+const REKEY_TIMEOUT_MS = SESSION_VERIFY_TIMEOUT_MS
 
 /**
  * Same shape as transport / TOFU key material — see workerKeyBundle.ts.
@@ -235,7 +220,7 @@ export class ChannelSession {
     flags: ChannelMessageFlags = ChannelMessageFlags.UNSPECIFIED,
   ): void {
     const msg = create(ChannelMessageSchema, {
-      protocolVersion: 1,
+      protocolVersion: PROTOCOL_VERSION,
       channelId: ch.channelId,
       ciphertext,
       // uint64 on the wire; see the decode boundary in handleMessage for why ids

@@ -7,73 +7,52 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
-// TestDisplayName keeps the backend label mapping in lockstep with the
-// frontend's agentProviderLabel (frontend/src/components/common/
-// AgentProviderIcon.tsx). When a new provider is added to the
-// AgentProvider enum, both sides should be updated together so
-// "Starting {provider}…" renders consistently.
-func TestDisplayName(t *testing.T) {
-	cases := []struct {
-		provider leapmuxv1.AgentProvider
-		want     string
-	}{
-		{leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, "Claude Code"},
-		{leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, "Codex"},
-		{leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, "OpenCode"},
-		{leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, "GitHub Copilot"},
-		{leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, "Cursor"},
-		{leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, "Goose"},
-		{leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO, "Kilo"},
-		{leapmuxv1.AgentProvider_AGENT_PROVIDER_PI, "Pi"},
-		{leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX, "Reasonix"},
-		{leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED, "agent"},
-		{leapmuxv1.AgentProvider(9999), "agent"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.provider.String(), func(t *testing.T) {
-			assert.Equal(t, tc.want, DisplayName(tc.provider))
-		})
+// The label VALUES live in contracts/providers.json and arrive here through
+// the generated tables -- restating them in this file would rebuild the very
+// pin (literal on both sides, kept green by discipline) that the contract
+// replaced. What these tests pin is the BEHAVIOR of the functions over those
+// tables: fallbacks, round-trips, ordering, and completeness.
+
+// TestDisplayName_FallsBackToOneWordForUnknown keeps every surface that
+// interpolates a provider into prose ("Starting {provider}…") from exposing
+// a bare enum int when the enum arrives from a newer peer.
+func TestDisplayName_FallsBackToOneWordForUnknown(t *testing.T) {
+	assert.Equal(t, "agent", DisplayName(leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED))
+	assert.Equal(t, "agent", DisplayName(leapmuxv1.AgentProvider(9999)))
+}
+
+// TestDisplayName_EveryKnownProviderHasADistinctLabel guards the property
+// the picker depends on: two providers must never share a label, or the
+// dropdown renders one name for two entries.
+func TestDisplayName_EveryKnownProviderHasADistinctLabel(t *testing.T) {
+	seen := map[string]leapmuxv1.AgentProvider{}
+	for _, p := range AllProviders() {
+		label := DisplayName(p)
+		require.NotEmptyf(t, label, "DisplayName(%v)", p)
+		owner, dup := seen[label]
+		require.Falsef(t, dup, "DisplayName collision: %v and %v both render %q", owner, p, label)
+		seen[label] = p
 	}
 }
 
-// TestCLIAlias pins the hyphenated short form CLIAlias emits for each
-// provider. Adding a new AgentProvider proto value requires extending
-// CLIAlias too — otherwise `LEAPMUX_CONTROL_AGENT_PROVIDER` silently
-// drops the new provider on spawn and `leapmux control tab open` won't
-// inherit it. The parity test below verifies every CLIAlias value
-// round-trips through ParseProvider.
-func TestCLIAlias(t *testing.T) {
-	cases := []struct {
-		provider leapmuxv1.AgentProvider
-		want     string
-	}{
-		{leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, "claude-code"},
-		{leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, "codex"},
-		{leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, "opencode"},
-		{leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, "copilot"},
-		{leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, "cursor"},
-		{leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, "goose"},
-		{leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO, "kilo"},
-		{leapmuxv1.AgentProvider_AGENT_PROVIDER_PI, "pi"},
-		{leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX, "reasonix"},
-		{leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED, ""},
-		{leapmuxv1.AgentProvider(9999), ""},
-	}
-	for _, tc := range cases {
-		t.Run(tc.provider.String(), func(t *testing.T) {
-			assert.Equal(t, tc.want, CLIAlias(tc.provider))
-		})
-	}
+// TestCLIAlias_UnknownReturnsEmpty is the guard callers rely on when emitting
+// LEAPMUX_CONTROL_AGENT_PROVIDER: an empty alias means "omit the env var",
+// never "write the enum's String()".
+func TestCLIAlias_UnknownReturnsEmpty(t *testing.T) {
+	assert.Equal(t, "", CLIAlias(leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED))
+	assert.Equal(t, "", CLIAlias(leapmuxv1.AgentProvider(9999)))
 }
 
 // TestCLIAlias_RoundTripsThroughParseProvider confirms that for every
 // known provider the CLIAlias output is one of the inputs
 // ParseProvider accepts and maps back to the same enum. Without this,
 // the env-var injection could ship a string `leapmux control` doesn't
-// recognise.
+// recognise. (The generator also cross-checks alias uniqueness at
+// generation time; this is the runtime half.)
 func TestCLIAlias_RoundTripsThroughParseProvider(t *testing.T) {
 	for _, p := range AllProviders() {
 		alias := CLIAlias(p)
@@ -84,37 +63,18 @@ func TestCLIAlias_RoundTripsThroughParseProvider(t *testing.T) {
 	}
 }
 
-// TestParseProvider_KnownAliasesAllMap pins the canonical names plus
-// the lower-case aliases the CLI accepts as user-typed input. A new
-// provider added to AgentProvider proto must show up here too,
-// otherwise --provider <new> silently falls back to Claude Code (per
-// the CLI's helper default) and the user is misled.
-func TestParseProvider_KnownAliasesAllMap(t *testing.T) {
-	cases := map[string]leapmuxv1.AgentProvider{
-		"Claude Code": leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		"claude":      leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		"claude-code": leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		"Codex":       leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
-		"codex":       leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
-		"Cursor":      leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
-		"cursor":      leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
-		"Copilot":     leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT,
-		"copilot":     leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT,
-		"Kilo":        leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO,
-		"kilo":        leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO,
-		"OpenCode":    leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
-		"opencode":    leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
-		"Goose":       leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
-		"goose":       leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
-		"Pi":          leapmuxv1.AgentProvider_AGENT_PROVIDER_PI,
-		"pi":          leapmuxv1.AgentProvider_AGENT_PROVIDER_PI,
-		"Reasonix":    leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX,
-		"reasonix":    leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX,
-	}
-	for in, want := range cases {
-		got, ok := ParseProvider(in)
-		assert.True(t, ok, "ParseProvider(%q)", in)
-		assert.Equal(t, want, got, "ParseProvider(%q)", in)
+// TestParseProvider_DisplayNameAndAliasesMapBack pins the structural half of
+// the parse table: for every provider, its display name and every alias the
+// generated table carries for it must map back to that provider. A new
+// provider arrives through the contract, so this stays true by construction
+// -- and fails loudly if a future refactor breaks the reverse map.
+func TestParseProvider_DisplayNameAndAliasesMapBack(t *testing.T) {
+	for _, p := range AllProviders() {
+		for _, in := range AliasesFor(p) {
+			got, ok := ParseProvider(in)
+			require.Truef(t, ok, "ParseProvider(%q) for %v", in, p)
+			assert.Equalf(t, p, got, "ParseProvider(%q)", in)
+		}
 	}
 }
 
@@ -130,52 +90,45 @@ func TestParseProvider_UnknownReturnsFalse(t *testing.T) {
 	}
 }
 
-// TestAllProviders_IsComplete pins the AllProviders enumeration against
-// every alias entry. A new AgentProvider proto value must be added to
-// AllProviders alongside DisplayName / providerAliases; this test fails
-// loudly when the lists drift, so the CLI's --provider error messages
-// stay in sync with what the parser accepts.
-func TestAllProviders_IsComplete(t *testing.T) {
-	all := AllProviders()
-	seen := map[leapmuxv1.AgentProvider]bool{}
-	for _, p := range all {
-		seen[p] = true
+// TestAllProviders_MatchesTheGeneratedTable pins AllProviders against the
+// generated enumeration (proto order, UNSPECIFIED excluded). The generator
+// cross-checks the table against the proto enum at generation time; this is
+// the Go-side view of the same property.
+func TestAllProviders_MatchesTheGeneratedTable(t *testing.T) {
+	assert.Equal(t, contracts.AllProviders, AllProviders())
+	for _, p := range AllProviders() {
 		assert.NotEqual(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED, p, "AllProviders must not include UNSPECIFIED")
 	}
-	assert.Len(t, seen, len(all), "AllProviders must not contain duplicates")
-	for _, p := range providerAliases {
-		assert.Truef(t, seen[p], "AllProviders is missing %v (referenced by providerAliases)", p)
+	seen := map[leapmuxv1.AgentProvider]bool{}
+	for _, p := range AllProviders() {
+		seen[p] = true
+	}
+	assert.Len(t, seen, len(AllProviders()), "AllProviders must not contain duplicates")
+	for _, p := range contracts.ProviderParseAliases {
+		assert.Truef(t, seen[p], "AllProviders is missing %v (used by the generated parse table)", p)
 	}
 }
 
 // TestAliasesFor_CanonicalFirstThenSorted pins the contract used by CLI
 // callers that render `agent providers` rows: the canonical display
 // name always leads, remaining aliases follow in lexicographic order,
-// and no duplicate of the canonical name appears in the tail.
+// and the set is exactly the generated parse table's entries for that
+// provider.
 func TestAliasesFor_CanonicalFirstThenSorted(t *testing.T) {
-	cases := map[leapmuxv1.AgentProvider][]string{
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE:    {"Claude Code", "claude", "claude-code"},
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX:          {"Codex", "codex"},
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT: {"GitHub Copilot", "Copilot", "copilot"},
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR:         {"Cursor", "cursor"},
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE:       {"OpenCode", "opencode"},
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE:          {"Goose", "goose"},
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO:           {"Kilo", "kilo"},
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_PI:             {"Pi", "pi"},
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX:       {"Reasonix", "reasonix"},
-	}
-	for provider, want := range cases {
+	for _, provider := range AllProviders() {
 		got := AliasesFor(provider)
-		// Canonical comes first, regardless of lexicographic order.
 		require.NotEmpty(t, got, "AliasesFor(%v) returned empty", provider)
+		// Canonical comes first, regardless of lexicographic order.
 		assert.Equalf(t, DisplayName(provider), got[0], "canonical name must be first for %v", provider)
 		// Tail must be sorted.
 		tail := append([]string(nil), got[1:]...)
 		sortedTail := append([]string(nil), tail...)
 		sort.Strings(sortedTail)
 		assert.Equalf(t, sortedTail, tail, "tail must be lexicographically sorted for %v", provider)
-		// Every expected alias must be present exactly once.
-		assert.ElementsMatchf(t, want, got, "AliasesFor(%v) alias set", provider)
+		// No duplicate of the canonical name in the tail.
+		for _, alias := range tail {
+			assert.NotEqualf(t, got[0], alias, "canonical name must not repeat for %v", provider)
+		}
 	}
 }
 

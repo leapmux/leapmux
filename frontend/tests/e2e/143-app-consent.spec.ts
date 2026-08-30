@@ -9,8 +9,8 @@
  * browser that walks the whole round trip shows that.
  */
 
-import { AppClientType, AppVisibility } from '../../src/generated/leapmux/v1/app_pb'
-import { Scope } from '../../src/generated/leapmux/v1/scope_pb'
+import { AppClientType, AppVisibility } from '../../src/generated/proto/leapmux/v1/app_pb'
+import { Scope } from '../../src/generated/proto/leapmux/v1/scope_pb'
 import { expect, test } from './fixtures'
 import { elevateSessionViaAPI, loginViaAPI, signUpViaAPI, TEST_ADMIN_PASSWORD, TEST_ADMIN_USERNAME } from './helpers/api'
 import { loginViaToken } from './helpers/ui'

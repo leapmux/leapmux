@@ -1,6 +1,6 @@
-import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
-import { AgentProvider, ContentCompression, MessageSource } from '~/generated/leapmux/v1/agent_pb'
-import { NOTIFICATION_THREAD_TYPE } from '~/lib/messageParser'
+import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
+import { NOTIFICATION_THREAD_TYPE } from '~/generated/contracts/worker-vocab'
+import { AgentProvider, ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 
 /** Encode a JSON object as raw message content bytes (no wrapper). */
 export function rawContent(obj: unknown): Uint8Array {

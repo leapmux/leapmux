@@ -632,7 +632,7 @@ func (tc *Conn) Write(b []byte) (int, error) {
 	// just frames: net.Conn.Write accepts a buffer of any size, so a caller that
 	// hands over a large one (a bufio.Writer, bytes.Buffer.WriteTo, an
 	// http.Transport flushing a big body) must neither pin tunnelflow.WriteWindowFrames *
-	// channelwire.DefaultMaxReassembledMessageSize on the worker nor fail outright against the
+	// contracts.DefaultMaxReassembledMessageSize on the worker nor fail outright against the
 	// channel's inner-message limit. Each chunk takes its own sequence and window slot, so the worker still
 	// applies them in order and backpressure still reaches this caller.
 	written := 0

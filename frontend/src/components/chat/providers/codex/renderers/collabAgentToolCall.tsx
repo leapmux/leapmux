@@ -1,7 +1,7 @@
 import type { JSX } from 'solid-js'
 import Bot from 'lucide-solid/icons/bot'
 import { createMemo, Show } from 'solid-js'
-import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { cachedInnerHtml } from '~/lib/htmlFragmentCache'
 import { pickString } from '~/lib/jsonPick'
 import { getCachedSettingsLabel } from '~/lib/settingsLabelCache'

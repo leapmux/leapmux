@@ -110,9 +110,9 @@ async function deleteWorkspace(harness: MultiWorkerHarness, workspaceId: string)
  * the helper uses, just without the global cache.
  */
 async function openAgent(harness: MultiWorkerHarness, workerId: string, workspaceId: string): Promise<string> {
-  const { OpenAgentRequestSchema, OpenAgentResponseSchema } = await import('../../src/generated/leapmux/v1/agent_pb')
+  const { OpenAgentRequestSchema, OpenAgentResponseSchema } = await import('../../src/generated/proto/leapmux/v1/agent_pb')
   const { createTestChannelManager } = await import('./helpers/e2e-channel')
-  const { TabType } = await import('../../src/generated/leapmux/v1/workspace_pb')
+  const { TabType } = await import('../../src/generated/proto/leapmux/v1/workspace_pb')
   const { getUserEventsSubscription, seedTabIntoWorkspace } = await import('./helpers/crdt')
   const channel = await createTestChannelManager(harness.hubUrl, harness.adminToken)
 

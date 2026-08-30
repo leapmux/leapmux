@@ -1,6 +1,6 @@
-import type { AgentProvider, AgentStatus, AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
-import type { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
-import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import type { AgentProvider, AgentStatus, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 
 /**
  * Module note: tab types live here so the store, op emitters, helpers,
@@ -118,7 +118,7 @@ export interface TerminalTab extends BaseTab {
   contentReady?: boolean
   /** PTY-driven title from worker-side OSC parsing; tab strip falls back before generic label. */
   ptyTitle?: string
-  progressState?: import('~/generated/leapmux/v1/terminal_pb').TerminalProgress_State
+  progressState?: import('~/generated/proto/leapmux/v1/terminal_pb').TerminalProgress_State
   progressPercent?: number
 }
 

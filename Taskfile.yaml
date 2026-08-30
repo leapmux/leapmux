@@ -50,10 +50,17 @@ vars:
 tasks:
   generate:
     desc: Generate all code
+    # proto, contracts, and spinners read no each other's OUTPUT (contracts
+    # runs its own local `buf build` from proto/ and reads no proto output),
+    # so they run as parallel deps; sqlc needs generate-proto's output and
+    # declares that dep itself. generate-contracts also resolves ajv from
+    # frontend/node_modules and carries that install dep itself.
+    deps:
+      - generate-proto
+      - generate-contracts
+      - generate-spinners
     cmds:
-      - task: generate-proto
       - task: generate-sqlc
-      - task: generate-spinners
 
   sync-versions:
     desc: Rewrite documented tool versions from versions.env
@@ -77,10 +84,17 @@ tasks:
       - proto/**/*
       - buf.gen.yaml
       - buf.yaml
+      - scripts/sync-generated.mjs
     generates:
       - backend/generated/proto/**/*
       - frontend/src/generated/**/*
     cmds:
+      # The proto tree moved from frontend/src/generated/leapmux/ to
+      # frontend/src/generated/proto/; sync-generated prunes only inside its
+      # --out roots, so a checkout built before the move keeps a stale
+      # duplicate that tsconfig and eslint still scan. Delete it here until
+      # no such checkout remains.
+      - rm -rf frontend/src/generated/leapmux
       # Regenerate into a throwaway staging dir, then publish with
       # scripts/sync-generated.mjs so byte-identical files keep their mtime and a
       # running Vite dev server (which watches frontend/src/**) does not
@@ -89,8 +103,44 @@ tasks:
       - >-
         bun scripts/sync-generated.mjs
         --out backend/generated/proto backend/generated/proto
-        --out frontend/src/generated frontend/src/generated
+        --out frontend/src/generated/proto frontend/src/generated/proto
         -- buf generate -o {STAGING}
+
+  generate-contracts:
+    desc: Generate Go and TS constants from contracts/*.json
+    # contracts/ is the single source of truth for every value consumed on
+    # both sides of a language boundary (channelwire limits, HTTP headers,
+    # retry policies, enum-keyed catalogs). The generator validates each
+    # contract against its sibling JSON Schema and cross-checks enum-keyed
+    # domains against the buf descriptors BEFORE emitting, so drift fails
+    # generation instead of surviving to a pin test. Every registered domain
+    # must ship its contracts/<name>.json: a missing file fails generation
+    # loudly (the migration is complete; a skip would orphan outputs).
+    # The proto files are sources because the enum cross-checks read them;
+    # buf itself is invoked by the generator (local build only, no plugins).
+    # validate-json.mjs is a source because the generator imports it (the
+    # pre-emit schema validation); sync-generated.mjs because the cmd runs it.
+    sources:
+      - contracts/**/*
+      - scripts/generate-contracts.mjs
+      - scripts/validate-json.mjs
+      - scripts/sync-generated.mjs
+      - proto/leapmux/v1/agent.proto
+      - proto/leapmux/v1/scope.proto
+    generates:
+      - backend/generated/contracts/**/*
+      - frontend/src/generated/contracts/**/*
+      - desktop/rust/src/generated/**/*
+    deps: [install-frontend-deps] # the generator resolves ajv from frontend/node_modules
+    cmds:
+      # Same staging/publish pattern as generate-proto: mtime-preserving so a
+      # running Vite dev server does not hard-refresh on identical output.
+      - >-
+        bun scripts/sync-generated.mjs
+        --out backend/generated/contracts backend/generated/contracts
+        --out frontend/src/generated/contracts frontend/src/generated/contracts
+        --out desktop/rust/src/generated desktop/rust/src/generated
+        -- bun scripts/generate-contracts.mjs --staging {STAGING}
 
   generate-conformance-corpus:
     desc: Regenerate the differential CRDT conformance corpus (deliberate; not part of test runs)
@@ -186,12 +236,30 @@ tasks:
       - task: prepare-backend
       - task: prepare-desktop
 
+  # Install-only slice of prepare-frontend: scripts that resolve tooling from
+  # frontend/node_modules (validate-json's ajv, lint-scripts' eslint) dep on
+  # THIS, not the whole prepare chain -- a contract edit must not re-run icon
+  # rendering before a 0.1s validation.
+  install-frontend-deps:
+    desc: Install frontend node modules
+    sources:
+      - frontend/package.json
+      - frontend/bun.lock
+    generates:
+      - frontend/node_modules/**/*
+    cmds:
+      - cd frontend && bun install
+
   prepare-frontend:
     desc: Prepare frontend for builds
     sources:
       - proto/**/*
       - buf.gen.yaml
       - buf.yaml
+      - contracts/**/*
+      - scripts/generate-contracts.mjs
+      - scripts/validate-json.mjs
+      - scripts/sync-generated.mjs
       - NOTICE.html
       - icons/leapmux-icon.svg
       - icons/leapmux-icon-square.svg
@@ -213,6 +281,7 @@ tasks:
       - frontend/public/icons/leapmux-icon-square-apple-touch.png
     cmds:
       - task: generate-proto
+      - task: generate-contracts
       - task: generate-spinners
       - cd frontend && bun install
       - NODE_PATH=frontend/node_modules bun frontend/scripts/generate-icons.mjs icons/leapmux-icon.svg icons/leapmux-icon-square.svg frontend/public
@@ -224,6 +293,10 @@ tasks:
       - proto/**/*
       - buf.gen.yaml
       - buf.yaml
+      - contracts/**/*
+      - scripts/generate-contracts.mjs
+      - scripts/validate-json.mjs
+      - scripts/sync-generated.mjs
       - backend/internal/hub/frontend.embed
       - frontend/.output/public/**/*
       - backend/generated/proto/**/*
@@ -234,6 +307,7 @@ tasks:
       - backend/internal/hub/generated/frontend/public/**/*
     cmds:
       - task: generate-proto
+      - task: generate-contracts
       - task: generate-sqlc
       - task: build-frontend
       - rm -rf backend/internal/hub/generated/frontend/public
@@ -250,6 +324,10 @@ tasks:
       - proto/**/*
       - buf.gen.yaml
       - buf.yaml
+      - contracts/**/*
+      - scripts/generate-contracts.mjs
+      - scripts/validate-json.mjs
+      - scripts/sync-generated.mjs
       - icons/leapmux-icon-square.svg
       - icons/leapmux-icon.svg
       - desktop/rust/scripts/**/*
@@ -264,6 +342,9 @@ tasks:
       - desktop/rust/icons/icon.ico
     cmds:
       - task: generate-proto
+      # The Rust shell include!'s the generated contracts module at compile
+      # time, so the desktop build needs it on disk before cargo runs.
+      - task: generate-contracts
       - task: build-frontend
       - task: prepare-backend
       # macOS renders the square source, because the system applies its own mask
@@ -718,6 +799,9 @@ tasks:
   test:
     desc: Run all tests
     cmds:
+      # validate-json first: CI has no standalone lint job, so this is what
+      # puts schema validation on every test runner (all three OSes).
+      - task: validate-json
       - task: test-scripts
       - task: test-frontend
       - task: test-backend
@@ -785,6 +869,8 @@ tasks:
     cmds:
       # Docker is the only thing this target drops. test-scripts needs none,
       # and leaving it out meant three of the four CI test jobs never ran it.
+      # validate-json first, for the same reason as `test` above.
+      - task: validate-json
       - task: test-scripts
       - task: test-frontend
       - task: test-backend-no-docker
@@ -810,10 +896,30 @@ tasks:
     cmds:
       - task: lint-versions
       - task: lint-scripts
+      - task: validate-json
       - task: lint-proto
       - task: lint-frontend
       - task: lint-backend
       - task: lint-desktop
+
+  validate-json:
+    desc: Validate every project-written JSON file against its schema
+    # The no-schemaless-JSON rule: any JSON an include pattern in
+    # scripts/validate-json.mjs matches must resolve to a schema (a sibling
+    # <name>.schema.json, or a shared one named on the rule) and conform to
+    # it. Covers contracts/, testdata/ fixtures, the vendored syntax themes,
+    # and the license-override metadata; tool-owned JSON (package.json,
+    # tsconfig, tauri configs, lockfiles) stays out on purpose.
+    deps: [install-frontend-deps] # ajv lives in frontend/node_modules
+    sources:
+      - contracts/**/*
+      - testdata/**/*
+      - backend/**/testdata/**/*
+      - frontend/src/lib/syntaxThemes/**/*
+      - scripts/license-overrides/**/*
+      - scripts/validate-json.mjs
+    cmds:
+      - bun scripts/validate-json.mjs
 
   lint-scripts:
     desc: Lint the repository build scripts
@@ -822,7 +928,7 @@ tasks:
     # of base path". eslint.config.mjs at the root fixes that, resolving the
     # shared @antfu config out of frontend/node_modules rather than duplicating
     # the toolchain in a root package.json the repo does not otherwise need.
-    deps: [prepare-frontend]
+    deps: [install-frontend-deps]
     sources:
       - scripts/*.mjs
       - desktop/rust/scripts/*.mjs
@@ -1164,4 +1270,5 @@ tasks:
       - rm -rf desktop/go/bin/
       - rm -rf desktop/rust/gen/
       - rm -rf desktop/rust/icons/
+      - rm -rf desktop/rust/src/generated/
       - rm -rf desktop/rust/target/

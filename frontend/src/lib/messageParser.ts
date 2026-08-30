@@ -1,14 +1,16 @@
-import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ContextUsageInfo } from '~/stores/agentSession.store'
+import { NOTIFICATION_THREAD_TYPE, NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
 import { decompressContentToString } from '~/lib/decompress'
 import { isObject, pickFirstNumber, pickFirstObject, pickNumber, pickString } from '~/lib/jsonPick'
 
 /**
  * Content-type discriminator emitted by the backend's `wrapNotifContent`
- * for every notification-thread row. Match this constant in lockstep with
- * `notifThreadWrapperType` in `backend/internal/worker/service/output.go`.
+ * for every notification-thread row. Both this constant and the
+ * notification-type tokens compared below come from
+ * contracts/worker-vocab.json (~/generated/contracts/worker-vocab); the
+ * worker stamps the same tokens via its generated Go constants.
  */
-export const NOTIFICATION_THREAD_TYPE = 'notification_thread'
 
 /**
  * The result of parsing a compressed AgentChatMessage. Every field is
@@ -491,7 +493,7 @@ export function extractSettingsChanges(parsed: ParsedMessageContent): {
   [key: string]: { old: string, new: string } | undefined
 } | null {
   const inner = getInnerMessage(parsed)
-  if (!inner || inner.type !== 'settings_changed')
+  if (!inner || inner.type !== NOTIFICATION_TYPE.SettingsChanged)
     return null
   const changes = inner.changes as Record<string, unknown> | undefined
   if (!changes || typeof changes !== 'object')
@@ -522,7 +524,7 @@ export function extractPlanUpdated(parsed: ParsedMessageContent): PlanUpdatedInf
     const msg = messages[i]
     if (typeof msg === 'object' && msg !== null) {
       const m = msg as Record<string, unknown>
-      if (m.type === 'plan_updated') {
+      if (m.type === NOTIFICATION_TYPE.PlanUpdated) {
         return {
           planTitle: typeof m.plan_title === 'string' ? m.plan_title : '',
           planFilePath: typeof m.plan_file_path === 'string' ? m.plan_file_path : '',
@@ -540,7 +542,7 @@ export function extractPlanFilePath(parsed: ParsedMessageContent): string | unde
   for (const msg of messagesOf(parsed)) {
     if (typeof msg === 'object' && msg !== null) {
       const m = msg as Record<string, unknown>
-      if (m.type === 'plan_execution' && typeof m.plan_file_path === 'string' && m.plan_file_path !== '') {
+      if (m.type === NOTIFICATION_TYPE.PlanExecution && typeof m.plan_file_path === 'string' && m.plan_file_path !== '') {
         return m.plan_file_path as string
       }
     }

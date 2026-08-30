@@ -1,5 +1,5 @@
 import type { Component } from 'solid-js'
-import type { BranchGitState } from '~/generated/leapmux/v1/git_pb'
+import type { BranchGitState } from '~/generated/proto/leapmux/v1/git_pb'
 import { Show } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { Spinner } from '~/components/common/Spinner'

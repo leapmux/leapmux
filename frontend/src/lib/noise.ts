@@ -14,17 +14,18 @@ import { chacha20poly1305 } from '@noble/ciphers/chacha.js'
 import { x25519 } from '@noble/curves/ed25519.js'
 import { blake2b } from '@noble/hashes/blake2.js'
 import { hmac } from '@noble/hashes/hmac.js'
+import { HARD_NONCE_LIMIT, MAX_CHUNK_SIZE, SOFT_NONCE_LIMIT } from '~/generated/contracts/wire'
 import { concatBytes } from './bytes'
+
 import { monotonicNow } from './monotonicNow'
 
 const PROTOCOL_NAME = 'Noise_NK_25519_ChaChaPoly_BLAKE2b'
-
-/** Soft nonce limit — triggers re-handshake. */
-const SOFT_NONCE_LIMIT = 2 ** 31 - 1
-/** Hard nonce limit — refuses to operate. */
-const HARD_NONCE_LIMIT = 2 ** 32 - 1
-/** Noise spec transport message size limit minus auth tag. */
-const MAX_PLAINTEXT_SIZE = 65535 - 16
+/**
+ * Noise spec transport message size limit minus auth tag -- the same
+ * derivation contracts/wire.json single-sources as MAX_CHUNK_SIZE, so
+ * retuning the ciphertext cap or the AEAD tag size moves this limit with it.
+ */
+const MAX_PLAINTEXT_SIZE = MAX_CHUNK_SIZE
 /** X25519 ephemeral public key size (bytes), as carried by rekey dh_pub. */
 export const DH_LEN = 32
 

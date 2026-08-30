@@ -2,7 +2,8 @@ import type { Interceptor } from '@connectrpc/connect'
 import { Code, ConnectError, createClient } from '@connectrpc/connect'
 import { createConnectTransport } from '@connectrpc/connect-web'
 import { desktopFetch, getCapabilities, isTauriApp } from '~/api/platformBridge'
-import { UserService } from '~/generated/leapmux/v1/user_pb'
+import * as wireHeaders from '~/generated/contracts/headers'
+import { UserService } from '~/generated/proto/leapmux/v1/user_pb'
 import { isElevationRequired, promptForElevation } from '~/lib/elevationPrompt'
 
 // Callbacks for auth state changes (set by AuthContext)
@@ -15,13 +16,15 @@ export function setOnAuthError(callback: () => void): void {
 /**
  * The hub's marker for an Unauthenticated whose subject is a credential the
  * REQUEST carried -- a step-up password, a step-up passkey assertion -- and
- * not the session that made it. Mirrors service.CredentialRejectedHeader.
+ * not the session that made it. Both sides take the name from
+ * contracts/headers.json; lowercased because that is the form fetch/Connect
+ * expose header names in.
  *
  * Without it, mistyping the password in a verification prompt would end the
  * very session the prompt exists to protect: the blanket rule below reads
  * every Unauthenticated as "your session is gone".
  */
-const CREDENTIAL_REJECTED_HEADER = 'leapmux-credential-rejected'
+const CREDENTIAL_REJECTED_HEADER = wireHeaders.CREDENTIAL_REJECTED_HEADER.toLowerCase()
 
 /**
  * Whether a failure means THIS SESSION is gone, and the user must be signed
@@ -99,7 +102,10 @@ export const elevationInterceptor: Interceptor = next => async (req) => {
 
 /**
  * The hub's report of the elevation deadline it holds NOW, on the response to
- * the request that SLID the window. Mirrors service.ElevationExpiresAtHeader.
+ * the request that SLID the window. Both sides take the name from
+ * contracts/headers.json (generated as service.ElevationExpiresAtHeader on
+ * the Go side); lowercased here because that is the form fetch/Connect
+ * expose header names in.
  *
  * It does not repeat what a GRANT says: both step-up ceremonies report their
  * deadline in the response body, and `~/lib/elevation` reads it there. A slide
@@ -108,7 +114,7 @@ export const elevationInterceptor: Interceptor = next => async (req) => {
  *
  * The value is RFC 3339 in UTC, which `Date` parses on its own.
  */
-const ELEVATION_EXPIRES_AT_HEADER = 'leapmux-elevation-expires-at'
+const ELEVATION_EXPIRES_AT_HEADER = wireHeaders.ELEVATION_EXPIRES_AT_HEADER.toLowerCase()
 
 /**
  * Completes one adoption of a hub-reported deadline. `AuthContext` supplies it.

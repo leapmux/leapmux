@@ -8,7 +8,7 @@
 
 import type { ChannelSocket, ChannelTransport, WorkerKeyBundle } from '../../../src/lib/channel'
 import { Buffer } from 'node:buffer'
-import { EncryptionMode } from '../../../src/generated/leapmux/v1/channel_pb'
+import { EncryptionMode } from '../../../src/generated/proto/leapmux/v1/channel_pb'
 import { setStorageAccount } from '../../../src/lib/browserStorage'
 import { ChannelManager, KeyPinStore } from '../../../src/lib/channel'
 import { authedHeaders, getUserId } from './api'

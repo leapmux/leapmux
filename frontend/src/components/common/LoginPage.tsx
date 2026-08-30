@@ -1,7 +1,7 @@
 import type { Timestamp } from '@bufbuild/protobuf/wkt'
 import type { Component } from 'solid-js'
 
-import type { OAuthProviderInfo } from '~/generated/leapmux/v1/auth_pb'
+import type { OAuthProviderInfo } from '~/generated/proto/leapmux/v1/auth_pb'
 import { A, useNavigate, useSearchParams } from '@solidjs/router'
 import { createEffect, createSignal, Show } from 'solid-js'
 import { actionsFooter } from '~/components/common/actionsFooter.css'

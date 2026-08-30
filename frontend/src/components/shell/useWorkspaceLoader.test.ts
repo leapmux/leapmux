@@ -1,9 +1,9 @@
 /// <reference types="vitest/globals" />
-import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
+import type { Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { create } from '@bufbuild/protobuf'
 import { createRoot } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { WorkspaceSchema } from '~/generated/leapmux/v1/workspace_pb'
+import { WorkspaceSchema } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { ChannelError } from '~/lib/channelError'
 import { createSectionStore } from '~/stores/section.store'
 import { createWorkspaceStore } from '~/stores/workspace.store'

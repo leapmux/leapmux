@@ -1,9 +1,9 @@
 /// <reference types="vitest/globals" />
-import type { GitBranchEntry } from '~/generated/leapmux/v1/git_pb'
+import type { GitBranchEntry } from '~/generated/proto/leapmux/v1/git_pb'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as workerRpc from '~/api/workerRpc'
-import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { menuOptions, menuTriggerText, pickMenuValue } from '~/test-support/menu'
 import { ChangeBranchDialog } from './ChangeBranchDialog'
 

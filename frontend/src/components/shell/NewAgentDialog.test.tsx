@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as workerRpc from '~/api/workerRpc'
 import { NewAgentDialog } from '~/components/shell/NewAgentDialog'
-import { WorkerSchema } from '~/generated/leapmux/v1/worker_pb'
+import { WorkerSchema } from '~/generated/proto/leapmux/v1/worker_pb'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 /// <reference types="vitest/globals" />
 import { withPreferences } from '~/test-support/preferencesProvider'

@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest'
+import { MAX_CHUNK_SIZE, MAX_CONFIGURABLE_MESSAGE_SIZE } from '~/generated/contracts/wire'
 import { ChannelError } from './channelError'
 import { ChannelOpen } from './channelOpen'
 import { ChannelPool } from './channelPool'
 import { ChannelRelay } from './channelRelay'
 import { ChannelSession } from './channelSession'
 import { KeyPinStore } from './keyPinStore'
-import { MAX_CHUNK_SIZE, MAX_CONFIGURABLE_MESSAGE_SIZE, maxReassembledMessageSize } from './reassembler'
+import { maxReassembledMessageSize } from './reassembler'
 
 function makeOpen(opts?: {
   testPayloadBudget?: number

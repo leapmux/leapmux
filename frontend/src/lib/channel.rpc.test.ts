@@ -5,7 +5,7 @@ import {
   InnerMessageSchema,
   InnerRpcRequestSchema,
   InnerRpcResponseSchema,
-} from '~/generated/leapmux/v1/channel_pb'
+} from '~/generated/proto/leapmux/v1/channel_pb'
 import { ChannelManager } from './channel'
 import {
   channelInternals,

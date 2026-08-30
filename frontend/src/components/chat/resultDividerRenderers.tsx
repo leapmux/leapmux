@@ -1,6 +1,6 @@
 import type { JSXElement } from 'solid-js'
 import type { ResultDividerModel } from './providers/registry'
-import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { resultDivider, resultErrorDetail } from './messageStyles.css'
 import { pluginFor } from './providers/registry'
 

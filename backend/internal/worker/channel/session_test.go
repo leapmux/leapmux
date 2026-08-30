@@ -22,6 +22,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/authscope"
 )
 
@@ -113,13 +114,13 @@ func performHandshake(t *testing.T, mgr *Manager, ck *noiseutil.CompositeKeypair
 		ChannelId:        channelID,
 		UserId:           userID,
 		HandshakePayload: msg1,
-		MaxMessageSize:   uint64(channelwire.MaxMessageSize),
+		MaxMessageSize:   uint64(contracts.MaxMessageSize),
 		GrantedScopes:    testChannelGrant,
 	})
 	require.Empty(t, resp.GetError(), "handshake should succeed")
 	require.NotEmpty(t, resp.GetHandshakePayload())
 	assert.Equal(t, channelID, resp.GetChannelId())
-	assert.Equal(t, uint64(channelwire.MaxMessageSize), resp.GetMaxMessageSize(),
+	assert.Equal(t, uint64(contracts.MaxMessageSize), resp.GetMaxMessageSize(),
 		"worker must echo the effective max_message_size")
 
 	// Initiator completes handshake.
@@ -187,7 +188,7 @@ func performClassicalHandshake(t *testing.T, mgr *Manager, ck *noiseutil.Composi
 		ChannelId:        channelID,
 		UserId:           userID,
 		HandshakePayload: msg1,
-		MaxMessageSize:   uint64(channelwire.MaxMessageSize),
+		MaxMessageSize:   uint64(contracts.MaxMessageSize),
 		GrantedScopes:    testChannelGrant,
 	})
 	require.Empty(t, resp.GetError(), "classical handshake should succeed")
@@ -325,7 +326,7 @@ func TestHandleOpen_ReassembledOverrideClampsMaxPayloadBudget(t *testing.T) {
 		ChannelId:        "ch-tiny",
 		UserId:           "user-1",
 		HandshakePayload: msg1,
-		MaxMessageSize:   uint64(channelwire.MaxMessageSize),
+		MaxMessageSize:   uint64(contracts.MaxMessageSize),
 		GrantedScopes:    testChannelGrant,
 	})
 	require.Empty(t, resp.GetError())
@@ -354,7 +355,7 @@ func TestCloseAll_UsesReleasedAllCallback(t *testing.T) {
 			ChannelId:        id,
 			UserId:           "user-1",
 			HandshakePayload: msg1,
-			MaxMessageSize:   uint64(channelwire.MaxMessageSize),
+			MaxMessageSize:   uint64(contracts.MaxMessageSize),
 			GrantedScopes:    testChannelGrant,
 		})
 		require.Empty(t, resp.GetError())
@@ -381,7 +382,7 @@ func TestCloseAll_FallsBackToPerIDRelease(t *testing.T) {
 			ChannelId:        id,
 			UserId:           "user-1",
 			HandshakePayload: msg1,
-			MaxMessageSize:   uint64(channelwire.MaxMessageSize),
+			MaxMessageSize:   uint64(contracts.MaxMessageSize),
 			GrantedScopes:    testChannelGrant,
 		})
 		require.Empty(t, resp.GetError())
@@ -423,7 +424,7 @@ func TestHandleOpen_RejectsOutOfBoundsHubMax(t *testing.T) {
 			ChannelId:        "ch-bad-max-high",
 			UserId:           "user-1",
 			HandshakePayload: msg1,
-			MaxMessageSize:   uint64(channelwire.MaxConfigurableMessageSize + 1),
+			MaxMessageSize:   uint64(contracts.MaxConfigurableMessageSize + 1),
 			GrantedScopes:    testChannelGrant,
 		})
 		assert.NotEmpty(t, resp.GetError())
@@ -528,7 +529,7 @@ func TestHandleOpen_DuplicateChannelIdRejected(t *testing.T) {
 		ChannelId:        "ch-reuse",
 		UserId:           "user-1",
 		HandshakePayload: msg1,
-		MaxMessageSize:   uint64(channelwire.MaxMessageSize),
+		MaxMessageSize:   uint64(contracts.MaxMessageSize),
 		GrantedScopes:    testChannelGrant,
 	})
 	assert.NotEmpty(t, resp.GetError(), "re-open must return an error response")
@@ -589,7 +590,7 @@ func TestHandleOpen_BadHandshake(t *testing.T) {
 		ChannelId:        "ch-bad",
 		UserId:           "user-1",
 		HandshakePayload: []byte("not a valid handshake message"),
-		MaxMessageSize:   uint64(channelwire.MaxMessageSize),
+		MaxMessageSize:   uint64(contracts.MaxMessageSize),
 		GrantedScopes:    testChannelGrant,
 	})
 	assert.NotEmpty(t, resp.GetError())
@@ -1154,7 +1155,7 @@ func TestSendEncrypted_MultiChunk(t *testing.T) {
 	mgr, kp, sender := setupTestManager(t)
 
 	// Create a handler that sends a large payload.
-	largePayload := make([]byte, channelwire.MaxPlaintextPerChunk+100)
+	largePayload := make([]byte, contracts.MaxPlaintextPerChunk+100)
 	for i := range largePayload {
 		largePayload[i] = byte(i % 256)
 	}
@@ -1240,7 +1241,7 @@ func TestSendEncrypted_ExactBoundary(t *testing.T) {
 	}
 
 	// Payload that fits in exactly 1 chunk.
-	exactPayloadSize := findPayloadSize(channelwire.MaxPlaintextPerChunk)
+	exactPayloadSize := findPayloadSize(contracts.MaxPlaintextPerChunk)
 	require.Greater(t, exactPayloadSize, 0)
 
 	dispatcher.Register("exact", func(_ context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
@@ -1297,7 +1298,7 @@ func TestReassembly_E2E(t *testing.T) {
 	session := performHandshake(t, mgr, kp, "ch-reasm", "user-1")
 
 	// Build a large InnerMessage, then chunk it manually on the initiator side.
-	largePayload := make([]byte, channelwire.MaxPlaintextPerChunk*2+100)
+	largePayload := make([]byte, contracts.MaxPlaintextPerChunk*2+100)
 	for i := range largePayload {
 		largePayload[i] = byte(i % 256)
 	}
@@ -1318,7 +1319,7 @@ func TestReassembly_E2E(t *testing.T) {
 
 	// Send chunks manually.
 	for offset := 0; offset < len(data); {
-		end := offset + channelwire.MaxPlaintextPerChunk
+		end := offset + contracts.MaxPlaintextPerChunk
 		if end > len(data) {
 			end = len(data)
 		}
@@ -1986,7 +1987,7 @@ func TestSendEncrypted_WithinCapDoesNotReportRejection(t *testing.T) {
 		channelID:      "test-ch",
 		session:        workerSession,
 		sendFn:         collector.send,
-		maxReassembled: channelwire.DefaultMaxReassembledMessageSize,
+		maxReassembled: contracts.DefaultMaxReassembledMessageSize,
 	}
 
 	err := cs.sendStream(1, &leapmuxv1.InnerStreamMessage{Payload: []byte("ok")})
@@ -2016,12 +2017,12 @@ func TestSendEncrypted_MaxSizedPayloadIsNotRejected(t *testing.T) {
 		channelID:      "test-ch",
 		session:        workerSession,
 		sendFn:         collector.send,
-		maxReassembled: channelwire.DefaultMaxReassembledMessageSize,
+		maxReassembled: contracts.DefaultMaxReassembledMessageSize,
 	}
 
 	// Exactly the ceiling a producer is allowed to emit.
 	err := cs.sendStream(1, &leapmuxv1.InnerStreamMessage{
-		Payload: make([]byte, channelwire.MaxMessageSize),
+		Payload: make([]byte, contracts.MaxMessageSize),
 	})
 
 	require.NoError(t, err,
@@ -2063,12 +2064,12 @@ func TestChannelSenderSmallResponseOvertakesMultiChunk(t *testing.T) {
 		channelID:      "ch-overtake",
 		session:        workerSession,
 		sendFn:         sendFn,
-		maxReassembled: channelwire.DefaultMaxReassembledMessageSize,
+		maxReassembled: contracts.DefaultMaxReassembledMessageSize,
 		lifetime:       life,
 		errorSends:     make(chan errorSend, errorSendQueueSize),
 	}
 
-	big := make([]byte, channelwire.MaxPlaintextPerChunk+100)
+	big := make([]byte, contracts.MaxPlaintextPerChunk+100)
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
@@ -2165,12 +2166,12 @@ func TestChannelSenderConcurrentMultiChunkNeverOverlapMORERuns(t *testing.T) {
 		channelID:      "ch-more",
 		session:        workerSession,
 		sendFn:         sendFn,
-		maxReassembled: channelwire.DefaultMaxReassembledMessageSize,
+		maxReassembled: contracts.DefaultMaxReassembledMessageSize,
 		lifetime:       life,
 		errorSends:     make(chan errorSend, errorSendQueueSize),
 	}
 
-	big := make([]byte, 2*channelwire.MaxPlaintextPerChunk+1)
+	big := make([]byte, 2*contracts.MaxPlaintextPerChunk+1)
 	var wg sync.WaitGroup
 	for id := uint64(1); id <= 2; id++ {
 		wg.Add(1)
@@ -2205,7 +2206,7 @@ func TestChannelSenderLifetimeUnwedgesParkedSender(t *testing.T) {
 		channelID:      "ch-life",
 		session:        workerSession,
 		sendFn:         sendFn,
-		maxReassembled: channelwire.DefaultMaxReassembledMessageSize,
+		maxReassembled: contracts.DefaultMaxReassembledMessageSize,
 		lifetime:       life,
 		errorSends:     make(chan errorSend, errorSendQueueSize),
 	}
@@ -2380,14 +2381,14 @@ func TestHandleMessage_RekeyAcceptAndReject(t *testing.T) {
 	msgs := sender.waitForMessages(msgsBefore + 1)
 	kind, retryMs, _ := decryptOutcome(msgs[len(msgs)-1])
 	assert.Equal(t, "reject", kind)
-	assert.InDelta(t, channelwire.MinRekeyInterval.Milliseconds(), retryMs,
+	assert.InDelta(t, contracts.MinRekeyInterval.Milliseconds(), retryMs,
 		float64(2*time.Second.Milliseconds()),
 		"fresh handshake Reject should advertise ~MinRekeyInterval")
 	// Receive advanced by the Request decrypt only; Rekey did not reset it.
 	assert.Equal(t, recvBeforeReject+1, sess.Session.Receive.Nonce())
 
 	// Age past MinRekeyInterval → Ack and both sides can continue.
-	sess.lastRekeyAt = time.Now().Add(-channelwire.MinRekeyInterval - time.Second)
+	sess.lastRekeyAt = time.Now().Add(-contracts.MinRekeyInterval - time.Second)
 	msgsBefore = len(sender.messages())
 	ri := sendRekey(101)
 	msgs = sender.waitForMessages(msgsBefore + 1)
@@ -2438,7 +2439,7 @@ func TestHandleMessage_RekeyBadEphemeralCancels(t *testing.T) {
 	sess := mgr.sessions[channelID]
 	mgr.mu.RUnlock()
 	require.NotNil(t, sess)
-	sess.lastRekeyAt = time.Now().Add(-channelwire.MinRekeyInterval - time.Second)
+	sess.lastRekeyAt = time.Now().Add(-contracts.MinRekeyInterval - time.Second)
 
 	// Build a RekeyRequest with a too-short dh_pub the way a non-compliant
 	// initiator would.
@@ -2481,7 +2482,7 @@ func TestHandleMessage_RekeyBadMlkemCtCancels(t *testing.T) {
 	sess := mgr.sessions[channelID]
 	mgr.mu.RUnlock()
 	require.NotNil(t, sess)
-	sess.lastRekeyAt = time.Now().Add(-channelwire.MinRekeyInterval - time.Second)
+	sess.lastRekeyAt = time.Now().Add(-contracts.MinRekeyInterval - time.Second)
 
 	// A valid-sized ephemeral so the dh_pub check passes, but a garbage mlkem_ct.
 	eph, err := noiseutil.GenerateEphemeralX25519()
@@ -2528,7 +2529,7 @@ func TestHandleMessage_RekeyClassicChannel(t *testing.T) {
 	sess := mgr.sessions[channelID]
 	mgr.mu.RUnlock()
 	require.NotNil(t, sess)
-	sess.lastRekeyAt = time.Now().Add(-channelwire.MinRekeyInterval - time.Second)
+	sess.lastRekeyAt = time.Now().Add(-contracts.MinRekeyInterval - time.Second)
 
 	envelope, ri := initiatorStartClassicalRekey(t)
 	pt, err := proto.Marshal(envelope)
@@ -2673,7 +2674,7 @@ func TestHandleMessage_RekeySendHoldsFrameAcrossAck(t *testing.T) {
 	mgr.mu.RUnlock()
 	require.NotNil(t, sess)
 
-	sess.lastRekeyAt = time.Now().Add(-channelwire.MinRekeyInterval - time.Second)
+	sess.lastRekeyAt = time.Now().Add(-contracts.MinRekeyInterval - time.Second)
 	sendNonceBefore := sess.Session.Send.Nonce()
 
 	// Occupy the frame permit so peek / Ack Encrypt parks inside handleRekeyRequest.
@@ -2777,7 +2778,7 @@ func TestHandleMessage_RekeyUnderLoad(t *testing.T) {
 
 	echo(1, "before")
 
-	sess.lastRekeyAt = time.Now().Add(-channelwire.MinRekeyInterval - time.Second)
+	sess.lastRekeyAt = time.Now().Add(-contracts.MinRekeyInterval - time.Second)
 	envelope, ri := initiatorStartRekey(t, kp.MlkemPublicKeyBytes())
 	pt, err := proto.Marshal(envelope)
 	require.NoError(t, err)
@@ -3007,7 +3008,7 @@ func TestHandleMessage_ChunkedStreamRequestReassembles(t *testing.T) {
 	})
 	<-ready
 
-	payload := bytes.Repeat([]byte("x"), channelwire.MaxPlaintextPerChunk+50)
+	payload := bytes.Repeat([]byte("x"), contracts.MaxPlaintextPerChunk+50)
 	envelope, err := proto.Marshal(&leapmuxv1.InnerMessage{
 		Kind: &leapmuxv1.InnerMessage_StreamRequest{
 			StreamRequest: &leapmuxv1.InnerStreamRequest{Payload: payload},
@@ -3016,7 +3017,7 @@ func TestHandleMessage_ChunkedStreamRequestReassembles(t *testing.T) {
 	require.NoError(t, err)
 
 	for offset := 0; offset < len(envelope); {
-		end := offset + channelwire.MaxPlaintextPerChunk
+		end := offset + contracts.MaxPlaintextPerChunk
 		if end > len(envelope) {
 			end = len(envelope)
 		}

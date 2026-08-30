@@ -1,16 +1,11 @@
 import type { SessionChannel } from './channelSession'
 import type { Session } from './noise'
 import { describe, expect, it, vi } from 'vitest'
-import { EncryptionMode } from '~/generated/leapmux/v1/channel_pb'
+import { MAX_CHUNK_SIZE, SESSION_KEY_HARD_CEILING_MS, SESSION_KEY_MAX_AGE_MS } from '~/generated/contracts/wire'
+import { EncryptionMode } from '~/generated/proto/leapmux/v1/channel_pb'
 import { ChannelError } from './channelError'
-import {
-  ChannelSession,
-  SESSION_KEY_HARD_CEILING_MS,
-  SESSION_KEY_MAX_AGE_MS,
-
-} from './channelSession'
+import { ChannelSession } from './channelSession'
 import { generateRekeyEphemeral } from './noise-hybrid'
-import { MAX_CHUNK_SIZE } from './reassembler'
 
 function mockCipher(sendNeeds = false, recvNeeds = false) {
   const encrypt = vi.fn((pt: Uint8Array) => new Uint8Array(pt))

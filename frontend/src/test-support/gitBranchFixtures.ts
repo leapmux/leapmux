@@ -1,4 +1,4 @@
-import type { GitBranchEntry, InspectBranchDeletionResponse, InspectWorktreeRemovalResponse } from '~/generated/leapmux/v1/git_pb'
+import type { GitBranchEntry, InspectBranchDeletionResponse, InspectWorktreeRemovalResponse } from '~/generated/proto/leapmux/v1/git_pb'
 
 /**
  * Fixtures for the git inspect responses the branch dialogs drive.

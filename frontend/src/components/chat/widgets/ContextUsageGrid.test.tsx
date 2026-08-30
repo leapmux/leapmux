@@ -1,7 +1,7 @@
 import type { ContextUsageInfo } from '~/stores/agentSession.store'
 import { cleanup, render } from '@solidjs/testing-library'
 import { afterEach, describe, expect, it } from 'vitest'
-import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { computePercentage, contextBufferPct, contextSize, ContextUsageGrid, DEFAULT_CONTEXT_WINDOW, resolveContextWindow } from './ContextUsageGrid'
 
 // Side-effect import: register the Claude plugin so contextBufferPct can resolve

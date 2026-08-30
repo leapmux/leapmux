@@ -1,5 +1,5 @@
 import type { UserEventsHook } from './useUserEvents'
-import type { WatchUserEvent } from '~/generated/leapmux/v1/user_ops_pb'
+import type { WatchUserEvent } from '~/generated/proto/leapmux/v1/user_ops_pb'
 import { create, toBinary } from '@bufbuild/protobuf'
 import { createRoot, createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -8,7 +8,7 @@ import {
   LWWStringSchema,
   TabRecordSchema,
   UserMaterializedSchema,
-} from '~/generated/leapmux/v1/user_crdt_pb'
+} from '~/generated/proto/leapmux/v1/user_crdt_pb'
 import {
   CrdtOpSchema,
   EntityMaterializedSchema,
@@ -19,8 +19,8 @@ import {
   TabIdentSchema,
   WatchUserEventSchema,
   WorkspaceCreatedSchema,
-} from '~/generated/leapmux/v1/user_ops_pb'
-import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+} from '~/generated/proto/leapmux/v1/user_ops_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { uint8ArrayToBase64 } from '~/lib/base64'
 import { KEY_USER_EVENTS_RELAY_SEQ, localStorageGet, localStorageSet } from '~/lib/browserStorage'
 import { isStatePopulated } from '~/lib/crdt/pendingOps'

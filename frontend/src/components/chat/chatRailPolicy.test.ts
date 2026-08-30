@@ -1,7 +1,7 @@
 import type { DotCluster } from './chatRailPolicy'
 import type { VirtualItem } from './useChatVirtualizer'
 import { describe, expect, it } from 'vitest'
-import { MarkType } from '~/generated/leapmux/v1/agent_pb'
+import { MarkType } from '~/generated/proto/leapmux/v1/agent_pb'
 import { canRenderSeqRailThumb, clusterMarks, dotClustersEqual, nearestDotWithin, resolveScrollbarOwner } from './chatRailPolicy'
 import { rowStartSeqs } from './chatScrollRailGeometry'
 

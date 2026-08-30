@@ -1,7 +1,7 @@
 import type { listMessageMarks } from '~/api/workerRpc'
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it, vi } from 'vitest'
-import { ListMessageMarksResponseSchema, MarkType, MessageMarkSchema } from '~/generated/leapmux/v1/agent_pb'
+import { ListMessageMarksResponseSchema, MarkType, MessageMarkSchema } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createMessageMarksStore } from '~/stores/chatMessageMarks'
 import { createMessageMarkSeeder, MAX_MESSAGE_MARK_SEED_RESCHEDULES } from '~/stores/chatMessageMarkSeeder'
 

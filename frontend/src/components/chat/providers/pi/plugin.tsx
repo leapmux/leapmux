@@ -7,7 +7,7 @@ import type { ClassificationInput, Provider, SpanRole, ToolResultMeta } from '..
 import type { PiExtensionResponse } from './controlResponse'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { ContextUsageInfo } from '~/stores/agentSession.store'
-import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
 import { messageUsage } from '~/lib/messageParser'
 import { formatUnifiedDiffText } from '../../diff'

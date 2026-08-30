@@ -4,6 +4,7 @@ import type { Session } from './noise'
 import { create, fromBinary, toBinary } from '@bufbuild/protobuf'
 import { chacha20poly1305 } from '@noble/ciphers/chacha.js'
 import { beforeEach, expect, vi } from 'vitest'
+import { DEFAULT_MAX_MESSAGE_SIZE, SESSION_KEY_HARD_CEILING_MS, SESSION_KEY_MAX_AGE_MS } from '~/generated/contracts/wire'
 import {
   ChannelMessageSchema,
   EncryptionMode,
@@ -12,16 +13,11 @@ import {
   InnerStreamMessageSchema,
   RekeyAckSchema,
   RekeyRejectSchema,
-} from '~/generated/leapmux/v1/channel_pb'
-import {
-  ChannelManager,
-  SESSION_KEY_HARD_CEILING_MS,
-  SESSION_KEY_MAX_AGE_MS,
-} from './channel'
+} from '~/generated/proto/leapmux/v1/channel_pb'
+import { ChannelManager } from './channel'
 import { frameBytes, unframeBytes } from './channelFraming'
 import { clearAllKeyPins, KeyPinStore } from './keyPinStore'
 import { generateRekeyEphemeral } from './noise-hybrid'
-import { DEFAULT_MAX_MESSAGE_SIZE } from './reassembler'
 
 /** Accepting TOFU store for tests that pin on first use / accept key rotation. */
 export function acceptingKeyPins(confirmKeyPin?: KeyPinConfirmFn): KeyPinStore {

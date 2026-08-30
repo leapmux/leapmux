@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/channelwire"
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/authscope"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
@@ -157,7 +158,7 @@ func NewManager(
 ) *Manager {
 	maxMessageSize = channelwire.ResolveMaxMessageSize(maxMessageSize)
 	if maxIncompleteChunked <= 0 {
-		maxIncompleteChunked = channelwire.DefaultMaxIncompleteChunked
+		maxIncompleteChunked = contracts.DefaultMaxIncompleteChunked
 	}
 	return &Manager{
 		sessions:             make(map[string]*channelSession),

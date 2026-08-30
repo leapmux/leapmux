@@ -12,7 +12,14 @@ import (
 // constant should fail the test, not compile.
 func mustNewRetry(t *testing.T, initial, maxInterval time.Duration, jitter float64, maxAttempts int) *Retry {
 	t.Helper()
-	r, err := NewRetry(initial, maxInterval, jitter, maxAttempts)
+	return mustNewRetryMultiplier(t, initial, maxInterval, 2, jitter, maxAttempts)
+}
+
+// mustNewRetryMultiplier is mustNewRetry with an explicit multiplier, for tests
+// that assert a non-doubling scale.
+func mustNewRetryMultiplier(t *testing.T, initial, maxInterval time.Duration, multiplier float64, jitter float64, maxAttempts int) *Retry {
+	t.Helper()
+	r, err := NewRetry(initial, maxInterval, multiplier, jitter, maxAttempts)
 	require.NoError(t, err)
 	return r
 }
@@ -51,6 +58,30 @@ func TestRetry_DoublesAndCapsJitterless(t *testing.T) {
 	r := mustNewRetry(t, 100*time.Millisecond, 500*time.Millisecond, 0, 0)
 	assertBaseSequence(t, func() time.Duration { return commitPeek(r) },
 		100*time.Millisecond, 500*time.Millisecond, 6)
+}
+
+func TestRetry_ScalesByMultiplierNotDoubling(t *testing.T) {
+	// The multiplier is the contracts/retry.json value; this pins that the
+	// constructor actually threads it into the sequence instead of keeping the
+	// historical hard-coded doubling (100ms -> 300 -> 900 -> 1000 cap with
+	// multiplier 3, not 100 -> 200 -> 400).
+	r := mustNewRetryMultiplier(t, 100*time.Millisecond, time.Second, 3, 0, 0)
+	want := 100 * time.Millisecond
+	for i := 0; i < 4; i++ {
+		assert.Equal(t, want, commitPeek(r), "attempt %d base delay", i)
+		next := time.Duration(float64(want) * 3)
+		if next > time.Second {
+			next = time.Second
+		}
+		want = next
+	}
+}
+
+func TestNewRetry_RejectsMultiplierBelowOne(t *testing.T) {
+	// Mirrors checkRetry in scripts/generate-contracts.mjs, which rejects the
+	// same range in the contract.
+	_, err := NewRetry(10*time.Millisecond, time.Second, 0.5, 0, 3)
+	assert.ErrorContains(t, err, "multiplier must be >= 1")
 }
 
 func TestRetry_PeekReturnsFalseWhenBudgetSpent(t *testing.T) {
@@ -248,7 +279,7 @@ func TestNewRetry_RejectsInvalidPolicy(t *testing.T) {
 	}}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			_, err := NewRetry(c.initial, c.max, c.jitter, c.maxAttempts)
+			_, err := NewRetry(c.initial, c.max, 2, c.jitter, c.maxAttempts)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "backoffutil:")
 		})
@@ -270,7 +301,7 @@ func TestNewRetry_AcceptsBoundaryPolicy(t *testing.T) {
 		{name: "jitterless", initial: time.Millisecond, max: time.Second, jitter: 0, maxAttempts: 1},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			_, err := NewRetry(c.initial, c.max, c.jitter, c.maxAttempts)
+			_, err := NewRetry(c.initial, c.max, 2, c.jitter, c.maxAttempts)
 			require.NoError(t, err)
 		})
 	}

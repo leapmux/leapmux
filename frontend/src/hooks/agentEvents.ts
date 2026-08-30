@@ -7,7 +7,7 @@
  * 1700-line module without changing a line of behaviour.
  */
 import type { Provider } from '~/components/chat/providers/registry'
-import type { AgentChatMessage, AgentControlRequest, AgentStatusChange, AgentStreamChunk, AgentStreamEnd, AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentChatMessage, AgentControlRequest, AgentStatusChange, AgentStreamChunk, AgentStreamEnd, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { createAgentSessionStore, RateLimitInfo } from '~/stores/agentSession.store'
@@ -22,8 +22,9 @@ import { sendAgentMessage } from '~/api/workerRpc'
 import { classifyAgentMessage, shouldClearStreamingText } from '~/components/chat/messageClassification'
 import { pluginFor, providerFor } from '~/components/chat/providers/registry'
 import { mergeStableOptionGroupRefs, OPTION_ID_MODEL, optionGroup } from '~/components/chat/settingsGroups'
-import { AgentStatus, MessageSource } from '~/generated/leapmux/v1/agent_pb'
-import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
+import { AgentStatus, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { isTabOnScreen } from '~/hooks/watchPlan'
 import { createLogger } from '~/lib/logger'
 import { extractCompactionContextTokens, extractContextUsage, extractPlanFilePath, extractPlanUpdated, extractResultMetadata, extractSettingsChanges, getInnerMessage, normalizeContextUsage, parseMessageContent } from '~/lib/messageParser'
@@ -156,7 +157,7 @@ export function handleAgentSessionInfo(
   parsed: ParsedMessageContent,
   agentSessionStore: AgentMessageStores['agentSessionStore'],
 ): boolean {
-  if (!(parsed.topLevel !== null && !parsed.wrapper && parsed.topLevel.type === 'agent_session_info'))
+  if (!(parsed.topLevel !== null && !parsed.wrapper && parsed.topLevel.type === NOTIFICATION_TYPE.AgentSessionInfo))
     return false
   const info = parsed.topLevel.info as Record<string, unknown> | undefined
   const updates = wireSessionInfoToUpdates(info)
@@ -204,7 +205,7 @@ export function applyNotificationMetadata(agentId: string, msg: AgentChatMessage
   const innerMsg = getInnerMessage(parsed)
   const innerType = innerMsg?.type as string | undefined
 
-  if (innerType === 'context_cleared') {
+  if (innerType === NOTIFICATION_TYPE.ContextCleared) {
     agentSessionStore.clearContextUsage(agentId)
     chatStore.todos.clear(agentId)
     // The conversation was wiped; drop any in-flight thinking-token estimate too. The
@@ -255,7 +256,7 @@ export function applyNotificationMetadata(agentId: string, msg: AgentChatMessage
     })
   }
 
-  if (innerType === 'settings_changed') {
+  if (innerType === NOTIFICATION_TYPE.SettingsChanged) {
     const sc = extractSettingsChanges(parsed)
     if (sc)
       emitSettingsChanged(sc)
@@ -264,12 +265,12 @@ export function applyNotificationMetadata(agentId: string, msg: AgentChatMessage
   // plan_execution / plan_updated may also appear inside a notification wrapper that
   // holds multiple message types, so wrapper messages always run the walk; non-wrapper
   // messages gate on the inner type to skip the call entirely.
-  if (parsed.wrapper !== null || innerType === 'plan_execution') {
+  if (parsed.wrapper !== null || innerType === NOTIFICATION_TYPE.PlanExecution) {
     const planFile = extractPlanFilePath(parsed)
     if (planFile)
       agentSessionStore.updateInfo(agentId, { planFilePath: planFile })
   }
-  if (parsed.wrapper !== null || innerType === 'plan_updated') {
+  if (parsed.wrapper !== null || innerType === NOTIFICATION_TYPE.PlanUpdated) {
     const planUpdate = extractPlanUpdated(parsed)
     if (planUpdate) {
       if (planUpdate.planFilePath)

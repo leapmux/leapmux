@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/backoffutil"
 )
@@ -146,20 +147,15 @@ func (systemClock) NewTimer(d time.Duration) (<-chan time.Time, func()) {
 	return t.C, func() { t.Stop() }
 }
 
-// LOOKUP_FAILED retry policy. Mirrors the frontend's rejectionBackoff so the
-// CLI and the UI use the same backoff shape under a flapping worker: jittered
-// exponential, 500ms → 15s, ±20% jitter, 8 attempts. The bounded attempt count
-// stops a flapping worker from compounding into an unbounded retry ladder (each
-// retry produces another LOOKUP_FAILED ack that would spawn another goroutine),
-// and the in-flight retry guard coalesces a burst of acks into one retry per
-// slot (matching the frontend's createExponentialBackoff.schedule).
-//
-// The frontend defines the same shape at
-// frontend/src/hooks/useWatchEventsStreams.ts (rejectionBackoff) on top of
-// createExponentialBackoff (frontend/src/lib/retry.ts). Cross-language constant
-// sharing is impractical, so the two are kept in sync by mirror + the pinning
-// test TestSubscription_LookupRetryPolicyMirrorsFrontend, which fails if the
-// values here drift from the documented frontend shape.
+// LOOKUP_FAILED retry policy. The eventsRejection policy in
+// contracts/retry.json, generated for this side and the frontend's
+// useWatchEventsStreams rejectionBackoff alike, so the CLI and the UI use
+// the same backoff shape under a flapping worker: jittered exponential,
+// 500ms → 15s, ±20% jitter, 8 attempts. The capped attempt count stops a
+// flapping worker from compounding into an uncapped retry ladder (each
+// retry produces another LOOKUP_FAILED ack that would spawn another
+// goroutine), and the in-flight retry guard coalesces a burst of acks into
+// one retry per slot (matching the frontend's createExponentialBackoff.schedule).
 //
 // One deliberate divergence: the frontend resets the budget per clean ack
 // (event-gated per worker); the CLI resets only on a fresh stream open, so a
@@ -167,10 +163,11 @@ func (systemClock) NewTimer(d time.Duration) (<-chan time.Time, func()) {
 // not re-arm the budget. A fresh open is the CLI's natural recovery boundary,
 // and resetting per-ack would let one entity's success mask another's failure.
 const (
-	lookupRetryInitial     = 500 * time.Millisecond
-	lookupRetryMaxInterval = 15 * time.Second
-	lookupRetryJitter      = 0.2
-	lookupRetryMaxAttempts = 8
+	lookupRetryInitial     = contracts.EventsRejectionRetryInitial
+	lookupRetryMaxInterval = contracts.EventsRejectionRetryMaxInterval
+	lookupRetryMultiplier  = contracts.EventsRejectionRetryMultiplier
+	lookupRetryJitter      = contracts.EventsRejectionRetryJitter
+	lookupRetryMaxAttempts = contracts.EventsRejectionRetryMaxAttempts
 )
 
 // NewSubscription wires the transport and cursors. Callbacks fire
@@ -187,7 +184,7 @@ func NewSubscription(t Transport, agents *AgentCursor, terminals *TerminalCursor
 	// here turns a bad future edit to the constants into a startup failure
 	// instead of a zero/negative-delay burst at runtime. Every test that calls
 	// NewSubscription exercises this path, so the panic also fires under go test.
-	retry, err := backoffutil.NewRetry(lookupRetryInitial, lookupRetryMaxInterval, lookupRetryJitter, lookupRetryMaxAttempts)
+	retry, err := backoffutil.NewRetry(lookupRetryInitial, lookupRetryMaxInterval, lookupRetryMultiplier, lookupRetryJitter, lookupRetryMaxAttempts)
 	if err != nil {
 		retryCancel()
 		panic(fmt.Sprintf("streamevents: invalid LOOKUP_FAILED retry policy: %v", err))

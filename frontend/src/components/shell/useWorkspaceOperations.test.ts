@@ -1,10 +1,10 @@
-import type { Section, SectionItem } from '~/generated/leapmux/v1/section_pb'
-import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
+import type { Section, SectionItem } from '~/generated/proto/leapmux/v1/section_pb'
+import type { Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { createRoot } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useWorkspaceOperations } from '~/components/shell/useWorkspaceOperations'
-import { SectionType } from '~/generated/leapmux/v1/section_pb'
-import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { SectionType } from '~/generated/proto/leapmux/v1/section_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { createSectionStore } from '~/stores/section.store'
 
 interface TabRefLike { tabType: TabType, tabId: string }

@@ -1,5 +1,5 @@
 import type { SettingsStorePorts } from './settingsStore'
-import type { SettingDescriptor, SettingValue } from '~/generated/leapmux/v1/settings_pb'
+import type { SettingDescriptor, SettingValue } from '~/generated/proto/leapmux/v1/settings_pb'
 import { createRoot } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { createSettingsStore } from './settingsStore'

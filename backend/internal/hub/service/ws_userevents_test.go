@@ -20,6 +20,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/leapmux/leapmux/channelwire"
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
@@ -967,7 +968,7 @@ func TestUserEventsHandler_RefusesTheConnectWhenTheBudgetCannotHoldTheBootstrap(
 				return sendq.NewPool(sendq.PoolConfig{Capacity: 256, MinFloor: 128, MaxFloor: 128})
 			},
 			wantStatus: websocket.StatusPolicyViolation,
-			wantReason: channelwire.CloseReasonSnapshotTooLarge,
+			wantReason: contracts.CloseReasonSnapshotTooLarge,
 			wantBound:  "capacity",
 			otherBound: "bytes",
 		},
@@ -1097,7 +1098,7 @@ func TestUserEventsHandler_RefusesBeyondThePerUserConnectionCap(t *testing.T) {
 	require.ErrorAs(t, err, &closeErr)
 	assert.Equal(t, websocket.StatusPolicyViolation, closeErr.Code,
 		"the client must read this as terminal, not retry into the same refusal")
-	assert.Equal(t, channelwire.CloseReasonTooManyConnections, closeErr.Reason,
+	assert.Equal(t, contracts.CloseReasonTooManyConnections, closeErr.Reason,
 		"the reason is what tells the user to close a tab rather than re-authenticate")
 
 	// The connection that was already open is untouched: the NEWEST pays.

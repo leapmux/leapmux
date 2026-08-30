@@ -1,35 +1,20 @@
 package channelwire
 
-import "time"
+import (
+	"time"
 
-const (
-	// SessionKeyMaxAge is how long a Noise transport key may live before the
-	// initiator should request an in-band rekey. Matches the frontend's former
-	// CHANNEL_MAX_AGE_MS close-and-rehandshake ceiling. In-band rotation is
-	// HKDF(k), not a fresh DH — see https://github.com/leapmux/leapmux/issues/321
-	SessionKeyMaxAge = time.Hour
-
-	// MinRekeyInterval is the earliest a peer may accept another rekey after a
-	// successful one (or after the handshake). Ten minutes of headroom under
-	// SessionKeyMaxAge stops age-only churn; SoftNonceLimit still bypasses.
-	MinRekeyInterval = 50 * time.Minute
-
-	// SessionKeyHardCeiling is the absolute age of a *single key epoch* past which
-	// initiators must close and re-handshake instead of serving the channel. Ten
-	// minutes past SessionKeyMaxAge covers one Reject backoff / modest clock skew.
-	// Successful rekeys reset lastRekeyAt, so this does not bound total channel
-	// lifetime — only how long one epoch key may be used.
-	SessionKeyHardCeiling = SessionKeyMaxAge + 10*time.Minute
-
-	// DefaultRejectBackoff is what initiators use when RekeyReject.retry_after_ms
-	// is unset (0) — legacy peers or an unexpected empty reject.
-	DefaultRejectBackoff = time.Minute
+	"github.com/leapmux/leapmux/generated/contracts"
 )
+
+// Session-key rotation timing is owned by contracts/wire.json
+// (contracts.SessionKeyMaxAge and friends; the browser's SESSION_KEY_*_MS
+// constants come from the same file), and the derivations -- hard ceiling =
+// max age + overrun -- are computed by the generator, not re-derived here.
 
 // AllowRekey reports whether an in-band rekey should be accepted by the worker
 // (authoritative) or whether a client may retry after a Reject. lastRekeyAt is
 // the handshake time until the first successful rekey. softNonce is true when
-// either CipherState has exceeded SoftNonceLimit (NeedsRekeyEither).
+// either CipherState has exceeded contracts.SoftNonceLimit (NeedsRekeyEither).
 func AllowRekey(now, lastRekeyAt time.Time, softNonce bool) bool {
 	if softNonce {
 		return true
@@ -37,7 +22,7 @@ func AllowRekey(now, lastRekeyAt time.Time, softNonce bool) bool {
 	if lastRekeyAt.IsZero() {
 		return false
 	}
-	return !now.Before(lastRekeyAt.Add(MinRekeyInterval))
+	return !now.Before(lastRekeyAt.Add(contracts.MinRekeyInterval))
 }
 
 // RejectRetryAfter is how long an initiator should wait after an age-only Reject
@@ -47,9 +32,9 @@ func AllowRekey(now, lastRekeyAt time.Time, softNonce bool) bool {
 // as a conservative bound.
 func RejectRetryAfter(now, lastRekeyAt time.Time) time.Duration {
 	if lastRekeyAt.IsZero() {
-		return MinRekeyInterval
+		return contracts.MinRekeyInterval
 	}
-	earliest := lastRekeyAt.Add(MinRekeyInterval)
+	earliest := lastRekeyAt.Add(contracts.MinRekeyInterval)
 	if !now.Before(earliest) {
 		return 0
 	}
@@ -65,7 +50,7 @@ func ShouldInitiateRekey(now, lastRekeyAt time.Time, softNonce bool) bool {
 	if lastRekeyAt.IsZero() {
 		return false
 	}
-	return !now.Before(lastRekeyAt.Add(SessionKeyMaxAge))
+	return !now.Before(lastRekeyAt.Add(contracts.SessionKeyMaxAge))
 }
 
 // PastHardCeiling reports whether the key is too old to keep serving: the
@@ -74,5 +59,5 @@ func PastHardCeiling(now, lastRekeyAt time.Time) bool {
 	if lastRekeyAt.IsZero() {
 		return false
 	}
-	return !now.Before(lastRekeyAt.Add(SessionKeyHardCeiling))
+	return !now.Before(lastRekeyAt.Add(contracts.SessionKeyHardCeiling))
 }

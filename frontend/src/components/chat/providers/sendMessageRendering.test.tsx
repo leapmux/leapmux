@@ -3,7 +3,7 @@ import type { RenderContext } from '../messageRenderers'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
-import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import './testMocks'
 
 const { renderMessageContent } = await import('../messageRenderers')

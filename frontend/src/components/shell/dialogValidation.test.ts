@@ -7,7 +7,7 @@ import {
   isTerminalCreateDisabled,
   isWorkspaceCreateDisabled,
 } from '~/components/shell/dialogValidation'
-import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { GitMode } from '~/hooks/useGitModeState'
 
 const validIntent: GitModeIntent = { mode: GitMode.Current }

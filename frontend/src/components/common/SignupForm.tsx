@@ -1,7 +1,7 @@
 import type { Timestamp } from '@bufbuild/protobuf/wkt'
 import type { Component, JSX } from 'solid-js'
 
-import type { EmailVerificationStatus, User } from '~/generated/leapmux/v1/auth_pb'
+import type { EmailVerificationStatus, User } from '~/generated/proto/leapmux/v1/auth_pb'
 import { createSignal, Show } from 'solid-js'
 import { authClient } from '~/api/clients'
 import { actionsFooter } from '~/components/common/actionsFooter.css'

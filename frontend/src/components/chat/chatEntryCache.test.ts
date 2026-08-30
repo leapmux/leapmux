@@ -1,8 +1,8 @@
-import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { create } from '@bufbuild/protobuf'
 import { createRoot, createSignal } from 'solid-js'
 import { describe, expect, it } from 'vitest'
-import { AgentChatMessageSchema, AgentProvider, ContentCompression, MessageSource } from '~/generated/leapmux/v1/agent_pb'
+import { AgentChatMessageSchema, AgentProvider, ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { invalidateMessageParseCache } from '~/lib/messageParser'
 import { createClassifiedEntryCache, heightKeyForEntry } from './chatEntryCache'
 

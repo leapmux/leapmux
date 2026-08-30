@@ -1,6 +1,6 @@
 import type { DotCluster } from './chatRailPolicy'
 import { createEffect, createMemo, on, onCleanup, onMount, Show } from 'solid-js'
-import { MarkType } from '~/generated/leapmux/v1/agent_pb'
+import { MarkType } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createRafResizeObserver } from '~/lib/resizeObserver'
 import { hasScrollRoom } from './chatScrollGeometry'
 import * as styles from './ChatScrollRail.css'

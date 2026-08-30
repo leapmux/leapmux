@@ -4,9 +4,9 @@ import type {
   NodeRecord,
   TabRecord,
   UserCrdtState,
-} from '~/generated/leapmux/v1/user_crdt_pb'
-import type { TabType } from '~/generated/leapmux/v1/workspace_pb'
-import { NodeKind } from '~/generated/leapmux/v1/user_crdt_pb'
+} from '~/generated/proto/leapmux/v1/user_crdt_pb'
+import type { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { NodeKind } from '~/generated/proto/leapmux/v1/user_crdt_pb'
 import { shallowEqual, shallowEqualArrays } from '~/lib/shallowEqual'
 import { hlcIsZero } from './hlc'
 

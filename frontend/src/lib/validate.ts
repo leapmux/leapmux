@@ -19,7 +19,7 @@
  * each JavaScript engine update their Unicode tables on their own release
  * schedules. A category test would let the two sides disagree on a character
  * that one of them classifies first.
- * `testdata/title_cleaning_conformance.json` pins the two lists together.
+ * `testdata/title_cleaning_conformance.json` pins the two algorithms together.
  *
  * Three groups stay deliberately, although they are also invisible. U+200C
  * and U+200D stay, because the joiner builds an emoji family or a profession,
@@ -32,8 +32,9 @@
  * a name may hold them: the invisible math operators U+2061-U+2064, the
  * interlinear annotation controls U+FFF9-U+FFFB, and the blank-glyph
  * characters U+115F, U+1160, U+2800 and U+3164 all survive today. Add a code
- * point HERE and in the Go copy together, and add a case to the shared
- * fixture, or the two sides drift.
+ * point to contracts/validate.json and a case to the shared fixture; both
+ * sides' tables regenerate from the contract, and the fixture proves the
+ * algorithms still agree.
  *
  * The control blocks have TWO gaps -- U+0009-U+000D and U+0085 -- and both
  * gaps are deliberate. Those characters are control characters AND whitespace
@@ -41,8 +42,9 @@
  * instead. A strip here made `Fix parser\nAdd tests` read as
  * `Fix parserAdd tests`.
  *
- * The two gaps are the COMPLEMENT of {@link NAME_WHITESPACE_G} inside the Cc
- * category, transcribed by hand, and the Go copy computes the same overlap by
+ * The generator computes the gaps as the complement of {@link NAME_WHITESPACE_G}
+ * inside the Cc category (NAME_INVISIBLE_CLASS is the derived `Cc minus the
+ * whitespace folds` class), and the Go copy computes the same overlap by
  * testing whitespace before control. Narrow the fold class and a gap becomes
  * a hole: a control character then reaches the stored name, and the hub
  * refuses it with no explanation at the field. `cleanName leaves no C0 or C1
@@ -56,8 +58,10 @@
  * emitter holds for whatever the store holds; a character ban here only
  * removed the user's text.
  */
-// eslint-disable-next-line no-control-regex
-const NAME_INVISIBLE_G = /[\x00-\x08\x0E-\x1F\x7F-\x84\x86-\x9F\u00AD\u061C\u180E\u200B\u200E\u200F\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/g
+
+import { BRANCH_FORBIDDEN_CLASS, BRANCH_NAME_BYTE_LIMIT, MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH, NAME_BYTE_LIMIT, NAME_INVISIBLE_CLASS, NAME_WHITESPACE_CLASS, NAME_WHITESPACE_MINUS_SPACE_CLASS, PRINTABLE_ASCII_CLASS, PUBLIC_RESERVED_USERNAMES, SESSION_FORBIDDEN_CLASS, SESSION_ID_BYTE_LIMIT, SYSTEM_RESERVED_USERNAMES } from '~/generated/contracts/validate'
+
+const NAME_INVISIBLE_G = new RegExp(`[${NAME_INVISIBLE_CLASS}]`, 'g')
 
 /**
  * A surrogate code unit with no partner.
@@ -96,8 +100,6 @@ const LONE_SURROGATE_G = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF]
  * silent. The `matches Go's whitespace set` test reports the day the pinned
  * set and `\s` stop differing by exactly those two code points.
  */
-export const NAME_WHITESPACE_CLASS = '\\u0009-\\u000D\\u0020\\u0085\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000'
-
 /** A run of whitespace, which becomes one space. */
 const NAME_WHITESPACE_G = new RegExp(`[${NAME_WHITESPACE_CLASS}]+`, 'g')
 
@@ -114,21 +116,17 @@ const NAME_WHITESPACE_G = new RegExp(`[${NAME_WHITESPACE_CLASS}]+`, 'g')
 const EDGE_WHITESPACE = new RegExp(`^[${NAME_WHITESPACE_CLASS}]|[${NAME_WHITESPACE_CLASS}]$`)
 
 // Every whitespace character the pinned class holds EXCEPT the plain U+0020.
-// Built by subtracting the space from the shared class, so a character added to
-// `NAME_WHITESPACE_CLASS` is covered here the same day, and the Go copy reads
-// its own pinned table the same way (`r != ' ' && IsNameWhitespace(r)`).
+// The generator computes the subtraction (NAME_WHITESPACE_MINUS_SPACE_CLASS),
+// so a character added to `NAME_WHITESPACE_CLASS` is covered here the same
+// day, and the Go copy reads its own pinned table the same way
+// (`r != ' ' && IsNameWhitespace(r)`).
 const INTERIOR_NON_PLAIN_WHITESPACE = new RegExp(
-  `[${NAME_WHITESPACE_CLASS.replace('\\u0020', '')}]`,
+  `[${NAME_WHITESPACE_MINUS_SPACE_CLASS}]`,
 )
-
-/**
- * The maximum size of a name or a title, in UTF-8 BYTES. Mirrors
- * `validate.NameByteLimit`.
- */
-export const NAME_BYTE_LIMIT = 128
 
 // Length is measured in UTF-8 bytes, so hoist one encoder rather than
 // constructing one for each call.
+
 const UTF8 = new TextEncoder()
 
 /**
@@ -282,14 +280,8 @@ export function sanitizeDisplayName(displayName: string, fallback: string): { va
  * class was widened to match that over-strictness rather than to match git --
  * both are now narrowed to git's own rule.
  */
-// eslint-disable-next-line no-control-regex
-const BRANCH_FORBIDDEN_CHARS = /[\x00-\x1F\x7F ~^:?*[\\]/
 
-/**
- * The maximum size of a git branch name, in UTF-8 BYTES. Mirrors
- * `gitutil.BranchNameByteLimit`.
- */
-export const BRANCH_NAME_BYTE_LIMIT = 256
+const BRANCH_FORBIDDEN_CHARS = new RegExp(`[${BRANCH_FORBIDDEN_CLASS}]`)
 
 /**
  * Validates a git branch name according to git-check-ref-format rules.
@@ -365,16 +357,6 @@ export function stripRemotePrefix(ref: string): string {
 }
 
 /**
- * The maximum size of an agent session ID, in UTF-8 BYTES. Mirrors
- * `validate.SessionIDByteLimit`.
- *
- * The number matches {@link NAME_BYTE_LIMIT} today, and the two are NOT
- * linked on purpose. A session ID is a token, a name is text a user reads,
- * and a change to what one may hold must not move the other.
- */
-export const SESSION_ID_BYTE_LIMIT = 128
-
-/**
  * A character an agent session ID must not hold: the control blocks, the
  * invisible format characters, and the four characters the name rule used to
  * strip.
@@ -388,8 +370,8 @@ export const SESSION_ID_BYTE_LIMIT = 128
  * session ID that carries one names no session that the agent knows, and the
  * resume then starts a new conversation with no report of why.
  */
-// eslint-disable-next-line no-control-regex
-const SESSION_ID_FORBIDDEN = /[\x00-\x1F\x7F-\x9F"\\$%\u00AD\u061C\u180E\u200B\u200E\u200F\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/
+
+const SESSION_ID_FORBIDDEN = new RegExp(`[${SESSION_FORBIDDEN_CLASS}]`)
 
 /**
  * Validates a session ID for resuming an agent session.
@@ -491,9 +473,8 @@ export function validateEmail(email: string): string | null {
 
 // Password length limits, counted in characters. A password holds printable
 // ASCII characters only (see validatePassword), so one character is one
-// UTF-16 code unit and `String.length` counts characters here.
-const MIN_PASSWORD_LENGTH = 8
-const MAX_PASSWORD_LENGTH = 128
+// UTF-16 code unit and `String.length` counts characters here. The limits
+// themselves are the generated MIN_PASSWORD_LENGTH / MAX_PASSWORD_LENGTH.
 
 /**
  * Matches a string in which EVERY UTF-16 code unit is printable ASCII: 0x20
@@ -504,7 +485,7 @@ const MAX_PASSWORD_LENGTH = 128
  * of its surrogates is a code unit above 0x7E. The empty string matches, and
  * the minimum-length rule below is the one that reports it.
  */
-const PRINTABLE_ASCII_ONLY = /^[\u0020-\u007E]*$/
+const PRINTABLE_ASCII_ONLY = new RegExp(`^[${PRINTABLE_ASCII_CLASS}]*$`)
 
 /**
  * Validates a password against the character-set policy and the length
@@ -578,17 +559,10 @@ export function sanitizeSlug(fieldName: string, value: string): [string, string 
   return [slug, null]
 }
 
-/**
- * Usernames reserved across every creation path (public signup, setup,
- * OAuth signup, admin CLI). Mirrors backend `usernames.IsReservedSystem`.
- */
-const SYSTEM_RESERVED_USERNAMES: ReadonlySet<string> = new Set(['solo'])
-
-/**
- * Usernames reserved only for anonymous post-setup signup. Mirrors backend
- * `usernames.IsReservedPublic`.
- */
-const PUBLIC_RESERVED_USERNAMES: ReadonlySet<string> = new Set(['admin'])
+// Reserved usernames are generated from contracts/validate.json, the same
+// file the hub's usernames package reads: systemReserved covers every
+// creation path, publicReserved only anonymous public signup. The generated
+// arrays are one element long each, so membership reads `.includes` directly.
 
 /**
  * Returns an error message if the username is reserved for the given context,
@@ -597,10 +571,10 @@ const PUBLIC_RESERVED_USERNAMES: ReadonlySet<string> = new Set(['admin'])
  */
 export function validateReservedUsername(slug: string, allowAdmin: boolean): string | null {
   const normalized = slug.trim().toLowerCase()
-  if (SYSTEM_RESERVED_USERNAMES.has(normalized)) {
+  if (SYSTEM_RESERVED_USERNAMES.includes(normalized)) {
     return `"${normalized}" is a reserved username`
   }
-  if (!allowAdmin && PUBLIC_RESERVED_USERNAMES.has(normalized)) {
+  if (!allowAdmin && PUBLIC_RESERVED_USERNAMES.includes(normalized)) {
     return `"${normalized}" is a reserved username`
   }
   return null

@@ -1,0 +1,221 @@
+{
+  "_readme": "Single source of truth for the OAuth scope vocabulary: the wire token, the Preferences-dialog description (frontend audience: a developer registering an app), the consent-screen sentence (hub audience: a person granting access -- the two texts are deliberately different), the family grouping both surfaces render, and the implied-by graph the register form locks and the hub expands. task generate-contracts cross-checks the whole file against the Scope proto enum (scopes + nonGrantable must partition it exactly; categories must cover each grantable scope exactly once; impliedBy must reference grantable scopes and stay acyclic) and emits Go tables (authscope and the OAuth consent pages consume them) and the TS records (scopeCatalogue and scopeToken consume them).",
+  "nonGrantable": [
+    "SCOPE_UNSPECIFIED",
+    "SCOPE_NEVER",
+    "SCOPE_ALL"
+  ],
+  "scopes": {
+    "SCOPE_ACCOUNT_READ": {
+      "token": "account:read",
+      "description": "Read the signed-in account's profile: username, email, verification state, administrator flag.",
+      "consentSentence": "Read your profile: your username, your email address and whether you are an administrator."
+    },
+    "SCOPE_ACCOUNT_WRITE": {
+      "token": "account:write",
+      "description": "Change the account's profile and preferences. No app reaches the credential surface.",
+      "consentSentence": "Change your profile and your account settings, including your password."
+    },
+    "SCOPE_WORKSPACE_READ": {
+      "token": "workspace:read",
+      "description": "Read workspaces, tabs and the layout document.",
+      "consentSentence": "Read your workspaces, your tabs and your layout."
+    },
+    "SCOPE_WORKSPACE_WRITE": {
+      "token": "workspace:write",
+      "description": "Create, rename, move and close workspaces and tabs, and submit layout operations.",
+      "consentSentence": "Create, rename, move and close your workspaces and tabs."
+    },
+    "SCOPE_WORKER_READ": {
+      "token": "worker:read",
+      "description": "List the account's workers and open a channel to one. Every other worker-surface scope implies it.",
+      "consentSentence": "List your workers and connect to one."
+    },
+    "SCOPE_WORKER_ADMIN": {
+      "token": "worker:admin",
+      "description": "Administer the account's own workers: rename, deregister, and manage the registration keys that let a machine join.",
+      "consentSentence": "Rename and deregister your workers, and manage the keys that let a machine join."
+    },
+    "SCOPE_AGENT_READ": {
+      "token": "agent:read",
+      "description": "Read coding-agent sessions: messages, plans, settings, todos.",
+      "consentSentence": "Read your coding-agent sessions, including every message in them."
+    },
+    "SCOPE_AGENT_WRITE": {
+      "token": "agent:write",
+      "description": "Drive a coding agent: send a prompt, answer a permission request, start, stop, or change its settings.",
+      "consentSentence": "Send prompts to your coding agents and answer their permission requests."
+    },
+    "SCOPE_TERMINAL_READ": {
+      "token": "terminal:read",
+      "description": "Read terminal output and metadata. This is a monitoring dashboard.",
+      "consentSentence": "Read the output of your terminals."
+    },
+    "SCOPE_TERMINAL_WRITE": {
+      "token": "terminal:write",
+      "description": "Type into a terminal. This is arbitrary code execution on the account's machine.",
+      "consentSentence": "Type into your terminals, which runs any command on your machine."
+    },
+    "SCOPE_FILE_READ": {
+      "token": "file:read",
+      "description": "Browse directories and read files on a worker.",
+      "consentSentence": "Browse and read files on your machines."
+    },
+    "SCOPE_GIT_READ": {
+      "token": "git:read",
+      "description": "Read git state: status, branches, diffs, log.",
+      "consentSentence": "Read the git state of your repositories: status, branches, diffs and history."
+    },
+    "SCOPE_GIT_WRITE": {
+      "token": "git:write",
+      "description": "Mutate a repository: commit, push, create or delete a branch, manage a worktree.",
+      "consentSentence": "Commit, push, and create or delete branches in your repositories."
+    },
+    "SCOPE_TUNNEL_OPEN": {
+      "token": "tunnel:open",
+      "description": "Open a TCP tunnel through a worker.",
+      "consentSentence": "Open network connections from inside your private network to any address it can reach."
+    },
+    "SCOPE_ADMIN_READ": {
+      "token": "admin:read",
+      "description": "Read the hub's administrative inventory: users, settings, workers, sessions, credentials.",
+      "consentSentence": "Read this hub's administration: every account, setting, worker and credential."
+    },
+    "SCOPE_ADMIN_USERS": {
+      "token": "admin:users",
+      "description": "Administer accounts: create, update, delete, reset a password, revoke sessions and credentials.",
+      "consentSentence": "Administer every account on this hub, including resetting passwords."
+    },
+    "SCOPE_ADMIN_SETTINGS": {
+      "token": "admin:settings",
+      "description": "Change the hub's settings, including its security policy and its identity providers.",
+      "consentSentence": "Change this hub's settings, including its security policy and its sign-in providers."
+    },
+    "SCOPE_ADMIN_WORKERS": {
+      "token": "admin:workers",
+      "description": "Administer every worker on the hub, and the registration keys that admit one.",
+      "consentSentence": "Administer every worker on this hub."
+    },
+    "SCOPE_ADMIN_APPS": {
+      "token": "admin:apps",
+      "description": "Register, edit, vouch, retire and delete the hub's app registrations.",
+      "consentSentence": "Register, edit, vouch, retire and delete the hub's app registrations."
+    }
+  },
+  "categories": [
+    {
+      "label": "Account",
+      "scopes": [
+        "SCOPE_ACCOUNT_READ",
+        "SCOPE_ACCOUNT_WRITE"
+      ]
+    },
+    {
+      "label": "Workspace",
+      "scopes": [
+        "SCOPE_WORKSPACE_READ",
+        "SCOPE_WORKSPACE_WRITE"
+      ]
+    },
+    {
+      "label": "Worker",
+      "scopes": [
+        "SCOPE_WORKER_READ",
+        "SCOPE_WORKER_ADMIN"
+      ]
+    },
+    {
+      "label": "Agent",
+      "scopes": [
+        "SCOPE_AGENT_READ",
+        "SCOPE_AGENT_WRITE"
+      ]
+    },
+    {
+      "label": "Terminal",
+      "scopes": [
+        "SCOPE_TERMINAL_READ",
+        "SCOPE_TERMINAL_WRITE"
+      ]
+    },
+    {
+      "label": "File",
+      "scopes": [
+        "SCOPE_FILE_READ"
+      ]
+    },
+    {
+      "label": "Git",
+      "scopes": [
+        "SCOPE_GIT_READ",
+        "SCOPE_GIT_WRITE"
+      ]
+    },
+    {
+      "label": "Tunnel",
+      "scopes": [
+        "SCOPE_TUNNEL_OPEN"
+      ]
+    },
+    {
+      "label": "Hub administration",
+      "scopes": [
+        "SCOPE_ADMIN_READ",
+        "SCOPE_ADMIN_USERS",
+        "SCOPE_ADMIN_SETTINGS",
+        "SCOPE_ADMIN_WORKERS",
+        "SCOPE_ADMIN_APPS"
+      ]
+    }
+  ],
+  "impliedBy": {
+    "SCOPE_ACCOUNT_WRITE": [
+      "SCOPE_ACCOUNT_READ"
+    ],
+    "SCOPE_WORKSPACE_WRITE": [
+      "SCOPE_WORKSPACE_READ"
+    ],
+    "SCOPE_WORKER_ADMIN": [
+      "SCOPE_WORKER_READ"
+    ],
+    "SCOPE_AGENT_READ": [
+      "SCOPE_WORKER_READ"
+    ],
+    "SCOPE_AGENT_WRITE": [
+      "SCOPE_WORKER_READ",
+      "SCOPE_AGENT_READ"
+    ],
+    "SCOPE_TERMINAL_READ": [
+      "SCOPE_WORKER_READ"
+    ],
+    "SCOPE_TERMINAL_WRITE": [
+      "SCOPE_WORKER_READ",
+      "SCOPE_TERMINAL_READ"
+    ],
+    "SCOPE_FILE_READ": [
+      "SCOPE_WORKER_READ"
+    ],
+    "SCOPE_GIT_READ": [
+      "SCOPE_WORKER_READ"
+    ],
+    "SCOPE_GIT_WRITE": [
+      "SCOPE_WORKER_READ",
+      "SCOPE_GIT_READ"
+    ],
+    "SCOPE_TUNNEL_OPEN": [
+      "SCOPE_WORKER_READ"
+    ],
+    "SCOPE_ADMIN_USERS": [
+      "SCOPE_ADMIN_READ"
+    ],
+    "SCOPE_ADMIN_SETTINGS": [
+      "SCOPE_ADMIN_READ"
+    ],
+    "SCOPE_ADMIN_WORKERS": [
+      "SCOPE_ADMIN_READ"
+    ],
+    "SCOPE_ADMIN_APPS": [
+      "SCOPE_ADMIN_READ"
+    ]
+  }
+}

@@ -7,8 +7,8 @@ import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as workerRpc from '~/api/workerRpc'
 import { showWarnToast } from '~/components/common/Toast'
-import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
-import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { WorktreeAction } from '~/generated/proto/leapmux/v1/common_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { createDialogState, createToggleDialog, createUpdatableDialogState } from '~/hooks/createDialogState'
 import { repoKey } from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
@@ -55,7 +55,7 @@ vi.mock('~/components/common/Toast', () => ({
 // `create`. The factory is async and runs lazily, so it can import both.
 vi.mock('~/components/shell/NewAgentDialog', async () => {
   const { create } = await import('@bufbuild/protobuf')
-  const { AgentInfoSchema } = await import('~/generated/leapmux/v1/agent_pb')
+  const { AgentInfoSchema } = await import('~/generated/proto/leapmux/v1/agent_pb')
   // No `gitStatus`: the OpenAgent response carries none. The worker computes
   // it in startup phase 1 and sends it on the STARTING broadcast, so the
   // `git status` shell-out does not block the RPC.

@@ -1,4 +1,4 @@
-import type { PasskeyInfo } from '~/generated/leapmux/v1/user_pb'
+import type { PasskeyInfo } from '~/generated/proto/leapmux/v1/user_pb'
 import { userClient } from '~/api/clients'
 
 export function credentialIdFromRegistrationJson(credentialJson: string): string | undefined {

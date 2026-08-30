@@ -1,11 +1,11 @@
 import type { ClassificationInput } from './registry'
-import type { AvailableOption, MessageSource } from '~/generated/leapmux/v1/agent_pb'
+import type { AvailableOption, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { create } from '@bufbuild/protobuf'
 import {
   AgentProvider,
   AvailableOptionGroupSchema,
   AvailableOptionSchema,
-} from '~/generated/leapmux/v1/agent_pb'
+} from '~/generated/proto/leapmux/v1/agent_pb'
 
 /**
  * Build a ClassificationInput from a parent object and optional wrapper, for

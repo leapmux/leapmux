@@ -1,5 +1,5 @@
 import type { AffectedTabs, BranchSnapshot } from './BranchStatusInfo'
-import type { BranchGitState } from '~/generated/leapmux/v1/git_pb'
+import type { BranchGitState } from '~/generated/proto/leapmux/v1/git_pb'
 import { render, screen } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { BranchStatusInfo, hasPushableWork } from './BranchStatusInfo'

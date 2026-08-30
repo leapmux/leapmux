@@ -1,4 +1,4 @@
-import type { SettingDescriptor, SettingValue } from '~/generated/leapmux/v1/settings_pb'
+import type { SettingDescriptor, SettingValue } from '~/generated/proto/leapmux/v1/settings_pb'
 import { createStore } from 'solid-js/store'
 import { formatErrorMessage } from '~/lib/errors'
 import { createKeyedQueue } from '~/lib/keyedQueue'

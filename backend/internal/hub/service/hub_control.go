@@ -7,6 +7,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/channelmgr"
 )
@@ -102,7 +103,7 @@ func (b *HubEventBroadcaster) flush(userID string) {
 		return
 	}
 	b.cMgr.SendToUser(userID, &leapmuxv1.ChannelMessage{
-		ProtocolVersion: 1,
+		ProtocolVersion: contracts.ProtocolVersion,
 		ChannelId:       channelmgr.HubControlChannelID,
 		Ciphertext:      data,
 	})

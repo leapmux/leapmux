@@ -1,4 +1,4 @@
-import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { pluginFor } from '~/components/chat/providers/registry'
 import { getOrCreate } from '~/lib/getOrCreate'

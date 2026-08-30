@@ -1,5 +1,5 @@
-import type { FloatingWindowRecord, HLC, LWWDirection, LWWDouble, LWWDoubles, LWWInt32, LWWNodeKind, LWWString, LWWUint32, NodeRecord, TabRecord, UserCrdtState } from '~/generated/leapmux/v1/user_crdt_pb'
-import type { CrdtOp } from '~/generated/leapmux/v1/user_ops_pb'
+import type { FloatingWindowRecord, HLC, LWWDirection, LWWDouble, LWWDoubles, LWWInt32, LWWNodeKind, LWWString, LWWUint32, NodeRecord, TabRecord, UserCrdtState } from '~/generated/proto/leapmux/v1/user_crdt_pb'
+import type { CrdtOp } from '~/generated/proto/leapmux/v1/user_ops_pb'
 import { create } from '@bufbuild/protobuf'
 import {
   DoubleListSchema,
@@ -15,7 +15,7 @@ import {
   TabRecordSchema,
   UserCrdtStateSchema,
   WorkspaceContentsRecordSchema,
-} from '~/generated/leapmux/v1/user_crdt_pb'
+} from '~/generated/proto/leapmux/v1/user_crdt_pb'
 import { hlcClone, hlcCmp, hlcIsZero } from './hlc'
 
 /**

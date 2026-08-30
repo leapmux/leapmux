@@ -1,5 +1,5 @@
 /// <reference types="vitest/globals" />
-import type { GitBranchEntry } from '~/generated/leapmux/v1/git_pb'
+import type { GitBranchEntry } from '~/generated/proto/leapmux/v1/git_pb'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { menuOptions, menuTrigger, menuTriggerText, pickMenuValue } from '~/test-support/menu'

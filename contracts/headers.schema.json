@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "headers.schema.json",
+  "title": "cross-program HTTP header contract",
+  "description": "Header names must be Leapmux-Namespaced tokens. Values are HTTP header names -- exact spelling is the contract. The pattern is enforced by BOTH layers on purpose: the schema here, and the generator's checkHeaders, because generate() runs schema-less in the generator's own test suite.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["_readme", "elevationRequired", "elevationExpiresAt", "credentialRejected"],
+  "properties": {
+    "_readme": { "type": "string", "minLength": 1 },
+    "elevationRequired": { "type": "string", "pattern": "^Leapmux-[A-Za-z-]+$" },
+    "elevationExpiresAt": { "type": "string", "pattern": "^Leapmux-[A-Za-z-]+$" },
+    "credentialRejected": { "type": "string", "pattern": "^Leapmux-[A-Za-z-]+$" }
+  }
+}

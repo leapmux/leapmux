@@ -4,16 +4,16 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/leapmux/leapmux/channelwire"
+	"github.com/leapmux/leapmux/generated/contracts"
 )
 
 const (
 	// maxChunkCiphertext is the maximum ciphertext size for a single Noise
-	// transport message. It mirrors channelwire.MaxCiphertextForChunk (65535 =
+	// transport message. It mirrors contracts.MaxCiphertextForChunk (65535 =
 	// 65519 plaintext + 16 auth tag) and aliases the shared constant so a
 	// transport-limit or AEAD-tag-size change is one edit in channelwire, not a
 	// 65535/16 pair this package's tests would not catch diverging.
-	maxChunkCiphertext = channelwire.MaxCiphertextForChunk
+	maxChunkCiphertext = contracts.MaxCiphertextForChunk
 )
 
 // chunkSequence tracks cumulative size for one in-flight chunked message.
@@ -54,7 +54,7 @@ type chunkTracker struct {
 // so at most ONE chunked sequence is ever in flight per channel+direction. That
 // interleaving rule is strictly stronger than any count cap of one or more, and
 // subsumes it. The Worker's and tunnel's reassembly caps, which share
-// channelwire.DefaultMaxIncompleteChunked, DO admit concurrent sequences and so
+// contracts.DefaultMaxIncompleteChunked, DO admit concurrent sequences and so
 // genuinely need the cap -- this reasoning is about the Hub relay only.
 func newChunkTracker(defaultReassembledMax int) *chunkTracker {
 	return &chunkTracker{
@@ -178,7 +178,7 @@ func (ct *chunkTracker) Track(channelID string, direction string, correlationID 
 // path rather than stranding an empty entry until RemoveChannel. Caller holds
 // ct.mu.
 func (ct *chunkTracker) accumulate(channelID, direction string, state *channelChunkState, seq *chunkSequence, correlationID uint64, ciphertextLen int) error {
-	estimated := ciphertextLen - channelwire.NoiseAEADAuthTagSize
+	estimated := ciphertextLen - contracts.NoiseAEADAuthTagSize
 	if estimated < 0 {
 		estimated = 0
 	}

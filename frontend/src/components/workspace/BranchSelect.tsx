@@ -1,5 +1,5 @@
 import type { Component } from 'solid-js'
-import type { GitBranchEntry } from '~/generated/leapmux/v1/git_pb'
+import type { GitBranchEntry } from '~/generated/proto/leapmux/v1/git_pb'
 import { createMemo } from 'solid-js'
 import { LoadingMenu } from '~/components/common/LoadingMenu'
 

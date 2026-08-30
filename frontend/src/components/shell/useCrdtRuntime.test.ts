@@ -4,8 +4,9 @@ import { IDBFactory, IDBKeyRange } from 'fake-indexeddb'
 import { createRoot, createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { channelManager } from '~/api/workerRpc'
-import { UserCrdtStateSchema } from '~/generated/leapmux/v1/user_crdt_pb'
-import { WatchUserEventSchema } from '~/generated/leapmux/v1/user_ops_pb'
+import { CLOSE_REASON_TOO_MANY_CONNECTIONS } from '~/generated/contracts/wire'
+import { UserCrdtStateSchema } from '~/generated/proto/leapmux/v1/user_crdt_pb'
+import { WatchUserEventSchema } from '~/generated/proto/leapmux/v1/user_ops_pb'
 import { KEY_CLIENT_ID, sessionStorageSet } from '~/lib/browserStorage'
 import { PendingOpsManager } from '~/lib/crdt'
 import { fullCheckpointDelta } from '~/lib/crdt/checkpointChunks'
@@ -19,9 +20,8 @@ import {
   SEED_CANDIDATE_MAX_AGE_MS,
   writeCheckpointAndTruncateOpLog,
 } from '~/lib/crdt/checkpointStore'
-import { createActiveClientStore } from '~/lib/presence/activeClient'
 
-import { CLOSE_REASON_TOO_MANY_CONNECTIONS } from '~/lib/wsCloseCodes'
+import { createActiveClientStore } from '~/lib/presence/activeClient'
 import { createOpLogAppender } from '~/test-support/opLog'
 import { useCrdtRuntime } from './useCrdtRuntime'
 

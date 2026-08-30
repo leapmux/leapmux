@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { ContentCompression } from '~/generated/leapmux/v1/agent_pb'
+import { ContentCompression } from '~/generated/proto/leapmux/v1/agent_pb'
 
 // Mock fzstd before importing the module under test
 vi.mock('fzstd', () => ({

@@ -6,7 +6,7 @@ import {
   NodeKind,
   NodeRecordSchema,
   WorkspaceContentsRecordSchema,
-} from '~/generated/leapmux/v1/user_crdt_pb'
+} from '~/generated/proto/leapmux/v1/user_crdt_pb'
 import { HLCClock, PendingOpsManager, setCRDTBridge } from '~/lib/crdt'
 
 /**

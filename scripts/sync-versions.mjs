@@ -67,6 +67,12 @@ export const CLAIMS = [
     render: v => `- **Node.js** ${major(v)} or later`,
   },
   {
+    file: 'README.md',
+    key: 'BUN_VERSION',
+    pattern: /^- \*\*Bun\*\* (\S+) or later/gm,
+    render: v => `- **Bun** ${v} or later`,
+  },
+  {
     file: 'site/content/docs/getting-started/installation.md',
     key: 'GOLANG_VERSION',
     pattern: /^- \*\*Go\*\* (\S+) or later$/gm,
@@ -77,6 +83,12 @@ export const CLAIMS = [
     key: 'NODE_VERSION',
     pattern: /^- \*\*Node\.js\*\* (\S+) or later$/gm,
     render: v => `- **Node.js** ${major(v)} or later`,
+  },
+  {
+    file: 'site/content/docs/getting-started/installation.md',
+    key: 'BUN_VERSION',
+    pattern: /^- \*\*Bun\*\* (\S+) or later/gm,
+    render: v => `- **Bun** ${v} or later`,
   },
   {
     file: 'go.work',

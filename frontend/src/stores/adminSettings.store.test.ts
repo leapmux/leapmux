@@ -1,4 +1,4 @@
-import type { SettingValue } from '~/generated/leapmux/v1/settings_pb'
+import type { SettingValue } from '~/generated/proto/leapmux/v1/settings_pb'
 import { createSignal } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 

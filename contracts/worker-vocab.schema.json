@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "worker-vocab.schema.json",
+  "title": "worker wire vocabulary contract",
+  "description": "Notification-type tokens, the notification-thread wrapper discriminator, the Codex time-window rate-limit token, and the model sentinels. The generator checks workerAuthoredNotificationTypes names keys of notificationTypes and that the tokens are unique.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "_readme",
+    "notificationTypes",
+    "workerAuthoredNotificationTypes",
+    "notificationThreadWrapperType",
+    "codexRateLimitReachedTimeWindow",
+    "modelSentinels"
+  ],
+  "properties": {
+    "_readme": { "type": "string", "minLength": 1 },
+    "notificationTypes": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": { "pattern": "^[A-Z][A-Za-z0-9]*$" },
+      "additionalProperties": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" }
+    },
+    "workerAuthoredNotificationTypes": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^[A-Z][A-Za-z0-9]*$" }
+    },
+    "notificationThreadWrapperType": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+    "codexRateLimitReachedTimeWindow": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+    "modelSentinels": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["accountDefaultModel", "effortAuto"],
+      "properties": {
+        "accountDefaultModel": { "type": "string", "minLength": 1 },
+        "effortAuto": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

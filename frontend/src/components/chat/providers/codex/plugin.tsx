@@ -8,16 +8,17 @@ import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { AgentSessionInfo, ContextUsageInfo, RateLimitInfo } from '~/stores/agentSession.store'
 import type { CommandStreamSegment } from '~/stores/chatTypes'
 import { buildPlanMode, OPTION_ID_PERMISSION_MODE } from '~/components/chat/settingsGroups'
-import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import { CODEX_RATE_LIMIT_REACHED_TIME_WINDOW, NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
+import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { getMessageContent, joinContentParagraphs } from '~/lib/contentBlocks'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { getInnerMessage } from '~/lib/messageParser'
-import { CODEX_RATE_LIMIT_REACHED_TIME_WINDOW, CODEX_RATE_LIMITS_METHOD, codexRateLimitReachedType, iterCodexRateLimitTiers } from '~/lib/rateLimitUtils'
+import { CODEX_RATE_LIMITS_METHOD, codexRateLimitReachedType, iterCodexRateLimitTiers } from '~/lib/rateLimitUtils'
 import { CODEX_INTERNAL_TOOL, CODEX_ITEM, CODEX_METHOD, CODEX_STATUS } from '~/types/toolMessages'
 import { getToolName } from '~/utils/controlResponse'
 import { defaultMarkPreview } from '../../markPreviewShared'
 import { PlanExecutionMessage, UserContentMessage } from '../../messageRenderers'
-import { isNotificationThreadWrapper, isTerminalCompactingStatus } from '../../messageUtils'
+import { isFinalCompactingStatus, isNotificationThreadWrapper } from '../../messageUtils'
 import { acpBuildControlResponse, isJsonRpcResponseObject } from '../acp/classification'
 import { registerProvider } from '../registry'
 import { CodexControlActions, CodexControlContent, sendCodexUserInputResponse } from './CodexControlRequest'
@@ -114,7 +115,7 @@ function isCodexEmptyCompletedWebSearch(item: Record<string, unknown>): boolean 
 }
 
 /** Extra notification types for Codex (agent_error). */
-const CODEX_EXTRA_NOTIF_TYPES = new Set(['agent_error'])
+const CODEX_EXTRA_NOTIF_TYPES = new Set([NOTIFICATION_TYPE.AgentError])
 /**
  * Codex JSON-RPC methods that, when persisted as SYSTEM, are notification-thread
  * entries. The consolidator treats these the same way `system+subtype` events
@@ -215,7 +216,7 @@ function isCodexRateLimitAllAllowed(m: Record<string, unknown>): boolean {
  *    turn/started, thread/{status,name,settings,tokenUsage}/updated,
  *    skills/changed, remoteControl/status/changed, hook/{started,completed} --
  *    transient signals persisted upstream, never rendered in chat.
- *  - a terminal (non-compacting) system status (see isTerminalCompactingStatus).
+ *  - a final (non-compacting) system status (see isFinalCompactingStatus).
  *  - the "Codex turn failed" agent_error (surfaced via the result divider).
  *  - an all-allowed rate-limit update (no throttle to show).
  *
@@ -229,9 +230,9 @@ function isCodexHiddenNotificationThreadMessage(m: unknown): boolean {
   const method = msg.method
   if (typeof method === 'string' && CODEX_HIDDEN_LIFECYCLE_METHODS.has(method))
     return true
-  if (isTerminalCompactingStatus(msg))
+  if (isFinalCompactingStatus(msg))
     return true
-  if (msg.type === 'agent_error' && msg.error === CODEX_TURN_FAILED_NOTIFICATION)
+  if (msg.type === NOTIFICATION_TYPE.AgentError && msg.error === CODEX_TURN_FAILED_NOTIFICATION)
     return true
   return isCodexRateLimitAllAllowed(msg)
 }
@@ -275,12 +276,12 @@ const CODEX_ITEM_CLASSIFIERS: Record<string, CodexItemClassifier> = {
 
 /** LeapMux-side notification `type` values produced by the worker. */
 const CODEX_LEAPMUX_NOTIFICATION_TYPES = new Set<string>([
-  'settings_changed',
-  'context_cleared',
-  'interrupted',
-  'agent_error',
-  'plan_updated',
-  'compacting',
+  NOTIFICATION_TYPE.SettingsChanged,
+  NOTIFICATION_TYPE.ContextCleared,
+  NOTIFICATION_TYPE.Interrupted,
+  NOTIFICATION_TYPE.AgentError,
+  NOTIFICATION_TYPE.PlanUpdated,
+  NOTIFICATION_TYPE.Compacting,
 ])
 
 /** Codex rate limits: {method:"account/rateLimits/updated", params:{rateLimits:{primary,secondary}}}. */
@@ -453,12 +454,12 @@ const codexPlugin: Provider = {
     if (type === 'system') {
       if (subtype === 'init' || subtype === 'task_notification')
         return { kind: 'hidden' }
-      if (isTerminalCompactingStatus(parent))
+      if (isFinalCompactingStatus(parent))
         return { kind: 'hidden' }
       return { kind: 'notification', messages: [parent] }
     }
 
-    if (type === 'agent_error' && parent.error === CODEX_TURN_FAILED_NOTIFICATION)
+    if (type === NOTIFICATION_TYPE.AgentError && parent.error === CODEX_TURN_FAILED_NOTIFICATION)
       return { kind: 'hidden' }
 
     if (method === CODEX_METHOD.TURN_PLAN_UPDATED && isObject(parent.params))

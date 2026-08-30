@@ -1,6 +1,6 @@
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
-import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { acpResultDivider } from '../acp/renderers'
 import { sendOpenCodePermissionResponse, sendOpenCodeQuestionResponse } from '../opencode/OpenCodeControlRequest'
 import { providerFor } from '../registry'

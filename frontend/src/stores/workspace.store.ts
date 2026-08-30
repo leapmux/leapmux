@@ -1,4 +1,4 @@
-import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
+import type { Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { createStore } from 'solid-js/store'
 
 interface WorkspaceStoreState {

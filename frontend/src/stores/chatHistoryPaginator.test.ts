@@ -1,5 +1,5 @@
 import type { ChatStoreState } from './chat.store'
-import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createStore } from 'solid-js/store'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -9,7 +9,7 @@ const { listAgentMessages } = vi.hoisted(() => ({ listAgentMessages: vi.fn() }))
 vi.mock('~/api/workerRpc', () => ({ listAgentMessages }))
 
 const { createHistoryPaginator, linkWatchSignal, MESSAGE_PAGE_SIZE } = await import('./chatHistoryPaginator')
-const { MessagePageAnchor, MessageSource } = await import('~/generated/leapmux/v1/agent_pb')
+const { MessagePageAnchor, MessageSource } = await import('~/generated/proto/leapmux/v1/agent_pb')
 
 // The harness's cap/ceiling, distinct so an assertion can prove WHICH was used. The
 // production wiring passes MAX_LOADED_CHAT_MESSAGES / MAX_LOADED_CHAT_MESSAGES_CEILING.

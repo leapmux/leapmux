@@ -2,7 +2,7 @@
 import { createComponent, createRoot } from 'solid-js'
 import { render } from 'solid-js/web'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { HubControlEvent } from '~/generated/leapmux/v1/channel_pb'
+import { HubControlEvent } from '~/generated/proto/leapmux/v1/channel_pb'
 import { createDialogState } from '~/hooks/createDialogState'
 import { useWorkerSection } from './useWorkerSection'
 

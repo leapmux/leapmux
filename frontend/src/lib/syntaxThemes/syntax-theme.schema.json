@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "syntax-theme.schema.json",
+  "title": "vendored shiki/VS Code syntax theme",
+  "description": "Shape of the theme JSONs vendored under frontend/src/lib/syntaxThemes/. Upstream owns the content; this schema only pins the structural contract the syntaxThemes loader relies on (name, type, colors map, tokenColors with settings).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "type", "colors", "tokenColors"],
+  "properties": {
+    "name": { "type": "string", "minLength": 1 },
+    "type": { "enum": ["light", "dark"] },
+    "colors": {
+      "type": "object",
+      "additionalProperties": { "type": "string" },
+      "minProperties": 1
+    },
+    "tokenColors": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["settings"],
+        "properties": {
+          "name": { "type": "string" },
+          "scope": {
+            "oneOf": [
+              { "type": "string" },
+              { "type": "array", "minItems": 1, "items": { "type": "string" } }
+            ]
+          },
+          "settings": {
+            "type": "object",
+            "additionalProperties": false,
+            "minProperties": 1,
+            "properties": {
+              "foreground": { "type": "string" },
+              "background": { "type": "string" },
+              "fontStyle": { "type": "string" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

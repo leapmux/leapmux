@@ -1,9 +1,9 @@
-import type { AgentChatMessage, ListMessageMarksResponse } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentChatMessage, ListMessageMarksResponse } from '~/generated/proto/leapmux/v1/agent_pb'
 import { create } from '@bufbuild/protobuf'
 import { createRoot } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createClassifiedEntryCache } from '~/components/chat/chatEntryCache'
-import { AgentChatMessageSchema, AgentProvider, ContentCompression, MarkType, MessageMarkSchema, MessagePageAnchor, MessageSource, TodoItemSchema, TodoStatus } from '~/generated/leapmux/v1/agent_pb'
+import { AgentChatMessageSchema, AgentProvider, ContentCompression, MarkType, MessageMarkSchema, MessagePageAnchor, MessageSource, TodoItemSchema, TodoStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createChatStore, MAX_LOADED_CHAT_MESSAGES, MAX_LOADED_CHAT_MESSAGES_CEILING } from '~/stores/chat.store'
 import { MESSAGE_PAGE_SIZE } from '~/stores/chatHistoryPaginator'
 

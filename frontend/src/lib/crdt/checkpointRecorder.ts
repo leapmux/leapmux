@@ -1,9 +1,9 @@
 import type { CheckpointDelta, ChunkRef, ChunkUpsert } from './checkpointStore'
 import type { PendingOpsManager } from './pendingOps'
-import type { UserCrdtState } from '~/generated/leapmux/v1/user_crdt_pb'
-import type { WatchUserEvent } from '~/generated/leapmux/v1/user_ops_pb'
+import type { UserCrdtState } from '~/generated/proto/leapmux/v1/user_crdt_pb'
+import type { WatchUserEvent } from '~/generated/proto/leapmux/v1/user_ops_pb'
 import { toBinary } from '@bufbuild/protobuf'
-import { WatchUserEventSchema } from '~/generated/leapmux/v1/user_ops_pb'
+import { WatchUserEventSchema } from '~/generated/proto/leapmux/v1/user_ops_pb'
 import { createLogger } from '~/lib/logger'
 import {
   entityKey,

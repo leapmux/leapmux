@@ -1,5 +1,6 @@
 import { Code, ConnectError } from '@connectrpc/connect'
 import { createSignal } from 'solid-js'
+import * as wireHeaders from '~/generated/contracts/headers'
 import { createLogger } from '~/lib/logger'
 
 const log = createLogger('elevationPrompt')
@@ -31,14 +32,16 @@ const log = createLogger('elevationPrompt')
 
 /**
  * The header the hub sets on a refusal whose remedy is "prove a factor and
- * retry". Mirrors service.ElevationRequiredHeader.
+ * retry". Both sides take the name from contracts/headers.json (generated as
+ * service.ElevationRequiredHeader on the Go side); lowercased here because
+ * that is the form fetch/Connect expose header names in.
  *
  * Keyed on a header rather than on the message, because the message is
  * user-facing prose that somebody will reword; and rather than on the code alone,
  * because FailedPrecondition also carries refusals a prompt cannot fix
  * ("this account has no password", "set a replacement password first").
  */
-const ELEVATION_REQUIRED_HEADER = 'leapmux-elevation-required'
+const ELEVATION_REQUIRED_HEADER = wireHeaders.ELEVATION_REQUIRED_HEADER.toLowerCase()
 
 /**
  * Whether this failure is one a step-up prompt would resolve.

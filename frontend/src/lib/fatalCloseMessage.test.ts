@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { fatalCloseError, fatalCloseMessage } from './fatalCloseMessage'
 import {
   CLOSE_REASON_CONTROL_FLOOD,
   CLOSE_REASON_FORBIDDEN,
   CLOSE_REASON_SNAPSHOT_TOO_LARGE,
   CLOSE_REASON_TOO_MANY_CONNECTIONS,
-} from './wsCloseCodes'
+} from '~/generated/contracts/wire'
+import { fatalCloseError, fatalCloseMessage } from './fatalCloseMessage'
 
 describe('fatalCloseMessage', () => {
   it('tells a capped user to close something, not to reload', () => {

@@ -1,7 +1,7 @@
 import type { DotCluster } from './chatRailPolicy'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
-import { MarkType } from '~/generated/leapmux/v1/agent_pb'
+import { MarkType } from '~/generated/proto/leapmux/v1/agent_pb'
 import { DotPreviewCard } from './ChatScrollRailPreview'
 
 // The card's pointer, wheel and selection behaviour is driven end-to-end through the real rail in

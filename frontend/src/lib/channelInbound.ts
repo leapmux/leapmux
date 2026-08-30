@@ -7,12 +7,12 @@
  */
 import type { ChannelRpcMux, RpcChannel } from './channelRpc'
 import type { ChannelSession, SessionChannel } from './channelSession'
-import type { ChannelMessage } from '~/generated/leapmux/v1/channel_pb'
+import type { ChannelMessage } from '~/generated/proto/leapmux/v1/channel_pb'
 import { fromBinary } from '@bufbuild/protobuf'
 import {
   ChannelMessageFlags,
   InnerMessageSchema,
-} from '~/generated/leapmux/v1/channel_pb'
+} from '~/generated/proto/leapmux/v1/channel_pb'
 import { ChannelError } from './channelError'
 import { createLogger } from './logger'
 

@@ -1,6 +1,6 @@
 import type { Component } from 'solid-js'
 import type { ActionsProps, AskQuestionState, EditorContentRef, Question } from './types'
-import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ControlRequest } from '~/stores/control.store'
 import { createUniqueId, For, Show } from 'solid-js'
 import { apiLoadingTimeoutMs } from '~/api/transport'

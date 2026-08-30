@@ -1,6 +1,10 @@
 package service
 
-import "connectrpc.com/connect"
+import (
+	"connectrpc.com/connect"
+
+	"github.com/leapmux/leapmux/generated/contracts"
+)
 
 // A rejected CREDENTIAL and a dead SESSION are opposites for a client, and
 // this file is the one place the difference is stated.
@@ -21,7 +25,9 @@ import "connectrpc.com/connect"
 // prompt would end the very session the prompt exists to protect. The code
 // stays Unauthenticated, because a rejected credential is what it means; the
 // marker says WHICH credential.
-const CredentialRejectedHeader = "Leapmux-Credential-Rejected"
+// The name is owned by contracts/headers.json, generated into the hub and
+// the browser alike.
+const CredentialRejectedHeader = contracts.CredentialRejectedHeader
 
 // credentialRejectedError builds an Unauthenticated that a client must not
 // read as a dead session. See CredentialRejectedHeader.

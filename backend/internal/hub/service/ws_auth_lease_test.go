@@ -6,7 +6,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/leapmux/leapmux/channelwire"
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 )
 
@@ -39,7 +39,7 @@ func TestLeaseOutcomeLabelIsSendableAsACloseReason(t *testing.T) {
 		assert.LessOrEqual(t, len(reason), 123, "outcome %d", outcome)
 	}
 
-	assert.Equal(t, channelwire.CloseReasonTooManyConnections,
+	assert.Equal(t, contracts.CloseReasonTooManyConnections,
 		auth.LeaseRefusedTooManyConnections.Label())
 
 	// Everything that is not the cap must NOT claim to be: a client shown the
@@ -54,7 +54,7 @@ func TestLeaseOutcomeLabelIsSendableAsACloseReason(t *testing.T) {
 		auth.LeaseOutcome(99),
 	} {
 		label := notTheCap.Label()
-		assert.NotEqual(t, channelwire.CloseReasonTooManyConnections, label,
+		assert.NotEqual(t, contracts.CloseReasonTooManyConnections, label,
 			"outcome %d must not be reported as a connection-cap refusal", notTheCap)
 		assert.False(t, seen[label],
 			"outcome %d shares a close token with another outcome, so a client cannot tell them apart", notTheCap)

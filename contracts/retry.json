@@ -1,0 +1,12 @@
+{
+  "_readme": "Retry policies consumed on BOTH sides of a language boundary. Only the events-rejection policy qualifies today: the CLI's streamevents LOOKUP_FAILED retry and the browser's useWatchEventsStreams rejectionBackoff must advance on the same schedule or a rejected batch retried by one side lands in a rhythm the other side's accounting does not expect. Frontend-only retry policies deliberately stay in the frontend (useOpsSubmitter, useUserEvents, workerPrivateEvents): no mirror, no contract to hold.",
+  "policies": {
+    "eventsRejection": {
+      "initialMs": 500,
+      "maxMs": 15000,
+      "multiplier": 2,
+      "jitterFactor": 0.2,
+      "maxAttempts": 8
+    }
+  }
+}

@@ -3,7 +3,7 @@ import { createRoot } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { userCRDTClient, userCRDTUnloadClient } from '~/api/clients'
 import { showWarnToast } from '~/components/common/Toast'
-import { BatchRejectionReason, OpBatchSchema } from '~/generated/leapmux/v1/user_ops_pb'
+import { BatchRejectionReason, OpBatchSchema } from '~/generated/proto/leapmux/v1/user_ops_pb'
 import { createOpsSubmitter } from './useOpsSubmitter'
 
 // The submitter's only user-visible side effect on a permanent rejection is a

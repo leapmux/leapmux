@@ -1,5 +1,5 @@
-import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
-import { MessageSource } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
+import { MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '~/lib/jsonPick'
 import { parseMessageContent } from '~/lib/messageParser'
 import { removePersistedLocalMessage } from './chatLocalMessages'

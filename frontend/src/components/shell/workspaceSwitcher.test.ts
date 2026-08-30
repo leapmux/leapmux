@@ -1,7 +1,7 @@
 /// <reference types="vitest/globals" />
 import { createRoot } from 'solid-js'
 import { beforeEach, describe, expect, it } from 'vitest'
-import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { KEY_ACTIVE_WORKSPACE, localStorageGet, resetStorageAccountForTests, setStorageAccount } from '~/lib/browserStorage'
 import { emitAddTab } from '~/stores/tabOps'
 import { TEST_USER_ID, withTestBridge } from '~/test-support/crdtBridge'

@@ -8,7 +8,7 @@ import { MessageContextMenuHostProvider } from '~/components/chat/MessageContext
 import * as chatStyles from '~/components/chat/messageStyles.css'
 import { toolBodyContent, toolHeaderTimestamp } from '~/components/chat/toolStyles.css'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
-import { AgentProvider, MessageSource } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { KEY_BROWSER_PREFS, localStorageSet } from '~/lib/browserStorage'
 import { makeMessage, rawContent, wrapContent } from '~/test-support/messageFactory'
 

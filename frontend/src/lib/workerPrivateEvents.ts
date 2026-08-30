@@ -6,13 +6,13 @@
 // `worker_file_tabs` row the caller owns) so a late-joining client
 // receives the full path cache before any live events.
 
-import type { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import type { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { create, fromBinary, toBinary } from '@bufbuild/protobuf'
 import { channelManager } from '~/api/workerRpc'
 import {
   WatchWorkerPrivateEventsRequestSchema,
   WorkerPrivateEventSchema,
-} from '~/generated/leapmux/v1/worker_private_pb'
+} from '~/generated/proto/leapmux/v1/worker_private_pb'
 import { createLogger } from '~/lib/logger'
 import { createExponentialBackoff } from '~/lib/retry'
 

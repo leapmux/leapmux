@@ -18,6 +18,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/leapmux/leapmux/channelwire"
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
@@ -65,7 +66,7 @@ func (s *rollbackChannelService) OpenChannel(
 		UserId:           "authenticated-user",
 	}
 	if !s.omitMaxMessageSize {
-		resp.MaxMessageSize = uint64(channelwire.MaxMessageSize)
+		resp.MaxMessageSize = uint64(contracts.MaxMessageSize)
 	}
 	return connect.NewResponse(resp), nil
 }
@@ -300,7 +301,7 @@ func TestOpenChannelRejectsAboveCeilingMaxMessageSize(t *testing.T) {
 	require.NoError(t, err)
 	stub := &maxMessageSizeStub{
 		rollbackChannelService: rollbackChannelService{publicKey: key.X25519Public},
-		size:                   uint64(channelwire.MaxConfigurableMessageSize + 1),
+		size:                   uint64(contracts.MaxConfigurableMessageSize + 1),
 	}
 	_, handler := leapmuxv1connect.NewChannelServiceHandler(stub)
 	server := httptest.NewServer(handler)
@@ -1151,7 +1152,7 @@ func newReassemblyTestChannel(t *testing.T) *Channel {
 	return &Channel{
 		ctx:            ctx,
 		cancel:         cancel,
-		maxReassembled: channelwire.DefaultMaxReassembledMessageSize,
+		maxReassembled: contracts.DefaultMaxReassembledMessageSize,
 		pending:        make(map[uint64]chan<- *leapmuxv1.InnerRpcResponse),
 		streamCbs:      make(map[uint64]*streamCallback),
 		reassembly:     make(map[uint64]*channelwire.ChunkBuffer),
@@ -1290,7 +1291,7 @@ func newReadTestConn(t *testing.T) *Conn {
 	ch := &Channel{
 		ctx:            ctx,
 		cancel:         cancel,
-		maxReassembled: channelwire.DefaultMaxReassembledMessageSize,
+		maxReassembled: contracts.DefaultMaxReassembledMessageSize,
 		pending:        make(map[uint64]chan<- *leapmuxv1.InnerRpcResponse),
 		streamCbs:      make(map[uint64]*streamCallback),
 		reassembly:     make(map[uint64]*channelwire.ChunkBuffer),
@@ -1605,7 +1606,7 @@ func TestDeliverRPCError(t *testing.T) {
 	ch := &Channel{
 		ctx:            ctx,
 		cancel:         cancel,
-		maxReassembled: channelwire.DefaultMaxReassembledMessageSize,
+		maxReassembled: contracts.DefaultMaxReassembledMessageSize,
 		pending:        make(map[uint64]chan<- *leapmuxv1.InnerRpcResponse),
 		streamCbs:      make(map[uint64]*streamCallback),
 		reassembly:     make(map[uint64]*channelwire.ChunkBuffer),
@@ -1654,7 +1655,7 @@ func TestDeliverResponseNeverDropsTheFirstResponse(t *testing.T) {
 	ch := &Channel{
 		ctx:            ctx,
 		cancel:         cancel,
-		maxReassembled: channelwire.DefaultMaxReassembledMessageSize,
+		maxReassembled: contracts.DefaultMaxReassembledMessageSize,
 		pending:        make(map[uint64]chan<- *leapmuxv1.InnerRpcResponse),
 		streamCbs:      make(map[uint64]*streamCallback),
 		reassembly:     make(map[uint64]*channelwire.ChunkBuffer),
@@ -1706,7 +1707,7 @@ func TestDeliverRPCErrorFallsBackToStreamHandler(t *testing.T) {
 	ch := &Channel{
 		ctx:            ctx,
 		cancel:         cancel,
-		maxReassembled: channelwire.DefaultMaxReassembledMessageSize,
+		maxReassembled: contracts.DefaultMaxReassembledMessageSize,
 		pending:        make(map[uint64]chan<- *leapmuxv1.InnerRpcResponse),
 		streamCbs:      make(map[uint64]*streamCallback),
 		reassembly:     make(map[uint64]*channelwire.ChunkBuffer),
@@ -1747,7 +1748,7 @@ func TestReassembleDropsChunksAfterOversizeInsteadOfReBuffering(t *testing.T) {
 		ctx:            ctx,
 		cancel:         cancel,
 		channelID:      "ch-1",
-		maxReassembled: channelwire.DefaultMaxReassembledMessageSize,
+		maxReassembled: contracts.DefaultMaxReassembledMessageSize,
 		pending:        make(map[uint64]chan<- *leapmuxv1.InnerRpcResponse),
 		streamCbs:      make(map[uint64]*streamCallback),
 		reassembly:     make(map[uint64]*channelwire.ChunkBuffer),
@@ -1823,7 +1824,7 @@ func TestReassembleDropsOutOfSpecFlags(t *testing.T) {
 		ctx:            ctx,
 		cancel:         cancel,
 		channelID:      "ch-flags",
-		maxReassembled: channelwire.DefaultMaxReassembledMessageSize,
+		maxReassembled: contracts.DefaultMaxReassembledMessageSize,
 		pending:        make(map[uint64]chan<- *leapmuxv1.InnerRpcResponse),
 		streamCbs:      make(map[uint64]*streamCallback),
 		reassembly:     make(map[uint64]*channelwire.ChunkBuffer),
@@ -1845,7 +1846,7 @@ func TestReassembleJoinsChunks(t *testing.T) {
 	ch := &Channel{
 		ctx:            ctx,
 		cancel:         cancel,
-		maxReassembled: channelwire.DefaultMaxReassembledMessageSize,
+		maxReassembled: contracts.DefaultMaxReassembledMessageSize,
 		pending:        make(map[uint64]chan<- *leapmuxv1.InnerRpcResponse),
 		streamCbs:      make(map[uint64]*streamCallback),
 		reassembly:     make(map[uint64]*channelwire.ChunkBuffer),
@@ -1876,7 +1877,7 @@ func TestReassemblePassesThroughUnchunked(t *testing.T) {
 	ch := &Channel{
 		ctx:            ctx,
 		cancel:         cancel,
-		maxReassembled: channelwire.DefaultMaxReassembledMessageSize,
+		maxReassembled: contracts.DefaultMaxReassembledMessageSize,
 		pending:        make(map[uint64]chan<- *leapmuxv1.InnerRpcResponse),
 		streamCbs:      make(map[uint64]*streamCallback),
 		reassembly:     make(map[uint64]*channelwire.ChunkBuffer),
@@ -1920,7 +1921,7 @@ func TestReassembleErrorsOverCapIDOnceAndDropsItsRemainingChunks(t *testing.T) {
 	more := leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE
 
 	// Fill the cap with live, in-flight chunked messages on other ids.
-	for i := range uint64(channelwire.DefaultMaxIncompleteChunked) {
+	for i := range uint64(contracts.DefaultMaxIncompleteChunked) {
 		reqID := 1 + i
 		ch.pending[reqID] = make(chan *leapmuxv1.InnerRpcResponse, 1)
 		payload, complete := ch.reassemble(reqID, more, []byte("live"))
@@ -1928,7 +1929,7 @@ func TestReassembleErrorsOverCapIDOnceAndDropsItsRemainingChunks(t *testing.T) {
 		require.Nil(t, payload)
 	}
 	ch.mu.Lock()
-	require.Equal(t, channelwire.DefaultMaxIncompleteChunked, ch.liveReassemblyLocked(), "the cap is full of live buffers")
+	require.Equal(t, contracts.DefaultMaxIncompleteChunked, ch.liveReassemblyLocked(), "the cap is full of live buffers")
 	ch.mu.Unlock()
 
 	// A further id's first chunk breaches the cap and is errored.
@@ -1981,7 +1982,7 @@ func TestReassembleTombstoneDoesNotConsumeCapSlot(t *testing.T) {
 	ch, errs := newStreamErrorChannel(t, overCapID)
 	more := leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE
 
-	for i := range uint64(channelwire.DefaultMaxIncompleteChunked) {
+	for i := range uint64(contracts.DefaultMaxIncompleteChunked) {
 		reqID := 1 + i
 		ch.pending[reqID] = make(chan *leapmuxv1.InnerRpcResponse, 1)
 		_, complete := ch.reassemble(reqID, more, []byte("live"))
@@ -1996,7 +1997,7 @@ func TestReassembleTombstoneDoesNotConsumeCapSlot(t *testing.T) {
 	}
 	ch.mu.Lock()
 	require.Contains(t, ch.reassembly, uint64(overCapID), "the tombstone is present")
-	require.Equal(t, channelwire.DefaultMaxIncompleteChunked, ch.liveReassemblyLocked(),
+	require.Equal(t, contracts.DefaultMaxIncompleteChunked, ch.liveReassemblyLocked(),
 		"the tombstone must not be counted against the cap")
 	ch.mu.Unlock()
 

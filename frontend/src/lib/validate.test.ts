@@ -3,15 +3,13 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
+import { NAME_BYTE_LIMIT, NAME_WHITESPACE_CLASS, SESSION_ID_BYTE_LIMIT } from '~/generated/contracts/validate'
 import {
   cleanName,
   isValidBranchName,
-  NAME_BYTE_LIMIT,
-  NAME_WHITESPACE_CLASS,
   sanitizeDisplayName,
   sanitizeName,
   sanitizeSlug,
-  SESSION_ID_BYTE_LIMIT,
   stripRemotePrefix,
   validateBranchName,
   validateEmail,

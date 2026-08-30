@@ -1,4 +1,4 @@
-import type { Section } from '~/generated/leapmux/v1/section_pb'
+import type { Section } from '~/generated/proto/leapmux/v1/section_pb'
 import { headerHeightPx } from '~/styles/tokens'
 
 /** Prefix for section draggable IDs. */

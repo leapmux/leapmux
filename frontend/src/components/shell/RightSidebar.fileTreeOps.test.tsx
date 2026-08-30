@@ -1,7 +1,7 @@
 import { cleanup, render } from '@solidjs/testing-library'
 import { createEffect, createSignal, For, onMount } from 'solid-js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { SectionType, Sidebar } from '~/generated/leapmux/v1/section_pb'
+import { SectionType, Sidebar } from '~/generated/proto/leapmux/v1/section_pb'
 import { refreshFileTree, toggleHiddenFiles } from '~/lib/fileTreeOps'
 import { createSectionStore } from '~/stores/section.store'
 import { RightSidebar } from './RightSidebar'

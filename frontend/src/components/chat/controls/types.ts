@@ -1,5 +1,5 @@
 import type { Accessor, Setter } from 'solid-js'
-import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ContextUsageInfo } from '~/stores/agentSession.store'
 import type { ControlRequest } from '~/stores/control.store'
 import type { PermissionMode } from '~/utils/controlResponse'

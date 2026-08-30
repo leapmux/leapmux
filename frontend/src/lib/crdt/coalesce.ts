@@ -4,7 +4,7 @@ import type {
   SetFloatingWindowRegisterOp,
   SetNodeRegisterOp,
   SetTabRegisterOp,
-} from '~/generated/leapmux/v1/user_ops_pb'
+} from '~/generated/proto/leapmux/v1/user_ops_pb'
 
 // ---------------------------------------------------------------------------
 // Last-writer-wins coalescing of queued ops

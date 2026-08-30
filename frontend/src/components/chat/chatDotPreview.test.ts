@@ -1,7 +1,7 @@
 import type { DotCluster } from './chatRailPolicy'
 import { createRoot, createSignal } from 'solid-js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { MarkType } from '~/generated/leapmux/v1/agent_pb'
+import { MarkType } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createDotPreview, POINTER_CLOSE_DELAY_MS } from './chatDotPreview'
 
 // Flush queued Solid effects (the stale-hover re-anchor effect is not a pull-based memo).

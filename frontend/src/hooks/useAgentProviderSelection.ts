@@ -1,5 +1,5 @@
 import type { Accessor } from 'solid-js'
-import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createEffect, createMemo, createSignal } from 'solid-js'
 import { useMruProviders } from '~/hooks/useMruProviders'
 import { getAvailableAgentProviders } from '~/lib/agentProviders'
@@ -17,7 +17,7 @@ interface UseAgentProviderSelectionResult {
   agentProvider: Accessor<AgentProvider | undefined>
   setAgentProvider: (v: AgentProvider) => void
   recordProviderUse: (provider: AgentProvider) => void
-  available: Accessor<AgentProvider[]>
+  available: Accessor<readonly AgentProvider[]>
   noProviders: Accessor<boolean>
 }
 
@@ -37,7 +37,7 @@ interface UseAgentProviderSelectionResult {
  * normalizes it via `getAvailableAgentProviders`.
  */
 export function useAgentProviderSelection(
-  availableProviders: Accessor<AgentProvider[] | undefined>,
+  availableProviders: Accessor<readonly AgentProvider[] | undefined>,
 ): UseAgentProviderSelectionResult {
   const available = createMemo(() => getAvailableAgentProviders(availableProviders()))
   const { mruProviders, recordProviderUse } = useMruProviders(available, 1)

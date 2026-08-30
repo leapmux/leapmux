@@ -64,7 +64,7 @@ The binary runs in several modes:
 | `leapmux control admin` | Online, authenticated CLI for users, workers, OAuth, settings, and tokens |
 | `leapmux recover` | Offline break-glass CLI: first-admin bootstrap, password reset, encryption keys, database |
 
-Frontend↔Hub uses ConnectRPC; Frontend↔Worker uses hybrid post-quantum Noise_NK multiplexed over a single Hub-relayed WebSocket; Worker↔Hub uses gRPC. The Hub routes traffic but can't read Frontend↔Worker content. The wire format is Protocol Buffers in [`/proto/leapmux/v1/`](proto/leapmux/v1/).
+Frontend↔Hub uses ConnectRPC; Frontend↔Worker uses hybrid post-quantum Noise_NK multiplexed over a single Hub-relayed WebSocket; Worker↔Hub uses gRPC. The Hub routes traffic but can't read Frontend↔Worker content. The wire format is Protocol Buffers in [`/proto/leapmux/v1/`](proto/leapmux/v1/); every constant shared across Go, TypeScript, and Rust is defined once in [`/contracts/`](contracts/) and generated into each language.
 
 LeapMux supports exactly one active Hub process per database. The Hub holds a database-backed runtime lease and refuses to serve when another live Hub owns it; a replacement can take over after graceful release or lease expiry. Administrative CLI processes may still access the database while the Hub is running.
 
@@ -78,7 +78,7 @@ Before you begin, ensure you have the following installed:
 
 - **Go** 1.26.5 or later
 - **Node.js** 24 or later
-- **Bun** (latest version) - JavaScript runtime and package manager
+- **Bun** 1.3.14 or later - JavaScript runtime and package manager
 - **Task** - Task runner (replaces Make)
 - **buf** CLI - Protocol Buffer code generation ([authentication](https://buf.build/docs/bsr/authentication/) recommended to avoid rate-limit errors)
 - **protobuf** (`protoc`) - Protocol Buffer compiler (required by Tauri's `prost-build`)
@@ -88,7 +88,7 @@ Before you begin, ensure you have the following installed:
 - **Rust toolchain** - For the Tauri desktop app (built by `task build`)
 - **Tauri desktop prerequisites** - WebView/system packages required by Tauri on your platform
 
-Go-based build tools — `sqlc`, `golangci-lint`, and `gotestsum` — are declared as `tool` dependencies in `backend/go.mod` and `desktop/go/go.mod`, and invoked automatically via `go tool <name>`. You don't need to install them separately.
+Go-based build tools — `sqlc`, `golangci-lint`, and `gotestsum` — are declared as `tool` dependencies in `backend/go.mod` and invoked automatically via `go tool <name>`. You don't need to install them separately.
 
 ### macOS
 
@@ -161,7 +161,7 @@ Get LeapMux running locally:
 git clone https://github.com/leapmux/leapmux.git
 cd leapmux
 
-# 2. Generate code and download assets (protobuf, sqlc, and spinner JSON — not checked into git)
+# 2. Generate code and download assets (protobuf, contracts, sqlc, and spinner JSON — not checked into git)
 task generate
 
 # 3. Start all services (requires mprocs)
@@ -237,6 +237,7 @@ task lint
 Run specific linters:
 ```bash
 task lint-versions   # Check documented tool versions against versions.env
+task validate-json   # Validate every project-written JSON file against its schema
 task lint-proto      # Lint Protocol Buffer definitions
 task lint-backend    # Lint Go code (hub + worker)
 task lint-frontend   # Lint frontend code (TypeScript typecheck + ESLint)
@@ -260,7 +261,7 @@ Desktop builds use [Tauri v2](https://v2.tauri.app/start/prerequisites/):
 
 ### Code Generation
 
-Regenerate all generated code and downloaded assets (Protocol Buffers, sqlc, and spinner JSON):
+Regenerate all generated code and downloaded assets (Protocol Buffers, contracts, sqlc, and spinner JSON):
 ```bash
 task generate
 ```
@@ -268,6 +269,7 @@ task generate
 You can also run each generator individually:
 ```bash
 task generate-proto      # Generate Protocol Buffer code (Go and TypeScript)
+task generate-contracts  # Generate Go/TS/Rust constants from contracts/*.json (the single source for every cross-language value)
 task generate-sqlc       # Generate type-safe SQL code (hub and worker)
 task generate-spinners   # Download spinner verb JSON files from awesome-claude-spinners
 ```
@@ -276,6 +278,7 @@ Task uses checksums to skip generation when source files haven't changed. To for
 
 Always run `task generate-proto` after modifying `.proto` files in `/proto/leapmux/v1/`.
 Always run `task generate-sqlc` after modifying `.sql` files in `/backend/internal/hub/store/*/db/queries/` or `/backend/internal/worker/db/queries/`.
+Always run `task generate-contracts` after modifying `contracts/*.json`. Adding a proto enum value (AgentProvider, Scope) fails generation until its contract entry exists.
 
 ### Preparation
 
@@ -286,9 +289,9 @@ task prepare
 
 You can also run each step individually:
 ```bash
-task prepare-frontend   # Generate proto/spinners, run bun install, generate icons, copy NOTICE.html
-task prepare-backend    # Generate proto/sqlc, build the frontend, and embed it into the backend
-task prepare-desktop    # Generate proto, build the frontend, prepare the backend, and generate desktop icons
+task prepare-frontend   # Generate proto/contracts/spinners, run bun install, generate icons, copy NOTICE.html
+task prepare-backend    # Generate proto/contracts/sqlc, build the frontend, and embed it into the backend
+task prepare-desktop    # Generate proto/contracts, build the frontend, prepare the backend, and generate desktop icons
 ```
 
 Note: Build targets automatically run their required preparation steps, so `task build` works without running `task prepare` first.
@@ -313,7 +316,7 @@ Clean a specific module:
 ```bash
 task clean-backend    # Remove leapmux binaries and generated/ directories
 task clean-frontend   # Remove .output, .vinxi, node_modules, and generated/ directories
-task clean-desktop    # Remove desktop binaries, bundles, and Rust target/
+task clean-desktop    # Remove desktop binaries, bundles, the generated contracts module, and Rust target/
 ```
 
 ### Docker images
@@ -401,7 +404,7 @@ task dev-site    # Live-reload dev server at http://localhost:1313
 
 ### Worker (Agent Wrapper)
 
-- **[CIRCL](https://github.com/cloudflare/circl)** - Post-quantum cryptographic primitives (ML-KEM, SLH-DSA) for E2EE channel handling
+- **[CIRCL](https://github.com/cloudflare/circl)** - SLH-DSA post-quantum signatures for E2EE channel handling
 - **[Git](https://git-scm.com/)** - Repository info and worktree management
 - **[Go](https://go.dev/)** - Primary language
 - **[gRPC](https://grpc.io/)** - Communication with Hub
@@ -433,15 +436,17 @@ leapmux/
 │   └── internal/
 │       ├── hub/         # Hub: auth, channel relay, pluggable store, keystore, OAuth
 │       └── worker/      # Worker: agents, terminals, file browser, git, E2EE channel
+├── contracts/           # Cross-language constant contracts (JSON + sibling JSON Schema), generated into Go/TS/Rust
 ├── desktop/             # Tauri v2 desktop app (Rust shell + Go sidecar)
 ├── docker/              # Dockerfile and s6-overlay service definitions
 ├── frontend/            # SolidJS web app
 │   └── src/components/  # UI: chat (+ per-agent renderers), terminal, files, shell
 ├── icons/               # App and agent-provider SVG icons
 ├── proto/leapmux/v1/    # Protocol Buffer service and message definitions
-├── scripts/             # Utility scripts (NOTICE generation, ICO builder, ...)
+├── scripts/             # Build scripts: contracts/proto generation, JSON-schema validation, NOTICE, icons
 ├── site/                # Hugo + Hextra documentation site (leapmux.dev)
 │   └── content/docs/    # The user manual
+├── testdata/            # Cross-language conformance corpora (JSON + JSON Schema), replayed by the Go and TS suites
 ├── go.work              # Go workspace (backend + desktop/go)
 ├── Taskfile.yaml        # Build orchestration (go-task.dev)
 └── versions.env         # Version string and tool/image versions

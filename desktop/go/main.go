@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/util/clockjump"
 )
 
@@ -18,8 +19,8 @@ import (
 //	envBinaryHash — hash the Rust shell computed from the sidecar binary;
 //	  the sidecar reports it back so the shell can detect stale processes.
 const (
-	envDevEndpoint = "LEAPMUX_DESKTOP_DEV_ENDPOINT"
-	envBinaryHash  = "LEAPMUX_DESKTOP_BINARY_HASH"
+	envDevEndpoint = contracts.EnvDevEndpoint
+	envBinaryHash  = contracts.EnvBinaryHash
 )
 
 func main() {

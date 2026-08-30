@@ -1,5 +1,5 @@
 import type { RailRange } from './chatScrollRailGeometry'
-import type { MarkType } from '~/generated/leapmux/v1/agent_pb'
+import type { MarkType } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { SeqMark } from '~/stores/chatMessageMarks'
 import { lowerBoundBySeq, smallestIndexWhere } from '~/lib/binarySearch'
 import { clamp } from '~/lib/clamp'

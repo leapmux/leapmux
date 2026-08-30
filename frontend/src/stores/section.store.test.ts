@@ -1,7 +1,7 @@
-import type { Section, SectionItem } from '~/generated/leapmux/v1/section_pb'
+import type { Section, SectionItem } from '~/generated/proto/leapmux/v1/section_pb'
 import { createRoot } from 'solid-js'
 import { describe, expect, it } from 'vitest'
-import { SectionType } from '~/generated/leapmux/v1/section_pb'
+import { SectionType } from '~/generated/proto/leapmux/v1/section_pb'
 import { createSectionStore } from '~/stores/section.store'
 
 function makeSection(id: string, name: string, sectionType: SectionType, position: string): Section {

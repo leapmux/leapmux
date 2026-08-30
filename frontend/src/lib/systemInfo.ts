@@ -1,9 +1,9 @@
-import type { OAuthProviderInfo } from '~/generated/leapmux/v1/auth_pb'
+import type { OAuthProviderInfo } from '~/generated/proto/leapmux/v1/auth_pb'
 import type { BuildInfo } from '~/lib/buildEnv'
 import { createSignal } from 'solid-js'
 import { authClient } from '~/api/clients'
 import { getCapabilities, isTauriApp } from '~/api/platformBridge'
-import { CaptchaProvider as GenCaptchaProvider } from '~/generated/leapmux/v1/auth_pb'
+import { CaptchaProvider as GenCaptchaProvider } from '~/generated/proto/leapmux/v1/auth_pb'
 import { frontendBuildInfo } from '~/lib/buildEnv'
 import { formatLocalDateTime } from './dateFormat'
 

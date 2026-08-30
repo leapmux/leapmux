@@ -5,7 +5,7 @@ import type { ControlRequest } from '~/stores/control.store'
 import { createRoot, createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { showWarnToast } from '~/components/common/Toast'
-import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { useControlResponseHandling } from './controlResponseHandling'
 
 // The no-plugin bail surfaces a toast; mock the module so it doesn't reach the

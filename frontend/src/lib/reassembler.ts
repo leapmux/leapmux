@@ -6,38 +6,19 @@
 // depends on nothing from ChannelManager, mirroring the Go reassemblers
 // (backend/internal/worker/channel/chunker.go and backend/tunnel/channel.go).
 
-// These three limits are a wire-protocol agreement with the Go implementation
-// (backend/channelwire/wire.go). Both ends chunk and reassemble the same
-// encrypted messages, so a receiver that disagrees silently rejects or mis-splits
-// a legitimate one. They are exported so reassembler.test.ts can pin them against the
-// shared testdata/channelwire_limits.json fixture, which the Go side asserts too.
-
-/** Maximum plaintext bytes per Noise transport message (65535 - 16 byte auth tag). */
-export const MAX_CHUNK_SIZE = 65535 - 16
-
-/**
- * Default operator-facing application payload budget (16 MiB).
- * The reassembled/send-gate ceiling is this plus INNER_ENVELOPE_HEADROOM.
- */
-export const DEFAULT_MAX_MESSAGE_SIZE = 16 * 1024 * 1024
-
-/** Bytes added on top of a (configured or default) max message size for protobuf envelopes. */
-export const INNER_ENVELOPE_HEADROOM = 64 * 1024
-
-/** Default reassembled InnerMessage ceiling (payload + headroom). */
-export const DEFAULT_MAX_REASSEMBLED_MESSAGE_SIZE
-  = DEFAULT_MAX_MESSAGE_SIZE + INNER_ENVELOPE_HEADROOM
-
-/** Largest max_message_size an operator may configure. */
-export const MAX_CONFIGURABLE_MESSAGE_SIZE = 64 * 1024 * 1024
+// The wire-protocol limits both ends agree on live in contracts/wire.json,
+// generated into ~/generated/contracts/wire (this side) and
+// backend/generated/contracts (Go); consumers import them there. The
+// derivations (MAX_CHUNK_SIZE = ciphertext - auth tag;
+// DEFAULT_MAX_REASSEMBLED_MESSAGE_SIZE = payload + headroom) are computed by
+// the GENERATOR, so neither language re-derives them and they cannot drift
+// per side.
+import { INNER_ENVELOPE_HEADROOM, MAX_INCOMPLETE_CHUNKED } from '~/generated/contracts/wire'
 
 /** Receive/send-gate ceiling for a negotiated or configured payload budget. */
 export function maxReassembledMessageSize(maxMessageSize: number): number {
   return maxMessageSize + INNER_ENVELOPE_HEADROOM
 }
-
-/** Maximum number of in-flight chunked sequences per channel. */
-export const MAX_INCOMPLETE_CHUNKED = 4
 
 interface ChunkBuffer {
   parts: Uint8Array[]

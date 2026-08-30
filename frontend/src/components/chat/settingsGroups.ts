@@ -1,6 +1,7 @@
-import type { AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
+import type { AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
 import { equals } from '@bufbuild/protobuf'
-import { AvailableOptionGroupSchema } from '~/generated/leapmux/v1/agent_pb'
+import { EFFORT_AUTO } from '~/generated/contracts/worker-vocab'
+import { AvailableOptionGroupSchema } from '~/generated/proto/leapmux/v1/agent_pb'
 
 // Pure, render-free helpers over the generic option-group catalog. Kept in a `.ts`
 // module (not the `.tsx` component file) so non-rendering consumers -- tab.helpers,
@@ -13,20 +14,15 @@ export const OPTION_ID_MODEL = 'model' as const
 export const OPTION_ID_EFFORT = 'effort' as const
 export const OPTION_ID_PERMISSION_MODE = 'permissionMode' as const
 
-/**
- * LeapMux-side sentinel meaning "let the CLI pick its own default reasoning effort". The
- * backend omits --effort (Claude) / reasoning_effort (Codex) when an agent carries this value,
- * so older CLIs that don't recognize newer effort names (e.g. "xhigh") still work. Mirrors
- * `agent.EffortAuto` in the Go worker. Every catalog-effort model offers it, so it is the safe
- * fallback when a transient catalog reports no concrete effort default.
+/*
+ * The two worker-vocab sentinels this module reasons about --
+ * EFFORT_AUTO ("let the CLI pick its own default reasoning effort"; the backend
+ * omits --effort when an agent carries it, so older CLIs that don't recognize
+ * newer effort names still work) and ACCOUNT_DEFAULT_MODEL (the only model value
+ * a relaunch resolves to a DIFFERENT concrete model) -- are imported where they
+ * are used, from ~/generated/contracts/worker-vocab. The Go twins are
+ * agent.EffortAuto and agent.DefaultModelSentinel in the same contract.
  */
-export const EFFORT_AUTO = 'auto' as const
-
-// The account-default model sentinel: the only model value a relaunch resolves to a
-// DIFFERENT concrete model (the CLI picks the account default). A concrete model id
-// the user explicitly picked stays itself, so only this value needs the post-switch
-// reconcile to snap to the settled catalog. Mirrors the backend DefaultModelSentinel.
-export const ACCOUNT_DEFAULT_MODEL = 'default' as const
 
 /** Threshold above which an option group renders as a searchable list instead of radios. */
 export const OPTION_GROUP_SEARCHABLE_THRESHOLD = 7

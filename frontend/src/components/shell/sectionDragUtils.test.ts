@@ -9,7 +9,7 @@ import {
   SIDEBAR_ZONE_PREFIX,
   X_TOLERANCE,
 } from '~/components/shell/sectionDragUtils'
-import { Sidebar } from '~/generated/leapmux/v1/section_pb'
+import { Sidebar } from '~/generated/proto/leapmux/v1/section_pb'
 import { headerHeightPx } from '~/styles/tokens'
 
 // ---------------------------------------------------------------------------

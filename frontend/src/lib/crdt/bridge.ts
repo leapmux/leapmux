@@ -1,6 +1,6 @@
 import type { HLCClock } from './hlc'
-import type { UserCrdtState } from '~/generated/leapmux/v1/user_crdt_pb'
-import type { OpBatch } from '~/generated/leapmux/v1/user_ops_pb'
+import type { UserCrdtState } from '~/generated/proto/leapmux/v1/user_crdt_pb'
+import type { OpBatch } from '~/generated/proto/leapmux/v1/user_ops_pb'
 import { createSignal } from 'solid-js'
 
 /**

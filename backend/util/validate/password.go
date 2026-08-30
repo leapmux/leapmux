@@ -1,20 +1,24 @@
 package validate
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/leapmux/leapmux/generated/contracts"
+)
 
 // The printable ASCII range, and the whole character set a password may hold.
 // 0x20 is the space and 0x7E is the tilde.
 const (
-	minPrintableASCII = 0x20
-	maxPrintableASCII = 0x7E
+	minPrintableASCII = contracts.MinPrintableASCII
+	maxPrintableASCII = contracts.MaxPrintableASCII
 )
 
 // Password length limits, counted in characters. A password holds printable
 // ASCII characters only (see ValidatePassword), so one character is one byte
 // and `len` counts characters here.
 const (
-	MinPasswordLength = 8
-	MaxPasswordLength = 128
+	MinPasswordLength = contracts.MinPasswordLength
+	MaxPasswordLength = contracts.MaxPasswordLength
 )
 
 // ValidatePassword checks that a password meets the character-set policy and

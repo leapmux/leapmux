@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "account_schema.schema.json",
+  "title": "usersettings account-schema test fixture",
+  "description": "The reduced account settings wire schema read by frontend/src/test-support/accountSchema.ts. Field `kind` is the lowercase wire token (not the proto enum name); optional keys appear only when the hub schema states them.",
+  "type": "array",
+  "minItems": 1,
+  "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["key", "category", "title", "fields"],
+    "properties": {
+      "key": { "type": "string", "minLength": 1 },
+      "category": { "type": "string", "minLength": 1 },
+      "title": { "type": "string", "minLength": 1 },
+      "fields": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "kind"],
+          "properties": {
+            "name": { "type": "string" },
+            "kind": {
+              "enum": ["custom", "bool", "string-list", "enum", "integer", "float", "string", "bytes"]
+            },
+            "customId": { "type": "string", "minLength": 1 },
+            "enumValues": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["value"],
+                "properties": {
+                  "value": { "type": "string", "minLength": 1 },
+                  "label": { "type": "string" },
+                  "help": { "type": "string" }
+                }
+              }
+            },
+            "min": { "type": "integer" },
+            "max": { "type": "integer" },
+            "unit": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}

@@ -4,10 +4,16 @@ import type { Session } from './noise'
 import { create, toBinary } from '@bufbuild/protobuf'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  DEFAULT_MAX_MESSAGE_SIZE,
+  INNER_ENVELOPE_HEADROOM,
+  MAX_CHUNK_SIZE,
+  MAX_CONFIGURABLE_MESSAGE_SIZE,
+} from '~/generated/contracts/wire'
+import {
   EncryptionMode,
   InnerMessageSchema,
   InnerRpcResponseSchema,
-} from '~/generated/leapmux/v1/channel_pb'
+} from '~/generated/proto/leapmux/v1/channel_pb'
 import { KEY_KEY_PINS, localStorageGet } from './browserStorage'
 import { ChannelManager } from './channel'
 import {
@@ -31,13 +37,7 @@ import {
   waitForPendingChannel,
 } from './channel.test-support'
 import { KeyPinStore } from './keyPinStore'
-import {
-  DEFAULT_MAX_MESSAGE_SIZE,
-  INNER_ENVELOPE_HEADROOM,
-  MAX_CHUNK_SIZE,
-  MAX_CONFIGURABLE_MESSAGE_SIZE,
-  maxReassembledMessageSize,
-} from './reassembler'
+import { maxReassembledMessageSize } from './reassembler'
 
 describe('channelManager openChannel', () => {
   const h = new ChannelManagerTestHarness()

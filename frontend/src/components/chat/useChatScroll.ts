@@ -1,6 +1,6 @@
 import type { Accessor } from 'solid-js'
 import type { MeasurementBatchInfo, UseChatVirtualizerResult, ViewportLead } from './useChatVirtualizer'
-import type { AgentChatMessage, AgentStatus } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentChatMessage, AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { SavedViewportScroll, ScrollAnchor } from '~/stores/chatTypes'
 import { createEffect, createMemo, createSignal, on, onCleanup, onMount, untrack } from 'solid-js'
 import { monotonicNow } from '~/lib/monotonicNow'

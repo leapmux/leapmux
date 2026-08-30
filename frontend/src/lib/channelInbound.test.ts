@@ -8,7 +8,7 @@ import {
   InnerMessageSchema,
   InnerRpcResponseSchema,
   RekeyAckSchema,
-} from '~/generated/leapmux/v1/channel_pb'
+} from '~/generated/proto/leapmux/v1/channel_pb'
 import { ChannelError } from './channelError'
 import { ChannelInbound } from './channelInbound'
 import { ChannelRpcMux } from './channelRpc'

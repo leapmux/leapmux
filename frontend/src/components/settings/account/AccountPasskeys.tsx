@@ -1,6 +1,6 @@
 import type { Component } from 'solid-js'
 import type { StatusMessage } from '~/components/common/StatusLine'
-import type { PasskeyInfo } from '~/generated/leapmux/v1/user_pb'
+import type { PasskeyInfo } from '~/generated/proto/leapmux/v1/user_pb'
 import { timestampDate } from '@bufbuild/protobuf/wkt'
 import { createSignal, For, onMount, Show } from 'solid-js'
 import { userClient } from '~/api/clients'

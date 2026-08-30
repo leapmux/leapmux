@@ -23,13 +23,13 @@ import type {
   SendAgentRawMessageResponse,
   SendControlResponseResponse,
   UpdateAgentSettingsResponse,
-} from '~/generated/leapmux/v1/agent_pb'
-import type { EncryptionMode, InnerStreamMessage } from '~/generated/leapmux/v1/channel_pb'
+} from '~/generated/proto/leapmux/v1/agent_pb'
+import type { EncryptionMode, InnerStreamMessage } from '~/generated/proto/leapmux/v1/channel_pb'
 import type {
   ListDirectoryResponse,
   ReadFileResponse,
   StatFileResponse,
-} from '~/generated/leapmux/v1/file_pb'
+} from '~/generated/proto/leapmux/v1/file_pb'
 import type {
   CheckoutBranchResponse,
   CreateBranchResponse,
@@ -44,7 +44,7 @@ import type {
   ListGitWorktreesResponse,
   PushBranchResponse,
   ReadGitFileResponse,
-} from '~/generated/leapmux/v1/git_pb'
+} from '~/generated/proto/leapmux/v1/git_pb'
 import type {
   CloseTerminalResponse,
   ListAvailableShellsResponse,
@@ -54,19 +54,19 @@ import type {
   RestartTerminalResponse,
   SendInputResponse,
   UpdateTerminalTitleResponse,
-} from '~/generated/leapmux/v1/terminal_pb'
+} from '~/generated/proto/leapmux/v1/terminal_pb'
 import type {
   GetWorkerSystemInfoResponse,
-} from '~/generated/leapmux/v1/worker_pb'
+} from '~/generated/proto/leapmux/v1/worker_pb'
 import type {
   GetFileTabPathResponse,
   RegisterFileTabPathResponse,
   RevokeFileTabPathResponse,
-} from '~/generated/leapmux/v1/worker_private_pb'
+} from '~/generated/proto/leapmux/v1/worker_private_pb'
 import type {
   CleanupWorkspaceResponse,
   WatchEventsResponse,
-} from '~/generated/leapmux/v1/workspace_pb'
+} from '~/generated/proto/leapmux/v1/workspace_pb'
 import type { ChannelSocket, ChannelTransport, KeyPinDecision, WorkerKeyBundle } from '~/lib/channel'
 import { create, fromBinary, toBinary, toJsonString } from '@bufbuild/protobuf'
 import { Code, createClient } from '@connectrpc/connect'
@@ -74,6 +74,7 @@ import { getCapabilities, isTauriApp } from '~/api/platformBridge'
 import { bufferStreamHandle } from '~/api/streamBuffer'
 import { TauriRelayWebSocket } from '~/api/tauriRelaySocket'
 import { apiLoadingTimeoutMs, transport } from '~/api/transport'
+import { WS_CHANNEL_ROUTE, WS_SUBPROTOCOL_CHANNEL_RELAY } from '~/generated/contracts/wire'
 import {
   CloseAgentRequestSchema,
   CloseAgentResponseSchema,
@@ -103,8 +104,8 @@ import {
   SendControlResponseResponseSchema,
   UpdateAgentSettingsRequestSchema,
   UpdateAgentSettingsResponseSchema,
-} from '~/generated/leapmux/v1/agent_pb'
-import { ChannelService } from '~/generated/leapmux/v1/channel_pb'
+} from '~/generated/proto/leapmux/v1/agent_pb'
+import { ChannelService } from '~/generated/proto/leapmux/v1/channel_pb'
 import {
   ListDirectoryRequestSchema,
   ListDirectoryResponseSchema,
@@ -112,7 +113,7 @@ import {
   ReadFileResponseSchema,
   StatFileRequestSchema,
   StatFileResponseSchema,
-} from '~/generated/leapmux/v1/file_pb'
+} from '~/generated/proto/leapmux/v1/file_pb'
 import {
   CheckoutBranchRequestSchema,
   CheckoutBranchResponseSchema,
@@ -140,7 +141,7 @@ import {
   PushBranchResponseSchema,
   ReadGitFileRequestSchema,
   ReadGitFileResponseSchema,
-} from '~/generated/leapmux/v1/git_pb'
+} from '~/generated/proto/leapmux/v1/git_pb'
 import {
   CloseTerminalRequestSchema,
   CloseTerminalResponseSchema,
@@ -158,11 +159,11 @@ import {
   SendInputResponseSchema,
   UpdateTerminalTitleRequestSchema,
   UpdateTerminalTitleResponseSchema,
-} from '~/generated/leapmux/v1/terminal_pb'
+} from '~/generated/proto/leapmux/v1/terminal_pb'
 import {
   GetWorkerSystemInfoRequestSchema,
   GetWorkerSystemInfoResponseSchema,
-} from '~/generated/leapmux/v1/worker_pb'
+} from '~/generated/proto/leapmux/v1/worker_pb'
 import {
   GetFileTabPathRequestSchema,
   GetFileTabPathResponseSchema,
@@ -170,13 +171,13 @@ import {
   RegisterFileTabPathResponseSchema,
   RevokeFileTabPathRequestSchema,
   RevokeFileTabPathResponseSchema,
-} from '~/generated/leapmux/v1/worker_private_pb'
+} from '~/generated/proto/leapmux/v1/worker_private_pb'
 import {
   CleanupWorkspaceRequestSchema,
   CleanupWorkspaceResponseSchema,
   WatchEventsRequestSchema,
   WatchEventsResponseSchema,
-} from '~/generated/leapmux/v1/workspace_pb'
+} from '~/generated/proto/leapmux/v1/workspace_pb'
 import { ChannelManager, KeyPinStore } from '~/lib/channel'
 import { ChannelError } from '~/lib/channelError'
 import { emitDevEvent } from '~/lib/devInstrument'
@@ -251,8 +252,8 @@ class BrowserChannelTransport implements ChannelTransport {
     }
 
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const wsUrl = `${wsProtocol}//${window.location.host}/ws/channel`
-    const ws = new WebSocket(wsUrl, ['channel-relay'])
+    const wsUrl = `${wsProtocol}//${window.location.host}${WS_CHANNEL_ROUTE}`
+    const ws = new WebSocket(wsUrl, [WS_SUBPROTOCOL_CHANNEL_RELAY])
     ws.binaryType = 'arraybuffer'
     return ws
   }

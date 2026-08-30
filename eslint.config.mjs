@@ -34,4 +34,9 @@ export default antfu({
     // These run under `bun scripts/...`, so stdout/stderr IS the interface.
     'no-console': 'off',
   },
+  languageOptions: {
+    // And they run under bun, whose runtime globals (Bun.Glob et al.) the
+    // node-oriented @antfu globals do not declare.
+    globals: { Bun: 'readonly' },
+  },
 })

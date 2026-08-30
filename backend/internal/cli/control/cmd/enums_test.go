@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/agentlabels"
 )
 
 // TestTabTypeName_AllValues pins the lowercase short labels the CLI
@@ -28,26 +29,18 @@ func TestTabTypeName_AllValues(t *testing.T) {
 }
 
 // TestAgentProviderName_UsesDisplayName guards the alignment between
-// the CLI's envelope and the frontend's picker labels. agentlabels.
-// DisplayName already owns the canonical strings ("Claude Code",
-// "Codex", ...); a regression that diverged would surface as a UX
-// inconsistency between the CLI and the UI.
+// the CLI's envelope and the frontend's picker labels. Both sides'
+// canonical strings are generated from contracts/providers.json
+// (agentlabels.DisplayName on this side, AgentProviderIcon's
+// agentProviderLabel on the other), so the alignment is structural --
+// this test pins that the envelope actually routes through DisplayName
+// rather than spelling its own copy.
 func TestAgentProviderName_UsesDisplayName(t *testing.T) {
-	cases := map[leapmuxv1.AgentProvider]string{
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE:    "Claude Code",
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX:          "Codex",
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR:         "Cursor",
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT: "GitHub Copilot",
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO:           "Kilo",
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE:       "OpenCode",
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE:          "Goose",
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_PI:             "Pi",
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX:       "Reasonix",
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED:    "",
+	for _, p := range agentlabels.AllProviders() {
+		assert.Equalf(t, agentlabels.DisplayName(p), agentProviderName(p), "agentProviderName(%v)", p)
 	}
-	for in, want := range cases {
-		assert.Equal(t, want, agentProviderName(in), "agentProviderName(%v)", in)
-	}
+	assert.Equal(t, "", agentProviderName(leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED),
+		"the CLI envelope omits the name for an unspecified provider rather than rendering a generic word")
 }
 
 // TestAgentStatusName_AllValues pins the human-readable strings for

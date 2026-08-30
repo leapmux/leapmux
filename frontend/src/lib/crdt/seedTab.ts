@@ -1,4 +1,4 @@
-import type { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import type { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { first } from '~/lib/lexorank'
 import { ctxFromBridge, getCRDTBridge } from './bridge'
 import { newBatch, setTabPosition, setTabTileId, setTabWorkerId } from './ops'

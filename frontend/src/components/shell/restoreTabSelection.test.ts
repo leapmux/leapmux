@@ -1,7 +1,7 @@
 /// <reference types="vitest/globals" />
 import { createRoot } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { sessionStorageSet } from '~/lib/browserStorage'
 import { getCRDTBridge, setCRDTBridge } from '~/lib/crdt'
 import { emitSplitTile } from '~/stores/layoutOps'

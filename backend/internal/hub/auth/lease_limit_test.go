@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/leapmux/leapmux/channelwire"
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
@@ -289,7 +289,7 @@ func TestLeaseOutcomeLabelsAreValidCloseReasons(t *testing.T) {
 	// Nothing checked that the two agreed, and the frontend asserts its own copy
 	// against channelwire's pinned testdata -- so a fork here would leave the
 	// metric label and the wire token describing the same refusal differently.
-	assert.Equal(t, channelwire.CloseReasonTooManyConnections,
+	assert.Equal(t, contracts.CloseReasonTooManyConnections,
 		LeaseRefusedTooManyConnections.Label())
 }
 

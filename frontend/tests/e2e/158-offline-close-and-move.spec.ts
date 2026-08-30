@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test'
-import { ListAgentsRequestSchema, ListAgentsResponseSchema } from '../../src/generated/leapmux/v1/agent_pb'
+import { ListAgentsRequestSchema, ListAgentsResponseSchema } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { cleanupWorkspaceViaAPI, createWorkspaceViaAPI, deleteWorkspaceViaAPI, getTestChannel, openAgentViaAPI } from './helpers/api'
 import { boxOf, loginViaToken, openWorkspace, sidebarLeafIds, tabbarAgentLabels, waitForWorkspaceReady, workspaceChevron, workspaceRow } from './helpers/ui'
 import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'

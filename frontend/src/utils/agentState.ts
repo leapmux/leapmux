@@ -1,13 +1,13 @@
-import type { AgentChatMessage, AgentInfo } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentChatMessage, AgentInfo } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { AgentSessionInfo } from '~/stores/agentSession.store'
 import type { TabWorkState } from '~/stores/chatBackgroundTasks'
 import { classifyAgentMessage } from '~/components/chat/messageClassification'
 import { allRegisteredProviders, pluginFor } from '~/components/chat/providers/registry'
-import { AgentStatus } from '~/generated/leapmux/v1/agent_pb'
+import { NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
+import { AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '~/lib/jsonPick'
 import { getInnerMessage, getInnerMessageType, parseMessageContent } from '~/lib/messageParser'
-import { NOTIFICATION_TYPE } from '~/lib/notificationTypes'
 // Side-effect import: ensures every provider has registered itself before
 // `allRegisteredProviders()` is consulted to aggregate non-progress
 // types/methods. Without this, `agentState.ts` may be evaluated before

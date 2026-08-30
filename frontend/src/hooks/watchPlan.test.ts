@@ -1,6 +1,6 @@
 import type { AgentTab, Tab } from '~/stores/tab.types'
 import { describe, expect, it } from 'vitest'
-import { TabType, WatchMode, WatchRejectionReason } from '~/generated/leapmux/v1/workspace_pb'
+import { TabType, WatchMode, WatchRejectionReason } from '~/generated/proto/leapmux/v1/workspace_pb'
 import {
   buildWatchPlans,
   isTabOnScreen,

@@ -1,8 +1,8 @@
 import type { RenderTree } from './project'
 import type { LocalTreeCache } from './renderTree'
 import { describe, expect, it } from 'vitest'
-import { NodeKind } from '~/generated/leapmux/v1/user_crdt_pb'
-import { SplitDirection } from '~/generated/leapmux/v1/workspace_pb'
+import { NodeKind } from '~/generated/proto/leapmux/v1/user_crdt_pb'
+import { SplitDirection } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { renderTreeToLocal } from './renderTree'
 
 function tree(over: Partial<RenderTree>): RenderTree {

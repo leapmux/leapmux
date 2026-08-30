@@ -10,6 +10,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/leapmux/leapmux/channelwire"
+	"github.com/leapmux/leapmux/generated/contracts"
 	desktoppb "github.com/leapmux/leapmux/generated/proto/leapmux/desktop/v1"
 	"github.com/leapmux/leapmux/util/ctxutil"
 	"github.com/leapmux/leapmux/util/drain"
@@ -300,7 +301,7 @@ func (a *App) openRelay(requestCtx context.Context, spec relayOpenSpec) error {
 // fence deterministically -- the concurrent-open window is otherwise a race no
 // test could pin down.
 var dialChannelRelay = func(ctx context.Context, proxy *HubProxy) (*websocket.Conn, error) {
-	wsURL := channelwire.HTTPToWS(proxy.baseURL) + "/ws/channel"
+	wsURL := channelwire.HTTPToWS(proxy.baseURL) + contracts.WSRouteChannel
 	// Fail closed on a missing WS client (see HubProxy.requireWSClient): a nil
 	// wsClient makes websocket.Dial fall back to http.DefaultClient, which
 	// carries neither the cookie jar nor pinRedirectsToOrigin and would let a
@@ -310,7 +311,7 @@ var dialChannelRelay = func(ctx context.Context, proxy *HubProxy) (*websocket.Co
 		return nil, err
 	}
 	opts := &websocket.DialOptions{
-		Subprotocols: []string{"channel-relay"},
+		Subprotocols: []string{contracts.WSSubprotocolChannelRelay},
 		HTTPHeader:   proxy.cookieHeader(),
 		HTTPClient:   proxy.wsClient,
 	}

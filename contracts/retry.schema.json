@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "retry.schema.json",
+  "title": "cross-language retry policy contract",
+  "description": "One entry per policy consumed by both Go and TS. jitterFactor bound [0,1) matches what backoffutil.NewRetry and createExponentialBackoff each reject outside of; the generator repeats the check at generation time.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["_readme", "policies"],
+  "properties": {
+    "_readme": { "type": "string", "minLength": 1 },
+    "policies": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "$ref": "#/$defs/policy" },
+      "propertyNames": { "pattern": "^[a-z][A-Za-z0-9]*$" }
+    }
+  },
+  "$defs": {
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["initialMs", "maxMs", "multiplier", "jitterFactor", "maxAttempts"],
+      "properties": {
+        "initialMs": { "type": "integer", "minimum": 1 },
+        "maxMs": { "type": "integer", "minimum": 1 },
+        "multiplier": { "type": "number", "minimum": 1 },
+        "jitterFactor": { "type": "number", "minimum": 0, "exclusiveMaximum": 1 },
+        "maxAttempts": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}

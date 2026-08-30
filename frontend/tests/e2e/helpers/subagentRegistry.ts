@@ -8,7 +8,7 @@
  * expect timeout (playwright.config.ts) applies.
  */
 import type { Locator, Page } from '@playwright/test'
-import { ListAgentsRequestSchema, ListAgentsResponseSchema } from '../../../src/generated/leapmux/v1/agent_pb'
+import { ListAgentsRequestSchema, ListAgentsResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { expect } from '../fixtures'
 import { getTestChannel } from './api'
 

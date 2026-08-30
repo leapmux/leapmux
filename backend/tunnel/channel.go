@@ -18,6 +18,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/leapmux/leapmux/channelwire"
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
@@ -26,8 +27,9 @@ import (
 // sessionVerifyTimeout bounds the open-time Ping round trip (see OpenChannel). It
 // is the open's budget, not a normal RPC's: the claim exchange it replaced used the
 // same 10s, and callers with an unbounded context rely on it to fail rather than
-// hang on a worker whose session is wedged.
-const sessionVerifyTimeout = 10 * time.Second
+// hang on a worker whose session is wedged. The browser's channelSession keeps the
+// same budget as its REKEY_TIMEOUT_MS; both are generated from contracts/wire.json.
+const sessionVerifyTimeout = contracts.SessionVerifyTimeout
 
 // Channel manages a single E2EE channel from the desktop app to a Worker
 // via the Hub's WebSocket relay.
@@ -457,10 +459,10 @@ func OpenChannel(ctx context.Context, hubURL, workerID string, opts *OpenChannel
 	}
 
 	// 5. Connect to Hub's WebSocket relay.
-	wsURL := channelwire.HTTPToWS(hubURL) + "/ws/channel"
+	wsURL := channelwire.HTTPToWS(hubURL) + contracts.WSRouteChannel
 
 	wsDialOpts := &websocket.DialOptions{
-		Subprotocols: []string{"channel-relay"},
+		Subprotocols: []string{contracts.WSSubprotocolChannelRelay},
 		HTTPHeader:   http.Header{},
 	}
 	if opts.WebSocketHTTPClient != nil {
@@ -526,7 +528,7 @@ func OpenChannel(ctx context.Context, hubURL, workerID string, opts *OpenChannel
 	// bounded itself at 10s for the same reason.
 	pingCtx, cancelPing := context.WithTimeout(ctx, sessionVerifyTimeout)
 	defer cancelPing()
-	if _, err := ch.CallRPC(pingCtx, channelwire.PingMethod, nil); err != nil {
+	if _, err := ch.CallRPC(pingCtx, contracts.PingMethod, nil); err != nil {
 		ch.Close()
 		return nil, fmt.Errorf("verify channel session: %w", err)
 	}
@@ -850,9 +852,10 @@ func (ch *Channel) sendInnerContext(ctx context.Context, correlationID uint64, m
 
 // rekeyIdleLoop periodically checks age-based rekey for long-lived channels
 // that may be idle (desktop tunnels) so keys still rotate without waiting for
-// the next outbound send.
+// the next outbound send. The interval is the browser's IDLE_REKEY_INTERVAL_MS
+// twin; both are generated from contracts/wire.json.
 func (ch *Channel) rekeyIdleLoop() {
-	ticker := time.NewTicker(time.Minute)
+	ticker := time.NewTicker(contracts.IdleRekeyInterval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -1024,7 +1027,7 @@ func (ch *Channel) reassembleLocked(correlationID uint64, more bool, plaintext [
 			if !ch.hasHandlerLocked(correlationID) {
 				return reassembleOutcome{action: reassembleActDropUnknownID}
 			}
-			if ch.liveReassemblyLocked() >= channelwire.DefaultMaxIncompleteChunked {
+			if ch.liveReassemblyLocked() >= contracts.DefaultMaxIncompleteChunked {
 				// Tombstone the rejected id BEFORE erroring it, exactly as the oversize
 				// path below does. Erroring without one left chunks 2..N of the message
 				// unrecognised: each re-entered this branch and errored the request

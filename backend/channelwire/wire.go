@@ -17,119 +17,41 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+
+	"github.com/leapmux/leapmux/generated/contracts"
 )
 
+// The wire-protocol limits both ends must agree on are owned by
+// contracts/wire.json and generated into
+// github.com/leapmux/leapmux/generated/contracts (and into
+// frontend/src/generated/contracts for the browser); consumers import that
+// package directly -- one Go spelling per contract constant. The
+// derivations (contracts.MaxPlaintextPerChunk, contracts.DefaultMaxReassembledMessageSize,
+// contracts.SessionKeyHardCeiling) are computed by the generator, so neither language
+// re-derives them. Go-only limits (WSReadLimit, UserEventsReadLimit) stay
+// hand-written here, but WSReadLimit reads the contract's chunk cap so the
+// two cannot drift apart.
 const (
-	// NoiseAEADAuthTagSize is the Noise transport AEAD auth-tag overhead appended
-	// to every ciphertext. It is the other half of the chunk-size relationship
-	// MaxCiphertextForChunk encodes, broken out as its own constant so a
-	// transport change (e.g. a post-quantum AEAD with a different tag size) is
-	// one edit instead of a 16-and-65535 pair each receiver re-derives.
-	NoiseAEADAuthTagSize = 16
-
-	// MaxCiphertextForChunk is the maximum ciphertext size for a single Noise
-	// transport message. The Noise spec caps a transport message at 65535 bytes
-	// of ciphertext (a 2-byte length prefix's range), which every chunk-split
-	// and per-chunk cap enforces independently. Paired with NoiseAEADAuthTagSize
-	// it derives MaxPlaintextPerChunk.
-	MaxCiphertextForChunk = 65535
-
-	// MaxPlaintextPerChunk is the maximum plaintext bytes per Noise transport
-	// message (MaxCiphertextForChunk - NoiseAEADAuthTagSize).
-	MaxPlaintextPerChunk = MaxCiphertextForChunk - NoiseAEADAuthTagSize
-
-	// MaxMessageSize is the default operator-facing message size: the
-	// largest application payload a sender may hand to the channel layer
-	// (an agent stdout line, a file body). Hub and Worker operators may
-	// raise or lower this via max_message_size; the effective per-channel
-	// value is min(hub, worker), announced at open. Producers that have a
-	// clamp (agent scanners, ReadFile) bound their own input by THIS, not
-	// by the reassembled ceiling, because what the receiver caps is the
-	// payload plus every envelope wrapped around it.
-	//
-	// When the payload budget and the reassembled ceiling were equal, a
-	// producer that filled its budget exactly built an inner message the
-	// receiver then refused -- and a refusal mid-stream has no recovery:
-	// the ordered, encrypted stream has no resync path, so the event was
-	// dropped with nothing to tell the client it had missed anything.
-	MaxMessageSize = 16 * 1024 * 1024
-
-	// InnerEnvelopeHeadroom is what MaxReassembledMessageSize adds on top
-	// of a (configured or default) MaxMessageSize to cover the envelopes a
-	// payload is wrapped in before it reaches the wire -- for the widest
-	// case, the WatchEvents fan-out, that is AgentChatMessage -> AgentEvent
-	// -> WatchEventsResponse -> InnerStreamMessage -> InnerMessage.
-	//
-	// Real overhead there is field tags, varint lengths and a few ids:
-	// a few kilobytes, not hundreds. 64 KiB is deliberate slack so that
-	// adding a field to any of those envelopes cannot quietly reintroduce
-	// the drop; wire_test.go pins that the widest fan-out stays under
-	// half of this budget.
-	InnerEnvelopeHeadroom = 64 * 1024
-
-	// DefaultMaxReassembledMessageSize is the default maximum reassembled
-	// InnerMessage size (MaxMessageSize + InnerEnvelopeHeadroom). Every
-	// receiver (hub relay, worker, tunnel client, browser) enforces the
-	// per-channel reassembled ceiling derived from the negotiated payload
-	// budget -- never a separately configured number.
-	DefaultMaxReassembledMessageSize = MaxMessageSize + InnerEnvelopeHeadroom
-
-	// MaxConfigurableMessageSize is the largest max_message_size an
-	// operator may configure. Caps worst-case per-channel reassembly
-	// memory (max_incomplete_chunked * MaxReassembledMessageSize) without
-	// touching tunnelflow's chunk-bounded windows.
-	MaxConfigurableMessageSize = 64 * 1024 * 1024
-
-	// DefaultMaxIncompleteChunked is the maximum number of in-flight chunked
-	// sequences per channel before new ones are rejected.
-	DefaultMaxIncompleteChunked = 4
-
 	// WSReadLimit is the WebSocket per-message read limit for channel relays.
-	// It must exceed the max ciphertext size to accommodate the 4-byte length
-	// prefix and protobuf framing of a ChannelMessage.
-	WSReadLimit = 65535 + 4096
-
-	// AuthTokenSubprotocolPrefix is the prefix for auth tokens passed via
-	// the Sec-WebSocket-Protocol header (e.g. "auth.token.<token>").
-	AuthTokenSubprotocolPrefix = "auth.token."
-
-	// PingMethod is the no-op inner RPC a client issues once, before OpenChannel
-	// returns, to prove the E2EE session works end to end.
-	//
-	// Noise_NK's handshake only proves the CLIENT can encrypt to the worker's static
-	// key; nothing in it proves the worker's session decrypts, nor that its replies
-	// decrypt back. Without a round trip at open time, a session broken in either
-	// direction (a key mismatch, a corrupted handshake payload, a relay that mangles
-	// a frame) opens "successfully" and fails later on the first real call -- and
-	// because channels are POOLED (crossworker.Client, the desktop TunnelManager),
-	// that broken session gets cached and served to every subsequent caller until
-	// something else evicts it. One round trip keeps the failure at the open, where
-	// the caller can attribute it and re-resolve.
-	//
-	// It carries no payload: the proof is that the round trip decrypts at both ends,
-	// not anything it says.
-	//
-	// It lives here, beside the other constants both ends of the channel must agree
-	// on, because the client (backend/tunnel) and the worker's handler
-	// (internal/worker/service) would otherwise each spell it themselves and rely on
-	// a test to notice the day they disagree. The frontend necessarily keeps its own
-	// copy (see PING_METHOD in frontend/src/lib/channel.ts).
-	PingMethod = "Ping"
+	// It must exceed contracts.MaxCiphertextForChunk to accommodate the
+	// 4-byte length prefix and protobuf framing of a ChannelMessage; the
+	// 4096 slack covers that framing.
+	WSReadLimit = contracts.MaxCiphertextForChunk + 4096
 )
 
 // ResolveMaxMessageSize maps a configured max_message_size to the effective
 // payload budget. Non-positive values mean "use the protocol default".
 func ResolveMaxMessageSize(n int) int {
 	if n <= 0 {
-		return MaxMessageSize
+		return contracts.MaxMessageSize
 	}
 	return n
 }
 
 // MaxReassembledMessageSize returns the receive/send-gate ceiling for a
-// (resolved) payload budget: the budget plus InnerEnvelopeHeadroom.
+// (resolved) payload budget: the budget plus contracts.InnerEnvelopeHeadroom.
 func MaxReassembledMessageSize(maxMessageSize int) int {
-	return maxMessageSize + InnerEnvelopeHeadroom
+	return maxMessageSize + contracts.InnerEnvelopeHeadroom
 }
 
 // ValidateMaxMessageSize checks a configured (or negotiated) payload budget.
@@ -137,11 +59,11 @@ func MaxReassembledMessageSize(maxMessageSize int) int {
 // them to the default); call this only for strictly positive values, or after
 // resolving. Open-path negotiation always validates the absolute resolved size.
 func ValidateMaxMessageSize(n int) error {
-	if n < MaxPlaintextPerChunk {
-		return fmt.Errorf("max_message_size %d is below the floor of %d (MaxPlaintextPerChunk)", n, MaxPlaintextPerChunk)
+	if n < contracts.MaxPlaintextPerChunk {
+		return fmt.Errorf("max_message_size %d is below the floor of %d (contracts.MaxPlaintextPerChunk)", n, contracts.MaxPlaintextPerChunk)
 	}
-	if n > MaxConfigurableMessageSize {
-		return fmt.Errorf("max_message_size %d exceeds the ceiling of %d (MaxConfigurableMessageSize)", n, MaxConfigurableMessageSize)
+	if n > contracts.MaxConfigurableMessageSize {
+		return fmt.Errorf("max_message_size %d exceeds the ceiling of %d (contracts.MaxConfigurableMessageSize)", n, contracts.MaxConfigurableMessageSize)
 	}
 	return nil
 }
@@ -200,7 +122,7 @@ func AdoptWireMaxMessageSize(wire uint64) (int, error) {
 // envelope both Go receivers (the tunnel client's Channel.deliverRPCError and
 // the worker session's channelSender.sendError) emit when an inner RPC fails.
 // Routing both through one constructor keeps the IsError+ErrorCode+ErrorMessage
-// shape in one place, alongside PingMethod and the chunk/message ceilings both
+// shape in one place, alongside contracts.PingMethod and the chunk/message ceilings both
 // ends of the channel must also agree on -- so a future field (a retryable bit,
 // a category) lands once instead of in two packages whose tests would only
 // notice the day they disagree.
@@ -209,13 +131,14 @@ func NewErrorResponse(code int32, message string) *leapmuxv1.InnerRpcResponse {
 }
 
 // NewChannelMessage wraps one encrypted chunk in the ChannelMessage envelope
-// both Go senders put on the wire. It owns ProtocolVersion: 1 so a version bump
-// is one edit instead of a literal in each sender (and in the empty-payload
-// terminating frame SendChannelFrames used to build inline).
+// both Go senders put on the wire. The protocol version is
+// contracts.ProtocolVersion (contracts/wire.json), so a version bump is one
+// edit that moves every sender -- this constructor, the senders that bypass
+// it, and the browser's channelSession -- instead of a literal in each.
 func NewChannelMessage(channelID string, correlationID uint64,
 	flags leapmuxv1.ChannelMessageFlags, ciphertext []byte) *leapmuxv1.ChannelMessage {
 	return &leapmuxv1.ChannelMessage{
-		ProtocolVersion: 1,
+		ProtocolVersion: contracts.ProtocolVersion,
 		ChannelId:       channelID,
 		CorrelationId:   correlationID,
 		Flags:           flags,
@@ -251,7 +174,7 @@ func HTTPToWS(rawURL string) string {
 func UserEventsURL(baseURL string, workspaceIDs []string, cursor *leapmuxv1.HLC, epoch int64) string {
 	q := url.Values{}
 	if len(workspaceIDs) > 0 {
-		q.Set("workspace_ids", strings.Join(workspaceIDs, ","))
+		q.Set(contracts.WSParamWorkspaceIDs, strings.Join(workspaceIDs, ","))
 	}
 	// Gate on the DECODER's own accept rule, not the weaker all-zero test.
 	// hlcIsZero only rejects {0,0,""}, but DecodeResumeHLC rejects any
@@ -261,14 +184,14 @@ func UserEventsURL(baseURL string, workspaceIDs []string, cursor *leapmuxv1.HLC,
 	// omit the cursor and degrade to a full snapshot. Asking the decoder keeps
 	// the encode and decode sides one rule instead of two that must agree.
 	if resumeCursorEncodable(cursor) {
-		q.Set("resume_after_hlc", EncodeResumeHLC(cursor))
-		q.Set("resume_epoch", strconv.FormatInt(epoch, 10))
+		q.Set(contracts.WSParamResumeAfterHLC, EncodeResumeHLC(cursor))
+		q.Set(contracts.WSParamResumeEpoch, strconv.FormatInt(epoch, 10))
 	}
 	qs := q.Encode()
 	if qs == "" {
-		return HTTPToWS(baseURL) + "/ws/userevents"
+		return HTTPToWS(baseURL) + contracts.WSRouteUserEvents
 	}
-	return HTTPToWS(baseURL) + "/ws/userevents?" + qs
+	return HTTPToWS(baseURL) + contracts.WSRouteUserEvents + "?" + qs
 }
 
 // EncodeResumeHLC renders an HLC as the "<physical>.<logical>.<client_id>"
@@ -390,7 +313,7 @@ func ParseResumeCursor(hlcRaw, epochRaw string) (cursor *leapmuxv1.HLC, epoch in
 // function it delegated to and putting the key literals two packages away from
 // their producer.
 func ParseResumeCursorFromQuery(q url.Values) (*leapmuxv1.HLC, int64, error) {
-	return ParseResumeCursor(q.Get("resume_after_hlc"), q.Get("resume_epoch"))
+	return ParseResumeCursor(q.Get(contracts.WSParamResumeAfterHLC), q.Get(contracts.WSParamResumeEpoch))
 }
 
 // plusSigned reports whether s carries an explicit leading `+`.
@@ -421,28 +344,28 @@ func resumeCursorEncodable(cursor *leapmuxv1.HLC) bool {
 // /ws/userevents (MarshaledEvent / WatchUserEvent); routing both
 // writers through one helper keeps the framing spec in one place.
 func WriteFramedBytes(ctx context.Context, ws *websocket.Conn, payload []byte) error {
-	buf := make([]byte, 4+len(payload))
-	binary.BigEndian.PutUint32(buf[:4], uint32(len(payload)))
-	copy(buf[4:], payload)
+	buf := make([]byte, contracts.LengthPrefixBytes+len(payload))
+	binary.BigEndian.PutUint32(buf[:contracts.LengthPrefixBytes], uint32(len(payload)))
+	copy(buf[contracts.LengthPrefixBytes:], payload)
 	return ws.Write(ctx, websocket.MessageBinary, buf)
 }
 
 // ReadFramedBytes reads one length-prefixed binary frame from a
-// WebSocket and returns the unwrapped payload (without the 4-byte
-// length prefix). Companion to WriteFramedBytes.
+// WebSocket and returns the unwrapped payload (without the length
+// prefix). Companion to WriteFramedBytes.
 func ReadFramedBytes(ctx context.Context, ws *websocket.Conn) ([]byte, error) {
 	_, data, err := ws.Read(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if len(data) < 4 {
+	if len(data) < contracts.LengthPrefixBytes {
 		return nil, fmt.Errorf("framed: message too short (%d bytes)", len(data))
 	}
-	length := binary.BigEndian.Uint32(data[:4])
-	if int(length) != len(data)-4 {
-		return nil, fmt.Errorf("framed: length mismatch (header=%d, actual=%d)", length, len(data)-4)
+	length := binary.BigEndian.Uint32(data[:contracts.LengthPrefixBytes])
+	if int(length) != len(data)-contracts.LengthPrefixBytes {
+		return nil, fmt.Errorf("framed: length mismatch (header=%d, actual=%d)", length, len(data)-contracts.LengthPrefixBytes)
 	}
-	return data[4:], nil
+	return data[contracts.LengthPrefixBytes:], nil
 }
 
 // ChunkContinuation interprets a ChannelMessage's flags field for the
@@ -484,7 +407,7 @@ func WriteChannelMessage(ctx context.Context, ws *websocket.Conn, msg *leapmuxv1
 	return WriteFramedBytes(ctx, ws, data)
 }
 
-// SendChannelFrames splits plaintext into MaxPlaintextPerChunk-sized chunks and
+// SendChannelFrames splits plaintext into contracts.MaxPlaintextPerChunk-sized chunks and
 // hands each to sendChunk in order, with the MORE flag set on every chunk but
 // the last.
 //
@@ -504,7 +427,7 @@ func WriteChannelMessage(ctx context.Context, ws *websocket.Conn, msg *leapmuxv1
 // once carried as a standalone helper.
 func SendChannelFrames(plaintext []byte, sendChunk func(chunk []byte, flags leapmuxv1.ChannelMessageFlags) error) error {
 	for offset := 0; ; {
-		end := offset + MaxPlaintextPerChunk
+		end := offset + contracts.MaxPlaintextPerChunk
 		more := true
 		if end >= len(plaintext) {
 			end, more = len(plaintext), false
@@ -540,63 +463,20 @@ func ReadChannelMessage(ctx context.Context, ws *websocket.Conn) (*leapmuxv1.Cha
 // subscribers (large initial-bootstrap snapshots can hit several MB on
 // busy accounts).
 //
-// Independent of DefaultMaxReassembledMessageSize: user events are plaintext CRDT
-// frames on their own socket, not chunked encrypted channel messages, so
-// the two limits answer different questions and are free to diverge.
+// Independent of contracts.DefaultMaxReassembledMessageSize: user events are
+// plaintext CRDT frames on their own socket, not chunked encrypted channel
+// messages, so the two limits answer different questions and are free to
+// diverge.
 const UserEventsReadLimit = 16 * 1024 * 1024
 
-// CloseReasonTooManyConnections is the WebSocket close REASON the Hub sends,
-// alongside a policy-violation status, when a user is already holding as many
-// long-lived connections as max_connections_per_user allows.
-//
-// A stable token rather than prose because a client has to branch on it: every
-// other policy-violation close means "re-authenticate", and this one means
-// "close a tab" -- opposite advice, so a client that cannot tell them apart
-// gives the wrong one. Pinned in testdata/channelwire_limits.json, which both
-// this package's test and the frontend's assert against, so the two languages
-// cannot drift.
-//
-// Short on purpose: RFC 6455 caps a close reason at 123 bytes and
-// coder/websocket enforces that on the send side, so a descriptive sentence
-// here would fail to send at all.
-const CloseReasonTooManyConnections = "too_many_connections"
-
-// CloseReasonSnapshotTooLarge is the WebSocket close REASON the Hub sends when a
-// /ws/userevents subscriber's opening snapshot is larger than the whole
-// user-events queue budget.
-//
-// Distinct from a transient shortage, and that distinction is the entire point:
-// a frame bigger than the pool's capacity is refused at EVERY occupancy, so the
-// retry-later answer a temporarily-full pool deserves produces a client that
-// rebuilds the same oversized snapshot forever while the user watches an app
-// that never loads. Only an operator can fix it -- by raising
-// userevents_queue_memory_budget -- so the close is terminal and says so.
-//
-// Pinned in testdata/channelwire_limits.json like its sibling above.
-const CloseReasonSnapshotTooLarge = "snapshot_too_large"
-
-// CloseReasonForbidden is the WebSocket close REASON the Hub sends when the
-// authenticated user may not have what they asked for -- an ACL check that said
-// no, not a credential that expired.
-//
-// Its own token because the advice differs from every other policy violation on
-// this socket: re-authenticating does not grant a permission, and reloading
-// asks for the same thing again. A client that saw only the 1008 told the user
-// to reload, which is the one action guaranteed not to help.
-//
-// Pinned in testdata/channelwire_limits.json like its siblings above.
-const CloseReasonForbidden = "forbidden"
-
-// CloseReasonControlFlood is the WebSocket close REASON the Hub sends when a
-// peer keeps sending control frames past what its allowance can absorb.
-//
-// A misbehaving or misconfigured client rather than a user error, and the
-// distinction matters to whoever reads it: nothing about the account, the
-// workspace or the credential is wrong, so advice aimed at any of those sends
-// the user looking in the wrong place.
-//
-// Pinned in testdata/channelwire_limits.json like its siblings above.
-const CloseReasonControlFlood = "too_many_control_frames"
+// The WebSocket close-reason TOKENS the Hub sends alongside a
+// policy-violation status live in contracts/wire.json (contracts.CloseReason*
+// here, CLOSE_REASON_* in the browser), each with the user-facing advice it
+// branches on documented beside its value in the JSON. They are stable
+// tokens rather than prose because a client has to branch on them, and short
+// on purpose: RFC 6455 caps a close reason at 123 bytes and coder/websocket
+// enforces that on the send side, so a descriptive sentence would fail to
+// send at all.
 
 // OpenUserEventsWS dials /ws/userevents on `hubURL` with the supplied
 // bearer + workspace scope and returns the resulting WebSocket. Used
@@ -620,7 +500,7 @@ func OpenUserEventsWS(ctx context.Context, httpClient *http.Client, hubURL, bear
 // is already represented by HTTP headers, such as the desktop cookie jar.
 func OpenUserEventsWSWithHeader(ctx context.Context, httpClient *http.Client, hubURL string, header http.Header, workspaceIDs []string, cursor *leapmuxv1.HLC, epoch int64) (*websocket.Conn, error) {
 	opts := &websocket.DialOptions{
-		Subprotocols: []string{"userevents-relay"},
+		Subprotocols: []string{contracts.WSSubprotocolUserEventsRelay},
 		HTTPHeader:   header.Clone(),
 	}
 	if httpClient != nil {

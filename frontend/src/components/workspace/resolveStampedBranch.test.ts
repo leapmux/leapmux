@@ -1,5 +1,5 @@
 /// <reference types="vitest/globals" />
-import type { GitBranchEntry } from '~/generated/leapmux/v1/git_pb'
+import type { GitBranchEntry } from '~/generated/proto/leapmux/v1/git_pb'
 import { describe, expect, it } from 'vitest'
 import { resolveStampedBranch } from '~/components/workspace/branchStamp'
 

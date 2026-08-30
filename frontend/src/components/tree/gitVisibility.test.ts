@@ -1,4 +1,4 @@
-import type { GitFileStatusEntry } from '~/generated/leapmux/v1/common_pb'
+import type { GitFileStatusEntry } from '~/generated/proto/leapmux/v1/common_pb'
 import { describe, expect, it } from 'vitest'
 import { computeGitVisibility, flatEntryOpenTarget, isPathVisible } from './gitVisibility'
 

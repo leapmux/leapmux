@@ -1,6 +1,6 @@
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
-import { HLCSchema, NodeKind } from '~/generated/leapmux/v1/user_crdt_pb'
+import { HLCSchema, NodeKind } from '~/generated/proto/leapmux/v1/user_crdt_pb'
 import {
   CrdtOpSchema,
   ReviveTabOpSchema,
@@ -12,8 +12,8 @@ import {
   TombstoneNodeOpSchema,
   TombstoneTabOpSchema,
   TombstoneWorkspaceOpSchema,
-} from '~/generated/leapmux/v1/user_ops_pb'
-import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+} from '~/generated/proto/leapmux/v1/user_ops_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { applyOp, newState } from './apply'
 
 function hlc(physical: bigint, logical: bigint, clientId: string) {

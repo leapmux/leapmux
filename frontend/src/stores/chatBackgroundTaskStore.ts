@@ -1,5 +1,5 @@
 import type { BackgroundTaskItem } from './chatBackgroundTasks'
-import type { BackgroundTaskItem as ProtoBackgroundTaskItem } from '~/generated/leapmux/v1/agent_pb'
+import type { BackgroundTaskItem as ProtoBackgroundTaskItem } from '~/generated/proto/leapmux/v1/agent_pb'
 import { shallowEqualArraysDeep } from '~/lib/shallowEqual'
 import { protoBackgroundTaskToStore } from './chatBackgroundTasks'
 import { createPerAgentStore } from './chatPerAgentStore'

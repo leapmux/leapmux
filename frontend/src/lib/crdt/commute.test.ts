@@ -1,5 +1,5 @@
-import type { UserCrdtState } from '~/generated/leapmux/v1/user_crdt_pb'
-import type { CrdtOp } from '~/generated/leapmux/v1/user_ops_pb'
+import type { UserCrdtState } from '~/generated/proto/leapmux/v1/user_crdt_pb'
+import type { CrdtOp } from '~/generated/proto/leapmux/v1/user_ops_pb'
 import { create, toBinary } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
 import {
@@ -7,15 +7,15 @@ import {
   NodeRecordSchema,
 
   TabRecordSchema,
-} from '~/generated/leapmux/v1/user_crdt_pb'
+} from '~/generated/proto/leapmux/v1/user_crdt_pb'
 import {
 
   CrdtOpSchema,
   SetNodeRegisterOpSchema,
   SetTabRegisterOpSchema,
   TombstoneNodeOpSchema,
-} from '~/generated/leapmux/v1/user_ops_pb'
-import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+} from '~/generated/proto/leapmux/v1/user_ops_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { applyOp, newState } from './apply'
 
 function hlc(physical: bigint, logical: bigint, clientId: string) {
