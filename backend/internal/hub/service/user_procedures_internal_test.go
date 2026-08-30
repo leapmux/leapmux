@@ -60,7 +60,7 @@ var userProcedureElevation = map[string]struct {
 
 	// Sensitive, and protected by a hand-written call. Each moves a credential
 	// or a recovery identity.
-	leapmuxv1connect.UserServiceRequestEmailChangeProcedure:        {protectedByRequireElevation, "the account email receives the password-reset link"},
+	leapmuxv1connect.UserServiceRequestEmailChangeProcedure:        {protectedByRequireElevation, "the account email receives the account-recovery link"},
 	leapmuxv1connect.UserServiceUnlinkOAuthProviderProcedure:       {protectedByRequireElevation, "detaching a provider removes a login method the owner cannot re-attach"},
 	leapmuxv1connect.UserServiceChangePasswordProcedure:            {protectedByPasskeyManagementAuth, "sets or replaces the password; an account with nothing to elevate with takes the sibling rule"},
 	leapmuxv1connect.UserServiceBeginPasskeyRegistrationProcedure:  {protectedByPasskeyManagementAuth, "peeks the admission before the browser prompt"},

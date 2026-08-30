@@ -80,7 +80,9 @@ leapmux control tab open --type terminal \
 
 `--shell` is optional — leaving it empty uses the Worker's default shell. `--shell-start-dir` defaults to the working directory. See [Control CLI](/docs/using/control-cli/) for the full flag set, entity-ID resolution, and placement flags.
 
-> **Note:** Remote control is automatic; see [Driving LeapMux from inside a terminal](#driving-leapmux-from-inside-a-terminal-remote-control).
+{{< callout type="info" >}}
+Remote control is automatic; see [Driving LeapMux from inside a terminal](#driving-leapmux-from-inside-a-terminal-remote-control).
+{{< /callout >}}
 
 ## Shell selection
 
@@ -107,7 +109,9 @@ When you don't choose a shell explicitly, the Worker uses its default, resolved 
    - **Windows:** `pwsh`, then `powershell`, falling back to the bundled Windows PowerShell.
    - **Other platforms:** `/bin/sh`.
 
-> **Tip:** To force a specific default shell for every terminal a Worker spawns, set `LEAPMUX_DEFAULT_SHELL` in the Worker's environment. See [Troubleshooting](/docs/reference/troubleshooting/) for the resolution order in full.
+{{< callout >}}
+To force a specific default shell for every terminal a Worker spawns, set `LEAPMUX_DEFAULT_SHELL` in the Worker's environment. See [Troubleshooting](/docs/reference/troubleshooting/) for the resolution order in full.
+{{< /callout >}}
 
 ### Login-shell flags
 
@@ -199,7 +203,9 @@ This works because the Worker keeps a rolling **100 KB screen buffer** for each 
 - **Workspace switch:** the on-screen contents (viewport plus scrollback) are captured when you switch away, so switching back restores exactly what was showing.
 - **Worker restart:** the running shell cannot survive the Worker going down, but because the terminal and its last screen are persisted to the database, the terminal is still listed when the Worker returns — showing its final screen — and pressing **Enter** restarts the shell.
 
-> **Note:** Restored output is replayed byte-for-byte, so full-screen apps redraw correctly. Content older than the 100 KB window scrolls off.
+{{< callout type="info" >}}
+Restored output is replayed byte-for-byte, so full-screen apps redraw correctly. Content older than the 100 KB window scrolls off.
+{{< /callout >}}
 
 ### When a shell exits
 
@@ -211,7 +217,9 @@ On an exited terminal, **Enter** is the only key that does anything — it resta
 
 ## Driving LeapMux from inside a terminal (remote control)
 
-> **Note:** There is no "remote-enabled" checkbox or toggle in the New terminal dialog, the CLI, or anywhere else. **Every** terminal LeapMux spawns is remote-enabled automatically (as long as the Worker has remote control configured). This is a frequent point of confusion — there is nothing to turn on.
+{{< callout type="info" >}}
+There is no "remote-enabled" checkbox or toggle in the New terminal dialog, the CLI, or anywhere else. **Every** terminal LeapMux spawns is remote-enabled automatically (as long as the Worker has remote control configured). This is a frequent point of confusion — there is nothing to turn on.
+{{< /callout >}}
 
 When the Worker spawns your shell, it injects a set of `LEAPMUX_CONTROL_*` environment variables that let any script or program running inside the terminal drive LeapMux through the [`leapmux control`](/docs/using/control-cli/) CLI — without needing to log in separately. The CLI detects these variables and routes its calls over a local socket the Worker provides, scoped to the terminal's own identity.
 
@@ -237,7 +245,9 @@ leapmux control whoami
 leapmux control tab open --type terminal --last
 ```
 
-> **Note:** Workspace id and tile id are deliberately **not** injected. The CLI derives them from `LEAPMUX_CONTROL_TAB_ID` at call time, which keeps them correct even if you move the tab. Terminals also do **not** get `LEAPMUX_CONTROL_AGENT_PROVIDER` (that is agents-only).
+{{< callout type="info" >}}
+Workspace id and tile id are deliberately **not** injected. The CLI derives them from `LEAPMUX_CONTROL_TAB_ID` at call time, which keeps them correct even if you move the tab. Terminals also do **not** get `LEAPMUX_CONTROL_AGENT_PROVIDER` (that is agents-only).
+{{< /callout >}}
 
 Any pre-existing `LEAPMUX_CONTROL_*` values are stripped before the Worker re-injects its own, so a terminal opened from inside another agent or terminal targets itself, not its parent. The per-spawn token is retired when the terminal is closed and re-minted on restart.
 

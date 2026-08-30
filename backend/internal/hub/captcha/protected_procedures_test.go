@@ -29,7 +29,7 @@ var protectedProcedureRationale = map[string]string{
 // above: these procedures sit behind the session gate rather than the
 // anonymous one, and are protected because a scripted session can charge
 // them cheaply -- the guess budget costs nothing to burn, and the resend
-// leg drives an SMTP send toward an address the cooldown gate alone no
+// path drives an SMTP send toward an address the cooldown gate alone no
 // longer fully paces.
 var protectedAuthenticatedRationale = map[string]string{
 	leapmuxv1connect.UserServiceVerifyEmailProcedure:             "charges the per-code wrong-guess budget, which a script burns for free",

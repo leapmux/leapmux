@@ -51,7 +51,9 @@ Notes on dispatch:
 - Daemon flags must follow the command keyword — `leapmux solo -listen ...`, not `leapmux -listen ... solo`. LeapMux rejects an unknown leading `-flag` because it is not a top-level flag.
 - LeapMux rejects an unexpected positional argument and points you at `--help`.
 
-> **Tip:** Flags accept both single- and double-hyphen forms (`-listen` and `--listen` are equivalent). The daemon-mode flag tables below use the single-hyphen form, matching the binary's help output; the `control` and `recover` sections keep the double-hyphen form used by their chapters.
+{{< callout >}}
+Flags accept both single- and double-hyphen forms (`-listen` and `--listen` are equivalent). The daemon-mode flag tables below use the single-hyphen form, matching the binary's help output; the `control` and `recover` sections keep the double-hyphen form used by their chapters.
+{{< /callout >}}
 
 > **Durations.** Every flag whose default is shown as a duration (`1h`, `5m`, …) takes a unit suffix — `ns`, `us`, `ms`, `s`, `m`, `h`, `d`, `w` — and combines parts. A bare number is a count of **seconds**. See [Duration values](/docs/admin/configuration/#duration-values).
 
@@ -79,9 +81,13 @@ leapmux solo [flags]
 | `-config` | `~/.config/leapmux/solo/solo.yaml` | Config file path |
 | `-version` | — | Print version and exit |
 
-> **Note:** Binding solo to a non-loopback address logs a warning because every request is auto-authenticated as the admin — use `hub` or `dev` for network-exposed deployments.
+{{< callout type="info" >}}
+Binding solo to a non-loopback address logs a warning because every request is auto-authenticated as the admin — use `hub` or `dev` for network-exposed deployments.
+{{< /callout >}}
 
-> **Note:** The `public_url` setting applies in solo: it sets the URL in the startup banner, and the `--hub` address in the command that the **Register worker** dialog prints.
+{{< callout type="info" >}}
+The `public_url` setting applies in solo: it sets the URL in the startup banner, and the `--hub` address in the command that the **Register worker** dialog prints.
+{{< /callout >}}
 
 ## hub
 
@@ -133,7 +139,9 @@ CockroachDB/YugabyteDB use the Postgres driver; TiDB uses the MySQL driver. See 
 | `-config` | `~/.config/leapmux/hub/hub.yaml` | Config file path |
 | `-version` | — | Print version and exit |
 
-> **Note:** One hub config key has **no** CLI flag and is set only via YAML or env var: `encryption_key_path` (`LEAPMUX_HUB_ENCRYPTION_KEY_PATH`, default `<data-dir>/encryption.key`). Runtime settings such as `secure_cookies` are database settings managed with `leapmux control admin settings` — see [Admin CLI](/docs/admin/admin-cli/). See also [Configuration](/docs/admin/configuration/) and [Encryption & Data](/docs/admin/encryption-and-data/).
+{{< callout type="info" >}}
+One hub config key has **no** CLI flag and is set only via YAML or env var: `encryption_key_path` (`LEAPMUX_HUB_ENCRYPTION_KEY_PATH`, default `<data-dir>/encryption.key`). Runtime settings such as `secure_cookies` are database settings managed with `leapmux control admin settings` — see [Admin CLI](/docs/admin/admin-cli/). See also [Configuration](/docs/admin/configuration/) and [Encryption & Data](/docs/admin/encryption-and-data/).
+{{< /callout >}}
 
 ## worker
 
@@ -183,7 +191,9 @@ leapmux worker -hub https://hub.example.com
 | `-config` | `~/.config/leapmux/worker/worker.yaml` | Config file path |
 | `-version` | — | Print version and exit |
 
-> **Note:** An unregistered Worker with no saved credentials fails to start, and the error tells you to pass a registration key from the hub UI. Passing `-registration-key` again to an already-registered Worker also fails, which protects you from burning a one-time key.
+{{< callout type="info" >}}
+An unregistered Worker with no saved credentials fails to start, and the error tells you to pass a registration key from the hub UI. Passing `-registration-key` again to an already-registered Worker also fails, which protects you from burning a one-time key.
+{{< /callout >}}
 
 ### worker cross-worker-pins
 
@@ -201,7 +211,9 @@ leapmux worker cross-worker-pins list|show|remove [--target-worker-id=<id>] [--d
 
 When `--data-dir` is omitted, the data directory is resolved through the standard Worker config loader, so it matches what `leapmux worker` would use: default `~/.config/leapmux/worker`, overridable with `LEAPMUX_WORKER_DATA_DIR` (or a `data_dir` entry in `worker.yaml`).
 
-> **Note:** The binary's own help text for this flag mentions `LEAPMUX_DATA_DIR`, but that variable is **not** read by the `leapmux` binary itself (only by the Docker entrypoint script), so it has no effect on this subcommand's data-dir resolution. Use `LEAPMUX_WORKER_DATA_DIR` (or `--data-dir`) here.
+{{< callout type="info" >}}
+The binary's own help text for this flag mentions `LEAPMUX_DATA_DIR`, but that variable is **not** read by the `leapmux` binary itself (only by the Docker entrypoint script), so it has no effect on this subcommand's data-dir resolution. Use `LEAPMUX_WORKER_DATA_DIR` (or `--data-dir`) here.
+{{< /callout >}}
 
 ## dev
 
@@ -270,7 +282,9 @@ leapmux control auth login --hub https://hub.example.com   # authorize first
 | `terminal` | `send`, `get`, `shells` |
 | `events` | `watch` |
 
-> **Note:** Agents are opened, closed, listed, and renamed through the `tab` group (`tab open --type agent`, `tab close`, …) — there is no `agent open`/`agent close`/`agent list`. The `agent` group is for agent-specific operations only.
+{{< callout type="info" >}}
+Agents are opened, closed, listed, and renamed through the `tab` group (`tab open --type agent`, `tab close`, …) — there is no `agent open`/`agent close`/`agent list`. The `agent` group is for agent-specific operations only.
+{{< /callout >}}
 
 ## Environment variables
 

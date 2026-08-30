@@ -40,13 +40,6 @@ import (
 // resend_cooldown.go.
 const accountRecoveryExpiry = time.Hour
 
-// generateAccountRecoveryToken mints the emailed recovery secret from the
-// shared id mint (crypto-rand backed, 48 chars over a 62-alphabet, ~285
-// bits), mirroring auth.MintAccessSecret and the session ids.
-func generateAccountRecoveryToken() string {
-	return id.Generate()
-}
-
 func (s *AuthService) RequestAccountRecovery(ctx context.Context, req *connect.Request[leapmuxv1.RequestAccountRecoveryRequest]) (*connect.Response[leapmuxv1.RequestAccountRecoveryResponse], error) {
 	if s.cfg.SoloMode {
 		return connect.NewResponse(&leapmuxv1.RequestAccountRecoveryResponse{}), nil
@@ -98,21 +91,22 @@ func (s *AuthService) RequestAccountRecovery(ctx context.Context, req *connect.R
 	// write lands only when no previous token exists or the previous one
 	// was issued at least the cooldown ago -- so a double-submit race
 	// cannot mint and send twice and the first email's link stays valid.
-	// mintCutoff owns the derivation; see resend_cooldown.go.
+	// mintBlockedUntil owns the derivation; see resend_cooldown.go.
 	// ONE instant for both, the way completeOAuthReauth states the rule for
 	// its own leg: the cutoff and the expiry answer the same "now", so two
 	// reads could disagree inside one request.
 	now := s.now().UTC()
-	cooldownCutoff := mintCutoff(now)
-	rawToken := generateAccountRecoveryToken()
-	issuedAt := now
+	// The emailed recovery secret comes from the shared id mint (crypto-rand
+	// backed, 48 chars over a 62-alphabet, ~285 bits), mirroring
+	// auth.MintAccessSecret and the session ids.
+	rawToken := id.Generate()
 	expiresAt := now.Add(accountRecoveryExpiry)
 	minted, err := s.store.Users().SetPendingRecovery(ctx, store.SetPendingRecoveryParams{
-		ID:                       user.ID,
-		PendingRecoveryToken:     hashBrowserSecret(rawToken),
-		PendingRecoveryExpiresAt: expiresAt,
-		PendingRecoveryIssuedAt:  &issuedAt,
-		CooldownCutoff:           cooldownCutoff,
+		ID:                         user.ID,
+		PendingRecoveryToken:       hashBrowserSecret(rawToken),
+		PendingRecoveryExpiresAt:   expiresAt,
+		PendingRecoveryUnblockedAt: mintUnblockedAt(now),
+		Now:                        now,
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -127,8 +121,17 @@ func (s *AuthService) RequestAccountRecovery(ctx context.Context, req *connect.R
 		// Report the clear separately from the send. A log line that claims
 		// "cleared pending token" while the clear itself failed makes the
 		// operator look for the wrong cause of a token that is still live
-		// for the full recovery TTL.
-		if clearErr := s.store.Users().ClearPendingRecovery(ctx, user.ID); clearErr != nil {
+		// for the full recovery TTL. The blocked-until deadline leaves the
+		// failure window, so a mint-send-clear loop costs one attempt per
+		// window rather than one SMTP transaction per request. The deadline
+		// reads the clock HERE, after the relay answered: a deadline derived
+		// from the pre-dial read leaves max(0, window - dial) of blockade,
+		// and a relay that fails slowly eats the whole window.
+		blockedUntil := failedSendUnblockedAt(s.now(), mailFailureCooldown(ctx, s.set))
+		if clearErr := s.store.Users().ClearPendingRecovery(ctx, store.ClearPendingRecoveryParams{
+			ID:          user.ID,
+			UnblockedAt: blockedUntil,
+		}); clearErr != nil {
 			slog.WarnContext(ctx, "clear pending account recovery after failed send",
 				"user_id", user.ID, "err", clearErr)
 		}
@@ -201,14 +204,11 @@ func (s *AuthService) CompleteAccountRecovery(ctx context.Context, req *connect.
 		if err := RevokePasskeyAuthState(ctx, tx, user.ID); err != nil {
 			return err
 		}
-		if err := tx.Sessions().DeleteByUser(ctx, uid); err != nil {
-			return fmt.Errorf("delete sessions: %w", err)
-		}
-		if _, err := tx.APITokens().RevokeByUser(ctx, uid); err != nil {
-			return fmt.Errorf("revoke api tokens: %w", err)
-		}
-		if _, err := tx.DelegationTokens().RevokeByUser(ctx, uid); err != nil {
-			return fmt.Errorf("revoke delegation tokens: %w", err)
+		// CompleteRecovery's row update already bumped the auth
+		// generation and returned the committed epoch, so the bearer
+		// revocation takes the already-bumped shape.
+		if _, _, _, err := RevokeCredentialsAfterRotation(ctx, tx, uid, true); err != nil {
+			return err
 		}
 		return nil
 	}); err != nil {

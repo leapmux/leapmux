@@ -29,32 +29,25 @@ import (
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
-type recordingMailSender struct {
-	msgs []mail.Message
-	err  error
-}
-
-func (r *recordingMailSender) Send(_ context.Context, msg mail.Message) error {
-	if r.err != nil {
-		return r.err
-	}
-	r.msgs = append(r.msgs, msg)
-	return nil
-}
-
 func setupAccountRecoveryAuthService(t *testing.T, sender mail.Sender) (leapmuxv1connect.AuthServiceClient, store.Store) {
-	client, st, _ := setupAccountRecoveryAuthServiceWithClock(t, sender)
+	client, st, _ := setupAccountRecoveryAuthServiceWithClock(t, sender, nil)
 	return client, st
 }
 
-// setupAccountRecoveryAuthServiceWithClock is the same harness, plus the
-// service value itself, so a test can move its clock seam.
-func setupAccountRecoveryAuthServiceWithClock(t *testing.T, sender mail.Sender) (leapmuxv1connect.AuthServiceClient, store.Store, *service.AuthService) {
+// setupAccountRecoveryAuthServiceWithClock builds the recovery harness:
+// store, settings, interceptor, service, and a connect client against an
+// httptest server. configure runs against the SAME manager the service
+// reads, so a seeded SMTP row is visible to the service under test; nil
+// leaves the defaults.
+func setupAccountRecoveryAuthServiceWithClock(t *testing.T, sender mail.Sender, configure func(t *testing.T, set *settings.Manager)) (leapmuxv1connect.AuthServiceClient, store.Store, *service.AuthService) {
 	t.Helper()
 
 	st := hubtestutil.OpenTestStore(t)
 	set := servicetest.NewSettingsManager(t, st, nil)
 	enableSignup(t, set)
+	if configure != nil {
+		configure(t, set)
+	}
 
 	mux := http.NewServeMux()
 	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
@@ -90,23 +83,31 @@ func extractAccountRecoveryToken(body string) string {
 	return rest
 }
 
+// assertRecoveryTokenShape pins the recovery link's token form: the shared
+// id mint's 48-character alphanumeric secret, the same shape session ids
+// and API access secrets carry.
+func assertRecoveryTokenShape(t *testing.T, token string) {
+	t.Helper()
+	assert.Regexp(t, "^[A-Za-z0-9]{48}$", token)
+}
+
 func TestRequestAccountRecovery_UnknownUser_EmptySuccess(t *testing.T) {
 	t.Parallel()
 
-	sender := &recordingMailSender{}
+	sender := &mailSenderDouble{}
 	client, _ := setupAccountRecoveryAuthService(t, sender)
 
 	_, err := client.RequestAccountRecovery(context.Background(), connect.NewRequest(&leapmuxv1.RequestAccountRecoveryRequest{
 		Identifier: "nobody@example.com",
 	}))
 	require.NoError(t, err)
-	assert.Empty(t, sender.msgs)
+	assert.Empty(t, sender.snapshot())
 }
 
 func TestRequestAccountRecovery_KnownUser_SendsMail(t *testing.T) {
 	t.Parallel()
 
-	sender := &recordingMailSender{}
+	sender := &mailSenderDouble{}
 	client, st := setupAccountRecoveryAuthService(t, sender)
 
 	userID := id.Generate()
@@ -126,14 +127,12 @@ func TestRequestAccountRecovery_KnownUser_SendsMail(t *testing.T) {
 		Identifier: "resetme@example.com",
 	}))
 	require.NoError(t, err)
-	require.Len(t, sender.msgs, 1)
-	assert.Equal(t, "resetme@example.com", sender.msgs[0].To)
+	require.Len(t, sender.snapshot(), 1)
+	assert.Equal(t, "resetme@example.com", sender.snapshot()[0].To)
 
-	token := extractAccountRecoveryToken(sender.msgs[0].Body)
+	token := extractAccountRecoveryToken(sender.snapshot()[0].Body)
 	require.NotEmpty(t, token)
-	// The recovery secret comes from the shared id mint, like session ids and
-	// API access secrets.
-	assert.Regexp(t, "^[A-Za-z0-9]{48}$", token)
+	assertRecoveryTokenShape(t, token)
 
 	user, err := st.Users().GetByID(context.Background(), userID)
 	require.NoError(t, err)
@@ -157,7 +156,7 @@ func TestRequestAccountRecovery_KnownUser_SendsMail(t *testing.T) {
 func TestRequestAccountRecovery_MailFailure_ClearsToken(t *testing.T) {
 	t.Parallel()
 
-	sender := &recordingMailSender{err: errors.New("smtp down")}
+	sender := &mailSenderDouble{err: errors.New("smtp down")}
 	client, st := setupAccountRecoveryAuthService(t, sender)
 
 	userID := id.Generate()
@@ -215,7 +214,7 @@ func TestCompleteAccountRecovery_InvalidToken_NotFound(t *testing.T) {
 func TestCompleteAccountRecovery_Success_WipesPasskeysAndSessions(t *testing.T) {
 	t.Parallel()
 
-	sender := &recordingMailSender{}
+	sender := &mailSenderDouble{}
 	client, st := setupAccountRecoveryAuthService(t, sender)
 
 	userID := id.Generate()
@@ -250,12 +249,10 @@ func TestCompleteAccountRecovery_Success_WipesPasskeysAndSessions(t *testing.T) 
 		Identifier: "wipeme",
 	}))
 	require.NoError(t, err)
-	require.Len(t, sender.msgs, 1)
-	token := extractAccountRecoveryToken(sender.msgs[0].Body)
+	require.Len(t, sender.snapshot(), 1)
+	token := extractAccountRecoveryToken(sender.snapshot()[0].Body)
 	require.NotEmpty(t, token)
-	// The recovery secret comes from the shared id mint, like session ids and
-	// API access secrets.
-	assert.Regexp(t, "^[A-Za-z0-9]{48}$", token)
+	assertRecoveryTokenShape(t, token)
 
 	_, err = client.CompleteAccountRecovery(context.Background(), connect.NewRequest(&leapmuxv1.CompleteAccountRecoveryRequest{
 		Token:       token,
@@ -285,7 +282,7 @@ func TestCompleteAccountRecovery_Success_WipesPasskeysAndSessions(t *testing.T) 
 func TestRequestAccountRecovery_PasswordlessAccount_SendsLink(t *testing.T) {
 	t.Parallel()
 
-	sender := &recordingMailSender{}
+	sender := &mailSenderDouble{}
 	client, st := setupAccountRecoveryAuthService(t, sender)
 
 	userID := id.Generate()
@@ -303,9 +300,9 @@ func TestRequestAccountRecovery_PasswordlessAccount_SendsLink(t *testing.T) {
 		Identifier: "passkeyonly",
 	}))
 	require.NoError(t, err)
-	require.Len(t, sender.msgs, 1)
-	assert.Equal(t, "passkeyonly@example.com", sender.msgs[0].To)
-	token := extractAccountRecoveryToken(sender.msgs[0].Body)
+	require.Len(t, sender.snapshot(), 1)
+	assert.Equal(t, "passkeyonly@example.com", sender.snapshot()[0].To)
+	token := extractAccountRecoveryToken(sender.snapshot()[0].Body)
 	require.NotEmpty(t, token)
 
 	row, err := st.Users().GetByID(context.Background(), userID)
@@ -320,7 +317,7 @@ func TestRequestAccountRecovery_PasswordlessAccount_SendsLink(t *testing.T) {
 func TestCompleteAccountRecovery_SetsFirstPassword(t *testing.T) {
 	t.Parallel()
 
-	sender := &recordingMailSender{}
+	sender := &mailSenderDouble{}
 	client, st := setupAccountRecoveryAuthService(t, sender)
 
 	userID := id.Generate()
@@ -339,8 +336,8 @@ func TestCompleteAccountRecovery_SetsFirstPassword(t *testing.T) {
 		Identifier: "recoverless@example.com",
 	}))
 	require.NoError(t, err)
-	require.Len(t, sender.msgs, 1)
-	token := extractAccountRecoveryToken(sender.msgs[0].Body)
+	require.Len(t, sender.snapshot(), 1)
+	token := extractAccountRecoveryToken(sender.snapshot()[0].Body)
 	require.NotEmpty(t, token)
 
 	_, err = client.CompleteAccountRecovery(context.Background(), connect.NewRequest(&leapmuxv1.CompleteAccountRecoveryRequest{
@@ -367,7 +364,7 @@ func TestCompleteAccountRecovery_SetsFirstPassword(t *testing.T) {
 func TestCompleteAccountRecovery_ExpiredToken_NotFound(t *testing.T) {
 	t.Parallel()
 
-	sender := &recordingMailSender{}
+	sender := &mailSenderDouble{}
 	client, st := setupAccountRecoveryAuthService(t, sender)
 
 	userID := id.Generate()
@@ -386,20 +383,21 @@ func TestCompleteAccountRecovery_ExpiredToken_NotFound(t *testing.T) {
 		Identifier: "expired@example.com",
 	}))
 	require.NoError(t, err)
-	require.Len(t, sender.msgs, 1)
-	token := extractAccountRecoveryToken(sender.msgs[0].Body)
+	require.Len(t, sender.snapshot(), 1)
+	token := extractAccountRecoveryToken(sender.snapshot()[0].Body)
 	require.NotEmpty(t, token)
-	// The recovery secret comes from the shared id mint, like session ids and
-	// API access secrets.
-	assert.Regexp(t, "^[A-Za-z0-9]{48}$", token)
+	assertRecoveryTokenShape(t, token)
 
 	user, err := st.Users().GetByID(context.Background(), userID)
 	require.NoError(t, err)
+	// Overwrite the live link with an expired one: the gate's Now moves
+	// past the deadline the live mint armed, so this seed lands.
 	_, err = st.Users().SetPendingRecovery(context.Background(), store.SetPendingRecoveryParams{
-		ID:                       userID,
-		PendingRecoveryToken:     user.PendingRecoveryToken,
-		PendingRecoveryExpiresAt: time.Now().UTC().Add(-time.Hour),
-		CooldownCutoff:           time.Now().UTC().Add(time.Hour),
+		ID:                         userID,
+		PendingRecoveryUnblockedAt: time.Now().Add(-5 * time.Minute).UTC(),
+		PendingRecoveryToken:       user.PendingRecoveryToken,
+		PendingRecoveryExpiresAt:   time.Now().UTC().Add(-time.Hour),
+		Now:                        time.Now().UTC().Add(2 * time.Minute),
 	})
 	require.NoError(t, err)
 
@@ -414,7 +412,7 @@ func TestCompleteAccountRecovery_ExpiredToken_NotFound(t *testing.T) {
 func TestCompleteAccountRecovery_AttemptLimitBlocksBeforeArgon2(t *testing.T) {
 	t.Parallel()
 
-	sender := &recordingMailSender{}
+	sender := &mailSenderDouble{}
 	client, st := setupAccountRecoveryAuthService(t, sender)
 
 	userID := id.Generate()
@@ -433,12 +431,10 @@ func TestCompleteAccountRecovery_AttemptLimitBlocksBeforeArgon2(t *testing.T) {
 		Identifier: "attemptcap@example.com",
 	}))
 	require.NoError(t, err)
-	require.Len(t, sender.msgs, 1)
-	token := extractAccountRecoveryToken(sender.msgs[0].Body)
+	require.Len(t, sender.snapshot(), 1)
+	token := extractAccountRecoveryToken(sender.snapshot()[0].Body)
 	require.NotEmpty(t, token)
-	// The recovery secret comes from the shared id mint, like session ids and
-	// API access secrets.
-	assert.Regexp(t, "^[A-Za-z0-9]{48}$", token)
+	assertRecoveryTokenShape(t, token)
 
 	// Use up the 5 soft attempts with a wrong password that still matches the
 	// token row (Consume increments). Use the real token so lookup succeeds;
@@ -469,20 +465,20 @@ func TestCompleteAccountRecovery_AttemptLimitBlocksBeforeArgon2(t *testing.T) {
 func TestRequestAccountRecovery_InvalidUsername_EmptySuccess(t *testing.T) {
 	t.Parallel()
 
-	sender := &recordingMailSender{}
+	sender := &mailSenderDouble{}
 	client, _ := setupAccountRecoveryAuthService(t, sender)
 
 	_, err := client.RequestAccountRecovery(context.Background(), connect.NewRequest(&leapmuxv1.RequestAccountRecoveryRequest{
 		Identifier: "!!!not-a-slug!!!",
 	}))
 	require.NoError(t, err)
-	assert.Empty(t, sender.msgs)
+	assert.Empty(t, sender.snapshot())
 }
 
 func TestRequestAccountRecovery_UsernameIsSanitized(t *testing.T) {
 	t.Parallel()
 
-	sender := &recordingMailSender{}
+	sender := &mailSenderDouble{}
 	client, st := setupAccountRecoveryAuthService(t, sender)
 
 	userID := id.Generate()
@@ -502,7 +498,7 @@ func TestRequestAccountRecovery_UsernameIsSanitized(t *testing.T) {
 		Identifier: "ResetMe",
 	}))
 	require.NoError(t, err)
-	require.Len(t, sender.msgs, 1)
+	require.Len(t, sender.snapshot(), 1)
 }
 
 func tokenHashForTest(token string) string {
@@ -515,8 +511,8 @@ func tokenHashForTest(token string) string {
 // token (which would invalidate the link the first email still carries and
 // flood the inbox), and the first token must still complete.
 func TestRequestAccountRecovery_CooldownKeepsPreviousLink(t *testing.T) {
-	sender := &recordingMailSender{}
-	client, _, st := setupAccountRecoveryAuthServiceConfigured(t, sender, seedSMTP)
+	sender := &mailSenderDouble{}
+	client, st := setupAccountRecoveryAuthServiceConfigured(t, sender, seedSMTP)
 
 	userID := id.Generate()
 	require.NoError(t, st.Users().Create(context.Background(), store.CreateUserParams{
@@ -535,13 +531,11 @@ func TestRequestAccountRecovery_CooldownKeepsPreviousLink(t *testing.T) {
 		}))
 		require.NoError(t, err)
 	}
-	require.Len(t, sender.msgs, 1, "cooldown must suppress the second send")
+	require.Len(t, sender.snapshot(), 1, "cooldown must suppress the second send")
 
-	token := extractAccountRecoveryToken(sender.msgs[0].Body)
+	token := extractAccountRecoveryToken(sender.snapshot()[0].Body)
 	require.NotEmpty(t, token)
-	// The recovery secret comes from the shared id mint, like session ids and
-	// API access secrets.
-	assert.Regexp(t, "^[A-Za-z0-9]{48}$", token)
+	assertRecoveryTokenShape(t, token)
 	_, err := client.CompleteAccountRecovery(context.Background(), connect.NewRequest(&leapmuxv1.CompleteAccountRecoveryRequest{
 		Token:       token,
 		NewPassword: "freshpass123",
@@ -556,8 +550,8 @@ func TestRequestAccountRecovery_CooldownKeepsPreviousLink(t *testing.T) {
 // the issued-at column, so burning the budget the holder already owns
 // cannot hurry the next email.
 func TestRequestAccountRecovery_BurnedBudgetKeepsCooldown(t *testing.T) {
-	sender := &recordingMailSender{}
-	client, _, st := setupAccountRecoveryAuthServiceConfigured(t, sender, seedSMTP)
+	sender := &mailSenderDouble{}
+	client, st := setupAccountRecoveryAuthServiceConfigured(t, sender, seedSMTP)
 	ctx := context.Background()
 
 	userID := id.Generate()
@@ -575,8 +569,8 @@ func TestRequestAccountRecovery_BurnedBudgetKeepsCooldown(t *testing.T) {
 		Identifier: "burned@example.com",
 	}))
 	require.NoError(t, err)
-	require.Len(t, sender.msgs, 1)
-	token := extractAccountRecoveryToken(sender.msgs[0].Body)
+	require.Len(t, sender.snapshot(), 1)
+	token := extractAccountRecoveryToken(sender.snapshot()[0].Body)
 	require.NotEmpty(t, token)
 
 	// Burn the whole attempt budget against the real token; the 6th charge
@@ -592,7 +586,7 @@ func TestRequestAccountRecovery_BurnedBudgetKeepsCooldown(t *testing.T) {
 		Identifier: "burned@example.com",
 	}))
 	require.NoError(t, err, "the response is uniform; only the mail differs")
-	require.Len(t, sender.msgs, 1, "burning the attempt budget must not reset the resend cooldown")
+	require.Len(t, sender.snapshot(), 1, "burning the attempt budget must not reset the resend cooldown")
 }
 
 // TestSignUp_MailFailureDoesNotLeakTransportDetails pins that a fail-closed
@@ -600,8 +594,8 @@ func TestRequestAccountRecovery_BurnedBudgetKeepsCooldown(t *testing.T) {
 // transport chain specifies the relay host and port, and that detail stays in
 // the server log, never in the client response.
 func TestSignUp_MailFailureDoesNotLeakTransportDetails(t *testing.T) {
-	sender := &recordingMailSender{err: errors.New("dial tcp smtp.secret-relay.example:587: connection refused")}
-	client, _, st := setupAccountRecoveryAuthServiceConfigured(t, sender, seedSMTP)
+	sender := &mailSenderDouble{err: errors.New("dial tcp smtp.secret-relay.example:587: connection refused")}
+	client, st := setupAccountRecoveryAuthServiceConfigured(t, sender, seedSMTP)
 
 	// A user must exist so the sign-up takes the public path, not the
 	// first-admin setup path (which verifies nothing and sends no mail).
@@ -629,36 +623,11 @@ func TestSignUp_MailFailureDoesNotLeakTransportDetails(t *testing.T) {
 	assert.NotContains(t, err.Error(), "connection refused")
 }
 
-// setupAccountRecoveryAuthServiceConfigured builds the reset harness with a
-// settings callback that runs against the SAME manager the service reads,
-// so a seeded SMTP row is visible to the service under test.
-func setupAccountRecoveryAuthServiceConfigured(t *testing.T, sender mail.Sender, configure func(t *testing.T, set *settings.Manager)) (leapmuxv1connect.AuthServiceClient, *settings.Manager, store.Store) {
-	t.Helper()
-
-	st := hubtestutil.OpenTestStore(t)
-	set := servicetest.NewSettingsManager(t, st, nil)
-	enableSignup(t, set)
-	configure(t, set)
-
-	mux := http.NewServeMux()
-	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
-	t.Cleanup(sc.Stop)
-	opts := connect.WithInterceptors(interceptor)
-	authSvc := service.NewAuthService(service.AuthServiceDeps{
-		Store:     st,
-		Config:    testConfig(),
-		Settings:  set,
-		Lifecycle: auth.NewCredentialLifecycleEffects(sc, nil, nil),
-		Mail:      sender,
-		Renderer:  mail.Renderer{BaseURL: func() string { return "https://hub.example.com" }},
-	})
-	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
-	mux.Handle(path, handler)
-	server := httptest.NewServer(mux)
-	t.Cleanup(server.Close)
-
-	client := leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL)
-	return client, set, st
+// setupAccountRecoveryAuthServiceConfigured is the harness with a settings
+// callback, for the tests that seed SMTP or flip a flag.
+func setupAccountRecoveryAuthServiceConfigured(t *testing.T, sender mail.Sender, configure func(t *testing.T, set *settings.Manager)) (leapmuxv1connect.AuthServiceClient, store.Store) {
+	client, st, _ := setupAccountRecoveryAuthServiceWithClock(t, sender, configure)
+	return client, st
 }
 
 // TestRequestAccountRecovery_AdminUnconfirmedAddressGetsNoLink is the recovery
@@ -675,10 +644,10 @@ func TestRequestAccountRecovery_AdminUnconfirmedAddressGetsNoLink(t *testing.T) 
 	t.Parallel()
 
 	// SMTP configured, so the hub REQUIRES verification -- which is the
-	// deployment where a reset link is a credential and the flag decides
+	// deployment where a recovery link is a credential and the flag decides
 	// whether the hub has evidence for the address.
-	sender := &recordingMailSender{}
-	client, _, st := setupAccountRecoveryAuthServiceConfigured(t, sender, seedSMTP)
+	sender := &mailSenderDouble{}
+	client, st := setupAccountRecoveryAuthServiceConfigured(t, sender, seedSMTP)
 	ctx := context.Background()
 
 	hash, err := password.Hash("oldpass123")
@@ -696,7 +665,7 @@ func TestRequestAccountRecovery_AdminUnconfirmedAddressGetsNoLink(t *testing.T) 
 		Identifier: "unconfirmed@example.com",
 	}))
 	require.NoError(t, err, "the response is uniform; only the mail differs")
-	assert.Empty(t, sender.msgs, "no link to an address the hub never confirmed, administrator or not")
+	assert.Empty(t, sender.snapshot(), "no link to an address the hub never confirmed, administrator or not")
 
 	row, err := st.Users().GetByID(ctx, unconfirmed)
 	require.NoError(t, err)
@@ -715,8 +684,8 @@ func TestRequestAccountRecovery_AdminUnconfirmedAddressGetsNoLink(t *testing.T) 
 		Identifier: "confirmed@example.com",
 	}))
 	require.NoError(t, err)
-	require.Len(t, sender.msgs, 1)
-	assert.Equal(t, "confirmed@example.com", sender.msgs[0].To)
+	require.Len(t, sender.snapshot(), 1)
+	assert.Equal(t, "confirmed@example.com", sender.snapshot()[0].To)
 }
 
 // TestRequestAccountRecovery_UsesTheServiceClock pins that the recovery expiry
@@ -731,8 +700,8 @@ func TestRequestAccountRecovery_AdminUnconfirmedAddressGetsNoLink(t *testing.T) 
 func TestRequestAccountRecovery_UsesTheServiceClock(t *testing.T) {
 	t.Parallel()
 
-	sender := &recordingMailSender{}
-	client, st, authSvc := setupAccountRecoveryAuthServiceWithClock(t, sender)
+	sender := &mailSenderDouble{}
+	client, st, authSvc := setupAccountRecoveryAuthServiceWithClock(t, sender, nil)
 
 	fixed := time.Now().UTC().Add(72 * time.Hour).Truncate(time.Second)
 	authSvc.Now = func() time.Time { return fixed }
@@ -749,7 +718,7 @@ func TestRequestAccountRecovery_UsesTheServiceClock(t *testing.T) {
 		Identifier: "clocked@example.com",
 	}))
 	require.NoError(t, err)
-	require.Len(t, sender.msgs, 1)
+	require.Len(t, sender.snapshot(), 1)
 
 	row, err := st.Users().GetByID(context.Background(), userID)
 	require.NoError(t, err)

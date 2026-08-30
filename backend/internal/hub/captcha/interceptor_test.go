@@ -16,25 +16,35 @@ import (
 	"github.com/leapmux/leapmux/internal/metrics"
 )
 
+// mountUnary mounts one stub procedure behind the interceptor on mux: the
+// handler answers an empty response and flips the flag it returns, so a
+// test proves a request reached (or never reached) the handler. Taking the
+// mux lets a harness mount several procedures on one server, each with its
+// own flag.
+func mountUnary[Req any, Resp any](mux *http.ServeMux, ic connect.UnaryInterceptorFunc, procedure string) *bool {
+	called := false
+	mux.Handle(procedure, connect.NewUnaryHandler(
+		procedure,
+		func(_ context.Context, _ *connect.Request[Req]) (*connect.Response[Resp], error) {
+			called = true
+			return connect.NewResponse(new(Resp)), nil
+		},
+		connect.WithInterceptors(ic),
+	))
+	return &called
+}
+
 // newLoginClient wires a one-procedure Login handler behind the captcha
 // interceptor, so requests reach it with a fully populated Spec exactly as
 // the hub's mux would populate it. handlerCalled reports whether the
 // protected handler ran.
 func newLoginClient(t *testing.T, ic connect.UnaryInterceptorFunc) (leapmuxv1connect.AuthServiceClient, *bool) {
 	t.Helper()
-	handlerCalled := false
-	handler := connect.NewUnaryHandler(
-		leapmuxv1connect.AuthServiceLoginProcedure,
-		func(ctx context.Context, req *connect.Request[leapmuxv1.LoginRequest]) (*connect.Response[leapmuxv1.LoginResponse], error) {
-			handlerCalled = true
-			return connect.NewResponse(&leapmuxv1.LoginResponse{}), nil
-		},
-		connect.WithInterceptors(ic),
-	)
-	server := httptest.NewServer(http.NewServeMux())
-	server.Config.Handler.(*http.ServeMux).Handle(leapmuxv1connect.AuthServiceLoginProcedure, handler)
+	mux := http.NewServeMux()
+	called := mountUnary[leapmuxv1.LoginRequest, leapmuxv1.LoginResponse](mux, ic, leapmuxv1connect.AuthServiceLoginProcedure)
+	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	return leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL), &handlerCalled
+	return leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL), called
 }
 
 func freshVerifiedPayload(t *testing.T, e *testEnv) string {
@@ -257,23 +267,15 @@ func TestInterceptorIgnoresUnprotectedProcedures(t *testing.T) {
 
 	// Logout carries neither captcha field; routed through the same
 	// interceptor it must reach its handler unconditionally.
-	logoutCalled := false
-	handler := connect.NewUnaryHandler(
-		leapmuxv1connect.AuthServiceLogoutProcedure,
-		func(ctx context.Context, req *connect.Request[leapmuxv1.LogoutRequest]) (*connect.Response[leapmuxv1.LogoutResponse], error) {
-			logoutCalled = true
-			return connect.NewResponse(&leapmuxv1.LogoutResponse{}), nil
-		},
-		connect.WithInterceptors(NewInterceptor(e.m)),
-	)
-	server := httptest.NewServer(http.NewServeMux())
-	server.Config.Handler.(*http.ServeMux).Handle(leapmuxv1connect.AuthServiceLogoutProcedure, handler)
+	mux := http.NewServeMux()
+	logoutCalled := mountUnary[leapmuxv1.LogoutRequest, leapmuxv1.LogoutResponse](mux, NewInterceptor(e.m), leapmuxv1connect.AuthServiceLogoutProcedure)
+	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	client := leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL)
 
 	_, err := client.Logout(context.Background(), connect.NewRequest(&leapmuxv1.LogoutRequest{}))
 	require.NoError(t, err)
-	assert.True(t, logoutCalled)
+	assert.True(t, *logoutCalled)
 }
 
 // newVerificationClient wires the two captcha-protected UserService
@@ -283,30 +285,12 @@ func TestInterceptorIgnoresUnprotectedProcedures(t *testing.T) {
 // real procedure paths rather than only in the classification test.
 func newVerificationClient(t *testing.T, ic connect.UnaryInterceptorFunc) (leapmuxv1connect.UserServiceClient, *bool, *bool) {
 	t.Helper()
-	verifyCalled := false
-	resendCalled := false
-
-	verify := connect.NewUnaryHandler(
-		leapmuxv1connect.UserServiceVerifyEmailProcedure,
-		func(ctx context.Context, req *connect.Request[leapmuxv1.VerifyEmailRequest]) (*connect.Response[leapmuxv1.VerifyEmailResponse], error) {
-			verifyCalled = true
-			return connect.NewResponse(&leapmuxv1.VerifyEmailResponse{}), nil
-		},
-		connect.WithInterceptors(ic),
-	)
-	resend := connect.NewUnaryHandler(
-		leapmuxv1connect.UserServiceResendVerificationEmailProcedure,
-		func(ctx context.Context, req *connect.Request[leapmuxv1.ResendVerificationEmailRequest]) (*connect.Response[leapmuxv1.ResendVerificationEmailResponse], error) {
-			resendCalled = true
-			return connect.NewResponse(&leapmuxv1.ResendVerificationEmailResponse{}), nil
-		},
-		connect.WithInterceptors(ic),
-	)
-	server := httptest.NewServer(http.NewServeMux())
-	server.Config.Handler.(*http.ServeMux).Handle(leapmuxv1connect.UserServiceVerifyEmailProcedure, verify)
-	server.Config.Handler.(*http.ServeMux).Handle(leapmuxv1connect.UserServiceResendVerificationEmailProcedure, resend)
+	mux := http.NewServeMux()
+	verifyCalled := mountUnary[leapmuxv1.VerifyEmailRequest, leapmuxv1.VerifyEmailResponse](mux, ic, leapmuxv1connect.UserServiceVerifyEmailProcedure)
+	resendCalled := mountUnary[leapmuxv1.ResendVerificationEmailRequest, leapmuxv1.ResendVerificationEmailResponse](mux, ic, leapmuxv1connect.UserServiceResendVerificationEmailProcedure)
+	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	return leapmuxv1connect.NewUserServiceClient(server.Client(), server.URL), &verifyCalled, &resendCalled
+	return leapmuxv1connect.NewUserServiceClient(server.Client(), server.URL), verifyCalled, resendCalled
 }
 
 // TestInterceptorProtectsTheVerificationProcedures pins the enforcement
@@ -332,7 +316,7 @@ func TestInterceptorProtectsTheVerificationProcedures(t *testing.T) {
 	assert.True(t, *verifyCalled)
 
 	// ALTCHA rejects salt reuse, so solve a fresh challenge for the
-	// resend leg.
+	// resend path.
 	secondPayload := freshVerifiedPayload(t, e)
 	_, err = client.ResendVerificationEmail(context.Background(), connect.NewRequest(&leapmuxv1.ResendVerificationEmailRequest{}))
 	require.Error(t, err)

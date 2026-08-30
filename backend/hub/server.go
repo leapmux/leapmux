@@ -454,8 +454,10 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// the next email without a restart. With SMTP unconfigured it returns
 	// the loud, matchable ErrEmailDisabled rather than silently dropping
 	// mail. Email verification follows SMTP: EmailVerificationEffective is
-	// true only when SMTP is enabled (no separate toggle).
-	mailSender := mail.NewSettingsSender(setMgr)
+	// true only when SMTP is enabled (no separate toggle). The recipient
+	// cap wraps it so every mail type -- verification, recovery, worker
+	// instructions, credential notices -- shares one per-recipient budget.
+	mailSender := mail.NewRecipientLimitedSender(mail.NewSettingsSender(setMgr), setMgr, time.Now)
 	// The renderer derives its base URL per render so a public_url change
 	// reaches the next email's links and footers without a restart.
 	mailRenderer := mail.Renderer{BaseURL: func() string {

@@ -41,7 +41,9 @@ There are three protocol paths, each with a different security posture:
 
 The key consequence: control-plane data (accounts, workspace records, layout, Worker registration) reaches the Hub in a form it can read, while everything you actually do inside an agent or terminal travels inside an encrypted channel the Hub merely forwards.
 
-> **Note:** "End-to-end" here means the two ends are your browser (the Frontend) and the Worker daemon. The Hub is the middle. See [Concepts & Architecture](/docs/getting-started/concepts/) for how these components fit together and [Running LeapMux](/docs/admin/running-leapmux/) for how to launch each one.
+{{< callout type="info" >}}
+"End-to-end" here means the two ends are your browser (the Frontend) and the Worker daemon. The Hub is the middle. See [Concepts & Architecture](/docs/getting-started/concepts/) for how these components fit together and [Running LeapMux](/docs/admin/running-leapmux/) for how to launch each one.
+{{< /callout >}}
 
 ## What the Hub can and cannot see
 
@@ -55,7 +57,9 @@ The two columns below state the threat model. Treat the left column as data that
 | Worker registration data: Worker ID, composite public keys, online status, last-seen time | Worker hostname, OS, or filesystem paths (sent only inside the encrypted channel) |
 | Per-message transport metadata: channel ID, correlation ID, ciphertext size, timing | Any plaintext of Frontend↔Worker traffic |
 
-> **Warning:** **Traffic analysis is in scope.** The Hub observes message timing, sizes, and which channel correlates to which Worker. It cannot read content, but it can infer activity patterns — when you work, how much you type, which Worker is busy. If that metadata is itself sensitive in your environment, treat the Hub host accordingly.
+{{< callout type="warning" >}}
+**Traffic analysis is in scope.** The Hub observes message timing, sizes, and which channel correlates to which Worker. It cannot read content, but it can infer activity patterns — when you work, how much you type, which Worker is busy. If that metadata is itself sensitive in your environment, treat the Hub host accordingly.
+{{< /callout >}}
 
 Four specifics matter:
 
@@ -166,7 +170,9 @@ The machine limit does not narrow what the token sees at the **Hub**, either. It
 
 All of one user's own work is a single trust domain from an agent's point of view. If you need a stronger boundary than that, use a separate user rather than a separate workspace.
 
-> **Note:** The Worker's check is defence in depth. The Hub already authorizes a channel to a Worker only for that Worker's own owner, so every delegation token that reaches it carries the right identity in the first place. The Worker verifies it anyway rather than trusting the Hub to be correct.
+{{< callout type="info" >}}
+The Worker's check is defence in depth. The Hub already authorizes a channel to a Worker only for that Worker's own owner, so every delegation token that reaches it carries the right identity in the first place. The Worker verifies it anyway rather than trusting the Hub to be correct.
+{{< /callout >}}
 
 ## Worker identity and TOFU pinning
 
@@ -186,7 +192,9 @@ When a mismatch occurs, the Frontend shows a dialog titled **"Worker public key 
 
 It displays an **Expected:** fingerprint and an **Actual:** fingerprint, and it tells you to reject the connection and to verify the Worker's identity out-of-band before you accept an unexpected change. Two buttons are offered — **Reject** and **Accept** (the Accept button is styled as a danger action). Dismissing the dialog counts as Reject. If the confirmation UI is not available for any reason, the transport defaults to reject (fail-closed).
 
-> **Tip:** The fingerprints are **4 dash-joined English words** derived from a hash of the Worker's composite public key (for example, `deep-idea-obey-tack`). Every word is drawn from a fixed 256-word list and is exactly four letters, so a fingerprint is always the same shape and easy to read aloud. The wordlist is identical across the browser and the Worker, so you can read the fingerprint over a trusted out-of-band channel (a phone call, an in-person check) and confirm it matches before accepting a changed key.
+{{< callout >}}
+The fingerprints are **4 dash-joined English words** derived from a hash of the Worker's composite public key (for example, `deep-idea-obey-tack`). Every word is drawn from a fixed 256-word list and is exactly four letters, so a fingerprint is always the same shape and easy to read aloud. The wordlist is identical across the browser and the Worker, so you can read the fingerprint over a trusted out-of-band channel (a phone call, an in-person check) and confirm it matches before accepting a changed key.
+{{< /callout >}}
 
 ### When to accept and when to reject
 
@@ -206,9 +214,11 @@ Solo mode collapses the trust boundary on purpose. It runs the Hub and the Worke
 
 So in solo mode the threat model reduces to **local-host trust**. The E2EE channel, the composite keypair, and TOFU pinning all still operate end-to-end inside the single process, but that protocol-level separation offers **no protection against a local attacker** who can reach the loopback port.
 
-> **Warning:** If you point solo mode at a non-loopback address, LeapMux warns you at startup. The warning states that every request is auto-authenticated as the admin, so anyone who can reach the port has full admin access without credentials. It also tells you to restrict access externally (firewall, Tailscale/WireGuard, SSH tunnel) or to run `leapmux hub` for real authentication.
->
-> Heed it. If you need authentication, run `leapmux hub` (distributed mode) instead of exposing solo mode. See [Running LeapMux](/docs/admin/running-leapmux/) for the differences between run modes.
+{{< callout type="warning" >}}
+If you point solo mode at a non-loopback address, LeapMux warns you at startup. The warning states that every request is auto-authenticated as the admin, so anyone who can reach the port has full admin access without credentials. It also tells you to restrict access externally (firewall, Tailscale/WireGuard, SSH tunnel) or to run `leapmux hub` for real authentication.
+
+Heed it. If you need authentication, run `leapmux hub` (distributed mode) instead of exposing solo mode. See [Running LeapMux](/docs/admin/running-leapmux/) for the differences between run modes.
+{{< /callout >}}
 
 The bundled Worker that solo and dev modes auto-register is created in-process and flagged as auto-registered; it deliberately bypasses the registration-key flow, since presenting a bearer token to a local in-process RPC would give no real security.
 
@@ -253,7 +263,9 @@ You elevate with whatever your account holds:
 
 The provider row applies **only** to an account with no password and no passkey, where the provider *is* the sign-in credential. An account that holds either factor must present it, because "this browser can still reach the provider's session" is a weaker claim than the factor the account already has. The verification screen therefore does not offer a provider it would refuse.
 
-> **Note:** A provider elevation proves that the browser still holds a live provider session for the linked account. It does not prove that anybody re-entered a credential just now. LeapMux asks the provider for a fresh authentication, but no provider reports back reliably enough for the Hub to insist, and GitHub cannot be asked at all. For an account whose only credential is that provider this costs nothing, because whoever holds the provider session can sign in from scratch anyway. If you want a real second factor, give the account a password or a passkey.
+{{< callout type="info" >}}
+A provider elevation proves that the browser still holds a live provider session for the linked account. It does not prove that anybody re-entered a credential just now. LeapMux asks the provider for a fresh authentication, but no provider reports back reliably enough for the Hub to insist, and GitHub cannot be asked at all. For an account whose only credential is that provider this costs nothing, because whoever holds the provider session can sign in from scratch anyway. If you want a real second factor, give the account a password or a passkey.
+{{< /callout >}}
 
 In the browser, an elevated session announces itself at the top of every Preferences section it covers — **Account** and every **Administration** section — with the deadline and an **End now** button. The deadline it shows follows the slide: the Hub reports the window it holds on the response to each action that slides it, so the tab that performed that action shows the extended deadline in the same round trip.
 
@@ -343,9 +355,11 @@ Be clear on what this does **not** cover, since "encrypted at rest" invites over
 
 The key ring is managed with `leapmux recover encryption-key rotate | remove | reencrypt | rotate-pepper`. The full keystore, key-rotation runbook, database backends, and backup/restore guidance live in [Encryption & Data](/docs/admin/encryption-and-data/).
 
-> **Warning:** The `encryption.key` file holds more than the encryption key ring. It also carries the **token pepper** — the HMAC key for every API and delegation token secret. Two consequences follow. The file and the database are a matched pair that must be backed up together: without the key file, the encrypted columns are permanently undecryptable. And `rotate-pepper` invalidates every API and delegation token at once — it takes effect on the next Hub restart, since a running Hub holds the pepper in memory from startup.
->
-> Sessions, Worker auth tokens, and registration keys do not use the pepper and survive a rotation. Losing the file is therefore not only an OAuth-data loss; it takes every issued token with it.
+{{< callout type="warning" >}}
+The `encryption.key` file holds more than the encryption key ring. It also carries the **token pepper** — the HMAC key for every API and delegation token secret. Two consequences follow. The file and the database are a matched pair that must be backed up together: without the key file, the encrypted columns are permanently undecryptable. And `rotate-pepper` invalidates every API and delegation token at once — it takes effect on the next Hub restart, since a running Hub holds the pepper in memory from startup.
+
+Sessions, Worker auth tokens, and registration keys do not use the pepper and survive a rotation. Losing the file is therefore not only an OAuth-data loss; it takes every issued token with it.
+{{< /callout >}}
 
 ## Recommendations for administrators
 

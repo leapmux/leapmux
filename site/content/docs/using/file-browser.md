@@ -9,7 +9,9 @@ LeapMux includes a git-aware file browser and a read-only file viewer. The brows
 
 Everything the file browser shows comes from the Worker that owns the active tab. See [Security & Threat Model](/docs/admin/security/) and [Working against a remote Worker](#working-against-a-remote-worker) below.
 
-> **Note:** The file viewer is strictly read-only. LeapMux has no file-editing or file-writing capability — there is no "save" that writes back to disk. The viewer's only output actions are downloading, quoting, and mentioning files. Edits happen through your coding agents and terminals, not through this browser.
+{{< callout type="info" >}}
+The file viewer is strictly read-only. LeapMux has no file-editing or file-writing capability — there is no "save" that writes back to disk. The viewer's only output actions are downloading, quoting, and mentioning files. Edits happen through your coding agents and terminals, not through this browser.
+{{< /callout >}}
 
 ## The Files section
 
@@ -51,7 +53,9 @@ The Files section header carries a row of action buttons, shown on the right. So
 
 The show/hidden and refresh buttons have keyboard shortcuts that work anywhere in the workspace. See [Keyboard Shortcuts](/docs/using/keyboard-shortcuts/) for the full keybindings table and how to customize them.
 
-> **Tip:** LeapMux stores the hidden-files setting and the sort order per Worker and working directory, so each repo keeps its own preferences across reloads.
+{{< callout >}}
+LeapMux stores the hidden-files setting and the sort order per Worker and working directory, so each repo keeps its own preferences across reloads.
+{{< /callout >}}
 
 ### Sort order
 
@@ -87,7 +91,9 @@ The tree shows the active tab's working directory and its contents.
 
 The tree refreshes itself automatically: it silently re-fetches expanded directories whenever an agent finishes a turn, and reloads in full when you click **Refresh**. Old contents stay visible during the refresh so the view never flickers blank.
 
-> **Note:** The tree's expanded/collapsed state and cached listings are remembered per working directory, so re-opening a workspace restores your place in the tree. This is session-scoped: it survives reloads within the same browser tab but is cleared when that tab is closed.
+{{< callout type="info" >}}
+The tree's expanded/collapsed state and cached listings are remembered per working directory, so re-opening a workspace restores your place in the tree. This is session-scoped: it survives reloads within the same browser tab but is cleared when that tab is closed.
+{{< /callout >}}
 
 ### File and folder context menu
 
@@ -155,7 +161,9 @@ When the working directory is a git repo, a filter bar appears above the tree wi
 
 Choosing any filter other than **All** restricts the view to changed files. In a filtered tree, directories with no changed descendants are hidden, and an empty result shows `No changes`. While a filter is active you can switch to a **Flat list** (via the header toggle) that lists each changed file by its repo-relative path, with the same status colors and diff badges.
 
-> **Tip:** The filter you open a file from also sets the file viewer's initial mode. Opening a file from **Staged**, **Changed**, or **Unstaged** drops you straight into the inline diff; opening from **All** shows the plain working-copy content. See "Opening a file" below.
+{{< callout >}}
+The filter you open a file from also sets the file viewer's initial mode. Opening a file from **Staged**, **Changed**, or **Unstaged** drops you straight into the inline diff; opening from **All** shows the plain working-copy content. See "Opening a file" below.
+{{< /callout >}}
 
 ## Opening a file
 
@@ -203,7 +211,9 @@ The viewer reads at most 256 KiB of a file. Binary files (detected by extension 
 
 From the card you can **Download** (web) or **Save as...** / **Save to Downloads** (desktop), and you can choose **Show anyway** to open a hex view of the raw bytes. On the desktop app the card also offers a **Reveal in file manager after save** checkbox. The hex view shows an offset / 16-byte / ASCII layout, with a **Show download view** button to return to the card.
 
-> **Note:** The **Show anyway** button is hidden for empty (zero-byte) files, since there are no bytes to inspect.
+{{< callout type="info" >}}
+The **Show anyway** button is hidden for empty (zero-byte) files, since there are no bytes to inspect.
+{{< /callout >}}
 
 ### Status bar and truncation
 
@@ -252,7 +262,9 @@ The file browser works identically whether the Worker is local or remote, becaus
 
 When the Worker is on another machine, every one of these requests and responses travels over the end-to-end-encrypted Worker channel. The Hub relays the encrypted traffic but cannot read your paths or file contents. This is the same channel your agents and terminals use. For how remote Workers are registered, approved, and selected, see [Managing Workers](/docs/admin/managing-workers/); for the encryption details, see [Security & Threat Model](/docs/admin/security/).
 
-> **Note:** Git error messages surfaced in the browser (for example, a dubious-ownership warning) appear in English.
+{{< callout type="info" >}}
+Git error messages surfaced in the browser (for example, a dubious-ownership warning) appear in English.
+{{< /callout >}}
 
 ## Related chapters
 

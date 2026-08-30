@@ -21,7 +21,9 @@ LeapMux has three components. The Hub and the Worker are roles of a single Go bi
 
 The division is deliberate: the Hub knows *who is talking to whom* but never *what they say*. That property is what makes it safe to let a teammate or platform team operate the Hub while your agents run on your own machine.
 
-> **Note:** The native desktop app is a packaged Frontend plus an embedded LeapMux binary. It can run a local Hub+Worker (solo) or connect its WebView to a remote Hub. See [Installation](/docs/getting-started/installation/) and [Running LeapMux](/docs/admin/running-leapmux/).
+{{< callout type="info" >}}
+The native desktop app is a packaged Frontend plus an embedded LeapMux binary. It can run a local Hub+Worker (solo) or connect its WebView to a remote Hub. See [Installation](/docs/getting-started/installation/) and [Running LeapMux](/docs/admin/running-leapmux/).
+{{< /callout >}}
 
 ## The two deployment shapes
 
@@ -54,7 +56,9 @@ LeapMux runs in two shapes. They use the same components and the same end-to-end
 
 Solo mode is ideal for one person on one machine. Because it auto-authenticates and binds loopback, the security model **reduces to local trust**: any local process that can reach the port can drive the Worker. The end-to-end encryption between Frontend and Worker still operates inside the process, but it offers no protection against an attacker who is already on your machine.
 
-> **Warning:** If you point solo mode at a non-loopback address, it logs a warning. The warning states that anyone who can reach the port gets full admin access without credentials. It recommends restricting access with a firewall, Tailscale/WireGuard, or an SSH tunnel, or running `leapmux hub` for real authentication. The desktop app avoids the issue entirely by listening on a Unix socket / named pipe instead of TCP.
+{{< callout type="warning" >}}
+If you point solo mode at a non-loopback address, it logs a warning. The warning states that anyone who can reach the port gets full admin access without credentials. It recommends restricting access with a firewall, Tailscale/WireGuard, or an SSH tunnel, or running `leapmux hub` for real authentication. The desktop app avoids the issue entirely by listening on a Unix socket / named pipe instead of TCP.
+{{< /callout >}}
 
 ### Distributed mode
 
@@ -147,7 +151,9 @@ Key properties:
 
 For registering, approving, pinning, and selecting Workers, see [Managing Workers](/docs/admin/managing-workers/).
 
-> **Note:** A tab can only be used while its Worker is online. If the hosting Worker is offline, opening a channel to it fails until it reconnects.
+{{< callout type="info" >}}
+A tab can only be used while its Worker is online. If the hosting Worker is offline, opening a channel to it fails until it reconnects.
+{{< /callout >}}
 
 ## End-to-end encrypted channels
 

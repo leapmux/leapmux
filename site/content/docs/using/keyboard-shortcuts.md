@@ -36,7 +36,7 @@ The engine supports **chords** — space-separated key sequences such as `$mod+k
 
 LeapMux binds shortcuts at the window level so they work no matter where focus sits, but it suppresses some of them to avoid hijacking your typing:
 
-- **Input focus.** When the cursor is in a text input, textarea, select, or any `contenteditable` element, a shortcut that has **no modifier and is not a function key** is suppressed — unless its `when`-clause explicitly references `inputFocused`. The suppression does not apply to shortcuts that use a modifier (`$mod`, `Ctrl`, `Alt`, `Meta`, `Shift`) or a plain function key (`F1`–`F12`): those always fire, regardless of focus.
+- **Input focus.** When the cursor is in a text input, textarea, select, or any `contenteditable` element, a shortcut with **no modifier that is not a function key** is suppressed — unless its `when`-clause explicitly refers to `inputFocused`. The suppression does not apply to shortcuts that use a modifier (`$mod`, `Ctrl`, `Alt`, `Meta`, `Shift`) or a plain function key (`F1`–`F12`): those always fire, regardless of focus.
 - **IME composition.** While you are composing text with an Input Method Editor (for example, typing Chinese, Japanese, or Korean), shortcuts are held back so they cannot interfere with your text entry.
 
 ## Contexts (the `when` clause)
@@ -120,7 +120,9 @@ These act on the file browser. See [File Browser](/docs/using/file-browser/).
 |---|---|---|---|
 | Send Message | `⌘J` | `Ctrl+J` | chat input focused |
 
-> **Note:** `Send Message` (`⌘J` / `Ctrl+J`) is a *global* way to submit the focused chat input, independent of the chat editor's own Enter behavior. The Enter-to-send vs. Cmd/Ctrl+Enter-to-send choice is a separate, editor-level setting described in [Chat editor keys](#chat-editor-keys-not-part-of-the-global-system) below.
+{{< callout type="info" >}}
+`Send Message` (`⌘J` / `Ctrl+J`) is a *global* way to submit the focused chat input, independent of the chat editor's own Enter behavior. The Enter-to-send vs. Cmd/Ctrl+Enter-to-send choice is a separate, editor-level setting described in [Chat editor keys](#chat-editor-keys-not-part-of-the-global-system) below.
+{{< /callout >}}
 
 ### Terminal (macOS only)
 
@@ -164,7 +166,9 @@ These are gated to the desktop app via `isDesktop` and have no effect in the bro
 | Actual Size | `⌘0` / `⌘Num0` | `Ctrl+0` / `Ctrl+Num0` | desktop |
 | Quit Application | `⌘Q` | `Ctrl+Q` | desktop |
 
-> **Note:** "Open in External Editor" works only in **solo mode**. In a distributed Hub/Worker setup, the active tab's working directory lives on the Worker machine, not your local filesystem, so there is no local editor to launch and the command does nothing. See [Running LeapMux](/docs/admin/running-leapmux/) for run modes, and [Open in external editor (desktop, solo mode)](#open-in-external-editor-desktop-solo-mode) below for the full feature.
+{{< callout type="info" >}}
+"Open in External Editor" works only in **solo mode**. In a distributed Hub/Worker setup, the active tab's working directory lives on the Worker machine, not your local filesystem, so there is no local editor to launch and the command does nothing. See [Running LeapMux](/docs/admin/running-leapmux/) for run modes, and [Open in external editor (desktop, solo mode)](#open-in-external-editor-desktop-solo-mode) below for the full feature.
+{{< /callout >}}
 
 The zoom, web-inspector, and quit shortcuts ("core" bindings) are mounted at the application root, so they work on every screen — including the launcher and the sign-in/setup pages — not just inside a workspace.
 
@@ -179,7 +183,9 @@ The `⇧⌘E` / `Ctrl+Shift+E` shortcut launches an external code editor against
 - The **main face** reads "Open in {EditorName}" (with the editor's icon) when you have a preferred editor. It reads "Open in …" with a generic icon when you have not picked one. With a preferred editor, clicking the main face — or pressing `⇧⌘E` / `Ctrl+Shift+E` — launches it. Without one, clicking the main face opens the dropdown; pressing the shortcut launches the first detected editor and records it as your preferred editor.
 - The **chevron** opens a dropdown that lists every detected editor alphabetically (with a checkmark on the current preferred one), followed by a separator and **"Refresh editor list"**.
 
-> **Note:** Picking an editor from the dropdown only **sets it as your preferred editor** — it does not launch it. To actually open the editor, use the main face or the keyboard shortcut after selecting. "Refresh editor list" re-probes your machine for installed editors, useful after you install or remove one.
+{{< callout type="info" >}}
+Picking an editor from the dropdown only **sets it as your preferred editor** — it does not launch it. To actually open the editor, use the main face or the keyboard shortcut after selecting. "Refresh editor list" re-probes your machine for installed editors, useful after you install or remove one.
+{{< /callout >}}
 
 **What gets opened.** LeapMux launches the editor against the **active tab's working directory**. The directory must be absolute and must exist. LeapMux rejects relative paths, missing paths, and plain files, so nothing launches when the active tab has no real directory.
 
@@ -196,7 +202,9 @@ The `⇧⌘E` / `Ctrl+Shift+E` shortcut launches an external code editor against
 
 A few key names also render specially: `Escape` shows as `Esc`, arrows as `← → ↑ ↓`, `NumpadAdd` as `Num+`, `NumpadSubtract` as `Num-`, and `Numpad0` as `Num0`. On macOS, modifiers always appear in the order ⌃⌥⇧⌘ with no separators, so Cmd renders last (for example, `⇧⌘N`). On Windows and Linux they are joined with `+` (for example, `Ctrl+Shift+N`).
 
-> **Tip:** You do not have to memorize these. LeapMux appends the active shortcut to tooltips and dropdown menu items automatically — for example, "New Agent (⌘N)" — formatted for your platform.
+{{< callout >}}
+You do not have to memorize these. LeapMux appends the active shortcut to tooltips and dropdown menu items automatically — for example, "New Agent (⌘N)" — formatted for your platform.
+{{< /callout >}}
 
 ## Customizing keybindings
 
@@ -226,7 +234,9 @@ Each override has the shape:
 | `key` | yes | A `tinykeys` key string, or `""` (empty) to unbind. |
 | `when` | no | A `when`-clause; inherits the default's clause if omitted. |
 
-> **Warning:** Overrides are applied to **workspace** keybindings. The core desktop bindings (quit, zoom, web inspector) are not part of the override-merged set.
+{{< callout type="warning" >}}
+Overrides are applied to **workspace** keybindings. The core desktop bindings (quit, zoom, web inspector) are not part of the override-merged set.
+{{< /callout >}}
 
 ### How overrides merge with the defaults
 
@@ -265,7 +275,9 @@ Each override targets a command by its id. Each id corresponds to one of the act
 | `terminal.lineStart` / `terminal.lineEnd` | Go to Line Start / End |
 | `terminal.wordLeft` / `terminal.wordRight` | Go to Previous / Next Word |
 
-> **Note:** If the `keybindings` setting ever holds a value the client cannot read, the engine treats it as "no overrides" and silently ignores it, falling back to the defaults — so a malformed value never breaks the default shortcuts.
+{{< callout type="info" >}}
+If the `keybindings` setting ever holds a value the client cannot read, the engine treats it as "no overrides" and silently ignores it, falling back to the defaults — so a malformed value never breaks the default shortcuts.
+{{< /callout >}}
 
 ## Desktop (Tauri) accelerator differences
 
@@ -278,7 +290,9 @@ Two commands get their accelerators synced onto the macOS menu:
 
 If the **Open Preferences** binding is overridden, the macOS menu accelerator updates to match.
 
-> **Warning:** **Chords cannot become macOS menu accelerators.** A binding that uses a space-separated chord (such as `$mod+k $mod+s`) still works as a regular shortcut, but it will not appear as an accelerator on the native menu item.
+{{< callout type="warning" >}}
+**Chords cannot become macOS menu accelerators.** A binding that uses a space-separated chord (such as `$mod+k $mod+s`) still works as a regular shortcut, but it will not appear as an accelerator on the native menu item.
+{{< /callout >}}
 
 The macOS menu also carries the usual system items in each submenu (About, Services, Hide, Quit, the standard Edit and Window commands, and so on). These come from macOS, not from the LeapMux shortcut registry, so their accelerators are the OS defaults you already know and are not affected by keybinding overrides.
 

@@ -4,7 +4,9 @@ import { createEffect, createSignal, Show } from 'solid-js'
 import { userClient } from '~/api/clients'
 import { actionsFooter } from '~/components/common/actionsFooter.css'
 import { CaptchaSection } from '~/components/common/CaptchaSection'
+import { VerificationResendControl } from '~/components/common/VerificationResendControl'
 import { useAuth } from '~/context/AuthContext'
+import { CAPTCHA_ACTION } from '~/generated/contracts/captcha'
 import { createCaptchaForm } from '~/lib/captchaForm'
 import { formatErrorMessage } from '~/lib/errors'
 import { stringParam } from '~/lib/searchParam'
@@ -29,14 +31,21 @@ export const VerifyEmailPage: Component = () => {
   const [code, setCode] = createSignal('')
   const [submitting, setSubmitting] = createSignal(false)
   const [error, setError] = createSignal<string | null>(null)
-  // The verify leg charges the per-code wrong-guess budget, which a script
+  // The verify path charges the per-code wrong-guess budget, which a script
   // burns for free, so it is captcha-protected like the sign-in it guards.
   const captcha = createCaptchaForm()
   const resend = useVerificationResend({
     nextResendAvailableAt: () => auth.verificationResendAvailableAt(),
+    // A hard reload mounts this page before the auth bootstrap seeds the
+    // deadline; a zero countdown then means "not known yet", not "legal".
+    cooldownKnown: () => !auth.loading(),
   })
 
   const [decided, setDecided] = createSignal(false)
+  // The emailed code the page still owes an auto-submit: set by the
+  // decision effect once auth settles, consumed by the auto-submit effect
+  // as soon as the captcha allows a request.
+  const [autoSubmitCode, setAutoSubmitCode] = createSignal<string | null>(null)
   createEffect(() => {
     // Wait for the auth bootstrap before deciding "not signed in": on a
     // fresh load the session cookie is often still restoring, and reading
@@ -61,8 +70,23 @@ export const VerifyEmailPage: Component = () => {
 
     if (urlCode) {
       setCode(urlCode)
-      void submitCode(urlCode)
+      setAutoSubmitCode(urlCode)
     }
+  })
+
+  // The emailed link's auto-submit WAITS for the captcha instead of failing
+  // one-shot. With captcha enabled the widget needs a moment to arm — and
+  // an interactive one (ALTCHA with auto: 'off') needs the user's click —
+  // so erroring at mount burned the attempt and left "still solving" over a
+  // form the user then had to submit by hand. Waiting submits the code the
+  // moment a payload exists: automatically for the self-solving providers,
+  // right after the user solves the widget for the interactive one.
+  createEffect(() => {
+    const owed = autoSubmitCode()
+    if (owed === null || submitting() || captcha.blocksSubmit())
+      return
+    setAutoSubmitCode(null)
+    void submitCode(owed)
   })
 
   async function submitCode(raw: string) {
@@ -137,7 +161,7 @@ export const VerifyEmailPage: Component = () => {
             maxlength={16}
             required
           />
-          <CaptchaSection action="verify_email" captcha={captcha} />
+          <CaptchaSection action={CAPTCHA_ACTION.verifyEmail} captcha={captcha} />
           <div class={actionsFooter}>
             <button
               type="submit"
@@ -151,30 +175,14 @@ export const VerifyEmailPage: Component = () => {
         <Show when={error()}>
           {msg => <div class={errorText}>{msg()}</div>}
         </Show>
-        <Show when={resend.error()}>
-          {msg => <div class={errorText}>{msg()}</div>}
-        </Show>
-        <Show when={resend.status()}>
-          {msg => <div data-testid="verify-email-resend-status">{msg()}</div>}
-        </Show>
-        <CaptchaSection action="resend_verification" captcha={resend.captcha} />
-        <div class={actionsFooter}>
-          <button
-            type="button"
-            data-testid="verify-email-resend"
-            onClick={() => {
-              // Clear the code error first. resend() clears only its own
-              // signals, so a stale "invalid or expired verification code"
-              // would otherwise render beside "A fresh code has been sent",
-              // which reads as though the new code was rejected too.
-              setError(null)
-              void resend.resend()
-            }}
-            disabled={resend.disabled()}
-          >
-            {resend.buttonLabel()}
-          </button>
-        </div>
+        <VerificationResendControl
+          resend={resend}
+          // Clear the code error first: resend() clears only its own
+          // signals, so a stale "invalid or expired verification code"
+          // would otherwise render beside "We sent a fresh code to your
+          // inbox", which reads as though the new code was rejected too.
+          beforeResend={() => setError(null)}
+        />
       </div>
     </div>
   )

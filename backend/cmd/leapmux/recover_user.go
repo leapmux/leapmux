@@ -7,7 +7,6 @@ import (
 	"fmt"
 
 	"github.com/leapmux/leapmux/internal/cli/control"
-	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/service"
@@ -144,23 +143,17 @@ func runPasswordReset(cmd cmdCtx, args []string) error {
 
 			// Offline break-glass matches online admin reset and self-service
 			// CompleteAccountRecovery: passkeys, ceremonies, and any pending
-			// reset email die with the password rotation.
+			// recovery link die with the password rotation.
 			if err := service.RevokePasskeyAuthState(ctx, tx, user.ID); err != nil {
 				return err
 			}
 
-			if err := tx.Sessions().DeleteByUser(ctx, revokeUID); err != nil {
-				return fmt.Errorf("delete sessions: %w", err)
-			}
-
-			// Admin password reset rotates the user's auth basis
-			// globally; every credential predating the rotation
-			// (api tokens, delegation tokens, sessions, channels)
-			// must die. The store records durable revocation events
-			// in this transaction so the hub's revocation watcher
-			// picks this up cross-process and fires
+			// The password rotation ends every credential that predates it
+			// (sessions, api tokens, delegation tokens, channels): the store
+			// records durable revocation events in this transaction so the
+			// hub's revocation watcher picks this up cross-process and fires
 			// CloseChannelsByUserRevocation without an IPC.
-			if _, _, err := auth.RevokeAllUserCredentials(ctx, tx, revokeUID); err != nil {
+			if _, _, _, err := service.RevokeCredentialsAfterRotation(ctx, tx, revokeUID, false); err != nil {
 				return err
 			}
 

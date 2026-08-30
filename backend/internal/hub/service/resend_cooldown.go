@@ -1,19 +1,28 @@
 package service
 
-import "time"
+import (
+	"context"
+	"time"
 
-// The resend cooldown, in ONE place, for every mail the hub sends on demand.
+	"github.com/leapmux/leapmux/internal/hub/settings"
+)
+
+// The pending-mail gate, in ONE place, for every mail the hub sends on
+// demand.
 //
 // It limits two flows -- the email-verification code and the
-// password-reset link -- and each flow carried its own copy: two constants
+// account-recovery link -- and each flow carried its own copy: two constants
 // holding the same 60 seconds, and two spellings of the same cutoff formula.
 // Each carried a comment that identified the other as its twin, which is the
 // shape a second source of truth takes just before the two drift.
 //
 // The token LIFETIMES stay per-flow and differ on purpose (a verification code
-// is short because it is short to type; a reset link is longer because it
-// arrives by mail and the person clicks it later). The cooldown and its
-// cutoff do not differ, so they live here.
+// is short because it is short to type; a recovery link is longer because it
+// arrives by mail and the person clicks it later). The gate does not differ,
+// so its one mechanism lives here: the store's unblocked_at column, one
+// deadline that both the mint gate compares and the reported countdown
+// shows. A mint arms it for one resend cooldown; a failed-send clear arms it
+// for the failure window; every other clear NULLs it.
 
 // resendCooldown caps how often one account can ask the hub to send again.
 //
@@ -23,29 +32,51 @@ import "time"
 // really did lose the first mail does not give up waiting.
 const resendCooldown = 60 * time.Second
 
-// mintCutoff is the instant a previous code or link must have been issued
-// at or before for a fresh mint to land, which is how the hub enforces the
-// cooldown.
-//
-// The gate reads the issued-at column the mint wrote, never the expiry.
-// The expiry cannot stand in for the issue time: ConsumeVerificationAttempt
-// and ConsumeRecoveryAttemptByToken force-expire a burned code or link by
-// moving the expiry to now, so a cutoff derived as "expiry minus TTL"
-// would read a five-second-old burned code as issued a full lifetime ago
-// and let the holder re-mint inside the cooldown -- burning the guess
-// budget would reset the cooldown, and every burn-and-resend cycle would
-// send another mail. The issued-at column moves only when a mint lands, so
-// no attempt pattern can hurry it.
-//
-// The comparison belongs in the mint STATEMENT rather than in a Go
-// read-then-check, and that is why this returns a cutoff instead of a
-// boolean: two concurrent resends both pass a Go check and both send.
-func mintCutoff(now time.Time) time.Time {
-	return now.UTC().Add(-resendCooldown)
+// mintUnblockedAt is the deadline a mint arms: one resend cooldown from
+// the instant it lands. The store gate compares this deadline directly,
+// and the countdown a client renders IS it, so the enforced and the
+// reported window cannot disagree.
+func mintUnblockedAt(now time.Time) time.Time {
+	return now.UTC().Add(resendCooldown)
 }
 
-// nextResendAt seeds the next-resend timestamp a successful send returns, so
-// a client renders a countdown against the same rule the hub enforces.
-func nextResendAt(issuedAt time.Time) time.Time {
-	return issuedAt.Add(resendCooldown)
+// failedSendUnblockedAt is the deadline a failed-send clear arms: the
+// failure window from the instant the relay answered. The caller reads the
+// clock AT the failure, never before the SMTP dial -- a deadline derived
+// from a pre-dial read leaves max(0, window - dial) of blockade, and a
+// relay that fails slowly (the dial timeout is 20s against a default 10s
+// window) eats the whole window.
+//
+// The window is settings-driven (mail_limits.failure_cooldown_seconds) and
+// is held at or under the resend cooldown: validation refuses more, and
+// this clamp holds the invariant even if that bound and this constant ever
+// drift apart. A failed send NEVER leaves more blockade than a successful
+// one would have.
+func failedSendUnblockedAt(now time.Time, failureCooldown time.Duration) time.Time {
+	if failureCooldown > resendCooldown {
+		failureCooldown = resendCooldown
+	}
+	if failureCooldown < 0 {
+		failureCooldown = 0
+	}
+	return now.UTC().Add(failureCooldown)
+}
+
+// pendingResendDeadline is the countdown a response reports: the stored
+// deadline when the row carries one, and one fresh cooldown when it does
+// not (no pending row was written, but the response still reports a
+// deadline the next mint will enforce).
+func pendingResendDeadline(now time.Time, blockedUntil *time.Time) time.Time {
+	if blockedUntil != nil {
+		return *blockedUntil
+	}
+	return mintUnblockedAt(now)
+}
+
+// mailFailureCooldown reads the failed-send window (mail_limits) from the
+// settings snapshot. Every failed-send deadline derivation goes through
+// this one read, so the knob has a single read path beside the gate
+// machinery that consumes it.
+func mailFailureCooldown(ctx context.Context, set *settings.Manager) time.Duration {
+	return settings.EmailFailureCooldown(set.Snapshot(ctx))
 }

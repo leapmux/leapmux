@@ -18,7 +18,9 @@ The dialog opens from the **user menu** — the avatar dropdown in the app shell
 
 This is the `app.openPreferences` command (default binding `$mod+Comma`). On macOS, the desktop app's native menu also has a **Preferences...** item that opens the same dialog.
 
-> **Note:** The dialog is a tall modal with a titled header. Press `Escape` to close, or click outside the dialog body.
+{{< callout type="info" >}}
+The dialog is a tall modal with a titled header. Press `Escape` to close, or click outside the dialog body.
+{{< /callout >}}
 
 ## The dialog
 
@@ -109,7 +111,9 @@ Unlike the palette and the mode, this one costs more to change: highlighting sto
 
 How file diffs render in chat tool results and the file viewer: **Unified** (single column) or **Side by side** (two columns). A dual-tier setting; the built-in default is **Unified**.
 
-> **Tip:** This setting is the *default* for new diffs. Individual diffs keep their own per-diff control so you can flip a single diff without changing your preference.
+{{< callout >}}
+This setting is the *default* for new diffs. Individual diffs keep their own per-diff control so you can flip a single diff without changing your preference.
+{{< /callout >}}
 
 ### Fonts
 
@@ -124,7 +128,9 @@ The override unit is the whole family configuration (switch + list together), so
 
 A family holds up to 32 names, and the panel reports a name it cannot use. For monospace, LeapMux tries your custom fonts first and appends the bundled `"Hack NF", Hack, "SF Mono", Consolas, monospace` stack as a fallback; for UI fonts only your custom list applies. LeapMux bundles **Hack NF** (Hack Nerd Font) as a web font, so glyph-rich agent output renders correctly with no configuration.
 
-> **Tip:** Custom fonts only take effect for families actually installed on the machine running the browser. List several fallbacks so the app degrades gracefully on devices that lack your first choice.
+{{< callout >}}
+Custom fonts only take effect for families actually installed on the machine running the browser. List several fallbacks so the app degrades gracefully on devices that lack your first choice.
+{{< /callout >}}
 
 ## Notifications
 
@@ -208,7 +214,7 @@ Shown in solo mode: a solo Hub authorizes apps like any other.
 
 ### Bot Protection
 
-- **Bot protection enabled** — whether captcha verification runs on sign-in and sign-up. The honeypot check stays active either way.
+- **Bot protection enabled** — whether captcha verification runs on the protected forms: sign-in, sign-up, account recovery, and email verification. The honeypot check stays active either way.
 - **Provider** — the active provider: the built-in **ALTCHA** (the default), **Google reCAPTCHA v3**, or **Cloudflare Turnstile**.
 - **ALTCHA parameters**, **Google reCAPTCHA v3**, **Cloudflare Turnstile** — one row per provider's key fields. Every provider's fields are visible at all times, so an administrator fills one in and then switches **Provider** to it.
 

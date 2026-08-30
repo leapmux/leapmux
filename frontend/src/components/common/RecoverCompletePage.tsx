@@ -5,6 +5,7 @@ import { authClient } from '~/api/clients'
 import { actionsFooter } from '~/components/common/actionsFooter.css'
 import { CaptchaSection } from '~/components/common/CaptchaSection'
 import { Spinner } from '~/components/common/Spinner'
+import { CAPTCHA_ACTION } from '~/generated/contracts/captcha'
 import { createCaptchaForm } from '~/lib/captchaForm'
 import { formatErrorMessage } from '~/lib/errors'
 import { stringParam } from '~/lib/searchParam'
@@ -72,7 +73,7 @@ export const RecoverCompletePage: Component = () => {
               confirmPassword={confirmPassword}
               setConfirmPassword={setConfirmPassword}
             />
-            <CaptchaSection action="complete_account_recovery" captcha={captcha} />
+            <CaptchaSection action={CAPTCHA_ACTION.completeAccountRecovery} captcha={captcha} />
             <Show when={error()}>
               <div class={errorText}>{error()}</div>
             </Show>

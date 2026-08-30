@@ -25,10 +25,10 @@
  */
 
 import type { ServerInfo } from './fixtures'
-import { join } from 'node:path'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
 import { cliAgentOpen, mintCLITokenForAdmin, waitForAgentTabs } from './helpers/cli'
+import { hubDataDir } from './helpers/server'
 import { loginViaToken, openWorkspace, tabById } from './helpers/ui'
 
 /**
@@ -42,7 +42,7 @@ function devModeTokenSource(server: ServerInfo): { hubUrl: string, adminToken: s
   return {
     hubUrl: server.hubUrl,
     adminToken: server.adminToken,
-    dataDir: join(server.dataDir, 'hub'),
+    dataDir: hubDataDir(server.dataDir),
   }
 }
 

@@ -35,22 +35,25 @@ CREATE TABLE users (
     -- Counts attempts against the active pending_email_token. Reset to 0
     -- whenever a new token is issued; force-expires the token at >5.
     pending_email_attempts   INTEGER NOT NULL DEFAULT 0,
-    -- When the current verification code was issued. ONLY SetPendingEmail
-    -- writes it; the resend-cooldown gate compares this column directly
-    -- rather than deriving the issue time from the expiry, because
-    -- ConsumeVerificationAttempt force-expires a burned code by moving
-    -- the expiry to now -- a derivation would then read a brand-new
-    -- burned code as issued a full lifetime ago and re-mint inside the
+    -- When the pending-mail gate opens again. The mint (SetPendingEmail)
+    -- writes it one resend cooldown ahead; the gate compares this column
+    -- directly rather than deriving from the expiry, because
+    -- When the pending-mail gate opens again: the mint arms it one
+    -- resend cooldown ahead, a failed-send clear one failure window
+    -- ahead, and every other clear NULLs it. The gate reads this, never
+    -- the expiry -- ConsumeVerificationAttempt force-expires a burned
+    -- code by moving the expiry to now, and a derivation would then read
+    -- a brand-new burned code as cooled down and re-mint inside the
     -- cooldown.
-    pending_email_issued_at    DATETIME,
+    pending_email_unblocked_at    DATETIME,
     -- Account-recovery break-glass: token stored hashed (SHA-256 hex).
     pending_recovery_token      VARCHAR(64) NOT NULL DEFAULT '',
     pending_recovery_expires_at DATETIME,
     pending_recovery_attempts   INTEGER NOT NULL DEFAULT 0,
-    -- When the current recovery link was issued; the cooldown gate reads
-    -- this, not the expiry, for the reason pending_email_issued_at states
+    -- When the recovery gate opens again; see
+    -- pending_email_unblocked_at for the semantics
     -- (ConsumeRecoveryAttemptByToken force-expires the same way).
-    pending_recovery_issued_at DATETIME,
+    pending_recovery_unblocked_at DATETIME,
     password_set             INTEGER NOT NULL DEFAULT 1,
     is_admin                 INTEGER NOT NULL DEFAULT 0,
     prefs          TEXT NOT NULL DEFAULT '{}',

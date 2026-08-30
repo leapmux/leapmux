@@ -5,6 +5,7 @@ import { authClient } from '~/api/clients'
 import { actionsFooter } from '~/components/common/actionsFooter.css'
 import { CaptchaSection } from '~/components/common/CaptchaSection'
 import { Spinner } from '~/components/common/Spinner'
+import { CAPTCHA_ACTION } from '~/generated/contracts/captcha'
 import { createCaptchaForm } from '~/lib/captchaForm'
 import { formatErrorMessage } from '~/lib/errors'
 import { errorText, pageCard, successText } from '~/styles/shared.css'
@@ -64,7 +65,7 @@ export const RecoverPage: Component = () => {
                 required
               />
             </label>
-            <CaptchaSection action="account_recovery" captcha={captcha} />
+            <CaptchaSection action={CAPTCHA_ACTION.accountRecovery} captcha={captcha} />
             <Show when={error()}>
               <div class={errorText}>{error()}</div>
             </Show>

@@ -20,6 +20,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
+	"github.com/leapmux/leapmux/internal/util/windowed"
 )
 
 // SettingKeyPrefix starts every rate_limit.<operation> settings key.
@@ -37,13 +38,13 @@ const (
 	// session elevation ("sudo mode") and the elevation-admitted mutations
 	// that are EXPENSIVE TO REPEAT.
 	//
-	// Two elevation-admitted mutations stay out, because neither is. Both
-	// RequestEmailChange and UnlinkOAuthProvider run no Argon2 hash and no
-	// ceremony write, and the pending-email mint already caps the first at
-	// one message per user per minute -- in SQL, on the row rather than on
-	// the requested address, so specifying a new address does not reset it.
-	// procedureOperations below lists what takes a slot, and
-	// TestExpensiveMutationsAreRouted pins that set exactly.
+	// Two elevation-admitted mutations stay out of THIS operation, because
+	// neither runs an Argon2 hash or a ceremony write. UnlinkOAuthProvider
+	// needs no budget of its own; RequestEmailChange has its own below,
+	// because the mint cooldown this comment once cited as its cap holds
+	// only while every send succeeds -- the failure path clears the row and
+	// exempts the retry. procedureOperations below lists what takes a slot,
+	// and TestExpensiveMutationsAreRouted pins that set exactly.
 	//
 	// One operation carries TWO budgets that the same numbers express, and
 	// the difference between them is why procedureSpec exists:
@@ -64,6 +65,27 @@ const (
 	// One operation rather than several, so the two budgets cannot drift
 	// apart and an operator has one number to set.
 	OpElevation Operation = "elevation"
+
+	// OpEmailChange limits UserService.RequestEmailChange, the one mail RPC
+	// behind neither a captcha nor this package's failure window: it needs
+	// only an elevated session, and the send it drives costs the relay a
+	// transaction whether the relay accepts it or not.
+	//
+	// It counts requests that PROCEEDED -- reached the mint and the send --
+	// in a fixed window (countsProceededRequests on the catalogue entry),
+	// not failures and not admissions. Not failures, because an abuse loop
+	// here SUCCEEDS per request: the mint lands, the relay answers, the
+	// failed code clears, so a failures-only window never sees it. Not
+	// admissions, because the legitimate user's first attempt is usually
+	// REFUSED before anything mails: the step-up prompt answers
+	// FailedPrecondition and the transport retries once, a malformed or
+	// unchanged address answers InvalidArgument, and a taken address
+	// answers AlreadyExists -- none of them cost the relay anything, and
+	// the mint cooldown and the per-recipient budget independently cap
+	// every send. Proceeded outcomes only: success, a send the relay
+	// refused (Unavailable), and a mint the cooldown refused
+	// (ResourceExhausted) -- the hammering loop hits exactly those.
+	OpEmailChange Operation = "email_change"
 
 	// OpOAuthAnonymous limits the authorization server's ANONYMOUS endpoints --
 	// every route mounted through anonymousLeg: device authorization, the
@@ -136,6 +158,19 @@ type LimitValue struct {
 type opSpec struct {
 	limits              Limits
 	isCredentialFailure func(error) bool
+	// countsProceededRequests counts, in the fixed window, the requests
+	// whose handler outcome says they reached the thing the budget guards.
+	// An operation whose abuse loop succeeds per request needs this: a
+	// failures-only window never sees a caller the handler keeps answering.
+	// Counting happens in complete(), against the handler outcome, so the
+	// refusals that precede the work (elevation prompts, validation,
+	// taken-address checks) spend nothing, and provesCredential stays false
+	// for every such operation so a success never resets the window.
+	countsProceededRequests bool
+	// proceedsToBudget classifies a NON-NIL handler error as one that
+	// reached the thing the budget guards (nil always counts -- a success
+	// proceeded). It is required when countsProceededRequests is set.
+	proceedsToBudget func(error) bool
 	// hiddenInSolo drops the operation's settings key from ListSettings on a
 	// solo hub, and it is a PER-OPERATION answer rather than a property of
 	// rate limiting.
@@ -166,6 +201,30 @@ var defaults = map[Operation]opSpec{
 			return errors.Is(err, auth.ErrInvalidCurrentPassword) || errors.Is(err, auth.ErrInvalidElevationAssertion)
 		},
 	},
+	OpEmailChange: {
+		// Six per fifteen minutes: a person fixing a typo changes an
+		// address two or three times, and the step-up prompt plus one
+		// validation miss cost them nothing; a loop is capped at six
+		// mail-driving attempts a quarter hour instead of request speed.
+		limits: Limits{MaxAttempts: 6, WindowSeconds: 900},
+		// No error here is a credential guess, and the proceeded requests
+		// carry their own counting, so nothing lands in a failure window.
+		isCredentialFailure:     func(error) bool { return false },
+		countsProceededRequests: true,
+		// Proceeded outcomes: the send landed (nil), the relay or the mint
+		// failed after the request reached them (Unavailable), or the mint
+		// cooldown refused (ResourceExhausted) -- the hammering loop's own
+		// shape. FailedPrecondition (elevation prompt), InvalidArgument
+		// (malformed or unchanged address) and AlreadyExists (taken
+		// address) all answer before anything mails, so they spend nothing.
+		proceedsToBudget: func(err error) bool {
+			code := connect.CodeOf(err)
+			return code == connect.CodeUnavailable || code == connect.CodeResourceExhausted
+		},
+		// Solo refuses email changes outright (rejectSolo), so the key is
+		// inert there.
+		hiddenInSolo: true,
+	},
 	OpOAuthAnonymous: {
 		// 600 in ten minutes: five device-code polls' worth of headroom on one
 		// shared address, and still a hard ceiling on a loop.
@@ -184,6 +243,19 @@ var defaults = map[Operation]opSpec{
 var limitKeys = func() map[Operation]*settings.Key[LimitValue] {
 	keys := make(map[Operation]*settings.Key[LimitValue], len(defaults))
 	for op, spec := range defaults {
+		// The summary states what one unit of the budget is, because the
+		// three counting modes size different quantities: a failures window
+		// counts refused credential guesses, an admitted-request window
+		// (OpOAuthAnonymous, through allowWindowed on the HTTP path) counts
+		// every request the limiter admits, and OpEmailChange counts the
+		// requests that reached the mail machinery. An operator tuning a
+		// key must know which quantity the knobs raise.
+		countedQuantity := "failed attempts"
+		if spec.countsProceededRequests {
+			countedQuantity = "mail-driving requests"
+		} else if op == OpOAuthAnonymous {
+			countedQuantity = "admitted requests"
+		}
 		keys[op] = settings.NewKey[LimitValue](SettingKeyPrefix + string(op)).
 			WithDefault(LimitValue{
 				Enabled:       true,
@@ -196,7 +268,7 @@ var limitKeys = func() map[Operation]*settings.Key[LimitValue] {
 			WithUI(settings.UIMeta{
 				Category:     "rate-limits",
 				Title:        "Rate limit - " + string(op),
-				Summary:      fmt.Sprintf("rate limit for %s (failed attempts per window)", op),
+				Summary:      fmt.Sprintf("rate limit for %s (%s per window)", op, countedQuantity),
 				HiddenInSolo: spec.hiddenInSolo,
 				Fields: []settings.Field{
 					{Name: "enabled", Label: "Enabled", Kind: settings.FieldBool},
@@ -287,6 +359,10 @@ var procedureOperations = map[string]procedureSpec{
 	leapmuxv1connect.UserServiceRenamePasskeyProcedure:             {op: OpElevation},
 	leapmuxv1connect.UserServiceDeletePasskeyProcedure:             {op: OpElevation},
 	leapmuxv1connect.UserServiceDeactivatePasskeyAuthProcedure:     {op: OpElevation},
+	// The mail RPC with no captcha and no secret to guess: it takes its
+	// budget from OpEmailChange, which counts every admitted request. See
+	// that operation's catalogue entry for why failures would not do.
+	leapmuxv1connect.UserServiceRequestEmailChangeProcedure: {op: OpEmailChange},
 }
 
 // effectiveLimit is the resolved per-operation policy.
@@ -307,27 +383,18 @@ type Manager struct {
 	solo bool
 	now  func() time.Time
 
-	windowMu sync.Mutex // guards windows, inFlight, and minResetAt
-	windows  map[windowKey]*windowState
+	windowMu sync.Mutex // guards windows and inFlight
+	windows  windowed.Windows[windowKey]
 	// inFlight counts attempts allow() reserved but complete() did not
 	// close yet, so a concurrent burst cannot evade a failures-only
 	// check (every burst member reads failures below max before any of
 	// them lands).
 	inFlight map[windowKey]int64
-	// minResetAt is the earliest resetAt among live windows (zero when
-	// unknown). It keeps the prune sweep off the hot path: the pass runs
-	// only when a window actually expired, never on a timer.
-	minResetAt time.Time
 }
 
 type windowKey struct {
 	op     Operation
 	userID string
-}
-
-type windowState struct {
-	failures int64
-	resetAt  time.Time
 }
 
 // errHandlerPanicked marks an attempt whose handler panicked below the
@@ -345,7 +412,6 @@ func NewManager(set *settings.Manager, soloMode bool) *Manager {
 		set:      set,
 		solo:     soloMode,
 		now:      time.Now,
-		windows:  make(map[windowKey]*windowState),
 		inFlight: make(map[windowKey]int64),
 	}
 }
@@ -401,16 +467,10 @@ func (m *Manager) allow(ctx context.Context, spec procedureSpec, userID string) 
 	now := m.now()
 	m.windowMu.Lock()
 	defer m.windowMu.Unlock()
-	m.pruneExpiredLocked(now)
+	m.windows.Sweep(now)
 	key := windowKey{op, userID}
-	w := m.windows[key]
-	if w != nil && now.After(w.resetAt) {
-		// The window expired: drop the entry instead of leaving it inert
-		// in the map.
-		delete(m.windows, key)
-		w = nil
-	}
-	// Recorded failures deny only the procedures that VERIFY a secret.
+	w := m.windows.Get(key, now)
+	// Recorded outcomes deny only the procedures whose budget they spent.
 	//
 	// One operation covers every path that can present a wrong secret, so
 	// that an attacker cannot alternate between the password and the passkey
@@ -422,25 +482,27 @@ func (m *Manager) allow(ctx context.Context, spec procedureSpec, userID string) 
 	// the owner out of passkey elevation, passkey management and the
 	// password change for the window, renewably. The seven already require
 	// an elevation the guesser does not hold, so admitting them widens
-	// nothing.
+	// nothing. The proceeded-request window (email change) reads the same
+	// way: only an outcome that reached the mail machinery spent it.
 	//
 	// The IN-FLIGHT reservation stays unconditional. Every routed procedure
 	// runs an Argon2 hash or a ceremony write, and that cost is what the
 	// concurrent cap protects, whatever the procedure proves.
-	var failures int64
-	if spec.provesCredential && w != nil {
-		failures = w.failures
+	var spent int64
+	readsSpentWindow := spec.provesCredential || defaults[op].countsProceededRequests
+	if readsSpentWindow && w != nil {
+		spent = w.Count
 	}
-	if failures >= limit.limits.MaxAttempts {
+	if spent >= limit.limits.MaxAttempts {
 		// resetAt came from m.now(), so the retry duration must be
 		// measured against the same clock — time.Until would use the
 		// wall clock and diverge wherever now is injected (and in
 		// these tests, frozen).
-		return a, false, w.resetAt.Sub(now), nil
+		return a, false, w.ResetAt.Sub(now), nil
 	}
-	if failures+m.inFlight[key] >= limit.limits.MaxAttempts {
+	if spent+m.inFlight[key] >= limit.limits.MaxAttempts {
 		// The denial is driven by in-flight reservations, not recorded
-		// failures: the reservations land within one handler latency, so
+		// outcomes: the reservations land within one handler latency, so
 		// the zero retry duration renders as the one-second floor rather
 		// than a full window the user does not actually owe.
 		return a, false, 0, nil
@@ -474,29 +536,15 @@ func (m *Manager) allowWindowed(ctx context.Context, op Operation, userID string
 	now := m.now()
 	m.windowMu.Lock()
 	defer m.windowMu.Unlock()
-	m.pruneExpiredLocked(now)
+	m.windows.Sweep(now)
 	key := windowKey{op, userID}
-	w := m.windows[key]
-	if w != nil && now.After(w.resetAt) {
-		// The window expired: drop the entry instead of leaving it inert
-		// in the map.
-		delete(m.windows, key)
-		w = nil
+	if w := m.windows.Get(key, now); w != nil && w.Count >= limit.limits.MaxAttempts {
+		return false, w.ResetAt.Sub(now), nil
 	}
-	if w != nil && w.failures >= limit.limits.MaxAttempts {
-		return false, w.resetAt.Sub(now), nil
-	}
-	if w == nil {
-		w = &windowState{resetAt: now.Add(time.Duration(limit.limits.WindowSeconds) * time.Second)}
-		m.windows[key] = w
-		if m.minResetAt.IsZero() || w.resetAt.Before(m.minResetAt) {
-			m.minResetAt = w.resetAt
-		}
-	}
-	// The counter field is named failures for the credential-guess path;
-	// for a windowed operation it counts admitted requests, which is the
-	// quantity this budget limits.
-	w.failures++
+	w := m.windows.Anchor(key, now, time.Duration(limit.limits.WindowSeconds)*time.Second)
+	// Count names no policy: for a windowed operation it counts admitted
+	// requests, which is the quantity this budget limits.
+	w.Count++
 	return true, 0, nil
 }
 
@@ -526,9 +574,22 @@ func (m *Manager) complete(a *attempt, handlerErr error) {
 	} else {
 		m.inFlight[key] = n - 1
 	}
+	// A proceeded-request budget spends on the outcomes that reached the
+	// thing it guards: success always proceeded, and the catalogue's
+	// predicate classifies the failures that did. Refusals that answer
+	// before the work -- the elevation prompt, validation, a taken
+	// address -- spend nothing, so a step-up retry costs the caller one
+	// slot, not two.
+	if spec, known := defaults[a.op]; a.countable && known && spec.countsProceededRequests {
+		if handlerErr == nil || spec.proceedsToBudget(handlerErr) {
+			// Fixed window anchored at the first proceeded request:
+			// self-expires one window later through the sweep.
+			m.windows.Anchor(key, now, time.Duration(a.window)*time.Second).Count++
+		}
+	}
 	if handlerErr == nil {
 		if a.provesCredential {
-			delete(m.windows, key)
+			m.windows.Delete(key)
 		}
 		return
 	}
@@ -539,40 +600,9 @@ func (m *Manager) complete(a *attempt, handlerErr error) {
 	if !known || !spec.isCredentialFailure(handlerErr) {
 		return
 	}
-	w := m.windows[key]
-	if w == nil || now.After(w.resetAt) {
-		// Fixed window anchored at the first failure: a burst of N failures
-		// trips the limit, and the counter self-expires one window later.
-		w = &windowState{resetAt: now.Add(time.Duration(a.window) * time.Second)}
-		m.windows[key] = w
-	}
-	if m.minResetAt.IsZero() || w.resetAt.Before(m.minResetAt) {
-		m.minResetAt = w.resetAt
-	}
-	w.failures++
-}
-
-// pruneExpiredLocked drops windows whose reset time is in the past. The
-// same-key lazy delete in allow only fires when that user returns, so
-// without this sweep a user who fails once and never retries would occupy
-// memory for the life of the process. minResetAt keeps the pass off the hot
-// path: it runs only when a window actually expired, and recomputes the
-// next expiry so the map holds nothing inert.
-func (m *Manager) pruneExpiredLocked(now time.Time) {
-	if !m.minResetAt.IsZero() && now.Before(m.minResetAt) {
-		return
-	}
-	next := time.Time{}
-	for k, w := range m.windows {
-		if now.After(w.resetAt) {
-			delete(m.windows, k)
-			continue
-		}
-		if next.IsZero() || w.resetAt.Before(next) {
-			next = w.resetAt
-		}
-	}
-	m.minResetAt = next
+	// Fixed window anchored at the first failure: a burst of N failures
+	// trips the limit, and the counter self-expires one window later.
+	m.windows.Anchor(key, now, time.Duration(a.window)*time.Second).Count++
 }
 
 // resolve returns the operation's effective policy from the shared

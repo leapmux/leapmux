@@ -7,7 +7,9 @@ weight: 2
 
 This chapter is a problem-to-fix reference. Each entry gives the **symptom** you see, the **likely cause**, and the **fix** with the real flags and settings. Entries are grouped by area. Use your browser's find (Ctrl/Cmd+F) to jump to a symptom.
 
-> **Tip:** Most "nothing works" problems trace back to one of three things: the Worker isn't online, you're bound to the wrong listen address, or nobody completed first-run setup. Start there.
+{{< callout >}}
+Most "nothing works" problems trace back to one of three things: the Worker isn't online, you're bound to the wrong listen address, or nobody completed first-run setup. Start there.
+{{< /callout >}}
 
 ## Workers won't connect or stay offline
 
@@ -67,7 +69,9 @@ The Worker process is alive and logging reconnection attempts, but it never show
 | Registered to a different Hub / owner | `leapmux control admin worker list` on the Hub | A Worker belongs to the Hub and user that minted its key. Re-register against the correct Hub if it's pointed at the wrong one. |
 | Worker was deregistered server-side | Worker logs show `Unauthenticated` on reconnect, then exits | When the Hub deletes a Worker, the Worker clears its local state and exits on next connect. Register it again from the UI. |
 
-> **Note:** A Worker reconnects automatically with exponential backoff (1s up to 180s between attempts). If you just restarted the Hub, give the Worker up to ~3 minutes to reconnect, or restart the Worker to retry immediately.
+{{< callout type="info" >}}
+A Worker reconnects automatically with exponential backoff (1s up to 180s between attempts). If you just restarted the Hub, give the Worker up to ~3 minutes to reconnect, or restart the Worker to retry immediately.
+{{< /callout >}}
 
 ### Worker is "online" to the Hub but the sidebar shows it disconnected
 
@@ -96,7 +100,9 @@ The Worker's remembered key no longer matches the key the Worker is now presenti
 - If you expected this change (you wiped the Worker's state, reinstalled, etc.), verify the **Actual** fingerprint matches the new Worker out-of-band, then click **Accept**. The pin is overwritten with the new key.
 - If you did **not** expect it, click **Reject** (closing the dialog also counts as Reject) and investigate before reconnecting. The channel is not opened.
 
-> **Warning:** Accepting overwrites the pinned key permanently. Only accept after confirming the new fingerprint really belongs to your Worker.
+{{< callout type="warning" >}}
+Accepting overwrites the pinned key permanently. Only accept after confirming the new fingerprint really belongs to your Worker.
+{{< /callout >}}
 
 ### A `leapmux control` or Worker-to-Worker connection aborts on a key mismatch
 
@@ -290,7 +296,9 @@ OAuth buttons don't appear on the login page, or clicking one ends in an error. 
 | The **Complete Sign Up** page says the signup link is invalid or expired | The pending OAuth signup expired or the `?token=` link was reused | Start the OAuth sign-in over from the login page (see note below). |
 | OAuth user logs in but can't unlink | It's their only login method | Set a password first under **Preferences → Account → Password**, then unlink. |
 
-> **Note:** An invalid or expired signup link means the pending OAuth signup ran past its 5-minute window, or the `?token=` link was reused or already completed. Start the OAuth sign-in over from the login page to mint a fresh pending signup, then pick a username promptly. A blank **Complete Sign Up** page that reports a missing signup token means you opened the URL without its `?token=` — restart from the login page.
+{{< callout type="info" >}}
+An invalid or expired signup link means the pending OAuth signup ran past its 5-minute window, or the `?token=` link was reused or already completed. Start the OAuth sign-in over from the login page to mint a fresh pending signup, then pick a username promptly. A blank **Complete Sign Up** page that reports a missing signup token means you opened the URL without its `?token=` — restart from the login page.
+{{< /callout >}}
 
 Administrators configuring providers should also confirm the OIDC issuer is reachable and the `public_url` setting is set so redirect/login URLs are built correctly. See [Sign-in Providers](/docs/admin/sign-in-providers/).
 
@@ -432,7 +440,9 @@ Pass a valid mode:
 docker run -p 4327:4327 -e LEAPMUX_MODE=hub -v leapmux-data:/data ghcr.io/leapmux/leapmux:latest
 ```
 
-> **Note:** Use `LEAPMUX_MODE=dev` (not `solo`) for an all-in-one container reachable from your host. `solo` defaults to loopback-only inside the container, so its port isn't reachable from outside unless you override `listen` to `:4327` in `/data/solo/solo.yaml`. `dev` binds all interfaces by default.
+{{< callout type="info" >}}
+Use `LEAPMUX_MODE=dev` (not `solo`) for an all-in-one container reachable from your host. `solo` defaults to loopback-only inside the container, so its port isn't reachable from outside unless you override `listen` to `:4327` in `/data/solo/solo.yaml`. `dev` binds all interfaces by default.
+{{< /callout >}}
 
 ### A Worker container can't connect
 
@@ -492,7 +502,9 @@ The Hub's state lives in its data dir (SQLite DB at `<data_dir>/hub.db`, encrypt
 - **CLI:** point `--data-dir` at a stable directory, or rely on the default under `~/.config/leapmux/<mode>/`. Don't run from a temp directory whose relative `data-dir` resolves somewhere transient.
 - **Upgrades:** pull a newer image/binary and recreate against the **same** data dir/volume. Migrations run automatically on startup; no manual migration command is needed.
 
-> **Warning:** Back up the Hub's `encryption.key` together with its database. The key ring encrypts stored secrets (OAuth tokens, etc.) at rest — losing it makes those secrets unrecoverable. See [Encryption & Data](/docs/admin/encryption-and-data/).
+{{< callout type="warning" >}}
+Back up the Hub's `encryption.key` together with its database. The key ring encrypts stored secrets (OAuth tokens, etc.) at rest — losing it makes those secrets unrecoverable. See [Encryption & Data](/docs/admin/encryption-and-data/).
+{{< /callout >}}
 
 ### Encryption-key errors after restoring a backup
 

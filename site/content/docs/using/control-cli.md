@@ -41,7 +41,9 @@ The CLI decides which transport to use automatically (see [Authentication](#auth
   └────────────────┘                  └────────────────────┘
 ```
 
-> **Tip:** Inside an agent or terminal, run `printenv | grep LEAPMUX_CONTROL_` to see exactly what context you were spawned with. Every entity-ID variable uses the `_ID` suffix.
+{{< callout >}}
+Inside an agent or terminal, run `printenv | grep LEAPMUX_CONTROL_` to see exactly what context you were spawned with. Every entity-ID variable uses the `_ID` suffix.
+{{< /callout >}}
 
 ## Output envelope and exit codes
 
@@ -187,7 +189,9 @@ Credentials are written one file per Hub:
 
 `<hub-host>` is the Hub's hostname, with `_<port>` appended when the URL carries a port (for example `leapmux.example.com_8443`). The file is written atomically with mode `0600`, in a directory created with mode `0700`. It contains the access token, the refresh token, both expiries, your user identity, the token id, and the permissions the credential holds.
 
-> **Tip:** Point `LEAPMUX_CONTROL_CONFIG_DIR` at a per-job directory to keep CI credentials isolated and easy to discard.
+{{< callout >}}
+Point `LEAPMUX_CONTROL_CONFIG_DIR` at a per-job directory to keep CI credentials isolated and easy to discard.
+{{< /callout >}}
 
 ## Worker-spawned environment variables
 
@@ -208,7 +212,9 @@ These variables become the **defaults** for the matching entity flags, so a scri
 
 Two IDs are deliberately **not** injected: the workspace id and the tile id. They are derived from the tab id at call time via the Hub's tab-locator RPC, so a script never targets a stale tile after somebody moves the tab.
 
-> **Note:** There is no "remote-enabled" flag or checkbox. Terminals and agents receive `LEAPMUX_CONTROL_*` automatically whenever the Worker has remote control enabled. Inherited `LEAPMUX_CONTROL_*` values are stripped before re-injection, so a Worker spawned from inside another agent gets a fresh context rather than its parent's. See [Terminals](/docs/using/terminals/) for the terminal side of this.
+{{< callout type="info" >}}
+There is no "remote-enabled" flag or checkbox. Terminals and agents receive `LEAPMUX_CONTROL_*` automatically whenever the Worker has remote control enabled. Inherited `LEAPMUX_CONTROL_*` values are stripped before re-injection, so a Worker spawned from inside another agent gets a fresh context rather than its parent's. See [Terminals](/docs/using/terminals/) for the terminal side of this.
+{{< /callout >}}
 
 ## Universal entity-ID flags
 
@@ -288,7 +294,9 @@ The `tab` group is the generic open/close/list/rename surface across all three t
 | `tab rename` | `--tab-id`, `--title` (required) |
 | `tab move` | `--tab-id`, `--target-tile-id`, `--target-workspace-id` + [placement flags](#placement-flags) |
 
-> **Note:** On `tab list`, `--tab-type` is an **output filter**, not a resolver constraint. On `tab get`/`tab move`, omitting the type lets the resolver auto-detect it.
+{{< callout type="info" >}}
+On `tab list`, `--tab-type` is an **output filter**, not a resolver constraint. On `tab get`/`tab move`, omitting the type lets the resolver auto-detect it.
+{{< /callout >}}
 
 ### Opening a tab
 
@@ -558,7 +566,9 @@ The first line is always the bootstrap snapshot (`{"kind":"materialized",...}`).
 
 The command runs until you interrupt it (SIGINT/SIGTERM) or the stream closes. Errors surface as `rpc_failed` or `stream_error`.
 
-> **Note:** `events watch` streams **workspace/layout** events only (the CRDT user event stream). It has no `--include` source filter, no `--follow`, and no per-line `source` key. To tail an agent's chat, use `agent messages --follow` instead.
+{{< callout type="info" >}}
+`events watch` streams **workspace/layout** events only (the CRDT user event stream). It has no `--include` source filter, no `--follow`, and no per-line `source` key. To tail an agent's chat, use `agent messages --follow` instead.
+{{< /callout >}}
 
 ```bash
 # React to tab removals in a workspace

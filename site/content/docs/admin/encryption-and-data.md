@@ -29,7 +29,9 @@ LeapMux keeps three kinds of persistent state:
 | Agent transcripts, terminal I/O, worktree/session state | Worker's local SQLite (`worker.db`) | No |
 | Worker E2EE private keys + Hub auth token | Worker's `state.json` | No — plain JSON, file mode `0600` |
 
-> **Note:** Agent chat transcripts, tool calls, terminal output, file contents, and diffs **never** reach the Hub in readable form and are **not** stored in the Hub database at all. They live only in the Worker's local database and are end-to-end encrypted in transit. See [Security & Threat Model](/docs/admin/security/).
+{{< callout type="info" >}}
+Agent chat transcripts, tool calls, terminal output, file contents, and diffs **never** reach the Hub in readable form and are **not** stored in the Hub database at all. They live only in the Worker's local database and are end-to-end encrypted in transit. See [Security & Threat Model](/docs/admin/security/).
+{{< /callout >}}
 
 ### Encryption at rest details
 
@@ -80,7 +82,9 @@ pepper:cGVwcGVyIGlzIGEgc2VwYXJhdGUgc3RhYmxlIHNlY3JldA==
 
 The **highest version number is the active key** — it encrypts all new secrets. Older versions stay in the file only to decrypt data written before a rotation.
 
-> **Warning:** Treat `encryption.key` as a top-grade secret. There is no master-password or HSM wrapping around it — the file contains the raw keys. Anyone who has both this file and a copy of the database can decrypt every stored OAuth secret. Conversely, **losing this file makes all encrypted columns permanently unreadable** (see [Backup & restore](#backup--restore)).
+{{< callout type="warning" >}}
+Treat `encryption.key` as a top-grade secret. There is no master-password or HSM wrapping around it — the file contains the raw keys. Anyone who has both this file and a copy of the database can decrypt every stored OAuth secret. Conversely, **losing this file makes all encrypted columns permanently unreadable** (see [Backup & restore](#backup--restore)).
+{{< /callout >}}
 
 There is nothing to configure to turn encryption on. Running the Hub once is enough:
 
@@ -152,9 +156,11 @@ Follow these steps in order. The `remove` step is guarded — it refuses to dele
    sudo systemctl restart leapmux-hub
    ```
 
-> **Warning:** `remove` permanently destroys a key version, so any ciphertext still encrypted under it would become undecryptable. As a guardrail, `remove` opens the database and **refuses** to delete a version that still encrypts OAuth provider secrets, OAuth tokens, settings secrets, or passkey credential public keys — it reports what still refers to the version and tells you to run `reencrypt` first.
->
-> It also refuses to delete the **active** version (`cannot remove active key version N`) and fails if the version is not in the ring (`keystore: key version N not in ring`). `--version` is required and must be `>= 1`. Transient rows are intentionally outside the guard: `pending_oauth_signups` and `webauthn_sessions` auto-expire, so a half-finished OAuth signup or WebAuthn ceremony simply fails and the user retries. Passkey `public_key` rows are scanned; `webauthn_sessions.session_data` is encrypted but never reencrypted because sessions expire within minutes.
+{{< callout type="warning" >}}
+`remove` permanently destroys a key version, so any ciphertext still encrypted under it would become undecryptable. As a guardrail, `remove` opens the database and **refuses** to delete a version that still encrypts OAuth provider secrets, OAuth tokens, settings secrets, or passkey credential public keys — it reports what still refers to the version and tells you to run `reencrypt` first.
+
+It also refuses to delete the **active** version (`cannot remove active key version N`) and fails if the version is not in the ring (`keystore: key version N not in ring`). `--version` is required and must be `>= 1`. Transient rows are intentionally outside the guard: `pending_oauth_signups` and `webauthn_sessions` auto-expire, so a half-finished OAuth signup or WebAuthn ceremony simply fails and the user retries. Passkey `public_key` rows are scanned; `webauthn_sessions.session_data` is encrypted but never reencrypted because sessions expire within minutes.
+{{< /callout >}}
 
 ### Rotation and API tokens
 
@@ -194,7 +200,9 @@ The default SQLite database lives at `{data_dir}/hub.db`. SQLite runs in WAL mod
 
 For the full set of connection-pool, cache, and DSN options for each backend, see [Configuration](/docs/admin/configuration/). The full storage-key reference (max-conns, lifetimes, etc.) lives there and is not repeated here.
 
-> **Note:** Use a config file (or CLI flags) to set storage options. Because of how environment variables are mapped, the nested `storage.*` keys are most reliably set via YAML or flags rather than env vars. See [Configuration](/docs/admin/configuration/).
+{{< callout type="info" >}}
+Use a config file (or CLI flags) to set storage options. Because of how environment variables are mapped, the nested `storage.*` keys are most reliably set via YAML or flags rather than env vars. See [Configuration](/docs/admin/configuration/).
+{{< /callout >}}
 
 ### Worker database
 
@@ -212,7 +220,9 @@ The `leapmux recover db` commands let you inspect and (where supported) control 
 | --- | --- | --- |
 | `leapmux recover db path` | Print the database path | Always prints `{data_dir}/hub.db`. Because `db path` takes no `--config`, it cannot load the config file, so it never reflects a custom `storage.sqlite.path` and does **not** consult `storage.type` — it prints the default SQLite path even when a SQL backend is configured. |
 
-> **Note:** `db path` prints the default SQLite location only. Point `db version` or `db migrate` at a custom backend with `--config`.
+{{< callout type="info" >}}
+`db path` prints the default SQLite location only. Point `db version` or `db migrate` at a custom backend with `--config`.
+{{< /callout >}}
 | `leapmux recover db version` | Show current schema version | Opens the store (which applies pending migrations), then prints current and latest versions. |
 | `leapmux recover db migrate` | Run schema migrations | `--version <int64>` selects a target (default `-1` = latest). |
 
@@ -240,7 +250,9 @@ Like `encryption-key reencrypt`, both `recover db version` and `recover db migra
 
 ## Backup & restore
 
-> **Warning:** The Hub database and the `encryption.key` file are a **matched pair**. Back them up together and restore them together. With the database but no key file, every encrypted OAuth secret is permanently unreadable. With the key file but no database, you have nothing to decrypt.
+{{< callout type="warning" >}}
+The Hub database and the `encryption.key` file are a **matched pair**. Back them up together and restore them together. With the database but no key file, every encrypted OAuth secret is permanently unreadable. With the key file but no database, you have nothing to decrypt.
+{{< /callout >}}
 
 **On-disk data to back up (Hub host vs. each Worker host):**
 
@@ -274,7 +286,9 @@ For each Worker:
 3. **`state.json`** (default `~/.config/leapmux/worker/state.json`). This holds the Worker's identity: its `worker_id`, Hub auth token, and its private E2EE keys (X25519, ML-KEM-1024, SLH-DSA). Losing it forces re-registration with a new registration key and a new key identity. The Hub holds the Worker's registered public keys, so a new identity triggers the Frontend's **"Worker public key changed"** dialog (the key-change dialog). See [Managing Workers](/docs/admin/managing-workers/) and [Security & Threat Model](/docs/admin/security/).
 4. `worker.db` is transient agent/session state. It is not a secret, but back it up if you want to preserve agent transcripts and terminal history across a rebuild.
 
-> **Tip:** A correct, restorable backup of a single-machine Hub is: a consistent copy of `hub.db` (Hub stopped) **plus** `encryption.key`, both taken at the same time. For a distributed deployment, add each Worker's `state.json`.
+{{< callout >}}
+A correct, restorable backup of a single-machine Hub is: a consistent copy of `hub.db` (Hub stopped) **plus** `encryption.key`, both taken at the same time. For a distributed deployment, add each Worker's `state.json`.
+{{< /callout >}}
 
 ### Restore
 

@@ -440,9 +440,14 @@ export async function backdatePendingEmailIssuedAt(hubDataDir: string, username:
   const execFileAsync = promisify(execFile)
   const dbPath = join(hubDataDir, 'hub.db')
   const escaped = username.replace(/'/g, `''`)
-  // The cooldown gate reads pending_email_issued_at; set it ~2m ago.
+  // The cooldown gate reads pending_email_issued_at with a raw text
+  // compare, so the backdate MUST use the canonical strftime layout the
+  // hub writes: SQLite's datetime() renders a space at byte 10, which
+  // sorts before the canonical 'T' regardless of how far back the value
+  // sits -- a backdate that passes the gate by format mixing cannot also
+  // prove a correctly elapsed cooldown passes it.
   // Retry on SQLITE_BUSY: the hub may hold a write lock briefly.
-  const sql = `UPDATE users SET pending_email_issued_at = datetime('now', '-2 minutes') WHERE username = '${escaped}' AND deleted_at IS NULL;`
+  const sql = `UPDATE users SET pending_email_issued_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-2 minutes') WHERE username = '${escaped}' AND deleted_at IS NULL;`
   let lastErr: unknown
   for (let attempt = 0; attempt < 8; attempt++) {
     try {
@@ -487,22 +492,6 @@ export async function verifyEmailViaAPI(hubUrl: string, cookie: string, verifica
   })
   if (!res.ok) {
     throw new Error(`verifyEmailViaAPI failed: ${res.status} ${await res.text()}`)
-  }
-}
-
-/** Request an account-recovery email via the public AuthService RPC. */
-export async function requestAccountRecoveryViaAPI(
-  hubUrl: string,
-  identifier: string,
-): Promise<void> {
-  const captcha = await solveCaptchaViaAPI(hubUrl)
-  const res = await fetch(`${hubUrl}/leapmux.v1.AuthService/RequestAccountRecovery`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ identifier, captchaPayload: captcha.captchaPayload, honeypot: captcha.honeypot }),
-  })
-  if (!res.ok) {
-    throw new Error(`requestAccountRecoveryViaAPI failed: ${res.status} ${await res.text()}`)
   }
 }
 

@@ -241,7 +241,7 @@ func (s *AuthService) FinishPasskeySignUp(ctx context.Context, req *connect.Requ
 			return nil, err
 		}
 		emailSent = true
-		next := nextResendAt(s.now().UTC())
+		next := pendingResendDeadline(s.now(), createdUser.PendingEmailUnblockedAt)
 		nextResend = &next
 	}
 
@@ -269,7 +269,7 @@ func (s *AuthService) FinishPasskeySignUp(ctx context.Context, req *connect.Requ
 
 // RevokePasskeyAuthState removes every passkey artifact a user owns: the
 // credential rows, their in-flight ceremony sessions, and any pending
-// password reset. The credential-rotation teardown paths (self-service
+// account recovery. The credential-rotation teardown paths (self-service
 // CompleteAccountRecovery, admin ResetPassword, admin DeleteUser, the
 // offline recover CLI, and signup rollback) share it, so the next
 // credential type needs one registration here instead of one at each
@@ -287,10 +287,76 @@ func RevokePasskeyAuthState(ctx context.Context, tx store.Store, userID string) 
 	if err := tx.WebAuthnSessions().DeleteAllByUser(ctx, userID); err != nil {
 		return fmt.Errorf("delete webauthn sessions: %w", err)
 	}
-	if err := tx.Users().ClearPendingRecovery(ctx, userID); err != nil {
-		return fmt.Errorf("clear pending password reset: %w", err)
+	if err := tx.Users().ClearPendingRecovery(ctx, store.ClearPendingRecoveryParams{
+		ID: userID,
+		// The rotation killed the flow the link rode; the account's next
+		// request must be free to mint, so the clear leaves no blockade
+		// (the zero time binds NULL).
+		UnblockedAt: time.Time{},
+	}); err != nil {
+		return fmt.Errorf("clear pending recovery: %w", err)
 	}
 	return nil
+}
+
+// RevokeCredentialsAfterRotation ends every bearer a credential rotation
+// invalidates, inside the caller's user-auth transaction: the account's
+// sessions, api tokens, and delegation tokens. The rotation sites --
+// self-service CompleteAccountRecovery, admin ResetPassword, admin
+// DeleteUser, the offline recover CLI, and admin RevokeUserSessions --
+// pair it with RevokePasskeyAuthState (except RevokeUserSessions, which
+// rotates no passkey), so the next credential kind registers in one place
+// instead of at each rotation site.
+//
+// generationAlreadyBumped is true only on the recovery completion:
+// CompleteRecovery's row update already moved tokens_revoked_at and
+// auth_generation and returned the committed generation, so the bearer
+// branches revoke rows directly -- auth.RevokeAllUserCredentials would bump
+// the epoch a second time and target an epoch the caller does not hold.
+//
+// Only the false branch writes the DURABLE revocation event (inside
+// auth.RevokeAllUserCredentials): the true branch's direct row revocations
+// emit none, and CompleteRecovery's UPDATE does not either, so on the
+// recovery path the revocation reaches other processes through the
+// committed generation bump -- a foreign replica's cached auth context
+// revalidates against the row -- and not through the revocation-events
+// stream.
+//
+// It does only the durable half. The caller owns the other half and must,
+// AFTER the commit, apply `lifecycle.UserRevoked(userID, committedGeneration)`
+// -- auth.RevokeAllUserCredentials requires an in-process caller to evict
+// the auth-context registry itself, because the durable event reaches this
+// hub only on the revocation watcher's next sweep, up to two seconds later.
+// The effect stays at the call site because it cannot run from in here: a
+// rollback after it would evict credentials that were never revoked.
+//
+// It takes the minted userid.UserID alone and spells the row id from it, so
+// no caller can pass an id and a userid that identify two different users.
+func RevokeCredentialsAfterRotation(
+	ctx context.Context, tx store.Store, uid userid.UserID, generationAlreadyBumped bool,
+) (apiCount, delegationCount, committedGeneration int64, err error) {
+	if err := tx.Sessions().DeleteByUser(ctx, uid); err != nil {
+		return 0, 0, 0, fmt.Errorf("delete sessions: %w", err)
+	}
+	if generationAlreadyBumped {
+		if apiCount, err = tx.APITokens().RevokeByUser(ctx, uid); err != nil {
+			return 0, 0, 0, fmt.Errorf("revoke api tokens: %w", err)
+		}
+		if delegationCount, err = tx.DelegationTokens().RevokeByUser(ctx, uid); err != nil {
+			return 0, 0, 0, fmt.Errorf("revoke delegation tokens: %w", err)
+		}
+	} else if apiCount, delegationCount, err = auth.RevokeAllUserCredentials(ctx, tx, uid); err != nil {
+		return 0, 0, 0, err
+	}
+	// The committed epoch, read INSIDE the transaction, so the post-commit
+	// eviction targets exactly what this commit revoked. The include-deleted
+	// form reads the fenced row whatever its deleted_at holds, so a caller
+	// that also soft-deletes the user still gets an epoch back.
+	revoked, err := tx.Users().GetByIDIncludeDeleted(ctx, uid.String())
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("query revoked user auth generation: %w", err)
+	}
+	return apiCount, delegationCount, revoked.AuthGeneration, nil
 }
 
 // rollbackUnusableSignup removes a just-created account after a fail-closed

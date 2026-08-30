@@ -383,7 +383,7 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 		if err := s.deliverSignupVerification(ctx, createdUser.ID, email, storedCode); err != nil {
 			return nil, err
 		}
-		nextResend := nextResendAt(s.now().UTC())
+		nextResend := pendingResendDeadline(s.now(), createdUser.PendingEmailUnblockedAt)
 
 		uid, mintErr := mintRowUserID(createdUser.ID)
 		if mintErr != nil {
@@ -800,7 +800,7 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 			return nil, err
 		}
 		emailSent = true
-		next := nextResendAt(s.now().UTC())
+		next := pendingResendDeadline(s.now(), user.PendingEmailUnblockedAt)
 		nextResend = &next
 	}
 

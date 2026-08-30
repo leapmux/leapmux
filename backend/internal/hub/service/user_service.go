@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"connectrpc.com/connect"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -138,7 +139,7 @@ func (s *UserService) RequestEmailChange(ctx context.Context, req *connect.Reque
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
-	// The account email is a recovery identity: it receives the password-reset
+	// The account email is a recovery identity: it receives the account-recovery
 	// link. A stolen session that could move it can then confirm the new
 	// address itself -- ResendVerificationEmail and VerifyEmail are both
 	// allowlisted for an unverified user -- and owns the recovery channel
@@ -176,7 +177,7 @@ func (s *UserService) RequestEmailChange(ctx context.Context, req *connect.Reque
 	// THIS address, which nobody did, and raising it for an administrator
 	// is the force this change removed from every other site: it made an
 	// administrator's unconfirmed address a valid self-service
-	// password-reset target, because RequestAccountRecovery reads the column
+	// account-recovery target, because RequestAccountRecovery reads the column
 	// and cannot take the sign-in exemption. The admin edit of ANOTHER
 	// user's address already lowers the flag (see resolveEmailVerified);
 	// this is the same rule on the self-service path.
@@ -186,7 +187,7 @@ func (s *UserService) RequestEmailChange(ctx context.Context, req *connect.Reque
 	//
 	// The gate at the top of this handler answered from a CACHED UserInfo, so
 	// "elevated" could be true of a session an administrator already took
-	// away -- and the account email receives the password-reset link, so a
+	// away -- and the account email receives the recovery link, so a
 	// change that lands on revoked authority gives the account away. Under
 	// the lock, every path that moves the credential epoch has to wait.
 	//
@@ -199,6 +200,7 @@ func (s *UserService) RequestEmailChange(ctx context.Context, req *connect.Reque
 	// may run more than once, and a re-run OVERWRITES this rather than adding
 	// to it, so the caller reads the attempt that committed.
 	var storedCode string
+	var mintedUnblockedAt time.Time
 	if err := s.store.RunInUserAuthTransaction(ctx, userInfo.ID, func(tx store.Store) error {
 		if err := refuseIfActingAuthorityMoved(ctx, tx, userInfo, s.now()); err != nil {
 			return err
@@ -209,7 +211,7 @@ func (s *UserService) RequestEmailChange(ctx context.Context, req *connect.Reque
 			}
 			return nil
 		}
-		code, err := mintPendingEmailVerification(ctx, tx, user.ID, newEmail, s.now())
+		code, blockedUntil, err := mintPendingEmailVerification(ctx, tx, user.ID, newEmail, s.now())
 		if err != nil {
 			// The conditional mint refuses inside the cooldown, which is the
 			// one thing that stops this RPC from being an open relay: the
@@ -221,6 +223,7 @@ func (s *UserService) RequestEmailChange(ctx context.Context, req *connect.Reque
 			return connect.NewError(connect.CodeUnavailable, err)
 		}
 		storedCode = code
+		mintedUnblockedAt = blockedUntil
 		return nil
 	}); err != nil {
 		return nil, err
@@ -239,8 +242,16 @@ func (s *UserService) RequestEmailChange(ctx context.Context, req *connect.Reque
 	}
 
 	// On a send failure the helper drops the undelivered code and keeps the
-	// pending address, so Resend retries the same change.
-	if !deliverPendingEmailVerification(ctx, s.store, s.mail, s.renderer, user.ID, newEmail, storedCode) {
+	// pending address, so Resend retries the same change; the failure
+	// window's deadline is what the clear leaves behind.
+	if sent, _ := deliverPendingEmailVerification(ctx, s.store, s.mail, s.renderer, pendingEmailDelivery{
+		userID:          user.ID,
+		email:           newEmail,
+		code:            storedCode,
+		mintUnblockedAt: mintedUnblockedAt,
+		failureCooldown: mailFailureCooldown(ctx, s.set),
+		now:             s.now,
+	}); !sent {
 		return nil, connect.NewError(connect.CodeUnavailable,
 			errors.New("the hub could not send the verification email"))
 	}
@@ -281,19 +292,22 @@ func (s *UserService) ResendVerificationEmail(ctx context.Context, _ *connect.Re
 	// issuePendingEmailVerification, not in a read-then-check here: two
 	// concurrent resends both passed a Go check and both sent.
 
-	sent, err := issuePendingEmailVerification(ctx, s.store, s.mail, s.renderer, full.ID, targetEmail, s.now())
+	sent, nextResend, err := issuePendingEmailVerification(ctx, s.store, s.mail, s.renderer, full.ID, targetEmail, s.now,
+		mailFailureCooldown(ctx, s.set))
 	if err != nil {
 		// A claimed address surfaces as AlreadyExists, not Internal: the
 		// user can act on "email already in use", and the transport error
 		// chain stays out of the response.
 		return nil, AvailabilityConnectError(err)
 	}
-	// Advertise a cooldown only after a successful send: a failed send
-	// leaves no live code, so blocking the retry the failure message
-	// invites would contradict the response.
+	// Advertise the deadline the gate enforces whichever way the send went:
+	// after a successful send it derives from the mint's own issue instant,
+	// and after a refused one from the failure stamp the clear writes -- a
+	// response that reports no cooldown would invite the retry the hub then
+	// refuses for the failure window.
 	resp := &leapmuxv1.ResendVerificationEmailResponse{EmailSent: sent}
-	if sent {
-		resp.NextResendAvailableAt = timestamppb.New(nextResendAt(s.now().UTC()))
+	if nextResend != nil {
+		resp.NextResendAvailableAt = timestamppb.New(*nextResend)
 	}
 	return connect.NewResponse(resp), nil
 }

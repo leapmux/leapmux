@@ -7,7 +7,9 @@ weight: 4
 
 This chapter gets you from zero to a working coding agent in a few minutes. Pick one of two launch paths, then follow the walkthrough to open your first agent, send a message, and open a terminal beside it.
 
-> **Note:** Both paths run LeapMux in **solo mode** — a Hub and a Worker running together in a single local process, with no login and your data kept on your machine. This is the fastest way to try LeapMux. For multi-user or remote setups, see [Running LeapMux](/docs/admin/running-leapmux/) and [Managing Workers](/docs/admin/managing-workers/).
+{{< callout type="info" >}}
+Both paths run LeapMux in **solo mode** — a Hub and a Worker running together in a single local process, with no login and your data kept on your machine. This is the fastest way to try LeapMux. For multi-user or remote setups, see [Running LeapMux](/docs/admin/running-leapmux/) and [Managing Workers](/docs/admin/managing-workers/).
+{{< /callout >}}
 
 ## Before you begin
 
@@ -23,7 +25,9 @@ This is the simplest path on macOS, Linux, or Windows.
    - **Distributed** — connect to a remote Hub by URL (covered in [Running LeapMux](/docs/admin/running-leapmux/)).
 3. Select **Solo** and click **Connect**.
 
-> **Note (macOS):** Solo mode needs **Full Disk Access** so the Worker can traverse your home directory. If it isn't granted, the launcher shows a **"Full Disk Access Required"** card with an **"Open System Settings"** button. Grant access there; the app detects it and restarts automatically.
+{{< callout type="info" >}}
+**macOS:** Solo mode needs **Full Disk Access** so the Worker can traverse your home directory. If it isn't granted, the launcher shows a **"Full Disk Access Required"** card with an **"Open System Settings"** button. Grant access there; the app detects it and restarts automatically.
+{{< /callout >}}
 
 The app remembers your choice and reconnects to Solo on the next launch. To return to the launcher later, open the user menu and choose **"Switch mode..."**.
 
@@ -52,9 +56,13 @@ A few useful flags (full reference in [Configuration](/docs/admin/configuration/
 | `-log-level` | `debug`, `info`, `warn`, `error` | `info` |
 | `-config` | Path to the config file | `~/.config/leapmux/solo/solo.yaml` |
 
-> **Warning:** Solo mode trusts every request as the admin. If you change `-listen` to a non-loopback address, anyone who can reach that port has full admin access without credentials. For how to expose solo mode safely, see [Security & Threat Model](/docs/admin/security/).
+{{< callout type="warning" >}}
+Solo mode trusts every request as the admin. If you change `-listen` to a non-loopback address, anyone who can reach that port has full admin access without credentials. For how to expose solo mode safely, see [Security & Threat Model](/docs/admin/security/).
+{{< /callout >}}
 
-> **Tip:** `leapmux solo` writes its database and keys under `~/.config/leapmux/solo`, so your workspaces and sessions persist across restarts.
+{{< callout >}}
+`leapmux solo` writes its database and keys under `~/.config/leapmux/solo`, so your workspaces and sessions persist across restarts.
+{{< /callout >}}
 
 ## The walkthrough
 
@@ -85,7 +93,9 @@ The window has a **titlebar** across the top, a **sidebar** down each side, and 
 └──────────────┴───────────────────────────────┴──────────────────┘
 ```
 
-> **Note:** The **"Open in …"** button is only available in the desktop app running in solo mode. It launches an editor on your local machine, which only applies when the files are local. Everything else is identical in the browser: the web app renders the same titlebar, sidebars, and tiling area inside the browser tab.
+{{< callout type="info" >}}
+The **"Open in …"** button is only available in the desktop app running in solo mode. It launches an editor on your local machine, which only applies when the files are local. Everything else is identical in the browser: the web app renders the same titlebar, sidebars, and tiling area inside the browser tab.
+{{< /callout >}}
 
 ### 2. Create or open a workspace
 
@@ -112,7 +122,9 @@ If you already have a workspace open and want another agent in it, open the tab 
 
 Click **"Create"** (it shows **"Creating..."** while the agent starts).
 
-> **Note:** The New agent dialog does **not** include model, effort, or permission-mode fields. A new agent starts with the provider's default model, effort, and permission mode. You change all of these mid-session from the composer's status-bar chips or its **[+]** menu. See [Coding Agents](/docs/using/coding-agents/) for the full settings reference.
+{{< callout type="info" >}}
+The New agent dialog does **not** include model, effort, or permission-mode fields. A new agent starts with the provider's default model, effort, and permission mode. You change all of these mid-session from the composer's status-bar chips or its **[+]** menu. See [Coding Agents](/docs/using/coding-agents/) for the full settings reference.
+{{< /callout >}}
 
 ### 4. (Optional) Choose model and effort after the agent starts
 
@@ -154,7 +166,9 @@ To get a shell next to your agent, open the tab bar's add menu and choose **"New
 
 You can split the tile so the agent and terminal sit side by side, or float the terminal as a separate window. Tiling, splitting, and floating are covered in [Tabs & Layout](/docs/using/tabs-and-layout/); terminal behavior and persistence in [Terminals](/docs/using/terminals/).
 
-> **Tip:** Your workspace, tabs, and agent sessions persist across restarts — close the browser tab or quit the desktop app, relaunch, and they come back. Terminals come back too, showing their last screen; if the Worker was restarted, press **Enter** in a terminal to start its shell again.
+{{< callout >}}
+Your workspace, tabs, and agent sessions persist across restarts — close the browser tab or quit the desktop app, relaunch, and they come back. Terminals come back too, showing their last screen; if the Worker was restarted, press **Enter** in a terminal to start its shell again.
+{{< /callout >}}
 
 ## Where to go next
 

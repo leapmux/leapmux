@@ -238,14 +238,14 @@ func TestExpiredWindowEntryIsReclaimed(t *testing.T) {
 
 	recordCredentialFailure(t, m, "usr_test123")
 	m.windowMu.Lock()
-	assert.Len(t, m.windows, 1)
+	assert.Equal(t, 1, m.windows.Len())
 	m.windowMu.Unlock()
 
 	fakeNow = fakeNow.Add(901 * time.Second)
 	_, _, _, err := m.allow(context.Background(), elevateSpec, "usr_test123")
 	require.NoError(t, err)
 	m.windowMu.Lock()
-	assert.Empty(t, m.windows, "expired window entries must be deleted on observation")
+	assert.Zero(t, m.windows.Len(), "expired window entries must be deleted on observation")
 	m.windowMu.Unlock()
 }
 
@@ -260,7 +260,7 @@ func TestExpiredWindowsAreSweptForAbsentUsers(t *testing.T) {
 	recordCredentialFailure(t, m, "usr_gone")
 	recordCredentialFailure(t, m, "usr_back")
 	m.windowMu.Lock()
-	assert.Len(t, m.windows, 2)
+	assert.Equal(t, 2, m.windows.Len())
 	m.windowMu.Unlock()
 
 	// Past the earliest window reset: any allow() now sweeps every
@@ -269,7 +269,7 @@ func TestExpiredWindowsAreSweptForAbsentUsers(t *testing.T) {
 	_, _, _, err := m.allow(context.Background(), elevateSpec, "usr_back")
 	require.NoError(t, err)
 	m.windowMu.Lock()
-	assert.Empty(t, m.windows, "the sweep must drop expired entries of users who never retry")
+	assert.Zero(t, m.windows.Len(), "the sweep must drop expired entries of users who never retry")
 	m.windowMu.Unlock()
 }
 
@@ -303,7 +303,7 @@ func TestConcurrentBurstCannotExceedBudget(t *testing.T) {
 	}
 	m.windowMu.Lock()
 	assert.Empty(t, m.inFlight, "completed attempts must release their reservations")
-	assert.Empty(t, m.windows, "non-countable errors must not open a failure window")
+	assert.Zero(t, m.windows.Len(), "non-countable errors must not open a failure window")
 	m.windowMu.Unlock()
 	_, allowed, _, err = m.allow(context.Background(), elevateSpec, "usr_test123")
 	require.NoError(t, err)
@@ -396,9 +396,9 @@ func TestNonProvingSuccessKeepsTheFailureWindow(t *testing.T) {
 	m.complete(begin, nil)
 
 	m.windowMu.Lock()
-	w := m.windows[windowKey{OpElevation, "usr_test123"}]
+	w := m.windows.Get(windowKey{OpElevation, "usr_test123"}, m.now())
 	require.NotNil(t, w, "a success that proves nothing must not delete the window")
-	assert.EqualValues(t, 1, w.failures, "the recorded failure must survive")
+	assert.EqualValues(t, 1, w.Count, "the recorded failure must survive")
 	m.windowMu.Unlock()
 
 	// The budget of 2 is therefore spent by one more failure, not two.
@@ -426,7 +426,7 @@ func TestProvingSuccessResetsTheFailureWindow(t *testing.T) {
 	m.complete(proved, nil)
 
 	m.windowMu.Lock()
-	assert.Empty(t, m.windows, "a proven credential clears the accumulated failures")
+	assert.Zero(t, m.windows.Len(), "a proven credential clears the accumulated failures")
 	m.windowMu.Unlock()
 }
 
@@ -479,7 +479,7 @@ func TestExpensiveMutationsAreRouted(t *testing.T) {
 		leapmuxv1connect.UserServiceDeletePasskeyProcedure:             false,
 		leapmuxv1connect.UserServiceDeactivatePasskeyAuthProcedure:     false,
 	}
-	assert.Len(t, procedureOperations, len(proving),
+	assert.Len(t, procedureOperations, len(proving)+1,
 		"a procedure added to or removed from the routing map must be reflected here")
 	for procedure, provesCredential := range proving {
 		spec, ok := procedureOperations[procedure]
@@ -488,20 +488,26 @@ func TestExpensiveMutationsAreRouted(t *testing.T) {
 		assert.Equal(t, provesCredential, spec.provesCredential, "%s", procedure)
 	}
 
+	// The one mail RPC on its own budget: no captcha, no secret to guess,
+	// and its abuse loop SUCCEEDS per request, so it counts the requests
+	// that reached the mail machinery rather than failures or admissions.
+	emailChangeSpec, routed := procedureOperations[leapmuxv1connect.UserServiceRequestEmailChangeProcedure]
+	require.True(t, routed, "RequestEmailChange drives an SMTP send per call; it must take a budget")
+	assert.Equal(t, OpEmailChange, emailChangeSpec.op)
+	assert.False(t, emailChangeSpec.provesCredential)
+	assert.True(t, defaults[OpEmailChange].countsProceededRequests,
+		"the email-change loop succeeds per request, so failures would never count it")
+	require.NotNil(t, defaults[OpEmailChange].proceedsToBudget,
+		"a proceeded-counting operation must classify its outcomes")
+
 	// The negative half, and it is the half OpElevation's doc has to keep
-	// true. Both of these are elevation-admitted mutations, so a reader who
-	// took "every mutation an elevation admits" literally would look for
-	// them above -- and both are deliberately absent, because neither runs
-	// Argon2 or a ceremony write. RequestEmailChange is capped instead by
-	// the pending-email mint cooldown, in SQL, on the row.
-	for _, procedure := range []string{
-		leapmuxv1connect.UserServiceRequestEmailChangeProcedure,
-		leapmuxv1connect.UserServiceUnlinkOAuthProviderProcedure,
-	} {
-		_, routed := procedureOperations[procedure]
-		assert.Falsef(t, routed,
-			"%s is not expensive to repeat; routing it means OpElevation's doc must say so too", procedure)
-	}
+	// true. UnlinkOAuthProvider is an elevation-admitted mutation, so a
+	// reader who took "every mutation an elevation admits" literally would
+	// look for it above -- and it is deliberately absent, because it runs
+	// no Argon2 and no ceremony write.
+	_, routed = procedureOperations[leapmuxv1connect.UserServiceUnlinkOAuthProviderProcedure]
+	assert.False(t, routed,
+		"UserServiceUnlinkOAuthProvider is not expensive to repeat; routing it means OpElevation's doc must say so too")
 }
 
 // TestPanickingHandlerReleasesReservation pins the panic path: net/http
@@ -532,7 +538,7 @@ func TestPanickingHandlerReleasesReservation(t *testing.T) {
 
 	m.windowMu.Lock()
 	assert.Empty(t, m.inFlight, "a panicking handler must not leak its reservation")
-	assert.Empty(t, m.windows, "a panic is not a credential failure and must not open a window")
+	assert.Zero(t, m.windows.Len(), "a panic is not a credential failure and must not open a window")
 	m.windowMu.Unlock()
 
 	// The budget is whole again: the next attempt reaches the handler
@@ -544,7 +550,7 @@ func TestPanickingHandlerReleasesReservation(t *testing.T) {
 }
 
 func TestKnownOperationsSortedAndEffectiveLimitsOverlay(t *testing.T) {
-	assert.Equal(t, []Operation{OpElevation, OpOAuthAnonymous}, KnownOperations())
+	assert.Equal(t, []Operation{OpElevation, OpEmailChange, OpOAuthAnonymous}, KnownOperations())
 
 	// No row: defaults, enabled.
 	m := newTestManager(t, false)
@@ -774,6 +780,67 @@ func TestElevationRefusalDoesNotSpendTheBudget(t *testing.T) {
 //
 // The set comes from the live routing map, so a procedure added on either
 // side of provesCredential is covered without an edit here.
+// TestEmailChangeCountsProceededRequests pins the counting mode the
+// email-change budget needs: its abuse loop SUCCEEDS per request (mint,
+// send, clear), so the window must spend on the requests that reached the
+// mail machinery, and neither a handler success nor a pre-work refusal may
+// reset or skip it. The refusals that answer before anything mails -- the
+// elevation prompt, validation, a taken address -- spend nothing, which is
+// what keeps the step-up retry (the transport resends once on
+// FailedPrecondition) at one slot instead of two.
+func TestEmailChangeCountsProceededRequests(t *testing.T) {
+	m := newTestManager(t, false)
+	upsertLimit(t, m, OpEmailChange, true, 6, 900)
+	spec, ok := procedureOperations[leapmuxv1connect.UserServiceRequestEmailChangeProcedure]
+	require.True(t, ok)
+
+	// Pre-work refusals spend nothing: an elevation prompt, a malformed
+	// address, and a taken address, each answered before any mint or send.
+	for _, refusal := range []error{
+		connect.NewError(connect.CodeFailedPrecondition, errors.New("elevation required")),
+		connect.NewError(connect.CodeInvalidArgument, errors.New("address unchanged")),
+		connect.NewError(connect.CodeAlreadyExists, errors.New("email already in use")),
+	} {
+		a, allowed, _, err := m.allow(context.Background(), spec, "usr_test123")
+		require.NoError(t, err)
+		require.True(t, allowed)
+		m.complete(a, refusal)
+	}
+	probe, allowed, retryAfter, err := m.allow(context.Background(), spec, "usr_test123")
+	require.NoError(t, err)
+	assert.True(t, allowed, "pre-work refusals must not spend the window")
+	assert.Zero(t, retryAfter)
+	m.complete(probe, connect.NewError(connect.CodeFailedPrecondition, errors.New("elevation required")))
+
+	for i := 0; i < 6; i++ {
+		a, allowed, _, err := m.allow(context.Background(), spec, "usr_test123")
+		require.NoError(t, err)
+		require.Truef(t, allowed, "proceeded request %d of 6 must pass", i+1)
+		// Alternate success with the two proceeded failure shapes: the
+		// send the relay refused, and the mint the cooldown refused.
+		var outcome error
+		switch i % 3 {
+		case 0:
+			outcome = nil
+		case 1:
+			outcome = connect.NewError(connect.CodeUnavailable, errors.New("the hub could not send the verification email"))
+		default:
+			outcome = connect.NewError(connect.CodeResourceExhausted, errors.New("the hub sent mail recently"))
+		}
+		m.complete(a, outcome) // every one of them proceeded; none may reset the window
+	}
+	_, allowed, retryAfter, err = m.allow(context.Background(), spec, "usr_test123")
+	require.NoError(t, err)
+	assert.False(t, allowed, "six proceeded requests must spend the window")
+	assert.Positive(t, retryAfter, "a proceeded-count denial reports the window left to wait out")
+
+	// A disabled budget stands down entirely, the way every operation does.
+	upsertLimit(t, m, OpEmailChange, false, 6, 900)
+	_, allowed, _, err = m.allow(context.Background(), spec, "usr_test123")
+	require.NoError(t, err)
+	assert.True(t, allowed)
+}
+
 func TestSpentFailureWindowStillAdmitsTheProceduresThatVerifyNothing(t *testing.T) {
 	m := newTestManager(t, false)
 	upsertLimit(t, m, OpElevation, true, 2, 900)
@@ -799,8 +866,8 @@ func TestSpentFailureWindowStillAdmitsTheProceduresThatVerifyNothing(t *testing.
 			"%s verifies no secret, so a wrong-password burst must not deny it", procedure)
 		m.complete(a, nil)
 	}
-	require.Equal(t, 7, nonProving,
-		"the routing map must still carry the seven mutations an elevation admits")
+	require.Equal(t, 8, nonProving,
+		"the routing map must still carry the seven mutations an elevation admits, plus email change")
 
 	// And the window is untouched by those admissions: a procedure that
 	// proves nothing must neither spend the budget nor clear it.
@@ -842,4 +909,23 @@ func TestSpentFailureWindowStillCapsConcurrency(t *testing.T) {
 	m.windowMu.Lock()
 	assert.Empty(t, m.inFlight, "completed attempts release their reservations")
 	m.windowMu.Unlock()
+}
+
+// The settings summary states what one unit of the budget is: an operator
+// tuning email_change as a failures-only window would expect refused
+// guesses to count, when every admitted request really spends it (and
+// oauth_anonymous counts admissions through allowWindowed for the same
+// reason).
+func TestLimitKeySummaryStatesTheCountedQuantity(t *testing.T) {
+	t.Parallel()
+
+	for op, wantSubstring := range map[Operation]string{
+		OpElevation:      "failed attempts per window",
+		OpEmailChange:    "mail-driving requests per window",
+		OpOAuthAnonymous: "admitted requests per window",
+	} {
+		key, ok := LimitKey(op)
+		require.True(t, ok, "%s must have a settings key", op)
+		assert.Contains(t, key.UI().Summary, wantSubstring, string(op))
+	}
 }

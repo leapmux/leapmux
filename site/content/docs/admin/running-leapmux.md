@@ -7,7 +7,7 @@ weight: 1
 
 LeapMux is a single Go binary (`leapmux`) that you run in one of four modes: `solo`, `hub`, `worker`, or `dev`. This chapter is the administrator's guide to those modes — what each one does, how to launch it, where it stores data, and how to run LeapMux under Docker or behind a reverse proxy.
 
-If you only want to try LeapMux on your own machine, the desktop app or `leapmux solo` is all you need. If you are standing up a shared service for a team, you will run a `hub` plus one or more `worker` processes. For the full list of configuration keys and storage backends referenced here, see [Configuration](/docs/admin/configuration/).
+If you only want to try LeapMux on your own machine, the desktop app or `leapmux solo` is all you need. To set up a shared service for a team, run a `hub` plus one or more `worker` processes. For the full list of configuration keys and storage backends referenced here, see [Configuration](/docs/admin/configuration/).
 
 ## Run modes at a glance
 
@@ -22,9 +22,13 @@ The modes that accept inbound connections — `solo`, `hub`, and `dev` — all d
 
 Each mode reads a YAML config file named after the mode inside its config directory — for example `~/.config/leapmux/hub/hub.yaml` for the Hub. The file is optional; a missing config file is silently skipped. The default data directory for each mode is the same as its config directory.
 
-> **Note:** `solo` and `dev` are the same program internally — both run a Hub and a Worker together in one process. Solo binds loopback only and skips login: it injects an admin user into every request. Dev binds all interfaces and uses password authentication. Dev bootstraps its first admin through the `/setup` flow.
+{{< callout type="info" >}}
+`solo` and `dev` are the same program internally — both run a Hub and a Worker together in one process. Solo binds loopback only and skips login: it injects an admin user into every request. Dev binds all interfaces and uses password authentication. Dev bootstraps its first admin through the `/setup` flow.
+{{< /callout >}}
 
-> **Warning:** Because solo mode auto-authenticates every request as the admin, anyone who can reach its port has full admin access with no credentials. That is safe on `127.0.0.1`. If you bind solo to a non-loopback address, LeapMux logs a startup warning telling you to restrict access externally or switch to `leapmux hub` (see [Security & Threat Model](/docs/admin/security/#solo-mode-a-reduced-threat-model) for the full warning text). For a multi-user or network-exposed deployment, run `leapmux hub` (with separate Workers) or `leapmux dev` instead, both of which require a real login.
+{{< callout type="warning" >}}
+Because solo mode auto-authenticates every request as the admin, anyone who can reach its port has full admin access with no credentials. That is safe on `127.0.0.1`. If you bind solo to a non-loopback address, LeapMux logs a startup warning telling you to restrict access externally or switch to `leapmux hub` (see [Security & Threat Model](/docs/admin/security/#solo-mode-a-reduced-threat-model) for the full warning text). For a multi-user or network-exposed deployment, run `leapmux hub` (with separate Workers) or `leapmux dev` instead, both of which require a real login.
+{{< /callout >}}
 
 ## Solo mode
 
@@ -81,7 +85,9 @@ leapmux control admin settings set smtp '{"host":"smtp.example.com","port":587,"
 
 By default the Hub uses an embedded SQLite database at `<data_dir>/hub.db` with its encryption key ring at `<data_dir>/encryption.key`. For a shared, durable deployment you will usually point it at an external database via `-storage-type` and the matching `*-dsn` flag. The full reference is in [Configuration](/docs/admin/configuration/); the [Hub settings](/docs/admin/admin-cli/#hub-settings) section of the Admin CLI chapter covers the settings table.
 
-> **Note:** The Hub does not terminate TLS itself. For HTTPS you put a reverse proxy in front of it; see [Reverse proxy and public URL](#reverse-proxy-and-public-url) below.
+{{< callout type="info" >}}
+The Hub does not terminate TLS itself. For HTTPS you put a reverse proxy in front of it; see [Reverse proxy and public URL](#reverse-proxy-and-public-url) below.
+{{< /callout >}}
 
 ## Running Workers
 
@@ -203,7 +209,9 @@ docker run -p 4327:4327 -e LEAPMUX_MODE=dev -v leapmux-data:/data \
   ghcr.io/leapmux/leapmux:latest
 ```
 
-> **Warning:** Do not run `LEAPMUX_MODE=solo` in a container expecting to reach it from outside. Solo's default listen address is `127.0.0.1:4327` (loopback only), which is not reachable from the host, and solo auto-authenticates every request as admin. Use `dev` for a single-process Hub + Worker that binds all interfaces with a real login, or run a `hub` container plus separate `worker` containers.
+{{< callout type="warning" >}}
+Do not run `LEAPMUX_MODE=solo` in a container expecting to reach it from outside. Solo's default listen address is `127.0.0.1:4327` (loopback only), which is not reachable from the host, and solo auto-authenticates every request as admin. Use `dev` for a single-process Hub + Worker that binds all interfaces with a real login, or run a `hub` container plus separate `worker` containers.
+{{< /callout >}}
 
 ### Running a Worker container
 
@@ -233,7 +241,9 @@ The Hub never terminates TLS on its own. To serve LeapMux over HTTPS, put a reve
 
 Both settings are hot: a running Hub applies them within ~30 seconds — no restart.
 
-> **Warning:** `public_url` must be a bare scheme + host — for example `https://hub.example.com`. Sub-path mounting (such as `https://example.com/leapmux`) is **not** supported and is rejected at write time. Give LeapMux its own hostname or subdomain.
+{{< callout type="warning" >}}
+`public_url` must be a bare scheme + host — for example `https://hub.example.com`. Sub-path mounting (such as `https://example.com/leapmux`) is **not** supported and is rejected at write time. Give LeapMux its own hostname or subdomain.
+{{< /callout >}}
 
 The proxy must also forward WebSocket upgrades, since Frontend traffic and the relayed Worker streams ride over long-lived connections. For the security implications of the relay, the end-to-end-encryption boundary, and Worker TOFU pinning, see [Security & Threat Model](/docs/admin/security/).
 
@@ -245,7 +255,9 @@ LeapMux runs database migrations automatically on startup, for both the Hub and 
 - **CLI binary:** Replace the `leapmux` binary from the newer server tarball or zip on the [Releases page](https://github.com/leapmux/leapmux/releases) and restart.
 - **Desktop app:** Download and install the newer artifact from the Releases page.
 
-> **Tip:** Back up your Hub data before a major upgrade — at minimum the database and `encryption.key` (or your external database, if you use one). The encryption key ring is required to read encrypted data, so keep it with your backups. See [Encryption & Data](/docs/admin/encryption-and-data/) for backup, restore, and key-rotation details.
+{{< callout >}}
+Back up your Hub data before a major upgrade — at minimum the database and `encryption.key` (or your external database, if you use one). The encryption key ring is required to read encrypted data, so keep it with your backups. See [Encryption & Data](/docs/admin/encryption-and-data/) for backup, restore, and key-rotation details.
+{{< /callout >}}
 
 ## Checking the version
 

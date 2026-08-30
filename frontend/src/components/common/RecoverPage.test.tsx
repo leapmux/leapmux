@@ -2,10 +2,10 @@ import { Code, ConnectError } from '@connectrpc/connect'
 import { createMemoryHistory, MemoryRouter, Route } from '@solidjs/router'
 /// <reference types="vitest/globals" />
 import { fireEvent, render, screen } from '@solidjs/testing-library'
-import { createSignal } from 'solid-js'
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { CaptchaProvider } from '~/generated/proto/leapmux/v1/auth_pb'
+import { setMockCaptchaPayload } from '~/test-support/captchaMocks'
 import { mockLoadSystemInfo, resetSystemInfoMock, setSystemInfoMock } from '~/test-support/systemInfoMock'
 
 import { RecoverPage } from './RecoverPage'
@@ -23,27 +23,8 @@ vi.mock('~/lib/systemInfo', async () => {
   return m.systemInfoMock
 })
 
-const [mockCaptchaPayload, setMockCaptchaPayload] = createSignal<string | null>(null)
-vi.mock('~/components/common/CaptchaField', async () => {
-  const { createEffect } = await import('solid-js')
-  return {
-    CaptchaField: (props: { action: string, onPayload: (p: string | null) => void, onUnavailable: () => void }) => {
-      createEffect(() => props.onPayload(mockCaptchaPayload()))
-      return <div data-testid="captcha-field" data-action={props.action} />
-    },
-  }
-})
-vi.mock('~/components/common/CaptchaHoneypot', () => ({
-  CaptchaHoneypot: (props: { value: string, onInput: (v: string) => void }) => (
-    <input
-      data-testid="captcha-honeypot"
-      type="text"
-      name="website"
-      value={props.value}
-      onInput={e => props.onInput(e.currentTarget.value)}
-    />
-  ),
-}))
+vi.mock('~/components/common/CaptchaField', async () => (await import('~/test-support/captchaMocks')).captchaFieldMock)
+vi.mock('~/components/common/CaptchaHoneypot', async () => (await import('~/test-support/captchaMocks')).captchaHoneypotMock)
 
 function renderRecoverPage() {
   const history = createMemoryHistory()

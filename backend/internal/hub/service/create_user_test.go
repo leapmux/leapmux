@@ -227,7 +227,7 @@ func TestSetPendingEmailWithToken_RejectsAlreadyVerifiedEmail(t *testing.T) {
 	userB := createSimpleUser(t, st, "user-b", "")
 
 	// User B tries to set pending_email to the already-verified address.
-	_, err := mintPendingEmailVerification(ctx, st, userB.ID, "taken@example.com", time.Now())
+	_, _, err := mintPendingEmailVerification(ctx, st, userB.ID, "taken@example.com", time.Now())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "already in use")
 
@@ -246,11 +246,25 @@ func TestSetPendingEmailWithToken_StoresPendingForUnclaimedEmail(t *testing.T) {
 
 	user := createSimpleUser(t, st, "user-a", "")
 
-	code, err := mintPendingEmailVerification(ctx, st, user.ID, "free@example.com", time.Now())
+	mintedAt := time.Now()
+	code, blockedUntil, err := mintPendingEmailVerification(ctx, st, user.ID, "free@example.com", mintedAt)
 	require.NoError(t, err)
-	require.True(t, deliverPendingEmailVerification(ctx, st, sender,
+	// A successful send never reaches the failure window, so the cooldown
+	// value here is arbitrary.
+	sent, nextResend := deliverPendingEmailVerification(ctx, st, sender,
 		mail.Renderer{BaseURL: func() string { return "https://hub.example.test" }},
-		user.ID, "free@example.com", code))
+		pendingEmailDelivery{
+			userID:          user.ID,
+			email:           "free@example.com",
+			code:            code,
+			mintUnblockedAt: blockedUntil,
+			failureCooldown: 10 * time.Second,
+			now:             time.Now,
+		})
+	require.True(t, sent)
+	require.NotNil(t, nextResend, "a successful send reports the mint's deadline")
+	assert.WithinDuration(t, mintedAt.Add(resendCooldown), *nextResend, time.Second,
+		"the deadline is one resend cooldown from the mint, and it is the value the gate compares")
 
 	// The row stays pending until the user submits a code via UserService.VerifyEmail.
 	updated, err := st.Users().GetByID(ctx, user.ID)
@@ -271,11 +285,12 @@ func TestCreateUser_ClearsCompetingPendingEmails(t *testing.T) {
 	userA := createSimpleUser(t, st, "user-a", "")
 	expiresAt := mustTime(t)
 	_, err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
-		ID:                    userA.ID,
-		PendingEmail:          "race@example.com",
-		PendingEmailToken:     verifycode.Generate(),
-		PendingEmailExpiresAt: &expiresAt,
-		CooldownCutoff:        store.UnconditionalMintCutoff(),
+		ID:                      userA.ID,
+		PendingEmail:            "race@example.com",
+		PendingEmailUnblockedAt: time.Now().Add(-5 * time.Minute).UTC(),
+		PendingEmailToken:       verifycode.Generate(),
+		PendingEmailExpiresAt:   &expiresAt,
+		Now:                     time.Now().UTC(),
 	})
 	require.NoError(t, err)
 
@@ -306,11 +321,12 @@ func TestSetEmailAndClearCompeting(t *testing.T) {
 	userA := createSimpleUser(t, st, "user-a", "")
 	expiresAt := mustTime(t)
 	_, err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
-		ID:                    userA.ID,
-		PendingEmail:          "target@example.com",
-		PendingEmailToken:     verifycode.Generate(),
-		PendingEmailExpiresAt: &expiresAt,
-		CooldownCutoff:        store.UnconditionalMintCutoff(),
+		ID:                      userA.ID,
+		PendingEmail:            "target@example.com",
+		PendingEmailUnblockedAt: time.Now().Add(-5 * time.Minute).UTC(),
+		PendingEmailToken:       verifycode.Generate(),
+		PendingEmailExpiresAt:   &expiresAt,
+		Now:                     time.Now().UTC(),
 	})
 	require.NoError(t, err)
 
@@ -379,10 +395,11 @@ func TestCreateUserInTx_MintsThePendingExpiryFromTheCallerSeam(t *testing.T) {
 	assert.True(t, fixed.Add(pendingEmailExpiry).Equal(user.PendingEmailExpiresAt.UTC()),
 		"the deadline must come from the caller's clock, not the wall clock")
 
-	// And the issued-at lands on the same clock, which is the whole point of
-	// one seam: the two are read together on the /verify-email page.
-	require.NotNil(t, user.PendingEmailIssuedAt)
-	assert.True(t, fixed.Equal(user.PendingEmailIssuedAt.UTC()))
+	// And the blockade the mint arms lands on the same clock, which is the
+	// whole point of one seam: the expiry and the gate deadline are read
+	// together on the /verify-email page.
+	require.NotNil(t, user.PendingEmailUnblockedAt)
+	assert.True(t, fixed.Add(resendCooldown).Equal(user.PendingEmailUnblockedAt.UTC()))
 }
 
 // TestVerifyPendingEmailToken_ReadsTheCallerSeam pins the other half. The
@@ -430,7 +447,7 @@ func TestCreateUserInTx_EnforcesTheAdminInvariants(t *testing.T) {
 	// The column records whether somebody confirmed the address, which is a
 	// fact about the address rather than a privilege of the account. Forcing
 	// it made an administrator's unconfirmed address a valid self-service
-	// password-reset target, because RequestAccountRecovery reads the column
+	// account-recovery target, because RequestAccountRecovery reads the column
 	// and cannot take an admin exemption -- the question it asks IS "did
 	// anybody confirm this address". The login gate takes the exemption
 	// instead; see auth.EmailVerificationFacts.Satisfied.

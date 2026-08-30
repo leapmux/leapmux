@@ -1,5 +1,6 @@
 import type { Accessor } from 'solid-js'
 import type { PillOptionSpec } from '~/components/common/PillGroup'
+import type { CaptchaAction } from '~/generated/contracts/captcha'
 
 import { createSignal } from 'solid-js'
 import { passkeyBlocker } from '~/lib/systemInfo'
@@ -14,9 +15,12 @@ export type AuthMethodKind = 'login' | 'signup'
 /**
  * The captcha action bound into an external provider's token. The hub
  * refuses a token minted under a different action, so this must follow the
- * EFFECTIVE method, never the raw selection.
+ * EFFECTIVE method, never the raw selection. The members come from the
+ * generated captcha contract (contracts/captcha.json), so a renamed
+ * action breaks this union at compile time instead of at the hub's
+ * action check.
  */
-export type AuthCaptchaAction = 'login' | 'signup' | 'passkey_login' | 'passkey_signup'
+export type AuthCaptchaAction = Extract<CaptchaAction, 'login' | 'signup' | 'passkey_login' | 'passkey_signup'>
 
 export interface AuthMethodSelection {
   /**

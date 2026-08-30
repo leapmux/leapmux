@@ -6,6 +6,7 @@ import { createSignal } from 'solid-js'
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { CaptchaProvider } from '~/generated/proto/leapmux/v1/auth_pb'
+import { fireCaptchaUnavailable, resetCaptchaMocks, setMockCaptchaPayload } from '~/test-support/captchaMocks'
 import { mockLoadOAuthProviders, mockLoadSystemInfo, resetSystemInfoMock, setSystemInfoMock } from '~/test-support/systemInfoMock'
 
 import { LoginPage } from './LoginPage'
@@ -28,37 +29,8 @@ vi.mock('~/lib/systemInfo', async () => {
   return m.systemInfoMock
 })
 
-// The fake widget holds its payload in a signal the test controls, so a
-// test can keep the form unsolved (button disabled) and release it. The
-// mock captures the unavailable callback so a test can simulate the hub
-// answering "no challenge" (captcha disabled at runtime).
-const [mockCaptchaPayload, setMockCaptchaPayload] = createSignal<string | null>(null)
-let mockCaptchaUnavailable: (() => void) | undefined
-vi.mock('~/components/common/CaptchaField', async () => {
-  const { createEffect } = await import('solid-js')
-  return {
-    CaptchaField: (props: { action: string, onPayload: (p: string | null) => void, onUnavailable: () => void }) => {
-      // Captured for the stand-down test; the primitive's callback is a
-      // stable closure, so an untracked read is fine.
-      /* eslint-disable solid/reactivity -- stable callback captured for tests */
-      mockCaptchaUnavailable = props.onUnavailable
-      /* eslint-enable solid/reactivity */
-      createEffect(() => props.onPayload(mockCaptchaPayload()))
-      return <div data-testid="captcha-field" data-action={props.action} />
-    },
-  }
-})
-vi.mock('~/components/common/CaptchaHoneypot', () => ({
-  CaptchaHoneypot: (props: { value: string, onInput: (v: string) => void }) => (
-    <input
-      data-testid="captcha-honeypot"
-      type="text"
-      name="website"
-      value={props.value}
-      onInput={e => props.onInput(e.currentTarget.value)}
-    />
-  ),
-}))
+vi.mock('~/components/common/CaptchaField', async () => (await import('~/test-support/captchaMocks')).captchaFieldMock)
+vi.mock('~/components/common/CaptchaHoneypot', async () => (await import('~/test-support/captchaMocks')).captchaHoneypotMock)
 
 const mockLogin = vi.fn()
 const mockLoginWithPasskey = vi.fn()
@@ -112,8 +84,7 @@ describe('loginPage', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     resetSystemInfoMock()
-    setMockCaptchaPayload(null)
-    mockCaptchaUnavailable = undefined
+    resetCaptchaMocks()
     setAuthLoading(false)
     mockLogin.mockResolvedValue({ verificationRequired: false, verificationEmailSent: false })
     mockLoginWithPasskey.mockResolvedValue({ verificationRequired: false, verificationEmailSent: false })
@@ -363,7 +334,7 @@ describe('loginPage', () => {
     fireEvent.input(screen.getByLabelText('Password'), { target: { value: 'secret' } })
     expect(screen.getByRole('button', { name: 'Sign in' })).toBeDisabled()
 
-    mockCaptchaUnavailable?.()
+    fireCaptchaUnavailable()
     await vi.waitFor(() => {
       expect(screen.getByRole('button', { name: 'Sign in' })).toBeEnabled()
     })
@@ -379,7 +350,7 @@ describe('loginPage', () => {
     fireEvent.input(screen.getByLabelText('Password'), { target: { value: 'secret' } })
     // A value that an autofill heuristic drops into the hidden input must
     // reach the request — the server checks it even with captcha off.
-    fireEvent.input(screen.getByTestId('captcha-honeypot'), { target: { value: 'http://spam.example' } })
+    fireEvent.input(screen.getByTestId('website-field'), { target: { value: 'http://spam.example' } })
     fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
     await vi.waitFor(() => {
       expect(mockLogin).toHaveBeenCalledWith('alice', 'secret', { captchaPayload: '', honeypot: 'http://spam.example' })

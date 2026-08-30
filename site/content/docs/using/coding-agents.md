@@ -49,7 +49,9 @@ Open the **New agent** dialog from the workspace, then fill in the fields below 
 | **Resume an existing session** | Optional. Paste a prior Session ID to continue an earlier conversation (see [Resuming a session](#resuming-an-existing-session)). |
 | **Git options** | Appears once a Worker is selected. Lets you start the agent on the current branch, switch branches, create a branch, or create/use a worktree. See [Worktrees & Branches](/docs/using/worktrees-and-branches/). |
 
-> **Note:** The dialog has **no model, effort, or permission-mode fields**. A new agent always starts with the provider's defaults; you change the model, reasoning effort, and permission mode afterward from the composer's status-bar chips or its **[+]** menu (see [Changing settings mid-session](#changing-settings-mid-session)).
+{{< callout type="info" >}}
+The dialog has **no model, effort, or permission-mode fields**. A new agent always starts with the provider's defaults; you change the model, reasoning effort, and permission mode afterward from the composer's status-bar chips or its **[+]** menu (see [Changing settings mid-session](#changing-settings-mid-session)).
+{{< /callout >}}
 
 LeapMux remembers your most recently used provider and pre-selects it (when it is available on the chosen Worker), so you usually only have to pick a directory and click **Create**.
 
@@ -106,7 +108,9 @@ Your messages appear immediately (optimistically) and are reconciled when the se
 
 While the agent is actively working — and there is no pending permission prompt — an **Interrupt** button (a square icon) appears. Click it to stop the current turn. LeapMux asks the agent to stop via its native interrupt mechanism rather than killing the process.
 
-> **Note:** The **Interrupt** button is hidden whenever the agent is waiting on you with a permission or question prompt — answer the prompt instead (see [Permission and approval prompts](#permission-and-approval-prompts)).
+{{< callout type="info" >}}
+The **Interrupt** button is hidden whenever the agent is waiting on you with a permission or question prompt — answer the prompt instead (see [Permission and approval prompts](#permission-and-approval-prompts)).
+{{< /callout >}}
 
 ## How tool calls and results render
 
@@ -122,7 +126,9 @@ As an agent works, the transcript shows its assistant text, its thinking (where 
 
 Long tool results are collapsible (an **Expand** button), and most rows have a **Copy** button. Where it makes sense, a row's header also offers a **Quote** button (tooltip "Quote", pulls the row's text into the editor as a quoted reply), a **Copy Markdown** button (tooltip "Copy Markdown"), and a **Copy Raw JSON** button for debugging. The permission-prompt banner (see [Permission and approval prompts](#permission-and-approval-prompts)) carries its own **Copy Raw JSON** action too.
 
-> **Tip:** Some rows are intentionally hidden to keep the transcript readable — for example, Claude Code suppresses its internal todo-list and tool-search bookkeeping rows. The information still drives the UI (the todo sidebar), it just isn't repeated inline.
+{{< callout >}}
+Some rows are intentionally hidden to keep the transcript readable — for example, Claude Code suppresses its internal todo-list and tool-search bookkeeping rows. The information still drives the UI (the todo sidebar), it just isn't repeated inline.
+{{< /callout >}}
 
 ### The todo / plan sidebar
 
@@ -193,7 +199,9 @@ Beneath the editor box is a status bar with one chip per setting axis — the gi
 
 The **[+]** menu holds every axis, including the provider-specific options that get no chip, each as a submenu. It also holds **Agent info** (context usage, rate limits, session). You can hide the status bar with **[+] > Show status bar**; the **[+]** menu still reaches everything the bar shows.
 
-> **Note:** Most settings changes apply **live**, without a restart: a concrete model or effort change and a permission-mode change take effect in place (the change is optimistic and rolls back if it fails). A restart happens when the provider can't apply the change to the running process — typically switching effort back to **Auto** or the Claude Code model back to **Default (recommended)**, which must relaunch the CLI without the flag — and for providers that fix the model at launch (Reasonix).
+{{< callout type="info" >}}
+Most settings changes apply **live**, without a restart: a concrete model or effort change and a permission-mode change take effect in place (the change is optimistic and rolls back if it fails). A restart happens when the provider can't apply the change to the running process — typically switching effort back to **Auto** or the Claude Code model back to **Default (recommended)**, which must relaunch the CLI without the flag — and for providers that fix the model at launch (Reasonix).
+{{< /callout >}}
 
 A picker shows radio items for up to 7 options and switches to a searchable list above that.
 
@@ -247,7 +255,9 @@ Leave the field empty to start a fresh session.
 
 Once you submit, the Worker resumes the prior session using that provider's own resume mechanism, picking up where the earlier conversation left off. If a session can't be resumed, the Worker starts a fresh one rather than failing.
 
-> **Tip:** Session IDs for Claude Code, Codex, and the other CLIs come from those tools' own session bookkeeping. If you've run the same CLI directly in a terminal, you can resume that session inside LeapMux by pasting its ID here.
+{{< callout >}}
+Session IDs for Claude Code, Codex, and the other CLIs come from those tools' own session bookkeeping. If you've run the same CLI directly in a terminal, you can resume that session inside LeapMux by pasting its ID here.
+{{< /callout >}}
 
 ### Resume across restarts and reconnects
 

@@ -85,7 +85,7 @@ UPDATE users SET username = sqlc.arg(username), display_name = sqlc.arg(display_
 WHERE id = sqlc.arg(id);
 
 -- name: UpdateUserEmail :execresult
-UPDATE users SET email = sqlc.arg(email), email_verified = sqlc.arg(email_verified), pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, updated_at = sqlc.arg(updated_at)
+UPDATE users SET email = sqlc.arg(email), email_verified = sqlc.arg(email_verified), pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, pending_email_unblocked_at = NULL, pending_email_attempts = 0, updated_at = sqlc.arg(updated_at)
 WHERE id = sqlc.arg(id);
 
 -- name: UpdateUserEmailVerified :execresult
@@ -151,42 +151,47 @@ SELECT count(*) FROM users WHERE deleted_at IS NULL;
 SELECT EXISTS(SELECT 1 FROM users WHERE deleted_at IS NULL LIMIT 1) AS has_any;
 
 -- name: SetPendingEmail :execresult
--- Conditional mint: the write lands only when no live code exists (empty
--- token) or the previous code was issued at or before cooldown_cutoff, so
--- two concurrent resends for one account cannot both mint and both send
--- (the loser matches no row), and RequestEmailChange cannot mint on every
--- request. Its twin SetPendingRecovery carries the same predicate.
+-- Conditional mint: the write lands only when the row carries no live
+-- blockade -- unblocked_at IS NULL, or it elapsed by now -- so two
+-- concurrent resends for one account cannot both mint and both send (the
+-- loser matches no row), and RequestEmailChange cannot mint on every
+-- request. The mint arms the next blockade itself: unblocked_at = now +
+-- the resend cooldown. A failed-send clear writes now + the failure
+-- window; every other clear (address-level moves, promotions, rotation
+-- teardowns) writes NULL, which leaves no blockade at all. Its twin
+-- SetPendingRecovery carries the same predicate.
 --
--- The gate reads pending_email_issued_at -- an instant only this mint
--- writes -- and never the expiry: ConsumeVerificationAttempt force-expires
--- a burned code by moving the expiry to now, so an expiry-derived gate
--- would read a five-second-old burned code as issued a full lifetime ago
--- and re-mint inside the cooldown. The Go caller derives cooldown_cutoff
--- from the resend cooldown; the comparison stays on the app clock, the
--- clock that wrote the issue.
-UPDATE users SET pending_email = sqlc.arg(pending_email), pending_email_token = sqlc.arg(pending_email_token), pending_email_expires_at = sqlc.narg(pending_email_expires_at), pending_email_issued_at = sqlc.narg(pending_email_issued_at), pending_email_attempts = 0, updated_at = NOW(3)
+-- The gate reads pending_email_unblocked_at and never the expiry:
+-- ConsumeVerificationAttempt force-expires a burned code by moving the
+-- expiry to now, so an expiry-derived gate would read a five-second-old
+-- burned code as minted a full lifetime ago and re-mint inside the
+-- cooldown. The comparison stays on the app clock, the clock that wrote
+-- the blockade.
+UPDATE users SET pending_email = sqlc.arg(pending_email), pending_email_token = sqlc.arg(pending_email_token), pending_email_expires_at = sqlc.narg(pending_email_expires_at), pending_email_unblocked_at = sqlc.arg(pending_email_unblocked_at), pending_email_attempts = 0, updated_at = NOW(3)
 WHERE id = sqlc.arg(id)
-  AND (pending_email_token = ''
-       OR pending_email_issued_at IS NULL
-       OR pending_email_issued_at <= sqlc.arg(cooldown_cutoff));
+  AND pending_email_unblocked_at IS NULL
+       OR pending_email_unblocked_at <= sqlc.arg(now);
 
 -- name: ClearPendingEmailCode :exec
 -- ClearPendingEmailCode drops an undelivered code and KEEPS the pending
 -- address. An empty token is the "no live code, address still pending"
 -- state: ConsumeVerificationAttempt and ClearStalePendingEmails both
--- filter pending_email_token != '', so neither acts on it, and the
--- cooldown -- which reads the expiry -- does not apply, so the retry a
--- failed send invites is never blocked. Unconditional on purpose: it
--- undoes a mint that the relay refused.
-UPDATE users SET pending_email_token = '', pending_email_expires_at = NULL, pending_email_attempts = 0, updated_at = NOW(3)
+-- filter pending_email_token != '', so neither acts on it. The clear
+-- writes the caller's unblocked_at -- the failure window a refused send
+-- leaves -- so the gate and the reported countdown agree that the retry a
+-- failed send invites waits out that window instead of landing at request
+-- speed; a NULL (the zero instant the caller binds) leaves no blockade at
+-- all. Unconditional on purpose: it undoes a mint that the relay
+-- refused.
+UPDATE users SET pending_email_token = '', pending_email_expires_at = NULL, pending_email_unblocked_at = sqlc.narg(unblocked_at), pending_email_attempts = 0, updated_at = NOW(3)
 WHERE id = ?;
 
 -- name: ClearPendingEmail :exec
-UPDATE users SET pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, pending_email_attempts = 0, updated_at = NOW(3)
+UPDATE users SET pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, pending_email_unblocked_at = NULL, pending_email_attempts = 0, updated_at = NOW(3)
 WHERE id = ?;
 
 -- name: PromotePendingEmail :execresult
-UPDATE users SET email = pending_email, email_verified = 1, pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, pending_email_attempts = 0, updated_at = sqlc.arg(updated_at)
+UPDATE users SET email = pending_email, email_verified = 1, pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, pending_email_unblocked_at = NULL, pending_email_attempts = 0, updated_at = sqlc.arg(updated_at)
 WHERE id = sqlc.arg(id) AND pending_email != '';
 
 -- ConsumeVerificationAttempt atomically charges one attempt against
@@ -206,7 +211,7 @@ SET pending_email_expires_at = CASE
 WHERE id = ? AND pending_email_token != '';
 
 -- name: ClearCompetingPendingEmails :exec
-UPDATE users SET pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, pending_email_attempts = 0, updated_at = NOW(3)
+UPDATE users SET pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, pending_email_unblocked_at = NULL, pending_email_attempts = 0, updated_at = NOW(3)
 WHERE pending_email = ? AND id != ?;
 
 -- name: ClearStalePendingEmails :execresult
@@ -215,7 +220,7 @@ WHERE pending_email = ? AND id != ?;
 -- expiry compare can never see it and an abandoned address would otherwise
 -- outlive the database. updated_at is the only instant such a row carries,
 -- and ClearPendingEmailCode stamps it.
-UPDATE users SET pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, pending_email_attempts = 0, updated_at = NOW(3)
+UPDATE users SET pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, pending_email_unblocked_at = NULL, pending_email_attempts = 0, updated_at = NOW(3)
 WHERE pending_email != ''
   AND ((pending_email_token != '' AND pending_email_expires_at IS NOT NULL AND pending_email_expires_at < sqlc.arg(cutoff))
     OR (pending_email_token = '' AND updated_at < sqlc.arg(codeless_cutoff)));
@@ -240,30 +245,33 @@ SET tokens_revoked_at = sqlc.arg(tokens_revoked_at),
 WHERE id = sqlc.arg(id);
 
 -- name: SetPendingRecovery :execresult
--- Conditional mint: the write lands only when no live link exists (empty
--- token) or the previous link was issued at or before cooldown_cutoff, so
--- two concurrent requests for one account cannot both mint and both send
--- (the loser matches no row). The gate reads pending_recovery_issued_at,
--- not the expiry, for the reason SetPendingEmail states: the attempt
--- consumer force-expires a burned link by moving the expiry to now. The
--- Go caller derives cooldown_cutoff from the resend cooldown; the
--- comparison stays on the app clock, the same clock that wrote the issue.
+-- Conditional mint, recovery twin of SetPendingEmail: the write lands
+-- only when the row carries no live blockade (unblocked_at IS NULL, or
+-- it elapsed by now), so two concurrent requests for one account cannot
+-- both mint and both send (the loser matches no row). The gate reads
+-- pending_recovery_unblocked_at, not the expiry, for the reason
+-- SetPendingEmail states: the attempt consumer force-expires a burned
+-- link by moving the expiry to now.
 UPDATE users
 SET pending_recovery_token = sqlc.arg(pending_recovery_token),
     pending_recovery_expires_at = sqlc.arg(pending_recovery_expires_at),
-    pending_recovery_issued_at = sqlc.narg(pending_recovery_issued_at),
+    pending_recovery_unblocked_at = sqlc.arg(pending_recovery_unblocked_at),
     pending_recovery_attempts = 0,
     updated_at = NOW(3)
 WHERE id = sqlc.arg(id)
-  AND (pending_recovery_token = ''
-       OR pending_recovery_issued_at IS NULL
-       OR pending_recovery_issued_at <= sqlc.arg(cooldown_cutoff));
+  AND pending_recovery_unblocked_at IS NULL
+       OR pending_recovery_unblocked_at <= sqlc.arg(now);
 
 
 -- name: ClearPendingRecovery :exec
+-- The failed-send clear, recovery twin: the unblocked_at the caller binds
+-- leaves a short failure window on the next mint (see
+-- ClearPendingEmailCode); a NULL (the zero instant) leaves none, which is
+-- the rotation teardown's shape.
 UPDATE users
 SET pending_recovery_token = '',
     pending_recovery_expires_at = NULL,
+    pending_recovery_unblocked_at = sqlc.narg(unblocked_at),
     pending_recovery_attempts = 0,
     updated_at = NOW(3)
 WHERE id = ?;
@@ -300,6 +308,7 @@ SET password_hash = sqlc.arg(password_hash),
     password_set = TRUE,
     pending_recovery_token = '',
     pending_recovery_expires_at = NULL,
+    pending_recovery_unblocked_at = NULL,
     pending_recovery_attempts = 0,
     tokens_revoked_at = sqlc.arg(tokens_revoked_at),
     auth_generation = sqlc.arg(auth_generation),

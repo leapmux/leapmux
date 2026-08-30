@@ -9,7 +9,9 @@ weight: 10
 
 Every other administration task — users, sessions, workers, OAuth providers, captcha, rate limits, instance settings, API tokens, delegation tokens — runs **online, authenticated, over RPC** with [`leapmux control admin ...`](/docs/admin/admin-cli/), or from the Preferences dialog's administration panels.
 
-> **Warning:** Because `leapmux recover` writes straight to the database, anyone who can run it has full control over the Hub's data. That is exactly its purpose — break-glass — and its entire surface is four groups. Protect the data directory and the hosts that can reach it. There is no per-command authentication.
+{{< callout type="warning" >}}
+Because `leapmux recover` writes straight to the database, anyone who can run it has full control over the Hub's data. That is exactly its purpose — break-glass — and its entire surface is four groups. Protect the data directory and the hosts that can reach it. There is no per-command authentication.
+{{< /callout >}}
 
 ## The tree
 
@@ -35,7 +37,9 @@ Every command that touches data resolves the database and encryption key through
 - Without `--config`, a minimal config is built from `--data-dir`.
 - The SQLite database defaults to `{DataDir}/hub.db`; the encryption key file to `{DataDir}/encryption.key`.
 
-> **Tip:** If your Hub runs on Postgres or MySQL, always pass `--config /path/to/hub.yaml`. Without it the CLI builds a SQLite-only config and would operate on `{DataDir}/hub.db` instead of your real backend.
+{{< callout >}}
+If your Hub runs on Postgres or MySQL, always pass `--config /path/to/hub.yaml`. Without it the CLI builds a SQLite-only config and would operate on `{DataDir}/hub.db` instead of your real backend.
+{{< /callout >}}
 
 Commands that need only the key file or config path — not a live database connection — accept only `--data-dir`: `db path`, `encryption-key rotate`, and `encryption-key rotate-pepper`.
 
@@ -80,9 +84,13 @@ Passwords are 8–128 printable ASCII characters, spaces included (see [Password
 
 The encryption key ring is a file (default `{DataDir}/encryption.key`, mode `0600`) holding versioned XChaCha20-Poly1305 keys plus a dedicated token pepper. The **highest version is the active key** used for all new encryption; older versions remain only to decrypt old data. For the full keystore model and backup guidance, see [Encryption & Data](/docs/admin/encryption-and-data/).
 
-> **Note:** The API-token / delegation-token pepper is a dedicated, stable secret stored in the key file but **independent** of the key ring, so `rotate`, `reencrypt`, and `remove` never invalidate tokens. To deliberately invalidate every API and delegation token, use `rotate-pepper`.
+{{< callout type="info" >}}
+The API-token / delegation-token pepper is a dedicated, stable secret stored in the key file but **independent** of the key ring, so `rotate`, `reencrypt`, and `remove` never invalidate tokens. To deliberately invalidate every API and delegation token, use `rotate-pepper`.
+{{< /callout >}}
 
-> **Note:** `rotate` and `rotate-pepper` use `--data-dir` only; `reencrypt` and `remove` open the store and accept both `--data-dir` and `--config`.
+{{< callout type="info" >}}
+`rotate` and `rotate-pepper` use `--data-dir` only; `reencrypt` and `remove` open the store and accept both `--data-dir` and `--config`.
+{{< /callout >}}
 
 ### `encryption-key rotate`
 

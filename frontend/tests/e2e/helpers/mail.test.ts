@@ -8,7 +8,7 @@
  * ever renamed to `.spec.ts`.
  *
  * Both defects these tests pin cost a spec author a 2.5-minute timeout on the
- * reset page rather than a message that named the cause, which is the reason
+ * recovery completion page rather than a message that stated the cause, which is the reason
  * the helper is worth unit-testing at all.
  */
 import type { CaptureSmtpServer } from './mail'
@@ -16,7 +16,7 @@ import { connect } from 'node:net'
 import { afterEach, describe, expect, it } from 'vitest'
 import { extractAccountRecoveryToken, startCaptureSmtpServer } from './mail'
 
-/** The width of `id.Generate()`, which mints the emailed reset token. */
+/** The width of `id.Generate()`, which mints the emailed recovery token. */
 const TOKEN_LENGTH = 48
 
 /** A token as the hub mints it: mixed case and digits over a 62-symbol alphabet. */
@@ -50,13 +50,13 @@ function recoveryEmailBody(token: string, hubURL = 'http://127.0.0.1:8080'): str
 }
 
 describe('extractAccountRecoveryToken', () => {
-  it('returns the whole token from a rendered reset email', () => {
+  it('returns the whole token from a rendered recovery email', () => {
     expect(extractAccountRecoveryToken(recoveryEmailBody(REALISTIC_TOKEN))).toBe(REALISTIC_TOKEN)
   })
 
   it('keeps every character after a hex-only prefix', () => {
     // The truncating half of the old defect: a hex class returned `deadbeef`,
-    // the reset page refused it, and the spec failed on a missing button one
+    // the recovery completion page refused it, and the spec failed on a missing button one
     // page later.
     const token = extractAccountRecoveryToken(recoveryEmailBody(HEX_PREFIX_TOKEN))
     expect(token).toBe(HEX_PREFIX_TOKEN)
@@ -74,7 +74,7 @@ describe('extractAccountRecoveryToken', () => {
     expect(extractAccountRecoveryToken(body)).toBe(REALISTIC_TOKEN)
   })
 
-  it('throws when the body carries no reset link', () => {
+  it('throws when the body carries no recovery link', () => {
     const body = 'Your LeapMux verification code is 123456.\r\n'
     expect(() => extractAccountRecoveryToken(body)).toThrow(/token not found in captured email/)
   })

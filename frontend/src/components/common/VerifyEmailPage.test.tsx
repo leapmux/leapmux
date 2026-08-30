@@ -5,6 +5,7 @@ import { createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { CaptchaProvider } from '~/generated/proto/leapmux/v1/auth_pb'
+import { setMockCaptchaPayload } from '~/test-support/captchaMocks'
 import { resetSystemInfoMock, setSystemInfoMock } from '~/test-support/systemInfoMock'
 
 import { VerifyEmailPage } from './VerifyEmailPage'
@@ -39,27 +40,8 @@ vi.mock('~/lib/systemInfo', async () => {
   return m.systemInfoMock
 })
 
-const [mockCaptchaPayload, setMockCaptchaPayload] = createSignal<string | null>(null)
-vi.mock('~/components/common/CaptchaField', async () => {
-  const { createEffect } = await import('solid-js')
-  return {
-    CaptchaField: (props: { action: string, onPayload: (p: string | null) => void, onUnavailable: () => void }) => {
-      createEffect(() => props.onPayload(mockCaptchaPayload()))
-      return <div data-testid="captcha-field" data-action={props.action} />
-    },
-  }
-})
-vi.mock('~/components/common/CaptchaHoneypot', () => ({
-  CaptchaHoneypot: (props: { value: string, onInput: (v: string) => void }) => (
-    <input
-      data-testid="captcha-honeypot"
-      type="text"
-      name="website"
-      value={props.value}
-      onInput={e => props.onInput(e.currentTarget.value)}
-    />
-  ),
-}))
+vi.mock('~/components/common/CaptchaField', async () => (await import('~/test-support/captchaMocks')).captchaFieldMock)
+vi.mock('~/components/common/CaptchaHoneypot', async () => (await import('~/test-support/captchaMocks')).captchaHoneypotMock)
 
 const mockSetAuth = vi.fn()
 // Verifying an address is a REFRESH of the same identity, not a transition to
@@ -69,11 +51,14 @@ const mockSetAuth = vi.fn()
 const mockAdoptSameIdentityUser = vi.fn()
 const mockRefreshUser = vi.fn<() => Promise<void>>(async () => {})
 const mockUser = vi.fn<() => { username: string, emailVerified: boolean } | null>()
+// A signal, not a vi.fn: the cooldownKnown gate re-runs when loading flips,
+// so a test can simulate the auth bootstrap answering mid-flight.
+const [authLoading, setAuthLoading] = createSignal(false)
 const mockVerificationResendAvailableAt = vi.fn<() => { seconds: bigint, nanos: number } | undefined>()
 vi.mock('~/context/AuthContext', () => ({
   useAuth: () => ({
     user: () => mockUser(),
-    loading: () => false,
+    loading: () => authLoading(),
     error: () => null,
     login: vi.fn(),
     logout: vi.fn(),
@@ -126,8 +111,8 @@ afterEach(() => {
 
 describe('verifyEmailPage', () => {
   it('passes the verify_email and resend_verification actions to their captcha fields', async () => {
-    // Both legs are captcha-protected: the verify leg burns a guess for
-    // free, and the resend leg drives an SMTP send. Each renders its own
+    // Both paths are captcha-protected: the verify path burns a guess for
+    // free, and the resend path drives an SMTP send. Each renders its own
     // field under its own action, in that order.
     setSystemInfoMock({ captchaEnabled: true, captchaProvider: CaptchaProvider.TURNSTILE, captchaSiteKey: '1x00000000000000000000AA' })
     renderPage('/verify-email')
@@ -165,6 +150,34 @@ describe('verifyEmailPage', () => {
     // The submitted token must be the *normalized* form (no hyphen,
     // uppercase). Auto-submit uses whatever was in the URL.
     expect(mockVerify).toHaveBeenCalledWith(expect.objectContaining({ verificationToken: 'AB2CDE' }))
+  })
+
+  // The emailed link's auto-submit WAITS for the captcha instead of failing
+  // one-shot. The shape this replaces burned its single attempt on "The
+  // captcha is still solving" the moment the page mounted on a captcha-
+  // enabled hub, and left the user to press Verify by hand.
+  it('auto-submits the emailed code once the captcha payload arrives', async () => {
+    setSystemInfoMock({ captchaEnabled: true, captchaProvider: CaptchaProvider.TURNSTILE, captchaSiteKey: '1x00000000000000000000AA' })
+    mockVerify.mockResolvedValueOnce({
+      user: { username: 'alice', emailVerified: true },
+    })
+
+    renderPage('/verify-email?code=AB2-CDE')
+
+    // No payload yet: both fields render, nothing submits, and the page
+    // shows no error about a captcha that has not answered.
+    await waitFor(() => {
+      expect(screen.getAllByTestId('captcha-field')).toHaveLength(2)
+    })
+    expect(mockVerify).not.toHaveBeenCalled()
+    expect(screen.queryByText(/still solving/i)).not.toBeInTheDocument()
+
+    // The widget delivers its payload; the queued code submits itself.
+    setMockCaptchaPayload('turnstile-token')
+    await waitFor(() => {
+      expect(mockVerify).toHaveBeenCalledWith(expect.objectContaining({ verificationToken: 'AB2CDE' }))
+    })
+    expect(await screen.findByTestId('app-home')).toBeInTheDocument()
   })
 
   it('redirects to / after a successful verification', async () => {
@@ -317,7 +330,66 @@ describe('verifyEmailPage', () => {
       expect(mockResend).toHaveBeenCalledOnce()
     })
     expect(await screen.findByTestId('verify-email-resend-status'))
-      .toHaveTextContent(/A fresh code has been sent/)
+      .toHaveTextContent(/sent a fresh code/i)
+  })
+
+  // The resend widget arms only when a resend is LEGAL: mounting it during
+  // the cooldown minted a challenge that typically expired unused (the page
+  // navigates away on verify success), and a reCAPTCHA v3 field re-minted
+  // one every 110 seconds while visible.
+  it('mounts the resend captcha widget only once the countdown ends', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
+    setSystemInfoMock({ captchaEnabled: true, captchaProvider: CaptchaProvider.TURNSTILE, captchaSiteKey: '1x00000000000000000000AA' })
+    // A fixed seed, captured once: a mock that recomputed from Date.now()
+    // would re-seed on every tick and the countdown would never end.
+    mockVerificationResendAvailableAt.mockReturnValue({
+      seconds: BigInt(Math.floor(Date.now() / 1000) + 42),
+      nanos: 0,
+    })
+
+    renderPage('/verify-email')
+
+    // During the cooldown: only the verify widget exists.
+    await waitFor(() => {
+      expect(screen.getAllByTestId('captcha-field').map(el => el.getAttribute('data-action')))
+        .toEqual(['verify_email'])
+    })
+
+    // Past the countdown: the resend widget arms.
+    vi.advanceTimersByTime(43_000)
+    await waitFor(() => {
+      expect(screen.getAllByTestId('captcha-field').map(el => el.getAttribute('data-action')))
+        .toEqual(['verify_email', 'resend_verification'])
+    })
+  })
+
+  // A countdown of 0 while the auth bootstrap has not answered means "not
+  // known yet", not "a resend is legal now": arming the widget on that
+  // reading mints a challenge the arriving seed immediately unmounts -- a
+  // wasted hub challenge per hard reload, exactly the cost the gate exists
+  // to prevent.
+  it('holds the resend widget back until the cooldown seed can be known', async () => {
+    setSystemInfoMock({ captchaEnabled: true, captchaProvider: CaptchaProvider.TURNSTILE, captchaSiteKey: '1x00000000000000000000AA' })
+    setAuthLoading(true)
+    mockVerificationResendAvailableAt.mockReturnValue(undefined)
+
+    renderPage('/verify-email')
+
+    // The bootstrap has not answered: only the verify widget exists, even
+    // though the countdown reads zero.
+    await waitFor(() => {
+      expect(screen.getAllByTestId('captcha-field').map(el => el.getAttribute('data-action')))
+        .toEqual(['verify_email'])
+    })
+
+    // The bootstrap answers with no deadline: a resend is legal now, and
+    // the widget arms.
+    setAuthLoading(false)
+    await waitFor(() => {
+      expect(screen.getAllByTestId('captcha-field').map(el => el.getAttribute('data-action')))
+        .toEqual(['verify_email', 'resend_verification'])
+    })
   })
 
   it('resend reports the partial-failure state when the mail send fails', async () => {
@@ -332,5 +404,31 @@ describe('verifyEmailPage', () => {
     })
     expect(await screen.findByTestId('verify-email-resend-status'))
       .toHaveTextContent(/couldn't send/)
+  })
+
+  // A stale "invalid or expired verification code" must not survive a
+  // resend: beside "We sent a fresh code to your inbox" it reads as though
+  // the new code was rejected too. The control's beforeResend slot is the
+  // wiring that clears it.
+  it('clears the stale code error when a resend succeeds', async () => {
+    mockVerify.mockRejectedValueOnce(new FakeConnectError('not_found', 'invalid or expired verification code'))
+    mockResend.mockResolvedValueOnce({ emailSent: true })
+
+    renderPage('/verify-email')
+
+    const input = await screen.findByTestId('verify-email-code-input') as HTMLInputElement
+    fireEvent.input(input, { target: { value: '7XC-8DZ' } })
+    fireEvent.click(screen.getByTestId('verify-email-submit'))
+    expect(await screen.findByText(/invalid or expired/i)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId('verify-email-resend'))
+    await waitFor(() => {
+      expect(mockResend).toHaveBeenCalledOnce()
+    })
+    await waitFor(() => {
+      expect(screen.queryByText(/invalid or expired/i)).not.toBeInTheDocument()
+    })
+    expect(await screen.findByTestId('verify-email-resend-status'))
+      .toHaveTextContent(/sent a fresh code/i)
   })
 })

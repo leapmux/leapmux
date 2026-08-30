@@ -21,29 +21,29 @@ var _ store.UserStore = (*userStore)(nil)
 
 func fromDBUser(u gendb.User) store.User {
 	return store.User{
-		ID:                       u.ID,
-		Username:                 u.Username,
-		PasswordHash:             u.PasswordHash,
-		DisplayName:              u.DisplayName,
-		Email:                    u.Email,
-		EmailVerified:            u.EmailVerified,
-		PendingEmail:             u.PendingEmail,
-		PendingEmailToken:        u.PendingEmailToken,
-		PendingEmailExpiresAt:    u.PendingEmailExpiresAt.Ptr(),
-		PendingEmailIssuedAt:     u.PendingEmailIssuedAt.Ptr(),
-		PendingEmailAttempts:     int64(u.PendingEmailAttempts),
-		PendingRecoveryToken:     u.PendingRecoveryToken,
-		PendingRecoveryExpiresAt: u.PendingRecoveryExpiresAt.Ptr(),
-		PendingRecoveryIssuedAt:  u.PendingRecoveryIssuedAt.Ptr(),
-		PendingRecoveryAttempts:  int64(u.PendingRecoveryAttempts),
-		PasswordSet:              u.PasswordSet,
-		IsAdmin:                  u.IsAdmin,
-		Prefs:                    u.Prefs,
-		CreatedAt:                u.CreatedAt.Time,
-		UpdatedAt:                u.UpdatedAt.Time,
-		TokensRevokedAt:          u.TokensRevokedAt.Ptr(),
-		AuthGeneration:           u.AuthGeneration,
-		DeletedAt:                u.DeletedAt.Ptr(),
+		ID:                         u.ID,
+		Username:                   u.Username,
+		PasswordHash:               u.PasswordHash,
+		DisplayName:                u.DisplayName,
+		Email:                      u.Email,
+		EmailVerified:              u.EmailVerified,
+		PendingEmail:               u.PendingEmail,
+		PendingEmailToken:          u.PendingEmailToken,
+		PendingEmailExpiresAt:      u.PendingEmailExpiresAt.Ptr(),
+		PendingEmailUnblockedAt:    u.PendingEmailUnblockedAt.Ptr(),
+		PendingEmailAttempts:       int64(u.PendingEmailAttempts),
+		PendingRecoveryToken:       u.PendingRecoveryToken,
+		PendingRecoveryExpiresAt:   u.PendingRecoveryExpiresAt.Ptr(),
+		PendingRecoveryUnblockedAt: u.PendingRecoveryUnblockedAt.Ptr(),
+		PendingRecoveryAttempts:    int64(u.PendingRecoveryAttempts),
+		PasswordSet:                u.PasswordSet,
+		IsAdmin:                    u.IsAdmin,
+		Prefs:                      u.Prefs,
+		CreatedAt:                  u.CreatedAt.Time,
+		UpdatedAt:                  u.UpdatedAt.Time,
+		TokensRevokedAt:            u.TokensRevokedAt.Ptr(),
+		AuthGeneration:             u.AuthGeneration,
+		DeletedAt:                  u.DeletedAt.Ptr(),
 	}
 }
 
@@ -360,13 +360,16 @@ func (s *userStore) UpdatePrefs(ctx context.Context, p store.UpdateUserPrefsPara
 }
 
 func (s *userStore) SetPendingEmail(ctx context.Context, p store.SetPendingEmailParams) (bool, error) {
+	if err := store.ValidatePendingUnblockedAt(p.PendingEmailUnblockedAt); err != nil {
+		return false, err
+	}
 	n, err := rowsAffected(s.conn.q.SetPendingEmail(ctx, gendb.SetPendingEmailParams{
-		PendingEmail:          store.NormalizeEmail(p.PendingEmail),
-		PendingEmailToken:     p.PendingEmailToken,
-		PendingEmailExpiresAt: pgtime.NewNull(p.PendingEmailExpiresAt),
-		PendingEmailIssuedAt:  pgtime.NewNull(p.PendingEmailIssuedAt),
-		ID:                    p.ID,
-		CooldownCutoff:        pgtime.NullOf(p.CooldownCutoff),
+		PendingEmail:            store.NormalizeEmail(p.PendingEmail),
+		PendingEmailToken:       p.PendingEmailToken,
+		PendingEmailExpiresAt:   pgtime.NewNull(p.PendingEmailExpiresAt),
+		PendingEmailUnblockedAt: pgtime.NullOf(p.PendingEmailUnblockedAt),
+		ID:                      p.ID,
+		Now:                     pgtime.NullOf(p.Now),
 	}))
 	if err != nil {
 		return false, err
@@ -376,8 +379,11 @@ func (s *userStore) SetPendingEmail(ctx context.Context, p store.SetPendingEmail
 
 // ClearPendingEmailCode drops an undelivered code and keeps the pending
 // address; see the query comment for why the address must survive.
-func (s *userStore) ClearPendingEmailCode(ctx context.Context, id string) error {
-	return mapErr(s.conn.q.ClearPendingEmailCode(ctx, id))
+func (s *userStore) ClearPendingEmailCode(ctx context.Context, p store.ClearPendingEmailCodeParams) error {
+	return mapErr(s.conn.q.ClearPendingEmailCode(ctx, gendb.ClearPendingEmailCodeParams{
+		UnblockedAt: pgtime.NewNull(store.UnblockedAtPtr(p.UnblockedAt)),
+		ID:          p.ID,
+	}))
 }
 
 // PromotePendingEmail moves pending_email into email (email_verified=TRUE). A
@@ -409,12 +415,15 @@ func (s *userStore) Delete(ctx context.Context, id string) error {
 }
 
 func (s *userStore) SetPendingRecovery(ctx context.Context, p store.SetPendingRecoveryParams) (bool, error) {
+	if err := store.ValidatePendingUnblockedAt(p.PendingRecoveryUnblockedAt); err != nil {
+		return false, err
+	}
 	n, err := rowsAffected(s.conn.q.SetPendingRecovery(ctx, gendb.SetPendingRecoveryParams{
-		PendingRecoveryToken:     p.PendingRecoveryToken,
-		PendingRecoveryExpiresAt: pgtime.NullOf(p.PendingRecoveryExpiresAt),
-		PendingRecoveryIssuedAt:  pgtime.NewNull(p.PendingRecoveryIssuedAt),
-		CooldownCutoff:           pgtime.NullOf(p.CooldownCutoff),
-		ID:                       p.ID,
+		PendingRecoveryToken:       p.PendingRecoveryToken,
+		PendingRecoveryExpiresAt:   pgtime.NullOf(p.PendingRecoveryExpiresAt),
+		PendingRecoveryUnblockedAt: pgtime.NullOf(p.PendingRecoveryUnblockedAt),
+		Now:                        pgtime.NullOf(p.Now),
+		ID:                         p.ID,
 	}))
 	if err != nil {
 		return false, err
@@ -422,8 +431,11 @@ func (s *userStore) SetPendingRecovery(ctx context.Context, p store.SetPendingRe
 	return n > 0, nil
 }
 
-func (s *userStore) ClearPendingRecovery(ctx context.Context, id string) error {
-	return mapErr(s.conn.q.ClearPendingRecovery(ctx, id))
+func (s *userStore) ClearPendingRecovery(ctx context.Context, p store.ClearPendingRecoveryParams) error {
+	return mapErr(s.conn.q.ClearPendingRecovery(ctx, gendb.ClearPendingRecoveryParams{
+		UnblockedAt: pgtime.NewNull(store.UnblockedAtPtr(p.UnblockedAt)),
+		ID:          p.ID,
+	}))
 }
 
 func (s *userStore) ConsumeRecoveryAttemptByToken(ctx context.Context, tokenHash string, now time.Time, maxAttempts int64) (*store.User, error) {
@@ -451,15 +463,7 @@ func (s *userStore) CompleteRecovery(ctx context.Context, p store.CompleteRecove
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	revokedAt, err := sqlutil.RequireTime(row.TokensRevokedAt.Time, row.TokensRevokedAt.Valid, "tokens_revoked_at")
-	if err != nil {
-		return nil, err
-	}
-	return &store.RecoveryRevocation{
-		UserID:          row.ID,
-		TokensRevokedAt: revokedAt,
-		AuthGeneration:  row.AuthGeneration,
-	}, nil
+	return &store.RecoveryRevocation{AuthGeneration: row.AuthGeneration}, nil
 }
 
 func (s *userStore) RevokeUserTokens(ctx context.Context, userID userid.UserID) (int64, error) {

@@ -31,7 +31,9 @@ LeapMux tracks one presence fact per workspace: which client is **active** — t
 
 You don't choose the active client — it follows whichever client you last used or brought to the front. To keep a particular client quiet regardless, set **Turn-end sound** to **None** in its **Preferences** dialog (see [Settings & Preferences](/docs/using/settings/)). The sound is also skipped for trivial single-exchange turns and plays at most once per minute.
 
-> **Note:** All tabs and windows of one browser profile count as a **single** client, because they share one login session — so they never compete for the turn-end sound among themselves. A separate browser, another device, or an authorized app is a distinct client.
+{{< callout type="info" >}}
+All tabs and windows of one browser profile count as a **single** client, because they share one login session — so they never compete for the turn-end sound among themselves. A separate browser, another device, or an authorized app is a distinct client.
+{{< /callout >}}
 
 There are no other presence features — no avatars, "who's viewing" badges, remote cursors, or typing indicators.
 

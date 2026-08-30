@@ -357,6 +357,7 @@ describe('generate', () => {
   it('emits the shipped domains from the real contracts dir', () => {
     const files = generate(join(ROOT, 'contracts'), DESCRIPTOR)
     expect(Object.keys(files).sort()).toEqual([
+      'backend/generated/contracts/captcha.go',
       'backend/generated/contracts/desktop.go',
       'backend/generated/contracts/headers.go',
       'backend/generated/contracts/providers.go',
@@ -367,6 +368,7 @@ describe('generate', () => {
       'backend/generated/contracts/wire.go',
       'backend/generated/contracts/worker-vocab.go',
       'desktop/rust/src/generated/contracts.rs',
+      'frontend/src/generated/contracts/captcha.ts',
       'frontend/src/generated/contracts/desktop.ts',
       'frontend/src/generated/contracts/headers.ts',
       'frontend/src/generated/contracts/providers.ts',

@@ -213,6 +213,60 @@ type QueueBudgetValue struct {
 	UserEventsBytes int64 `json:"userevents_bytes"`
 }
 
+// MailLimitsValue caps outbound-mail abuse; see KeyMailLimits. The fields
+// carry no omitempty: zero is the stored, meaningful value "no block" /
+// "unlimited", and omitempty would drop it from the stored document so the
+// next decode merged the non-zero default back over it.
+type MailLimitsValue struct {
+	FailureCooldownSeconds int64 `json:"failure_cooldown_seconds"`
+	RecipientMax           int64 `json:"recipient_max"`
+	RecipientWindowSeconds int64 `json:"recipient_window_seconds"`
+}
+
+// DefaultMailLimits sizes both knobs far above every legitimate flow -- a
+// person verifying an address costs two or three mails in a minute -- and
+// far below what a loop costs: a failed-send retry storm gets one attempt
+// per ten seconds, and one inbox gets ten mails per hour no matter how
+// many accounts sent them.
+var DefaultMailLimits = MailLimitsValue{
+	FailureCooldownSeconds: 10,
+	RecipientMax:           10,
+	RecipientWindowSeconds: 3600,
+}
+
+// validateMailLimits keeps the cooldown at or under the resend cooldown it
+// backs (60s): a longer window would leave one failed send blocking an
+// account's mail longer than a successful send does, and the stamp
+// derivation (failedSendBlockedUntil, service/resend_cooldown.go) clamps to
+// the same bound as a second guard. The recipient window stays inside a
+// day: a window longer than that stops being a rate limit and starts being
+// a denial of service to a legitimate address.
+func validateMailLimits(v MailLimitsValue) error {
+	if v.FailureCooldownSeconds < 0 || v.FailureCooldownSeconds > 60 {
+		return fmt.Errorf("failure cooldown must be between 0 and 60 seconds (got %d)", v.FailureCooldownSeconds)
+	}
+	if v.RecipientMax < 0 || v.RecipientMax > 1000 {
+		return fmt.Errorf("per-recipient max must be between 0 and 1000 (got %d)", v.RecipientMax)
+	}
+	if v.RecipientWindowSeconds < 60 || v.RecipientWindowSeconds > 86400 {
+		return fmt.Errorf("per-recipient window must be between 60 and 86400 seconds (got %d)", v.RecipientWindowSeconds)
+	}
+	return nil
+}
+
+// EmailFailureCooldown reads mail_limits.failure_cooldown_seconds as a
+// time.Duration. Zero means a failed send blocks nothing.
+func EmailFailureCooldown(s *Snapshot) time.Duration {
+	return time.Duration(KeyMailLimits.Of(s).FailureCooldownSeconds) * time.Second
+}
+
+// MailRecipientBudget reads the per-recipient mail budget: most mails one
+// recipient address may receive per window. A max of zero means no budget.
+func MailRecipientBudget(s *Snapshot) (max int64, window time.Duration) {
+	v := KeyMailLimits.Of(s)
+	return v.RecipientMax, time.Duration(v.RecipientWindowSeconds) * time.Second
+}
+
 // DefaultMaxMessageSizeBytes is the default application payload budget;
 // channelwire owns the number and channelwire.ResolveMaxMessageSize stays
 // the one resolver.
@@ -545,6 +599,31 @@ var (
 					Min:  ptrconv.Ptr[int64](0), Max: ptrconv.Ptr[int64](config.MaxQueueMemoryBudget)},
 			},
 		}).Restart()
+
+	// MailLimitsValue caps the abuse surfaces of outbound mail. Two knobs,
+	// one row: the cooldown a FAILED send leaves behind, and the
+	// per-recipient budget that stops one inbox being bombed through many
+	// accounts. The mint cooldown (60s, per account) already caps
+	// successful sends; these close the paths it cannot see.
+	KeyMailLimits = NewKey[MailLimitsValue]("mail_limits").
+			WithDefault(DefaultMailLimits).
+			WithValidate(validateMailLimits).
+			WithUI(UIMeta{
+			Category:     "rate-limits",
+			Title:        "Mail limits",
+			Summary:      "failed-send cooldown and per-recipient mail budget",
+			HiddenInSolo: true,
+			Fields: []Field{
+				{Name: "failure_cooldown_seconds", Label: "Failed-send cooldown", Kind: FieldInt,
+					Help: "how long a failed send blocks the next verification or recovery mail (0 = no block; at most the 60s resend cooldown).",
+					Min:  ptrconv.Ptr[int64](0), Max: ptrconv.Ptr[int64](60), Unit: "seconds"},
+				{Name: "recipient_max", Label: "Per-recipient max", Kind: FieldInt,
+					Help: "most mails one recipient address gets per window (0 = unlimited).",
+					Min:  ptrconv.Ptr[int64](0), Max: ptrconv.Ptr[int64](1000), Unit: "count"},
+				{Name: "recipient_window_seconds", Label: "Per-recipient window", Kind: FieldInt,
+					Min: ptrconv.Ptr[int64](60), Max: ptrconv.Ptr[int64](86400), Unit: "seconds"},
+			},
+		})
 )
 
 // CoreDescriptors lists the hub-core keys for manager registration.
@@ -562,6 +641,7 @@ func CoreDescriptors() []Descriptor {
 		KeySMTP,
 		KeyTimeouts,
 		KeyLimits,
+		KeyMailLimits,
 		KeyMaxMessageSizeBytes,
 		KeyQueueBudget,
 	}
@@ -598,7 +678,7 @@ func SignupEnabledEffective(s *Snapshot, devMode bool) bool {
 // use. All three spellings resolve that way -- ":4327", "0.0.0.0:4327" and
 // "[::]:4327". Only ":4327" did before, and the other two produced
 // "http://0.0.0.0:4327": an address no browser can open, printed into every
-// verification and password-reset mail, into the device-code
+// verification and account-recovery mail, into the device-code
 // verification_uri the CLI displays, and registered as the OAuth
 // redirect_uri. It is the same assumption the rest of the hub already makes
 // for a wildcard bind -- webauthn.servesLoopback accepts one as a loopback

@@ -14,7 +14,7 @@ import (
 //
 // It sat in auth_passkey.go, whose name covers none of it: a reader looking
 // for why a login answers "verify your email" had to find it inside a file
-// about passkeys. These functions and password reset share one resend
+// about passkeys. These functions and account recovery share one resend
 // cooldown -- see resend_cooldown.go.
 
 // verificationOutcome carries the verification flags every login and
@@ -78,10 +78,10 @@ func (s *AuthService) emailVerificationSatisfied(ctx context.Context, user *stor
 // the reported deadline and the enforced one drift apart, and the user
 // would watch a timer reach zero on a button that still refuses.
 func (s *AuthService) pendingResendCooldown(user *store.User) *time.Time {
-	if user.PendingEmail == "" || user.PendingEmailIssuedAt == nil {
+	if user.PendingEmail == "" || user.PendingEmailUnblockedAt == nil {
 		return nil
 	}
-	next := nextResendAt(*user.PendingEmailIssuedAt)
+	next := *user.PendingEmailUnblockedAt
 	if !s.now().UTC().Before(next) {
 		return nil
 	}
@@ -114,16 +114,14 @@ func (s *AuthService) loginVerificationOutcome(ctx context.Context, user *store.
 		out.NextResendAvailableAt = next
 		return out
 	}
-	sent, err := issuePendingEmailVerification(ctx, s.store, s.mail, s.renderer, user.ID, user.PendingEmail, s.now())
+	sent, next, err := issuePendingEmailVerification(ctx, s.store, s.mail, s.renderer, user.ID, user.PendingEmail, s.now,
+		mailFailureCooldown(ctx, s.set))
 	if err != nil {
 		slogWarnVerification(ctx, "resend verification on login", user.ID, err)
 		return out
 	}
 	out.EmailSent = sent
-	if sent {
-		next := nextResendAt(s.now().UTC())
-		out.NextResendAvailableAt = &next
-	}
+	out.NextResendAvailableAt = next
 	return out
 }
 
@@ -131,13 +129,10 @@ func (s *AuthService) ensurePendingVerification(ctx context.Context, userID, ema
 	if err := CheckEmailAvailable(ctx, s.store, email, userID); err != nil {
 		return false, nil, err
 	}
-	sent, err = issuePendingEmailVerification(ctx, s.store, s.mail, s.renderer, userID, email, s.now())
+	sent, nextResend, err = issuePendingEmailVerification(ctx, s.store, s.mail, s.renderer, userID, email, s.now,
+		mailFailureCooldown(ctx, s.set))
 	if err != nil {
 		return false, nil, err
-	}
-	if sent {
-		next := nextResendAt(s.now().UTC())
-		nextResend = &next
 	}
 	return sent, nextResend, nil
 }

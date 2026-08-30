@@ -35,9 +35,13 @@ The dialog is titled **New workspace** and contains these fields:
 
 Click **Create** to confirm. Creating a workspace starts its first agent automatically, then opens the new workspace.
 
-> **Note:** Workspace titles are checked and tidied server-side. If a title cannot be used, the dialog shows the reason inline.
+{{< callout type="info" >}}
+Workspace titles are checked and tidied server-side. If a title cannot be used, the dialog shows the reason inline.
+{{< /callout >}}
 
-> **Tip:** If anything fails after the workspace row is created — for example the agent cannot start — LeapMux rolls the creation back automatically, so you are not left with an empty workspace.
+{{< callout >}}
+If anything fails after the workspace row is created — for example the agent cannot start — LeapMux rolls the creation back automatically, so you are not left with an empty workspace.
+{{< /callout >}}
 
 ## The sidebar workspace tree
 
@@ -54,7 +58,9 @@ All workspace sections except **Archived** are expanded by default; click a sect
 
 In addition to the default sections, your sidebar can hold **custom sections** that you use to group workspaces. A custom section behaves like **In progress**: it is expanded by default, it carries a **+** button to create a workspace directly in it, and it is a valid drag target and a **Move to** target (see [Moving and archiving](#moving-and-archiving) below). Each section is per-user, so creating, renaming, or deleting a section changes only *your* sidebar.
 
-> **Note:** The current UI provides no way to **create**, **rename**, or **delete** custom sections, so the only sections you will see are the two defaults.
+{{< callout type="info" >}}
+The current UI provides no way to **create**, **rename**, or **delete** custom sections, so the only sections you will see are the two defaults.
+{{< /callout >}}
 
 ### Workspace rows
 
@@ -72,7 +78,9 @@ Row interactions:
 - **Click the chevron** to expand the tab tree.
 - Drag a workspace to **reorder** it or **move** it between sections. Dragging into **Archived** routes through the archive confirmation.
 
-> **Note:** Expanded/collapsed state is remembered between page reloads, so the tree comes back the way you left it.
+{{< callout type="info" >}}
+Expanded/collapsed state is remembered between page reloads, so the tree comes back the way you left it.
+{{< /callout >}}
 
 ### The per-workspace tab tree
 
@@ -119,11 +127,13 @@ To delete a workspace, open the workspace context menu and choose **Delete** (sh
 > **Delete workspace**
 > Are you sure you want to delete this workspace? This cannot be undone.
 
-On confirm, the workspace is deleted and everything it held is cleaned up. Its agents and terminals are stopped. A worktree no other workspace references is reclaimed shortly afterwards by the Worker's housekeeping pass. A worktree with uncommitted changes or unpushed commits is left on disk for you.
+On confirm, the workspace is deleted and everything it held is cleaned up. Its agents and terminals are stopped. A worktree that no other workspace points at is reclaimed shortly afterwards by the Worker's housekeeping pass. A worktree with uncommitted changes or unpushed commits is left on disk for you.
 
 A Worker that is unreachable at that moment catches up the next time it connects. If the deleted workspace was the active one, LeapMux switches you to your first non-archived workspace (or shows the empty "Create a new workspace…" state if none remain). If deletion fails, the workspace is left in place.
 
-> **Warning:** Deletion is final from your point of view — there is no undelete in the UI.
+{{< callout type="warning" >}}
+Deletion is final from your point of view — there is no undelete in the UI.
+{{< /callout >}}
 
 ## Switching workspaces
 

@@ -200,6 +200,30 @@ func TestValidateQueueBudgetPerClassFloor(t *testing.T) {
 	require.ErrorContains(t, validateQueueBudget(QueueBudgetValue{RelayBytes: config.MaxQueueMemoryBudget + 1}), "ceiling")
 }
 
+// TestValidateMailLimitsBounds pins the knobs' bounds. The cooldown's
+// ceiling is the resend cooldown it backs (60s): a longer window would
+// leave one failed send blocking an account's mail longer than a
+// successful send does, and failedSendBlockedUntil (service layer) clamps to
+// the same bound as a second guard.
+func TestValidateMailLimitsBounds(t *testing.T) {
+	assert.NoError(t, validateMailLimits(DefaultMailLimits), "the shipped defaults must validate")
+	assert.NoError(t, validateMailLimits(MailLimitsValue{RecipientWindowSeconds: 3600}),
+		"zero cooldown and zero recipient max are the stored meanings of 'block nothing' and 'unlimited'; the window stays a real number because an omitted field merges the default back at decode")
+
+	for name, v := range map[string]MailLimitsValue{
+		"cooldown over the resend cooldown": {FailureCooldownSeconds: 61},
+		"cooldown negative":                 {FailureCooldownSeconds: -1},
+		"recipient max too high":            {RecipientMax: 1001},
+		"recipient max negative":            {RecipientMax: -1},
+		"window under a minute":             {RecipientWindowSeconds: 59},
+		"window over a day":                 {RecipientWindowSeconds: 86401},
+	} {
+		assert.Error(t, validateMailLimits(v), "%s must be refused", name)
+	}
+	assert.NoError(t, validateMailLimits(MailLimitsValue{FailureCooldownSeconds: 60, RecipientWindowSeconds: 60}),
+		"a cooldown of exactly the resend cooldown is the most blockade a failed send may leave")
+}
+
 // TestQueueBudgetDefaultMarshalsZeros pins that 0 (auto-size) survives
 // JSON encoding. omitempty would drop it and the preferences dialog
 // would render an empty number field instead of 0.

@@ -1,6 +1,7 @@
 import type { Component } from 'solid-js'
-import { Match, Show, Switch } from 'solid-js'
+import type { CaptchaAction } from '~/generated/contracts/captcha'
 
+import { Match, Show, Switch } from 'solid-js'
 import { CaptchaProvider } from '~/generated/proto/leapmux/v1/auth_pb'
 import { getCaptchaProvider } from '~/lib/systemInfo'
 import { AltchaField } from './AltchaField'
@@ -14,14 +15,14 @@ export interface CaptchaFieldHandle {
 }
 
 // CaptchaFieldProps is exported for CaptchaSection, which types its action
-// prop with the same union the hub's protectedProcedures map carries.
+// prop with the generated union the hub's protectedProcedures map carries
+// (both come from contracts/captcha.json).
 export interface CaptchaFieldProps {
   /**
-   * The action the token is minted under: 'login', 'signup', or
-   * 'complete_signup'. External providers bind it into the token and the
-   * hub refuses mismatches; ALTCHA ignores it.
+   * The action the token is minted under. External providers bind it into
+   * the token and the hub refuses mismatches; ALTCHA ignores it.
    */
-  action: 'login' | 'signup' | 'complete_signup' | 'passkey_login' | 'passkey_signup' | 'account_recovery' | 'complete_account_recovery' | 'verify_email' | 'resend_verification'
+  action: CaptchaAction
   /** Receives the provider token once solved, null otherwise. */
   onPayload: (payload: string | null) => void
   /**

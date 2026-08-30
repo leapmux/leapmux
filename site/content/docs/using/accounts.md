@@ -21,7 +21,9 @@ LeapMux runs in several modes (see [Running LeapMux](/docs/admin/running-leapmux
 
 In **solo mode** there is nothing to sign up for and nothing to sign out of. If you navigate to `/login` or `/signup`, LeapMux redirects you straight into the app. Solo mode intentionally disables account-related actions: it refuses a change to your profile, your email, or your password, and it refuses to unlink an OAuth provider. Each refusal identifies the action that solo mode does not support.
 
-> **Note:** Solo mode auto-authenticates *every* request as the admin. If you bind it to a non-loopback address, anyone who can reach the port has full admin access without credentials. LeapMux warns you about this at startup. For a shared or networked deployment, run `leapmux hub` (or `leapmux dev`) so real authentication applies. See [Security & Threat Model](/docs/admin/security/).
+{{< callout type="info" >}}
+Solo mode auto-authenticates *every* request as the admin. If you bind it to a non-loopback address, anyone who can reach the port has full admin access without credentials. LeapMux warns you about this at startup. For a shared or networked deployment, run `leapmux hub` (or `leapmux dev`) so real authentication applies. See [Security & Threat Model](/docs/admin/security/).
+{{< /callout >}}
 
 The rest of this chapter applies to **hub** and **dev** mode, where accounts are real.
 
@@ -47,7 +49,9 @@ This first account differs in three ways:
 - Its email is **unverified**, like every other new address. That never blocks you, because administrators are exempt from the verification gate. It does mean [account recovery](#recovering-your-account) will not send a link to that address, so verify it from **Preferences → Account** once you configure SMTP. See [Email verification](#email-verification).
 - The username `admin` is **allowed** here (it is reserved in public signup and OAuth completion). The username `solo` is reserved everywhere and cannot be used.
 
-> **Note:** The `/setup` screen only appears while no users exist. Once the first admin is created, visiting `/setup` redirects you to the login page. Setup is also race-safe: if two people submit at once, only one wins and the other is told sign-up is disabled.
+{{< callout type="info" >}}
+The `/setup` screen only appears while no users exist. Once the first admin is created, visiting `/setup` redirects you to the login page. Setup is also race-safe: if two people submit at once, only one wins and the other is told sign-up is disabled.
+{{< /callout >}}
 
 ## Signing up
 
@@ -76,7 +80,9 @@ What happens after you submit depends on whether the hub has SMTP configured (se
 - **SMTP not configured:** you are signed in immediately and taken to `/`. Your email is stored as unverified in the database; the runtime requirement stays off until SMTP is configured.
 - **SMTP configured:** LeapMux sends a verification email and routes you to the email-verification screen. Signup is **fail-closed**: if the verification email cannot be sent, the account is not created and you see an error (retry when mail works).
 
-> **Note:** The username `solo` is rejected in all signup paths, and `admin` is additionally reserved for public signup and OAuth completion (it is allowed only in `/setup`). Self-service signups are never administrators.
+{{< callout type="info" >}}
+The username `solo` is rejected in all signup paths, and `admin` is additionally reserved for public signup and OAuth completion (it is allowed only in `/setup`). Self-service signups are never administrators.
+{{< /callout >}}
 
 ## Signing in
 
@@ -96,7 +102,9 @@ Click **Sign in** or **Sign in with passkey**. The button stays disabled until t
 - If OAuth providers are configured, their buttons appear above the form under the verb **"Sign in with"** with an **"or"** divider.
 - If you were redirected to login from a protected page, you are sent back there after signing in (LeapMux only honors a same-site relative path, as an open-redirect safeguard).
 
-> **Note:** Both an unknown username and a wrong password produce the same error, and it says only that the credentials are invalid. This is deliberate — it prevents anyone from probing which usernames exist.
+{{< callout type="info" >}}
+Both an unknown username and a wrong password produce the same error, and it says only that the credentials are invalid. This is deliberate — it prevents anyone from probing which usernames exist.
+{{< /callout >}}
 
 ## Email verification
 
@@ -115,7 +123,7 @@ You reach the **"Verify your email"** screen automatically right after signing u
 - A separate **Resend code** button requests a new code.
 - Each verification and each resend passes the hub's captcha challenge when one is configured, like the sign-in forms do.
 
-The verification email arrives with the subject **"[LeapMux] Verify your email address"** and contains both the code and a direct link. Clicking the link opens the verification screen with the code pre-filled and submits it automatically.
+The verification email arrives with the subject **"[LeapMux] Verify your email address"** and contains both the code and a direct link. Clicking the link opens the verification screen with the code pre-filled and submits it as soon as the captcha allows: by itself when the hub runs no captcha or the provider solves without a click, and right after you solve the challenge when it needs one.
 
 On success you are signed in fully and taken to `/`.
 
@@ -126,14 +134,18 @@ On success you are signed in fully and taken to `/`.
 | Code length / format | 6 characters, shown as `XXX-XXX` |
 | Code lifetime | **30 minutes** |
 | Wrong-guess budget | **5 attempts** — the 6th wrong guess invalidates the code, and you must request a new one |
-| Resend cooldown | **60 seconds** between requests — invalidating a code by guessing wrong does **not** shorten it |
+| Resend cooldown | **60 seconds** between requests — invalidating a code by guessing wrong does **not** shorten it, and a **failed** send blocks the retry for only the failed-send window (**10 seconds** by default) |
 | Captcha | Required on every verify and resend when the hub has captcha enabled |
 
 The code alphabet deliberately omits look-alike characters (no `0`, `1`, `I`, `O`, or `L`), so what you read in the email is what you type. An expired code and a wrong code report the same generic error so neither leaks information.
 
-> **Tip:** If you wait too long and your code expires, press **Resend code** to get a fresh one. The screen confirms that a fresh code went to your inbox.
+{{< callout >}}
+If you wait too long and your code expires, press **Resend code** to get a fresh one. The screen confirms that a fresh code went to your inbox.
+{{< /callout >}}
 
-> **Warning:** While verification applies and you are an unverified non-admin user, you can only view your own account, sign out, change/verify your email, and resend the code. LeapMux refuses every other action until you verify. Administrators are exempt.
+{{< callout type="warning" >}}
+While verification applies and you are an unverified non-admin user, you can only view your own account, sign out, change/verify your email, and resend the code. LeapMux refuses every other action until you verify. Administrators are exempt.
+{{< /callout >}}
 
 ## Passkeys
 
@@ -164,11 +176,17 @@ Open **Preferences → Account** — it is the first section, and the one the di
 
 Every action above is sensitive: the first one in a sitting opens the **Verify your identity** dialog, and one answer covers every further sensitive change for a while. What counts as sensitive, how long the answer lasts, and what you can prove it with are covered once, in [Session elevation](/docs/admin/security/#session-elevation).
 
-> **Note:** Passkeys appear only where they can run: the page must be secure (HTTPS or `localhost`), and it must reach the Hub by an address the Hub publishes. When either is missing, the **Passkey** option is disabled with the reason on it — or removed outright — and **Add passkey** carries the reason. See [Passkeys](/docs/admin/configuration/#passkeys) in the administration chapter for the rule and its remedies, or [Passkey sign-in fails or the authenticator never appears](/docs/reference/troubleshooting/#passkey-sign-in-fails-or-the-authenticator-never-appears) for diagnosis.
+{{< callout type="info" >}}
+Passkeys appear only where they can run: the page must be secure (HTTPS or `localhost`), and it must reach the Hub by an address the Hub publishes. When either is missing, the **Passkey** option is disabled with the reason on it — or removed outright — and **Add passkey** carries the reason. See [Passkeys](/docs/admin/configuration/#passkeys) in the administration chapter for the rule and its remedies, or [Passkey sign-in fails or the authenticator never appears](/docs/reference/troubleshooting/#passkey-sign-in-fails-or-the-authenticator-never-appears) for diagnosis.
+{{< /callout >}}
 
-> **Note:** An account with **neither a password nor a passkey** follows stricter rules for adding its **first** one — see [The account with nothing to prove](/docs/admin/security/#the-account-with-nothing-to-prove).
+{{< callout type="info" >}}
+An account with **neither a password nor a passkey** follows stricter rules for adding its **first** one — see [The account with nothing to prove](/docs/admin/security/#the-account-with-nothing-to-prove).
+{{< /callout >}}
 
-> **Tip:** A passkey lost with its device does not lock the account out — see [Recovering your account](#recovering-your-account).
+{{< callout >}}
+A passkey lost with its device does not lock the account out — see [Recovering your account](#recovering-your-account).
+{{< /callout >}}
 
 ## Signing in with OAuth / OIDC
 
@@ -188,7 +206,9 @@ What happens at step 3 depends on whether the identity is already known:
 - **Not linked, but the verified email matches an existing account** → LeapMux may link the identity automatically and log you in. This only happens when the administrator marked that provider as one that trusts emails.
 - **A brand-new identity** → if self-service signup is enabled, you are taken to a short completion page; otherwise sign-in is refused because there is no account to attach the identity to.
 
-> **Note:** OAuth sign-in requires the provider to return a **verified** email address. If a provider does not return an email — typically because the "email" scope was not granted — LeapMux cannot complete the sign-in.
+{{< callout type="info" >}}
+OAuth sign-in requires the provider to return a **verified** email address. If a provider does not return an email — typically because the "email" scope was not granted — LeapMux cannot complete the sign-in.
+{{< /callout >}}
 
 ### Completing an OAuth signup
 
@@ -308,7 +328,9 @@ See [Connected Apps](/docs/using/connected-apps/) for how to read a row and what
 - Unlinking needs a **verified session**, like the other changes in this dialog — see [Session elevation](/docs/admin/security/#session-elevation).
 - LeapMux refuses to unlink your **only** login method when you have no password — set a password first. This keeps you from locking yourself out.
 
-> **Tip:** If you signed up via OAuth and want a fallback, set a password under **Password** before unlinking any provider.
+{{< callout >}}
+If you signed up via OAuth and want a fallback, set a password under **Password** before unlinking any provider.
+{{< /callout >}}
 
 ## Where to go next
 

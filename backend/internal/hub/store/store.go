@@ -139,11 +139,16 @@ type UserStore interface {
 	ClearPendingEmail(ctx context.Context, id string) error
 	// ClearPendingEmailCode drops an undelivered code and keeps the
 	// pending address, so a failed send does not lose the only record of
-	// what the account verifies.
-	ClearPendingEmailCode(ctx context.Context, id string) error
+	// what the account verifies. UnblockedAt is the failure-window deadline
+	// instant the clear leaves behind: the mint gate and the reported
+	// countdown then agree that one more short window (the failure
+	// cooldown) must pass before the retry a failed send invites.
+	ClearPendingEmailCode(ctx context.Context, p ClearPendingEmailCodeParams) error
 	ClearCompetingPendingEmails(ctx context.Context, p ClearCompetingPendingEmailsParams) error
 	SetPendingRecovery(ctx context.Context, p SetPendingRecoveryParams) (bool, error)
-	ClearPendingRecovery(ctx context.Context, id string) error
+	// ClearPendingRecovery clears an uncompleted recovery link; see
+	// ClearPendingEmailCode for the stamp's meaning.
+	ClearPendingRecovery(ctx context.Context, p ClearPendingRecoveryParams) error
 	ConsumeRecoveryAttemptByToken(ctx context.Context, tokenHash string, now time.Time, maxAttempts int64) (*User, error)
 	CompleteRecovery(ctx context.Context, p CompleteRecoveryParams) (*RecoveryRevocation, error)
 	// Delete soft-deletes the user.

@@ -1,5 +1,5 @@
-import { join } from 'node:path'
 import { expect, test } from './fixtures'
+import { solveCaptchaViaAPI } from './helpers/altcha'
 import {
   authedHeaders,
   listPasskeysViaAPI,
@@ -8,12 +8,9 @@ import {
   verifyEmailViaAPI,
 } from './helpers/api'
 import { extractAccountRecoveryToken, withCaptureSmtp } from './helpers/mail'
+import { hubDataDir } from './helpers/server'
 import { loginViaToken, loginViaUI, logoutViaUI, solveCaptchaViaUI } from './helpers/ui'
 import { enableVirtualAuthenticator, loginWithPasskeyViaAPIInBrowser, signUpWithPasskeyViaAPIInBrowser } from './helpers/webauthn'
-
-function hubDataDir(dataDir: string): string {
-  return join(dataDir, 'hub')
-}
 
 test.describe('Account recovery', () => {
   test('account recovery flow clears passkeys on completion', async ({ page, leapmuxServer }) => {
@@ -63,10 +60,7 @@ test.describe('Account recovery', () => {
         body: '{}',
       })
 
-      const captcha = await (async () => {
-        const { solveCaptchaViaAPI } = await import('./helpers/altcha')
-        return solveCaptchaViaAPI(leapmuxServer.hubUrl)
-      })()
+      const captcha = await solveCaptchaViaAPI(leapmuxServer.hubUrl)
       const passkeyBegin = await fetch(`${leapmuxServer.hubUrl}/leapmux.v1.AuthService/BeginPasskeyLogin`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

@@ -12,7 +12,9 @@ This chapter is for administrators who run a LeapMux **Hub** and want to offer s
 
 If you only want to know what the sign-in experience looks like as an end user (the "Sign in with…" buttons, completing a first OAuth sign-up, linking and unlinking accounts), see [Accounts & Authentication](/docs/using/accounts/). This chapter stays on the administrator side: how providers are defined, how callback URLs are derived, and how to troubleshoot setup.
 
-> **Note:** OAuth providers only apply to **Hub** deployments (`leapmux hub`, and `leapmux dev`). In **solo mode** every request is auto-authenticated as the local admin, so there is no login screen and providers do nothing. See [Running LeapMux](/docs/admin/running-leapmux/) for the difference between run modes.
+{{< callout type="info" >}}
+OAuth providers only apply to **Hub** deployments (`leapmux hub`, and `leapmux dev`). In **solo mode** every request is auto-authenticated as the local admin, so there is no login screen and providers do nothing. See [Running LeapMux](/docs/admin/running-leapmux/) for the difference between run modes.
+{{< /callout >}}
 
 ## What you can configure
 
@@ -31,7 +33,9 @@ GitHub uses plain OAuth2, not OpenID Connect, so it has no issuer URL or discove
 
 You configure every provider with the `leapmux control admin idp` command group. Each verb is an RPC call to a **running** Hub: the CLI sends your control credential, and the Hub writes its own database and encrypts the client secret with its own key file. There is **no UI** for adding providers — it is an administrative task. For the full command surface, see [`admin` — hub administration over RPC](/docs/admin/admin-cli/).
 
-> **Note:** These commands take no `--data-dir` and no `--config`; the flags do not exist, and the CLI refuses them. Run the commands from any machine, and select the Hub with `--hub <url>` or the `LEAPMUX_HUB` environment variable.
+{{< callout type="info" >}}
+These commands take no `--data-dir` and no `--config`; the flags do not exist, and the CLI refuses them. Run the commands from any machine, and select the Hub with `--hub <url>` or the `LEAPMUX_HUB` environment variable.
+{{< /callout >}}
 
 Authorize the CLI first with `leapmux control auth login --hub <url>`, and use an administrator account: the Hub answers `permission_denied` for every other caller. A `leapmux dev` instance is a separate Hub, so point `--hub` at its own address. See [Authentication](/docs/using/control-cli/#authentication) for the credential rules.
 
@@ -90,7 +94,9 @@ If you omit `--name`, `--issuer-url`, `--scopes`, or `--trust-email`, these defa
 | `apple` | `Apple` | `https://appleid.apple.com` | `openid name email` | `true` |
 | `oidc` | (none — must pass `--name`) | (none — must pass `--issuer-url`) | `openid profile email` | (none — must pass `--trust-email`) |
 
-> **Note:** OAuth sign-in **requires** a verified email from the provider — LeapMux refuses an identity that returns no email. Keep an email scope in your scope list (`user:email` for GitHub, `email`/`openid` for OIDC). If you remove it, sign-in fails because the provider returns no email address.
+{{< callout type="info" >}}
+OAuth sign-in **requires** a verified email from the provider — LeapMux refuses an identity that returns no email. Keep an email scope in your scope list (`user:email` for GitHub, `email`/`openid` for OIDC). If you remove it, sign-in fails because the provider returns no email address.
+{{< /callout >}}
 
 ### What happens when you add a provider
 
@@ -100,7 +106,9 @@ If you omit `--name`, `--issuer-url`, `--scopes`, or `--trust-email`, these defa
 4. The provider is created **enabled** and assigned a generated ID.
 5. The command prints the control JSON envelope: `data` holds the created provider, including its generated `id` and its `type`.
 
-> **Important:** Note the `id` in the reply. You need it to build the exact callback URL to register with your provider, and to `enable`/`disable`/`remove` the provider later.
+{{< callout type="important" >}}
+Note the `id` in the reply. You need it to build the exact callback URL to register with your provider, and to `enable`/`disable`/`remove` the provider later.
+{{< /callout >}}
 
 ### Examples
 
@@ -136,7 +144,9 @@ leapmux control admin idp add \
   --trust-email=true
 ```
 
-> **Tip:** If you are not sure which flags a preset requires or what the exact help text is, run `leapmux control admin idp add --help`.
+{{< callout >}}
+If you are not sure which flags a preset requires or what the exact help text is, run `leapmux control admin idp add --help`.
+{{< /callout >}}
 
 ## Callback and login URLs
 
@@ -172,9 +182,13 @@ If your Hub's public address is `https://hub.example.com`, set `public_url` acco
 https://hub.example.com/auth/idp/prov_abc123/callback
 ```
 
-> **Warning:** `public_url` must be a bare absolute origin — scheme + host (+ port), with **no path, query, or fragment**. Sub-path deployments such as `https://example.com/leapmux` are rejected. Front LeapMux at the root of a hostname (or subdomain), not under a path prefix.
+{{< callout type="warning" >}}
+`public_url` must be a bare absolute origin — scheme + host (+ port), with **no path, query, or fragment**. Sub-path deployments such as `https://example.com/leapmux` are rejected. Front LeapMux at the root of a hostname (or subdomain), not under a path prefix.
+{{< /callout >}}
 
-> **Note:** `secure_cookies` is a database setting (`leapmux control admin settings set secure_cookies true`). When you terminate TLS with a reverse proxy and set `public_url` to an `https://…` address, the public URL already carries the `https` scheme, so the callback URL is correct regardless of `secure_cookies`. Still enable `secure_cookies` behind TLS so session cookies get the secure flag — see [Accounts & Authentication](/docs/using/accounts/). Details of the reverse-proxy setup live in [Running LeapMux](/docs/admin/running-leapmux/).
+{{< callout type="info" >}}
+`secure_cookies` is a database setting (`leapmux control admin settings set secure_cookies true`). When you terminate TLS with a reverse proxy and set `public_url` to an `https://…` address, the public URL already carries the `https` scheme, so the callback URL is correct regardless of `secure_cookies`. Still enable `secure_cookies` behind TLS so session cookies get the secure flag — see [Accounts & Authentication](/docs/using/accounts/). Details of the reverse-proxy setup live in [Running LeapMux](/docs/admin/running-leapmux/).
+{{< /callout >}}
 
 ## Trusting the provider's email
 
@@ -183,7 +197,9 @@ The `--trust-email` flag controls **account auto-linking** by verified email:
 - **`--trust-email=true`** — when an OAuth sign-in returns a verified email that matches an existing LeapMux account's verified email, the OAuth identity is linked to that account automatically and the user is signed in. This lets a user who already signed up with a password later "Sign in with GitHub" and land in the same account without manual linking.
 - **`--trust-email=false`** — no auto-linking. A new OAuth identity always goes through the "Complete Sign Up" flow (or is rejected if sign-up is disabled), even if the email matches an existing account.
 
-> **Warning:** Set `--trust-email=true` only for providers you control or fully trust to assert email ownership. Auto-linking grants access to an existing account based solely on a matching verified email; an identity provider that lets users set an arbitrary verified email could be used to take over accounts. For a public, multi-tenant IdP, prefer `--trust-email=false`. Regardless of this flag, LeapMux still requires the provider to mark the email as verified (OIDC `email_verified=true`; GitHub's primary verified email).
+{{< callout type="warning" >}}
+Set `--trust-email=true` only for providers you control or fully trust to assert email ownership. Auto-linking grants access to an existing account based solely on a matching verified email; an identity provider that lets users set an arbitrary verified email could be used to take over accounts. For a public, multi-tenant IdP, prefer `--trust-email=false`. Regardless of this flag, LeapMux still requires the provider to mark the email as verified (OIDC `email_verified=true`; GitHub's primary verified email).
+{{< /callout >}}
 
 ## Listing, enabling, disabling, and removing providers
 
@@ -216,9 +232,11 @@ The Hub refuses such a removal. The error carries the `failed_precondition` code
 
 Give each of those users another login method, then run `remove` again. They can set a password themselves under **Preferences → Account → Password**, or link a second enabled provider — see [Accounts & Authentication](/docs/using/accounts/). An admin can also set a password with `leapmux recover password reset` (see [Recovery](/docs/admin/recover/)), which runs offline with the Hub stopped.
 
-> **Warning:** `--force` removes the provider even when accounts lose their last login method. Those users cannot sign in again through a provider.
->
-> A user whose email address is verified can still recover the account alone with **Can't sign in?** — recovery sets the account's first password (see [Accounts & Authentication](/docs/using/accounts/#recovering-your-account)). For anyone else, an administrator restores access with `leapmux recover password reset` (or `leapmux control admin user reset-password` while the Hub runs). Give them another login method first.
+{{< callout type="warning" >}}
+`--force` removes the provider even when accounts lose their last login method. Those users cannot sign in again through a provider.
+
+A user whose email address is verified can still recover the account alone with **Can't sign in?** — recovery sets the account's first password (see [Accounts & Authentication](/docs/using/accounts/#recovering-your-account)). For anyone else, an administrator restores access with `leapmux recover password reset` (or `leapmux control admin user reset-password` while the Hub runs). Give them another login method first.
+{{< /callout >}}
 
 ```bash
 leapmux control admin idp remove --id <providerID> --force
@@ -226,7 +244,9 @@ leapmux control admin idp remove --id <providerID> --force
 
 The reply reports `locked_out_users`: how many accounts lost their last login method. Without `--force` it is zero, because the Hub refuses the removal in that case. A non-zero count is the report of how many accounts a forced removal locked out.
 
-> **Tip:** A running Hub caches built provider configurations. Treat a provider's settings as immutable once created — to change a client ID, secret, issuer, scopes, or `trust-email`, `remove` the provider and `add` it again. Re-adding generates a **new** provider ID, which changes the callback URL, so update your provider's registered redirect URI to match.
+{{< callout >}}
+A running Hub caches built provider configurations. Treat a provider's settings as immutable once created — to change a client ID, secret, issuer, scopes, or `trust-email`, `remove` the provider and `add` it again. Re-adding generates a **new** provider ID, which changes the callback URL, so update your provider's registered redirect URI to match.
+{{< /callout >}}
 
 ## The end-user experience
 
@@ -256,7 +276,9 @@ All of this UI is covered in detail in [Accounts & Authentication](/docs/using/a
 | Button doesn't appear | Provider is disabled, or not created. | `leapmux control admin idp list`; if `enabled` is `false`, run `enable --id <id>`. |
 | Changed scopes/secret but behavior is unchanged | The Hub caches provider config as immutable. | `remove` and re-`add` the provider, then update the registered callback URL to the new id, and restart the Hub if needed. |
 
-> **Tip:** If a stored client secret can no longer be decrypted after an encryption-key change, you have rotated keys without re-encrypting secrets. Run the re-encryption step described in [Encryption & Data](/docs/admin/encryption-and-data/).
+{{< callout >}}
+If a stored client secret can no longer be decrypted after an encryption-key change, you have rotated keys without re-encrypting secrets. Run the re-encryption step described in [Encryption & Data](/docs/admin/encryption-and-data/).
+{{< /callout >}}
 
 ## Related chapters
 

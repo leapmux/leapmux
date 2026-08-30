@@ -3,15 +3,15 @@ import { A } from '@solidjs/router'
 import { createMemo, createSignal, Show } from 'solid-js'
 import { userClient } from '~/api/clients'
 import { actionsFooter } from '~/components/common/actionsFooter.css'
-import { CaptchaSection } from '~/components/common/CaptchaSection'
 import { StatusLine } from '~/components/common/StatusLine'
+import { VerificationResendControl } from '~/components/common/VerificationResendControl'
 import { useAuth } from '~/context/AuthContext'
 import { KEY_EMAIL_CHANGE_DRAFT, sessionStorageGet, sessionStorageRemove, sessionStorageSet } from '~/lib/browserStorage'
 import { elevationPrompting } from '~/lib/elevationPrompt'
 import { isEmailEnabled } from '~/lib/systemInfo'
 import { useVerificationResend } from '~/lib/useVerificationResend'
 import { validateEmail } from '~/lib/validate'
-import { errorText, successText, warningText } from '~/styles/shared.css'
+import { errorText, warningText } from '~/styles/shared.css'
 import * as styles from './accountFields.css'
 import { createAccountAction } from './createAccountAction'
 
@@ -19,7 +19,7 @@ import { createAccountAction } from './createAccountAction'
  * The account's email: its current state, the route to a confirmed one, and
  * the change itself.
  *
- * The address is a RECOVERY IDENTITY -- it receives the password-reset link --
+ * The address is a RECOVERY IDENTITY -- it receives the recovery link --
  * so the hub refuses to move it without a recently proven factor. Nothing
  * here checks that: the transport opens the step-up prompt on the hub's
  * refusal and retries the one refused request.
@@ -126,19 +126,10 @@ export const AccountEmail: Component = () => {
         address when there is none.
       */}
       <Show when={auth.user()?.email && !auth.user()?.emailVerified && isEmailEnabled()}>
-        <CaptchaSection action="resend_verification" captcha={verification.captcha} />
-        <div class={actionsFooter}>
-          <button type="button" onClick={() => void verification.resend()} disabled={verification.disabled()}>
-            {verification.buttonLabel()}
-          </button>
-          <A href="/verify-email">Enter the code</A>
-        </div>
-        <Show when={verification.status()}>
-          {msg => <div class={successText}>{msg()}</div>}
-        </Show>
-        <Show when={verification.error()}>
-          {msg => <div class={errorText}>{msg()}</div>}
-        </Show>
+        <VerificationResendControl
+          resend={verification}
+          footerExtra={<A href="/verify-email">Enter the code</A>}
+        />
       </Show>
       <Show when={auth.user()?.pendingEmail}>
         <div class={warningText}>

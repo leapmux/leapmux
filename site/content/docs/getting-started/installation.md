@@ -12,7 +12,9 @@ Pick the way to get LeapMux that matches how you want to run it:
 - **Standalone binary** — the pre-built `leapmux` command-line binary, for running any mode on a host without Docker and without compiling.
 - **From source** — for contributors and administrators who want to build the binary, images, or desktop app themselves.
 
-> **Tip:** If you just want to run LeapMux, the pre-built Docker images, desktop app installers, and standalone binaries are all you need.
+{{< callout >}}
+If you just want to run LeapMux, the pre-built Docker images, desktop app installers, and standalone binaries are all you need.
+{{< /callout >}}
 
 ## Which install should I choose?
 
@@ -38,7 +40,9 @@ LeapMux is developed and tested natively on macOS, Linux, and Windows.
 
 Pre-built Docker images target `linux/amd64` and `linux/arm64`.
 
-> **Note:** The standalone server binary for macOS is distributed as `darwin_arm64` only.
+{{< callout type="info" >}}
+The standalone server binary for macOS is distributed as `darwin_arm64` only.
+{{< /callout >}}
 
 ## Desktop app
 
@@ -63,9 +67,13 @@ Download the installer for your platform from the [Releases page](https://github
 
 The macOS build is signed with a Developer ID and notarized, so it opens without Gatekeeper warnings.
 
-> **Note:** Solo mode on macOS requires **Full Disk Access** so LeapMux can traverse directories in your home folder. The first time you select **Solo**, the launcher shows a **Full Disk Access Required** card with an **Open System Settings** button. Grant access there. The app detects the change and restarts itself. Distributed mode does not require Full Disk Access.
+{{< callout type="info" >}}
+Solo mode on macOS requires **Full Disk Access** so LeapMux can traverse directories in your home folder. The first time you select **Solo**, the launcher shows a **Full Disk Access Required** card with an **Open System Settings** button. Grant access there. The app detects the change and restarts itself. Distributed mode does not require Full Disk Access.
+{{< /callout >}}
 
-> **Tip:** On macOS the desktop app can install a `leapmux` command-line symlink at `/usr/local/bin/leapmux` so you can use the [Remote control CLI](/docs/using/control-cli/) from a terminal. When you enter a Solo workspace and the CLI isn't on your `PATH`, LeapMux offers to install it. This integration is macOS-only.
+{{< callout >}}
+On macOS the desktop app can install a `leapmux` command-line symlink at `/usr/local/bin/leapmux` so you can use the [Remote control CLI](/docs/using/control-cli/) from a terminal. When you enter a Solo workspace and the CLI isn't on your `PATH`, LeapMux offers to install it. This integration is macOS-only.
+{{< /callout >}}
 
 ### Linux
 
@@ -96,7 +104,9 @@ After installing the `.deb`, launch **LeapMux Desktop** from your application me
 
 The installer also ships the `leapmux.exe` command-line tool in a `cli\` subdirectory and adds that directory to your user `PATH`. WebView2 is installed automatically if it isn't already present.
 
-> **Note:** The desktop app has no built-in auto-updater. To upgrade, download the newer installer from the Releases page and install it over the existing version.
+{{< callout type="info" >}}
+The desktop app has no built-in auto-updater. To upgrade, download the newer installer from the Releases page and install it over the existing version.
+{{< /callout >}}
 
 ## Docker
 
@@ -119,9 +129,13 @@ docker run -p 4327:4327 -e LEAPMUX_MODE=dev -v leapmux-data:/data ghcr.io/leapmu
 
 For the full image-tag matrix (Alpine vs. Ubuntu variants, version pinning, the `:dev` tag), the s6-overlay supervision and startup mechanics, and the `/data` volume layout, see [Running LeapMux](/docs/admin/running-leapmux/), which is canonical for Docker operations. Anything beyond `LEAPMUX_MODE` and `LEAPMUX_DATA_DIR` is configured through the per-mode YAML file or through `LEAPMUX_HUB_*` / `LEAPMUX_WORKER_*` environment variables — see [Configuration](/docs/admin/configuration/).
 
-> **Note:** Use `dev` (not `solo`) for an all-in-one container. In `solo` mode the binary defaults to binding loopback only (`127.0.0.1:4327`), so the port is not reachable from outside the container unless you override the listen address in `/data/solo/solo.yaml`. `dev` mode binds all interfaces (`:4327`) and is the container-friendly all-in-one variant.
+{{< callout type="info" >}}
+Use `dev` (not `solo`) for an all-in-one container. In `solo` mode the binary defaults to binding loopback only (`127.0.0.1:4327`), so the port is not reachable from outside the container unless you override the listen address in `/data/solo/solo.yaml`. `dev` mode binds all interfaces (`:4327`) and is the container-friendly all-in-one variant.
+{{< /callout >}}
 
-> **Warning:** The Hub does not terminate TLS itself. To serve LeapMux over HTTPS, put a reverse proxy in front of the container and set `public_url` and `secure_cookies` with `leapmux control admin settings set`. See [Running LeapMux](/docs/admin/running-leapmux/) and [Configuration](/docs/admin/configuration/) for reverse-proxy guidance.
+{{< callout type="warning" >}}
+The Hub does not terminate TLS itself. To serve LeapMux over HTTPS, put a reverse proxy in front of the container and set `public_url` and `secure_cookies` with `leapmux control admin settings set`. See [Running LeapMux](/docs/admin/running-leapmux/) and [Configuration](/docs/admin/configuration/) for reverse-proxy guidance.
+{{< /callout >}}
 
 ### Running a Worker container
 
@@ -157,7 +171,9 @@ cd leapmux_<version>_linux_amd64
 
 The macOS package is signed with a Developer ID and notarized.
 
-> **Tip:** Put `leapmux` somewhere on your `PATH` (e.g. `/usr/local/bin`) so you can invoke it from any directory and use the [Remote control CLI](/docs/using/control-cli/). To upgrade, replace the binary with the one from a newer release archive; Hub and Worker database migrations run automatically the next time you start.
+{{< callout >}}
+Put `leapmux` somewhere on your `PATH` (e.g. `/usr/local/bin`) so you can invoke it from any directory and use the [Remote control CLI](/docs/using/control-cli/). To upgrade, replace the binary with the one from a newer release archive; Hub and Worker database migrations run automatically the next time you start.
+{{< /callout >}}
 
 For run modes, ports, and data directories, see [Running LeapMux](/docs/admin/running-leapmux/); for the full subcommand and flag reference, see [CLI Reference](/docs/reference/cli-reference/).
 

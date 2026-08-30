@@ -39,7 +39,9 @@ The **More options** menu groups its actions:
 - **Terminals** — **New terminal...** (`Cmd/Ctrl + Shift + T`), then one entry per available shell. The configured default shell is marked **(default)**. See [Terminals](/docs/using/terminals/) for shell selection.
 - **Advanced** — toggles for **Expand agent thoughts** and **Show hidden messages** (a checkmark indicates the toggle is on).
 
-> **Tip:** Double-click empty space in the tab list to open the New Agent dialog.
+{{< callout >}}
+Double-click empty space in the tab list to open the New Agent dialog.
+{{< /callout >}}
 
 When the tab bar is too narrow, it collapses. A minimal-width bar shows a single **+** button. A very narrow bar shows a **…** overflow button. The **…** menu also includes the tile actions — see [Splitting a tile](#splitting-a-tile).
 
@@ -56,7 +58,9 @@ A small dot on a tab (a **notification indicator**) means the tab has unseen act
 
 Double-click an **agent** or **terminal** tab to rename it inline. Press `Enter` to commit, `Escape` to cancel; clicking away also commits. Empty or unchanged names are ignored.
 
-> **Note:** File tabs cannot be renamed, and tabs in a read-only (archived) workspace cannot be renamed. Renaming an agent also updates the agent's name on the Worker; if that update fails, the new name is kept locally and may not match the agent on the Worker.
+{{< callout type="info" >}}
+File tabs cannot be renamed, and tabs in a read-only (archived) workspace cannot be renamed. Renaming an agent also updates the agent's name on the Worker; if that update fails, the new name is kept locally and may not match the agent on the Worker.
+{{< /callout >}}
 
 ### Closing tabs
 
@@ -67,7 +71,7 @@ Closing certain tabs triggers a confirmation:
 - Closing the **last tab tied to a git worktree**, or the last non-worktree tab for a **branch with uncommitted or unpushed work**, raises the **Close last tab** dialog (see below).
 - Closing a tab is also what happens when you choose "Close all tabs" in a close-tile / close-grid / close-window dialog. Each tab is closed one at a time, so you may see a last-tab prompt for one of them.
 
-If the tab's Worker cannot be reached — it is offline, asleep, or has been deregistered — LeapMux cannot check git state, so it skips the dialog and closes the tab immediately. The Worker stops the agent or terminal process the next time it connects, and releases the worktree once it has confirmed no tab still references it.
+If the tab's Worker cannot be reached — it is offline, asleep, or deregistered — LeapMux cannot check git state, so it skips the dialog and closes the tab immediately. The Worker stops the agent or terminal process the next time it connects, and releases the worktree once it confirms that no tab still points at it.
 
 #### The "Close last tab" dialog
 
@@ -98,7 +102,9 @@ Moving the active tab out of a tile automatically promotes another tab in that t
 
 A single tile can be divided into more panes. Each division is either a **split** (two panes) or a **grid** (rows × columns). Splits and grids can nest, building up a layout tree.
 
-> **Note:** In the main layout, splitting and gridding are allowed up to a nesting depth of **3**. Once a region is that deeply nested, its split/grid buttons stop appearing — flatten or use a grid instead. Floating windows have no depth limit.
+{{< callout type="info" >}}
+In the main layout, splitting and gridding are allowed up to a nesting depth of **3**. Once a region is that deeply nested, its split/grid buttons stop appearing — flatten or use a grid instead. Floating windows have no depth limit.
+{{< /callout >}}
 
 ### The tile actions
 
@@ -112,7 +118,9 @@ Each tile's tab bar has a strip of action buttons on the right (it appears only 
 | Make grid | Grid | "Make grid" | Opens the grid-size popover. |
 | Close | X | "Close tile" / "Close grid" | Closes this tile. On a grid, only the anchor cell (top-right) shows an X, and it closes the whole grid. |
 
-> **Tip:** "Split **vertically**" means a vertical divider that puts panes left-and-right. "Split **horizontally**" means a horizontal divider that stacks panes top-and-bottom. Match the word to the divider line, not to the arrangement of panes.
+{{< callout >}}
+"Split **vertically**" means a vertical divider that puts panes left-and-right. "Split **horizontally**" means a horizontal divider that stacks panes top-and-bottom. Match the word to the divider line, not to the arrangement of panes.
+{{< /callout >}}
 
 On a very short tile, the whole strip collapses into a single **…** ("Tile menu") button that opens the same actions in a dropdown. In that menu, **Make grid** appears as "Make a grid…".
 
@@ -171,7 +179,9 @@ The grid can be up to **20 × 20**. When you make a grid, the tile's existing ta
 └────────────────────────┴────────────────────────┘
 ```
 
-> **Note:** From the narrowest tab-bar overflow menu, the make-grid action is a fixed **Make a 2×2 grid** rather than the size popover.
+{{< callout type="info" >}}
+From the narrowest tab-bar overflow menu, the make-grid action is a fixed **Make a 2×2 grid** rather than the size popover.
+{{< /callout >}}
 
 ### Adjusting split and grid ratios
 
@@ -191,7 +201,9 @@ The **X** on a normal tile closes that tile; the **X** on a grid's **anchor cell
 
 **Close all tabs** closes each tab in turn (you may see the Close last tab dialog for one of them), then removes the structure.
 
-> **Note:** A workspace always keeps at least one tile. The last remaining tile in the main layout has no close button and cannot be removed.
+{{< callout type="info" >}}
+A workspace always keeps at least one tile. The last remaining tile in the main layout has no close button and cannot be removed.
+{{< /callout >}}
 
 ## Floating windows
 

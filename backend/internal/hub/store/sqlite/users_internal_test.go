@@ -34,11 +34,12 @@ func TestSetPendingEmailStoresCanonicalFormat(t *testing.T) {
 	// isolates the layout assertion from that sub-ms rounding difference.
 	expiry := time.Now().UTC().Add(30 * time.Minute).Truncate(time.Millisecond)
 	minted, err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
-		ID:                    user.ID,
-		PendingEmail:          "new@example.com",
-		PendingEmailToken:     "tok-1",
-		PendingEmailExpiresAt: &expiry,
-		CooldownCutoff:        store.UnconditionalMintCutoff(),
+		ID:                      user.ID,
+		PendingEmail:            "new@example.com",
+		PendingEmailToken:       "tok-1",
+		PendingEmailExpiresAt:   &expiry,
+		PendingEmailUnblockedAt: time.Now().UTC().Add(time.Minute),
+		Now:                     time.Now().UTC(),
 	})
 	require.NoError(t, err)
 	require.True(t, minted)
@@ -72,11 +73,12 @@ func TestClearStalePendingEmailsSweepsLockoutRowSameDay(t *testing.T) {
 
 	expiry := time.Now().UTC().Add(24 * time.Hour)
 	minted, err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
-		ID:                    user.ID,
-		PendingEmail:          "locked@example.com",
-		PendingEmailToken:     "tok-lock",
-		PendingEmailExpiresAt: &expiry,
-		CooldownCutoff:        store.UnconditionalMintCutoff(),
+		ID:                      user.ID,
+		PendingEmail:            "locked@example.com",
+		PendingEmailToken:       "tok-lock",
+		PendingEmailExpiresAt:   &expiry,
+		PendingEmailUnblockedAt: time.Now().UTC().Add(time.Minute),
+		Now:                     time.Now().UTC(),
 	})
 	require.NoError(t, err)
 	require.True(t, minted)

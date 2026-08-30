@@ -19,7 +19,9 @@ See [Running LeapMux](/docs/admin/running-leapmux/) for the run modes and [Conce
 
 No. Solo mode is single-user by design. Every request is auto-authenticated as the admin without credentials, so it offers no protection against another process that can reach the port.
 
-> **Warning:** If you ever bind solo mode to a non-loopback address, anyone who can reach the port has full admin access with no password. LeapMux logs a warning when this happens. For multi-user or networked use, run `leapmux hub` instead, or place solo behind a firewall, VPN (Tailscale/WireGuard), or SSH tunnel.
+{{< callout type="warning" >}}
+If you ever bind solo mode to a non-loopback address, anyone who can reach the port has full admin access with no password. LeapMux logs a warning when this happens. For multi-user or networked use, run `leapmux hub` instead, or place solo behind a firewall, VPN (Tailscale/WireGuard), or SSH tunnel.
+{{< /callout >}}
 
 For real multi-user setups see [Accounts & Authentication](/docs/using/accounts/) and [Managing Workers](/docs/admin/managing-workers/).
 
@@ -51,7 +53,9 @@ The Hub **can** see connection metadata — channel IDs, ciphertext sizes, and t
 
 See [Security & Threat Model](/docs/admin/security/) for the authoritative scope of what the Hub does and does not see.
 
-> **Note:** In solo mode the Hub and Worker run in the same process, so the E2EE protocol is still in effect but provides no protection against a local attacker who can reach the loopback port. The threat model there reduces to local-host trust.
+{{< callout type="info" >}}
+In solo mode the Hub and Worker run in the same process, so the E2EE protocol is still in effect but provides no protection against a local attacker who can reach the loopback port. The threat model there reduces to local-host trust.
+{{< /callout >}}
 
 ## Which coding agents are supported?
 
@@ -129,7 +133,9 @@ LeapMux is source-available under the **Functional Source License, Version 1.1, 
 
 You may use, modify, and redistribute it for any **Permitted Purpose** — including your own internal use, non-commercial education, and non-commercial research — but not for a **Competing Use**. A Competing Use makes LeapMux available to others in a commercial product or service that substitutes for, or offers substantially similar functionality to, LeapMux. Each version converts to Apache 2.0 on a future date — see [Legal](/docs/reference/legal/) for the conversion date and the full terms.
 
-> **Note:** This FAQ summarizes the license for convenience and is not legal advice. The `LICENSE.md` file in the repository is the authoritative text.
+{{< callout type="info" >}}
+This FAQ summarizes the license for convenience and is not legal advice. The `LICENSE.md` file in the repository is the authoritative text.
+{{< /callout >}}
 
 ## More questions?
 

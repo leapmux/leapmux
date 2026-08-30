@@ -21,7 +21,9 @@ A **linked worktree** is a second working directory attached to the same reposit
 
 LeapMux uses this model throughout: tabs are grouped in the sidebar by repository and then by branch, and the open-time **Git options** panel lets you create a new worktree from the dialog.
 
-> **Note:** Worktrees are optional. You can also keep working in your repository's main checkout ("Use current state") — useful for quick one-off tasks where isolation does not matter.
+{{< callout type="info" >}}
+Worktrees are optional. You can also keep working in your repository's main checkout ("Use current state") — useful for quick one-off tasks where isolation does not matter.
+{{< /callout >}}
 
 ## The Repo → Branch sidebar tree
 
@@ -51,7 +53,9 @@ Each branch row has a **`...`** context menu with exactly two items:
 
 Both items act through the Worker that hosts the repository. LeapMux greys them out, with the reason on hover, while that Worker is offline. The `(no branch)` row carries no menu at all, because it has no branch to change or delete.
 
-> **Note:** A detached-HEAD row keeps its menu, because its short-SHA label is a real label. **Delete branch** fails there — the row names a commit, not a branch — and only after the working directory has already been switched to the branch you picked. Use **Create new branch** first to get onto a real branch.
+{{< callout type="info" >}}
+A detached-HEAD row keeps its menu, because its short-SHA label is a real label. **Delete branch** fails there — the row identifies a commit, not a branch — and only after the working directory has already been switched to the branch you picked. Use **Create new branch** first to get onto a real branch.
+{{< /callout >}}
 
 ### The branch chip in the composer
 
@@ -121,7 +125,9 @@ A new worktree starts from committed state only. Uncommitted changes in the sour
 
 Pick a worktree from the selector. Each option carries the label `<branch> — <tilde-path>`. The selector lists **linked** worktrees only. It leaves out the repository's main working tree, so you cannot adopt the main checkout as a managed worktree by accident.
 
-> **Tip:** Create new worktree is the right choice for "start a fresh task in isolation." Use existing worktree is for re-attaching a tab to work you (or another agent) already set up.
+{{< callout >}}
+Create new worktree is the right choice for "start a fresh task in isolation." Use existing worktree is for re-attaching a tab to work you (or another agent) already set up.
+{{< /callout >}}
 
 ## Changing the branch on a tab
 
@@ -144,7 +150,9 @@ When you pick **Create new worktree** in this dialog, an extra **Open as** selec
 
 The sidebar labels update as soon as the change completes. The file browser's git status refreshes too, when it shows the repository you changed.
 
-> **Warning:** Switching branches with uncommitted changes can fail or discard work. If the dialog reports uncommitted changes, commit or push them first (see [Pushing a branch](#pushing-a-branch)).
+{{< callout type="warning" >}}
+Switching branches with uncommitted changes can fail or discard work. If the dialog reports uncommitted changes, commit or push them first (see [Pushing a branch](#pushing-a-branch)).
+{{< /callout >}}
 
 ## Deleting a branch
 
@@ -166,7 +174,9 @@ For a branch in the main checkout, you must tell LeapMux where to leave HEAD. Th
 
 If the branch you are deleting is the **only** branch, the selector is replaced by the error **Cannot delete the only branch. Create another branch first.** and the button stays disabled.
 
-> **Warning:** Branch deletion is a force-delete (`git branch -D`). Unmerged commits on the deleted branch that have not been pushed are gone. If the status block shows unpushed commits, push first.
+{{< callout type="warning" >}}
+Branch deletion is a force-delete (`git branch -D`). Unmerged commits on the deleted branch that have not been pushed are gone. If the status block shows unpushed commits, push first.
+{{< /callout >}}
 
 ## Pushing a branch
 
@@ -181,7 +191,9 @@ The Delete branch dialog and the Close last tab dialog both offer a push button 
 
 A push needs an `origin` remote and a real branch name, so LeapMux cannot push a detached HEAD.
 
-> **Tip:** Use **Commit and Push** as a quick "save my work before I switch or delete" before changing or deleting a branch. The `WIP` commit captures everything so nothing is lost; you can reword or squash it later.
+{{< callout >}}
+Use **Commit and Push** as a quick "save my work before I switch or delete" before changing or deleting a branch. The `WIP` commit captures everything so nothing is lost; you can reword or squash it later.
+{{< /callout >}}
 
 ## Branch status indicators
 
@@ -214,9 +226,13 @@ If git refuses the removal — the worktree is locked, for example — **Delete*
 
 LeapMux removes a worktree only as part of closing the tabs that point at it, so a removal never deletes a worktree that a live tab still uses. **Delete** here covers the last tab on that worktree. [**Delete branch...**](#deleting-a-linked-worktree) on the branch row covers the whole group at once.
 
-> **Warning:** **Close anyway** does not push and does not delete. It closes the tab. Any uncommitted changes stay on disk in the worktree, but you lose the tab that points at it. Use **Push** / **Commit and Push** first if the status block shows work you want to keep.
+{{< callout type="warning" >}}
+**Close anyway** does not push and does not delete. It closes the tab. Any uncommitted changes stay on disk in the worktree, but you lose the tab that points at it. Use **Push** / **Commit and Push** first if the status block shows work you want to keep.
+{{< /callout >}}
 
-> **Note:** This dialog needs the Worker, because only the Worker reads the branch's git state. With that Worker offline, the tab closes without the dialog and the worktree is left unreferenced; when the Worker returns, its housekeeping pass reclaims it — directory and branch — unless it holds uncommitted or unpushed work, which is always left for you.
+{{< callout type="info" >}}
+This dialog needs the Worker, because only the Worker reads the branch's git state. With that Worker offline, the tab closes without the dialog and the worktree is left unreferenced; when the Worker returns, its housekeeping pass reclaims it — directory and branch — unless it holds uncommitted or unpushed work, which is always left for you.
+{{< /callout >}}
 
 ## Where git operations run
 

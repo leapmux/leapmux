@@ -685,7 +685,7 @@ func TestIssuedToken_EmailsTheOwner(t *testing.T) {
 				ID: env.userID, Email: tc.email, EmailVerified: tc.verified,
 			}))
 
-			sender := &recordingSender{}
+			sender := &mailSenderDouble{}
 			mux := http.NewServeMux()
 			srv := httptest.NewServer(mux)
 			t.Cleanup(srv.Close)

@@ -30,10 +30,11 @@ func (s *Suite) testAccountRecoveryStore(t *testing.T) {
 		// predicate compares against the DATABASE clock, and a seed near
 		// "now" can lose to container clock skew.
 		minted, err := st.Users().SetPendingRecovery(ctx, store.SetPendingRecoveryParams{
-			ID:                       user.ID,
-			PendingRecoveryToken:     token,
-			PendingRecoveryExpiresAt: time.Now().Add(24 * time.Hour).UTC(),
-			CooldownCutoff:           store.UnconditionalMintCutoff(),
+			ID:                         user.ID,
+			PendingRecoveryToken:       token,
+			PendingRecoveryExpiresAt:   time.Now().Add(24 * time.Hour).UTC(),
+			PendingRecoveryUnblockedAt: time.Now().UTC().Add(time.Minute),
+			Now:                        time.Now().UTC(),
 		})
 		require.NoError(t, err)
 		require.True(t, minted)
@@ -53,22 +54,56 @@ func (s *Suite) testAccountRecoveryStore(t *testing.T) {
 
 	t.Run("consume by token rejects cleared and unknown tokens", func(t *testing.T) {
 		st := s.NewStore(t)
-		user := SeedUser(t, st, "reset-miss-user")
+		user := SeedUser(t, st, "reset-consume-user")
 
 		_, err := st.Users().ConsumeRecoveryAttemptByToken(ctx, "tok-unknown", time.Now().UTC(), 5)
 		require.ErrorIs(t, err, store.ErrNotFound)
 
+		base := time.Now().UTC()
 		minted, err := st.Users().SetPendingRecovery(ctx, store.SetPendingRecoveryParams{
-			ID:                       user.ID,
-			PendingRecoveryToken:     "tok-live",
-			PendingRecoveryExpiresAt: time.Now().Add(time.Hour).UTC(),
-			CooldownCutoff:           store.UnconditionalMintCutoff(),
+			ID:                         user.ID,
+			PendingRecoveryToken:       "tok-live",
+			PendingRecoveryExpiresAt:   base.Add(time.Hour),
+			PendingRecoveryUnblockedAt: base.Add(time.Minute),
+			Now:                        base,
 		})
 		require.NoError(t, err)
 		require.True(t, minted)
-		require.NoError(t, st.Users().ClearPendingRecovery(ctx, user.ID))
-		_, err = st.Users().ConsumeRecoveryAttemptByToken(ctx, "tok-live", time.Now().UTC(), 5)
+		// A failed-send clear at `base` with a 10s failure window: the
+		// deadline it arms is 10s ahead, not a full cooldown.
+		require.NoError(t, st.Users().ClearPendingRecovery(ctx, store.ClearPendingRecoveryParams{
+			ID:          user.ID,
+			UnblockedAt: base.Add(10 * time.Second),
+		}))
+		_, err = st.Users().ConsumeRecoveryAttemptByToken(ctx, "tok-live", base, 5)
 		require.ErrorIs(t, err, store.ErrNotFound)
+
+		// Inside the failure window the retry is refused: a retry that no
+		// window holds back is a mint-send-clear loop that costs the relay
+		// one SMTP transaction per request.
+		insideWindow := base.Add(5 * time.Second)
+		minted, err = st.Users().SetPendingRecovery(ctx, store.SetPendingRecoveryParams{
+			ID:                         user.ID,
+			PendingRecoveryToken:       "tok-retry",
+			PendingRecoveryExpiresAt:   insideWindow.Add(time.Hour),
+			PendingRecoveryUnblockedAt: insideWindow.Add(time.Minute),
+			Now:                        insideWindow,
+		})
+		require.NoError(t, err)
+		assert.False(t, minted, "the failure window must refuse the retry a failed send invites")
+
+		// Once the window elapses the retry lands -- the person whose relay
+		// hiccuped waits seconds, not a minute.
+		pastWindow := base.Add(11 * time.Second)
+		minted, err = st.Users().SetPendingRecovery(ctx, store.SetPendingRecoveryParams{
+			ID:                         user.ID,
+			PendingRecoveryToken:       "tok-retry2",
+			PendingRecoveryExpiresAt:   pastWindow.Add(time.Hour),
+			PendingRecoveryUnblockedAt: pastWindow.Add(time.Minute),
+			Now:                        pastWindow,
+		})
+		require.NoError(t, err)
+		assert.True(t, minted, "a cleared recovery row must not block the retry past the failure window")
 	})
 
 	t.Run("attempt budget comes from the caller, not the SQL text", func(t *testing.T) {
@@ -76,10 +111,11 @@ func (s *Suite) testAccountRecoveryStore(t *testing.T) {
 		user := SeedUser(t, st, "reset-budget-user")
 
 		minted, err := st.Users().SetPendingRecovery(ctx, store.SetPendingRecoveryParams{
-			ID:                       user.ID,
-			PendingRecoveryToken:     "tok-budget",
-			PendingRecoveryExpiresAt: time.Now().Add(24 * time.Hour).UTC(),
-			CooldownCutoff:           store.UnconditionalMintCutoff(),
+			ID:                         user.ID,
+			PendingRecoveryToken:       "tok-budget",
+			PendingRecoveryExpiresAt:   time.Now().Add(24 * time.Hour).UTC(),
+			PendingRecoveryUnblockedAt: time.Now().UTC().Add(time.Minute),
+			Now:                        time.Now().UTC(),
 		})
 		require.NoError(t, err)
 		require.True(t, minted)
@@ -103,43 +139,46 @@ func (s *Suite) testAccountRecoveryStore(t *testing.T) {
 		user := SeedUser(t, st, "reset-mint-user")
 
 		issued := time.Now().UTC()
-		// First mint: no previous token exists, so any cutoff passes.
+		// First mint: a fresh row holds no blockade, so it lands.
 		minted, err := st.Users().SetPendingRecovery(ctx, store.SetPendingRecoveryParams{
-			ID:                       user.ID,
-			PendingRecoveryToken:     "tok-first",
-			PendingRecoveryExpiresAt: issued.Add(time.Hour),
-			PendingRecoveryIssuedAt:  &issued,
-			CooldownCutoff:           issued,
+			ID:                         user.ID,
+			PendingRecoveryToken:       "tok-first",
+			PendingRecoveryExpiresAt:   issued.Add(time.Hour),
+			PendingRecoveryUnblockedAt: issued.Add(time.Minute),
+			Now:                        issued,
 		})
 		require.NoError(t, err)
 		require.True(t, minted)
 
-		// The previous token was issued now; a cutoff before that issue
-		// means the cooldown has not elapsed, so the mint must refuse and
-		// the FIRST token must survive.
+		// The first mint armed unblocked_at = issued+60s; a mint whose Now
+		// is still inside that window must refuse, and the FIRST token
+		// must survive.
 		minted, err = st.Users().SetPendingRecovery(ctx, store.SetPendingRecoveryParams{
-			ID:                       user.ID,
-			PendingRecoveryToken:     "tok-second",
-			PendingRecoveryExpiresAt: issued.Add(2 * time.Hour),
-			CooldownCutoff:           issued.Add(-time.Second),
+			ID:                         user.ID,
+			PendingRecoveryToken:       "tok-second",
+			PendingRecoveryExpiresAt:   issued.Add(2 * time.Hour),
+			PendingRecoveryUnblockedAt: issued.Add(2 * time.Minute),
+			Now:                        issued,
 		})
 		require.NoError(t, err)
-		require.False(t, minted)
+		assert.False(t, minted)
 
 		after, err := st.Users().GetByID(ctx, user.ID)
 		require.NoError(t, err)
 		assert.Equal(t, "tok-first", after.PendingRecoveryToken)
 
-		// Once the previous issue is at or before the cutoff (the cooldown
-		// elapsed), the mint lands and replaces the token.
+		// One cooldown after the mint, the blockade elapsed and the mint
+		// lands and replaces the token.
+		later := issued.Add(time.Minute)
 		minted, err = st.Users().SetPendingRecovery(ctx, store.SetPendingRecoveryParams{
-			ID:                       user.ID,
-			PendingRecoveryToken:     "tok-third",
-			PendingRecoveryExpiresAt: issued.Add(2 * time.Hour),
-			CooldownCutoff:           issued.Add(time.Second),
+			ID:                         user.ID,
+			PendingRecoveryToken:       "tok-third",
+			PendingRecoveryExpiresAt:   later.Add(2 * time.Hour),
+			PendingRecoveryUnblockedAt: later.Add(time.Minute),
+			Now:                        later,
 		})
 		require.NoError(t, err)
-		require.True(t, minted)
+		assert.True(t, minted)
 
 		after, err = st.Users().GetByID(ctx, user.ID)
 		require.NoError(t, err)
@@ -151,10 +190,11 @@ func (s *Suite) testAccountRecoveryStore(t *testing.T) {
 		user := SeedUser(t, st, "reset-complete-user")
 		token := "tok-complete"
 		minted, err := st.Users().SetPendingRecovery(ctx, store.SetPendingRecoveryParams{
-			ID:                       user.ID,
-			PendingRecoveryToken:     token,
-			PendingRecoveryExpiresAt: time.Now().Add(time.Hour).UTC(),
-			CooldownCutoff:           store.UnconditionalMintCutoff(),
+			ID:                         user.ID,
+			PendingRecoveryToken:       token,
+			PendingRecoveryExpiresAt:   time.Now().Add(time.Hour).UTC(),
+			PendingRecoveryUnblockedAt: time.Now().UTC().Add(time.Minute),
+			Now:                        time.Now().UTC(),
 		})
 		require.NoError(t, err)
 		require.True(t, minted)
@@ -165,7 +205,10 @@ func (s *Suite) testAccountRecoveryStore(t *testing.T) {
 			PendingRecoveryToken: token,
 		})
 		require.NoError(t, err)
-		assert.NotZero(t, revoked.AuthGeneration)
+		// Exactly one bump: the post-commit lifecycle eviction targets this
+		// generation, so a second bump inside the completion would evict at
+		// an epoch this transaction never produced.
+		assert.Equal(t, user.AuthGeneration+1, revoked.AuthGeneration)
 
 		after, err := st.Users().GetByID(ctx, user.ID)
 		require.NoError(t, err)
@@ -173,6 +216,8 @@ func (s *Suite) testAccountRecoveryStore(t *testing.T) {
 		assert.True(t, after.PasswordSet)
 		assert.Empty(t, after.PendingRecoveryToken)
 		assert.Nil(t, after.PendingRecoveryExpiresAt)
+		assert.Nil(t, after.PendingRecoveryUnblockedAt,
+			"a completed row carries no leftover recovery state to report or gate on")
 		assert.Zero(t, after.PendingRecoveryAttempts)
 
 		// A replayed completion matches no row.

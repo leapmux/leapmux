@@ -32,7 +32,9 @@ The default is `http://127.0.0.1:4327` (a Hub on the same machine). The `--hub` 
 
 The two local-IPC forms exist for co-located setups (notably the desktop app's local-only mode, where the Hub never opens a TCP port at all). On a remote Hub you will always use `http://` or `https://`.
 
-> **Tip:** Every Worker flag has an environment-variable equivalent with the prefix `LEAPMUX_WORKER_` — for example `LEAPMUX_WORKER_HUB` and `LEAPMUX_WORKER_REGISTRATION_KEY`. This is handy for containers and `systemd` units. See [Configuration](/docs/admin/configuration/) for the full precedence rules.
+{{< callout >}}
+Every Worker flag has an environment-variable equivalent with the prefix `LEAPMUX_WORKER_` — for example `LEAPMUX_WORKER_HUB` and `LEAPMUX_WORKER_REGISTRATION_KEY`. This is handy for containers and `systemd` units. See [Configuration](/docs/admin/configuration/) for the full precedence rules.
+{{< /callout >}}
 
 ### Where the Worker keeps its state
 
@@ -84,7 +86,9 @@ This is the everyday path for users.
 
 The dialog explains the key's lifetime in plain terms: the key stays valid only while the dialog stays open, and closing the dialog destroys it. Keys are short-lived (5 minutes), but the dialog auto-extends the key as long as it stays open, so you have time to switch machines and paste the command.
 
-> **Note:** If your Hub has email configured and your account email is **verified**, the dialog also offers **Send email**, which mails the command to your verified address — useful when the target machine is elsewhere. The button is hidden in solo mode and on Hubs without SMTP, and disabled until your email is verified. See [Accounts & Authentication](/docs/using/accounts/) for email verification.
+{{< callout type="info" >}}
+If your Hub has email configured and your account email is **verified**, the dialog also offers **Send email**, which mails the command to your verified address — useful when the target machine is elsewhere. The button is hidden in solo mode and on Hubs without SMTP, and disabled until your email is verified. See [Accounts & Authentication](/docs/using/accounts/) for email verification.
+{{< /callout >}}
 
 ### Running the Worker with the key
 
@@ -116,7 +120,9 @@ A Worker's **online** status is computed live — it reflects whether the Hub cu
 
 Offline appears within ~10 seconds of a dropped link. During normal traffic the regular messages keep the link alive, so no extra heartbeats are sent.
 
-> **Note:** The exact heartbeat cadence (administrator-level detail): the Worker checks its connection every 2 seconds and sends an idle heartbeat only after 5 seconds of silence (no other message sent in that window); the Hub treats a Worker that has gone silent for 10 seconds as disconnected.
+{{< callout type="info" >}}
+The exact heartbeat cadence (administrator-level detail): the Worker checks its connection every 2 seconds and sends an idle heartbeat only after 5 seconds of silence (no other message sent in that window); the Hub treats a Worker that is silent for 10 seconds as disconnected.
+{{< /callout >}}
 
 ### In the sidebar
 
@@ -159,7 +165,9 @@ So a Worker that briefly loses its link reconnects within seconds, while a Worke
 
 When the Hub shuts down gracefully it tells the Worker how long to wait before reconnecting; the Worker honors that requested delay once, then resumes normal backoff.
 
-> **Note:** Auto-reconnect handles transient failures, **not** revocation. If the Hub rejects the Worker's token as unauthenticated on reconnect — which happens when the Worker has been deregistered or deleted — the Worker clears its local state and exits instead of retrying. Re-registering it requires a fresh registration key.
+{{< callout type="info" >}}
+Auto-reconnect handles transient failures, **not** revocation. If the Hub rejects the Worker's token as unauthenticated on reconnect — which happens when an administrator deregisters or deletes the Worker — the Worker clears its local state and exits instead of retrying. Re-registering it requires a fresh registration key.
+{{< /callout >}}
 
 ## Deregistering a Worker
 
@@ -254,11 +262,13 @@ browser pin workers independently, and neither sees the other's pins.
 
 ### What a mismatch looks like in the browser
 
-When a Worker's key has changed since you last connected, the Frontend stops and shows a dialog titled **Worker public key changed**. It displays the **Expected:** and **Actual:** fingerprints (short, human-comparable four-word strings) and asks you to **Reject** or **Accept** the changed key.
+When a Worker's key differs from the one you saw at your last connection, the Frontend stops and shows a dialog titled **Worker public key changed**. It displays the **Expected:** and **Actual:** fingerprints (short, human-comparable four-word strings) and asks you to **Reject** or **Accept** the changed key.
 
 Accept only if you *expected* the change — for example, you deliberately wiped a Worker's `state.json` and re-registered it, regenerating its keypair. Verify the new fingerprint out-of-band first. See [Security & Threat Model](/docs/admin/security/) for the full dialog text, the fingerprint scheme, and the accept-vs-reject reasoning.
 
-> **Warning:** A key mismatch you did not cause is a serious signal. Do not click **Accept** to "make it work." When in doubt, **Reject** and confirm the Worker's fingerprint directly with whoever runs it.
+{{< callout type="warning" >}}
+A key mismatch you did not cause is a serious signal. Do not click **Accept** to "make it work." When in doubt, **Reject** and confirm the Worker's fingerprint directly with whoever runs it.
+{{< /callout >}}
 
 ### What a mismatch looks like on the CLI / a sibling Worker
 
@@ -274,7 +284,9 @@ leapmux worker cross-worker-pins remove --target-worker-id=<id>
 
 Both pin-management commands run entirely against local pin files — no Worker process needs to be running to manage them. For the full `leapmux control worker pins list|show|remove` reference (and the required `--hub` flag), see [Control CLI](/docs/using/control-cli/).
 
-> **Note:** Browser pins are managed under **Preferences → Advanced → Trusted worker keys**, which lists and removes pinned keys. For a deeper look at the handshake, fingerprints, and the full trust model, see [Security & Threat Model](/docs/admin/security/).
+{{< callout type="info" >}}
+Browser pins are managed under **Preferences → Advanced → Trusted worker keys**, which lists and removes pinned keys. For a deeper look at the handshake, fingerprints, and the full trust model, see [Security & Threat Model](/docs/admin/security/).
+{{< /callout >}}
 
 ## Administrator reference: admin worker commands
 
@@ -289,7 +301,9 @@ Administrators manage all Workers on a Hub (not just their own) with `leapmux co
 | `leapmux control admin worker reg-key revoke --id <id>` | Revoke a registration key. |
 | `leapmux control admin worker reg-key purge-expired` | Hard-delete all expired or revoked keys. |
 
-> **Note:** `control admin` deliberately has **no** `reg-key create` — registration keys are minted only by an authenticated user (via the **Register worker** dialog), which is itself the authorization step. `control admin` lists, revokes, and purges keys but does not issue them.
+{{< callout type="info" >}}
+`control admin` deliberately has **no** `reg-key create` — registration keys are minted only by an authenticated user (via the **Register worker** dialog), which is itself the authorization step. `control admin` lists, revokes, and purges keys but does not issue them.
+{{< /callout >}}
 
 For the complete administrator surface — including sessions, API tokens, and delegation tokens — see [`admin` — hub administration over RPC](/docs/admin/admin-cli/). Encryption keys are offline work; see [Recovery](/docs/admin/recover/).
 

@@ -1,9 +1,9 @@
 import { Code, ConnectError } from '@connectrpc/connect'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
-import { createSignal } from 'solid-js'
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { CaptchaProvider } from '~/generated/proto/leapmux/v1/auth_pb'
+import { resetCaptchaMocks } from '~/test-support/captchaMocks'
 import { mockLoadSystemInfo, resetSystemInfoMock, setSystemInfoMock } from '~/test-support/systemInfoMock'
 
 import { SignupForm } from './SignupForm'
@@ -36,19 +36,14 @@ vi.mock('~/lib/systemInfo', async () => {
   return m.systemInfoMock
 })
 
-const [mockCaptchaPayload, setMockCaptchaPayload] = createSignal<string | null>(null)
 vi.mock('~/components/common/CaptchaField', async () => {
-  const { createEffect } = await import('solid-js')
-  return {
-    CaptchaField: (props: { action: string, onPayload: (p: string | null) => void, onUnavailable: () => void }) => {
-      createEffect(() => props.onPayload(mockCaptchaPayload()))
-      return <div data-testid="captcha-field" data-action={props.action} />
-    },
-  }
+  const m = await import('~/test-support/captchaMocks')
+  return m.captchaFieldMock
 })
-vi.mock('~/components/common/CaptchaHoneypot', () => ({
-  CaptchaHoneypot: () => <input data-testid="captcha-honeypot" type="text" name="website" />,
-}))
+vi.mock('~/components/common/CaptchaHoneypot', async () => {
+  const m = await import('~/test-support/captchaMocks')
+  return m.captchaHoneypotMock
+})
 
 function usernameInput() {
   return screen.getByLabelText('Username') as HTMLInputElement
@@ -85,7 +80,7 @@ describe('signup form display-name mirror', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     resetSystemInfoMock()
-    setMockCaptchaPayload(null)
+    resetCaptchaMocks()
     mockSignUp.mockResolvedValue({})
   })
 
@@ -130,7 +125,7 @@ describe('signup form passkey path', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     resetSystemInfoMock()
-    setMockCaptchaPayload(null)
+    resetCaptchaMocks()
   })
 
   it('requires email before submit', () => {
