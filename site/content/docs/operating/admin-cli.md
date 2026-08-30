@@ -1,6 +1,6 @@
 ---
 title: "Admin CLI"
-description: "leapmux control admin runs hub administration over RPC: settings, users, sessions, workers, sign-in providers, captcha, rate limits, and tokens."
+description: "leapmux control admin administers a running Hub over RPC: settings, users, sessions, Workers, sign-in providers, captcha, rate limits, and tokens."
 type: docs
 weight: 9
 ---
