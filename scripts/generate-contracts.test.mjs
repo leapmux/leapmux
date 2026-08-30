@@ -29,6 +29,7 @@ import {
   checkWorkerVocab,
   ContractError,
   deriveWire,
+  DESKTOP_RS_MACOS_ONLY_EVENTS,
   emitGoDesktop,
   emitGoHeaders,
   emitGoRetry,
@@ -271,6 +272,20 @@ describe('emitters', () => {
     const ts = emitTsDesktop(d)
     expect(ts).toContain('TAURI_EVENT_SIDECAR_LOG = "sidecar:log"')
     expect(ts).toContain('TAURI_EVENT_MENU_SHOW_PREFERENCES = "menu:show-preferences"')
+  })
+
+  it('shields the macOS-only menu consts from dead_code off macOS', () => {
+    // The menu events are emitted solely from #[cfg(target_os = "macos")]
+    // code (the native app menu; Linux and Windows render the menu in the
+    // webview), so `cargo clippy --all-targets -- -D warnings` on the
+    // Linux/Windows CI runners saw the consts as dead and failed the build.
+    // allow, not expect: on macOS the consts are used and expect(dead_code)
+    // would itself warn there.
+    const d = readContract('desktop')
+    const rs = emitRsDesktop(d)
+    expect(rs).toContain('#[cfg_attr(not(target_os = "macos"), allow(dead_code))]\npub const EVENT_MENU_SHOW_ABOUT: &str = "menu:show-about"')
+    expect(rs).toContain('#[cfg_attr(not(target_os = "macos"), allow(dead_code))]\npub const EVENT_MENU_SHOW_PREFERENCES: &str = "menu:show-preferences"')
+    expect(rs).not.toContain('#[cfg_attr(not(target_os = "macos"), allow(dead_code))]\npub const EVENT_CHANNEL_MESSAGE')
   })
 
   it('emits durations as const expressions, not runtime values', () => {
@@ -717,6 +732,21 @@ describe('checkWorkerVocab / checkDesktop', () => {
       envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y' },
       tauriEvents: { channelMessage: 'c:m', channelClose: 'c:c', userEventsMessage: 'u:m', userEventsClose: 'u:c', extra: 'e:x' },
     }), 'has no DESKTOP_RS_EVENT_NAMES entry')
+  })
+
+  it('rejects a macOS-only event key that no name table carries', () => {
+    // A typo in DESKTOP_RS_MACOS_ONLY_EVENTS would silently stop annotating
+    // the const it meant, and the off-macOS clippy failure would come back.
+    DESKTOP_RS_MACOS_ONLY_EVENTS.add('noSuchEvent')
+    try {
+      expectContractError(() => checkDesktop({
+        envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y' },
+        tauriEvents: { channelMessage: 'c:m', channelClose: 'c:c', userEventsMessage: 'u:m', userEventsClose: 'u:c' },
+      }), 'missing from DESKTOP_RS_EVENT_NAMES')
+    }
+    finally {
+      DESKTOP_RS_MACOS_ONLY_EVENTS.delete('noSuchEvent')
+    }
   })
 
   it('emits the Rust module without inner doc comments (include! cannot take them)', () => {
