@@ -17,7 +17,7 @@ LeapMux is a single Go binary, `leapmux`, that can play three roles. In a runnin
 
 The division is deliberate: the Hub knows *who is talking to whom* but never *what they say*. That property is what makes it safe to let a teammate or platform team operate the Hub while your agents run on your own machine.
 
-> **Note:** The native desktop app is a packaged Frontend plus an embedded LeapMux binary. It can run a local Hub+Worker (solo) or connect its WebView to a remote Hub. See [Installation](/docs/getting-started/installation/) and [Running LeapMux](/docs/operating/running-leapmux/).
+> **Note:** The native desktop app is a packaged Frontend plus an embedded LeapMux binary. It can run a local Hub+Worker (solo) or connect its WebView to a remote Hub. See [Installation](/docs/getting-started/installation/) and [Running LeapMux](/docs/admin/running-leapmux/).
 
 ## The two deployment shapes
 
@@ -85,7 +85,7 @@ There is also `leapmux dev` — the same Hub+Worker-in-one-process runner as sol
 | Multiple user accounts | No | Yes |
 | Trust model | Local-host trust | Hub is an authenticated relay |
 
-The default TCP port everywhere is **4327**. For run modes, ports, data directories, Docker, and reverse-proxy setup, see [Running LeapMux](/docs/operating/running-leapmux/) and [Configuration](/docs/operating/configuration/). For the full command surface, see the [CLI Reference](/docs/reference/cli-reference/).
+The default TCP port everywhere is **4327**. For run modes, ports, data directories, Docker, and reverse-proxy setup, see [Running LeapMux](/docs/admin/running-leapmux/) and [Configuration](/docs/admin/configuration/). For the full command surface, see the [CLI Reference](/docs/reference/cli-reference/).
 
 ## The object hierarchy
 
@@ -141,7 +141,7 @@ Key properties:
 - Workers **dial out** to the Hub and re-establish the connection automatically after a drop, so they work behind NATs and firewalls without inbound ports.
 - In distributed mode a Worker must be **registered** before it can connect: an authenticated user mints a registration key in the Hub UI and passes it to `leapmux worker --registration-key <key>` on first run. Once registered, the Worker saves its credentials and reconnects on its own.
 
-For registering, approving, pinning, and selecting Workers, see [Managing Workers](/docs/operating/managing-workers/).
+For registering, approving, pinning, and selecting Workers, see [Managing Workers](/docs/admin/managing-workers/).
 
 > **Note:** A tab can only be used while its Worker is online. If the hosting Worker is offline, opening a channel to it fails until it reconnects.
 
@@ -152,16 +152,16 @@ All Frontend↔Worker traffic is **end-to-end encrypted**. The Hub relays opaque
 Conceptually:
 
 - When the Frontend needs to talk to a Worker, it opens an **encrypted channel** to that Worker, multiplexed through the Hub. The Hub routes the ciphertext but cannot decrypt it.
-- The encryption is a hybrid post-quantum handshake (classical + post-quantum key exchange, with authenticated encryption). A **classic** (non-PQ) mode is also available; the default is **post-quantum**. The specific algorithms are listed in [Security & Threat Model](/docs/operating/security/).
+- The encryption is a hybrid post-quantum handshake (classical + post-quantum key exchange, with authenticated encryption). A **classic** (non-PQ) mode is also available; the default is **post-quantum**. The specific algorithms are listed in [Security & Threat Model](/docs/admin/security/).
 - After the handshake the Frontend proves its identity to the Worker (so a channel is bound to the authenticated user). The Worker refuses any request before this verification.
 
-So the Hub sees *who talks to whom* plus the control-plane metadata it needs to route — but never the *content*: agent transcripts, tool calls, terminal I/O, and file contents all travel inside the encrypted channel. This is what "the Hub is an **authenticated relay, not a trusted peer**" means in practice, and it is load-bearing in distributed mode, where the Hub may be operated by someone other than you. For the authoritative breakdown of exactly what the Hub can and cannot see, see [Security & Threat Model](/docs/operating/security/).
+So the Hub sees *who talks to whom* plus the control-plane metadata it needs to route — but never the *content*: agent transcripts, tool calls, terminal I/O, and file contents all travel inside the encrypted channel. This is what "the Hub is an **authenticated relay, not a trusted peer**" means in practice, and it is load-bearing in distributed mode, where the Hub may be operated by someone other than you. For the authoritative breakdown of exactly what the Hub can and cannot see, see [Security & Threat Model](/docs/admin/security/).
 
 ### Worker identity is pinned (TOFU)
 
 Each Worker has a persistent static keypair. The Frontend pins that key **trust-on-first-use (TOFU)**: it records the Worker's key on first connection and rejects any later handshake whose key doesn't match. If the key changes, you get a **"Worker public key changed"** dialog showing 4-word fingerprints for the expected and actual keys, and you must explicitly **Accept** or **Reject**. A compromised Hub therefore cannot silently swap a Worker underneath you. (Closing the dialog counts as Reject — it fails closed.)
 
-For the full protocol, threat model, and trust boundaries, see [Security & Threat Model](/docs/operating/security/). For operator-side encryption at rest (a separate keystore protecting Hub-stored secrets like OAuth tokens), see [Encryption & Data](/docs/operating/encryption-and-data/).
+For the full protocol, threat model, and trust boundaries, see [Security & Threat Model](/docs/admin/security/). For administrator-side encryption at rest (a separate keystore protecting Hub-stored secrets like OAuth tokens), see [Encryption & Data](/docs/admin/encryption-and-data/).
 
 ## Persistence
 

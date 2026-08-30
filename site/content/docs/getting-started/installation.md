@@ -10,7 +10,7 @@ There are several ways to get LeapMux. Pick the one that matches how you want to
 - **Desktop app** — the fastest way to try LeapMux on your own machine. Download a single installer, run it, and you have a Hub and Worker running together locally with no network setup.
 - **Docker** — the recommended way to run a Hub (or a Hub plus Worker) as a long-lived service for a team or on a server.
 - **Standalone binary** — the pre-built `leapmux` command-line binary, for running any mode on a host without Docker and without compiling.
-- **From source** — for contributors and operators who want to build the binary, images, or desktop app themselves.
+- **From source** — for contributors and administrators who want to build the binary, images, or desktop app themselves.
 
 > **Tip:** If you just want to run LeapMux, the pre-built Docker images, desktop app installers, and standalone binaries are all you need.
 
@@ -24,7 +24,7 @@ There are several ways to get LeapMux. Pick the one that matches how you want to
 | Run a Hub or Worker on a host without Docker | **Standalone binary** | A single self-contained `leapmux` executable you run directly. |
 | Modify LeapMux, or build your own images/artifacts | **From source** | Full control over the build via `task` targets. |
 
-For more on what each run mode does (solo vs. hub vs. worker vs. dev) and how to operate them, see [Running LeapMux](/docs/operating/running-leapmux/). For your very first session once LeapMux is installed, see [Quick Start](/docs/getting-started/quick-start/).
+For more on what each run mode does (solo vs. hub vs. worker vs. dev) and how to operate them, see [Running LeapMux](/docs/admin/running-leapmux/). For your very first session once LeapMux is installed, see [Quick Start](/docs/getting-started/quick-start/).
 
 ## Supported platforms
 
@@ -65,7 +65,7 @@ The macOS build is signed with a Developer ID and notarized, so it opens without
 
 > **Note:** Solo mode on macOS requires **Full Disk Access** so LeapMux can traverse directories in your home folder. The first time you select **Solo**, the launcher shows a **Full Disk Access Required** card with an **Open System Settings** button. Grant access there; the app detects the change and restarts itself automatically. Distributed mode does not require Full Disk Access.
 
-> **Tip:** On macOS the desktop app can install a `leapmux` command-line symlink at `/usr/local/bin/leapmux` so you can use the [Remote control CLI](/docs/operating/control-cli/) from a terminal. When you enter a Solo workspace and the CLI isn't on your `PATH`, LeapMux offers to install it. This integration is macOS-only.
+> **Tip:** On macOS the desktop app can install a `leapmux` command-line symlink at `/usr/local/bin/leapmux` so you can use the [Remote control CLI](/docs/using/control-cli/) from a terminal. When you enter a Solo workspace and the CLI isn't on your `PATH`, LeapMux offers to install it. This integration is macOS-only.
 
 ### Linux
 
@@ -117,15 +117,15 @@ docker run -p 4327:4327 -e LEAPMUX_MODE=hub -v leapmux-data:/data ghcr.io/leapmu
 docker run -p 4327:4327 -e LEAPMUX_MODE=dev -v leapmux-data:/data ghcr.io/leapmux/leapmux:latest
 ```
 
-For the full image-tag matrix (Alpine vs. Ubuntu variants, version pinning, the `:dev` tag), the s6-overlay supervision and startup mechanics, and the `/data` volume layout, see [Running LeapMux](/docs/operating/running-leapmux/), which is canonical for Docker operations. Anything beyond `LEAPMUX_MODE` and `LEAPMUX_DATA_DIR` is configured through the per-mode YAML file or through `LEAPMUX_HUB_*` / `LEAPMUX_WORKER_*` environment variables — see [Configuration](/docs/operating/configuration/).
+For the full image-tag matrix (Alpine vs. Ubuntu variants, version pinning, the `:dev` tag), the s6-overlay supervision and startup mechanics, and the `/data` volume layout, see [Running LeapMux](/docs/admin/running-leapmux/), which is canonical for Docker operations. Anything beyond `LEAPMUX_MODE` and `LEAPMUX_DATA_DIR` is configured through the per-mode YAML file or through `LEAPMUX_HUB_*` / `LEAPMUX_WORKER_*` environment variables — see [Configuration](/docs/admin/configuration/).
 
 > **Note:** Use `dev` (not `solo`) for an all-in-one container. In `solo` mode the binary defaults to binding loopback only (`127.0.0.1:4327`), so the port is not reachable from outside the container unless you override the listen address in `/data/solo/solo.yaml`. `dev` mode binds all interfaces (`:4327`) and is the container-friendly all-in-one variant.
 
-> **Warning:** The Hub does not terminate TLS itself. To serve LeapMux over HTTPS, put a reverse proxy in front of the container and set `public_url` and `secure_cookies` with `leapmux control admin settings set`. See [Running LeapMux](/docs/operating/running-leapmux/) and [Configuration](/docs/operating/configuration/) for reverse-proxy guidance.
+> **Warning:** The Hub does not terminate TLS itself. To serve LeapMux over HTTPS, put a reverse proxy in front of the container and set `public_url` and `secure_cookies` with `leapmux control admin settings set`. See [Running LeapMux](/docs/admin/running-leapmux/) and [Configuration](/docs/admin/configuration/) for reverse-proxy guidance.
 
 ### Running a Worker container
 
-A `worker` container connects out to a Hub and must be registered with a registration key minted in the Hub UI. The container doesn't pass any Hub URL or key flags on your behalf, so supply them via the Worker config (`/data/worker/worker.yaml`) or via `LEAPMUX_WORKER_HUB` and `LEAPMUX_WORKER_REGISTRATION_KEY` environment variables. An unregistered Worker with no key exits, and the error tells you to pass a registration key from the hub UI. See [Managing Workers](/docs/operating/managing-workers/) for the full registration flow.
+A `worker` container connects out to a Hub and must be registered with a registration key minted in the Hub UI. The container doesn't pass any Hub URL or key flags on your behalf, so supply them via the Worker config (`/data/worker/worker.yaml`) or via `LEAPMUX_WORKER_HUB` and `LEAPMUX_WORKER_REGISTRATION_KEY` environment variables. An unregistered Worker with no key exits, and the error tells you to pass a registration key from the hub UI. See [Managing Workers](/docs/admin/managing-workers/) for the full registration flow.
 
 ### Upgrading
 
@@ -157,13 +157,13 @@ cd leapmux_<version>_linux_amd64
 
 The macOS package is signed with a Developer ID and notarized.
 
-> **Tip:** Put `leapmux` somewhere on your `PATH` (e.g. `/usr/local/bin`) so you can invoke it from any directory and use the [Remote control CLI](/docs/operating/control-cli/). To upgrade, replace the binary with the one from a newer release archive; Hub and Worker database migrations run automatically the next time you start.
+> **Tip:** Put `leapmux` somewhere on your `PATH` (e.g. `/usr/local/bin`) so you can invoke it from any directory and use the [Remote control CLI](/docs/using/control-cli/). To upgrade, replace the binary with the one from a newer release archive; Hub and Worker database migrations run automatically the next time you start.
 
-For run modes, ports, and data directories, see [Running LeapMux](/docs/operating/running-leapmux/); for the full subcommand and flag reference, see [CLI Reference](/docs/reference/cli-reference/).
+For run modes, ports, and data directories, see [Running LeapMux](/docs/admin/running-leapmux/); for the full subcommand and flag reference, see [CLI Reference](/docs/reference/cli-reference/).
 
 ## From source
 
-Building from source is for contributors and operators who want to compile the binary, Docker images, or desktop app themselves. The full developer guide lives in the project [`README.md`](https://github.com/leapmux/leapmux); this section is a high-level pointer.
+Building from source is for contributors and administrators who want to compile the binary, Docker images, or desktop app themselves. The full developer guide lives in the project [`README.md`](https://github.com/leapmux/leapmux); this section is a high-level pointer.
 
 ### Prerequisites
 
@@ -200,11 +200,11 @@ Common build targets:
 | `task build-desktop` | The Tauri desktop app |
 | `task docker-build` | Both Alpine and Ubuntu Docker images |
 
-For the platform-specific dependency install commands (Homebrew, pacman, winget) and the full set of dev workflows, follow the project [`README.md`](https://github.com/leapmux/leapmux). For what each run mode does once built, see [Running LeapMux](/docs/operating/running-leapmux/).
+For the platform-specific dependency install commands (Homebrew, pacman, winget) and the full set of dev workflows, follow the project [`README.md`](https://github.com/leapmux/leapmux). For what each run mode does once built, see [Running LeapMux](/docs/admin/running-leapmux/).
 
 ## Next steps
 
 - [Quick Start](/docs/getting-started/quick-start/) — launch LeapMux and open your first agent.
-- [Running LeapMux](/docs/operating/running-leapmux/) — run modes, ports, data directories, Docker, and reverse proxies in depth.
-- [Configuration](/docs/operating/configuration/) — the full configuration key reference and storage backends.
-- [Managing Workers](/docs/operating/managing-workers/) — register and approve Workers connecting to a Hub.
+- [Running LeapMux](/docs/admin/running-leapmux/) — run modes, ports, data directories, Docker, and reverse proxies in depth.
+- [Configuration](/docs/admin/configuration/) — the full configuration key reference and storage backends.
+- [Managing Workers](/docs/admin/managing-workers/) — register and approve Workers connecting to a Hub.

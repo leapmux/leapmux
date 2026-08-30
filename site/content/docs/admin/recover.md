@@ -7,7 +7,7 @@ weight: 10
 
 `leapmux recover` is the **offline break-glass** command tree. It operates **directly against the Hub's database and on-disk encryption key file** — no running Hub, no network call, no login. You run it on the machine that holds the Hub's data directory, typically as the same OS user that runs the Hub.
 
-Every other administration task — users, sessions, workers, OAuth providers, captcha, rate limits, instance settings, API tokens, delegation tokens — runs **online, authenticated, over RPC** with [`leapmux control admin ...`](/docs/operating/admin-cli/), or from the Preferences dialog's administration panels.
+Every other administration task — users, sessions, workers, OAuth providers, captcha, rate limits, instance settings, API tokens, delegation tokens — runs **online, authenticated, over RPC** with [`leapmux control admin ...`](/docs/admin/admin-cli/), or from the Preferences dialog's administration panels.
 
 > **Warning:** Because `leapmux recover` writes straight to the database, anyone who can run it has full control over the Hub's data. That is exactly its purpose — break-glass — and its entire surface is four groups. Protect the data directory and the hosts that can reach it. There is no per-command authentication.
 
@@ -48,13 +48,13 @@ leapmux recover bootstrap create-admin --username alice
 # (prompts for the password)
 ```
 
-The created user is always an administrator. The command **refuses once any admin exists**, and it points you at [`control admin user create --admin`](/docs/operating/control-cli/) instead.
+The created user is always an administrator. The command **refuses once any admin exists**, and it points you at [`control admin user create --admin`](/docs/using/control-cli/) instead.
 
-Every later user — admin included — is created online through [`control admin user create`](/docs/operating/control-cli/).
+Every later user — admin included — is created online through [`control admin user create`](/docs/using/control-cli/).
 
 ## `password reset`
 
-Resets a user's password with the hub stopped — the break-glass path for a hub whose only admin forgot their password. Reach for it when the hub cannot serve; while the hub runs, [`leapmux control admin user reset-password`](/docs/operating/admin-cli/#user-passwords) does the same work over RPC and needs an administrator login.
+Resets a user's password with the hub stopped — the break-glass path for a hub whose only admin forgot their password. Reach for it when the hub cannot serve; while the hub runs, [`leapmux control admin user reset-password`](/docs/admin/admin-cli/#user-passwords) does the same work over RPC and needs an administrator login.
 
 ```bash
 leapmux recover password reset --username alice
@@ -72,7 +72,7 @@ Passwords are 8–128 printable ASCII characters, spaces included (see [Password
 
 ## `encryption-key` — encryption keys
 
-The encryption key ring is a file (default `{DataDir}/encryption.key`, mode `0600`) holding versioned XChaCha20-Poly1305 keys plus a dedicated token pepper. The **highest version is the active key** used for all new encryption; older versions remain only to decrypt old data. For the full keystore model and backup guidance, see [Encryption & Data](/docs/operating/encryption-and-data/).
+The encryption key ring is a file (default `{DataDir}/encryption.key`, mode `0600`) holding versioned XChaCha20-Poly1305 keys plus a dedicated token pepper. The **highest version is the active key** used for all new encryption; older versions remain only to decrypt old data. For the full keystore model and backup guidance, see [Encryption & Data](/docs/admin/encryption-and-data/).
 
 > **Note:** The API-token / delegation-token pepper is a dedicated, stable secret stored in the key file but **independent** of the key ring, so `rotate`, `reencrypt`, and `remove` never invalidate tokens. To deliberately invalidate every API and delegation token, use `rotate-pepper`.
 
@@ -140,6 +140,6 @@ leapmux recover db migrate --config /etc/leapmux/hub.yaml
 
 ## Related chapters
 
-- [Admin CLI](/docs/operating/admin-cli/) — the online `control admin` surface (users, sessions, tokens, workers, OAuth, settings).
-- [Configuration](/docs/operating/configuration/) — what each instance setting does.
-- [Encryption & Data](/docs/operating/encryption-and-data/) — the keystore model.
+- [Admin CLI](/docs/admin/admin-cli/) — the online `control admin` surface (users, sessions, tokens, workers, OAuth, settings).
+- [Configuration](/docs/admin/configuration/) — what each instance setting does.
+- [Encryption & Data](/docs/admin/encryption-and-data/) — the keystore model.

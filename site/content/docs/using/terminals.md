@@ -67,7 +67,7 @@ Submit with the **"Create"** button (it reads **"Creating..."** while in flight)
 
 ### Opening a terminal from the CLI
 
-You can create a terminal from a script or another agent with the [Control CLI](/docs/operating/control-cli/):
+You can create a terminal from a script or another agent with the [Control CLI](/docs/using/control-cli/):
 
 ```bash
 leapmux control tab open --type terminal \
@@ -76,7 +76,7 @@ leapmux control tab open --type terminal \
   --shell /bin/zsh
 ```
 
-`--shell` is optional — leaving it empty uses the Worker's default shell. `--shell-start-dir` defaults to the working directory. See [Control CLI](/docs/operating/control-cli/) for the full flag set, entity-ID resolution, and placement flags.
+`--shell` is optional — leaving it empty uses the Worker's default shell. `--shell-start-dir` defaults to the working directory. See [Control CLI](/docs/using/control-cli/) for the full flag set, entity-ID resolution, and placement flags.
 
 > **Note:** Remote control is automatic; see [Driving LeapMux from inside a terminal](#driving-leapmux-from-inside-a-terminal-remote-control).
 
@@ -105,7 +105,7 @@ When you don't choose a shell explicitly, the Worker uses its default, resolved 
    - **Windows:** `pwsh`, then `powershell`, falling back to the bundled Windows PowerShell.
    - **Other platforms:** `/bin/sh`.
 
-> **Tip:** To force a specific default shell for every terminal a Worker spawns, set `LEAPMUX_DEFAULT_SHELL` in the Worker's environment. See [Configuration](/docs/operating/configuration/).
+> **Tip:** To force a specific default shell for every terminal a Worker spawns, set `LEAPMUX_DEFAULT_SHELL` in the Worker's environment. See [Configuration](/docs/admin/configuration/).
 
 ### Login-shell flags
 
@@ -211,7 +211,7 @@ On an exited terminal, **Enter** is the only key that does anything — it resta
 
 > **Note:** There is no "remote-enabled" checkbox or toggle in the New terminal dialog, the CLI, or anywhere else. **Every** terminal LeapMux spawns is remote-enabled automatically (as long as the Worker has remote control configured). This is a frequent point of confusion — there is nothing to turn on.
 
-When the Worker spawns your shell, it injects a set of `LEAPMUX_CONTROL_*` environment variables that let any script or program running inside the terminal drive LeapMux through the [`leapmux control`](/docs/operating/control-cli/) CLI — without needing to log in separately. The CLI detects these variables and routes its calls over a local socket the Worker provides, scoped to the terminal's own identity.
+When the Worker spawns your shell, it injects a set of `LEAPMUX_CONTROL_*` environment variables that let any script or program running inside the terminal drive LeapMux through the [`leapmux control`](/docs/using/control-cli/) CLI — without needing to log in separately. The CLI detects these variables and routes its calls over a local socket the Worker provides, scoped to the terminal's own identity.
 
 The variables injected into a terminal are:
 
@@ -258,7 +258,7 @@ leapmux control terminal get --tab-id <tab> --screen
 leapmux control terminal shells --worker-id <worker>
 ```
 
-See [Control CLI](/docs/operating/control-cli/) for the complete terminal subcommand reference, authentication, and the JSON output contract.
+See [Control CLI](/docs/using/control-cli/) for the complete terminal subcommand reference, authentication, and the JSON output contract.
 
 ## Renaming a terminal
 
@@ -283,6 +283,6 @@ The terminal and tab shortcuts (opening, closing, scrollback paging, and the mac
 - [Tabs & Layout](/docs/using/tabs-and-layout/) — tiling, floating, and moving terminal tabs.
 - [Worktrees & Branches](/docs/using/worktrees-and-branches/) — git options, worktree creation, and the close-last-tab flow.
 - [Coding Agents](/docs/using/coding-agents/) — agents share the same tab, Worker, and git-options model.
-- [Control CLI](/docs/operating/control-cli/) — the full `leapmux control terminal` and `tab` command surface.
+- [Control CLI](/docs/using/control-cli/) — the full `leapmux control terminal` and `tab` command surface.
 - [Settings & Preferences](/docs/using/settings/) — terminal theme and fonts.
 - [Keyboard Shortcuts](/docs/using/keyboard-shortcuts/) — remap any of the shortcuts above.

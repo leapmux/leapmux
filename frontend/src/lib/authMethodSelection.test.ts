@@ -37,7 +37,7 @@ describe('createAuthMethodSelection', () => {
   // blocker can appear with a passkey already selected. Every
   // reader must then see 'password' -- LoginPage and SignupForm each read
   // the RAW signal at one or two sites, which hid the password field, hid
-  // the "Forgot password?" link, and skipped the password validation while
+  // the "recovery" link, and skipped the password validation while
   // the submit path already fell back.
   it('falls back to password when passkey support disappears mid-form', () => {
     setSystemInfoMock({ passkeyBlocker: null })

@@ -2,12 +2,12 @@
 title: "File Browser"
 description: "The git-aware file browser and read-only viewer in LeapMux: browse the tree with live git status, open files as tabs, and view inline diffs, even remotely."
 type: docs
-weight: 6
+weight: 7
 ---
 
 LeapMux includes a git-aware file browser and a read-only file viewer. The browser lives in the workspace sidebar's **Files** section and shows the directory tree of the active tab's working directory, with live git-status colors and diff-stat badges. Clicking a file opens it as a tab in the main tile area, where you can read its contents, view inline diffs against `HEAD` or the index, preview images and Markdown, and quote selections into a chat.
 
-Everything the file browser shows — directory listings, file contents, and git status — comes from the Worker that owns the active tab. When that Worker runs on a remote machine, all of this data streams over the end-to-end-encrypted Worker channel; the Hub never sees your paths or file contents. See [Security & Threat Model](/docs/operating/security/) for the trust boundaries.
+Everything the file browser shows — directory listings, file contents, and git status — comes from the Worker that owns the active tab. When that Worker runs on a remote machine, all of this data streams over the end-to-end-encrypted Worker channel; the Hub never sees your paths or file contents. See [Security & Threat Model](/docs/admin/security/) for the trust boundaries.
 
 > **Note:** The file viewer is strictly read-only. LeapMux has no file-editing or file-writing capability — there is no "save" that writes back to disk. The viewer's only output actions are downloading, quoting, and mentioning files. Edits happen through your coding agents and terminals, not through this browser.
 
@@ -250,7 +250,7 @@ The file browser works identically whether the Worker is local or remote, becaus
 - **Git status** (file states and diff stats) for the colors, badges, and filters.
 - **Committed and staged file contents** for the inline diffs.
 
-When the Worker is on another machine, every one of these requests and responses travels over the end-to-end-encrypted Worker channel. The Hub relays the encrypted traffic but cannot read your paths or file contents. This is the same channel your agents and terminals use. For how remote Workers are registered, approved, and selected, see [Managing Workers](/docs/operating/managing-workers/); for the encryption details, see [Security & Threat Model](/docs/operating/security/).
+When the Worker is on another machine, every one of these requests and responses travels over the end-to-end-encrypted Worker channel. The Hub relays the encrypted traffic but cannot read your paths or file contents. This is the same channel your agents and terminals use. For how remote Workers are registered, approved, and selected, see [Managing Workers](/docs/admin/managing-workers/); for the encryption details, see [Security & Threat Model](/docs/admin/security/).
 
 > **Note:** Git error messages surfaced in the browser (for example, a dubious-ownership warning) appear in English.
 

@@ -3,6 +3,7 @@ import { A } from '@solidjs/router'
 import { createMemo, createSignal, Show } from 'solid-js'
 import { userClient } from '~/api/clients'
 import { actionsFooter } from '~/components/common/actionsFooter.css'
+import { CaptchaSection } from '~/components/common/CaptchaSection'
 import { StatusLine } from '~/components/common/StatusLine'
 import { useAuth } from '~/context/AuthContext'
 import { KEY_EMAIL_CHANGE_DRAFT, sessionStorageGet, sessionStorageRemove, sessionStorageSet } from '~/lib/browserStorage'
@@ -117,7 +118,7 @@ export const AccountEmail: Component = () => {
         "Change Email" writes an administrator's new address straight to the
         column with no code at all. So the /setup administrator -- who lands
         UNVERIFIED, because the column records confirmation and not privilege
-        -- had no route to a confirmed address, and Forgot password, the
+        -- had no route to a confirmed address, and account recovery, the
         worker-instructions mail and the CLI-credential notice all stayed
         silently off for them.
 
@@ -125,6 +126,7 @@ export const AccountEmail: Component = () => {
         address when there is none.
       */}
       <Show when={auth.user()?.email && !auth.user()?.emailVerified && isEmailEnabled()}>
+        <CaptchaSection action="resend_verification" captcha={verification.captcha} />
         <div class={actionsFooter}>
           <button type="button" onClick={() => void verification.resend()} disabled={verification.disabled()}>
             {verification.buttonLabel()}

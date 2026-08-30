@@ -44,8 +44,8 @@ function withoutTrailingSlash(path: string): string {
  *
  * A non-solo hub whose initial setup is not complete has no account at all.
  * Every credential page therefore offers a form that cannot succeed:
- * `/login` has nothing to sign in to, `/signup` and `/forgot-password` and
- * `/reset-password` have no account to act on, `/verify-email` and
+ * `/login` has nothing to sign in to, `/signup` and `/recover-account` and
+ * `/recover-account/complete` have no account to act on, `/verify-email` and
  * `/elevate` need a session nobody can hold. Only `/setup` does anything.
  *
  * It is mounted ONCE, around the router outlet in `~/app.tsx`, and that

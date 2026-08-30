@@ -16,13 +16,17 @@ service UserService {
   // and email-change verification. Authenticated; the session user must own
   // the pending email row identified by `verification_token`. The token is
   // the 6-character display code (with or without hyphen) the user
-  // received in their verification email.
+  // received in their verification email. Captcha-protected like the
+  // anonymous credential RPCs: the wrong-guess budget is free to charge,
+  // so automation must pre-pay here too.
   rpc VerifyEmail(VerifyEmailRequest) returns (VerifyEmailResponse);
   // Re-issue the verification email for the current user's pending
   // address. Authenticated; requires a pending verification to exist
   // (FailedPrecondition otherwise). The RPC invalidates the previous code
   // — a fresh 6-character code with a new 30-minute TTL replaces it. Use
   // this when the original mail was lost or never arrived.
+  // Captcha-protected: every attempt drives an SMTP send toward the
+  // cooldown gate, so automation must pre-pay here too.
   rpc ResendVerificationEmail(ResendVerificationEmailRequest) returns (ResendVerificationEmailResponse);
   // Change the current user's password. Requires an elevated session,
   // except on an account that has neither a password nor a passkey -- that
@@ -111,13 +115,22 @@ message RequestEmailChangeResponse {
 
 message VerifyEmailRequest {
   string verification_token = 1;
+  // Provider token; see LoginRequest.captcha_payload.
+  string captcha_payload = 2;
+  // Hidden anti-bot field value; see LoginRequest.honeypot.
+  string honeypot = 3;
 }
 
 message VerifyEmailResponse {
   User user = 1;
 }
 
-message ResendVerificationEmailRequest {}
+message ResendVerificationEmailRequest {
+  // Provider token; see LoginRequest.captcha_payload.
+  string captcha_payload = 1;
+  // Hidden anti-bot field value; see LoginRequest.honeypot.
+  string honeypot = 2;
+}
 
 message ResendVerificationEmailResponse {
   // True iff the hub sent the verification email successfully. False

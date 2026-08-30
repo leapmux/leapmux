@@ -7,14 +7,14 @@ weight: 3
 
 A **Worker** is the long-running daemon (`leapmux worker`) that hosts your coding agents, terminals, and file access. It runs on whatever machine holds the code you want to work on — your laptop, a beefy desktop, a remote build box — and connects *out* to a Hub. This chapter covers how a Worker reaches a Hub, how you register and approve one, how the UI shows Worker status, how Trust-On-First-Use (TOFU) key pinning protects you from a malicious Hub, and how you pick which Worker hosts a new tab.
 
-If you only ever run `leapmux solo`, a Worker is started for you in-process and most of this chapter is informational — see [Running LeapMux](/docs/operating/running-leapmux/) for the run modes and [Concepts & Architecture](/docs/getting-started/concepts/) for how the Hub, Worker, and Frontend fit together.
+If you only ever run `leapmux solo`, a Worker is started for you in-process and most of this chapter is informational — see [Running LeapMux](/docs/admin/running-leapmux/) for the run modes and [Concepts & Architecture](/docs/getting-started/concepts/) for how the Hub, Worker, and Frontend fit together.
 
 ## How a Worker reaches a Hub
 
 The Worker always **dials the Hub** — it opens a single outbound bidirectional gRPC stream and keeps it alive. Nothing ever connects *to* the Worker, so:
 
 - The Worker needs **no inbound port** and works fine behind NAT, a home router, or a corporate firewall.
-- Only the Hub needs a reachable address (see [Running LeapMux](/docs/operating/running-leapmux/) and [Configuration](/docs/operating/configuration/)).
+- Only the Hub needs a reachable address (see [Running LeapMux](/docs/admin/running-leapmux/) and [Configuration](/docs/admin/configuration/)).
 
 You tell the Worker where its Hub is with the `--hub` flag:
 
@@ -32,7 +32,7 @@ The default is `http://127.0.0.1:4327` (a Hub on the same machine). The `--hub` 
 
 The two local-IPC forms exist for co-located setups (notably the desktop app's local-only mode, where the Hub never opens a TCP port at all). On a remote Hub you will always use `http://` or `https://`.
 
-> **Tip:** Every Worker flag has an environment-variable equivalent with the prefix `LEAPMUX_WORKER_` — for example `LEAPMUX_WORKER_HUB` and `LEAPMUX_WORKER_REGISTRATION_KEY`. This is handy for containers and `systemd` units. See [Configuration](/docs/operating/configuration/) for the full precedence rules.
+> **Tip:** Every Worker flag has an environment-variable equivalent with the prefix `LEAPMUX_WORKER_` — for example `LEAPMUX_WORKER_HUB` and `LEAPMUX_WORKER_REGISTRATION_KEY`. This is handy for containers and `systemd` units. See [Configuration](/docs/admin/configuration/) for the full precedence rules.
 
 ### Where the Worker keeps its state
 
@@ -107,7 +107,7 @@ Because keys are one-shot and expire in 5 minutes, a key that worked a moment ag
 
 ### Auto-registered Workers (solo and dev)
 
-In **solo** and **dev** modes the launcher auto-registers a co-located Worker in-process, bypassing the key flow entirely (presenting a bearer token to a local same-process RPC would add nothing). These Workers are flagged *auto-registered* and **cannot be deregistered** — re-registration on the next launch would just undo it. See [Running LeapMux](/docs/operating/running-leapmux/).
+In **solo** and **dev** modes the launcher auto-registers a co-located Worker in-process, bypassing the key flow entirely (presenting a bearer token to a local same-process RPC would add nothing). These Workers are flagged *auto-registered* and **cannot be deregistered** — re-registration on the next launch would just undo it. See [Running LeapMux](/docs/admin/running-leapmux/).
 
 ## Worker status: online and offline
 
@@ -115,7 +115,7 @@ A Worker's **online** status is computed live — it reflects whether the Hub cu
 
 Offline appears within ~10 seconds of a dropped link. During normal traffic the regular messages keep the link alive, so no extra heartbeats are sent.
 
-> **Note:** The exact heartbeat cadence (operator-level detail): the Worker checks its connection every 2 seconds and sends an idle heartbeat only after 5 seconds of silence (no other message sent in that window); the Hub treats a Worker that has gone silent for 10 seconds as disconnected.
+> **Note:** The exact heartbeat cadence (administrator-level detail): the Worker checks its connection every 2 seconds and sends an idle heartbeat only after 5 seconds of silence (no other message sent in that window); the Hub treats a Worker that has gone silent for 10 seconds as disconnected.
 
 ### In the sidebar
 
@@ -140,7 +140,7 @@ Key behaviors:
 
 Worker details are cached for about a minute, so reopening a dialog doesn't re-fetch worker details; click **Refresh workers** to force a re-list (for example, right after a new Worker comes online).
 
-To open an agent or terminal on a chosen Worker, see [Coding Agents](/docs/using/coding-agents/) and [Terminals](/docs/using/terminals/). To script the same thing, `leapmux control tab open --worker-id <id> ...` — see [Control CLI](/docs/operating/control-cli/).
+To open an agent or terminal on a chosen Worker, see [Coding Agents](/docs/using/coding-agents/) and [Terminals](/docs/using/terminals/). To script the same thing, `leapmux control tab open --worker-id <id> ...` — see [Control CLI](/docs/using/control-cli/).
 
 ## Auto-reconnect
 
@@ -166,13 +166,13 @@ Deregistering tells the Hub to forget a Worker and tear down everything running 
 
 **From the UI:** choose **Deregister...** from a Worker's context menu. The **Deregister worker** dialog warns that the action terminates every active workspace and terminal on that Worker, and that you cannot undo it. Confirm to proceed. Auto-registered (bundled local) Workers cannot be deregistered and don't show the option; the Hub refuses the attempt.
 
-**From the control CLI** (operators):
+**From the control CLI** (administrators):
 
 ```bash
 leapmux control admin worker deregister --id <worker-id>
 ```
 
-On deregistration the Worker acknowledges the request, shuts down gracefully, clears its local credentials, and exits. See [Control CLI](/docs/operating/control-cli/) for the full operator surface.
+On deregistration the Worker acknowledges the request, shuts down gracefully, clears its local credentials, and exits. See [Control CLI](/docs/using/control-cli/) for the full administrator surface.
 
 ## Tunnels (desktop app)
 
@@ -206,7 +206,7 @@ So a port-forward needs a `targetAddr` and `targetPort` (the service the Worker 
 
 ## TOFU key pinning
 
-LeapMux end-to-end encrypts all Frontend↔Worker traffic and treats the Hub as an **authenticated relay, not a trusted peer** — it routes ciphertext but can never read it. The piece that stops a *malicious or compromised Hub* from quietly swapping a real Worker for an impostor is **TOFU (Trust-On-First-Use) static-key pinning**: each client records a Worker's composite public key on first contact and rejects any later connection whose key differs. [Security & Threat Model](/docs/operating/security/) covers *why* this defeats a compromised Hub, the composite keypair, and the fingerprint scheme in full; this section is the operational reference for the three pin stores and how to reset a pin in each.
+LeapMux end-to-end encrypts all Frontend↔Worker traffic and treats the Hub as an **authenticated relay, not a trusted peer** — it routes ciphertext but can never read it. The piece that stops a *malicious or compromised Hub* from quietly swapping a real Worker for an impostor is **TOFU (Trust-On-First-Use) static-key pinning**: each client records a Worker's composite public key on first contact and rejects any later connection whose key differs. [Security & Threat Model](/docs/admin/security/) covers *why* this defeats a compromised Hub, the composite keypair, and the fingerprint scheme in full; this section is the operational reference for the three pin stores and how to reset a pin in each.
 
 **TOFU pinning in the browser — first contact pins the key, a later mismatch is rejected:**
 
@@ -249,7 +249,7 @@ browser pin workers independently, and neither sees the other's pins.
 
 ### What a mismatch looks like in the browser
 
-When a Worker's key has changed since you last connected, the Frontend stops and shows a dialog titled **Worker public key changed**. It displays the **Expected:** and **Actual:** fingerprints (short, human-comparable four-word strings) and asks you to **Reject** or **Accept** the changed key. Accept only if you *expected* the change — for example, you deliberately wiped a Worker's `state.json` and re-registered it, regenerating its keypair — and verify the new fingerprint out-of-band first. See [Security & Threat Model](/docs/operating/security/) for the full dialog text, the fingerprint scheme, and the accept-vs-reject reasoning.
+When a Worker's key has changed since you last connected, the Frontend stops and shows a dialog titled **Worker public key changed**. It displays the **Expected:** and **Actual:** fingerprints (short, human-comparable four-word strings) and asks you to **Reject** or **Accept** the changed key. Accept only if you *expected* the change — for example, you deliberately wiped a Worker's `state.json` and re-registered it, regenerating its keypair — and verify the new fingerprint out-of-band first. See [Security & Threat Model](/docs/admin/security/) for the full dialog text, the fingerprint scheme, and the accept-vs-reject reasoning.
 
 > **Warning:** A key mismatch you did not cause is a serious signal. Do not click **Accept** to "make it work." When in doubt, **Reject** and confirm the Worker's fingerprint directly with whoever runs it.
 
@@ -265,13 +265,13 @@ leapmux control worker pins remove --worker-id=<id>
 leapmux worker cross-worker-pins remove --target-worker-id=<id>
 ```
 
-Both pin-management commands run entirely against local pin files — no Worker process needs to be running to manage them. For the full `leapmux control worker pins list|show|remove` reference (and the required `--hub` flag), see [Control CLI](/docs/operating/control-cli/).
+Both pin-management commands run entirely against local pin files — no Worker process needs to be running to manage them. For the full `leapmux control worker pins list|show|remove` reference (and the required `--hub` flag), see [Control CLI](/docs/using/control-cli/).
 
-> **Note:** There is no UI for browsing or pre-clearing browser pins; in the browser, a pin is only reset by accepting the mismatch dialog (or by clearing browser storage). For a deeper look at the handshake, fingerprints, and the full trust model, see [Security & Threat Model](/docs/operating/security/).
+> **Note:** There is no UI for browsing or pre-clearing browser pins; in the browser, a pin is only reset by accepting the mismatch dialog (or by clearing browser storage). For a deeper look at the handshake, fingerprints, and the full trust model, see [Security & Threat Model](/docs/admin/security/).
 
-## Operator reference: admin worker commands
+## Administrator reference: admin worker commands
 
-Operators manage all Workers on a Hub (not just their own) with `leapmux control admin worker`. These are RPC calls to a **running** Hub, so the Hub must be up and you must be logged in as an administrator. Only `leapmux recover` opens the database directly. Highlights:
+Administrators manage all Workers on a Hub (not just their own) with `leapmux control admin worker`. These are RPC calls to a **running** Hub, so the Hub must be up and you must be logged in as an administrator. Only `leapmux recover` opens the database directly. Highlights:
 
 | Command | Purpose |
 | --- | --- |
@@ -284,7 +284,7 @@ Operators manage all Workers on a Hub (not just their own) with `leapmux control
 
 > **Note:** `control admin` deliberately has **no** `reg-key create` — registration keys are minted only by an authenticated user (via the **Register worker** dialog), which is itself the authorization step. `control admin` lists, revokes, and purges keys but does not issue them.
 
-For the complete operator surface — including sessions, API tokens, and delegation tokens — see [`admin` — hub administration over RPC](/docs/operating/admin-cli/). Encryption keys are offline work; see [Recovery](/docs/operating/recover/).
+For the complete administrator surface — including sessions, API tokens, and delegation tokens — see [`admin` — hub administration over RPC](/docs/admin/admin-cli/). Encryption keys are offline work; see [Recovery](/docs/admin/recover/).
 
 ## Encryption mode
 
@@ -293,11 +293,11 @@ A Worker runs in one of two encryption modes, set with `--encryption-mode`:
 - `post-quantum` (the default) — the hybrid post-quantum handshake, advertising all three static keys.
 - `classic` — X25519-only.
 
-Leave this at the default unless you have a specific reason to change it; both ends must agree, and the Hub tracks the mode the Worker declares. The cryptographic details are covered in [Security & Threat Model](/docs/operating/security/).
+Leave this at the default unless you have a specific reason to change it; both ends must agree, and the Hub tracks the mode the Worker declares. The cryptographic details are covered in [Security & Threat Model](/docs/admin/security/).
 
 ## See also
 
-- [Running LeapMux](/docs/operating/running-leapmux/) — run modes, ports, data directories, the bundled Worker.
-- [Configuration](/docs/operating/configuration/) — Worker flags, env vars, and config-file precedence.
-- [Security & Threat Model](/docs/operating/security/) — the E2EE protocol, TOFU pinning, and what the Hub can and cannot see.
-- [Control CLI](/docs/operating/control-cli/) — `leapmux control worker` and `worker pins` for scripting and pin management, plus the full [`leapmux control admin worker`](/docs/operating/admin-cli/) and registration-key reference.
+- [Running LeapMux](/docs/admin/running-leapmux/) — run modes, ports, data directories, the bundled Worker.
+- [Configuration](/docs/admin/configuration/) — Worker flags, env vars, and config-file precedence.
+- [Security & Threat Model](/docs/admin/security/) — the E2EE protocol, TOFU pinning, and what the Hub can and cannot see.
+- [Control CLI](/docs/using/control-cli/) — `leapmux control worker` and `worker pins` for scripting and pin management, plus the full [`leapmux control admin worker`](/docs/admin/admin-cli/) and registration-key reference.

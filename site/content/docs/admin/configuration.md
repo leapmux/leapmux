@@ -7,9 +7,9 @@ weight: 2
 
 This chapter is the complete reference for configuring the LeapMux **Hub** and **Worker** services: how settings are layered and resolved, where config files live, every config key with its default and meaning, the supported storage backends, listen-address formats, encryption mode, and the timeout/limit knobs.
 
-For *how to launch* each mode (solo, hub, worker, dev) and what each is for, see [Running LeapMux](/docs/operating/running-leapmux/). For key management, encryption at rest, and database operations, see [Encryption & Data](/docs/operating/encryption-and-data/).
+For *how to launch* each mode (solo, hub, worker, dev) and what each is for, see [Running LeapMux](/docs/admin/running-leapmux/). For key management, encryption at rest, and database operations, see [Encryption & Data](/docs/admin/encryption-and-data/).
 
-> **Note:** Everything here applies to the long-running daemons. `solo` and `dev` modes reuse the Hub's configuration loader with a restricted flag set; the differences are called out where relevant. The desktop app, the `leapmux control` CLI, and the `leapmux recover` CLI are configured separately — see [Running LeapMux](/docs/operating/running-leapmux/), [Control CLI](/docs/operating/control-cli/), and [Recovery](/docs/operating/recover/).
+> **Note:** Everything here applies to the long-running daemons. `solo` and `dev` modes reuse the Hub's configuration loader with a restricted flag set; the differences are called out where relevant. The desktop app, the `leapmux control` CLI, and the `leapmux recover` CLI are configured separately — see [Running LeapMux](/docs/admin/running-leapmux/), [Control CLI](/docs/using/control-cli/), and [Recovery](/docs/admin/recover/).
 
 ## Configuration precedence
 
@@ -227,13 +227,13 @@ Solo mode omits the settings a single-user Hub has no use for, from `settings li
 | `captcha.*` | Solo has no sign-up and no login to protect. |
 | `rate_limit.elevation` | Keyed by USER, and solo has one. |
 
-`public_url` stays: it sets the URL in the startup banner, and the `--hub` address you give a remote Worker. `rate_limit.oauth_anonymous` stays too, and for the reason the omissions above give: it is keyed by client ADDRESS on endpoints a solo Hub also serves. `open_app_registration` stays because a solo Hub authorizes apps like any other — see [App Authorization](/docs/operating/app-authorization/).
+`public_url` stays: it sets the URL in the startup banner, and the `--hub` address you give a remote Worker. `rate_limit.oauth_anonymous` stays too, and for the reason the omissions above give: it is keyed by client ADDRESS on endpoints a solo Hub also serves. `open_app_registration` stays because a solo Hub authorizes apps like any other — see [App Authorization](/docs/admin/app-authorization/).
 
-See [Accounts & Authentication](/docs/using/accounts/) for sign-up, passkeys, verification, and password-reset flows, and [Sign-in Providers](/docs/operating/sign-in-providers/) for OAuth/OIDC.
+See [Accounts & Authentication](/docs/using/accounts/) for sign-up, passkeys, verification, and account-recovery flows, and [Sign-in Providers](/docs/admin/sign-in-providers/) for OAuth/OIDC.
 
-> **Note:** Email verification is not a separate setting. Once the `smtp` block is fully configured (`host` **and** `from_address`), the hub requires verification for new non-admin sign-ups and exposes forgot-password / worker registration email features. Removing or disabling SMTP turns verification off at runtime.
+> **Note:** Email verification is not a separate setting. Once the `smtp` block is fully configured (`host` **and** `from_address`), the hub requires verification for new non-admin sign-ups and exposes account recovery / worker registration email features. Removing or disabling SMTP turns verification off at runtime.
 >
-> **SMTP-enable transition:** users who signed up while SMTP was off keep `email_verified=false` in the database. When an operator later configures SMTP, the Hub requires those accounts to verify on the next request until they do so via `/verify-email`. You need no data migration. Administrators stay exempt at the sign-in gate, but their address is stored unverified like anybody else's — the flag records only what somebody confirmed, and an unverified address still cannot receive a password-reset link.
+> **SMTP-enable transition:** users who signed up while SMTP was off keep `email_verified=false` in the database. When an administrator later configures SMTP, the Hub requires those accounts to verify on the next request until they do so via `/verify-email`. You need no data migration. Administrators stay exempt at the sign-in gate, but their address is stored unverified like anybody else's — the flag records only what somebody confirmed, and an unverified address still cannot receive a recovery link.
 
 ### Bot protection (captcha & rate limits)
 
@@ -246,14 +246,14 @@ leapmux control admin captcha set --provider turnstile --site-key 0x4AAAA... --s
 leapmux control admin rate-limit list
 ```
 
-With no configuration at all: captcha is **enabled** with the built-in ALTCHA provider at `PBKDF2/SHA-256` cost `10000` (challenges expire after 20 minutes), and `elevation` — failed attempts to verify your identity for a sensitive account change, see [Session elevation](/docs/operating/security/#session-elevation) — is limited to 5 failed attempts per 15 minutes per user. A second limit, `oauth_anonymous`, caps the authorization server's three anonymous endpoints per client address; see [App Authorization](/docs/operating/app-authorization/). Solo mode enforces no captcha and no per-user limit, but it does enforce `oauth_anonymous`. ALTCHA runs only where a browser can solve it and somebody other than you can reach the Hub — see **When ALTCHA runs** below.
+With no configuration at all: captcha is **enabled** with the built-in ALTCHA provider at `PBKDF2/SHA-256` cost `10000` (challenges expire after 20 minutes), and `elevation` — failed attempts to verify your identity for a sensitive account change, see [Session elevation](/docs/admin/security/#session-elevation) — is limited to 5 failed attempts per 15 minutes per user. A second limit, `oauth_anonymous`, caps the authorization server's three anonymous endpoints per client address; see [App Authorization](/docs/admin/app-authorization/). Solo mode enforces no captcha and no per-user limit, but it does enforce `oauth_anonymous`. ALTCHA runs only where a browser can solve it and somebody other than you can reach the Hub — see **When ALTCHA runs** below.
 
-Selecting Google reCAPTCHA v3 or Cloudflare Turnstile needs its site key and its secret, because the Hub refuses a selected provider whose key pair is incomplete. Pass both in the same `captcha set` invocation, as the example above does, or store them first and select the provider after. The Preferences dialog's Bot Protection panel shows every provider's key fields at all times for the same reason: an operator fills a provider in, then switches to it.
+Selecting Google reCAPTCHA v3 or Cloudflare Turnstile needs its site key and its secret, because the Hub refuses a selected provider whose key pair is incomplete. Pass both in the same `captcha set` invocation, as the example above does, or store them first and select the provider after. The Preferences dialog's Bot Protection panel shows every provider's key fields at all times for the same reason: an administrator fills a provider in, then switches to it.
 
 A few caveats before you change defaults:
 
 - **Captcha cost** is the per-derivation iteration count, and the browser performs ~256 derivations per solve — total work scales as ~256 × cost. Raising it multiplies bot cost and your users' wait time equally, so large values mostly punish humans. The challenge-issuing endpoint is itself unauthenticated and costs the Hub one HMAC per challenge (the solver does the expensive side), so issuance stays cheap even at high costs.
-- **External providers verify online and uncapped**: every login/signup attempt with a non-empty token makes one siteverify call to Google or Cloudflare with no per-client throttle, so scripted garbage tokens can spend the operator's siteverify quota. Disabling captcha removes that egress but leaves the unauthenticated procedures limited only by Argon2 cost and the honeypot. The built-in ALTCHA provider has no egress and self-throttles through the client-side proof-of-work.
+- **External providers verify online and uncapped**: every login/signup attempt with a non-empty token makes one siteverify call to Google or Cloudflare with no per-client throttle, so scripted garbage tokens can spend the administrator's siteverify quota. Disabling captcha removes that egress but leaves the unauthenticated procedures limited only by Argon2 cost and the honeypot. The built-in ALTCHA provider has no egress and self-throttles through the client-side proof-of-work.
 
 **When ALTCHA runs.** The Hub requires the built-in provider only where it can both work and matter. Two conditions, and both must hold:
 
@@ -277,7 +277,20 @@ WARN captcha is enabled in the settings but verifies nothing reason="the selecte
 
 It logs on the transition, not per request, so a busy Hub prints one line rather than one per sign-in. Set `public_url` (or `secure_cookies`) and the Hub logs `captcha enforcement restored: this hub publishes a secure browser address` at `INFO`. So a Hub whose settings read `captcha.enabled = true` while the browser shows no widget has one place to look for the reason.
 
-See [Captcha](/docs/operating/admin-cli/#captcha) and [Rate limits](/docs/operating/admin-cli/#rate-limits) in the Admin CLI chapter for the full flag reference.
+See [Captcha](/docs/admin/admin-cli/#captcha) and [Rate limits](/docs/admin/admin-cli/#rate-limits) in the Admin CLI chapter for the full flag reference.
+
+### Passkeys
+
+Passkeys have no switch to enable. A ceremony runs on a page only when two parties agree, and each can refuse:
+
+1. **The browser** exposes WebAuthn only in a secure context — HTTPS, or plain HTTP on a loopback address — and a browser without WebAuthn support refuses the same way. This half belongs to the browser; no Hub setting changes it, so serve the Hub over HTTPS wherever users reach it by a hostname.
+2. **The Hub** runs ceremonies only at the origins it publishes: `public_url` when set (scheme and host, no path), otherwise the TCP `listen` address — plus the loopback spellings (`localhost`, `127.0.0.1`, `[::1]`) when the bind serves loopback. The match is on the full origin: scheme, host, and port.
+
+A user who reaches the same Hub by an address outside that list — the LAN IP behind the reverse proxy, a tunnel host, a port that `public_url` does not name — can never run a ceremony. The sign-in and sign-up forms therefore **remove the Passkey option** outright: that refusal is identical for every visitor, so an option that can never work would only mislead. A browser-side refusal instead leaves the option in place, **disabled with the reason on it**, because it describes the reader's own machine and they can move. In **Preferences → Account**, either refusal disables **Add passkey** with the reason written on it.
+
+`public_url` is hot: setting it — or an administrator changing **Public base URL** under **Preferences → Administration → General** — flips passkey availability at once, with no restart and no page reload.
+
+For the sign-in and sign-up flows, see [Accounts & Authentication](/docs/using/accounts/#passkeys); for diagnosis, [Passkey sign-in fails or the authenticator never appears](/docs/reference/troubleshooting/#passkey-sign-in-fails-or-the-authenticator-never-appears).
 
 ### Outbound queue memory
 
@@ -354,7 +367,7 @@ Both long-lived sockets are probed every 30 seconds. Without the probe, a peer t
 
 `encryption_key_path` (env `LEAPMUX_HUB_ENCRYPTION_KEY_PATH`, default `{data_dir}/encryption.key`) can only be set through the YAML file or an env var — there is no command-line flag. It specifies the encryption key ring file that the Hub needs before it can read the encrypted halves of its settings rows.
 
-See [Encryption & Data](/docs/operating/encryption-and-data/) for the encryption key ring, rotation, and what is encrypted at rest.
+See [Encryption & Data](/docs/admin/encryption-and-data/) for the encryption key ring, rotation, and what is encrypted at rest.
 
 ### Derived paths and behaviors
 
@@ -365,7 +378,7 @@ See [Encryption & Data](/docs/operating/encryption-and-data/) for the encryption
 
 ## Worker configuration reference
 
-Env prefix: `LEAPMUX_WORKER_`. A Worker connects to a Hub over a URL; it does not serve HTTP itself. See [Managing Workers](/docs/operating/managing-workers/) for registration and approval. Each key's CLI flag is `--` followed by the key with underscores replaced by hyphens (for example, `db_max_conns` → `--db-max-conns`).
+Env prefix: `LEAPMUX_WORKER_`. A Worker connects to a Hub over a URL; it does not serve HTTP itself. See [Managing Workers](/docs/admin/managing-workers/) for registration and approval. Each key's CLI flag is `--` followed by the key with underscores replaced by hyphens (for example, `db_max_conns` → `--db-max-conns`).
 
 ### Worker options
 
@@ -379,7 +392,7 @@ Env prefix: `LEAPMUX_WORKER_`. A Worker connects to a Hub over a URL; it does no
 | `encryption_mode` | `post-quantum` | E2EE mode: `classic` or `post-quantum`. |
 | `use_login_shell` | `true` | Wrap the agent invocation in the user's login shell. |
 
-> **Note:** `registration_key` is required on first run and is never persisted to disk. On subsequent runs you simply omit it — the saved credentials are reused. Do **not** pass it again to an already-registered Worker: the Worker refuses the key rather than ignoring it, so you cannot burn it by accident on a machine that is already configured. For the registration flow, see [Managing Workers](/docs/operating/managing-workers/).
+> **Note:** `registration_key` is required on first run and is never persisted to disk. On subsequent runs you simply omit it — the saved credentials are reused. Do **not** pass it again to an already-registered Worker: the Worker refuses the key rather than ignoring it, so you cannot burn it by accident on a machine that is already configured. For the registration flow, see [Managing Workers](/docs/admin/managing-workers/).
 
 ### Timeout and limit options
 
@@ -404,7 +417,7 @@ The Worker keeps its own SQLite database (`<data_dir>/worker.db`) for transient 
 
 ### Worker state file
 
-After registration, a Worker persists its identity to `<data_dir>/state.json` (mode `0600`): its Worker ID, Hub auth token, who registered it, and its private E2EE keypair (auto-generated on first run). For the underlying key primitives, see [Encryption & Data](/docs/operating/encryption-and-data/) and [Security & Threat Model](/docs/operating/security/).
+After registration, a Worker persists its identity to `<data_dir>/state.json` (mode `0600`): its Worker ID, Hub auth token, who registered it, and its private E2EE keypair (auto-generated on first run). For the underlying key primitives, see [Encryption & Data](/docs/admin/encryption-and-data/) and [Security & Threat Model](/docs/admin/security/).
 
 > **Warning:** `state.json` holds the Worker's private E2EE keys and Hub auth token, and it is **not encrypted**. Treat it as a secret and back it up. Losing it forces re-registration with a new registration key and a new key identity.
 
@@ -417,7 +430,7 @@ The `encryption_mode` key (flag `--encryption-mode`, env `LEAPMUX_WORKER_ENCRYPT
 | `post-quantum` | Default. Aliases `pq`, `post_quantum`, and an empty value all map here.         |
 | `classic`      | Classical-only mode.                                                            |
 
-Any unrecognized value falls back to `post-quantum` (fail-safe). For what each mode protects and the underlying primitives, see [Security & Threat Model](/docs/operating/security/).
+Any unrecognized value falls back to `post-quantum` (fail-safe). For what each mode protects and the underlying primitives, see [Security & Threat Model](/docs/admin/security/).
 
 ## Storage backends
 
@@ -435,7 +448,7 @@ The Hub stores all relational data (users, workers, sessions, workspaces, tokens
 
 An unknown type is rejected at startup with `unsupported storage.type: "<type>" (valid: sqlite, postgres, mysql, cockroachdb, yugabytedb, tidb)`.
 
-> **Note:** Configure storage via the YAML file or the dedicated CLI flags, not env vars (see the warning under [Environment variable mapping](#environment-variable-mapping)). For backups, key/DB interplay, and the `leapmux recover db` / `leapmux recover encryption-key` commands, see [Encryption & Data](/docs/operating/encryption-and-data/).
+> **Note:** Configure storage via the YAML file or the dedicated CLI flags, not env vars (see the warning under [Environment variable mapping](#environment-variable-mapping)). For backups, key/DB interplay, and the `leapmux recover db` / `leapmux recover encryption-key` commands, see [Encryption & Data](/docs/admin/encryption-and-data/).
 
 ### SQLite (default)
 
@@ -598,9 +611,9 @@ The bare `version` subcommand is a **top-level** command (`leapmux version`), no
 
 ## Related chapters
 
-- [Running LeapMux](/docs/operating/running-leapmux/) — run modes, ports, data dirs, Docker, reverse proxy.
-- [Encryption & Data](/docs/operating/encryption-and-data/) — encryption key ring, rotation, DB migrations, backup/restore.
-- [Managing Workers](/docs/operating/managing-workers/) — registration keys, approval, Worker selection.
-- [Sign-in Providers](/docs/operating/sign-in-providers/) — configuring OAuth/OIDC as an operator.
-- [Security & Threat Model](/docs/operating/security/) — E2EE protocol, encryption modes, trust boundaries.
+- [Running LeapMux](/docs/admin/running-leapmux/) — run modes, ports, data dirs, Docker, reverse proxy.
+- [Encryption & Data](/docs/admin/encryption-and-data/) — encryption key ring, rotation, DB migrations, backup/restore.
+- [Managing Workers](/docs/admin/managing-workers/) — registration keys, approval, Worker selection.
+- [Sign-in Providers](/docs/admin/sign-in-providers/) — configuring OAuth/OIDC as an administrator.
+- [Security & Threat Model](/docs/admin/security/) — E2EE protocol, encryption modes, trust boundaries.
 - [CLI Reference](/docs/reference/cli-reference/) — consolidated command and flag cheat-sheet.

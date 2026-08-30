@@ -151,17 +151,24 @@ SELECT count(*) FROM users WHERE deleted_at IS NULL;
 SELECT EXISTS(SELECT 1 FROM users WHERE deleted_at IS NULL LIMIT 1) AS has_any;
 
 -- name: SetPendingEmail :execresult
--- Conditional mint: the write lands only when no previous code exists or
--- the previous code's expiry is at or before cooldown_cutoff, so two
--- concurrent resends for one account cannot both mint and both send (the
--- loser matches no row), and RequestEmailChange cannot mint on every
--- request. Its twin SetPendingPasswordReset carries the same predicate.
--- The Go caller derives cooldown_cutoff from the resend cooldown; the
--- comparison stays on the app clock, the clock that wrote the expiry.
-UPDATE users SET pending_email = sqlc.arg(pending_email), pending_email_token = sqlc.arg(pending_email_token), pending_email_expires_at = sqlc.narg(pending_email_expires_at), pending_email_attempts = 0, updated_at = NOW(3)
+-- Conditional mint: the write lands only when no live code exists (empty
+-- token) or the previous code was issued at or before cooldown_cutoff, so
+-- two concurrent resends for one account cannot both mint and both send
+-- (the loser matches no row), and RequestEmailChange cannot mint on every
+-- request. Its twin SetPendingRecovery carries the same predicate.
+--
+-- The gate reads pending_email_issued_at -- an instant only this mint
+-- writes -- and never the expiry: ConsumeVerificationAttempt force-expires
+-- a burned code by moving the expiry to now, so an expiry-derived gate
+-- would read a five-second-old burned code as issued a full lifetime ago
+-- and re-mint inside the cooldown. The Go caller derives cooldown_cutoff
+-- from the resend cooldown; the comparison stays on the app clock, the
+-- clock that wrote the issue.
+UPDATE users SET pending_email = sqlc.arg(pending_email), pending_email_token = sqlc.arg(pending_email_token), pending_email_expires_at = sqlc.narg(pending_email_expires_at), pending_email_issued_at = sqlc.narg(pending_email_issued_at), pending_email_attempts = 0, updated_at = NOW(3)
 WHERE id = sqlc.arg(id)
-  AND (pending_email_expires_at IS NULL
-       OR pending_email_expires_at <= sqlc.arg(cooldown_cutoff));
+  AND (pending_email_token = ''
+       OR pending_email_issued_at IS NULL
+       OR pending_email_issued_at <= sqlc.arg(cooldown_cutoff));
 
 -- name: ClearPendingEmailCode :exec
 -- ClearPendingEmailCode drops an undelivered code and KEEPS the pending
@@ -232,32 +239,36 @@ SET tokens_revoked_at = sqlc.arg(tokens_revoked_at),
     updated_at = sqlc.arg(updated_at)
 WHERE id = sqlc.arg(id);
 
--- name: SetPendingPasswordReset :execresult
--- Conditional mint: the write lands only when no previous token exists or
--- the previous token's expiry is at or before cooldown_cutoff, so two
--- concurrent requests for one account cannot both mint and both send (the
--- loser matches no row). The Go caller derives cooldown_cutoff from the
--- resend cooldown; the comparison stays on the app clock, the same clock
--- that wrote the expiry.
+-- name: SetPendingRecovery :execresult
+-- Conditional mint: the write lands only when no live link exists (empty
+-- token) or the previous link was issued at or before cooldown_cutoff, so
+-- two concurrent requests for one account cannot both mint and both send
+-- (the loser matches no row). The gate reads pending_recovery_issued_at,
+-- not the expiry, for the reason SetPendingEmail states: the attempt
+-- consumer force-expires a burned link by moving the expiry to now. The
+-- Go caller derives cooldown_cutoff from the resend cooldown; the
+-- comparison stays on the app clock, the same clock that wrote the issue.
 UPDATE users
-SET pending_password_reset_token = sqlc.arg(pending_password_reset_token),
-    pending_password_reset_expires_at = sqlc.arg(pending_password_reset_expires_at),
-    pending_password_reset_attempts = 0,
+SET pending_recovery_token = sqlc.arg(pending_recovery_token),
+    pending_recovery_expires_at = sqlc.arg(pending_recovery_expires_at),
+    pending_recovery_issued_at = sqlc.narg(pending_recovery_issued_at),
+    pending_recovery_attempts = 0,
     updated_at = NOW(3)
 WHERE id = sqlc.arg(id)
-  AND (pending_password_reset_expires_at IS NULL
-       OR pending_password_reset_expires_at <= sqlc.arg(cooldown_cutoff));
+  AND (pending_recovery_token = ''
+       OR pending_recovery_issued_at IS NULL
+       OR pending_recovery_issued_at <= sqlc.arg(cooldown_cutoff));
 
 
--- name: ClearPendingPasswordReset :exec
+-- name: ClearPendingRecovery :exec
 UPDATE users
-SET pending_password_reset_token = '',
-    pending_password_reset_expires_at = NULL,
-    pending_password_reset_attempts = 0,
+SET pending_recovery_token = '',
+    pending_recovery_expires_at = NULL,
+    pending_recovery_attempts = 0,
     updated_at = NOW(3)
 WHERE id = ?;
 
--- name: ConsumePasswordResetAttemptByToken :execresult
+-- name: ConsumeRecoveryAttemptByToken :execresult
 -- Charges one attempt against the row that holds this exact token. Keying
 -- the charge by the token (not the user id) makes the find, the charge, and
 -- the ownership re-check one statement: a token cleared between a caller's
@@ -267,30 +278,30 @@ WHERE id = ?;
 -- evaluates SET clauses left-to-right and a later clause would read the
 -- already-incremented counter, firing the force-expiry one charge early.
 UPDATE users
-SET pending_password_reset_expires_at = CASE
-        WHEN pending_password_reset_attempts + 1 > sqlc.arg(max_attempts) THEN sqlc.arg(now)
-        ELSE pending_password_reset_expires_at END,
-    pending_password_reset_attempts = pending_password_reset_attempts + 1,
+SET pending_recovery_expires_at = CASE
+        WHEN pending_recovery_attempts + 1 > sqlc.arg(max_attempts) THEN sqlc.arg(now)
+        ELSE pending_recovery_expires_at END,
+    pending_recovery_attempts = pending_recovery_attempts + 1,
     updated_at = NOW(3)
-WHERE pending_password_reset_token = ? AND pending_password_reset_token != ''
-  AND pending_password_reset_expires_at > sqlc.arg(now)
+WHERE pending_recovery_token = ? AND pending_recovery_token != ''
+  AND pending_recovery_expires_at > sqlc.arg(now)
   AND deleted_at IS NULL;
 
--- name: GetUserAfterPasswordResetAttemptByToken :one
+-- name: GetUserAfterRecoveryAttemptByToken :one
 -- No liveness predicate here: the paired UPDATE already enforced it, and a
 -- force-expired row (expires_at = NOW(3) in the same statement) must still
 -- be readable in the same transaction.
 SELECT * FROM users
-WHERE pending_password_reset_token = ? AND deleted_at IS NULL;
+WHERE pending_recovery_token = ? AND deleted_at IS NULL;
 
--- name: CompletePasswordReset :execresult
+-- name: CompleteRecovery :execresult
 UPDATE users
 SET password_hash = sqlc.arg(password_hash),
     password_set = TRUE,
-    pending_password_reset_token = '',
-    pending_password_reset_expires_at = NULL,
-    pending_password_reset_attempts = 0,
+    pending_recovery_token = '',
+    pending_recovery_expires_at = NULL,
+    pending_recovery_attempts = 0,
     tokens_revoked_at = sqlc.arg(tokens_revoked_at),
     auth_generation = sqlc.arg(auth_generation),
     updated_at = sqlc.arg(updated_at)
-WHERE id = sqlc.arg(id) AND pending_password_reset_token = sqlc.arg(pending_password_reset_token);
+WHERE id = sqlc.arg(id) AND pending_recovery_token = sqlc.arg(pending_recovery_token);

@@ -14,7 +14,7 @@ For the bigger picture of how workspaces fit alongside Hubs, Workers, tiles, and
 - A workspace is owned by the user who created it. One workspace is open at a time.
 - The user who creates a workspace is its **owner**. Only the owner can rename or delete it.
 - Workspace access is strictly owner-only: you see exactly the workspaces you own. There is no sharing.
-- Agent and terminal state lives only in the Worker's local database and is never uploaded to the Hub. Frontend↔Worker traffic is end-to-end encrypted in transit. The Hub stores the workspace's title, tab positions, and layout geometry, but never the content. See [Security & Threat Model](/docs/operating/security/).
+- Agent and terminal state lives only in the Worker's local database and is never uploaded to the Hub. Frontend↔Worker traffic is end-to-end encrypted in transit. The Hub stores the workspace's title, tab positions, and layout geometry, but never the content. See [Security & Threat Model](/docs/admin/security/).
 
 ## Creating a workspace
 
@@ -27,14 +27,14 @@ The dialog is titled **New workspace** and contains these fields:
 
 | Field | What it does |
 | --- | --- |
-| **Worker** | Pick which Worker (machine) hosts the workspace's first agent. See [Managing Workers](/docs/operating/managing-workers/). |
+| **Worker** | Pick which Worker (machine) hosts the workspace's first agent. See [Managing Workers](/docs/admin/managing-workers/). |
 | Agent provider | Choose the agent backend (for example Claude Code or Codex). A refresh control re-queries the Worker for available providers. See [Coding Agents](/docs/using/coding-agents/). |
 | **Title** | The workspace name. Pre-filled with a random three-word title-cased name; the placeholder is `New Workspace`. The refresh button beside the label (tooltip **Generate random name**) regenerates the suggestion. |
 | Directory | The working directory to open on the Worker (left column). The same picker the other dialogs use: browse the tree, or type a path in the box above it. |
 | Session ID | Optional agent session ID to resume an existing agent session (right column). See [Coding Agents](/docs/using/coding-agents/). |
 | Git options | Once a Worker is chosen, choose the git mode for the working directory — for example opening directly or in a worktree. See [Worktrees & Branches](/docs/using/worktrees-and-branches/). |
 
-Click **Create** to confirm. The button shows **Creating…** while the workspace is provisioned. Creating a workspace spins up its first agent automatically, then opens the new workspace.
+Click **Create** to confirm. Creating a workspace spins up its first agent automatically, then opens the new workspace.
 
 > **Note:** Workspace titles are checked and tidied server-side. If a title cannot be used, the dialog shows the reason inline.
 
@@ -140,4 +140,4 @@ Workspace lifecycle changes — create, rename, delete — are broadcast to all 
 - [Coding Agents](/docs/using/coding-agents/) — opening and using agents in a workspace.
 - [Worktrees & Branches](/docs/using/worktrees-and-branches/) — the git side of workspace tabs.
 - [Device Sync](/docs/using/device-sync/) — live layout sync across your devices.
-- [Security & Threat Model](/docs/operating/security/) — what the Hub can and cannot see.
+- [Security & Threat Model](/docs/admin/security/) — what the Hub can and cannot see.

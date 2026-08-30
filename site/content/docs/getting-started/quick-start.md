@@ -7,7 +7,7 @@ weight: 4
 
 This chapter gets you from zero to a working coding agent in a few minutes. Pick one of two launch paths, then follow the walkthrough to open your first agent, send a message, and open a terminal beside it.
 
-> **Note:** Both paths run LeapMux in **solo mode** — a Hub and a Worker running together in a single local process, with no login and your data kept on your machine. This is the fastest way to try LeapMux. For multi-user or remote setups, see [Running LeapMux](/docs/operating/running-leapmux/) and [Managing Workers](/docs/operating/managing-workers/).
+> **Note:** Both paths run LeapMux in **solo mode** — a Hub and a Worker running together in a single local process, with no login and your data kept on your machine. This is the fastest way to try LeapMux. For multi-user or remote setups, see [Running LeapMux](/docs/admin/running-leapmux/) and [Managing Workers](/docs/admin/managing-workers/).
 
 ## Before you begin
 
@@ -20,7 +20,7 @@ This is the simplest path on macOS, Linux, or Windows.
 1. Install **LeapMux Desktop** for your platform (see [Installation](/docs/getting-started/installation/) for download details).
 2. Launch the app. On first launch it shows a launcher titled **"LeapMux"** with the subtitle **"Choose how you'd like to connect"** and two cards:
    - **Solo** — "Run LeapMux entirely on this machine. A Hub and Worker start together in a single process — no network setup required. Your data stays local. Ideal for personal use, local development, or trying out LeapMux."
-   - **Distributed** — connect to a remote Hub by URL (covered in [Running LeapMux](/docs/operating/running-leapmux/)).
+   - **Distributed** — connect to a remote Hub by URL (covered in [Running LeapMux](/docs/admin/running-leapmux/)).
 3. Select **Solo** and click **Connect**.
 
 > **Note (macOS):** Solo mode needs **Full Disk Access** so the Worker can traverse your home directory. If it isn't granted, the launcher shows a **"Full Disk Access Required"** card with an **"Open System Settings"** button. Grant access there; the app detects it and restarts automatically.
@@ -43,7 +43,7 @@ http://127.0.0.1:4327
 
 No login is required — solo mode auto-authenticates every request as the admin.
 
-A few useful flags (full reference in [Configuration](/docs/operating/configuration/) and [CLI Reference](/docs/reference/cli-reference/)):
+A few useful flags (full reference in [Configuration](/docs/admin/configuration/) and [CLI Reference](/docs/reference/cli-reference/)):
 
 | Flag | Purpose | Default |
 | --- | --- | --- |
@@ -52,7 +52,7 @@ A few useful flags (full reference in [Configuration](/docs/operating/configurat
 | `-log-level` | `debug`, `info`, `warn`, `error` | `info` |
 | `-config` | Path to the config file | `~/.config/leapmux/solo/solo.yaml` |
 
-> **Warning:** Solo mode trusts every request as the admin. If you change `-listen` to a non-loopback address, anyone who can reach that port has full admin access without credentials. For how to expose solo mode safely, see [Security & Threat Model](/docs/operating/security/).
+> **Warning:** Solo mode trusts every request as the admin. If you change `-listen` to a non-loopback address, anyone who can reach that port has full admin access without credentials. For how to expose solo mode safely, see [Security & Threat Model](/docs/admin/security/).
 
 > **Tip:** `leapmux solo` writes its database and keys under `~/.config/leapmux/solo`, so your workspaces and sessions persist across restarts.
 
@@ -168,4 +168,4 @@ You now have a working agent and a terminal. From here:
 - [Terminals](/docs/using/terminals/) — shell selection, persistence, and remote terminals.
 - [File Browser](/docs/using/file-browser/) — the file tree, git status, and diffs.
 - [Keyboard Shortcuts](/docs/using/keyboard-shortcuts/) — speed up everything above.
-- [Running LeapMux](/docs/operating/running-leapmux/) — move beyond solo mode to a shared Hub and remote Workers.
+- [Running LeapMux](/docs/admin/running-leapmux/) — move beyond solo mode to a shared Hub and remote Workers.

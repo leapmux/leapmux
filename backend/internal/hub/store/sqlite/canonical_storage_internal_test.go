@@ -339,22 +339,25 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	require.NoError(t, err)
 	require.EqualValues(t, 1, consumedSalt)
 
-	// users.pending_email_expires_at is Go-bound by SetPendingEmail.
+	// users.pending_email_expires_at and pending_email_issued_at are
+	// Go-bound by SetPendingEmail.
 	minted, err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
 		ID:                    user.ID,
 		PendingEmail:          "canon-pending@example.com",
 		PendingEmailToken:     "canon-token",
 		PendingEmailExpiresAt: ptr(future),
+		PendingEmailIssuedAt:  ptr(now),
 		CooldownCutoff:        store.UnconditionalMintCutoff(),
 	})
 	require.NoError(t, err)
 	require.True(t, minted)
 
-	minted, err = st.Users().SetPendingPasswordReset(ctx, store.SetPendingPasswordResetParams{
-		ID:                            user.ID,
-		PendingPasswordResetToken:     "canon-reset-token",
-		PendingPasswordResetExpiresAt: future,
-		CooldownCutoff:                future,
+	minted, err = st.Users().SetPendingRecovery(ctx, store.SetPendingRecoveryParams{
+		ID:                       user.ID,
+		PendingRecoveryToken:     "canon-reset-token",
+		PendingRecoveryExpiresAt: future,
+		PendingRecoveryIssuedAt:  ptr(now),
+		CooldownCutoff:           future,
 	})
 	require.NoError(t, err)
 	require.True(t, minted)

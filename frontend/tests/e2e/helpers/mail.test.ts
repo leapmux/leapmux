@@ -14,7 +14,7 @@
 import type { CaptureSmtpServer } from './mail'
 import { connect } from 'node:net'
 import { afterEach, describe, expect, it } from 'vitest'
-import { extractPasswordResetToken, startCaptureSmtpServer } from './mail'
+import { extractAccountRecoveryToken, startCaptureSmtpServer } from './mail'
 
 /** The width of `id.Generate()`, which mints the emailed reset token. */
 const TOKEN_LENGTH = 48
@@ -32,14 +32,14 @@ const HEX_PREFIX_TOKEN = `deadbeefZ${'x'.repeat(39)}`
 /** 48 chars with no hex digit at all: a `[0-9a-f]+` class matches nothing here. */
 const NO_HEX_TOKEN = 'Z'.repeat(TOKEN_LENGTH)
 
-/** The reset email as `Renderer.PasswordResetEmail` renders it: plain text, link on its own line. */
-function resetEmailBody(token: string, hubURL = 'http://127.0.0.1:8080'): string {
+/** The recovery email as `Renderer.AccountRecoveryEmail` renders it: plain text, link on its own line. */
+function recoveryEmailBody(token: string, hubURL = 'http://127.0.0.1:8080'): string {
   return [
-    'You requested a password reset for your LeapMux account.',
+    'You asked to recover your LeapMux account.',
     '',
-    'Click the link below to choose a new password:',
+    'Click the link below to set a new password and sign back in:',
     '',
-    `    ${hubURL}/reset-password?token=${token}`,
+    `    ${hubURL}/recover-account/complete?token=${token}`,
     '',
     'The link expires in one hour. If you did not request this, you can ignore this email.',
     '',
@@ -49,16 +49,16 @@ function resetEmailBody(token: string, hubURL = 'http://127.0.0.1:8080'): string
   ].join('\r\n')
 }
 
-describe('extractPasswordResetToken', () => {
+describe('extractAccountRecoveryToken', () => {
   it('returns the whole token from a rendered reset email', () => {
-    expect(extractPasswordResetToken(resetEmailBody(REALISTIC_TOKEN))).toBe(REALISTIC_TOKEN)
+    expect(extractAccountRecoveryToken(recoveryEmailBody(REALISTIC_TOKEN))).toBe(REALISTIC_TOKEN)
   })
 
   it('keeps every character after a hex-only prefix', () => {
     // The truncating half of the old defect: a hex class returned `deadbeef`,
     // the reset page refused it, and the spec failed on a missing button one
     // page later.
-    const token = extractPasswordResetToken(resetEmailBody(HEX_PREFIX_TOKEN))
+    const token = extractAccountRecoveryToken(recoveryEmailBody(HEX_PREFIX_TOKEN))
     expect(token).toBe(HEX_PREFIX_TOKEN)
     expect(token).toHaveLength(TOKEN_LENGTH)
   })
@@ -66,37 +66,37 @@ describe('extractPasswordResetToken', () => {
   it('reads a token that holds no hex digit at all', () => {
     // The other half: a hex class matched nothing, so extraction threw
     // "not found" on a body that plainly held the link.
-    expect(extractPasswordResetToken(resetEmailBody(NO_HEX_TOKEN))).toBe(NO_HEX_TOKEN)
+    expect(extractAccountRecoveryToken(recoveryEmailBody(NO_HEX_TOKEN))).toBe(NO_HEX_TOKEN)
   })
 
   it('stops at the first character outside the mint alphabet', () => {
-    const body = `Reset here: http://h/reset-password?token=${REALISTIC_TOKEN}. Ignore if not you.`
-    expect(extractPasswordResetToken(body)).toBe(REALISTIC_TOKEN)
+    const body = `Recover here: http://h/recover-account/complete?token=${REALISTIC_TOKEN}. Ignore if not you.`
+    expect(extractAccountRecoveryToken(body)).toBe(REALISTIC_TOKEN)
   })
 
   it('throws when the body carries no reset link', () => {
     const body = 'Your LeapMux verification code is 123456.\r\n'
-    expect(() => extractPasswordResetToken(body)).toThrow(/token not found in captured email/)
+    expect(() => extractAccountRecoveryToken(body)).toThrow(/token not found in captured email/)
   })
 
   it('names the body in the not-found error, so the failure is diagnosable', () => {
-    expect(() => extractPasswordResetToken('nothing here')).toThrow(/nothing here/)
+    expect(() => extractAccountRecoveryToken('nothing here')).toThrow(/nothing here/)
   })
 
   it('throws when the extracted token is short', () => {
     const short = REALISTIC_TOKEN.slice(0, TOKEN_LENGTH - 1)
-    expect(() => extractPasswordResetToken(resetEmailBody(short)))
+    expect(() => extractAccountRecoveryToken(recoveryEmailBody(short)))
       .toThrow(new RegExp(`is ${TOKEN_LENGTH - 1} characters, want ${TOKEN_LENGTH}`))
   })
 
   it('throws when the extracted token is long', () => {
     const long = `${REALISTIC_TOKEN}Q`
-    expect(() => extractPasswordResetToken(resetEmailBody(long)))
+    expect(() => extractAccountRecoveryToken(recoveryEmailBody(long)))
       .toThrow(new RegExp(`is ${TOKEN_LENGTH + 1} characters, want ${TOKEN_LENGTH}`))
   })
 
   it('rejects an empty body rather than returning an empty token', () => {
-    expect(() => extractPasswordResetToken('')).toThrow(/token not found in captured email/)
+    expect(() => extractAccountRecoveryToken('')).toThrow(/token not found in captured email/)
   })
 })
 

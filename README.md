@@ -68,7 +68,7 @@ Frontend↔Hub uses ConnectRPC; Frontend↔Worker uses hybrid post-quantum Noise
 
 LeapMux supports exactly one active Hub process per database. The Hub holds a database-backed runtime lease and refuses to serve when another live Hub owns it; a replacement can take over after graceful release or lease expiry. Administrative CLI processes may still access the database while the Hub is running.
 
-For the full architecture, deployment modes, and threat model, see the **[Concepts](https://leapmux.dev/docs/getting-started/concepts/)** and **[Security & Threat Model](https://leapmux.dev/docs/operating/security/)** chapters at [leapmux.dev](https://leapmux.dev).
+For the full architecture, deployment modes, and threat model, see the **[Concepts](https://leapmux.dev/docs/getting-started/concepts/)** and **[Security & Threat Model](https://leapmux.dev/docs/admin/security/)** chapters at [leapmux.dev](https://leapmux.dev).
 
 ## Prerequisites
 

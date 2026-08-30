@@ -63,30 +63,30 @@ test.describe('Authentication', () => {
     await loginViaUI(page)
     await expect(page).toHaveURL(APP_HOME_URL_RE)
 
-    for (const path of ['/login', '/signup', '/forgot-password', '/setup']) {
+    for (const path of ['/login', '/signup', '/recover-account', '/setup']) {
       await page.goto(path)
       await expect(page).toHaveURL(APP_HOME_URL_RE)
       await expect(page.getByRole('button', { name: 'Sign in' })).toBeHidden()
     }
   })
 
-  // /reset-password is the one page that EXPLAINS instead of redirecting, and
+  // /recover-account/complete is the one page that EXPLAINS instead of redirecting, and
   // the reason is in its address: it carries a single-use token and no
   // ?redirect=, so a silent bounce gains the visitor nothing, explains
   // nothing, and the `replace` takes the tokened address out of that tab's
   // history as well.
-  test('explains rather than redirects on the reset-password page', async ({ page }) => {
+  test('explains rather than redirects on the recover-account completion page', async ({ page }) => {
     await loginViaUI(page)
     await expect(page).toHaveURL(APP_HOME_URL_RE)
 
-    await page.goto('/reset-password?token=not-a-real-token')
+    await page.goto('/recover-account/complete?token=not-a-real-token')
     await expect(page.getByTestId('signed-out-only-explain')).toBeVisible()
     await expect(page.getByTestId('signed-out-only-sign-out')).toBeVisible()
 
     // Signing out re-renders the form at the SAME address, token intact.
     await page.getByTestId('signed-out-only-sign-out').click()
     await expect(page.getByTestId('signed-out-only-explain')).toBeHidden()
-    await expect(page).toHaveURL(/\/reset-password\?token=not-a-real-token$/)
+    await expect(page).toHaveURL(/\/recover-account\/complete\?token=not-a-real-token$/)
   })
 
   test('should redirect to original page after login', async ({ page }) => {

@@ -23,7 +23,7 @@ import (
 // hand-written copies chose their own verb, and a template that kept the passive
 // would have to choose one of them for every caller.
 //
-// RequestPasswordReset is deliberately NOT a member. It answers solo mode
+// RequestAccountRecovery is deliberately NOT a member. It answers solo mode
 // with an empty SUCCESS rather than a refusal, because the response is
 // uniform by design and a refusal there would be an enumeration oracle.
 func rejectSolo(solo bool, subject string) error {

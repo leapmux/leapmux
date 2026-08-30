@@ -145,7 +145,7 @@ describe('accountEmail', () => {
  * an administrator to /verify-email, and an administrator's "Change Email"
  * writes the new address straight to the column with no code sent. The /setup
  * administrator therefore landed unverified with no route to a confirmed
- * address -- silently disabling Forgot password, the worker-instructions mail
+ * address -- silently disabling account recovery, the worker-instructions mail
  * and the CLI-credential notice for the one account that most needs them, while
  * `docs/using/accounts.md` told the operator to "verify it from Preferences,
  * Account".
@@ -228,7 +228,7 @@ describe('accountEmail verification', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Resend code' }))
 
     await vi.waitFor(() => {
-      expect(mockResendVerificationEmail).toHaveBeenCalledWith({})
+      expect(mockResendVerificationEmail).toHaveBeenCalledWith({ captchaPayload: '', honeypot: '' })
     })
     expect(await screen.findByText(/fresh code/i)).toBeInTheDocument()
   })

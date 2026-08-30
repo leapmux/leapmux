@@ -7,7 +7,7 @@ weight: 1
 
 This is the quick-lookup cheat-sheet for the `leapmux` command line. It covers the top-level command list, a synopsis and flag table for each daemon mode (`solo`, `hub`, `worker`, `dev`), the `version` command, the environment variables LeapMux reads, and outlines of the three large command groups — `recover` (offline break-glass), `control` (user-facing scripting), and `control admin` (hub administration) — which have their own dedicated chapters.
 
-For task-oriented walkthroughs rather than reference tables, see [Running LeapMux](/docs/operating/running-leapmux/) (run modes, ports, data dirs, Docker), [Configuration](/docs/operating/configuration/) (full config-key reference and storage backends), [Recovery](/docs/operating/recover/), and [Control CLI](/docs/operating/control-cli/).
+For task-oriented walkthroughs rather than reference tables, see [Running LeapMux](/docs/admin/running-leapmux/) (run modes, ports, data dirs, Docker), [Configuration](/docs/admin/configuration/) (full config-key reference and storage backends), [Recovery](/docs/admin/recover/), and [Control CLI](/docs/using/control-cli/).
 
 ## Top-level usage
 
@@ -35,12 +35,12 @@ Any command name can be shortened as far as it stays unambiguous.
 
 | Command | What it does | Reference |
 |---------|--------------|-----------|
-| `solo` | Hub + Worker in one process, loopback only, no login | [Running LeapMux](/docs/operating/running-leapmux/) |
-| `hub` | Hub service only; Workers connect separately | [Running LeapMux](/docs/operating/running-leapmux/) |
-| `worker` | Worker only; connects out to a Hub | [Managing Workers](/docs/operating/managing-workers/) |
-| `dev` | Hub + Worker in one process with real auth (development) | [Running LeapMux](/docs/operating/running-leapmux/) |
-| `recover` | Offline break-glass: first-admin bootstrap, password reset, keys, db | [Recovery](/docs/operating/recover/) |
-| `control` | Drive a running Hub over RPC (scripts / spawned agents) | [Control CLI](/docs/operating/control-cli/) |
+| `solo` | Hub + Worker in one process, loopback only, no login | [Running LeapMux](/docs/admin/running-leapmux/) |
+| `hub` | Hub service only; Workers connect separately | [Running LeapMux](/docs/admin/running-leapmux/) |
+| `worker` | Worker only; connects out to a Hub | [Managing Workers](/docs/admin/managing-workers/) |
+| `dev` | Hub + Worker in one process with real auth (development) | [Running LeapMux](/docs/admin/running-leapmux/) |
+| `recover` | Offline break-glass: first-admin bootstrap, password reset, keys, db | [Recovery](/docs/admin/recover/) |
+| `control` | Drive a running Hub over RPC (scripts / spawned agents) | [Control CLI](/docs/using/control-cli/) |
 | `version` | Print the build version and exit | [below](#version) |
 
 Notes on dispatch:
@@ -53,11 +53,11 @@ Notes on dispatch:
 
 > **Tip:** Flags accept both single- and double-hyphen forms (`-listen` and `--listen` are equivalent). This chapter uses the single-hyphen form, matching the binary's help output.
 
-> **Durations.** Every flag whose default is shown as a duration (`1h`, `5m`, …) takes a unit suffix — `ns`, `us`, `ms`, `s`, `m`, `h`, `d`, `w` — and combines parts. A bare number is a count of **seconds**. See [Duration values](/docs/operating/configuration/#duration-values).
+> **Durations.** Every flag whose default is shown as a duration (`1h`, `5m`, …) takes a unit suffix — `ns`, `us`, `ms`, `s`, `m`, `h`, `d`, `w` — and combines parts. A bare number is a count of **seconds**. See [Duration values](/docs/admin/configuration/#duration-values).
 
 ## solo
 
-Run a Hub and a Worker in one process on loopback, with no login (every request is auto-authenticated as the admin). See [Running LeapMux](/docs/operating/running-leapmux/#solo-mode) for details.
+Run a Hub and a Worker in one process on loopback, with no login (every request is auto-authenticated as the admin). See [Running LeapMux](/docs/admin/running-leapmux/#solo-mode) for details.
 
 ```bash
 leapmux solo [flags]
@@ -81,13 +81,13 @@ leapmux solo [flags]
 
 ## hub
 
-Run only the Hub: authentication, workspace management, Worker registration, and the encrypted relay. Binds all interfaces by default and requires a real login. See [Running LeapMux](/docs/operating/running-leapmux/#hub-mode) and [Configuration](/docs/operating/configuration/) for the complete key reference.
+Run only the Hub: authentication, workspace management, Worker registration, and the encrypted relay. Binds all interfaces by default and requires a real login. See [Running LeapMux](/docs/admin/running-leapmux/#hub-mode) and [Configuration](/docs/admin/configuration/) for the complete key reference.
 
 ```bash
 leapmux hub [flags]
 ```
 
-This table lists the most common flags. The full set — including all PostgreSQL/MySQL/CockroachDB/YugabyteDB/TiDB pool-tuning flags — is in [Configuration](/docs/operating/configuration/).
+This table lists the most common flags. The full set — including all PostgreSQL/MySQL/CockroachDB/YugabyteDB/TiDB pool-tuning flags — is in [Configuration](/docs/admin/configuration/).
 
 **Server options**
 
@@ -99,7 +99,7 @@ This table lists the most common flags. The full set — including all PostgreSQ
 | `-dev-frontend` | empty | Frontend dev-server URL for the reverse proxy |
 | `-log-level` | `info` | `debug`, `info`, `warn`, `error` |
 
-**Behavioral settings.** Auth policy (sign-up, verification, sessions), SMTP, timeouts, and per-user limits are not flags: they are instance settings in the Hub's database, managed by `leapmux control admin settings` (see [Configuration](/docs/operating/configuration/) and the [`control admin` section](/docs/operating/admin-cli/)).
+**Behavioral settings.** Auth policy (sign-up, verification, sessions), SMTP, timeouts, and per-user limits are not flags: they are instance settings in the Hub's database, managed by `leapmux control admin settings` (see [Configuration](/docs/admin/configuration/) and the [`control admin` section](/docs/admin/admin-cli/)).
 
 **Storage options**
 
@@ -113,7 +113,7 @@ This table lists the most common flags. The full set — including all PostgreSQ
 | `-storage-postgres-dsn` | empty | PostgreSQL connection string (required when `storage.type` is `postgres`) |
 | `-storage-mysql-dsn` | empty | MySQL connection string (required when `storage.type` is `mysql`) |
 
-The Postgres family (`-storage-postgres-*`, `-storage-cockroachdb-*`, `-storage-yugabytedb-*`) defaults to `max-conns 25`, `min-conns 5`, `conn-max-lifetime-seconds 3600`, `max-conn-idle-time-seconds 300`, `health-check-period-seconds 30`. The MySQL family (`-storage-mysql-*`, `-storage-tidb-*`) defaults to `max-conns 25`, `max-idle-conns 5`, `conn-max-lifetime-seconds 3600`, `conn-max-idle-time-seconds 300`. CockroachDB/YugabyteDB use the Postgres driver; TiDB uses the MySQL driver. See [Configuration](/docs/operating/configuration/) for every storage flag and DSN format.
+The Postgres family (`-storage-postgres-*`, `-storage-cockroachdb-*`, `-storage-yugabytedb-*`) defaults to `max-conns 25`, `min-conns 5`, `conn-max-lifetime-seconds 3600`, `max-conn-idle-time-seconds 300`, `health-check-period-seconds 30`. The MySQL family (`-storage-mysql-*`, `-storage-tidb-*`) defaults to `max-conns 25`, `max-idle-conns 5`, `conn-max-lifetime-seconds 3600`, `conn-max-idle-time-seconds 300`. CockroachDB/YugabyteDB use the Postgres driver; TiDB uses the MySQL driver. See [Configuration](/docs/admin/configuration/) for every storage flag and DSN format.
 
 **Common options**
 
@@ -122,11 +122,11 @@ The Postgres family (`-storage-postgres-*`, `-storage-cockroachdb-*`, `-storage-
 | `-config` | `~/.config/leapmux/hub/hub.yaml` | Config file path |
 | `-version` | — | Print version and exit |
 
-> **Note:** One hub config key has **no** CLI flag and is set only via YAML or env var: `encryption_key_path` (`LEAPMUX_HUB_ENCRYPTION_KEY_PATH`, default `<data-dir>/encryption.key`). Runtime settings such as `secure_cookies` are database settings managed with `leapmux control admin settings` — see [Admin CLI](/docs/operating/admin-cli/). See also [Configuration](/docs/operating/configuration/) and [Encryption & Data](/docs/operating/encryption-and-data/).
+> **Note:** One hub config key has **no** CLI flag and is set only via YAML or env var: `encryption_key_path` (`LEAPMUX_HUB_ENCRYPTION_KEY_PATH`, default `<data-dir>/encryption.key`). Runtime settings such as `secure_cookies` are database settings managed with `leapmux control admin settings` — see [Admin CLI](/docs/admin/admin-cli/). See also [Configuration](/docs/admin/configuration/) and [Encryption & Data](/docs/admin/encryption-and-data/).
 
 ## worker
 
-Run a Worker that connects out to a Hub. Workers do not serve an inbound HTTP port; they register with the Hub using a key minted in the Hub UI. See [Managing Workers](/docs/operating/managing-workers/).
+Run a Worker that connects out to a Hub. Workers do not serve an inbound HTTP port; they register with the Hub using a key minted in the Hub UI. See [Managing Workers](/docs/admin/managing-workers/).
 
 ```bash
 # First run — register with a key from the hub UI:
@@ -176,7 +176,7 @@ leapmux worker -hub https://hub.example.com
 
 ### worker cross-worker-pins
 
-A local-only utility for inspecting the Worker's TOFU pin store. It runs entirely against local files — no Worker process starts. See [Security & Threat Model](/docs/operating/security/) for what these pins protect.
+A local-only utility for inspecting the Worker's TOFU pin store. It runs entirely against local files — no Worker process starts. See [Security & Threat Model](/docs/admin/security/) for what these pins protect.
 
 ```bash
 leapmux worker cross-worker-pins list|show|remove [--target-worker-id=<id>] [--data-dir=<dir>]
@@ -194,7 +194,7 @@ When `--data-dir` is omitted, the data directory is resolved through the standar
 
 ## dev
 
-Run a Hub and a Worker in one process with **real** password authentication — the same program as `solo` but with login enabled, binding all interfaces, and the first admin bootstrapped through the `/setup` flow. See [Running LeapMux](/docs/operating/running-leapmux/#dev-mode).
+Run a Hub and a Worker in one process with **real** password authentication — the same program as `solo` but with login enabled, binding all interfaces, and the first admin bootstrapped through the `/setup` flow. See [Running LeapMux](/docs/admin/running-leapmux/#dev-mode).
 
 ```bash
 leapmux dev [flags]
@@ -217,7 +217,7 @@ Fields are conditional: the version value is always present (falls back to `dev`
 
 ## recover (command-group outline)
 
-`leapmux recover` is the **offline break-glass** tree: it manages the Hub's database and encryption key file **directly, with the hub stopped** — no network call, no login. It is deliberately tiny. For full per-command flags and behavior, see [Recovery](/docs/operating/recover/).
+`leapmux recover` is the **offline break-glass** tree: it manages the Hub's database and encryption key file **directly, with the hub stopped** — no network call, no login. It is deliberately tiny. For full per-command flags and behavior, see [Recovery](/docs/admin/recover/).
 
 ```bash
 leapmux recover <group> <command> [flags]
@@ -230,11 +230,11 @@ leapmux recover <group> <command> [flags]
 | `encryption-key` | `rotate`, `remove`, `reencrypt`, `rotate-pepper` |
 | `db` | `path`, `migrate`, `version` |
 
-Recover commands accept `--data-dir` to locate the data directory. The commands that open the database also accept `--config`, which loads the Hub's storage settings; pass it whenever the Hub runs on Postgres or MySQL. Three leaves need no database connection and therefore accept `--data-dir` only: `db path`, `encryption-key rotate`, and `encryption-key rotate-pepper`. Commands that take `--password` prompt interactively when you omit the flag. Every other administration task is online — see [Admin CLI](/docs/operating/admin-cli/). See [Recovery](/docs/operating/recover/) and [Encryption & Data](/docs/operating/encryption-and-data/).
+Recover commands accept `--data-dir` to locate the data directory. The commands that open the database also accept `--config`, which loads the Hub's storage settings; pass it whenever the Hub runs on Postgres or MySQL. Three leaves need no database connection and therefore accept `--data-dir` only: `db path`, `encryption-key rotate`, and `encryption-key rotate-pepper`. Commands that take `--password` prompt interactively when you omit the flag. Every other administration task is online — see [Admin CLI](/docs/admin/admin-cli/). See [Recovery](/docs/admin/recover/) and [Encryption & Data](/docs/admin/encryption-and-data/).
 
 ## control (command-group outline)
 
-`leapmux control` drives a **running** Hub over RPC — it does not touch the database. It is used both by external scripts (which authorize with `leapmux control auth login`) and by agents/terminals that LeapMux spawns (which inherit `LEAPMUX_CONTROL_*` env vars). Every command emits a JSON envelope — `{"data": ...}` on success, `{"error": {"code", "message"}}` on failure (both on stdout) — with a non-zero exit on failure. For full per-command flags, entity-ID resolution, and output shapes, see [Control CLI](/docs/operating/control-cli/).
+`leapmux control` drives a **running** Hub over RPC — it does not touch the database. It is used both by external scripts (which authorize with `leapmux control auth login`) and by agents/terminals that LeapMux spawns (which inherit `LEAPMUX_CONTROL_*` env vars). Every command emits a JSON envelope — `{"data": ...}` on success, `{"error": {"code", "message"}}` on failure (both on stdout) — with a non-zero exit on failure. For full per-command flags, entity-ID resolution, and output shapes, see [Control CLI](/docs/using/control-cli/).
 
 ```bash
 leapmux control <group> <command> [flags]
@@ -245,7 +245,7 @@ leapmux control auth login --hub https://hub.example.com   # authorize first
 |-------|----------|
 | *(top level)* | `whoami`, `version` |
 | `auth` | `login` (add `--scope` to ask for particular permissions), `logout`, `list`, `status`, `credentials` — `list` reads this machine's credential files, `credentials` asks the Hub what the whole account holds |
-| `admin` | subgroups `settings`, `user`, `session`, `worker` (with `reg-key`), `app`, `idp`, `captcha`, `rate-limit`, `api-token`, `delegation-token` — the online hub administration surface (requires an admin login; never available over the worker-IPC transport), covered in [Admin CLI](/docs/operating/admin-cli/). `app` registers the apps a consent screen authorizes; `idp` configures the providers users sign in *with*. |
+| `admin` | subgroups `settings`, `user`, `session`, `worker` (with `reg-key`), `app`, `idp`, `captcha`, `rate-limit`, `api-token`, `delegation-token` — the online hub administration surface (requires an admin login; never available over the worker-IPC transport), covered in [Admin CLI](/docs/admin/admin-cli/). `app` registers the apps a consent screen authorizes; `idp` configures the providers users sign in *with*. |
 | `workspace` | `list`, `get`, `create`, `rename`, `delete` |
 | `tab` | `list`, `get`, `open`, `close`, `rename`, `move` |
 | `worker` | `list`, `get`; subgroup `pins`: `list`, `show`, `remove` |
@@ -281,7 +281,7 @@ Hub-family modes (`hub`, `solo`, `dev`) read variables prefixed `LEAPMUX_HUB_`; 
 | `LEAPMUX_WORKER_ENCRYPTION_MODE` | worker `encryption_mode` | `post-quantum` |
 | `LEAPMUX_WORKER_LOG_LEVEL` | worker `log_level` | `info` |
 
-The prefix strip lowercases the remainder but does **not** translate `_` into `.`, so nested storage keys such as `storage.type` and `storage.postgres.dsn` cannot be set cleanly via env vars — use the YAML config file or the dedicated `-storage-*` flags instead. See [Configuration](/docs/operating/configuration/) for the full list and precedence rules (defaults < config file < env vars < explicitly-set CLI flags).
+The prefix strip lowercases the remainder but does **not** translate `_` into `.`, so nested storage keys such as `storage.type` and `storage.postgres.dsn` cannot be set cleanly via env vars — use the YAML config file or the dedicated `-storage-*` flags instead. See [Configuration](/docs/admin/configuration/) for the full list and precedence rules (defaults < config file < env vars < explicitly-set CLI flags).
 
 ### Remote CLI (`leapmux control`)
 
@@ -298,7 +298,7 @@ The prefix strip lowercases the remainder but does **not** translate `_` into `.
 | `LEAPMUX_CONTROL_WORKING_DIR` | spawned agents | Working directory at spawn |
 | `LEAPMUX_CONTROL_AGENT_PROVIDER` | spawned agents | Agent provider (agents only) |
 
-The `LEAPMUX_CONTROL_*` variables (the `_SOCK` / `_TOKEN` / `_*_ID` / `_TAB_*` family) are injected automatically by the Worker into the agents and terminals it spawns; you do not set them by hand. See [Control CLI](/docs/operating/control-cli/) for how they drive entity-ID resolution.
+The `LEAPMUX_CONTROL_*` variables (the `_SOCK` / `_TOKEN` / `_*_ID` / `_TAB_*` family) are injected automatically by the Worker into the agents and terminals it spawns; you do not set them by hand. See [Control CLI](/docs/using/control-cli/) for how they drive entity-ID resolution.
 
 ## Config and data locations
 
@@ -312,4 +312,4 @@ Each mode reads an optional YAML config named after the mode, and stores data, u
 | `dev` | `~/.config/leapmux/dev/dev.yaml` | `~/.config/leapmux/dev` |
 | `control` | `~/.config/leapmux/control/<hub-host>.json` (credentials, mode 0600) | — |
 
-In `solo` and `dev`, the data directory is split into `<data-dir>/hub` and `<data-dir>/worker` subdirectories. See [Running LeapMux](/docs/operating/running-leapmux/) and [Configuration](/docs/operating/configuration/) for the full layout and resolution rules.
+In `solo` and `dev`, the data directory is split into `<data-dir>/hub` and `<data-dir>/worker` subdirectories. See [Running LeapMux](/docs/admin/running-leapmux/) and [Configuration](/docs/admin/configuration/) for the full layout and resolution rules.

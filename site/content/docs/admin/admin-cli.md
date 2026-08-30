@@ -5,7 +5,7 @@ type: docs
 weight: 9
 ---
 
-This chapter is the `leapmux control admin ...` command tree: the online, authenticated face of hub administration. It uses the same transport, authentication, JSON output envelope, and entity-ID flags as the rest of `leapmux control` — see [Control CLI](/docs/operating/control-cli/) for those mechanics. For the offline break-glass tree (`bootstrap`, `password`, `encryption-key`, `db`), see [Recovery](/docs/operating/recover/).
+This chapter is the `leapmux control admin ...` command tree: the online, authenticated face of hub administration. It uses the same transport, authentication, JSON output envelope, and entity-ID flags as the rest of `leapmux control` — see [Control CLI](/docs/using/control-cli/) for those mechanics. For the offline break-glass tree (`bootstrap`, `password`, `encryption-key`, `db`), see [Recovery](/docs/admin/recover/).
 
 Every group calls the hub's Admin RPCs with your normal control credential. The hub itself checks that the caller is an administrator, and answers `permission_denied` to every other login.
 
@@ -24,7 +24,7 @@ leapmux control admin delegation-token  list | revoke
 
 These verbs are RPC calls, so there is no `--data-dir` and no `--config`; neither flag exists on any admin leaf. `--hub` behaves like every other control group. Output uses the control JSON envelope (`{"data": ...}`) — pipe it through `jq`.
 
-> **Offline break-glass is `leapmux recover`.** First-admin bootstrap, password reset with the hub stopped, `db`, and `encryption-key` surgery stay offline — see [Recovery](/docs/operating/recover/). Everything else is here.
+> **Offline break-glass is `leapmux recover`.** First-admin bootstrap, password reset with the hub stopped, `db`, and `encryption-key` surgery stay offline — see [Recovery](/docs/admin/recover/). Everything else is here.
 
 ## The admin gate and the worker-IPC transport
 
@@ -44,11 +44,11 @@ leapmux control admin settings reset smtp
 
 **Every write here needs an admin-scoped credential that verified recently.** Several of these keys are the hub's own security controls, so `set`, `set-secret` and `reset` each require a proven factor — from a command-line credential exactly as from a browser session.
 
-You do not run anything extra for it. A refused command prints an address and a short code, waits while you approve it in a browser, and then runs. The credential stays verified for {{< duration elevation-window >}}, and every write slides that window forward. Reads (`list`, `get`) need no verification at all. See [Verifying a command-line credential](/docs/operating/security/#verifying-a-command-line-credential).
+You do not run anything extra for it. A refused command prints an address and a short code, waits while you approve it in a browser, and then runs. The credential stays verified for {{< duration elevation-window >}}, and every write slides that window forward. Reads (`list`, `get`) need no verification at all. See [Verifying a command-line credential](/docs/admin/security/#verifying-a-command-line-credential).
 
 **When a write takes effect** depends on the key's propagation class. A `hot` key reaches the hub instance that serves the write at once, because that instance replaces its cached settings snapshot right after the commit. Another hub instance on the same database picks the same change up within ~30 seconds, the lifetime of its own settings cache. A `restart` key applies only after a hub restart. Every verb that reports one key states the class: `list`, `get`, and `set` each carry a `propagation` field of `hot` or `restart`, and the Preferences dialog's administration panels show a "Requires Restart" badge.
 
-[Configuration](/docs/operating/configuration/) documents what each key does. The [`captcha`](#captcha) and [`rate-limit`](#rate-limits) groups are sugar over the same settings keys; each composes the partial documents for you.
+[Configuration](/docs/admin/configuration/) documents what each key does. The [`captcha`](#captcha) and [`rate-limit`](#rate-limits) groups are sugar over the same settings keys; each composes the partial documents for you.
 
 ## Captcha
 
@@ -128,7 +128,7 @@ This verb needs a **browser session that verified recently**, and an API token c
 
 A reset destroys every credential the old password authenticated: all of the user's sessions are deleted, and all of their API and delegation tokens are revoked. The envelope reports the two token counts. Resetting your **own** password ends your own sessions and tokens too, including the credential that made the call — log in again with the new password.
 
-The offline twin is [`leapmux recover password reset`](/docs/operating/recover/#password-reset), for a hub that is stopped.
+The offline twin is [`leapmux recover password reset`](/docs/admin/recover/#password-reset), for a hub that is stopped.
 
 ## API tokens
 
@@ -149,11 +149,11 @@ The hub emails the owner whenever this verb issues a credential for them, on the
 
 `--scope` specifies the permissions the credential holds; omitting it grants everything the owner can do **except** administer the hub. The hub refuses an admin permission for an owner who is not an administrator, rather than minting a credential whose grant and authority disagree. It also refuses to issue a credential **wider than the one issuing it**, so a chain of self-issued credentials terminates at the browser consent that started it.
 
-`api-token list` reports `granted_scopes` on every row, so "which credentials can administer this hub" is answerable. The whole vocabulary is in [App Authorization](/docs/operating/app-authorization/#permissions).
+`api-token list` reports `granted_scopes` on every row, so "which credentials can administer this hub" is answerable. The whole vocabulary is in [App Authorization](/docs/admin/app-authorization/#permissions).
 
 ## Headless service accounts
 
-The interactive `leapmux control auth login` flows ([Control CLI](/docs/operating/control-cli/#authentication)) are for humans. For unattended scripts and integrations, mint a durable bearer token with `leapmux control admin` instead:
+The interactive `leapmux control auth login` flows ([Control CLI](/docs/using/control-cli/#authentication)) are for humans. For unattended scripts and integrations, mint a durable bearer token with `leapmux control admin` instead:
 
 ```bash
 leapmux control admin api-token issue --user-id usr_... --client-name "ci-bot"
@@ -179,7 +179,7 @@ Today the rule covers four things:
 - `user create` — a new account, optionally an administrator, with a password the caller picks.
 - `user reset-password` — a password on any account, without the old one.
 - `user grant-admin` **and** `user revoke-admin` — one hub procedure carries both directions, so the refusal covers the demotion as well as the promotion. Plan an emergency demotion from a browser; a CI credential cannot run it.
-- `user update --email` and `user update --email-verified` — the address receives the password-reset link, so writing one hands over a way in.
+- `user update --email` and `user update --email-verified` — the address receives the recovery link, so writing one hands over a way in.
 
 Every other admin write that needs verification accepts a **command-line credential that verified recently**: `api-token issue`, `user delete`, `user update --display-name` and `--clear-pending-email`, `settings set` / `set-secret` / `reset` with the `captcha` and `rate-limit` sugar over them, and the `idp` add, remove, enable and disable verbs. Reads need no verification at all.
 
@@ -187,9 +187,9 @@ Every other admin write that needs verification accepts a **command-line credent
 
 ## See also
 
-- [Control CLI](/docs/operating/control-cli/) — authentication, the JSON envelope, entity-ID resolution, and the user-facing command groups.
-- [Configuration](/docs/operating/configuration/) — what each hub instance setting does.
-- [Recovery](/docs/operating/recover/) — the offline break-glass tree, for when the hub cannot serve.
-- [Sign-in Providers](/docs/operating/sign-in-providers/) — the `idp` verbs in their operator context.
-- [App Authorization](/docs/operating/app-authorization/) — the `app` verbs and the permission vocabulary.
-- [Security & Threat Model](/docs/operating/security/) — why every write here needs a recently proven factor.
+- [Control CLI](/docs/using/control-cli/) — authentication, the JSON envelope, entity-ID resolution, and the user-facing command groups.
+- [Configuration](/docs/admin/configuration/) — what each hub instance setting does.
+- [Recovery](/docs/admin/recover/) — the offline break-glass tree, for when the hub cannot serve.
+- [Sign-in Providers](/docs/admin/sign-in-providers/) — the `idp` verbs in their administrator context.
+- [App Authorization](/docs/admin/app-authorization/) — the `app` verbs and the permission vocabulary.
+- [Security & Threat Model](/docs/admin/security/) — why every write here needs a recently proven factor.

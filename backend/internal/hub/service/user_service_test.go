@@ -789,7 +789,7 @@ func TestUpdateProfile_EmailFieldRemoved(t *testing.T) {
 // under any configuration. What they do not get is a raised email_verified:
 // nobody confirmed the new address, and the column records exactly that.
 // Raising it made an administrator's unconfirmed address a valid
-// self-service password-reset target, because RequestPasswordReset reads the
+// self-service password-reset target, because RequestAccountRecovery reads the
 // column and cannot take the sign-in exemption -- the same force this change
 // removed from account creation and from the admin edit of another user.
 func TestRequestEmailChange_Admin_ImmediateChangeLandsUnverified(t *testing.T) {
@@ -1326,16 +1326,18 @@ func TestResendVerificationEmail_RotatesCodeAndSends(t *testing.T) {
 func TestResendVerificationEmail_CooldownEnforced(t *testing.T) {
 	t.Parallel()
 
-	// Seed a pending row whose implied "issued_at" is just now: the
-	// cooldown must reject a back-to-back resend so a runaway client
-	// (or hostile caller) cannot flood the user's inbox.
+	// Seed a pending row issued just now: the cooldown must reject a
+	// back-to-back resend so a runaway client (or hostile caller) cannot
+	// flood the user's inbox.
 	env, _ := setupResendUserTest(t)
 
+	now := time.Now().UTC()
 	minted, err := env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
 		ID:                    env.userID,
 		PendingEmail:          "u@example.com",
 		PendingEmailToken:     verifycode.Generate(),
-		PendingEmailExpiresAt: ptrTime(time.Now().Add(30 * time.Minute).UTC()),
+		PendingEmailExpiresAt: ptrTime(now.Add(30 * time.Minute)),
+		PendingEmailIssuedAt:  ptrTime(now),
 		CooldownCutoff:        store.UnconditionalMintCutoff(),
 	})
 	require.NoError(t, err)
@@ -1344,6 +1346,54 @@ func TestResendVerificationEmail_CooldownEnforced(t *testing.T) {
 	_, err = env.client.ResendVerificationEmail(context.Background(), authedReq(&leapmuxv1.ResendVerificationEmailRequest{}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(err))
+}
+
+// TestResendVerificationEmail_BurnedBudgetKeepsCooldown pins the closed
+// hole. Burning the 5-guess budget force-expires the code in SQL, and an
+// expiry-derived gate read that as "issued a full lifetime ago" and let a
+// resend land immediately -- burn and resend became a mail loop at seven
+// cheap RPCs per email. The gate reads the issued-at column, which no
+// attempt path moves, so a burned code waits out the same cooldown a live
+// one does.
+func TestResendVerificationEmail_BurnedBudgetKeepsCooldown(t *testing.T) {
+	t.Parallel()
+
+	env, _ := setupResendUserTest(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	minted, err := env.store.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
+		ID:                    env.userID,
+		PendingEmail:          "u@example.com",
+		PendingEmailToken:     verifycode.Generate(),
+		PendingEmailExpiresAt: ptrTime(now.Add(30 * time.Minute)),
+		PendingEmailIssuedAt:  ptrTime(now),
+		CooldownCutoff:        store.UnconditionalMintCutoff(),
+	})
+	require.NoError(t, err)
+	require.True(t, minted)
+
+	// Burn the whole wrong-guess budget; the 6th attempt force-expires the
+	// code in SQL (the expiry moves to now).
+	for i := 0; i < 6; i++ {
+		_, err = env.client.VerifyEmail(ctx, authedReq(&leapmuxv1.VerifyEmailRequest{
+			VerificationToken: verifycode.Generate(),
+		}, env.token))
+		require.Error(t, err, "a wrong code must never verify")
+	}
+
+	row, err := env.store.Users().GetByID(ctx, env.userID)
+	require.NoError(t, err)
+	require.NotNil(t, row.PendingEmailExpiresAt)
+	assert.False(t, time.Now().UTC().Before(row.PendingEmailExpiresAt.UTC()),
+		"the burned code must be force-expired for this pin to mean anything")
+
+	// The code is expired, but it was issued seconds ago: the resend must
+	// still hit the cooldown.
+	_, err = env.client.ResendVerificationEmail(ctx, authedReq(&leapmuxv1.ResendVerificationEmailRequest{}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(err),
+		"burning the guess budget must not reset the resend cooldown")
 }
 
 func TestVerifyEmail_EmailTakenSinceRequest(t *testing.T) {

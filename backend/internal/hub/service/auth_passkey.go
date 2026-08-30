@@ -270,7 +270,7 @@ func (s *AuthService) FinishPasskeySignUp(ctx context.Context, req *connect.Requ
 // RevokePasskeyAuthState removes every passkey artifact a user owns: the
 // credential rows, their in-flight ceremony sessions, and any pending
 // password reset. The credential-rotation teardown paths (self-service
-// CompletePasswordReset, admin ResetPassword, admin DeleteUser, the
+// CompleteAccountRecovery, admin ResetPassword, admin DeleteUser, the
 // offline recover CLI, and signup rollback) share it, so the next
 // credential type needs one registration here instead of one at each
 // rotation site.
@@ -287,7 +287,7 @@ func RevokePasskeyAuthState(ctx context.Context, tx store.Store, userID string) 
 	if err := tx.WebAuthnSessions().DeleteAllByUser(ctx, userID); err != nil {
 		return fmt.Errorf("delete webauthn sessions: %w", err)
 	}
-	if err := tx.Users().ClearPendingPasswordReset(ctx, userID); err != nil {
+	if err := tx.Users().ClearPendingRecovery(ctx, userID); err != nil {
 		return fmt.Errorf("clear pending password reset: %w", err)
 	}
 	return nil

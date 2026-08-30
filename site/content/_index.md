@@ -45,13 +45,13 @@ layout: hextra-home
     title="End-to-end encrypted"
     icon="lock-closed"
     subtitle="Traffic between your browser and your agents is sealed with a hybrid post-quantum handshake. The relay in between only forwards bytes it cannot read."
-    link="/docs/operating/security/"
+    link="/docs/admin/security/"
   >}}
   {{< hextra/feature-card
     title="NAT-friendly remote machines"
     icon="server"
     subtitle="The machines running your agents dial out to connect, so they work behind firewalls and NATs with no inbound ports open."
-    link="/docs/operating/managing-workers/"
+    link="/docs/admin/managing-workers/"
   >}}
   {{< hextra/feature-card
     title="Tiling & floating layout"

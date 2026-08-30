@@ -51,7 +51,7 @@ func (u *UserInfo) EmailVerificationFacts() EmailVerificationFacts {
 // address; "an administrator is never locked out of their own hub" is a fact
 // about the account. Writing the second into the first made an
 // administrator's unconfirmed address a valid self-service password-reset
-// target, because RequestPasswordReset reads the column and cannot take this
+// target, because RequestAccountRecovery reads the column and cannot take this
 // exemption -- the question it asks IS "did anybody confirm this address".
 //
 // Five call sites share it: the auth interceptor's per-request check, the two

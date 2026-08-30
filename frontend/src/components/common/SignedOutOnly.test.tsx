@@ -84,8 +84,8 @@ function renderGate(path = '/login', whenSignedIn?: 'redirect' | 'explain') {
     <MemoryRouter history={history}>
       <Route path="/login" component={Restricted} />
       <Route path="/signup" component={Restricted} />
-      <Route path="/forgot-password" component={Restricted} />
-      <Route path="/reset-password" component={Restricted} />
+      <Route path="/recover-account" component={Restricted} />
+      <Route path="/recover-account/complete" component={Restricted} />
       <Route path="/" component={() => <div data-testid="app-stub" />} />
       {/* A REAL in-app address, because `postAuthNavigate` decides the branch
           from the SPA's own route table -- an invented path takes the
@@ -151,13 +151,13 @@ describe('signedOutOnly', () => {
     expect(assign).toHaveBeenCalledTimes(1)
   })
 
-  // /reset-password carries a SINGLE-USE token and no ?redirect=, so the
+  // /recover-account/complete carries a SINGLE-USE token and no ?redirect=, so the
   // default silent bounce spent nothing and explained nothing: the user
   // landed on the dashboard with no idea why their emailed link went there,
   // and `replace` took the tokened address out of that tab's history too.
   it('explains rather than redirects when the page says so', async () => {
     mockUser.mockReturnValue({ id: 'u-1', username: 'alice' })
-    const { navigations } = renderGate('/reset-password?token=abc', 'explain')
+    const { navigations } = renderGate('/recover-account/complete?token=abc', 'explain')
 
     expect(await screen.findByTestId('signed-out-only-explain')).toBeInTheDocument()
     expect(screen.queryByTestId('credential-form')).not.toBeInTheDocument()
@@ -169,7 +169,7 @@ describe('signedOutOnly', () => {
   // address, with the token still in it and still unspent.
   it('renders the form again after signing out in place', async () => {
     mockUser.mockReturnValue({ id: 'u-1', username: 'alice' })
-    renderGate('/reset-password?token=abc', 'explain')
+    renderGate('/recover-account/complete?token=abc', 'explain')
 
     fireEvent.click(await screen.findByTestId('signed-out-only-sign-out'))
     await vi.waitFor(() => {
@@ -243,12 +243,12 @@ describe('signedOutOnly', () => {
 
   // A SOLO hub answers every request as the synthetic solo user, so no
   // credential page can succeed on it. Each page used to spell the rule out,
-  // and it reached two of the five: /forgot-password, /reset-password and
+  // and it reached two of the five: /recover-account, /recover-account/complete and
   // /setup each served a form the hub has no endpoint for.
   it('sends a solo-hub visitor to the app, from every credential page', async () => {
     setSystemInfoMock({ soloMode: true })
     mockUser.mockReturnValue({ id: 'solo' })
-    const { navigations } = renderGate('/forgot-password')
+    const { navigations } = renderGate('/recover-account')
     await vi.waitFor(() => {
       expect(navigations).toEqual(['/'])
     })
@@ -279,7 +279,7 @@ describe('signedOutOnly', () => {
   it('redirects rather than explains on a solo hub', async () => {
     setSystemInfoMock({ soloMode: true })
     mockUser.mockReturnValue({ id: 'solo', username: 'solo' })
-    const { navigations } = renderGate('/reset-password?token=abc', 'explain')
+    const { navigations } = renderGate('/recover-account/complete?token=abc', 'explain')
 
     await vi.waitFor(() => {
       expect(navigations).toEqual(['/'])

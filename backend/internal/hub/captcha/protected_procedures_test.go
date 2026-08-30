@@ -9,20 +9,31 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 )
 
-// protectedProcedureRationale records, for every captcha-protected
+// protectedProcedureRationale records, for every captcha-protected PUBLIC
 // procedure, why anonymous automation must pre-pay proof-of-work before
 // its handler runs. This is the captcha sibling of the auth package's
 // publicProcedureRationale tripwire: protectedProcedures lists the doors
 // that make an unauthenticated caller run Argon2 or create users, so an
 // entry without a written reason is unaudited.
 var protectedProcedureRationale = map[string]string{
-	leapmuxv1connect.AuthServiceLoginProcedure:                 "runs Argon2 verification for an anonymous caller",
-	leapmuxv1connect.AuthServiceSignUpProcedure:                "creates a user (Argon2 hash, optional SMTP) for an anonymous caller",
-	leapmuxv1connect.AuthServiceCompleteOAuthSignupProcedure:   "consumes a single-use pending id and creates a user for an anonymous caller",
-	leapmuxv1connect.AuthServiceBeginPasskeyLoginProcedure:     "starts a passkey assertion ceremony for an anonymous caller",
-	leapmuxv1connect.AuthServiceBeginPasskeySignUpProcedure:    "starts a passkey registration ceremony for an anonymous caller",
-	leapmuxv1connect.AuthServiceRequestPasswordResetProcedure:  "issues a password-reset email for an anonymous caller",
-	leapmuxv1connect.AuthServiceCompletePasswordResetProcedure: "runs Argon2 and rotates credentials for an anonymous caller with a reset token",
+	leapmuxv1connect.AuthServiceLoginProcedure:                   "runs Argon2 verification for an anonymous caller",
+	leapmuxv1connect.AuthServiceSignUpProcedure:                  "creates a user (Argon2 hash, optional SMTP) for an anonymous caller",
+	leapmuxv1connect.AuthServiceCompleteOAuthSignupProcedure:     "consumes a single-use pending id and creates a user for an anonymous caller",
+	leapmuxv1connect.AuthServiceBeginPasskeyLoginProcedure:       "starts a passkey assertion ceremony for an anonymous caller",
+	leapmuxv1connect.AuthServiceBeginPasskeySignUpProcedure:      "starts a passkey registration ceremony for an anonymous caller",
+	leapmuxv1connect.AuthServiceRequestAccountRecoveryProcedure:  "issues a recovery email for an anonymous caller",
+	leapmuxv1connect.AuthServiceCompleteAccountRecoveryProcedure: "runs Argon2 and rotates credentials for an anonymous caller with a recovery token",
+}
+
+// protectedAuthenticatedRationale is the authenticated sibling of the map
+// above: these procedures sit behind the session gate rather than the
+// anonymous one, and are protected because a scripted session can charge
+// them cheaply -- the guess budget costs nothing to burn, and the resend
+// leg drives an SMTP send toward an address the cooldown gate alone no
+// longer fully paces.
+var protectedAuthenticatedRationale = map[string]string{
+	leapmuxv1connect.UserServiceVerifyEmailProcedure:             "charges the per-code wrong-guess budget, which a script burns for free",
+	leapmuxv1connect.UserServiceResendVerificationEmailProcedure: "drives an SMTP send toward the cooldown gate",
 }
 
 // captchaExemptRationale records, for every OTHER public procedure, why it
@@ -52,15 +63,27 @@ func TestProtectedProceduresAreClassified(t *testing.T) {
 	}
 
 	for procedure := range protectedProcedures {
-		note, ok := protectedProcedureRationale[procedure]
-		assert.Truef(t, ok, "protected procedure %q has no rationale; record why automation must pre-pay proof-of-work", procedure)
-		assert.NotEmptyf(t, note, "protected procedure %q has an empty rationale", procedure)
-		assert.Truef(t, public[procedure],
-			"protected procedure %q is not in the auth interceptor's publicProcedures; the captcha check assumes an anonymous caller", procedure)
+		_, publicRationale := protectedProcedureRationale[procedure]
+		_, authRationale := protectedAuthenticatedRationale[procedure]
+		assert.Truef(t, publicRationale || authRationale,
+			"protected procedure %q has no rationale; record why automation must pre-pay proof-of-work", procedure)
+		assert.Falsef(t, publicRationale && authRationale,
+			"protected procedure %q is classified as both public and authenticated; pick one", procedure)
+		// A PUBLIC rationale claims the anonymous door; the auth
+		// interceptor's list must agree. An authenticated rationale makes
+		// no such claim -- the session gate is the entry, not the captcha.
+		if publicRationale {
+			assert.Truef(t, public[procedure],
+				"protected procedure %q has a public rationale but is not in the auth interceptor's publicProcedures", procedure)
+		}
 	}
 	for procedure := range protectedProcedureRationale {
 		assert.Truef(t, func() bool { _, ok := protectedProcedures[procedure]; return ok }(),
 			"%q has a protection rationale but is no longer protected; drop the entry", procedure)
+	}
+	for procedure := range protectedAuthenticatedRationale {
+		assert.Truef(t, func() bool { _, ok := protectedProcedures[procedure]; return ok }(),
+			"%q has an authenticated protection rationale but is no longer protected; drop the entry", procedure)
 	}
 	// The forget-direction tripwire: every public procedure must be
 	// classified on exactly one side.

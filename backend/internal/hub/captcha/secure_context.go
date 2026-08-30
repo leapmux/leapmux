@@ -83,7 +83,7 @@ func isSecureContextHost(host string) bool {
 // The gate this replaced read the request's Origin header, so any caller
 // could claim an insecure page and switch ALTCHA off for its own request --
 // a client-chosen switch on a server-side security decision, in front of the
-// only automation control Login, RequestPasswordReset and the passkey Begin
+// only automation control Login, RequestAccountRecovery and the passkey Begin
 // procedures have.
 //
 // A stand-down is therefore silent to the caller by design, and visible to

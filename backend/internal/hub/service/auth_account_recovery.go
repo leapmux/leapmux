@@ -17,30 +17,39 @@ import (
 	"github.com/leapmux/leapmux/util/validate"
 )
 
-// The forgot-password flow: mint a single-use link, then spend it.
+// The account-recovery flow: mint a single-use link, then spend it.
 //
-// It sat in auth_passkey.go under a name that promised passkeys, so somebody
-// tracing a reset link read past six hundred lines of passkey ceremony to
-// reach it. The token is browser-bound the same way the OAuth nonce is (see
+// Recovery is mechanism-agnostic ON PURPOSE: the link proves the account's
+// verified email address, not the method the user lost, so a password-only,
+// passkey-only, or provider-only account recovers through the same two RPCs.
+// Completing always sets a password (the account's first one when it had
+// none), because a password is the only factor a signed-out visitor can add;
+// anything richer (re-enrolling a passkey over the link) would need an
+// unauthenticated WebAuthn ceremony and is not worth the risk. The response
+// must not branch on the account's mechanisms either -- that would enumerate
+// which accounts are passwordless.
+//
+// The token is browser-bound the same way the OAuth nonce is (see
 // browser_secret.go), and its resend cooldown is the shared one (see
 // resend_cooldown.go).
 
-// passwordResetExpiry is the lifetime of a reset link. It is longer than a
-// verification code's because it arrives by mail and a user clicks it later,
-// rather than reads it off a screen and types it. The cooldown that limits
-// how often one may be minted is the shared one -- see resend_cooldown.go.
-const passwordResetExpiry = time.Hour
+// accountRecoveryExpiry is the lifetime of a recovery link. It is longer
+// than a verification code's because it arrives by mail and a user clicks it
+// later, rather than reads it off a screen and types it. The cooldown that
+// limits how often one may be minted is the shared one -- see
+// resend_cooldown.go.
+const accountRecoveryExpiry = time.Hour
 
-// generatePasswordResetToken mints the emailed reset secret from the
+// generateAccountRecoveryToken mints the emailed recovery secret from the
 // shared id mint (crypto-rand backed, 48 chars over a 62-alphabet, ~285
 // bits), mirroring auth.MintAccessSecret and the session ids.
-func generatePasswordResetToken() string {
+func generateAccountRecoveryToken() string {
 	return id.Generate()
 }
 
-func (s *AuthService) RequestPasswordReset(ctx context.Context, req *connect.Request[leapmuxv1.RequestPasswordResetRequest]) (*connect.Response[leapmuxv1.RequestPasswordResetResponse], error) {
+func (s *AuthService) RequestAccountRecovery(ctx context.Context, req *connect.Request[leapmuxv1.RequestAccountRecoveryRequest]) (*connect.Response[leapmuxv1.RequestAccountRecoveryResponse], error) {
 	if s.cfg.SoloMode {
-		return connect.NewResponse(&leapmuxv1.RequestPasswordResetResponse{}), nil
+		return connect.NewResponse(&leapmuxv1.RequestAccountRecoveryResponse{}), nil
 	}
 	identifier := req.Msg.GetIdentifier()
 	var user *store.User
@@ -50,13 +59,13 @@ func (s *AuthService) RequestPasswordReset(ctx context.Context, req *connect.Req
 	} else {
 		username, slugErr := validate.SanitizeSlug("username", identifier)
 		if slugErr != nil {
-			return connect.NewResponse(&leapmuxv1.RequestPasswordResetResponse{}), nil
+			return connect.NewResponse(&leapmuxv1.RequestAccountRecoveryResponse{}), nil
 		}
 		user, err = s.store.Users().GetByUsername(ctx, username)
 	}
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return connect.NewResponse(&leapmuxv1.RequestPasswordResetResponse{}), nil
+			return connect.NewResponse(&leapmuxv1.RequestAccountRecoveryResponse{}), nil
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -68,11 +77,11 @@ func (s *AuthService) RequestPasswordReset(ctx context.Context, req *connect.Req
 	// per-account resend cooldown below.
 	targetEmail := user.Email
 	if targetEmail == "" {
-		return connect.NewResponse(&leapmuxv1.RequestPasswordResetResponse{}), nil
+		return connect.NewResponse(&leapmuxv1.RequestAccountRecoveryResponse{}), nil
 	}
 	// No IsAdmin exemption here, unlike the auth interceptor's verification
 	// control: this predicate asks whether the hub trusts THIS address with a
-	// credential-bearing reset link, and the hub never verified it.
+	// credential-bearing recovery link, and the hub never verified it.
 	//
 	// An unverified administrator self-recovers with ResendVerificationEmail
 	// plus VerifyEmail, which Preferences › Account offers beside the
@@ -81,7 +90,7 @@ func (s *AuthService) RequestPasswordReset(ctx context.Context, req *connect.Req
 	// administrator branch writes the new address straight to the email
 	// column and clears any pending row.
 	if !user.EmailVerified && s.emailVerificationRequired(ctx) {
-		return connect.NewResponse(&leapmuxv1.RequestPasswordResetResponse{}), nil
+		return connect.NewResponse(&leapmuxv1.RequestAccountRecoveryResponse{}), nil
 	}
 	// Cooldown: a recent request keeps its link. Minting a fresh token on
 	// every request would flood the inbox and invalidate the link the
@@ -94,14 +103,16 @@ func (s *AuthService) RequestPasswordReset(ctx context.Context, req *connect.Req
 	// its own leg: the cutoff and the expiry answer the same "now", so two
 	// reads could disagree inside one request.
 	now := s.now().UTC()
-	cooldownCutoff := mintCutoff(now, passwordResetExpiry)
-	rawToken := generatePasswordResetToken()
-	expiresAt := now.Add(passwordResetExpiry)
-	minted, err := s.store.Users().SetPendingPasswordReset(ctx, store.SetPendingPasswordResetParams{
-		ID:                            user.ID,
-		PendingPasswordResetToken:     hashBrowserSecret(rawToken),
-		PendingPasswordResetExpiresAt: expiresAt,
-		CooldownCutoff:                cooldownCutoff,
+	cooldownCutoff := mintCutoff(now)
+	rawToken := generateAccountRecoveryToken()
+	issuedAt := now
+	expiresAt := now.Add(accountRecoveryExpiry)
+	minted, err := s.store.Users().SetPendingRecovery(ctx, store.SetPendingRecoveryParams{
+		ID:                       user.ID,
+		PendingRecoveryToken:     hashBrowserSecret(rawToken),
+		PendingRecoveryExpiresAt: expiresAt,
+		PendingRecoveryIssuedAt:  &issuedAt,
+		CooldownCutoff:           cooldownCutoff,
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -110,28 +121,28 @@ func (s *AuthService) RequestPasswordReset(ctx context.Context, req *connect.Req
 		// A concurrent or recent request holds a live token: keep it (its
 		// email is on the way or already delivered) and answer the same
 		// empty body as every other path.
-		return connect.NewResponse(&leapmuxv1.RequestPasswordResetResponse{}), nil
+		return connect.NewResponse(&leapmuxv1.RequestAccountRecoveryResponse{}), nil
 	}
-	if err := s.mail.Send(ctx, s.renderer.PasswordResetEmail(targetEmail, rawToken, passwordResetExpiry)); err != nil {
+	if err := s.mail.Send(ctx, s.renderer.AccountRecoveryEmail(targetEmail, rawToken, accountRecoveryExpiry)); err != nil {
 		// Report the clear separately from the send. A log line that claims
 		// "cleared pending token" while the clear itself failed makes the
 		// operator look for the wrong cause of a token that is still live
-		// for the full reset TTL.
-		if clearErr := s.store.Users().ClearPendingPasswordReset(ctx, user.ID); clearErr != nil {
-			slog.WarnContext(ctx, "clear pending password reset after failed send",
+		// for the full recovery TTL.
+		if clearErr := s.store.Users().ClearPendingRecovery(ctx, user.ID); clearErr != nil {
+			slog.WarnContext(ctx, "clear pending account recovery after failed send",
 				"user_id", user.ID, "err", clearErr)
 		}
-		slog.WarnContext(ctx, "password reset email send failed; cleared pending token",
+		slog.WarnContext(ctx, "account recovery email send failed; cleared token",
 			"user_id", user.ID, "err", err)
 		// Still return empty success so the response cannot enumerate accounts,
 		// but do not leave a live token after a failed send.
-		return connect.NewResponse(&leapmuxv1.RequestPasswordResetResponse{}), nil
+		return connect.NewResponse(&leapmuxv1.RequestAccountRecoveryResponse{}), nil
 	}
-	return connect.NewResponse(&leapmuxv1.RequestPasswordResetResponse{}), nil
+	return connect.NewResponse(&leapmuxv1.RequestAccountRecoveryResponse{}), nil
 }
 
-func (s *AuthService) CompletePasswordReset(ctx context.Context, req *connect.Request[leapmuxv1.CompletePasswordResetRequest]) (*connect.Response[leapmuxv1.CompletePasswordResetResponse], error) {
-	if err := rejectSolo(s.cfg.SoloMode, "password reset"); err != nil {
+func (s *AuthService) CompleteAccountRecovery(ctx context.Context, req *connect.Request[leapmuxv1.CompleteAccountRecoveryRequest]) (*connect.Response[leapmuxv1.CompleteAccountRecoveryResponse], error) {
+	if err := rejectSolo(s.cfg.SoloMode, "account recovery"); err != nil {
 		return nil, err
 	}
 	token := req.Msg.GetToken()
@@ -145,22 +156,22 @@ func (s *AuthService) CompletePasswordReset(ctx context.Context, req *connect.Re
 
 	// Charge one attempt against the row that holds this exact token. The
 	// find, the charge, and the token re-check are one statement, so a token
-	// cleared by a concurrent reset cannot surface as a 500.
+	// cleared by a concurrent recovery cannot surface as a 500.
 	now := s.now().UTC()
-	charged, err := s.store.Users().ConsumePasswordResetAttemptByToken(ctx, hashedToken, now, maxPasswordResetAttempts)
+	charged, err := s.store.Users().ConsumeRecoveryAttemptByToken(ctx, hashedToken, now, maxAccountRecoveryAttempts)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("invalid or expired reset token"))
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("invalid or expired recovery token"))
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	// Attempt 6+ expires the token in SQL (sets expires_at = now). Refuse
 	// before Argon2 so the attempt budget is a hard cap, not soft.
-	if charged.PendingPasswordResetAttempts > maxPasswordResetAttempts {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("invalid or expired reset token"))
+	if charged.PendingRecoveryAttempts > maxAccountRecoveryAttempts {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("invalid or expired recovery token"))
 	}
-	if charged.PendingPasswordResetExpiresAt != nil && now.After(*charged.PendingPasswordResetExpiresAt) {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("reset token expired"))
+	if charged.PendingRecoveryExpiresAt != nil && now.After(*charged.PendingRecoveryExpiresAt) {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("recovery token expired"))
 	}
 
 	hashed, err := pwdhash.Hash(req.Msg.GetNewPassword())
@@ -173,17 +184,17 @@ func (s *AuthService) CompletePasswordReset(ctx context.Context, req *connect.Re
 	if mintErr != nil {
 		return nil, mintErr
 	}
-	var revoked *store.PasswordResetRevocation
+	var revoked *store.RecoveryRevocation
 	if err := s.store.RunInUserAuthTransaction(ctx, uid, func(tx store.Store) error {
 		var completeErr error
-		revoked, completeErr = tx.Users().CompletePasswordReset(ctx, store.CompletePasswordResetParams{
-			ID:                        user.ID,
-			PasswordHash:              hashed,
-			PendingPasswordResetToken: hashedToken,
+		revoked, completeErr = tx.Users().CompleteRecovery(ctx, store.CompleteRecoveryParams{
+			ID:                   user.ID,
+			PasswordHash:         hashed,
+			PendingRecoveryToken: hashedToken,
 		})
 		if completeErr != nil {
 			if errors.Is(completeErr, store.ErrNotFound) {
-				return connect.NewError(connect.CodeNotFound, fmt.Errorf("invalid or expired reset token"))
+				return connect.NewError(connect.CodeNotFound, fmt.Errorf("invalid or expired recovery token"))
 			}
 			return completeErr
 		}
@@ -210,5 +221,5 @@ func (s *AuthService) CompletePasswordReset(ctx context.Context, req *connect.Re
 	if revoked != nil {
 		s.lifecycle.UserRevoked(user.ID, revoked.AuthGeneration)
 	}
-	return connect.NewResponse(&leapmuxv1.CompletePasswordResetResponse{}), nil
+	return connect.NewResponse(&leapmuxv1.CompleteAccountRecoveryResponse{}), nil
 }

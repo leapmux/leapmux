@@ -1,15 +1,15 @@
 import { onMount } from 'solid-js'
-import { ForgotPasswordPage } from '~/components/common/ForgotPasswordPage'
+import { RecoverPage } from '~/components/common/RecoverPage'
 import { SignedOutOnly } from '~/components/common/SignedOutOnly'
 import { setPageTitle } from '~/lib/pageTitle'
 
-export default function ForgotPasswordRoute() {
+export default function RecoverAccountRoute() {
   onMount(() => {
-    setPageTitle('Forgot password')
+    setPageTitle('Recover your account')
   })
   return (
     <SignedOutOnly>
-      <ForgotPasswordPage />
+      <RecoverPage />
     </SignedOutOnly>
   )
 }

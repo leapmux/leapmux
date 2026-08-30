@@ -115,7 +115,7 @@ func TestResolveEmailVerified(t *testing.T) {
 // administrator exemption answers "may this account use the hub". They were
 // one column, and writing the second into the first made an administrator's
 // unconfirmed address a valid self-service password-reset target -- because
-// RequestPasswordReset reads the column and CANNOT take the exemption: the
+// RequestAccountRecovery reads the column and CANNOT take the exemption: the
 // question it asks is exactly the first one.
 func TestEmailVerificationFactsSatisfied_SeparatesTheAddressFromThePrivilege(t *testing.T) {
 	t.Parallel()

@@ -1,11 +1,11 @@
 ---
 title: "Settings & Preferences"
-description: "Every Preferences dialog setting: appearance, notifications, chat, terminal, files, fonts, keyboard shortcuts, account, apps, and hub administration panels."
+description: "Every Preferences dialog category in order: Account, Apps, Appearance, Notifications, Chat & Composer, Terminal, Files & Editors, Keyboard Shortcuts, Advanced — and the Administration group hub administrators see."
 type: docs
 weight: 10
 ---
 
-LeapMux keeps your settings in one **Preferences** dialog reached from the user (avatar) menu. It is a large, searchable, categorized dialog covering every user, browser, and (for hub administrators) instance setting in one place. This chapter covers every category, the additional in-context toggles, and how each preference is stored and resolved.
+LeapMux keeps your settings in one **Preferences** dialog reached from the user (avatar) menu. It is a large, searchable, categorized dialog covering every user, browser, and (for hub administrators) instance setting in one place. This chapter covers every category in the dialog's own order, the additional in-context toggles, and how each preference is stored and resolved.
 
 ## Opening Preferences
 
@@ -31,12 +31,12 @@ Every row shows a label, a one-line description, and a control. Rows that exist 
 
 Opening the chip offers **Use account default** or **Override on this device**. Single-tier rows show the tier as static text instead of a chip.
 
-The categories:
+The user categories, in navigation order:
 
 | Category | Covers |
 |---|---|
-| **Account** | Profile name, email, password, passkeys, linked accounts, connected apps. The section the dialog opens on. Solo mode hides every row but **Connected apps**, because a solo Hub authorizes apps like any other and its owner must be able to disconnect one. |
-| **Apps** | The app registrations you own. An ordinary account may register an app for itself; an administrator's registrations are visible to everybody. See [App Authorization](/docs/operating/app-authorization/). |
+| **Account** | Profile name, email, password, passkeys, linked accounts. The section the dialog opens on. Solo mode hides every row, and the category disappears from the dialog. |
+| **Apps** | The app errand in two rows: **Connected apps** (what your account authorized) and the app registrations you own. An ordinary account may register an app for itself; an administrator's registrations are visible to everybody. Both rows stay in solo mode, because a solo Hub authorizes apps like any other. See [App Authorization](/docs/admin/app-authorization/). |
 | **Appearance** | Theme (palette + light/dark), terminal theme, syntax theme, diff view, UI fonts, monospace fonts. |
 | **Notifications** | Turn-end sound and volume, terminal OS notifications. |
 | **Chat & Composer** | Expand agent thoughts, show hidden messages, Enter key behavior, composer status bar. |
@@ -45,20 +45,31 @@ The categories:
 | **Keyboard Shortcuts** | The keybinding editor (see below). |
 | **Advanced** | Debug logging, trusted worker keys, reset all browser overrides. |
 
-Administrators additionally see an **ADMINISTRATION** section in the navigation. These rows administer the hub itself, so the hub authenticates and validates every write — and every write needs a **verified session**, because several of these keys are the hub's own security controls. The first change in a sitting opens a **Verify your identity** dialog and then lands on its own; see [Session elevation](/docs/operating/security/#session-elevation). Most rows apply without a restart. The hub that serves the write applies the change at once, and another hub on the same database picks it up within ~30 seconds. The dialog re-reads the hub's own state after every accepted write, so a key that decides what the rest of the app offers converges immediately: publish the hub's URL and **Add passkey** in the **Account** section stops being disabled, with no page reload. The two rows in the ADMINISTRATION **Advanced** category are the exception; they apply only after a hub restart. Solo mode omits the categories a single-user hub has no use for:
+Administrators additionally see an **ADMINISTRATION** group in the navigation, below these categories — see [Administration](#administration) below.
 
-| Category | Covers | In solo mode |
-|---|---|---|
-| **General** | Public base URL, session duration, secure cookies. | Public base URL only |
-| **Sign-up & Access** | Open sign-up, require verified email. | Hidden |
-| **Email (SMTP)** | Relay host and port, credentials, sender address, TLS mode. | Hidden |
-| **Bot Protection** | Captcha provider and its parameters. | Hidden |
-| **Rate Limits** | Failed-attempt limits, per operation. | The anonymous authorization-server limit only |
-| **Limits & Timeouts** | API, agent-startup, and worktree-create timeouts; per-user connection and worker caps. | Shown |
-| **Apps** | Open app registration (RFC 7591), off by default. | Shown |
-| **Advanced** | Maximum message size, queue budgets. Both apply only after a hub restart, and both rows carry a **Requires Restart** badge. | Shown |
+## Account
 
-See [Configuration](/docs/operating/configuration/) for what each instance setting does, and [`admin` — hub administration over RPC](/docs/operating/admin-cli/) for the CLI surface over the same settings.
+The Account category carries your account settings, as one row per concern. It leads the navigation. Solo mode hides every row here — a solo deployment has one local identity, so there is no password, address or provider to manage — and the category disappears from the dialog. For the broader account lifecycle — sign-up, login, OAuth, email verification, sessions — see [Accounts & Authentication](/docs/using/accounts/).
+
+- **Profile** — your username and display name, saved together. A username is a lowercase slug, and `solo` is always reserved. A display name falls back to the username when empty.
+- **Email** — changing it may require verification (an administrator-configured policy); a pending change shows a notice until confirmed.
+- **Password** — 8–128 printable ASCII characters, spaces included (see [Password requirements](/docs/using/accounts/#password-requirements)) with a live strength meter. Changing it signs out all your *other* sessions and disconnects every app; your current session stays signed in. OAuth-only accounts can set a first password here.
+- **Passkeys** — the credentials registered to this account, with add, rename and remove. See [Managing passkeys in your profile](/docs/using/accounts/#managing-passkeys-in-your-profile).
+- **Linked accounts** — your linked OAuth/OIDC providers, each with an **Unlink** button. You cannot detach your only sign-in method without a password set.
+
+Four of those five rows need a **verified session**: email, password, passkeys, and linked accounts. Your profile name does not. While the session is verified, a panel at the top of the section says so and offers **End now**. Every **ADMINISTRATION** section takes the same rule and shows the same panel. See [Session elevation](/docs/admin/security/#session-elevation).
+
+## Apps
+
+The category holds the whole app errand in two rows, authorization first.
+
+**Connected apps** lists every app holding access to your account, grouped by app, with the permissions each was granted. **Disconnect** on the app's line ends every machine it runs on; **Revoke** on one row ends that machine alone. See [Connected Apps](/docs/using/connected-apps/).
+
+**App registrations** lists the apps you registered, with **Register app**, and per row the permission ceiling it may ask for, whether an administrator vouched for it, **Edit** (the name, home page, redirect addresses and that ceiling), **Allow step-up** or **Refuse step-up**, and **Retire**. Narrowing that ceiling takes the permission from every credential the app already holds, so it is the lever to reach for short of retiring the app outright. Yours are visible to you alone; an administrator's are visible to everybody and only an administrator can edit them. Administrators also get **Vouch** and **Withdraw vouch** on every row. See [App Authorization](/docs/admin/app-authorization/) for what each field decides.
+
+**App registrations** needs a **verified session**; **Connected apps**, the row above it, does not. The asymmetry is the point: disconnecting reduces access, while editing a registration rewrites **where a consent redirects** — the single most dangerous write in the feature, because it diverts an authorization code already in flight to an address the editor chose. Registering an app, allowing it the step-up ceremony, and vouching for it take the same rule.
+
+Administrators additionally see the **Hub-wide Apps** category under **ADMINISTRATION** — see [Hub-wide Apps](#hub-wide-apps) below.
 
 ## Appearance
 
@@ -127,9 +138,9 @@ A 0–100% slider (built-in default 100%), shown when the turn-end sound is not 
 
 Whether terminal alerts raise OS-level notifications (browser-only; the browser asks for notification permission when you enable it). Off by default.
 
-## Chat & Composer, Terminal, Files & Editors
+## Chat & Composer
 
-These categories hold the per-device toggles. The in-context controls — the tab-bar **Advanced** menu, the composer **[+]** menu, the file viewer's save action — change the same stored value, so a toggle in one place is reflected everywhere.
+Per-device toggles for the chat surface. The in-context controls — the tab-bar **Advanced** menu and the composer **[+]** menu — change the same stored value, so a toggle in one place is reflected everywhere.
 
 | Setting | Default | Also toggled from | What it does |
 |---|---|---|---|
@@ -137,12 +148,24 @@ These categories hold the per-device toggles. The in-context controls — the ta
 | **Show hidden messages** | Off | Tab bar menu | Developer view that reveals hidden chat messages. |
 | **Enter key behavior** | **Cmd/Ctrl+Enter sends** | Composer **[+]** menu (**Send with ⌘⏎**) | Whether plain Enter sends a chat message or inserts a newline. The other choice is **Enter sends**. |
 | **Composer status bar** | On | Composer **[+]** menu | Whether the branch/model/effort/mode chips show beneath the editor box. |
-| **Terminal renderer** | Auto | — | Renderer backend for terminals (auto / WebGL / canvas). Automatic selection avoids WebGL on Linux desktop. |
+
+## Terminal
+
+| Setting | Default | What it does |
+|---|---|---|
+| **Terminal renderer** | Auto | Renderer backend for terminals (auto / WebGL / canvas). Automatic selection avoids WebGL on Linux desktop. |
+
+## Files & Editors
+
+Per-device toggles for files and external editors. As with the chat toggles, the in-context controls — the editor menu on **Open in Editor**, the file viewer's save action, the directory picker — change the same stored value as these rows.
+
+| Setting | Default | Also toggled from | What it does |
+|---|---|---|---|
 | **Preferred editor** | First detected (desktop only) | The editor menu on **Open in Editor** | Which external editor opens files. |
 | **Reveal after download** | On (desktop only) | The file viewer's save action | Reveals a downloaded file in Finder / Explorer / Files after saving. |
 | **Hidden files in directory picker** | On | The directory picker itself | Whether the directory picker lists dotfiles. |
 
-## Keyboard shortcuts
+## Keyboard Shortcuts
 
 The **Keyboard Shortcuts** category is a table of every command with its default binding and source (**Default** or **Custom**). Click a binding to capture a new chord; the panel refuses a chord already bound in the same context and gives the name of the conflicting command; **Reset** on a customized row returns it to its default. Overrides are stored account-level (up to 200 of them) and follow you to every device. See [Keyboard Shortcuts](/docs/using/keyboard-shortcuts/) for the command catalogue.
 
@@ -152,26 +175,69 @@ The **Keyboard Shortcuts** category is a table of every command with its default
 - **Trusted worker keys** — the list of worker keys that your browser trusts (TOFU). Remove individual pins or clear them all; the next connect re-prompts.
 - **Reset all browser overrides** — the **Reset overrides** button removes every **This device** override at once, returning every dual-tier setting to its account default.
 
-## Account
+## Administration
 
-The Account category carries your account settings, as one row per concern. It leads the navigation. Solo mode hides every row here but **Connected apps** — a solo deployment has one local identity, so there is no password, address or provider to manage, but it authorizes apps like any other Hub. For the broader account lifecycle — sign-up, login, OAuth, email verification, sessions — see [Accounts & Authentication](/docs/using/accounts/).
+Administrators see a second group in the navigation, **ADMINISTRATION**, below the user categories. Its rows are the Hub's own instance settings: the Hub authenticates and validates every write, and every write needs a **verified session** — several of these keys are the Hub's own security controls. The first change in a sitting opens a **Verify your identity** dialog and then lands on its own; see [Session elevation](/docs/admin/security/#session-elevation).
 
-- **Profile** — your username and display name, saved together. A username is a lowercase slug, and `solo` is always reserved. A display name falls back to the username when empty.
-- **Email** — changing it may require verification (an operator-configured policy); a pending change shows a notice until confirmed.
-- **Password** — 8–128 printable ASCII characters, spaces included (see [Password requirements](/docs/using/accounts/#password-requirements)) with a live strength meter. Changing it signs out all your *other* sessions and disconnects every app; your current session stays signed in. OAuth-only accounts can set a first password here.
-- **Passkeys** — the credentials registered to this account, with add, rename and remove. See [Managing passkeys in your profile](/docs/using/accounts/#managing-passkeys-in-your-profile).
-- **Linked accounts** — your linked OAuth/OIDC providers, each with an **Unlink** button. You cannot detach your only sign-in method without a password set.
-- **Connected apps** — every app holding access to your account, grouped by app, with the permissions each was granted. **Disconnect** on the app's line ends every machine it runs on; **Revoke** on one row ends that machine alone. See [Connected Apps](/docs/using/connected-apps/).
+Most rows apply without a restart. The Hub that serves the write applies the change at once, and another Hub on the same database picks it up within ~30 seconds. The dialog re-reads the Hub's own state after every accepted write, so a key that decides what the rest of the app offers converges immediately: publish the Hub's URL and **Add passkey** in the **Account** category stops being disabled, with no page reload. The two rows that apply only after a Hub restart carry a **Requires Restart** badge. Solo mode omits the categories a single-user Hub has no use for; each category below states what stays.
 
-Four of those six rows need a **verified session**: email, password, passkeys, and linked accounts. Your profile name and your connected apps do not. Disconnecting an app only ever *reduces* what it can reach, and demanding a fresh factor from somebody who just realized an app is malicious is the wrong failure mode. While the session is verified, a panel at the top of the section says so and offers **End now**. Every **ADMINISTRATION** section takes the same rule and shows the same panel. See [Session elevation](/docs/operating/security/#session-elevation).
+### General
 
-## Apps
+- **Public base URL** — the browser-facing URL when the Hub runs behind a TLS-terminating reverse proxy (scheme and host only). Mail links, the CLI's login endpoints, and passkey ceremonies all derive from it. See [Passkeys](/docs/admin/configuration/#passkeys).
+- **Session duration** — how long a session lives after your last activity. See [Sessions and signing out](/docs/using/accounts/#sessions-and-signing-out).
+- **Secure cookies** — serve the session cookie with the `__Host-` prefix behind TLS; changing it signs everybody out.
 
-**App registrations** lists the apps you registered, with **Register app**, and per row the permission ceiling it may ask for, whether an administrator vouched for it, **Edit** (the name, home page, redirect addresses and that ceiling), **Allow step-up** or **Refuse step-up**, and **Retire**. Narrowing that ceiling takes the permission from every credential the app already holds, so it is the lever to reach for short of retiring the app outright. Yours are visible to you alone; an administrator's are visible to everybody and only an administrator can edit them. Administrators also get **Vouch** and **Withdraw vouch** on every row. See [App Authorization](/docs/operating/app-authorization/) for what each field decides.
+In solo mode only **Public base URL** stays.
 
-This row needs a **verified session**, and **Connected apps** one category up does not. The asymmetry is the point: disconnecting reduces access, while editing a registration rewrites **where a consent redirects** — the single most dangerous write in the feature, because it diverts an authorization code already in flight to an address the editor chose. Registering an app, allowing it the step-up ceremony, and vouching for it take the same rule.
+### Sign-up & Access
 
-Administrators additionally see **Apps** under **ADMINISTRATION**, which holds the Hub's own app setting: whether [RFC 7591 open registration](/docs/operating/app-authorization/#open-registration) accepts anonymous callers. It is off by default.
+One row: **Open sign-up**, off by default. With it off, new accounts come only from an administrator or from a linked OAuth identity; with it on, the `/signup` page works. Email verification has no row of its own — it follows the mail relay: configuring **Email (SMTP)** below is what turns verification on. Hidden entirely in solo mode.
+
+### Email (SMTP)
+
+One row, **SMTP relay**: host, port, username, from address, TLS mode, and a password kept in the row's secret half. Configuring it enables verification emails and account recovery; with no relay, sign-ups skip verification entirely. Hidden entirely in solo mode.
+
+### Hub-wide Apps
+
+- **Open app registration** — whether anonymous callers may register an app through [RFC 7591 dynamic registration](/docs/admin/app-authorization/#open-registration). Off by default.
+- **Hub-wide app registrations** — the registrations an administrator creates for every account on the Hub to authorize. Registering one is an administrator's act, so it asks for a fresh proof first.
+
+Shown in solo mode: a solo Hub authorizes apps like any other.
+
+### Bot Protection
+
+- **Bot protection enabled** — whether captcha verification runs on sign-in and sign-up. The honeypot check stays active either way.
+- **Provider** — the active provider: the built-in **ALTCHA** (the default), **Google reCAPTCHA v3**, or **Cloudflare Turnstile**.
+- **ALTCHA parameters**, **Google reCAPTCHA v3**, **Cloudflare Turnstile** — one row per provider's key fields. Every provider's fields are visible at all times, so an administrator fills one in and then switches **Provider** to it.
+
+See [Bot protection](/docs/admin/configuration/#bot-protection-captcha--rate-limits) for where the built-in ALTCHA runs and what the parameters cost. Hidden entirely in solo mode.
+
+### Rate Limits
+
+One row per counted operation:
+
+- **Rate limit - elevation** — failed attempts to verify your identity for a sensitive change: 5 per 15 minutes, per user.
+- **Rate limit - oauth_anonymous** — the authorization server's anonymous endpoints: 600 per 10 minutes, per client address.
+
+In solo mode only the anonymous limit stays.
+
+### Limits & Timeouts
+
+- **Timeouts** — the API timeout, the agent-startup timeout, and the worktree-create timeout, each in seconds.
+- **Per-user caps** — a user's maximum simultaneous connections (default 32) and Workers (default 64); `0` means unlimited.
+
+Shown in solo mode.
+
+### Advanced
+
+Two rows, both carrying a **Requires Restart** badge:
+
+- **Maximum message size** — the application payload ceiling.
+- **Queue budgets** — memory budgets for the Hub's outbound queue pools; `0` auto-sizes them.
+
+Shown in solo mode.
+
+See [Configuration](/docs/admin/configuration/) for what each instance setting does, and [Admin CLI](/docs/admin/admin-cli/) for the CLI surface over the same settings.
 
 ## How preferences persist
 
@@ -209,6 +275,6 @@ Device override (if set)  →  Account default  →  built-in default
 
 - [Accounts & Authentication](/docs/using/accounts/) — sign-up, login, OAuth, email verification, sessions.
 - [Keyboard Shortcuts](/docs/using/keyboard-shortcuts/) — the shortcut system, default bindings, and customization.
-- [Configuration](/docs/operating/configuration/) — the hub instance settings the administration panels manage.
-- [`leapmux control admin`](/docs/operating/control-cli/) — the CLI surface over the same hub settings.
-- [Running LeapMux](/docs/operating/running-leapmux/) — solo vs. distributed mode.
+- [Configuration](/docs/admin/configuration/) — the hub instance settings the administration panels manage.
+- [`leapmux control admin`](/docs/using/control-cli/) — the CLI surface over the same hub settings.
+- [Running LeapMux](/docs/admin/running-leapmux/) — solo vs. distributed mode.

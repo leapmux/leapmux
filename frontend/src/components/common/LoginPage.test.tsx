@@ -537,12 +537,17 @@ describe('loginPage', () => {
     expect(screen.getByLabelText('Password')).toBeInTheDocument()
   })
 
-  it('shows forgot password when email is enabled and password sign-in is selected', async () => {
+  it('shows the recovery link on both sign-in methods when email is enabled', async () => {
+    // Recovery verifies the account's email, not the method the user lost,
+    // so the entry point must survive the passkey tab. Hidden only when the
+    // hub cannot send mail.
     setSystemInfoMock({ emailEnabled: true })
     renderLoginPage()
     await vi.waitFor(() => {
-      expect(screen.getByText('Forgot password?')).toBeInTheDocument()
+      expect(screen.getByText('Can\'t sign in?')).toBeInTheDocument()
     })
+    fireEvent.click(screen.getByRole('radio', { name: 'Passkey' }))
+    expect(screen.getByText('Can\'t sign in?')).toBeInTheDocument()
   })
 
   it('switches captcha action when the passkey method is selected', async () => {

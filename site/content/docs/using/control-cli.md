@@ -7,7 +7,7 @@ weight: 8
 
 `leapmux control` is a JSON-emitting command-line surface for driving LeapMux from outside the browser. It lets you open and close tabs, send messages to agents, type into terminals, reshape the tile layout, inspect files and git state on a Worker, and stream live workspace events — all from a script, a CI job, or another agent.
 
-This chapter covers authentication, the universal entity-ID flags, the output envelope, and every command group with its subcommands and key flags. The online administration groups (`leapmux control admin ...`) are documented in the companion [Admin CLI](/docs/operating/admin-cli/) chapter. For the offline break-glass tree (`bootstrap`, `password`, `encryption-key`, `db`), see [Recovery](/docs/operating/recover/). For the agent and terminal features these commands drive, see [Coding Agents](/docs/using/coding-agents/) and [Terminals](/docs/using/terminals/).
+This chapter covers authentication, the universal entity-ID flags, the output envelope, and every command group with its subcommands and key flags. The online administration groups (`leapmux control admin ...`) are documented in the companion [Admin CLI](/docs/admin/admin-cli/) chapter. For the offline break-glass tree (`bootstrap`, `password`, `encryption-key`, `db`), see [Recovery](/docs/admin/recover/). For the agent and terminal features these commands drive, see [Coding Agents](/docs/using/coding-agents/) and [Terminals](/docs/using/terminals/).
 
 ## Two callers, one CLI
 
@@ -94,9 +94,9 @@ Authorizes the CLI against a Hub and writes a credential file to disk. The `--hu
 | `--device-code` | `false` | Force the RFC 8628 device-code flow (headless / SSH / container) |
 | `--scope <permissions>` | everything except `admin:*` | The permissions to ask for, space- or comma-separated |
 
-The CLI is a registered app like any other, so a login is an ordinary OAuth 2.1 authorization. See [App Authorization](/docs/operating/app-authorization/) for how apps are registered and what they may ask for, and [OAuth API](/docs/reference/oauth-api/) for the wire contract.
+The CLI is a registered app like any other, so a login is an ordinary OAuth 2.1 authorization. See [App Authorization](/docs/admin/app-authorization/) for how apps are registered and what they may ask for, and [OAuth API](/docs/reference/oauth-api/) for the wire contract.
 
-**You verify your identity in the browser, not in the terminal.** Authorizing a credential needs an elevated session, so the consent page sends you through a verification prompt (password, passkey, or your identity provider) before it hands anything back. That elevation lasts {{< duration elevation-window >}}, so a second login in the same sitting does not ask again. See [Session elevation](/docs/operating/security/#session-elevation).
+**You verify your identity in the browser, not in the terminal.** Authorizing a credential needs an elevated session, so the consent page sends you through a verification prompt (password, passkey, or your identity provider) before it hands anything back. That elevation lasts {{< duration elevation-window >}}, so a second login in the same sitting does not ask again. See [Session elevation](/docs/admin/security/#session-elevation).
 
 **Default flow (PKCE local redirect).** The CLI opens a loopback listener on `127.0.0.1`, prints the authorization URL with an instruction to open it in your browser, and tries to launch your browser automatically (`open` on macOS, `xdg-open` on Linux, the shell handler on Windows). You sign in on the Hub's web page; the Hub redirects back to the loopback listener to complete the exchange. The CLI waits up to **10 minutes** for the callback before failing with `{"error":{"code":"timeout",...}}`.
 
@@ -143,7 +143,7 @@ Both separators work: the wire format is space-delimited, which a shell needs qu
 
 The **browser** decides. The consent page states in sentences what the credential will be able to do, and you approve or refuse there. The permission list in the response is what you actually granted, which is what the CLI records — and it may be wider than you asked for, because some permissions imply others. `file:read` implies `worker:read`, since reading a file means reaching the machine that holds it.
 
-The whole vocabulary is in [App Authorization](/docs/operating/app-authorization/#permissions).
+The whole vocabulary is in [App Authorization](/docs/admin/app-authorization/#permissions).
 
 ### Renewal and lifetime
 
@@ -159,7 +159,7 @@ Logging in again on the same machine **revokes the credential it replaces**, so 
 | --- | --- | --- |
 | `auth status` | `--hub` | `{hub_url, username, user_id, expires, expired, refresh_expires, scope, token_id}` for the specified Hub. Error `not_logged_in` if there is no credential. `expires` is the hour-long access token, which renews itself; `refresh_expires` is when the device must sign in again. |
 | `auth list` | none | An array of `{hub_url, username, user_id, expires, scope}` for every Hub you have credentials for. |
-| `auth credentials` | `--hub` | An array of `{id, client_id, client_name, installation_name, created_at, last_used_at, refresh_expires, expires, granted_scopes, client_verified, current}` for every credential the account holds. `client_name` is the app and `installation_name` is which copy of it. `current` marks the one this command uses. Each credential carries exactly one deadline: a renewing credential reports `refresh_expires`, and one minted with `--ttl` (an [Admin CLI](/docs/operating/admin-cli/#api-tokens) issuance) reports `expires`. A row with neither never expires. |
+| `auth credentials` | `--hub` | An array of `{id, client_id, client_name, installation_name, created_at, last_used_at, refresh_expires, expires, granted_scopes, client_verified, current}` for every credential the account holds. `client_name` is the app and `installation_name` is which copy of it. `current` marks the one this command uses. Each credential carries exactly one deadline: a renewing credential reports `refresh_expires`, and one minted with `--ttl` (an [Admin CLI](/docs/admin/admin-cli/#api-tokens) issuance) reports `expires`. A row with neither never expires. |
 | `auth logout` | `--hub` | Best-effort revokes the token on the Hub, then deletes the local credential file. Emits `{hub_url}`. |
 
 **`list` and `credentials` answer different questions.** `list` reads this machine's credential files — which Hubs this box can reach. `credentials` asks the Hub what the whole account holds — what else can reach your account, from anywhere. It is the same list the browser shows under **Preferences → Account → Connected apps**, where you can also disconnect. See [Connected Apps](/docs/using/connected-apps/).
@@ -448,7 +448,7 @@ LeapMux pins each Worker's key on first connection (trust-on-first-use). The `wo
 | `worker pins show` | `--worker-id` (defaults to `$LEAPMUX_CONTROL_WORKER_ID`) | One recorded pin; `not_found` if none |
 | `worker pins remove` | `--worker-id` | Drops the pin so the next connect re-prompts; emits `{removed_worker_id}` |
 
-Pins are stored at `<ConfigDir>/<hub-host>/pins.json` with mode `0644` (they are not secrets). For the Worker registration and approval lifecycle, see [Managing Workers](/docs/operating/managing-workers/).
+Pins are stored at `<ConfigDir>/<hub-host>/pins.json` with mode `0644` (they are not secrets). For the Worker registration and approval lifecycle, see [Managing Workers](/docs/admin/managing-workers/).
 
 ## Agent commands
 
@@ -611,7 +611,7 @@ A `--hub` value may be a hub IPC listener (`unix:$HOME/.config/leapmux/hub/hub.s
 
 Login rules:
 
-- **Solo needs no login to use.** Solo mode authenticates every request as the local user, so ordinary commands need no credential. It still **authorizes apps**: a login there mints a scoped credential, and the Hub binds that credential's permissions rather than the solo account's. Both flows complete, because the consent pages accept the solo account. See [App Authorization](/docs/operating/app-authorization/#solo-mode).
+- **Solo needs no login to use.** Solo mode authenticates every request as the local user, so ordinary commands need no credential. It still **authorizes apps**: a login there mints a scoped credential, and the Hub binds that credential's permissions rather than the solo account's. Both flows complete, because the consent pages accept the solo account. See [App Authorization](/docs/admin/app-authorization/#solo-mode).
 - A **non-solo hub over a socket** uses `--device-code`: `leapmux control auth login --hub unix:...hub.sock --device-code` dials the socket for the token exchange while you approve in a browser against the hub's **public** origin (which the hub derives itself from its settings — not from `--hub`). The PKCE local-redirect flow is refused for socket URLs with a message pointing at `--device-code`, because a browser cannot reach a socket hub origin.
 
 ```bash
@@ -642,14 +642,14 @@ The two transports carry different credentials and trust boundaries:
 - **Spawned agent or terminal.** The Worker hands the process a private local-IPC socket (mode `0600`) and a per-process token scoped to the spawning user and tab. When the agent or terminal closes, the socket is torn down and the token is invalidated.
 - **Cross-worker calls from a spawned agent.** Reaching a *sibling* Worker (an `agent`/`terminal`/`file`/`git` command with a different `--worker-id`) uses a Worker-minted delegation token: it carries your identity and is pinned to the machines it may reach. It is minted lazily on the first cross-worker call and revoked when the agent closes — so an agent that never reaches across Workers never holds one.
 
-For the full trust model, what the Hub can and cannot see, and the encryption primitives, see [Security & Threat Model](/docs/operating/security/).
+For the full trust model, what the Hub can and cannot see, and the encryption primitives, see [Security & Threat Model](/docs/admin/security/).
 
 ## See also
 
 - [Coding Agents](/docs/using/coding-agents/) — providers, models, effort, control prompts, and resume that `agent` commands drive.
 - [Terminals](/docs/using/terminals/) — PTY sessions, shells, and the automatic `LEAPMUX_CONTROL_*` injection.
-- [Managing Workers](/docs/operating/managing-workers/) — Worker registration, approval, and TOFU pinning.
-- [Admin CLI](/docs/operating/admin-cli/) — the `control admin` surface for hub administration.
-- [Recovery](/docs/operating/recover/) — the offline break-glass tree.
+- [Managing Workers](/docs/admin/managing-workers/) — Worker registration, approval, and TOFU pinning.
+- [Admin CLI](/docs/admin/admin-cli/) — the `control admin` surface for hub administration.
+- [Recovery](/docs/admin/recover/) — the offline break-glass tree.
 - [Tabs and Layout](/docs/using/tabs-and-layout/) — the tile/split/grid model that `tile` and `layout` manipulate.
 - [Worktrees and Branches](/docs/using/worktrees-and-branches/) — the worktree dispositions used by `tab close --worktree`.

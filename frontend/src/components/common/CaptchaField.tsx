@@ -21,7 +21,7 @@ export interface CaptchaFieldProps {
    * 'complete_signup'. External providers bind it into the token and the
    * hub refuses mismatches; ALTCHA ignores it.
    */
-  action: 'login' | 'signup' | 'complete_signup' | 'passkey_login' | 'passkey_signup' | 'password_reset' | 'complete_password_reset'
+  action: 'login' | 'signup' | 'complete_signup' | 'passkey_login' | 'passkey_signup' | 'account_recovery' | 'complete_account_recovery' | 'verify_email' | 'resend_verification'
   /** Receives the provider token once solved, null otherwise. */
   onPayload: (payload: string | null) => void
   /**

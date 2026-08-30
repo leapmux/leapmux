@@ -332,7 +332,7 @@ func (s *Service) BeginRegistration(ctx context.Context, userID, origin string) 
 // atomic conditional UPDATE, so it does not need to share the caller's
 // transaction either -- only the credential INSERT does.
 //
-// FinishSignUp and CompletePasswordReset already order their expensive work
+// FinishSignUp and CompleteAccountRecovery already order their expensive work
 // this way; this is the same shape for the registration path.
 func (s *Service) VerifyRegistration(ctx context.Context, userID, sessionID, credentialJSON string) (FinishedSignUpCredential, error) {
 	row, sessionData, err := s.consumeCeremonySession(ctx, sessionID, KindRegister)

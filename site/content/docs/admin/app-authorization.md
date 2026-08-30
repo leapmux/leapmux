@@ -1,16 +1,16 @@
 ---
 title: "App Authorization"
-description: "Register apps on a LeapMux Hub, control what each may ask for, and vouch for the ones you trust. The OAuth 2.1 authorization server, from the operator's side."
+description: "Register apps on a LeapMux Hub, control what each may ask for, and vouch for the ones you trust. The OAuth 2.1 authorization server, from the administrator's side."
 type: docs
 weight: 5
 ---
 
-> **Not this chapter:** signing users *in* with GitHub, Google, or your own OIDC issuer is [Sign-in Providers](/docs/operating/sign-in-providers/).
+> **Not this chapter:** signing users *in* with GitHub, Google, or your own OIDC issuer is [Sign-in Providers](/docs/admin/sign-in-providers/).
 > This chapter is the other direction — apps that ask **your Hub** for access to an account on it.
 
 A LeapMux Hub is an OAuth 2.1 authorization server. Any program can ask an account holder for permission, and the account holder decides on a consent screen the Hub renders. The control CLI uses the same flow as everything else; it is registered like any other app.
 
-This chapter is for operators. If you want to see and disconnect the apps on **your own** account, see [Connected Apps](/docs/using/connected-apps/). If you write an app, the wire contract is [OAuth API](/docs/reference/oauth-api/).
+This chapter is for administrators. If you want to see and disconnect the apps on **your own** account, see [Connected Apps](/docs/using/connected-apps/). If you write an app, the wire contract is [OAuth API](/docs/reference/oauth-api/).
 
 ## Who may register an app
 
@@ -23,7 +23,7 @@ Both an administrator and an ordinary user can register one, and the difference 
 
 A private app is invisible in every sense. Another account does not see it in a listing, and a consent screen for it does not render even for somebody handed the link — the Hub answers as though the app does not exist. That is deliberate: telling a stranger "that app exists but is not yours" answers the question the rule exists to refuse.
 
-A user registers an app from **Preferences → Apps**. An operator uses the CLI:
+A user registers an app from **Preferences → Apps**. An administrator uses the CLI:
 
 ```bash
 leapmux control admin app register \
@@ -37,7 +37,7 @@ leapmux control admin app register \
 
 The response carries the `client_id` and, for a confidential client, the `client_secret` **once**. The Hub stores only its hash and cannot show it again.
 
-**Every write to a registration needs a recently proven factor** — registering, editing, allowing the step-up ceremony, and vouching. Editing is why: rewriting a redirect list diverts an authorization code already in flight to an address the editor chose, which is the most dangerous write on this surface. In the browser the first such write in a sitting opens a **Verify your identity** dialog; on the CLI the refusal prints an address and a short code you approve in a browser (see [Verifying a command-line credential](/docs/operating/security/#verifying-a-command-line-credential)). **Retiring** an app and **deleting** an empty registration need none: both only reduce what the app can reach, and demanding a fresh factor from somebody who just realized an app is malicious is the wrong failure mode.
+**Every write to a registration needs a recently proven factor** — registering, editing, allowing the step-up ceremony, and vouching. Editing is why: rewriting a redirect list diverts an authorization code already in flight to an address the editor chose, which is the most dangerous write on this surface. In the browser the first such write in a sitting opens a **Verify your identity** dialog; on the CLI the refusal prints an address and a short code you approve in a browser (see [Verifying a command-line credential](/docs/admin/security/#verifying-a-command-line-credential)). **Retiring** an app and **deleting** an empty registration need none: both only reduce what the app can reach, and demanding a fresh factor from somebody who just realized an app is malicious is the wrong failure mode.
 
 ## Permissions
 
@@ -73,7 +73,7 @@ Four rules bind the whole vocabulary.
 
 **The registration is a LIVE ceiling.** `--scope` sets what the app may *ask* for, and the Hub applies it at every request rather than only at the consent — so narrowing it takes the permission from the credentials the app already holds, at their next call. Use that when an app should keep working with less; **Retire** is for when it should not keep working at all. The ceiling only narrows: the account's consent is untouched, so restoring the permission on the registration restores what the account already agreed to, with no fresh authorization. Editing a registration needs a recently proven factor.
 
-**An admin permission needs an administrator on both sides.** A non-administrator cannot register an app that *asks* for one, and cannot grant one on a consent screen. The refusal lands at registration, so an operator learns it before the app ships rather than when a user meets it.
+**An admin permission needs an administrator on both sides.** A non-administrator cannot register an app that *asks* for one, and cannot grant one on a consent screen. The refusal lands at registration, so an administrator learns it before the app ships rather than when a user meets it.
 
 Nothing an app holds reaches the account's own authenticators. Adding a passkey, changing the recovery address, unlinking a sign-in provider, and managing another app's credential are outside every grant, whatever the consent screen offered — those create authority that outlives the app's connection, so disconnecting the app would no longer withdraw what it was given.
 
@@ -123,7 +123,7 @@ leapmux control admin app revoke --client-id <client_id>
 
 **Delete** removes a registration that never held a credential. The Hub refuses it otherwise and says how many credentials exist, so you can retire instead. A revoked credential still counts: it is history that the account's own list shows, and deleting the app it belonged to would leave that history pointing at nothing.
 
-Two registrations ship with the Hub — the control CLI and the service account that holds administrator-issued credentials. Neither can be edited, retired, or deleted, because their fields are constants of the build. Their elevation setting is the one thing that moves, so an operator who does not want `leapmux control admin ...` to elevate can say so.
+Two registrations ship with the Hub — the control CLI and the service account that holds administrator-issued credentials. Neither can be edited, retired, or deleted, because their fields are constants of the build. Their elevation setting is the one thing that moves, so an administrator who does not want `leapmux control admin ...` to elevate can say so.
 
 ## Solo mode
 
@@ -135,5 +135,5 @@ That is what makes the model useful on one machine: hand a local agent a credent
 
 - [Connected Apps](/docs/using/connected-apps/) — the account holder's side
 - [OAuth API](/docs/reference/oauth-api/) — the wire contract
-- [Control CLI](/docs/operating/control-cli/) — `leapmux control admin app ...`
-- [Security & Threat Model](/docs/operating/security/) — session elevation and the trust boundaries
+- [Control CLI](/docs/using/control-cli/) — `leapmux control admin app ...`
+- [Security & Threat Model](/docs/admin/security/) — session elevation and the trust boundaries

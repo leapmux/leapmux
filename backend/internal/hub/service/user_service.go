@@ -176,7 +176,7 @@ func (s *UserService) RequestEmailChange(ctx context.Context, req *connect.Reque
 	// THIS address, which nobody did, and raising it for an administrator
 	// is the force this change removed from every other site: it made an
 	// administrator's unconfirmed address a valid self-service
-	// password-reset target, because RequestPasswordReset reads the column
+	// password-reset target, because RequestAccountRecovery reads the column
 	// and cannot take the sign-in exemption. The admin edit of ANOTHER
 	// user's address already lowers the flag (see resolveEmailVerified);
 	// this is the same rule on the self-service path.

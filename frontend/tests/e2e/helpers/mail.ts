@@ -171,7 +171,7 @@ export async function withCaptureSmtp(
  * change to the mint fails here, at the extraction, rather than as an
  * unexplained timeout on the reset page 120 seconds later.
  */
-const PASSWORD_RESET_TOKEN_LENGTH = 48
+const ACCOUNT_RECOVERY_TOKEN_LENGTH = 48
 
 /**
  * Pull the self-service password-reset token out of a captured reset email body.
@@ -184,14 +184,14 @@ const PASSWORD_RESET_TOKEN_LENGTH = 48
  * rejects the token and the failure surfaces as a missing button on the
  * following page.
  */
-export function extractPasswordResetToken(emailBody: string): string {
-  const match = emailBody.match(/\/reset-password\?token=([A-Za-z0-9]+)/)
+export function extractAccountRecoveryToken(emailBody: string): string {
+  const match = emailBody.match(/\/recover-account\/complete\?token=([A-Za-z0-9]+)/)
   if (!match?.[1])
-    throw new Error(`password reset token not found in captured email:\n${emailBody}`)
+    throw new Error(`account recovery token not found in captured email:\n${emailBody}`)
   const token = match[1]
-  if (token.length !== PASSWORD_RESET_TOKEN_LENGTH) {
+  if (token.length !== ACCOUNT_RECOVERY_TOKEN_LENGTH) {
     throw new Error(
-      `password reset token is ${token.length} characters, want ${PASSWORD_RESET_TOKEN_LENGTH}. `
+      `account recovery token is ${token.length} characters, want ${ACCOUNT_RECOVERY_TOKEN_LENGTH}. `
       + `The character class above does not cover the whole mint alphabet, so it stopped early. Token: ${token}`,
     )
   }

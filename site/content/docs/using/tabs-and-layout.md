@@ -270,4 +270,4 @@ Splitting, gridding, and floating windows are desktop features — on mobile you
 
 ## Keyboard shortcuts
 
-The shortcuts referenced throughout this chapter — for opening, switching, and closing tabs, splitting tiles, toggling floating windows and sidebars — are collected with the rest of LeapMux's bindings in [Keyboard Shortcuts](/docs/using/keyboard-shortcuts/), the single source of truth for the full reference and how to customize bindings. To drive tabs, tiles, and layouts from a script, see [Control CLI](/docs/operating/control-cli/).
+The shortcuts referenced throughout this chapter — for opening, switching, and closing tabs, splitting tiles, toggling floating windows and sidebars — are collected with the rest of LeapMux's bindings in [Keyboard Shortcuts](/docs/using/keyboard-shortcuts/), the single source of truth for the full reference and how to customize bindings. To drive tabs, tiles, and layouts from a script, see [Control CLI](/docs/using/control-cli/).

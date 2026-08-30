@@ -31,7 +31,7 @@ LeapMux bundles open-source components, each under its own license. The complete
 
 LeapMux is **self-hosted software**, not a hosted service. You — or your organization — run the Hub and Workers; the LeapMux project does not operate a central service that receives your data, and the software contains no third-party analytics or "phone-home" telemetry. The only metrics LeapMux emits are exposed on a Prometheus `/metrics` endpoint on the Hub. The endpoint is unauthenticated, so restrict network access to it to infrastructure you control.
 
-What data is stored, where it lives, and what is end-to-end encrypted is described in [Security & Threat Model](/docs/operating/security/) and [Encryption & Data](/docs/operating/encryption-and-data/). Because LeapMux is self-hosted, the privacy and data-handling practices of any particular deployment are determined by whoever operates that Hub.
+What data is stored, where it lives, and what is end-to-end encrypted is described in [Security & Threat Model](/docs/admin/security/) and [Encryption & Data](/docs/admin/encryption-and-data/). Because LeapMux is self-hosted, the privacy and data-handling practices of any particular deployment are determined by whoever operates that Hub.
 
 ### This documentation website
 

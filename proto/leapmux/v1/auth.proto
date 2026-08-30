@@ -36,9 +36,13 @@ service AuthService {
   // Begin/finish passkey signup (passkey-only, no password).
   rpc BeginPasskeySignUp(BeginPasskeySignUpRequest) returns (BeginPasskeySignUpResponse);
   rpc FinishPasskeySignUp(FinishPasskeySignUpRequest) returns (FinishPasskeySignUpResponse);
-  // Self-service password reset (break-glass; clears passkeys).
-  rpc RequestPasswordReset(RequestPasswordResetRequest) returns (RequestPasswordResetResponse);
-  rpc CompletePasswordReset(CompletePasswordResetRequest) returns (CompletePasswordResetResponse);
+  // Self-service account recovery (break-glass; clears passkeys). Works
+  // for every account with a verified email regardless of how it signs in
+  // — password, passkey, linked provider, or any mix — because the emailed
+  // link proves the address, not the method the user lost. Completing it
+  // sets a password (the account's first one if it never had one).
+  rpc RequestAccountRecovery(RequestAccountRecoveryRequest) returns (RequestAccountRecoveryResponse);
+  rpc CompleteAccountRecovery(CompleteAccountRecoveryRequest) returns (CompleteAccountRecoveryResponse);
 }
 
 message LoginRequest {
@@ -338,15 +342,18 @@ message FinishPasskeySignUpResponse {
   EmailVerificationStatus email_verification = 2;
 }
 
-message RequestPasswordResetRequest {
+message RequestAccountRecoveryRequest {
   string identifier = 1; // email or username
   string captcha_payload = 2;
   string honeypot = 3;
 }
 
-message RequestPasswordResetResponse {}
+// Empty on purpose: identical on every path — known account, unknown
+// identifier, unverified email, resend cooldown — so the response cannot
+// enumerate which identifiers hold accounts.
+message RequestAccountRecoveryResponse {}
 
-message CompletePasswordResetRequest {
+message CompleteAccountRecoveryRequest {
   string token = 1;
   string new_password = 2;
   // Provider token; see LoginRequest.captcha_payload.
@@ -355,7 +362,7 @@ message CompletePasswordResetRequest {
   string honeypot = 4;
 }
 
-// Empty on purpose: the caller is an anonymous bearer of the reset token,
-// and the flow ends at the login screen. Returning no account data keeps the
-// response free of information the token does not already carry.
-message CompletePasswordResetResponse {}
+// Empty on purpose: the caller is an anonymous bearer of the recovery
+// token, and the flow ends at the login screen. Returning no account data
+// keeps the response free of information the token does not already carry.
+message CompleteAccountRecoveryResponse {}

@@ -7,7 +7,7 @@ weight: 3
 
 Coding agents are the heart of LeapMux. Each agent is a real coding-assistant CLI (Claude Code, Codex, and others) running on a Worker, wrapped in a chat tab so you can talk to it, watch its tool calls, approve its actions, and steer it without leaving the browser. This chapter covers which agents are supported, how to open one, how to chat with it, how tool calls render, how to answer permission prompts, and how to change models and settings mid-session.
 
-For where agents live in the workspace layout, see [Tabs & Layout](/docs/using/tabs-and-layout/). For the git side of opening an agent in a branch or worktree, see [Worktrees & Branches](/docs/using/worktrees-and-branches/). To drive agents from a script instead of the browser, see [Control CLI](/docs/operating/control-cli/).
+For where agents live in the workspace layout, see [Tabs & Layout](/docs/using/tabs-and-layout/). For the git side of opening an agent in a branch or worktree, see [Worktrees & Branches](/docs/using/worktrees-and-branches/). To drive agents from a script instead of the browser, see [Control CLI](/docs/using/control-cli/).
 
 ## Supported agents
 
@@ -37,13 +37,13 @@ If no provider is detected, the picker shows a disabled **No agents available** 
 
 ## Opening a new agent
 
-Open the **New agent** dialog from the workspace, then fill in the fields below and click **Create** (the button shows **Creating...** while the agent spins up).
+Open the **New agent** dialog from the workspace, then fill in the fields below and click **Create**.
 
 ### Dialog fields
 
 | Field | What it does |
 | --- | --- |
-| **Worker** | The machine that will run the agent. Determines which providers are available and where the working directory lives. See [Managing Workers](/docs/operating/managing-workers/). |
+| **Worker** | The machine that will run the agent. Determines which providers are available and where the working directory lives. See [Managing Workers](/docs/admin/managing-workers/). |
 | **Agent Provider** | Which agent CLI to launch. Shows the provider icon, label, and a chevron; a check marks the current choice. |
 | **Directory** | The working directory for the agent, chosen from a directory tree on the Worker. A text box above the tree shows the selected path; type a path and press Enter to go there. It is the same picker the New Terminal dialog uses — see [Working Directory](/docs/using/terminals/#the-full-new-terminal-dialog) for the full behavior, including the path-style hint for a Windows Worker. |
 | **Resume an existing session** | Optional. Paste a prior Session ID to continue an earlier conversation (see [Resuming a session](#resuming-an-existing-session)). |
@@ -104,7 +104,7 @@ Your messages appear immediately (optimistically) and are reconciled when the se
 
 ### Interrupting a turn
 
-While the agent is actively working — and there is no pending permission prompt — an **Interrupt** button (a square icon) appears. Click it to stop the current turn; it shows **Interrupting...** while the stop is in flight. LeapMux asks the agent to stop via its native interrupt/cancel mechanism rather than killing the process, so it can wind down gracefully.
+While the agent is actively working — and there is no pending permission prompt — an **Interrupt** button (a square icon) appears. Click it to stop the current turn. LeapMux asks the agent to stop via its native interrupt/cancel mechanism rather than killing the process, so it can wind down gracefully.
 
 > **Note:** The **Interrupt** button is hidden whenever the agent is waiting on you with a permission or question prompt — answer the prompt instead (see [Permission and approval prompts](#permission-and-approval-prompts)).
 
@@ -281,4 +281,4 @@ leapmux control tab open --type agent --worker-id <id> --provider "Claude Code" 
 leapmux control agent send-control-response --tab-id <id> --content '<raw JSON>'
 ```
 
-See [Control CLI](/docs/operating/control-cli/) for the full command tree, entity-ID resolution, and the JSON output contract.
+See [Control CLI](/docs/using/control-cli/) for the full command tree, entity-ID resolution, and the JSON output contract.

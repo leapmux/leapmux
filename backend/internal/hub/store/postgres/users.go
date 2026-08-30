@@ -21,27 +21,29 @@ var _ store.UserStore = (*userStore)(nil)
 
 func fromDBUser(u gendb.User) store.User {
 	return store.User{
-		ID:                            u.ID,
-		Username:                      u.Username,
-		PasswordHash:                  u.PasswordHash,
-		DisplayName:                   u.DisplayName,
-		Email:                         u.Email,
-		EmailVerified:                 u.EmailVerified,
-		PendingEmail:                  u.PendingEmail,
-		PendingEmailToken:             u.PendingEmailToken,
-		PendingEmailExpiresAt:         u.PendingEmailExpiresAt.Ptr(),
-		PendingEmailAttempts:          int64(u.PendingEmailAttempts),
-		PendingPasswordResetToken:     u.PendingPasswordResetToken,
-		PendingPasswordResetExpiresAt: u.PendingPasswordResetExpiresAt.Ptr(),
-		PendingPasswordResetAttempts:  int64(u.PendingPasswordResetAttempts),
-		PasswordSet:                   u.PasswordSet,
-		IsAdmin:                       u.IsAdmin,
-		Prefs:                         u.Prefs,
-		CreatedAt:                     u.CreatedAt.Time,
-		UpdatedAt:                     u.UpdatedAt.Time,
-		TokensRevokedAt:               u.TokensRevokedAt.Ptr(),
-		AuthGeneration:                u.AuthGeneration,
-		DeletedAt:                     u.DeletedAt.Ptr(),
+		ID:                       u.ID,
+		Username:                 u.Username,
+		PasswordHash:             u.PasswordHash,
+		DisplayName:              u.DisplayName,
+		Email:                    u.Email,
+		EmailVerified:            u.EmailVerified,
+		PendingEmail:             u.PendingEmail,
+		PendingEmailToken:        u.PendingEmailToken,
+		PendingEmailExpiresAt:    u.PendingEmailExpiresAt.Ptr(),
+		PendingEmailIssuedAt:     u.PendingEmailIssuedAt.Ptr(),
+		PendingEmailAttempts:     int64(u.PendingEmailAttempts),
+		PendingRecoveryToken:     u.PendingRecoveryToken,
+		PendingRecoveryExpiresAt: u.PendingRecoveryExpiresAt.Ptr(),
+		PendingRecoveryIssuedAt:  u.PendingRecoveryIssuedAt.Ptr(),
+		PendingRecoveryAttempts:  int64(u.PendingRecoveryAttempts),
+		PasswordSet:              u.PasswordSet,
+		IsAdmin:                  u.IsAdmin,
+		Prefs:                    u.Prefs,
+		CreatedAt:                u.CreatedAt.Time,
+		UpdatedAt:                u.UpdatedAt.Time,
+		TokensRevokedAt:          u.TokensRevokedAt.Ptr(),
+		AuthGeneration:           u.AuthGeneration,
+		DeletedAt:                u.DeletedAt.Ptr(),
 	}
 }
 
@@ -362,6 +364,7 @@ func (s *userStore) SetPendingEmail(ctx context.Context, p store.SetPendingEmail
 		PendingEmail:          store.NormalizeEmail(p.PendingEmail),
 		PendingEmailToken:     p.PendingEmailToken,
 		PendingEmailExpiresAt: pgtime.NewNull(p.PendingEmailExpiresAt),
+		PendingEmailIssuedAt:  pgtime.NewNull(p.PendingEmailIssuedAt),
 		ID:                    p.ID,
 		CooldownCutoff:        pgtime.NullOf(p.CooldownCutoff),
 	}))
@@ -405,12 +408,13 @@ func (s *userStore) Delete(ctx context.Context, id string) error {
 	return mapErr(s.conn.q.DeleteUser(ctx, id))
 }
 
-func (s *userStore) SetPendingPasswordReset(ctx context.Context, p store.SetPendingPasswordResetParams) (bool, error) {
-	n, err := rowsAffected(s.conn.q.SetPendingPasswordReset(ctx, gendb.SetPendingPasswordResetParams{
-		PendingPasswordResetToken:     p.PendingPasswordResetToken,
-		PendingPasswordResetExpiresAt: pgtime.NullOf(p.PendingPasswordResetExpiresAt),
-		CooldownCutoff:                pgtime.NullOf(p.CooldownCutoff),
-		ID:                            p.ID,
+func (s *userStore) SetPendingRecovery(ctx context.Context, p store.SetPendingRecoveryParams) (bool, error) {
+	n, err := rowsAffected(s.conn.q.SetPendingRecovery(ctx, gendb.SetPendingRecoveryParams{
+		PendingRecoveryToken:     p.PendingRecoveryToken,
+		PendingRecoveryExpiresAt: pgtime.NullOf(p.PendingRecoveryExpiresAt),
+		PendingRecoveryIssuedAt:  pgtime.NewNull(p.PendingRecoveryIssuedAt),
+		CooldownCutoff:           pgtime.NullOf(p.CooldownCutoff),
+		ID:                       p.ID,
 	}))
 	if err != nil {
 		return false, err
@@ -418,12 +422,12 @@ func (s *userStore) SetPendingPasswordReset(ctx context.Context, p store.SetPend
 	return n > 0, nil
 }
 
-func (s *userStore) ClearPendingPasswordReset(ctx context.Context, id string) error {
-	return mapErr(s.conn.q.ClearPendingPasswordReset(ctx, id))
+func (s *userStore) ClearPendingRecovery(ctx context.Context, id string) error {
+	return mapErr(s.conn.q.ClearPendingRecovery(ctx, id))
 }
 
-func (s *userStore) ConsumePasswordResetAttemptByToken(ctx context.Context, tokenHash string, now time.Time, maxAttempts int64) (*store.User, error) {
-	u, err := s.conn.q.ConsumePasswordResetAttemptByToken(ctx, gendb.ConsumePasswordResetAttemptByTokenParams{
+func (s *userStore) ConsumeRecoveryAttemptByToken(ctx context.Context, tokenHash string, now time.Time, maxAttempts int64) (*store.User, error) {
+	u, err := s.conn.q.ConsumeRecoveryAttemptByToken(ctx, gendb.ConsumeRecoveryAttemptByTokenParams{
 		Token:       tokenHash,
 		Now:         pgtime.NullOf(now),
 		MaxAttempts: int32(maxAttempts),
@@ -435,11 +439,11 @@ func (s *userStore) ConsumePasswordResetAttemptByToken(ctx context.Context, toke
 	return &out, nil
 }
 
-func (s *userStore) CompletePasswordReset(ctx context.Context, p store.CompletePasswordResetParams) (*store.PasswordResetRevocation, error) {
-	row, err := s.conn.q.CompletePasswordReset(ctx, gendb.CompletePasswordResetParams{
-		PasswordHash:              p.PasswordHash,
-		ID:                        p.ID,
-		PendingPasswordResetToken: p.PendingPasswordResetToken,
+func (s *userStore) CompleteRecovery(ctx context.Context, p store.CompleteRecoveryParams) (*store.RecoveryRevocation, error) {
+	row, err := s.conn.q.CompleteRecovery(ctx, gendb.CompleteRecoveryParams{
+		PasswordHash:         p.PasswordHash,
+		ID:                   p.ID,
+		PendingRecoveryToken: p.PendingRecoveryToken,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, store.ErrNotFound
@@ -451,7 +455,7 @@ func (s *userStore) CompletePasswordReset(ctx context.Context, p store.CompleteP
 	if err != nil {
 		return nil, err
 	}
-	return &store.PasswordResetRevocation{
+	return &store.RecoveryRevocation{
 		UserID:          row.ID,
 		TokensRevokedAt: revokedAt,
 		AuthGeneration:  row.AuthGeneration,

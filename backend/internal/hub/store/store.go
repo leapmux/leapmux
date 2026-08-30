@@ -142,10 +142,10 @@ type UserStore interface {
 	// what the account verifies.
 	ClearPendingEmailCode(ctx context.Context, id string) error
 	ClearCompetingPendingEmails(ctx context.Context, p ClearCompetingPendingEmailsParams) error
-	SetPendingPasswordReset(ctx context.Context, p SetPendingPasswordResetParams) (bool, error)
-	ClearPendingPasswordReset(ctx context.Context, id string) error
-	ConsumePasswordResetAttemptByToken(ctx context.Context, tokenHash string, now time.Time, maxAttempts int64) (*User, error)
-	CompletePasswordReset(ctx context.Context, p CompletePasswordResetParams) (*PasswordResetRevocation, error)
+	SetPendingRecovery(ctx context.Context, p SetPendingRecoveryParams) (bool, error)
+	ClearPendingRecovery(ctx context.Context, id string) error
+	ConsumeRecoveryAttemptByToken(ctx context.Context, tokenHash string, now time.Time, maxAttempts int64) (*User, error)
+	CompleteRecovery(ctx context.Context, p CompleteRecoveryParams) (*RecoveryRevocation, error)
 	// Delete soft-deletes the user.
 	Delete(ctx context.Context, id string) error
 	// RevokeUserTokens advances the user's tokens_revoked_at marker

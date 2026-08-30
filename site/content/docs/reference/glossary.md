@@ -19,21 +19,21 @@ A coding agent: a CLI assistant (Claude Code, Codex, Cursor, GitHub Copilot, Ope
 
 ### App
 
-A program that asks a LeapMux Hub for access to an account on it. Every app is a registration the Hub holds -- a name, the addresses an authorization may return to, and a ceiling on the permissions it may ask for. An ordinary user's app is visible and authorizable to that user alone; an administrator's is visible to everybody on the Hub. The control CLI is an app, registered like any other. See [App Authorization](/docs/operating/app-authorization/) and [Connected Apps](/docs/using/connected-apps/).
+A program that asks a LeapMux Hub for access to an account on it. Every app is a registration the Hub holds -- a name, the addresses an authorization may return to, and a ceiling on the permissions it may ask for. An ordinary user's app is visible and authorizable to that user alone; an administrator's is visible to everybody on the Hub. The control CLI is an app, registered like any other. See [App Authorization](/docs/admin/app-authorization/) and [Connected Apps](/docs/using/connected-apps/).
 
 ### App credential
 
-One token pair a **connection** holds: an access token that renews itself and a refresh token behind it. An app holds one per machine it runs on, labelled by its **installation name**, so signing one laptop out leaves the rest working. A credential is **minted** when the app is authorized and **revoked** from its own row in **Preferences → Account → Connected apps**. See [Connected Apps](/docs/using/connected-apps/#ending-an-apps-access) and [App credentials](/docs/operating/security/#app-credentials).
+One token pair a **connection** holds: an access token that renews itself and a refresh token behind it. An app holds one per machine it runs on, labelled by its **installation name**, so signing one laptop out leaves the rest working. A credential is **minted** when the app is authorized and **revoked** from its own row in **Preferences → Account → Connected apps**. See [Connected Apps](/docs/using/connected-apps/#ending-an-apps-access) and [App credentials](/docs/admin/security/#app-credentials).
 
 ### App registration
 
-The Hub's record of one **app**: its name, its redirect addresses, the permission ceiling it may ask for, whether an administrator vouched for it, and whether it may run the **step-up** ceremony. The ceiling and the step-up flag are read at every request rather than only at the consent, so removing either takes it from the credentials the app already holds. It is **registered** and **deleted** from **Preferences → Apps**, and every write to it needs a recently proven factor. A registration is not access: an account still authorizes the app separately. See [App Authorization](/docs/operating/app-authorization/).
+The Hub's record of one **app**: its name, its redirect addresses, the permission ceiling it may ask for, whether an administrator vouched for it, and whether it may run the **step-up** ceremony. The ceiling and the step-up flag are read at every request rather than only at the consent, so removing either takes it from the credentials the app already holds. It is **registered** and **deleted** from **Preferences → Apps**, and every write to it needs a recently proven factor. A registration is not access: an account still authorizes the app separately. See [App Authorization](/docs/admin/app-authorization/).
 
 ## C
 
 ### Channel (E2EE)
 
-The end-to-end-encrypted connection between your browser (or CLI) and a single Worker, multiplexed over one WebSocket and relayed — but never decrypted — by the Hub. One channel is opened per Worker and reused: all of that Worker's agent transcripts, terminal streams, and file requests share the same channel, kept separate by correlation IDs. The channel is periodically re-handshaked to refresh keys. See [Encryption & Data](/docs/operating/encryption-and-data/) and [Security & Threat Model](/docs/operating/security/).
+The end-to-end-encrypted connection between your browser (or CLI) and a single Worker, multiplexed over one WebSocket and relayed — but never decrypted — by the Hub. One channel is opened per Worker and reused: all of that Worker's agent transcripts, terminal streams, and file requests share the same channel, kept separate by correlation IDs. The channel is periodically re-handshaked to refresh keys. See [Encryption & Data](/docs/admin/encryption-and-data/) and [Security & Threat Model](/docs/admin/security/).
 
 ### Connection (app authorization)
 
@@ -47,7 +47,7 @@ The page a Hub renders when an app asks for access. It states the app's name, wa
 
 ### Distributed mode
 
-Running LeapMux with the Hub and one or more Workers as separate processes — typically the Hub on a shared server and Workers on your dev machines — instead of the single all-in-one `solo` process. In this mode the Hub is treated as an authenticated relay that cannot read content, which is what makes it safe for a teammate or platform team to operate. Contrast with **solo mode**. See [Running LeapMux](/docs/operating/running-leapmux/) and [Security & Threat Model](/docs/operating/security/).
+Running LeapMux with the Hub and one or more Workers as separate processes — typically the Hub on a shared server and Workers on your dev machines — instead of the single all-in-one `solo` process. In this mode the Hub is treated as an authenticated relay that cannot read content, which is what makes it safe for a teammate or platform team to operate. Contrast with **solo mode**. See [Running LeapMux](/docs/admin/running-leapmux/) and [Security & Threat Model](/docs/admin/security/).
 
 ## E
 
@@ -75,7 +75,7 @@ A tile turned into a fixed `rows × cols` matrix of panes (up to 20 × 20), with
 
 ### Hub
 
-The central service (`leapmux hub`) that authenticates users, stores accounts, workspaces, and layout geometry, mints Worker registration keys, and relays encrypted traffic between Frontends and Workers. The Hub is an **authenticated relay, not a trusted peer**: it routes opaque ciphertext and sees metadata (who talks to whom, message sizes, timing) but never the plaintext of agent transcripts, terminal I/O, or file contents. Its default listen address is `:4327`. See [Concepts & Architecture](/docs/getting-started/concepts/) and [Running LeapMux](/docs/operating/running-leapmux/).
+The central service (`leapmux hub`) that authenticates users, stores accounts, workspaces, and layout geometry, mints Worker registration keys, and relays encrypted traffic between Frontends and Workers. The Hub is an **authenticated relay, not a trusted peer**: it routes opaque ciphertext and sees metadata (who talks to whom, message sizes, timing) but never the plaintext of agent transcripts, terminal I/O, or file contents. Its default listen address is `:4327`. See [Concepts & Architecture](/docs/getting-started/concepts/) and [Running LeapMux](/docs/admin/running-leapmux/).
 
 ## L
 
@@ -87,17 +87,17 @@ The string-based ordering scheme LeapMux uses to position tabs (and other ordere
 
 ### Noise_NK
 
-The Noise-protocol handshake pattern behind the E2EE channel: the Worker has a known static key the Frontend verifies. LeapMux extends it into a hybrid post-quantum handshake (see **Post-quantum encryption**). See [Security & Threat Model](/docs/operating/security/).
+The Noise-protocol handshake pattern behind the E2EE channel: the Worker has a known static key the Frontend verifies. LeapMux extends it into a hybrid post-quantum handshake (see **Post-quantum encryption**). See [Security & Threat Model](/docs/admin/security/).
 
 ## P
 
 ### Permission (scope)
 
-One named thing an app may do, such as `file:read` or `terminal:write`. A grant is a set of them, and it only ever **subtracts** from what its owner can already do -- an app granted `admin:users` on an ordinary account administers nothing. Some permissions imply others: `file:read` implies `worker:read`, because reading a file means reaching the machine that holds it. The Hub enforces a grant at its own boundary and the Worker enforces it again inside the encrypted channel. See [App Authorization](/docs/operating/app-authorization/#permissions).
+One named thing an app may do, such as `file:read` or `terminal:write`. A grant is a set of them, and it only ever **subtracts** from what its owner can already do -- an app granted `admin:users` on an ordinary account administers nothing. Some permissions imply others: `file:read` implies `worker:read`, because reading a file means reaching the machine that holds it. The Hub enforces a grant at its own boundary and the Worker enforces it again inside the encrypted channel. See [App Authorization](/docs/admin/app-authorization/#permissions).
 
 ### Post-quantum encryption
 
-The default E2EE mode (`post-quantum`), a hybrid handshake combining classical and post-quantum cryptography so the channel stays secure even if one algorithm is later broken: **X25519 + ML-KEM-1024 (FIPS 203)** for key exchange, **SLH-DSA-SHAKE-256f (FIPS 205)** for Worker static-key authentication, and ChaCha20-Poly1305 + BLAKE2b for transport. The alternative `classic` mode is X25519-only. Set it on the Worker with `--encryption-mode`. See [Encryption & Data](/docs/operating/encryption-and-data/) and [Security & Threat Model](/docs/operating/security/).
+The default E2EE mode (`post-quantum`), a hybrid handshake combining classical and post-quantum cryptography so the channel stays secure even if one algorithm is later broken: **X25519 + ML-KEM-1024 (FIPS 203)** for key exchange, **SLH-DSA-SHAKE-256f (FIPS 205)** for Worker static-key authentication, and ChaCha20-Poly1305 + BLAKE2b for transport. The alternative `classic` mode is X25519-only. Set it on the Worker with `--encryption-mode`. See [Encryption & Data](/docs/admin/encryption-and-data/) and [Security & Threat Model](/docs/admin/security/).
 
 ### Presence
 
@@ -111,11 +111,11 @@ A pseudo-terminal — the operating-system primitive behind a terminal tab. Each
 
 ### Registration key
 
-A short-lived, single-use secret (5-minute TTL) that authorizes a Worker to join a Hub. You mint one from the Hub's "Register worker" dialog (or via the CLI), then run the Worker with `--registration-key`. Presenting a valid key immediately creates an active Worker — there is no separate approval queue; the gate is possessing the key. See [Managing Workers](/docs/operating/managing-workers/).
+A short-lived, single-use secret (5-minute TTL) that authorizes a Worker to join a Hub. You mint one from the Hub's "Register worker" dialog (or via the CLI), then run the Worker with `--registration-key`. Presenting a valid key immediately creates an active Worker — there is no separate approval queue; the gate is possessing the key. See [Managing Workers](/docs/admin/managing-workers/).
 
 ### Remote CLI
 
-`leapmux control`: a JSON-emitting command-line surface for driving a running Hub from a script or from inside an agent — creating workspaces and tabs, sending agent and terminal input, mutating the tile layout, inspecting files and git, and watching events. External users authorize it with `leapmux control auth login`; agents are handed credentials automatically through `LEAPMUX_CONTROL_*` environment variables. See [Control CLI](/docs/operating/control-cli/).
+`leapmux control`: a JSON-emitting command-line surface for driving a running Hub from a script or from inside an agent — creating workspaces and tabs, sending agent and terminal input, mutating the tile layout, inspecting files and git, and watching events. External users authorize it with `leapmux control auth login`; agents are handed credentials automatically through `LEAPMUX_CONTROL_*` environment variables. See [Control CLI](/docs/using/control-cli/).
 
 ## S
 
@@ -125,11 +125,11 @@ The persistent state of a running coding agent — its conversation history and 
 
 ### Solo mode
 
-The single-user, all-in-one mode (`leapmux solo`) that runs a Hub and a Worker in one process on `127.0.0.1:4327` with **no authentication** — every request is auto-authenticated as the admin. It is the easiest way to run LeapMux locally, but its security reduces to local-host trust: any local process that can reach the port has full access. Binding it to a non-loopback address triggers a warning. Contrast with **distributed mode**. See [Running LeapMux](/docs/operating/running-leapmux/) and [Security & Threat Model](/docs/operating/security/).
+The single-user, all-in-one mode (`leapmux solo`) that runs a Hub and a Worker in one process on `127.0.0.1:4327` with **no authentication** — every request is auto-authenticated as the admin. It is the easiest way to run LeapMux locally, but its security reduces to local-host trust: any local process that can reach the port has full access. Binding it to a non-loopback address triggers a warning. Contrast with **distributed mode**. See [Running LeapMux](/docs/admin/running-leapmux/) and [Security & Threat Model](/docs/admin/security/).
 
 ### Step-up
 
-The ceremony that proves a factor for a credential rather than for a browser session. An app that needs one is refused with a marker, opens `/oauth/step-up`, and the account holder approves in a browser; the credential then holds a window for {{< duration elevation-window >}}. It issues nothing new. An app is refused this ceremony unless its owner allowed it per app. See [Session elevation](/docs/operating/security/#session-elevation).
+The ceremony that proves a factor for a credential rather than for a browser session. An app that needs one is refused with a marker, opens `/oauth/step-up`, and the account holder approves in a browser; the credential then holds a window for {{< duration elevation-window >}}. It issues nothing new. An app is refused this ceremony unless its owner allowed it per app. See [Session elevation](/docs/admin/security/#session-elevation).
 
 ## T
 
@@ -143,13 +143,13 @@ A rectangular pane in the workspace's recursive tiling layout. A **leaf** tile i
 
 ### TOFU (trust on first use)
 
-The pinning scheme that protects Worker identity. On the first connection to a Worker the Frontend records the Worker's composite static public key, and rejects any later handshake whose key differs — so a compromised Hub cannot silently swap a Worker underneath you. A mismatch raises the **"Worker public key changed"** dialog showing 4-word fingerprints, where you must explicitly Accept or Reject. CLI and cross-Worker connections pin the same way. See [Managing Workers](/docs/operating/managing-workers/) and [Security & Threat Model](/docs/operating/security/).
+The pinning scheme that protects Worker identity. On the first connection to a Worker the Frontend records the Worker's composite static public key, and rejects any later handshake whose key differs — so a compromised Hub cannot silently swap a Worker underneath you. A mismatch raises the **"Worker public key changed"** dialog showing 4-word fingerprints, where you must explicitly Accept or Reject. CLI and cross-Worker connections pin the same way. See [Managing Workers](/docs/admin/managing-workers/) and [Security & Threat Model](/docs/admin/security/).
 
 ## W
 
 ### Worker
 
-A long-running daemon (`leapmux worker`) that runs on a developer machine and hosts agents, terminals, and file access for a workspace. A Worker dials the Hub outbound (so it works behind NAT with no inbound ports), registers with a registration key, and keeps agent and terminal state in its own local database. Its online/offline status reflects whether it currently holds a live connection to the Hub. See [Managing Workers](/docs/operating/managing-workers/) and [Running LeapMux](/docs/operating/running-leapmux/).
+A long-running daemon (`leapmux worker`) that runs on a developer machine and hosts agents, terminals, and file access for a workspace. A Worker dials the Hub outbound (so it works behind NAT with no inbound ports), registers with a registration key, and keeps agent and terminal state in its own local database. Its online/offline status reflects whether it currently holds a live connection to the Hub. See [Managing Workers](/docs/admin/managing-workers/) and [Running LeapMux](/docs/admin/running-leapmux/).
 
 ### Workspace
 

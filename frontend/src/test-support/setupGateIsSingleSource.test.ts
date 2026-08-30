@@ -10,7 +10,7 @@ import { collectFiles, frontendRoot, posixRelative } from '~/test-support/source
 // It got that way from the opposite arrangement. Three surfaces carried a
 // private copy (AuthGuard, LoginPage and ElevatePage each called
 // isSetupRequired and navigated), and the four addresses that needed it most
-// carried none: /signup, /forgot-password, /reset-password and /verify-email
+// carried none: /signup, /recover-account, /recover-account/complete and /verify-email
 // all served a form that cannot succeed on a hub with no account. Which
 // address the rule covered depended on who remembered.
 //

@@ -1,7 +1,11 @@
 /// <reference types="vitest/globals" />
 import { createMemoryHistory, MemoryRouter, Route, useSearchParams } from '@solidjs/router'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
+import { createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import { CaptchaProvider } from '~/generated/proto/leapmux/v1/auth_pb'
+import { resetSystemInfoMock, setSystemInfoMock } from '~/test-support/systemInfoMock'
 
 import { VerifyEmailPage } from './VerifyEmailPage'
 
@@ -18,14 +22,43 @@ class FakeConnectError extends Error {
   }
 }
 
-const mockVerify = vi.fn<(args: { verificationToken: string }) => Promise<{ user?: { username: string, emailVerified: boolean } | null }>>()
-const mockResend = vi.fn<(args: Record<string, never>) => Promise<{ emailSent: boolean }>>()
+const mockVerify = vi.fn<(args: { verificationToken: string } & Record<string, string>) => Promise<{ user?: { username: string, emailVerified: boolean } | null }>>()
+const mockResend = vi.fn<(args: { captchaPayload: string, honeypot: string }) => Promise<{ emailSent: boolean }>>()
 
 vi.mock('~/api/clients', () => ({
   userClient: {
     verifyEmail: (...a: Parameters<typeof mockVerify>) => mockVerify(...a),
     resendVerificationEmail: (...a: Parameters<typeof mockResend>) => mockResend(...a),
   },
+}))
+
+// The page carries two captcha forms (verify + resend); the default mock
+// answers with a loaded snapshot and captcha disabled.
+vi.mock('~/lib/systemInfo', async () => {
+  const m = await import('~/test-support/systemInfoMock')
+  return m.systemInfoMock
+})
+
+const [mockCaptchaPayload, setMockCaptchaPayload] = createSignal<string | null>(null)
+vi.mock('~/components/common/CaptchaField', async () => {
+  const { createEffect } = await import('solid-js')
+  return {
+    CaptchaField: (props: { action: string, onPayload: (p: string | null) => void, onUnavailable: () => void }) => {
+      createEffect(() => props.onPayload(mockCaptchaPayload()))
+      return <div data-testid="captcha-field" data-action={props.action} />
+    },
+  }
+})
+vi.mock('~/components/common/CaptchaHoneypot', () => ({
+  CaptchaHoneypot: (props: { value: string, onInput: (v: string) => void }) => (
+    <input
+      data-testid="captcha-honeypot"
+      type="text"
+      name="website"
+      value={props.value}
+      onInput={e => props.onInput(e.currentTarget.value)}
+    />
+  ),
 }))
 
 const mockSetAuth = vi.fn()
@@ -80,6 +113,8 @@ function renderPage(initialPath: string) {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  resetSystemInfoMock()
+  setMockCaptchaPayload(null)
   mockUser.mockReturnValue({ username: 'alice', emailVerified: false })
 })
 
@@ -90,6 +125,19 @@ afterEach(() => {
 // Tests ----------------------------------------------------------------
 
 describe('verifyEmailPage', () => {
+  it('passes the verify_email and resend_verification actions to their captcha fields', async () => {
+    // Both legs are captcha-protected: the verify leg burns a guess for
+    // free, and the resend leg drives an SMTP send. Each renders its own
+    // field under its own action, in that order.
+    setSystemInfoMock({ captchaEnabled: true, captchaProvider: CaptchaProvider.TURNSTILE, captchaSiteKey: '1x00000000000000000000AA' })
+    renderPage('/verify-email')
+
+    await vi.waitFor(() => {
+      expect(screen.getAllByTestId('captcha-field').map(el => el.getAttribute('data-action')))
+        .toEqual(['verify_email', 'resend_verification'])
+    })
+  })
+
   it('redirects unauthenticated users to /login with the original code preserved in ?redirect=', async () => {
     mockUser.mockReturnValue(null)
 
@@ -116,7 +164,7 @@ describe('verifyEmailPage', () => {
     })
     // The submitted token must be the *normalized* form (no hyphen,
     // uppercase). Auto-submit uses whatever was in the URL.
-    expect(mockVerify).toHaveBeenCalledWith({ verificationToken: 'AB2CDE' })
+    expect(mockVerify).toHaveBeenCalledWith(expect.objectContaining({ verificationToken: 'AB2CDE' }))
   })
 
   it('redirects to / after a successful verification', async () => {
@@ -202,7 +250,7 @@ describe('verifyEmailPage', () => {
     fireEvent.click(screen.getByTestId('verify-email-submit'))
 
     await waitFor(() => {
-      expect(mockVerify).toHaveBeenCalledWith({ verificationToken: '7XC8DZ' })
+      expect(mockVerify).toHaveBeenCalledWith(expect.objectContaining({ verificationToken: '7XC8DZ' }))
     })
   })
 
@@ -221,7 +269,7 @@ describe('verifyEmailPage', () => {
 
     await waitFor(() => {
       // Submitted *as typed* (without hyphens), uppercased — backend rejects.
-      expect(mockVerify).toHaveBeenCalledWith({ verificationToken: 'O0O0O0' })
+      expect(mockVerify).toHaveBeenCalledWith(expect.objectContaining({ verificationToken: 'O0O0O0' }))
     })
     expect(await screen.findByText(/invalid verification code/i)).toBeInTheDocument()
   })

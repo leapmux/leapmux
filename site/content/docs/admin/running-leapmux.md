@@ -1,13 +1,13 @@
 ---
 title: "Running LeapMux"
-description: "Operator guide to the solo, hub, worker, and dev modes: what each does, how to launch it, where it stores data, and how to run under Docker or a proxy."
+description: "Administrator guide to the solo, hub, worker, and dev modes: what each does, how to launch it, where it stores data, and how to run under Docker or a proxy."
 type: docs
 weight: 1
 ---
 
-LeapMux is a single Go binary (`leapmux`) that you run in one of four operating modes: `solo`, `hub`, `worker`, or `dev`. This chapter is the operator's guide to those modes — what each one does, how to launch it, where it stores data, and how to run LeapMux under Docker or behind a reverse proxy.
+LeapMux is a single Go binary (`leapmux`) that you run in one of four modes: `solo`, `hub`, `worker`, or `dev`. This chapter is the administrator's guide to those modes — what each one does, how to launch it, where it stores data, and how to run LeapMux under Docker or behind a reverse proxy.
 
-If you only want to try LeapMux on your own machine, the desktop app or `leapmux solo` is all you need. If you are standing up a shared service for a team, you will run a `hub` plus one or more `worker` processes. For the full list of configuration keys and storage backends referenced here, see [Configuration](/docs/operating/configuration/).
+If you only want to try LeapMux on your own machine, the desktop app or `leapmux solo` is all you need. If you are standing up a shared service for a team, you will run a `hub` plus one or more `worker` processes. For the full list of configuration keys and storage backends referenced here, see [Configuration](/docs/admin/configuration/).
 
 ## Run modes at a glance
 
@@ -24,7 +24,7 @@ Each mode reads a YAML config file named after the mode inside its config direct
 
 > **Note:** `solo` and `dev` are the same program internally — both run a Hub and a Worker together in one process. The differences are that `solo` binds loopback only and skips login (it injects an admin user into every request), while `dev` binds all interfaces, uses real password authentication, and bootstraps its first admin through the `/setup` flow.
 
-> **Warning:** Because solo mode auto-authenticates every request as the admin, anyone who can reach its port has full admin access with no credentials. That is safe on `127.0.0.1`, but if you bind solo to a non-loopback address LeapMux logs a startup warning telling you to restrict access externally or switch to `leapmux hub` (see [Security & Threat Model](/docs/operating/security/#solo-mode-a-reduced-threat-model) for the full warning text). For a multi-user or network-exposed deployment, run `leapmux hub` (with separate Workers) or `leapmux dev` instead, both of which require a real login.
+> **Warning:** Because solo mode auto-authenticates every request as the admin, anyone who can reach its port has full admin access with no credentials. That is safe on `127.0.0.1`, but if you bind solo to a non-loopback address LeapMux logs a startup warning telling you to restrict access externally or switch to `leapmux hub` (see [Security & Threat Model](/docs/admin/security/#solo-mode-a-reduced-threat-model) for the full warning text). For a multi-user or network-exposed deployment, run `leapmux hub` (with separate Workers) or `leapmux dev` instead, both of which require a real login.
 
 ## Solo mode
 
@@ -47,7 +47,7 @@ Solo mode accepts a subset of the Hub's flags plus an `--encryption-mode` flag f
 | `-encryption-mode` | `post-quantum` | `classic` or `post-quantum` |
 | `-config` | `~/.config/leapmux/solo/solo.yaml` | Config file path |
 
-Solo also accepts the SQLite and chunked-reassembly tuning flags (`-storage-sqlite-max-conns`, `-max-incomplete-chunked`) plus `-dev-frontend`; see [Configuration](/docs/operating/configuration/) for those. The message-size and timeout settings are instance settings now: change them with `leapmux control admin settings` instead of launch flags.
+Solo also accepts the SQLite and chunked-reassembly tuning flags (`-storage-sqlite-max-conns`, `-max-incomplete-chunked`) plus `-dev-frontend`; see [Configuration](/docs/admin/configuration/) for those. The message-size and timeout settings are instance settings now: change them with `leapmux control admin settings` instead of launch flags.
 
 The desktop app runs solo mode under the hood, but with no TCP port at all — it serves the Hub only over a local IPC socket (a Unix domain socket or Windows named pipe). See [Installation](/docs/getting-started/installation/) for the desktop app.
 
@@ -59,7 +59,7 @@ The desktop app runs solo mode under the hood, but with no TCP port at all — i
 leapmux hub -listen :4327
 ```
 
-A fresh Hub has no users and (by default) sign-up disabled. Open it in a browser and the root path sends you to the `/setup` form — the first person to register becomes the administrator (see [Accounts & Authentication](/docs/using/accounts/)). You can also create that first admin offline with [`leapmux recover bootstrap create-admin`](/docs/operating/recover/), which refuses once any admin exists. Then log in as that administrator. Enable sign-up with `leapmux control admin settings set signup_enabled true`, or create each account with `leapmux control admin user create`. The most important Hub flags:
+A fresh Hub has no users and (by default) sign-up disabled. Open it in a browser and the root path sends you to the `/setup` form — the first person to register becomes the administrator (see [Accounts & Authentication](/docs/using/accounts/)). You can also create that first admin offline with [`leapmux recover bootstrap create-admin`](/docs/admin/recover/), which refuses once any admin exists. Then log in as that administrator. Enable sign-up with `leapmux control admin settings set signup_enabled true`, or create each account with `leapmux control admin user create`. The most important Hub flags:
 
 | Flag | Default | Meaning |
 |------|---------|---------|
@@ -77,7 +77,7 @@ leapmux control admin settings set signup_enabled true
 leapmux control admin settings set smtp '{"host":"smtp.example.com","port":587,"from_address":"no-reply@example.com"}'
 ```
 
-By default the Hub uses an embedded SQLite database at `<data_dir>/hub.db` with its encryption key ring at `<data_dir>/encryption.key`. For a shared, durable deployment you will usually point it at an external database via `-storage-type` and the matching `*-dsn` flag. The full reference — every flag, every storage backend, the YAML layout, and the settings table — is in [Configuration](/docs/operating/configuration/) and the [Hub settings](/docs/operating/admin-cli/#hub-settings) section of the Admin CLI chapter.
+By default the Hub uses an embedded SQLite database at `<data_dir>/hub.db` with its encryption key ring at `<data_dir>/encryption.key`. For a shared, durable deployment you will usually point it at an external database via `-storage-type` and the matching `*-dsn` flag. The full reference — every flag, every storage backend, the YAML layout, and the settings table — is in [Configuration](/docs/admin/configuration/) and the [Hub settings](/docs/admin/admin-cli/#hub-settings) section of the Admin CLI chapter.
 
 > **Note:** The Hub does not terminate TLS itself. For HTTPS you put a reverse proxy in front of it; see [Reverse proxy and public URL](#reverse-proxy-and-public-url) below.
 
@@ -108,7 +108,7 @@ If a Worker has no saved credentials and no key, it refuses to start, and the er
 
 And if you pass `--registration-key` to a Worker that is already registered, it stops rather than burning the key by accident. The error tells you to remove `--registration-key` or to wipe the local state.
 
-Minting registration keys, approving Workers, the trust-on-first-use (TOFU) pinning of Worker keys, and choosing which Worker a tab runs on are all covered in [Managing Workers](/docs/operating/managing-workers/).
+Minting registration keys, approving Workers, the trust-on-first-use (TOFU) pinning of Worker keys, and choosing which Worker a tab runs on are all covered in [Managing Workers](/docs/admin/managing-workers/).
 
 ## Dev mode
 
@@ -130,7 +130,7 @@ Dev mode accepts the same flags as solo, plus `-encryption-mode`. The most impor
 | `-encryption-mode` | `post-quantum` | `classic` or `post-quantum` |
 | `-config` | `~/.config/leapmux/dev/dev.yaml` | Config file path |
 
-Like solo, dev also accepts the SQLite tuning flags plus `-dev-frontend` (see [Configuration](/docs/operating/configuration/)).
+Like solo, dev also accepts the SQLite tuning flags plus `-dev-frontend` (see [Configuration](/docs/admin/configuration/)).
 
 Dev mode seeds `signup_enabled=true` (it runs the full multi-user path), and the runtime knobs are settings rather than flags — a short session for exercising the signed-out path is:
 
@@ -155,7 +155,7 @@ Both variants target `linux/amd64` and `linux/arm64`. Release tags (`:latest`, `
 
 `LEAPMUX_MODE` is **required** and must be one of `hub`, `worker`, `dev`, or `solo`. If it is unset or invalid, the container exits, and the error lists the four accepted modes.
 
-The supervisor always invokes `leapmux <mode> -config /data/<mode>/<mode>.yaml`, creating an empty `0600` config file if none exists. It passes no other flags — so any additional settings must come from the YAML config file or from `LEAPMUX_HUB_*` / `LEAPMUX_WORKER_*` environment variables (see [Configuration](/docs/operating/configuration/)).
+The supervisor always invokes `leapmux <mode> -config /data/<mode>/<mode>.yaml`, creating an empty `0600` config file if none exists. It passes no other flags — so any additional settings must come from the YAML config file or from `LEAPMUX_HUB_*` / `LEAPMUX_WORKER_*` environment variables (see [Configuration](/docs/admin/configuration/)).
 
 ### Volume layout
 
@@ -231,7 +231,7 @@ Both settings are hot: a running Hub applies them within ~30 seconds — no rest
 
 > **Warning:** `public_url` must be a bare scheme + host — for example `https://hub.example.com`. Sub-path mounting (such as `https://example.com/leapmux`) is **not** supported and is rejected at write time. Give LeapMux its own hostname or subdomain.
 
-The proxy must also forward WebSocket upgrades, since Frontend traffic and the relayed Worker streams ride over long-lived connections. For the security implications of the relay, the end-to-end-encryption boundary, and Worker TOFU pinning, see [Security & Threat Model](/docs/operating/security/).
+The proxy must also forward WebSocket upgrades, since Frontend traffic and the relayed Worker streams ride over long-lived connections. For the security implications of the relay, the end-to-end-encryption boundary, and Worker TOFU pinning, see [Security & Threat Model](/docs/admin/security/).
 
 ## Upgrading
 
@@ -241,7 +241,7 @@ LeapMux runs database migrations automatically on startup, for both the Hub and 
 - **CLI binary:** Replace the `leapmux` binary from the newer server tarball or zip on the [Releases page](https://github.com/leapmux/leapmux/releases) and restart.
 - **Desktop app:** Download and install the newer artifact from the Releases page.
 
-> **Tip:** Back up your Hub data before a major upgrade — at minimum the database and `encryption.key` (or your external database, if you use one). The encryption key ring is required to read encrypted data, so keep it with your backups. See [Encryption & Data](/docs/operating/encryption-and-data/) for backup, restore, and key-rotation details.
+> **Tip:** Back up your Hub data before a major upgrade — at minimum the database and `encryption.key` (or your external database, if you use one). The encryption key ring is required to read encrypted data, so keep it with your backups. See [Encryption & Data](/docs/admin/encryption-and-data/) for backup, restore, and key-rotation details.
 
 ## Checking the version
 
@@ -254,10 +254,10 @@ leapmux --version
 
 ## See also
 
-- [Configuration](/docs/operating/configuration/) — full flag and config-key reference, storage backends, listen addresses, env-var precedence.
-- [Managing Workers](/docs/operating/managing-workers/) — registration keys, Worker approval, TOFU pinning, Worker selection.
-- [Recovery](/docs/operating/recover/) — the offline break-glass tree: first-admin bootstrap, password reset, schema migrations, and encryption-key surgery.
-- [Control CLI](/docs/operating/control-cli/) and [Admin CLI](/docs/operating/admin-cli/) — users, sessions, workers, OAuth providers, instance settings, and tokens on a running Hub.
+- [Configuration](/docs/admin/configuration/) — full flag and config-key reference, storage backends, listen addresses, env-var precedence.
+- [Managing Workers](/docs/admin/managing-workers/) — registration keys, Worker approval, TOFU pinning, Worker selection.
+- [Recovery](/docs/admin/recover/) — the offline break-glass tree: first-admin bootstrap, password reset, schema migrations, and encryption-key surgery.
+- [Control CLI](/docs/using/control-cli/) and [Admin CLI](/docs/admin/admin-cli/) — users, sessions, workers, OAuth providers, instance settings, and tokens on a running Hub.
 - [Installation](/docs/getting-started/installation/) — desktop app, Docker images, and building from source.
-- [Security & Threat Model](/docs/operating/security/) — trust boundaries, the E2EE relay, and solo-mode caveats.
+- [Security & Threat Model](/docs/admin/security/) — trust boundaries, the E2EE relay, and solo-mode caveats.
 - [CLI Reference](/docs/reference/cli-reference/) — consolidated cheat-sheet for every subcommand.

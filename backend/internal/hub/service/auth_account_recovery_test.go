@@ -42,14 +42,14 @@ func (r *recordingMailSender) Send(_ context.Context, msg mail.Message) error {
 	return nil
 }
 
-func setupPasswordResetAuthService(t *testing.T, sender mail.Sender) (leapmuxv1connect.AuthServiceClient, store.Store) {
-	client, st, _ := setupPasswordResetAuthServiceWithClock(t, sender)
+func setupAccountRecoveryAuthService(t *testing.T, sender mail.Sender) (leapmuxv1connect.AuthServiceClient, store.Store) {
+	client, st, _ := setupAccountRecoveryAuthServiceWithClock(t, sender)
 	return client, st
 }
 
-// setupPasswordResetAuthServiceWithClock is the same harness, plus the
+// setupAccountRecoveryAuthServiceWithClock is the same harness, plus the
 // service value itself, so a test can move its clock seam.
-func setupPasswordResetAuthServiceWithClock(t *testing.T, sender mail.Sender) (leapmuxv1connect.AuthServiceClient, store.Store, *service.AuthService) {
+func setupAccountRecoveryAuthServiceWithClock(t *testing.T, sender mail.Sender) (leapmuxv1connect.AuthServiceClient, store.Store, *service.AuthService) {
 	t.Helper()
 
 	st := hubtestutil.OpenTestStore(t)
@@ -77,8 +77,8 @@ func setupPasswordResetAuthServiceWithClock(t *testing.T, sender mail.Sender) (l
 	return client, st, authSvc
 }
 
-func extractPasswordResetToken(body string) string {
-	const marker = "/reset-password?token="
+func extractAccountRecoveryToken(body string) string {
+	const marker = "/recover-account/complete?token="
 	i := strings.Index(body, marker)
 	if i < 0 {
 		return ""
@@ -90,24 +90,24 @@ func extractPasswordResetToken(body string) string {
 	return rest
 }
 
-func TestRequestPasswordReset_UnknownUser_EmptySuccess(t *testing.T) {
+func TestRequestAccountRecovery_UnknownUser_EmptySuccess(t *testing.T) {
 	t.Parallel()
 
 	sender := &recordingMailSender{}
-	client, _ := setupPasswordResetAuthService(t, sender)
+	client, _ := setupAccountRecoveryAuthService(t, sender)
 
-	_, err := client.RequestPasswordReset(context.Background(), connect.NewRequest(&leapmuxv1.RequestPasswordResetRequest{
+	_, err := client.RequestAccountRecovery(context.Background(), connect.NewRequest(&leapmuxv1.RequestAccountRecoveryRequest{
 		Identifier: "nobody@example.com",
 	}))
 	require.NoError(t, err)
 	assert.Empty(t, sender.msgs)
 }
 
-func TestRequestPasswordReset_KnownUser_SendsMail(t *testing.T) {
+func TestRequestAccountRecovery_KnownUser_SendsMail(t *testing.T) {
 	t.Parallel()
 
 	sender := &recordingMailSender{}
-	client, st := setupPasswordResetAuthService(t, sender)
+	client, st := setupAccountRecoveryAuthService(t, sender)
 
 	userID := id.Generate()
 	hash, err := password.Hash("oldpass123")
@@ -122,25 +122,25 @@ func TestRequestPasswordReset_KnownUser_SendsMail(t *testing.T) {
 		PasswordSet:   true,
 	}))
 
-	_, err = client.RequestPasswordReset(context.Background(), connect.NewRequest(&leapmuxv1.RequestPasswordResetRequest{
+	_, err = client.RequestAccountRecovery(context.Background(), connect.NewRequest(&leapmuxv1.RequestAccountRecoveryRequest{
 		Identifier: "resetme@example.com",
 	}))
 	require.NoError(t, err)
 	require.Len(t, sender.msgs, 1)
 	assert.Equal(t, "resetme@example.com", sender.msgs[0].To)
 
-	token := extractPasswordResetToken(sender.msgs[0].Body)
+	token := extractAccountRecoveryToken(sender.msgs[0].Body)
 	require.NotEmpty(t, token)
-	// The reset secret comes from the shared id mint, like session ids and
+	// The recovery secret comes from the shared id mint, like session ids and
 	// API access secrets.
 	assert.Regexp(t, "^[A-Za-z0-9]{48}$", token)
 
 	user, err := st.Users().GetByID(context.Background(), userID)
 	require.NoError(t, err)
-	assert.NotEmpty(t, user.PendingPasswordResetToken)
-	assert.NotNil(t, user.PendingPasswordResetExpiresAt)
+	assert.NotEmpty(t, user.PendingRecoveryToken)
+	assert.NotNil(t, user.PendingRecoveryExpiresAt)
 
-	_, err = client.CompletePasswordReset(context.Background(), connect.NewRequest(&leapmuxv1.CompletePasswordResetRequest{
+	_, err = client.CompleteAccountRecovery(context.Background(), connect.NewRequest(&leapmuxv1.CompleteAccountRecoveryRequest{
 		Token:       token,
 		NewPassword: "newpass123",
 	}))
@@ -154,11 +154,11 @@ func TestRequestPasswordReset_KnownUser_SendsMail(t *testing.T) {
 	assert.True(t, match)
 }
 
-func TestRequestPasswordReset_MailFailure_ClearsToken(t *testing.T) {
+func TestRequestAccountRecovery_MailFailure_ClearsToken(t *testing.T) {
 	t.Parallel()
 
 	sender := &recordingMailSender{err: errors.New("smtp down")}
-	client, st := setupPasswordResetAuthService(t, sender)
+	client, st := setupAccountRecoveryAuthService(t, sender)
 
 	userID := id.Generate()
 	hash, err := password.Hash("oldpass123")
@@ -173,20 +173,20 @@ func TestRequestPasswordReset_MailFailure_ClearsToken(t *testing.T) {
 		PasswordSet:   true,
 	}))
 
-	_, err = client.RequestPasswordReset(context.Background(), connect.NewRequest(&leapmuxv1.RequestPasswordResetRequest{
+	_, err = client.RequestAccountRecovery(context.Background(), connect.NewRequest(&leapmuxv1.RequestAccountRecoveryRequest{
 		Identifier: "mailfail@example.com",
 	}))
 	require.NoError(t, err)
 
 	user, err := st.Users().GetByID(context.Background(), userID)
 	require.NoError(t, err)
-	assert.Empty(t, user.PendingPasswordResetToken)
+	assert.Empty(t, user.PendingRecoveryToken)
 }
 
-func TestCompletePasswordReset_InvalidToken_NotFound(t *testing.T) {
+func TestCompleteAccountRecovery_InvalidToken_NotFound(t *testing.T) {
 	t.Parallel()
 
-	client, st := setupPasswordResetAuthService(t, mail.NewStubSender())
+	client, st := setupAccountRecoveryAuthService(t, mail.NewStubSender())
 
 	userID := id.Generate()
 	hash, err := password.Hash("oldpass123")
@@ -198,7 +198,7 @@ func TestCompletePasswordReset_InvalidToken_NotFound(t *testing.T) {
 		PasswordSet:  true,
 	}))
 
-	_, err = client.CompletePasswordReset(context.Background(), connect.NewRequest(&leapmuxv1.CompletePasswordResetRequest{
+	_, err = client.CompleteAccountRecovery(context.Background(), connect.NewRequest(&leapmuxv1.CompleteAccountRecoveryRequest{
 		Token:       "not-a-real-token",
 		NewPassword: "newpass123",
 	}))
@@ -212,11 +212,11 @@ func TestCompletePasswordReset_InvalidToken_NotFound(t *testing.T) {
 	assert.True(t, match)
 }
 
-func TestCompletePasswordReset_Success_WipesPasskeysAndSessions(t *testing.T) {
+func TestCompleteAccountRecovery_Success_WipesPasskeysAndSessions(t *testing.T) {
 	t.Parallel()
 
 	sender := &recordingMailSender{}
-	client, st := setupPasswordResetAuthService(t, sender)
+	client, st := setupAccountRecoveryAuthService(t, sender)
 
 	userID := id.Generate()
 	hash, err := password.Hash("oldpass123")
@@ -246,18 +246,18 @@ func TestCompletePasswordReset_Success_WipesPasskeysAndSessions(t *testing.T) {
 		CreatedAt:   now,
 	}))
 
-	_, err = client.RequestPasswordReset(context.Background(), connect.NewRequest(&leapmuxv1.RequestPasswordResetRequest{
+	_, err = client.RequestAccountRecovery(context.Background(), connect.NewRequest(&leapmuxv1.RequestAccountRecoveryRequest{
 		Identifier: "wipeme",
 	}))
 	require.NoError(t, err)
 	require.Len(t, sender.msgs, 1)
-	token := extractPasswordResetToken(sender.msgs[0].Body)
+	token := extractAccountRecoveryToken(sender.msgs[0].Body)
 	require.NotEmpty(t, token)
-	// The reset secret comes from the shared id mint, like session ids and
+	// The recovery secret comes from the shared id mint, like session ids and
 	// API access secrets.
 	assert.Regexp(t, "^[A-Za-z0-9]{48}$", token)
 
-	_, err = client.CompletePasswordReset(context.Background(), connect.NewRequest(&leapmuxv1.CompletePasswordResetRequest{
+	_, err = client.CompleteAccountRecovery(context.Background(), connect.NewRequest(&leapmuxv1.CompleteAccountRecoveryRequest{
 		Token:       token,
 		NewPassword: "newpass123",
 	}))
@@ -277,11 +277,98 @@ func TestCompletePasswordReset_Success_WipesPasskeysAndSessions(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestCompletePasswordReset_ExpiredToken_NotFound(t *testing.T) {
+// TestRequestAccountRecovery_PasswordlessAccount_SendsLink pins the rule the
+// docs promise: recovery verifies the account's EMAIL, not the method the
+// user lost. A passwordless account (passkey-only or provider-only — the
+// store cannot tell the difference, and neither may the flow) with a
+// verified address gets the same link a password account gets.
+func TestRequestAccountRecovery_PasswordlessAccount_SendsLink(t *testing.T) {
 	t.Parallel()
 
 	sender := &recordingMailSender{}
-	client, st := setupPasswordResetAuthService(t, sender)
+	client, st := setupAccountRecoveryAuthService(t, sender)
+
+	userID := id.Generate()
+	require.NoError(t, st.Users().Create(context.Background(), store.CreateUserParams{
+		ID:            userID,
+		Username:      "passkeyonly",
+		PasswordHash:  password.PlaceholderHash,
+		DisplayName:   "Passkey Only",
+		Email:         "passkeyonly@example.com",
+		EmailVerified: true,
+		PasswordSet:   false,
+	}))
+
+	_, err := client.RequestAccountRecovery(context.Background(), connect.NewRequest(&leapmuxv1.RequestAccountRecoveryRequest{
+		Identifier: "passkeyonly",
+	}))
+	require.NoError(t, err)
+	require.Len(t, sender.msgs, 1)
+	assert.Equal(t, "passkeyonly@example.com", sender.msgs[0].To)
+	token := extractAccountRecoveryToken(sender.msgs[0].Body)
+	require.NotEmpty(t, token)
+
+	row, err := st.Users().GetByID(context.Background(), userID)
+	require.NoError(t, err)
+	assert.NotEmpty(t, row.PendingRecoveryToken)
+}
+
+// TestCompleteAccountRecovery_SetsFirstPassword pins the passwordless half of
+// the flow: spending the link on an account that never had a password sets
+// its FIRST one, wipes the passkeys it could no longer use, and leaves the
+// account signing in with the new password.
+func TestCompleteAccountRecovery_SetsFirstPassword(t *testing.T) {
+	t.Parallel()
+
+	sender := &recordingMailSender{}
+	client, st := setupAccountRecoveryAuthService(t, sender)
+
+	userID := id.Generate()
+	require.NoError(t, st.Users().Create(context.Background(), store.CreateUserParams{
+		ID:            userID,
+		Username:      "recoverless",
+		PasswordHash:  password.PlaceholderHash,
+		DisplayName:   "Recover Less",
+		Email:         "recoverless@example.com",
+		EmailVerified: true,
+		PasswordSet:   false,
+	}))
+	seedPasskeyCredential(t, st, userID, "Lost Laptop")
+
+	_, err := client.RequestAccountRecovery(context.Background(), connect.NewRequest(&leapmuxv1.RequestAccountRecoveryRequest{
+		Identifier: "recoverless@example.com",
+	}))
+	require.NoError(t, err)
+	require.Len(t, sender.msgs, 1)
+	token := extractAccountRecoveryToken(sender.msgs[0].Body)
+	require.NotEmpty(t, token)
+
+	_, err = client.CompleteAccountRecovery(context.Background(), connect.NewRequest(&leapmuxv1.CompleteAccountRecoveryRequest{
+		Token:       token,
+		NewPassword: "firstpass123",
+	}))
+	require.NoError(t, err)
+
+	row, err := st.Users().GetByID(context.Background(), userID)
+	require.NoError(t, err)
+	assert.True(t, row.PasswordSet, "recovery must set the account's first password")
+	match, err := password.Verify(row.PasswordHash, "firstpass123")
+	require.NoError(t, err)
+	assert.True(t, match)
+
+	count, err := st.PasskeyCredentials().CountByUser(context.Background(), userID)
+	require.NoError(t, err)
+	assert.EqualValues(t, 0, count, "the lost passkey must be wiped by the break-glass posture")
+
+	_, _, _, err = auth.Login(context.Background(), st, "recoverless", "firstpass123", auth.DefaultSessionDuration)
+	require.NoError(t, err)
+}
+
+func TestCompleteAccountRecovery_ExpiredToken_NotFound(t *testing.T) {
+	t.Parallel()
+
+	sender := &recordingMailSender{}
+	client, st := setupAccountRecoveryAuthService(t, sender)
 
 	userID := id.Generate()
 	hash, err := password.Hash("oldpass123")
@@ -295,28 +382,28 @@ func TestCompletePasswordReset_ExpiredToken_NotFound(t *testing.T) {
 		PasswordSet:   true,
 	}))
 
-	_, err = client.RequestPasswordReset(context.Background(), connect.NewRequest(&leapmuxv1.RequestPasswordResetRequest{
+	_, err = client.RequestAccountRecovery(context.Background(), connect.NewRequest(&leapmuxv1.RequestAccountRecoveryRequest{
 		Identifier: "expired@example.com",
 	}))
 	require.NoError(t, err)
 	require.Len(t, sender.msgs, 1)
-	token := extractPasswordResetToken(sender.msgs[0].Body)
+	token := extractAccountRecoveryToken(sender.msgs[0].Body)
 	require.NotEmpty(t, token)
-	// The reset secret comes from the shared id mint, like session ids and
+	// The recovery secret comes from the shared id mint, like session ids and
 	// API access secrets.
 	assert.Regexp(t, "^[A-Za-z0-9]{48}$", token)
 
 	user, err := st.Users().GetByID(context.Background(), userID)
 	require.NoError(t, err)
-	_, err = st.Users().SetPendingPasswordReset(context.Background(), store.SetPendingPasswordResetParams{
-		ID:                            userID,
-		PendingPasswordResetToken:     user.PendingPasswordResetToken,
-		PendingPasswordResetExpiresAt: time.Now().UTC().Add(-time.Hour),
-		CooldownCutoff:                time.Now().UTC().Add(time.Hour),
+	_, err = st.Users().SetPendingRecovery(context.Background(), store.SetPendingRecoveryParams{
+		ID:                       userID,
+		PendingRecoveryToken:     user.PendingRecoveryToken,
+		PendingRecoveryExpiresAt: time.Now().UTC().Add(-time.Hour),
+		CooldownCutoff:           time.Now().UTC().Add(time.Hour),
 	})
 	require.NoError(t, err)
 
-	_, err = client.CompletePasswordReset(context.Background(), connect.NewRequest(&leapmuxv1.CompletePasswordResetRequest{
+	_, err = client.CompleteAccountRecovery(context.Background(), connect.NewRequest(&leapmuxv1.CompleteAccountRecoveryRequest{
 		Token:       token,
 		NewPassword: "newpass123",
 	}))
@@ -324,11 +411,11 @@ func TestCompletePasswordReset_ExpiredToken_NotFound(t *testing.T) {
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
 }
 
-func TestCompletePasswordReset_AttemptLimitBlocksBeforeArgon2(t *testing.T) {
+func TestCompleteAccountRecovery_AttemptLimitBlocksBeforeArgon2(t *testing.T) {
 	t.Parallel()
 
 	sender := &recordingMailSender{}
-	client, st := setupPasswordResetAuthService(t, sender)
+	client, st := setupAccountRecoveryAuthService(t, sender)
 
 	userID := id.Generate()
 	hash, err := password.Hash("oldpass123")
@@ -342,29 +429,29 @@ func TestCompletePasswordReset_AttemptLimitBlocksBeforeArgon2(t *testing.T) {
 		PasswordSet:   true,
 	}))
 
-	_, err = client.RequestPasswordReset(context.Background(), connect.NewRequest(&leapmuxv1.RequestPasswordResetRequest{
+	_, err = client.RequestAccountRecovery(context.Background(), connect.NewRequest(&leapmuxv1.RequestAccountRecoveryRequest{
 		Identifier: "attemptcap@example.com",
 	}))
 	require.NoError(t, err)
 	require.Len(t, sender.msgs, 1)
-	token := extractPasswordResetToken(sender.msgs[0].Body)
+	token := extractAccountRecoveryToken(sender.msgs[0].Body)
 	require.NotEmpty(t, token)
-	// The reset secret comes from the shared id mint, like session ids and
+	// The recovery secret comes from the shared id mint, like session ids and
 	// API access secrets.
 	assert.Regexp(t, "^[A-Za-z0-9]{48}$", token)
 
 	// Use up the 5 soft attempts with a wrong password that still matches the
 	// token row (Consume increments). Use the real token so lookup succeeds;
-	// CompletePasswordReset validates password strength before hashing, so the
+	// CompleteAccountRecovery validates password strength before hashing, so the
 	// call needs a valid new password. We force attempts via the store API.
 	for i := 0; i < 5; i++ {
-		_, err = st.Users().ConsumePasswordResetAttemptByToken(context.Background(), tokenHashForTest(token), time.Now().UTC(), 5)
+		_, err = st.Users().ConsumeRecoveryAttemptByToken(context.Background(), tokenHashForTest(token), time.Now().UTC(), 5)
 		require.NoError(t, err)
 	}
 
 	// Sixth Complete must refuse after Consume sets attempts>5, before a
 	// successful password change (password stays oldpass123).
-	_, err = client.CompletePasswordReset(context.Background(), connect.NewRequest(&leapmuxv1.CompletePasswordResetRequest{
+	_, err = client.CompleteAccountRecovery(context.Background(), connect.NewRequest(&leapmuxv1.CompleteAccountRecoveryRequest{
 		Token:       token,
 		NewPassword: "newpass123",
 	}))
@@ -376,27 +463,27 @@ func TestCompletePasswordReset_AttemptLimitBlocksBeforeArgon2(t *testing.T) {
 	match, err := password.Verify(user.PasswordHash, "oldpass123")
 	require.NoError(t, err)
 	assert.True(t, match, "attempt limit must block before password hash is replaced")
-	assert.Greater(t, user.PendingPasswordResetAttempts, int64(5))
+	assert.Greater(t, user.PendingRecoveryAttempts, int64(5))
 }
 
-func TestRequestPasswordReset_InvalidUsername_EmptySuccess(t *testing.T) {
+func TestRequestAccountRecovery_InvalidUsername_EmptySuccess(t *testing.T) {
 	t.Parallel()
 
 	sender := &recordingMailSender{}
-	client, _ := setupPasswordResetAuthService(t, sender)
+	client, _ := setupAccountRecoveryAuthService(t, sender)
 
-	_, err := client.RequestPasswordReset(context.Background(), connect.NewRequest(&leapmuxv1.RequestPasswordResetRequest{
+	_, err := client.RequestAccountRecovery(context.Background(), connect.NewRequest(&leapmuxv1.RequestAccountRecoveryRequest{
 		Identifier: "!!!not-a-slug!!!",
 	}))
 	require.NoError(t, err)
 	assert.Empty(t, sender.msgs)
 }
 
-func TestRequestPasswordReset_UsernameIsSanitized(t *testing.T) {
+func TestRequestAccountRecovery_UsernameIsSanitized(t *testing.T) {
 	t.Parallel()
 
 	sender := &recordingMailSender{}
-	client, st := setupPasswordResetAuthService(t, sender)
+	client, st := setupAccountRecoveryAuthService(t, sender)
 
 	userID := id.Generate()
 	hash, err := password.Hash("oldpass123")
@@ -411,7 +498,7 @@ func TestRequestPasswordReset_UsernameIsSanitized(t *testing.T) {
 		PasswordSet:   true,
 	}))
 
-	_, err = client.RequestPasswordReset(context.Background(), connect.NewRequest(&leapmuxv1.RequestPasswordResetRequest{
+	_, err = client.RequestAccountRecovery(context.Background(), connect.NewRequest(&leapmuxv1.RequestAccountRecoveryRequest{
 		Identifier: "ResetMe",
 	}))
 	require.NoError(t, err)
@@ -423,13 +510,13 @@ func tokenHashForTest(token string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// TestRequestPasswordReset_CooldownKeepsPreviousLink pins the per-account
+// TestRequestAccountRecovery_CooldownKeepsPreviousLink pins the per-account
 // resend cooldown: a second request inside the window must not mint a fresh
 // token (which would invalidate the link the first email still carries and
 // flood the inbox), and the first token must still complete.
-func TestRequestPasswordReset_CooldownKeepsPreviousLink(t *testing.T) {
+func TestRequestAccountRecovery_CooldownKeepsPreviousLink(t *testing.T) {
 	sender := &recordingMailSender{}
-	client, _, st := setupPasswordResetAuthServiceConfigured(t, sender, seedSMTP)
+	client, _, st := setupAccountRecoveryAuthServiceConfigured(t, sender, seedSMTP)
 
 	userID := id.Generate()
 	require.NoError(t, st.Users().Create(context.Background(), store.CreateUserParams{
@@ -443,23 +530,69 @@ func TestRequestPasswordReset_CooldownKeepsPreviousLink(t *testing.T) {
 	}))
 
 	for i := 0; i < 2; i++ {
-		_, err := client.RequestPasswordReset(context.Background(), connect.NewRequest(&leapmuxv1.RequestPasswordResetRequest{
+		_, err := client.RequestAccountRecovery(context.Background(), connect.NewRequest(&leapmuxv1.RequestAccountRecoveryRequest{
 			Identifier: "cooldown@example.com",
 		}))
 		require.NoError(t, err)
 	}
 	require.Len(t, sender.msgs, 1, "cooldown must suppress the second send")
 
-	token := extractPasswordResetToken(sender.msgs[0].Body)
+	token := extractAccountRecoveryToken(sender.msgs[0].Body)
 	require.NotEmpty(t, token)
-	// The reset secret comes from the shared id mint, like session ids and
+	// The recovery secret comes from the shared id mint, like session ids and
 	// API access secrets.
 	assert.Regexp(t, "^[A-Za-z0-9]{48}$", token)
-	_, err := client.CompletePasswordReset(context.Background(), connect.NewRequest(&leapmuxv1.CompletePasswordResetRequest{
+	_, err := client.CompleteAccountRecovery(context.Background(), connect.NewRequest(&leapmuxv1.CompleteAccountRecoveryRequest{
 		Token:       token,
 		NewPassword: "freshpass123",
 	}))
 	require.NoError(t, err, "the first link must stay completable inside the cooldown window")
+}
+
+// TestRequestAccountRecovery_BurnedBudgetKeepsCooldown is the recovery twin
+// of the burned-budget verification pin. Charging all five token attempts
+// force-expires the link in SQL, and an expiry-derived gate read that as
+// "issued a full lifetime ago" and re-minted immediately. The gate reads
+// the issued-at column, so burning the budget the holder already owns
+// cannot hurry the next email.
+func TestRequestAccountRecovery_BurnedBudgetKeepsCooldown(t *testing.T) {
+	sender := &recordingMailSender{}
+	client, _, st := setupAccountRecoveryAuthServiceConfigured(t, sender, seedSMTP)
+	ctx := context.Background()
+
+	userID := id.Generate()
+	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
+		ID:            userID,
+		Username:      "burned-budget",
+		PasswordHash:  password.PlaceholderHash,
+		DisplayName:   "Burned Budget",
+		Email:         "burned@example.com",
+		EmailVerified: true,
+		PasswordSet:   true,
+	}))
+
+	_, err := client.RequestAccountRecovery(ctx, connect.NewRequest(&leapmuxv1.RequestAccountRecoveryRequest{
+		Identifier: "burned@example.com",
+	}))
+	require.NoError(t, err)
+	require.Len(t, sender.msgs, 1)
+	token := extractAccountRecoveryToken(sender.msgs[0].Body)
+	require.NotEmpty(t, token)
+
+	// Burn the whole attempt budget against the real token; the 6th charge
+	// force-expires the link in SQL (the expiry moves to now).
+	for i := 0; i < 6; i++ {
+		_, err = st.Users().ConsumeRecoveryAttemptByToken(ctx, tokenHashForTest(token), time.Now().UTC(), 5)
+		require.NoError(t, err)
+	}
+
+	// The link is expired, but it was issued seconds ago: the next request
+	// must answer the same empty success and send nothing.
+	_, err = client.RequestAccountRecovery(ctx, connect.NewRequest(&leapmuxv1.RequestAccountRecoveryRequest{
+		Identifier: "burned@example.com",
+	}))
+	require.NoError(t, err, "the response is uniform; only the mail differs")
+	require.Len(t, sender.msgs, 1, "burning the attempt budget must not reset the resend cooldown")
 }
 
 // TestSignUp_MailFailureDoesNotLeakTransportDetails pins that a fail-closed
@@ -468,7 +601,7 @@ func TestRequestPasswordReset_CooldownKeepsPreviousLink(t *testing.T) {
 // the server log, never in the client response.
 func TestSignUp_MailFailureDoesNotLeakTransportDetails(t *testing.T) {
 	sender := &recordingMailSender{err: errors.New("dial tcp smtp.secret-relay.example:587: connection refused")}
-	client, _, st := setupPasswordResetAuthServiceConfigured(t, sender, seedSMTP)
+	client, _, st := setupAccountRecoveryAuthServiceConfigured(t, sender, seedSMTP)
 
 	// A user must exist so the sign-up takes the public path, not the
 	// first-admin setup path (which verifies nothing and sends no mail).
@@ -496,10 +629,10 @@ func TestSignUp_MailFailureDoesNotLeakTransportDetails(t *testing.T) {
 	assert.NotContains(t, err.Error(), "connection refused")
 }
 
-// setupPasswordResetAuthServiceConfigured builds the reset harness with a
+// setupAccountRecoveryAuthServiceConfigured builds the reset harness with a
 // settings callback that runs against the SAME manager the service reads,
 // so a seeded SMTP row is visible to the service under test.
-func setupPasswordResetAuthServiceConfigured(t *testing.T, sender mail.Sender, configure func(t *testing.T, set *settings.Manager)) (leapmuxv1connect.AuthServiceClient, *settings.Manager, store.Store) {
+func setupAccountRecoveryAuthServiceConfigured(t *testing.T, sender mail.Sender, configure func(t *testing.T, set *settings.Manager)) (leapmuxv1connect.AuthServiceClient, *settings.Manager, store.Store) {
 	t.Helper()
 
 	st := hubtestutil.OpenTestStore(t)
@@ -528,24 +661,24 @@ func setupPasswordResetAuthServiceConfigured(t *testing.T, sender mail.Sender, c
 	return client, set, st
 }
 
-// TestRequestPasswordReset_AdminUnconfirmedAddressGetsNoLink is the recovery
+// TestRequestAccountRecovery_AdminUnconfirmedAddressGetsNoLink is the recovery
 // route this change closes.
 //
-// A reset link is a credential, and the Hub only sends one to an address it
+// A recovery link is a credential, and the Hub only sends one to an address it
 // has evidence for. email_verified IS that evidence, and the hub used to
 // force it true for every administrator -- so an administrator moved to a
-// brand-new address kept a live self-service reset route to whatever address
+// brand-new address kept a live self-service recovery route to whatever address
 // the request carried, on the highest-privilege accounts on the hub. The
 // flag now records only what somebody confirmed, and the administrator
 // exemption lives at the login gate where it belongs.
-func TestRequestPasswordReset_AdminUnconfirmedAddressGetsNoLink(t *testing.T) {
+func TestRequestAccountRecovery_AdminUnconfirmedAddressGetsNoLink(t *testing.T) {
 	t.Parallel()
 
 	// SMTP configured, so the hub REQUIRES verification -- which is the
 	// deployment where a reset link is a credential and the flag decides
 	// whether the hub has evidence for the address.
 	sender := &recordingMailSender{}
-	client, _, st := setupPasswordResetAuthServiceConfigured(t, sender, seedSMTP)
+	client, _, st := setupAccountRecoveryAuthServiceConfigured(t, sender, seedSMTP)
 	ctx := context.Background()
 
 	hash, err := password.Hash("oldpass123")
@@ -559,7 +692,7 @@ func TestRequestPasswordReset_AdminUnconfirmedAddressGetsNoLink(t *testing.T) {
 		EmailVerified: false, PasswordSet: true, IsAdmin: true,
 	}))
 
-	_, err = client.RequestPasswordReset(ctx, connect.NewRequest(&leapmuxv1.RequestPasswordResetRequest{
+	_, err = client.RequestAccountRecovery(ctx, connect.NewRequest(&leapmuxv1.RequestAccountRecoveryRequest{
 		Identifier: "unconfirmed@example.com",
 	}))
 	require.NoError(t, err, "the response is uniform; only the mail differs")
@@ -567,7 +700,7 @@ func TestRequestPasswordReset_AdminUnconfirmedAddressGetsNoLink(t *testing.T) {
 
 	row, err := st.Users().GetByID(ctx, unconfirmed)
 	require.NoError(t, err)
-	assert.Empty(t, row.PendingPasswordResetToken, "and no token was minted")
+	assert.Empty(t, row.PendingRecoveryToken, "and no token was minted")
 
 	// An administrator who really did confirm their address still gets one:
 	// the rule is about the ADDRESS, not about the privilege.
@@ -578,7 +711,7 @@ func TestRequestPasswordReset_AdminUnconfirmedAddressGetsNoLink(t *testing.T) {
 		EmailVerified: true, PasswordSet: true, IsAdmin: true,
 	}))
 
-	_, err = client.RequestPasswordReset(ctx, connect.NewRequest(&leapmuxv1.RequestPasswordResetRequest{
+	_, err = client.RequestAccountRecovery(ctx, connect.NewRequest(&leapmuxv1.RequestAccountRecoveryRequest{
 		Identifier: "confirmed@example.com",
 	}))
 	require.NoError(t, err)
@@ -586,7 +719,7 @@ func TestRequestPasswordReset_AdminUnconfirmedAddressGetsNoLink(t *testing.T) {
 	assert.Equal(t, "confirmed@example.com", sender.msgs[0].To)
 }
 
-// TestRequestPasswordReset_UsesTheServiceClock pins that the reset expiry
+// TestRequestAccountRecovery_UsesTheServiceClock pins that the recovery expiry
 // comes from the service's own seam and not from the wall clock.
 //
 // clockSeam's rule is the whole type, not the elevation path inside it. This
@@ -595,11 +728,11 @@ func TestRequestPasswordReset_AdminUnconfirmedAddressGetsNoLink(t *testing.T) {
 // expiry" -- so a test that moved the clock moved neither, and the cooldown
 // cutoff and the expiry could answer two different instants inside one
 // request.
-func TestRequestPasswordReset_UsesTheServiceClock(t *testing.T) {
+func TestRequestAccountRecovery_UsesTheServiceClock(t *testing.T) {
 	t.Parallel()
 
 	sender := &recordingMailSender{}
-	client, st, authSvc := setupPasswordResetAuthServiceWithClock(t, sender)
+	client, st, authSvc := setupAccountRecoveryAuthServiceWithClock(t, sender)
 
 	fixed := time.Now().UTC().Add(72 * time.Hour).Truncate(time.Second)
 	authSvc.Now = func() time.Time { return fixed }
@@ -612,7 +745,7 @@ func TestRequestPasswordReset_UsesTheServiceClock(t *testing.T) {
 		Email: "clocked@example.com", EmailVerified: true, PasswordSet: true,
 	}))
 
-	_, err = client.RequestPasswordReset(context.Background(), connect.NewRequest(&leapmuxv1.RequestPasswordResetRequest{
+	_, err = client.RequestAccountRecovery(context.Background(), connect.NewRequest(&leapmuxv1.RequestAccountRecoveryRequest{
 		Identifier: "clocked@example.com",
 	}))
 	require.NoError(t, err)
@@ -620,7 +753,7 @@ func TestRequestPasswordReset_UsesTheServiceClock(t *testing.T) {
 
 	row, err := st.Users().GetByID(context.Background(), userID)
 	require.NoError(t, err)
-	require.NotNil(t, row.PendingPasswordResetExpiresAt)
-	assert.WithinDuration(t, fixed.Add(time.Hour), *row.PendingPasswordResetExpiresAt, time.Minute,
+	require.NotNil(t, row.PendingRecoveryExpiresAt)
+	assert.WithinDuration(t, fixed.Add(time.Hour), *row.PendingRecoveryExpiresAt, time.Minute,
 		"the expiry must be measured from the service's clock, not the wall clock")
 }

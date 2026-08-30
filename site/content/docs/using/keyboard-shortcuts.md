@@ -2,7 +2,7 @@
 title: "Keyboard Shortcuts"
 description: "How the VS Code-style shortcut system works in LeapMux, every default key binding by context, and the override format for customizing them."
 type: docs
-weight: 11
+weight: 9
 ---
 
 LeapMux ships with a VS Code-style keyboard shortcut system: every shortcut is a *command* bound to a *key*, and each binding is active only inside a *context* (for example, only when a dialog is open or a terminal is focused). This chapter explains how the system works, lists every default binding, and documents the override format the engine uses for customization.
@@ -163,7 +163,7 @@ These are gated to the desktop app via `isDesktop` and have no effect in the bro
 | Actual Size | `⌘0` / `⌘Num0` | `Ctrl+0` / `Ctrl+Num0` | desktop |
 | Quit Application | `⌘Q` | `Ctrl+Q` | desktop |
 
-> **Note:** "Open in External Editor" works only in **solo mode**. In a distributed Hub/Worker setup, the active tab's working directory lives on the Worker machine, not your local filesystem, so there is no local editor to launch and the command does nothing. See [Running LeapMux](/docs/operating/running-leapmux/) for run modes, and [Open in external editor (desktop, solo mode)](#open-in-external-editor-desktop-solo-mode) below for the full feature.
+> **Note:** "Open in External Editor" works only in **solo mode**. In a distributed Hub/Worker setup, the active tab's working directory lives on the Worker machine, not your local filesystem, so there is no local editor to launch and the command does nothing. See [Running LeapMux](/docs/admin/running-leapmux/) for run modes, and [Open in external editor (desktop, solo mode)](#open-in-external-editor-desktop-solo-mode) below for the full feature.
 
 The zoom, web-inspector, and quit shortcuts ("core" bindings) are mounted at the application root, so they work on every screen — including the launcher and the sign-in/setup pages — not just inside a workspace.
 
@@ -303,4 +303,4 @@ You do not need any of this to use the shortcuts, but it explains a few edge cas
 - [Terminals](/docs/using/terminals/) — terminal behavior and the macOS cursor-motion shortcuts.
 - [File Browser](/docs/using/file-browser/) — the directory tree refreshed and filtered by the Files shortcuts.
 - [Settings & Preferences](/docs/using/settings/) — the Preferences dialog and where account vs. browser settings live.
-- [Running LeapMux](/docs/operating/running-leapmux/) — solo vs. distributed mode, which affects the "Open in External Editor" shortcut.
+- [Running LeapMux](/docs/admin/running-leapmux/) — solo vs. distributed mode, which affects the "Open in External Editor" shortcut.

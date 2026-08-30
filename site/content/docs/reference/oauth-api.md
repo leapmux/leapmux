@@ -5,7 +5,7 @@ type: docs
 weight: 6
 ---
 
-This is the implementable specification for a program that wants access to an account on a LeapMux Hub. For the operator's side — registering apps, verifying them, controlling what they may ask for — see [App Authorization](/docs/operating/app-authorization/).
+This is the implementable specification for a program that wants access to an account on a LeapMux Hub. For the administrator's side — registering apps, verifying them, controlling what they may ask for — see [App Authorization](/docs/admin/app-authorization/).
 
 A Hub is an OAuth 2.1 authorization server. It follows RFC 6749 and RFC 6750 as OAuth 2.1 profiles them, with RFC 7636 (PKCE), RFC 8628 (device authorization), RFC 7009 (revocation), RFC 7591 (dynamic registration), RFC 8414 and RFC 9728 (metadata).
 
@@ -24,10 +24,10 @@ The authorization-server document lists the endpoints, the grant types the Hub s
 
 Every request specifies a `client_id`. There is no anonymous client and no client that registers itself by accident.
 
-- An operator or a user registers the app; see [App Authorization](/docs/operating/app-authorization/).
+- An administrator or a user registers the app; see [App Authorization](/docs/admin/app-authorization/).
 - Or, where the Hub allows it, the app registers itself through `POST /oauth/register` (RFC 7591).
 
-A **public** client holds no secret. That is the honest shape for a binary a user holds — a CLI, a desktop app, a browser app — and PKCE is what protects it. A **confidential** client holds a secret, which means a server the app operator runs. The secret crosses once, at registration.
+A **public** client holds no secret. That is the honest shape for a binary a user holds — a CLI, a desktop app, a browser app — and PKCE is what protects it. A **confidential** client holds a secret, which means a server the app administrator runs. The secret crosses once, at registration.
 
 An app's name is what a consent screen states, and its icon is stored at registration and served same-origin from `/oauth/apps/<client_id>/icon` — a consent page fetches nothing from the app's own servers.
 
@@ -190,14 +190,14 @@ POST /oauth/step-up
 
 This opens a device-style ceremony against the **existing** credential. It issues nothing. The account holder proves a factor in a browser, and the credential gains a window; the app polls `/oauth/token` with the device-code grant to learn when.
 
-An app is refused this ceremony unless its owner allowed it. See [App Authorization](/docs/operating/app-authorization/#elevation).
+An app is refused this ceremony unless its owner allowed it. See [App Authorization](/docs/admin/app-authorization/#elevation).
 
 ## Rate limits
 
-The three anonymous endpoints — device authorization, the token endpoint, and dynamic registration — share one per-address budget. Nothing there presents a secret somebody had to guess, so no error counts against a failure window; the limit is a ceiling on a loop, not a lockout. An operator adjusts it as `rate_limit.oauth_anonymous`.
+The three anonymous endpoints — device authorization, the token endpoint, and dynamic registration — share one per-address budget. Nothing there presents a secret somebody had to guess, so no error counts against a failure window; the limit is a ceiling on a loop, not a lockout. An administrator adjusts it as `rate_limit.oauth_anonymous`.
 
 ## See also
 
-- [App Authorization](/docs/operating/app-authorization/) — registering and verifying apps
+- [App Authorization](/docs/admin/app-authorization/) — registering and verifying apps
 - [Connected Apps](/docs/using/connected-apps/) — what an account holder sees
-- [Control CLI](/docs/operating/control-cli/) — a worked client, and the one that ships
+- [Control CLI](/docs/using/control-cli/) — a worked client, and the one that ships

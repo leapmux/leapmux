@@ -56,10 +56,22 @@ CREATE TABLE users (
     -- Counts attempts against the active pending_email_token. Reset to 0
     -- whenever a new token is issued; force-expires the token at >5.
     pending_email_attempts   INT NOT NULL DEFAULT 0,
-    -- Password-reset break-glass: token stored hashed (SHA-256 hex).
-    pending_password_reset_token      VARCHAR(64) NOT NULL DEFAULT '',
-    pending_password_reset_expires_at DATETIME(3),
-    pending_password_reset_attempts   INT NOT NULL DEFAULT 0,
+    -- When the current verification code was issued. ONLY SetPendingEmail
+    -- writes it; the resend-cooldown gate compares this column directly
+    -- rather than deriving the issue time from the expiry, because
+    -- ConsumeVerificationAttempt force-expires a burned code by moving
+    -- the expiry to now -- a derivation would then read a brand-new
+    -- burned code as issued a full lifetime ago and re-mint inside the
+    -- cooldown.
+    pending_email_issued_at    DATETIME(3),
+    -- Account-recovery break-glass: token stored hashed (SHA-256 hex).
+    pending_recovery_token      VARCHAR(64) NOT NULL DEFAULT '',
+    pending_recovery_expires_at DATETIME(3),
+    pending_recovery_attempts   INT NOT NULL DEFAULT 0,
+    -- When the current recovery link was issued; the cooldown gate reads
+    -- this, not the expiry, for the reason pending_email_issued_at states
+    -- (ConsumeRecoveryAttemptByToken force-expires the same way).
+    pending_recovery_issued_at DATETIME(3),
     password_set             BOOLEAN NOT NULL DEFAULT TRUE,
     is_admin                 BOOLEAN NOT NULL DEFAULT FALSE,
     prefs          MEDIUMTEXT NOT NULL,
@@ -87,9 +99,9 @@ CREATE INDEX idx_users_created_at ON users(created_at DESC, id DESC);
 -- Verification codes are looked up per-user (the session identifies who),
 -- so no global token index is needed. Index expiry instead, for cleanup.
 CREATE INDEX idx_users_pending_email_expires_at ON users(pending_email_expires_at);
--- Password-reset tokens are looked up by hash on complete. MySQL has no
+-- Recovery tokens are looked up by hash on complete. MySQL has no
 -- partial indexes, so this covers every row (empty token is the common case).
-CREATE INDEX idx_users_pending_password_reset_token ON users(pending_password_reset_token);
+CREATE INDEX idx_users_pending_recovery_token ON users(pending_recovery_token);
 -- GetFirstAdmin scans for the earliest non-deleted admin (bootstrap path).
 -- MySQL has no partial indexes; the composite indexes deleted_at as a key
 -- part (IS NULL is a ref-able key part in MySQL), so the ORDER BY created_at

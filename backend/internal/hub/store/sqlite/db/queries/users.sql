@@ -161,25 +161,34 @@ SELECT count(*) FROM users WHERE deleted_at IS NULL;
 SELECT EXISTS(SELECT 1 FROM users WHERE deleted_at IS NULL LIMIT 1);
 
 -- name: SetPendingEmail :execresult
--- Conditional mint: the write lands only when no previous code exists or
--- the previous code's expiry is at or before cooldown_cutoff, so two
--- concurrent resends for one account cannot both mint and both send (the
--- loser matches no row), and RequestEmailChange cannot mint on every
--- request. Its twin SetPendingPasswordReset carries the same predicate.
--- The Go caller derives cooldown_cutoff from the resend cooldown; the
--- comparison stays on the app clock, the clock that wrote the expiry.
+-- Conditional mint: the write lands only when no live code exists (empty
+-- token) or the previous code was issued at or before cooldown_cutoff, so
+-- two concurrent resends for one account cannot both mint and both send
+-- (the loser matches no row), and RequestEmailChange cannot mint on every
+-- request. Its twin SetPendingRecovery carries the same predicate.
 --
--- pending_email_expires_at MUST land in the canonical strftime layout, so the
--- bound instant is a SQLiteNullTime rather than the modernc driver layout a raw
--- time.Time bind would produce: ConsumeVerificationAttempt's lockout branch
--- writes the same column via strftime('now'), and ClearStalePendingEmails
--- compares it raw against a canonical cutoff -- mixing layouts breaks that
--- lexicographic compare at the ' ' vs 'T' separator byte (byte 10). An invalid
--- SQLiteNullTime binds NULL.
-UPDATE users SET pending_email = sqlc.arg(pending_email), pending_email_token = sqlc.arg(pending_email_token), pending_email_expires_at = sqlc.narg(pending_email_expires_at), pending_email_attempts = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+-- The gate reads pending_email_issued_at -- an instant only this mint
+-- writes -- and never the expiry: ConsumeVerificationAttempt force-expires
+-- a burned code by moving the expiry to now, so an expiry-derived gate
+-- would read a five-second-old burned code as issued a full lifetime ago
+-- and re-mint inside the cooldown. The Go caller derives cooldown_cutoff
+-- from the resend cooldown; the comparison stays on the app clock, the
+-- clock that wrote the issue.
+--
+-- pending_email_expires_at and pending_email_issued_at MUST land in the
+-- canonical strftime layout, so the bound instants are a SQLiteNullTime
+-- rather than the modernc driver layout a raw time.Time bind would
+-- produce: ConsumeVerificationAttempt's lockout branch writes the expiry
+-- via strftime('now'), ClearStalePendingEmails compares it raw against a
+-- canonical cutoff, and the WHERE above compares issued_at raw against a
+-- canonical cutoff -- mixing layouts breaks those lexicographic compares
+-- at the ' ' vs 'T' separator byte (byte 10). An invalid SQLiteNullTime
+-- binds NULL.
+UPDATE users SET pending_email = sqlc.arg(pending_email), pending_email_token = sqlc.arg(pending_email_token), pending_email_expires_at = sqlc.narg(pending_email_expires_at), pending_email_issued_at = sqlc.narg(pending_email_issued_at), pending_email_attempts = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE id = sqlc.arg(id)
-  AND (pending_email_expires_at IS NULL
-       OR pending_email_expires_at <= sqlc.arg(cooldown_cutoff));
+  AND (pending_email_token = ''
+       OR pending_email_issued_at IS NULL
+       OR pending_email_issued_at <= sqlc.arg(cooldown_cutoff));
 
 -- name: ClearPendingEmailCode :exec
 -- ClearPendingEmailCode drops an undelivered code and KEEPS the pending
@@ -250,56 +259,60 @@ SET tokens_revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
 WHERE id = ?
 RETURNING id, tokens_revoked_at, auth_generation;
 
--- name: SetPendingPasswordReset :execresult
--- Conditional mint: the write lands only when no previous token exists or
--- the previous token's expiry is at or before cooldown_cutoff, so two
--- concurrent requests for one account cannot both mint and both send (the
--- loser matches no row). The Go caller derives cooldown_cutoff from the
--- resend cooldown; the comparison stays on the app clock, the same clock
--- that wrote the expiry.
+-- name: SetPendingRecovery :execresult
+-- Conditional mint: the write lands only when no live link exists (empty
+-- token) or the previous link was issued at or before cooldown_cutoff, so
+-- two concurrent requests for one account cannot both mint and both send
+-- (the loser matches no row). The gate reads pending_recovery_issued_at,
+-- not the expiry, for the reason SetPendingEmail states: the attempt
+-- consumer force-expires a burned link by moving the expiry to now. The
+-- Go caller derives cooldown_cutoff from the resend cooldown; the
+-- comparison stays on the app clock, the same clock that wrote the issue.
 UPDATE users
-SET pending_password_reset_token = sqlc.arg(pending_password_reset_token),
-    pending_password_reset_expires_at = sqlc.arg(pending_password_reset_expires_at),
-    pending_password_reset_attempts = 0,
+SET pending_recovery_token = sqlc.arg(pending_recovery_token),
+    pending_recovery_expires_at = sqlc.arg(pending_recovery_expires_at),
+    pending_recovery_issued_at = sqlc.narg(pending_recovery_issued_at),
+    pending_recovery_attempts = 0,
     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE id = sqlc.arg(id)
-  AND (pending_password_reset_expires_at IS NULL
-       OR pending_password_reset_expires_at <= sqlc.arg(cooldown_cutoff));
+  AND (pending_recovery_token = ''
+       OR pending_recovery_issued_at IS NULL
+       OR pending_recovery_issued_at <= sqlc.arg(cooldown_cutoff));
 
 
--- name: ClearPendingPasswordReset :exec
+-- name: ClearPendingRecovery :exec
 UPDATE users
-SET pending_password_reset_token = '',
-    pending_password_reset_expires_at = NULL,
-    pending_password_reset_attempts = 0,
+SET pending_recovery_token = '',
+    pending_recovery_expires_at = NULL,
+    pending_recovery_attempts = 0,
     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE id = ?;
 
--- name: ConsumePasswordResetAttemptByToken :one
+-- name: ConsumeRecoveryAttemptByToken :one
 -- Charges one attempt against the row that holds this exact token. Keying
 -- the charge by the token (not the user id) makes the find, the charge, and
 -- the ownership re-check one statement: a token cleared between a caller's
 -- read and this update simply matches no row.
 UPDATE users
-SET pending_password_reset_expires_at = CASE
-        WHEN pending_password_reset_attempts + 1 > sqlc.arg(max_attempts) THEN sqlc.arg(now)
-        ELSE pending_password_reset_expires_at END,
-    pending_password_reset_attempts = pending_password_reset_attempts + 1,
+SET pending_recovery_expires_at = CASE
+        WHEN pending_recovery_attempts + 1 > sqlc.arg(max_attempts) THEN sqlc.arg(now)
+        ELSE pending_recovery_expires_at END,
+    pending_recovery_attempts = pending_recovery_attempts + 1,
     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-WHERE pending_password_reset_token = sqlc.arg(token) AND pending_password_reset_token != ''
-  AND pending_password_reset_expires_at > sqlc.arg(now)
+WHERE pending_recovery_token = sqlc.arg(token) AND pending_recovery_token != ''
+  AND pending_recovery_expires_at > sqlc.arg(now)
   AND deleted_at IS NULL
 RETURNING *;
 
--- name: CompletePasswordReset :one
+-- name: CompleteRecovery :one
 UPDATE users
 SET password_hash = sqlc.arg(password_hash),
     password_set = 1,
-    pending_password_reset_token = '',
-    pending_password_reset_expires_at = NULL,
-    pending_password_reset_attempts = 0,
+    pending_recovery_token = '',
+    pending_recovery_expires_at = NULL,
+    pending_recovery_attempts = 0,
     tokens_revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
     auth_generation = auth_generation + 1,
     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-WHERE id = sqlc.arg(id) AND pending_password_reset_token = sqlc.arg(pending_password_reset_token)
+WHERE id = sqlc.arg(id) AND pending_recovery_token = sqlc.arg(pending_recovery_token)
 RETURNING id, tokens_revoked_at, auth_generation;

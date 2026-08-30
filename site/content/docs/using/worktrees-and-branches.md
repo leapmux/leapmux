@@ -224,4 +224,4 @@ Every git command runs on the **Worker** that owns the working directory — the
 
 The Worker runs each git command with a fixed English/C locale and with terminal prompts disabled, so no command blocks and waits for credentials. A push against a private remote therefore fails instead of hanging. Configure a credential helper or an SSH agent on the Worker.
 
-For more on workers and how they are selected, see [Managing Workers](/docs/operating/managing-workers/). For the run modes that host workers, see [Running LeapMux](/docs/operating/running-leapmux/).
+For more on workers and how they are selected, see [Managing Workers](/docs/admin/managing-workers/). For the run modes that host workers, see [Running LeapMux](/docs/admin/running-leapmux/).

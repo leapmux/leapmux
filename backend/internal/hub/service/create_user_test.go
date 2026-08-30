@@ -357,8 +357,8 @@ func mustTime(t *testing.T) time.Time {
 // against the caller's clock rather than the wall clock.
 //
 // Every instant a service mints comes from its seam (see clockSeam), and this
-// one did not. The resend cooldown is DERIVED from this expiry
-// (issuedAtFromExpiry), so a test that moved the seam moved the cooldown and
+// one did not. The resend cooldown gate reads the issued-at
+// column, so a test that moved the seam moved the cooldown and
 // left the expiry it reads behind, and the two disagreed by exactly the
 // offset the test applied.
 func TestCreateUserInTx_MintsThePendingExpiryFromTheCallerSeam(t *testing.T) {
@@ -379,9 +379,10 @@ func TestCreateUserInTx_MintsThePendingExpiryFromTheCallerSeam(t *testing.T) {
 	assert.True(t, fixed.Add(pendingEmailExpiry).Equal(user.PendingEmailExpiresAt.UTC()),
 		"the deadline must come from the caller's clock, not the wall clock")
 
-	// And the derived cooldown lands on the same clock, which is the whole
-	// point of one seam: the two are read together on the /verify-email page.
-	assert.True(t, fixed.Equal(issuedAtFromExpiry(*user.PendingEmailExpiresAt, pendingEmailExpiry).UTC()))
+	// And the issued-at lands on the same clock, which is the whole point of
+	// one seam: the two are read together on the /verify-email page.
+	require.NotNil(t, user.PendingEmailIssuedAt)
+	assert.True(t, fixed.Equal(user.PendingEmailIssuedAt.UTC()))
 }
 
 // TestVerifyPendingEmailToken_ReadsTheCallerSeam pins the other half. The
@@ -429,7 +430,7 @@ func TestCreateUserInTx_EnforcesTheAdminInvariants(t *testing.T) {
 	// The column records whether somebody confirmed the address, which is a
 	// fact about the address rather than a privilege of the account. Forcing
 	// it made an administrator's unconfirmed address a valid self-service
-	// password-reset target, because RequestPasswordReset reads the column
+	// password-reset target, because RequestAccountRecovery reads the column
 	// and cannot take an admin exemption -- the question it asks IS "did
 	// anybody confirm this address". The login gate takes the exemption
 	// instead; see auth.EmailVerificationFacts.Satisfied.

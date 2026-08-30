@@ -1,17 +1,17 @@
 ---
 title: "Accounts & Authentication"
-description: "Getting into LeapMux as a user: when you need an account, creating the first one, signing up and logging in, email verification, OAuth, and your profile."
+description: "Getting into LeapMux as a user: when you need an account, creating the first one, signing up and logging in, email verification, OAuth, account recovery, and your profile."
 type: docs
-weight: 8
+weight: 11
 ---
 
-This chapter covers everything you need to get into LeapMux as a user: when you need an account at all, how to create the very first one, how to sign up and log in, how email verification and OAuth sign-in work, and how to manage your profile and password once you are in.
+This chapter covers everything you need to get into LeapMux as a user: when you need an account at all, how to create the very first one, how to sign up and log in, how email verification and OAuth sign-in work, how to recover an account you are locked out of, and how to manage your profile and password once you are in.
 
 Whether you ever see a login screen depends on the mode LeapMux runs in. The first section makes that distinction; the rest assumes a multi-user deployment where accounts apply.
 
 ## When you need an account
 
-LeapMux runs in several modes (see [Running LeapMux](/docs/operating/running-leapmux/)). Two of them treat accounts very differently:
+LeapMux runs in several modes (see [Running LeapMux](/docs/admin/running-leapmux/)). Two of them treat accounts very differently:
 
 | Mode | Account needed? | What you see |
 | --- | --- | --- |
@@ -21,7 +21,7 @@ LeapMux runs in several modes (see [Running LeapMux](/docs/operating/running-lea
 
 In **solo mode** there is nothing to sign up for and nothing to log out of. If you navigate to `/login` or `/signup`, LeapMux redirects you straight into the app. Solo mode intentionally disables account-related actions: it refuses a change to your profile, your email, or your password, and it refuses to unlink an OAuth provider. Each refusal identifies the action that solo mode does not support.
 
-> **Note:** Solo mode auto-authenticates *every* request as the admin. If you bind it to a non-loopback address, anyone who can reach the port has full admin access without credentials. LeapMux warns you about this at startup. For a shared or networked deployment, run `leapmux hub` (or `leapmux dev`) so real authentication applies. See [Security & Threat Model](/docs/operating/security/).
+> **Note:** Solo mode auto-authenticates *every* request as the admin. If you bind it to a non-loopback address, anyone who can reach the port has full admin access without credentials. LeapMux warns you about this at startup. For a shared or networked deployment, run `leapmux hub` (or `leapmux dev`) so real authentication applies. See [Security & Threat Model](/docs/admin/security/).
 
 The rest of this chapter applies to **hub** and **dev** mode, where accounts are real.
 
@@ -37,21 +37,21 @@ When a hub or dev instance has no users yet, it is in *setup mode*. The first pe
    - **Email**
    - **New Password** (with a live strength meter)
    - **Confirm Password**
-4. Click **Create account** (the button reads **Creating account...** while it works).
+4. Click **Create account**.
 
 On success you are signed in and taken to the app home at `/`.
 
 A few things are special about this first account:
 
 - It is **always created as an administrator**.
-- Its email is **unverified**, like every other new address. That never blocks you, because administrators are exempt from the verification gate. It does mean **Forgot password** will not send a reset link to that address, so verify it from **Preferences → Account** once an operator configures SMTP. See [Email verification](#email-verification).
+- Its email is **unverified**, like every other new address. That never blocks you, because administrators are exempt from the verification gate. It does mean [account recovery](#recovering-your-account) will not send a link to that address, so verify it from **Preferences → Account** once you configure SMTP. See [Email verification](#email-verification).
 - The username `admin` is **allowed** here (it is reserved in public signup and OAuth completion). The username `solo` is reserved everywhere and cannot be used.
 
 > **Note:** The `/setup` screen only appears while no users exist. Once the first admin is created, visiting `/setup` redirects you to the login page. Setup is also race-safe: if two people submit at once, only one wins and the other is told sign-up is disabled.
 
 ## Signing up
 
-After the first admin exists, new self-service accounts are only possible if the operator enables the `signup_enabled` setting (`leapmux control admin settings set signup_enabled true`; it is **off by default**). See [Configuration](/docs/operating/configuration/).
+After the first admin exists, new self-service accounts are only possible if the administrator enables the `signup_enabled` setting (`leapmux control admin settings set signup_enabled true`; it is **off by default**). See [Configuration](/docs/admin/configuration/).
 
 - **If signup is disabled**, visiting `/signup` shows a "not found" page titled **"Sign-up disabled"**, which states that new account registration is not available and offers a **"Go to login"** link.
 - **If signup is enabled**, you get the **"Sign Up"** page.
@@ -67,9 +67,9 @@ The form fields are the same as setup:
 | **Confirm Password** | Must match. |
 | **Sign-up method** | **Password** (default) or **Passkey**. Passkey sign-up registers a WebAuthn credential instead of setting a password. |
 
-The submit button reads **Sign up** or **Sign up with passkey** (and **Signing up...** while submitting). It stays disabled until you enter a username, a valid email, and (for password sign-up) a valid, matching password. A footer link, **"Already have an account? Sign in"**, takes you to the login page.
+The submit button reads **Sign up** or **Sign up with passkey**. It stays disabled until you enter a username, a valid email, and (for password sign-up) a valid, matching password. A footer link, **"Already have an account? Sign in"**, takes you to the login page.
 
-If your operator configures OAuth/OIDC providers, a list of provider buttons appears above the form under the verb **"Sign up with"** (for example, **"Sign up with GitHub"**), followed by the divider **"or create an account with email"**. See [Signing in with OAuth / OIDC](#signing-in-with-oauth--oidc).
+If your administrator configures OAuth/OIDC providers, a list of provider buttons appears above the form under the verb **"Sign up with"** (for example, **"Sign up with GitHub"**), followed by the divider **"or create an account with email"**. See [Signing in with OAuth / OIDC](#signing-in-with-oauth--oidc).
 
 What happens after you submit depends on whether the hub has SMTP configured (see [Email verification](#email-verification)):
 
@@ -89,10 +89,10 @@ A **Sign-in method** chooser always offers **Password** and **Passkey** (LeapMux
 | **Password** | Fill **Password**, then click **Sign in**. |
 | **Passkey** | Click **Sign in with passkey** and complete the WebAuthn prompt in your browser or device. |
 
-Click **Sign in** or **Sign in with passkey** (**Signing in...** while it works). The button stays disabled until the username is filled and any captcha challenge is solved. An account that cannot use the method you picked returns a generic failure (same shape as a wrong password).
+Click **Sign in** or **Sign in with passkey**. The button stays disabled until the username is filled and any captcha challenge is solved. An account that cannot use the method you picked returns a generic failure (same shape as a wrong password).
 
 - A **"Sign up"** link appears in the footer only when self-service signup is enabled.
-- **Forgot password?** appears under the password form when the hub has SMTP configured (see [Forgot password](#forgot-password)).
+- **Can't sign in?** appears under the form when the hub has SMTP configured (see [Recovering your account](#recovering-your-account)).
 - If OAuth providers are configured, their buttons appear above the form under the verb **"Sign in with"** with an **"or"** divider.
 - If you were redirected to login from a protected page, you are sent back there after signing in (LeapMux only honors a same-site relative path, as an open-redirect safeguard).
 
@@ -100,7 +100,7 @@ Click **Sign in** or **Sign in with passkey** (**Signing in...** while it works)
 
 ## Email verification
 
-Email verification is **automatic whenever the operator configures SMTP** on the hub (`host` and `from_address` both set). There is no separate `email_verification_required` toggle — configuring mail is what turns verification on. When SMTP is absent, sign-ups skip verification entirely.
+Email verification is **automatic whenever the administrator configures SMTP** on the hub (`host` and `from_address` both set). There is no separate `email_verification_required` toggle — configuring mail is what turns verification on. When SMTP is absent, sign-ups skip verification entirely.
 
 When verification applies, you must verify your email before you can use most of LeapMux.
 
@@ -111,8 +111,9 @@ You reach the **"Verify your email"** screen automatically right after signing u
 > Enter the 6-character code we sent to your inbox, or click the link in that email.
 
 - The input expects a code in the form **`XXX-XXX`**. You can type it with or without the hyphen and in any case — LeapMux normalizes it for you.
-- Click **Verify** (**Verifying…** while it works). If you submit an empty field, the form asks you for the 6-character code from your email.
+- Click **Verify**. If you submit an empty field, the form asks you for the 6-character code from your email.
 - A separate **Resend code** button requests a new code.
+- Each verification and each resend passes the hub's captcha challenge when one is configured, like the sign-in forms do.
 
 The verification email arrives with the subject **"[LeapMux] Verify your email address"** and contains both the code and a direct link. Clicking the link opens the verification screen with the code pre-filled and submits it automatically.
 
@@ -125,7 +126,8 @@ On success you are signed in fully and taken to `/`.
 | Code length / format | 6 characters, shown as `XXX-XXX` |
 | Code lifetime | **30 minutes** |
 | Wrong-guess budget | **5 attempts** — the 6th wrong guess invalidates the code, and you must request a new one |
-| Resend cooldown | **60 seconds** between requests |
+| Resend cooldown | **60 seconds** between requests — invalidating a code by guessing wrong does **not** shorten it |
+| Captcha | Required on every verify and resend when the hub has captcha enabled |
 
 The code alphabet deliberately omits look-alike characters (no `0`, `1`, `I`, `O`, or `L`), so what you read in the email is what you type. An expired code and a wrong code report the same generic error so neither leaks information.
 
@@ -151,51 +153,26 @@ You can still choose **Password** when your account has a password, even if pass
 
 ### Managing passkeys in your profile
 
-Open **Preferences → Account** — it is the first section, and the one the dialog opens on. The **Passkeys** row lists every credential, when it was last used, and actions to rename or remove one.
+Open **Preferences → Account** — it is the first section, and the one the dialog opens on. The **Passkeys** row lists every credential with its name and when it was last used (or added), and offers these actions:
 
-| Action | What it requires |
-| --- | --- |
-| **Add passkey** | A verified session (see below), a secure page, and a Hub that runs ceremonies at the address you opened it by (see the note below). |
-| **Rename passkey** | A verified session. |
-| **Remove passkey** | A verified session. Removing your **last** passkey from an account that has **no password** also requires setting one in the same step; with a password already set it asks for nothing extra. |
-| **Disable passkey sign-in** | Removes **all** passkeys. Passkey-only accounts must set a password as part of this flow. |
+| Action | What it does | What it requires |
+| --- | --- | --- |
+| **Add passkey** | Registers another credential. | A [verified session](/docs/admin/security/#session-elevation), and a page where ceremonies can run (see the note below). |
+| **Rename passkey** | Changes a credential's name. | A verified session. |
+| **Remove passkey** | Deletes one credential. | A verified session. Removing your **last** passkey from an account with **no password** also sets a password in the same step. |
+| **Disable passkey sign-in** | Deletes **all** credentials at once (offered once at least one passkey exists). | A verified session. A passkey-only account sets a password as part of the same flow. |
 
-The first of these in a sitting opens a **Verify your identity** dialog. The passkey rows ask **at the click**, before their own dialog opens, so you answer one credential prompt at a time and never lose a half-filled form to a refusal. Enter your password or use a passkey, and the session stays verified for {{< duration elevation-window >}} — every further change lands without another prompt, and each one extends that window. While it lasts, the top of the Account section says so and offers **End now**. See [Session elevation](/docs/operating/security/#session-elevation) for the limits.
+Every action above is sensitive: the first one in a sitting opens the **Verify your identity** dialog, and one answer covers every further sensitive change for a while. What counts as sensitive, how long the answer lasts, and what you can prove it with are covered once, in [Session elevation](/docs/admin/security/#session-elevation).
 
-The same dialog guards the rest of **Preferences → Account**: changing your password, changing your account email, and removing a linked provider. One answer covers them all for the next {{< duration elevation-window >}}, so a sitting that touches several settings asks once. Your **Profile** name and your **Connected apps** are the two rows it does not cover.
+> **Note:** Passkeys appear only where they can run: the page must be secure (HTTPS or `localhost`), and it must reach the Hub by an address the Hub publishes. When either is missing, the **Passkey** option is disabled with the reason on it — or removed outright — and **Add passkey** carries the reason. See [Passkeys](/docs/admin/configuration/#passkeys) in the administration chapter for the rule and its remedies, or [Passkey sign-in fails or the authenticator never appears](/docs/reference/troubleshooting/#passkey-sign-in-fails-or-the-authenticator-never-appears) for diagnosis.
 
-> **Note:** Two parties decide whether a passkey ceremony can run on the page you are on, and each one can stop it. **Add passkey** is disabled with the reason on it whenever either does. On the login and sign-up forms the two look different, so the form itself tells you which party refused:
->
-> - **Your browser** runs a passkey only on a secure page: HTTPS, or a `localhost` address. On a plain-HTTP address it exposes no WebAuthn API at all, and no setting on the Hub changes that; a browser with no WebAuthn support stops the ceremony the same way. The **Passkey** option stays on the form, **disabled, with the reason on it**. You can move — to a secure address, or to another browser — so the form states the remedy instead of hiding the choice.
-> - **The Hub** accepts only the addresses it publishes. Reach the same Hub by another one — a LAN IP behind the reverse proxy, a tunnel host, a port that `public_url` does not list — and the Hub refuses every ceremony. The form then **removes the Passkey option**, because this refusal is identical for every visitor and an option that can never work would only mislead. Open the Hub at its configured URL, or ask an administrator to publish the address you reach it by. An administrator who sets **Public base URL** in **Preferences → Administration → General** sees **Add passkey** follow the change at once, with no page reload.
->
-> See [Passkey sign-in fails or the authenticator never appears](/docs/reference/troubleshooting/#passkey-sign-in-fails-or-the-authenticator-never-appears).
+> **Note:** An account with **neither a password nor a passkey** follows stricter rules for adding its **first** one — see [The account with nothing to prove](/docs/admin/security/#the-account-with-nothing-to-prove).
 
-> **Note:** An account with **neither a password nor a passkey** holds no factor of its own, so adding its **first** password or passkey takes two rules instead of one. A linked provider still verifies the account, and a verified session is admitted first. Failing that, a sign-in from the last five minutes admits the change on its own. Sign out and in again through your provider when your session is older than five minutes.
-
-> **Note:** An OAuth-only account has no password to reset, so **Forgot password** cannot recover it. Set a password soon after OAuth signup if you want that break-glass path; see [Forgot password](#forgot-password).
-
-## Forgot password
-
-When SMTP is configured, the login page shows **Forgot password?** under the password form. It is hidden for passkey-only sign-in (there is no password to reset on that path).
-
-1. Open **Forgot password?** or visit `/forgot-password`.
-2. Enter your **email or username**.
-3. Click **Send reset link**.
-
-If an account with that address exists and its email is verified (when verification applies), LeapMux emails a one-hour reset link. The response is always the same whether or not an account matched — this prevents username probing.
-
-4. Open the link (or paste the token from `/reset-password?token=…`) and choose a new password.
-
-If that browser is already signed in, the page says so and offers **Sign out and continue** rather than taking you to the app. The link is single-use, so it stays unspent until you actually choose a new password: sign out and the same address shows the form.
-
-Completing a self-service reset **clears every passkey** on the account, revokes other sessions, and revokes API/delegation tokens — the same break-glass posture as an admin password reset. Set a new passkey afterward if you still want passwordless sign-in.
-
-If you signed up with a passkey and never set a password, use **Disable passkey sign-in** in your profile to add a password instead of the forgot-password flow.
+> **Tip:** A passkey lost with its device does not lock the account out — see [Recovering your account](#recovering-your-account).
 
 ## Signing in with OAuth / OIDC
 
-If your operator configures one or more external identity providers — GitHub, Google, Apple, or a generic OIDC provider — you can sign in or sign up with them instead of (or in addition to) a password. Configuring providers is an operator task; see [Sign-in Providers](/docs/operating/sign-in-providers/).
+If your administrator configures one or more external identity providers — GitHub, Google, Apple, or a generic OIDC provider — you can sign in or sign up with them instead of (or in addition to) a password. Configuring providers is an administrative task; see [Sign-in Providers](/docs/admin/sign-in-providers/).
 
 ### The flow
 
@@ -208,7 +185,7 @@ In short, the redirect chain is: Browser -> Hub (starts sign-in) -> Provider (yo
 What happens at step 3 depends on whether the identity is already known:
 
 - **Already linked** to a LeapMux account → you are logged straight in.
-- **Not linked, but the verified email matches an existing account** → LeapMux may link the identity automatically and log you in. This only happens when the operator marked that provider as one that trusts emails.
+- **Not linked, but the verified email matches an existing account** → LeapMux may link the identity automatically and log you in. This only happens when the administrator marked that provider as one that trusts emails.
 - **A brand-new identity** → if self-service signup is enabled, you are taken to a short completion page; otherwise sign-in is refused because there is no account to attach the identity to.
 
 > **Note:** OAuth sign-in requires the provider to return a **verified** email address. If a provider does not return an email — typically because the "email" scope was not granted — LeapMux cannot complete the sign-in.
@@ -223,30 +200,34 @@ For a new identity, you land on the **"Complete Sign Up"** page. It greets you w
 | **Display Name** | Pre-filled from the provider; editable. |
 | **Email** | Read-only, shown only if the provider supplied one. |
 
-Click **Create account** (**Creating account...** while it works). On success you are signed in. If your email still needs verification, you are routed to the verification screen first; otherwise you go straight to `/`.
+Click **Create account**. On success you are signed in. If your email still needs verification, you are routed to the verification screen first; otherwise you go straight to `/`.
 
-Accounts created this way have no password set. You can add one later from your profile (see [Managing your profile](#managing-your-profile)), which is useful as a fallback login method.
+Accounts created this way have no password set. You can add one later from your profile (see [Managing your profile](#managing-your-profile)), which is useful as a fallback login method — and if you lose the provider itself, [recover the account](#recovering-your-account) by email.
+
+## Recovering your account
+
+When the hub has SMTP configured, the login page offers **Can't sign in?** under the form. Recovery asks one thing of the account — a **verified email address** — and nothing about how it signs in, so the same flow covers a lost password, a lost passkey, and a lost provider alike.
+
+1. Open **Can't sign in?** or visit `/recover-account`.
+2. Enter your **email or username** and click **Send recovery link**.
+3. Open the emailed link (or paste the token from `/recover-account/complete?token=…`) and choose a new password — the account's **first** one if it never had a password.
+
+The link is **single-use** and **expires after one hour**, and it stays unspent until you actually submit a new password. If the browser is already signed in when you open it, the page says so and offers **Sign out and continue** — sign out, and the same address shows the form. The hub answers the request identically whether or not the identifier matched, so the flow cannot be used to probe which accounts exist.
+
+Completing recovery **clears every passkey** on the account, revokes other sessions, and revokes API/delegation tokens — the same break-glass posture as an admin password reset. Linked providers stay linked. Sign in with the new password and add a passkey again if you still want passwordless sign-in.
+
+An **unverified** email address gets no link. Verify it from **Preferences → Account** while you can still sign in; when you cannot sign in at all (for example, the first admin never verified the address), an administrator can set a password with `leapmux control admin user reset-password` or the offline `leapmux recover password reset` (see [Admin CLI](/docs/admin/admin-cli/) and [Recovery](/docs/admin/recover/)).
 
 ## Password requirements
 
-LeapMux enforces a character set and a length on passwords:
+Passwords are enforced identically in the browser and on the server:
 
-| Rule | Value |
-| --- | --- |
-| Character set | **Printable ASCII only** (spaces included) |
-| Minimum length | **8 characters** |
-| Maximum length | **128 characters** |
-| Complexity (uppercase, digits, symbols) | Not required |
+- **8–128 characters**
+- **Printable ASCII only**: every character from the space (0x20) through the tilde (0x7E) — unaccented letters, digits, spaces, and the punctuation on a US keyboard. **Spaces count**, even at the start and end, so a passphrase like `correct horse battery staple` is taken exactly as you type it.
+- Accented letters, CJK characters, emoji, and control characters (the tab or newline a paste sometimes carries) are each refused.
+- **No complexity rule**: uppercase letters, digits, and symbols are never required.
 
-A password holds printable ASCII characters only — every character from the space (0x20) through the tilde (0x7E): unaccented letters, digits, spaces, and the punctuation on a US keyboard. **Spaces count**, at the start and at the end of the password as well, so a passphrase such as `correct horse battery staple` is taken exactly as you type it. An accented letter, a CJK character, and an emoji are each refused, and so is a control character — the tab or newline a paste sometimes carries. The refusal identifies the character set that a password must stay inside.
-
-The ASCII-only rule keeps the browser and the Hub measuring length identically — one character equals one byte, so a password the form accepts is one the Hub accepts — and it guarantees every character in the password is one you can type again on any keyboard.
-
-There is **no** mandatory mix of character types. The signup, setup, and password-change forms show a live **strength meter** with the labels **Weak**, **Fair**, **Good**, and **Strong**, but this is advisory only — it never blocks you. The form also warns you when your confirmation does not match the password.
-
-> **Tip:** The meter rewards length and variety, but it penalizes any password that is all letters or all digits — regardless of how long it is. So an all-letters passphrase (even with mixed case) won't score above **Fair**; add at least one digit or symbol to reach **Good** or **Strong**. The meter is advisory only — it never blocks you, so treat it as guidance, not a gate.
-
-Passwords are stored hashed with Argon2id using OWASP-recommended parameters; LeapMux never stores or transmits your plaintext password after hashing. See [Encryption & Data](/docs/operating/encryption-and-data/).
+The forms show a live strength meter (**Weak** to **Strong**); it is guidance, not a gate — it never blocks you, though an all-letters or all-digits password scores no higher than **Fair**.
 
 ## Username rules
 
@@ -269,8 +250,8 @@ When you log in, LeapMux issues a session and stores it in a secure, `HttpOnly` 
 
 | Property | Value |
 | --- | --- |
-| Session lifetime | **7 days after your last activity** (operators can change this — see [`session_duration_seconds`](/docs/operating/configuration/)) |
-| Cookie name | `leapmux-session` (or `__Host-leapmux-session` when the operator enables secure cookies behind TLS) |
+| Session lifetime | **7 days after your last activity** (administrators can change this — see [`session_duration_seconds`](/docs/admin/configuration/)) |
+| Cookie name | `leapmux-session` (or `__Host-leapmux-session` when the administrator enables secure cookies behind TLS) |
 | Cookie flags | `HttpOnly`, `Path=/`, `SameSite=Lax` |
 
 **The clock runs from your last activity, not from your login.** Each action you take in the app slides the expiry forward and refreshes the cookie, so a session you keep using does not run out. The lifetime is an idle timeout: stay away for the whole period without touching LeapMux and you are signed out.
@@ -279,13 +260,13 @@ When you log in, LeapMux issues a session and stores it in a secure, `HttpOnly` 
 
 **Signing out.** Use the log-out action in the app. It ends your session on the server and clears the cookie. (In solo mode, "log out" does nothing — there is no session to end.)
 
-**Changing your password signs out your other sessions.** When you change your password, LeapMux invalidates every *other* active session (the current one stays signed in) and revokes your API and delegation tokens. This is a security feature: if someone else had a session, changing your password locks them out. See [Control CLI](/docs/operating/control-cli/) for operator-side session management.
+**Changing your password signs out your other sessions.** When you change your password, LeapMux invalidates every *other* active session (the current one stays signed in) and revokes your API and delegation tokens. This is a security feature: if someone else had a session, changing your password locks them out. See [Control CLI](/docs/using/control-cli/) for administrator-side session management.
 
 ## Managing your profile
 
-Manage your account from the **Preferences** dialog (the user menu's **Preferences...**, or `⌘,`), in its **Account** section — the section the dialog opens on. Each heading below is one row of it; the details of each field and persistence behavior live in [Settings & Preferences](/docs/using/settings/), so this is a summary.
+Manage your account from the **Preferences** dialog (the user menu's **Preferences...**, or `⌘,`), in its **Account** section — the section the dialog opens on. Each heading below is one row of it, except **Connected apps**, which sits one category over in **Apps**; the details of each field and persistence behavior live in [Settings & Preferences](/docs/using/settings/), so this is a summary.
 
-While the session is verified, a panel at the top of the section says so and offers **End now** — see [Session elevation](/docs/operating/security/#session-elevation).
+While the session is verified, a panel at the top of the section says so and offers **End now** — see [Session elevation](/docs/admin/security/#session-elevation).
 
 ### Profile
 
@@ -296,9 +277,9 @@ While the session is verified, a panel at the top of the section says so and off
 ### Email
 
 - **Current Email** shows your address (or **"Not set"**) with a **(verified)** or **(unverified)** badge. An unverified address has a **Resend code** button beside it; the code goes in at `/verify-email`. A pending change shows the new address and asks you to verify it from your inbox.
-- Enter a new address in **New Email** and click **Change Email**. This is one of the changes that needs a verified session — see [Session elevation](/docs/operating/security/#session-elevation).
+- Enter a new address in **New Email** and click **Change Email**. This is one of the changes that needs a verified session — see [Session elevation](/docs/admin/security/#session-elevation).
 - If verification is required, LeapMux sends a verification email and tells you to check your inbox. You must verify the new address before it takes effect. Otherwise the dialog confirms the new address at once. Admins change email immediately.
-- Either way the new address starts out **unverified**, because nobody confirmed it yet. Until you do, **Forgot password** cannot send a reset link to it.
+- Either way the new address starts out **unverified**, because nobody confirmed it yet. Until you do, [account recovery](#recovering-your-account) cannot send a link to it.
 
 ### Password
 
@@ -313,16 +294,16 @@ See [Passkeys](#passkeys) above for the full passkey management surface in this 
 
 ### Connected apps
 
-Every app that holds access to your account appears here, **grouped by app**: one block per app, and under it one row per machine that app runs on, with every permission you granted, when it was last used, and when it stops working. A credential that can administer the Hub says so.
+This row sits one category over, in the dialog's **Apps** section, beside **App registrations**. Every app that holds access to your account appears here, **grouped by app**: one block per app, and under it one row per machine that app runs on, with every permission you granted, when it was last used, and when it stops working. A credential that can administer the Hub says so.
 
 **Disconnect**, on the app's line, ends your whole authorization of it — every machine at once. **Revoke**, on one row, ends that machine only and leaves the app working elsewhere. Either way the app must be authorized again to come back. Both are among the few account changes that need no verification, so you can act the moment you suspect an app is malicious. `leapmux control auth credentials` prints the same list from a terminal.
 
-See [Connected Apps](/docs/using/connected-apps/) for how to read a row and what registering your own app involves, and [App credentials](/docs/operating/security/#app-credentials) for what a credential can do, how long it lives, and the email notice you get when one is issued.
+See [Connected Apps](/docs/using/connected-apps/) for how to read a row and what registering your own app involves, and [App credentials](/docs/admin/security/#app-credentials) for what a credential can do, how long it lives, and the email notice you get when one is issued.
 
 ### Linked accounts
 
 - Lists the identity providers you sign in through, each with an **Unlink** button. An account that signs in through none says so.
-- Unlinking needs a **verified session**, like the other changes in this dialog — see [Session elevation](/docs/operating/security/#session-elevation).
+- Unlinking needs a **verified session**, like the other changes in this dialog — see [Session elevation](/docs/admin/security/#session-elevation).
 - LeapMux refuses to unlink your **only** login method when you have no password — set a password first. This keeps you from locking yourself out.
 
 > **Tip:** If you signed up via OAuth and want a fallback, set a password under **Password** before unlinking any provider.
@@ -330,6 +311,6 @@ See [Connected Apps](/docs/using/connected-apps/) for how to read a row and what
 ## Where to go next
 
 - [Settings & Preferences](/docs/using/settings/) — the full Preferences dialog and every other setting.
-- [Sign-in Providers](/docs/operating/sign-in-providers/) — configuring OAuth/OIDC as an operator.
-- [Running LeapMux](/docs/operating/running-leapmux/) and [Configuration](/docs/operating/configuration/) — choosing a run mode, the `signup_enabled` setting, and SMTP (which controls email verification and password reset).
-- [Security & Threat Model](/docs/operating/security/) — what authentication does and does not protect.
+- [Sign-in Providers](/docs/admin/sign-in-providers/) — configuring OAuth/OIDC as an administrator.
+- [Running LeapMux](/docs/admin/running-leapmux/) and [Configuration](/docs/admin/configuration/) — choosing a run mode, the `signup_enabled` setting, and SMTP (which controls email verification and account recovery).
+- [Security & Threat Model](/docs/admin/security/) — what authentication does and does not protect.

@@ -25,8 +25,10 @@ var (
 	_ captchaRequest = (*leapmuxv1.CompleteOAuthSignupRequest)(nil)
 	_ captchaRequest = (*leapmuxv1.BeginPasskeyLoginRequest)(nil)
 	_ captchaRequest = (*leapmuxv1.BeginPasskeySignUpRequest)(nil)
-	_ captchaRequest = (*leapmuxv1.RequestPasswordResetRequest)(nil)
-	_ captchaRequest = (*leapmuxv1.CompletePasswordResetRequest)(nil)
+	_ captchaRequest = (*leapmuxv1.RequestAccountRecoveryRequest)(nil)
+	_ captchaRequest = (*leapmuxv1.CompleteAccountRecoveryRequest)(nil)
+	_ captchaRequest = (*leapmuxv1.VerifyEmailRequest)(nil)
+	_ captchaRequest = (*leapmuxv1.ResendVerificationEmailRequest)(nil)
 )
 
 // protectedProcedure is one protected procedure's captcha contract.
@@ -40,19 +42,25 @@ type protectedProcedure struct {
 	action string
 }
 
-// protectedProcedures lists the unauthenticated procedures whose handlers
-// are expensive enough (Argon2 verification, user creation, SMTP) that
-// automation against them must pre-pay a captcha token. Carrying the
-// action in the same entry makes a protected procedure without an action
-// structurally impossible.
+// protectedProcedures lists the procedures whose handlers are expensive
+// enough (Argon2 verification, user creation, SMTP) that automation against
+// them must pre-pay a captcha token. Most are unauthenticated; the two
+// verification RPCs are not, and they are here for the same reason the
+// anonymous ones are: their attempt budgets and cooldowns are cheap to
+// charge, and the resend leg drives an SMTP send, so a scripted session
+// must pay the same toll a scripted login does. Carrying the action in the
+// same entry makes a protected procedure without an action structurally
+// impossible.
 var protectedProcedures = map[string]protectedProcedure{
-	leapmuxv1connect.AuthServiceLoginProcedure:                 {action: "login"},
-	leapmuxv1connect.AuthServiceSignUpProcedure:                {action: "signup"},
-	leapmuxv1connect.AuthServiceCompleteOAuthSignupProcedure:   {action: "complete_signup"},
-	leapmuxv1connect.AuthServiceBeginPasskeyLoginProcedure:     {action: "passkey_login"},
-	leapmuxv1connect.AuthServiceBeginPasskeySignUpProcedure:    {action: "passkey_signup"},
-	leapmuxv1connect.AuthServiceRequestPasswordResetProcedure:  {action: "password_reset"},
-	leapmuxv1connect.AuthServiceCompletePasswordResetProcedure: {action: "complete_password_reset"},
+	leapmuxv1connect.AuthServiceLoginProcedure:                   {action: "login"},
+	leapmuxv1connect.AuthServiceSignUpProcedure:                  {action: "signup"},
+	leapmuxv1connect.AuthServiceCompleteOAuthSignupProcedure:     {action: "complete_signup"},
+	leapmuxv1connect.AuthServiceBeginPasskeyLoginProcedure:       {action: "passkey_login"},
+	leapmuxv1connect.AuthServiceBeginPasskeySignUpProcedure:      {action: "passkey_signup"},
+	leapmuxv1connect.AuthServiceRequestAccountRecoveryProcedure:  {action: "account_recovery"},
+	leapmuxv1connect.AuthServiceCompleteAccountRecoveryProcedure: {action: "complete_account_recovery"},
+	leapmuxv1connect.UserServiceVerifyEmailProcedure:             {action: "verify_email"},
+	leapmuxv1connect.UserServiceResendVerificationEmailProcedure: {action: "resend_verification"},
 }
 
 // NewInterceptor returns a unary interceptor enforcing captcha + honeypot

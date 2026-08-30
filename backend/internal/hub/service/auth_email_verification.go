@@ -66,22 +66,22 @@ func (s *AuthService) emailVerificationSatisfied(ctx context.Context, user *stor
 // pendingResendCooldown reports when the account may ask for another
 // verification message, or nil when it may ask now.
 //
-// This helper DERIVES the cooldown from the live pending row rather than
-// storing it: the row carries an expiry, and issuedAtFromExpiry runs the
-// fixed lifetime backwards to the instant the code was issued. So a hard
-// reload of /verify-email resumes the same countdown a login handed out
-// instead of starting at zero and offering a button that the hub refuses.
+// It reads the issued-at column the mint wrote -- not a value derived from
+// the expiry, which the attempt consumer force-moves on a burned code. So
+// a hard reload of /verify-email resumes the same countdown a login handed
+// out instead of starting at zero and offering a button that the hub
+// refuses.
 //
 // One helper, because the two callers read the SAME countdown for two
 // purposes: verificationStatusFor reports it, and loginVerificationOutcome
-// tests it to decide whether to send. A second copy of the derivation would
-// let the reported deadline and the enforced one drift apart, and the user
+// tests it to decide whether to send. A second copy of the rule would let
+// the reported deadline and the enforced one drift apart, and the user
 // would watch a timer reach zero on a button that still refuses.
 func (s *AuthService) pendingResendCooldown(user *store.User) *time.Time {
-	if user.PendingEmail == "" || user.PendingEmailExpiresAt == nil {
+	if user.PendingEmail == "" || user.PendingEmailIssuedAt == nil {
 		return nil
 	}
-	next := nextResendAt(issuedAtFromExpiry(*user.PendingEmailExpiresAt, pendingEmailExpiry))
+	next := nextResendAt(*user.PendingEmailIssuedAt)
 	if !s.now().UTC().Before(next) {
 		return nil
 	}

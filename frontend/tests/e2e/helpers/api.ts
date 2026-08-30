@@ -440,9 +440,9 @@ export async function backdatePendingEmailIssuedAt(hubDataDir: string, username:
   const execFileAsync = promisify(execFile)
   const dbPath = join(hubDataDir, 'hub.db')
   const escaped = username.replace(/'/g, `''`)
-  // pending_email_expires_at = issued_at + 30m; set issued ~2m ago.
+  // The cooldown gate reads pending_email_issued_at; set it ~2m ago.
   // Retry on SQLITE_BUSY: the hub may hold a write lock briefly.
-  const sql = `UPDATE users SET pending_email_expires_at = datetime('now', '+28 minutes') WHERE username = '${escaped}' AND deleted_at IS NULL;`
+  const sql = `UPDATE users SET pending_email_issued_at = datetime('now', '-2 minutes') WHERE username = '${escaped}' AND deleted_at IS NULL;`
   let lastErr: unknown
   for (let attempt = 0; attempt < 8; attempt++) {
     try {
@@ -479,29 +479,30 @@ export async function readPendingEmailToken(hubDataDir: string, username: string
 
 /** Verify the session user's pending email with a code from the DB or inbox. */
 export async function verifyEmailViaAPI(hubUrl: string, cookie: string, verificationToken: string): Promise<void> {
+  const captcha = await solveCaptchaViaAPI(hubUrl)
   const res = await fetch(`${hubUrl}/leapmux.v1.UserService/VerifyEmail`, {
     method: 'POST',
     headers: authedHeaders(cookie),
-    body: JSON.stringify({ verificationToken }),
+    body: JSON.stringify({ verificationToken, captchaPayload: captcha.captchaPayload, honeypot: captcha.honeypot }),
   })
   if (!res.ok) {
     throw new Error(`verifyEmailViaAPI failed: ${res.status} ${await res.text()}`)
   }
 }
 
-/** Request a password-reset email via the public AuthService RPC. */
-export async function requestPasswordResetViaAPI(
+/** Request an account-recovery email via the public AuthService RPC. */
+export async function requestAccountRecoveryViaAPI(
   hubUrl: string,
   identifier: string,
 ): Promise<void> {
   const captcha = await solveCaptchaViaAPI(hubUrl)
-  const res = await fetch(`${hubUrl}/leapmux.v1.AuthService/RequestPasswordReset`, {
+  const res = await fetch(`${hubUrl}/leapmux.v1.AuthService/RequestAccountRecovery`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ identifier, captchaPayload: captcha.captchaPayload, honeypot: captcha.honeypot }),
   })
   if (!res.ok) {
-    throw new Error(`requestPasswordResetViaAPI failed: ${res.status} ${await res.text()}`)
+    throw new Error(`requestAccountRecoveryViaAPI failed: ${res.status} ${await res.text()}`)
   }
 }
 

@@ -541,7 +541,7 @@ func (s *Suite) testUsers(t *testing.T) {
 		assert.Equal(t, want, got)
 	})
 
-	// The mint is conditional, exactly like its twin SetPendingPasswordReset.
+	// The mint is conditional, exactly like its twin SetPendingRecovery.
 	// Without it, ResendVerificationEmail's cooldown was a Go read-then-check
 	// that two concurrent calls both passed, and RequestEmailChange had no
 	// check at all -- a logged-in user could send one message per request to
@@ -550,26 +550,28 @@ func (s *Suite) testUsers(t *testing.T) {
 		st := s.NewStore(t)
 		user := SeedUser(t, st, "pending-mint-user")
 
-		expires := time.Now().Add(30 * time.Minute).UTC()
+		issued := time.Now().UTC()
+		expires := issued.Add(30 * time.Minute)
 		minted, err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
 			ID:                    user.ID,
 			PendingEmail:          "first@example.com",
 			PendingEmailToken:     verifycode.Generate(),
 			PendingEmailExpiresAt: &expires,
-			CooldownCutoff:        time.Now().UTC(),
+			PendingEmailIssuedAt:  &issued,
+			CooldownCutoff:        issued,
 		})
 		require.NoError(t, err)
 		require.True(t, minted, "no previous code exists, so any cutoff mints")
 
-		// The previous code expires in 30 minutes; a cutoff before that
-		// expiry means the cooldown has not elapsed. The mint must refuse
-		// and the FIRST code must survive, whatever address is asked for.
+		// The previous code was issued now; a cutoff before that issue
+		// means the cooldown has not elapsed. The mint must refuse and the
+		// FIRST code must survive, whatever address is asked for.
 		minted, err = st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
 			ID:                    user.ID,
 			PendingEmail:          "second@example.com",
 			PendingEmailToken:     verifycode.Generate(),
 			PendingEmailExpiresAt: &expires,
-			CooldownCutoff:        time.Now().UTC(),
+			CooldownCutoff:        issued.Add(-time.Second),
 		})
 		require.NoError(t, err)
 		assert.False(t, minted)
@@ -579,13 +581,14 @@ func (s *Suite) testUsers(t *testing.T) {
 		assert.Equal(t, "first@example.com", after.PendingEmail,
 			"a refused mint must leave the live code and its address untouched")
 
-		// A cutoff past the previous expiry means the cooldown elapsed.
+		// A cutoff at or after the previous issue means the cooldown
+		// elapsed, so the mint lands.
 		minted, err = st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
 			ID:                    user.ID,
 			PendingEmail:          "third@example.com",
 			PendingEmailToken:     verifycode.Generate(),
 			PendingEmailExpiresAt: &expires,
-			CooldownCutoff:        expires.Add(time.Second),
+			CooldownCutoff:        issued.Add(time.Second),
 		})
 		require.NoError(t, err)
 		assert.True(t, minted)
@@ -633,7 +636,7 @@ func (s *Suite) testUsers(t *testing.T) {
 	})
 
 	// The mirror of "attempt budget comes from the caller, not the SQL text"
-	// in test_password_reset.go. MySQL reads an already-updated column in a
+	// in test_account_recovery.go. MySQL reads an already-updated column in a
 	// later SET clause, so an increment-first ordering makes the force-expiry
 	// CASE fire one charge early and MySQL gives one attempt fewer than
 	// sqlite and postgres. Only a boundary assertion catches that, and only

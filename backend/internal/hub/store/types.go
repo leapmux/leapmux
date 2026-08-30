@@ -56,27 +56,29 @@ func SearchLikePattern(query *string) *string {
 
 // User represents a user account.
 type User struct {
-	ID                            string
-	Username                      string
-	PasswordHash                  string
-	DisplayName                   string
-	Email                         string
-	EmailVerified                 bool
-	PendingEmail                  string
-	PendingEmailToken             string
-	PendingEmailExpiresAt         *time.Time
-	PendingEmailAttempts          int64
-	PendingPasswordResetToken     string
-	PendingPasswordResetExpiresAt *time.Time
-	PendingPasswordResetAttempts  int64
-	PasswordSet                   bool
-	IsAdmin                       bool
-	Prefs                         string
-	CreatedAt                     time.Time
-	UpdatedAt                     time.Time
-	TokensRevokedAt               *time.Time
-	AuthGeneration                int64
-	DeletedAt                     *time.Time
+	ID                       string
+	Username                 string
+	PasswordHash             string
+	DisplayName              string
+	Email                    string
+	EmailVerified            bool
+	PendingEmail             string
+	PendingEmailToken        string
+	PendingEmailExpiresAt    *time.Time
+	PendingEmailIssuedAt     *time.Time
+	PendingEmailAttempts     int64
+	PendingRecoveryToken     string
+	PendingRecoveryExpiresAt *time.Time
+	PendingRecoveryIssuedAt  *time.Time
+	PendingRecoveryAttempts  int64
+	PasswordSet              bool
+	IsAdmin                  bool
+	Prefs                    string
+	CreatedAt                time.Time
+	UpdatedAt                time.Time
+	TokensRevokedAt          *time.Time
+	AuthGeneration           int64
+	DeletedAt                *time.Time
 }
 
 // PageCursor returns the keyset position for user listings (ListAll/Search),
@@ -580,10 +582,14 @@ type SetPendingEmailParams struct {
 	PendingEmail          string
 	PendingEmailToken     string
 	PendingEmailExpiresAt *time.Time
+	// PendingEmailIssuedAt is the instant this mint lands; the cooldown
+	// gate compares THIS column, never the expiry (which the attempt
+	// consumer force-moves on a burned code).
+	PendingEmailIssuedAt *time.Time
 	// CooldownCutoff controls the conditional mint: the write lands only
-	// when no previous code exists or the previous code's expiry is at or
+	// when no live code exists or the previous code was issued at or
 	// before this instant. The caller derives it from the resend cooldown.
-	// Its twin is SetPendingPasswordResetParams.CooldownCutoff.
+	// Its twin is SetPendingRecoveryParams.CooldownCutoff.
 	CooldownCutoff time.Time
 }
 
@@ -1240,27 +1246,30 @@ type CreateWebAuthnSessionParams struct {
 	CreatedAt   time.Time
 }
 
-type SetPendingPasswordResetParams struct {
-	ID                            string
-	PendingPasswordResetToken     string
-	PendingPasswordResetExpiresAt time.Time
+type SetPendingRecoveryParams struct {
+	ID                       string
+	PendingRecoveryToken     string
+	PendingRecoveryExpiresAt time.Time
+	// PendingRecoveryIssuedAt is the instant this mint lands; the cooldown
+	// gate compares THIS column, never the expiry (which the attempt
+	// consumer force-moves on a burned link).
+	PendingRecoveryIssuedAt *time.Time
 	// CooldownCutoff controls the conditional mint: the write lands only when
-	// no previous token exists or the previous token's expiry is at or
-	// before this cutoff, so two concurrent first requests cannot both
-	// mint and both send. The caller derives the cutoff from the resend
-	// cooldown.
+	// no live link exists or the previous link was issued at or before this
+	// cutoff, so two concurrent first requests cannot both mint and both
+	// send. The caller derives the cutoff from the resend cooldown.
 	CooldownCutoff time.Time
 }
 
-type CompletePasswordResetParams struct {
-	ID                        string
-	PasswordHash              string
-	PendingPasswordResetToken string
+type CompleteRecoveryParams struct {
+	ID                   string
+	PasswordHash         string
+	PendingRecoveryToken string
 }
 
-// PasswordResetRevocation is returned by CompletePasswordReset when the
+// RecoveryRevocation is returned by CompleteRecovery when the
 // user row was updated and tokens must be revoked cross-process.
-type PasswordResetRevocation struct {
+type RecoveryRevocation struct {
 	UserID          string
 	TokensRevokedAt time.Time
 	AuthGeneration  int64

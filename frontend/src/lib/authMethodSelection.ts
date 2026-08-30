@@ -40,7 +40,7 @@ export interface AuthMethodSelection {
  * kept their own copy of this two-line state machine, and each then read
  * the raw signal at one or two sites while every other site read the
  * effective one — so a hub that lost passkey support mid-form hid the
- * password field, hid the "Forgot password?" link and skipped the password
+ * password field, hid the recovery link and skipped the password
  * validation, while the submit path already fell back to the password
  * option. A caller that cannot reach the raw signal cannot reintroduce that
  * split.

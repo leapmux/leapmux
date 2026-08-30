@@ -3,7 +3,9 @@ import { useNavigate, useSearchParams } from '@solidjs/router'
 import { createEffect, createSignal, Show } from 'solid-js'
 import { userClient } from '~/api/clients'
 import { actionsFooter } from '~/components/common/actionsFooter.css'
+import { CaptchaSection } from '~/components/common/CaptchaSection'
 import { useAuth } from '~/context/AuthContext'
+import { createCaptchaForm } from '~/lib/captchaForm'
 import { formatErrorMessage } from '~/lib/errors'
 import { stringParam } from '~/lib/searchParam'
 import { useVerificationResend } from '~/lib/useVerificationResend'
@@ -27,6 +29,9 @@ export const VerifyEmailPage: Component = () => {
   const [code, setCode] = createSignal('')
   const [submitting, setSubmitting] = createSignal(false)
   const [error, setError] = createSignal<string | null>(null)
+  // The verify leg charges the per-code wrong-guess budget, which a script
+  // burns for free, so it is captcha-protected like the sign-in it guards.
+  const captcha = createCaptchaForm()
   const resend = useVerificationResend({
     nextResendAvailableAt: () => auth.verificationResendAvailableAt(),
   })
@@ -66,10 +71,16 @@ export const VerifyEmailPage: Component = () => {
       setError('Enter the 6-character code from your email.')
       return
     }
+    if (captcha.blocksSubmit()) {
+      // The email deep-link auto-submit can fire before the widget finishes;
+      // a refused RPC would burn a guess for nothing, so wait it out.
+      setError('The captcha is still solving — try again in a moment.')
+      return
+    }
     setSubmitting(true)
     setError(null)
     try {
-      const resp = await userClient.verifyEmail({ verificationToken: normalized })
+      const resp = await userClient.verifyEmail({ verificationToken: normalized, ...captcha.fields() })
       // The RESPONSE is the authoritative account, so adopt it first. A second
       // round trip can fail, and `refreshUser` discards its own failure, so a
       // page that read the account only through the refresh navigates home with
@@ -94,6 +105,7 @@ export const VerifyEmailPage: Component = () => {
     }
     catch (e) {
       setError(formatErrorMessage(e, 'Verification failed'))
+      captcha.reset(e)
     }
     finally {
       setSubmitting(false)
@@ -125,11 +137,12 @@ export const VerifyEmailPage: Component = () => {
             maxlength={16}
             required
           />
+          <CaptchaSection action="verify_email" captcha={captcha} />
           <div class={actionsFooter}>
             <button
               type="submit"
               data-testid="verify-email-submit"
-              disabled={submitting()}
+              disabled={submitting() || captcha.blocksSubmit()}
             >
               {submitting() ? 'Verifying…' : 'Verify'}
             </button>
@@ -144,6 +157,7 @@ export const VerifyEmailPage: Component = () => {
         <Show when={resend.status()}>
           {msg => <div data-testid="verify-email-resend-status">{msg()}</div>}
         </Show>
+        <CaptchaSection action="resend_verification" captcha={resend.captcha} />
         <div class={actionsFooter}>
           <button
             type="button"

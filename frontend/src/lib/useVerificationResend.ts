@@ -2,6 +2,7 @@ import type { Timestamp } from '@bufbuild/protobuf/wkt'
 import { timestampDate } from '@bufbuild/protobuf/wkt'
 import { createEffect, createMemo, createSignal, onCleanup } from 'solid-js'
 import { userClient } from '~/api/clients'
+import { createCaptchaForm } from '~/lib/captchaForm'
 import { formatErrorMessage } from '~/lib/errors'
 
 function cooldownSeconds(untilMs: number, nowMs: number): number {
@@ -87,7 +88,14 @@ export function useVerificationResend(options?: UseVerificationResendOptions) {
     return 'Resend code'
   })
 
-  const disabled = () => resending() || countdown() > 0
+  // The resend leg is captcha-protected like the verify leg: it drives an
+  // SMTP send, and the cooldown gate alone does not pace a scripted
+  // session. The form lives HERE rather than at each call site, so both
+  // surfaces (/verify-email and Preferences → Account) send the same
+  // fields and neither can forget the widget.
+  const captcha = createCaptchaForm()
+
+  const disabled = () => resending() || countdown() > 0 || captcha.blocksSubmit()
 
   const resend = async () => {
     if (disabled())
@@ -96,7 +104,7 @@ export function useVerificationResend(options?: UseVerificationResendOptions) {
     setStatus(null)
     setError(null)
     try {
-      const resp = await userClient.resendVerificationEmail({})
+      const resp = await userClient.resendVerificationEmail({ ...captcha.fields() })
       setStatus(
         resp.emailSent
           ? 'A fresh code has been sent to your inbox.'
@@ -108,6 +116,7 @@ export function useVerificationResend(options?: UseVerificationResendOptions) {
     }
     catch (e) {
       setError(formatErrorMessage(e, 'Failed to resend verification email'))
+      captcha.reset(e)
     }
     finally {
       setResending(false)
@@ -124,5 +133,6 @@ export function useVerificationResend(options?: UseVerificationResendOptions) {
     buttonLabel,
     disabled,
     countdown,
+    captcha,
   }
 }

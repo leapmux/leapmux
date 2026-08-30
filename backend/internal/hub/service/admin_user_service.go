@@ -530,7 +530,7 @@ func resolveEmailVerified(user *store.User, msg *leapmuxv1.UpdateUserRequest) (v
 // creating durable new authority.
 //
 // {email: attacker@example.com, email_verified: true} in one call moves where
-// the public RequestPasswordReset mails a reset link, and that verb refuses
+// the public RequestAccountRecovery mails a reset link, and that verb refuses
 // only an UNVERIFIED address -- so this pair hands over any account, exactly
 // as ResetPassword does, and leaves the victim's password working until the
 // attacker chooses to reset it. Restricting ResetPassword and not this
@@ -913,7 +913,7 @@ func (s *AdminUserService) ResetPassword(ctx context.Context, req *connect.Reque
 				return fmt.Errorf("update password: %w", err)
 			}
 			// Admin password reset is break-glass: clear passkeys the same
-			// way self-service CompletePasswordReset does, so a lost-device
+			// way self-service CompleteAccountRecovery does, so a lost-device
 			// recovery cannot leave orphan credentials, and a reset email
 			// requested before this emergency reset must not stay
 			// completable.

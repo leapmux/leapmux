@@ -13,7 +13,7 @@ You can run everything locally. The `leapmux solo` command starts a Hub and a Wo
 
 You only need a separate Hub when you want multiple users, remote Workers, or sign-in. In that case run `leapmux hub` (central relay, real authentication) and connect one or more `leapmux worker` processes to it.
 
-See [Running LeapMux](/docs/operating/running-leapmux/) for the run modes and [Concepts & Architecture](/docs/getting-started/concepts/) for solo vs. distributed.
+See [Running LeapMux](/docs/admin/running-leapmux/) for the run modes and [Concepts & Architecture](/docs/getting-started/concepts/) for solo vs. distributed.
 
 ## Is solo mode multi-user?
 
@@ -21,7 +21,7 @@ No. Solo mode is single-user by design. Every request is auto-authenticated as t
 
 > **Warning:** If you ever bind solo mode to a non-loopback address, anyone who can reach the port has full admin access with no password. LeapMux logs a warning when this happens. For multi-user or networked use, run `leapmux hub` instead, or place solo behind a firewall, VPN (Tailscale/WireGuard), or SSH tunnel.
 
-For real multi-user setups see [Accounts & Authentication](/docs/using/accounts/) and [Managing Workers](/docs/operating/managing-workers/).
+For real multi-user setups see [Accounts & Authentication](/docs/using/accounts/) and [Managing Workers](/docs/admin/managing-workers/).
 
 ## Where is my data stored?
 
@@ -37,13 +37,13 @@ Default locations:
 | Worker | `~/.config/leapmux/worker/` (DB `worker.db`, state `state.json`) |
 | Docker | `/data/<mode>/` inside the `/data` volume |
 
-See [Configuration](/docs/operating/configuration/) and [Encryption & Data](/docs/operating/encryption-and-data/).
+See [Configuration](/docs/admin/configuration/) and [Encryption & Data](/docs/admin/encryption-and-data/).
 
 ## Can the Hub read my code, chats, or terminal output?
 
 No — all Frontend-to-Worker traffic is end-to-end encrypted, and the Hub is an **authenticated relay, not a trusted peer**: it forwards opaque ciphertext and never holds the session keys.
 
-The Hub **can** see connection metadata — channel IDs, ciphertext sizes, and timing (traffic analysis is in scope) — plus account and workspace records and Worker public keys. The Hub **cannot** see agent transcripts, tool-call arguments or outputs, terminal I/O, file contents, diffs, or git status. Even the Worker's hostname and filesystem paths travel inside the encrypted application stream, so they are not exposed to the relay. See [Security & Threat Model](/docs/operating/security/) for the authoritative scope of what the Hub does and does not see.
+The Hub **can** see connection metadata — channel IDs, ciphertext sizes, and timing (traffic analysis is in scope) — plus account and workspace records and Worker public keys. The Hub **cannot** see agent transcripts, tool-call arguments or outputs, terminal I/O, file contents, diffs, or git status. Even the Worker's hostname and filesystem paths travel inside the encrypted application stream, so they are not exposed to the relay. See [Security & Threat Model](/docs/admin/security/) for the authoritative scope of what the Hub does and does not see.
 
 > **Note:** In solo mode the Hub and Worker run in the same process, so the E2EE protocol is still in effect but provides no protection against a local attacker who can reach the loopback port. The threat model there reduces to local-host trust.
 
@@ -61,11 +61,11 @@ Yes. The **Worker always initiates the connection to the Hub**, so it never need
 
 Local Workers can instead use a Unix domain socket (`unix:<path>`) or Windows named pipe (`npipe:<name>`).
 
-See [Managing Workers](/docs/operating/managing-workers/) and [Configuration](/docs/operating/configuration/).
+See [Managing Workers](/docs/admin/managing-workers/) and [Configuration](/docs/admin/configuration/).
 
 ## Can I use PostgreSQL or MySQL instead of SQLite?
 
-Yes — for the **Hub**. The Hub supports six storage backends, selected with `storage.type`: `sqlite` (default), `postgres`, `mysql`, `cockroachdb`, `yugabytedb`, and `tidb`. The Postgres- and MySQL-compatible backends reuse their respective drivers — see [Configuration](/docs/operating/configuration/) for which driver each one uses. Each external backend needs a `dsn`:
+Yes — for the **Hub**. The Hub supports six storage backends, selected with `storage.type`: `sqlite` (default), `postgres`, `mysql`, `cockroachdb`, `yugabytedb`, and `tidb`. The Postgres- and MySQL-compatible backends reuse their respective drivers — see [Configuration](/docs/admin/configuration/) for which driver each one uses. Each external backend needs a `dsn`:
 
 ```yaml
 storage:
@@ -76,7 +76,7 @@ storage:
 
 Migrations run automatically when the store opens. **Workers always use SQLite locally** — that's not configurable. Note that storage settings are nested keys, so set them in the YAML config file (or via CLI flags), not via simple environment variables.
 
-See [Configuration](/docs/operating/configuration/) and [Encryption & Data](/docs/operating/encryption-and-data/).
+See [Configuration](/docs/admin/configuration/) and [Encryption & Data](/docs/admin/encryption-and-data/).
 
 ## How do multiple agents avoid clobbering each other?
 
@@ -103,7 +103,7 @@ They are the same SolidJS Frontend. The difference is packaging:
 
 The same end-to-end encryption applies either way. Pick the desktop app for a self-contained local setup; use the browser when connecting to a shared Hub.
 
-See [Installation](/docs/getting-started/installation/) and [Running LeapMux](/docs/operating/running-leapmux/).
+See [Installation](/docs/getting-started/installation/) and [Running LeapMux](/docs/admin/running-leapmux/).
 
 ## How do I update LeapMux?
 
@@ -115,7 +115,7 @@ See [Installation](/docs/getting-started/installation/) and [Running LeapMux](/d
 
 Database migrations run automatically on startup, so no manual migration command is required.
 
-See [Installation](/docs/getting-started/installation/) and [Running LeapMux](/docs/operating/running-leapmux/).
+See [Installation](/docs/getting-started/installation/) and [Running LeapMux](/docs/admin/running-leapmux/).
 
 ## Is it free? What's the license?
 

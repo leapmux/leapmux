@@ -5,14 +5,14 @@ type: docs
 weight: 4
 ---
 
-> **Not this chapter:** apps that ask **your Hub** for access to an account on it are [App Authorization](/docs/operating/app-authorization/).
+> **Not this chapter:** apps that ask **your Hub** for access to an account on it are [App Authorization](/docs/admin/app-authorization/).
 > This chapter is the other direction — identity providers your Hub signs users in *with*.
 
-This chapter is for operators who run a LeapMux **Hub** and want to offer single sign-on. It covers configuring OAuth/OIDC providers so your users can sign in with GitHub, Google, Apple, or any standards-compliant OpenID Connect identity provider.
+This chapter is for administrators who run a LeapMux **Hub** and want to offer single sign-on. It covers configuring OAuth/OIDC providers so your users can sign in with GitHub, Google, Apple, or any standards-compliant OpenID Connect identity provider.
 
-If you only want to know what the sign-in experience looks like as an end user (the "Sign in with…" buttons, completing a first OAuth sign-up, linking and unlinking accounts), see [Accounts & Authentication](/docs/using/accounts/). This chapter stays on the operator side: how providers are defined, how callback URLs are derived, and how to troubleshoot setup.
+If you only want to know what the sign-in experience looks like as an end user (the "Sign in with…" buttons, completing a first OAuth sign-up, linking and unlinking accounts), see [Accounts & Authentication](/docs/using/accounts/). This chapter stays on the administrator side: how providers are defined, how callback URLs are derived, and how to troubleshoot setup.
 
-> **Note:** OAuth providers only apply to **Hub** deployments (`leapmux hub`, and `leapmux dev`). In **solo mode** every request is auto-authenticated as the local admin, so there is no login screen and providers do nothing. See [Running LeapMux](/docs/operating/running-leapmux/) for the difference between run modes.
+> **Note:** OAuth providers only apply to **Hub** deployments (`leapmux hub`, and `leapmux dev`). In **solo mode** every request is auto-authenticated as the local admin, so there is no login screen and providers do nothing. See [Running LeapMux](/docs/admin/running-leapmux/) for the difference between run modes.
 
 ## What you can configure
 
@@ -29,9 +29,9 @@ Internally there are only **two** stored provider types — `github` and `oidc`.
 
 GitHub uses plain OAuth2, not OpenID Connect, so it has no issuer URL or discovery document — its endpoints are fixed. The issuer URL applies only to the `oidc`-stored providers, where the Hub uses it for discovery and ID-token verification.
 
-You configure every provider with the `leapmux control admin idp` command group. Each verb is an RPC call to a **running** Hub: the CLI sends your control credential, and the Hub writes its own database and encrypts the client secret with its own key file. There is **no UI** for adding providers — it is an operator task. For the full command surface, see [`admin` — hub administration over RPC](/docs/operating/admin-cli/).
+You configure every provider with the `leapmux control admin idp` command group. Each verb is an RPC call to a **running** Hub: the CLI sends your control credential, and the Hub writes its own database and encrypts the client secret with its own key file. There is **no UI** for adding providers — it is an administrative task. For the full command surface, see [`admin` — hub administration over RPC](/docs/admin/admin-cli/).
 
-> **Note:** These commands take no `--data-dir` and no `--config`; the flags do not exist, and the CLI refuses them. Run the commands from any machine, and select the Hub with `--hub <url>` or the `LEAPMUX_HUB` environment variable. Authorize the CLI first with `leapmux control auth login --hub <url>`, and use an administrator account: the Hub answers `permission_denied` for every other caller. A `leapmux dev` instance is a separate Hub, so point `--hub` at its own address. See [Authentication](/docs/operating/control-cli/#authentication) for the credential rules.
+> **Note:** These commands take no `--data-dir` and no `--config`; the flags do not exist, and the CLI refuses them. Run the commands from any machine, and select the Hub with `--hub <url>` or the `LEAPMUX_HUB` environment variable. Authorize the CLI first with `leapmux control auth login --hub <url>`, and use an administrator account: the Hub answers `permission_denied` for every other caller. A `leapmux dev` instance is a separate Hub, so point `--hub` at its own address. See [Authentication](/docs/using/control-cli/#authentication) for the credential rules.
 
 ## Prerequisites
 
@@ -44,7 +44,7 @@ When a user signs in with OAuth and **no** existing account is linked to that id
 - With `signup_enabled=false`, LeapMux rejects an OAuth sign-in for an unknown identity, and the error says that sign-up is disabled. Only users whose OAuth identity is already linked (or auto-linked by verified email — see [Trusting the provider's email](#trusting-the-providers-email)) can sign in.
 - With `signup_enabled=true`, new OAuth users can self-register through the completion page.
 
-Decide which behavior you want and set the flag accordingly. See [Configuration](/docs/operating/configuration/) and [Running LeapMux](/docs/operating/running-leapmux/) for where flags and config keys live.
+Decide which behavior you want and set the flag accordingly. See [Configuration](/docs/admin/configuration/) and [Running LeapMux](/docs/admin/running-leapmux/) for where flags and config keys live.
 
 ### 2. The Hub must know its public origin
 
@@ -94,7 +94,7 @@ If you omit `--name`, `--issuer-url`, `--scopes`, or `--trust-email`, these defa
 
 1. The flags are merged with the preset.
 2. For OIDC-based types (`google`, `apple`, `oidc`), the Hub validates the issuer over the network first. It fetches the issuer's OpenID Connect discovery document; if that fetch fails, the Hub refuses the request and stores nothing. GitHub providers skip this step.
-3. The client secret is encrypted with the Hub's **active encryption key** and stored. (For key rotation and re-encryption, see [Encryption & Data](/docs/operating/encryption-and-data/).)
+3. The client secret is encrypted with the Hub's **active encryption key** and stored. (For key rotation and re-encryption, see [Encryption & Data](/docs/admin/encryption-and-data/).)
 4. The provider is created **enabled** and assigned a generated ID.
 5. The command prints the control JSON envelope: `data` holds the created provider, including its generated `id` and its `type`.
 
@@ -172,7 +172,7 @@ https://hub.example.com/auth/idp/prov_abc123/callback
 
 > **Warning:** `public_url` must be a bare absolute origin — scheme + host (+ port), with **no path, query, or fragment**. Sub-path deployments such as `https://example.com/leapmux` are rejected. Front LeapMux at the root of a hostname (or subdomain), not under a path prefix.
 
-> **Note:** `secure_cookies` is a database setting (`leapmux control admin settings set secure_cookies true`). When you terminate TLS with a reverse proxy and set `public_url` to an `https://…` address, the public URL already carries the `https` scheme, so the callback URL is correct regardless of `secure_cookies`. Still enable `secure_cookies` behind TLS so session cookies get the secure flag — see [Accounts & Authentication](/docs/using/accounts/). Details of the reverse-proxy setup live in [Running LeapMux](/docs/operating/running-leapmux/).
+> **Note:** `secure_cookies` is a database setting (`leapmux control admin settings set secure_cookies true`). When you terminate TLS with a reverse proxy and set `public_url` to an `https://…` address, the public URL already carries the `https` scheme, so the callback URL is correct regardless of `secure_cookies`. Still enable `secure_cookies` behind TLS so session cookies get the secure flag — see [Accounts & Authentication](/docs/using/accounts/). Details of the reverse-proxy setup live in [Running LeapMux](/docs/admin/running-leapmux/).
 
 ## Trusting the provider's email
 
@@ -212,9 +212,9 @@ This deletes the provider configuration (including the stored client secret) per
 
 The Hub refuses such a removal. The error carries the `failed_precondition` code, identifies the provider, and counts the accounts that the removal would lock out.
 
-Give each of those users another login method, then run `remove` again. They can set a password themselves under **Preferences → Account → Password**, or link a second enabled provider — see [Accounts & Authentication](/docs/using/accounts/). An admin can also set a password offline with `leapmux recover password reset` (see [Recovery](/docs/operating/recover/)), which needs the Hub host and the Hub stopped.
+Give each of those users another login method, then run `remove` again. They can set a password themselves under **Preferences → Account → Password**, or link a second enabled provider — see [Accounts & Authentication](/docs/using/accounts/). An admin can also set a password offline with `leapmux recover password reset` (see [Recovery](/docs/admin/recover/)), which needs the Hub host and the Hub stopped.
 
-> **Warning:** `--force` removes the provider even when accounts lose their last login method. Those users cannot sign in again, and only `leapmux recover password reset` restores their access. Give them another login method first.
+> **Warning:** `--force` removes the provider even when accounts lose their last login method. Those users cannot sign in again through a provider. A user whose email address is verified can still recover the account alone with **Can't sign in?** — recovery sets the account's first password (see [Accounts & Authentication](/docs/using/accounts/#recovering-your-account)); for anyone else, only `leapmux recover password reset` restores their access. Give them another login method first.
 
 ```bash
 leapmux control admin idp remove --id <providerID> --force
@@ -252,12 +252,12 @@ All of this UI is covered in detail in [Accounts & Authentication](/docs/using/a
 | Button doesn't appear | Provider is disabled, or not created. | `leapmux control admin idp list`; if `enabled` is `false`, run `enable --id <id>`. |
 | Changed scopes/secret but behavior is unchanged | The Hub caches provider config as immutable. | `remove` and re-`add` the provider, then update the registered callback URL to the new id, and restart the Hub if needed. |
 
-> **Tip:** If a stored client secret can no longer be decrypted after an encryption-key change, you have rotated keys without re-encrypting secrets. Run the re-encryption step described in [Encryption & Data](/docs/operating/encryption-and-data/).
+> **Tip:** If a stored client secret can no longer be decrypted after an encryption-key change, you have rotated keys without re-encrypting secrets. Run the re-encryption step described in [Encryption & Data](/docs/admin/encryption-and-data/).
 
 ## Related chapters
 
 - [Accounts & Authentication](/docs/using/accounts/) — the end-user sign-in, sign-up, and account-linking experience.
-- [Control CLI](/docs/operating/control-cli/) — the full `leapmux control admin` reference, including login and the `--hub` flag.
-- [Running LeapMux](/docs/operating/running-leapmux/) — run modes, listen addresses, `public_url`, and reverse-proxy setup.
-- [Configuration](/docs/operating/configuration/) — config precedence and the full key reference (`signup_enabled`, `public_url`, `secure_cookies`, …).
-- [Encryption & Data](/docs/operating/encryption-and-data/) — how client secrets are encrypted at rest, key rotation, and re-encryption.
+- [Control CLI](/docs/using/control-cli/) — the full `leapmux control admin` reference, including login and the `--hub` flag.
+- [Running LeapMux](/docs/admin/running-leapmux/) — run modes, listen addresses, `public_url`, and reverse-proxy setup.
+- [Configuration](/docs/admin/configuration/) — config precedence and the full key reference (`signup_enabled`, `public_url`, `secure_cookies`, …).
+- [Encryption & Data](/docs/admin/encryption-and-data/) — how client secrets are encrypted at rest, key rotation, and re-encryption.

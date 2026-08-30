@@ -5,14 +5,14 @@ type: docs
 weight: 6
 ---
 
-This chapter is for operators who run a LeapMux **Hub** (or a solo-mode instance) and need to understand what data is stored, what is encrypted at rest, how to rotate encryption keys, how database migrations work, and how to back up and restore everything safely.
+This chapter is for administrators who run a LeapMux **Hub** (or a solo-mode instance) and need to understand what data is stored, what is encrypted at rest, how to rotate encryption keys, how database migrations work, and how to back up and restore everything safely.
 
 It covers two distinct encryption systems that are easy to confuse:
 
 - **Encryption at rest** — the Hub encrypts a small set of stored secrets (OAuth client secrets and OAuth tokens) using a local **keystore** (the `encryption.key` file). This chapter is mostly about this.
-- **End-to-end encryption (E2EE)** — all Frontend-to-Worker traffic is encrypted so the Hub can route it but never read it. That protocol is covered in [Security & Threat Model](/docs/operating/security/); this chapter only touches the Worker key material you must back up.
+- **End-to-end encryption (E2EE)** — all Frontend-to-Worker traffic is encrypted so the Hub can route it but never read it. That protocol is covered in [Security & Threat Model](/docs/admin/security/); this chapter only touches the Worker key material you must back up.
 
-For where these settings live and how to set them, see [Configuration](/docs/operating/configuration/). For key rotation commands, see [Recovery](/docs/operating/recover/).
+For where these settings live and how to set them, see [Configuration](/docs/admin/configuration/). For key rotation commands, see [Recovery](/docs/admin/recover/).
 
 ## What is stored, and what is encrypted
 
@@ -28,7 +28,7 @@ LeapMux keeps three kinds of persistent state:
 | Agent transcripts, terminal I/O, worktree/session state | Worker's local SQLite (`worker.db`) | No |
 | Worker E2EE private keys + Hub auth token | Worker's `state.json` | No — plain JSON, file mode `0600` |
 
-> **Note:** Agent chat transcripts, tool calls, terminal output, file contents, and diffs **never** reach the Hub in readable form and are **not** stored in the Hub database at all. They live only in the Worker's local database and are end-to-end encrypted in transit. See [Security & Threat Model](/docs/operating/security/).
+> **Note:** Agent chat transcripts, tool calls, terminal output, file contents, and diffs **never** reach the Hub in readable form and are **not** stored in the Hub database at all. They live only in the Worker's local database and are end-to-end encrypted in transit. See [Security & Threat Model](/docs/admin/security/).
 
 ### Encryption at rest details
 
@@ -51,7 +51,9 @@ The keystore loads its versioned key ring from `encryption.key` (highest version
 
 The key lives in a separate file from the database, so a copy of the database alone leaves the encrypted OAuth secrets readable only as ciphertext — which is why the two must be backed up together.
 
-API-token and delegation-token secrets are **not** encrypted — they are HMAC-SHA256 hashed with a dedicated, stable pepper that is independent of the encryption key ring, so the database never contains a recoverable token. See [Accounts & Authentication](/docs/using/accounts/) and the [Control CLI](/docs/operating/control-cli/) for token management.
+API-token and delegation-token secrets are **not** encrypted — they are HMAC-SHA256 hashed with a dedicated, stable pepper that is independent of the encryption key ring, so the database never contains a recoverable token. See [Accounts & Authentication](/docs/using/accounts/) and the [Control CLI](/docs/using/control-cli/) for token management.
+
+Account passwords are hashed with **Argon2id** using OWASP-recommended parameters; the Hub never stores or transmits the plaintext after hashing. See [Password requirements](/docs/using/accounts/#password-requirements).
 
 ## The encryption key file (`encryption.key`)
 
@@ -106,7 +108,7 @@ These commands do **not** all take the same flags, because they touch different 
 | `remove` | `--data-dir`, `--config`, `--version` (required) | The local key file **and** the Hub database |
 | `reencrypt` | `--data-dir`, `--config` | The local key file **and** the Hub database |
 
-`reencrypt` and `remove` open the database, so both accept `--config` (point it at the same config file the Hub uses, so they target the same backend). `remove` reads the database to check whether any ciphertext still depends on the version being removed (see the runbook warning below). `rotate` and `rotate-pepper` work purely on the local key file and accept `--data-dir` only — passing `--config` to either makes the command fail flag parsing. See [Recovery](/docs/operating/recover/) for the full flag reference.
+`reencrypt` and `remove` open the database, so both accept `--config` (point it at the same config file the Hub uses, so they target the same backend). `remove` reads the database to check whether any ciphertext still depends on the version being removed (see the runbook warning below). `rotate` and `rotate-pepper` work purely on the local key file and accept `--data-dir` only — passing `--config` to either makes the command fail flag parsing. See [Recovery](/docs/admin/recover/) for the full flag reference.
 
 > **Note:** `rotate` and `rotate-pepper` only read and rewrite the local key file — they do not touch the database, which is why they take no `--config`. `reencrypt` and `remove` open the database (and, like any store-opening command, run pending migrations first).
 
@@ -166,7 +168,7 @@ leapmux recover encryption-key rotate-pepper --yes
 # Restart the hub to apply, then re-issue API tokens with: leapmux control admin api-token issue
 ```
 
-Token hashes are one-way, so regenerating the pepper cannot migrate existing tokens — it invalidates them all at once, and they must be reissued (`leapmux control admin api-token issue`) or re-authenticated. The command requires `--yes` and takes effect on the next Hub restart. See the [Control CLI](/docs/operating/control-cli/) for `api-token` and `delegation-token` management.
+Token hashes are one-way, so regenerating the pepper cannot migrate existing tokens — it invalidates them all at once, and they must be reissued (`leapmux control admin api-token issue`) or re-authenticated. The command requires `--yes` and takes effect on the next Hub restart. See the [Control CLI](/docs/using/control-cli/) for `api-token` and `delegation-token` management.
 
 ## Databases
 
@@ -183,17 +185,17 @@ The Hub stores all relational data in one of six interchangeable SQL backends, s
 | `yugabytedb` | Yes — `storage.yugabytedb.dsn` |
 | `tidb` | Yes — `storage.tidb.dsn` |
 
-The exact Go drivers and which backends reuse them (CockroachDB and YugabyteDB on the PostgreSQL driver, TiDB on the MySQL driver) are in the full driver-reuse table in [Configuration](/docs/operating/configuration/).
+The exact Go drivers and which backends reuse them (CockroachDB and YugabyteDB on the PostgreSQL driver, TiDB on the MySQL driver) are in the full driver-reuse table in [Configuration](/docs/admin/configuration/).
 
 The default SQLite database lives at `{data_dir}/hub.db`. SQLite runs in WAL mode, so while the Hub is running you will also see two sidecar files: `hub.db-wal` and `hub.db-shm`. On a clean shutdown the Hub checkpoints and truncates the WAL.
 
-For the full set of connection-pool, cache, and DSN options for each backend, see [Configuration](/docs/operating/configuration/). The full storage-key reference (max-conns, lifetimes, etc.) lives there and is not repeated here.
+For the full set of connection-pool, cache, and DSN options for each backend, see [Configuration](/docs/admin/configuration/). The full storage-key reference (max-conns, lifetimes, etc.) lives there and is not repeated here.
 
-> **Note:** Use a config file (or CLI flags) to set storage options. Because of how environment variables are mapped, the nested `storage.*` keys are most reliably set via YAML or flags rather than env vars. See [Configuration](/docs/operating/configuration/).
+> **Note:** Use a config file (or CLI flags) to set storage options. Because of how environment variables are mapped, the nested `storage.*` keys are most reliably set via YAML or flags rather than env vars. See [Configuration](/docs/admin/configuration/).
 
 ### Worker database
 
-Each Worker keeps its **own** separate SQLite database at `{data_dir}/worker.db` (default Worker data dir: `~/.config/leapmux/worker`). It holds transient agent and session state — agents, messages, terminals, worktrees, todos, control requests, and so on. It uses the same WAL/foreign-key settings as the Hub's SQLite and is chmod'd to `0600`. Worker SQLite tuning flags (`--db-max-conns`, `--db-cache-size`, `--db-mmap-size`) are documented in [Configuration](/docs/operating/configuration/) and [Running LeapMux](/docs/operating/running-leapmux/).
+Each Worker keeps its **own** separate SQLite database at `{data_dir}/worker.db` (default Worker data dir: `~/.config/leapmux/worker`). It holds transient agent and session state — agents, messages, terminals, worktrees, todos, control requests, and so on. It uses the same WAL/foreign-key settings as the Hub's SQLite and is chmod'd to `0600`. Worker SQLite tuning flags (`--db-max-conns`, `--db-cache-size`, `--db-mmap-size`) are documented in [Configuration](/docs/admin/configuration/) and [Running LeapMux](/docs/admin/running-leapmux/).
 
 ## Migrations
 
@@ -229,7 +231,7 @@ Because opening the store already migrates up to the latest version, an explicit
 leapmux recover db migrate --version 1
 ```
 
-Like `encryption-key reencrypt`, both `recover db version` and `recover db migrate` open the store, so both accept `--data-dir` and `--config`; pass `--config` so the command targets the same backend the Hub uses. `recover db path` does not open the store, so it accepts `--data-dir` only. See [Recovery](/docs/operating/recover/).
+Like `encryption-key reencrypt`, both `recover db version` and `recover db migrate` open the store, so both accept `--data-dir` and `--config`; pass `--config` so the command targets the same backend the Hub uses. `recover db path` does not open the store, so it accepts `--data-dir` only. See [Recovery](/docs/admin/recover/).
 
 ## Backup & restore
 
@@ -264,7 +266,7 @@ For a Hub:
 
 For each Worker:
 
-3. **`state.json`** (default `~/.config/leapmux/worker/state.json`). This holds the Worker's identity: its `worker_id`, Hub auth token, and its private E2EE keys (X25519, ML-KEM-1024, SLH-DSA). Losing it forces re-registration with a new registration key and a new key identity — and because the Worker's public keys are registered in the Hub, a new identity will trip the Frontend's "Worker public key changed" pin-mismatch dialog. See [Managing Workers](/docs/operating/managing-workers/) and [Security & Threat Model](/docs/operating/security/).
+3. **`state.json`** (default `~/.config/leapmux/worker/state.json`). This holds the Worker's identity: its `worker_id`, Hub auth token, and its private E2EE keys (X25519, ML-KEM-1024, SLH-DSA). Losing it forces re-registration with a new registration key and a new key identity — and because the Worker's public keys are registered in the Hub, a new identity will trip the Frontend's "Worker public key changed" pin-mismatch dialog. See [Managing Workers](/docs/admin/managing-workers/) and [Security & Threat Model](/docs/admin/security/).
 4. `worker.db` is transient agent/session state. It is not a secret, but back it up if you want to preserve agent transcripts and terminal history across a rebuild.
 
 > **Tip:** A correct, restorable backup of a single-machine Hub is: a consistent copy of `hub.db` (Hub stopped) **plus** `encryption.key`, both taken at the same time. For a distributed deployment, add each Worker's `state.json`.
@@ -281,7 +283,7 @@ For each Worker:
 
 - **Lost `encryption.key`, database intact:** encrypted OAuth secrets are unrecoverable. Generate a new key by starting the Hub (it auto-creates a version-1 key), then have users re-link their OAuth providers and re-enter provider client secrets. Non-encrypted data (accounts, workspaces) is unaffected.
 - **Lost `hub.db`, key intact:** the key alone cannot reconstruct accounts or workspaces. Restore the database from backup.
-- **Lost a Worker's `state.json`:** re-register the Worker (a fresh registration key from the Hub UI). The first Frontend to reconnect after the identity changes sees the **"Worker public key changed"** dialog and must explicitly Accept the new key. See [Managing Workers](/docs/operating/managing-workers/).
+- **Lost a Worker's `state.json`:** re-register the Worker (a fresh registration key from the Hub UI). The first Frontend to reconnect after the identity changes sees the **"Worker public key changed"** dialog and must explicitly Accept the new key. See [Managing Workers](/docs/admin/managing-workers/).
 - **Lost `worker.db`:** the Worker recovers as a fresh Worker; in-progress agent transcripts and terminal scrollback held only in that database are lost. The Worker's identity (`state.json`) is unaffected.
 
 ## Encryption modes (E2EE)
@@ -293,14 +295,14 @@ The keystore in this chapter protects data **at rest**. Wholly separate from it,
 | `post-quantum` (**default**) | Hybrid classical + post-quantum handshake — secure even if either the classical or the post-quantum algorithm is broken. |
 | `classic` | Classical-only handshake (no post-quantum protection). Smaller handshake messages. |
 
-Unless you have a specific reason to choose `classic`, leave it at the default. The accepted aliases and the fail-safe resolution of unrecognized values are documented in [Configuration](/docs/operating/configuration/).
+Unless you have a specific reason to choose `classic`, leave it at the default. The accepted aliases and the fail-safe resolution of unrecognized values are documented in [Configuration](/docs/admin/configuration/).
 
-The handshake primitives, Worker identity pinning (TOFU), and the key-change dialog are covered in [Security & Threat Model](/docs/operating/security/). Configuration precedence and the full flag list are in [Configuration](/docs/operating/configuration/).
+The handshake primitives, Worker identity pinning (TOFU), and the key-change dialog are covered in [Security & Threat Model](/docs/admin/security/). Configuration precedence and the full flag list are in [Configuration](/docs/admin/configuration/).
 
 ## See also
 
-- [Configuration](/docs/operating/configuration/) — config precedence, the full storage-key reference, data directories, and listen addresses.
-- [Security & Threat Model](/docs/operating/security/) — the E2EE protocol, the Hub-as-relay trust boundary, Worker TOFU pinning, and the solo-mode caveat.
-- [Recovery](/docs/operating/recover/) — the offline break-glass commands (`bootstrap`, `password`, `encryption-key`, `db`).
-- [Control CLI](/docs/operating/control-cli/) — the online `control admin` reference, including token commands.
-- [Managing Workers](/docs/operating/managing-workers/) — registering and approving Workers, registration keys, and key-pin handling.
+- [Configuration](/docs/admin/configuration/) — config precedence, the full storage-key reference, data directories, and listen addresses.
+- [Security & Threat Model](/docs/admin/security/) — the E2EE protocol, the Hub-as-relay trust boundary, Worker TOFU pinning, and the solo-mode caveat.
+- [Recovery](/docs/admin/recover/) — the offline break-glass commands (`bootstrap`, `password`, `encryption-key`, `db`).
+- [Control CLI](/docs/using/control-cli/) — the online `control admin` reference, including token commands.
+- [Managing Workers](/docs/admin/managing-workers/) — registering and approving Workers, registration keys, and key-pin handling.

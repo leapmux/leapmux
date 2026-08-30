@@ -142,7 +142,7 @@ func (s *WorkspaceService) LocateTab(
 //
 // There is no delegation-scope arm any more: a delegation bearer authenticates AS
 // its owner and carries no workspace bound, so it reaches every workspace that
-// owner has -- see the note on LocateTab, and `docs/operating/security.md` for
+// owner has -- see the note on LocateTab, and `docs/admin/security.md` for
 // what that bound now is. The CRDT registry is keyed by user id, so this always
 // resolves against exactly one UserCRDT manager: the authenticated user's own.
 //

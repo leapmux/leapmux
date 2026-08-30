@@ -21,8 +21,9 @@ const footerSeparator = "-- \n"
 // shape.
 const verifyEmailPath = "/verify-email?code="
 
-// resetPasswordPath is the frontend route for self-service password reset.
-const resetPasswordPath = "/reset-password?token="
+// accountRecoveryPath is the frontend route for self-service account
+// recovery completion.
+const accountRecoveryPath = "/recover-account/complete?token="
 
 // Renderer builds the email Messages this package sends. It carries a
 // base-URL closure so render call sites only pass per-message data
@@ -163,16 +164,21 @@ func (r Renderer) RegistrationInstructions(to, command string) Message {
 	}
 }
 
-// PasswordResetEmail builds the self-service password reset email.
-func (r Renderer) PasswordResetEmail(to, token string, ttl time.Duration) Message {
-	link := r.hubURL() + resetPasswordPath + token
+// AccountRecoveryEmail builds the self-service account-recovery email.
+//
+// The body is identical for every account regardless of which sign-in
+// methods it holds: naming the method the user lost would tell a mailbox
+// reader which mechanisms the account uses. One link, one sentence, one
+// action.
+func (r Renderer) AccountRecoveryEmail(to, token string, ttl time.Duration) Message {
+	link := r.hubURL() + accountRecoveryPath + token
 	// expiresIn is an ARGUMENT, never spliced into the format string: a
 	// concatenated value carries its own text into the verb list, so one
 	// stray %% in a future duration string would shift every verb after it
 	// and render "%!o(string=F)f an hour" into the delivered mail.
 	body := fmt.Sprintf(
-		"You requested a password reset for your LeapMux account.\n\n"+
-			"Click the link below to choose a new password:\n\n    %s\n\n"+
+		"You asked to recover your LeapMux account.\n\n"+
+			"Click the link below to set a new password and sign back in:\n\n    %s\n\n"+
 			"The link expires in %s. If you did not request this, you can ignore this email.\n\n%s",
 		link,
 		expiresIn(ttl),
@@ -180,7 +186,7 @@ func (r Renderer) PasswordResetEmail(to, token string, ttl time.Duration) Messag
 	)
 	return Message{
 		To:      to,
-		Subject: "[LeapMux] Reset your password",
+		Subject: "[LeapMux] Recover your account",
 		Body:    body,
 	}
 }

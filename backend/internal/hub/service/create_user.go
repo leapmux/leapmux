@@ -31,11 +31,11 @@ const pendingEmailExpiry = 30 * time.Minute
 // the Go gate and the store can never disagree at the boundary attempt.
 const maxVerificationAttempts = 5
 
-// maxPasswordResetAttempts is the per-token attempt budget for the
+// maxAccountRecoveryAttempts is the per-token attempt budget for the
 // self-service password reset. The token is a 285-bit secret, so the
 // budget is defense-in-depth against a throttled oracle, not a
 // brute-force limit; the SQL force-expire binds the same constant.
-const maxPasswordResetAttempts = 5
+const maxAccountRecoveryAttempts = 5
 
 // CreateUserParams holds the parameters for creating a new user.
 type CreateUserParams struct {
@@ -63,11 +63,11 @@ type createUserTxParams struct {
 	isAdmin       bool
 	extra         func(tx store.Store) error
 	// now is the CALLER's clock seam, and this transaction mints the pending
-	// verification deadline from it. Every instant a service mints comes from
+	// verification row from it. Every instant a service mints comes from
 	// that seam (see clockSeam), and this one did not: it read the wall clock
-	// inside the transaction, so a test that moved the seam moved the resend
-	// cooldown -- which issuedAtFromExpiry DERIVES from this deadline -- and
-	// left the deadline itself where it was.
+	// inside the transaction, so a test that moved the seam moved the
+	// issued-at the cooldown gate reads -- and left the deadline itself
+	// where it was.
 	//
 	// Nil reads the wall clock, exactly as clockSeam does. CreateUser passes
 	// none and needs none: that flavor writes no pending row, so it mints no
@@ -110,7 +110,7 @@ func createUserInTx(ctx context.Context, st store.Store, opt createUserTxParams)
 	// column says whether somebody CONFIRMED this address, and that is a
 	// fact about the address rather than a privilege of the account. Forcing
 	// it made an administrator's unconfirmed address a valid self-service
-	// password-reset target, because RequestPasswordReset reads the column
+	// password-reset target, because RequestAccountRecovery reads the column
 	// and has no admin exemption -- and it cannot have one, since the
 	// question it asks is exactly "did anybody confirm this address".
 	//
@@ -155,7 +155,8 @@ func createUserInTx(ctx context.Context, st store.Store, opt createUserTxParams)
 		}
 		if opt.pendingEmail != "" {
 			code = verifycode.Generate()
-			expiresAt := opt.clock().Add(pendingEmailExpiry).UTC()
+			issuedAt := opt.clock().UTC()
+			expiresAt := issuedAt.Add(pendingEmailExpiry)
 			// A brand-new account holds no previous code, so the
 			// conditional mint always lands; UnconditionalMintCutoff says that
 			// explicitly rather than leaving a zero cutoff to mean it.
@@ -164,6 +165,7 @@ func createUserInTx(ctx context.Context, st store.Store, opt createUserTxParams)
 				PendingEmail:          opt.pendingEmail,
 				PendingEmailToken:     code,
 				PendingEmailExpiresAt: &expiresAt,
+				PendingEmailIssuedAt:  &issuedAt,
 				CooldownCutoff:        store.UnconditionalMintCutoff(),
 			}); err != nil {
 				return fmt.Errorf("set pending email: %w", err)
@@ -451,13 +453,15 @@ func mintPendingEmailVerification(ctx context.Context, st store.Store, userID, e
 		return "", err
 	}
 	storedCode := verifycode.Generate()
-	expiresAt := now.Add(pendingEmailExpiry).UTC()
+	issuedAt := now.UTC()
+	expiresAt := issuedAt.Add(pendingEmailExpiry)
 	minted, err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
 		ID:                    userID,
 		PendingEmail:          email,
 		PendingEmailToken:     storedCode,
 		PendingEmailExpiresAt: &expiresAt,
-		CooldownCutoff:        mintCutoff(now, pendingEmailExpiry),
+		PendingEmailIssuedAt:  &issuedAt,
+		CooldownCutoff:        mintCutoff(now),
 	})
 	if err != nil {
 		return "", fmt.Errorf("set pending email: %w", err)
