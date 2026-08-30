@@ -132,7 +132,7 @@ Dev mode accepts the same flags as solo, plus `-encryption-mode`. The most impor
 
 Like solo, dev also accepts the SQLite tuning flags plus `-dev-frontend` (see [Configuration](/docs/operating/configuration/)).
 
-Dev mode seeds `signup_enabled=true` (it runs the full multi-user path), and the runtime knobs the old flags carried are settings now — a short session for exercising the signed-out path is:
+Dev mode seeds `signup_enabled=true` (it runs the full multi-user path), and the runtime knobs are settings rather than flags — a short session for exercising the signed-out path is:
 
 ```bash
 leapmux control admin settings set session_duration_seconds 300   # the 5-minute minimum

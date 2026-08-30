@@ -129,7 +129,7 @@ Whether terminal alerts raise OS-level notifications (browser-only; the browser 
 
 ## Chat & Composer, Terminal, Files & Editors
 
-These categories hold the per-device toggles that used to be scattered across in-app menus. The in-context controls stay exactly where they were — the tab-bar **Advanced** menu, the composer **[+]** menu, the file viewer's save action — and both routes change the same stored value, so a toggle in one place is reflected everywhere.
+These categories hold the per-device toggles. The in-context controls — the tab-bar **Advanced** menu, the composer **[+]** menu, the file viewer's save action — change the same stored value, so a toggle in one place is reflected everywhere.
 
 | Setting | Default | Also toggled from | What it does |
 |---|---|---|---|
@@ -154,7 +154,7 @@ The **Keyboard Shortcuts** category is a table of every command with its default
 
 ## Account
 
-The Account category carries what the old Profile dialog managed, as one row per concern. It leads the navigation. Solo mode hides every row here but **Connected apps** — a solo deployment has one local identity, so there is no password, address or provider to manage, but it authorizes apps like any other Hub. For the broader account lifecycle — sign-up, login, OAuth, email verification, sessions — see [Accounts & Authentication](/docs/using/accounts/).
+The Account category carries your account settings, as one row per concern. It leads the navigation. Solo mode hides every row here but **Connected apps** — a solo deployment has one local identity, so there is no password, address or provider to manage, but it authorizes apps like any other Hub. For the broader account lifecycle — sign-up, login, OAuth, email verification, sessions — see [Accounts & Authentication](/docs/using/accounts/).
 
 - **Profile** — your username and display name, saved together. A username is a lowercase slug, and `solo` is always reserved. A display name falls back to the username when empty.
 - **Email** — changing it may require verification (an operator-configured policy); a pending change shows a notice until confirmed.
@@ -177,7 +177,7 @@ Administrators additionally see **Apps** under **ADMINISTRATION**, which holds t
 
 ### Per-key account storage
 
-Account settings are stored on the Hub **one key at a time**. Each change sends only the changed key, and the Hub merges it under a row lock — so **two devices (or two tabs) editing different settings no longer overwrite each other**, and a rejected change never partially applies. A value the Hub considers invalid is refused with the row's error; your other settings are untouched.
+Account settings are stored on the Hub **one key at a time**. Each change sends only the changed key, and the Hub merges it under a row lock — so **two devices (or two tabs) can edit different settings without overwriting each other**, and a rejected change never partially applies. A value the Hub considers invalid is refused with the row's error; your other settings are untouched.
 
 ### Device overrides
 

@@ -155,7 +155,7 @@ Follow these steps in order. The `remove` step is guarded — it refuses to dele
 
 Pepper rotation is **not** part of the key-rotation runbook above, and you should not add it there — encryption-key rotation deliberately leaves API and delegation tokens working.
 
-The pepper used to hash API-token and delegation-token secrets is a **dedicated, stable secret**. It lives alongside the encryption keys in `encryption.key` but is **independent** of the encryption key ring: rotating, re-encrypting, or removing encryption keys never changes it, so existing API and delegation tokens keep validating across key rotation. (An `encryption.key` file created before this behavior is seeded with a pepper automatically the next time it is loaded.)
+The pepper used to hash API-token and delegation-token secrets is a **dedicated, stable secret**. It lives alongside the encryption keys in `encryption.key` but is **independent** of the encryption key ring: rotating, re-encrypting, or removing encryption keys never changes it, so API and delegation tokens keep validating across key rotation.
 
 To deliberately invalidate **every** API token and delegation token — for example after a suspected keystore compromise — regenerate the pepper:
 

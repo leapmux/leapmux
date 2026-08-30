@@ -117,7 +117,7 @@ Every config-file key that holds a duration — each database pool setting and t
 
 Parts combine, in any order: `1h30m`, `1w2d`, `2d12h`.
 
-**A bare number is a count of seconds.** That is what these keys took before they had units, so `api_timeout: 10` still means ten seconds and an existing config file keeps working. A number only means seconds when it is the whole value — `1d30` is rejected rather than read as a day and thirty seconds.
+**A bare number is a count of seconds**: `api_timeout: 10` means ten seconds. A number only means seconds when it is the whole value — `1d30` is rejected rather than read as a day and thirty seconds.
 
 The same spellings work everywhere a key can be set: the config file, the environment variable, and the CLI flag. `0` means "use the default" for the Worker timeouts, and "leave the database driver's own default alone" for the pool settings.
 

@@ -605,10 +605,6 @@ leapmux control tile split --tile-id "$TILE" --direction vertical
 leapmux control layout set --workspace-id "$WS" --file before.json
 ```
 
-## `admin` — hub administration over RPC
-
-The `admin` subtree — settings, users, sessions, workers, sign-in providers, app registrations, captcha, rate limits, and API/delegation tokens — has its own chapter: [Admin CLI](/docs/operating/admin-cli/). Two rules from it apply everywhere: admin commands never run over the worker-IPC transport (`control admin` refuses when `LEAPMUX_CONTROL_SOCK` is set), and every write needs an admin-scoped credential that verified recently.
-
 ## Sockets, `--hub unix:`/`npipe:`, and login
 
 A `--hub` value may be a hub IPC listener (`unix:$HOME/.config/leapmux/hub/hub.sock` on Unix, `npipe:...` on Windows) as well as an http(s) URL. A socket hub URL is still the HUB peer: the CLI presents the same `Authorization: Bearer` credential as over http(s) — only the worker-IPC transport uses the internal `X-LeapMux-Token` header.

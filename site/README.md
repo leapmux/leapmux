@@ -62,5 +62,5 @@ directory with front matter that sets `title`, `type: docs`, and a `weight`
 (controls sidebar order), then add a card for it in the section's `_index.md`
 and a mention in the introduction's "How this manual is organized" list.
 Internal links use absolute paths, e.g. `[Configuration](/docs/operating/configuration/)`.
-If you move or rename a page, keep its old URL working with an `aliases` entry
-and update every inbound link.
+If you move or rename a page, update every inbound link (the project is
+pre-release: old URLs are not kept working).

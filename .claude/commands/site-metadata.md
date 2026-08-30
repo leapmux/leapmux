@@ -63,7 +63,7 @@ the `description` front matter (right after `title:`). Write a concise, specific
 preview-tuned line, **120-160 characters**, plain ASCII (no smart quotes/em-dashes), no
 double quotes inside the value.
 
-Conventions to follow (see `site/CLAUDE.md` and the docs-site memory):
+Conventions to follow:
 
 - **Pre-Concepts pages** — the manual home (`content/docs/_index.md`),
   `getting-started/introduction.md`, and `getting-started/_index.md` — must NOT use the
@@ -108,9 +108,10 @@ The build must be clean. Then verify, from `site/`:
    OG=$(grep -oE 'property="og:image" content="[^"]*"' public/docs/using/workspaces/index.html | head -1 | sed -E 's/.*content="([^"]*)".*/\1/')
    cp "public/${OG#https://leapmux.dev/}" /tmp/card.png
    ```
-   Read `/tmp/card.png`: legible title, correct section eyebrow, "LeapMux" wordmark
-   (not LEAPMUX), `leapmux.dev/docs` footer, 1200x630. If a long title overflows, tune
-   `$maxChars` / `$titleSize` in `og-image.html`.
+   Read `/tmp/card.png`: legible title (word-wrapped, not clipped), "LeapMux" wordmark
+   (not LEAPMUX), a path-aware footer URL (`leapmux.dev` on the home page,
+   `leapmux.dev/docs/<section>` on docs pages), 1200x630. If a long title overflows,
+   tune `$maxChars` / `$titleSize` in `og-image.html`.
 
 4. **llms.txt** exists and is hierarchical: `head -25 public/llms.txt`.
 
@@ -118,12 +119,6 @@ The build must be clean. Then verify, from `site/`:
    ```bash
    grep -o 'Last updated on[^<]*<time[^>]*>[^<]*</time>' public/docs/reference/legal/index.html | head -1
    ```
-
-6. **No broken numeric-prefix links** left from the old structure:
-   ```bash
-   grep -roE '/docs/[0-9]+-[a-z-]+/' public/ | sort -u
-   ```
-   (empty = good)
 
 ## Step 4: Report
 

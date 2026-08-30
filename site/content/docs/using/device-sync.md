@@ -3,8 +3,6 @@ title: "Device Sync"
 description: "How LeapMux keeps a workspace layout in sync across your browsers and devices in near-real-time, and how the turn-end sound picks a single client."
 type: docs
 weight: 7
-aliases:
-  - /docs/using/collaboration/
 ---
 
 LeapMux keeps a workspace's **layout** in sync across every client where you have it open — your browser tabs, windows, and devices. Open the same workspace in two places and its tiling tree, tabs, splits, and floating windows stay identical in both, in near-real-time. This is layout sync, not content mirroring: what you type into an agent chat or terminal composer in one client does not echo into another's input area.

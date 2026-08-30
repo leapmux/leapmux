@@ -55,7 +55,7 @@ Beyond the defaults, LeapMux also supports your own **custom sections** for orga
 
 In addition to the default sections, your sidebar can hold **custom sections** that you use to group workspaces. A custom section behaves like **In progress**: it is expanded by default, it carries a **+** button to create a workspace directly in it, and it is a valid drag target and a **Move to** target (see [Moving and archiving](#moving-and-archiving) below). Each section is per-user, so creating, renaming, or deleting a section changes only *your* sidebar.
 
-> **Note:** Custom sections may appear if they already exist, but the current UI provides no way to **create**, **rename**, or **delete** them — so the only sections you will normally see are the two defaults.
+> **Note:** The current UI provides no way to **create**, **rename**, or **delete** custom sections, so the only sections you will see are the two defaults.
 
 ### Workspace rows
 
