@@ -2,7 +2,7 @@
 title: "Terminals"
 description: "Full shell terminals in LeapMux that run on a Worker and stream over the end-to-end-encrypted channel: open one, use it, and keep it across reconnects."
 type: docs
-weight: 8
+weight: 5
 ---
 
 LeapMux gives you full shell terminals that run on a Worker and stream into your Frontend (browser or desktop app) over the same end-to-end-encrypted channel as your agents. A terminal is a tab, just like an agent or a file viewer — you can tile it, float it, move it between workspaces, and it survives page refreshes and reconnects.
@@ -67,7 +67,7 @@ Submit with the **"Create"** button (it reads **"Creating..."** while in flight)
 
 ### Opening a terminal from the CLI
 
-You can create a terminal from a script or another agent with the [Remote Control CLI](/docs/operating/control-cli/):
+You can create a terminal from a script or another agent with the [Control CLI](/docs/operating/control-cli/):
 
 ```bash
 leapmux control tab open --type terminal \
@@ -76,7 +76,7 @@ leapmux control tab open --type terminal \
   --shell /bin/zsh
 ```
 
-`--shell` is optional — leaving it empty uses the Worker's default shell. `--shell-start-dir` defaults to the working directory. See [Remote Control CLI](/docs/operating/control-cli/) for the full flag set, entity-ID resolution, and placement flags.
+`--shell` is optional — leaving it empty uses the Worker's default shell. `--shell-start-dir` defaults to the working directory. See [Control CLI](/docs/operating/control-cli/) for the full flag set, entity-ID resolution, and placement flags.
 
 > **Note:** Remote control is automatic; see [Driving LeapMux from inside a terminal](#driving-leapmux-from-inside-a-terminal-remote-control).
 
@@ -258,7 +258,7 @@ leapmux control terminal get --tab-id <tab> --screen
 leapmux control terminal shells --worker-id <worker>
 ```
 
-See [Remote Control CLI](/docs/operating/control-cli/) for the complete terminal subcommand reference, authentication, and the JSON output contract.
+See [Control CLI](/docs/operating/control-cli/) for the complete terminal subcommand reference, authentication, and the JSON output contract.
 
 ## Renaming a terminal
 
@@ -283,6 +283,6 @@ The terminal and tab shortcuts (opening, closing, scrollback paging, and the mac
 - [Tabs & Layout](/docs/using/tabs-and-layout/) — tiling, floating, and moving terminal tabs.
 - [Worktrees & Branches](/docs/using/worktrees-and-branches/) — git options, worktree creation, and the close-last-tab flow.
 - [Coding Agents](/docs/using/coding-agents/) — agents share the same tab, Worker, and git-options model.
-- [Remote Control CLI](/docs/operating/control-cli/) — the full `leapmux control terminal` and `tab` command surface.
+- [Control CLI](/docs/operating/control-cli/) — the full `leapmux control terminal` and `tab` command surface.
 - [Settings & Preferences](/docs/using/settings/) — terminal theme and fonts.
 - [Keyboard Shortcuts](/docs/using/keyboard-shortcuts/) — remap any of the shortcuts above.

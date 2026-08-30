@@ -11,7 +11,7 @@ Short definitions of the terms you will meet throughout the LeapMux manual. Each
 
 ### Active client (presence)
 
-The single client connection that "owns" the turn-end notification sound for a workspace at any moment. The slot is not a fixed assignment: it follows wherever you last typed, going to the client that most recently received your input (and stays empty if two clients tie or none has reported input yet). When an agent finishes a turn, only the client that currently holds the slot plays the ding — so opening the same workspace on a laptop and a phone does not double-ding. The active client is broadcast over the per-user events stream and is not the same thing as the layout sync. See [Device Sync & Presence](/docs/using/collaboration/).
+The single client connection that "owns" the turn-end notification sound for a workspace at any moment. The slot is not a fixed assignment: it follows wherever you last typed, going to the client that most recently received your input (and stays empty if two clients tie or none has reported input yet). When an agent finishes a turn, only the client that currently holds the slot plays the ding — so opening the same workspace on a laptop and a phone does not double-ding. The active client is broadcast over the per-user events stream and is not the same thing as the layout sync. See [Device Sync](/docs/using/device-sync/).
 
 ### Agent
 
@@ -115,7 +115,7 @@ A short-lived, single-use secret (5-minute TTL) that authorizes a Worker to join
 
 ### Remote CLI
 
-`leapmux control`: a JSON-emitting command-line surface for driving a running Hub from a script or from inside an agent — creating workspaces and tabs, sending agent and terminal input, mutating the tile layout, inspecting files and git, and watching events. External users authorize it with `leapmux control auth login`; agents are handed credentials automatically through `LEAPMUX_CONTROL_*` environment variables. See [Remote Control CLI](/docs/operating/control-cli/).
+`leapmux control`: a JSON-emitting command-line surface for driving a running Hub from a script or from inside an agent — creating workspaces and tabs, sending agent and terminal input, mutating the tile layout, inspecting files and git, and watching events. External users authorize it with `leapmux control auth login`; agents are handed credentials automatically through `LEAPMUX_CONTROL_*` environment variables. See [Control CLI](/docs/operating/control-cli/).
 
 ## S
 

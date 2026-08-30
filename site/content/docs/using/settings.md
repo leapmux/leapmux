@@ -1,8 +1,8 @@
 ---
 title: "Settings & Preferences"
-description: "Every setting in the Preferences dialog: appearance, notifications, chat, terminal, files, keyboard shortcuts, account, fonts, and the hub administration panels."
+description: "Every Preferences dialog setting: appearance, notifications, chat, terminal, files, fonts, keyboard shortcuts, account, apps, and hub administration panels."
 type: docs
-weight: 11
+weight: 10
 ---
 
 LeapMux keeps your settings in one **Preferences** dialog reached from the user (avatar) menu. It is a large, searchable, categorized dialog covering every user, browser, and (for hub administrators) instance setting in one place. This chapter covers every category, the additional in-context toggles, and how each preference is stored and resolved.
@@ -58,7 +58,7 @@ Administrators additionally see an **ADMINISTRATION** section in the navigation.
 | **Apps** | Open app registration (RFC 7591), off by default. | Shown |
 | **Advanced** | Maximum message size, queue budgets. Both apply only after a hub restart, and both rows carry a **Requires Restart** badge. | Shown |
 
-See [Configuration](/docs/operating/configuration/) for what each instance setting does, and [`admin` — hub administration over RPC](/docs/operating/control-cli/#admin--hub-administration-over-rpc) for the CLI surface over the same settings.
+See [Configuration](/docs/operating/configuration/) for what each instance setting does, and [`admin` — hub administration over RPC](/docs/operating/admin-cli/) for the CLI surface over the same settings.
 
 ## Appearance
 
@@ -117,7 +117,7 @@ A family holds up to 32 names, and the panel reports a name it cannot use. For m
 
 ### Turn-end sound
 
-Plays a notification sound when a coding agent finishes a turn: **None** or **Ding dong** (the built-in default). The sound is intentionally restrained — only the focused client plays it, so it does not double across tabs or devices, and it is skipped for single-exchange turns and rate-limited to at most one chime per minute. See [Device Sync & Presence](/docs/using/collaboration/).
+Plays a notification sound when a coding agent finishes a turn: **None** or **Ding dong** (the built-in default). The sound is intentionally restrained — only the focused client plays it, so it does not double across tabs or devices, and it is skipped for single-exchange turns and rate-limited to at most one chime per minute. See [Device Sync](/docs/using/device-sync/).
 
 ### Turn-end volume
 

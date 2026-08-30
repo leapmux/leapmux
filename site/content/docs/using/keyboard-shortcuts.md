@@ -2,7 +2,7 @@
 title: "Keyboard Shortcuts"
 description: "How the VS Code-style shortcut system works in LeapMux, every default key binding by context, and the override format for customizing them."
 type: docs
-weight: 12
+weight: 11
 ---
 
 LeapMux ships with a VS Code-style keyboard shortcut system: every shortcut is a *command* bound to a *key*, and each binding is active only inside a *context* (for example, only when a dialog is open or a terminal is focused). This chapter explains how the system works, lists every default binding, and documents the override format the engine uses for customization.

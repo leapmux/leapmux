@@ -9,7 +9,7 @@ This chapter is the complete reference for configuring the LeapMux **Hub** and *
 
 For *how to launch* each mode (solo, hub, worker, dev) and what each is for, see [Running LeapMux](/docs/operating/running-leapmux/). For key management, encryption at rest, and database operations, see [Encryption & Data](/docs/operating/encryption-and-data/).
 
-> **Note:** Everything here applies to the long-running daemons. `solo` and `dev` modes reuse the Hub's configuration loader with a restricted flag set; the differences are called out where relevant. The desktop app, the `leapmux control` CLI, and the `leapmux recover` CLI are configured separately — see [Running LeapMux](/docs/operating/running-leapmux/), [Remote Control CLI](/docs/operating/control-cli/), and [Recovery](/docs/operating/recover/).
+> **Note:** Everything here applies to the long-running daemons. `solo` and `dev` modes reuse the Hub's configuration loader with a restricted flag set; the differences are called out where relevant. The desktop app, the `leapmux control` CLI, and the `leapmux recover` CLI are configured separately — see [Running LeapMux](/docs/operating/running-leapmux/), [Control CLI](/docs/operating/control-cli/), and [Recovery](/docs/operating/recover/).
 
 ## Configuration precedence
 
@@ -277,7 +277,7 @@ WARN captcha is enabled in the settings but verifies nothing reason="the selecte
 
 It logs on the transition, not per request, so a busy Hub prints one line rather than one per sign-in. Set `public_url` (or `secure_cookies`) and the Hub logs `captcha enforcement restored: this hub publishes a secure browser address` at `INFO`. So a Hub whose settings read `captcha.enabled = true` while the browser shows no widget has one place to look for the reason.
 
-See [Captcha](/docs/operating/control-cli/#captcha) and [Rate limits](/docs/operating/control-cli/#rate-limits) in the Remote Control CLI chapter for the full flag reference.
+See [Captcha](/docs/operating/admin-cli/#captcha) and [Rate limits](/docs/operating/admin-cli/#rate-limits) in the Admin CLI chapter for the full flag reference.
 
 ### Outbound queue memory
 

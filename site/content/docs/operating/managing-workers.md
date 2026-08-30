@@ -140,7 +140,7 @@ Key behaviors:
 
 Worker details are cached for about a minute, so reopening a dialog doesn't re-fetch worker details; click **Refresh workers** to force a re-list (for example, right after a new Worker comes online).
 
-To open an agent or terminal on a chosen Worker, see [Coding Agents](/docs/using/coding-agents/) and [Terminals](/docs/using/terminals/). To script the same thing, `leapmux control tab open --worker-id <id> ...` — see [Remote Control CLI](/docs/operating/control-cli/).
+To open an agent or terminal on a chosen Worker, see [Coding Agents](/docs/using/coding-agents/) and [Terminals](/docs/using/terminals/). To script the same thing, `leapmux control tab open --worker-id <id> ...` — see [Control CLI](/docs/operating/control-cli/).
 
 ## Auto-reconnect
 
@@ -172,7 +172,7 @@ Deregistering tells the Hub to forget a Worker and tear down everything running 
 leapmux control admin worker deregister --id <worker-id>
 ```
 
-On deregistration the Worker acknowledges the request, shuts down gracefully, clears its local credentials, and exits. See [Remote Control CLI](/docs/operating/control-cli/) for the full operator surface.
+On deregistration the Worker acknowledges the request, shuts down gracefully, clears its local credentials, and exits. See [Control CLI](/docs/operating/control-cli/) for the full operator surface.
 
 ## Tunnels (desktop app)
 
@@ -265,7 +265,7 @@ leapmux control worker pins remove --worker-id=<id>
 leapmux worker cross-worker-pins remove --target-worker-id=<id>
 ```
 
-Both pin-management commands run entirely against local pin files — no Worker process needs to be running to manage them. For the full `leapmux control worker pins list|show|remove` reference (and the required `--hub` flag), see [Remote Control CLI](/docs/operating/control-cli/).
+Both pin-management commands run entirely against local pin files — no Worker process needs to be running to manage them. For the full `leapmux control worker pins list|show|remove` reference (and the required `--hub` flag), see [Control CLI](/docs/operating/control-cli/).
 
 > **Note:** There is no UI for browsing or pre-clearing browser pins; in the browser, a pin is only reset by accepting the mismatch dialog (or by clearing browser storage). For a deeper look at the handshake, fingerprints, and the full trust model, see [Security & Threat Model](/docs/operating/security/).
 
@@ -284,7 +284,7 @@ Operators manage all Workers on a Hub (not just their own) with `leapmux control
 
 > **Note:** `control admin` deliberately has **no** `reg-key create` — registration keys are minted only by an authenticated user (via the **Register worker** dialog), which is itself the authorization step. `control admin` lists, revokes, and purges keys but does not issue them.
 
-For the complete operator surface — including sessions, API tokens, and delegation tokens — see [`admin` — hub administration over RPC](/docs/operating/control-cli/#admin--hub-administration-over-rpc). Encryption keys are offline work; see [Recovery](/docs/operating/recover/).
+For the complete operator surface — including sessions, API tokens, and delegation tokens — see [`admin` — hub administration over RPC](/docs/operating/admin-cli/). Encryption keys are offline work; see [Recovery](/docs/operating/recover/).
 
 ## Encryption mode
 
@@ -300,4 +300,4 @@ Leave this at the default unless you have a specific reason to change it; both e
 - [Running LeapMux](/docs/operating/running-leapmux/) — run modes, ports, data directories, the bundled Worker.
 - [Configuration](/docs/operating/configuration/) — Worker flags, env vars, and config-file precedence.
 - [Security & Threat Model](/docs/operating/security/) — the E2EE protocol, TOFU pinning, and what the Hub can and cannot see.
-- [Remote Control CLI](/docs/operating/control-cli/) — `leapmux control worker` and `worker pins` for scripting and pin management, plus the full [`leapmux control admin worker`](/docs/operating/control-cli/#admin--hub-administration-over-rpc) and registration-key reference.
+- [Control CLI](/docs/operating/control-cli/) — `leapmux control worker` and `worker pins` for scripting and pin management, plus the full [`leapmux control admin worker`](/docs/operating/admin-cli/) and registration-key reference.

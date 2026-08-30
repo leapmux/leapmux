@@ -2,7 +2,7 @@
 title: "App Authorization"
 description: "Register apps on a LeapMux Hub, control what each may ask for, and vouch for the ones you trust. The OAuth 2.1 authorization server, from the operator's side."
 type: docs
-weight: 6
+weight: 5
 ---
 
 > **Not this chapter:** signing users *in* with GitHub, Google, or your own OIDC issuer is [Sign-in Providers](/docs/operating/sign-in-providers/).

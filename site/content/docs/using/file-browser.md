@@ -2,7 +2,7 @@
 title: "File Browser"
 description: "The git-aware file browser and read-only viewer in LeapMux: browse the tree with live git status, open files as tabs, and view inline diffs, even remotely."
 type: docs
-weight: 9
+weight: 6
 ---
 
 LeapMux includes a git-aware file browser and a read-only file viewer. The browser lives in the workspace sidebar's **Files** section and shows the directory tree of the active tab's working directory, with live git-status colors and diff-stat badges. Clicking a file opens it as a tab in the main tile area, where you can read its contents, view inline diffs against `HEAD` or the index, preview images and Markdown, and quote selections into a chat.
@@ -169,7 +169,7 @@ The initial view depends on the filter you opened from:
 | **Changed** or **Unstaged** | Inline diff of `HEAD` vs the working copy. |
 | **All** (or an unfiltered tree) | The plain working-copy content. |
 
-File tabs participate in the workspace's tiling and layout system like any other tab, so you can split, float, and rearrange them. See [Tabs & Layout](/docs/using/tabs-and-layout/). The file's path is registered with the Worker over the encrypted channel so that your other clients viewing the workspace can resolve the same file — see [Device Sync & Presence](/docs/using/collaboration/).
+File tabs participate in the workspace's tiling and layout system like any other tab, so you can split, float, and rearrange them. See [Tabs & Layout](/docs/using/tabs-and-layout/). The file's path is registered with the Worker over the encrypted channel so that your other clients viewing the workspace can resolve the same file — see [Device Sync](/docs/using/device-sync/).
 
 ## Viewing files
 

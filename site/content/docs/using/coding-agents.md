@@ -2,12 +2,12 @@
 title: "Coding Agents"
 description: "Run coding-assistant CLIs like Claude Code and Codex in LeapMux: open an agent, chat, read tool calls, answer permission prompts, and switch models mid-session."
 type: docs
-weight: 6
+weight: 3
 ---
 
 Coding agents are the heart of LeapMux. Each agent is a real coding-assistant CLI (Claude Code, Codex, and others) running on a Worker, wrapped in a chat tab so you can talk to it, watch its tool calls, approve its actions, and steer it without leaving the browser. This chapter covers which agents are supported, how to open one, how to chat with it, how tool calls render, how to answer permission prompts, and how to change models and settings mid-session.
 
-For where agents live in the workspace layout, see [Tabs & Layout](/docs/using/tabs-and-layout/). For the git side of opening an agent in a branch or worktree, see [Worktrees & Branches](/docs/using/worktrees-and-branches/). To drive agents from a script instead of the browser, see [Remote Control CLI](/docs/operating/control-cli/).
+For where agents live in the workspace layout, see [Tabs & Layout](/docs/using/tabs-and-layout/). For the git side of opening an agent in a branch or worktree, see [Worktrees & Branches](/docs/using/worktrees-and-branches/). To drive agents from a script instead of the browser, see [Control CLI](/docs/operating/control-cli/).
 
 ## Supported agents
 
@@ -281,4 +281,4 @@ leapmux control tab open --type agent --worker-id <id> --provider "Claude Code" 
 leapmux control agent send-control-response --tab-id <id> --content '<raw JSON>'
 ```
 
-See [Remote Control CLI](/docs/operating/control-cli/) for the full command tree, entity-ID resolution, and the JSON output contract.
+See [Control CLI](/docs/operating/control-cli/) for the full command tree, entity-ID resolution, and the JSON output contract.

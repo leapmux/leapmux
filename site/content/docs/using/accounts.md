@@ -2,7 +2,7 @@
 title: "Accounts & Authentication"
 description: "Getting into LeapMux as a user: when you need an account, creating the first one, signing up and logging in, email verification, OAuth, and your profile."
 type: docs
-weight: 1
+weight: 8
 ---
 
 This chapter covers everything you need to get into LeapMux as a user: when you need an account at all, how to create the very first one, how to sign up and log in, how email verification and OAuth sign-in work, and how to manage your profile and password once you are in.
@@ -279,7 +279,7 @@ When you log in, LeapMux issues a session and stores it in a secure, `HttpOnly` 
 
 **Signing out.** Use the log-out action in the app. It ends your session on the server and clears the cookie. (In solo mode, "log out" does nothing — there is no session to end.)
 
-**Changing your password signs out your other sessions.** When you change your password, LeapMux invalidates every *other* active session (the current one stays signed in) and revokes your API and delegation tokens. This is a security feature: if someone else had a session, changing your password locks them out. See [Remote Control CLI](/docs/operating/control-cli/) for operator-side session management.
+**Changing your password signs out your other sessions.** When you change your password, LeapMux invalidates every *other* active session (the current one stays signed in) and revokes your API and delegation tokens. This is a security feature: if someone else had a session, changing your password locks them out. See [Control CLI](/docs/operating/control-cli/) for operator-side session management.
 
 ## Managing your profile
 

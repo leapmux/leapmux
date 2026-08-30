@@ -39,7 +39,7 @@ The Worker prints an error and exits. The error says that the Hub rejected the r
 Registration keys are **consumed atomically** on first use and live only 5 minutes. This error means the key was already used by another Worker, was revoked, or expired. These are permanent errors — the Worker does **not** retry them (unlike a transient network failure, which it does retry with backoff).
 
 **Fix**
-Mint a brand-new key from the **Register worker** dialog and run the Worker with it. Never reuse a key across machines. If you mint keys via the CLI, check live keys with `leapmux control admin worker reg-key list` and revoke stale ones with `leapmux control admin worker reg-key revoke --id <id>` (see [Remote Control CLI](/docs/operating/control-cli/)).
+Mint a brand-new key from the **Register worker** dialog and run the Worker with it. Never reuse a key across machines. If you mint keys via the CLI, check live keys with `leapmux control admin worker reg-key list` and revoke stale ones with `leapmux control admin worker reg-key revoke --id <id>` (see [Control CLI](/docs/operating/control-cli/)).
 
 ### The Worker refuses `--registration-key` because it is already registered
 
@@ -126,7 +126,7 @@ leapmux worker cross-worker-pins list                              # see all pin
 leapmux worker cross-worker-pins remove --target-worker-id <id>    # clear one pin
 ```
 
-There is no UI for clearing key pins — pin removal is CLI-only. See [Remote Control CLI](/docs/operating/control-cli/) and [Managing Workers](/docs/operating/managing-workers/).
+There is no UI for clearing key pins — pin removal is CLI-only. See [Control CLI](/docs/operating/control-cli/) and [Managing Workers](/docs/operating/managing-workers/).
 
 ## Ports, listen address, and reaching the UI
 
@@ -229,7 +229,7 @@ Public sign-up is controlled by the `signup_enabled` setting, which defaults to 
 
 **Fix**
 - To allow self-service sign-up: `leapmux control admin settings set signup_enabled true`.
-- Otherwise have an admin create the account with `leapmux control admin user create` (see [Remote Control CLI](/docs/operating/control-cli/)).
+- Otherwise have an admin create the account with `leapmux control admin user create` (see [Control CLI](/docs/operating/control-cli/)).
 
 ### Login is refused although the username and the password look right
 
@@ -240,7 +240,7 @@ Sign-in is refused, and the form says only that the credentials are invalid.
 For security, the Hub returns the identical error for both an unknown username and a wrong password — there's no way to tell which from the message. Usernames are lowercase slugs; passwords are 8-128 printable ASCII characters, and a password may hold spaces.
 
 **Fix**
-Double-check the exact username (lowercase, hyphens, no spaces). If you've lost the password, have an admin reset it with `leapmux control admin user reset-password` (see [User passwords](/docs/operating/control-cli/#user-passwords)), which runs over RPC against the live Hub. When the Hub is stopped, `leapmux recover password reset` does the same work offline (see [Recovery](/docs/operating/recover/)); that command opens the Hub's database directly, so run it on the Hub host with the Hub stopped. Either way, every session, token, **and passkey** the account holds is revoked. Note: solo mode has no login at all — if you expected a login page in solo mode, you won't get one; it auto-authenticates.
+Double-check the exact username (lowercase, hyphens, no spaces). If you've lost the password, have an admin reset it with `leapmux control admin user reset-password` (see [User passwords](/docs/operating/admin-cli/#user-passwords)), which runs over RPC against the live Hub. When the Hub is stopped, `leapmux recover password reset` does the same work offline (see [Recovery](/docs/operating/recover/)); that command opens the Hub's database directly, so run it on the Hub host with the Hub stopped. Either way, every session, token, **and passkey** the account holds is revoked. Note: solo mode has no login at all — if you expected a login page in solo mode, you won't get one; it auto-authenticates.
 
 ### Passkey sign-in fails or the authenticator never appears
 
@@ -502,7 +502,7 @@ Restore the `encryption.key` from the same backup as the database. For planned k
 
 ## Terminals and `leapmux control`
 
-For terminal behavior, see [Terminals](/docs/using/terminals/); for the CLI, see [Remote Control CLI](/docs/operating/control-cli/).
+For terminal behavior, see [Terminals](/docs/using/terminals/); for the CLI, see [Control CLI](/docs/operating/control-cli/).
 
 ### `leapmux control` inside a terminal/agent says it can't find the Hub
 

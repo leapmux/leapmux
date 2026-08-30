@@ -2,7 +2,7 @@
 title: "Workspaces"
 description: "The top-level container in LeapMux for tiled agent, terminal, and file tabs: create, rename, delete, organize, and switch between workspaces."
 type: docs
-weight: 4
+weight: 1
 ---
 
 A **workspace** is the top-level container you work inside. It holds a tiling layout of tabs — coding agents, terminals, and file browsers — each tab tied to a Worker (machine), a working directory, and (usually) a git branch. Every workspace is owned by the user who created it (you see only your own), and persists across restarts (see [Coding Agents](/docs/using/coding-agents/) and [Terminals](/docs/using/terminals/) for how agent and terminal sessions are restored). This chapter covers creating, renaming, deleting, organizing, and switching between workspaces.
@@ -132,12 +132,12 @@ Your active workspace is remembered in the browser, per account, so a reload or 
 
 ## Live updates across clients
 
-Workspace lifecycle changes — create, rename, delete — are broadcast to all of your connected clients near-real-time over the user event stream, so the sidebar stays in sync without a manual refresh. The tiling layout *inside* a workspace also syncs live across your devices; see [Device Sync & Presence](/docs/using/collaboration/).
+Workspace lifecycle changes — create, rename, delete — are broadcast to all of your connected clients near-real-time over the user event stream, so the sidebar stays in sync without a manual refresh. The tiling layout *inside* a workspace also syncs live across your devices; see [Device Sync](/docs/using/device-sync/).
 
 ## Related chapters
 
 - [Tabs & Layout](/docs/using/tabs-and-layout/) — working inside a workspace: tabs, splits, grids, floating windows.
 - [Coding Agents](/docs/using/coding-agents/) — opening and using agents in a workspace.
 - [Worktrees & Branches](/docs/using/worktrees-and-branches/) — the git side of workspace tabs.
-- [Device Sync & Presence](/docs/using/collaboration/) — live layout sync across your devices.
+- [Device Sync](/docs/using/device-sync/) — live layout sync across your devices.
 - [Security & Threat Model](/docs/operating/security/) — what the Hub can and cannot see.

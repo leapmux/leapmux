@@ -2,7 +2,7 @@
 title: "Sign-in Providers"
 description: "Configure OAuth/OIDC single sign-on for a LeapMux Hub so users can log in with GitHub, Google, Apple, or any standards-compliant OpenID Connect provider."
 type: docs
-weight: 5
+weight: 4
 ---
 
 > **Not this chapter:** apps that ask **your Hub** for access to an account on it are [App Authorization](/docs/operating/app-authorization/).
@@ -29,7 +29,7 @@ Internally there are only **two** stored provider types — `github` and `oidc`.
 
 GitHub uses plain OAuth2, not OpenID Connect, so it has no issuer URL or discovery document — its endpoints are fixed. The issuer URL applies only to the `oidc`-stored providers, where the Hub uses it for discovery and ID-token verification.
 
-You configure every provider with the `leapmux control admin idp` command group. Each verb is an RPC call to a **running** Hub: the CLI sends your control credential, and the Hub writes its own database and encrypts the client secret with its own key file. There is **no UI** for adding providers — it is an operator task. For the full command surface, see [`admin` — hub administration over RPC](/docs/operating/control-cli/#admin--hub-administration-over-rpc).
+You configure every provider with the `leapmux control admin idp` command group. Each verb is an RPC call to a **running** Hub: the CLI sends your control credential, and the Hub writes its own database and encrypts the client secret with its own key file. There is **no UI** for adding providers — it is an operator task. For the full command surface, see [`admin` — hub administration over RPC](/docs/operating/admin-cli/).
 
 > **Note:** These commands take no `--data-dir` and no `--config`; the flags do not exist, and the CLI refuses them. Run the commands from any machine, and select the Hub with `--hub <url>` or the `LEAPMUX_HUB` environment variable. Authorize the CLI first with `leapmux control auth login --hub <url>`, and use an administrator account: the Hub answers `permission_denied` for every other caller. A `leapmux dev` instance is a separate Hub, so point `--hub` at its own address. See [Authentication](/docs/operating/control-cli/#authentication) for the credential rules.
 
@@ -257,7 +257,7 @@ All of this UI is covered in detail in [Accounts & Authentication](/docs/using/a
 ## Related chapters
 
 - [Accounts & Authentication](/docs/using/accounts/) — the end-user sign-in, sign-up, and account-linking experience.
-- [Remote Control CLI](/docs/operating/control-cli/) — the full `leapmux control admin` reference, including login and the `--hub` flag.
+- [Control CLI](/docs/operating/control-cli/) — the full `leapmux control admin` reference, including login and the `--hub` flag.
 - [Running LeapMux](/docs/operating/running-leapmux/) — run modes, listen addresses, `public_url`, and reverse-proxy setup.
 - [Configuration](/docs/operating/configuration/) — config precedence and the full key reference (`signup_enabled`, `public_url`, `secure_cookies`, …).
 - [Encryption & Data](/docs/operating/encryption-and-data/) — how client secrets are encrypted at rest, key rotation, and re-encryption.
