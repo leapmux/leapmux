@@ -46,7 +46,7 @@ Every provider is first-class: you get a consistent core experience — chat, st
 | Pi | `pi` |
 | Reasonix | `reasonix` |
 
-Each provider exposes its own settings — models and permission modes, and where the CLI supports it, effort/reasoning levels — which you change mid-session from the composer's status-bar chips or its **[+]** menu. For example, Codex starts on the `gpt-5.4` model, and Claude Code on its recommended default (with Opus, Sonnet, and Haiku a click away). For how to open an agent, chat, answer permission prompts, switch models, and resume a session, see [Coding Agents](/docs/using/coding-agents/).
+Each provider exposes its own settings — models and permission modes, and where the CLI supports it, effort/reasoning levels — which you change mid-session from the composer's status-bar chips or its **[+]** menu. A new agent starts on the provider's defaults. For how to open an agent, chat, answer permission prompts, switch models, and resume a session, see [Coding Agents](/docs/using/coding-agents/).
 
 ## Key features
 
