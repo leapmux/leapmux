@@ -88,7 +88,7 @@ Before you begin, ensure you have the following installed:
 - **Rust toolchain** - For the Tauri desktop app (built by `task build`)
 - **Tauri desktop prerequisites** - WebView/system packages required by Tauri on your platform
 
-Go-based build tools are declared as `tool` dependencies and invoked automatically via `go tool <name>` — `sqlc` in `backend/go.mod`, and `golangci-lint` and `gotestsum` in both `backend/go.mod` and `desktop/go/go.mod`. You don't need to install them separately.
+Go-based build tools — `sqlc`, `golangci-lint`, and `gotestsum` — are declared as `tool` dependencies in `backend/go.mod` and invoked automatically via `go tool <name>`. You don't need to install them separately.
 
 ### macOS
 
