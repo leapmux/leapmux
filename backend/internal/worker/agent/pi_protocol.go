@@ -10,64 +10,27 @@ package agent
 // Pi event types — the top-level "type" field on every JSONL envelope
 // emitted by the Pi process. The set mirrors the dispatch switch in
 // handlePiOutput.
-const (
-	PiEventAgentStart          = "agent_start"
-	PiEventAgentEnd            = "agent_end"
-	PiEventTurnStart           = "turn_start"
-	PiEventTurnEnd             = "turn_end"
-	PiEventMessageStart        = "message_start"
-	PiEventMessageUpdate       = "message_update"
-	PiEventMessageEnd          = "message_end"
-	PiEventToolExecutionStart  = "tool_execution_start"
-	PiEventToolExecutionEnd    = "tool_execution_end"
-	PiEventToolExecutionUpdate = "tool_execution_update"
-	PiEventExtensionUIRequest  = "extension_ui_request"
-	PiEventExtensionError      = "extension_error"
-	PiEventCompactionStart     = "compaction_start"
-	PiEventCompactionEnd       = "compaction_end"
-	PiEventAutoRetryStart      = "auto_retry_start"
-	PiEventAutoRetryEnd        = "auto_retry_end"
-	PiEventQueueUpdate         = "queue_update"
-	PiEventResponse            = "response"
-)
+// The values are generated: see contracts/pi-protocol.json. The browser plugin
+// dispatches on the same strings, so a hand copy on either side could drift.
 
 // Pi message_update assistantMessageEvent sub-types — carried inside
 // `message_update` envelopes. text_delta and thinking_delta are the
 // streaming deltas; the others (start/stop/done/error) bracket the
 // stream and are no-ops for UI rendering today.
-const (
-	PiAssistantEventTextDelta     = "text_delta"
-	PiAssistantEventThinkingDelta = "thinking_delta"
-)
+// The values are generated: see contracts/pi-protocol.json.
 
 // Pi extension_ui_request methods.
 //
 // Dialog methods (select / confirm / input / editor) block waiting for
 // an extension_ui_response and surface as control requests. The
 // fire-and-forget methods drive session-info or notification updates.
-const (
-	PiDialogMethodSelect  = "select"
-	PiDialogMethodConfirm = "confirm"
-	PiDialogMethodInput   = "input"
-	PiDialogMethodEditor  = "editor"
-
-	PiExtensionMethodNotify        = "notify"
-	PiExtensionMethodSetStatus     = "setStatus"
-	PiExtensionMethodSetWidget     = "setWidget"
-	PiExtensionMethodSetTitle      = "setTitle"
-	PiExtensionMethodSetEditorText = "set_editor_text"
-)
+// The values are generated: see contracts/pi-protocol.json.
 
 // Pi tool names — the canonical lowercase identifiers Pi uses on
 // `tool_execution_start` / `tool_execution_end` envelopes. The frontend
 // dispatches result renderers off these identifiers, so they must
 // match the wire format exactly.
-const (
-	PiToolBash  = "bash"
-	PiToolRead  = "read"
-	PiToolEdit  = "edit"
-	PiToolWrite = "write"
-)
+// The values are generated: see contracts/pi-protocol.json.
 
 // PiToolAgent is the tool the pi-subagents extension registers to spawn a
 // subagent (SUBAGENT_TOOL_NAMES.AGENT in its src/agent-runner.ts; its nested

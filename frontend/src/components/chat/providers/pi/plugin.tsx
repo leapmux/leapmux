@@ -7,6 +7,7 @@ import type { ClassificationInput, Provider, SpanRole, ToolResultMeta } from '..
 import type { PiExtensionResponse } from './controlResponse'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { ContextUsageInfo } from '~/stores/agentSession.store'
+import { PI_DIALOG_METHOD, PI_EVENT, PI_TOOL } from '~/generated/contracts/pi-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
 import { messageUsage } from '~/lib/messageParser'
@@ -32,7 +33,6 @@ import { extractPiBash } from './extractors/bash'
 import { extractPiRead, piResolveDiffSources } from './extractors/fileEdit'
 import { piExtractTool } from './extractors/toolCommon'
 import { piContentText, piIsThinkingOnly } from './messageContent'
-import { PI_DIALOG_METHOD, PI_EVENT, PI_TOOL } from './protocol'
 import {
   describePiNotification,
   PiAssistantMessage,

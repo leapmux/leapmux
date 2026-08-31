@@ -1,6 +1,6 @@
 import type { CommandResultSource } from '../../../results/commandResult'
+import { PI_TOOL } from '~/generated/contracts/pi-protocol'
 import { isObject, pickString } from '~/lib/jsonPick'
-import { PI_TOOL } from '../protocol'
 import { piExtractTool } from './toolCommon'
 
 export interface PiBashCommand {

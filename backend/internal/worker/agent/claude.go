@@ -243,10 +243,15 @@ func StartClaudeCode(ctx context.Context, opts Options, sink OutputSink) (*Claud
 	// already flagged one: a default-model launch sends no --model/--effort
 	// (empty modelEffortArgs) but must still detect a provider configured in the
 	// user's rc files so OptionGroups() can hide the model/effort UI.
+	launch, err := resolveProviderLaunch(ctx, opts.Shell, opts.LoginShell, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
 	cmd, preambleDelimiter, metaPrefix := buildShellWrappedCommand(ctx, shellWrapSpec{
 		Shell:           opts.Shell,
 		LoginShell:      opts.LoginShell,
-		BinaryName:      "claude",
+		Launch:          launch,
 		StripEnvKeys:    []string{"CLAUDECODE"},
 		BaseArgs:        baseArgs,
 		ModelEffortArgs: modelEffortArgs,

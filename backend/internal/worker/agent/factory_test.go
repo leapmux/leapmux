@@ -6,9 +6,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"testing"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/agentlabels"
 	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -146,6 +150,8 @@ func TestPermissionModeOrDefault(t *testing.T) {
 		{"goose legacy db default", leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, PermissionModeDefault, GooseCLIModeAuto},
 		{"opencode no top-level default", leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, "", ""},
 		{"reasonix no permission mode", leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX, "", ""},
+		{"zcode empty", leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE, "", contracts.ZCodeDefaultMode},
+		{"zcode explicit", leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE, contracts.ZCodeModePlan, contracts.ZCodeModePlan},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -241,18 +247,10 @@ func TestKnownOptionIDs(t *testing.T) {
 		return KnownOptionIDs(provider)[id]
 	}
 
-	// model is universal.
-	for _, p := range []leapmuxv1.AgentProvider{
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_PI,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX,
-	} {
+	// model is universal, so the list comes from the GENERATED provider table rather
+	// than being retyped here. A hand-written list drifts silently: it keeps passing
+	// while a provider added after it goes unchecked.
+	for _, p := range agentlabels.AllProviders() {
 		assert.Truef(t, has(p, OptionIDModel), "%s must allow model", p)
 	}
 
@@ -313,6 +311,13 @@ func TestKnownOptionIDs(t *testing.T) {
 	assert.False(t, has(reasonix, OptionIDPermissionMode))
 	assert.False(t, has(reasonix, OptionIDPrimaryAgent))
 
+	// ZCode surfaces thought level under the well-known effort id, and its session
+	// mode under LeapMux's permission-mode axis (plan | build | edit | yolo).
+	zcode := leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE
+	assert.True(t, has(zcode, OptionIDEffort))
+	assert.True(t, has(zcode, OptionIDPermissionMode))
+	assert.False(t, has(zcode, OptionIDPrimaryAgent), "zcode has no primary-agent axis")
+
 	// An unknown provider yields just {model}.
 	unknown := KnownOptionIDs(leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED)
 	assert.Equal(t, map[string]bool{OptionIDModel: true}, unknown)
@@ -369,17 +374,15 @@ func TestListAvailableProviders_ExpiredContextIsIncomplete(t *testing.T) {
 func TestProbeBinaryInconclusiveWhenTheShellCannotStart(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "no-such-shell")
 
-	available, conclusive := probeBinary(context.Background(), missing, false, "claude")
-	assert.False(t, available)
-	assert.False(t, conclusive, "a shell that never ran establishes nothing")
+	assert.Equal(t, probeUnknown, probeBinary(context.Background(), missing, false, "claude"),
+		"a shell that never ran establishes nothing")
 
 	// And nothing is cached, so a later call with a working shell is free
 	// to answer for itself. The inconclusiveness reaches the caller too:
 	// ListAvailableProviders needs it to tell "the shell said no" apart
 	// from "the shell never ran".
-	gotAvailable, gotConclusive := checkBinaryAvailable(context.Background(), missing, false, "claude")
-	assert.False(t, gotAvailable)
-	assert.False(t, gotConclusive, "checkBinaryAvailable must forward the probe's conclusiveness")
+	assert.Equal(t, probeUnknown, checkBinaryAvailable(context.Background(), missing, false, "claude"),
+		"checkBinaryAvailable must forward the probe's own verdict")
 	_, cached := binaryAvailabilityCache.Load(binaryAvailabilityKey{missing, false, "claude"})
 	assert.False(t, cached, "an inconclusive probe must not be cached")
 }
@@ -394,9 +397,8 @@ func TestProbeBinaryInconclusiveWhenTheShellExitsBeforeTheProbe(t *testing.T) {
 	stub := filepath.Join(t.TempDir(), "shell")
 	require.NoError(t, os.WriteFile(stub, []byte("#!/bin/sh\nexit 1\n"), 0o755))
 
-	available, conclusive := probeBinary(context.Background(), stub, true, "claude")
-	assert.False(t, available)
-	assert.False(t, conclusive, "a shell that exits before the inner command establishes nothing")
+	assert.Equal(t, probeUnknown, probeBinary(context.Background(), stub, true, "claude"),
+		"a shell that exits before the inner command establishes nothing")
 
 	_, cached := binaryAvailabilityCache.Load(binaryAvailabilityKey{stub, true, "claude"})
 	assert.False(t, cached, "an inconclusive probe must not be cached")
@@ -412,9 +414,8 @@ func TestProbeBinaryInconclusiveWhenTheShellExitsZeroWithoutAMarker(t *testing.T
 	stub := filepath.Join(t.TempDir(), "shell")
 	require.NoError(t, os.WriteFile(stub, []byte("#!/bin/sh\nexit 0\n"), 0o755))
 
-	available, conclusive := probeBinary(context.Background(), stub, true, "claude")
-	assert.False(t, available)
-	assert.False(t, conclusive, "exit 0 without the reached marker establishes nothing")
+	assert.Equal(t, probeUnknown, probeBinary(context.Background(), stub, true, "claude"),
+		"exit 0 without the reached marker establishes nothing")
 
 	_, cached := binaryAvailabilityCache.Load(binaryAvailabilityKey{stub, true, "claude"})
 	assert.False(t, cached, "an inconclusive probe must not be cached")
@@ -429,16 +430,13 @@ func TestProbeBinaryConclusiveWhenTheShellAnswers(t *testing.T) {
 	}
 	const absent = "leapmux-definitely-not-installed"
 
-	available, conclusive := probeBinary(context.Background(), shell, false, absent)
-	assert.False(t, available)
-	assert.True(t, conclusive, "the shell ran and answered")
+	assert.Equal(t, probeNo, probeBinary(context.Background(), shell, false, absent),
+		"the shell ran and answered")
 
-	gotAvailable, gotConclusive := checkBinaryAvailable(context.Background(), shell, false, absent)
-	assert.False(t, gotAvailable)
-	assert.True(t, gotConclusive)
+	assert.Equal(t, probeNo, checkBinaryAvailable(context.Background(), shell, false, absent))
 	v, cached := binaryAvailabilityCache.Load(binaryAvailabilityKey{shell, false, absent})
-	require.True(t, cached, "a conclusive probe must be cached")
-	assert.Equal(t, false, v)
+	require.True(t, cached, "a settled probe must be cached")
+	assert.Equal(t, probeNo, v)
 }
 
 func TestProbeBinaryConclusiveWhenTheBinaryIsPresent(t *testing.T) {
@@ -447,9 +445,8 @@ func TestProbeBinaryConclusiveWhenTheBinaryIsPresent(t *testing.T) {
 		t.Skip("no POSIX shell on this machine")
 	}
 
-	available, conclusive := probeBinary(context.Background(), shell, false, "echo")
-	assert.True(t, conclusive, "the shell ran and answered")
-	assert.True(t, available, "echo is a POSIX builtin, so command -v must find it")
+	assert.Equal(t, probeYes, probeBinary(context.Background(), shell, false, "echo"),
+		"echo is a POSIX builtin, so command -v must find it")
 }
 
 // A probe killed by an expired context reports an ExitError ("signal:
@@ -463,8 +460,8 @@ func TestProbeBinaryInconclusiveUnderAnExpiredContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, conclusive := probeBinary(ctx, shell, false, "leapmux-cancelled-probe")
-	assert.False(t, conclusive, "a probe under a dead context establishes nothing")
+	assert.Equal(t, probeUnknown, probeBinary(ctx, shell, false, "leapmux-cancelled-probe"),
+		"a probe under a dead context establishes nothing")
 }
 
 // TestListAvailableProvidersIncompleteWhenTheShellCannotStart is the whole
@@ -479,6 +476,10 @@ func TestProbeBinaryInconclusiveUnderAnExpiredContext(t *testing.T) {
 // was installed.
 func TestListAvailableProvidersIncompleteWhenTheShellCannotStart(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "no-such-shell")
+	// ZCode resolves through the filesystem, not the shell, so a developer machine with
+	// the desktop app installed would answer for it whatever the shell does. Point its
+	// override at an absent script so this test measures only the shell.
+	forceZCodeUnavailable(t)
 
 	providers, complete := ListAvailableProviders(context.Background(), missing, false)
 	assert.Empty(t, providers)
@@ -499,8 +500,137 @@ func TestListAvailableProvidersCompleteWhenTheShellAnswers(t *testing.T) {
 		binaryAvailabilityCache.Delete(k)
 		return true
 	})
+	// ZCode does not resolve through PATH, so an emptied PATH says nothing about it.
+	forceZCodeUnavailable(t)
 
 	providers, complete := ListAvailableProviders(context.Background(), shell, false)
 	assert.Empty(t, providers)
 	assert.True(t, complete, "the shell ran and answered for every binary")
+}
+
+// A provider with a launch resolver is answered by that resolver, not by a PATH probe --
+// and the resolver's three states must reach ListAvailableProviders unchanged.
+func TestListAvailableProvidersUsesTheLaunchResolver(t *testing.T) {
+	shell, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("no POSIX shell on this machine")
+	}
+	t.Setenv("PATH", t.TempDir())
+	binaryAvailabilityCache.Range(func(k, _ any) bool {
+		binaryAvailabilityCache.Delete(k)
+		return true
+	})
+
+	tests := []struct {
+		name         string
+		resolution   launchResolution
+		wantListed   bool
+		wantComplete bool
+	}{
+		{name: "found is listed", resolution: launchFound, wantListed: true, wantComplete: true},
+		{name: "missing is a complete absence", resolution: launchMissing, wantComplete: true},
+		{
+			// The load-bearing state: a resolver that established nothing must make the
+			// whole scan retryable, exactly as an inconclusive PATH probe does.
+			name:       "unknown makes the scan incomplete",
+			resolution: launchUnknown,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			restoreZCodeResolver(t, func(context.Context, string, bool) (launchSpec, launchResolution) {
+				return launchSpec{Program: "/opt/node", PrefixArgs: []string{"/opt/zcode.cjs"}}, tc.resolution
+			})
+
+			providers, complete := ListAvailableProviders(context.Background(), shell, false)
+
+			assert.Equal(t, tc.wantComplete, complete)
+			assert.Equal(t, tc.wantListed,
+				slices.Contains(providers, leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE))
+		})
+	}
+}
+
+// resolveProviderLaunch is the launch-side twin of the availability scan and must read the
+// SAME registry field, so the two can never disagree about which program runs.
+func TestResolveProviderLaunch(t *testing.T) {
+	t.Run("resolver answer is used verbatim", func(t *testing.T) {
+		want := launchSpec{
+			Program:    "/opt/node",
+			PrefixArgs: []string{"/opt/zcode.cjs"},
+			Env:        []string{"ELECTRON_RUN_AS_NODE=1"},
+		}
+		restoreZCodeResolver(t, func(context.Context, string, bool) (launchSpec, launchResolution) {
+			return want, launchFound
+		})
+
+		got, err := resolveProviderLaunch(context.Background(), "/bin/sh", false,
+			leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE)
+
+		require.NoError(t, err)
+		assert.Equal(t, want, got)
+	})
+
+	// Both non-found states are startup failures here: neither can start a process. They
+	// differ for the availability scan, not for a launch.
+	for _, tc := range []struct {
+		name string
+		res  launchResolution
+	}{{"missing", launchMissing}, {"unknown", launchUnknown}} {
+		t.Run(tc.name+" is an error", func(t *testing.T) {
+			restoreZCodeResolver(t, func(context.Context, string, bool) (launchSpec, launchResolution) {
+				return launchSpec{}, tc.res
+			})
+
+			_, err := resolveProviderLaunch(context.Background(), "/bin/sh", false,
+				leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE)
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "ZCode")
+		})
+	}
+
+	// A provider with no resolver reads its binaryNames off the REGISTRY, which is the
+	// same list the availability scan probes. Passing them in would have been a second
+	// source that could disagree with it.
+	t.Run("falls back to the registered binary names", func(t *testing.T) {
+		shell, err := exec.LookPath("sh")
+		if err != nil {
+			t.Skip("no POSIX shell on this machine")
+		}
+		spec, err := resolveProviderLaunch(context.Background(), shell, false,
+			leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+
+		require.NoError(t, err)
+		assert.Equal(t, "claude", spec.Program, "Claude registers exactly one candidate")
+		assert.Empty(t, spec.PrefixArgs)
+		assert.Empty(t, spec.Env)
+	})
+
+	// Every provider must resolve to SOMETHING, or its Start returns an error before it
+	// spawns anything. A provider registered with no candidate and no resolver is a
+	// registration bug, and this is where it surfaces.
+	t.Run("every registered provider resolves", func(t *testing.T) {
+		shell, err := exec.LookPath("sh")
+		if err != nil {
+			t.Skip("no POSIX shell on this machine")
+		}
+		for provider := range agentFactoryRegistry {
+			spec, err := resolveProviderLaunch(context.Background(), shell, false, provider)
+			// ZCode resolves against the real machine, so it may legitimately report that
+			// it is not installed. Every other provider must name a program.
+			if err != nil {
+				assert.Equal(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE, provider,
+					"provider %v has neither a resolver nor a registered binary name", provider)
+				continue
+			}
+			assert.NotEmptyf(t, spec.Program, "provider %v resolved to an empty program", provider)
+		}
+	})
+
+	t.Run("an unregistered provider is an error", func(t *testing.T) {
+		_, err := resolveProviderLaunch(context.Background(), "/bin/sh", false,
+			leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED)
+		require.Error(t, err)
+	})
 }

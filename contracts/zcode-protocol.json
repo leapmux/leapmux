@@ -1,0 +1,69 @@
+{
+  "_readme": "ZCode's app-server wire vocabulary, for the tables BOTH the Go provider and the TS renderer plugin read. ZCode speaks line-delimited JSON with no `jsonrpc` field, so the envelope's `type` and the payload's `kind` ARE the dispatch keys on both sides -- a one-character drift between the two copies silently stops rendering a row rather than failing a build. Only the tables that are genuinely duplicated live here. The Go-only vocabulary (client->server methods, error codes, reply field names, input sources, task kinds, scopes) and the frontend-only `display.kind` stay in their own file, per the contracts rule's one-side-only exemption. LeapMux does not own these values -- Z.ai does -- so a change here follows the app-server, it does not lead it.",
+  "events": {
+    "SessionCreated": "session.created",
+    "SessionResumed": "session.resumed",
+    "SessionUpdated": "session.updated",
+    "SessionTitleUpdated": "session.titleUpdated",
+    "SessionClosed": "session.closed",
+    "TurnStarted": "turn.started",
+    "TurnSteerQueued": "turn.steerQueued",
+    "TurnSteerDrained": "turn.steerDrained",
+    "TurnCompleted": "turn.completed",
+    "TurnFailed": "turn.failed",
+    "MessageUpserted": "message.upserted",
+    "MessageRemoved": "message.removed",
+    "PartStarted": "part.started",
+    "PartDelta": "part.delta",
+    "PartUpserted": "part.upserted",
+    "PartRemoved": "part.removed",
+    "ModelStreaming": "model.streaming",
+    "ToolUpdated": "tool.updated",
+    "PermissionRequested": "permission.requested",
+    "PermissionResolved": "permission.resolved",
+    "UserInputRequested": "userInput.requested",
+    "UserInputResolved": "userInput.resolved",
+    "CheckpointCreated": "checkpoint.created",
+    "RewindTriggered": "rewind.triggered",
+    "StreamRecoveryUpdated": "streamRecovery.updated"
+  },
+  "toolKinds": {
+    "Scheduled": "scheduled",
+    "Started": "started",
+    "Progress": "progress",
+    "Result": "result",
+    "Error": "error",
+    "Batch": "batch"
+  },
+  "toolNames": {
+    "Bash": "Bash",
+    "TodoWrite": "TodoWrite",
+    "Agent": "Agent",
+    "TaskOutput": "TaskOutput",
+    "AskUserQuestion": "AskUserQuestion",
+    "EnterPlanMode": "EnterPlanMode",
+    "ExitPlanMode": "ExitPlanMode",
+    "Read": "Read",
+    "Write": "Write",
+    "Edit": "Edit",
+    "Glob": "Glob",
+    "Grep": "Grep"
+  },
+  "modes": {
+    "Plan": "plan",
+    "Build": "build",
+    "Edit": "edit",
+    "Yolo": "yolo"
+  },
+  "resultTypes": {
+    "Success": "success",
+    "Cancelled": "cancelled"
+  },
+  "decisions": {
+    "Allow": "allow",
+    "Deny": "deny",
+    "Escalate": "escalate",
+    "Modify": "modify"
+  },
+  "defaultMode": "Build"
+}

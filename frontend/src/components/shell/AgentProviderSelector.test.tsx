@@ -2,6 +2,7 @@ import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProviderSelector } from '~/components/shell/AgentProviderSelector'
+import { ALL_PROVIDERS, PROVIDER_DISPLAY_NAME } from '~/generated/contracts/providers'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { sortAgentProvidersByName } from '~/lib/agentProviders'
 import { clippedText } from '~/styles/shared.css'
@@ -134,31 +135,34 @@ describe('agentProviderSelector', () => {
     expect(screen.getByTestId('agent-provider-selector-trigger')).toHaveTextContent('Claude Code')
   })
 
-  // Each known AgentProvider value, when present in availableProviders, must
-  // render an option with `agent-provider-option-${id}` testid and the right
-  // human-readable label.
-  it.each([
-    [AgentProvider.CLAUDE_CODE, 'Claude Code'],
-    [AgentProvider.CODEX, 'Codex'],
-    [AgentProvider.OPENCODE, 'OpenCode'],
-    [AgentProvider.GITHUB_COPILOT, 'GitHub Copilot'],
-    [AgentProvider.CURSOR, 'Cursor'],
-    [AgentProvider.GOOSE, 'Goose'],
-    [AgentProvider.KILO, 'Kilo'],
-    [AgentProvider.REASONIX, 'Reasonix'],
-  ])('renders option for provider %d with label "%s"', (provider, label) => {
-    const [value] = createSignal(provider as AgentProvider)
-    render(() => (
-      <AgentProviderSelector
-        value={value}
-        onChange={() => {}}
-        availableProviders={[provider as AgentProvider]}
-      />
-    ))
+  // EVERY known AgentProvider value, when present in availableProviders, must render an
+  // option with `agent-provider-option-${id}` testid and the right human-readable label.
+  //
+  // The cases come from the GENERATED provider table, not from a hand-written list. The
+  // hand-written one drifted: it omitted two providers, and it kept passing while
+  // they went unchecked.
+  const labelledProviders: Array<[AgentProvider, string]> = ALL_PROVIDERS.map(
+    provider => [provider, PROVIDER_DISPLAY_NAME[provider] ?? ''],
+  )
 
-    const option = screen.getByTestId(`agent-provider-option-${provider}`)
-    expect(option).toHaveTextContent(label)
-  })
+  it.each(labelledProviders)(
+    'renders option for provider %d with label "%s"',
+    (provider, label) => {
+      expect(label).not.toBe('')
+
+      const [value] = createSignal(provider)
+      render(() => (
+        <AgentProviderSelector
+          value={value}
+          onChange={() => {}}
+          availableProviders={[provider]}
+        />
+      ))
+
+      const option = screen.getByTestId(`agent-provider-option-${provider}`)
+      expect(option).toHaveTextContent(label)
+    },
+  )
 
   it('only renders options for available providers', () => {
     const [value] = createSignal(AgentProvider.CODEX)

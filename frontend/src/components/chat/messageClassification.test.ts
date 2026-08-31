@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { bubbleRunsToRightEdge, classifyMessage, isMirroredMessageRow, messageBubbleClass, messageRowChrome, messageRowChromeClass, messageRowClass, rowIsWidened } from '~/components/chat/messageClassification'
 import * as chatStyles from '~/components/chat/messageStyles.css'
 import { input } from '~/components/chat/providers/testUtils'
+import { ALL_PROVIDERS } from '~/generated/contracts/providers'
 import { AgentProvider, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 
 /**
@@ -376,13 +377,7 @@ describe('classifyMessage', () => {
     // classifyMessage -- not per plugin -- so it resolves identically for every provider and a new
     // plugin can't forget it. Exercise a spread of provider plugins (Claude / Codex / an ACP question
     // provider / Pi / Cursor) through the real dispatch.
-    for (const provider of [
-      AgentProvider.CLAUDE_CODE,
-      AgentProvider.CODEX,
-      AgentProvider.OPENCODE,
-      AgentProvider.PI,
-      AgentProvider.CURSOR,
-    ]) {
+    for (const provider of ALL_PROVIDERS) {
       const row = { isSynthetic: true, controlResponse: { provider: 'X', requestId: 'r', response: { response: { behavior: 'allow' } } } }
       expect(classifyMessage(input(row, null, provider)).kind).toBe('control_response')
     }
@@ -547,14 +542,7 @@ describe('classifyMessage', () => {
   describe('worker-authored notification', () => {
     const divider = { type: 'subagent_ended', status: 'completed' }
 
-    it.each([
-      ['Claude', AgentProvider.CLAUDE_CODE],
-      ['Codex', AgentProvider.CODEX],
-      ['Pi', AgentProvider.PI],
-      ['OpenCode', AgentProvider.OPENCODE],
-      ['Cursor', AgentProvider.CURSOR],
-      ['Goose', AgentProvider.GOOSE],
-    ])('classifies subagent_ended as a notification for %s', (_name, provider) => {
+    it.each(ALL_PROVIDERS)('classifies subagent_ended as a notification for provider %s', (provider) => {
       const result = classifyMessage(input(divider, null, provider))
       expect(result.kind).toBe('notification')
       expect(result.kind === 'notification' && result.messages).toEqual([divider])

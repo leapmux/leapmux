@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -1831,5 +1833,76 @@ func TestProcessControlResponse(t *testing.T) {
 			[]byte(`{"response":{"request_id":"plan-1","response":{"behavior":"allow"}}}`), "plan-tok")
 		assert.False(t, forward, "a plan-mode prompt is handled server-side, never forwarded")
 		assert.Nil(t, bytes)
+	})
+
+	// A provider that cannot build a frame its agent can parse sets resolution.Withhold.
+	// An empty Content cannot carry that meaning: buildControlResponsePlan backfills the
+	// raw frontend bytes over it, so clearing Content forwards the exact envelope the
+	// provider refused to send -- a frame the app-server cannot parse, on its stdin.
+	t.Run("a provider's withheld resolution is not forwarded", func(t *testing.T) {
+		svc, _, _ := setupTestService(t)
+		require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+			ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE,
+		}))
+		// NO stored control request: it is gone (a teardown, or a persist that failed),
+		// so ZCode has no wire id to address a reply to.
+		dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
+		require.NoError(t, err)
+		content := []byte(`{"type":"control_response","response":{"request_id":"req-gone","response":{"behavior":"allow"}}}`)
+
+		bytes, forward := svc.processControlResponse("agent-1", dbAgent, content, "tok-1")
+		assert.False(t, forward, "no frame may reach the app-server's stdin")
+		assert.Nil(t, bytes)
+	})
+
+	// The plan-exit fallback mode is the PROVIDER's own word. Shared code that stamped
+	// Claude's `acceptEdits` persisted a mode ZCode's session/setMode rejects, so the
+	// mode chip showed a value the session had never entered.
+	t.Run("an approved plan exit lands on the provider's own mode", func(t *testing.T) {
+		cases := []struct {
+			name     string
+			provider leapmuxv1.AgentProvider
+			toolName string
+			want     string
+		}{
+			{
+				"claude", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+				agent.ToolNameExitPlanMode, agent.PermissionModeAcceptEdits,
+			},
+			{
+				"zcode", leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE,
+				contracts.ZCodeToolNameExitPlanMode, contracts.ZCodeModeBuild,
+			},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				svc, _, _ := setupTestService(t)
+				require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+					ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+					AgentProvider: tc.provider,
+				}))
+				payload := `{"type":"control_request","request_id":"plan-1","id":7,` +
+					`"method":"interaction/requestUserInput",` +
+					`"request":{"tool_name":"` + tc.toolName + `","tool_use_id":"call-1"}}`
+				require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+					AgentID: "agent-1", RequestID: "plan-1", Payload: []byte(payload),
+				}))
+				dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
+				require.NoError(t, err)
+
+				// Approve with NO permissionMode: the banner's unchecked state, which is
+				// what makes the provider's own fallback the answer.
+				svc.processControlResponse("agent-1", dbAgent,
+					[]byte(`{"type":"control_response","response":{"request_id":"plan-1","response":{"behavior":"allow"}}}`),
+					"plan-tok")
+
+				updated, err := svc.Queries.GetAgentByID(ctx, "agent-1")
+				require.NoError(t, err)
+				opts := map[string]string{}
+				require.NoError(t, json.Unmarshal([]byte(updated.Options), &opts))
+				assert.Equal(t, tc.want, opts[agent.OptionIDPermissionMode])
+			})
+		}
 	})
 }

@@ -16,6 +16,7 @@ enum AgentProvider {
   AGENT_PROVIDER_GOOSE = 8;
   AGENT_PROVIDER_PI = 9;
   AGENT_PROVIDER_REASONIX = 10;
+  AGENT_PROVIDER_ZCODE = 11;
 }
 
 // AgentStatus tracks the lifecycle state of an agent.

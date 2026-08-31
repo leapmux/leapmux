@@ -21,7 +21,7 @@ LeapMux is © Event Loop, Inc.
 
 ## Trademarks and disclaimer
 
-All product names, logos, and trademarks are the property of their respective owners. LeapMux is not affiliated with, endorsed by, or sponsored by Anomaly, Anthropic, Anysphere, Apple, Block, Cognition, Don Ho, Earendil, GitHub, Google, JetBrains, Kilo Code, Microsoft, OpenAI, Sublime HQ, Zed Industries, or any other third party. Coding agent, editor, and IDE icons are used solely to indicate compatibility and are reproduced here for identification purposes only.
+All product names, logos, and trademarks are the property of their respective owners. LeapMux is not affiliated with, endorsed by, or sponsored by Anomaly, Anthropic, Anysphere, Apple, Block, Cognition, Don Ho, Earendil, GitHub, Google, JetBrains, Kilo Code, Microsoft, OpenAI, Sublime HQ, Z.ai, Zed Industries, or any other third party. Coding agent, editor, and IDE icons are used solely to indicate compatibility and are reproduced here for identification purposes only.
 
 ## Third-party licenses
 

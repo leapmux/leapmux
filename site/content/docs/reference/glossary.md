@@ -15,7 +15,7 @@ The client connection that owns the turn-end notification sound for a workspace.
 
 ### Agent
 
-A coding agent: a CLI assistant (Claude Code, Codex, Cursor, GitHub Copilot, OpenCode, Pi, Kilo, Goose, Reasonix) that LeapMux launches and hosts on a Worker, one process per agent tab. You chat with it, watch its tool calls render inline, set its model and effort, and resume it across restarts. See [Coding Agents](/docs/using/coding-agents/).
+A coding agent: a CLI assistant (Claude Code, Codex, Cursor, GitHub Copilot, OpenCode, Pi, Kilo, Goose, Reasonix, ZCode) that LeapMux launches and hosts on a Worker, one process per agent tab. You chat with it, watch its tool calls render inline, set its model and effort, and resume it across restarts. See [Coding Agents](/docs/using/coding-agents/).
 
 ### App
 

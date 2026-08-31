@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
@@ -93,10 +95,10 @@ const piRetryableWebSocketError = "WebSocket error"
 // extension_ui_response. These are surfaced as control requests so the
 // frontend can render a dialog and ship a response back.
 var piDialogMethods = map[string]struct{}{
-	PiDialogMethodSelect:  {},
-	PiDialogMethodConfirm: {},
-	PiDialogMethodInput:   {},
-	PiDialogMethodEditor:  {},
+	contracts.PiDialogMethodSelect:  {},
+	contracts.PiDialogMethodConfirm: {},
+	contracts.PiDialogMethodInput:   {},
+	contracts.PiDialogMethodEditor:  {},
 }
 
 // handlePiOutput dispatches a single parsed Pi event line.
@@ -104,35 +106,35 @@ func handlePiOutput(a *PiAgent, line *parsedLine) {
 	slog.Debug("pi HandleOutput", "agent_id", a.agentID, "type", line.Type, "len", len(line.Raw))
 
 	switch line.Type {
-	case PiEventAgentStart:
+	case contracts.PiEventAgentStart:
 		a.handlePiAgentStart()
-	case PiEventAgentEnd:
+	case contracts.PiEventAgentEnd:
 		a.handlePiAgentEnd(line.Raw)
-	case PiEventTurnStart, PiEventTurnEnd, PiEventMessageStart:
+	case contracts.PiEventTurnStart, contracts.PiEventTurnEnd, contracts.PiEventMessageStart:
 		// Lifecycle markers; no UI state change required.
-	case PiEventMessageUpdate:
+	case contracts.PiEventMessageUpdate:
 		a.handlePiMessageUpdate(line.Raw)
-	case PiEventMessageEnd:
+	case contracts.PiEventMessageEnd:
 		a.handlePiMessageEnd(line.Raw)
-	case PiEventToolExecutionStart:
+	case contracts.PiEventToolExecutionStart:
 		a.handlePiToolExecutionStart(line.Raw)
-	case PiEventToolExecutionUpdate:
+	case contracts.PiEventToolExecutionUpdate:
 		a.handlePiToolExecutionUpdate(line.Raw)
-	case PiEventToolExecutionEnd:
+	case contracts.PiEventToolExecutionEnd:
 		a.handlePiToolExecutionEnd(line.Raw)
-	case PiEventQueueUpdate:
+	case contracts.PiEventQueueUpdate:
 		a.handlePiQueueUpdate(line.Raw)
-	case PiEventCompactionStart, PiEventCompactionEnd,
-		PiEventAutoRetryStart, PiEventAutoRetryEnd,
-		PiEventExtensionError:
+	case contracts.PiEventCompactionStart, contracts.PiEventCompactionEnd,
+		contracts.PiEventAutoRetryStart, contracts.PiEventAutoRetryEnd,
+		contracts.PiEventExtensionError:
 		// Pi-emitted lifecycle / extension events — AGENT source per the
 		// proto rule (LEAPMUX is reserved for worker-synthesized envelopes).
 		if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, line.Raw); err != nil {
 			slog.Error("pi persist notification", "agent_id", a.agentID, "type", line.Type, "error", err)
 		}
-	case PiEventExtensionUIRequest:
+	case contracts.PiEventExtensionUIRequest:
 		a.handlePiExtensionUIRequest(line.Raw)
-	case PiEventResponse:
+	case contracts.PiEventResponse:
 		// Should have been intercepted by handlePiResponse; reaching here means
 		// no caller was waiting on this id. Log and drop.
 		slog.Warn("pi orphan response line", "agent_id", a.agentID, "len", len(line.Raw))
@@ -218,7 +220,7 @@ func (a *PiAgent) handlePiMessageUpdate(raw []byte) {
 	}
 
 	switch env.AssistantMessageEvent.Type {
-	case PiAssistantEventTextDelta, PiAssistantEventThinkingDelta:
+	case contracts.PiAssistantEventTextDelta, contracts.PiAssistantEventThinkingDelta:
 		// Text and thinking deltas are handled identically: stream the chunk under
 		// its own event type, then feed it to the live token estimate. Pi persists
 		// both as one message_end with no per-phase split, so a thinking->text
@@ -324,7 +326,7 @@ func (a *PiAgent) handlePiToolExecutionUpdate(raw []byte) {
 	if delta.Len() == 0 {
 		return
 	}
-	a.sink.BroadcastStreamChunk([]byte(delta.String()), env.ToolCallID, PiEventToolExecutionUpdate)
+	a.sink.BroadcastStreamChunk([]byte(delta.String()), env.ToolCallID, contracts.PiEventToolExecutionUpdate)
 
 	// pi-subagents extension: when partialResult.details parses to the
 	// subagent shape {status, activity} (shape detection), upsert a running
@@ -403,14 +405,14 @@ func (a *PiAgent) handlePiExtensionUIRequest(raw []byte) {
 	}
 
 	switch head.Method {
-	case PiExtensionMethodNotify:
+	case contracts.PiExtensionMethodNotify:
 		// Persist the raw extension_ui_request envelope as AGENT. The
 		// frontend's Pi notification renderer derives level/message from
 		// `notifyType`/`message` on the raw payload — no synthesis needed.
 		if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw); err != nil {
 			slog.Error("pi persist notify", "agent_id", a.agentID, "error", err)
 		}
-	case PiExtensionMethodSetStatus:
+	case contracts.PiExtensionMethodSetStatus:
 		statusValue := any(nil)
 		if head.StatusText != nil {
 			statusValue = *head.StatusText
@@ -418,7 +420,7 @@ func (a *PiAgent) handlePiExtensionUIRequest(raw []byte) {
 		a.sink.BroadcastSessionInfo(map[string]any{
 			"pi_status": map[string]any{head.StatusKey: statusValue},
 		})
-	case PiExtensionMethodSetWidget:
+	case contracts.PiExtensionMethodSetWidget:
 		widget := map[string]any{
 			"placement": cmp.Or(head.Placement, "aboveEditor"),
 		}
@@ -430,11 +432,11 @@ func (a *PiAgent) handlePiExtensionUIRequest(raw []byte) {
 		a.sink.BroadcastSessionInfo(map[string]any{
 			"pi_widget": map[string]any{head.WidgetKey: widget},
 		})
-	case PiExtensionMethodSetTitle:
+	case contracts.PiExtensionMethodSetTitle:
 		a.sink.BroadcastSessionInfo(map[string]any{
 			"pi_terminal_title": head.Title,
 		})
-	case PiExtensionMethodSetEditorText:
+	case contracts.PiExtensionMethodSetEditorText:
 		a.sink.BroadcastSessionInfo(map[string]any{
 			"pi_editor_text": head.Text,
 		})

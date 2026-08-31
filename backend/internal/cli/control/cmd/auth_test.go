@@ -34,6 +34,53 @@ import (
 	"github.com/leapmux/leapmux/locallisten/locallistentest"
 )
 
+// isolateCLIEnv gives one test its own credential store AND cuts it off from the
+// worker-spawned environment.
+//
+// The config dir alone is not isolation. `NewClientFromEnv` -- which every verb that
+// calls requireClient goes through -- prefers LEAPMUX_CONTROL_SOCK over the --hub flag
+// and over the stored credential, because a CLI invoked inside an agent must reach its
+// own worker. A developer who runs this suite from inside a LeapMux agent inherits that
+// socket, so the client under test talks to a real worker instead of the test's httptest
+// server: the verb then emits the worker-IPC envelope, and the assertions read empty
+// fields and absent keys rather than a wrong value. CI has none of these set, so the
+// failure appears only on the machine the product itself is used on.
+//
+// LEAPMUX_HUB is cleared for the same reason one step down: it is the fallback when no
+// --hub is passed, and a test that means "no hub configured" must not inherit one.
+func isolateCLIEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+	for _, key := range []string{"LEAPMUX_CONTROL_SOCK", "LEAPMUX_CONTROL_TOKEN", "LEAPMUX_HUB"} {
+		t.Setenv(key, "")
+	}
+}
+
+// isolateCLIEnv is what keeps every verb in this package pointed at the test's own
+// httptest server. Each variable it clears steers client construction somewhere else,
+// so dropping one silently sends a test to a real worker or a real hub.
+func TestIsolateCLIEnv_CutsTheWorkerSpawnedEnvironment(t *testing.T) {
+	// The environment a LeapMux-spawned agent inherits, which is where this suite runs
+	// when a developer uses the product to work on it.
+	t.Setenv("LEAPMUX_CONTROL_SOCK", "unix:/tmp/real-worker.sock")
+	t.Setenv("LEAPMUX_CONTROL_TOKEN", "real-token")
+	t.Setenv("LEAPMUX_HUB", "https://real-hub.example")
+
+	t.Run("isolated", func(t *testing.T) {
+		isolateCLIEnv(t)
+		for _, key := range []string{"LEAPMUX_CONTROL_SOCK", "LEAPMUX_CONTROL_TOKEN", "LEAPMUX_HUB"} {
+			assert.Emptyf(t, os.Getenv(key), "%s must not reach a test", key)
+		}
+		assert.NotEmpty(t, os.Getenv("LEAPMUX_CONTROL_CONFIG_DIR"), "the credential store is still isolated")
+
+		// The point of clearing the socket: the client follows --hub rather than the
+		// inherited worker, so a verb reaches the test's server.
+		c, err := control.NewClientOrAnonymous("https://hub.example")
+		require.NoError(t, err)
+		assert.False(t, c.IsWorkerIPC(), "an inherited worker socket must not capture the client")
+	})
+}
+
 // TestPKCEChallenge_DerivesFromVerifier pins the PKCE challenge as
 // SHA-256 of the verifier, base64url-encoded without padding (RFC
 // 7636 §4.2). Without this, a regression in the encoder would silently
@@ -132,7 +179,7 @@ func TestPersistTokenResponse_WarnsWhenAScopeWasNotGranted(t *testing.T) {
 // the job -- and that place must be the row the Preferences dialog actually
 // draws (Apps, not the Account group it moved out of).
 func TestRunAuthLogin_WarnsWhenTheRevokeFails(t *testing.T) {
-	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+	isolateCLIEnv(t)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -167,7 +214,7 @@ func TestRunAuthLogin_WarnsWhenTheRevokeFails(t *testing.T) {
 // cannot revoke, but the login must not leave it in place either: the file
 // goes, and the warning states that its grant may still live on the hub.
 func TestRunAuthLogin_CleansUpAnUnreadableCredentialFile(t *testing.T) {
-	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+	isolateCLIEnv(t)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "refused", http.StatusInternalServerError)
@@ -277,7 +324,7 @@ func TestRunAuthLogout_RevokesAndRemovesCreds(t *testing.T) {
 // sent hunting for a panel the rename had already taken away. The row it
 // names must be the one the Preferences dialog actually draws.
 func TestRunAuthLogout_WarnsWhereToFinishTheJob(t *testing.T) {
-	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+	isolateCLIEnv(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, "/oauth/revoke", r.URL.Path)
 		w.WriteHeader(http.StatusInternalServerError)
@@ -317,7 +364,7 @@ func TestRunAuthLogout_SucceedsWhenTheRowIsAlreadyGone(t *testing.T) {
 		"a proxy answers not found":    http.StatusNotFound,
 	} {
 		t.Run(name, func(t *testing.T) {
-			t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+			isolateCLIEnv(t)
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				require.Equal(t, "/oauth/revoke", r.URL.Path)
 				w.WriteHeader(status)
@@ -351,7 +398,7 @@ func TestRunAuthLogout_SucceedsWhenTheRowIsAlreadyGone(t *testing.T) {
 // polarity: a refusal the operator CAN act on must still be reported, so the
 // credential does not stay live behind a clean result.
 func TestRunAuthLogout_WarnsWhenTheHubRefusesTheRevoke(t *testing.T) {
-	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+	isolateCLIEnv(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
@@ -821,7 +868,7 @@ func TestRunAuthCredentials_ListsTheAccountCredentials(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+	isolateCLIEnv(t)
 	require.NoError(t, control.SaveCredentials(srv.URL, control.CredentialFile{
 		HubURL: srv.URL, AccessToken: "lmx_a_test", RefreshToken: "lmx_r_test",
 		ExpiresAt: time.Now().Add(time.Hour), UserID: "u-1", Username: "alice",
@@ -889,7 +936,7 @@ func TestRunAuthCredentials_AsksForTheHubsMaximumPage(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+	isolateCLIEnv(t)
 	require.NoError(t, control.SaveCredentials(srv.URL, control.CredentialFile{
 		HubURL: srv.URL, AccessToken: "lmx_a_test", RefreshToken: "lmx_r_test",
 		ExpiresAt: time.Now().Add(time.Hour), UserID: "u-1", Username: "alice",
@@ -1071,7 +1118,7 @@ func liveCredentialFor(t *testing.T, hubURL string) {
 }
 
 func TestRunAuthStatus_ConfirmsWithTheHub(t *testing.T) {
-	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+	isolateCLIEnv(t)
 	srv := currentUserServer(t, "renamed-on-the-hub", true)
 	liveCredentialFor(t, srv.URL)
 
@@ -1097,7 +1144,7 @@ func TestRunAuthStatus_ConfirmsWithTheHub(t *testing.T) {
 // read the credential FILE, whose zone is the writer's, and the envelope
 // must not leak it.
 func TestRunAuthList_PrintsUTC(t *testing.T) {
-	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+	isolateCLIEnv(t)
 	srv := currentUserServer(t, "unused", false)
 	liveCredentialFor(t, srv.URL)
 
@@ -1115,7 +1162,7 @@ func TestRunAuthList_PrintsUTC(t *testing.T) {
 }
 
 func TestRunAuthStatus_WarnsWhenTheHubCannotBeAsked(t *testing.T) {
-	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+	isolateCLIEnv(t)
 	// A server that is already closed: the URL stays valid, the hub is gone.
 	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	srv.Close()
@@ -1134,7 +1181,7 @@ func TestRunAuthStatus_WarnsWhenTheHubCannotBeAsked(t *testing.T) {
 }
 
 func TestRunAuthStatus_RefusedMeansSignedOut(t *testing.T) {
-	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+	isolateCLIEnv(t)
 	// The hub answers the RPC itself with 401, and the rotation the
 	// interceptor then attempts with invalid_grant -- which deletes the
 	// credential file on the way through.
@@ -1174,7 +1221,7 @@ func TestRunAuthStatus_RefusedMeansSignedOut(t *testing.T) {
 }
 
 func TestRunWhoami_ConfirmsWithTheHub(t *testing.T) {
-	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+	isolateCLIEnv(t)
 	srv := currentUserServer(t, "hub-name", false)
 	liveCredentialFor(t, srv.URL)
 
@@ -1196,7 +1243,7 @@ func TestRunWhoami_ConfirmsWithTheHub(t *testing.T) {
 // is_admin present (null, the honest unknown), so its direct endings carry
 // one shape.
 func TestRunAuthStatus_FallsBackWhenTheCredentialLacksAccountRead(t *testing.T) {
-	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+	isolateCLIEnv(t)
 	srv := currentUserPermissionDeniedServer(t)
 	liveCredentialFor(t, srv.URL)
 
@@ -1213,7 +1260,7 @@ func TestRunAuthStatus_FallsBackWhenTheCredentialLacksAccountRead(t *testing.T) 
 }
 
 func TestRunWhoami_FallsBackWhenTheCredentialLacksAccountRead(t *testing.T) {
-	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+	isolateCLIEnv(t)
 	srv := currentUserPermissionDeniedServer(t)
 	liveCredentialFor(t, srv.URL)
 
@@ -1234,7 +1281,7 @@ func TestRunWhoami_FallsBackWhenTheCredentialLacksAccountRead(t *testing.T) {
 // behind. The fake hub refuses the device authorization, which is exactly
 // the "attempting a login" that must not rescue the old credential.
 func TestRunAuthLogin_CleansUpTheExistingLoginFirst(t *testing.T) {
-	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+	isolateCLIEnv(t)
 
 	revoked := false
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1271,7 +1318,7 @@ func TestRunAuthLogin_CleansUpTheExistingLoginFirst(t *testing.T) {
 // refuses must not cost the machine its working credential. The scope below
 // is exactly the value splitScopeFlag exists to refuse.
 func TestRunAuthLogin_RefusedFlagKeepsTheExistingLogin(t *testing.T) {
-	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+	isolateCLIEnv(t)
 
 	revoked := false
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1304,7 +1351,7 @@ func TestRunAuthLogin_RefusedFlagKeepsTheExistingLogin(t *testing.T) {
 // local answer stands with a warning, not an rpc_failed exit that hides the
 // fields the file still answers.
 func TestRunAuthStatus_FallsBackWhenTheProxyDropsTheRoute(t *testing.T) {
-	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+	isolateCLIEnv(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r) // a proxy that no longer routes the hub
 	}))
@@ -1329,7 +1376,7 @@ func TestRunAuthStatus_FallsBackWhenTheProxyDropsTheRoute(t *testing.T) {
 // must read as unreachable, not as a refused credential, because the hub
 // never answered anything.
 func TestRunAuthStatus_HungHubCannotHoldTheCommand(t *testing.T) {
-	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+	isolateCLIEnv(t)
 	hang := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		<-hang // accept, then stall every route the check touches

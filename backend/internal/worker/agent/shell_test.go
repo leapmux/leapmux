@@ -21,7 +21,7 @@ func wrapShellCmd(ctx context.Context, shell string, loginShell bool, binaryName
 	return buildShellWrappedCommand(ctx, shellWrapSpec{
 		Shell:           shell,
 		LoginShell:      loginShell,
-		BinaryName:      binaryName,
+		Launch:          launchSpec{Program: binaryName},
 		StripEnvKeys:    stripEnvKeys,
 		BaseArgs:        baseArgs,
 		ModelEffortArgs: modelEffortArgs,
@@ -49,7 +49,7 @@ func TestBuildShellWrappedCommand_Bash_Interactive(t *testing.T) {
 	assert.Equal(t, "-c", cmd.Args[3])
 	assert.Contains(t, cmd.Args[4], "echo '"+delimiter+"'")
 	assert.Contains(t, cmd.Args[4], "unset CLAUDECODE")
-	assert.Contains(t, cmd.Args[4], "exec claude")
+	assert.Contains(t, cmd.Args[4], "exec 'claude'")
 	assert.Contains(t, cmd.Args[4], "'--output-format'")
 	assert.Contains(t, cmd.Args[4], "'--model'")
 	assert.Contains(t, cmd.Args[4], "'opus'")
@@ -68,7 +68,7 @@ func TestBuildShellWrappedCommand_Bash_NonInteractive(t *testing.T) {
 	assert.Equal(t, "/bin/bash", cmd.Path)
 	require.Len(t, cmd.Args, 3) // bash -c <cmd>
 	assert.Equal(t, "-c", cmd.Args[1])
-	assert.Contains(t, cmd.Args[2], "exec claude")
+	assert.Contains(t, cmd.Args[2], "exec 'claude'")
 }
 
 func TestBuildShellWrappedCommand_Zsh(t *testing.T) {
@@ -82,7 +82,7 @@ func TestBuildShellWrappedCommand_Zsh(t *testing.T) {
 	assert.Equal(t, "-l", cmd.Args[2])
 	assert.Equal(t, "-c", cmd.Args[3])
 	assert.Contains(t, cmd.Args[4], "unset CLAUDECODE")
-	assert.Contains(t, cmd.Args[4], "exec claude")
+	assert.Contains(t, cmd.Args[4], "exec 'claude'")
 	assert.Contains(t, cmd.Args[4], delimiter)
 }
 
@@ -97,7 +97,7 @@ func TestBuildShellWrappedCommand_Fish(t *testing.T) {
 	assert.Equal(t, "-l", cmd.Args[2])
 	assert.Equal(t, "-c", cmd.Args[3])
 	assert.Contains(t, cmd.Args[4], "unset CLAUDECODE")
-	assert.Contains(t, cmd.Args[4], "exec claude")
+	assert.Contains(t, cmd.Args[4], "exec 'claude'")
 	// No conditional (empty modelEffortArgs)
 	assert.NotContains(t, cmd.Args[4], "CLAUDE_CODE_USE_BEDROCK")
 }
@@ -111,8 +111,19 @@ func TestBuildShellWrappedCommand_Tcsh_Interactive(t *testing.T) {
 	require.Len(t, cmd.Args, 3) // tcsh -ic <cmd>
 	assert.Equal(t, "-ic", cmd.Args[1])
 	assert.Contains(t, cmd.Args[2], "echo '"+delimiter+"'")
-	assert.Contains(t, cmd.Args[2], "unset CLAUDECODE")
-	assert.Contains(t, cmd.Args[2], "exec claude")
+	// `unsetenv`, not `unset`: csh's `unset` removes a SHELL variable, so the key would
+	// survive into the launched agent's environment.
+	assert.Contains(t, cmd.Args[2], "unsetenv CLAUDECODE")
+	assert.NotContains(t, cmd.Args[2], "unset CLAUDECODE")
+	assert.Contains(t, cmd.Args[2], "exec 'claude'")
+	// csh's own conditional. `[ -n "$VAR" ]` on an unset name is a hard error there
+	// ("VAR: Undefined variable."), which killed every ProbeThirdParty launch.
+	assert.NotContains(t, cmd.Args[2], `[ -n "$`)
+	assert.Contains(t, cmd.Args[2], "endif")
+	assert.Contains(t, cmd.Args[2], "if ( $?CLAUDE_CODE_USE_VERTEX ) then")
+	// The guard and the read it guards must be on SEPARATE lines: csh substitutes a
+	// whole line's variables before it evaluates any of that line.
+	assert.NotContains(t, cmd.Args[2], `$?CLAUDE_CODE_USE_VERTEX && `)
 }
 
 func TestBuildShellWrappedCommand_Tcsh_NonInteractive(t *testing.T) {
@@ -133,8 +144,22 @@ func TestBuildShellWrappedCommand_Csh(t *testing.T) {
 	assert.Equal(t, "/bin/csh", cmd.Path)
 	require.Len(t, cmd.Args, 3) // csh -ic <cmd>
 	assert.Equal(t, "-ic", cmd.Args[1])
-	assert.Contains(t, cmd.Args[2], "unset CLAUDECODE")
-	assert.Contains(t, cmd.Args[2], "exec claude")
+	assert.Contains(t, cmd.Args[2], "unsetenv CLAUDECODE")
+	assert.NotContains(t, cmd.Args[2], "unset CLAUDECODE")
+	assert.Contains(t, cmd.Args[2], "exec 'claude'")
+}
+
+// A csh launch with no probe emits no conditional at all, so the simple path must stay
+// free of the seed lines the conditional path needs.
+func TestBuildShellWrappedCommand_Csh_NoProbeEmitsNoConditional(t *testing.T) {
+	cmd, delimiter, meta := wrapShellCmd(
+		context.Background(), "/bin/tcsh", false, "/usr/local/bin/node",
+		[]string{"CLAUDECODE"}, []string{"app-server", "--stdio"}, nil, false, "/tmp",
+	)
+	assert.Empty(t, meta)
+	assert.Equal(t,
+		"unsetenv CLAUDECODE; echo '"+delimiter+"' && exec '/usr/local/bin/node' 'app-server' '--stdio'",
+		cmd.Args[2])
 }
 
 func TestBuildShellWrappedCommand_Nu_Interactive(t *testing.T) {
@@ -149,7 +174,7 @@ func TestBuildShellWrappedCommand_Nu_Interactive(t *testing.T) {
 	assert.Equal(t, "-c", cmd.Args[3])
 	assert.Contains(t, cmd.Args[4], "echo '"+delimiter+"'")
 	assert.Contains(t, cmd.Args[4], "hide-env CLAUDECODE")
-	assert.Contains(t, cmd.Args[4], "^claude")
+	assert.Contains(t, cmd.Args[4], `^"claude"`)
 	assert.NotContains(t, cmd.Args[4], "exec")
 	assert.Contains(t, cmd.Args[4], "CLAUDE_CODE_USE_BEDROCK")
 	// Args should be double-quoted (nuQuote), not single-quoted (posixQuote)
@@ -161,7 +186,7 @@ func TestBuildShellWrappedCommand_Nu_Interactive(t *testing.T) {
 
 func TestBuildNuCommand_SingleQuoteInArgs(t *testing.T) {
 	inner := buildNuCommand(shellWrapSpec{
-		BinaryName:      "claude",
+		Launch:          launchSpec{Program: "claude"},
 		StripEnvKeys:    []string{"CLAUDECODE"},
 		BaseArgs:        []string{"--output-format", "stream-json"},
 		ModelEffortArgs: []string{"--model", "it's-a-model"},
@@ -194,7 +219,7 @@ func TestBuildShellWrappedCommand_PwshCore_Interactive(t *testing.T) {
 			assert.Equal(t, "-Command", cmd.Args[2])
 			assert.Contains(t, cmd.Args[3], "Write-Output '"+delimiter+"'")
 			assert.Contains(t, cmd.Args[3], "Remove-Item Env:CLAUDECODE")
-			assert.Contains(t, cmd.Args[3], "& claude")
+			assert.Contains(t, cmd.Args[3], "& 'claude'")
 			assert.NotContains(t, cmd.Args[3], "exec")
 			assert.Contains(t, cmd.Args[3], "CLAUDE_CODE_USE_BEDROCK")
 		})
@@ -219,7 +244,7 @@ func TestBuildShellWrappedCommand_WindowsPowerShell_Interactive(t *testing.T) {
 			assert.NotContains(t, cmd.Args, "-Login")
 			assert.Contains(t, cmd.Args[2], "Write-Output '"+delimiter+"'")
 			assert.Contains(t, cmd.Args[2], "Remove-Item Env:CLAUDECODE")
-			assert.Contains(t, cmd.Args[2], "& claude")
+			assert.Contains(t, cmd.Args[2], "& 'claude'")
 			assert.Contains(t, cmd.Args[2], "CLAUDE_CODE_USE_BEDROCK")
 		})
 	}
@@ -246,7 +271,7 @@ func TestBuildShellWrappedCommand_UnknownShell(t *testing.T) {
 	assert.Equal(t, "-l", cmd.Args[2])
 	assert.Equal(t, "-c", cmd.Args[3])
 	assert.Contains(t, cmd.Args[4], "unset CLAUDECODE")
-	assert.Contains(t, cmd.Args[4], "exec claude")
+	assert.Contains(t, cmd.Args[4], "exec 'claude'")
 }
 
 // When the desktop app runs as a Linux AppImage, the runtime exports
@@ -361,8 +386,8 @@ func TestBuildShellWrappedCommand_ProbeThirdPartyDefaultModel(t *testing.T) {
 	// Both branches still exec claude with the base args.
 	parts := strings.SplitN(inner, "else", 2)
 	require.Len(t, parts, 2, "expected if/else probe structure")
-	assert.Contains(t, parts[0], "exec claude")
-	assert.Contains(t, parts[1], "exec claude")
+	assert.Contains(t, parts[0], "exec 'claude'")
+	assert.Contains(t, parts[1], "exec 'claude'")
 }
 
 // TestBuildShellWrappedCommand_ProbeThirdPartyDefaultModel_NuAndPwsh checks the
@@ -389,7 +414,7 @@ func TestBuildShellWrappedCommand_ProbeThirdPartyDefaultModel_NuAndPwsh(t *testi
 
 func TestBuildShellWrappedCommand_ModelEffortInElseBranch(t *testing.T) {
 	inner := buildPosixCommand(shellWrapSpec{
-		BinaryName:      "claude",
+		Launch:          launchSpec{Program: "claude"},
 		StripEnvKeys:    []string{"CLAUDECODE"},
 		BaseArgs:        []string{"--output-format", "stream-json"},
 		ModelEffortArgs: []string{"--model", "opus", "--effort", "high"},
@@ -417,7 +442,7 @@ func TestBuildShellWrappedCommand_CodexUsesCodexEnvMarkers(t *testing.T) {
 	assert.Contains(t, cmd.Args[4], "unset CODEX_CI")
 	assert.NotContains(t, cmd.Args[4], "CLAUDECODE")
 	assert.Contains(t, cmd.Args[4], "echo '"+delimiter+"'")
-	assert.Contains(t, cmd.Args[4], "exec codex")
+	assert.Contains(t, cmd.Args[4], "exec 'codex'")
 }
 
 func TestBuildShellWrappedCommand_CodexUsesCodexEnvMarkers_NuAndPwsh(t *testing.T) {
@@ -631,6 +656,45 @@ func TestBuildModelEffortArgs(t *testing.T) {
 	}
 }
 
+// A Launch.Program that is an absolute path -- ZCode's resolved Node interpreter, and
+// on Windows commonly `C:\Program Files\nodejs\node.exe` -- must reach the shell as
+// ONE word in every dialect. Unquoted, the space split it and the shell tried to
+// run `C:\Program` with `Files\nodejs\node.exe` as its first argument.
+func TestBuildShellWrappedCommand_QuotesProgramPathWithSpace(t *testing.T) {
+	const program = `/Applications/My Tools/node`
+
+	posix := buildPosixCommand(shellWrapSpec{
+		Launch:   launchSpec{Program: program},
+		BaseArgs: []string{"/opt/zcode.cjs", "app-server", "--stdio"},
+	}, "__DELIM__", "")
+	assert.Contains(t, posix, "exec '"+program+"'")
+
+	nu := buildNuCommand(shellWrapSpec{
+		Launch:   launchSpec{Program: program},
+		BaseArgs: []string{"/opt/zcode.cjs"},
+	}, "__DELIM__", "")
+	assert.Contains(t, nu, `^"`+program+`"`)
+
+	pwsh := buildPwshCommand(shellWrapSpec{
+		Launch:   launchSpec{Program: program},
+		BaseArgs: []string{"/opt/zcode.cjs"},
+	}, "__DELIM__", "")
+	assert.Contains(t, pwsh, "& '"+program+"'")
+}
+
+// The quoting must also survive a quote character inside the path, using each
+// dialect's own escape (POSIX '\”, PowerShell doubled ”, Nushell \").
+func TestBuildShellWrappedCommand_EscapesQuoteInProgramPath(t *testing.T) {
+	posix := buildPosixCommand(shellWrapSpec{Launch: launchSpec{Program: "/opt/it's/node"}}, "__DELIM__", "")
+	assert.Contains(t, posix, `exec '/opt/it'\''s/node'`)
+
+	pwsh := buildPwshCommand(shellWrapSpec{Launch: launchSpec{Program: "/opt/it's/node"}}, "__DELIM__", "")
+	assert.Contains(t, pwsh, `& '/opt/it''s/node'`)
+
+	nu := buildNuCommand(shellWrapSpec{Launch: launchSpec{Program: `/opt/say"hi"/node`}}, "__DELIM__", "")
+	assert.Contains(t, nu, `^"/opt/say\"hi\"/node"`)
+}
+
 func TestPosixQuote(t *testing.T) {
 	assert.Equal(t, "'hello'", posixQuote("hello"))
 	assert.Equal(t, "'it'\\''s'", posixQuote("it's"))
@@ -659,4 +723,81 @@ func TestIsPwsh(t *testing.T) {
 	assert.False(t, terminal.IsPwsh("bash"))
 	assert.False(t, terminal.IsPwsh("zsh"))
 	assert.False(t, terminal.IsPwsh("pwsh-extra-stuff"))
+}
+
+// --- the launch spec ---
+//
+// buildShellWrappedCommand owns the PrefixArgs and Env merge, which is the whole point
+// of threading a launchSpec rather than a bare program name. ZCode was the only caller
+// that needed either, and it merged both by hand -- so a second bundled provider would
+// have had to remember two steps, and losing one is silent: a missing PrefixArgs runs
+// the interpreter with no script, and a missing Env starts Electron's desktop
+// application instead of its Node runtime.
+
+// The interpreter's arguments come FIRST, before the provider's own.
+func TestBuildShellWrappedCommand_PrefixArgsPrecedeTheBaseArgs(t *testing.T) {
+	cmd, delimiter, _ := buildShellWrappedCommand(context.Background(), shellWrapSpec{
+		Shell: "/bin/bash",
+		Launch: launchSpec{
+			Program:    "/usr/local/bin/node",
+			PrefixArgs: []string{"/Applications/ZCode.app/zcode.cjs"},
+		},
+		BaseArgs:   []string{"app-server", "--stdio"},
+		WorkingDir: "/tmp",
+	})
+
+	assert.Equal(t,
+		"echo '"+delimiter+"' && exec '/usr/local/bin/node' '/Applications/ZCode.app/zcode.cjs' 'app-server' '--stdio'",
+		cmd.Args[2])
+}
+
+// The launch env reaches the process, and it survives the caller's own
+// FinalizeAgentEnv -- which is where a hand merge used to have to run.
+func TestBuildShellWrappedCommand_LaunchEnvReachesTheProcess(t *testing.T) {
+	cmd, _, _ := buildShellWrappedCommand(context.Background(), shellWrapSpec{
+		Shell:      "/bin/bash",
+		Launch:     launchSpec{Program: "/opt/electron", Env: []string{"ELECTRON_RUN_AS_NODE=1"}},
+		BaseArgs:   []string{"app-server"},
+		WorkingDir: "/tmp",
+	})
+
+	assert.Contains(t, cmd.Env, "ELECTRON_RUN_AS_NODE=1")
+	cmd.Env = FinalizeAgentEnv(cmd.Environ(), Options{})
+	assert.Contains(t, cmd.Env, "ELECTRON_RUN_AS_NODE=1",
+		"FinalizeAgentEnv scrubs only the agent-identity and LEAPMUX_CONTROL_ keys")
+}
+
+// A launch that needs neither leaves the environment inherited, which is what every
+// provider but ZCode gets. cmd.Env stays nil so cmd.Environ() reports the parent's.
+func TestBuildShellWrappedCommand_NoLaunchEnvLeavesTheEnvironmentInherited(t *testing.T) {
+	cmd, _, _ := buildShellWrappedCommand(context.Background(), shellWrapSpec{
+		Shell:      "/bin/bash",
+		Launch:     launchSpec{Program: "claude"},
+		BaseArgs:   []string{"--print"},
+		WorkingDir: "/tmp",
+	})
+
+	assert.Nil(t, cmd.Env)
+	assert.NotEmpty(t, cmd.Environ(), "a nil Env means the parent's environment, not an empty one")
+}
+
+// Every dialect prepends the same way, or a bundled provider would work on one shell
+// and start with no script on another.
+func TestBuildShellWrappedCommand_EveryDialectPrependsThePrefixArgs(t *testing.T) {
+	for _, shell := range []string{"/bin/bash", "/bin/zsh", "/usr/bin/nu", "/usr/bin/pwsh", "/bin/tcsh"} {
+		t.Run(shell, func(t *testing.T) {
+			cmd, _, _ := buildShellWrappedCommand(context.Background(), shellWrapSpec{
+				Shell:      shell,
+				Launch:     launchSpec{Program: "/opt/node", PrefixArgs: []string{"/opt/zcode.cjs"}},
+				BaseArgs:   []string{"app-server"},
+				WorkingDir: "/tmp",
+			})
+			inner := cmd.Args[len(cmd.Args)-1]
+			script := strings.Index(inner, "zcode.cjs")
+			serve := strings.Index(inner, "app-server")
+			require.NotEqual(t, -1, script, "the script must reach the command line")
+			require.NotEqual(t, -1, serve)
+			assert.Less(t, script, serve, "the interpreter's script comes before the provider's own args")
+		})
+	}
 }

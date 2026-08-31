@@ -135,11 +135,15 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Agent, erro
 
 	// Codex doesn't have third-party provider detection or model/effort
 	// conditional args, so we pass empty modelEffortArgs for a simple command.
-	binary := resolveBinaryName(ctx, opts.Shell, opts.LoginShell, codexBinaryCandidates)
+	launch, err := resolveProviderLaunch(ctx, opts.Shell, opts.LoginShell, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
 	cmd, preambleDelimiter, metaPrefix := buildShellWrappedCommand(ctx, shellWrapSpec{
 		Shell:        opts.Shell,
 		LoginShell:   opts.LoginShell,
-		BinaryName:   binary,
+		Launch:       launch,
 		StripEnvKeys: []string{"CODEX_CI"},
 		BaseArgs:     []string{"app-server"},
 		WorkingDir:   opts.WorkingDir,

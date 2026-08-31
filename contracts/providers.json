@@ -45,6 +45,11 @@
       "displayName": "Reasonix",
       "cliAlias": "reasonix",
       "parseAliases": []
+    },
+    "AGENT_PROVIDER_ZCODE": {
+      "displayName": "ZCode",
+      "cliAlias": "zcode",
+      "parseAliases": ["glm"]
     }
   }
 }

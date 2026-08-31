@@ -1,10 +1,10 @@
 import type { FileEditDiffSource } from '../../../results/fileEditDiff'
 import type { ReadFileResultSource } from '../../../results/readFileResult'
 import type { ParsedMessageContent } from '~/lib/messageParser'
+import { PI_TOOL } from '~/generated/contracts/pi-protocol'
 import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
 import { fileEditDiffFromHunks, fileEditDiffFromNewFile, fileEditHasDiff } from '../../../results/fileEditDiff'
 import { readFileSourceFromContent } from '../../../results/readFileResult'
-import { PI_TOOL } from '../protocol'
 import { parsePiNumberedDiff } from './piDiffParser'
 import { piExtractTool } from './toolCommon'
 

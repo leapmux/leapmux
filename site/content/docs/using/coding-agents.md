@@ -11,7 +11,7 @@ For where agents live in the workspace layout, see [Tabs & Layout](/docs/using/t
 
 ## Supported agents
 
-LeapMux integrates nine coding-agent providers:
+LeapMux integrates ten coding-agent providers:
 
 | Provider | CLI binary detected on the Worker |
 | --- | --- |
@@ -24,16 +24,29 @@ LeapMux integrates nine coding-agent providers:
 | Goose | `goose` |
 | Pi | `pi` |
 | Reasonix | `reasonix` |
+| ZCode | `zcode`, or the desktop application (see [below](#zcode-is-found-through-its-desktop-application)) |
 
-All nine are first-class: each one supports the core workflow — chat, streamed tool calls, permission prompts, and session resume. The plan/todo sidebar only appears for agents whose CLI emits task or todo updates. Resume falls back to a fresh session when the agent's own resume can't pick up the prior conversation. The available models, settings, and prompt styles vary from provider to provider (each CLI exposes its own); the rest of this chapter covers those per-provider details.
+All ten are first-class: each one supports the core workflow — chat, streamed tool calls, permission prompts, and session resume. The plan/todo sidebar only appears for agents whose CLI emits task or todo updates. Resume falls back to a fresh session when the agent's own resume can't pick up the prior conversation. The available models, settings, and prompt styles vary from provider to provider (each CLI exposes its own); the rest of this chapter covers those per-provider details.
 
 ### Which agents you can actually open
 
-A provider only appears in the picker if its CLI is installed on the selected Worker. When you choose a Worker, LeapMux probes its shell for each provider's binary (`command -v <binary>`) and shows only the providers it finds.
+A provider only appears in the picker if its CLI is installed on the selected Worker. When you choose a Worker, LeapMux probes its shell for each provider's binary (`command -v <binary>`) and shows only the providers it finds. ZCode is the exception: it ships no command, so LeapMux looks for its desktop installation instead (see [ZCode is found through its desktop application](#zcode-is-found-through-its-desktop-application)).
 
-While that probe is still loading, LeapMux shows a default list of all nine providers, sorted alphabetically by label; once the probe completes, the list narrows to the providers actually installed on the Worker.
+While that probe is still loading, LeapMux shows a default list of all ten providers, sorted alphabetically by label; once the probe completes, the list narrows to the providers actually installed on the Worker.
 
 If no provider is detected, the picker shows a disabled **No agents available** button. Install the relevant CLI on the Worker and use the **Refresh available providers** button to re-probe.
+
+#### ZCode is found through its desktop application
+
+ZCode ships no command of its own, so LeapMux looks for it in three steps and takes the first that answers:
+
+1. The `LEAPMUX_ZCODE_SCRIPT` environment variable, which points straight at a `zcode.cjs`. Pair it with `LEAPMUX_ZCODE_NODE` to name the interpreter as well.
+2. A `zcode` command on the Worker's `PATH`. Your own wrapper script wins over the installed application.
+3. The `zcode.cjs` inside the ZCode desktop installation — under `ZCode.app` on macOS, `Programs\ZCode` or `Program Files\ZCode` on Windows, and `~/.local/share/ZCode`, `/opt/ZCode`, `/usr/share/zcode` or `/usr/lib/zcode` on Linux. LeapMux runs it with an interpreter that provides `node:sqlite`: a `node` on `PATH`, or the installation's own bundled runtime.
+
+The `node:sqlite` requirement is not cosmetic — ZCode keeps its session store in it. An interpreter without that module is rejected during the probe rather than failing on the first message.
+
+ZCode also reads its credentials and its model list from the desktop application's own configuration at `~/.zcode/v2/config.json`. Sign in to ZCode once and LeapMux picks the same providers and models up; LeapMux only reads that file and never writes it. Without it, the provider reports that ZCode is not configured instead of starting an agent that fails on every turn.
 
 ## Opening a new agent
 
@@ -97,8 +110,11 @@ You can attach files with **[+] > Attach file...**, or by pasting or dropping th
 | Claude Code | yes | yes | yes | no |
 | Codex | yes | yes | no | no |
 | Pi | yes | yes | no | no |
+| ZCode | yes | model-dependent | no | no |
 | Reasonix | yes | no | no | no |
 | Cursor, GitHub Copilot, Goose, OpenCode, Kilo | yes | yes | yes | yes |
+
+ZCode accepts an image only on a model that declares image input — of the models Z.ai ships today that is GLM-5.3-Flash. Attaching one to a text-only model is refused with a message naming the model, because ZCode would otherwise accept the image and never show it to the model.
 
 ### Message persistence and offline behavior
 
@@ -132,11 +148,11 @@ Some rows are intentionally hidden to keep the transcript readable — for examp
 
 ### The todo / plan sidebar
 
-When an agent produces a task plan or todo list, LeapMux shows it in a persistent sidebar with each item's status (pending, in progress, completed). Codex turn plans, Claude Code's todo and task tracking, and other providers' plan updates all feed this sidebar. The list is server-authoritative, so it stays correct across reconnects.
+When an agent produces a task plan or todo list, LeapMux shows it in a persistent sidebar with each item's status (pending, in progress, completed). Codex turn plans, Claude Code's and ZCode's todo tracking, Claude Code's task tools, and other providers' plan updates all feed this sidebar. The list is server-authoritative, so it stays correct across reconnects.
 
 ### Subagents and the Background tasks sidebar
 
-When an agent spawns a subagent (Claude Code's Task tool) or runs a background shell, LeapMux tracks it in a **Background tasks** sidebar section. Each row shows the task's live status and, for subagents that own a transcript, is clickable to open the subagent in its own tab alongside its parent. A small chip on the thinking indicator shows the active count and opens the same list as a popover.
+When an agent spawns a subagent (Claude Code's Task tool, ZCode's Agent tool) or runs a background shell, LeapMux tracks it in a **Background tasks** sidebar section. Each row shows the task's live status and, for subagents that own a transcript, is clickable to open the subagent in its own tab alongside its parent. A small chip on the thinking indicator shows the active count and opens the same list as a popover.
 
 Closing a subagent tab closes only the tab. The transcript and registry survive, and you can reopen the tab from the section later. Only providers whose CLIs expose subagent activity appear here; the registry lives in the worker's local database and never reaches the hub.
 
@@ -189,6 +205,12 @@ An **& Bypass Permissions** option is also available (it switches Codex to Full 
 
 Pi shows method-specific dialogs: **confirm** (Deny / Approve), **input** (an inline text field; Cancel / Send), **editor** (an inline textarea; Cancel / Send), and **select** (uses the shared question UI). Some Pi prompts show a timeout hint ("Auto-resolves in Ns if no response.").
 
+### ZCode
+
+ZCode's tool prompts carry the options the app-server offered, typically **Allow once**, **Always allow in this project** and **Deny**, together with the risk level and the reason it asked. Choosing an "always" option sends back ZCode's own permission rule, so the same command stops asking for the rest of the project.
+
+Its plan prompt is titled from the **ExitPlanMode** tool and shows the plan the agent wrote, with the shared plan-approval buttons. Questions use the shared question UI.
+
 ### Other providers
 
 Cursor, GitHub Copilot, Goose, OpenCode, Kilo, and Reasonix render a permission banner whose title comes from the tool call (default **Permission Request**) and whose buttons come from the options the agent offered. An **& Bypass Permissions** option appears only for Goose and GitHub Copilot, which declare a bypass mode; Cursor, OpenCode, Kilo, and Reasonix declare none. Cursor, OpenCode, and Kilo plug in their own richer question handling where they support it.
@@ -233,6 +255,12 @@ For providers that support a plan mode, **Shift+Tab** in the editor toggles betw
 
 **Pi** — **Thinking Level** (effort) and **Model**. Default model **glm-5.3**. Pi has no permission mode, no plan mode, and no bypass.
 
+**ZCode** — **Thought Level** (effort), **Model**, and **Mode**.
+
+- The models come from your own `~/.zcode/v2/config.json`, so the list is whatever that installation is signed in to. Each entry names its ZCode provider, which is what tells two rows apart when a plan and an API key both reach the same model. LeapMux orders them the way ZCode does and starts on the first — for the Z.ai plans that is **GLM-5.3**.
+- Thought levels are per model and also come from that configuration: **Low / High / Max** on GLM-5.3 and GLM-5.3-Flash, **Enabled / Off** on GLM-5-Turbo. **Auto** means the model's own default rather than no level at all.
+- Modes: **Plan**, **Build** (the default), **Edit**, **Yolo**. Shift+Tab toggles Plan, and Yolo is the bypass mode. ZCode's own `auto` mode is not offered: the shipped build denies every tool call under it.
+
 **Other providers** — a single option group plus a model selector. Each axis gets its own chip, and each chip shows the current value.
 
 | Provider | Default model | Default mode | Notes |
@@ -267,8 +295,9 @@ Pasting a Session ID is the manual path; most resumption happens automatically. 
 
 - **Defaults vary by provider.** Claude Code starts in **Default** permission mode (it will ask before risky actions); Codex starts in **Suggest & Approve**. Both ask before doing dangerous things unless you bypass.
 - **Bypass is a deliberate, sticky choice.** The "& Bypass Permissions" / "Bypass permissions" actions stop the agent asking for approval for the rest of the session (Codex's button also opens the sandbox and network). Use them only when you trust the working directory and the task.
-- **Attachment support differs by provider** (see the [attachments table](#attachments)) — every provider takes text and images, but PDF and other-binary support varies.
+- **Attachment support differs by provider** (see the [attachments table](#attachments)) — every provider takes text, but image, PDF and other-binary support varies. Reasonix takes text only, and ZCode takes an image only on a model that declares image input.
 - **Pi is minimal** — model and thinking level only, no permission/plan/bypass controls.
+- **ZCode borrows the desktop application's account.** Its models, credentials and thought levels all come from `~/.zcode/v2/config.json`, so what an agent can run matches what the ZCode application itself can run on that machine.
 - **Strict provider dispatch.** LeapMux never tries to render or encode one provider's messages with another provider's code. If a provider plugin is missing it surfaces a clear warning rather than guessing.
 
 ## Driving agents from a script

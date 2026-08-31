@@ -82,14 +82,18 @@ type PiAgent struct {
 func StartPi(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
 	ctx, cancel := context.WithCancel(ctx)
 
-	binary := resolveBinaryName(ctx, opts.Shell, opts.LoginShell, piBinaryCandidates)
+	launch, err := resolveProviderLaunch(ctx, opts.Shell, opts.LoginShell, leapmuxv1.AgentProvider_AGENT_PROVIDER_PI)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
 	// Pi has no --working-dir flag (it uses the process cwd). buildShellWrappedCommand
 	// already sets cmd.Dir to opts.WorkingDir, so the agent picks up the right
 	// directory implicitly.
 	cmd, preambleDelimiter, metaPrefix := buildShellWrappedCommand(ctx, shellWrapSpec{
 		Shell:      opts.Shell,
 		LoginShell: opts.LoginShell,
-		BinaryName: binary,
+		Launch:     launch,
 		BaseArgs:   []string{"--mode", "rpc"},
 		WorkingDir: opts.WorkingDir,
 	})

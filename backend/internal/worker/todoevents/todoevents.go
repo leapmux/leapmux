@@ -1,10 +1,12 @@
-// Package todoevents reduces a heterogeneous stream of agent messages
-// (Claude TodoWrite/TaskCreate/TaskUpdate/TaskGet/TaskList, Codex
-// turn/plan/updated, ACP sessionUpdate=plan) into a provider-neutral
-// to-do list. The worker owns the canonical state in agent_todos and
-// broadcasts the post-mutation snapshot to clients via
-// AgentTodosChanged; the frontend does not reduce these events
-// locally.
+// Package todoevents is the provider-neutral to-do list model: an Item,
+// its Status, and the Event variants that mutate a list of them.
+//
+// It holds no provider's wire shape. Each provider's plugin reads its
+// own messages and returns an Event from them
+// (agent.Provider.ExtractTodoEvent); the worker owns the canonical
+// state in agent_todos and broadcasts the post-mutation snapshot to
+// clients via AgentTodosChanged. The frontend does not reduce these
+// events locally.
 package todoevents
 
 import (
@@ -12,10 +14,10 @@ import (
 )
 
 // MaxTodos caps the size of an agent's to-do list shipped to clients
-// and held in memory by the reducer. Practically, Claude's Task* tool
-// rarely produces more than a few dozen rows per agent; the cap is a
-// guardrail against a runaway agent flooding `agent_todos` and making
-// every cold-start payload pathologically large.
+// and held in memory by the reducer. Practically, an agent rarely
+// produces more than a few dozen rows; the cap is a guardrail against
+// a runaway one flooding `agent_todos` and making every cold-start
+// payload pathologically large.
 const MaxTodos = 64
 
 // Item mirrors leapmuxv1.TodoItem in a plain-Go shape so the reducer
@@ -67,20 +69,20 @@ type Patch struct {
 type EventKind int
 
 const (
-	// KindSnapshot replaces the whole list (TodoWrite, Codex plan,
-	// ACP plan, Claude TaskList).
+	// KindSnapshot replaces the whole list. It is what a provider that
+	// re-sends every row on each change produces, which is most of them.
 	KindSnapshot EventKind = iota
-	// KindCreate appends one row (or replaces by ID for idempotent
-	// replay of Claude TaskCreate).
+	// KindCreate appends one row, or replaces the row that already
+	// carries its ID, so a replayed create is idempotent.
 	KindCreate
-	// KindUpdate merges fields into the row identified by ID
-	// (Claude TaskUpdate).
+	// KindUpdate merges the Patch into the row identified by ID.
 	KindUpdate
-	// KindDelete removes the row identified by ID (Claude TaskUpdate
-	// with status="deleted").
+	// KindDelete tombstones the row identified by ID.
 	KindDelete
-	// KindDetail merges fields into the row identified by ID,
-	// appending it when unseen (Claude TaskGet).
+	// KindDetail merges a full row into the row identified by ID, and
+	// appends it when that ID is unseen. It is what a read-only query
+	// of one row produces, so it never downgrades a status; see
+	// MergeDetail.
 	KindDetail
 )
 
@@ -95,8 +97,7 @@ type Event struct {
 }
 
 // ApplyPatch overlays a Patch onto base; nil fields preserve base.
-// Used by the worker's persistence layer to apply incremental
-// TaskUpdate mutations.
+// Used by the worker's persistence layer to apply a KindUpdate.
 func ApplyPatch(base Item, patch Patch) Item {
 	out := base
 	if patch.Content != nil {
@@ -115,13 +116,13 @@ func ApplyPatch(base Item, patch Patch) Item {
 }
 
 // MergeDetail overlays the non-zero fields of detail onto base.
-// KindDetail carries a TaskGet snapshot of the row; missing fields
-// map to empty strings via StatusFromWire / json zero values, which
-// we treat as "preserve". StatusPending is the zero value of Status
-// and the default for an empty wire string, so we preserve base on
-// that case too — TaskGet is a read-only query and never legitimately
-// downgrades a row from in_progress/completed back to pending. Real
-// status transitions arrive via KindUpdate (TaskUpdate).
+// KindDetail carries a full snapshot of one row; a missing field maps
+// to an empty string via StatusFromWire or a json zero value, which we
+// treat as "preserve". StatusPending is the zero value of Status and
+// the default for an empty wire string, so base wins there too — the
+// read-only query that produces a KindDetail never legitimately
+// downgrades a row from in_progress or completed back to pending. A
+// real status transition arrives as a KindUpdate.
 func MergeDetail(base, detail Item) Item {
 	out := base
 	if detail.Content != "" {

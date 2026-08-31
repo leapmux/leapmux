@@ -23,10 +23,11 @@ LeapMux is a workspace for running several coding agents and shell terminals at 
   <a href="https://cursor.com/cli"><img src="icons/agents/cursor.svg" width="64" height="64" title="Cursor"></a>&nbsp;
   <a href="https://github.com/features/copilot/cli"><img src="icons/agents/github-copilot.svg" width="64" height="64" title="GitHub Copilot"></a>&nbsp;
   <a href="https://opencode.ai/"><img src="icons/agents/opencode.svg" width="64" height="64" title="OpenCode"></a>&nbsp;
-  <a href="https://pi.dev/"><img src="icons/agents/pi.svg" width="64" height="64" title="Pi"></a>
+  <a href="https://pi.dev/"><img src="icons/agents/pi.svg" width="64" height="64" title="Pi"></a>&nbsp;
   <a href="https://kilo.ai/cli"><img src="icons/agents/kilo.svg" width="64" height="64" title="Kilo"></a>&nbsp;
   <a href="https://block.github.io/goose/"><img src="icons/agents/goose.svg" width="64" height="64" title="Goose"></a>&nbsp;
   <a href="https://github.com/esengine/DeepSeek-Reasonix"><img src="icons/agents/reasonix.svg" width="64" height="64" title="Reasonix"></a>&nbsp;
+  <a href="https://zcode.z.ai/"><img src="icons/agents/zcode.svg" width="64" height="64" title="ZCode"></a>
 </p>
 
 > **📖 Want to use LeapMux?**
@@ -471,4 +472,4 @@ See the [LICENSE](LICENSE.md) file for full details.
 
 ## Disclaimer
 
-All product names, logos, and trademarks are the property of their respective owners. LeapMux is not affiliated with, endorsed by, or sponsored by Anomaly, Anthropic, Anysphere, Apple, Block, Cognition, Don Ho, Earendil, GitHub, Google, JetBrains, Kilo Code, Microsoft, OpenAI, Sublime HQ, Zed Industries, or any other third party. Coding agent, editor, and IDE icons are used solely to indicate compatibility and are reproduced here for identification purposes only.
+All product names, logos, and trademarks are the property of their respective owners. LeapMux is not affiliated with, endorsed by, or sponsored by Anomaly, Anthropic, Anysphere, Apple, Block, Cognition, Don Ho, Earendil, GitHub, Google, JetBrains, Kilo Code, Microsoft, OpenAI, Sublime HQ, Z.ai, Zed Industries, or any other third party. Coding agent, editor, and IDE icons are used solely to indicate compatibility and are reproduced here for identification purposes only.

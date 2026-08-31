@@ -20,6 +20,13 @@ import (
 // returns the sink, the agent_id, and a row-listing helper bound to that
 // agent. Used by the to-do persistence/broadcast tests.
 func setupTodoTest(t *testing.T) (agent.OutputSink, string, func() []db.AgentTodo) {
+	return setupTodoTestForProvider(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+}
+
+// setupTodoTestForProvider is setupTodoTest for an agent of a stated provider. The
+// provider decides which extractor reads the message, so a test that feeds one
+// provider's shape has to create an agent of THAT provider.
+func setupTodoTestForProvider(t *testing.T, provider leapmuxv1.AgentProvider) (agent.OutputSink, string, func() []db.AgentTodo) {
 	t.Helper()
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
@@ -27,9 +34,9 @@ func setupTodoTest(t *testing.T) (agent.OutputSink, string, func() []db.AgentTod
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
 		HomeDir:       t.TempDir(),
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		AgentProvider: provider,
 	}))
-	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	sink := svc.Output.NewSink("agent-1", provider)
 	// The seed query returns NEWEST first (it feeds a capped cache, which must
 	// keep the newest rows). Reverse here so assertions read the persisted rows
 	// in ascending seq order, which is the order the cache exposes them in.
@@ -80,6 +87,118 @@ func TestOutputTodos_TodoWriteSnapshotPersists(t *testing.T) {
 	assert.Equal(t, "Doing A", rows[0].ActiveForm)
 	assert.Equal(t, "B", rows[1].Content)
 	assert.Equal(t, "in_progress", rows[1].Status)
+}
+
+// ZCode names its to-do tool exactly as Claude Code does and takes the same input,
+// but it carries it in its OWN `tool.updated` envelope -- so the list only reaches
+// the sidebar because the extraction is dispatched through the provider plugin.
+func TestOutputTodos_ZCodeToolUpdatedSnapshotPersists(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:            "agent-z",
+		WorkingDir:    t.TempDir(),
+		HomeDir:       t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE,
+	}))
+	sink := svc.Output.NewSink("agent-z", leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE)
+
+	body := marshalJSON(t, map[string]any{
+		"type": "tool.updated",
+		"payload": map[string]any{
+			"kind": "scheduled", "toolCallId": "call-1", "toolName": "TodoWrite",
+			"input": map[string]any{
+				"todos": []any{
+					map[string]any{"content": "A", "status": "in_progress", "activeForm": "Doing A"},
+					map[string]any{"content": "B", "status": "pending"},
+				},
+			},
+		},
+	})
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, body, agent.SpanInfo{
+		SpanID: "call-1", SpanType: "TodoWrite",
+	}))
+
+	rows, err := svc.Queries.ListAgentTodosNewestFirst(ctx, db.ListAgentTodosNewestFirstParams{AgentID: "agent-z", Limit: 1000})
+	require.NoError(t, err)
+	slices.Reverse(rows)
+	require.Len(t, rows, 2)
+	assert.Equal(t, "A", rows[0].Content)
+	assert.Equal(t, "in_progress", rows[0].Status)
+	assert.Equal(t, "Doing A", rows[0].ActiveForm)
+	assert.Equal(t, "B", rows[1].Content)
+	assert.Equal(t, "pending", rows[1].Status)
+
+	// The result half repeats the tool name with no input. Reading it as an empty
+	// snapshot would clear the list the opener just set.
+	result := marshalJSON(t, map[string]any{
+		"type": "tool.updated",
+		"payload": map[string]any{
+			"kind": "result", "toolCallId": "call-1", "toolName": "TodoWrite",
+			"result": map[string]any{"success": true},
+		},
+	})
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, result, agent.SpanInfo{
+		SpanID: "call-1", SpanType: "TodoWrite", Closing: true,
+	}))
+	rows, err = svc.Queries.ListAgentTodosNewestFirst(ctx, db.ListAgentTodosNewestFirstParams{AgentID: "agent-z", Limit: 1000})
+	require.NoError(t, err)
+	assert.Len(t, rows, 2)
+}
+
+// One provider's to-do shape must never populate another provider's list. The dispatch
+// through the plugin is the whole mechanism, and this is what proves it: before it, a
+// shared extractor tried every shape on every message, so the reader was decided by the
+// message body rather than by the agent that produced it. ZCode makes that reachable --
+// it gives its tool the same name Claude Code does, `TodoWrite` -- and this pins the
+// ownership: each shape feeds its own provider's list and no other.
+func TestOutputTodos_OneProvidersShapeNeverFeedsAnother(t *testing.T) {
+	t.Parallel()
+
+	shapes := map[string]struct {
+		owner    leapmuxv1.AgentProvider
+		spanType string
+		body     string
+	}{
+		"claude TodoWrite": {leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, "TodoWrite",
+			`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"TodoWrite",
+			  "input":{"todos":[{"content":"A","status":"pending"}]}}]}}`},
+		"codex plan": {leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, "",
+			`{"method":"turn/plan/updated","params":{"plan":[{"step":"A","status":"pending"}]}}`},
+		"acp plan": {leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, "",
+			`{"sessionUpdate":"plan","entries":[{"content":"A","status":"pending"}]}`},
+		"zcode tool.updated": {leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE, "TodoWrite",
+			`{"type":"tool.updated","payload":{"kind":"scheduled","toolCallId":"c1","toolName":"TodoWrite",
+			  "input":{"todos":[{"content":"A","status":"pending"}]}}}`},
+	}
+	readers := []leapmuxv1.AgentProvider{
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_PI,
+	}
+
+	for name, shape := range shapes {
+		for _, reader := range readers {
+			t.Run(name+" read by "+reader.String(), func(t *testing.T) {
+				t.Parallel()
+				sink, _, listRows := setupTodoTestForProvider(t, reader)
+				require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+					[]byte(shape.body), agent.SpanInfo{SpanID: "span-1", SpanType: shape.spanType}))
+
+				rows := listRows()
+				if reader == shape.owner {
+					require.Len(t, rows, 1, "the owning provider reads its own shape")
+					assert.Equal(t, "A", rows[0].Content)
+					return
+				}
+				assert.Empty(t, rows, "no other provider may read it")
+			})
+		}
+	}
 }
 
 func TestOutputTodos_TaskCreateInsertsRowAfterResult(t *testing.T) {
@@ -355,7 +474,7 @@ func TestOutputTodos_TodoWriteReplacesPriorTaskList(t *testing.T) {
 func TestOutputTodos_CodexPlanSnapshotPopulates(t *testing.T) {
 	t.Parallel()
 
-	sink, _, listRows := setupTodoTest(t)
+	sink, _, listRows := setupTodoTestForProvider(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 	body := marshalJSON(t, map[string]any{
 		"method": "turn/plan/updated",
 		"params": map[string]any{
@@ -376,7 +495,7 @@ func TestOutputTodos_CodexPlanSnapshotPopulates(t *testing.T) {
 func TestOutputTodos_AcpPlanSnapshotPopulates(t *testing.T) {
 	t.Parallel()
 
-	sink, _, listRows := setupTodoTest(t)
+	sink, _, listRows := setupTodoTestForProvider(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE)
 	body := marshalJSON(t, map[string]any{
 		"sessionUpdate": "plan",
 		"entries": []any{
@@ -889,4 +1008,67 @@ func TestOutputTodos_TaskCreateAtCapEvictsOldestDeleted(t *testing.T) {
 	}
 	assert.Contains(t, taskIDs, "t2")
 	assert.Contains(t, taskIDs, "new")
+}
+
+// --- the paired tool_use reader ---
+//
+// It is the one piece of SHARED code the to-do path still owns, because resolving
+// the row is a database read that only the worker can do. Every branch of it
+// answers nil, so a provider's extractor builds the less detailed row rather than
+// none at all.
+
+func TestPairedToolUseLookup_ReadsTheToolUseHalfOfTheSpan(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:            "agent-1",
+		WorkingDir:    t.TempDir(),
+		HomeDir:       t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	body := marshalJSON(t, map[string]any{"type": "assistant", "note": "the use half"})
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, body, agent.SpanInfo{
+		SpanID: "span-1", SpanType: "TaskCreate",
+	}))
+
+	read := svc.Output.pairedToolUseLookup("agent-1", agent.SpanInfo{SpanID: "span-1"})
+	assert.JSONEq(t, string(body), string(read()))
+	assert.JSONEq(t, string(body), string(read()), "a second read answers from the memo")
+}
+
+func TestPairedToolUseLookup_AnswersNilWhenThereIsNothingToRead(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+
+	assert.Nil(t, svc.Output.pairedToolUseLookup("agent-1", agent.SpanInfo{})(),
+		"a message with no span has no tool_use half")
+	assert.Nil(t, svc.Output.pairedToolUseLookup("agent-1", agent.SpanInfo{SpanID: "never-persisted"})(),
+		"a rolled-up tool_use, or one this result raced, is absent rather than an error")
+}
+
+// The miss is memoized too: a row that appears between two reads must not change
+// the answer inside one message's extraction, which would let two parsers of the
+// same message disagree about what the row said.
+func TestPairedToolUseLookup_MemoizesTheMiss(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:            "agent-1",
+		WorkingDir:    t.TempDir(),
+		HomeDir:       t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	read := svc.Output.pairedToolUseLookup("agent-1", agent.SpanInfo{SpanID: "span-1"})
+	require.Nil(t, read())
+
+	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		marshalJSON(t, map[string]any{"type": "assistant"}), agent.SpanInfo{SpanID: "span-1"}))
+	assert.Nil(t, read(), "the answer is fixed for the message being extracted")
 }

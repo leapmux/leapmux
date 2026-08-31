@@ -256,3 +256,27 @@ func buildInlineTextAttachmentBlock(attachment classifiedAttachment) string {
 	builder.WriteString(" -----")
 	return builder.String()
 }
+
+// ValidateAttachment enforces the part of ZCode's attachment policy that does not
+// depend on the running model.
+//
+// A PDF is refused outright. The app-server's attachment normalizer recognizes
+// image, video, file and audio and NOTHING else, so a PDF arrives as a generic
+// file: a small one is decoded as text and reaches the model as binary garbage, and
+// a large one is dropped with no message at all. Both are worse than a refusal that
+// says so.
+//
+// The image gate is NOT here, because this check is stateless and an image's
+// acceptance depends on the CURRENT model's declared input modalities. It runs in
+// zcodeAgent.SendInput, which is the only place that knows the model -- see
+// zcode_attachments.go.
+func (zcodeProvider) ValidateAttachment(attachment classifiedAttachment) error {
+	switch attachment.kind {
+	case attachmentKindPDF:
+		return fmt.Errorf("zcode does not support PDF attachments: %s", attachment.filename)
+	case attachmentKindBinary:
+		return fmt.Errorf("zcode does not support binary attachments: %s", attachment.filename)
+	default:
+		return nil
+	}
+}

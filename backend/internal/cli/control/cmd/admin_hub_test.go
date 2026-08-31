@@ -251,7 +251,7 @@ func (h *fakeAdminHub) listCallCount() int {
 // requireAdminClient does against a solo hub.
 func startAdminHub(t *testing.T, hub *fakeAdminHub) string {
 	t.Helper()
-	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+	isolateCLIEnv(t)
 	t.Setenv("LEAPMUX_CONTROL_SOCK", "")
 
 	mux := http.NewServeMux()

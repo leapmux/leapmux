@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strconv"
 	"time"
+
+	"github.com/leapmux/leapmux/generated/contracts"
 )
 
 // piResponseEnvelope is the success/error/data shape of a {type:"response"}
@@ -76,7 +78,7 @@ func (a *PiAgent) sendPiCommand(method string, payload map[string]any, timeout t
 // lines to the matching pending channel. Returns true when the line was
 // consumed, false to forward it to the regular output handler.
 func (a *PiAgent) handlePiResponse(line *parsedLine) bool {
-	if line.Type != PiEventResponse {
+	if line.Type != contracts.PiEventResponse {
 		return false
 	}
 	// Pi response ids are opaque strings — fall back to the parsedLine helper
