@@ -108,7 +108,7 @@ params:
   # of one duration cannot drift apart and a typo cannot render nothing.
   #
   # Change a value here and every page follows. The canonical prose home is
-  # the Quick reference table in content/docs/operating/security.md.
+  # the Quick reference table in content/docs/admin/security.md.
   durations:
     # How long one proven factor keeps a session or a CLI credential elevated.
     elevation-window:

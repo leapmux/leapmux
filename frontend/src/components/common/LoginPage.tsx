@@ -190,9 +190,12 @@ export const LoginPage: Component = () => {
                 : effectiveMethod() === 'passkey' ? 'Sign in with passkey' : 'Sign in'}
             </button>
           </div>
-          <Show when={isEmailEnabled() && effectiveMethod() === 'password'}>
+          {/* Shown for BOTH sign-in methods: recovery verifies the account's
+              email, so it applies to a lost passkey or provider as much as a
+              lost password. Hidden only when the hub cannot send mail. */}
+          <Show when={isEmailEnabled()}>
             <div>
-              <A href="/forgot-password">Forgot password?</A>
+              <A href="/recover-account">Can't sign in?</A>
             </div>
           </Show>
         </form>

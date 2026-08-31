@@ -383,7 +383,7 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 		if err := s.deliverSignupVerification(ctx, createdUser.ID, email, storedCode); err != nil {
 			return nil, err
 		}
-		nextResend := nextResendAt(s.now().UTC())
+		nextResend := pendingResendDeadline(s.now(), createdUser.PendingEmailUnblockedAt)
 
 		uid, mintErr := mintRowUserID(createdUser.ID)
 		if mintErr != nil {
@@ -428,7 +428,7 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 // UNVERIFIED: nobody confirmed it, and the column records only what somebody
 // confirmed. The login gate takes its own exemption through
 // auth.EmailVerificationFacts.Satisfied, so nothing blocks the administrator
-// -- but Forgot password stays closed for that address until they verify it
+// -- but account recovery stays closed for that address until they verify it
 // from Preferences › Account.
 func (s *AuthService) signUpSetupMode(ctx context.Context, username, displayName, email, passwordHash string) (*connect.Response[leapmuxv1.SignUpResponse], error) {
 	// Re-check to handle the race condition where another request created a
@@ -800,7 +800,7 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 			return nil, err
 		}
 		emailSent = true
-		next := nextResendAt(s.now().UTC())
+		next := pendingResendDeadline(s.now(), user.PendingEmailUnblockedAt)
 		nextResend = &next
 	}
 

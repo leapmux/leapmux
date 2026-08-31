@@ -52,7 +52,7 @@ func TestResolveEmailVerified(t *testing.T) {
 			wantWrite: true,
 		},
 		// No administrator exception, and this is the recovery-route fix. A
-		// verified address is a valid self-service password-reset target, so
+		// verified address is a valid self-service account-recovery target, so
 		// carrying the flag onto an address nobody confirmed handed the
 		// highest-privilege accounts a live reset route to whatever address
 		// the request carried. The exemption that keeps an administrator
@@ -114,8 +114,8 @@ func TestResolveEmailVerified(t *testing.T) {
 // email_verified answers "did anybody confirm this address". The
 // administrator exemption answers "may this account use the hub". They were
 // one column, and writing the second into the first made an administrator's
-// unconfirmed address a valid self-service password-reset target -- because
-// RequestPasswordReset reads the column and CANNOT take the exemption: the
+// unconfirmed address a valid self-service account-recovery target -- because
+// RequestAccountRecovery reads the column and CANNOT take the exemption: the
 // question it asks is exactly the first one.
 func TestEmailVerificationFactsSatisfied_SeparatesTheAddressFromThePrivilege(t *testing.T) {
 	t.Parallel()

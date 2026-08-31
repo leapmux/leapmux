@@ -220,42 +220,6 @@ func revokeByID(ctx context.Context, id, op, notFoundFormat string, verb func(co
 	return nil
 }
 
-// revokeEveryUserCredential ends every credential one user holds: their
-// sessions are deleted and each bearer they hold is revoked. It reports the
-// two bearer counts and the auth generation THIS transaction committed.
-//
-// It runs inside the caller's RunInUserAuthTransaction, and it does only the
-// durable half. The caller owns the other half and must, AFTER the commit,
-// apply `s.lifecycle.UserRevoked(userID, committedGeneration)` --
-// auth.RevokeAllUserCredentials requires an in-process caller to evict the
-// auth-context registry itself, because the durable event reaches this hub
-// only on the revocation watcher's next sweep, up to two seconds later. The
-// effect stays at the call site because it cannot run from in here: a
-// rollback after it would evict credentials that were never revoked. The
-// generation comes back as a return value so no caller has to read it a
-// second time and get whatever a concurrent revocation left.
-//
-// It takes the minted userid.UserID alone and spells the row id from it, so
-// no caller can pass an id and a userid that identify two different users.
-func revokeEveryUserCredential(ctx context.Context, tx store.Store, uid userid.UserID) (apiCount, delegationCount, committedGeneration int64, err error) {
-	if err := tx.Sessions().DeleteByUser(ctx, uid); err != nil {
-		return 0, 0, 0, fmt.Errorf("delete sessions: %w", err)
-	}
-	apiCount, delegationCount, err = auth.RevokeAllUserCredentials(ctx, tx, uid)
-	if err != nil {
-		return 0, 0, 0, err
-	}
-	// The committed epoch, read INSIDE the transaction, so the post-commit
-	// eviction targets exactly what this commit revoked. The include-deleted
-	// form reads the fenced row whatever its deleted_at holds, so a caller
-	// that also soft-deletes the user still gets an epoch back.
-	revoked, err := tx.Users().GetByIDIncludeDeleted(ctx, uid.String())
-	if err != nil {
-		return 0, 0, 0, fmt.Errorf("query revoked user auth generation: %w", err)
-	}
-	return apiCount, delegationCount, revoked.AuthGeneration, nil
-}
-
 // The page-size limits every paginated admin RPC applies.
 //
 // Exported because the CLI reads them: it refuses an out-of-range --limit
@@ -424,7 +388,7 @@ func (s *AdminUserService) CreateUser(ctx context.Context, req *connect.Request[
 	// rest on CreateUser forcing email_verified in the database, which this
 	// change removed: the column records whether somebody confirmed the
 	// address, and forcing it made an administrator's unconfirmed address a
-	// valid self-service password-reset target.
+	// valid self-service account-recovery target.
 	if email == "" && s.set != nil && !(auth.EmailVerificationFacts{
 		IsAdmin:       msg.GetIsAdmin(),
 		EmailVerified: msg.GetEmailVerified(),
@@ -481,7 +445,7 @@ func (s *AdminUserService) CreateUser(ctx context.Context, req *connect.Request[
 // A new address is unconfirmed, so an address change LOWERS email_verified
 // unless the same request raises it explicitly. Carrying the old flag onto
 // the new address marked an address nobody confirmed as verified -- and a
-// verified address is a valid self-service password-reset target, so the
+// verified address is a valid self-service account-recovery target, so the
 // carry handed the account's recovery route to whatever address the request
 // carried.
 //
@@ -530,7 +494,7 @@ func resolveEmailVerified(user *store.User, msg *leapmuxv1.UpdateUserRequest) (v
 // creating durable new authority.
 //
 // {email: attacker@example.com, email_verified: true} in one call moves where
-// the public RequestPasswordReset mails a reset link, and that verb refuses
+// the public RequestAccountRecovery mails a recovery link, and that verb refuses
 // only an UNVERIFIED address -- so this pair hands over any account, exactly
 // as ResetPassword does, and leaves the victim's password working until the
 // attacker chooses to reset it. Restricting ResetPassword and not this
@@ -715,7 +679,7 @@ func (s *AdminUserService) DeleteUser(ctx context.Context, req *connect.Request[
 			// and lose the cross-process teardown. store.RevokeUserTokens
 			// states the rule.
 			var err error
-			if _, _, committedGeneration, err = revokeEveryUserCredential(ctx, tx, delUID); err != nil {
+			if _, _, committedGeneration, err = RevokeCredentialsAfterRotation(ctx, tx, delUID, false); err != nil {
 				return err
 			}
 			// Soft-delete does not CASCADE; clear passkey state now so
@@ -913,8 +877,8 @@ func (s *AdminUserService) ResetPassword(ctx context.Context, req *connect.Reque
 				return fmt.Errorf("update password: %w", err)
 			}
 			// Admin password reset is break-glass: clear passkeys the same
-			// way self-service CompletePasswordReset does, so a lost-device
-			// recovery cannot leave orphan credentials, and a reset email
+			// way self-service CompleteAccountRecovery does, so a lost-device
+			// recovery cannot leave orphan credentials, and a recovery link
 			// requested before this emergency reset must not stay
 			// completable.
 			if err := RevokePasskeyAuthState(ctx, tx, user.ID); err != nil {
@@ -925,7 +889,7 @@ func (s *AdminUserService) ResetPassword(ctx context.Context, req *connect.Reque
 			// die, because whoever knew the old password is often the reason
 			// for the reset.
 			var err error
-			apiCount, delegationCount, committedGeneration, err = revokeEveryUserCredential(ctx, tx, uid)
+			apiCount, delegationCount, committedGeneration, err = RevokeCredentialsAfterRotation(ctx, tx, uid, false)
 			return err
 		})
 	})
@@ -936,8 +900,8 @@ func (s *AdminUserService) ResetPassword(ctx context.Context, req *connect.Reque
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	// AFTER the commit, the half revokeEveryUserCredential leaves to its
-	// caller.
+	// AFTER the commit, the half RevokeCredentialsAfterRotation leaves to
+	// its caller.
 	s.lifecycle.UserRevoked(user.ID, committedGeneration)
 	return connect.NewResponse(&leapmuxv1.ResetPasswordResponse{
 		UserId:                  user.ID,
@@ -1017,14 +981,14 @@ func (s *AdminUserService) RevokeUserSessions(ctx context.Context, req *connect.
 	var apiCount, delegationCount, committedGeneration int64
 	err = s.store.RunInUserAuthTransaction(ctx, uid, func(tx store.Store) error {
 		var err error
-		apiCount, delegationCount, committedGeneration, err = revokeEveryUserCredential(ctx, tx, uid)
+		apiCount, delegationCount, committedGeneration, err = RevokeCredentialsAfterRotation(ctx, tx, uid, false)
 		return err
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	// AFTER the commit, the half revokeEveryUserCredential leaves to its
-	// caller.
+	// AFTER the commit, the half RevokeCredentialsAfterRotation leaves to
+	// its caller.
 	s.lifecycle.UserRevoked(user.ID, committedGeneration)
 	return connect.NewResponse(&leapmuxv1.RevokeUserSessionsResponse{
 		ApiTokensRevoked:        apiCount,

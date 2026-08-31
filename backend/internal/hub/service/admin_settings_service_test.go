@@ -435,10 +435,11 @@ func TestAdminSettingsService_SoloOmitsHiddenInSolo(t *testing.T) {
 	sort.Strings(omitted)
 
 	assert.Equal(t, []string{
-		// No captcha to solve, and no second user to rate-limit.
+		// No captcha to solve, and no second user to rate-limit. The
+		// mail-abuse limits are inert for the same reason: no mail.
 		"captcha.altcha", "captcha.enabled", "captcha.recaptcha_v3",
-		"captcha.selected", "captcha.turnstile",
-		"rate_limit.elevation",
+		"captcha.selected", "captcha.turnstile", "mail_limits",
+		"rate_limit.elevation", "rate_limit.email_change",
 		// No cookie and no session exist on the synthetic-user path.
 		"secure_cookies", "session_duration_seconds",
 		"signup_enabled",

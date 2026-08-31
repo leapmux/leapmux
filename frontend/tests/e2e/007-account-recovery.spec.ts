@@ -1,5 +1,5 @@
-import { join } from 'node:path'
 import { expect, test } from './fixtures'
+import { solveCaptchaViaAPI } from './helpers/altcha'
 import {
   authedHeaders,
   listPasskeysViaAPI,
@@ -7,20 +7,17 @@ import {
   readPendingEmailToken,
   verifyEmailViaAPI,
 } from './helpers/api'
-import { extractPasswordResetToken, withCaptureSmtp } from './helpers/mail'
+import { extractAccountRecoveryToken, withCaptureSmtp } from './helpers/mail'
+import { hubDataDir } from './helpers/server'
 import { loginViaToken, loginViaUI, logoutViaUI, solveCaptchaViaUI } from './helpers/ui'
 import { enableVirtualAuthenticator, loginWithPasskeyViaAPIInBrowser, signUpWithPasskeyViaAPIInBrowser } from './helpers/webauthn'
 
-function hubDataDir(dataDir: string): string {
-  return join(dataDir, 'hub')
-}
-
-test.describe('Password reset', () => {
-  test('forgot-password flow clears passkeys on completion', async ({ page, leapmuxServer }) => {
+test.describe('Account recovery', () => {
+  test('account recovery flow clears passkeys on completion', async ({ page, leapmuxServer }) => {
     await withCaptureSmtp(leapmuxServer, async (smtp) => {
       await enableVirtualAuthenticator(page)
 
-      const username = `reset-${Date.now()}`
+      const username = `recover-${Date.now()}`
       const email = `${username}@test.local`
       const passkeyCookie = await signUpWithPasskeyViaAPIInBrowser(page, leapmuxServer.hubUrl, username, email)
       const verifyToken = await readPendingEmailToken(hubDataDir(leapmuxServer.dataDir), username)
@@ -33,25 +30,25 @@ test.describe('Password reset', () => {
 
       await logoutViaUI(page)
 
-      await page.goto('/forgot-password')
+      await page.goto('/recover-account')
       await page.getByLabel('Email or username').fill(username)
       await solveCaptchaViaUI(page)
       // Arm the wait BEFORE the click: waitForMessage resolves with the next
       // message that arrives, never an already-buffered one (the signup
       // verification email is still in the buffer).
-      const resetEmail = smtp.waitForMessage()
-      await page.getByRole('button', { name: 'Send reset link' }).click()
+      const recoveryEmail = smtp.waitForMessage()
+      await page.getByRole('button', { name: 'Send recovery link' }).click()
       await expect(page.getByText(/If an account with that email or username exists/i)).toBeVisible()
 
-      const emailBody = await resetEmail
-      const token = extractPasswordResetToken(emailBody)
+      const emailBody = await recoveryEmail
+      const token = extractAccountRecoveryToken(emailBody)
 
-      await page.goto(`/reset-password?token=${encodeURIComponent(token)}`)
+      await page.goto(`/recover-account/complete?token=${encodeURIComponent(token)}`)
       const newPassword = 'newpass123'
       await page.getByLabel('New Password').fill(newPassword)
       await page.getByLabel('Confirm Password').fill(newPassword)
       await solveCaptchaViaUI(page)
-      await page.getByRole('button', { name: 'Reset password' }).click()
+      await page.getByRole('button', { name: 'Set new password' }).click()
       await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible()
 
       const newCookie = await loginViaAPI(leapmuxServer.hubUrl, username, newPassword)
@@ -63,10 +60,7 @@ test.describe('Password reset', () => {
         body: '{}',
       })
 
-      const captcha = await (async () => {
-        const { solveCaptchaViaAPI } = await import('./helpers/altcha')
-        return solveCaptchaViaAPI(leapmuxServer.hubUrl)
-      })()
+      const captcha = await solveCaptchaViaAPI(leapmuxServer.hubUrl)
       const passkeyBegin = await fetch(`${leapmuxServer.hubUrl}/leapmux.v1.AuthService/BeginPasskeyLogin`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -83,12 +77,12 @@ test.describe('Password reset', () => {
     })
   })
 
-  test('shows the forgot-password link when email is enabled', async ({ page, leapmuxServer }) => {
+  test('shows the recovery link when email is enabled', async ({ page, leapmuxServer }) => {
     await withCaptureSmtp(leapmuxServer, async () => {
       await page.goto('/login')
       await page.getByLabel('Username').fill('admin')
       await page.getByLabel('Username').blur()
-      await expect(page.getByRole('link', { name: 'Forgot password?' })).toBeVisible()
+      await expect(page.getByRole('link', { name: 'Can\'t sign in?' })).toBeVisible()
     })
   })
 })

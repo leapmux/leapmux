@@ -5,7 +5,7 @@ type: docs
 weight: 4
 ---
 
-LeapMux is built to run several coding agents at once against the same repository. The thing that keeps them from clobbering each other's changes is **git worktrees** — each agent (or terminal) can work in its own linked worktree, on its own branch, with its own working copy. This chapter explains how to choose a branch or worktree when you open a tab, how to change or delete branches later, how to push your work, and how LeapMux protects you from losing uncommitted changes when you close a tab.
+LeapMux is built to run several coding agents at once against the same repository. **Git worktrees keep their changes separate**: each agent (or terminal) can work in its own linked worktree, on its own branch, with its own working copy. This chapter explains how to choose a branch or worktree when you open a tab, how to change or delete branches later, how to push your work, and how LeapMux protects you from losing uncommitted changes when you close a tab.
 
 For the content that lives inside tabs, see [Coding Agents](/docs/using/coding-agents/) and [Terminals](/docs/using/terminals/). For the git-aware file tree and inline diffs, see [File Browser](/docs/using/file-browser/). For the tiling canvas the tabs live in, see [Tabs & Layout](/docs/using/tabs-and-layout/).
 
@@ -19,9 +19,11 @@ A **linked worktree** is a second working directory attached to the same reposit
 - An independent branch — switching or committing in one worktree does not touch another.
 - A contained cleanup — delete a worktree, and its branch, when that line of work ends. The main checkout stays untouched.
 
-LeapMux makes this the default mental model: tabs are grouped in the sidebar by repository and then by branch, and the open-time **Git options** let you spin up a fresh worktree without ever touching the terminal.
+LeapMux uses this model throughout: tabs are grouped in the sidebar by repository and then by branch, and the open-time **Git options** panel lets you create a new worktree from the dialog.
 
-> **Note:** Worktrees are optional. You can also keep working in your repository's main checkout ("Use current state") — useful for quick one-off tasks where isolation does not matter.
+{{< callout type="info" >}}
+Worktrees are optional. You can also keep working in your repository's main checkout ("Use current state") — useful for quick one-off tasks where isolation does not matter.
+{{< /callout >}}
 
 ## The Repo → Branch sidebar tree
 
@@ -51,7 +53,9 @@ Each branch row has a **`...`** context menu with exactly two items:
 
 Both items act through the Worker that hosts the repository. LeapMux greys them out, with the reason on hover, while that Worker is offline. The `(no branch)` row carries no menu at all, because it has no branch to change or delete.
 
-> **Note:** A detached-HEAD row keeps its menu, because its short-SHA label is a real label. **Delete branch** fails there — the row names a commit, not a branch — and only after the working directory has already been switched to the branch you picked. Use **Create new branch** first to get onto a real branch.
+{{< callout type="info" >}}
+A detached-HEAD row keeps its menu, because its short-SHA label is a real label. **Delete branch** fails there — the row identifies a commit, not a branch — and only after the working directory has already been switched to the branch you picked. Use **Create new branch** first to get onto a real branch.
+{{< /callout >}}
 
 ### The branch chip in the composer
 
@@ -77,7 +81,7 @@ No fields. The tab opens in the repository's current working directory on its cu
 
 Pick a branch from the selector. The list has a **Local** and a **Remote** option group, and ` (current)` marks the branch you are already on.
 
-The panel warns you about three cases. You picked the branch you are already on. You picked a remote branch, and LeapMux checks out the same-named local branch instead. Or the working copy holds uncommitted changes, which can make the switch fail or discard them.
+The panel warns you about three cases. You picked the branch you are already on. You picked a remote branch, and LeapMux checks out the same-named local branch instead. Or the working copy holds uncommitted changes. The switch can then fail, or it can discard those changes.
 
 ### Create new branch
 
@@ -98,7 +102,7 @@ Same **Branch Name** and **Base Branch** fields as Create new branch, plus a rea
 
 For example, a repository at `~/code/leapmux` with a branch `fix-login` produces `~/code/leapmux-worktrees/fix-login`. The preview is tilde-abbreviated, with the full path in a tooltip. If that path already exists on disk, the operation is rejected.
 
-So the worktrees live in a sibling directory next to the main checkout, one subdirectory per branch:
+The worktrees live in a sibling directory of the main checkout, one subdirectory per branch:
 
 **On-disk worktree layout:**
 
@@ -113,7 +117,7 @@ So the worktrees live in a sibling directory next to the main checkout, one subd
         └── (working copy on branch add-search)
 ```
 
-Each agent or terminal tab that uses a worktree opens in one of these branch directories, so its edits stay isolated from the main checkout and from the other worktrees.
+Each worktree tab opens in one of these branch directories.
 
 A new worktree starts from committed state only. Uncommitted changes in the source working copy stay where they are. The panel states this when it finds any.
 
@@ -121,7 +125,9 @@ A new worktree starts from committed state only. Uncommitted changes in the sour
 
 Pick a worktree from the selector. Each option carries the label `<branch> — <tilde-path>`. The selector lists **linked** worktrees only. It leaves out the repository's main working tree, so you cannot adopt the main checkout as a managed worktree by accident.
 
-> **Tip:** Create new worktree is the right choice for "start a fresh task in isolation." Use existing worktree is for re-attaching a tab to work you (or another agent) already set up.
+{{< callout >}}
+Create new worktree is the right choice for "start a fresh task in isolation." Use existing worktree is for re-attaching a tab to work you (or another agent) already set up.
+{{< /callout >}}
 
 ## Changing the branch on a tab
 
@@ -135,7 +141,7 @@ What each mode does on **Apply**:
 | **Create new branch** | Creates the branch from the chosen base and checks it out here. Tabs relabelled to the new branch. |
 | **Create new worktree** | Opens a **brand-new tab** in the new worktree — your current tabs stay where they are. |
 
-Switch and Create-branch change the working directory under the tabs already in it. An agent or a terminal there does not stop, and from that point it reads the new branch's files. The dialog states this before you apply.
+**Switch to branch** and **Create new branch** change the working directory under the tabs already in it. An agent or a terminal there does not stop, and from that point it reads the new branch's files. The dialog states this before you apply.
 
 When you pick **Create new worktree** in this dialog, an extra **Open as** selector appears with two choices:
 
@@ -144,7 +150,9 @@ When you pick **Create new worktree** in this dialog, an extra **Open as** selec
 
 The sidebar labels update as soon as the change completes. The file browser's git status refreshes too, when it shows the repository you changed.
 
-> **Warning:** Switching branches with uncommitted changes can fail or discard work. If the dialog reports uncommitted changes, commit or push them first (see [Pushing a branch](#pushing-a-branch)).
+{{< callout type="warning" >}}
+Switching branches with uncommitted changes can fail or discard work. If the dialog reports uncommitted changes, commit or push them first (see [Pushing a branch](#pushing-a-branch)).
+{{< /callout >}}
 
 ## Deleting a branch
 
@@ -158,15 +166,17 @@ There is no "switch to" picker, and the status block notes that the group's tabs
 
 The dialog checks that git accepts the removal, then closes and leaves the work running on the Worker. The Worker needs a moment to stop an agent and delete a large working copy, so the directory disappears shortly after the tabs do. A worktree that another tab still uses, or one LeapMux does not track (a directory you created yourself with `git worktree add`), stays on disk.
 
-If git refuses the removal outright — the worktree is locked, for example — the dialog stays open with the reason and closes nothing.
+If git refuses the removal outright — the worktree is locked, for example — the dialog stays open with the reason, closes nothing, and adds a **Close tabs, keep worktree** button that closes the group's tabs and leaves the directory on disk.
 
 ### Deleting a regular branch
 
-For a branch in the main checkout, you must tell LeapMux where to leave HEAD. The dialog shows **Switch this working directory to:** and a branch selector listing every branch except the one being deleted. On **Delete branch**, the Worker checks out your chosen target, then force-deletes the doomed branch. Tabs keep running on the switched-to branch.
+For a branch in the main checkout, you must tell LeapMux where to leave HEAD. The dialog shows **Switch this working directory to:** and a branch selector listing every branch except the one being deleted. On **Delete branch**, the Worker checks out your chosen target, then force-deletes the branch you are deleting. Tabs keep running on the switched-to branch.
 
 If the branch you are deleting is the **only** branch, the selector is replaced by the error **Cannot delete the only branch. Create another branch first.** and the button stays disabled.
 
-> **Warning:** Branch deletion is a force-delete (`git branch -D`). Unmerged commits on the deleted branch that have not been pushed are gone. If the status block shows unpushed commits, push first.
+{{< callout type="warning" >}}
+Branch deletion is a force-delete (`git branch -D`). Unmerged commits on the deleted branch that have not been pushed are gone. If the status block shows unpushed commits, push first.
+{{< /callout >}}
 
 ## Pushing a branch
 
@@ -181,7 +191,9 @@ The Delete branch dialog and the Close last tab dialog both offer a push button 
 
 A push needs an `origin` remote and a real branch name, so LeapMux cannot push a detached HEAD.
 
-> **Tip:** Use **Commit and Push** as a quick "save my work before I switch or delete" before changing or deleting a branch. The `WIP` commit captures everything so nothing is lost; you can reword or squash it later.
+{{< callout >}}
+Use **Commit and Push** as a quick "save my work before I switch or delete" before changing or deleting a branch. The `WIP` commit captures everything so nothing is lost; you can reword or squash it later.
+{{< /callout >}}
 
 ## Branch status indicators
 
@@ -212,16 +224,20 @@ It identifies what you are about to close — the worktree path, or the branch �
 
 If git refuses the removal — the worktree is locked, for example — **Delete** is unavailable and the reason appears above the buttons. **Close anyway** still closes the tab.
 
-LeapMux removes a worktree only as part of closing the tabs that point at it, so no removal takes one away from a live tab. **Delete** here covers the last tab on that worktree. [**Delete branch...**](#deleting-a-linked-worktree) on the branch row covers the whole group at once.
+LeapMux removes a worktree only as part of closing the tabs that point at it, so a removal never deletes a worktree that a live tab still uses. **Delete** here covers the last tab on that worktree. [**Delete branch...**](#deleting-a-linked-worktree) on the branch row covers the whole group at once.
 
-> **Warning:** **Close anyway** does not push and does not delete. It closes the tab. Any uncommitted changes stay on disk in the worktree, but you lose the tab that points at it. Use **Push** / **Commit and Push** first if the status block shows work you want to keep.
+{{< callout type="warning" >}}
+**Close anyway** does not push and does not delete. It closes the tab. Any uncommitted changes stay on disk in the worktree, but you lose the tab that points at it. Use **Push** / **Commit and Push** first if the status block shows work you want to keep.
+{{< /callout >}}
 
-> **Note:** This dialog needs the Worker, because only the Worker reads the branch's git state. With that Worker offline, the tab closes without the dialog and the worktree is left unreferenced; when the Worker returns, its housekeeping pass reclaims it — directory and branch — unless it holds uncommitted or unpushed work, which is always left for you.
+{{< callout type="info" >}}
+This dialog needs the Worker, because only the Worker reads the branch's git state. With that Worker offline, the tab closes without the dialog and the worktree is left unreferenced; when the Worker returns, its housekeeping pass reclaims it — directory and branch — unless it holds uncommitted or unpushed work, which is always left for you.
+{{< /callout >}}
 
 ## Where git operations run
 
 Every git command runs on the **Worker** that owns the working directory — the machine where your repository actually lives — not in your browser and not on the Hub. So the Worker computes all the branch and worktree state you see (branches, worktrees, diff stats, ahead/behind) and streams it back over the end-to-end-encrypted Worker channel.
 
-The Worker runs each git command with a fixed English/C locale and with terminal prompts disabled, so no command blocks and waits for credentials. A push against a private remote therefore fails instead of hanging. Configure a credential helper or an SSH agent on the Worker.
+The Worker runs each git command with a fixed C locale and with terminal prompts disabled, so no command blocks and waits for credentials. A push against a private remote therefore fails instead of hanging. Configure a credential helper or an SSH agent on the Worker.
 
-For more on workers and how they are selected, see [Managing Workers](/docs/operating/managing-workers/). For the run modes that host workers, see [Running LeapMux](/docs/operating/running-leapmux/).
+For more on workers and how they are selected, see [Managing Workers](/docs/admin/managing-workers/). For the run modes that host workers, see [Running LeapMux](/docs/admin/running-leapmux/).

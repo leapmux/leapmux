@@ -733,7 +733,7 @@ func refuseIfSessionWasRevoked(ctx context.Context, tx store.Store, sessionID st
 // them; the epoch can. Sessions().Delete alone -- Logout, and the admin's
 // per-session revoke -- leaves the epoch where it is, while every path that
 // means "this account's credentials are no longer trusted"
-// (revokeEveryUserCredential,
+// (RevokeCredentialsAfterRotation,
 // revokeOtherCredentialsPreservingActingCredential)
 // moves it.
 //

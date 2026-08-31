@@ -3,6 +3,7 @@ package service_test
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"testing"
 	"time"
 
@@ -11,12 +12,53 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/config"
+	"github.com/leapmux/leapmux/internal/hub/mail"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
 )
 
 var ptrTime = ptrconv.Ptr[time.Time]
+
+// mailSenderDouble is the one mail.Sender test double this package uses:
+// it records everything that reached the mail layer and can fail every
+// Send. The mutex is load-bearing for the suites whose servers Serve on
+// their own goroutines (the worker-registration env); the readers below
+// take the same lock, so an assertion never races a Serve-side Send.
+type mailSenderDouble struct {
+	mu   sync.Mutex
+	err  error
+	msgs []mail.Message
+}
+
+func (m *mailSenderDouble) Send(_ context.Context, msg mail.Message) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.err != nil {
+		return m.err
+	}
+	m.msgs = append(m.msgs, msg)
+	return nil
+}
+
+// snapshot returns every recorded message, copied so a caller cannot race
+// a later append.
+func (m *mailSenderDouble) snapshot() []mail.Message {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]mail.Message(nil), m.msgs...)
+}
+
+// last returns the newest message, or nil when nothing was sent.
+func (m *mailSenderDouble) last() *mail.Message {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.msgs) == 0 {
+		return nil
+	}
+	out := m.msgs[len(m.msgs)-1]
+	return &out
+}
 
 func authedReq[T any](msg *T, token string) *connect.Request[T] {
 	req := connect.NewRequest(msg)

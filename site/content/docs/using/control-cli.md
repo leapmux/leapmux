@@ -5,13 +5,13 @@ type: docs
 weight: 8
 ---
 
-`leapmux control` is a JSON-emitting command-line surface for driving LeapMux from outside the browser. It lets you open and close tabs, send messages to agents, type into terminals, reshape the tile layout, inspect files and git state on a Worker, and stream live workspace events — all from a script, a CI job, or another agent.
+`leapmux control` is a JSON-emitting command-line surface for driving LeapMux from outside the browser. Use it from a script, a CI job, or another agent. It opens and closes tabs, sends messages to agents, types into terminals, reshapes the tile layout, inspects files and git state on a Worker, and streams live workspace events.
 
-This chapter covers authentication, the universal entity-ID flags, the output envelope, and every command group with its subcommands and key flags. The online administration groups (`leapmux control admin ...`) are documented in the companion [Admin CLI](/docs/operating/admin-cli/) chapter. For the offline break-glass tree (`bootstrap`, `password`, `encryption-key`, `db`), see [Recovery](/docs/operating/recover/). For the agent and terminal features these commands drive, see [Coding Agents](/docs/using/coding-agents/) and [Terminals](/docs/using/terminals/).
+This chapter covers authentication, the universal entity-ID flags, the output envelope, and every command group with its subcommands and key flags. The online administration groups (`leapmux control admin ...`) are documented in the companion [Admin CLI](/docs/admin/admin-cli/) chapter. For the offline break-glass tree (`bootstrap`, `password`, `encryption-key`, `db`), see [Recovery](/docs/admin/recover/). For the agent and terminal features these commands drive, see [Coding Agents](/docs/using/coding-agents/) and [Terminals](/docs/using/terminals/).
 
 ## Two callers, one CLI
 
-The same `leapmux control ...` invocation works in two very different contexts:
+The same `leapmux control ...` invocation works in two contexts:
 
 1. **An external user on their own machine.** You authorize the CLI against a Hub with `leapmux control auth login --hub ...`, which persists a bearer token on disk. Every subsequent command attaches that token and talks to the Hub over HTTPS.
 2. **An agent or terminal spawned inside a Worker.** When a Worker spawns an agent process or a shell, it hands the process a private local-IPC socket and a per-process token through `LEAPMUX_CONTROL_*` environment variables. A script running inside that agent or shell can call `leapmux control` with no login and no flags — the env vars supply the credential and pre-fill the entity IDs of the spawning tab.
@@ -41,7 +41,9 @@ The CLI decides which transport to use automatically (see [Authentication](#auth
   └────────────────┘                  └────────────────────┘
 ```
 
-> **Tip:** Inside an agent or terminal, run `printenv | grep LEAPMUX_CONTROL_` to see exactly what context you were spawned with. Every entity-ID variable uses the `_ID` suffix.
+{{< callout >}}
+Inside an agent or terminal, run `printenv | grep LEAPMUX_CONTROL_` to see exactly what context you were spawned with. Every entity-ID variable uses the `_ID` suffix.
+{{< /callout >}}
 
 ## Output envelope and exit codes
 
@@ -94,9 +96,9 @@ Authorizes the CLI against a Hub and writes a credential file to disk. The `--hu
 | `--device-code` | `false` | Force the RFC 8628 device-code flow (headless / SSH / container) |
 | `--scope <permissions>` | everything except `admin:*` | The permissions to ask for, space- or comma-separated |
 
-The CLI is a registered app like any other, so a login is an ordinary OAuth 2.1 authorization. See [App Authorization](/docs/operating/app-authorization/) for how apps are registered and what they may ask for, and [OAuth API](/docs/reference/oauth-api/) for the wire contract.
+The CLI is a registered app like any other, so a login is an ordinary OAuth 2.1 authorization. See [App Authorization](/docs/admin/app-authorization/) for how apps are registered and what they may ask for, and [OAuth API](/docs/reference/oauth-api/) for the wire contract.
 
-**You verify your identity in the browser, not in the terminal.** Authorizing a credential needs an elevated session, so the consent page sends you through a verification prompt (password, passkey, or your identity provider) before it hands anything back. That elevation lasts {{< duration elevation-window >}}, so a second login in the same sitting does not ask again. See [Session elevation](/docs/operating/security/#session-elevation).
+**You verify your identity in the browser, not in the terminal.** Authorizing a credential needs an elevated session, so the consent page sends you through a verification prompt (password, passkey, or your identity provider) before it hands anything back. That elevation lasts {{< duration elevation-window >}}, so a second login in the same sitting does not ask again. See [Session elevation](/docs/admin/security/#session-elevation).
 
 **Default flow (PKCE local redirect).** The CLI opens a loopback listener on `127.0.0.1`, prints the authorization URL with an instruction to open it in your browser, and tries to launch your browser automatically (`open` on macOS, `xdg-open` on Linux, the shell handler on Windows). You sign in on the Hub's web page; the Hub redirects back to the loopback listener to complete the exchange. The CLI waits up to **10 minutes** for the callback before failing with `{"error":{"code":"timeout",...}}`.
 
@@ -139,11 +141,11 @@ leapmux control auth login --hub https://leapmux.example.com --scope "file:read 
 leapmux control auth login --hub https://leapmux.example.com --scope "admin:read admin:users admin:settings admin:workers admin:apps"
 ```
 
-Both separators work: the wire format is space-delimited, which a shell needs quoted, and a comma-separated list is what most people type.
+Both separators work. The wire format is space-delimited, so a shell needs quotes around it; a comma-separated list also works.
 
 The **browser** decides. The consent page states in sentences what the credential will be able to do, and you approve or refuse there. The permission list in the response is what you actually granted, which is what the CLI records — and it may be wider than you asked for, because some permissions imply others. `file:read` implies `worker:read`, since reading a file means reaching the machine that holds it.
 
-The whole vocabulary is in [App Authorization](/docs/operating/app-authorization/#permissions).
+The whole vocabulary is in [App Authorization](/docs/admin/app-authorization/#permissions).
 
 ### Renewal and lifetime
 
@@ -157,12 +159,12 @@ Logging in again on the same machine **revokes the credential it replaces**, so 
 
 | Command | Flags | Output |
 | --- | --- | --- |
-| `auth status` | `--hub` | `{hub_url, username, user_id, expires, expired, refresh_expires, scope, token_id}` for the specified Hub. Error `not_logged_in` if there is no credential. `expires` is the hour-long access token, which renews itself; `refresh_expires` is when the device must sign in again. |
+| `auth status` | `--hub` | `{hub_url, username, user_id, expires, expired, refresh_expires, scope, token_id, hub_checked, is_admin}` for the specified Hub. Error `not_logged_in` if there is no credential. `expires` is the hour-long access token, which renews itself; `refresh_expires` is when the device must sign in again. `hub_checked` says whether the Hub confirmed the credential (`is_admin` from the Hub when it did, a `warning` when it could not be reached). |
 | `auth list` | none | An array of `{hub_url, username, user_id, expires, scope}` for every Hub you have credentials for. |
-| `auth credentials` | `--hub` | An array of `{id, client_id, client_name, installation_name, created_at, last_used_at, refresh_expires, expires, granted_scopes, client_verified, current}` for every credential the account holds. `client_name` is the app and `installation_name` is which copy of it. `current` marks the one this command uses. Each credential carries exactly one deadline: a renewing credential reports `refresh_expires`, and one minted with `--ttl` (an [Admin CLI](/docs/operating/admin-cli/#api-tokens) issuance) reports `expires`. A row with neither never expires. |
+| `auth credentials` | `--hub` | An array of `{id, client_id, client_name, installation_name, created_at, last_used_at, refresh_expires, expires, granted_scopes, client_verified, current}` for every credential the account holds. `client_name` is the app and `installation_name` is which copy of it. `current` marks the one this command uses. Each credential carries exactly one deadline: a renewing credential reports `refresh_expires`, and one minted with `--ttl` (an [Admin CLI](/docs/admin/admin-cli/#api-tokens) issuance) reports `expires`. A row with neither never expires. |
 | `auth logout` | `--hub` | Best-effort revokes the token on the Hub, then deletes the local credential file. Emits `{hub_url}`. |
 
-**`list` and `credentials` answer different questions.** `list` reads this machine's credential files — which Hubs this box can reach. `credentials` asks the Hub what the whole account holds — what else can reach your account, from anywhere. It is the same list the browser shows under **Preferences → Account → Connected apps**, where you can also disconnect. See [Connected Apps](/docs/using/connected-apps/).
+**`list` and `credentials` answer different questions.** `list` reads this machine's credential files — which Hubs this box can reach. `credentials` asks the Hub what the whole account holds — what else can reach your account, from anywhere. It is the same list the browser shows under **Preferences → Apps → Connected apps**, where you can also disconnect. See [Connected Apps](/docs/using/connected-apps/).
 
 ```bash
 leapmux control auth list
@@ -187,7 +189,9 @@ Credentials are written one file per Hub:
 
 `<hub-host>` is the Hub's hostname, with `_<port>` appended when the URL carries a port (for example `leapmux.example.com_8443`). The file is written atomically with mode `0600`, in a directory created with mode `0700`. It contains the access token, the refresh token, both expiries, your user identity, the token id, and the permissions the credential holds.
 
-> **Tip:** Point `LEAPMUX_CONTROL_CONFIG_DIR` at a per-job directory to keep CI credentials isolated and easy to discard.
+{{< callout >}}
+Point `LEAPMUX_CONTROL_CONFIG_DIR` at a per-job directory to keep CI credentials isolated and easy to discard.
+{{< /callout >}}
 
 ## Worker-spawned environment variables
 
@@ -208,7 +212,9 @@ These variables become the **defaults** for the matching entity flags, so a scri
 
 Two IDs are deliberately **not** injected: the workspace id and the tile id. They are derived from the tab id at call time via the Hub's tab-locator RPC, so a script never targets a stale tile after somebody moves the tab.
 
-> **Note:** There is no "remote-enabled" flag or checkbox. Terminals and agents receive `LEAPMUX_CONTROL_*` automatically whenever the Worker has remote control enabled. Inherited `LEAPMUX_CONTROL_*` values are stripped before re-injection, so a Worker spawned from inside another agent gets a fresh context rather than its parent's. See [Terminals](/docs/using/terminals/) for the terminal side of this.
+{{< callout type="info" >}}
+There is no "remote-enabled" flag or checkbox. Terminals and agents receive `LEAPMUX_CONTROL_*` automatically whenever the Worker has remote control enabled. Inherited `LEAPMUX_CONTROL_*` values are stripped before re-injection, so a Worker spawned from inside another agent gets a fresh context rather than its parent's. See [Terminals](/docs/using/terminals/) for the terminal side of this.
+{{< /callout >}}
 
 ## Universal entity-ID flags
 
@@ -217,7 +223,7 @@ Almost every command needs to know which entity to act on. Rather than hand-roll
 | Flag | Env default | Notes |
 | --- | --- | --- |
 | `--tab-id` | `$LEAPMUX_CONTROL_TAB_ID` | The agent/terminal/file tab |
-| `--tab-type` | (none) | `agent` or `terminal`; auto-detected when omitted. Only on the generic `tab` group. |
+| `--tab-type` | (none) | `agent` or `terminal`; auto-detected when omitted. Not on `agent`/`terminal` commands, which pin the type; hidden on `tab list`, which reuses the flag as an output filter. |
 | `--tile-id` | (none) | Derivable from `--tab-id` |
 | `--workspace-id` | (none) | Derivable from `--tab-id` / `--tile-id` |
 | `--worker-id` | `$LEAPMUX_CONTROL_WORKER_ID` | The host Worker |
@@ -231,7 +237,7 @@ Supply the most specific ID you have and the Hub fills in the rest:
 - `--tab-id` gives the tab's matched type, workspace, tile, and Worker;
 - `--tile-id` gives its workspace.
 
-So `--tab-id` alone is usually enough. `--workspace-id` and `--worker-id` sit at the end of these chains — nothing is derived from them, so reach for one only when you have nothing more specific.
+So `--tab-id` alone is usually enough. `--workspace-id` and `--worker-id` sit at the end of these chains — nothing is derived from them, so pass one only when you have nothing more specific.
 
 ### Pinned tab type for agent and terminal commands
 
@@ -252,7 +258,7 @@ leapmux control whoami          # who am I, where am I?
 leapmux control version --hub https://leapmux.example.com
 ```
 
-- `whoami` from inside an agent/terminal returns `{user_id, username, worker_id, tab_id, tab_type}`. From your laptop (Hub mode) it returns `{hub_url, user_id, username}`.
+- `whoami` from inside an agent/terminal returns `{user_id, username, worker_id, tab_id, tab_type}`. From your laptop (Hub mode) it returns `{hub_url, user_id, username, is_admin}`.
 - `version` always emits the CLI's `{cli:{version, commit, branch, build_time, formatted}}`; when `--hub` is set it also probes the Hub's unauthenticated version endpoint and adds `hub:{...}` (or a non-fatal `hub_error`).
 
 ## Workspace commands
@@ -271,7 +277,9 @@ leapmux control workspace create --title "Release 2.0"
 
 `workspace list` returns the workspaces you own; workspace access is owner-only.
 
-`workspace delete` cascades a Hub delete and then fans out worktree cleanup to every Worker that hosted tabs in the workspace, emitting `{workspace_id, worker_ids, status, cleanup:[...]}` where `status` is `ok` or `partial`. If the *calling* tab lives in the workspace you're deleting, the [self-target guard](#self-target-guard) refuses unless you pass `--force`, which deletes the workspace even when the calling tab lives in it and therefore kills the caller's own PTY.
+`workspace delete` cascades a Hub delete and then fans out worktree cleanup to every Worker that hosted tabs in the workspace, emitting `{workspace_id, worker_ids, status, cleanup:[...]}` where `status` is `ok` or `partial`.
+
+If the *calling* tab lives in the workspace you're deleting, the [self-target guard](#self-target-guard) refuses unless you pass `--force`, which deletes the workspace even when the calling tab lives in it and therefore kills the caller's own PTY.
 
 ## Tab commands
 
@@ -286,7 +294,9 @@ The `tab` group is the generic open/close/list/rename surface across all three t
 | `tab rename` | `--tab-id`, `--title` (required) |
 | `tab move` | `--tab-id`, `--target-tile-id`, `--target-workspace-id` + [placement flags](#placement-flags) |
 
-> **Note:** On `tab list`, `--tab-type` is an **output filter**, not a resolver constraint. On `tab get`/`tab move`, omitting the type lets the resolver auto-detect it.
+{{< callout type="info" >}}
+On `tab list`, `--tab-type` is an **output filter**, not a resolver constraint. On `tab get`/`tab move`, omitting the type lets the resolver auto-detect it.
+{{< /callout >}}
 
 ### Opening a tab
 
@@ -321,7 +331,7 @@ The `tab` group is the generic open/close/list/rename surface across all three t
 | `--display-mode` | `0` | File-tab display mode |
 | `--file-view-mode` | `0` | File view mode |
 
-`tab open` emits `{tab_id, tab_type, workspace_id, worker_id, tile_id, position}` plus per-type extras such as `initial_message_warning` or `path`. (The permission mode now rides in the open request and is applied at launch, so there is no longer a `permission_mode_warning`.)
+`tab open` emits `{tab_id, tab_type, workspace_id, worker_id, tile_id, position}` plus per-type extras such as `initial_message_warning` or `path`.
 
 ```bash
 # Spin up a Claude Code agent in a worker's repo and send it a task
@@ -342,7 +352,7 @@ leapmux control tab open --type agent \
 | `--before <tab-id>` | Place immediately before the referenced tab |
 | `--after <tab-id>` | Place immediately after the referenced tab |
 
-`--before`/`--after` take a **tab id** (not a rank). For those two, the destination tile is taken from the referenced tab's tile; if you also pass `--tile-id`/`--target-tile-id`, the two must agree. Two inputs are misuse. The flags `--first`, `--last`, `--before`, and `--after` are mutually exclusive, so the command refuses more than one of them. It also refuses a `--before`/`--after` tab id that no tab uses.
+`--before`/`--after` take a **tab id** (not a rank). For those two, the destination tile is taken from the referenced tab's tile; if you also pass `--tile-id`/`--target-tile-id`, the two must agree. The flags `--first`, `--last`, `--before`, and `--after` are mutually exclusive, so the command refuses more than one of them. It also refuses a `--before`/`--after` tab id that no tab uses.
 
 ### Closing a tab
 
@@ -355,7 +365,9 @@ leapmux control tab close --tab-id "$T" --worktree push
 | `--force` | Self-target override: close even if the target is the calling tab |
 | `--worktree keep\|push\|discard` | Worktree disposition (`remove` is a synonym for `discard`) |
 
-`--worktree` is **required** when the close would remove the last tab for a worktree, or close the last tab on a non-worktree branch that has uncommitted or unpushed changes — omitting it then returns an `invalid_request` with the details. `--worktree push` runs `git push` and fails with `invalid_request` if the branch isn't pushable. `--worktree discard` fails with `invalid_request` when git refuses to remove the worktree — it is locked, or git no longer lists the path. The CLI runs this check before it tombstones the tab. The removal itself starts after the tab is gone, and the frontend disables the same choice for the same reason. The command emits `{tab_id, tab_type, tombstoned, worktree?, worker_close_error?}`. The CLI inspects every tab type, file tabs included: a file tab holds a worktree open and sits on a branch exactly as an agent or terminal tab does. See [Worktrees and Branches](/docs/using/worktrees-and-branches/) for the disposition rules.
+`--worktree` is **required** when the close would remove the last tab for a worktree, or close the last tab on a non-worktree branch that has uncommitted or unpushed changes — omitting it then returns an `invalid_request` with the details. `--worktree push` runs `git push` and fails with `invalid_request` if the branch isn't pushable. `--worktree discard` fails with `invalid_request` when git refuses to remove the worktree — it is locked, or git no longer lists the path. The CLI runs this check before it tombstones the tab; the removal itself starts after the tab is gone.
+
+The command emits `{tab_id, tab_type, tombstoned, worktree?, worker_close_error?}`, plus `inspect_hint`, `closed_subagent_tab_ids`, or `subagent_close_error` when they apply. The CLI inspects every tab type, file tabs included: a file tab holds a worktree open and sits on a branch exactly as an agent or terminal tab does. See [Worktrees and Branches](/docs/using/worktrees-and-branches/) for the disposition rules.
 
 ### Renaming and moving
 
@@ -411,7 +423,8 @@ leapmux control layout set --workspace-id "$WS" --file layout.json
 ```
 
 - `layout get` emits `{workspace_id, root_node_id, tree, tabs_by_tile}`.
-- `layout set` requires exactly one of `--file PATH` or `--stdin`, and it accepts **only the tree node** — the value of the `tree` field, *not* the full `layout get` envelope. Feeding back the whole `{workspace_id, root_node_id, tree, tabs_by_tile}` object fails validation with `root: unrecognized kind`, because the top-level keys it expects are `kind`/`direction`/`ratios`/`rows`/`cols`/`children`. Extract the `tree` field first (e.g. `jq '.data.tree'`). It rewrites the entire tree in one batch and repoints every live tab onto the new tree's first leaf; the root node id never changes.
+- `layout set` requires exactly one of `--file PATH` or `--stdin`, and it accepts **only the tree node** — the value of the `tree` field, *not* the full `layout get` envelope. Feeding back the whole `{workspace_id, root_node_id, tree, tabs_by_tile}` object fails validation with `root: unrecognized kind`, because the top-level keys it expects are `kind`/`direction`/`ratios`/`rows`/`cols`/`row_ratios`/`col_ratios`/`children`. Extract the `tree` field first (e.g. `jq '.data.tree'`).
+- `layout set` rewrites the entire tree in one batch and repoints every live tab onto the new tree's first leaf; the root node id never changes.
 
 The input tree's `kind` accepts `leaf`/`split`/`grid` (uppercase and `NODE_KIND_*` forms too). A `split` needs at least 2 children and a `direction`; a `grid` needs `rows`/`cols` in `1..20` and exactly `rows*cols` children. Validation errors are path-anchored, e.g. "root.children[1].children[0]: SPLIT requires at least 2 children (got 1)".
 
@@ -448,7 +461,7 @@ LeapMux pins each Worker's key on first connection (trust-on-first-use). The `wo
 | `worker pins show` | `--worker-id` (defaults to `$LEAPMUX_CONTROL_WORKER_ID`) | One recorded pin; `not_found` if none |
 | `worker pins remove` | `--worker-id` | Drops the pin so the next connect re-prompts; emits `{removed_worker_id}` |
 
-Pins are stored at `<ConfigDir>/<hub-host>/pins.json` with mode `0644` (they are not secrets). For the Worker registration and approval lifecycle, see [Managing Workers](/docs/operating/managing-workers/).
+Pins are stored at `<ConfigDir>/<hub-host>/pins.json` with mode `0644` (they are not secrets). For the Worker registration and approval lifecycle, see [Managing Workers](/docs/admin/managing-workers/).
 
 ## Agent commands
 
@@ -541,6 +554,8 @@ The first line is always the bootstrap snapshot (`{"kind":"materialized",...}`).
 | --- | --- |
 | `materialized` | Bootstrap snapshot (always first) |
 | `batch` | A batch of layout/tab operations |
+| `batch_end` | Boundary after a committed batch |
+| `resume_delta` | Resumed stream frames (reserved; not sent today) |
 | `entity_materialized` | An entity (tab, node, floating window) became visible |
 | `entity_removed` | An entity was removed |
 | `presence` | Active-client presence changed for a workspace |
@@ -551,7 +566,9 @@ The first line is always the bootstrap snapshot (`{"kind":"materialized",...}`).
 
 The command runs until you interrupt it (SIGINT/SIGTERM) or the stream closes. Errors surface as `rpc_failed` or `stream_error`.
 
-> **Note:** `events watch` streams **workspace/layout** events only (the CRDT user event stream). It has no `--include` source filter, no `--follow`, and no per-line `source` key. To tail an agent's chat, use `agent messages --follow` instead.
+{{< callout type="info" >}}
+`events watch` streams **workspace/layout** events only (the CRDT user event stream). It has no `--include` source filter, no `--follow`, and no per-line `source` key. To tail an agent's chat, use `agent messages --follow` instead.
+{{< /callout >}}
 
 ```bash
 # React to tab removals in a workspace
@@ -568,7 +585,7 @@ export LEAPMUX_HUB=https://leapmux.example.com
 leapmux control auth login --hub "$LEAPMUX_HUB"
 
 WS=$(leapmux control workspace create --title "Bugfix" | jq -r '.data.workspace_id')
-W=$(leapmux control worker list | jq -r '.data[0].worker_id')
+W=$(leapmux control worker list | jq -r '.data[0].id')
 
 T=$(leapmux control tab open --type agent \
       --worker-id "$W" --workspace-id "$WS" \
@@ -611,7 +628,7 @@ A `--hub` value may be a hub IPC listener (`unix:$HOME/.config/leapmux/hub/hub.s
 
 Login rules:
 
-- **Solo needs no login to use.** Solo mode authenticates every request as the local user, so ordinary commands need no credential. It still **authorizes apps**: a login there mints a scoped credential, and the Hub binds that credential's permissions rather than the solo account's. Both flows complete, because the consent pages accept the solo account. See [App Authorization](/docs/operating/app-authorization/#solo-mode).
+- **Solo needs no login to use.** Solo mode authenticates every request as the local user, so ordinary commands need no credential. It still **authorizes apps**: a login there mints a scoped credential, and the Hub binds that credential's permissions rather than the solo account's. Both flows complete, because the consent pages accept the solo account. See [App Authorization](/docs/admin/app-authorization/#solo-mode).
 - A **non-solo hub over a socket** uses `--device-code`: `leapmux control auth login --hub unix:...hub.sock --device-code` dials the socket for the token exchange while you approve in a browser against the hub's **public** origin (which the hub derives itself from its settings — not from `--hub`). The PKCE local-redirect flow is refused for socket URLs with a message pointing at `--device-code`, because a browser cannot reach a socket hub origin.
 
 ```bash
@@ -642,14 +659,14 @@ The two transports carry different credentials and trust boundaries:
 - **Spawned agent or terminal.** The Worker hands the process a private local-IPC socket (mode `0600`) and a per-process token scoped to the spawning user and tab. When the agent or terminal closes, the socket is torn down and the token is invalidated.
 - **Cross-worker calls from a spawned agent.** Reaching a *sibling* Worker (an `agent`/`terminal`/`file`/`git` command with a different `--worker-id`) uses a Worker-minted delegation token: it carries your identity and is pinned to the machines it may reach. It is minted lazily on the first cross-worker call and revoked when the agent closes — so an agent that never reaches across Workers never holds one.
 
-For the full trust model, what the Hub can and cannot see, and the encryption primitives, see [Security & Threat Model](/docs/operating/security/).
+For the full trust model, what the Hub can and cannot see, and the encryption primitives, see [Security & Threat Model](/docs/admin/security/).
 
 ## See also
 
 - [Coding Agents](/docs/using/coding-agents/) — providers, models, effort, control prompts, and resume that `agent` commands drive.
 - [Terminals](/docs/using/terminals/) — PTY sessions, shells, and the automatic `LEAPMUX_CONTROL_*` injection.
-- [Managing Workers](/docs/operating/managing-workers/) — Worker registration, approval, and TOFU pinning.
-- [Admin CLI](/docs/operating/admin-cli/) — the `control admin` surface for hub administration.
-- [Recovery](/docs/operating/recover/) — the offline break-glass tree.
+- [Managing Workers](/docs/admin/managing-workers/) — Worker registration, approval, and TOFU pinning.
+- [Admin CLI](/docs/admin/admin-cli/) — the `control admin` surface for hub administration.
+- [Recovery](/docs/admin/recover/) — the offline break-glass tree.
 - [Tabs and Layout](/docs/using/tabs-and-layout/) — the tile/split/grid model that `tile` and `layout` manipulate.
 - [Worktrees and Branches](/docs/using/worktrees-and-branches/) — the worktree dispositions used by `tab close --worktree`.

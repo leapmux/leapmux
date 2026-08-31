@@ -1,5 +1,6 @@
 import type { Accessor } from 'solid-js'
 import type { PillOptionSpec } from '~/components/common/PillGroup'
+import type { CaptchaAction } from '~/generated/contracts/captcha'
 
 import { createSignal } from 'solid-js'
 import { passkeyBlocker } from '~/lib/systemInfo'
@@ -14,9 +15,12 @@ export type AuthMethodKind = 'login' | 'signup'
 /**
  * The captcha action bound into an external provider's token. The hub
  * refuses a token minted under a different action, so this must follow the
- * EFFECTIVE method, never the raw selection.
+ * EFFECTIVE method, never the raw selection. The members come from the
+ * generated captcha contract (contracts/captcha.json), so a renamed
+ * action breaks this union at compile time instead of at the hub's
+ * action check.
  */
-export type AuthCaptchaAction = 'login' | 'signup' | 'passkey_login' | 'passkey_signup'
+export type AuthCaptchaAction = Extract<CaptchaAction, 'login' | 'signup' | 'passkey_login' | 'passkey_signup'>
 
 export interface AuthMethodSelection {
   /**
@@ -40,7 +44,7 @@ export interface AuthMethodSelection {
  * kept their own copy of this two-line state machine, and each then read
  * the raw signal at one or two sites while every other site read the
  * effective one — so a hub that lost passkey support mid-form hid the
- * password field, hid the "Forgot password?" link and skipped the password
+ * password field, hid the recovery link and skipped the password
  * validation, while the submit path already fell back to the password
  * option. A caller that cannot reach the raw signal cannot reintroduce that
  * split.

@@ -102,7 +102,7 @@ const sendTimeout = 20 * time.Second
 
 func (s *SMTPSender) Send(ctx context.Context, msg Message) error {
 	// Bound the WHOLE exchange, not just the dial. Callers send inline on
-	// interactive RPC paths (login, sign-up, password reset), and a Connect
+	// interactive RPC paths (login, sign-up, account recovery), and a Connect
 	// request context carries no server-side deadline of its own, so a relay
 	// that completes the TCP handshake and then stalls in EHLO, AUTH, or
 	// DATA held the request goroutine open indefinitely: the sign-in button

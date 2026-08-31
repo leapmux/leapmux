@@ -31,11 +31,11 @@ const pendingEmailExpiry = 30 * time.Minute
 // the Go gate and the store can never disagree at the boundary attempt.
 const maxVerificationAttempts = 5
 
-// maxPasswordResetAttempts is the per-token attempt budget for the
-// self-service password reset. The token is a 285-bit secret, so the
+// maxAccountRecoveryAttempts is the per-token attempt budget for the
+// self-service account recovery. The token is a 285-bit secret, so the
 // budget is defense-in-depth against a throttled oracle, not a
 // brute-force limit; the SQL force-expire binds the same constant.
-const maxPasswordResetAttempts = 5
+const maxAccountRecoveryAttempts = 5
 
 // CreateUserParams holds the parameters for creating a new user.
 type CreateUserParams struct {
@@ -63,11 +63,11 @@ type createUserTxParams struct {
 	isAdmin       bool
 	extra         func(tx store.Store) error
 	// now is the CALLER's clock seam, and this transaction mints the pending
-	// verification deadline from it. Every instant a service mints comes from
+	// verification row from it. Every instant a service mints comes from
 	// that seam (see clockSeam), and this one did not: it read the wall clock
-	// inside the transaction, so a test that moved the seam moved the resend
-	// cooldown -- which issuedAtFromExpiry DERIVES from this deadline -- and
-	// left the deadline itself where it was.
+	// inside the transaction, so a test that moved the seam moved the
+	// issued-at the cooldown gate reads -- and left the deadline itself
+	// where it was.
 	//
 	// Nil reads the wall clock, exactly as clockSeam does. CreateUser passes
 	// none and needs none: that flavor writes no pending row, so it mints no
@@ -110,7 +110,7 @@ func createUserInTx(ctx context.Context, st store.Store, opt createUserTxParams)
 	// column says whether somebody CONFIRMED this address, and that is a
 	// fact about the address rather than a privilege of the account. Forcing
 	// it made an administrator's unconfirmed address a valid self-service
-	// password-reset target, because RequestPasswordReset reads the column
+	// account-recovery target, because RequestAccountRecovery reads the column
 	// and has no admin exemption -- and it cannot have one, since the
 	// question it asks is exactly "did anybody confirm this address".
 	//
@@ -155,16 +155,17 @@ func createUserInTx(ctx context.Context, st store.Store, opt createUserTxParams)
 		}
 		if opt.pendingEmail != "" {
 			code = verifycode.Generate()
-			expiresAt := opt.clock().Add(pendingEmailExpiry).UTC()
-			// A brand-new account holds no previous code, so the
-			// conditional mint always lands; UnconditionalMintCutoff says that
-			// explicitly rather than leaving a zero cutoff to mean it.
+			issuedAt := opt.clock().UTC()
+			expiresAt := issuedAt.Add(pendingEmailExpiry)
+			// A brand-new account holds no previous blockade (the column
+			// is NULL), so the conditional mint always lands.
 			if _, err := tx.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
-				ID:                    userID,
-				PendingEmail:          opt.pendingEmail,
-				PendingEmailToken:     code,
-				PendingEmailExpiresAt: &expiresAt,
-				CooldownCutoff:        store.UnconditionalMintCutoff(),
+				ID:                      userID,
+				PendingEmail:            opt.pendingEmail,
+				PendingEmailToken:       code,
+				PendingEmailExpiresAt:   &expiresAt,
+				PendingEmailUnblockedAt: mintUnblockedAt(issuedAt),
+				Now:                     issuedAt,
 			}); err != nil {
 				return fmt.Errorf("set pending email: %w", err)
 			}
@@ -409,31 +410,68 @@ func ClearCompetingPendingEmails(ctx context.Context, st store.Store, email, own
 // issuePendingEmailVerification stores a fresh pending_email row and
 // dispatches the verification mail. The token is a 6-character
 // verifycode (stored raw, displayed hyphenated); the mail body carries
-// both the code and a click-through link to /verify-email, which is
+// both the code and a click-through link to /verify-email, which
 // itself requires a login, so a leaked link alone cannot complete
 // verification.
 //
-// Returns (sent, err): err signals a check or storage failure; sent=false
-// means the mail send failed. On a failed send this drops the undelivered
-// CODE and logs the failure server-side: a row whose code was
-// never delivered would block the immediate retry behind the resend
-// cooldown and leave the operator without a signal. The pending ADDRESS
-// survives, because it is the only record of the address the account must
-// verify -- a sign-up that requires verification leaves users.email empty,
-// so deleting the whole row leaves ResendVerificationEmail with nothing to
-// re-send to and the account permanently unverifiable. Email-change
-// callers that surface the failure to the user inline can use
-// issuePendingEmailVerificationOrFail instead.
-func issuePendingEmailVerification(ctx context.Context, st store.Store, sender mail.Sender, renderer mail.Renderer, userID, email string, now time.Time) (bool, error) {
-	storedCode, err := mintPendingEmailVerification(ctx, st, userID, email, now)
+// now is the service clock, read twice: once for the mint, and again (by
+// the deliver step) when the relay answers a refused send. failureCooldown
+// is the failed-send window (mail_limits): a send the relay refuses leaves
+// the window behind, so the retry loop a failure invites still waits out
+// one short window.
+//
+// Returns (sent, nextResend, err): err signals a check or storage failure;
+// sent=false means the mail send failed. nextResend is the deadline the
+// mint gate enforces, non-nil in BOTH outcomes -- the mint's own
+// unblocked_at after a successful send, and the failure window the clear
+// arms after a refused one -- so the countdown a client renders never
+// invites a retry the hub refuses. On a failed send this
+// drops the undelivered CODE and logs the failure server-side: a row whose
+// code was never delivered would block the immediate retry behind the
+// resend cooldown and leave the operator without a signal. The pending
+// ADDRESS survives, because it is the only record of the address the
+// account must verify -- a sign-up that requires verification leaves
+// users.email empty, so deleting the whole row leaves
+// ResendVerificationEmail with nothing to re-send to and the account
+// permanently unverifiable. Email-change callers that surface the failure
+// to the user inline can use issuePendingEmailVerificationOrFail instead.
+func issuePendingEmailVerification(ctx context.Context, st store.Store, sender mail.Sender, renderer mail.Renderer, userID, email string, now func() time.Time, failureCooldown time.Duration) (bool, *time.Time, error) {
+	storedCode, blockedUntil, err := mintPendingEmailVerification(ctx, st, userID, email, now())
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
-	return deliverPendingEmailVerification(ctx, st, sender, renderer, userID, email, storedCode), nil
+	sent, nextResend := deliverPendingEmailVerification(ctx, st, sender, renderer, pendingEmailDelivery{
+		userID:          userID,
+		email:           email,
+		code:            storedCode,
+		mintUnblockedAt: blockedUntil,
+		failureCooldown: failureCooldown,
+		now:             now,
+	})
+	return sent, nextResend, nil
+}
+
+// pendingEmailDelivery is one verification mail in flight: the minted code
+// to send, plus the two facts the reported deadline derives from. The
+// struct names the deliver path's inputs instead of growing its parameter
+// list.
+type pendingEmailDelivery struct {
+	userID string
+	email  string
+	code   string
+	// mintUnblockedAt is the deadline the mint armed -- the SUCCESS
+	// countdown reports it, the same value the gate compares.
+	mintUnblockedAt time.Time
+	// failureCooldown is the failed-send window (mail_limits). The clock
+	// reads it only after the relay answers a refused send.
+	failureCooldown time.Duration
+	now             func() time.Time
 }
 
 // mintPendingEmailVerification performs the two STORE steps and nothing
-// else, and returns the code it minted.
+// else, and returns the code it minted together with the blocked-until
+// deadline the mint armed, so callers report the same deadline the gate
+// compares.
 //
 // Split from the send so a caller that needs the mint INSIDE a transaction
 // can take one. RequestEmailChange does: it moves the account's recovery
@@ -446,67 +484,92 @@ func issuePendingEmailVerification(ctx context.Context, st store.Store, sender m
 // email-change RPC from being an open relay: the address is caller-supplied,
 // so an unconditional mint sends a message per request to any address the
 // caller specifies.
-func mintPendingEmailVerification(ctx context.Context, st store.Store, userID, email string, now time.Time) (string, error) {
+func mintPendingEmailVerification(ctx context.Context, st store.Store, userID, email string, now time.Time) (string, time.Time, error) {
 	if err := CheckEmailAvailable(ctx, st, email, userID); err != nil {
-		return "", err
+		return "", time.Time{}, err
 	}
 	storedCode := verifycode.Generate()
-	expiresAt := now.Add(pendingEmailExpiry).UTC()
+	blockedUntil := mintUnblockedAt(now)
+	expiresAt := now.UTC().Add(pendingEmailExpiry)
 	minted, err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
-		ID:                    userID,
-		PendingEmail:          email,
-		PendingEmailToken:     storedCode,
-		PendingEmailExpiresAt: &expiresAt,
-		CooldownCutoff:        mintCutoff(now, pendingEmailExpiry),
+		ID:                      userID,
+		PendingEmail:            email,
+		PendingEmailToken:       storedCode,
+		PendingEmailExpiresAt:   &expiresAt,
+		PendingEmailUnblockedAt: blockedUntil,
+		Now:                     now,
 	})
 	if err != nil {
-		return "", fmt.Errorf("set pending email: %w", err)
+		return "", time.Time{}, fmt.Errorf("set pending email: %w", err)
 	}
 	if !minted {
-		return "", ErrVerificationCooldown
+		return "", time.Time{}, ErrVerificationCooldown
 	}
-	return storedCode, nil
+	return storedCode, blockedUntil, nil
 }
 
-// deliverPendingEmailVerification sends a minted code and reports whether the
-// relay took it. On a failed send it drops the undelivered CODE and KEEPS the
-// pending address; see clearUndeliveredVerificationCode.
+// deliverPendingEmailVerification sends a minted code and reports the
+// resend deadline the hub now enforces, whichever way the relay answered:
+// the mint's unblocked_at after a successful send, and
+// failedSendUnblockedAt(now(), failureCooldown) after a refused one. Both
+// deadlines are the value the mint gate compares, so the countdown a
+// client renders and the window the hub enforces cannot disagree -- not
+// after a slow SMTP dial (the success deadline is the mint's own value,
+// not a post-dial read) and not after a failed send (the failure deadline
+// is the value the clear writes).
+//
+// On a failed send it drops the undelivered CODE, KEEPS the pending
+// address, and arms the failure window; see
+// clearUndeliveredVerificationCode. The deadline reads the clock at the
+// failure, never before the dial: a pre-dial read leaves
+// max(0, window - dial) of blockade, and a relay that fails slowly eats
+// the whole window.
 //
 // st is the plain store, never a transaction: this runs AFTER the mint
 // commits, so the repair is its own write on the failure path rather than a
 // rollback of a mint the caller may want to keep.
-func deliverPendingEmailVerification(ctx context.Context, st store.Store, sender mail.Sender, renderer mail.Renderer, userID, email, storedCode string) bool {
-	if err := sender.Send(ctx, renderer.VerificationEmail(email, storedCode, pendingEmailExpiry)); err != nil {
-		if clearErr := clearUndeliveredVerificationCode(ctx, st, userID); clearErr != nil {
+func deliverPendingEmailVerification(ctx context.Context, st store.Store, sender mail.Sender, renderer mail.Renderer, d pendingEmailDelivery) (bool, *time.Time) {
+	if err := sender.Send(ctx, renderer.VerificationEmail(d.email, d.code, pendingEmailExpiry)); err != nil {
+		blockedUntil := failedSendUnblockedAt(d.now(), d.failureCooldown)
+		if clearErr := clearUndeliveredVerificationCode(ctx, st, d.userID, blockedUntil); clearErr != nil {
 			slog.WarnContext(ctx, "clear undelivered verification code after failed send",
-				"user_id", userID, "err", clearErr)
+				"user_id", d.userID, "err", clearErr)
 		}
 		slog.WarnContext(ctx, "verification email send failed; dropped the code and kept the pending address for retry",
-			"user_id", userID, "email", email, "err", err)
-		return false
+			"user_id", d.userID, "email", d.email, "err", err)
+		return false, &blockedUntil
 	}
-	return true
+	// The mint's own deadline, not a second clock read taken after the SMTP
+	// dial: a countdown seeded after a slow dial runs longer than the window
+	// the hub enforces -- the reported and enforced deadlines would disagree
+	// by the whole round trip.
+	return true, &d.mintUnblockedAt
 }
 
 // ErrVerificationCooldown reports a conditional mint that the resend
 // cooldown refused. It is a sentinel, not a message match: the RPC layer
 // maps it to ResourceExhausted, and infrastructure failures stay Internal.
-var ErrVerificationCooldown = errors.New("the hub sent a verification code recently; wait before you ask for another")
+var ErrVerificationCooldown = errors.New("the hub sent mail recently or a send just failed; wait before you ask for another")
 
 // clearUndeliveredVerificationCode drops a code that the relay refused, and
 // KEEPS the address it was for.
 //
 // An empty token is the "no live code, address still pending" state: the
 // verify path refuses it (ConsumeVerificationAttempt skips a row whose
-// pending_email_token is empty), and the resend cooldown -- which reads the
-// expiry -- does not apply, so nothing blocks the retry the failure message
-// invites. Clearing the address instead would strand a
-// verification-required sign-up, whose users.email column is empty, with
-// nothing to re-send to.
+// pending_email_token is empty). The unblocked_at the clear writes leaves
+// the failure window -- the mint gate and the reported countdown read it,
+// so the retry a failed send invites waits out that one short window
+// instead of landing at request speed (a retry no window holds back is a
+// mint-send-clear loop that costs the relay a transaction per request).
+// Clearing the address instead would strand a verification-required
+// sign-up, whose users.email column is empty, with nothing to re-send to.
 //
 // The address is still subject to retention: ClearStalePendingEmails has a
 // second branch that reaps a codeless row on updated_at, because the expiry
 // compare cannot see one.
-func clearUndeliveredVerificationCode(ctx context.Context, st store.Store, userID string) error {
-	return st.Users().ClearPendingEmailCode(ctx, userID)
+func clearUndeliveredVerificationCode(ctx context.Context, st store.Store, userID string, blockedUntil time.Time) error {
+	return st.Users().ClearPendingEmailCode(ctx, store.ClearPendingEmailCodeParams{
+		ID:          userID,
+		UnblockedAt: blockedUntil,
+	})
 }

@@ -45,10 +45,10 @@ func expectedRegistrationBody(command, hubURL string) string {
 	return b.String()
 }
 
-func expectedPasswordResetBody(link, hubURL string) string {
+func expectedAccountRecoveryBody(link, hubURL string) string {
 	var b strings.Builder
-	b.WriteString("You requested a password reset for your LeapMux account.\n\n")
-	b.WriteString("Click the link below to choose a new password:\n\n    ")
+	b.WriteString("You asked to recover your LeapMux account.\n\n")
+	b.WriteString("Click the link below to set a new password and sign back in:\n\n    ")
 	b.WriteString(link)
 	b.WriteString("\n\nThe link expires in one hour. If you did not request this, you can ignore this email.\n\n")
 	b.WriteString(verificationFooterTrailingSpace + "\n")
@@ -86,23 +86,24 @@ func TestRenderer_VerificationEmail_Bytes(t *testing.T) {
 	}
 }
 
-// TestRenderer_PasswordResetEmail_Bytes pins the password reset email body.
-func TestRenderer_PasswordResetEmail_Bytes(t *testing.T) {
+// TestRenderer_AccountRecoveryEmail_Bytes pins the account recovery email
+// body.
+func TestRenderer_AccountRecoveryEmail_Bytes(t *testing.T) {
 	const token = "abc123"
 	const hubURL = "https://hub.example.com"
-	link := hubURL + "/reset-password?token=" + token
+	link := hubURL + "/recover-account/complete?token=" + token
 
 	r := mail.Renderer{BaseURL: func() string { return hubURL }}
-	msg := r.PasswordResetEmail("alice@example.test", token, time.Hour)
+	msg := r.AccountRecoveryEmail("alice@example.test", token, time.Hour)
 
 	if msg.To != "alice@example.test" {
 		t.Errorf("To = %q, want %q", msg.To, "alice@example.test")
 	}
-	if msg.Subject != "[LeapMux] Reset your password" {
-		t.Errorf("Subject = %q, want %q", msg.Subject, "[LeapMux] Reset your password")
+	if msg.Subject != "[LeapMux] Recover your account" {
+		t.Errorf("Subject = %q, want %q", msg.Subject, "[LeapMux] Recover your account")
 	}
 
-	want := expectedPasswordResetBody(link, hubURL)
+	want := expectedAccountRecoveryBody(link, hubURL)
 	if msg.Body != want {
 		t.Errorf("Body bytes mismatch.\n got: %q\nwant: %q", msg.Body, want)
 	}
@@ -195,8 +196,8 @@ func TestRenderersReflectTTLArgument(t *testing.T) {
 	if !strings.Contains(v.Body, "The code expires in 120 minutes.") {
 		t.Errorf("verification body does not reflect the TTL: %q", v.Body)
 	}
-	p := mail.Renderer{}.PasswordResetEmail("alice@example.test", "tok", 2*time.Hour)
+	p := mail.Renderer{}.AccountRecoveryEmail("alice@example.test", "tok", 2*time.Hour)
 	if !strings.Contains(p.Body, "The link expires in 120 minutes.") {
-		t.Errorf("reset body does not reflect the TTL: %q", p.Body)
+		t.Errorf("recovery body does not reflect the TTL: %q", p.Body)
 	}
 }

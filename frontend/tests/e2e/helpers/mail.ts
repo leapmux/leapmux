@@ -18,7 +18,7 @@ function reply(socket: Socket, code: number, message: string) {
  * Start a minimal loopback SMTP server that accepts one message at a time.
  *
  * The caller points the hub at this relay with `tls_mode: "none"`, so E2E
- * tests can capture verification and password-reset emails without external
+ * tests can capture verification and account-recovery emails without external
  * infrastructure.
  */
 export async function startCaptureSmtpServer(): Promise<CaptureSmtpServer> {
@@ -145,6 +145,17 @@ export async function startCaptureSmtpServer(): Promise<CaptureSmtpServer> {
  * "permission_denied: email verification required" and no clue where it came
  * from. Which spec that hits depends on how Playwright packed the files onto
  * workers, so it moves between runs.
+ *
+ * The same worker-shared hub holds the per-recipient mail budget
+ * (`mail_limits.recipient_max`, 10 per hour by default) in memory, and this
+ * helper does not clear it: the capture relay accepts every message, so
+ * every delivery spends it. A spec that mails one FIXED address more than
+ * ten times inside a worker refuses the eleventh send with a failure that
+ * reads as an SMTP fault, and it keeps refusing until the next worker's
+ * fresh hub. Mail a per-test unique address (the `${prefix}-${Date.now()}`
+ * shape the specs use), or stage `mail_limits` with
+ * `updateSettingViaAPI` (`{"recipient_max":0}` disables the cap) when a
+ * spec must hammer one recipient.
  */
 export async function withCaptureSmtp(
   server: { hubUrl: string, adminToken: string },
@@ -166,32 +177,33 @@ export async function withCaptureSmtp(
 }
 
 /**
- * The width of a reset token, from the hub's `id.Generate()` mint
- * (`backend/internal/util/id/id.go`). This module asserts it below, so a
- * change to the mint fails here, at the extraction, rather than as an
- * unexplained timeout on the reset page 120 seconds later.
+ * The width of an account-recovery token, from the hub's `id.Generate()`
+ * mint (`backend/internal/util/id/id.go`). This module asserts it below, so
+ * a change to the mint fails here, at the extraction, rather than as an
+ * unexplained timeout on the recovery completion page 120 seconds later.
  */
-const PASSWORD_RESET_TOKEN_LENGTH = 48
+const ACCOUNT_RECOVERY_TOKEN_LENGTH = 48
 
 /**
- * Pull the self-service password-reset token out of a captured reset email body.
+ * Pull the self-service account-recovery token out of a captured
+ * account-recovery email body.
  *
  * The token alphabet is ALPHANUMERIC (`A-Za-z0-9`), never hex. A hex-only
  * character class fails in two different places depending on the token that
  * the mint happens to produce: it captures a truncated prefix when the token
  * starts with hex digits, and it matches nothing at all otherwise. The
- * truncated prefix is the worse of the two, because the reset page then
- * rejects the token and the failure surfaces as a missing button on the
- * following page.
+ * truncated prefix is the worse of the two, because the recovery completion
+ * page then rejects the token and the failure surfaces as a missing button
+ * on the following page.
  */
-export function extractPasswordResetToken(emailBody: string): string {
-  const match = emailBody.match(/\/reset-password\?token=([A-Za-z0-9]+)/)
+export function extractAccountRecoveryToken(emailBody: string): string {
+  const match = emailBody.match(/\/recover-account\/complete\?token=([A-Za-z0-9]+)/)
   if (!match?.[1])
-    throw new Error(`password reset token not found in captured email:\n${emailBody}`)
+    throw new Error(`account recovery token not found in captured email:\n${emailBody}`)
   const token = match[1]
-  if (token.length !== PASSWORD_RESET_TOKEN_LENGTH) {
+  if (token.length !== ACCOUNT_RECOVERY_TOKEN_LENGTH) {
     throw new Error(
-      `password reset token is ${token.length} characters, want ${PASSWORD_RESET_TOKEN_LENGTH}. `
+      `account recovery token is ${token.length} characters, want ${ACCOUNT_RECOVERY_TOKEN_LENGTH}. `
       + `The character class above does not cover the whole mint alphabet, so it stopped early. Token: ${token}`,
     )
   }

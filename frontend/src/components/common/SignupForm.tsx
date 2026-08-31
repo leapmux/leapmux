@@ -188,7 +188,7 @@ export const SignupForm: Component<SignupFormProps> = (props) => {
             value={email()}
             onInput={e => setEmail(e.currentTarget.value)}
             required={emailRequired()}
-            placeholder={emailRequired() ? undefined : 'Optional: enables password reset'}
+            placeholder={emailRequired() ? undefined : 'Optional: enables account recovery'}
           />
         </label>
         {/*

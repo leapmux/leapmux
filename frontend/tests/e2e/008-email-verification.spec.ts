@@ -1,4 +1,3 @@
-import { join } from 'node:path'
 import { expect, test } from './fixtures'
 import { solveCaptchaViaAPI } from './helpers/altcha'
 import {
@@ -11,11 +10,8 @@ import {
   waitForEmailEnabled,
 } from './helpers/api'
 import { withCaptureSmtp } from './helpers/mail'
+import { hubDataDir } from './helpers/server'
 import { loginViaToken, openAccountSettings, readSessionCookie, signUpViaUI, solveCaptchaViaUI } from './helpers/ui'
-
-function hubDataDir(dataDir: string): string {
-  return join(dataDir, 'hub')
-}
 
 test.describe('Email verification', () => {
   test('signup with SMTP configured routes to verify-email and accepts the code', async ({ page, leapmuxServer }) => {
@@ -54,7 +50,7 @@ test.describe('Email verification', () => {
       await page.reload()
       await expect(page.getByTestId('verify-email-resend')).toBeEnabled()
       await page.getByTestId('verify-email-resend').click()
-      await expect(page.getByTestId('verify-email-resend-status')).toContainText(/fresh code has been sent/i)
+      await expect(page.getByTestId('verify-email-resend-status')).toContainText(/sent a fresh code/i)
       await expect(page.getByTestId('verify-email-resend')).toBeDisabled()
       await expect(page.getByTestId('verify-email-resend')).toContainText(/Resend code \(\d+:\d{2}\)/)
     })

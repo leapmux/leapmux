@@ -789,7 +789,7 @@ func TestUpdateProfile_EmailFieldRemoved(t *testing.T) {
 // under any configuration. What they do not get is a raised email_verified:
 // nobody confirmed the new address, and the column records exactly that.
 // Raising it made an administrator's unconfirmed address a valid
-// self-service password-reset target, because RequestPasswordReset reads the
+// self-service account-recovery target, because RequestAccountRecovery reads the
 // column and cannot take the sign-in exemption -- the same force this change
 // removed from account creation and from the admin edit of another user.
 func TestRequestEmailChange_Admin_ImmediateChangeLandsUnverified(t *testing.T) {
@@ -1046,11 +1046,12 @@ func TestVerifyEmail_Success(t *testing.T) {
 	// Seed pending_email + a 6-char verifycode-shaped token.
 	verifyToken := verifycode.Generate()
 	_, err := env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
-		PendingEmail:          "verified@example.com",
-		PendingEmailToken:     verifyToken,
-		PendingEmailExpiresAt: ptrTime(time.Now().Add(1 * time.Hour).UTC()),
-		ID:                    env.userID,
-		CooldownCutoff:        store.UnconditionalMintCutoff(),
+		PendingEmail:            "verified@example.com",
+		PendingEmailUnblockedAt: time.Now().Add(-5 * time.Minute).UTC(),
+		PendingEmailToken:       verifyToken,
+		PendingEmailExpiresAt:   ptrTime(time.Now().Add(1 * time.Hour).UTC()),
+		ID:                      env.userID,
+		Now:                     time.Now().UTC(),
 	})
 	require.NoError(t, err)
 
@@ -1082,11 +1083,12 @@ func TestVerifyEmail_AcceptsLowercaseInput(t *testing.T) {
 
 	verifyToken := verifycode.Generate()
 	_, err := env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
-		PendingEmail:          "lowercase@example.com",
-		PendingEmailToken:     verifyToken,
-		PendingEmailExpiresAt: ptrTime(time.Now().Add(1 * time.Hour).UTC()),
-		ID:                    env.userID,
-		CooldownCutoff:        store.UnconditionalMintCutoff(),
+		PendingEmail:            "lowercase@example.com",
+		PendingEmailUnblockedAt: time.Now().Add(-5 * time.Minute).UTC(),
+		PendingEmailToken:       verifyToken,
+		PendingEmailExpiresAt:   ptrTime(time.Now().Add(1 * time.Hour).UTC()),
+		ID:                      env.userID,
+		Now:                     time.Now().UTC(),
 	})
 	require.NoError(t, err)
 
@@ -1122,11 +1124,12 @@ func TestVerifyEmail_ExpiredOrMismatchSurfacesIdentically(t *testing.T) {
 
 	expiredToken := verifycode.Generate()
 	_, err := env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
-		PendingEmail:          "expired@example.com",
-		PendingEmailToken:     expiredToken,
-		PendingEmailExpiresAt: ptrTime(time.Now().Add(-1 * time.Hour).UTC()),
-		ID:                    env.userID,
-		CooldownCutoff:        store.UnconditionalMintCutoff(),
+		PendingEmail:            "expired@example.com",
+		PendingEmailUnblockedAt: time.Now().Add(-5 * time.Minute).UTC(),
+		PendingEmailToken:       expiredToken,
+		PendingEmailExpiresAt:   ptrTime(time.Now().Add(-1 * time.Hour).UTC()),
+		ID:                      env.userID,
+		Now:                     time.Now().UTC(),
 	})
 	require.NoError(t, err)
 
@@ -1143,11 +1146,12 @@ func TestVerifyEmail_ExpiredOrMismatchSurfacesIdentically(t *testing.T) {
 		wrongToken = verifycode.Generate()
 	}
 	minted, err := env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
-		PendingEmail:          "live@example.com",
-		PendingEmailToken:     liveToken,
-		PendingEmailExpiresAt: ptrTime(time.Now().Add(1 * time.Hour).UTC()),
-		ID:                    env.userID,
-		CooldownCutoff:        store.UnconditionalMintCutoff(),
+		PendingEmail:            "live@example.com",
+		PendingEmailUnblockedAt: time.Now().Add(-5 * time.Minute).UTC(),
+		PendingEmailToken:       liveToken,
+		PendingEmailExpiresAt:   ptrTime(time.Now().Add(1 * time.Hour).UTC()),
+		ID:                      env.userID,
+		Now:                     time.Now().UTC(),
 	})
 	require.NoError(t, err)
 	require.True(t, minted)
@@ -1169,11 +1173,12 @@ func TestVerifyEmail_PendingEmailEmpty(t *testing.T) {
 	// to verify" precondition error, distinct from invalid/expired codes.
 	verifyToken := verifycode.Generate()
 	_, err := env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
-		PendingEmail:          "",
-		PendingEmailToken:     verifyToken,
-		PendingEmailExpiresAt: ptrTime(time.Now().Add(1 * time.Hour).UTC()),
-		ID:                    env.userID,
-		CooldownCutoff:        store.UnconditionalMintCutoff(),
+		PendingEmail:            "",
+		PendingEmailUnblockedAt: time.Now().Add(-5 * time.Minute).UTC(),
+		PendingEmailToken:       verifyToken,
+		PendingEmailExpiresAt:   ptrTime(time.Now().Add(1 * time.Hour).UTC()),
+		ID:                      env.userID,
+		Now:                     time.Now().UTC(),
 	})
 	require.NoError(t, err)
 
@@ -1191,11 +1196,12 @@ func TestVerifyEmail_RateLimitForceExpires(t *testing.T) {
 
 	live := verifycode.Generate()
 	minted, err := env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
-		PendingEmail:          "burned@example.com",
-		PendingEmailToken:     live,
-		PendingEmailExpiresAt: ptrTime(time.Now().Add(1 * time.Hour).UTC()),
-		ID:                    env.userID,
-		CooldownCutoff:        store.UnconditionalMintCutoff(),
+		PendingEmail:            "burned@example.com",
+		PendingEmailUnblockedAt: time.Now().Add(-5 * time.Minute).UTC(),
+		PendingEmailToken:       live,
+		PendingEmailExpiresAt:   ptrTime(time.Now().Add(1 * time.Hour).UTC()),
+		ID:                      env.userID,
+		Now:                     time.Now().UTC(),
 	})
 	require.NoError(t, err)
 	require.True(t, minted)
@@ -1225,9 +1231,9 @@ func TestVerifyEmail_RateLimitForceExpires(t *testing.T) {
 
 // --- ResendVerificationEmail ---
 
-// setupResendUserTest provisions a UserService backed by a recordingSender
+// setupResendUserTest provisions a UserService backed by a mailSenderDouble
 // so tests can assert the resent email's recipient + body.
-func setupResendUserTest(t *testing.T) (*userTestEnv, *recordingSender) {
+func setupResendUserTest(t *testing.T) (*userTestEnv, *mailSenderDouble) {
 	t.Helper()
 	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err)
@@ -1235,7 +1241,7 @@ func setupResendUserTest(t *testing.T) (*userTestEnv, *recordingSender) {
 
 	require.NoError(t, st.Migrator().Migrate(context.Background()))
 
-	rec := &recordingSender{}
+	rec := &mailSenderDouble{}
 	userSvc := service.NewUserService(st, testConfig(), servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil), rec, mail.Renderer{}, nil)
 
 	mux := http.NewServeMux()
@@ -1290,14 +1296,15 @@ func TestResendVerificationEmail_RotatesCodeAndSends(t *testing.T) {
 
 	// Seed a pending row with an "old" expires_at far enough back that
 	// the cooldown window already elapsed (TTL is 30min, cooldown 60s — set
-	// expires_at = now+25min so issued_at = now-5min).
+	// deadline elapsed 5 minutes ago).
 	originalCode := verifycode.Generate()
 	minted, err := env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
-		ID:                    env.userID,
-		PendingEmail:          "u@example.com",
-		PendingEmailToken:     originalCode,
-		PendingEmailExpiresAt: ptrTime(time.Now().Add(25 * time.Minute).UTC()),
-		CooldownCutoff:        store.UnconditionalMintCutoff(),
+		ID:                      env.userID,
+		PendingEmail:            "u@example.com",
+		PendingEmailUnblockedAt: time.Now().Add(-5 * time.Minute).UTC(),
+		PendingEmailToken:       originalCode,
+		PendingEmailExpiresAt:   ptrTime(time.Now().Add(25 * time.Minute).UTC()),
+		Now:                     time.Now().UTC(),
 	})
 	require.NoError(t, err)
 	require.True(t, minted)
@@ -1326,17 +1333,19 @@ func TestResendVerificationEmail_RotatesCodeAndSends(t *testing.T) {
 func TestResendVerificationEmail_CooldownEnforced(t *testing.T) {
 	t.Parallel()
 
-	// Seed a pending row whose implied "issued_at" is just now: the
-	// cooldown must reject a back-to-back resend so a runaway client
-	// (or hostile caller) cannot flood the user's inbox.
+	// Seed a pending row issued just now: the cooldown must reject a
+	// back-to-back resend so a runaway client (or hostile caller) cannot
+	// flood the user's inbox.
 	env, _ := setupResendUserTest(t)
 
+	now := time.Now().UTC()
 	minted, err := env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
-		ID:                    env.userID,
-		PendingEmail:          "u@example.com",
-		PendingEmailToken:     verifycode.Generate(),
-		PendingEmailExpiresAt: ptrTime(time.Now().Add(30 * time.Minute).UTC()),
-		CooldownCutoff:        store.UnconditionalMintCutoff(),
+		ID:                      env.userID,
+		PendingEmail:            "u@example.com",
+		PendingEmailToken:       verifycode.Generate(),
+		PendingEmailExpiresAt:   ptrTime(now.Add(30 * time.Minute)),
+		PendingEmailUnblockedAt: now.Add(time.Minute),
+		Now:                     now,
 	})
 	require.NoError(t, err)
 	require.True(t, minted)
@@ -1346,6 +1355,54 @@ func TestResendVerificationEmail_CooldownEnforced(t *testing.T) {
 	assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(err))
 }
 
+// TestResendVerificationEmail_BurnedBudgetKeepsCooldown pins the closed
+// hole. Burning the 5-guess budget force-expires the code in SQL, and an
+// expiry-derived gate read that as "issued a full lifetime ago" and let a
+// resend land immediately -- burn and resend became a mail loop at seven
+// cheap RPCs per email. The gate reads the issued-at column, which no
+// attempt path moves, so a burned code waits out the same cooldown a live
+// one does.
+func TestResendVerificationEmail_BurnedBudgetKeepsCooldown(t *testing.T) {
+	t.Parallel()
+
+	env, _ := setupResendUserTest(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	minted, err := env.store.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
+		ID:                      env.userID,
+		PendingEmail:            "u@example.com",
+		PendingEmailToken:       verifycode.Generate(),
+		PendingEmailExpiresAt:   ptrTime(now.Add(30 * time.Minute)),
+		PendingEmailUnblockedAt: now.Add(time.Minute),
+		Now:                     now,
+	})
+	require.NoError(t, err)
+	require.True(t, minted)
+
+	// Burn the whole wrong-guess budget; the 6th attempt force-expires the
+	// code in SQL (the expiry moves to now).
+	for i := 0; i < 6; i++ {
+		_, err = env.client.VerifyEmail(ctx, authedReq(&leapmuxv1.VerifyEmailRequest{
+			VerificationToken: verifycode.Generate(),
+		}, env.token))
+		require.Error(t, err, "a wrong code must never verify")
+	}
+
+	row, err := env.store.Users().GetByID(ctx, env.userID)
+	require.NoError(t, err)
+	require.NotNil(t, row.PendingEmailExpiresAt)
+	assert.False(t, time.Now().UTC().Before(row.PendingEmailExpiresAt.UTC()),
+		"the burned code must be force-expired for this pin to mean anything")
+
+	// The code is expired, but it was issued seconds ago: the resend must
+	// still hit the cooldown.
+	_, err = env.client.ResendVerificationEmail(ctx, authedReq(&leapmuxv1.ResendVerificationEmailRequest{}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(err),
+		"burning the guess budget must not reset the resend cooldown")
+}
+
 func TestVerifyEmail_EmailTakenSinceRequest(t *testing.T) {
 	t.Parallel()
 
@@ -1353,11 +1410,12 @@ func TestVerifyEmail_EmailTakenSinceRequest(t *testing.T) {
 
 	verifyToken := verifycode.Generate()
 	_, err := env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
-		PendingEmail:          "contested@example.com",
-		PendingEmailToken:     verifyToken,
-		PendingEmailExpiresAt: ptrTime(time.Now().Add(1 * time.Hour).UTC()),
-		ID:                    env.userID,
-		CooldownCutoff:        store.UnconditionalMintCutoff(),
+		PendingEmail:            "contested@example.com",
+		PendingEmailUnblockedAt: time.Now().Add(-5 * time.Minute).UTC(),
+		PendingEmailToken:       verifyToken,
+		PendingEmailExpiresAt:   ptrTime(time.Now().Add(1 * time.Hour).UTC()),
+		ID:                      env.userID,
+		Now:                     time.Now().UTC(),
 	})
 	require.NoError(t, err)
 
@@ -1397,11 +1455,12 @@ func TestVerifyEmail_CrossUser_NoOracle(t *testing.T) {
 
 	victimToken := verifycode.Generate()
 	_, err := env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
-		PendingEmail:          "stolen@example.com",
-		PendingEmailToken:     victimToken,
-		PendingEmailExpiresAt: ptrTime(time.Now().Add(1 * time.Hour).UTC()),
-		ID:                    env.userID,
-		CooldownCutoff:        store.UnconditionalMintCutoff(),
+		PendingEmail:            "stolen@example.com",
+		PendingEmailUnblockedAt: time.Now().Add(-5 * time.Minute).UTC(),
+		PendingEmailToken:       victimToken,
+		PendingEmailExpiresAt:   ptrTime(time.Now().Add(1 * time.Hour).UTC()),
+		ID:                      env.userID,
+		Now:                     time.Now().UTC(),
 	})
 	require.NoError(t, err)
 
@@ -1421,11 +1480,12 @@ func TestVerifyEmail_CrossUser_NoOracle(t *testing.T) {
 	})
 	attackerOwnToken := verifycode.Generate()
 	minted, err := env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
-		PendingEmail:          "attacker@example.com",
-		PendingEmailToken:     attackerOwnToken,
-		PendingEmailExpiresAt: ptrTime(time.Now().Add(1 * time.Hour).UTC()),
-		ID:                    attackerID,
-		CooldownCutoff:        store.UnconditionalMintCutoff(),
+		PendingEmail:            "attacker@example.com",
+		PendingEmailUnblockedAt: time.Now().Add(-5 * time.Minute).UTC(),
+		PendingEmailToken:       attackerOwnToken,
+		PendingEmailExpiresAt:   ptrTime(time.Now().Add(1 * time.Hour).UTC()),
+		ID:                      attackerID,
+		Now:                     time.Now().UTC(),
 	})
 	require.NoError(t, err)
 	require.True(t, minted)
@@ -1576,7 +1636,7 @@ func newConcurrentSessionRemovalEnv(t *testing.T, remove func(ctx context.Contex
 // revoke raised on another hub reaches this process only on the revocation
 // watcher's next sweep -- so "elevated" could be true of a session an
 // administrator already took away. The account email receives the
-// password-reset link, so a change that landed on that authority gave the
+// recovery link, so a change that landed on that authority gave the
 // account away.
 //
 // It is the SAME shape the passkey mutations use: the write moved inside the
@@ -1962,7 +2022,7 @@ func TestUnlinkOAuthProvider_NotFound(t *testing.T) {
 // --- The plain elevation gate: RequestEmailChange and UnlinkOAuthProvider ---
 //
 // Both move a durable identity. The account email receives the
-// password-reset link, and on an admin edit it lands VERIFIED with no round
+// recovery link, and on an admin edit it lands VERIFIED with no round
 // trip; an OAuth link is the login method -- and for an OAuth-only account,
 // the very factor that account elevates with. A session alone must not move
 // either.
@@ -2695,11 +2755,12 @@ func TestVerifyEmail_IncludesPasskeyCount(t *testing.T) {
 
 	verifyToken := verifycode.Generate()
 	minted, err := env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
-		PendingEmail:          "counted@example.com",
-		PendingEmailToken:     verifyToken,
-		PendingEmailExpiresAt: ptrTime(time.Now().Add(1 * time.Hour).UTC()),
-		ID:                    env.userID,
-		CooldownCutoff:        store.UnconditionalMintCutoff(),
+		PendingEmail:            "counted@example.com",
+		PendingEmailUnblockedAt: time.Now().Add(-5 * time.Minute).UTC(),
+		PendingEmailToken:       verifyToken,
+		PendingEmailExpiresAt:   ptrTime(time.Now().Add(1 * time.Hour).UTC()),
+		ID:                      env.userID,
+		Now:                     time.Now().UTC(),
 	})
 	require.NoError(t, err)
 	require.True(t, minted)
@@ -2722,7 +2783,7 @@ func TestResendVerificationEmail_SMTPEnableTransition(t *testing.T) {
 	set := servicetest.NewSettingsManager(t, st, nil)
 	seedSMTP(t, set)
 
-	rec := &recordingSender{}
+	rec := &mailSenderDouble{}
 	userSvc := service.NewUserService(st, testConfig(), set, auth.NewCredentialLifecycleEffects(nil, nil, nil), rec, mail.Renderer{}, nil)
 
 	mux := http.NewServeMux()
@@ -2772,11 +2833,12 @@ func TestResendVerificationEmail_NextResendAvailableAt(t *testing.T) {
 	env, _ := setupResendUserTest(t)
 
 	minted, err := env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
-		ID:                    env.userID,
-		PendingEmail:          "u@example.com",
-		PendingEmailToken:     verifycode.Generate(),
-		PendingEmailExpiresAt: ptrTime(time.Now().Add(25 * time.Minute).UTC()),
-		CooldownCutoff:        store.UnconditionalMintCutoff(),
+		ID:                      env.userID,
+		PendingEmail:            "u@example.com",
+		PendingEmailUnblockedAt: time.Now().Add(-5 * time.Minute).UTC(),
+		PendingEmailToken:       verifycode.Generate(),
+		PendingEmailExpiresAt:   ptrTime(time.Now().Add(25 * time.Minute).UTC()),
+		Now:                     time.Now().UTC(),
 	})
 	require.NoError(t, err)
 	require.True(t, minted)
@@ -2788,6 +2850,47 @@ func TestResendVerificationEmail_NextResendAvailableAt(t *testing.T) {
 	nextAt := resp.Msg.GetNextResendAvailableAt().AsTime()
 	assert.True(t, nextAt.After(before.Add(59*time.Second)))
 	assert.True(t, nextAt.Before(before.Add(61*time.Second)))
+}
+
+// A failed send reports the FAILURE window it leaves behind: the response
+// carries the deadline the mint gate now enforces, so the countdown a
+// client renders never invites a retry the hub then refuses. The reported
+// window is the failure cooldown (10s by default), never the full minute a
+// successful send leaves.
+func TestResendVerificationEmail_FailedSendReportsFailureWindow(t *testing.T) {
+	t.Parallel()
+
+	env, rec := setupResendUserTest(t)
+
+	minted, err := env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
+		ID:                      env.userID,
+		PendingEmail:            "u@example.com",
+		PendingEmailToken:       verifycode.Generate(),
+		PendingEmailExpiresAt:   ptrTime(time.Now().Add(25 * time.Minute).UTC()),
+		PendingEmailUnblockedAt: time.Now().UTC().Add(-5 * time.Minute).Add(time.Minute),
+		Now:                     time.Now().UTC().Add(-5 * time.Minute),
+	})
+	require.NoError(t, err)
+	require.True(t, minted)
+
+	rec.err = errors.New("smtp unavailable")
+	before := time.Now().UTC()
+	resp, err := env.client.ResendVerificationEmail(context.Background(), authedReq(&leapmuxv1.ResendVerificationEmailRequest{}, env.token))
+	require.NoError(t, err)
+	assert.False(t, resp.Msg.GetEmailSent())
+	require.NotNil(t, resp.Msg.GetNextResendAvailableAt(),
+		"a failed send arms the failure window, so the response must report it")
+	nextAt := resp.Msg.GetNextResendAvailableAt().AsTime()
+	assert.True(t, nextAt.After(before.Add(8*time.Second)),
+		"the reported window is the failure cooldown")
+	assert.True(t, nextAt.Before(before.Add(12*time.Second)),
+		"and never the full resend cooldown a successful send leaves")
+
+	// The immediate retry the failure message invites is refused for that
+	// window: the gate and the countdown read one column.
+	_, err = env.client.ResendVerificationEmail(context.Background(), authedReq(&leapmuxv1.ResendVerificationEmailRequest{}, env.token))
+	assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(err),
+		"the retry lands inside the failure window the response just reported")
 }
 
 func TestBeginPasskeyRegistration_OAuthOnly_NoReauthRequired(t *testing.T) {

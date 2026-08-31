@@ -528,7 +528,7 @@ export const browserSettings: BrowserSettingDecl[] = [
     id: 'account.email',
     category: 'account',
     label: 'Email',
-    help: 'The address that receives the password-reset link, and how to change it.',
+    help: 'The address that receives the account-recovery link, and how to change it.',
     keywords: ['email', 'address', 'verify', 'recovery'],
     scope: 'account',
     control: { kind: 'custom', id: 'accountEmail' },

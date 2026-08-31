@@ -800,7 +800,7 @@ func TestCompleteOAuthSignup_UntrustedFailClosedWhenVerificationEmailFails(t *te
 	opts := connect.WithInterceptors(interceptor)
 	authDeps := servicetest.AuthServiceDeps(st, cfg, set, auth.NewCredentialLifecycleEffects(nil, nil, nil))
 	authDeps.Keystore = ks
-	authDeps.Mail = failingMailSender{err: errors.New("smtp down")}
+	authDeps.Mail = &mailSenderDouble{err: errors.New("smtp down")}
 	authSvc := service.NewAuthService(authDeps)
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
 	mux.Handle(path, handler)

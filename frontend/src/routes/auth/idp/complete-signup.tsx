@@ -8,6 +8,7 @@ import * as styles from '~/components/common/LoginPage.css'
 import { Spinner } from '~/components/common/Spinner'
 import { UsernameField } from '~/components/common/UsernameField'
 import { useAuth } from '~/context/AuthContext'
+import { CAPTCHA_ACTION } from '~/generated/contracts/captcha'
 import { createCaptchaForm } from '~/lib/captchaForm'
 import { formatErrorMessage } from '~/lib/errors'
 import { setPageTitle } from '~/lib/pageTitle'
@@ -162,7 +163,7 @@ const OAuthCompleteSignupPage: Component = () => {
                 required={emailRequired()}
               />
             </label>
-            <CaptchaSection action="complete_signup" captcha={captcha} />
+            <CaptchaSection action={CAPTCHA_ACTION.completeSignup} captcha={captcha} />
             <Show when={error()}>
               <div class={errorText}>{error()}</div>
             </Show>

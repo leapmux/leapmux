@@ -288,7 +288,7 @@ type credentialNotice struct {
 //
 // It runs DETACHED, on its own goroutine and its own deadline, and this is
 // the only mail send in the hub that does. Every other one IS the request the
-// caller made -- a password-reset link, a verification code -- so the caller
+// caller made -- an account-recovery link, a verification code -- so the caller
 // waits for it and reads its error. This one is incidental to a token the
 // caller is blocked on, and an SMTP exchange is capped at sendTimeout, so
 // leaving it on the response path added up to that long to an authorization a

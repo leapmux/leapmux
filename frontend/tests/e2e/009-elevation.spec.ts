@@ -107,7 +107,7 @@ test.describe('session elevation', () => {
     await prefs.getByLabel('New Email').fill('moved@test.local')
     await prefs.getByRole('button', { name: 'Change Email' }).click()
 
-    // Moving the account email requires elevation: it receives the password-reset
+    // Moving the account email requires elevation: it receives the account-recovery
     // link, so a session alone must not move it.
     const verify = page.getByRole('dialog', { name: 'Verify your identity' })
     await expect(verify).toBeVisible()

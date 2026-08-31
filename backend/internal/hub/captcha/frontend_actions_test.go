@@ -1,9 +1,9 @@
 package captcha
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"sort"
 	"testing"
@@ -12,30 +12,34 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestFrontendCaptchaActionsMatchProcedureActions pins the cross-end
-// action contract: the backend verifies tokens under the actions in
-// protectedProcedures, and the frontend's CaptchaField action union must
-// offer exactly those strings (the three pages bind them as literals). A
-// drift on either end denies every token for the affected procedure, and
-// no other test compiles both ends together — the per-end tests each
-// assert their own half against its own literal.
-func TestFrontendCaptchaActionsMatchProcedureActions(t *testing.T) {
+// TestCaptchaActionsMatchProcedureActions pins the cross-end action
+// contract: contracts/captcha.json is the single source of truth, the
+// backend's protectedProcedures map consumes its generated constants, and
+// the frontend's CaptchaField action union is generated from the same file.
+// This test pins the remaining seam -- the map's action set must be exactly
+// the contract's -- so a stale contract entry, or a literal that bypassed
+// the generated constants, fails here instead of denying tokens at runtime.
+// A drift on either end denies every token for the affected procedure, and
+// no other test compiles both ends together.
+func TestCaptchaActionsMatchProcedureActions(t *testing.T) {
 	_, thisFile, _, ok := runtime.Caller(0)
 	require.True(t, ok)
-	fieldPath := filepath.Join(filepath.Dir(thisFile), "..", "..", "..", "..",
-		"frontend", "src", "components", "common", "CaptchaField.tsx")
-	raw, err := os.ReadFile(fieldPath)
-	require.NoError(t, err, "the frontend captcha field source must stay readable at %s", fieldPath)
+	contractPath := filepath.Join(filepath.Dir(thisFile), "..", "..", "..", "..",
+		"contracts", "captcha.json")
+	raw, err := os.ReadFile(contractPath)
+	require.NoError(t, err, "the captcha action contract must stay readable at %s", contractPath)
 
-	unionLine := regexp.MustCompile(`(?m)^\s*action:\s*.*$`).Find(raw)
-	require.NotNil(t, unionLine, "CaptchaField.tsx must declare the action union")
-	quoted := regexp.MustCompile(`'([^']+)'`).FindAllStringSubmatch(string(unionLine), -1)
-	require.NotEmpty(t, quoted, "the action union must list its members as quoted literals")
-	frontend := make([]string, 0, len(quoted))
-	for _, m := range quoted {
-		frontend = append(frontend, m[1])
+	var contract struct {
+		Actions map[string]string `json:"actions"`
 	}
-	sort.Strings(frontend)
+	require.NoError(t, json.Unmarshal(raw, &contract))
+	require.NotEmpty(t, contract.Actions, "contracts/captcha.json must list its actions")
+
+	contractActions := make([]string, 0, len(contract.Actions))
+	for _, token := range contract.Actions {
+		contractActions = append(contractActions, token)
+	}
+	sort.Strings(contractActions)
 
 	backend := make([]string, 0, len(protectedProcedures))
 	for _, proc := range protectedProcedures {
@@ -43,6 +47,6 @@ func TestFrontendCaptchaActionsMatchProcedureActions(t *testing.T) {
 	}
 	sort.Strings(backend)
 
-	assert.Equal(t, backend, frontend,
-		"the captcha action literals must match across hub and frontend; a mismatch denies every token for the affected procedure")
+	assert.Equal(t, contractActions, backend,
+		"the captcha action set must match between contracts/captcha.json and protectedProcedures; a mismatch denies every token for the affected procedure")
 }

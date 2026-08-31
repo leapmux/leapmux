@@ -3,6 +3,9 @@ import { timestampFromDate } from '@bufbuild/protobuf/wkt'
 import { createRoot } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { CaptchaProvider } from '~/generated/proto/leapmux/v1/auth_pb'
+import { resetSystemInfoMock, setSystemInfoMock } from '~/test-support/systemInfoMock'
+
 import { useVerificationResend } from './useVerificationResend'
 
 const mockResend = vi.fn()
@@ -13,9 +16,17 @@ vi.mock('~/api/clients', () => ({
   },
 }))
 
+// The resend leg carries a captcha form; the default mock answers with a
+// loaded snapshot and captcha disabled, so blocksSubmit() is false.
+vi.mock('~/lib/systemInfo', async () => {
+  const m = await import('~/test-support/systemInfoMock')
+  return m.systemInfoMock
+})
+
 describe('useVerificationResend', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    resetSystemInfoMock()
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
   })
@@ -70,6 +81,22 @@ describe('useVerificationResend', () => {
       await Promise.resolve()
       expect(hook.buttonLabel()).toBe('Resend code (0:42)')
       expect(hook.disabled()).toBe(true)
+      dispose()
+    })
+  })
+
+  it('keeps the resend disabled while a required captcha is unsolved', async () => {
+    // Fail closed: with captcha enabled and no solved payload, the button
+    // stays disabled and the click is a no-op, so a page cannot round-trip
+    // into a uniform PermissionDenied the cooldown UI then has to explain.
+    setSystemInfoMock({ captchaEnabled: true, captchaProvider: CaptchaProvider.ALTCHA })
+
+    await createRoot(async (dispose) => {
+      const hook = useVerificationResend()
+      expect(hook.countdown()).toBe(0)
+      expect(hook.disabled()).toBe(true)
+      await hook.resend()
+      expect(mockResend).not.toHaveBeenCalled()
       dispose()
     })
   })

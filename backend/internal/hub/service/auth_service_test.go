@@ -696,11 +696,12 @@ func TestPromotePendingEmail_ClearsCompetingPendingEmails(t *testing.T) {
 		})
 		require.NoError(t, err)
 		_, err = st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
-			PendingEmail:          "shared@example.com",
-			PendingEmailToken:     verifycode.Generate(),
-			PendingEmailExpiresAt: ptrTime(time.Now().Add(24 * time.Hour).UTC()),
-			ID:                    userID,
-			CooldownCutoff:        store.UnconditionalMintCutoff(),
+			PendingEmail:            "shared@example.com",
+			PendingEmailUnblockedAt: time.Now().Add(-5 * time.Minute).UTC(),
+			PendingEmailToken:       verifycode.Generate(),
+			PendingEmailExpiresAt:   ptrTime(time.Now().Add(24 * time.Hour).UTC()),
+			ID:                      userID,
+			Now:                     time.Now().UTC(),
 		})
 		require.NoError(t, err)
 	}
@@ -757,11 +758,12 @@ func TestSignUp_DirectEmail_ClearsCompetingPendingEmails(t *testing.T) {
 	})
 	require.NoError(t, err)
 	_, err = st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
-		PendingEmail:          "race@example.com",
-		PendingEmailToken:     verifycode.Generate(),
-		PendingEmailExpiresAt: ptrTime(time.Now().Add(24 * time.Hour).UTC()),
-		ID:                    userAID,
-		CooldownCutoff:        store.UnconditionalMintCutoff(),
+		PendingEmail:            "race@example.com",
+		PendingEmailUnblockedAt: time.Now().Add(-5 * time.Minute).UTC(),
+		PendingEmailToken:       verifycode.Generate(),
+		PendingEmailExpiresAt:   ptrTime(time.Now().Add(24 * time.Hour).UTC()),
+		ID:                      userAID,
+		Now:                     time.Now().UTC(),
 	})
 	require.NoError(t, err)
 
@@ -977,10 +979,6 @@ func TestSignUp_VerificationRequired_EmailInPendingColumn(t *testing.T) {
 	assert.Contains(t, resp.Header().Get("Set-Cookie"), auth.CookieName+"=")
 }
 
-type failingMailSender struct{ err error }
-
-func (f failingMailSender) Send(context.Context, mail.Message) error { return f.err }
-
 func TestSignUp_FailClosedWhenVerificationEmailFails(t *testing.T) {
 	t.Parallel()
 
@@ -998,7 +996,7 @@ func TestSignUp_FailClosedWhenVerificationEmailFails(t *testing.T) {
 		Config:    testConfig(),
 		Settings:  set,
 		Lifecycle: auth.NewCredentialLifecycleEffects(sc, nil, nil),
-		Mail:      failingMailSender{err: errors.New("smtp down")},
+		Mail:      &mailSenderDouble{err: errors.New("smtp down")},
 		Renderer:  mail.Renderer{},
 	})
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
@@ -1679,7 +1677,7 @@ func TestFinishPasskeySignUp_FailClosedWhenVerificationEmailFails(t *testing.T) 
 	env := setupPasskeyAuthTestServer(t, func(t *testing.T, set *settings.Manager) {
 		enableSignup(t, set)
 		enableEmailVerification(t, set)
-	}, failingMailSender{err: errors.New("smtp down")})
+	}, &mailSenderDouble{err: errors.New("smtp down")})
 
 	begin := beginPasskeySignUp(t, env.client, "pkfailclosed", "pkfailclosed@example.com")
 	ceremony := newPasskeyCeremony()

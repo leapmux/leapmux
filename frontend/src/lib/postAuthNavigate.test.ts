@@ -30,8 +30,8 @@ describe('isServerRoute', () => {
     expect(isServerRoute('/login')).toBe(false)
     expect(isServerRoute('/signup')).toBe(false)
     expect(isServerRoute('/setup')).toBe(false)
-    expect(isServerRoute('/forgot-password')).toBe(false)
-    expect(isServerRoute('/reset-password?token=abc')).toBe(false)
+    expect(isServerRoute('/recover-account')).toBe(false)
+    expect(isServerRoute('/recover-account/complete?token=abc')).toBe(false)
     expect(isServerRoute('/auth/idp/complete-signup')).toBe(false)
   })
 

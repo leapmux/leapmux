@@ -35,7 +35,12 @@ export const field = style({
 // exactly those before deciding to fill a field. Real users never tab to
 // it (tabindex -1), screen readers skip it (aria-hidden), and autofill
 // heuristics pass it by (unlabeled, off-screen).
-export const honeypot = style({
+//
+// The export NAME is part of the disguise: vanilla-extract embeds it in
+// the served class name (CaptchaField_<export>__hash), and a bot that
+// reads the DOM can read attributes. Name it like an ordinary form-field
+// class — never "honeypot", "trap", or "bot".
+export const websiteField = style({
   position: 'absolute',
   left: '-10000px',
   top: 'auto',

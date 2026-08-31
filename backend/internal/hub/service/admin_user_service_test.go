@@ -47,7 +47,7 @@ type adminUserEnv struct {
 	// mail records the issuance notice IssueAPIToken sends. It is a real
 	// Sender rather than nil, because "sends nothing" and "sends the wrong
 	// thing" look identical through a nil one.
-	mail *recordingSender
+	mail *mailSenderDouble
 }
 
 // awaitCredentialNotice waits for the issuance notice and returns it.
@@ -194,7 +194,7 @@ func setupAdminUserTestUnelevated(t *testing.T) *adminUserEnv {
 	// delivered one).
 	revocations := &recordingCredentialCloser{}
 	lifecycle := auth.NewCredentialLifecycleEffects(contexts, revocations, nil)
-	sender := &recordingSender{}
+	sender := &mailSenderDouble{}
 	path, handler := leapmuxv1connect.NewAdminUserServiceHandler(service.NewAdminUserService(service.AdminUserServiceDeps{
 		Store: st, Validator: tv, Lifecycle: lifecycle, Mail: sender,
 	}), opts)
@@ -1354,7 +1354,7 @@ func TestAdminUserService_DurableAuthorityVerbsNeedAnElevatedSession(t *testing.
 //
 // Both shipped with NO gate. DeleteUser is irreversible destruction of an
 // account, every workspace it owns and every credential it holds; UpdateUser
-// writes the account email, which is the address the public password-reset
+// writes the account email, which is the address the public account-recovery
 // verb mails a link to -- so {email, email_verified:true} in one call handed
 // over any account by the longer route while its sibling ResetPassword was
 // restricted. The classification record in admin_procedures_internal_test.go
@@ -1991,7 +1991,7 @@ func TestAdminUserService_ResetPassword_DeletesPasskeys(t *testing.T) {
 //
 // Carrying the old flag across marked an address nobody confirmed as
 // verified. That is not cosmetic: a verified address is a valid
-// self-service password-reset target, so the carry handed the account's
+// self-service account-recovery target, so the carry handed the account's
 // recovery route to whatever address the request carried. The change must
 // also FENCE, because lowering email_verified reduces the user's auth gate.
 func TestAdminUserService_AddressChangeLowersEmailVerified(t *testing.T) {
@@ -2054,7 +2054,7 @@ func TestAdminUserService_AddressChangeKeepsAnExplicitVerification(t *testing.T)
 //
 // email_verified records whether somebody confirmed the address. An
 // administrator's brand-new address is exactly as unconfirmed as anybody
-// else's, and a verified address is a valid self-service password-reset
+// else's, and a verified address is a valid self-service account-recovery
 // target -- so keeping the flag across the move handed the highest-privilege
 // accounts on the hub a live reset route to whatever address the request
 // carried.
@@ -2158,7 +2158,7 @@ func TestAdminUserService_RewritingTheSameAddressKeepsVerified(t *testing.T) {
 // false before and after, so the test passed with the whole rule reverted.
 // An address arriving for the first time is unconfirmed,
 // exactly like one that replaces another, so it must not land verified --
-// and a verified address is a valid self-service password-reset target.
+// and a verified address is a valid self-service account-recovery target.
 func TestAdminUserService_SettingAFirstEmailIsUnverified(t *testing.T) {
 	ctx := context.Background()
 	env := setupAdminUserTest(t)

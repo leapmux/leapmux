@@ -2,10 +2,10 @@
 title: "OAuth API"
 description: "The wire contract for LeapMux's OAuth 2.1 authorization server: endpoints, grant types, PKCE, scopes, refresh rotation, and revocation."
 type: docs
-weight: 6
+weight: 5
 ---
 
-This is the implementable specification for a program that wants access to an account on a LeapMux Hub. For the operator's side — registering apps, verifying them, controlling what they may ask for — see [App Authorization](/docs/operating/app-authorization/).
+This is the implementable specification for a program that wants access to an account on a LeapMux Hub. For the administrator's side — registering apps, verifying them, controlling what they may ask for — see [App Authorization](/docs/admin/app-authorization/).
 
 A Hub is an OAuth 2.1 authorization server. It follows RFC 6749 and RFC 6750 as OAuth 2.1 profiles them, with RFC 7636 (PKCE), RFC 8628 (device authorization), RFC 7009 (revocation), RFC 7591 (dynamic registration), RFC 8414 and RFC 9728 (metadata).
 
@@ -22,18 +22,20 @@ The authorization-server document lists the endpoints, the grant types the Hub s
 
 ## Client registration
 
-Every request specifies a `client_id`. There is no anonymous client and no client that registers itself by accident.
+Every request specifies a `client_id`. A request without one is refused.
 
-- An operator or a user registers the app; see [App Authorization](/docs/operating/app-authorization/).
+- An administrator or a user registers the app; see [App Authorization](/docs/admin/app-authorization/).
 - Or, where the Hub allows it, the app registers itself through `POST /oauth/register` (RFC 7591).
 
-A **public** client holds no secret. That is the honest shape for a binary a user holds — a CLI, a desktop app, a browser app — and PKCE is what protects it. A **confidential** client holds a secret, which means a server the app operator runs. The secret crosses once, at registration.
+A **public** client holds no secret. That is the correct client type for a binary a user holds — a CLI, a desktop app, a browser app — and PKCE is what protects it. A **confidential** client holds a secret, which means a server the app administrator runs. The secret crosses once, at registration.
 
-An app's name is what a consent screen states, and its icon is stored at registration and served same-origin from `/oauth/apps/<client_id>/icon` — a consent page fetches nothing from the app's own servers.
+An app's name is what a consent screen states, and its icon is stored at registration and served same-origin from `/oauth/apps/<client_id>/icon` — a consent page fetches nothing from the app's own servers. The Hub serves an icon only for an app it verified; every other consent screen shows a monogram.
 
 ## Redirect addresses
 
-A redirect address must match one the app registered, exactly, with one exception: for a **loopback** address (`127.0.0.1` or `localhost`) the **port is ignored**, per RFC 8252 section 7.3. A native app binds whatever port is free at launch, so the registered address carries no port and any port matches. An IPv6 loopback literal such as `[::1]` is refused at registration: the consent page's content security policy cannot state an IPv6 host, so the login would hang. Use `127.0.0.1` or `localhost`.
+A redirect address must match one the app registered, exactly, with one exception: for a **loopback** address (`127.0.0.1` or `localhost`) the **port is ignored**, per RFC 8252 section 7.3. A native app binds whatever port is free at launch, so the port is ignored on both sides: any registered loopback address matches any port.
+
+An IPv6 loopback literal such as `[::1]` is refused at registration: the consent page's content security policy cannot state an IPv6 host, so the login would hang. Use `127.0.0.1` or `localhost`.
 
 Everything else is compared literally. No prefix match, no wildcard host, no scheme substitution.
 
@@ -81,6 +83,8 @@ POST /oauth/token
 
 `redirect_uri` must be present and identical to the one the authorization used. Everything else comes from the stored grant — the app, the permissions, the label — and nothing from this request, so holding a code cannot widen what the account approved.
 
+A **confidential** client also authenticates on this request — HTTP Basic, or `client_secret` in the body. A public client sends `client_id` alone.
+
 **A code is one-shot.** Presenting it twice means it leaked, so the second presentation is refused *and* the credential the first one minted is revoked (RFC 6749 section 4.1.2).
 
 ## Device authorization
@@ -90,13 +94,16 @@ The flow for a machine with no browser: a headless server, an SSH session, a con
 ```
 POST /oauth/device-authorization
   client_id=<id>
+  client_secret=<secret>            # a confidential client authenticates here too
   scope=<space-delimited, optional>
   installation_name=<label, optional>
 ```
 
 The response carries `device_code`, `user_code`, `verification_uri`, `verification_uri_complete`, `expires_in` and `interval`. Show the user code and the URL; the person opens it on any device they can sign in on. `verification_uri` is the Hub's own page at `/oauth/device`, where the code is typed or confirmed — never the token endpoint, which a machine polls.
 
-`verification_uri_complete` carries the user code and nothing else. The permissions the app asked for live in the grant the Hub stored, so a rewritten link cannot ask somebody to approve one thing while the grant records another. A grant that reaches the hub-administration family answers the first **Authorize** with a confirmation page and binds nothing until the second: the typed-code flow authorizes a machine the person cannot see, so the highest-stakes ask takes a deliberate second stop.
+`verification_uri_complete` carries the user code and nothing else. The permissions the app asked for live in the grant the Hub stored, so a rewritten link cannot ask somebody to approve one thing while the grant records another.
+
+A grant that reaches the hub-administration family answers the first **Authorize** with a confirmation page and binds nothing until the second: the typed-code flow authorizes a machine the person cannot see, so the highest-stakes ask takes a deliberate second stop.
 
 Poll the token endpoint no faster than `interval` seconds:
 
@@ -132,7 +139,7 @@ An **absent** decision on the consent form is a refusal, and it is final: a gran
 }
 ```
 
-`scope` is what the credential **reaches**, with its implications closed — so it may be **wider** than what was asked for, and `file:read` comes back with `worker:read` beside it. It is never wider in a way the consent screen did not show.
+`scope` is what the credential **reaches**, including every permission the asked-for ones imply — so it may be **wider** than what was asked for, and `file:read` comes back with `worker:read` beside it. It is never wider in a way the consent screen did not show.
 
 Reaching is the account's consent intersected with the app's **registered ceiling**, and the Hub applies that intersection at every request rather than only at the consent. So an owner who removes a permission from a registration takes it from the credentials the app already holds, and this field says so at the next refresh. The consent itself is not rewritten: put the permission back on the registration and the credential reaches it again, with no fresh authorization.
 
@@ -148,7 +155,7 @@ POST /oauth/token
   scope=<optional, to NARROW>
 ```
 
-The refresh token **rotates**: each exchange returns a new pair and retires the old one. Presenting a retired refresh token after a short grace window means it leaked, so the Hub revokes the whole credential (RFC 6749 section 6).
+The refresh token **rotates**: each exchange returns a new pair and retires the old one. Presenting a retired refresh token after a sixty-second grace window means it leaked, so the Hub revokes the whole credential (RFC 6749 section 6).
 
 An optional `scope` may only narrow. A refresh cannot widen a grant, because the account holder is not there to approve it — and it is measured against what the credential **reaches**, so asking for a permission the app's registration no longer lists answers `invalid_scope` rather than succeeding and failing at the next call.
 
@@ -163,7 +170,7 @@ POST /oauth/revoke
   client_secret=<secret>            # or HTTP Basic, for a confidential one
 ```
 
-The client is authenticated before anything else, per RFC 7009 section 2.1. A **confidential** client sends its secret — HTTP Basic or the body, the two forms RFC 6749 section 2.3.1 defines — and a **public** client identifies itself with its `client_id`. In both cases only the app a credential was issued to may end it, so one app cannot tear down another's installations. The token itself must also be presented in full: an identifier alone revokes nothing.
+The client is authenticated before the token is verified, per RFC 7009 section 2.1. A **confidential** client sends its secret — HTTP Basic or the body, the two forms RFC 6749 section 2.3.1 defines — and a **public** client identifies itself with its `client_id`. In both cases only the app a credential was issued to may end it, so one app cannot tear down another's installations. The token itself must also be presented in full: an identifier alone revokes nothing.
 
 Per RFC 7009 section 2.2, the answer is `200` for a token that was revoked **and** for one that was already invalid — an invalid token is not an error a client can act on. That uniformity is also the non-disclosure: the response separates nothing, so the endpoint cannot be used to discover which token identifiers are live.
 
@@ -171,33 +178,33 @@ A missing `token` parameter is the one shape refusal: `400 invalid_request`. A c
 
 ## Errors
 
-Every token-endpoint error is `400` with an RFC 6749 section 5.2 body, except `invalid_client`, which is `401`. The distinction is one a client library acts on: `401` says the client's own credentials are wrong, and `400` says the grant is finished.
+Every token-endpoint error is `400` with an RFC 6749 section 5.2 body, except `invalid_client`, which is `401`. The distinction is one a client library acts on: `401` says the client's own credentials are wrong, and `400` says the grant is finished. One more answer exists: an address that spent the shared anonymous budget gets `429` with `slow_down`; wait and retry.
 
 ```json
 { "error": "invalid_grant", "error_description": "code expired or already consumed" }
 ```
 
-The Hub puts no client's command in a description. One endpoint serves every registered app, so a remedy that made sense for one would be noise to the rest; the standard code plus the fact is what travels, and each client renders its own remedy.
+The Hub writes every error description itself, and no description names a client or tells it what to do. One endpoint serves every registered app, so a remedy that made sense for one would be noise to the rest; each client renders its own remedy.
 
 ## Step-up
 
-Some actions need a recently proven factor. A credential that lacks one is refused with `FAILED_PRECONDITION` and a marker header; the app then runs:
+Some actions need a recently proven factor. A credential that lacks one is refused with `FAILED_PRECONDITION` and the `Leapmux-Elevation-Required: 1` header; the app then runs:
 
 ```
 POST /oauth/step-up
   Authorization: Bearer <access_token>
 ```
 
-This opens a device-style ceremony against the **existing** credential. It issues nothing. The account holder proves a factor in a browser, and the credential gains a window; the app polls `/oauth/token` with the device-code grant to learn when.
+This opens a device-style ceremony against the **existing** credential. It issues nothing. The account holder proves a factor in a browser, and the credential gains a window; the app polls `/oauth/token` with the device-code grant, and the success answer is `{"elevated": true}`, not a token response.
 
-An app is refused this ceremony unless its owner allowed it. See [App Authorization](/docs/operating/app-authorization/#elevation).
+An app is refused this ceremony unless its owner allowed it. See [App Authorization](/docs/admin/app-authorization/#elevation).
 
 ## Rate limits
 
-The three anonymous endpoints — device authorization, the token endpoint, and dynamic registration — share one per-address budget. Nothing there presents a secret somebody had to guess, so no error counts against a failure window; the limit is a ceiling on a loop, not a lockout. An operator adjusts it as `rate_limit.oauth_anonymous`.
+The anonymous endpoints — device authorization, the token endpoint, revocation, dynamic registration, step-up, and the app icons — share one per-address budget. The budget counts admitted requests, not failures, so it is a ceiling on a loop, not a lockout. An administrator adjusts it as `rate_limit.oauth_anonymous`.
 
 ## See also
 
-- [App Authorization](/docs/operating/app-authorization/) — registering and verifying apps
+- [App Authorization](/docs/admin/app-authorization/) — registering and verifying apps
 - [Connected Apps](/docs/using/connected-apps/) — what an account holder sees
-- [Control CLI](/docs/operating/control-cli/) — a worked client, and the one that ships
+- [Control CLI](/docs/using/control-cli/) — a worked client, and the one that ships

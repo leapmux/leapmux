@@ -8,7 +8,7 @@ export default function SignupRoute() {
 
   // The solo-hub redirect lives in `SignedOutOnly`, which wraps every
   // credential page. This route kept a copy of it, and so did LoginPage,
-  // while /forgot-password, /reset-password and /setup carried none.
+  // while /recover-account, /recover-account/complete and /setup carried none.
   return (
     <SignedOutOnly>
       <SignupPage />

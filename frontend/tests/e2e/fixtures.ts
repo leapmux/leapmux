@@ -24,7 +24,7 @@ import {
 } from './helpers/api'
 import { closeAllUserEventsSubscriptions } from './helpers/crdt'
 import { stopProcess } from './helpers/process'
-import { findFreePort, getGlobalState, waitForServer } from './helpers/server'
+import { findFreePort, getGlobalState, hubDataDir, waitForServer } from './helpers/server'
 import { createServerOutput, reportStartupFailure } from './helpers/serverOutput'
 import { getRecordedToasts, installToastRecorder } from './helpers/toast'
 import { loginViaToken, openWorkspace } from './helpers/ui'
@@ -100,7 +100,7 @@ export const test = base.extend<
     // The first admin must exist BEFORE the hub opens the DB: the offline
     // bootstrap refuses once any admin exists, and the online /setup path no
     // longer reserves the `admin` username once one does.
-    await bootstrapFirstAdmin(join(dataDir, 'hub'))
+    await bootstrapFirstAdmin(hubDataDir(dataDir))
 
     console.log(`[e2e] Starting dev instance on port ${port}...`)
 

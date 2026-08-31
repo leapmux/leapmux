@@ -354,6 +354,55 @@ export const EFFORT_AUTO = ${jsonString(v.modelSentinels.effortAuto)} as const
 }
 
 // ---------------------------------------------------------------------------
+// captcha: the protected RPCs' action vocabulary
+// ---------------------------------------------------------------------------
+
+export function checkCaptcha(v) {
+  const entries = Object.entries(v.actions)
+  const tokens = entries.map(([, token]) => token)
+  mustBe(new Set(tokens).size === tokens.length, 'captcha.json', 'two captcha actions share one token')
+  for (const token of tokens) {
+    mustBe(/^[a-z][a-z0-9_]*$/.test(token), 'captcha.json', `action ${JSON.stringify(token)} must use only lowercase alphanumerics and underscores -- both external providers accept that set`)
+    mustBe(token.length <= 32, 'captcha.json', `action ${JSON.stringify(token)} exceeds Turnstile's 32-character action cap`)
+  }
+  return {}
+}
+
+export function emitGoCaptcha(v) {
+  return `${GO_HEADER('captcha.json')}package contracts
+
+// The captcha action vocabulary: the action name each protected RPC's token
+// is minted under (reCAPTCHA's grecaptcha.execute({action}) and Turnstile's
+// action parameter). The browser's CaptchaField action union is generated
+// from the same contracts/captcha.json, so a rename cannot touch one side
+// only.
+
+// CaptchaAction* are the action tokens the hub verifies server-side.
+const (
+${goConstBlock(Object.entries(v.actions)
+  .map(([key, token]) => ({ name: `CaptchaAction${key.charAt(0).toUpperCase()}${key.slice(1)}`, value: jsonString(token) })))}
+)
+`
+}
+
+export function emitTsCaptcha(v) {
+  const actions = Object.entries(v.actions)
+    .map(([key, token]) => `  ${key}: ${jsonString(token)},`)
+    .join('\n')
+  return `${TS_HEADER('captcha.json')}
+// The captcha action vocabulary, generated from contracts/captcha.json
+// (the hub's protectedProcedures map carries the same tokens).
+
+/** The action each protected RPC's captcha token is minted under. */
+export const CAPTCHA_ACTION = {
+${actions}
+} as const
+
+export type CaptchaAction = typeof CAPTCHA_ACTION[keyof typeof CAPTCHA_ACTION]
+`
+}
+
+// ---------------------------------------------------------------------------
 // providers: the AgentProvider enum's human-facing vocabulary
 // ---------------------------------------------------------------------------
 
@@ -1454,6 +1503,15 @@ const DOMAINS = [
       checkWorkerVocab(v)
       out['backend/generated/contracts/worker-vocab.go'] = emitGoWorkerVocab(v)
       out['frontend/src/generated/contracts/worker-vocab.ts'] = emitTsWorkerVocab(v)
+    },
+  },
+  {
+    name: 'captcha',
+    emit(out, read) {
+      const c = read('captcha')
+      checkCaptcha(c)
+      out['backend/generated/contracts/captcha.go'] = emitGoCaptcha(c)
+      out['frontend/src/generated/contracts/captcha.ts'] = emitTsCaptcha(c)
     },
   },
   {

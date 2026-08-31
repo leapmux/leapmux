@@ -138,11 +138,12 @@ func (s *Suite) testCleanup(t *testing.T) {
 		// "expired-and-aged-out" path.
 		past := time.Now().Add(-48 * time.Hour).UTC()
 		_, err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
-			ID:                    user.ID,
-			PendingEmail:          "stale@example.com",
-			PendingEmailToken:     "ABC123",
-			PendingEmailExpiresAt: &past,
-			CooldownCutoff:        store.UnconditionalMintCutoff(),
+			ID:                      user.ID,
+			PendingEmail:            "stale@example.com",
+			PendingEmailToken:       "ABC123",
+			PendingEmailExpiresAt:   &past,
+			PendingEmailUnblockedAt: past.Add(time.Minute),
+			Now:                     past,
 		})
 		require.NoError(t, err)
 
@@ -170,16 +171,21 @@ func (s *Suite) testCleanup(t *testing.T) {
 
 		expires := time.Now().Add(30 * time.Minute).UTC()
 		minted, err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
-			ID:                    user.ID,
-			PendingEmail:          "undelivered@example.com",
-			PendingEmailToken:     "DEAD12",
-			PendingEmailExpiresAt: &expires,
-			CooldownCutoff:        store.UnconditionalMintCutoff(),
+			ID:                      user.ID,
+			PendingEmail:            "undelivered@example.com",
+			PendingEmailToken:       "DEAD12",
+			PendingEmailExpiresAt:   &expires,
+			PendingEmailUnblockedAt: time.Now().UTC().Add(time.Minute),
+			Now:                     time.Now().UTC(),
 		})
 		require.NoError(t, err)
 		require.True(t, minted)
-		// The failed-send state: the code is gone, the address remains.
-		require.NoError(t, st.Users().ClearPendingEmailCode(ctx, user.ID))
+		// The failed-send state: the code is gone, the address remains. The
+		// reap tests care about retention, not the retry window.
+		require.NoError(t, st.Users().ClearPendingEmailCode(ctx, store.ClearPendingEmailCodeParams{
+			ID:          user.ID,
+			UnblockedAt: time.Time{},
+		}))
 
 		// A cutoff before the row's updated_at leaves it alone: the address
 		// is recent, and the user can still ask for a fresh code.
@@ -206,11 +212,12 @@ func (s *Suite) testCleanup(t *testing.T) {
 		// the user out of completing verification.
 		future := time.Now().Add(15 * time.Minute).UTC()
 		_, err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
-			ID:                    user.ID,
-			PendingEmail:          "still-valid@example.com",
-			PendingEmailToken:     "LIVE12",
-			PendingEmailExpiresAt: &future,
-			CooldownCutoff:        store.UnconditionalMintCutoff(),
+			ID:                      user.ID,
+			PendingEmail:            "still-valid@example.com",
+			PendingEmailToken:       "LIVE12",
+			PendingEmailExpiresAt:   &future,
+			PendingEmailUnblockedAt: time.Now().UTC().Add(time.Minute),
+			Now:                     time.Now().UTC(),
 		})
 		require.NoError(t, err)
 

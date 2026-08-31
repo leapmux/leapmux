@@ -1,0 +1,14 @@
+{
+  "_readme": "Single source of truth for the captcha action vocabulary: the action name each protected RPC's token is minted under. The hub's protectedProcedures map and the browser's CaptchaField action union are generated from this file. The external providers bind the action into the token and the hub refuses a mismatch, so a rename that touched one side only would compile green on both and deny every protected RPC at runtime -- the contract turns that into a generation-time fact. Adding a protected RPC is: one entry here, task generate, and both sides' vocabulary updates.",
+  "actions": {
+    "login": "login",
+    "signup": "signup",
+    "completeSignup": "complete_signup",
+    "passkeyLogin": "passkey_login",
+    "passkeySignUp": "passkey_signup",
+    "accountRecovery": "account_recovery",
+    "completeAccountRecovery": "complete_account_recovery",
+    "verifyEmail": "verify_email",
+    "resendVerification": "resend_verification"
+  }
+}

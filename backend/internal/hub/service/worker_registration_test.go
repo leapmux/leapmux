@@ -39,36 +39,12 @@ import (
 	"github.com/leapmux/leapmux/locallisten/locallistentest"
 )
 
-// recordingSender captures every Send for assertions about what content
-// reached the mail layer. Using a real Sender (rather than a nil stub)
-// lets the EmailRegistrationInstructions test verify body composition.
-type recordingSender struct {
-	mu       sync.Mutex
-	messages []mail.Message
-}
-
-func (r *recordingSender) Send(_ context.Context, msg mail.Message) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.messages = append(r.messages, msg)
-	return nil
-}
-func (r *recordingSender) last() *mail.Message {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if len(r.messages) == 0 {
-		return nil
-	}
-	out := r.messages[len(r.messages)-1]
-	return &out
-}
-
 type regKeyEnv struct {
 	mgmtClient      leapmuxv1connect.WorkerManagementServiceClient
 	connectorClient leapmuxv1connect.WorkerConnectorServiceClient
 	authClient      leapmuxv1connect.AuthServiceClient
 	store           store.Store
-	mailer          *recordingSender
+	mailer          *mailSenderDouble
 	server          *httptest.Server
 	mux             *http.ServeMux
 	wMgr            *workermgr.Manager
@@ -117,7 +93,7 @@ func setupRegKeyEnvWithCfg(t *testing.T, cfg *config.Config, seed regKeySeed) *r
 	t.Cleanup(sc.Stop)
 	opts := connect.WithInterceptors(interceptor)
 
-	mailer := &recordingSender{}
+	mailer := &mailSenderDouble{}
 	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, cfg, set, auth.NewCredentialLifecycleEffects(sc, nil, nil)))
 	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
 	mux.Handle(authPath, authHandler)

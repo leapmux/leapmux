@@ -8,7 +8,7 @@ sidebar:
 ---
 
 New to LeapMux? Start here. These chapters explain what LeapMux is and how it is
-put together, then get it running and walk you through your first agent session.
+built, then get it running and walk you through your first agent session.
 
 {{< cards >}}
   {{< card link="/docs/getting-started/introduction/" title="Introduction" icon="book-open" subtitle="What LeapMux is, the problem it solves, and the agents it supports." >}}

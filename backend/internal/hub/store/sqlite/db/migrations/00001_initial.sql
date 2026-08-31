@@ -35,10 +35,25 @@ CREATE TABLE users (
     -- Counts attempts against the active pending_email_token. Reset to 0
     -- whenever a new token is issued; force-expires the token at >5.
     pending_email_attempts   INTEGER NOT NULL DEFAULT 0,
-    -- Password-reset break-glass: token stored hashed (SHA-256 hex).
-    pending_password_reset_token      VARCHAR(64) NOT NULL DEFAULT '',
-    pending_password_reset_expires_at DATETIME,
-    pending_password_reset_attempts   INTEGER NOT NULL DEFAULT 0,
+    -- When the pending-mail gate opens again. The mint (SetPendingEmail)
+    -- writes it one resend cooldown ahead; the gate compares this column
+    -- directly rather than deriving from the expiry, because
+    -- When the pending-mail gate opens again: the mint arms it one
+    -- resend cooldown ahead, a failed-send clear one failure window
+    -- ahead, and every other clear NULLs it. The gate reads this, never
+    -- the expiry -- ConsumeVerificationAttempt force-expires a burned
+    -- code by moving the expiry to now, and a derivation would then read
+    -- a brand-new burned code as cooled down and re-mint inside the
+    -- cooldown.
+    pending_email_unblocked_at    DATETIME,
+    -- Account-recovery break-glass: token stored hashed (SHA-256 hex).
+    pending_recovery_token      VARCHAR(64) NOT NULL DEFAULT '',
+    pending_recovery_expires_at DATETIME,
+    pending_recovery_attempts   INTEGER NOT NULL DEFAULT 0,
+    -- When the recovery gate opens again; see
+    -- pending_email_unblocked_at for the semantics
+    -- (ConsumeRecoveryAttemptByToken force-expires the same way).
+    pending_recovery_unblocked_at DATETIME,
     password_set             INTEGER NOT NULL DEFAULT 1,
     is_admin                 INTEGER NOT NULL DEFAULT 0,
     prefs          TEXT NOT NULL DEFAULT '{}',
@@ -64,9 +79,9 @@ CREATE INDEX idx_users_created_at ON users(created_at DESC, id DESC) WHERE delet
 -- Verification codes are looked up per-user (the session identifies who),
 -- so no global token index is needed. Index expiry instead, for cleanup.
 CREATE INDEX idx_users_pending_email_expires_at ON users(pending_email_expires_at) WHERE pending_email_expires_at IS NOT NULL;
--- Password-reset tokens are looked up by hash on complete; index non-empty
+-- Recovery tokens are looked up by hash on complete; index non-empty
 -- values so Completes do not scan the users table.
-CREATE INDEX IF NOT EXISTS idx_users_pending_password_reset_token ON users(pending_password_reset_token) WHERE pending_password_reset_token != '';
+CREATE INDEX IF NOT EXISTS idx_users_pending_recovery_token ON users(pending_recovery_token) WHERE pending_recovery_token != '';
 -- GetFirstAdmin scans for the earliest non-deleted admin (bootstrap path).
 -- Partial on (is_admin, deleted_at) keeps the index tiny;
 -- created_at lets the ORDER BY + LIMIT 1 hit the first leaf directly.

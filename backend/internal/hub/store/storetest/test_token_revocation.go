@@ -648,11 +648,12 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 		// promotion changes the cached email/email_verified and must emit.
 		expiresAt := time.Now().Add(time.Hour)
 		minted, err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
-			ID:                    user.ID,
-			PendingEmail:          "promoted@example.com",
-			PendingEmailToken:     "tok",
-			PendingEmailExpiresAt: &expiresAt,
-			CooldownCutoff:        store.UnconditionalMintCutoff(),
+			ID:                      user.ID,
+			PendingEmail:            "promoted@example.com",
+			PendingEmailToken:       "tok",
+			PendingEmailExpiresAt:   &expiresAt,
+			PendingEmailUnblockedAt: time.Now().UTC().Add(time.Minute),
+			Now:                     time.Now().UTC(),
 		})
 		mustSetPendingEmail(t, minted, err)
 		assertUserInfoEvent(t, st, user.ID, func() error {

@@ -7,7 +7,9 @@ weight: 4
 
 This chapter gets you from zero to a working coding agent in a few minutes. Pick one of two launch paths, then follow the walkthrough to open your first agent, send a message, and open a terminal beside it.
 
-> **Note:** Both paths run LeapMux in **solo mode** — a Hub and a Worker running together in a single local process, with no login and your data kept on your machine. This is the fastest way to try LeapMux. For multi-user or remote setups, see [Running LeapMux](/docs/operating/running-leapmux/) and [Managing Workers](/docs/operating/managing-workers/).
+{{< callout type="info" >}}
+Both paths run LeapMux in **solo mode** — a Hub and a Worker running together in a single local process, with no login and your data kept on your machine. This is the fastest way to try LeapMux. For multi-user or remote setups, see [Running LeapMux](/docs/admin/running-leapmux/) and [Managing Workers](/docs/admin/managing-workers/).
+{{< /callout >}}
 
 ## Before you begin
 
@@ -19,11 +21,13 @@ This is the simplest path on macOS, Linux, or Windows.
 
 1. Install **LeapMux Desktop** for your platform (see [Installation](/docs/getting-started/installation/) for download details).
 2. Launch the app. On first launch it shows a launcher titled **"LeapMux"** with the subtitle **"Choose how you'd like to connect"** and two cards:
-   - **Solo** — "Run LeapMux entirely on this machine. A Hub and Worker start together in a single process — no network setup required. Your data stays local. Ideal for personal use, local development, or trying out LeapMux."
-   - **Distributed** — connect to a remote Hub by URL (covered in [Running LeapMux](/docs/operating/running-leapmux/)).
+   - **Solo** — run everything on this machine, as described above.
+   - **Distributed** — connect to a remote Hub by URL (covered in [Running LeapMux](/docs/admin/running-leapmux/)).
 3. Select **Solo** and click **Connect**.
 
-> **Note (macOS):** Solo mode needs **Full Disk Access** so the Worker can traverse your home directory. If it isn't granted, the launcher shows a **"Full Disk Access Required"** card with an **"Open System Settings"** button. Grant access there; the app detects it and restarts automatically.
+{{< callout type="info" >}}
+**macOS:** Solo mode needs **Full Disk Access** so the Worker can traverse your home directory. If it isn't granted, the launcher shows a **"Full Disk Access Required"** card with an **"Open System Settings"** button. Grant access there; the app detects it and restarts automatically.
+{{< /callout >}}
 
 The app remembers your choice and reconnects to Solo on the next launch. To return to the launcher later, open the user menu and choose **"Switch mode..."**.
 
@@ -43,7 +47,7 @@ http://127.0.0.1:4327
 
 No login is required — solo mode auto-authenticates every request as the admin.
 
-A few useful flags (full reference in [Configuration](/docs/operating/configuration/) and [CLI Reference](/docs/reference/cli-reference/)):
+A few useful flags (full reference in [Configuration](/docs/admin/configuration/) and [CLI Reference](/docs/reference/cli-reference/)):
 
 | Flag | Purpose | Default |
 | --- | --- | --- |
@@ -52,9 +56,13 @@ A few useful flags (full reference in [Configuration](/docs/operating/configurat
 | `-log-level` | `debug`, `info`, `warn`, `error` | `info` |
 | `-config` | Path to the config file | `~/.config/leapmux/solo/solo.yaml` |
 
-> **Warning:** Solo mode trusts every request as the admin. If you change `-listen` to a non-loopback address, anyone who can reach that port has full admin access without credentials. For how to expose solo mode safely, see [Security & Threat Model](/docs/operating/security/).
+{{< callout type="warning" >}}
+Solo mode trusts every request as the admin. If you change `-listen` to a non-loopback address, anyone who can reach that port has full admin access without credentials. For how to expose solo mode safely, see [Security & Threat Model](/docs/admin/security/).
+{{< /callout >}}
 
-> **Tip:** `leapmux solo` writes its database and keys under `~/.config/leapmux/solo`, so your workspaces and sessions persist across restarts.
+{{< callout >}}
+`leapmux solo` writes its database and keys under `~/.config/leapmux/solo`, so your workspaces and sessions persist across restarts.
+{{< /callout >}}
 
 ## The walkthrough
 
@@ -64,7 +72,7 @@ Once the app or browser tab is open, you'll see the LeapMux UI. The rest of this
 
 The window has a **titlebar** across the top, a **sidebar** down each side, and the **tiling area** in the middle:
 
-- **Titlebar** — the **app menu** (account and app controls) is on the left; **"Open in…"** (open the working directory in an external editor) and the **left/right sidebar toggles** are on the right.
+- **Titlebar** — the **app menu** (account and app controls) is on the left; **"Open in …"** (open the working directory in an external editor) and the **left/right sidebar toggles** are on the right.
 - **Left sidebar** — your **workspaces**, grouped into **In progress**, any custom sections, and **Archived**, plus a **Workers** section. Each workspace expands into a tree of its open tabs, grouped by **Repo** then **Branch**.
 - **Tiling area** — the center, where tabs (agents, terminals, file viewers) are laid out under a **tab bar**; tiles can be split, gridded, and resized (see [Tabs & Layout](/docs/using/tabs-and-layout/)). For an agent, the **input area** (message composer) sits at the bottom.
 - **Right sidebar** — the **Files** browser for the active tab (see [File Browser](/docs/using/file-browser/)).
@@ -73,7 +81,7 @@ The window has a **titlebar** across the top, a **sidebar** down each side, and 
 
 ```text
 ┌─────────────────────────────────────────────────────────────────┐
-│ App menu                   Titlebar         Open in… · sidebars │
+│ App menu                   Titlebar       Open in … · sidebars │
 ├──────────────┬───────────────────────────────┬──────────────────┤
 │              │            Tab bar            │                  │
 │              ├───────────────────────────────┤                  │
@@ -85,7 +93,9 @@ The window has a **titlebar** across the top, a **sidebar** down each side, and 
 └──────────────┴───────────────────────────────┴──────────────────┘
 ```
 
-> **Note:** The **"Open in…"** button is only available in the desktop app running in solo mode — it launches an editor on your local machine, which only applies when the files are local. Everything else is identical in the browser: the web app renders the same titlebar, sidebars, and tiling area inside the browser tab, just with the browser's own chrome around the page.
+{{< callout type="info" >}}
+The **"Open in …"** button is only available in the desktop app running in solo mode. It launches an editor on your local machine, which only applies when the files are local. Everything else is identical in the browser: the web app renders the same titlebar, sidebars, and tiling area inside the browser tab.
+{{< /callout >}}
 
 ### 2. Create or open a workspace
 
@@ -112,20 +122,22 @@ If you already have a workspace open and want another agent in it, open the tab 
 
 Click **"Create"** (it shows **"Creating..."** while the agent starts).
 
-> **Note:** The New agent dialog does **not** include model, effort, or permission-mode fields. A new agent starts with the provider's default model, effort, and permission mode. You change all of these mid-session from the composer's status-bar chips or its **[+]** menu. See [Coding Agents](/docs/using/coding-agents/) for the full settings reference.
+{{< callout type="info" >}}
+The New agent dialog does **not** include model, effort, or permission-mode fields. A new agent starts with the provider's default model, effort, and permission mode. You change all of these mid-session from the composer's status-bar chips or its **[+]** menu. See [Coding Agents](/docs/using/coding-agents/) for the full settings reference.
+{{< /callout >}}
 
 ### 4. (Optional) Choose model and effort after the agent starts
 
-Once the agent is running, the status bar under the composer shows one chip per axis: branch, model, effort, and mode. Click a chip to pick a different **Model**, an **Effort** tier, or a **Permission Mode**. The composer's **[+]** menu holds every axis, including the per-provider options that have no chip, and it stays available when you hide the status bar. Most changes apply live; a change that the provider can't apply to the running process (typically switching effort back to **Auto**) restarts the agent. Details and the per-provider option matrix are in [Coding Agents](/docs/using/coding-agents/).
+Once the agent is running, the status bar under the composer shows one chip per axis: branch, model, effort, and mode. Click a chip to pick a different **Model**, an **Effort** tier, or a **Permission Mode**. The composer's **[+]** menu holds every axis, including the per-provider options that have no chip. It stays available when you hide the status bar. Most changes apply live; a change that the provider can't apply to the running process (typically switching effort back to **Auto**) restarts the agent. Details and the per-provider option matrix are in [Coding Agents](/docs/using/coding-agents/).
 
 ### 5. (Optional) Work in a branch or worktree
 
-The **Git options** panel (header **"Git options"**) lets you decide where the agent runs relative to git. For your first session, two modes cover the common cases:
+The **Git options** panel lets you decide where the agent runs relative to git. For your first session, two modes cover the common cases:
 
 - **Use current state** — run against the working directory as-is. This is the default.
-- **Create new worktree** — spin up a fresh linked git worktree on its own branch so this agent works in isolation.
+- **Create new worktree** — create a fresh linked git worktree on its own branch so this agent works in isolation.
 
-Worktrees keep each agent's changes on their own branch and directory, so several agents can work on the same repo at once without stepping on each other. The full set of modes, the worktree path layout, and branch operations — switching, pushing (**"Push"** / **"Commit and Push"**), and deletion — are covered in [Worktrees & Branches](/docs/using/worktrees-and-branches/).
+Worktrees keep each agent's changes on their own branch and directory, so several agents can work on the same repo at once without affecting each other's changes. The full set of modes, the worktree path layout, and branch operations — switching, pushing (**"Push"** / **"Commit and Push"**), and deletion — are covered in [Worktrees & Branches](/docs/using/worktrees-and-branches/).
 
 ### 6. Send your first message
 
@@ -154,7 +166,9 @@ To get a shell next to your agent, open the tab bar's add menu and choose **"New
 
 You can split the tile so the agent and terminal sit side by side, or float the terminal as a separate window. Tiling, splitting, and floating are covered in [Tabs & Layout](/docs/using/tabs-and-layout/); terminal behavior and persistence in [Terminals](/docs/using/terminals/).
 
-> **Tip:** Your workspace, tabs, and agent sessions persist across restarts — close the browser tab or quit the desktop app, relaunch, and they come back. Terminals come back too, showing their last screen; if the Worker was restarted, press **Enter** in a terminal to start its shell again.
+{{< callout >}}
+Your workspace, tabs, and agent sessions persist across restarts — close the browser tab or quit the desktop app, relaunch, and they come back. Terminals come back too, showing their last screen; if the Worker was restarted, press **Enter** in a terminal to start its shell again.
+{{< /callout >}}
 
 ## Where to go next
 
@@ -168,4 +182,4 @@ You now have a working agent and a terminal. From here:
 - [Terminals](/docs/using/terminals/) — shell selection, persistence, and remote terminals.
 - [File Browser](/docs/using/file-browser/) — the file tree, git status, and diffs.
 - [Keyboard Shortcuts](/docs/using/keyboard-shortcuts/) — speed up everything above.
-- [Running LeapMux](/docs/operating/running-leapmux/) — move beyond solo mode to a shared Hub and remote Workers.
+- [Running LeapMux](/docs/admin/running-leapmux/) — move beyond solo mode to a shared Hub and remote Workers.

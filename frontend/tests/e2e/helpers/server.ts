@@ -2,7 +2,16 @@ import type { AddressInfo } from 'node:net'
 import type { E2EGlobalState } from '../global-setup'
 import { readFileSync } from 'node:fs'
 import { createServer } from 'node:net'
+import { join } from 'node:path'
 import process from 'node:process'
+
+// hubDataDir states the dev-mode data-dir layout: the fixture root holds
+// the hub's database under a `hub` subdirectory. One spelling, because the
+// specs and fixtures each re-derived it and the layout change nobody
+// greps for is the one written four ways.
+export function hubDataDir(dataDir: string): string {
+  return join(dataDir, 'hub')
+}
 
 // ──────────────────────────────────────────────
 // Global state (read from file written by global-setup)

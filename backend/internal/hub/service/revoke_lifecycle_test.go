@@ -184,7 +184,7 @@ func TestAdminUserService_RevokeDelegationTokenClosesThatBearer(t *testing.T) {
 }
 
 // TestAdminUserService_RevokeUserSessionsReportsTheCommittedGeneration pins
-// the user-wide path of the OTHER verb that runs revokeEveryUserCredential.
+// the user-wide path of the OTHER verb that runs RevokeCredentialsAfterRotation.
 //
 // The epoch must be the one the transaction committed, read inside it. A
 // post-commit re-read looks identical on a quiet hub and drifts under a

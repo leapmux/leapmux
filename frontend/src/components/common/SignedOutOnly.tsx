@@ -8,8 +8,8 @@ import { isSoloMode } from '~/lib/systemInfo'
 import { centeredFull, pageCard } from '~/styles/shared.css'
 
 /**
- * Sole gate on the credential pages: `/login`, `/signup`, `/forgot-password`,
- * `/reset-password` and `/setup`. It is the mirror of AuthGuard, which guards
+ * Sole gate on the credential pages: `/login`, `/signup`, `/recover-account`,
+ * `/recover-account/complete` and `/setup`. It is the mirror of AuthGuard, which guards
  * the authenticated app, and it exists because the credential pages had NO
  * such gate at all.
  *
@@ -17,9 +17,9 @@ import { centeredFull, pageCard } from '~/styles/shared.css'
  *
  * A SOLO hub serves no credential endpoint at all: it authenticates every
  * request as the synthetic solo user, so there is nothing to sign in to, no
- * account to create, and no password to reset. Each page used to spell that
- * rule out, and it reached two of the five, so `/forgot-password`,
- * `/reset-password` and `/setup` each offered a form the hub answers nothing
+ * account to create, and no account to recover. Each page used to spell that
+ * rule out, and it reached two of the five, so `/recover-account`,
+ * `/recover-account/complete` and `/setup` each offered a form the hub answers nothing
  * for. It OUTRANKS `whenSignedIn`: an `explain` panel that offers to sign out
  * is the wrong answer on a hub where signing out is impossible.
  *
@@ -30,7 +30,7 @@ import { centeredFull, pageCard } from '~/styles/shared.css'
  * of them. Two of those were more than untidy: `/signup` consulted the hub's
  * signup setting and nothing else, so a signed-in user could create a SECOND
  * account and the page then swapped their session to it without a word, and
- * `/reset-password?token=...` spent the token and rotated a password with no
+ * `/recover-account/complete?token=...` spent the token and set a password with no
  * notion of who was signed in. The remedy a signed-in user actually wants for
  * all of them is Preferences -> Account.
  *
@@ -46,11 +46,12 @@ import { centeredFull, pageCard } from '~/styles/shared.css'
  * target passes safeRedirect and a hub-served address gets the full-document
  * assign it needs.
  *
- * `whenSignedIn` picks what a signed-in ARRIVAL gets, and `/reset-password`
+ * `whenSignedIn` picks what a signed-in ARRIVAL gets, and
+ * `/recover-account/complete`
  * is the one page that must not take the default. Four of the five carry
  * nothing: the visitor asked for a form, they do not need it, and the app is
  * where they wanted to go -- often through the `?redirect=` they arrived
- * with. A reset link carries a SINGLE-USE token in its address and no
+ * with. A recovery link carries a SINGLE-USE token in its address and no
  * redirect, so a silent bounce spends nothing and explains nothing, and the
  * `replace` also takes the tokened address out of that tab's history. This
  * gate must tell that user, and give them the one control that helps.
@@ -149,7 +150,7 @@ export const SignedOutOnly: ParentComponent<{
             <div class={pageCard} data-testid="signed-out-only-explain">
               <h1>You are already signed in</h1>
               <p>
-                This link resets the password of the account it was sent to,
+                This link recovers the account it was mailed to,
                 and this browser is signed in as
                 {' '}
                 <strong>{auth.user()?.username}</strong>

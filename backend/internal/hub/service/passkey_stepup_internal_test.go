@@ -382,7 +382,8 @@ func TestIssuePendingEmailVerificationFailedSendKeepsAddressDropsCode(t *testing
 	st := newStepUpTestStore(t)
 	user := stepUpUser(t, st, true)
 
-	sent, err := issuePendingEmailVerification(context.Background(), st, failingSender{}, mail.Renderer{}, user.ID, "retry@example.com", time.Now())
+	// A 10s failure window, the setting's default.
+	sent, _, err := issuePendingEmailVerification(context.Background(), st, failingSender{}, mail.Renderer{}, user.ID, "retry@example.com", time.Now, 10*time.Second)
 	require.NoError(t, err)
 	assert.False(t, sent)
 
@@ -392,12 +393,67 @@ func TestIssuePendingEmailVerificationFailedSendKeepsAddressDropsCode(t *testing
 		"the address must survive a failed send: it is the only record of what to re-send to")
 	assert.Empty(t, after.PendingEmailToken, "an undelivered code must not stay live")
 	assert.Nil(t, after.PendingEmailExpiresAt,
-		"no expiry means no armed cooldown, so the retry the failure invites is not blocked")
+		"no expiry means the dropped code cannot be verified")
+	require.NotNil(t, after.PendingEmailUnblockedAt,
+		"the clear arms the failure window, so the gate and the reported countdown agree")
+	// The deadline is the failure window ahead of the failure: the reported
+	// countdown reads 10s from now, not the full 60 -- the phantom
+	// full-minute cooldown was the bug this shape replaced.
+	assert.WithinDuration(t, time.Now().Add(10*time.Second), *after.PendingEmailUnblockedAt, 2*time.Second,
+		"the deadline leaves exactly the failure window, not a full cooldown")
 
-	// The dropped code means an immediate retry is not cooldown-blocked.
-	sent2, err2 := issuePendingEmailVerification(context.Background(), st, failingSender{}, mail.Renderer{}, user.ID, "retry@example.com", time.Now())
-	require.NoError(t, err2)
+	// The immediate retry is refused for the window: a retry that no window
+	// holds back is a mint-send-clear loop that costs the relay one SMTP
+	// transaction per request.
+	sent2, _, err2 := issuePendingEmailVerification(context.Background(), st, failingSender{}, mail.Renderer{}, user.ID, "retry@example.com", time.Now, 10*time.Second)
+	require.ErrorIs(t, err2, ErrVerificationCooldown)
 	assert.False(t, sent2)
+
+	// Once the window elapses the retry lands again: advance the clock past
+	// it and the mint gate admits the stamped row. (A disabled window on a
+	// LATER call cannot shrink a stamp an earlier failure already wrote --
+	// the knob applies when the clear stamps, not when the gate reads.)
+	future := time.Now().Add(15 * time.Second)
+	sent3, _, err3 := issuePendingEmailVerification(context.Background(), st, failingSender{}, mail.Renderer{}, user.ID, "retry@example.com", func() time.Time { return future }, 10*time.Second)
+	require.NoError(t, err3)
+	assert.False(t, sent3)
+}
+
+// The failure stamp must read the clock AT the failure, never before the
+// SMTP dial: a relay that stalls then fails spends the dial inside the
+// window, and a stamp derived from the pre-dial read leaves
+// max(0, window - dial) of blockade -- zero for a dial that outlives the
+// window. The advancing clock simulates the dial: the mint reads T, the
+// failure stamp reads T+20s.
+func TestIssuePendingEmailVerificationSlowFailureKeepsTheWindow(t *testing.T) {
+	t.Parallel()
+	st := newStepUpTestStore(t)
+	user := stepUpUser(t, st, true)
+
+	mintAt := time.Now().UTC().Truncate(time.Second)
+	failAt := mintAt.Add(20 * time.Second) // the relay's dial before it fails
+	reads := 0
+	clock := func() time.Time {
+		defer func() { reads++ }()
+		if reads == 0 {
+			return mintAt
+		}
+		return failAt
+	}
+
+	sent, nextResend, err := issuePendingEmailVerification(context.Background(), st, failingSender{}, mail.Renderer{}, user.ID, "slow@example.com", clock, 10*time.Second)
+	require.NoError(t, err)
+	assert.False(t, sent)
+	require.NotNil(t, nextResend, "a failed send reports the failure window it leaves")
+	assert.WithinDuration(t, failAt.Add(10*time.Second), *nextResend, time.Second,
+		"the reported window runs the failure cooldown from the FAILURE, not from the dial start")
+
+	// The gate agrees: a retry 5s after the failure is still inside the
+	// 10s window, although the dial already spent 20s.
+	retry := failAt.Add(5 * time.Second)
+	_, _, err = issuePendingEmailVerification(context.Background(), st, failingSender{}, mail.Renderer{}, user.ID, "slow@example.com", func() time.Time { return retry }, 10*time.Second)
+	assert.ErrorIs(t, err, ErrVerificationCooldown,
+		"a slow failure must leave the window; a pre-dial stamp would leave none")
 }
 
 // The regression this pair exists for: a sign-up that requires
@@ -414,7 +470,7 @@ func TestResendAfterFailedSendStillFindsTheAddress(t *testing.T) {
 		ID: user.ID, Email: "", EmailVerified: false,
 	}))
 
-	_, err := issuePendingEmailVerification(context.Background(), st, failingSender{}, mail.Renderer{}, user.ID, "signup@example.com", time.Now())
+	_, _, err := issuePendingEmailVerification(context.Background(), st, failingSender{}, mail.Renderer{}, user.ID, "signup@example.com", time.Now, 10*time.Second)
 	require.NoError(t, err)
 
 	after, err := st.Users().GetByID(context.Background(), user.ID)

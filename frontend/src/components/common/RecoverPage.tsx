@@ -5,12 +5,13 @@ import { authClient } from '~/api/clients'
 import { actionsFooter } from '~/components/common/actionsFooter.css'
 import { CaptchaSection } from '~/components/common/CaptchaSection'
 import { Spinner } from '~/components/common/Spinner'
+import { CAPTCHA_ACTION } from '~/generated/contracts/captcha'
 import { createCaptchaForm } from '~/lib/captchaForm'
 import { formatErrorMessage } from '~/lib/errors'
 import { errorText, pageCard, successText } from '~/styles/shared.css'
 import * as styles from './LoginPage.css'
 
-export const ForgotPasswordPage: Component = () => {
+export const RecoverPage: Component = () => {
   const [identifier, setIdentifier] = createSignal('')
   const [submitting, setSubmitting] = createSignal(false)
   const [error, setError] = createSignal<string | null>(null)
@@ -24,7 +25,7 @@ export const ForgotPasswordPage: Component = () => {
     setSubmitting(true)
     setError(null)
     try {
-      await authClient.requestPasswordReset({
+      await authClient.requestAccountRecovery({
         identifier: identifier().trim(),
         ...captcha.fields(),
       })
@@ -40,19 +41,19 @@ export const ForgotPasswordPage: Component = () => {
   return (
     <div class={styles.container}>
       <div class={pageCard}>
-        <h1>Reset password</h1>
+        <h1>Recover your account</h1>
         <Show
           when={!submitted()}
           fallback={(
             <div class="vstack gap-4">
               <p class={successText}>
-                If an account with that email or username exists, we sent a reset link.
+                If an account with that email or username exists, we sent it a recovery link.
               </p>
               <A href="/login">Back to login</A>
             </div>
           )}
         >
-          <p>Enter your email or username and we will send a reset link if an account exists.</p>
+          <p>Lost your password, passkey, or provider? Enter your email or username and we will send a recovery link if an account exists.</p>
           <form class="vstack gap-4" onSubmit={handleSubmit}>
             <label>
               Email or username
@@ -64,14 +65,14 @@ export const ForgotPasswordPage: Component = () => {
                 required
               />
             </label>
-            <CaptchaSection action="password_reset" captcha={captcha} />
+            <CaptchaSection action={CAPTCHA_ACTION.accountRecovery} captcha={captcha} />
             <Show when={error()}>
               <div class={errorText}>{error()}</div>
             </Show>
             <div class={actionsFooter}>
               <button type="submit" disabled={submitting() || !identifier().trim() || captcha.blocksSubmit()}>
                 <Show when={submitting()}><Spinner /></Show>
-                {submitting() ? 'Sending…' : 'Send reset link'}
+                {submitting() ? 'Sending…' : 'Send recovery link'}
               </button>
             </div>
           </form>

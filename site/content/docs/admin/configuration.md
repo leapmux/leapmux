@@ -5,11 +5,13 @@ type: docs
 weight: 2
 ---
 
-This chapter is the complete reference for configuring the LeapMux **Hub** and **Worker** services: how settings are layered and resolved, where config files live, every config key with its default and meaning, the supported storage backends, listen-address formats, encryption mode, and the timeout/limit knobs.
+This chapter is the complete configuration reference for the LeapMux **Hub** and **Worker** services. It covers how settings are layered and resolved, where config files live, every config key with its default and meaning, the supported storage backends, listen-address formats, encryption mode, and the timeout/limit knobs.
 
-For *how to launch* each mode (solo, hub, worker, dev) and what each is for, see [Running LeapMux](/docs/operating/running-leapmux/). For key management, encryption at rest, and database operations, see [Encryption & Data](/docs/operating/encryption-and-data/).
+For *how to launch* each mode (solo, hub, worker, dev) and what each is for, see [Running LeapMux](/docs/admin/running-leapmux/). For key management, encryption at rest, and database operations, see [Encryption & Data](/docs/admin/encryption-and-data/).
 
-> **Note:** Everything here applies to the long-running daemons. `solo` and `dev` modes reuse the Hub's configuration loader with a restricted flag set; the differences are called out where relevant. The desktop app, the `leapmux control` CLI, and the `leapmux recover` CLI are configured separately — see [Running LeapMux](/docs/operating/running-leapmux/), [Control CLI](/docs/operating/control-cli/), and [Recovery](/docs/operating/recover/).
+{{< callout type="info" >}}
+Everything here applies to the long-running daemons. `solo` and `dev` modes reuse the Hub's configuration loader with a restricted flag set; the differences are called out where relevant. The desktop app, the `leapmux control` CLI, and the `leapmux recover` CLI are configured separately — see [Running LeapMux](/docs/admin/running-leapmux/), [Control CLI](/docs/using/control-cli/), and [Recovery](/docs/admin/recover/).
+{{< /callout >}}
 
 ## Configuration precedence
 
@@ -46,7 +48,9 @@ built-in defaults  <  YAML config file  <  environment variables  <  CLI flags y
             └───────────────────────────────────────────┘  │
 ```
 
-> **Tip:** Because only *explicitly passed* flags override lower layers, you can set a baseline in `hub.yaml`, override per-environment values with `LEAPMUX_HUB_*` env vars in your deployment, and still drop in a one-off `--log-level debug` on the command line for a single run.
+{{< callout >}}
+Because only *explicitly passed* flags override lower layers, you can set a baseline in `hub.yaml`, override per-environment values with `LEAPMUX_HUB_*` env vars in your deployment, and still drop in a one-off `--log-level debug` on the command line for a single run.
+{{< /callout >}}
 
 ## Config file locations
 
@@ -75,7 +79,9 @@ The `data_dir` setting (`--data-dir`, default `.`) is where the SQLite database,
 
 So with no config file and no `--data-dir`, the Hub's data dir is `~/.config/leapmux/hub`. The data directory is created with mode `0750` at startup.
 
-> **Note:** In `solo` and `dev` modes a single `data_dir` is split in two: the in-process Hub uses `<data_dir>/hub` and the in-process Worker uses `<data_dir>/worker`.
+{{< callout type="info" >}}
+In `solo` and `dev` modes a single `data_dir` is split in two: the in-process Hub uses `<data_dir>/hub` and the in-process Worker uses `<data_dir>/worker`.
+{{< /callout >}}
 
 ## Environment variable mapping
 
@@ -95,7 +101,9 @@ This means flat, top-level keys map cleanly:
 | `LEAPMUX_WORKER_HUB`                | `hub`                  |
 | `LEAPMUX_WORKER_ENCRYPTION_MODE`   | `encryption_mode`      |
 
-> **Warning:** Nested **storage** keys live under dotted paths (`storage.type`, `storage.postgres.dsn`, `storage.sqlite.path`, …). Because the env mapping does not convert underscores to dots, you **cannot** reliably set storage settings via simple env vars. Configure storage through the **YAML config file** or the dedicated **CLI flags** instead (for example `--storage-type postgres --storage-postgres-dsn ...`).
+{{< callout type="warning" >}}
+Nested **storage** keys live under dotted paths (`storage.type`, `storage.postgres.dsn`, `storage.sqlite.path`, …). Because the env mapping does not convert underscores to dots, you **cannot** reliably set storage settings via simple env vars. Configure storage through the **YAML config file** or the dedicated **CLI flags** instead (for example `--storage-type postgres --storage-postgres-dsn ...`).
+{{< /callout >}}
 
 ```bash
 # Flat keys work cleanly as env vars:
@@ -149,7 +157,9 @@ Defaults differ by mode:
 | `dev`  | `:4327`              | All interfaces.                                         |
 | `solo` | `127.0.0.1:4327`     | Loopback only; every request is auto-authenticated as admin. |
 
-> **Warning:** In solo mode every request is auto-authenticated as the admin. If you bind it to a non-loopback address, anyone who can reach the port has full admin access without credentials, and the Hub logs a warning to that effect. Restrict access externally (firewall, Tailscale/WireGuard, SSH tunnel) or run `leapmux hub` for real authentication.
+{{< callout type="warning" >}}
+In solo mode every request is auto-authenticated as the admin. If you bind it to a non-loopback address, anyone who can reach the port has full admin access without credentials, and the Hub logs a warning to that effect. Restrict access externally (firewall, Tailscale/WireGuard, SSH tunnel) or run `leapmux hub` for real authentication.
+{{< /callout >}}
 
 ### Local IPC listen (`local_listen`)
 
@@ -212,6 +222,7 @@ Changes fall into two classes, shown by `settings list`:
 | `smtp` | `{host, port, username, from_address, tls_mode}` + secret `{password}` | disabled | hot |
 | `timeouts` | `{api_seconds, agent_startup_seconds, worktree_create_seconds}` | 10 / 300 / 60 | hot |
 | `limits` | `{max_connections_per_user, max_workers_per_user}` | 32 / 64 | hot (`0` = unlimited) |
+| `mail_limits` | `{failure_cooldown_seconds, recipient_max, recipient_window_seconds}` | 10 / 10 / 3600 | hot (`recipient_max` `0` = unlimited) |
 | `max_message_size_bytes` | integer | `16777216` (16 MiB) | restart (64 KiB–64 MiB) |
 | `queue_budget` | `{relay_bytes, worker_bytes, userevents_bytes}` | `0` = auto-size | restart |
 | `open_app_registration` | boolean | `false` | hot |
@@ -221,19 +232,22 @@ Solo mode omits the settings a single-user Hub has no use for, from `settings li
 
 | Omitted in solo | Because |
 | --- | --- |
-| `signup_enabled`, `smtp` | Solo has no sign-up and no outbound mail. |
+| `signup_enabled` | Solo has no sign-up. |
 | `session_duration_seconds`, `secure_cookies` | Solo has no login, so there is no session and no cookie. |
-| `smtp` | Solo has nowhere to send mail. |
-| `captcha.*` | Solo has no sign-up and no login to protect. |
-| `rate_limit.elevation` | Keyed by USER, and solo has one. |
+| `smtp` | Solo has no sign-up and no outbound mail. |
+| `captcha.*` | Solo has no sign-up, no sign-in, and no other captcha-protected surface. |
+| `rate_limit.elevation`, `rate_limit.email_change` | Keyed by USER, and solo has one; solo also refuses email changes outright. |
+| `mail_limits` | Solo sends no mail: no relay, no recipient to cap. |
 
-`public_url` stays: it sets the URL in the startup banner, and the `--hub` address you give a remote Worker. `rate_limit.oauth_anonymous` stays too, and for the reason the omissions above give: it is keyed by client ADDRESS on endpoints a solo Hub also serves. `open_app_registration` stays because a solo Hub authorizes apps like any other — see [App Authorization](/docs/operating/app-authorization/).
+`public_url` stays: it sets the URL in the startup banner, and the `--hub` address you give a remote Worker. `rate_limit.oauth_anonymous` stays too, and for the reason the omissions above give: it is keyed by client ADDRESS on endpoints a solo Hub also serves. `open_app_registration` stays because a solo Hub authorizes apps like any other — see [App Authorization](/docs/admin/app-authorization/).
 
-See [Accounts & Authentication](/docs/using/accounts/) for sign-up, passkeys, verification, and password-reset flows, and [Sign-in Providers](/docs/operating/sign-in-providers/) for OAuth/OIDC.
+See [Accounts & Authentication](/docs/using/accounts/) for sign-up, passkeys, verification, and account-recovery flows, and [Sign-in Providers](/docs/admin/sign-in-providers/) for OAuth/OIDC.
 
-> **Note:** Email verification is not a separate setting. Once the `smtp` block is fully configured (`host` **and** `from_address`), the hub requires verification for new non-admin sign-ups and exposes forgot-password / worker registration email features. Removing or disabling SMTP turns verification off at runtime.
->
-> **SMTP-enable transition:** users who signed up while SMTP was off keep `email_verified=false` in the database. When an operator later configures SMTP, the Hub requires those accounts to verify on the next request until they do so via `/verify-email`. You need no data migration. Administrators stay exempt at the sign-in gate, but their address is stored unverified like anybody else's — the flag records only what somebody confirmed, and an unverified address still cannot receive a password-reset link.
+{{< callout type="info" >}}
+Email verification is not a separate setting. Once the `smtp` block is fully configured (`host` **and** `from_address`), the hub requires verification for new non-admin sign-ups and exposes account recovery / worker registration email features. Removing or disabling SMTP turns verification off at runtime.
+
+**SMTP-enable transition:** users who signed up while SMTP was off keep `email_verified=false` in the database. When an administrator later configures SMTP, the Hub requires those accounts to verify on the next request until they do so via `/verify-email`. You need no data migration. Administrators stay exempt at the sign-in gate, but their address is stored unverified like anybody else's — the flag records only what somebody confirmed, and an unverified address still cannot receive a recovery link.
+{{< /callout >}}
 
 ### Bot protection (captcha & rate limits)
 
@@ -246,14 +260,16 @@ leapmux control admin captcha set --provider turnstile --site-key 0x4AAAA... --s
 leapmux control admin rate-limit list
 ```
 
-With no configuration at all: captcha is **enabled** with the built-in ALTCHA provider at `PBKDF2/SHA-256` cost `10000` (challenges expire after 20 minutes), and `elevation` — failed attempts to verify your identity for a sensitive account change, see [Session elevation](/docs/operating/security/#session-elevation) — is limited to 5 failed attempts per 15 minutes per user. A second limit, `oauth_anonymous`, caps the authorization server's three anonymous endpoints per client address; see [App Authorization](/docs/operating/app-authorization/). Solo mode enforces no captcha and no per-user limit, but it does enforce `oauth_anonymous`. ALTCHA runs only where a browser can solve it and somebody other than you can reach the Hub — see **When ALTCHA runs** below.
+With no configuration at all: captcha is **enabled** with the built-in ALTCHA provider at `PBKDF2/SHA-256` cost `10000` (challenges expire after 20 minutes), and `elevation` — failed attempts to verify your identity for a sensitive account change, see [Session elevation](/docs/admin/security/#session-elevation) — is limited to 5 failed attempts per 15 minutes per user. Two more caps guard the relay: `email_change` limits the requests to change an account email that reach the mail machinery (6 per 15 minutes per user — each one drove a mint and an SMTP attempt, a loop otherwise pays no captcha and guesses no secret, while the elevation prompt and validation refusals that precede the work cost nothing), and `mail_limits` caps how often the Hub mails one recipient address (10 per hour by default) plus how long a **failed** send blocks the next verification or recovery mail (10 seconds by default, and never more than the 60-second resend cooldown — one failed send must not block longer than a successful one). The per-recipient budget counts delivered mail: a send the relay refuses spends nothing. It folds plus-tagged addresses (`victim+1@`, `victim+2@`) onto the one inbox they share on every provider that honors tags, so a provider that treats `+` as a literal local-part character shares one budget between mailboxes that differ only in the tag.
 
-Selecting Google reCAPTCHA v3 or Cloudflare Turnstile needs its site key and its secret, because the Hub refuses a selected provider whose key pair is incomplete. Pass both in the same `captcha set` invocation, as the example above does, or store them first and select the provider after. The Preferences dialog's Bot Protection panel shows every provider's key fields at all times for the same reason: an operator fills a provider in, then switches to it.
+A second limit, `oauth_anonymous`, caps the authorization server's anonymous endpoints (`/oauth/device-authorization`, `/oauth/token`, `/oauth/revoke`, `/oauth/register`, `/oauth/step-up`, and the app icons) per client address; see [App Authorization](/docs/admin/app-authorization/). Solo mode enforces no captcha and no per-user limit, but it does enforce `oauth_anonymous`. ALTCHA runs only where a browser can solve it and somebody other than you can reach the Hub — see **When ALTCHA runs** below.
+
+Selecting Google reCAPTCHA v3 or Cloudflare Turnstile needs its site key and its secret, because the Hub refuses a selected provider whose key pair is incomplete. Pass both in the same `captcha set` invocation, as the example above does, or store them first and select the provider after. The Preferences dialog's Bot Protection panel shows every provider's key fields at all times for the same reason: an administrator fills a provider in, then switches to it.
 
 A few caveats before you change defaults:
 
-- **Captcha cost** is the per-derivation iteration count, and the browser performs ~256 derivations per solve — total work scales as ~256 × cost. Raising it multiplies bot cost and your users' wait time equally, so large values mostly punish humans. The challenge-issuing endpoint is itself unauthenticated and costs the Hub one HMAC per challenge (the solver does the expensive side), so issuance stays cheap even at high costs.
-- **External providers verify online and uncapped**: every login/signup attempt with a non-empty token makes one siteverify call to Google or Cloudflare with no per-client throttle, so scripted garbage tokens can spend the operator's siteverify quota. Disabling captcha removes that egress but leaves the unauthenticated procedures limited only by Argon2 cost and the honeypot. The built-in ALTCHA provider has no egress and self-throttles through the client-side proof-of-work.
+- **Captcha cost** is the per-derivation iteration count, and the browser performs ~256 derivations per solve — total work scales as ~256 × cost. Raising it multiplies bot cost and your users' wait time equally, so large values mostly punish humans. The challenge-issuing endpoint is itself unauthenticated and costs the Hub one HMAC per challenge (the solver does the expensive side). Issuance therefore stays cheap even at high costs.
+- **External providers verify online and uncapped**: every login/signup attempt with a non-empty token makes one siteverify call to Google or Cloudflare with no per-client throttle, so scripted garbage tokens can spend the administrator's siteverify quota. Disabling captcha removes that egress but leaves the unauthenticated procedures limited only by Argon2 cost and the honeypot. The built-in ALTCHA provider has no egress and self-throttles through the client-side proof-of-work.
 
 **When ALTCHA runs.** The Hub requires the built-in provider only where it can both work and matter. Two conditions, and both must hold:
 
@@ -265,9 +281,11 @@ The Hub checks both conditions against its own configuration, reading two settin
 1. `public_url`, when set. This is the browser-facing URL you published, and the setting to use behind a TLS-terminating reverse proxy. ALTCHA runs when that URL is a secure context and its host is not loopback.
 2. `secure_cookies`, when `public_url` is unset. It means the Hub itself is served over HTTPS, and a Hub with a certificate is a Hub somebody reaches.
 
-With neither setting the Hub serves plain HTTP, so an **unpublished Hub runs no ALTCHA** — including the first-run setup form. When ALTCHA is off, the Hub issues no challenge, and sign-in and sign-up skip verification, but the Hub does not write `captcha.enabled`: the stored setting keeps its value, so publishing the Hub restores protection with no admin re-enable. The honeypot check still runs. The gate never restricts reCAPTCHA v3 or Turnstile, which both work on plain HTTP pages.
+With neither setting the Hub serves plain HTTP, so an **unpublished Hub runs no ALTCHA** — including the first-run setup form. When ALTCHA is off, the Hub issues no challenge, and every protected form — sign-in, sign-up, account recovery, and email verification — skips the captcha check, but the Hub does not write `captcha.enabled`: the stored setting keeps its value, so publishing the Hub restores protection with no admin re-enable. The honeypot check still runs. The gate never restricts reCAPTCHA v3 or Turnstile, which both work on plain HTTP pages.
 
-**Set `public_url` on a Hub that browsers really reach by a LAN address or a hostname.** It is a recommendation, not a requirement, and rung 2 above says why: a Hub with `secure_cookies` set and no `public_url` already runs ALTCHA. What `public_url` adds is the deployment where the Hub itself speaks plain HTTP behind a TLS-terminating reverse proxy — there `secure_cookies` describes the Hub's own listener rather than the browser's page, and the published URL is the only setting that states what the browser sees. Set it to the URL your users type, and serve that URL over HTTPS. `public_url` is already what mail links, the CLI login endpoints, and passkey sign-in need on such a deployment. Publish a plain-HTTP LAN URL and the Hub keeps ALTCHA down by itself, because no browser there could solve a challenge.
+**Set `public_url` on a Hub that browsers really reach by a LAN address or a hostname.** It is a recommendation, not a requirement, and rung 2 above says why: a Hub with `secure_cookies` set and no `public_url` already runs ALTCHA. What `public_url` adds is the deployment where the Hub itself speaks plain HTTP behind a TLS-terminating reverse proxy — there `secure_cookies` describes the Hub's own listener rather than the browser's page, and the published URL is the only setting that states what the browser sees.
+
+Set it to the URL your users type, and serve that URL over HTTPS. `public_url` is already what mail links, the CLI login endpoints, and passkey sign-in need on such a deployment. Publish a plain-HTTP LAN URL and the Hub keeps ALTCHA down by itself, because no browser there could solve a challenge.
 
 **How you find out that the Hub disabled ALTCHA.** The Hub disables it silently to the browser — a message there would tell a bot which control is off — so it reports the change to its own log instead. When the stored `captcha.enabled` is `true` and the gate disables the widget, the Hub logs once at `WARN`:
 
@@ -277,11 +295,26 @@ WARN captcha is enabled in the settings but verifies nothing reason="the selecte
 
 It logs on the transition, not per request, so a busy Hub prints one line rather than one per sign-in. Set `public_url` (or `secure_cookies`) and the Hub logs `captcha enforcement restored: this hub publishes a secure browser address` at `INFO`. So a Hub whose settings read `captcha.enabled = true` while the browser shows no widget has one place to look for the reason.
 
-See [Captcha](/docs/operating/admin-cli/#captcha) and [Rate limits](/docs/operating/admin-cli/#rate-limits) in the Admin CLI chapter for the full flag reference.
+See [Captcha](/docs/admin/admin-cli/#captcha) and [Rate limits](/docs/admin/admin-cli/#rate-limits) in the Admin CLI chapter for the full flag reference.
+
+### Passkeys
+
+Passkeys have no switch to enable. A ceremony runs on a page only when two parties agree, and each can refuse:
+
+1. **The browser** exposes WebAuthn only in a secure context — HTTPS, or plain HTTP on a loopback address — and a browser without WebAuthn support refuses the same way. This half belongs to the browser; no Hub setting changes it, so serve the Hub over HTTPS wherever users reach it by a hostname.
+2. **The Hub** runs ceremonies only at the origins it publishes: `public_url` when set (scheme and host, no path), otherwise the TCP `listen` address — plus the loopback spellings (`localhost`, `127.0.0.1`, `[::1]`) when the bind serves loopback. The match is on the full origin: scheme, host, and port.
+
+A user who reaches the same Hub by an address outside that list — the LAN IP behind the reverse proxy, a tunnel host, a port that `public_url` does not name — can never run a ceremony. The sign-in and sign-up forms therefore **remove the Passkey option** outright: that refusal is identical for every visitor, so an option that can never work would only mislead. A browser-side refusal instead leaves the option in place, **disabled with the reason on it**, because it describes the reader's own machine and they can move. In **Preferences → Account**, either refusal disables **Add passkey** with the reason written on it.
+
+`public_url` is hot: setting it — or an administrator changing **Public base URL** under **Preferences → Administration → General** — flips passkey availability at once, with no restart and no page reload.
+
+For the sign-in and sign-up flows, see [Accounts & Authentication](/docs/using/accounts/#passkeys); for diagnosis, [Passkey sign-in fails or the authenticator never appears](/docs/reference/troubleshooting/#passkey-sign-in-fails-or-the-authenticator-never-appears).
 
 ### Outbound queue memory
 
-Every long-lived stream the Hub writes to — one per browser tab on `/ws/channel`, one per connected Worker, one per browser tab on `/ws/userevents` — buffers outbound frames, so that one slow reader cannot stall the others. The three fields of the `queue_budget` setting limit how much memory those buffers may hold, as one budget per connection kind: **channel relays**, **Worker streams**, and **user-event subscribers**. The split is deliberate, because the cheapest recovery differs by kind — a dropped relay or Worker connection simply reconnects, while a user-event subscriber can resynchronize from its cursor instead of being disconnected at all — so a backlog on one kind never costs the others.
+Every long-lived stream the Hub writes to — one per browser tab on `/ws/channel`, one per connected Worker, one per browser tab on `/ws/userevents` — buffers outbound frames, so that one slow reader cannot stall the others. The three fields of the `queue_budget` setting limit how much memory those buffers may hold, as one budget per connection kind: **channel relays**, **Worker streams**, and **user-event subscribers**.
+
+The split is deliberate, because the cheapest recovery differs by kind — a dropped relay or Worker connection simply reconnects, while a user-event subscriber can resynchronize from its cursor instead of being disconnected at all — so a backlog on one kind never costs the others.
 
 Left at `0` (the default), each budget is a share of the memory the process may use — four thirty-seconds for channel relays, two for Workers, two for user events, together a quarter, and never above 8 GiB. Channel relays get the largest share because they carry the bulk of the traffic. The Hub derives that memory figure from `GOMEMLIMIT` when set, otherwise the cgroup memory limit on Linux (which is what makes the default correct inside a container), otherwise total physical memory, and 512 MiB when none of these can be read. The basis and all three resolved figures are logged at startup, so a wrong basis is visible; a Linux host whose cgroup limit could not be read also logs a one-time warning.
 
@@ -293,11 +326,13 @@ leapmux control admin settings set queue_budget '{"relay_bytes":1073741824}'
 
 Three facts matter when you pick numbers:
 
-- **Each budget has a floor.** It must be able to hold one largest frame of its kind plus a small guaranteed working set per connection, and the Hub refuses to start on a configured value below it rather than failing at runtime. `max_message_size_bytes` does **not** move this floor: the Hub is a relay on that path and its queues only ever carry individual encrypted chunks, never a reassembled message.
+- **Each budget has a floor.** It must be able to hold one largest frame of its kind plus a small guaranteed working set per connection, and a configured value below it is rejected when you write it, rather than failing at runtime. `max_message_size_bytes` does **not** move this floor: the Hub is a relay on that path and its queues only ever carry individual encrypted chunks, never a reassembled message.
 - **A frame does not cost its wire size.** A user-event frame is charged at twice its encoded size, so size a budget against `leapmux_sendq_pool_used_bytes` — what the process really holds — not against observed network traffic.
 - **What the budgets do not cover.** They limit *queued* frames, not the moment the Hub builds a frame, so a reconnect storm on large accounts peaks above the budget for as long as those snapshots take to build.
 
-**When a budget runs out**, the Hub disconnects that budget's largest holder and the peer reconnects, reported as `pool_pressure`. User-event subscribers instead drop the frame they cannot fit and resynchronize; those drops are counted by `leapmux_userevents_frames_dropped_total`. The one *permanent* failure is an account whose opening user-events frame — the snapshot of its whole visible state — is larger than the entire `userevents_bytes` budget: such a connect is refused as final, the browser reports that the workspace exceeds the server's limit, and the fix is to raise that field. On the dropped-frames metric, `bound="capacity"` marks exactly this case, while a merely full budget is the transient `bound="bytes"` one that resolves itself as connections drain.
+**When a budget runs out**, the Hub disconnects that budget's largest holder and the peer reconnects, reported as `pool_pressure`. User-event subscribers instead drop the frame they cannot fit and resynchronize; those drops are counted by `leapmux_userevents_frames_dropped_total`.
+
+The one *permanent* failure is an account whose opening user-events frame — the snapshot of its whole visible state — is larger than the entire `userevents_bytes` budget: such a connect is refused as final, the browser reports that the workspace exceeds the server's limit, and the fix is to raise that field. On the dropped-frames metric, `bound="capacity"` marks exactly this case, while a merely full budget is the transient `bound="bytes"` one that resolves itself as connections drain.
 
 `leapmux_sendq_pool_overcommits_total` increments whenever the Hub granted a per-connection working set the budget had no room for. Sustained growth means the deployment has more connections of that kind than its budget can honour — raise the budget (or run more Hubs). What keeps the connection count from growing without limit in the first place is [`max_connections_per_user`](#connections-per-user).
 
@@ -318,7 +353,9 @@ And, unlabelled by pool:
 | --- | --- |
 | `leapmux_connections_refused_total{reason="too_many_connections"}` | Connections refused because a user was at [`max_connections_per_user`](#connections-per-user). Steady growth is either a client leaking sockets or a cap below the way your users actually work. |
 | `leapmux_connections_refused_total{reason="credential"}` | Connections refused because the credential expired or was revoked between authenticating and being served. |
-| `leapmux_userevents_frames_dropped_total{phase,bound}` | User-event frames a subscriber could not take. `bound="frames"` means the client was too far behind; `bound="bytes"` means the shared budget was full at that moment, which is the deployment's to fix; `bound="capacity"` means the frame was larger than the whole budget, which no occupancy would have admitted — only raising the budget clears it. `phase="park"` costs a snapshot instead of a delta, `phase="live"` costs a reconnect, and `phase="bootstrap"` refused the connect — with `bound="bytes"` the client retries, with `bound="capacity"` the Hub tells it to stop. |
+| `leapmux_userevents_frames_dropped_total{phase,bound}` | User-event frames a subscriber could not take. `bound="frames"` means the client was too far behind; `bound="bytes"` means the shared budget was full at that moment, which is the deployment's to fix; `bound="capacity"` means the frame was larger than the whole budget, which no occupancy would have admitted — only raising the budget clears it. |
+
+On that last metric, the `phase` label says what the drop cost: `phase="park"` a snapshot instead of a delta, `phase="live"` a reconnect, and `phase="bootstrap"` a refused connect — with `bound="bytes"` the client retries, with `bound="capacity"` the Hub tells it to stop.
 
 ### Solo and dev extras (worker-scoped)
 
@@ -330,7 +367,9 @@ And, unlabelled by pool:
 | `use_login_shell` | `true` | Wrap the bundled Worker's agent invocation in the user's login shell. |
 | `max_incomplete_chunked` | `0` | Maximum in-flight chunked sequences per channel for the bundled Worker (`0` = 4 default). |
 
-> **Note:** `max_incomplete_chunked` caps the bundled Worker's chunk-reassembly budget; a peer that exceeds it gets `RESOURCE_EXHAUSTED`. There is no Hub-side equivalent — the Hub admits only one in-flight chunked sequence per channel and direction, which is a stricter rule than any count, so the key is meaningless on `leapmux hub`. The standalone Worker sets the same limit through its own `max_incomplete_chunked` key (see [Worker configuration reference](#worker-configuration-reference)).
+{{< callout type="info" >}}
+`max_incomplete_chunked` caps the bundled Worker's chunk-reassembly budget; a peer that exceeds it gets `RESOURCE_EXHAUSTED`. There is no Hub-side equivalent — the Hub admits only one in-flight chunked sequence per channel and direction, which is a stricter rule than any count, so the key is meaningless on `leapmux hub`. The standalone Worker sets the same limit through its own `max_incomplete_chunked` key (see [Worker configuration reference](#worker-configuration-reference)).
+{{< /callout >}}
 
 ### Connections per user
 
@@ -340,11 +379,15 @@ And, unlabelled by pool:
 
 When a user is at the limit the Hub refuses the **newest** connection and everything already open keeps working; the refused tab says so and stops retrying, so the remedy is to close another tab and reload. Set the key to `0` to turn the cap off entirely. Refusals are counted in `leapmux_connections_refused_total{reason="too_many_connections"}` and logged with the user id and the limit — steady growth is either a client leaking sockets or a cap set below the way your users actually work.
 
-> **Note:** In solo and desktop mode *everything* authenticates as the single local user, so all of the above shares one allowance. It is generous enough that this is unlikely to bite, but it is the first key to raise if it does.
+{{< callout type="info" >}}
+In solo and desktop mode *everything* authenticates as the single local user, so all of the above shares one allowance. It is generous enough that this is unlikely to bite, but it is the first key to raise if it does.
+{{< /callout >}}
 
 ### Workers per user
 
-`max_workers_per_user` (default `64`) is the same limit for the Worker pool: a Worker's Connect stream draws on the Worker queue budget and carries the same guaranteed working set, but it is not a *lease*, so the connection cap does not see it. The limit applies at both **registration** and **connection** — a registered Worker and a live pool member are not the same thing, and counting only registrations would let an account cycle register and deregister to accumulate pool members. Either refusal returns a `resource_exhausted` error that names the key; the Hub counts it in `leapmux_worker_admissions_refused_total` (labelled `stage="register"` or `stage="connect"`) and logs it with the owner and the limit. The default is far past what an account plausibly runs; it exists so the pool whose eviction costs the most — dropping a Worker takes every user's channels on that machine — cannot be oversubscribed.
+`max_workers_per_user` (default `64`) is the same limit for the Worker pool: a Worker's Connect stream draws on the Worker queue budget and carries the same guaranteed working set, but it is not a *lease*, so the connection cap does not see it. The limit applies at both **registration** and **connection** — a registered Worker and a live pool member are not the same thing, and counting only registrations would let an account cycle register and deregister to accumulate pool members.
+
+Either refusal returns a `resource_exhausted` error that names the key; the Hub counts it in `leapmux_worker_admissions_refused_total` (labelled `stage="register"` or `stage="connect"`) and logs it with the owner and the limit. The default is far past what an account plausibly runs; it exists so the pool whose eviction costs the most — dropping a Worker takes every user's channels on that machine — cannot be oversubscribed.
 
 ### Idle connections
 
@@ -354,7 +397,7 @@ Both long-lived sockets are probed every 30 seconds. Without the probe, a peer t
 
 `encryption_key_path` (env `LEAPMUX_HUB_ENCRYPTION_KEY_PATH`, default `{data_dir}/encryption.key`) can only be set through the YAML file or an env var — there is no command-line flag. It specifies the encryption key ring file that the Hub needs before it can read the encrypted halves of its settings rows.
 
-See [Encryption & Data](/docs/operating/encryption-and-data/) for the encryption key ring, rotation, and what is encrypted at rest.
+See [Encryption & Data](/docs/admin/encryption-and-data/) for the encryption key ring, rotation, and what is encrypted at rest.
 
 ### Derived paths and behaviors
 
@@ -365,7 +408,7 @@ See [Encryption & Data](/docs/operating/encryption-and-data/) for the encryption
 
 ## Worker configuration reference
 
-Env prefix: `LEAPMUX_WORKER_`. A Worker connects to a Hub over a URL; it does not serve HTTP itself. See [Managing Workers](/docs/operating/managing-workers/) for registration and approval. Each key's CLI flag is `--` followed by the key with underscores replaced by hyphens (for example, `db_max_conns` → `--db-max-conns`).
+Env prefix: `LEAPMUX_WORKER_`. A Worker connects to a Hub over a URL; it does not serve HTTP itself. See [Managing Workers](/docs/admin/managing-workers/) for registration and approval. Each key's CLI flag is `--` followed by the key with underscores replaced by hyphens (for example, `db_max_conns` → `--db-max-conns`).
 
 ### Worker options
 
@@ -379,7 +422,9 @@ Env prefix: `LEAPMUX_WORKER_`. A Worker connects to a Hub over a URL; it does no
 | `encryption_mode` | `post-quantum` | E2EE mode: `classic` or `post-quantum`. |
 | `use_login_shell` | `true` | Wrap the agent invocation in the user's login shell. |
 
-> **Note:** `registration_key` is required on first run and is never persisted to disk. On subsequent runs you simply omit it — the saved credentials are reused. Do **not** pass it again to an already-registered Worker: the Worker refuses the key rather than ignoring it, so you cannot burn it by accident on a machine that is already configured. For the registration flow, see [Managing Workers](/docs/operating/managing-workers/).
+{{< callout type="info" >}}
+`registration_key` is required on first run and is never persisted to disk. On subsequent runs you simply omit it — the saved credentials are reused. Do **not** pass it again to an already-registered Worker: the Worker refuses the key rather than ignoring it, so you cannot burn it by accident on a machine that is already configured. For the registration flow, see [Managing Workers](/docs/admin/managing-workers/).
+{{< /callout >}}
 
 ### Timeout and limit options
 
@@ -404,9 +449,11 @@ The Worker keeps its own SQLite database (`<data_dir>/worker.db`) for transient 
 
 ### Worker state file
 
-After registration, a Worker persists its identity to `<data_dir>/state.json` (mode `0600`): its Worker ID, Hub auth token, who registered it, and its private E2EE keypair (auto-generated on first run). For the underlying key primitives, see [Encryption & Data](/docs/operating/encryption-and-data/) and [Security & Threat Model](/docs/operating/security/).
+After registration, a Worker persists its identity to `<data_dir>/state.json` (mode `0600`): its Worker ID, Hub auth token, and its private E2EE keypairs (auto-generated on first run). For the underlying key primitives, see [Encryption & Data](/docs/admin/encryption-and-data/) and [Security & Threat Model](/docs/admin/security/).
 
-> **Warning:** `state.json` holds the Worker's private E2EE keys and Hub auth token, and it is **not encrypted**. Treat it as a secret and back it up. Losing it forces re-registration with a new registration key and a new key identity.
+{{< callout type="warning" >}}
+`state.json` holds the Worker's private E2EE keys and Hub auth token, and it is **not encrypted**. Treat it as a secret and back it up. Losing it forces re-registration with a new registration key and a new key identity.
+{{< /callout >}}
 
 ### Encryption mode
 
@@ -417,7 +464,7 @@ The `encryption_mode` key (flag `--encryption-mode`, env `LEAPMUX_WORKER_ENCRYPT
 | `post-quantum` | Default. Aliases `pq`, `post_quantum`, and an empty value all map here.         |
 | `classic`      | Classical-only mode.                                                            |
 
-Any unrecognized value falls back to `post-quantum` (fail-safe). For what each mode protects and the underlying primitives, see [Security & Threat Model](/docs/operating/security/).
+Any unrecognized value falls back to `post-quantum` (fail-safe). For what each mode protects and the underlying primitives, see [Security & Threat Model](/docs/admin/security/).
 
 ## Storage backends
 
@@ -435,7 +482,9 @@ The Hub stores all relational data (users, workers, sessions, workspaces, tokens
 
 An unknown type is rejected at startup with `unsupported storage.type: "<type>" (valid: sqlite, postgres, mysql, cockroachdb, yugabytedb, tidb)`.
 
-> **Note:** Configure storage via the YAML file or the dedicated CLI flags, not env vars (see the warning under [Environment variable mapping](#environment-variable-mapping)). For backups, key/DB interplay, and the `leapmux recover db` / `leapmux recover encryption-key` commands, see [Encryption & Data](/docs/operating/encryption-and-data/).
+{{< callout type="info" >}}
+Configure storage via the YAML file or the dedicated CLI flags, not env vars (see the warning under [Environment variable mapping](#environment-variable-mapping)). For backups, key/DB interplay, and the `leapmux recover db` / `leapmux recover encryption-key` commands, see [Encryption & Data](/docs/admin/encryption-and-data/).
+{{< /callout >}}
 
 ### SQLite (default)
 
@@ -494,7 +543,9 @@ storage:
     health_check_period: 30s
 ```
 
-> **Tip:** `sslmode=disable` is fine for local testing but you should use `sslmode=require` (or stronger) for any networked database. CockroachDB and YugabyteDB use the same config block shape — just set `type: cockroachdb` / `type: yugabytedb` and fill in `storage.cockroachdb` / `storage.yugabytedb`.
+{{< callout >}}
+`sslmode=disable` is fine for local testing but you should use `sslmode=require` (or stronger) for any networked database. CockroachDB and YugabyteDB use the same config block shape — just set `type: cockroachdb` / `type: yugabytedb` and fill in `storage.cockroachdb` / `storage.yugabytedb`.
+{{< /callout >}}
 
 ### MySQL and TiDB
 
@@ -527,7 +578,9 @@ storage:
     conn_max_idle_time: 5m
 ```
 
-> **Warning:** MySQL and TiDB DSNs **must** include `parseTime=true`, or time columns will fail to decode. For TiDB, the store best-effort enables foreign-key support on connect (a no-op on real MySQL, which already enforces them).
+{{< callout type="warning" >}}
+MySQL and TiDB DSNs **must** include `parseTime=true`, or time columns will fail to decode. For TiDB, the store best-effort enables foreign-key support on connect (a no-op on real MySQL, which already enforces them).
+{{< /callout >}}
 
 ## Example configurations
 
@@ -591,16 +644,16 @@ leapmux worker
 
 Every mode supports the standard help tokens, and each mode honors `--version`:
 
-- `-h`, `-help`, `--help`, or `help` prints categorized usage to stdout.
+- `-h`, `-help`, or `--help` prints categorized usage to stdout. The bare `help` token works only at the top level (`leapmux help`).
 - `--version` (or `-version`) prints the build version and exits.
 
 The bare `version` subcommand is a **top-level** command (`leapmux version`), not a per-mode token. Passing it inside a mode — `leapmux hub version` — is rejected as an unexpected positional argument. LeapMux rejects an unexpected positional argument, identifies it, and points you at `--help`.
 
 ## Related chapters
 
-- [Running LeapMux](/docs/operating/running-leapmux/) — run modes, ports, data dirs, Docker, reverse proxy.
-- [Encryption & Data](/docs/operating/encryption-and-data/) — encryption key ring, rotation, DB migrations, backup/restore.
-- [Managing Workers](/docs/operating/managing-workers/) — registration keys, approval, Worker selection.
-- [Sign-in Providers](/docs/operating/sign-in-providers/) — configuring OAuth/OIDC as an operator.
-- [Security & Threat Model](/docs/operating/security/) — E2EE protocol, encryption modes, trust boundaries.
+- [Running LeapMux](/docs/admin/running-leapmux/) — run modes, ports, data dirs, Docker, reverse proxy.
+- [Encryption & Data](/docs/admin/encryption-and-data/) — encryption key ring, rotation, DB migrations, backup/restore.
+- [Managing Workers](/docs/admin/managing-workers/) — registration keys, approval, Worker selection.
+- [Sign-in Providers](/docs/admin/sign-in-providers/) — configuring OAuth/OIDC as an administrator.
+- [Security & Threat Model](/docs/admin/security/) — E2EE protocol, encryption modes, trust boundaries.
 - [CLI Reference](/docs/reference/cli-reference/) — consolidated command and flag cheat-sheet.

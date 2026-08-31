@@ -24,6 +24,7 @@ func TestHiddenInSoloIsADeliberatePerOperationAnswer(t *testing.T) {
 
 	expected := map[Operation]bool{
 		OpElevation:      true,
+		OpEmailChange:    true, // solo refuses email changes outright (rejectSolo)
 		OpOAuthAnonymous: false,
 	}
 	for _, op := range KnownOperations() {

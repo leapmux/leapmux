@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "captcha.schema.json",
+  "title": "captcha action vocabulary contract",
+  "description": "The action names the protected RPCs' captcha tokens are minted under. The generator checks the tokens are unique, use only lowercase alphanumerics and underscores (valid for both external providers), and stay within Turnstile's 32-character action cap.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["_readme", "actions"],
+  "properties": {
+    "_readme": { "type": "string", "minLength": 1 },
+    "actions": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": { "pattern": "^[a-z][A-Za-z0-9]*$" },
+      "additionalProperties": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$", "maxLength": 32 }
+    }
+  }
+}

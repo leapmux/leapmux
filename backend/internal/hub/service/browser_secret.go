@@ -9,13 +9,13 @@ import (
 // The hash for every secret the hub hands to ONE browser and then checks on
 // the way back.
 //
-// Three flows use it -- the emailed password-reset token, the OAuth
+// Three flows use it -- the emailed account-recovery token, the OAuth
 // flow-binding nonce, and the pending-signup nonce that carries that binding
 // across the hand-off -- so it belongs to none of them. It lived in
 // auth_passkey.go, which is the one flow that does NOT use it.
 
 // hashBrowserSecret hashes a secret the hub hands to a browser and then
-// stores only in hashed form: the emailed password-reset token, the OAuth
+// stores only in hashed form: the emailed account-recovery token, the OAuth
 // flow-binding nonce, and the pending-signup nonce that carries that binding
 // across the hand-off. A read of the row that holds the hash must not
 // reconstruct a value that completes the flow, so every such secret goes

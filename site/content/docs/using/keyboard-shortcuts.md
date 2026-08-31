@@ -2,7 +2,7 @@
 title: "Keyboard Shortcuts"
 description: "How the VS Code-style shortcut system works in LeapMux, every default key binding by context, and the override format for customizing them."
 type: docs
-weight: 11
+weight: 9
 ---
 
 LeapMux ships with a VS Code-style keyboard shortcut system: every shortcut is a *command* bound to a *key*, and each binding is active only inside a *context* (for example, only when a dialog is open or a terminal is focused). This chapter explains how the system works, lists every default binding, and documents the override format the engine uses for customization.
@@ -30,13 +30,13 @@ Other modifiers are `Shift`, `Alt` (also written `Option`), `Control`/`Ctrl`, an
 
 ### Chords
 
-The engine supports **chords** — space-separated key sequences such as `$mod+k $mod+s` (press the first combination, then the second). Chords render correctly in tooltips and menus, but no default binding uses one. The override format supports chords (see [Customizing keybindings](#customizing-keybindings)), with one caveat on the desktop app noted later.
+The engine supports **chords** — space-separated key sequences such as `$mod+k $mod+s` (press the first combination, then the second). Chords render correctly in tooltips and menus, but no default binding uses one. The override format supports chords (see [Customizing keybindings](#customizing-keybindings)), with one caveat on the desktop app (see [Desktop (Tauri) accelerator differences](#desktop-tauri-accelerator-differences)).
 
 ### When shortcuts are suppressed
 
 LeapMux binds shortcuts at the window level so they work no matter where focus sits, but it suppresses some of them to avoid hijacking your typing:
 
-- **Input focus.** When the cursor is in a text input, textarea, select, or any `contenteditable` element, a shortcut that has **no modifier and is not a function key** is suppressed — unless its `when`-clause explicitly references `inputFocused`. Shortcuts that use a modifier (`$mod`, `Ctrl`, `Alt`, `Meta`, `Shift`) or a plain function key (`F1`–`F12`) always fire, regardless of focus.
+- **Input focus.** When the cursor is in a text input, textarea, select, or any `contenteditable` element, a shortcut with **no modifier that is not a function key** is suppressed — unless its `when`-clause explicitly refers to `inputFocused`. The suppression does not apply to shortcuts that use a modifier (`$mod`, `Ctrl`, `Alt`, `Meta`, `Shift`) or a plain function key (`F1`–`F12`): those always fire, regardless of focus.
 - **IME composition.** While you are composing text with an Input Method Editor (for example, typing Chinese, Japanese, or Korean), shortcuts are held back so they cannot interfere with your text entry.
 
 ## Contexts (the `when` clause)
@@ -48,13 +48,14 @@ A binding's `when`-clause is a small boolean expression evaluated against the ac
 | `isDesktop` | boolean | Running inside the Tauri desktop app. |
 | `platform` | string | `"mac"`, `"windows"`, or `"linux"`. |
 | `dialogOpen` | boolean | A modal dialog is currently open. |
+| `sidebarVisible` | boolean | The left sidebar is expanded. |
 | `activeTabType` | string | `"agent"`, `"terminal"`, `"file"`, or empty when no tab is active. |
 | `inputFocused` | boolean | Focus is in an input, textarea, select, or `contenteditable` element. |
 | `editorFocused` | boolean | Focus is inside a rich-text editor surface. |
 | `chatInputFocused` | boolean | Focus is inside a chat message input. |
 | `terminalFocused` | boolean | Focus is inside a terminal. |
 
-The `when` expression grammar supports `||` (or), `&&` (and), `!` (not), parentheses, `==`/`!=` comparisons, identifiers, quoted strings, and the literals `true`/`false`. An empty or absent `when` means "always active." Examples drawn from the defaults: `!dialogOpen`, `dialogOpen`, `isDesktop`, `!dialogOpen && isDesktop`, `chatInputFocused`, and `terminalFocused && platform == "mac"`.
+The `when` expression grammar supports `||` (or), `&&` (and), `!` (not), parentheses, `==`/`!=` comparisons, identifiers, quoted strings, and the literals `true`/`false`. An empty or absent `when` means "always active." Examples drawn from the defaults: `!dialogOpen`, `isDesktop`, `!dialogOpen && isDesktop`, `chatInputFocused`, and `terminalFocused && platform == "mac"`.
 
 ## Default keyboard shortcuts
 
@@ -119,7 +120,9 @@ These act on the file browser. See [File Browser](/docs/using/file-browser/).
 |---|---|---|---|
 | Send Message | `⌘J` | `Ctrl+J` | chat input focused |
 
-> **Note:** `Send Message` (`⌘J` / `Ctrl+J`) is a *global* way to submit the focused chat input, independent of the chat editor's own Enter behavior. The Enter-to-send vs. Cmd/Ctrl+Enter-to-send choice is a separate, editor-level setting described in [Chat editor keys](#chat-editor-keys-not-part-of-the-global-system) below.
+{{< callout type="info" >}}
+`Send Message` (`⌘J` / `Ctrl+J`) is a *global* way to submit the focused chat input, independent of the chat editor's own Enter behavior. The Enter-to-send vs. Cmd/Ctrl+Enter-to-send choice is a separate, editor-level setting described in [Chat editor keys](#chat-editor-keys-not-part-of-the-global-system) below.
+{{< /callout >}}
 
 ### Terminal (macOS only)
 
@@ -138,7 +141,7 @@ Under the hood these send terminal control sequences (Ctrl-A, Ctrl-E, Esc-b, Esc
 
 `Esc` closes the most recently opened dialog — unless that dialog is busy (for example, mid-operation), in which case it resists closing until the operation finishes.
 
-`Esc` is not a keybinding, and no command performs this action. The browser delivers the key to the innermost open layer, so one press dismisses one layer: with a drop-down menu open inside a dialog, the first `Esc` closes the menu and the second closes the dialog. A control that answers `Esc` itself comes first in the same way — the Preferences search box clears the query, and an inline rename cancels the edit.
+`Esc` is not a keybinding, and no command performs this action. The browser delivers the key to the innermost open layer, so one press dismisses one layer: with a dropdown menu open inside a dialog, the first `Esc` closes the menu and the second closes the dialog. A control that answers `Esc` itself comes first in the same way — the Preferences search box clears the query, and an inline rename cancels the edit.
 
 `Esc` is **reserved**: an override that binds it is ignored, and the log records the entry that was dropped. Every keybinding fires from a single listener that runs ahead of the layers, so a binding for `Esc` would close a dialog underneath an open menu — which is the behaviour the reservation exists to prevent.
 
@@ -163,7 +166,9 @@ These are gated to the desktop app via `isDesktop` and have no effect in the bro
 | Actual Size | `⌘0` / `⌘Num0` | `Ctrl+0` / `Ctrl+Num0` | desktop |
 | Quit Application | `⌘Q` | `Ctrl+Q` | desktop |
 
-> **Note:** "Open in External Editor" works only in **solo mode**. In a distributed Hub/Worker setup, the active tab's working directory lives on the Worker machine, not your local filesystem, so there is no local editor to launch and the command does nothing. See [Running LeapMux](/docs/operating/running-leapmux/) for run modes, and [Open in external editor (desktop, solo mode)](#open-in-external-editor-desktop-solo-mode) below for the full feature.
+{{< callout type="info" >}}
+"Open in External Editor" works only in **solo mode**. In a distributed Hub/Worker setup, the active tab's working directory lives on the Worker machine, not your local filesystem, so there is no local editor to launch and the command does nothing. See [Running LeapMux](/docs/admin/running-leapmux/) for run modes, and [Open in external editor (desktop, solo mode)](#open-in-external-editor-desktop-solo-mode) below for the full feature.
+{{< /callout >}}
 
 The zoom, web-inspector, and quit shortcuts ("core" bindings) are mounted at the application root, so they work on every screen — including the launcher and the sign-in/setup pages — not just inside a workspace.
 
@@ -175,12 +180,14 @@ The `⇧⌘E` / `Ctrl+Shift+E` shortcut launches an external code editor against
 
 **The two faces of the split button.**
 
-- The **main face** reads "Open in {EditorName}" (with the editor's icon) when you have a preferred editor, or "Open in …" with a generic icon when you have not yet picked one. With a preferred editor set, clicking the main face — or pressing `⇧⌘E` / `Ctrl+Shift+E` — launches it against the active tab's working directory. When no editor is preferred yet, the two faces diverge: clicking the main face opens the dropdown so you can pick one, while pressing the shortcut launches the first detected editor (and records it as your preferred editor).
+- The **main face** reads "Open in {EditorName}" (with the editor's icon) when you have a preferred editor. It reads "Open in …" with a generic icon when you have not picked one. With a preferred editor, clicking the main face — or pressing `⇧⌘E` / `Ctrl+Shift+E` — launches it. Without one, clicking the main face opens the dropdown; pressing the shortcut launches the first detected editor and records it as your preferred editor.
 - The **chevron** opens a dropdown that lists every detected editor alphabetically (with a checkmark on the current preferred one), followed by a separator and **"Refresh editor list"**.
 
-> **Note:** Picking an editor from the dropdown only **sets it as your preferred editor** — it does not launch it. To actually open the editor, use the main face or the keyboard shortcut after selecting. "Refresh editor list" re-probes your machine for installed editors, useful after you install or remove one.
+{{< callout type="info" >}}
+Picking an editor from the dropdown only **sets it as your preferred editor** — it does not launch it. To actually open the editor, use the main face or the keyboard shortcut after selecting. "Refresh editor list" re-probes your machine for installed editors, useful after you install or remove one.
+{{< /callout >}}
 
-**What gets opened.** The editor is launched against the **active tab's working directory** and only against an absolute, existing directory — relative paths, missing paths, and plain files are rejected, so nothing launches if the active tab has no real directory.
+**What gets opened.** LeapMux launches the editor against the **active tab's working directory**. The directory must be absolute and must exist. LeapMux rejects relative paths, missing paths, and plain files, so nothing launches when the active tab has no real directory.
 
 **Detected editors.** LeapMux auto-detects popular editors including VS Code, the JetBrains IDEs, Cursor, Zed, Sublime Text, and others, probing your `PATH`, known install locations, and (on macOS) `.app` bundles. The chevron dropdown shows exactly which editors were found on your machine.
 
@@ -193,13 +200,17 @@ The `⇧⌘E` / `Ctrl+Shift+E` shortcut launches an external code editor against
 | ⌥ | Option / Alt |
 | ⇧ | Shift |
 
-A few key names also render specially: `Escape` shows as `Esc`, arrows as `← → ↑ ↓`, `NumpadAdd` as `Num+`, `NumpadSubtract` as `Num-`, and `Numpad0` as `Num0`. On macOS, modifiers always appear in the order ⌃⌥⇧⌘ with no separators, so Cmd renders last (for example, `⇧⌘N` — the Shift glyph, then the Cmd glyph, then the key); on Windows and Linux they are joined with `+` (for example, `Ctrl+Shift+N`).
+A few key names also render specially: `Escape` shows as `Esc`, arrows as `← → ↑ ↓`, `NumpadAdd` as `Num+`, `NumpadSubtract` as `Num-`, and `Numpad0` as `Num0`. On macOS, modifiers always appear in the order ⌃⌥⇧⌘ with no separators, so Cmd renders last (for example, `⇧⌘N`). On Windows and Linux they are joined with `+` (for example, `Ctrl+Shift+N`).
 
-> **Tip:** You do not have to memorize these. LeapMux appends the active shortcut to tooltips and dropdown menu items automatically — for example, "New Agent (⌘N)" — formatted for your platform.
+{{< callout >}}
+You do not have to memorize these. LeapMux appends the active shortcut to tooltips and dropdown menu items automatically — for example, "New Agent (⌘N)" — formatted for your platform.
+{{< /callout >}}
 
 ## Customizing keybindings
 
-Customize bindings in the **Preferences → Keyboard Shortcuts** category: a table of every command with its binding and source (Default or Custom). Click a binding to capture a new chord; a chord already bound in the same context is refused with the conflicting command's name; **Reset** restores the default. Overrides are stored account-level (the `keybindings` user setting, capped at 200 entries), so they follow you to every device — see [Settings & Preferences](/docs/using/settings/#keyboard-shortcuts). The override format below is what the editor writes.
+Customize bindings in the **Preferences → Keyboard Shortcuts** category: a table of every command with its binding and source (Default or Custom). Click a binding to capture a new chord; a chord already bound in the same context is refused with the conflicting command's name; **Reset** restores the default.
+
+Overrides are stored account-level (the `keybindings` user setting, capped at 200 entries), so they follow you to every device — see [Settings & Preferences](/docs/using/settings/#keyboard-shortcuts). The override format below is what the editor writes.
 
 LeapMux's shortcut engine is built to rebind, add, or remove shortcuts through **account-level overrides** stored as JSON. The rest of this section describes that format and how the engine merges it with the defaults.
 
@@ -223,7 +234,9 @@ Each override has the shape:
 | `key` | yes | A `tinykeys` key string, or `""` (empty) to unbind. |
 | `when` | no | A `when`-clause; inherits the default's clause if omitted. |
 
-> **Warning:** Overrides are applied to **workspace** keybindings. The core desktop bindings (quit, zoom, web inspector) are not part of the override-merged set.
+{{< callout type="warning" >}}
+Overrides are applied to **workspace** keybindings. The core desktop bindings (quit, zoom, web inspector) are not part of the override-merged set.
+{{< /callout >}}
 
 ### How overrides merge with the defaults
 
@@ -262,7 +275,9 @@ Each override targets a command by its id. Each id corresponds to one of the act
 | `terminal.lineStart` / `terminal.lineEnd` | Go to Line Start / End |
 | `terminal.wordLeft` / `terminal.wordRight` | Go to Previous / Next Word |
 
-> **Note:** If the `custom_keybindings_json` field ever holds an invalid JSON value, the engine treats it as "no overrides" and silently ignores it, falling back to the defaults — so a malformed value never breaks the default shortcuts.
+{{< callout type="info" >}}
+If the `keybindings` setting ever holds a value the client cannot read, the engine treats it as "no overrides" and silently ignores it, falling back to the defaults — so a malformed value never breaks the default shortcuts.
+{{< /callout >}}
 
 ## Desktop (Tauri) accelerator differences
 
@@ -273,11 +288,13 @@ Two commands get their accelerators synced onto the macOS menu:
 - **Open Preferences** (`⌘,`) appears as **Preferences...** in the **LeapMux Desktop** application menu (the leftmost app menu on macOS).
 - **Open Web Inspector** appears as **Open Web Inspector** in the Help submenu.
 
-If either command's binding is overridden, the macOS menu accelerator updates to match.
+If the **Open Preferences** binding is overridden, the macOS menu accelerator updates to match.
 
-> **Warning:** **Chords cannot become macOS menu accelerators.** A binding that uses a space-separated chord (such as `$mod+k $mod+s`) still works as a regular shortcut, but it will not appear as an accelerator on the native menu item.
+{{< callout type="warning" >}}
+**Chords cannot become macOS menu accelerators.** A binding that uses a space-separated chord (such as `$mod+k $mod+s`) still works as a regular shortcut, but it will not appear as an accelerator on the native menu item.
+{{< /callout >}}
 
-The macOS menu also carries the usual system items in each submenu (About, Services, Hide, Quit, the standard Edit and Window commands, and so on). These come from macOS, not from the LeapMux shortcut registry, so their accelerators are the OS defaults you already know and are not affected by `custom_keybindings_json`.
+The macOS menu also carries the usual system items in each submenu (About, Services, Hide, Quit, the standard Edit and Window commands, and so on). These come from macOS, not from the LeapMux shortcut registry, so their accelerators are the OS defaults you already know and are not affected by keybinding overrides.
 
 ## Chat editor keys (not part of the global system)
 
@@ -286,7 +303,7 @@ The chat message editor has its own in-editor key handling that is **separate** 
 - **Cmd/Ctrl+Enter sends (default):** `⌘Enter` / `Ctrl+Enter` sends the message; a plain `Enter` inserts a newline.
 - **Enter sends:** a plain `Enter` sends the message; `Shift+Enter` inserts a newline.
 
-You can flip between the two from the composer's **[+]** menu. Other editor keys handle Markdown structure inside the message box — for example, `Tab`/`Shift+Tab` adjust list and heading levels, `Backspace` lifts blockquotes and code blocks, and `Cmd/Ctrl+E` toggles inline code. These editor keys are not bindable through `custom_keybindings_json`.
+You can flip between the two from the composer's **[+]** menu. Other editor keys handle Markdown structure inside the message box — for example, `Tab`/`Shift+Tab` adjust list and heading levels, `Backspace` lifts blockquotes and code blocks, and `Cmd/Ctrl+E` toggles inline code. These editor keys are not bindable through keybinding overrides.
 
 For more on writing and sending messages to agents, see [Coding Agents](/docs/using/coding-agents/).
 
@@ -294,7 +311,7 @@ For more on writing and sending messages to agents, see [Coding Agents](/docs/us
 
 You do not need any of this to use the shortcuts, but it explains a few edge cases:
 
-- **Keys are matched by physical position.** Single-letter keys are matched by the key's physical position on the keyboard (the browser's `event.code`), not by the character it produces. This is deliberate: on macOS WebKit, holding Option transforms the character (for example, `Cmd+Alt+N` would otherwise produce `˜`), so position-based matching keeps shortcuts working across keyboard layouts and modifier combinations.
+- **Keys are matched by physical position.** Single-letter keys are matched by the key's physical position on the keyboard (the browser's `event.code`), not by the character it produces. This is deliberate: on macOS WebKit, holding Option transforms the character (for example, `Cmd+Alt+N` would otherwise produce `˜`). Position-based matching keeps shortcuts working across keyboard layouts and modifier combinations.
 - **First match wins.** When a key matches more than one binding, the first binding in registration order whose `when`-clause is true runs; LeapMux then prevents the browser default and runs the command.
 
 ## See also
@@ -303,4 +320,4 @@ You do not need any of this to use the shortcuts, but it explains a few edge cas
 - [Terminals](/docs/using/terminals/) — terminal behavior and the macOS cursor-motion shortcuts.
 - [File Browser](/docs/using/file-browser/) — the directory tree refreshed and filtered by the Files shortcuts.
 - [Settings & Preferences](/docs/using/settings/) — the Preferences dialog and where account vs. browser settings live.
-- [Running LeapMux](/docs/operating/running-leapmux/) — solo vs. distributed mode, which affects the "Open in External Editor" shortcut.
+- [Running LeapMux](/docs/admin/running-leapmux/) — solo vs. distributed mode, which affects the "Open in External Editor" shortcut.

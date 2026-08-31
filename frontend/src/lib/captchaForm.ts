@@ -45,17 +45,17 @@ export interface CaptchaFormState {
   unsolvable: () => boolean
   /** Submit-button gate: blocks while a payload is required and missing. */
   blocksSubmit: () => boolean
-  /** Request fields for Login/SignUp/CompleteOAuthSignup. */
+  /** Request fields for any protected request. */
   fields: () => CaptchaRequestFields
 }
 
 /**
  * createCaptchaForm owns the captcha lifecycle one protected form needs:
  * the payload and honeypot state, the reactive requirement gate, the
- * fail-closed bootstrap window, and the reset path. The three credential
- * forms consume this instead of re-wiring the same six pieces — they
- * already drifted on the bootstrap gate, which hid the widget on direct
- * page loads.
+ * fail-closed bootstrap window, and the reset path. Every protected form
+ * consumes this instead of re-wiring the same six pieces — the credential
+ * forms already drifted on the bootstrap gate, which hid the widget on
+ * direct page loads.
  */
 export function createCaptchaForm(): CaptchaFormState {
   const [payload, setPayload] = createSignal<string | null>(null)

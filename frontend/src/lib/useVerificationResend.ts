@@ -2,6 +2,7 @@ import type { Timestamp } from '@bufbuild/protobuf/wkt'
 import { timestampDate } from '@bufbuild/protobuf/wkt'
 import { createEffect, createMemo, createSignal, onCleanup } from 'solid-js'
 import { userClient } from '~/api/clients'
+import { createCaptchaForm } from '~/lib/captchaForm'
 import { formatErrorMessage } from '~/lib/errors'
 
 function cooldownSeconds(untilMs: number, nowMs: number): number {
@@ -22,6 +23,14 @@ export interface UseVerificationResendOptions {
    * restart from.
    */
   nextResendAvailableAt?: () => Timestamp | undefined
+  /**
+   * Whether the seed accessor has answered yet. A countdown of 0 means
+   * "no cooldown known" until it does -- the auth bootstrap on a hard
+   * reload has not run -- and arming the captcha widget on that reading
+   * mints a challenge the arriving seed immediately unmounts. Surfaces
+   * that render only for a signed-in user may leave this unset.
+   */
+  cooldownKnown?: () => boolean
 }
 
 export function useVerificationResend(options?: UseVerificationResendOptions) {
@@ -87,7 +96,19 @@ export function useVerificationResend(options?: UseVerificationResendOptions) {
     return 'Resend code'
   })
 
-  const disabled = () => resending() || countdown() > 0
+  // The resend path is captcha-protected like the verify path: it drives an
+  // SMTP send, and the cooldown gate alone does not pace a scripted
+  // session. The form lives HERE rather than at each call site, so both
+  // surfaces (/verify-email and Preferences → Account) send the same
+  // fields and neither can forget the widget.
+  const captcha = createCaptchaForm()
+
+  // Whether the countdown's zero reading is an ANSWER ("a resend is legal
+  // now") rather than an absence ("the seed has not arrived"). The widget
+  // gates on this so it arms only when it will stay armed.
+  const cooldownKnown = createMemo(() => options?.cooldownKnown?.() ?? true)
+
+  const disabled = () => resending() || countdown() > 0 || captcha.blocksSubmit()
 
   const resend = async () => {
     if (disabled())
@@ -96,10 +117,10 @@ export function useVerificationResend(options?: UseVerificationResendOptions) {
     setStatus(null)
     setError(null)
     try {
-      const resp = await userClient.resendVerificationEmail({})
+      const resp = await userClient.resendVerificationEmail({ ...captcha.fields() })
       setStatus(
         resp.emailSent
-          ? 'A fresh code has been sent to your inbox.'
+          ? 'We sent a fresh code to your inbox.'
           : 'We couldn\'t send the email — please try again shortly.',
       )
       if (resp.nextResendAvailableAt) {
@@ -108,6 +129,7 @@ export function useVerificationResend(options?: UseVerificationResendOptions) {
     }
     catch (e) {
       setError(formatErrorMessage(e, 'Failed to resend verification email'))
+      captcha.reset(e)
     }
     finally {
       setResending(false)
@@ -124,5 +146,7 @@ export function useVerificationResend(options?: UseVerificationResendOptions) {
     buttonLabel,
     disabled,
     countdown,
+    cooldownKnown,
+    captcha,
   }
 }

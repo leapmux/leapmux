@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"strings"
 	"time"
 
@@ -56,27 +57,29 @@ func SearchLikePattern(query *string) *string {
 
 // User represents a user account.
 type User struct {
-	ID                            string
-	Username                      string
-	PasswordHash                  string
-	DisplayName                   string
-	Email                         string
-	EmailVerified                 bool
-	PendingEmail                  string
-	PendingEmailToken             string
-	PendingEmailExpiresAt         *time.Time
-	PendingEmailAttempts          int64
-	PendingPasswordResetToken     string
-	PendingPasswordResetExpiresAt *time.Time
-	PendingPasswordResetAttempts  int64
-	PasswordSet                   bool
-	IsAdmin                       bool
-	Prefs                         string
-	CreatedAt                     time.Time
-	UpdatedAt                     time.Time
-	TokensRevokedAt               *time.Time
-	AuthGeneration                int64
-	DeletedAt                     *time.Time
+	ID                         string
+	Username                   string
+	PasswordHash               string
+	DisplayName                string
+	Email                      string
+	EmailVerified              bool
+	PendingEmail               string
+	PendingEmailToken          string
+	PendingEmailExpiresAt      *time.Time
+	PendingEmailUnblockedAt    *time.Time
+	PendingEmailAttempts       int64
+	PendingRecoveryToken       string
+	PendingRecoveryExpiresAt   *time.Time
+	PendingRecoveryUnblockedAt *time.Time
+	PendingRecoveryAttempts    int64
+	PasswordSet                bool
+	IsAdmin                    bool
+	Prefs                      string
+	CreatedAt                  time.Time
+	UpdatedAt                  time.Time
+	TokensRevokedAt            *time.Time
+	AuthGeneration             int64
+	DeletedAt                  *time.Time
 }
 
 // PageCursor returns the keyset position for user listings (ListAll/Search),
@@ -567,29 +570,77 @@ type UpdateUserPrefsParams struct {
 	Prefs string
 }
 
-// UnconditionalMintCutoff always satisfies a conditional mint. Use it
-// where no previous code can exist (account creation) or where the caller
-// deliberately overwrites (a test seed). It says so at the call site
-// instead of leaving a zero cutoff to mean it by accident.
-func UnconditionalMintCutoff() time.Time {
-	return time.Now().UTC().Add(100 * 365 * 24 * time.Hour)
-}
-
 type SetPendingEmailParams struct {
 	ID                    string
 	PendingEmail          string
 	PendingEmailToken     string
 	PendingEmailExpiresAt *time.Time
-	// CooldownCutoff controls the conditional mint: the write lands only
-	// when no previous code exists or the previous code's expiry is at or
-	// before this instant. The caller derives it from the resend cooldown.
-	// Its twin is SetPendingPasswordResetParams.CooldownCutoff.
-	CooldownCutoff time.Time
+	// PendingEmailUnblockedAt is the blockade this mint itself arms: now
+	// plus the resend cooldown, so the row's gate stays closed for one
+	// cooldown after the code lands. Required, not a pointer, and the
+	// store adapters refuse the zero time with
+	// ErrPendingUnblockedAtRequired: a forgotten deadline would store a
+	// live token the gate can never cool down, and a zero time binds as
+	// year 1 -- eternally open -- which fails the gate OPEN, so the value
+	// must be a real deadline.
+	PendingEmailUnblockedAt time.Time
+	// Now is the instant the gate compares UnblockedAt against; the mint
+	// derives it from the same clock read as the deadline, so the two
+	// cannot disagree. Its twin is SetPendingRecoveryParams.Now.
+	Now time.Time
+}
+
+// ErrPendingUnblockedAtRequired reports a mint whose blockade deadline is
+// the zero time. The gate compares the blocked-until column, and a zero
+// time binds as year 1 -- eternally open -- so a live token minted under
+// it never cools down and the gate fails open. The required time.Time
+// field removed the nil case; the adapters' guard
+// (ValidatePendingUnblockedAt) removes the zero case, so the store
+// boundary refuses both.
+var ErrPendingUnblockedAtRequired = errors.New("pending blocked-until is required: the mint gate reads it, and a zero deadline disables the cooldown")
+
+// ValidatePendingUnblockedAt enforces ErrPendingUnblockedAtRequired for
+// every dialect's SetPendingEmail and SetPendingRecovery.
+func ValidatePendingUnblockedAt(blockedUntil time.Time) error {
+	if blockedUntil.IsZero() {
+		return ErrPendingUnblockedAtRequired
+	}
+	return nil
+}
+
+// UnblockedAtPtr maps a clear's deadline onto the nullable bind the SQL
+// statements take: the zero time means "no blockade" and binds NULL, which
+// is the rotation teardown's shape; any other instant binds itself.
+func UnblockedAtPtr(blockedUntil time.Time) *time.Time {
+	if blockedUntil.IsZero() {
+		return nil
+	}
+	return &blockedUntil
 }
 
 type ClearCompetingPendingEmailsParams struct {
 	PendingEmail string
 	ExcludeID    string
+}
+
+// ClearPendingEmailCodeParams clears an undelivered code while keeping the
+// pending address. UnblockedAt is the deadline this clear leaves: the
+// failure window a refused send arms (now plus the failure cooldown), so
+// the retry a failed send invites waits out that window instead of landing
+// at request speed. The zero time writes NULL -- no blockade at all.
+type ClearPendingEmailCodeParams struct {
+	ID          string
+	UnblockedAt time.Time
+}
+
+// ClearPendingRecoveryParams clears an uncompleted recovery link;
+// UnblockedAt carries the same meaning as
+// ClearPendingEmailCodeParams.UnblockedAt. The rotation teardowns pass the
+// zero time: the credential the link rode just died, so the account's next
+// request must mint freely.
+type ClearPendingRecoveryParams struct {
+	ID          string
+	UnblockedAt time.Time
 }
 
 // PageParams is the shared keyset-pagination input embedded in every list
@@ -1240,30 +1291,29 @@ type CreateWebAuthnSessionParams struct {
 	CreatedAt   time.Time
 }
 
-type SetPendingPasswordResetParams struct {
-	ID                            string
-	PendingPasswordResetToken     string
-	PendingPasswordResetExpiresAt time.Time
-	// CooldownCutoff controls the conditional mint: the write lands only when
-	// no previous token exists or the previous token's expiry is at or
-	// before this cutoff, so two concurrent first requests cannot both
-	// mint and both send. The caller derives the cutoff from the resend
-	// cooldown.
-	CooldownCutoff time.Time
+type SetPendingRecoveryParams struct {
+	ID                       string
+	PendingRecoveryToken     string
+	PendingRecoveryExpiresAt time.Time
+	// PendingRecoveryUnblockedAt is the blockade this mint arms: now plus
+	// the resend cooldown. Required, not a pointer, for the reason
+	// SetPendingEmailParams states.
+	PendingRecoveryUnblockedAt time.Time
+	// Now is the instant the gate compares UnblockedAt against.
+	Now time.Time
 }
 
-type CompletePasswordResetParams struct {
-	ID                        string
-	PasswordHash              string
-	PendingPasswordResetToken string
+type CompleteRecoveryParams struct {
+	ID                   string
+	PasswordHash         string
+	PendingRecoveryToken string
 }
 
-// PasswordResetRevocation is returned by CompletePasswordReset when the
-// user row was updated and tokens must be revoked cross-process.
-type PasswordResetRevocation struct {
-	UserID          string
-	TokensRevokedAt time.Time
-	AuthGeneration  int64
+// RecoveryRevocation is returned by CompleteRecovery and carries the auth
+// generation the completion committed, so the caller's post-commit
+// lifecycle eviction targets exactly the epoch this transaction produced.
+type RecoveryRevocation struct {
+	AuthGeneration int64
 }
 
 // --- API token types ---

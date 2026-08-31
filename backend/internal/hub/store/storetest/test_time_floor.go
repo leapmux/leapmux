@@ -237,11 +237,12 @@ func (s *Suite) testTimeFloor(t *testing.T) {
 
 		expiresAt := floorProbe(floorProbeBase(), 0)
 		minted, err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
-			ID:                    user.ID,
-			PendingEmail:          "floor@example.com",
-			PendingEmailToken:     "TOKEN1",
-			PendingEmailExpiresAt: &expiresAt,
-			CooldownCutoff:        store.UnconditionalMintCutoff(),
+			ID:                      user.ID,
+			PendingEmail:            "floor@example.com",
+			PendingEmailToken:       "TOKEN1",
+			PendingEmailExpiresAt:   &expiresAt,
+			PendingEmailUnblockedAt: time.Now().UTC().Add(time.Minute),
+			Now:                     time.Now().UTC(),
 		})
 		mustSetPendingEmail(t, minted, err)
 
