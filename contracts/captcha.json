@@ -7,7 +7,8 @@
     "passkeyLogin": "passkey_login",
     "passkeySignUp": "passkey_signup",
     "accountRecovery": "account_recovery",
-    "completeAccountRecovery": "complete_account_recovery",
+    "accountRecoveryPassword": "account_recovery_password",
+    "accountRecoveryPasskey": "account_recovery_passkey",
     "verifyEmail": "verify_email",
     "resendVerification": "resend_verification"
   }

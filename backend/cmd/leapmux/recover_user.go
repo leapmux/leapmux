@@ -142,7 +142,7 @@ func runPasswordReset(cmd cmdCtx, args []string) error {
 			}
 
 			// Offline break-glass matches online admin reset and self-service
-			// CompleteAccountRecovery: passkeys, ceremonies, and any pending
+			// CompleteAccountRecoveryPassword: passkeys, ceremonies, and any pending
 			// recovery link die with the password rotation.
 			if err := service.RevokePasskeyAuthState(ctx, tx, user.ID); err != nil {
 				return err

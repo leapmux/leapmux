@@ -672,11 +672,11 @@ CREATE UNIQUE INDEX idx_passkey_credentials_credential_id ON passkey_credentials
 CREATE INDEX idx_passkey_credentials_user_id ON passkey_credentials(user_id);
 CREATE INDEX idx_passkey_credentials_key_version ON passkey_credentials(key_version);
 
--- Ephemeral WebAuthn ceremony state (signup, login, register, elevation)
+-- Ephemeral WebAuthn ceremony state (signup, login, register, elevation, recovery)
 CREATE TABLE webauthn_sessions (
     id           TEXT COLLATE "C" PRIMARY KEY,
     kind         TEXT NOT NULL CHECK (kind IN (
-        'signup', 'login', 'register', 'elevation'
+        'signup', 'login', 'register', 'elevation', 'recovery'
     )),
     user_id      TEXT COLLATE "C" REFERENCES users(id) ON DELETE CASCADE,
     payload_json TEXT NOT NULL DEFAULT '{}',  -- '{}' or keystore-encrypted signup draft (base64), AAD: 'webauthn_payload:' || id
@@ -686,9 +686,15 @@ CREATE TABLE webauthn_sessions (
 );
 CREATE INDEX idx_webauthn_sessions_expires_at ON webauthn_sessions(expires_at);
 
--- Ceremony begins delete prior rows per user and kind on every Begin*;
--- without this index each begin full-scans the not-yet-swept rows.
-CREATE INDEX idx_webauthn_sessions_user_kind ON webauthn_sessions(user_id, kind);
+-- One live ceremony per (user_id, kind) for per-user kinds (login, register,
+-- elevation, recovery). persistSession deletes then inserts; this unique
+-- index is what stops two concurrent Begins from leaving two encrypted
+-- rows, and it also serves the delete-by-user-and-kind lookup. Signup has
+-- no user yet (NULL user_id) and sits outside the predicate so concurrent
+-- anonymous signups can coexist.
+CREATE UNIQUE INDEX idx_webauthn_sessions_user_kind
+    ON webauthn_sessions(user_id, kind)
+    WHERE user_id IS NOT NULL;
 
 -- Instance-level hub settings: one row per setting key. `value` is a JSON
 -- document whose shape is defined by the owning package's typed key handle

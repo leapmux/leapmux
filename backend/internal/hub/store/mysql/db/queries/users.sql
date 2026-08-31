@@ -159,7 +159,9 @@ SELECT EXISTS(SELECT 1 FROM users WHERE deleted_at IS NULL LIMIT 1) AS has_any;
 -- the resend cooldown. A failed-send clear writes now + the failure
 -- window; every other clear (address-level moves, promotions, rotation
 -- teardowns) writes NULL, which leaves no blockade at all. Its twin
--- SetPendingRecovery carries the same predicate.
+-- SetPendingRecovery carries the same predicate. The OR is parenthesized
+-- because AND binds tighter: without that, a mint for one account whose
+-- cooldown elapsed would update every other elapsed row.
 --
 -- The gate reads pending_email_unblocked_at and never the expiry:
 -- ConsumeVerificationAttempt force-expires a burned code by moving the
@@ -169,8 +171,8 @@ SELECT EXISTS(SELECT 1 FROM users WHERE deleted_at IS NULL LIMIT 1) AS has_any;
 -- the blockade.
 UPDATE users SET pending_email = sqlc.arg(pending_email), pending_email_token = sqlc.arg(pending_email_token), pending_email_expires_at = sqlc.narg(pending_email_expires_at), pending_email_unblocked_at = sqlc.arg(pending_email_unblocked_at), pending_email_attempts = 0, updated_at = NOW(3)
 WHERE id = sqlc.arg(id)
-  AND pending_email_unblocked_at IS NULL
-       OR pending_email_unblocked_at <= sqlc.arg(now);
+  AND (pending_email_unblocked_at IS NULL
+       OR pending_email_unblocked_at <= sqlc.arg(now));
 
 -- name: ClearPendingEmailCode :exec
 -- ClearPendingEmailCode drops an undelivered code and KEEPS the pending
@@ -259,8 +261,8 @@ SET pending_recovery_token = sqlc.arg(pending_recovery_token),
     pending_recovery_attempts = 0,
     updated_at = NOW(3)
 WHERE id = sqlc.arg(id)
-  AND pending_recovery_unblocked_at IS NULL
-       OR pending_recovery_unblocked_at <= sqlc.arg(now);
+  AND (pending_recovery_unblocked_at IS NULL
+       OR pending_recovery_unblocked_at <= sqlc.arg(now));
 
 
 -- name: ClearPendingRecovery :exec
@@ -302,10 +304,23 @@ WHERE pending_recovery_token = ? AND pending_recovery_token != ''
 SELECT * FROM users
 WHERE pending_recovery_token = ? AND deleted_at IS NULL;
 
+-- name: GetUserByLiveRecoveryToken :one
+-- Finish reads this before it consumes the WebAuthn ceremony, so a
+-- force-expired or reminted token cannot spend a session minted under a
+-- previous token. The liveness predicate matches ConsumeRecoveryAttemptByToken.
+SELECT * FROM users
+WHERE pending_recovery_token = sqlc.arg(token) AND pending_recovery_token != ''
+  AND pending_recovery_expires_at > sqlc.arg(now)
+  AND deleted_at IS NULL;
+
 -- name: CompleteRecovery :execresult
+-- Spends the recovery token on a replacement factor. password_set is true
+-- for a new password and false for a passkey spend (caller binds the
+-- not-set placeholder hash). The WHERE re-checks the token at write time,
+-- so a link spent on a concurrent completion matches no row.
 UPDATE users
 SET password_hash = sqlc.arg(password_hash),
-    password_set = TRUE,
+    password_set = sqlc.arg(password_set),
     pending_recovery_token = '',
     pending_recovery_expires_at = NULL,
     pending_recovery_unblocked_at = NULL,
@@ -314,3 +329,4 @@ SET password_hash = sqlc.arg(password_hash),
     auth_generation = sqlc.arg(auth_generation),
     updated_at = sqlc.arg(updated_at)
 WHERE id = sqlc.arg(id) AND pending_recovery_token = sqlc.arg(pending_recovery_token);
+

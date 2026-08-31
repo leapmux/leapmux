@@ -36,13 +36,26 @@ service AuthService {
   // Begin/finish passkey signup (passkey-only, no password).
   rpc BeginPasskeySignUp(BeginPasskeySignUpRequest) returns (BeginPasskeySignUpResponse);
   rpc FinishPasskeySignUp(FinishPasskeySignUpRequest) returns (FinishPasskeySignUpResponse);
-  // Self-service account recovery (break-glass; clears passkeys). Works
-  // for every account with a verified email regardless of how it signs in
-  // — password, passkey, linked provider, or any mix — because the emailed
-  // link proves the address, not the method the user lost. Completing it
-  // sets a password (the account's first one if it never had one).
+  // Self-service account recovery (break-glass; revokes passkeys and signs
+  // out every session). Works for every account with a verified email
+  // regardless of how it signs in — password, passkey, linked provider, or
+  // any mix — because the emailed link proves the address, not the method
+  // the user lost. Completing it spends the token on a replacement factor:
+  // a new password (the account's first one if it never had one), or a new
+  // passkey (which also clears the password). Linked providers stay.
+  // Either way every existing passkey is revoked.
   rpc RequestAccountRecovery(RequestAccountRecoveryRequest) returns (RequestAccountRecoveryResponse);
-  rpc CompleteAccountRecovery(CompleteAccountRecoveryRequest) returns (CompleteAccountRecoveryResponse);
+  // Password completion of account recovery: spends the emailed token on a
+  // new password (the account's first one if it never had one) and revokes
+  // every existing passkey. Linked providers stay. The passkey twin is
+  // Begin/FinishAccountRecoveryPasskey.
+  rpc CompleteAccountRecoveryPassword(CompleteAccountRecoveryPasswordRequest) returns (CompleteAccountRecoveryPasswordResponse);
+  // Begin/finish the passkey path of account recovery: the recovery token
+  // replaces the authenticated session as the ceremony's authorization, so
+  // a signed-out visitor holding the emailed link can enroll a replacement
+  // passkey. Finish clears the password and revokes every other passkey.
+  rpc BeginAccountRecoveryPasskey(BeginAccountRecoveryPasskeyRequest) returns (BeginAccountRecoveryPasskeyResponse);
+  rpc FinishAccountRecoveryPasskey(FinishAccountRecoveryPasskeyRequest) returns (FinishAccountRecoveryPasskeyResponse);
 }
 
 message LoginRequest {
@@ -353,7 +366,7 @@ message RequestAccountRecoveryRequest {
 // enumerate which identifiers hold accounts.
 message RequestAccountRecoveryResponse {}
 
-message CompleteAccountRecoveryRequest {
+message CompleteAccountRecoveryPasswordRequest {
   string token = 1;
   string new_password = 2;
   // Provider token; see LoginRequest.captcha_payload.
@@ -365,4 +378,34 @@ message CompleteAccountRecoveryRequest {
 // Empty on purpose: the caller is an anonymous bearer of the recovery
 // token, and the flow ends at the login screen. Returning no account data
 // keeps the response free of information the token does not already carry.
-message CompleteAccountRecoveryResponse {}
+message CompleteAccountRecoveryPasswordResponse {}
+
+message BeginAccountRecoveryPasskeyRequest {
+  // The recovery token from the emailed link; it authorizes the ceremony
+  // the way an authenticated session authorizes BeginPasskeyRegistration.
+  string token = 1;
+  // Provider token; see LoginRequest.captcha_payload.
+  string captcha_payload = 2;
+  // Hidden anti-bot field value; see LoginRequest.honeypot.
+  string honeypot = 3;
+}
+
+message BeginAccountRecoveryPasskeyResponse {
+  string session_id = 1;
+  string options_json = 2;
+  // Relying party ID for this ceremony's origin; echo it in Signal API calls.
+  string rp_id = 3;
+}
+
+message FinishAccountRecoveryPasskeyRequest {
+  // Re-checked at write time: a token spent on a concurrent recovery (or
+  // burned by the attempt cap) fails this RPC even mid-ceremony.
+  string token = 1;
+  string session_id = 2;
+  string credential_json = 3;
+}
+
+// Empty on purpose, like CompleteAccountRecoveryPasswordResponse: the caller is an
+// anonymous bearer of the recovery token, and the flow ends at the login
+// screen.
+message FinishAccountRecoveryPasskeyResponse {}

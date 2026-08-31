@@ -48,7 +48,7 @@ func expectedRegistrationBody(command, hubURL string) string {
 func expectedAccountRecoveryBody(link, hubURL string) string {
 	var b strings.Builder
 	b.WriteString("You asked to recover your LeapMux account.\n\n")
-	b.WriteString("Click the link below to set a new password and sign back in:\n\n    ")
+	b.WriteString("Click the link below to set a new password or passkey and sign back in:\n\n    ")
 	b.WriteString(link)
 	b.WriteString("\n\nThe link expires in one hour. If you did not request this, you can ignore this email.\n\n")
 	b.WriteString(verificationFooterTrailingSpace + "\n")

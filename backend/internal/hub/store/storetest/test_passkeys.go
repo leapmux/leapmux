@@ -202,6 +202,64 @@ func (s *Suite) testPasskeys(t *testing.T) {
 		require.NoError(t, err)
 	})
 
+	t.Run("one live ceremony per user and kind", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "wa-unique")
+		now := time.Now().UTC()
+		firstID := id.Generate()
+		require.NoError(t, st.WebAuthnSessions().Create(ctx, store.CreateWebAuthnSessionParams{
+			ID: firstID, Kind: webauthn.KindLogin, UserID: user.ID, PayloadJSON: "{}",
+			SessionData: []byte("first"), ExpiresAt: now.Add(time.Minute), CreatedAt: now,
+		}))
+		err := st.WebAuthnSessions().Create(ctx, store.CreateWebAuthnSessionParams{
+			ID: id.Generate(), Kind: webauthn.KindLogin, UserID: user.ID, PayloadJSON: "{}",
+			SessionData: []byte("second"), ExpiresAt: now.Add(time.Minute), CreatedAt: now,
+		})
+		assert.ErrorIs(t, err, store.ErrConflict)
+		_, err = st.WebAuthnSessions().Get(ctx, firstID)
+		require.NoError(t, err, "the unique index must refuse the second insert, not replace the first")
+
+		require.NoError(t, st.WebAuthnSessions().DeleteByUserAndKind(ctx, user.ID, webauthn.KindLogin))
+		require.NoError(t, st.WebAuthnSessions().Create(ctx, store.CreateWebAuthnSessionParams{
+			ID: id.Generate(), Kind: webauthn.KindLogin, UserID: user.ID, PayloadJSON: "{}",
+			SessionData: []byte("after-delete"), ExpiresAt: now.Add(time.Minute), CreatedAt: now,
+		}))
+	})
+
+	t.Run("two users may hold the same ceremony kind", func(t *testing.T) {
+		st := s.NewStore(t)
+		alice := SeedUser(t, st, "wa-unique-a")
+		bob := SeedUser(t, st, "wa-unique-b")
+		now := time.Now().UTC()
+		require.NoError(t, st.WebAuthnSessions().Create(ctx, store.CreateWebAuthnSessionParams{
+			ID: id.Generate(), Kind: webauthn.KindLogin, UserID: alice.ID, PayloadJSON: "{}",
+			SessionData: []byte("alice"), ExpiresAt: now.Add(time.Minute), CreatedAt: now,
+		}))
+		require.NoError(t, st.WebAuthnSessions().Create(ctx, store.CreateWebAuthnSessionParams{
+			ID: id.Generate(), Kind: webauthn.KindLogin, UserID: bob.ID, PayloadJSON: "{}",
+			SessionData: []byte("bob"), ExpiresAt: now.Add(time.Minute), CreatedAt: now,
+		}))
+	})
+
+	t.Run("signup ceremonies with no user may coexist", func(t *testing.T) {
+		st := s.NewStore(t)
+		now := time.Now().UTC()
+		firstID := id.Generate()
+		secondID := id.Generate()
+		require.NoError(t, st.WebAuthnSessions().Create(ctx, store.CreateWebAuthnSessionParams{
+			ID: firstID, Kind: webauthn.KindSignup, UserID: "", PayloadJSON: "{}",
+			SessionData: []byte("signup-a"), ExpiresAt: now.Add(time.Minute), CreatedAt: now,
+		}))
+		require.NoError(t, st.WebAuthnSessions().Create(ctx, store.CreateWebAuthnSessionParams{
+			ID: secondID, Kind: webauthn.KindSignup, UserID: "", PayloadJSON: "{}",
+			SessionData: []byte("signup-b"), ExpiresAt: now.Add(time.Minute), CreatedAt: now,
+		}))
+		_, err := st.WebAuthnSessions().Get(ctx, firstID)
+		require.NoError(t, err)
+		_, err = st.WebAuthnSessions().Get(ctx, secondID)
+		require.NoError(t, err)
+	})
+
 	t.Run("blank user id refused on passkey list", func(t *testing.T) {
 		st := s.NewStore(t)
 		_, err := st.PasskeyCredentials().ListByUser(ctx, "")

@@ -42,10 +42,13 @@ type SignupDraft struct {
 }
 
 // The service stores ceremonyMeta in webauthn_sessions.payload_json for
-// the login, register, and elevation kinds so Finish rebuilds the RP ID
-// the ceremony started with.
+// the login, register, elevation, and recovery kinds so Finish rebuilds
+// the RP ID the ceremony started with. TokenHash is set only on recovery:
+// Finish must present the same token Begin charged, so a reminted link
+// cannot spend a ceremony minted under the previous token.
 type ceremonyMeta struct {
-	RPID string `json:"rpId"`
+	RPID      string `json:"rpId"`
+	TokenHash string `json:"tokenHash,omitempty"`
 }
 
 // Service orchestrates WebAuthn ceremonies with encrypted session and credential storage.
@@ -181,7 +184,7 @@ func (s *Service) beginAssertion(ctx context.Context, kind, userID, origin strin
 	if err != nil {
 		return "", "", "", fmt.Errorf("begin assertion: %w", err)
 	}
-	sessionID, optionsJSON, err = s.persistSession(ctx, kind, userID, ceremonyPayload(rpID), session, assertion)
+	sessionID, optionsJSON, err = s.persistSession(ctx, kind, userID, ceremonyPayload(rpID, ""), session, assertion)
 	return sessionID, optionsJSON, rpID, err
 }
 
@@ -194,6 +197,14 @@ func (s *Service) ceremonyRPIDForOrigin(origin string) (string, error) {
 		return "", fmt.Errorf("%w: %q", ErrOriginNotAllowed, origin)
 	}
 	return rpID, nil
+}
+
+// CheckOrigin refuses an origin the hub does not serve, without starting
+// a ceremony or touching the store. Recovery Begin runs this before it
+// charges the attempt budget.
+func (s *Service) CheckOrigin(origin string) error {
+	_, err := s.ceremonyRPIDForOrigin(origin)
+	return err
 }
 
 // validateAssertion runs the assertion pipeline shared by login and elevation:
@@ -209,11 +220,11 @@ func (s *Service) ceremonyRPIDForOrigin(origin string) (string, error) {
 // service layer stamps -- so it discards both return values.
 //
 // A REGISTRATION ceremony never reaches here. It presents an attestation
-// rather than an assertion, so both of its legs -- FinishSignUp, which also
+// rather than an assertion, so both of its paths -- FinishSignUp, which also
 // carries the signup draft, and VerifyRegistration -- run verifyAttestation
 // instead.
 func (s *Service) validateAssertion(ctx context.Context, sessionID, wantKind, expectedUserID, credentialJSON string) (*store.User, int64, error) {
-	row, sessionData, err := s.consumeCeremonySession(ctx, sessionID, wantKind)
+	row, sessionData, err := s.consumeCeremonySession(ctx, sessionID, wantKind, "")
 	if err != nil {
 		return nil, 0, err
 	}
@@ -265,7 +276,7 @@ type FinishedSignUpCredential struct {
 // FinishSignUp validates attestation and returns the signup draft plus credential data.
 func (s *Service) FinishSignUp(ctx context.Context, sessionID, credentialJSON string) (SignupDraft, FinishedSignUpCredential, error) {
 	var zero FinishedSignUpCredential
-	row, sessionData, err := s.consumeCeremonySession(ctx, sessionID, KindSignup)
+	row, sessionData, err := s.consumeCeremonySession(ctx, sessionID, KindSignup, "")
 	if err != nil {
 		return SignupDraft{}, zero, err
 	}
@@ -301,22 +312,7 @@ func (s *Service) FinishSignUp(ctx context.Context, sessionID, credentialJSON st
 
 // BeginRegistration starts adding a passkey to an authenticated account.
 func (s *Service) BeginRegistration(ctx context.Context, userID, origin string) (sessionID string, optionsJSON string, rpID string, err error) {
-	rpID, err = s.ceremonyRPIDForOrigin(origin)
-	if err != nil {
-		return "", "", "", err
-	}
-	w, waUser, _, err := s.loadUserWithRPID(ctx, userID, rpID)
-	if err != nil {
-		return "", "", "", err
-	}
-	creation, session, err := w.BeginRegistration(waUser,
-		gowebauthn.WithExclusions(gowebauthn.Credentials(waUser.credentials).CredentialDescriptors()),
-	)
-	if err != nil {
-		return "", "", "", fmt.Errorf("begin registration: %w", err)
-	}
-	sessionID, optionsJSON, err = s.persistSession(ctx, KindRegister, userID, ceremonyPayload(rpID), session, creation)
-	return sessionID, optionsJSON, rpID, err
+	return s.beginRegistration(ctx, KindRegister, userID, origin, true, "")
 }
 
 // VerifyRegistration consumes the ceremony session and validates the
@@ -332,21 +328,102 @@ func (s *Service) BeginRegistration(ctx context.Context, userID, origin string) 
 // atomic conditional UPDATE, so it does not need to share the caller's
 // transaction either -- only the credential INSERT does.
 //
-// FinishSignUp and CompleteAccountRecovery already order their expensive work
+// FinishSignUp and CompleteAccountRecoveryPassword already order their expensive work
 // this way; this is the same shape for the registration path.
 func (s *Service) VerifyRegistration(ctx context.Context, userID, sessionID, credentialJSON string) (FinishedSignUpCredential, error) {
-	row, sessionData, err := s.consumeCeremonySession(ctx, sessionID, KindRegister)
+	_, cred, err := s.verifyRegistration(ctx, sessionID, KindRegister, userID, "", credentialJSON)
+	return cred, err
+}
+
+// BeginRecoveryRegistration starts a passkey registration on an existing
+// account WITHOUT a signed-in session: the account-recovery token the
+// service layer already validated replaces the session as the ceremony's
+// authorization. Unlike BeginRegistration it sends no credential
+// exclusions -- the existing passkeys are revoked by the completion this
+// ceremony feeds, and their descriptors are not the link-bearer's to read.
+// It also loads no existing credentials: those rows are about to be
+// deleted, and an undecryptable one must not block the flow that replaces
+// them. tokenHash is the hash Begin charged; Finish must present it.
+func (s *Service) BeginRecoveryRegistration(ctx context.Context, userID, origin, tokenHash string) (sessionID string, optionsJSON string, rpID string, err error) {
+	if tokenHash == "" {
+		return "", "", "", fmt.Errorf("recovery ceremony requires a token hash")
+	}
+	return s.beginRegistration(ctx, KindRecovery, userID, origin, false, tokenHash)
+}
+
+// VerifyRecoveryRegistration is VerifyRegistration's recovery twin: it
+// consumes the KindRecovery ceremony session and validates the attestation
+// without writing, so the caller can run the recovery completion and the
+// credential INSERT in one transaction. It derives the user from the
+// session row (the Begin that minted it resolved the account through the
+// recovery token), and returns that user id so the caller's completion can
+// target the same row. expectedTokenHash must match the hash Begin stored
+// in the session; a reminted link cannot spend a ceremony minted under
+// the previous token. A mismatch refuses BEFORE the session is consumed.
+func (s *Service) VerifyRecoveryRegistration(ctx context.Context, sessionID, credentialJSON, expectedTokenHash string) (string, FinishedSignUpCredential, error) {
+	if expectedTokenHash == "" {
+		return "", FinishedSignUpCredential{}, fmt.Errorf("%w: recovery token required", ErrCeremonyInvalid)
+	}
+	return s.verifyRegistration(ctx, sessionID, KindRecovery, "", expectedTokenHash, credentialJSON)
+}
+
+// beginRegistration is the shared begin path for KindRegister and
+// KindRecovery. excludeExisting loads the credential list and sends
+// WebAuthn exclusions; recovery omits both.
+func (s *Service) beginRegistration(ctx context.Context, kind, userID, origin string, excludeExisting bool, tokenHash string) (sessionID, optionsJSON, rpID string, err error) {
+	rpID, err = s.ceremonyRPIDForOrigin(origin)
 	if err != nil {
-		return FinishedSignUpCredential{}, err
+		return "", "", "", err
 	}
-	if row.UserID != userID {
-		return FinishedSignUpCredential{}, fmt.Errorf("%w: owner mismatch", ErrCeremonyInvalid)
+	var w *gowebauthn.WebAuthn
+	var waUser *user
+	if excludeExisting {
+		w, waUser, _, err = s.loadUserWithRPID(ctx, userID, rpID)
+	} else {
+		w, waUser, err = s.loadUserIdentity(ctx, userID, rpID)
 	}
-	w, waUser, _, err := s.loadUserWithRPID(ctx, userID, ceremonyRPID(row.PayloadJSON))
 	if err != nil {
-		return FinishedSignUpCredential{}, err
+		return "", "", "", err
 	}
-	return verifyAttestation(w, waUser, *sessionData, credentialJSON)
+	var beginOpts []gowebauthn.RegistrationOption
+	if excludeExisting {
+		beginOpts = append(beginOpts, gowebauthn.WithExclusions(gowebauthn.Credentials(waUser.credentials).CredentialDescriptors()))
+	}
+	creation, session, err := w.BeginRegistration(waUser, beginOpts...)
+	if err != nil {
+		return "", "", "", fmt.Errorf("begin registration: %w", err)
+	}
+	sessionID, optionsJSON, err = s.persistSession(ctx, kind, userID, ceremonyPayload(rpID, tokenHash), session, creation)
+	return sessionID, optionsJSON, rpID, err
+}
+
+// verifyRegistration consumes a registration ceremony and validates the
+// attestation against an identity-only user (CreateCredential compares
+// only WebAuthnID). An empty expectedUserID derives the owner from the
+// session row. expectedTokenHash is the recovery bind; empty skips it.
+func (s *Service) verifyRegistration(ctx context.Context, sessionID, wantKind, expectedUserID, expectedTokenHash, credentialJSON string) (string, FinishedSignUpCredential, error) {
+	row, sessionData, err := s.consumeCeremonySession(ctx, sessionID, wantKind, expectedTokenHash)
+	if err != nil {
+		return "", FinishedSignUpCredential{}, err
+	}
+	userID := expectedUserID
+	if userID == "" {
+		if row.UserID == "" {
+			return "", FinishedSignUpCredential{}, fmt.Errorf("%w: missing user", ErrCeremonyInvalid)
+		}
+		userID = row.UserID
+	} else if row.UserID != expectedUserID {
+		return "", FinishedSignUpCredential{}, fmt.Errorf("%w: owner mismatch", ErrCeremonyInvalid)
+	}
+	w, waUser, err := s.loadUserIdentity(ctx, userID, ceremonyRPID(row.PayloadJSON))
+	if err != nil {
+		return "", FinishedSignUpCredential{}, err
+	}
+	cred, err := verifyAttestation(w, waUser, *sessionData, credentialJSON)
+	if err != nil {
+		return "", FinishedSignUpCredential{}, err
+	}
+	return userID, cred, nil
 }
 
 // BeginElevation starts a passkey assertion for step-up authentication.
@@ -448,15 +525,17 @@ func (s *Service) persistSession(ctx context.Context, kind, userID, payload stri
 	// next per-user kind, and the accumulation that follows is invisible until
 	// the table grows.
 	//
+	// Delete-then-Create is two statements. The unique index on (user_id,
+	// kind) for a non-NULL user_id is the invariant that two concurrent
+	// Begins cannot both insert. When Create returns ErrConflict, one retry
+	// deletes the other Begin's row and inserts ours -- the later Begin
+	// replaces the earlier one, the same as two sequential Begins.
+	//
 	// Signup is the one kind that cannot replace by user, because the account
 	// does not exist yet and there is no users FK to key on; captcha on
 	// BeginSignUp limits anonymous accumulation instead. A blank userID is
-	// the same condition seen from the caller's side.
-	if userID != "" && kind != KindSignup {
-		if err := s.store.WebAuthnSessions().DeleteByUserAndKind(ctx, userID, kind); err != nil {
-			return "", "", fmt.Errorf("clear prior %s ceremony: %w", kind, err)
-		}
-	}
+	// the same condition seen from the caller's side. Those rows store
+	// NULL user_id, so they sit outside the unique index.
 	sessionID = id.Generate()
 	enc, err := s.encryptSessionData(sessionID, session)
 	if err != nil {
@@ -471,7 +550,7 @@ func (s *Service) persistSession(ctx context.Context, kind, userID, payload stri
 		payloadJSON = encPayload
 	}
 	now := time.Now().UTC()
-	if err := s.store.WebAuthnSessions().Create(ctx, store.CreateWebAuthnSessionParams{
+	params := store.CreateWebAuthnSessionParams{
 		ID:          sessionID,
 		Kind:        kind,
 		UserID:      userID,
@@ -479,8 +558,20 @@ func (s *Service) persistSession(ctx context.Context, kind, userID, payload stri
 		SessionData: enc,
 		ExpiresAt:   now.Add(CeremonyTTL),
 		CreatedAt:   now,
-	}); err != nil {
-		return "", "", fmt.Errorf("store session: %w", err)
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		if userID != "" && kind != KindSignup {
+			if err := s.store.WebAuthnSessions().DeleteByUserAndKind(ctx, userID, kind); err != nil {
+				return "", "", fmt.Errorf("clear prior %s ceremony: %w", kind, err)
+			}
+		}
+		err = s.store.WebAuthnSessions().Create(ctx, params)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, store.ErrConflict) || attempt == 1 {
+			return "", "", fmt.Errorf("store session: %w", err)
+		}
 	}
 	optionsJSON, err = marshalOptions(options)
 	if err != nil {
@@ -507,18 +598,26 @@ func ceremonyRPID(payload string) string {
 	return meta.RPID
 }
 
-func ceremonyPayload(rpID string) string {
-	b, err := json.Marshal(ceremonyMeta{RPID: rpID})
+func ceremonyPayload(rpID, tokenHash string) string {
+	b, err := json.Marshal(ceremonyMeta{RPID: rpID, TokenHash: tokenHash})
 	if err != nil {
 		return "{}"
 	}
 	return string(b)
 }
 
+func ceremonyTokenHash(payload string) string {
+	var meta ceremonyMeta
+	if err := json.Unmarshal([]byte(payload), &meta); err != nil {
+		return ""
+	}
+	return meta.TokenHash
+}
+
 // consumeCeremonySession loads a ceremony row then atomically deletes it so a
 // second Finish call cannot reuse the same assertion/attestation. The kind
 // and expiry rules live in the consume SQL; Go does not re-check them.
-func (s *Service) consumeCeremonySession(ctx context.Context, sessionID, wantKind string) (*store.WebAuthnSession, *gowebauthn.SessionData, error) {
+func (s *Service) consumeCeremonySession(ctx context.Context, sessionID, wantKind, expectedTokenHash string) (*store.WebAuthnSession, *gowebauthn.SessionData, error) {
 	row, err := s.store.WebAuthnSessions().Get(ctx, sessionID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -528,6 +627,12 @@ func (s *Service) consumeCeremonySession(ctx context.Context, sessionID, wantKin
 	}
 	if row.Kind != wantKind {
 		return nil, nil, fmt.Errorf("%w: wrong kind", ErrCeremonyInvalid)
+	}
+	if expectedTokenHash != "" {
+		stored := ceremonyTokenHash(row.PayloadJSON)
+		if stored == "" || stored != expectedTokenHash {
+			return nil, nil, fmt.Errorf("%w: recovery token mismatch", ErrCeremonyInvalid)
+		}
 	}
 	data, err := s.decryptSessionData(sessionID, row.SessionData)
 	if err != nil {
@@ -598,6 +703,33 @@ func (s *Service) loadUserWithRPID(ctx context.Context, userID, rpID string) (*g
 		return nil, nil, 0, err
 	}
 	return w, waUser, int64(len(creds)), nil
+}
+
+// loadUserIdentity loads the user row and the go-webauthn instance with
+// no credential list. Recovery registration uses it because the existing
+// passkeys are revoked at completion and their ciphertext is not needed
+// to mint or verify an attestation (CreateCredential compares WebAuthnID
+// only). Authenticated registration still uses loadUserWithRPID so it
+// can send exclusions.
+func (s *Service) loadUserIdentity(ctx context.Context, userID, rpID string) (*gowebauthn.WebAuthn, *user, error) {
+	u, err := s.store.Users().GetByID(ctx, userID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, nil, fmt.Errorf("user not found")
+		}
+		return nil, nil, fmt.Errorf("load user: %w", err)
+	}
+	waUser := &user{
+		id:          userIDBytes(userID),
+		name:        u.Username,
+		displayName: u.DisplayName,
+		source:      u,
+	}
+	w, err := s.ceremonyWebAuthn(rpID)
+	if err != nil {
+		return nil, nil, err
+	}
+	return w, waUser, nil
 }
 
 // DecryptPublicKey exposes keystore decrypt for tests and reencrypt tooling.

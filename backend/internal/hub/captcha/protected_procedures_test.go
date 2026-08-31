@@ -16,13 +16,14 @@ import (
 // that make an unauthenticated caller run Argon2 or create users, so an
 // entry without a written reason is unaudited.
 var protectedProcedureRationale = map[string]string{
-	leapmuxv1connect.AuthServiceLoginProcedure:                   "runs Argon2 verification for an anonymous caller",
-	leapmuxv1connect.AuthServiceSignUpProcedure:                  "creates a user (Argon2 hash, optional SMTP) for an anonymous caller",
-	leapmuxv1connect.AuthServiceCompleteOAuthSignupProcedure:     "consumes a single-use pending id and creates a user for an anonymous caller",
-	leapmuxv1connect.AuthServiceBeginPasskeyLoginProcedure:       "starts a passkey assertion ceremony for an anonymous caller",
-	leapmuxv1connect.AuthServiceBeginPasskeySignUpProcedure:      "starts a passkey registration ceremony for an anonymous caller",
-	leapmuxv1connect.AuthServiceRequestAccountRecoveryProcedure:  "issues a recovery email for an anonymous caller",
-	leapmuxv1connect.AuthServiceCompleteAccountRecoveryProcedure: "runs Argon2 and rotates credentials for an anonymous caller with a recovery token",
+	leapmuxv1connect.AuthServiceLoginProcedure:                           "runs Argon2 verification for an anonymous caller",
+	leapmuxv1connect.AuthServiceSignUpProcedure:                          "creates a user (Argon2 hash, optional SMTP) for an anonymous caller",
+	leapmuxv1connect.AuthServiceCompleteOAuthSignupProcedure:             "consumes a single-use pending id and creates a user for an anonymous caller",
+	leapmuxv1connect.AuthServiceBeginPasskeyLoginProcedure:               "starts a passkey assertion ceremony for an anonymous caller",
+	leapmuxv1connect.AuthServiceBeginPasskeySignUpProcedure:              "starts a passkey registration ceremony for an anonymous caller",
+	leapmuxv1connect.AuthServiceRequestAccountRecoveryProcedure:          "issues a recovery email for an anonymous caller",
+	leapmuxv1connect.AuthServiceCompleteAccountRecoveryPasswordProcedure: "runs Argon2 and rotates credentials for an anonymous caller with a recovery token",
+	leapmuxv1connect.AuthServiceBeginAccountRecoveryPasskeyProcedure:     "charges the recovery token's attempt budget and resolves the account for an anonymous caller",
 }
 
 // protectedAuthenticatedRationale is the authenticated sibling of the map
@@ -49,6 +50,7 @@ var captchaExemptRationale = map[string]string{
 	leapmuxv1connect.AuthServiceGetAltchaChallengeProcedure:                 "issues the ALTCHA challenges themselves; protecting it would be circular",
 	leapmuxv1connect.AuthServiceFinishPasskeyLoginProcedure:                 "consumes a short-lived ceremony session; expensive work is in Begin",
 	leapmuxv1connect.AuthServiceFinishPasskeySignUpProcedure:                "consumes a short-lived ceremony session; expensive work is in Begin",
+	leapmuxv1connect.AuthServiceFinishAccountRecoveryPasskeyProcedure:       "consumes a short-lived ceremony session the captcha'd Begin minted",
 	leapmuxv1connect.WorkerConnectorServiceRegisterProcedure:                "caller is a worker process with a registration key, not a human form",
 	leapmuxv1connect.WorkerConnectorServiceConnectProcedure:                 "caller is a worker process with an auth_token, not a human form",
 	leapmuxv1connect.WorkerReconcilerServiceListOwnedTabsForWorkerProcedure: "caller is a worker process with an auth_token, not a human form",

@@ -270,7 +270,7 @@ func (s *AuthService) FinishPasskeySignUp(ctx context.Context, req *connect.Requ
 // RevokePasskeyAuthState removes every passkey artifact a user owns: the
 // credential rows, their in-flight ceremony sessions, and any pending
 // account recovery. The credential-rotation teardown paths (self-service
-// CompleteAccountRecovery, admin ResetPassword, admin DeleteUser, the
+// CompleteAccountRecoveryPassword, admin ResetPassword, admin DeleteUser, the
 // offline recover CLI, and signup rollback) share it, so the next
 // credential type needs one registration here instead of one at each
 // rotation site.
@@ -302,7 +302,7 @@ func RevokePasskeyAuthState(ctx context.Context, tx store.Store, userID string) 
 // RevokeCredentialsAfterRotation ends every bearer a credential rotation
 // invalidates, inside the caller's user-auth transaction: the account's
 // sessions, api tokens, and delegation tokens. The rotation sites --
-// self-service CompleteAccountRecovery, admin ResetPassword, admin
+// self-service CompleteAccountRecoveryPassword, admin ResetPassword, admin
 // DeleteUser, the offline recover CLI, and admin RevokeUserSessions --
 // pair it with RevokePasskeyAuthState (except RevokeUserSessions, which
 // rotates no passkey), so the next credential kind registers in one place

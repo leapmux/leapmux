@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/store"
 )
 
@@ -202,6 +203,7 @@ func (s *Suite) testAccountRecoveryStore(t *testing.T) {
 		revoked, err := st.Users().CompleteRecovery(ctx, store.CompleteRecoveryParams{
 			ID:                   user.ID,
 			PasswordHash:         hashFor("newpass"),
+			PasswordSet:          true,
 			PendingRecoveryToken: token,
 		})
 		require.NoError(t, err)
@@ -224,8 +226,128 @@ func (s *Suite) testAccountRecoveryStore(t *testing.T) {
 		_, err = st.Users().CompleteRecovery(ctx, store.CompleteRecoveryParams{
 			ID:                   user.ID,
 			PasswordHash:         hashFor("replay"),
+			PasswordSet:          true,
 			PendingRecoveryToken: token,
 		})
+		require.ErrorIs(t, err, store.ErrNotFound)
+	})
+
+	t.Run("complete with passkey clears the password and clears the pending row", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "reset-complete-passkey-user")
+		token := "tok-complete-passkey"
+		minted, err := st.Users().SetPendingRecovery(ctx, store.SetPendingRecoveryParams{
+			ID:                         user.ID,
+			PendingRecoveryToken:       token,
+			PendingRecoveryExpiresAt:   time.Now().Add(time.Hour).UTC(),
+			PendingRecoveryUnblockedAt: time.Now().UTC().Add(time.Minute),
+			Now:                        time.Now().UTC(),
+		})
+		require.NoError(t, err)
+		require.True(t, minted)
+
+		revoked, err := st.Users().CompleteRecovery(ctx, store.CompleteRecoveryParams{
+			ID:                   user.ID,
+			PasswordHash:         password.PlaceholderHash,
+			PasswordSet:          false,
+			PendingRecoveryToken: token,
+		})
+		require.NoError(t, err)
+		assert.Equal(t, user.AuthGeneration+1, revoked.AuthGeneration)
+
+		after, err := st.Users().GetByID(ctx, user.ID)
+		require.NoError(t, err)
+		assert.Equal(t, password.PlaceholderHash, after.PasswordHash)
+		assert.False(t, after.PasswordSet)
+		assert.Empty(t, after.PendingRecoveryToken)
+		assert.Nil(t, after.PendingRecoveryExpiresAt)
+		assert.Nil(t, after.PendingRecoveryUnblockedAt)
+		assert.Zero(t, after.PendingRecoveryAttempts)
+
+		// A replayed completion matches no row, and neither does the
+		// password path's completion on the same spent token.
+		_, err = st.Users().CompleteRecovery(ctx, store.CompleteRecoveryParams{
+			ID:                   user.ID,
+			PasswordHash:         password.PlaceholderHash,
+			PasswordSet:          false,
+			PendingRecoveryToken: token,
+		})
+		require.ErrorIs(t, err, store.ErrNotFound)
+		_, err = st.Users().CompleteRecovery(ctx, store.CompleteRecoveryParams{
+			ID:                   user.ID,
+			PasswordHash:         hashFor("late"),
+			PasswordSet:          true,
+			PendingRecoveryToken: token,
+		})
+		require.ErrorIs(t, err, store.ErrNotFound)
+	})
+
+	t.Run("conditional mint does not overwrite another elapsed account", func(t *testing.T) {
+		st := s.NewStore(t)
+		a := SeedUser(t, st, "mint-elapsed-a")
+		b := SeedUser(t, st, "mint-elapsed-b")
+		issued := time.Now().UTC()
+
+		mintA, err := st.Users().SetPendingRecovery(ctx, store.SetPendingRecoveryParams{
+			ID:                         a.ID,
+			PendingRecoveryToken:       "tok-a",
+			PendingRecoveryExpiresAt:   issued.Add(time.Hour),
+			PendingRecoveryUnblockedAt: issued.Add(time.Minute),
+			Now:                        issued,
+		})
+		require.NoError(t, err)
+		require.True(t, mintA)
+		mintB, err := st.Users().SetPendingRecovery(ctx, store.SetPendingRecoveryParams{
+			ID:                         b.ID,
+			PendingRecoveryToken:       "tok-b",
+			PendingRecoveryExpiresAt:   issued.Add(time.Hour),
+			PendingRecoveryUnblockedAt: issued.Add(time.Minute),
+			Now:                        issued,
+		})
+		require.NoError(t, err)
+		require.True(t, mintB)
+
+		later := issued.Add(time.Minute)
+		mintA2, err := st.Users().SetPendingRecovery(ctx, store.SetPendingRecoveryParams{
+			ID:                         a.ID,
+			PendingRecoveryToken:       "tok-a2",
+			PendingRecoveryExpiresAt:   later.Add(time.Hour),
+			PendingRecoveryUnblockedAt: later.Add(time.Minute),
+			Now:                        later,
+		})
+		require.NoError(t, err)
+		require.True(t, mintA2)
+
+		afterB, err := st.Users().GetByID(ctx, b.ID)
+		require.NoError(t, err)
+		assert.Equal(t, "tok-b", afterB.PendingRecoveryToken,
+			"a remint for A must not write A's token onto B whose cooldown also elapsed")
+	})
+
+	t.Run("live-token lookup refuses a force-expired row", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "live-token-user")
+		token := "tok-live-lookup"
+		now := time.Now().UTC()
+		minted, err := st.Users().SetPendingRecovery(ctx, store.SetPendingRecoveryParams{
+			ID:                         user.ID,
+			PendingRecoveryToken:       token,
+			PendingRecoveryExpiresAt:   now.Add(24 * time.Hour),
+			PendingRecoveryUnblockedAt: now.Add(time.Minute),
+			Now:                        now,
+		})
+		require.NoError(t, err)
+		require.True(t, minted)
+
+		live, err := st.Users().GetByLiveRecoveryToken(ctx, token, now)
+		require.NoError(t, err)
+		assert.Equal(t, user.ID, live.ID)
+
+		for i := 1; i <= 6; i++ {
+			_, err := st.Users().ConsumeRecoveryAttemptByToken(ctx, token, now, 5)
+			require.NoErrorf(t, err, "consume iteration %d failed", i)
+		}
+		_, err = st.Users().GetByLiveRecoveryToken(ctx, token, now)
 		require.ErrorIs(t, err, store.ErrNotFound)
 	})
 }

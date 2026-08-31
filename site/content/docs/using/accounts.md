@@ -230,11 +230,13 @@ When the hub has SMTP configured, the login page offers **Can't sign in?** under
 
 1. Open **Can't sign in?** or visit `/recover-account`.
 2. Enter your **email or username** and click **Send recovery link**.
-3. Open the emailed link (or paste the token from `/recover-account/complete?token=…`) and choose a new password — the account's **first** one if it never had a password.
+3. Open the emailed link (or paste the token from `/recover-account/complete?token=…`) and spend it on a replacement sign-in factor:
+   - **Set new password** — the account's **first** one if it never had a password.
+   - **Recover with passkey** — enroll a new passkey instead (offered when the hub runs passkey ceremonies). This also **removes the password**.
 
-The link is **single-use** and **expires after one hour**, and it stays unspent until you submit a new password. If the browser is already signed in when you open it, the page says so and offers **Sign out and continue** — sign out, and the same address shows the form. The hub answers the request identically whether or not the identifier matched, so the flow cannot be used to probe which accounts exist.
+The link is **single-use** and **expires after one hour**, and it stays unspent until you submit the completion. Either path draws on one five-attempt budget. If the browser is already signed in when you open it, the page says so and offers **Sign out and continue** — sign out, and the same address shows the form. The hub answers the request identically whether or not the identifier matched, so the flow cannot be used to probe which accounts exist.
 
-Completing recovery **clears every passkey** on the account, revokes other sessions, and revokes API/delegation tokens — the same break-glass posture as an admin password reset. Linked providers stay linked. Sign in with the new password and add a passkey again if you still want passwordless sign-in.
+Completing recovery **clears every passkey** on the account, revokes other sessions, and revokes API/delegation tokens — the same break-glass posture as an admin password reset. Linked providers stay linked. Sign in with the factor you chose: the new password, or the passkey the recovery enrolled.
 
 An **unverified** email address gets no link. Verify it from **Preferences → Account** while you can still sign in; when you cannot sign in at all (for example, the first admin never verified the address), an administrator can set a password with `leapmux control admin user reset-password` or the offline `leapmux recover password reset` (see [Admin CLI](/docs/admin/admin-cli/) and [Recovery](/docs/admin/recover/)).
 
