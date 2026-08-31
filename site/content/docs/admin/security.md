@@ -310,7 +310,7 @@ A cookie captured earlier in the day therefore cannot attach a credential that o
 - **Removing your last passkey from an account that has no password** also needs a new password, in the same request: you must retain *some* sign-in method. With a password already set, removing the last passkey asks for nothing extra.
 - **Disabling passkey sign-in** on a passkey-only account also needs a new password, for the same reason.
 
-Self-service **account recovery** and admin **reset-password** both **delete every passkey** on the account. That is deliberate: recovery is break-glass, and leaving old passkeys registered would let someone who still holds a device sign back in without knowing the new password.
+Self-service **account recovery** and admin **reset-password** both **delete every passkey** on the account. That is deliberate: recovery is break-glass, and leaving old passkeys registered would let someone who still holds a device sign back in without knowing the new factor. When recovery is completed with a passkey instead of a password, the password is cleared too, so the enrolled passkey is the only passkey left. Linked providers stay linked.
 
 ## App credentials
 

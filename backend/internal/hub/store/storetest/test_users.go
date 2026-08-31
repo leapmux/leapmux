@@ -599,6 +599,56 @@ func (s *Suite) testUsers(t *testing.T) {
 		assert.True(t, minted)
 	})
 
+	t.Run("pending email mint does not overwrite another elapsed account", func(t *testing.T) {
+		st := s.NewStore(t)
+		a := SeedUser(t, st, "pending-elapsed-a")
+		b := SeedUser(t, st, "pending-elapsed-b")
+		issued := time.Now().UTC()
+		expires := issued.Add(time.Hour)
+		tokenA := verifycode.Generate()
+		tokenB := verifycode.Generate()
+
+		mintA, err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
+			ID:                      a.ID,
+			PendingEmail:            "a@example.com",
+			PendingEmailToken:       tokenA,
+			PendingEmailExpiresAt:   &expires,
+			PendingEmailUnblockedAt: issued.Add(time.Minute),
+			Now:                     issued,
+		})
+		require.NoError(t, err)
+		require.True(t, mintA)
+		mintB, err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
+			ID:                      b.ID,
+			PendingEmail:            "b@example.com",
+			PendingEmailToken:       tokenB,
+			PendingEmailExpiresAt:   &expires,
+			PendingEmailUnblockedAt: issued.Add(time.Minute),
+			Now:                     issued,
+		})
+		require.NoError(t, err)
+		require.True(t, mintB)
+
+		later := issued.Add(time.Minute)
+		laterExpires := later.Add(time.Hour)
+		mintA2, err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
+			ID:                      a.ID,
+			PendingEmail:            "a2@example.com",
+			PendingEmailToken:       verifycode.Generate(),
+			PendingEmailExpiresAt:   &laterExpires,
+			PendingEmailUnblockedAt: later.Add(time.Minute),
+			Now:                     later,
+		})
+		require.NoError(t, err)
+		require.True(t, mintA2)
+
+		afterB, err := st.Users().GetByID(ctx, b.ID)
+		require.NoError(t, err)
+		assert.Equal(t, "b@example.com", afterB.PendingEmail)
+		assert.Equal(t, tokenB, afterB.PendingEmailToken,
+			"a remint for A must not write A's code onto B whose cooldown also elapsed")
+	})
+
 	// ClearPendingEmailCode is the failed-send path: it must drop the code
 	// and KEEP the address, because a verification-required sign-up stores
 	// the address only in pending_email.

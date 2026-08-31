@@ -74,6 +74,24 @@ describe('createAuthMethodSelection', () => {
     })
   })
 
+  it('derives the recovery captcha actions for both methods', () => {
+    setSystemInfoMock({ passkeyBlocker: null })
+    createRoot((dispose) => {
+      const recovery = createAuthMethodSelection('recovery')
+      expect(recovery.captchaAction()).toBe('account_recovery_password')
+
+      recovery.select('passkey')
+      expect(recovery.captchaAction()).toBe('account_recovery_passkey')
+
+      // The fallback rule covers the recovery kind too: a hub that stops
+      // serving this origin mid-form must not send the hub a passkey
+      // token for a password submission.
+      setSystemInfoMock({ passkeyBlocker: 'origin-not-allowed' })
+      expect(recovery.captchaAction()).toBe('account_recovery_password')
+      dispose()
+    })
+  })
+
   it('keeps two selections independent', () => {
     setSystemInfoMock({ passkeyBlocker: null })
     createRoot((dispose) => {

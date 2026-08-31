@@ -391,3 +391,19 @@ func TestRevokedTokenSweepsAreSargable(t *testing.T) {
 			"%s sweep must carry the UPPER limit into the index seek (the datetime() wrap loses it and scans every revoked row)", tc.table)
 	}
 }
+
+// TestWebAuthnSessionsUserKindIndexIsPartialUnique pins the index that makes
+// two concurrent Begin* calls fail at insert instead of leaving two encrypted
+// rows. persistSession is Delete then Create; without UNIQUE the race is
+// invisible to every sequential storetest. The WHERE excludes signup (NULL
+// user_id) so concurrent anonymous ceremonies can coexist.
+func TestWebAuthnSessionsUserKindIndexIsPartialUnique(t *testing.T) {
+	_, db := newSessionTestStore(t)
+	sqlText := indexSQL(t, db, "webauthn_sessions", "idx_webauthn_sessions_user_kind")
+	upper := strings.ToUpper(sqlText)
+	assert.Contains(t, upper, "UNIQUE",
+		"idx_webauthn_sessions_user_kind must be UNIQUE so two concurrent Begins cannot leave two rows of the same (user_id, kind)")
+	assert.Contains(t, upper, "(USER_ID, KIND)")
+	assert.Contains(t, upper, "WHERE USER_ID IS NOT NULL",
+		"the unique index must exclude signup rows (NULL user_id); a non-partial UNIQUE still allows multiple NULLs on SQLite but hides the intent")
+}

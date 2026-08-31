@@ -241,23 +241,29 @@ func TestRun_DeletesExpiredWebAuthnSessions(t *testing.T) {
 	st := setupTestStore(t)
 	ctx := context.Background()
 
-	userID := id.Generate()
 	hash, err := password.Hash("TestPassword1!")
 	require.NoError(t, err)
+	expiredUserID := id.Generate()
+	liveUserID := id.Generate()
 	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
-		ID: userID, Username: "wauser",
-		PasswordHash: hash, DisplayName: "WA", PasswordSet: true,
+		ID: expiredUserID, Username: "wauser-expired",
+		PasswordHash: hash, DisplayName: "WA Expired", PasswordSet: true,
+	}))
+	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
+		ID: liveUserID, Username: "wauser-live",
+		PasswordHash: hash, DisplayName: "WA Live", PasswordSet: true,
 	}))
 
 	expiredID := id.Generate()
 	liveID := id.Generate()
 	now := time.Now().UTC()
+	// Two users, same kind: one live ceremony per (user_id, kind).
 	require.NoError(t, st.WebAuthnSessions().Create(ctx, store.CreateWebAuthnSessionParams{
-		ID: expiredID, Kind: "login", UserID: userID, PayloadJSON: "{}",
+		ID: expiredID, Kind: "login", UserID: expiredUserID, PayloadJSON: "{}",
 		SessionData: []byte("x"), ExpiresAt: now.Add(-time.Hour), CreatedAt: now.Add(-2 * time.Hour),
 	}))
 	require.NoError(t, st.WebAuthnSessions().Create(ctx, store.CreateWebAuthnSessionParams{
-		ID: liveID, Kind: "login", UserID: userID, PayloadJSON: "{}",
+		ID: liveID, Kind: "login", UserID: liveUserID, PayloadJSON: "{}",
 		SessionData: []byte("y"), ExpiresAt: now.Add(time.Hour), CreatedAt: now,
 	}))
 

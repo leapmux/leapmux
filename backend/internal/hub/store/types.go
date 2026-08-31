@@ -1306,6 +1306,7 @@ type SetPendingRecoveryParams struct {
 type CompleteRecoveryParams struct {
 	ID                   string
 	PasswordHash         string
+	PasswordSet          bool
 	PendingRecoveryToken string
 }
 

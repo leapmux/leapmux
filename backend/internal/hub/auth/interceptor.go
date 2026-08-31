@@ -61,13 +61,18 @@ var publicProcedures = map[string]bool{
 	// fetchable before login. The captcha interceptor guards the
 	// procedures that consume solutions, not the one that issues
 	// challenges.
-	leapmuxv1connect.AuthServiceGetAltchaChallengeProcedure:      true,
-	leapmuxv1connect.AuthServiceBeginPasskeyLoginProcedure:       true,
-	leapmuxv1connect.AuthServiceFinishPasskeyLoginProcedure:      true,
-	leapmuxv1connect.AuthServiceBeginPasskeySignUpProcedure:      true,
-	leapmuxv1connect.AuthServiceFinishPasskeySignUpProcedure:     true,
-	leapmuxv1connect.AuthServiceRequestAccountRecoveryProcedure:  true,
-	leapmuxv1connect.AuthServiceCompleteAccountRecoveryProcedure: true,
+	leapmuxv1connect.AuthServiceGetAltchaChallengeProcedure:              true,
+	leapmuxv1connect.AuthServiceBeginPasskeyLoginProcedure:               true,
+	leapmuxv1connect.AuthServiceFinishPasskeyLoginProcedure:              true,
+	leapmuxv1connect.AuthServiceBeginPasskeySignUpProcedure:              true,
+	leapmuxv1connect.AuthServiceFinishPasskeySignUpProcedure:             true,
+	leapmuxv1connect.AuthServiceRequestAccountRecoveryProcedure:          true,
+	leapmuxv1connect.AuthServiceCompleteAccountRecoveryPasswordProcedure: true,
+	// The passkey path of recovery: authorized by the emailed recovery token
+	// (attempt-capped at the handler), not by a session, so both procedures
+	// are public like the passkey signup pair above.
+	leapmuxv1connect.AuthServiceBeginAccountRecoveryPasskeyProcedure:  true,
+	leapmuxv1connect.AuthServiceFinishAccountRecoveryPasskeyProcedure: true,
 }
 
 // PublicProcedures lists every procedure the auth interceptor waives, so

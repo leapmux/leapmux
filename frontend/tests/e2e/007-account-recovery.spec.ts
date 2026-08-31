@@ -5,12 +5,18 @@ import {
   listPasskeysViaAPI,
   loginViaAPI,
   readPendingEmailToken,
+  signUpViaAPI,
   verifyEmailViaAPI,
 } from './helpers/api'
 import { extractAccountRecoveryToken, withCaptureSmtp } from './helpers/mail'
 import { hubDataDir } from './helpers/server'
 import { loginViaToken, loginViaUI, logoutViaUI, solveCaptchaViaUI } from './helpers/ui'
-import { enableVirtualAuthenticator, loginWithPasskeyViaAPIInBrowser, signUpWithPasskeyViaAPIInBrowser } from './helpers/webauthn'
+import {
+  addPasskeyViaAPIInBrowser,
+  enableVirtualAuthenticator,
+  loginWithPasskeyViaAPIInBrowser,
+  signUpWithPasskeyViaAPIInBrowser,
+} from './helpers/webauthn'
 
 test.describe('Account recovery', () => {
   test('account recovery flow clears passkeys on completion', async ({ page, leapmuxServer }) => {
@@ -83,6 +89,53 @@ test.describe('Account recovery', () => {
       await page.getByLabel('Username').fill('admin')
       await page.getByLabel('Username').blur()
       await expect(page.getByRole('link', { name: 'Can\'t sign in?' })).toBeVisible()
+    })
+  })
+
+  // The passkey path of recovery: spending the link on a passkey revokes the
+  // old passkeys AND clears the password, so the account afterwards signs
+  // in with the credential the recovery ceremony enrolled. Linked providers
+  // stay.
+  test('account recovery with a passkey clears the password and re-enrolls a passkey', async ({ page, leapmuxServer }) => {
+    await withCaptureSmtp(leapmuxServer, async (smtp) => {
+      await enableVirtualAuthenticator(page)
+
+      const username = `recover-passkey-${Date.now()}`
+      const email = `${username}@test.local`
+      const password = 'oldpass123'
+      const cookie = await signUpViaAPI(leapmuxServer.hubUrl, username, password, '', email)
+      const verifyToken = await readPendingEmailToken(hubDataDir(leapmuxServer.dataDir), username)
+      await verifyEmailViaAPI(leapmuxServer.hubUrl, cookie, verifyToken)
+      await addPasskeyViaAPIInBrowser(page, leapmuxServer.hubUrl, cookie, password)
+      expect((await listPasskeysViaAPI(leapmuxServer.hubUrl, cookie)).length).toBeGreaterThan(0)
+
+      await logoutViaUI(page)
+
+      await page.goto('/recover-account')
+      await page.getByLabel('Email or username').fill(username)
+      await solveCaptchaViaUI(page)
+      const recoveryEmail = smtp.waitForMessage()
+      await page.getByRole('button', { name: 'Send recovery link' }).click()
+      const token = extractAccountRecoveryToken(await recoveryEmail)
+
+      await page.goto(`/recover-account/complete?token=${encodeURIComponent(token)}`)
+      await page.getByRole('radio', { name: 'Passkey' }).click()
+      await expect(page.getByLabel('New Password')).not.toBeVisible()
+      await solveCaptchaViaUI(page)
+      await page.getByRole('button', { name: 'Recover with passkey' }).click()
+      await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible()
+
+      // The account is passkey-only now: the password the flow cleared no
+      // longer authenticates, and one passkey -- the recovery's -- remains.
+      const passwordAttempt = await fetch(`${leapmuxServer.hubUrl}/leapmux.v1.AuthService/Login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      })
+      expect(passwordAttempt.ok).toBe(false)
+
+      const newCookie = await loginWithPasskeyViaAPIInBrowser(page, leapmuxServer.hubUrl, username)
+      expect(await listPasskeysViaAPI(leapmuxServer.hubUrl, newCookie)).toHaveLength(1)
     })
   })
 })

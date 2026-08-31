@@ -178,7 +178,7 @@ func (r Renderer) AccountRecoveryEmail(to, token string, ttl time.Duration) Mess
 	// and render "%!o(string=F)f an hour" into the delivered mail.
 	body := fmt.Sprintf(
 		"You asked to recover your LeapMux account.\n\n"+
-			"Click the link below to set a new password and sign back in:\n\n    %s\n\n"+
+			"Click the link below to set a new password or passkey and sign back in:\n\n    %s\n\n"+
 			"The link expires in %s. If you did not request this, you can ignore this email.\n\n%s",
 		link,
 		expiresIn(ttl),

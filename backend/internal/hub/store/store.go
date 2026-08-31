@@ -150,6 +150,11 @@ type UserStore interface {
 	// ClearPendingEmailCode for the stamp's meaning.
 	ClearPendingRecovery(ctx context.Context, p ClearPendingRecoveryParams) error
 	ConsumeRecoveryAttemptByToken(ctx context.Context, tokenHash string, now time.Time, maxAttempts int64) (*User, error)
+	// GetByLiveRecoveryToken returns the account that still holds this
+	// recovery token, with no attempt charge. Finish uses it so a
+	// force-expired or reminted token cannot consume a ceremony minted
+	// under a previous token.
+	GetByLiveRecoveryToken(ctx context.Context, tokenHash string, now time.Time) (*User, error)
 	CompleteRecovery(ctx context.Context, p CompleteRecoveryParams) (*RecoveryRevocation, error)
 	// Delete soft-deletes the user.
 	Delete(ctx context.Context, id string) error

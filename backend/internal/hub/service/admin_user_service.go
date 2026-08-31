@@ -877,7 +877,7 @@ func (s *AdminUserService) ResetPassword(ctx context.Context, req *connect.Reque
 				return fmt.Errorf("update password: %w", err)
 			}
 			// Admin password reset is break-glass: clear passkeys the same
-			// way self-service CompleteAccountRecovery does, so a lost-device
+			// way self-service CompleteAccountRecoveryPassword does, so a lost-device
 			// recovery cannot leave orphan credentials, and a recovery link
 			// requested before this emergency reset must not stay
 			// completable.

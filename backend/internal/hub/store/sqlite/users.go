@@ -449,9 +449,22 @@ func (s *userStore) ConsumeRecoveryAttemptByToken(ctx context.Context, tokenHash
 	return &out, nil
 }
 
+func (s *userStore) GetByLiveRecoveryToken(ctx context.Context, tokenHash string, now time.Time) (*store.User, error) {
+	u, err := s.conn.q.GetUserByLiveRecoveryToken(ctx, gendb.GetUserByLiveRecoveryTokenParams{
+		Token: tokenHash,
+		Now:   sqltime.SQLiteNullTimeOf(now),
+	})
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	out := fromDBUser(u)
+	return &out, nil
+}
+
 func (s *userStore) CompleteRecovery(ctx context.Context, p store.CompleteRecoveryParams) (*store.RecoveryRevocation, error) {
 	row, err := s.conn.q.CompleteRecovery(ctx, gendb.CompleteRecoveryParams{
 		PasswordHash:         p.PasswordHash,
+		PasswordSet:          ptrconv.BoolToInt64(p.PasswordSet),
 		ID:                   p.ID,
 		PendingRecoveryToken: p.PendingRecoveryToken,
 	})

@@ -351,3 +351,71 @@ func TestBeginSignUpAllocatesItsOwnUserID(t *testing.T) {
 		"BeginSignUp must discard a caller-supplied user id")
 	assert.NotEmpty(t, string(handle), "BeginSignUp must allocate one of its own")
 }
+
+func TestBeginRecoveryRegistration_IgnoresUndecryptablePasskeys(t *testing.T) {
+	svc, st := newMigratedWebAuthnService(t)
+	userID := seedUser(t, st)
+
+	require.NoError(t, st.PasskeyCredentials().Create(context.Background(), store.CreatePasskeyCredentialParams{
+		ID:           id.Generate(),
+		UserID:       userID,
+		CredentialID: []byte{0x01, 0x02, 0x03, 0x04},
+		PublicKey:    []byte("not-ciphertext"),
+		SignCount:    0,
+		Transports:   "[]",
+		FriendlyName: "Lost",
+		KeyVersion:   1,
+		CreatedAt:    time.Now().UTC(),
+	}))
+
+	sessionID, optionsJSON, _, err := svc.BeginRecoveryRegistration(context.Background(), userID, "", "tok-hash")
+	require.NoError(t, err)
+	assert.NotEmpty(t, sessionID)
+	assert.NotEmpty(t, optionsJSON)
+
+	_, _, _, err = svc.BeginRegistration(context.Background(), userID, "")
+	require.Error(t, err, "authenticated registration still decrypts existing passkeys")
+}
+
+func TestBeginRecoveryRegistration_RequiresTokenHash(t *testing.T) {
+	svc, st := newMigratedWebAuthnService(t)
+	userID := seedUser(t, st)
+
+	_, _, _, err := svc.BeginRecoveryRegistration(context.Background(), userID, "", "")
+	require.Error(t, err)
+}
+
+func TestBeginRecoveryRegistration_ReplacesPriorCeremony(t *testing.T) {
+	svc, st := newMigratedWebAuthnService(t)
+	userID := seedUser(t, st)
+
+	firstID, _, _, err := svc.BeginRecoveryRegistration(context.Background(), userID, "", "tok-hash")
+	require.NoError(t, err)
+	secondID, _, _, err := svc.BeginRecoveryRegistration(context.Background(), userID, "", "tok-hash")
+	require.NoError(t, err)
+	assert.NotEqual(t, firstID, secondID)
+
+	_, err = st.WebAuthnSessions().Get(context.Background(), firstID)
+	assert.ErrorIs(t, err, store.ErrNotFound)
+	_, err = st.WebAuthnSessions().Get(context.Background(), secondID)
+	require.NoError(t, err)
+}
+
+func TestVerifyRecoveryRegistration_TokenMismatchDoesNotConsume(t *testing.T) {
+	svc, st := newMigratedWebAuthnService(t)
+	userID := seedUser(t, st)
+
+	sessionID, _, _, err := svc.BeginRecoveryRegistration(context.Background(), userID, "", "tok-hash")
+	require.NoError(t, err)
+
+	_, _, err = svc.VerifyRecoveryRegistration(context.Background(), sessionID, "{}", "other-hash")
+	require.ErrorIs(t, err, webauthn.ErrCeremonyInvalid)
+
+	_, err = st.WebAuthnSessions().Get(context.Background(), sessionID)
+	require.NoError(t, err, "a hash mismatch must leave the ceremony session in place")
+
+	_, _, err = svc.VerifyRecoveryRegistration(context.Background(), sessionID, "{}", "tok-hash")
+	require.Error(t, err)
+	_, err = st.WebAuthnSessions().Get(context.Background(), sessionID)
+	assert.ErrorIs(t, err, store.ErrNotFound, "the matching hash consumes the session even when attestation then fails")
+}

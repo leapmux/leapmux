@@ -10,7 +10,7 @@ import { passkeyBlockerMessage } from '~/lib/webauthn'
 export type AuthMethod = 'password' | 'passkey'
 
 /** Which form the selection belongs to. Only the captcha action differs. */
-export type AuthMethodKind = 'login' | 'signup'
+export type AuthMethodKind = 'login' | 'signup' | 'recovery'
 
 /**
  * The captcha action bound into an external provider's token. The hub
@@ -20,7 +20,7 @@ export type AuthMethodKind = 'login' | 'signup'
  * action breaks this union at compile time instead of at the hub's
  * action check.
  */
-export type AuthCaptchaAction = Extract<CaptchaAction, 'login' | 'signup' | 'passkey_login' | 'passkey_signup'>
+export type AuthCaptchaAction = Extract<CaptchaAction, 'login' | 'signup' | 'passkey_login' | 'passkey_signup' | 'account_recovery_password' | 'account_recovery_passkey'>
 
 export interface AuthMethodSelection {
   /**
@@ -36,6 +36,13 @@ export interface AuthMethodSelection {
   /** The captcha action for the effective method. */
   captchaAction: Accessor<AuthCaptchaAction>
 }
+
+/** Kind × method → captcha action. A new kind is a compile error here, not a fallthrough. */
+const CAPTCHA_ACTIONS = {
+  login: { password: 'login', passkey: 'passkey_login' },
+  signup: { password: 'signup', passkey: 'passkey_signup' },
+  recovery: { password: 'account_recovery_password', passkey: 'account_recovery_passkey' },
+} as const satisfies Record<AuthMethodKind, Record<AuthMethod, AuthCaptchaAction>>
 
 /**
  * Owns the credential-kind choice for an auth form.
@@ -55,11 +62,7 @@ export function createAuthMethodSelection(kind: AuthMethodKind): AuthMethodSelec
   const effectiveMethod = (): AuthMethod =>
     method() === 'passkey' && passkeyBlocker() === null ? 'passkey' : 'password'
 
-  const captchaAction = (): AuthCaptchaAction => {
-    if (effectiveMethod() === 'passkey')
-      return kind === 'login' ? 'passkey_login' : 'passkey_signup'
-    return kind
-  }
+  const captchaAction = (): AuthCaptchaAction => CAPTCHA_ACTIONS[kind][effectiveMethod()]
 
   return { effectiveMethod, select: setMethod, captchaAction }
 }

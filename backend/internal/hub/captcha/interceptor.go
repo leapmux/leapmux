@@ -27,7 +27,8 @@ var (
 	_ captchaRequest = (*leapmuxv1.BeginPasskeyLoginRequest)(nil)
 	_ captchaRequest = (*leapmuxv1.BeginPasskeySignUpRequest)(nil)
 	_ captchaRequest = (*leapmuxv1.RequestAccountRecoveryRequest)(nil)
-	_ captchaRequest = (*leapmuxv1.CompleteAccountRecoveryRequest)(nil)
+	_ captchaRequest = (*leapmuxv1.CompleteAccountRecoveryPasswordRequest)(nil)
+	_ captchaRequest = (*leapmuxv1.BeginAccountRecoveryPasskeyRequest)(nil)
 	_ captchaRequest = (*leapmuxv1.VerifyEmailRequest)(nil)
 	_ captchaRequest = (*leapmuxv1.ResendVerificationEmailRequest)(nil)
 )
@@ -56,15 +57,23 @@ type protectedProcedure struct {
 // same entry makes a protected procedure without an action structurally
 // impossible.
 var protectedProcedures = map[string]protectedProcedure{
-	leapmuxv1connect.AuthServiceLoginProcedure:                   {action: contracts.CaptchaActionLogin},
-	leapmuxv1connect.AuthServiceSignUpProcedure:                  {action: contracts.CaptchaActionSignup},
-	leapmuxv1connect.AuthServiceCompleteOAuthSignupProcedure:     {action: contracts.CaptchaActionCompleteSignup},
-	leapmuxv1connect.AuthServiceBeginPasskeyLoginProcedure:       {action: contracts.CaptchaActionPasskeyLogin},
-	leapmuxv1connect.AuthServiceBeginPasskeySignUpProcedure:      {action: contracts.CaptchaActionPasskeySignUp},
-	leapmuxv1connect.AuthServiceRequestAccountRecoveryProcedure:  {action: contracts.CaptchaActionAccountRecovery},
-	leapmuxv1connect.AuthServiceCompleteAccountRecoveryProcedure: {action: contracts.CaptchaActionCompleteAccountRecovery},
-	leapmuxv1connect.UserServiceVerifyEmailProcedure:             {action: contracts.CaptchaActionVerifyEmail},
-	leapmuxv1connect.UserServiceResendVerificationEmailProcedure: {action: contracts.CaptchaActionResendVerification},
+	leapmuxv1connect.AuthServiceLoginProcedure:                  {action: contracts.CaptchaActionLogin},
+	leapmuxv1connect.AuthServiceSignUpProcedure:                 {action: contracts.CaptchaActionSignup},
+	leapmuxv1connect.AuthServiceCompleteOAuthSignupProcedure:    {action: contracts.CaptchaActionCompleteSignup},
+	leapmuxv1connect.AuthServiceBeginPasskeyLoginProcedure:      {action: contracts.CaptchaActionPasskeyLogin},
+	leapmuxv1connect.AuthServiceBeginPasskeySignUpProcedure:     {action: contracts.CaptchaActionPasskeySignUp},
+	leapmuxv1connect.AuthServiceRequestAccountRecoveryProcedure: {action: contracts.CaptchaActionAccountRecovery},
+	// account_recovery_password matches account_recovery_passkey. The longer
+	// complete_account_recovery_password exceeds Turnstile's 32-character
+	// action cap.
+	leapmuxv1connect.AuthServiceCompleteAccountRecoveryPasswordProcedure: {action: contracts.CaptchaActionAccountRecoveryPassword},
+	// The recovery passkey Begin charges an attempt against the recovery
+	// token and resolves the account, so it pays the same toll the password
+	// completion does. Finish is captcha-free like every ceremony Finish:
+	// it can only spend a session the captcha'd Begin minted.
+	leapmuxv1connect.AuthServiceBeginAccountRecoveryPasskeyProcedure: {action: contracts.CaptchaActionAccountRecoveryPasskey},
+	leapmuxv1connect.UserServiceVerifyEmailProcedure:                 {action: contracts.CaptchaActionVerifyEmail},
+	leapmuxv1connect.UserServiceResendVerificationEmailProcedure:     {action: contracts.CaptchaActionResendVerification},
 }
 
 // NewInterceptor returns a unary interceptor enforcing captcha + honeypot

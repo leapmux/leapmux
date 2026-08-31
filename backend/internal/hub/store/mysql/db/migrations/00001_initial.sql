@@ -744,7 +744,7 @@ CREATE UNIQUE INDEX idx_passkey_credentials_credential_id ON passkey_credentials
 CREATE INDEX idx_passkey_credentials_user_id ON passkey_credentials(user_id);
 CREATE INDEX idx_passkey_credentials_key_version ON passkey_credentials(key_version);
 
--- Ephemeral WebAuthn ceremony state (signup, login, register, elevation)
+-- Ephemeral WebAuthn ceremony state (signup, login, register, elevation, recovery)
 CREATE TABLE webauthn_sessions (
     id           VARCHAR(255) PRIMARY KEY,
     kind         VARCHAR(32) NOT NULL,
@@ -754,13 +754,17 @@ CREATE TABLE webauthn_sessions (
     expires_at   DATETIME(3) NOT NULL,
     created_at   DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-    CHECK (kind IN ('signup', 'login', 'register', 'elevation'))
+    CHECK (kind IN ('signup', 'login', 'register', 'elevation', 'recovery'))
 ) COLLATE=utf8mb4_bin;
 CREATE INDEX idx_webauthn_sessions_expires_at ON webauthn_sessions(expires_at);
 
--- Ceremony begins delete prior rows per user and kind on every Begin*;
--- without this index each begin full-scans the not-yet-swept rows.
-CREATE INDEX idx_webauthn_sessions_user_kind ON webauthn_sessions(user_id, kind);
+-- One live ceremony per (user_id, kind) for per-user kinds. MySQL has no
+-- partial unique indexes; UNIQUE on a nullable user_id is the equivalent
+-- because InnoDB treats each NULL as distinct, so signup rows (NULL
+-- user_id) coexist. persistSession deletes then inserts; this unique
+-- index is what stops two concurrent Begins from leaving two encrypted
+-- rows, and it also serves the delete-by-user-and-kind lookup.
+CREATE UNIQUE INDEX idx_webauthn_sessions_user_kind ON webauthn_sessions(user_id, kind);
 
 -- Instance-level hub settings: one row per setting key. `value` is a JSON
 -- document whose shape is defined by the owning package's typed key handle

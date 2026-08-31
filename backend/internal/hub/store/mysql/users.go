@@ -539,6 +539,18 @@ func (s *userStore) ConsumeRecoveryAttemptByToken(ctx context.Context, tokenHash
 	return out, err
 }
 
+func (s *userStore) GetByLiveRecoveryToken(ctx context.Context, tokenHash string, now time.Time) (*store.User, error) {
+	u, err := s.conn.q.GetUserByLiveRecoveryToken(ctx, gendb.GetUserByLiveRecoveryTokenParams{
+		Token: tokenHash,
+		Now:   sqltime.MySQLNullTimeOf(now),
+	})
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	out := fromDBUser(u)
+	return &out, nil
+}
+
 func (s *userStore) CompleteRecovery(ctx context.Context, p store.CompleteRecoveryParams) (*store.RecoveryRevocation, error) {
 	var out *store.RecoveryRevocation
 	err := s.conn.withTransaction(ctx, func(conn *mysqlConn) error {
@@ -558,6 +570,7 @@ func (s *userStore) CompleteRecovery(ctx context.Context, p store.CompleteRecove
 		nextGeneration := row.AuthGeneration + 1
 		n, err := rowsAffected(conn.q.CompleteRecovery(ctx, gendb.CompleteRecoveryParams{
 			PasswordHash:         p.PasswordHash,
+			PasswordSet:          p.PasswordSet,
 			TokensRevokedAt:      sqltime.MySQLNullTimeOf(revokedAt),
 			AuthGeneration:       nextGeneration,
 			UpdatedAt:            sqltime.NewMySQLTime(updatedAt),
