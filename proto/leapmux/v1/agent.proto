@@ -678,6 +678,43 @@ message ListAvailableProvidersResponse {
   repeated AgentProvider providers = 1;
 }
 
+// ListAgentSessions offers the sessions a user can resume in one working
+// directory, so the New Agent / New Workspace dialogs can present a list
+// instead of asking the user to remember a session ID.
+//
+// The worker merges two sources: its OWN database, which holds every session
+// LeapMux started, and the selected provider's on-disk session store, which
+// holds sessions started outside LeapMux as well. A handle both sources carry
+// appears once.
+message ListAgentSessionsRequest {
+  string worker_id = 1;
+  // Which provider's sessions to list. A resume handle is only meaningful to
+  // the CLI that issued it, so the answer is per-provider and changes with the
+  // dialog's provider selector.
+  AgentProvider agent_provider = 2;
+  // The directory the sessions must have run in, matched exactly. Every
+  // provider store records a session's working directory, and the sessions of
+  // the directory a user is starting an agent in are the relevant ones.
+  string working_dir = 3;
+}
+
+message AgentSessionSummary {
+  // The resume handle. Goes back on the wire verbatim as
+  // OpenAgentRequest.agent_session_id.
+  string session_id = 1;
+  // A human-readable summary. MAY BE EMPTY: Pi stores no title, and a Claude
+  // session has none until its title pass runs. A client shows the handle in
+  // its place rather than inventing one.
+  string title = 2;
+  // Last activity, RFC3339. Empty when the store recorded none.
+  string updated_at = 3;
+}
+
+message ListAgentSessionsResponse {
+  // Newest first. Capped by the worker; a client does not ask for a count.
+  repeated AgentSessionSummary sessions = 1;
+}
+
 // InterruptAgent asks the worker to abort the agent's current turn. The
 // worker dispatches the appropriate provider-specific signal (SIGINT,
 // stream-control payload, etc.); callers (frontend or CLI) never need to

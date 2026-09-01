@@ -6,11 +6,25 @@ interface SessionIdInputProps {
   state: SessionIdState
 }
 
-/** The visible label, reused as the input's accessible name. */
-const SESSION_ID_LABEL = 'Resume an existing session'
+/**
+ * The visible label of the resume field, reused as the accessible name of
+ * whichever control the field is showing.
+ *
+ * Exported because `ResumeSessionField` swaps between this input and
+ * `SessionSelect`, and the two must answer to ONE name: a screen-reader user
+ * whose label changed when the session list arrived would be told the field
+ * became a different field.
+ */
+export const RESUME_SESSION_LABEL = 'Resume an existing session'
 
-/** The error node's id, so the input can point at it. */
-const SESSION_ID_ERROR_ID = 'session-id-error'
+/**
+ * The error node's id, so the input can point at it.
+ *
+ * Exported and shared with `ResumeSessionField`, which shows the same error
+ * above its menu. The two controls never render together, so one id serves
+ * both and cannot collide.
+ */
+export const RESUME_SESSION_ERROR_ID = 'session-id-error'
 
 /**
  * Optional session-id input used by NewWorkspaceDialog and NewAgentDialog
@@ -31,15 +45,15 @@ const SESSION_ID_ERROR_ID = 'session-id-error'
  */
 export const SessionIdInput: Component<SessionIdInputProps> = props => (
   <LabeledField
-    label={SESSION_ID_LABEL}
+    label={RESUME_SESSION_LABEL}
     error={props.state.error()}
-    errorId={SESSION_ID_ERROR_ID}
+    errorId={RESUME_SESSION_ERROR_ID}
   >
     <input
       type="text"
-      aria-label={SESSION_ID_LABEL}
+      aria-label={RESUME_SESSION_LABEL}
       aria-invalid={props.state.error() ? 'true' : undefined}
-      aria-describedby={props.state.error() ? SESSION_ID_ERROR_ID : undefined}
+      aria-describedby={props.state.error() ? RESUME_SESSION_ERROR_ID : undefined}
       value={props.state.value()}
       onInput={e => props.state.setValue(e.currentTarget.value)}
       placeholder={props.state.isFilePath() ? 'Session ID or file path' : 'Session ID'}

@@ -13,7 +13,7 @@ import { isAgentCreateDisabled } from '~/components/shell/dialogValidation'
 import { DirectorySelector } from '~/components/shell/DirectorySelector'
 import { GitOptions } from '~/components/shell/GitOptions'
 import { GitOptionsLoader } from '~/components/shell/GitOptionsLoader'
-import { SessionIdInput } from '~/components/shell/SessionIdInput'
+import { ResumeSessionField } from '~/components/shell/ResumeSessionField'
 import { TitleInput } from '~/components/shell/TitleInput'
 import { DialogFormFooter, WorkerDialogShell } from '~/components/shell/WorkerDialogShell'
 import { WorkerSelector } from '~/components/shell/WorkerSelector'
@@ -200,7 +200,12 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
         left={<DirectorySelector state={worker} tree={tree} repoGitStore={props.repoGitStore} />}
         right={(
           <>
-            <SessionIdInput state={sessionId} />
+            <ResumeSessionField
+              state={sessionId}
+              workerId={worker.workerId()}
+              workingDir={worker.workingDir()}
+              agentProvider={agentProvider()}
+            />
             <Show when={worker.workerId()}>
               <GitOptionsLoader gitInfo={pathInfo}>
                 {() => (

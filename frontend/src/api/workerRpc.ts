@@ -14,6 +14,7 @@ import type {
   GetAgentMessageResponse,
   InterruptAgentResponse,
   ListAgentMessagesResponse,
+  ListAgentSessionsResponse,
   ListAgentsResponse,
   ListAvailableProvidersResponse,
   ListMessageMarksResponse,
@@ -86,6 +87,8 @@ import {
   InterruptAgentResponseSchema,
   ListAgentMessagesRequestSchema,
   ListAgentMessagesResponseSchema,
+  ListAgentSessionsRequestSchema,
+  ListAgentSessionsResponseSchema,
   ListAgentsRequestSchema,
   ListAgentsResponseSchema,
   ListAvailableProvidersRequestSchema,
@@ -431,6 +434,22 @@ export function deleteAgentMessage(workerId: string, req: MessageInitShape<typeo
 
 export function updateAgentSettings(workerId: string, req: MessageInitShape<typeof UpdateAgentSettingsRequestSchema>): Promise<UpdateAgentSettingsResponse> {
   return callWorker(workerId, 'UpdateAgentSettings', UpdateAgentSettingsRequestSchema, UpdateAgentSettingsResponseSchema, req)
+}
+
+/**
+ * The sessions this worker can offer to resume in one working directory.
+ *
+ * The worker merges its own records with the selected provider's on-disk
+ * session store, so the answer changes with BOTH the provider and the
+ * directory -- pass a fresh `signal` per call and let a later one supersede an
+ * earlier.
+ */
+export function listAgentSessions(
+  workerId: string,
+  req: MessageInitShape<typeof ListAgentSessionsRequestSchema>,
+  opts?: { signal?: AbortSignal },
+): Promise<ListAgentSessionsResponse> {
+  return callWorker(workerId, 'ListAgentSessions', ListAgentSessionsRequestSchema, ListAgentSessionsResponseSchema, req, opts)
 }
 
 export function listAvailableProviders(

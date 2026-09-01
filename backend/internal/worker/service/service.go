@@ -1083,6 +1083,7 @@ func registerAllClassified(d *channel.Dispatcher, svc *Service) (map[string]meth
 	registerGitHandlers(ownerOnly, svc)
 	registerTerminalHandlers(r, svc)
 	registerAgentHandlers(r, svc)
+	registerAgentSessionHandlers(r, svc)
 	registerCleanupHandlers(r, svc)
 	registerSysInfoHandlers(ownerOnly, svc)
 	tunnels := registerTunnelHandlers(ownerOnly)

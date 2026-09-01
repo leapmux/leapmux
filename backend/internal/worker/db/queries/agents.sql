@@ -258,3 +258,39 @@ SELECT tree.id FROM tree;
 -- name: ListAllOpenRootAgentIDs :many
 SELECT id FROM agents WHERE closed_at IS NULL AND parent_agent_id IS NULL;
 
+
+-- ListSessionsForResume lists the resume handles this worker recorded for one
+-- provider in one working directory, newest activity first.
+--
+-- It returns OPEN rows as well as closed ones, although only a closed session
+-- can be offered for resume: an open handle names a session a live process is
+-- already attached to, and the caller needs it as an EXCLUSION set -- the
+-- provider's own store lists that session too, and resuming it into a second
+-- tab would run two processes against one session store. The caller cannot
+-- build that set from a second query without a race between the two reads.
+--
+-- parent_agent_id IS NULL drops the virtual child rows that hold subagent
+-- transcripts. They carry no session of their own to resume.
+--
+-- last_activity reads the newest message's time through the
+-- messages(agent_id, seq) unique index rather than aggregating the agent's
+-- whole transcript. The COALESCE is not only a fallback for a session that
+-- never received a message: it makes the column NOT NULL, which is what the
+-- generated scan needs -- sqlc types a bare correlated subquery as the
+-- non-null SQLiteTime, whose Scan has no branch for a NULL and would fail the
+-- whole query on the first message-less row.
+-- name: ListSessionsForResume :many
+SELECT a.agent_session_id,
+       a.title,
+       a.closed_at,
+       COALESCE(
+         (SELECT m.created_at FROM messages m
+           WHERE m.agent_id = a.id ORDER BY m.seq DESC LIMIT 1),
+         a.created_at
+       ) AS last_activity
+FROM agents a
+WHERE a.agent_provider = ?
+  AND a.working_dir = ?
+  AND a.agent_session_id <> ''
+  AND a.parent_agent_id IS NULL
+ORDER BY last_activity DESC;
