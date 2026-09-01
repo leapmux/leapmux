@@ -79,6 +79,13 @@ func (svc *Service) remintControlIPC(
 // fails keeps its tab open and retries on the next message, and that retry
 // re-mints through here, which retires this token. The registered cleanup is
 // the tab's CURRENT socket either way.
+//
+// One consequence of retiring first is worth stating, because the order that
+// forces it is not negotiable. applySettingsViaRestart is the one caller that
+// still has a LIVE process when it calls this -- restartAgent stops it
+// afterwards -- so an ErrMissingIdentity here leaves that process running with
+// a socket that no longer answers. The caller reports the failure and keeps the
+// agent on its current settings; the next relaunch mints again.
 func (svc *Service) remintAgentControlIPC(agentID, workingDir string, provider leapmuxv1.AgentProvider, phase string) ([]string, error) {
 	owner := svc.RegisteredBy()
 	envs, _, err := svc.remintControlIPC(&svc.agentCleanups, "agent", agentID, phase, func() ([]string, func(), error) {

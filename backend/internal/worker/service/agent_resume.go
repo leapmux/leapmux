@@ -27,19 +27,27 @@ import (
 type AgentResumer struct {
 	svc *Service
 
-	// startOnce latches the sweep. Start is called from every converged
-	// reconciler pass -- which repeats hourly -- and only the first may sweep.
-	startOnce sync.Once
-	// done closes when the sweep goroutine returns. Nil until the sweep starts,
-	// which is why Stop reads it under mu.
+	// mu guards the four fields below. Start and Stop take it for their WHOLE
+	// decision, not merely to read a field.
+	//
+	// The two race in production. Shutdown stops the resumer before the
+	// reconciler, so the reconciler goroutine can still report a converged pass
+	// and call Start. Deciding under one lock is what makes "Stop wins" true
+	// rather than likely: a Start that latched just after Stop read a nil done
+	// channel launches a sweep nobody waits for, and it reads a database the
+	// caller is about to close.
+	mu sync.Mutex
+	// started latches the sweep. Start is called from every converged reconciler
+	// pass -- which repeats hourly -- and only the first may sweep.
+	started bool
+	// stopped records that Stop ran, so a later Start refuses and a second Stop
+	// does not close an already-closed channel.
+	stopped bool
+	// done closes when the sweep goroutine returns. Nil until the sweep starts.
 	done chan struct{}
 	// stop closes on Stop and is what makes the launcher give up on the
-	// candidates it has not reached yet. stopOnce guards the close: Shutdown
-	// runs it through the background-loop stopper while a test's cleanup may
-	// run it again, and a second bare close panics.
-	stop     chan struct{}
-	stopOnce sync.Once
-	mu       sync.Mutex
+	// candidates it has not reached yet.
+	stop chan struct{}
 }
 
 // NewAgentResumer builds the boot-time resume sweep for this service.
@@ -47,7 +55,8 @@ func (svc *Service) NewAgentResumer() *AgentResumer {
 	return &AgentResumer{svc: svc, stop: make(chan struct{})}
 }
 
-// Start runs the sweep once, in the background. Later calls do nothing.
+// Start runs the sweep once, in the background. Later calls do nothing, and so
+// does a call that arrives after Stop.
 //
 // It REFUSES, without latching, when the worker has no owner yet or is shutting
 // down. Not latching is the point: the caller fires this from every converged
@@ -63,29 +72,39 @@ func (r *AgentResumer) Start(ctx context.Context) {
 	if r.svc.shuttingDown.Load() {
 		return
 	}
-	r.startOnce.Do(func() {
-		done := make(chan struct{})
-		r.mu.Lock()
-		r.done = done
-		r.mu.Unlock()
-		go func() {
-			defer close(done)
-			r.sweep(ctx)
-		}()
-	})
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	// stopped is the second half of the shuttingDown check above, and the half
+	// that cannot be lost to a race: a Stop that lands between that check and
+	// this lock still refuses this sweep.
+	if r.started || r.stopped {
+		return
+	}
+	r.started = true
+	done := make(chan struct{})
+	r.done = done
+	go func() {
+		defer close(done)
+		r.sweep(ctx)
+	}()
 }
 
-// Stop tells the launcher to reach no further candidates and waits for it.
+// Stop tells the launcher to reach no further candidates and waits for the
+// launcher goroutine. A Start that arrives afterwards starts nothing.
 //
-// It does NOT wait for a resume that is already handshaking. Those are
-// registered with svc.AgentStartup, so Service.Shutdown's own
-// AgentStartup.WaitForInFlight drains them -- the same drain an interactive
-// startup goes through. Waiting for them here as well would park Shutdown
-// behind a second copy of that wait, before the goodbye broadcasts that
-// Shutdown deliberately sends first.
+// It does not wait for the resumes the launcher ALREADY handed off. The one
+// exception costs nothing: a launcher that reached its last candidate is inside
+// the group wait, so Stop joins that. Either way Service.Shutdown's own
+// AgentStartup.WaitForInFlight is what guarantees those startups are drained --
+// the same drain an interactive startup goes through, and one place for that
+// wait rather than two.
 func (r *AgentResumer) Stop() {
-	r.stopOnce.Do(func() { close(r.stop) })
 	r.mu.Lock()
+	if !r.stopped {
+		r.stopped = true
+		close(r.stop)
+	}
 	done := r.done
 	r.mu.Unlock()
 	if done != nil {
@@ -93,7 +112,8 @@ func (r *AgentResumer) Stop() {
 	}
 }
 
-// sweep resumes every open root agent the user has actually used.
+// sweep resumes every open root agent that ran a process before. See skipReason
+// for what that means and for the predicate it deliberately does not use.
 func (r *AgentResumer) sweep(ctx context.Context) {
 	svc := r.svc
 	ids, err := svc.Queries.ListAllOpenRootAgentIDs(ctx)
@@ -118,12 +138,13 @@ func (r *AgentResumer) sweep(ctx context.Context) {
 	g.SetLimit(limit)
 	for _, id := range ids {
 		// Both early returns leave the resumes already in flight running, and
-		// deliberately do not g.Wait() for them: Shutdown calls Stop BEFORE its
-		// goodbye broadcasts, and a handshake can park for the whole
-		// agent_startup_timeout. Those startups are registered with
-		// svc.AgentStartup, so Shutdown's own WaitForInFlight is what joins them,
-		// after the broadcasts are away. counts is mutex-guarded, so the summary
-		// logged here is a snapshot rather than a race.
+		// deliberately do not g.Wait() for them: a handshake can park for the
+		// whole agent_startup_timeout, and Stop is what Shutdown calls to make
+		// the loops quiet, not to drain them. Those startups are registered with
+		// svc.AgentStartup, so Shutdown's own WaitForInFlight joins them a few
+		// lines later -- one place that wait belongs, rather than two. counts is
+		// mutex-guarded, so the summary logged here is a snapshot rather than a
+		// race.
 		select {
 		case <-r.stop:
 			slog.Info("agent resume: stopped before the sweep finished", counts.logArgs()...)
@@ -187,11 +208,6 @@ func (r *AgentResumer) resumeOne(ctx context.Context, agentID string, counts *re
 		return
 	}
 
-	// Register the resume with the SAME startup registry an interactive open
-	// uses. Three things follow from that and none of them needs its own
-	// machinery here: the tab reports STARTING to a client that connects mid
-	// sweep, a CloseAgent cancels this resume through cancelAndClear, and
-	// Service.Shutdown's AgentStartup.WaitForInFlight drains it.
 	// This context is the resumed PROCESS's lifetime, not just its startup's:
 	// the provider builds its exec.CommandContext from it. So it must NOT be
 	// cancelled on the success path -- a `defer cancel()` here SIGTERMs the agent
@@ -199,9 +215,10 @@ func (r *AgentResumer) resumeOne(ctx context.Context, agentID string, counts *re
 	// nothing naming the cause. runAgentStartup has the same shape and for the
 	// same reason leaves the cancel to a close.
 	//
-	// Handing it to AgentStartup.begin is what keeps it reachable: three things
-	// follow and none needs its own machinery here. The tab reports STARTING to a
-	// client that connects mid sweep; a CloseAgent cancels this resume through
+	// Registering the resume with the SAME startup registry an interactive open
+	// uses is what keeps that cancel reachable. Three things follow from it and
+	// none needs its own machinery here: the tab reports STARTING to a client
+	// that connects mid sweep; a CloseAgent cancels this resume through
 	// cancelAndClear, which is where the cancel above is finally called; and
 	// Service.Shutdown's AgentStartup.WaitForInFlight drains it.
 	startupCtx, cancel := context.WithCancel(ctx)
@@ -235,6 +252,7 @@ type resumeSkipReason string
 
 const (
 	resumeSkipAlreadyRunning resumeSkipReason = "already running"
+	resumeSkipClosed         resumeSkipReason = "tab closed since the sweep listed it"
 	resumeSkipStartupFailed  resumeSkipReason = "previous startup failed"
 	resumeSkipNeverStarted   resumeSkipReason = "never started and not created from a session"
 )
@@ -263,6 +281,20 @@ func (r *AgentResumer) skipReason(dbAgent db.Agent) resumeSkipReason {
 	// Already running: a message that arrived during the sweep beat us to it.
 	if r.svc.Agents.HasAgent(dbAgent.ID) {
 		return resumeSkipAlreadyRunning
+	}
+	// The candidate list is a SNAPSHOT: ListAllOpenRootAgentIDs ran once, and a
+	// candidate at the back of a throttled queue is reached much later -- minutes,
+	// on a machine with many tabs and a concurrency of 1. A CloseAgent in between
+	// already ran that tab's whole teardown, so a process started for it now is
+	// one nothing will ever stop: it holds a CLI and its memory for the life of
+	// the worker, under a tab no client can see. This row was read AFTER the
+	// list, which is what makes the check worth having.
+	//
+	// The remaining window is the few instructions between this read and
+	// AgentStartup.begin below, and a close that lands there is cancelled through
+	// cancelAndClear like any other in-flight startup.
+	if dbAgent.ClosedAt.Valid {
+		return resumeSkipClosed
 	}
 	// The same permanent-failure gate SendAgentMessage applies. Respawning an
 	// agent whose last startup failed would burn a slot on a CLI that is going to

@@ -264,6 +264,39 @@ func TestAgentResume_SkipsClosedAgents(t *testing.T) {
 	assert.Empty(t, rec.ids())
 }
 
+// TestAgentResume_SkipsATabClosedSinceTheListing pins the snapshot race. The
+// candidate list is read once; a candidate at the back of a throttled queue is
+// reached much later, and a CloseAgent in between already ran that tab's whole
+// teardown. A process started for it then is one nothing will ever stop -- it
+// holds a CLI for the life of the worker under a tab no client can see.
+//
+// The row is closed through the fetch seam rather than by racing a real close,
+// because the window under test is exactly "the list said open, the row says
+// closed".
+func TestAgentResume_SkipsATabClosedSinceTheListing(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	rec := newStartRecorder()
+	rec.install(svc)
+
+	seedOpenAgent(t, svc, "agent-live", true)
+	seedOpenAgent(t, svc, "agent-closing", true)
+
+	fetch := svc.getAgentByIDFn
+	svc.getAgentByIDFn = func(ctx context.Context, agentID string) (db.Agent, error) {
+		row, err := fetch(ctx, agentID)
+		if err == nil && agentID == "agent-closing" {
+			row.ClosedAt = sqltime.SQLiteNullTimeOf(time.Now())
+		}
+		return row, err
+	}
+
+	runSweep(t, svc)
+	assert.Equal(t, []string{"agent-live"}, rec.ids(),
+		"a tab closed after the listing must not be given a process nothing will stop")
+}
+
 // TestAgentResume_SkipsChildTranscripts pins that a subagent transcript is
 // never spawned: it has no process of its own, it is fed by its parent's.
 // ensureAgentRunning refuses one outright, so a sweep that offered it up would
@@ -505,6 +538,36 @@ func TestAgentResume_StopAbandonsTheRemainingCandidates(t *testing.T) {
 
 	assert.Less(t, len(rec.ids()), 4,
 		"Stop must abandon the candidates the sweep has not reached; it started every one")
+}
+
+// TestAgentResume_StartAfterStopLaunchesNoSweep pins the race Shutdown creates.
+// The composed stopper stops the resumer BEFORE the reconciler, so the
+// reconciler goroutine can still report a converged pass -- and call Start --
+// after Stop returned.
+//
+// It asserts on the GOROUTINE, not on the agents. A sweep launched here starts
+// nothing, because the closed stop channel ends its loop at the first
+// candidate; the damage is that it lists the open agents against a database the
+// caller is about to close, with nothing left to wait for it. Asserting "no
+// agent started" would therefore pass against the very bug it names.
+func TestAgentResume_StartAfterStopLaunchesNoSweep(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	rec := newStartRecorder()
+	rec.install(svc)
+	seedOpenAgent(t, svc, "agent-1", true)
+
+	r := svc.NewAgentResumer()
+	r.Stop()
+	r.Start(t.Context())
+
+	r.mu.Lock()
+	done := r.done
+	r.mu.Unlock()
+	assert.Nil(t, done,
+		"Start launched a sweep goroutine after Stop returned; nothing joins it, and it reads a closing database")
+	assert.Empty(t, rec.ids())
 }
 
 // TestAgentResume_StopBeforeTheSweepIsRunNeverBlocks pins that Stop is safe on a

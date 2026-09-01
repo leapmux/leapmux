@@ -311,7 +311,8 @@ func (r *cleanupRegistry) replace(id string) {
 	r.mu.Lock()
 	fn := r.m[id]
 	delete(r.m, id)
-	delete(r.claimed, id)
+	// The claim is set, not deleted and re-added: a claim already here belongs to
+	// a spawn whose cleanup has not landed, and this one subsumes it.
 	if r.claimed == nil {
 		r.claimed = map[string]struct{}{}
 	}

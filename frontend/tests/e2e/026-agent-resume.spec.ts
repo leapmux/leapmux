@@ -66,9 +66,9 @@ test.describe('Agent Session Resume', () => {
       const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
       await expect(editor).toBeVisible()
 
-      // One exchange makes the agent "used", which is the filter the boot-time
-      // sweep applies: a tab nobody ever wrote to has no conversation to
-      // restore and is deliberately left cold.
+      // One exchange is what gets the CLI to report a session id, which is the
+      // filter the boot-time sweep applies: a tab whose agent never ran has
+      // nothing to restore and is deliberately left cold.
       await editor.click()
       await page.keyboard.type(ARITHMETIC_PROMPT)
       await page.keyboard.press('Meta+Enter')

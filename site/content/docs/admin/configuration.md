@@ -445,7 +445,7 @@ A Worker restart ends every agent process it hosts. Once the Worker is up again,
 
 Which agents come back:
 
-- Every **open** agent tab the user has actually used — one created by resuming a session, or one that has at least one user message. A tab nobody wrote to has no conversation to restore and stays cold until the first message.
+- Every **open** agent tab that ran a process before — one whose agent CLI reported a session id, which every provider does during its startup handshake, or one opened by resuming an existing session. A tab that was opened and never started has nothing to restore and stays cold until its first message.
 - A closed tab, a subagent transcript, and an agent whose last startup failed are all skipped.
 
 The Worker waits for its Hub connection to settle before it starts anything. Two things have to hold first: the Hub has to name the Worker's owner, because a resumed agent gets its own `leapmux control` socket and that socket is scoped to a user; and the Worker's tab list has to agree with the Hub's, so a tab deleted while the Worker was down is not given a fresh process seconds before it is torn down. A Worker that never reaches its Hub therefore does not resume its agents; it retries on the reconciler's own backoff and logs each attempt.
