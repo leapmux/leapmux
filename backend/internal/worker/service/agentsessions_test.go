@@ -393,3 +393,28 @@ func TestListAgentSessions_EmptyStoreAndNoRecordsIsAnEmptyList(t *testing.T) {
 	resp := listAgentSessions(t, d, w, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, t.TempDir())
 	assert.Empty(t, resp.GetSessions(), "nothing to resume is a successful empty answer, not an error")
 }
+
+// Resuming a session is what puts TWO worker rows on one handle: the tab that
+// was closed keeps its record, and the tab that resumed it adds another. The
+// second is open, so the handle must stay out of the list -- a live process is
+// attached to that session store.
+//
+// The exclusion set is therefore built from every row before any row becomes a
+// list entry. A check of "is THIS row closed?" would offer the older record and
+// hand the user a session already in use, which is reachable by resuming once
+// and opening the dialog again.
+func TestMergeSessionSummaries_AClosedRowCannotReviveAnOpenHandle(t *testing.T) {
+	t.Parallel()
+	got := mergeSessionSummaries(
+		[]db.ListSessionsForResumeRow{
+			// The closed record comes FIRST, so a row-local check reaches it
+			// before it ever sees the open one.
+			closedRow("resumed", "The tab that was closed", mergeBase.Add(-time.Hour)),
+			openRow("resumed", "The tab that resumed it", mergeBase),
+			closedRow("other", "Free to resume", mergeBase.Add(-2*time.Hour)),
+		},
+		[]agent.StoredSession{{Handle: "resumed", Title: "The CLI sees it too", UpdatedAt: mergeBase}},
+		maxListedSessions,
+	)
+	assert.Equal(t, []string{"other"}, summaryHandles(got))
+}
