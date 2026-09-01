@@ -243,14 +243,13 @@ func (s *AuthService) BeginAccountRecoveryPasskey(ctx context.Context, req *conn
 	if err != nil {
 		return nil, err
 	}
-	sessionID, optionsJSON, rpID, err := wa.BeginRecoveryRegistration(ctx, user.ID, originFromRequest(req), user.PendingRecoveryToken)
+	sessionID, optionsJSON, err := wa.BeginRecoveryRegistration(ctx, user.ID, originFromRequest(req), user.PendingRecoveryToken)
 	if err != nil {
 		return nil, mapPasskeyConnectError(ctx, err)
 	}
 	return connect.NewResponse(&leapmuxv1.BeginAccountRecoveryPasskeyResponse{
 		SessionId:   sessionID,
 		OptionsJson: optionsJSON,
-		RpId:        rpID,
 	}), nil
 }
 

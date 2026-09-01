@@ -49,31 +49,36 @@ func RPConfigFromSettings(s *settings.Snapshot, listen string) (RPConfig, error)
 	}, nil
 }
 
-// RPIDForOrigin returns the RP ID for a browser origin the hub allows, and
-// whether the origin is allowed at all. The match is on the full origin
-// (scheme, host, port): a host-only match would admit a different port or
-// scheme, the browser would accept the ceremony (the RP ID is still a
-// suffix of the page host), and the finish-time origin check would then
-// reject the assertion — a ceremony that cannot succeed, after interactive
-// biometric work. An unallowed or unparseable origin reports allowed=false
-// so Begin can refuse it with a clear error. An empty origin (a non-browser
-// client without an Origin header) keeps the default RPID: there is no
-// browser ceremony to mislead.
-func (c RPConfig) RPIDForOrigin(origin string) (rpID string, allowed bool) {
+// AllowsOrigin reports whether a browser at this origin can run a ceremony.
+// The match is on the full origin (scheme, host, port): a host-only match
+// would admit a different port or scheme, the browser would accept the
+// ceremony (the RP ID is still a suffix of the page host), and the
+// finish-time origin check would then reject the assertion — a ceremony that
+// cannot succeed, after interactive biometric work. An unallowed or
+// unparseable origin reports false so Begin can refuse it with a clear
+// error. An empty origin (a non-browser client without an Origin header) is
+// allowed: there is no browser ceremony to mislead.
+//
+// It answers a BOOLEAN, not an RP ID, because the hub has exactly one. Every
+// allowed origin resolves to RPID: allowedOrigins lists the base origin and
+// at most the loopback name, and rpIDForHost maps every host it can hold to
+// the same value. A per-origin RP ID existed to serve the IP-literal
+// spellings, which cannot run a ceremony at all — see allowedOrigins.
+func (c RPConfig) AllowsOrigin(origin string) bool {
 	if origin == "" {
-		return c.RPID, true
+		return true
 	}
 	u, err := url.Parse(origin)
 	if err != nil || u.Scheme == "" || u.Hostname() == "" {
-		return "", false
+		return false
 	}
 	candidate := u.Scheme + "://" + u.Host
 	for _, a := range c.RPOrigins {
 		if strings.EqualFold(a, candidate) {
-			return rpIDForHost(u.Hostname()), true
+			return true
 		}
 	}
-	return "", false
+	return false
 }
 
 // allowedOrigins returns the base origin plus the loopback name when a hub

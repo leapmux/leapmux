@@ -68,7 +68,7 @@ func TestVerifyRegistration_KeepsTheCeremonyGuards(t *testing.T) {
 	other := seedUser(t, st)
 
 	t.Run("refuses a session owned by another user", func(t *testing.T) {
-		sessionID, _, _, err := svc.BeginRegistration(context.Background(), owner, "")
+		sessionID, _, err := svc.BeginRegistration(context.Background(), owner, "")
 		require.NoError(t, err)
 		_, err = svc.VerifyRegistration(context.Background(), other, sessionID, "{}")
 		require.ErrorIs(t, err, webauthn.ErrCeremonyInvalid,
@@ -76,7 +76,7 @@ func TestVerifyRegistration_KeepsTheCeremonyGuards(t *testing.T) {
 	})
 
 	t.Run("consumes the session, so it cannot be replayed", func(t *testing.T) {
-		sessionID, _, _, err := svc.BeginRegistration(context.Background(), owner, "")
+		sessionID, _, err := svc.BeginRegistration(context.Background(), owner, "")
 		require.NoError(t, err)
 
 		// The first call consumes the row; the attestation then fails on the
@@ -121,7 +121,7 @@ func TestStoreCredential_DefaultsTheFriendlyName(t *testing.T) {
 func TestBeginSignUp_AllocatesStableUserID(t *testing.T) {
 	svc, st := newMigratedWebAuthnService(t)
 
-	sessionID, optionsJSON, _, err := svc.BeginSignUp(context.Background(), webauthn.SignupDraft{
+	sessionID, optionsJSON, err := svc.BeginSignUp(context.Background(), webauthn.SignupDraft{
 		Username:    "newuser",
 		Email:       "new@example.com",
 		DisplayName: "New User",
@@ -163,7 +163,7 @@ func TestBeginElevation_RejectsEmptyCredentials(t *testing.T) {
 	svc, st := newMigratedWebAuthnService(t)
 	userID := seedUser(t, st)
 
-	_, _, _, err := svc.BeginElevation(context.Background(), userID, "")
+	_, _, err := svc.BeginElevation(context.Background(), userID, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no passkeys registered")
 }
@@ -183,9 +183,9 @@ func TestBeginElevation_ReplacesPriorCeremony(t *testing.T) {
 		KeyVersion: version, CreatedAt: now,
 	}))
 
-	firstID, _, _, err := svc.BeginElevation(context.Background(), userID, "")
+	firstID, _, err := svc.BeginElevation(context.Background(), userID, "")
 	require.NoError(t, err)
-	secondID, _, _, err := svc.BeginElevation(context.Background(), userID, "")
+	secondID, _, err := svc.BeginElevation(context.Background(), userID, "")
 	require.NoError(t, err)
 	assert.NotEqual(t, firstID, secondID)
 
@@ -210,9 +210,9 @@ func TestBeginLogin_ReplacesPriorCeremony(t *testing.T) {
 		KeyVersion: version, CreatedAt: now,
 	}))
 
-	firstID, _, _, err := svc.BeginLogin(context.Background(), userID, "")
+	firstID, _, err := svc.BeginLogin(context.Background(), userID, "")
 	require.NoError(t, err)
-	secondID, _, _, err := svc.BeginLogin(context.Background(), userID, "")
+	secondID, _, err := svc.BeginLogin(context.Background(), userID, "")
 	require.NoError(t, err)
 	assert.NotEqual(t, firstID, secondID)
 
@@ -226,9 +226,9 @@ func TestBeginRegistration_ReplacesPriorCeremony(t *testing.T) {
 	svc, st := newMigratedWebAuthnService(t)
 	userID := seedUser(t, st)
 
-	firstID, _, _, err := svc.BeginRegistration(context.Background(), userID, "")
+	firstID, _, err := svc.BeginRegistration(context.Background(), userID, "")
 	require.NoError(t, err)
-	secondID, _, _, err := svc.BeginRegistration(context.Background(), userID, "")
+	secondID, _, err := svc.BeginRegistration(context.Background(), userID, "")
 	require.NoError(t, err)
 	assert.NotEqual(t, firstID, secondID)
 
@@ -242,7 +242,7 @@ func TestBeginRegistration_PersistsEncryptedSession(t *testing.T) {
 	svc, st := newMigratedWebAuthnService(t)
 	userID := seedUser(t, st)
 
-	sessionID, optionsJSON, _, err := svc.BeginRegistration(context.Background(), userID, "")
+	sessionID, optionsJSON, err := svc.BeginRegistration(context.Background(), userID, "")
 	require.NoError(t, err)
 	assert.NotEmpty(t, sessionID)
 	assert.NotEmpty(t, optionsJSON)
@@ -279,7 +279,7 @@ func TestBeginElevation_ConstrainsAllowCredentials(t *testing.T) {
 		CreatedAt:    now,
 	}))
 
-	sessionID, optionsJSON, _, err := svc.BeginElevation(context.Background(), userID, "")
+	sessionID, optionsJSON, err := svc.BeginElevation(context.Background(), userID, "")
 	require.NoError(t, err)
 	assert.NotEmpty(t, sessionID)
 
@@ -328,7 +328,7 @@ func TestBeginSignUpAllocatesItsOwnUserID(t *testing.T) {
 	svc, _ := newMigratedWebAuthnService(t)
 
 	const attackerChosen = "victim-user-id"
-	_, optionsJSON, _, err := svc.BeginSignUp(context.Background(), webauthn.SignupDraft{
+	_, optionsJSON, err := svc.BeginSignUp(context.Background(), webauthn.SignupDraft{
 		UserID:      attackerChosen,
 		Username:    "newcomer",
 		Email:       "newcomer@example.com",
@@ -368,12 +368,12 @@ func TestBeginRecoveryRegistration_IgnoresUndecryptablePasskeys(t *testing.T) {
 		CreatedAt:    time.Now().UTC(),
 	}))
 
-	sessionID, optionsJSON, _, err := svc.BeginRecoveryRegistration(context.Background(), userID, "", "tok-hash")
+	sessionID, optionsJSON, err := svc.BeginRecoveryRegistration(context.Background(), userID, "", "tok-hash")
 	require.NoError(t, err)
 	assert.NotEmpty(t, sessionID)
 	assert.NotEmpty(t, optionsJSON)
 
-	_, _, _, err = svc.BeginRegistration(context.Background(), userID, "")
+	_, _, err = svc.BeginRegistration(context.Background(), userID, "")
 	require.Error(t, err, "authenticated registration still decrypts existing passkeys")
 }
 
@@ -381,7 +381,7 @@ func TestBeginRecoveryRegistration_RequiresTokenHash(t *testing.T) {
 	svc, st := newMigratedWebAuthnService(t)
 	userID := seedUser(t, st)
 
-	_, _, _, err := svc.BeginRecoveryRegistration(context.Background(), userID, "", "")
+	_, _, err := svc.BeginRecoveryRegistration(context.Background(), userID, "", "")
 	require.Error(t, err)
 }
 
@@ -389,9 +389,9 @@ func TestBeginRecoveryRegistration_ReplacesPriorCeremony(t *testing.T) {
 	svc, st := newMigratedWebAuthnService(t)
 	userID := seedUser(t, st)
 
-	firstID, _, _, err := svc.BeginRecoveryRegistration(context.Background(), userID, "", "tok-hash")
+	firstID, _, err := svc.BeginRecoveryRegistration(context.Background(), userID, "", "tok-hash")
 	require.NoError(t, err)
-	secondID, _, _, err := svc.BeginRecoveryRegistration(context.Background(), userID, "", "tok-hash")
+	secondID, _, err := svc.BeginRecoveryRegistration(context.Background(), userID, "", "tok-hash")
 	require.NoError(t, err)
 	assert.NotEqual(t, firstID, secondID)
 
@@ -405,7 +405,7 @@ func TestVerifyRecoveryRegistration_TokenMismatchDoesNotConsume(t *testing.T) {
 	svc, st := newMigratedWebAuthnService(t)
 	userID := seedUser(t, st)
 
-	sessionID, _, _, err := svc.BeginRecoveryRegistration(context.Background(), userID, "", "tok-hash")
+	sessionID, _, err := svc.BeginRecoveryRegistration(context.Background(), userID, "", "tok-hash")
 	require.NoError(t, err)
 
 	_, _, err = svc.VerifyRecoveryRegistration(context.Background(), sessionID, "{}", "other-hash")

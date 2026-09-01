@@ -189,8 +189,6 @@ message BeginPasskeyRegistrationRequest {}
 message BeginPasskeyRegistrationResponse {
   string session_id = 1;
   string options_json = 2;
-  // Relying party ID for this ceremony's origin; echo it in Signal API calls.
-  string rp_id = 3;
 }
 
 message FinishPasskeyRegistrationRequest {
@@ -222,8 +220,6 @@ message BeginPasskeyElevationRequest {}
 message BeginPasskeyElevationResponse {
   string session_id = 1;
   string options_json = 2;
-  // Relying party ID for this ceremony's origin; echo it in Signal API calls.
-  string rp_id = 3;
 }
 
 message FinishPasskeyElevationRequest {
@@ -245,8 +241,10 @@ message ListPasskeysRequest {}
 
 message ListPasskeysResponse {
   repeated PasskeyInfo passkeys = 1;
-  // Relying party ID for passkey management on this hub; echo it in Signal
-  // API calls (the delete/deactivate flows have no Begin response).
+  // Relying party ID for this hub; echo it in Signal API calls. This is the
+  // only response that carries it, because it is the only one a client needs:
+  // the Signal API reports a credential the hub no longer accepts, which the
+  // delete and deactivate flows do and no ceremony does.
   string rp_id = 2;
 }
 

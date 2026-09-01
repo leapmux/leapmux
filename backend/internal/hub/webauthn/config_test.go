@@ -60,13 +60,10 @@ func TestRPConfigFromSettings_LoopbackCollapsesToLocalhost(t *testing.T) {
 	// the whole service unbuildable rather than one ceremony fail.
 	assert.Equal(t, "localhost", cfg.RPID)
 
-	rpID, allowed := cfg.RPIDForOrigin("http://localhost:8080")
-	require.True(t, allowed)
-	assert.Equal(t, "localhost", rpID)
+	assert.True(t, cfg.AllowsOrigin("http://localhost:8080"))
 
 	for _, origin := range []string{"http://127.0.0.1:8080", "http://[::1]:8080"} {
-		_, allowed = cfg.RPIDForOrigin(origin)
-		assert.Falsef(t, allowed, "%s cannot run a ceremony and must not be allowed", origin)
+		assert.Falsef(t, cfg.AllowsOrigin(origin), "%s cannot run a ceremony and must not be allowed", origin)
 	}
 }
 
@@ -97,7 +94,7 @@ func TestRPConfigFromSettings_RejectsBareIPPublicURL(t *testing.T) {
 		"the error must say what to do, because the remedy is to set public_url to a hostname")
 }
 
-func TestRPConfigFromSettings_RPIDForOriginOnlyAllowsConfiguredOrigins(t *testing.T) {
+func TestRPConfigFromSettings_AllowsOriginOnlyAllowsConfiguredOrigins(t *testing.T) {
 	st := testutil.OpenTestStore(t)
 	set := servicetest.NewSettingsManager(t, st, nil)
 	ctx := context.Background()
@@ -105,28 +102,21 @@ func TestRPConfigFromSettings_RPIDForOriginOnlyAllowsConfiguredOrigins(t *testin
 
 	cfg, err := webauthn.RPConfigFromSettings(set.Snapshot(ctx), "0.0.0.0:9999")
 	require.NoError(t, err)
-	rpID, allowed := cfg.RPIDForOrigin("http://localhost:4327")
-	require.True(t, allowed)
-	assert.Equal(t, "localhost", rpID)
+	assert.True(t, cfg.AllowsOrigin("http://localhost:4327"))
 	// The IP-literal spelling of the SAME host is refused: no RP ID exists
 	// that a browser on that page would accept.
-	_, allowed = cfg.RPIDForOrigin("http://127.0.0.1:4327")
-	assert.False(t, allowed)
+	assert.False(t, cfg.AllowsOrigin("http://127.0.0.1:4327"))
 	// An origin the hub does not serve is refused outright instead of
 	// falling back to the default RP ID: the browser would accept the
 	// ceremony (the RP ID stays a suffix of the page host) and the
 	// finish-time origin check would reject it -- interactive biometric
 	// work for a guaranteed-dead ceremony. A client-claimed origin can
 	// never widen the credential scope either, because it matches nothing.
-	_, allowed = cfg.RPIDForOrigin("https://evil.example.com")
-	assert.False(t, allowed)
+	assert.False(t, cfg.AllowsOrigin("https://evil.example.com"))
 	// A port-mismatched spelling of the allowed host is refused for the
 	// same reason: the host matches, the origin does not.
-	_, allowed = cfg.RPIDForOrigin("http://localhost:9999")
-	assert.False(t, allowed)
-	// An empty origin (a non-browser client without an Origin header) keeps
-	// the default RPID: there is no browser ceremony to mislead.
-	rpID, allowed = cfg.RPIDForOrigin("")
-	require.True(t, allowed)
-	assert.Equal(t, cfg.RPID, rpID)
+	assert.False(t, cfg.AllowsOrigin("http://localhost:9999"))
+	// An empty origin (a non-browser client without an Origin header) is
+	// allowed: there is no browser ceremony to mislead.
+	assert.True(t, cfg.AllowsOrigin(""))
 }

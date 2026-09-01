@@ -316,8 +316,6 @@ message BeginPasskeyLoginRequest {
 message BeginPasskeyLoginResponse {
   string session_id = 1;
   string options_json = 2;
-  // Relying party ID for this ceremony's origin; echo it in Signal API calls.
-  string rp_id = 3;
 }
 
 message FinishPasskeyLoginRequest {
@@ -341,8 +339,6 @@ message BeginPasskeySignUpRequest {
 message BeginPasskeySignUpResponse {
   string session_id = 1;
   string options_json = 2;
-  // Relying party ID for this ceremony's origin; echo it in Signal API calls.
-  string rp_id = 3;
 }
 
 message FinishPasskeySignUpRequest {
@@ -393,8 +389,6 @@ message BeginAccountRecoveryPasskeyRequest {
 message BeginAccountRecoveryPasskeyResponse {
   string session_id = 1;
   string options_json = 2;
-  // Relying party ID for this ceremony's origin; echo it in Signal API calls.
-  string rp_id = 3;
 }
 
 message FinishAccountRecoveryPasskeyRequest {
