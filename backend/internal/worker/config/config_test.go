@@ -5,6 +5,8 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -237,12 +239,44 @@ func TestWorkerHelpGroupsOptions(t *testing.T) {
 	// noisy churn. Assert that the section header is followed by *some*
 	// flag instead.
 	assert.Contains(t, output, "\nWorker options:\n\n  -")
-	assert.Contains(t, output, "\nTimeout and limit options:\n\n  -agent-startup-timeout duration")
-	assert.Contains(t, output, "\nSQLite database options:\n\n  -db-cache-size int")
-	assert.Contains(t, output, "  -data-dir string")
-	assert.Contains(t, output, "  -hub string")
-	assert.Contains(t, output, "  -api-timeout duration")
-	assert.Contains(t, output, "  -db-cache-size int")
+	assert.Contains(t, output, "\nTimeout and limit options:\n\n  -")
+	assert.Contains(t, output, "\nSQLite database options:\n\n  -")
+
+	// Then pin each flag to its SECTION, which "the output contains this flag
+	// somewhere" does not. A flag whose usageCategories entry is dropped or
+	// mistyped still prints -- PrintFlagUsage collects the uncategorized ones
+	// under a generic "Options" heading -- so a bare Contains passes while
+	// `leapmux worker --help` groups the flag under the wrong header. Reading
+	// the section back is lead-flag independent, so it survives a new option
+	// sorting ahead of any of these.
+	for flagLine, section := range map[string]string{
+		"  -data-dir string":                "Worker options",
+		"  -hub string":                     "Worker options",
+		"  -agent-startup-timeout duration": "Timeout and limit options",
+		"  -agent-startup-concurrency int":  "Timeout and limit options",
+		"  -api-timeout duration":           "Timeout and limit options",
+		"  -db-cache-size int":              "SQLite database options",
+	} {
+		assert.Equal(t, section, helpSectionOf(t, output, flagLine), "flag %q is in the wrong help section", flagLine)
+	}
+}
+
+// helpSectionOf reports the section header a flag line appears under: the last
+// header above it. A header is a line that starts at column 0 and ends in a
+// colon, which in this output is only the section headings -- the usage line
+// carries no trailing colon, the description ends in a period, and every flag
+// and usage line is indented.
+func helpSectionOf(t *testing.T, output, flagLine string) string {
+	t.Helper()
+	idx := strings.Index(output, flagLine)
+	require.GreaterOrEqual(t, idx, 0, "flag %q is missing from the help output entirely", flagLine)
+	section := ""
+	for _, line := range strings.Split(output[:idx], "\n") {
+		if line != "" && !strings.HasPrefix(line, " ") && strings.HasSuffix(line, ":") {
+			section = strings.TrimSuffix(line, ":")
+		}
+	}
+	return section
 }
 
 func TestValidate(t *testing.T) {
@@ -283,4 +317,100 @@ func TestPaths(t *testing.T) {
 	cfg := &Config{DataDir: "/test/dir"}
 	assert.Equal(t, filepath.Join("/test/dir", "worker.db"), cfg.DBPath())
 	assert.Equal(t, filepath.Join("/test/dir", "state.json"), cfg.StatePath())
+}
+
+// TestAgentStartupConcurrency covers the knob that caps concurrent agent
+// startups, from every source the loader supports.
+//
+// Zero is load-bearing and is asserted here rather than resolved: the default
+// follows this machine's core count, so it is resolved by
+// agent.ResolveStartupConcurrency at the point of use. A Load that "helpfully"
+// substituted a number would freeze that decision into the config and break the
+// entry points that pass the value straight through.
+func TestAgentStartupConcurrency(t *testing.T) {
+	t.Run("unset stays zero so the consumer resolves the default", func(t *testing.T) {
+		cfg, _, err := Load(nil)
+		require.NoError(t, err)
+		assert.Equal(t, 0, cfg.AgentStartupConcurrency)
+	})
+
+	t.Run("flag", func(t *testing.T) {
+		cfg, _, err := Load([]string{"-agent-startup-concurrency", "7"})
+		require.NoError(t, err)
+		assert.Equal(t, 7, cfg.AgentStartupConcurrency)
+	})
+
+	t.Run("config file", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "worker.yaml")
+		require.NoError(t, os.WriteFile(path, []byte("agent_startup_concurrency: 3\n"), 0o644))
+		cfg, _, err := Load([]string{"-config", path})
+		require.NoError(t, err)
+		assert.Equal(t, 3, cfg.AgentStartupConcurrency)
+	})
+
+	t.Run("env", func(t *testing.T) {
+		t.Setenv("LEAPMUX_WORKER_AGENT_STARTUP_CONCURRENCY", "5")
+		cfg, _, err := Load(nil)
+		require.NoError(t, err)
+		assert.Equal(t, 5, cfg.AgentStartupConcurrency)
+	})
+
+	t.Run("flag beats config file", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "worker.yaml")
+		require.NoError(t, os.WriteFile(path, []byte("agent_startup_concurrency: 3\n"), 0o644))
+		cfg, _, err := Load([]string{"-config", path, "-agent-startup-concurrency", "9"})
+		require.NoError(t, err)
+		assert.Equal(t, 9, cfg.AgentStartupConcurrency)
+	})
+
+	t.Run("a negative value loads and is resolved downstream", func(t *testing.T) {
+		cfg, _, err := Load([]string{"-agent-startup-concurrency", "-2"})
+		require.NoError(t, err)
+		assert.Equal(t, -2, cfg.AgentStartupConcurrency,
+			"Load does not clamp; agent.ResolveStartupConcurrency turns any non-positive value into the default")
+	})
+}
+
+// TestAgentStartupConcurrencyHelpDerivesTheDefault pins that the flag's help
+// text reads the constant rather than restating it.
+//
+// The number appears in the help output a user reads, so a hand-written literal
+// makes `leapmux worker --help` lie the day the default changes -- silently, and
+// with nothing that fails.
+func TestAgentStartupConcurrencyHelpDerivesTheDefault(t *testing.T) {
+	output := testutil.CaptureStdout(t, func() {
+		_, _, err := Load([]string{"--help"})
+		require.True(t, errors.Is(err, flag.ErrHelp))
+	})
+	assert.Contains(t, output, "0 = "+strconv.Itoa(DefaultMaxStartupConcurrency),
+		"the flag help must derive the default from DefaultMaxStartupConcurrency")
+}
+
+// TestResolveStartupConcurrency covers the rule the two help strings describe.
+func TestResolveStartupConcurrency(t *testing.T) {
+	t.Run("a positive value is honored", func(t *testing.T) {
+		assert.Equal(t, 1, ResolveStartupConcurrency(1))
+		assert.Equal(t, 3, ResolveStartupConcurrency(3))
+		assert.Equal(t, 64, ResolveStartupConcurrency(64), "a value above the default cap is still honored")
+	})
+
+	t.Run("a non-positive value selects the default", func(t *testing.T) {
+		want := min(runtime.GOMAXPROCS(0), DefaultMaxStartupConcurrency)
+		assert.Equal(t, want, ResolveStartupConcurrency(0))
+		assert.Equal(t, want, ResolveStartupConcurrency(-3))
+		assert.GreaterOrEqual(t, want, 1, "the default must always admit at least one startup")
+		assert.LessOrEqual(t, want, DefaultMaxStartupConcurrency, "the default never exceeds the cap")
+	})
+
+	t.Run("the default follows the CPU budget, not the core count", func(t *testing.T) {
+		// Not parallel: GOMAXPROCS is process-global state. NumCPU reports the
+		// affinity mask and a cgroup CPU quota does not change it, so a container
+		// limited to half a core on a 32-core host still reports 32 -- and the
+		// "a two-core container must not run four handshakes" promise would never
+		// apply there. Both answers agree on a normal laptop, so only lowering
+		// GOMAXPROCS tells them apart.
+		prev := runtime.GOMAXPROCS(1)
+		t.Cleanup(func() { runtime.GOMAXPROCS(prev) })
+		assert.Equal(t, 1, ResolveStartupConcurrency(0))
+	})
 }

@@ -41,6 +41,7 @@ func seedGooseDB(t *testing.T, path string, rows []gooseSessionRow) {
 	t.Helper()
 	db := newFixtureDB(t, path, gooseSessionsDDL)
 	for _, r := range rows {
+		requireHostAbsDir(t, r.workingDir)
 		_, err := db.Exec(
 			`INSERT INTO sessions (id, name, session_type, working_dir, created_at, updated_at, archived_at, parent_session_id)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -51,14 +52,14 @@ func seedGooseDB(t *testing.T, path string, rows []gooseSessionRow) {
 
 func TestGooseStoredSessions(t *testing.T) {
 	t.Parallel()
-	dir := "/Users/dev/project"
+	dir := absPath("Users", "dev", "project")
 	home := t.TempDir()
 	seedGooseDB(t, filepath.Join(home, ".local", "share", "goose", "sessions", "sessions.db"), []gooseSessionRow{
 		{id: "20260830_2", name: "Newest", kind: "acp", workingDir: dir, createdAt: "2026-08-30 10:00:00", updatedAt: "2026-08-30 15:54:13"},
 		{id: "20260830_1", name: "Older", kind: "user", workingDir: dir, createdAt: "2026-08-30 09:00:00", updatedAt: "2026-08-30 09:30:00"},
 		{id: "20260830_3", name: "Delegated task", kind: "sub_agent", workingDir: dir, createdAt: "2026-08-30 16:00:00", updatedAt: "2026-08-30 16:00:00", parentID: "20260830_2"},
 		{id: "20260830_4", name: "Put away", kind: "acp", workingDir: dir, createdAt: "2026-08-30 17:00:00", updatedAt: "2026-08-30 17:00:00", archivedAt: "2026-08-30 17:05:00"},
-		{id: "20260830_5", name: "Elsewhere", kind: "acp", workingDir: "/other/dir", createdAt: "2026-08-30 18:00:00", updatedAt: "2026-08-30 18:00:00"},
+		{id: "20260830_5", name: "Elsewhere", kind: "acp", workingDir: absPath("other", "dir"), createdAt: "2026-08-30 18:00:00", updatedAt: "2026-08-30 18:00:00"},
 	})
 
 	got, err := gooseStoredSessions(context.Background(), StoredSessionQuery{
@@ -78,7 +79,7 @@ func TestGooseStoredSessions(t *testing.T) {
 // sessions this picker exists to offer.
 func TestGooseStoredSessions_KeepsACPSessions(t *testing.T) {
 	t.Parallel()
-	dir := "/Users/dev/project"
+	dir := absPath("Users", "dev", "project")
 	home := t.TempDir()
 	seedGooseDB(t, filepath.Join(home, ".local", "share", "goose", "sessions", "sessions.db"), []gooseSessionRow{
 		{id: "acp_only", name: "Started by LeapMux", kind: "acp", workingDir: dir, createdAt: "2026-08-30 10:00:00", updatedAt: "2026-08-30 10:00:00"},
@@ -99,7 +100,7 @@ func TestGooseStoredSessions_KeepsACPSessions(t *testing.T) {
 // `julianday`, which reads all four shapes.
 func TestGooseStoredSessions_OrdersByInstantNotByText(t *testing.T) {
 	t.Parallel()
-	dir := "/Users/dev/project"
+	dir := absPath("Users", "dev", "project")
 	home := t.TempDir()
 	seedGooseDB(t, filepath.Join(home, ".local", "share", "goose", "sessions", "sessions.db"), []gooseSessionRow{
 		// The newest instant, in the shape CURRENT_TIMESTAMP writes.
@@ -123,7 +124,7 @@ func TestGooseStoredSessions_OrdersByInstantNotByText(t *testing.T) {
 // a real session.
 func TestGooseStoredSessions_AnUnreadableTimeDoesNotTakeASlot(t *testing.T) {
 	t.Parallel()
-	dir := "/Users/dev/project"
+	dir := absPath("Users", "dev", "project")
 	home := t.TempDir()
 	seedGooseDB(t, filepath.Join(home, ".local", "share", "goose", "sessions", "sessions.db"), []gooseSessionRow{
 		{id: "junk", name: "Unreadable", kind: "acp", workingDir: dir, createdAt: "nonsense", updatedAt: "nonsense"},
@@ -142,7 +143,7 @@ func TestGooseStoredSessions_AnUnreadableTimeDoesNotTakeASlot(t *testing.T) {
 func TestGooseStoredSessions_AbsentStoreIsEmpty(t *testing.T) {
 	t.Parallel()
 	got, err := gooseStoredSessions(context.Background(), StoredSessionQuery{
-		WorkingDir: "/Users/dev/project", HomeDir: t.TempDir(), Getenv: fixtureEnv(nil),
+		WorkingDir: absPath("Users", "dev", "project"), HomeDir: t.TempDir(), Getenv: fixtureEnv(nil),
 	})
 	require.NoError(t, err)
 	assert.Empty(t, got)
@@ -153,7 +154,7 @@ func TestGooseStoredSessions_AbsentStoreIsEmpty(t *testing.T) {
 // drop. A store one level up is simply absent.
 func TestGooseStoredSessions_NeedsTheSessionsSubdirectory(t *testing.T) {
 	t.Parallel()
-	dir := "/Users/dev/project"
+	dir := absPath("Users", "dev", "project")
 	home := t.TempDir()
 	seedGooseDB(t, filepath.Join(home, ".local", "share", "goose", "sessions.db"), []gooseSessionRow{
 		{id: "s1", name: "n", kind: "acp", workingDir: dir, createdAt: "2026-08-30 10:00:00", updatedAt: "2026-08-30 10:00:00"},
@@ -168,11 +169,14 @@ func TestGooseStoredSessions_NeedsTheSessionsSubdirectory(t *testing.T) {
 
 func TestGooseDBCandidates(t *testing.T) {
 	t.Parallel()
-	home := "/home/dev"
+	home := absPath("home", "dev")
 
-	// An ABSOLUTE GOOSE_PATH_ROOT wins and is probed first.
-	rooted := StoredSessionQuery{HomeDir: home, Getenv: fixtureEnv(map[string]string{"GOOSE_PATH_ROOT": "/goose-root"})}
-	assert.Equal(t, filepath.Join("/goose-root", "data", "sessions", "sessions.db"), gooseDBCandidates(rooted)[0])
+	// An ABSOLUTE GOOSE_PATH_ROOT wins and is probed first. Absolute for the
+	// HOST: Goose asks filepath.IsAbs, and a rooted POSIX literal fails that
+	// question on Windows.
+	root := absPath("goose-root")
+	rooted := StoredSessionQuery{HomeDir: home, Getenv: fixtureEnv(map[string]string{"GOOSE_PATH_ROOT": root})}
+	assert.Equal(t, filepath.Join(root, "data", "sessions", "sessions.db"), gooseDBCandidates(rooted)[0])
 
 	// A RELATIVE one is ignored, exactly as Goose ignores it.
 	relative := StoredSessionQuery{HomeDir: home, Getenv: fixtureEnv(map[string]string{"GOOSE_PATH_ROOT": "relative/path"})}

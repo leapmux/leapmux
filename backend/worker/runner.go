@@ -38,8 +38,12 @@ type RunConfig struct {
 	MaxMessageSize       int                         // Maximum application payload size in bytes (0 = 16 MiB default)
 	AgentStartupTimeout  time.Duration               // Timeout for agent startup handshake (0 = 5m default)
 	APITimeout           time.Duration               // Timeout for JSON-RPC requests (0 = 10s default)
-	EncryptionMode       leapmuxv1.EncryptionMode    // Encryption mode (classic, post-quantum)
-	UseLoginShell        bool                        // Wrap claude invocation in user's login shell
+	// AgentStartupConcurrency caps how many agent processes may be inside their
+	// startup handshake at once (0 = 4, or the CPU core count when that is
+	// lower). It does not limit how many agents run.
+	AgentStartupConcurrency int
+	EncryptionMode          leapmuxv1.EncryptionMode // Encryption mode (classic, post-quantum)
+	UseLoginShell           bool                     // Wrap claude invocation in user's login shell
 	// RegisteredBy seeds the worker's owner, which gates every machine-scoped RPC
 	// family (tunnels, file, git, sysinfo) -- see service.requireWorkerOwner. It is a
 	// DB-sourced seed for the in-process launchers (solo reads it from
@@ -144,8 +148,11 @@ func Run(ctx context.Context, cfg RunConfig) error {
 			SeedRegisteredBy:     cfg.RegisteredBy,
 			AgentStartupTimeout:  cfg.AgentStartupTimeout,
 			APITimeout:           cfg.APITimeout,
-			UseLoginShell:        cfg.UseLoginShell,
-			WakeLock:             wakeLockTracker,
+			// 0 (the default) lets the worker resolve the concurrency from this
+			// machine's core count.
+			AgentStartupConcurrency: cfg.AgentStartupConcurrency,
+			UseLoginShell:           cfg.UseLoginShell,
+			WakeLock:                wakeLockTracker,
 		})
 
 		runShutdown = func() {

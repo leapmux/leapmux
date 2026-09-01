@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -15,6 +16,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	workerconfig "github.com/leapmux/leapmux/internal/worker/config"
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/hub"
@@ -254,6 +256,13 @@ func TestBuildTabSync_ReadFailureIsAnErrorNotAnEmptyReport(t *testing.T) {
 // and starts background loops but never dials.
 func wireForTest(t *testing.T, mode leapmuxv1.EncryptionMode) (*Wiring, *hub.Client) {
 	t.Helper()
+	return wireForTestWith(t, mode, func(*Params) {})
+}
+
+// wireForTestWith is wireForTest with a hook that adjusts the Params before
+// Wire runs, for the tests that care about one specific field.
+func wireForTestWith(t *testing.T, mode leapmuxv1.EncryptionMode, adjust func(*Params)) (*Wiring, *hub.Client) {
+	t.Helper()
 
 	sqlDB, err := workerdb.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err)
@@ -269,7 +278,7 @@ func wireForTest(t *testing.T, mode leapmuxv1.EncryptionMode) (*Wiring, *hub.Cli
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	w := Wire(Params{
+	params := Params{
 		Ctx:            ctx,
 		Client:         client,
 		DB:             sqlDB,
@@ -279,7 +288,9 @@ func wireForTest(t *testing.T, mode leapmuxv1.EncryptionMode) (*Wiring, *hub.Cli
 		Name:           "test",
 		HomeDir:        t.TempDir(),
 		DataDir:        t.TempDir(),
-	})
+	}
+	adjust(&params)
+	w := Wire(params)
 	t.Cleanup(w.Shutdown)
 	return w, client
 }
@@ -477,4 +488,77 @@ func TestLiveTabForMint_SkipsChildAgents(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "root-1", id, "mint must target a root agent, never a child")
 	assert.Equal(t, int32(leapmuxv1.TabType_TAB_TYPE_AGENT), tabType)
+}
+
+// TestWire_AppliesTheConfiguredStartupConcurrency pins the hop from the loaded
+// config to the ONE place that holds it: the agent manager's background permit
+// pool. The resume sweep reads it back from there rather than keeping a second
+// copy, so this one assertion covers both consumers.
+func TestWire_AppliesTheConfiguredStartupConcurrency(t *testing.T) {
+	_, client := wireForTestWith(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM,
+		func(p *Params) { p.AgentStartupConcurrency = 3 })
+
+	assert.Equal(t, 3, client.AgentManager().StartupConcurrency(),
+		"the manager holds the configured cap, and the resume sweep sizes its fan-out from it")
+}
+
+// TestWire_UnsetStartupConcurrencyResolvesTheDefault pins the "0 means auto"
+// convention at the boundary the entry points actually cross: they pass the
+// loaded value through unchanged, and an unset worker.yaml key arrives as 0.
+func TestWire_UnsetStartupConcurrencyResolvesTheDefault(t *testing.T) {
+	_, client := wireForTest(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM)
+
+	assert.Equal(t, workerconfig.ResolveStartupConcurrency(0),
+		client.AgentManager().StartupConcurrency())
+}
+
+// TestWiring_ShutdownStopsTheResumeSweep pins that the resume sweep is covered
+// by the single stopBackgroundLoops slot the reconciler already used.
+//
+// Both loops share that one field, so wiring a second one is exactly the shape
+// in which the first gets overwritten and quietly stops being stopped: a sweep
+// left running past Shutdown keeps spawning agent processes and registering
+// remote-IPC cleanups while the caller closes the database underneath it.
+//
+// It asserts on the RESUMER, not merely on Shutdown returning. A stopper that
+// dropped the resumer returns just as promptly, so a timing-only check passes
+// against the exact regression this test is named for.
+func TestWiring_ShutdownStopsTheResumeSweep(t *testing.T) {
+	w, _ := wireForTest(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM)
+
+	require.NotNil(t, w.Resumer, "Wire must hand the resume sweep back so Shutdown's reach is observable")
+	require.False(t, w.Resumer.StoppedForTest(), "the resumer must be live before Shutdown")
+
+	// Shutdown is idempotent and the fixture's cleanup runs it again; this also
+	// asserts that it RETURNS -- a stopper that waited on a loop it never started
+	// would block here for ever.
+	done := make(chan struct{})
+	go func() { defer close(done); w.Shutdown() }()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Shutdown blocked; the composed background-loop stopper did not return")
+	}
+	assert.True(t, w.Resumer.StoppedForTest(),
+		"the composed stopper must reach the resume sweep, not only the reconciler")
+}
+
+// TestWire_WorkerIdentityTriggersAReconcilerPass pins the nudge that keeps the
+// resume sweep's retry from taking an hour.
+//
+// The sweep refuses, without latching, while the worker has no owner. A pass can
+// CONVERGE before the owner arrives -- the hub leg needs only the auth token --
+// and a converged pass disarms the retry backoff, so the next pass would be the
+// hourly tick. Delivering the identity has to wake the reconciler itself.
+func TestWire_WorkerIdentityTriggersAReconcilerPass(t *testing.T) {
+	w, client := wireForTest(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM)
+
+	require.NotNil(t, client.OnWorkerIdentity,
+		"the identity handler must survive the background-loop wiring that wraps it")
+	client.OnWorkerIdentity("user-1")
+
+	// The wrapper must still do the delivery it wrapped.
+	assert.Eventually(t, func() bool { return w.Service.RegisteredBy().Matches("user-1") },
+		5*time.Second, 10*time.Millisecond,
+		"the identity nudge dropped the delivery it wraps")
 }

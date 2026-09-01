@@ -41,7 +41,7 @@ var sessionStoreFixtures = map[leapmuxv1.AgentProvider]sessionStoreFixture{
 	leapmuxv1.AgentProvider_AGENT_PROVIDER_PI: func(t *testing.T, home, dir string) string {
 		writePiTranscript(t, filepath.Join(home, ".pi", "agent", "sessions"), dir,
 			"2026-09-01T12-00-00-000Z_pi-session.jsonl", time.Now(),
-			`{"type":"session","version":3,"id":"pi-session","cwd":"`+dir+`"}`)
+			`{"type":"session","version":3,"id":"pi-session","cwd":`+fixtureJSONString(dir)+`}`)
 		return "pi-session"
 	},
 	leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE: func(t *testing.T, home, dir string) string {
@@ -69,7 +69,7 @@ var sessionStoreFixtures = map[leapmuxv1.AgentProvider]sessionStoreFixture{
 		require.True(t, ok)
 		writeReasonixSession(t, filepath.Join(home, ".reasonix", "projects", slug, "sessions"),
 			"reasonix-session",
-			`{"id":"reasonix-session","turns":1,"preview":"work","workspace_root":"`+dir+`"}`, "")
+			`{"id":"reasonix-session","turns":1,"preview":"work","workspace_root":`+fixtureJSONString(dir)+`}`, "")
 		return "reasonix-session"
 	},
 	leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR: func(t *testing.T, home, dir string) string {

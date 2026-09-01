@@ -15,6 +15,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/testutil"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
@@ -450,3 +451,5 @@ func TestRestartTerminal_CloseDuringRestart(t *testing.T) {
 	testutil.AssertEventually(t, func() bool { return !svc.Terminals.HasTerminal(id) },
 		"runTerminalRestart must remove the PTY when closed_at is set between spawn and post-spawn fetch")
 }
+
+func (f *fakeRemoteIPC) HoldDelegation(userid.UserID) func() { return func() {} }

@@ -224,10 +224,16 @@ func shortPrefix(s string, n int) string {
 	return s[:n]
 }
 
-// DefaultSocketPath returns the canonical per-spawn socket URL the
-// worker uses when spawning agents / terminals. workerID + (kind,
-// entityID) are folded in so concurrent spawns on the same worker
-// get distinct sockets.
+// DefaultSocketPath returns the canonical per-TAB socket URL the worker uses
+// when it spawns agents and terminals. It folds in workerID and (kind,
+// entityID), so two DIFFERENT tabs on one worker get distinct sockets.
+//
+// It is a pure function of those three values, and entityID is the tab id. Two
+// spawns of the SAME tab therefore get the SAME path, and a relaunch collides
+// with the previous spawn's listener: locallisten refuses a path whose socket
+// answers a dial. Every relaunch must retire the previous spawn's token BEFORE
+// it mints -- see Service.remintControlIPC, which owns that order for the agent
+// and terminal relaunch paths alike.
 //
 // Path budget (Unix): macOS's sun_path is 104 bytes including NUL,
 // and the default $TMPDIR is ~49 chars (`/var/folders/<2>/<32>/T/`).

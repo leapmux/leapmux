@@ -15,6 +15,7 @@ import (
 // naming produces, and sets the modification time the reader orders by.
 func writePiTranscript(t *testing.T, sessionsRoot, cwd, fileName string, at time.Time, lines ...string) {
 	t.Helper()
+	requireHostAbsDir(t, cwd)
 	path := filepath.Join(sessionsRoot, manglePiPath(cwd), fileName)
 	writeFixtureFile(t, path, strings.Join(lines, "\n")+"\n")
 	touchFixture(t, path, at)
@@ -35,17 +36,17 @@ func TestManglePiPath(t *testing.T) {
 
 func TestPiStoredSessions(t *testing.T) {
 	t.Parallel()
-	dir := "/Users/dev/project"
+	dir := absPath("Users", "dev", "project")
 	home := t.TempDir()
 	root := filepath.Join(home, ".pi", "agent", "sessions")
 	base := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 
 	writePiTranscript(t, root, dir, "2026-09-01T12-00-00-000Z_sess-new.jsonl", base,
-		`{"type":"session","version":3,"id":"sess-new","timestamp":"2026-09-01T12:00:00.000Z","cwd":"`+dir+`"}`,
+		`{"type":"session","version":3,"id":"sess-new","timestamp":"2026-09-01T12:00:00.000Z","cwd":`+fixtureJSONString(dir)+`}`,
 		`{"type":"model_change","provider":"zai","modelId":"glm-5.3"}`,
 		`{"type":"message","message":{"role":"user","content":[{"type":"text","text":"run the tests"}]}}`)
 	writePiTranscript(t, root, dir, "2026-09-01T11-00-00-000Z_sess-old.jsonl", base.Add(-time.Hour),
-		`{"type":"session","version":3,"id":"sess-old","cwd":"`+dir+`"}`,
+		`{"type":"session","version":3,"id":"sess-old","cwd":`+fixtureJSONString(dir)+`}`,
 		`{"type":"message","message":{"role":"user","content":"earlier work"}}`)
 
 	got, err := piStoredSessions(context.Background(), StoredSessionQuery{
@@ -62,12 +63,12 @@ func TestPiStoredSessions(t *testing.T) {
 
 func TestPiStoredSessions_ReadsAVersion4Header(t *testing.T) {
 	t.Parallel()
-	dir := "/Users/dev/project"
+	dir := absPath("Users", "dev", "project")
 	home := t.TempDir()
 	root := filepath.Join(home, ".pi", "agent", "sessions")
 
 	writePiTranscript(t, root, dir, "2026-09-01T12-00-00-000Z_v4.jsonl", time.Now(),
-		`{"kind":"header","version":4,"id":"v4","cwd":"`+dir+`"}`,
+		`{"kind":"header","version":4,"id":"v4","cwd":`+fixtureJSONString(dir)+`}`,
 		`{"type":"message","message":{"role":"user","content":[{"type":"text","text":"v4 prompt"}]}}`)
 
 	got, err := piStoredSessions(context.Background(), StoredSessionQuery{
@@ -80,19 +81,19 @@ func TestPiStoredSessions_ReadsAVersion4Header(t *testing.T) {
 
 func TestPiStoredSessions_ExcludesSubagentTranscripts(t *testing.T) {
 	t.Parallel()
-	dir := "/Users/dev/project"
+	dir := absPath("Users", "dev", "project")
 	home := t.TempDir()
 	root := filepath.Join(home, ".pi", "agent", "sessions")
 	base := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 
 	writePiTranscript(t, root, dir, "2026-09-01T12-00-00-000Z_sess-real.jsonl", base,
-		`{"type":"session","version":3,"id":"sess-real","cwd":"`+dir+`"}`,
+		`{"type":"session","version":3,"id":"sess-real","cwd":`+fixtureJSONString(dir)+`}`,
 		`{"type":"message","message":{"role":"user","content":"real"}}`)
 	// Subagent transcripts sit in a `tasks/` directory beside the session file,
 	// which the file-only walk refuses.
 	writeFixtureFile(t,
 		filepath.Join(root, manglePiPath(dir), "2026-09-01T12-00-00-000Z_sess-real", "tasks", "task-1.jsonl"),
-		`{"type":"session","version":3,"id":"task-1","cwd":"`+dir+`"}`+"\n")
+		`{"type":"session","version":3,"id":"task-1","cwd":`+fixtureJSONString(dir)+`}`+"\n")
 
 	got, err := piStoredSessions(context.Background(), StoredSessionQuery{
 		WorkingDir: dir, HomeDir: home, Getenv: fixtureEnv(nil),
@@ -103,20 +104,20 @@ func TestPiStoredSessions_ExcludesSubagentTranscripts(t *testing.T) {
 
 func TestPiStoredSessions_RefusesAForeignHeader(t *testing.T) {
 	t.Parallel()
-	dir := "/Users/dev/project"
+	dir := absPath("Users", "dev", "project")
 	home := t.TempDir()
 	root := filepath.Join(home, ".pi", "agent", "sessions")
 
 	// A header naming a different working directory, in this directory's
 	// folder. The folder placed it, so the disagreement is the file's; refuse.
 	writePiTranscript(t, root, dir, "2026-09-01T12-00-00-000Z_wrong.jsonl", time.Now(),
-		`{"type":"session","version":3,"id":"wrong","cwd":"/somewhere/else"}`)
+		`{"type":"session","version":3,"id":"wrong","cwd":`+fixtureJSONString(absPath("somewhere", "else"))+`}`)
 	// A file whose first record is not a header at all.
 	writePiTranscript(t, root, dir, "2026-09-01T12-00-00-000Z_nothdr.jsonl", time.Now(),
 		`{"type":"message","message":{"role":"user","content":"no header"}}`)
 	// And a real one, so the assertion is not vacuous.
 	writePiTranscript(t, root, dir, "2026-09-01T12-00-00-000Z_ok.jsonl", time.Now(),
-		`{"type":"session","version":3,"id":"ok","cwd":"`+dir+`"}`,
+		`{"type":"session","version":3,"id":"ok","cwd":`+fixtureJSONString(dir)+`}`,
 		`{"type":"message","message":{"role":"user","content":"fine"}}`)
 
 	got, err := piStoredSessions(context.Background(), StoredSessionQuery{
@@ -131,7 +132,7 @@ func TestPiStoredSessions_RefusesAForeignHeader(t *testing.T) {
 // exactly, so a header that omits the cwd is still placed.
 func TestPiStoredSessions_HeaderWithoutCwdIsPlacedByItsDirectory(t *testing.T) {
 	t.Parallel()
-	dir := "/Users/dev/project"
+	dir := absPath("Users", "dev", "project")
 	home := t.TempDir()
 	root := filepath.Join(home, ".pi", "agent", "sessions")
 
@@ -148,14 +149,14 @@ func TestPiStoredSessions_HeaderWithoutCwdIsPlacedByItsDirectory(t *testing.T) {
 
 func TestPiStoredSessions_EnvOverrides(t *testing.T) {
 	t.Parallel()
-	dir := "/Users/dev/project"
+	dir := absPath("Users", "dev", "project")
 
 	t.Run("PI_CODING_AGENT_DIR moves the agent directory", func(t *testing.T) {
 		t.Parallel()
 		home := t.TempDir()
 		root := filepath.Join(home, "alt-agent", "sessions")
 		writePiTranscript(t, root, dir, "2026-09-01T12-00-00-000Z_s.jsonl", time.Now(),
-			`{"type":"session","version":3,"id":"s","cwd":"`+dir+`"}`)
+			`{"type":"session","version":3,"id":"s","cwd":`+fixtureJSONString(dir)+`}`)
 
 		got, err := piStoredSessions(context.Background(), StoredSessionQuery{
 			WorkingDir: dir, HomeDir: home,
@@ -170,7 +171,7 @@ func TestPiStoredSessions_EnvOverrides(t *testing.T) {
 		home := t.TempDir()
 		root := filepath.Join(home, "explicit-sessions")
 		writePiTranscript(t, root, dir, "2026-09-01T12-00-00-000Z_s.jsonl", time.Now(),
-			`{"type":"session","version":3,"id":"s","cwd":"`+dir+`"}`)
+			`{"type":"session","version":3,"id":"s","cwd":`+fixtureJSONString(dir)+`}`)
 
 		got, err := piStoredSessions(context.Background(), StoredSessionQuery{
 			WorkingDir: dir, HomeDir: home,
@@ -187,7 +188,7 @@ func TestPiStoredSessions_EnvOverrides(t *testing.T) {
 func TestPiStoredSessions_AbsentStoreIsEmpty(t *testing.T) {
 	t.Parallel()
 	got, err := piStoredSessions(context.Background(), StoredSessionQuery{
-		WorkingDir: "/Users/dev/project", HomeDir: t.TempDir(), Getenv: fixtureEnv(nil),
+		WorkingDir: absPath("Users", "dev", "project"), HomeDir: t.TempDir(), Getenv: fixtureEnv(nil),
 	})
 	require.NoError(t, err)
 	assert.Empty(t, got)
@@ -205,12 +206,12 @@ func TestPiSessionIDFromFileName(t *testing.T) {
 // could parse as a header but that carries no id.
 func TestPiStoredSessions_FallsBackToTheFileNameID(t *testing.T) {
 	t.Parallel()
-	dir := "/Users/dev/project"
+	dir := absPath("Users", "dev", "project")
 	home := t.TempDir()
 	root := filepath.Join(home, ".pi", "agent", "sessions")
 
 	writePiTranscript(t, root, dir, "2026-09-01T12-00-00-000Z_from-name.jsonl", time.Now(),
-		`{"type":"session","version":3,"cwd":"`+dir+`"}`)
+		`{"type":"session","version":3,"cwd":`+fixtureJSONString(dir)+`}`)
 
 	got, err := piStoredSessions(context.Background(), StoredSessionQuery{
 		WorkingDir: dir, HomeDir: home, Getenv: fixtureEnv(nil),

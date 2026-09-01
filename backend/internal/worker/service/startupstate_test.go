@@ -175,3 +175,47 @@ func TestDispositionOf_NilHandleIsAnUncontestedStartup(t *testing.T) {
 	assert.False(t, raced)
 	assert.Equal(t, keepWorktreeOnClose, got)
 }
+
+// TestStartupCore_BeginClaimsTheIDAgainstASecondStartup pins the claim that
+// makes one registry slot belong to one startup.
+//
+// begin used to overwrite, so a second startup for a tab stranded the first
+// one's handle: a later cancelAndClear then cancelled the wrong context and
+// stamped its close disposition on the wrong entry, so the first goroutine read
+// "no close raced me" and kept a worktree the user had asked to delete.
+func TestStartupCore_BeginClaimsTheIDAgainstASecondStartup(t *testing.T) {
+	t.Parallel()
+
+	core := newStartupCore()
+	firstCancelled := false
+	first := core.begin("tab-1", func() { firstCancelled = true })
+	require.NotNil(t, first)
+
+	secondCancelled := false
+	assert.Nil(t, core.begin("tab-1", func() { secondCancelled = true }),
+		"a second startup took the slot; the first one's handle is now unreachable")
+
+	// The FIRST handle must still be the registered one.
+	core.cancelAndClear("tab-1", keepWorktreeOnClose)
+	assert.True(t, firstCancelled, "the close must reach the startup that owns the slot")
+	assert.False(t, secondCancelled)
+
+	core.finish()
+	core.WaitForInFlight()
+}
+
+// TestStartupCore_BeginReclaimsAFailedEntry pins the other half. A failed entry
+// is a FINISHED startup that lingers for failedEntryTTL so a status query can
+// still read the error. Refusing on it would lock the tab out of every retry for
+// those five minutes.
+func TestStartupCore_BeginReclaimsAFailedEntry(t *testing.T) {
+	t.Parallel()
+
+	core := newStartupCore()
+	core.fail("tab-1", "claude: command not found")
+
+	h := core.begin("tab-1", func() {})
+	require.NotNil(t, h, "a retry after a failed startup must be able to claim the tab again")
+	core.finish()
+	core.WaitForInFlight()
+}

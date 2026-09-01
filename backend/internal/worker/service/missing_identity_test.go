@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
 // noIdentityRemoteIPC fails every spawn with ErrMissingIdentity and records
@@ -101,14 +102,14 @@ func TestOpenAgent_MissingIdentityFailsStartupAndReleasesInFlight(t *testing.T) 
 // spawn's token.
 //
 // Both halves matter, and the second is the one that is easy to get wrong. The
-// restart path mints the fresh token before retiring the previous one -- they
-// share a registry key, so the swap has to be ordered -- which makes it tempting
-// to skip the retire when the mint fails, on the theory that the old shell still
-// needs its socket. It does not: RestartTerminal refuses synchronously while
-// IsRunning, so by the time this goroutine runs the old PTY has already exited.
-// Skipping the retire leaks a listening unix socket and an unrevoked
-// per-user delegation bearer for a process that is gone, and nothing
-// later comes along to clean them up because the restart never happens.
+// restart path retires the previous spawn's token before it mints the fresh one
+// -- they share a registry key and a socket path, so the swap has to be ordered
+// -- which puts the retire ahead of a mint that can fail. It must stay there:
+// RestartTerminal refuses synchronously while IsRunning, so by the time this
+// goroutine runs the old PTY has already exited, and a retire moved after the
+// mint would be skipped on this path and leak a listening unix socket plus an
+// unrevoked per-user delegation bearer for a process that is gone. Nothing
+// later comes along to clean them up, because the restart never happens.
 //
 // The fixture below exits the terminal first for exactly that reason -- it is
 // the only state from which a restart is reachable at all.
@@ -142,3 +143,5 @@ func TestRestartTerminal_MissingIdentityFailsAndRetiresPreviousToken(t *testing.
 	assert.NotEmpty(t, row.StartupError,
 		"a restart refused for a missing identity must persist why")
 }
+
+func (f *noIdentityRemoteIPC) HoldDelegation(userid.UserID) func() { return func() {} }

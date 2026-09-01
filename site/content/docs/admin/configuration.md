@@ -366,6 +366,7 @@ On that last metric, the `phase` label says what the drop cost: `phase="park"` a
 | `encryption_mode` | `post-quantum` | E2EE mode for the bundled Worker: `classic` or `post-quantum`. See [Encryption mode](#encryption-mode). |
 | `use_login_shell` | `true` | Wrap the bundled Worker's agent invocation in the user's login shell. |
 | `max_incomplete_chunked` | `0` | Maximum in-flight chunked sequences per channel for the bundled Worker (`0` = 4 default). |
+| `agent_startup_concurrency` | `0` | How many agents the bundled Worker brings back at once after a restart (`0` = 4, or the CPU count when that is lower). |
 
 {{< callout type="info" >}}
 `max_incomplete_chunked` caps the bundled Worker's chunk-reassembly budget; a peer that exceeds it gets `RESOURCE_EXHAUSTED`. There is no Hub-side equivalent — the Hub admits only one in-flight chunked sequence per channel and direction, which is a stricter rule than any count, so the key is meaningless on `leapmux hub`. The standalone Worker sets the same limit through its own `max_incomplete_chunked` key (see [Worker configuration reference](#worker-configuration-reference)).
@@ -436,6 +437,21 @@ Every timeout below takes a unit suffix; see [Duration values](#duration-values)
 | `max_message_size` | `0` | Maximum application payload size in bytes (`0` = 16 MiB default). Negotiated per channel as `min(hub, worker)` — the Hub's side is the `max_message_size_bytes` setting; the reassembled ceiling is this plus 64 KiB of envelope headroom. |
 | `agent_startup_timeout` | `5m` | Agent startup timeout. `0` means the default. |
 | `api_timeout` | `10s` | JSON-RPC request timeout. `0` means the default. |
+| `agent_startup_concurrency` | `0` | How many agents the Worker brings back at once after a restart. `0` means 4, or the number of CPUs available to the Worker when that is lower. See [Agents after a Worker restart](#agents-after-a-worker-restart). |
+
+### Agents after a Worker restart
+
+A Worker restart ends every agent process it hosts. The Worker starts them again by itself, so an agent that lists or messages the other agents on the machine finds them without your help.
+
+Each agent continues the conversation it was in. You do not have to send it a message first.
+
+An agent comes back when its tab is open and the agent ran at least once before. A tab that you opened but never used has nothing to restore, so it stays idle until your first message. The Worker also skips a closed tab, and an agent whose last start failed.
+
+The Worker waits for its Hub connection first, so the agents return a few seconds after startup rather than at once. A Worker that never reaches its Hub starts no agents, and it tries again on each later connection.
+
+`agent_startup_concurrency` caps how many agents start at the same time. It does not cap how many run, and it never delays an agent that you start yourself. Raise it on a machine with spare CPU capacity. Lower it to 1 to bring the agents back one at a time.
+
+The Worker brings back every open agent that qualifies, and not a recent few. A machine with many open tabs therefore ends each restart with one agent process per tab. Close the tabs that you no longer need.
 
 ### SQLite database options
 
@@ -631,6 +647,7 @@ name: "build-box-01"
 encryption_mode: post-quantum
 log_level: info
 data_dir: ~/.config/leapmux/worker
+agent_startup_concurrency: 0   # 0 = 4, or the CPU count when that is lower
 ```
 
 ```bash

@@ -187,6 +187,28 @@ func (f *Factory) makeCleanup(spawnKey string, sc spawnCommon, srv *Server) func
 	}
 }
 
+// HoldDelegation takes one reference on userID's delegation and returns the
+// release, so a caller that retires a spawn and mints its replacement keeps the
+// reference count off zero across the swap.
+//
+// Without it that count reaches zero for a user whose only live spawn is the one
+// being replaced, and Release revokes the token through a blocking call to the
+// hub -- inside the per-tab lifecycle lock -- after which the next call from the
+// relaunched tab pays a second round trip to mint a fresh one.
+func (f *Factory) HoldDelegation(userID userid.UserID) func() {
+	if f.Delegation == nil || userID.IsZero() {
+		return func() {}
+	}
+	f.Delegation.Acquire(userID)
+	return func() {
+		ctx, cancel := context.WithTimeout(context.Background(), releaseRevokeTimeout)
+		defer cancel()
+		if err := f.Delegation.Release(ctx, userID); err != nil {
+			slog.Warn("delegation release failed after a spawn swap", "user_id", userID, "error", err)
+		}
+	}
+}
+
 // newRouter builds a router scoped to userID.
 func (f *Factory) newRouter(userID userid.UserID) *Router {
 	return &Router{

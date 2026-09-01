@@ -277,6 +277,54 @@ func TestManager_ExitNotification(t *testing.T) {
 	m.RemoveTerminal("tm-notify")
 }
 
+// TestInstallTerminal_ExitHandlerWaitsForTheReaderToDrain pins the order the
+// exit handler depends on. That handler persists the terminal's final screen,
+// and the child being reaped says nothing about the reader: readOutput runs on
+// its own goroutine, and readDoneCh is the signal that it stopped writing. A
+// handler that runs first snapshots a screen the reader can still grow, and a
+// natural exit persists only once, so the row keeps the truncated copy.
+//
+// The two signals are driven by hand rather than by a real shell. Through a
+// PTY the reader wins this race on any unloaded machine -- waitForExit polls
+// for the process group's death before it closes exitCh, which hands the reader
+// all the time it needs -- so a shell-driven version of this test passes
+// whether the wait is there or not. That is exactly how the loss reached CI:
+// visible only on a runner slow enough to lose the race.
+func TestInstallTerminal_ExitHandlerWaitsForTheReaderToDrain(t *testing.T) {
+	m := NewManager()
+	const id = "tm-exit-order"
+
+	// No PTY: only the two channels installTerminal orders against.
+	term := &Terminal{
+		id:         id,
+		exitCh:     make(chan struct{}),
+		readDoneCh: make(chan struct{}),
+		screenBuf:  NewScreenBuffer(),
+	}
+	ran := make(chan struct{})
+	m.installTerminal(id, term, func(string, int) { close(ran) },
+		func(TerminalMeta) TerminalMeta { return TerminalMeta{} })
+
+	// The child is reaped, and the reader has not finished.
+	close(term.exitCh)
+	select {
+	case <-ran:
+		require.Fail(t, "the exit handler ran while the reader could still write the screen it persists")
+	case <-time.After(100 * time.Millisecond):
+		// The window only bounds a "has not happened yet" claim, so a slow
+		// machine can only make this case weaker, never make it fail wrongly.
+		// Without the wait the handler runs at once and this fails every run.
+	}
+
+	close(term.readDoneCh)
+	select {
+	case <-ran:
+	case <-time.After(10 * time.Second):
+		require.Fail(t, "the exit handler never ran after the reader drained")
+	}
+	m.WaitForExit(id)
+}
+
 func TestManager_StopAll(t *testing.T) {
 	m := NewManager()
 

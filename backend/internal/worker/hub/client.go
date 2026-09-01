@@ -98,6 +98,35 @@ type Client struct {
 	// when it sends a HubShuttingDownNotification. Consumed once by
 	// connectWithReconnect after the connection drops.
 	hubRetryDelay atomic.Int64
+
+	// now and after are the clock connectWithReconnect measures its
+	// long-connection threshold against and waits its backoff on. A test owns
+	// both, so a whole reconnect sequence runs with no sleep and no window to
+	// race.
+	//
+	// A real sleep does not measure a backoff. It measures the host's timer
+	// granularity too, which is about 15.6ms on Windows -- wide enough to
+	// swallow the difference between this policy's 10ms and 40ms intervals and
+	// report them in the wrong order. Nil means the real clock, so the zero
+	// value of Client keeps working.
+	now   func() time.Time
+	after func(time.Duration) <-chan time.Time
+}
+
+// clockNow reads the clock, defaulting to the real one.
+func (c *Client) clockNow() time.Time {
+	if c.now != nil {
+		return c.now()
+	}
+	return time.Now()
+}
+
+// clockAfter waits on the clock, defaulting to the real one.
+func (c *Client) clockAfter(d time.Duration) <-chan time.Time {
+	if c.after != nil {
+		return c.after(d)
+	}
+	return time.After(d)
 }
 
 // New creates a new Hub client with integrated lifecycle management.
@@ -659,7 +688,7 @@ func (c *Client) ConnectWithReconnect(ctx context.Context, authToken string) {
 
 func (c *Client) connectWithReconnect(ctx context.Context, authToken string, connect connectFn, bo backoff, threshold time.Duration) {
 	for {
-		start := time.Now()
+		start := c.clockNow()
 		err := connect(ctx, authToken)
 		if ctx.Err() != nil {
 			return
@@ -683,14 +712,14 @@ func (c *Client) connectWithReconnect(ctx context.Context, authToken string, con
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(time.Duration(delay) * time.Second):
+			case <-c.clockAfter(time.Duration(delay) * time.Second):
 			}
 			bo.Reset()
 			continue
 		}
 
 		// If connection lasted long enough, reset backoff.
-		if time.Since(start) >= threshold {
+		if c.clockNow().Sub(start) >= threshold {
 			bo.Reset()
 		}
 
@@ -699,7 +728,7 @@ func (c *Client) connectWithReconnect(ctx context.Context, authToken string, con
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(interval):
+		case <-c.clockAfter(interval):
 		}
 	}
 }

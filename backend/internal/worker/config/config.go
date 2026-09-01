@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -34,7 +35,40 @@ const (
 	// DefaultAPITimeout is the default timeout for JSON-RPC requests to agent
 	// processes (e.g. turn/start, session/new).
 	DefaultAPITimeout = 10 * time.Second
+
+	// DefaultMaxStartupConcurrency caps the DEFAULT number of agent startups the
+	// boot-time resume sweep runs at once. Agent startup is CPU-bound on this
+	// side (a login shell, the CLI's own boot, JSON parsing), so four concurrent
+	// handshakes already saturate a laptop while it serves the user's own tab. A
+	// machine with more cores gets no more by default, because the extra
+	// parallelism buys the sweep little; an operator who wants more asks for it
+	// by name.
+	DefaultMaxStartupConcurrency = 4
 )
+
+// ResolveStartupConcurrency answers how many agent processes the resume sweep
+// may have inside their startup handshake at once. n <= 0 selects the default.
+//
+// The default is DefaultMaxStartupConcurrency, lowered to this machine's CPU
+// budget when that is smaller: a two-core container must not run four
+// handshakes at once.
+//
+// The budget comes from runtime.GOMAXPROCS(0), not runtime.NumCPU(). NumCPU
+// reports the logical CPUs the process may run on -- the affinity mask -- and a
+// cgroup CPU quota does not change it, so a container limited to half a core on
+// a 32-core host still reports 32. GOMAXPROCS derives its default from the quota
+// as well as the affinity mask, which is the number this cap wants.
+//
+// It lives in this package, and not beside the permit pool it sizes, so that the
+// two flag-help strings that print the default can read it. agent imports config
+// (agent/factory.go, for the two timeouts above), so the reverse edge is a cycle
+// and a constant in agent is unreachable from here or from solo.
+func ResolveStartupConcurrency(n int) int {
+	if n > 0 {
+		return n
+	}
+	return min(runtime.GOMAXPROCS(0), DefaultMaxStartupConcurrency)
+}
 
 // Config holds the worker's runtime configuration.
 type Config struct {
@@ -55,9 +89,18 @@ type Config struct {
 	// Default* constant.
 	AgentStartupTimeout time.Duration `koanf:"agent_startup_timeout" json:"agent_startup_timeout"`
 	APITimeout          time.Duration `koanf:"api_timeout" json:"api_timeout"`
-	LogLevel            string        `koanf:"log_level" json:"log_level"`
-	EncryptionMode      string        `koanf:"encryption_mode" json:"encryption_mode"`
-	UseLoginShell       bool          `koanf:"use_login_shell" json:"use_login_shell"`
+	// AgentStartupConcurrency caps how many agent processes may be inside their
+	// startup handshake at once. It does NOT cap how many agents this machine
+	// runs -- a started agent holds nothing.
+	//
+	// Zero is kept as zero here, unlike the two timeouts above: the default
+	// follows this machine's CPU budget, which is a runtime property rather than
+	// a loaded one, so ResolveStartupConcurrency resolves it at the point of use.
+	// That is also why the flag's default below is the literal 0.
+	AgentStartupConcurrency int    `koanf:"agent_startup_concurrency" json:"agent_startup_concurrency"`
+	LogLevel                string `koanf:"log_level" json:"log_level"`
+	EncryptionMode          string `koanf:"encryption_mode" json:"encryption_mode"`
+	UseLoginShell           bool   `koanf:"use_login_shell" json:"use_login_shell"`
 }
 
 // EncryptionModeProto returns the protobuf EncryptionMode value.
@@ -173,27 +216,32 @@ func Load(args []string) (*Config, bool, error) {
 		"agent-startup-timeout", "agent startup timeout. "+internalconfig.UnitSyntax)
 	fs.Var(internalconfig.NewDurationFlag(new(time.Duration), DefaultAPITimeout),
 		"api-timeout", "JSON-RPC request timeout. "+internalconfig.UnitSyntax)
+	fs.Int("agent-startup-concurrency", 0,
+		fmt.Sprintf("how many agents to bring back at once after a restart "+
+			"(0 = %d, or the CPU count when that is lower); "+
+			"it never delays an agent you start yourself", DefaultMaxStartupConcurrency))
 	fs.String("log-level", defaultLogLevel, "log level (debug, info, warn, error)")
 	fs.String("encryption-mode", "post-quantum", "encryption mode (classic, post-quantum)")
 	fs.Bool("use-login-shell", true, "wrap claude invocation in user's login shell")
 	showVersion := fs.Bool("version", false, "print version and exit")
 	usageCategories := map[string]string{
-		"config":                 "Common options",
-		"version":                "Common options",
-		"hub":                    "Worker options",
-		"registration-key":       "Worker options",
-		"name":                   "Worker options",
-		"data-dir":               "Worker options",
-		"log-level":              "Worker options",
-		"encryption-mode":        "Worker options",
-		"use-login-shell":        "Worker options",
-		"max-incomplete-chunked": "Timeout and limit options",
-		"max-message-size":       "Timeout and limit options",
-		"agent-startup-timeout":  "Timeout and limit options",
-		"api-timeout":            "Timeout and limit options",
-		"db-max-conns":           "SQLite database options",
-		"db-cache-size":          "SQLite database options",
-		"db-mmap-size":           "SQLite database options",
+		"config":                    "Common options",
+		"version":                   "Common options",
+		"hub":                       "Worker options",
+		"registration-key":          "Worker options",
+		"name":                      "Worker options",
+		"data-dir":                  "Worker options",
+		"log-level":                 "Worker options",
+		"encryption-mode":           "Worker options",
+		"use-login-shell":           "Worker options",
+		"max-incomplete-chunked":    "Timeout and limit options",
+		"max-message-size":          "Timeout and limit options",
+		"agent-startup-timeout":     "Timeout and limit options",
+		"api-timeout":               "Timeout and limit options",
+		"agent-startup-concurrency": "Timeout and limit options",
+		"db-max-conns":              "SQLite database options",
+		"db-cache-size":             "SQLite database options",
+		"db-mmap-size":              "SQLite database options",
 	}
 	if err := internalconfig.ConfigureAndParse(fs, args, "Run a Worker connected to a Hub.", usageCategories, workerFlagCategoryOrder); err != nil {
 		return nil, false, err
@@ -205,20 +253,21 @@ func Load(args []string) (*Config, bool, error) {
 
 	// Flag name -> koanf key mapping.
 	fieldMap := map[string]string{
-		"hub":                    "hub",
-		"registration-key":       "registration_key",
-		"name":                   "name",
-		"data-dir":               "data_dir",
-		"db-max-conns":           "db_max_conns",
-		"db-cache-size":          "db_cache_size",
-		"db-mmap-size":           "db_mmap_size",
-		"max-incomplete-chunked": "max_incomplete_chunked",
-		"max-message-size":       "max_message_size",
-		"agent-startup-timeout":  "agent_startup_timeout",
-		"api-timeout":            "api_timeout",
-		"log-level":              "log_level",
-		"encryption-mode":        "encryption_mode",
-		"use-login-shell":        "use_login_shell",
+		"hub":                       "hub",
+		"registration-key":          "registration_key",
+		"name":                      "name",
+		"data-dir":                  "data_dir",
+		"db-max-conns":              "db_max_conns",
+		"db-cache-size":             "db_cache_size",
+		"db-mmap-size":              "db_mmap_size",
+		"max-incomplete-chunked":    "max_incomplete_chunked",
+		"max-message-size":          "max_message_size",
+		"agent-startup-timeout":     "agent_startup_timeout",
+		"api-timeout":               "api_timeout",
+		"agent-startup-concurrency": "agent_startup_concurrency",
+		"log-level":                 "log_level",
+		"encryption-mode":           "encryption_mode",
+		"use-login-shell":           "use_login_shell",
 	}
 
 	defaults := map[string]interface{}{
@@ -233,9 +282,12 @@ func Load(args []string) (*Config, bool, error) {
 		"max_message_size":       0,
 		"agent_startup_timeout":  DefaultAgentStartupTimeout,
 		"api_timeout":            DefaultAPITimeout,
-		"log_level":              defaultLogLevel,
-		"encryption_mode":        "post-quantum",
-		"use_login_shell":        true,
+		// 0 means "resolve from this machine's core count" -- see the field's
+		// comment on Config.AgentStartupConcurrency.
+		"agent_startup_concurrency": 0,
+		"log_level":                 defaultLogLevel,
+		"encryption_mode":           "post-quantum",
+		"use_login_shell":           true,
 	}
 
 	k := koanf.New(internalconfig.Delim)

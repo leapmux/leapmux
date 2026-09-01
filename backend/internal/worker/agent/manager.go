@@ -12,6 +12,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
+	"github.com/leapmux/leapmux/internal/worker/config"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -30,6 +31,26 @@ type Manager struct {
 	// until the old process's onExit has run. See stopAndWait and startAgentWith.
 	exitDone map[Agent]chan struct{}
 	onExit   ExitHandler
+
+	// startupSlots caps how many BACKGROUND agent startups run at once: one
+	// token is held from just before the provider's start func spawns the
+	// process until that func returns, which is the point the provider has
+	// completed its handshake (the initialize control_response, thread/start,
+	// session/new, get_state -- one per provider). It never covers a running
+	// agent, so it does not limit how many agents this machine hosts.
+	//
+	// Only a background spawn draws on it. A spawn the user asked for -- an
+	// open, a restart, a /clear, a cold start behind a message -- takes no
+	// permit and never waits, because the user is waiting on it: the send path
+	// calls the cold start INLINE, and the client gives that RPC about fifteen
+	// seconds, so a permit wait would fail the send although the message row is
+	// already durable. The boot-time resume sweep is the one caller nobody is
+	// waiting on, and it is the one this pool exists to hold back.
+	//
+	// Buffered and never nil: NewManager fills it, because a nil channel blocks
+	// for ever and this manager is constructed (in hub.New) before any
+	// configuration is read. SetStartupConcurrency replaces it.
+	startupSlots chan struct{}
 }
 
 // cachedCatalog is the last-known option-group set for a not-running agent, stamped
@@ -58,6 +79,67 @@ func NewManager(onExit ExitHandler) *Manager {
 		lifecycleLocks:     make(map[string]*lifecycleEntry),
 		exitDone:           make(map[Agent]chan struct{}),
 		onExit:             onExit,
+		startupSlots:       newStartupSlots(config.ResolveStartupConcurrency(0)),
+	}
+}
+
+// newStartupSlots builds a permit channel of capacity n. n is already resolved
+// by config.ResolveStartupConcurrency, so a non-positive value here would be a
+// caller bug; the max keeps it from producing an unbuffered channel, which
+// admits nobody and would wedge every background spawn.
+func newStartupSlots(n int) chan struct{} {
+	return make(chan struct{}, max(n, 1))
+}
+
+// SetStartupConcurrency replaces the background startup permit pool. n <= 0
+// restores the default (see config.ResolveStartupConcurrency).
+//
+// Call it before the manager is reachable by anything that spawns. Wire does,
+// beside SetOnExit and well before SetChannelMgr publishes the manager to the
+// connect loop, so no in-flight startup can be holding a permit from the pool
+// this discards -- a swap under load would let the two pools admit
+// old+new callers at once, briefly doubling the configured concurrency.
+func (m *Manager) SetStartupConcurrency(n int) {
+	slots := newStartupSlots(config.ResolveStartupConcurrency(n))
+	m.mu.Lock()
+	m.startupSlots = slots
+	m.mu.Unlock()
+}
+
+// StartupConcurrency reports the background permit pool's current capacity.
+//
+// It is the ONE source of truth for the configured number. The resume sweep
+// reads it to size its own fan-out, so the depth of the queue in front of the
+// pool matches the pool, and neither can drift when a wiring line is missed.
+// A caller must not branch on it to decide WHETHER to spawn -- the pool itself
+// enforces that, on the spawn path, for every background caller.
+func (m *Manager) StartupConcurrency() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return cap(m.startupSlots)
+}
+
+// acquireStartupSlot takes one background startup permit, blocking while the
+// configured number of background startups are already in flight. The returned
+// function releases it. Defer it around the start func, so a start that returns
+// an error AND a start that panics both give the permit back -- a leaked permit
+// shrinks the pool for the life of the process.
+//
+// It selects on ctx.Done() so a startup whose tab is closed while it waits
+// gives its place up instead of spawning a process nobody wants. The permit is
+// read once under the lock rather than through m.startupSlots at both ends, so
+// a concurrent SetStartupConcurrency cannot make the release land in a
+// different pool than the acquire.
+func (m *Manager) acquireStartupSlot(ctx context.Context) (release func(), err error) {
+	m.mu.RLock()
+	slots := m.startupSlots
+	m.mu.RUnlock()
+
+	select {
+	case slots <- struct{}{}:
+		return func() { <-slots }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 }
 
@@ -140,14 +222,27 @@ type startFunc func(ctx context.Context, opts Options, sink OutputSink) (Agent, 
 // Returns the confirmed option values from the startup handshake (e.g.
 // permission mode, discovered model), keyed by option-group id.
 func (m *Manager) StartAgent(ctx context.Context, opts Options, sink OutputSink) (map[string]string, error) {
+	return m.startAgent(ctx, opts, sink, false)
+}
+
+// StartBackgroundAgent is StartAgent for a spawn nobody is waiting on -- today
+// the boot-time resume sweep. It is the only entry point that draws on the
+// startup permit pool, so a machine restoring two hundred tabs cannot run two
+// hundred handshakes at once, while a tab the user opens by hand never waits
+// behind them.
+func (m *Manager) StartBackgroundAgent(ctx context.Context, opts Options, sink OutputSink) (map[string]string, error) {
+	return m.startAgent(ctx, opts, sink, true)
+}
+
+func (m *Manager) startAgent(ctx context.Context, opts Options, sink OutputSink, background bool) (map[string]string, error) {
 	reg, ok := agentFactoryRegistry[opts.AgentProvider]
 	if !ok {
 		return nil, fmt.Errorf("unsupported agent provider: %v", opts.AgentProvider)
 	}
-	return m.startAgentWith(ctx, opts, sink, reg.start)
+	return m.startAgentWith(ctx, opts, sink, reg.start, background)
 }
 
-func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink OutputSink, start startFunc) (map[string]string, error) {
+func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink OutputSink, start startFunc, background bool) (map[string]string, error) {
 	m.mu.Lock()
 	if _, exists := m.agents[opts.AgentID]; exists {
 		m.mu.Unlock()
@@ -155,7 +250,32 @@ func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink OutputS
 	}
 	m.mu.Unlock()
 
-	provider, err := start(ctx, opts, sink)
+	// Throttle the SPAWN, not the agent, and only a background one. start blocks
+	// from the exec through the provider's startup handshake, so the permit is
+	// held for exactly the window this cap is about and is given back before the
+	// agent is registered.
+	//
+	// A spawn the user asked for takes no permit and never waits. That is the
+	// whole point of the split: the cap exists so a boot-time sweep does not
+	// start two hundred CLIs at once, and a user who opens a tab in the middle of
+	// that sweep is not the one who should pay for it.
+	//
+	// The release is deferred inside a closure rather than called after start
+	// returns. A provider that panics mid-handshake would otherwise keep its
+	// permit for the life of the process: a recovered panic leaves the worker
+	// running one permit short, and after enough of them the sweep blocks in
+	// acquireStartupSlot with nothing logged.
+	provider, err := func() (Agent, error) {
+		if !background {
+			return start(ctx, opts, sink)
+		}
+		release, err := m.acquireStartupSlot(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("wait for an agent startup slot: %w", err)
+		}
+		defer release()
+		return start(ctx, opts, sink)
+	}()
 	if err != nil {
 		return nil, err
 	}

@@ -33,6 +33,7 @@ CREATE TABLE session (
 // the rows every filter has to drop.
 func seedOpenCodeFamilyDB(t *testing.T, path, dir string) {
 	t.Helper()
+	requireHostAbsDir(t, dir)
 	db := newFixtureDB(t, path, openCodeFamilyDDL)
 	insert := func(id, parent, directory, title string, created, updated int64, archived any) {
 		t.Helper()
@@ -51,13 +52,13 @@ func seedOpenCodeFamilyDB(t *testing.T, path, dir string) {
 	insert("ses_old", "", dir, "Older session", 1_000, 2_000, nil)
 	insert("ses_subagent", "ses_new", dir, "Spawn subagent", 1_000, 9_000, nil)
 	insert("ses_archived", "", dir, "Put away", 1_000, 9_000, 8_000)
-	insert("ses_elsewhere", "", "/somewhere/else", "Another directory", 1_000, 9_000, nil)
+	insert("ses_elsewhere", "", absPath("somewhere", "else"), "Another directory", 1_000, 9_000, nil)
 	insert("ses_no_updated", "", dir, "Never updated", 500, 0, nil)
 }
 
 func TestOpenCodeFamilySessions(t *testing.T) {
 	t.Parallel()
-	dir := "/Users/dev/project"
+	dir := absPath("Users", "dev", "project")
 	path := filepath.Join(t.TempDir(), "opencode.db")
 	seedOpenCodeFamilyDB(t, path, dir)
 
@@ -74,20 +75,24 @@ func TestOpenCodeFamilySessions(t *testing.T) {
 
 func TestOpenCodeFamilySessions_MatchesTheDirectoryExactly(t *testing.T) {
 	t.Parallel()
-	dir := "/Users/dev/project"
+	dir := absPath("Users", "dev", "project")
+	parent := filepath.Dir(dir)
+	sep := string(filepath.Separator)
 	path := filepath.Join(t.TempDir(), "opencode.db")
 	seedOpenCodeFamilyDB(t, path, dir)
 
-	// A trailing slash and a `.` segment name the same directory, and the
-	// reader cleans the query before it binds it.
-	for _, query := range []string{dir, dir + "/", "/Users/dev/./project"} {
+	// A trailing separator and a `.` segment name the same directory, and the
+	// reader cleans the query before it binds it. Both are composed from `dir`
+	// rather than written out, so each stays a spelling of the host's own path.
+	dotted := parent + sep + "." + sep + filepath.Base(dir)
+	for _, query := range []string{dir, dir + sep, dotted} {
 		got, err := openCodeFamilySessions(context.Background(), path, StoredSessionQuery{WorkingDir: query})
 		require.NoError(t, err)
 		assert.Equal(t, []string{"ses_new", "ses_old", "ses_no_updated"}, handlesOf(got), "query=%q", query)
 	}
 
 	// A different directory, and a prefix of the real one, both answer nothing.
-	for _, query := range []string{"/Users/dev/other", "/Users/dev"} {
+	for _, query := range []string{filepath.Join(parent, "other"), parent} {
 		got, err := openCodeFamilySessions(context.Background(), path, StoredSessionQuery{WorkingDir: query})
 		require.NoError(t, err)
 		assert.Empty(t, got, "query=%q must not match by prefix", query)
@@ -96,7 +101,7 @@ func TestOpenCodeFamilySessions_MatchesTheDirectoryExactly(t *testing.T) {
 
 func TestOpenCodeFamilySessions_RespectsTheLimit(t *testing.T) {
 	t.Parallel()
-	dir := "/Users/dev/project"
+	dir := absPath("Users", "dev", "project")
 	path := filepath.Join(t.TempDir(), "opencode.db")
 	db := newFixtureDB(t, path, openCodeFamilyDDL)
 	for i := range 10 {
@@ -116,7 +121,7 @@ func TestOpenCodeFamilySessions_AbsentStoreIsEmpty(t *testing.T) {
 	t.Parallel()
 	got, err := openCodeFamilySessions(context.Background(),
 		filepath.Join(t.TempDir(), "never-created.db"),
-		StoredSessionQuery{WorkingDir: "/Users/dev/project"})
+		StoredSessionQuery{WorkingDir: absPath("Users", "dev", "project")})
 	require.NoError(t, err, "a CLI the user never ran is not a failure")
 	assert.Empty(t, got)
 }
@@ -127,7 +132,7 @@ func TestOpenCodeFamilySessions_ForeignSchemaIsAnError(t *testing.T) {
 	newFixtureDB(t, path, `CREATE TABLE unrelated (id text)`)
 
 	_, err := openCodeFamilySessions(context.Background(), path,
-		StoredSessionQuery{WorkingDir: "/Users/dev/project"})
+		StoredSessionQuery{WorkingDir: absPath("Users", "dev", "project")})
 	// Reported rather than swallowed: the CALLER decides that a provider-store
 	// failure degrades to the worker's own records, and it can only log what it
 	// is told.
@@ -137,7 +142,7 @@ func TestOpenCodeFamilySessions_ForeignSchemaIsAnError(t *testing.T) {
 func TestOpenCodeFamilySessions_EmptyWorkingDirListsNothing(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "opencode.db")
-	seedOpenCodeFamilyDB(t, path, "/Users/dev/project")
+	seedOpenCodeFamilyDB(t, path, absPath("Users", "dev", "project"))
 
 	got, err := openCodeFamilySessions(context.Background(), path, StoredSessionQuery{WorkingDir: "  "})
 	require.NoError(t, err)
@@ -146,7 +151,7 @@ func TestOpenCodeFamilySessions_EmptyWorkingDirListsNothing(t *testing.T) {
 
 func TestOpenCodeFamilySessions_LeavesTheStoreAlone(t *testing.T) {
 	t.Parallel()
-	dir := "/Users/dev/project"
+	dir := absPath("Users", "dev", "project")
 	path := filepath.Join(t.TempDir(), "opencode.db")
 	seedOpenCodeFamilyDB(t, path, dir)
 	// The fixture is built with sqlitedb.Open, which chmods to 0600 and sets
@@ -193,17 +198,21 @@ func TestOpencodeDBPath_OverrideWithNoDataDirIsEmpty(t *testing.T) {
 
 func TestOpencodeDBPath(t *testing.T) {
 	t.Parallel()
-	home := "/home/dev"
+	home := absPath("home", "dev")
 
 	base := StoredSessionQuery{HomeDir: home, Getenv: fixtureEnv(nil)}
 	assert.Equal(t, filepath.Join(home, ".local", "share", "opencode", "opencode.db"), opencodeDBPath(base))
 
-	xdg := StoredSessionQuery{HomeDir: home, Getenv: fixtureEnv(map[string]string{"XDG_DATA_HOME": "/data"})}
-	assert.Equal(t, filepath.Join("/data", "opencode", "opencode.db"), opencodeDBPath(xdg))
+	data := absPath("data")
+	xdg := StoredSessionQuery{HomeDir: home, Getenv: fixtureEnv(map[string]string{"XDG_DATA_HOME": data})}
+	assert.Equal(t, filepath.Join(data, "opencode", "opencode.db"), opencodeDBPath(xdg))
 
 	// OPENCODE_DB takes an absolute path, or a bare name under the data dir.
-	abs := StoredSessionQuery{HomeDir: home, Getenv: fixtureEnv(map[string]string{"OPENCODE_DB": "/custom/store.db"})}
-	assert.Equal(t, "/custom/store.db", opencodeDBPath(abs))
+	// The override has to be absolute for the HOST, because that is the
+	// question storeOverridePath asks it.
+	custom := absPath("custom", "store.db")
+	abs := StoredSessionQuery{HomeDir: home, Getenv: fixtureEnv(map[string]string{"OPENCODE_DB": custom})}
+	assert.Equal(t, custom, opencodeDBPath(abs))
 
 	rel := StoredSessionQuery{HomeDir: home, Getenv: fixtureEnv(map[string]string{"OPENCODE_DB": "beta.db"})}
 	assert.Equal(t, filepath.Join(home, ".local", "share", "opencode", "beta.db"), opencodeDBPath(rel))
@@ -211,13 +220,13 @@ func TestOpencodeDBPath(t *testing.T) {
 
 func TestOpencodeStoredSessions_EndToEnd(t *testing.T) {
 	t.Parallel()
-	dir := "/Users/dev/project"
+	dir := absPath("Users", "dev", "project")
 	data := t.TempDir()
 	seedOpenCodeFamilyDB(t, filepath.Join(data, "opencode", "opencode.db"), dir)
 
 	got, err := opencodeStoredSessions(context.Background(), StoredSessionQuery{
 		WorkingDir: dir,
-		HomeDir:    "/unused",
+		HomeDir:    absPath("unused"),
 		Getenv:     fixtureEnv(map[string]string{"XDG_DATA_HOME": data}),
 	})
 	require.NoError(t, err)

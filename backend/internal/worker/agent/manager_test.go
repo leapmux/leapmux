@@ -57,7 +57,7 @@ func TestManager_SetOnExit_FiresOnStop(t *testing.T) {
 		AgentID:    "s-exit",
 		Options:    map[string]string{OptionIDModel: "test"},
 		WorkingDir: t.TempDir(),
-	}, noopSink{}, startMockAgent)
+	}, noopSink{}, startMockAgent, false)
 	require.NoError(t, err)
 
 	m.StopAgent("s-exit")
@@ -78,7 +78,7 @@ func TestManager_StartAndStop(t *testing.T) {
 		AgentID:    "s1",
 		Options:    map[string]string{OptionIDModel: "test"},
 		WorkingDir: t.TempDir(),
-	}, noopSink{}, startMockAgent)
+	}, noopSink{}, startMockAgent, false)
 	require.NoError(t, err, "StartAgent")
 
 	assert.True(t, m.HasAgent("s1"), "expected HasAgent(s1) = true")
@@ -88,7 +88,7 @@ func TestManager_StartAndStop(t *testing.T) {
 		AgentID:    "s1",
 		Options:    map[string]string{OptionIDModel: "test"},
 		WorkingDir: t.TempDir(),
-	}, noopSink{}, startMockAgent)
+	}, noopSink{}, startMockAgent, false)
 	assert.Error(t, err, "expected error for duplicate agent")
 
 	// Stop and verify cleanup.
@@ -109,7 +109,7 @@ func TestManager_SendInput(t *testing.T) {
 		AgentID:    "s2",
 		Options:    map[string]string{OptionIDModel: "test"},
 		WorkingDir: t.TempDir(),
-	}, sink, startMockAgent)
+	}, sink, startMockAgent, false)
 	require.NoError(t, err, "StartAgent")
 	defer m.StopAgent("s2")
 
@@ -164,7 +164,7 @@ func TestManager_SendInputWaitsForRestartToFinish(t *testing.T) {
 		WorkingDir: t.TempDir(),
 	}
 
-	_, err := m.startAgentWith(ctx, opts, noopSink{}, startMockAgent)
+	_, err := m.startAgentWith(ctx, opts, noopSink{}, startMockAgent, false)
 	require.NoError(t, err, "StartAgent")
 
 	// Open the restart window by hand -- lock held, old process gone, new one not
@@ -186,7 +186,7 @@ func TestManager_SendInputWaitsForRestartToFinish(t *testing.T) {
 	}
 
 	// Finish the restart, then release the lock the way the service does.
-	_, err = m.startAgentWith(ctx, opts, noopSink{}, startMockAgent)
+	_, err = m.startAgentWith(ctx, opts, noopSink{}, startMockAgent, false)
 	require.NoError(t, err, "restart")
 	unlock()
 	defer m.StopAgent(agentID)
@@ -214,7 +214,7 @@ func TestManager_SendChildInputWaitsForRestartToFinish(t *testing.T) {
 		WorkingDir: t.TempDir(),
 	}
 
-	_, err := m.startAgentWith(ctx, opts, noopSink{}, startMockAgent)
+	_, err := m.startAgentWith(ctx, opts, noopSink{}, startMockAgent, false)
 	require.NoError(t, err, "StartAgent")
 
 	// The restart window, held open by hand the way RestartAgent holds it.
@@ -234,7 +234,7 @@ func TestManager_SendChildInputWaitsForRestartToFinish(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 	}
 
-	_, err = m.startAgentWith(ctx, opts, noopSink{}, startMockAgent)
+	_, err = m.startAgentWith(ctx, opts, noopSink{}, startMockAgent, false)
 	require.NoError(t, err, "restart")
 	unlock()
 	defer m.StopAgent(agentID)
@@ -275,7 +275,7 @@ func TestManager_SendInputDoesNotHoldTheLifecycleLockAcrossTheWrite(t *testing.T
 		AgentID:    agentID,
 		Options:    map[string]string{OptionIDModel: "test"},
 		WorkingDir: t.TempDir(),
-	}, noopSink{}, start)
+	}, noopSink{}, start, false)
 	require.NoError(t, err, "StartAgent")
 
 	sendDone := make(chan error, 1)
@@ -330,7 +330,7 @@ func TestManager_StopAll(t *testing.T) {
 			AgentID:    id,
 			Options:    map[string]string{OptionIDModel: "test"},
 			WorkingDir: t.TempDir(),
-		}, noopSink{}, startMockAgent)
+		}, noopSink{}, startMockAgent, false)
 		require.NoError(t, err, "StartAgent(%s)", id)
 	}
 
@@ -353,7 +353,7 @@ func TestManager_StopAndWaitAgent(t *testing.T) {
 		AgentID:    "s1",
 		Options:    map[string]string{OptionIDModel: "test"},
 		WorkingDir: t.TempDir(),
-	}, noopSink{}, startMockAgent)
+	}, noopSink{}, startMockAgent, false)
 	require.NoError(t, err, "StartAgent")
 
 	// StopAndWaitAgent should block until the agent is fully removed.
@@ -365,7 +365,7 @@ func TestManager_StopAndWaitAgent(t *testing.T) {
 		AgentID:    "s1",
 		Options:    map[string]string{OptionIDModel: "test"},
 		WorkingDir: t.TempDir(),
-	}, noopSink{}, startMockAgent)
+	}, noopSink{}, startMockAgent, false)
 	require.NoError(t, err, "StartAgent after StopAndWaitAgent should succeed")
 	m.StopAgent("s1")
 }
@@ -403,7 +403,7 @@ func TestManager_ExitGoroutineHonorsIdentityGuard(t *testing.T) {
 		AgentID:    "r",
 		Options:    map[string]string{OptionIDModel: "a"},
 		WorkingDir: t.TempDir(),
-	}, noopSink{}, func(context.Context, Options, OutputSink) (Agent, error) { return old, nil })
+	}, noopSink{}, func(context.Context, Options, OutputSink) (Agent, error) { return old, nil }, false)
 	require.NoError(t, err)
 	require.True(t, m.HasAgent("r"))
 
@@ -472,7 +472,7 @@ func TestManager_StopAndWaitWaitsForOnExit(t *testing.T) {
 		AgentID:    "w",
 		Options:    map[string]string{OptionIDModel: "a"},
 		WorkingDir: t.TempDir(),
-	}, noopSink{}, func(context.Context, Options, OutputSink) (Agent, error) { return old, nil })
+	}, noopSink{}, func(context.Context, Options, OutputSink) (Agent, error) { return old, nil }, false)
 	require.NoError(t, err)
 
 	stopReturned := make(chan struct{})
@@ -538,7 +538,7 @@ func TestManager_OptionGroupsRefreshesCacheFromLive(t *testing.T) {
 		AgentID:    "c",
 		Options:    map[string]string{OptionIDModel: "x"},
 		WorkingDir: t.TempDir(),
-	}, noopSink{}, func(context.Context, Options, OutputSink) (Agent, error) { return p, nil })
+	}, noopSink{}, func(context.Context, Options, OutputSink) (Agent, error) { return p, nil }, false)
 	require.NoError(t, err)
 	m.mu.RLock()
 	_, seeded := m.cachedOptionGroups["c"]
@@ -566,12 +566,12 @@ func TestManager_LockAgent_ComposesStopAndStart(t *testing.T) {
 	m := NewManager(nil)
 	ctx := context.Background()
 
-	_, err := m.startAgentWith(ctx, Options{AgentID: "r1", Options: map[string]string{OptionIDModel: "test"}, WorkingDir: t.TempDir()}, noopSink{}, startMockAgent)
+	_, err := m.startAgentWith(ctx, Options{AgentID: "r1", Options: map[string]string{OptionIDModel: "test"}, WorkingDir: t.TempDir()}, noopSink{}, startMockAgent, false)
 	require.NoError(t, err)
 
 	unlock := m.LockAgent("r1")
 	m.stopAndWait("r1", false)
-	_, err = m.startAgentWith(ctx, Options{AgentID: "r1", Options: map[string]string{OptionIDModel: "test"}, WorkingDir: t.TempDir()}, noopSink{}, startMockAgent)
+	_, err = m.startAgentWith(ctx, Options{AgentID: "r1", Options: map[string]string{OptionIDModel: "test"}, WorkingDir: t.TempDir()}, noopSink{}, startMockAgent, false)
 	unlock()
 	require.NoError(t, err, "restart composed under LockAgent should succeed")
 	assert.True(t, m.HasAgent("r1"))
@@ -582,14 +582,14 @@ func TestManager_LockAgent_SerializesConcurrentRestarts(t *testing.T) {
 	m := NewManager(nil)
 	ctx := context.Background()
 
-	_, err := m.startAgentWith(ctx, Options{AgentID: "race", Options: map[string]string{OptionIDModel: "test"}, WorkingDir: t.TempDir()}, noopSink{}, startMockAgent)
+	_, err := m.startAgentWith(ctx, Options{AgentID: "race", Options: map[string]string{OptionIDModel: "test"}, WorkingDir: t.TempDir()}, noopSink{}, startMockAgent, false)
 	require.NoError(t, err)
 
 	restart := func() error {
 		unlock := m.LockAgent("race")
 		defer unlock()
 		m.stopAndWait("race", false)
-		_, err := m.startAgentWith(ctx, Options{AgentID: "race", Options: map[string]string{OptionIDModel: "test"}, WorkingDir: t.TempDir()}, noopSink{}, startMockAgent)
+		_, err := m.startAgentWith(ctx, Options{AgentID: "race", Options: map[string]string{OptionIDModel: "test"}, WorkingDir: t.TempDir()}, noopSink{}, startMockAgent, false)
 		return err
 	}
 
@@ -655,7 +655,7 @@ func TestManager_AgentExitCleanup(t *testing.T) {
 		scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
 		go a.readOutputLoop(scanner)
 		return a, nil
-	})
+	}, false)
 	require.NoError(t, err, "StartAgent")
 
 	// Wait for the process to exit and cleanup to happen.

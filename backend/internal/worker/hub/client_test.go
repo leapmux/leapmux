@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -191,35 +192,89 @@ func TestConnectWithReconnect_StopsOnContextCancel(t *testing.T) {
 	assert.GreaterOrEqual(t, attempts.Load(), int32(1), "expected at least 1 attempt")
 }
 
+// fakeClock is the clock the reconnect tests own. Now feeds the
+// long-connection threshold and After feeds the backoff wait, so a whole
+// reconnect sequence is exercised with no sleep and no window to race.
+//
+// A test asserts on the durations the code ASKED to wait, which a real sleep
+// cannot report: a measured gap carries the host's timer granularity too, and
+// on Windows that is about 15.6ms -- wide enough to swallow the difference
+// between this policy's 10ms and 40ms intervals and report them in the wrong
+// order, which is how these tests failed there while the policy was correct.
+type fakeClock struct {
+	mu     sync.Mutex
+	now    time.Time
+	waited []time.Duration
+}
+
+func newFakeClock() *fakeClock {
+	// A fixed instant rather than time.Now, so nothing about the result depends
+	// on when the suite runs.
+	return &fakeClock{now: time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)}
+}
+
+func (c *fakeClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+// After records the wait, advances the clock over it, and hands back a channel
+// that is already ready. The wait becomes a fact the test reads instead of a
+// delay it pays.
+func (c *fakeClock) After(d time.Duration) <-chan time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.waited = append(c.waited, d)
+	c.now = c.now.Add(d)
+	ch := make(chan time.Time, 1)
+	ch <- c.now
+	return ch
+}
+
+// Advance moves the clock without recording a wait, which is how a test states
+// that a connection LASTED some time.
+func (c *fakeClock) Advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
+}
+
+// waits returns a copy, so a caller cannot read the slice while
+// connectWithReconnect still appends to it.
+func (c *fakeClock) waits() []time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]time.Duration(nil), c.waited...)
+}
+
 func TestConnectWithReconnect_ResetsBackoffAfterLongConnection(t *testing.T) {
-	// Track when each connect call happens.
-	var timestamps []time.Time
 	var attempts atomic.Int32
 
-	client := &Client{}
+	clock := newFakeClock()
+	client := &Client{now: clock.Now, after: clock.After}
 	ctx, cancel := context.WithCancel(context.Background())
 
+	// Zero jitter, so the sequence asserted below is the one the policy states.
 	bo := backoffutil.NewBackoff(10*time.Millisecond, 500*time.Millisecond, 0)
 
 	mockConnect := func(_ context.Context, _ string) error {
-		n := attempts.Add(1)
-		timestamps = append(timestamps, time.Now())
-		switch n {
+		switch attempts.Add(1) {
 		case 1:
-			// First call: fail immediately → backoff=10ms.
+			// Fails at once → backoff 10ms.
 			return fmt.Errorf("fail 1")
 		case 2:
-			// Second call: fail immediately → backoff=20ms.
+			// Fails at once → backoff 20ms.
 			return fmt.Errorf("fail 2")
 		case 3:
-			// Third call: fail immediately → backoff=40ms.
+			// Fails at once → backoff 40ms.
 			return fmt.Errorf("fail 3")
 		case 4:
-			// Fourth call: succeed for longer than threshold → should reset backoff.
-			time.Sleep(80 * time.Millisecond)
+			// Holds longer than the threshold, which resets the backoff.
+			clock.Advance(80 * time.Millisecond)
 			return fmt.Errorf("disconnect after long session")
 		case 5:
-			// Fifth call: fail → backoff should have been reset to 10ms (InitialInterval).
+			// Fails at once → back to the initial 10ms.
 			return fmt.Errorf("fail 5")
 		default:
 			cancel()
@@ -229,31 +284,35 @@ func TestConnectWithReconnect_ResetsBackoffAfterLongConnection(t *testing.T) {
 
 	client.connectWithReconnect(ctx, "token", mockConnect, bo, 50*time.Millisecond)
 
-	require.GreaterOrEqual(t, len(timestamps), 6, "expected at least 6 timestamps")
+	require.GreaterOrEqual(t, attempts.Load(), int32(6), "expected at least 6 connect attempts")
 
-	// Gap between call 3 and 4 should be large (40ms backoff).
-	// Gap between call 5 and 6 should be small (10ms, reset to InitialInterval).
-	gap34 := timestamps[3].Sub(timestamps[2])
-	gap56 := timestamps[5].Sub(timestamps[4])
-
-	assert.Less(t, gap56, gap34, "gap after reset should be shorter than gap before long connection")
+	// The whole policy in one line: the interval doubles while the connections
+	// are short, and the connection that outlasted the threshold puts it back to
+	// the initial interval.
+	waits := clock.waits()
+	require.GreaterOrEqual(t, len(waits), 5)
+	assert.Equal(t, []time.Duration{
+		10 * time.Millisecond,
+		20 * time.Millisecond,
+		40 * time.Millisecond,
+		10 * time.Millisecond,
+		20 * time.Millisecond,
+	}, waits[:5], "the fourth disconnect follows a long connection, so it restarts the sequence")
 }
 
 func TestConnectWithReconnect_BackoffCapsAtMax(t *testing.T) {
-	var timestamps []time.Time
 	targetAttempts := int32(8)
 	var attempts atomic.Int32
 
-	client := &Client{}
+	clock := newFakeClock()
+	client := &Client{now: clock.Now, after: clock.After}
 	ctx, cancel := context.WithCancel(context.Background())
 
 	const maxInterval = 10 * time.Millisecond
 	bo := backoffutil.NewBackoff(2*time.Millisecond, maxInterval, 0)
 
 	mockConnect := func(_ context.Context, _ string) error {
-		n := attempts.Add(1)
-		timestamps = append(timestamps, time.Now())
-		if n >= targetAttempts {
+		if attempts.Add(1) >= targetAttempts {
 			cancel()
 		}
 		return fmt.Errorf("fail")
@@ -261,14 +320,18 @@ func TestConnectWithReconnect_BackoffCapsAtMax(t *testing.T) {
 
 	client.connectWithReconnect(ctx, "token", mockConnect, bo, 1*time.Hour)
 
-	// Verify that later gaps don't exceed MaxInterval + tolerance.
-	// Use a generous tolerance because OS scheduling jitter on short intervals
-	// can easily add several milliseconds.
-	tolerance := 50 * time.Millisecond
-	for i := 1; i < len(timestamps); i++ {
-		gap := timestamps[i].Sub(timestamps[i-1])
-		assert.LessOrEqual(t, gap, maxInterval+tolerance, "gap[%d]=%v exceeds MaxInterval=%v", i, gap, maxInterval)
+	// The waits the code asked for, not the gaps they produced: a measured gap
+	// carries the host's scheduling delay too, which is why this used to allow a
+	// 50ms tolerance against a 10ms cap -- and so could not have caught a cap
+	// five times too large.
+	waits := clock.waits()
+	require.NotEmpty(t, waits)
+	for i, wait := range waits {
+		assert.LessOrEqual(t, wait, maxInterval,
+			"wait[%d]=%v exceeds MaxInterval=%v", i, wait, maxInterval)
 	}
+	assert.Equal(t, maxInterval, waits[len(waits)-1],
+		"the sequence must actually reach the cap, or the loop above proves nothing")
 }
 
 func TestIsCodeUnauthenticated(t *testing.T) {

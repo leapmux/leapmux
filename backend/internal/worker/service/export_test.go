@@ -18,3 +18,14 @@ import "context"
 func (r *OrphanReconciler) ReconcileOnceForTest(ctx context.Context) bool {
 	return r.reconcileOnce(ctx)
 }
+
+// WaitForSweepForTest blocks until the resume sweep goroutine returns, or
+// returns at once when no sweep ever started.
+//
+// It is the wait alone, without the stop. Stop is the wrong tool for a test
+// barrier: it also tells the launcher to abandon the candidates it did not
+// reach, so a test that uses it as a barrier races its own sweep and asserts on
+// a partial run.
+func (r *AgentResumer) WaitForSweepForTest() {
+	r.waitForSweep()
+}
