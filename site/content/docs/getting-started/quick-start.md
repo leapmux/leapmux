@@ -105,7 +105,7 @@ A **workspace** is the top-level container that holds your tiling layout. To cre
 - **Worker** — which machine hosts the agent. In solo mode there is one local Worker, already selected.
 - **Agent Provider** — the agent backend (for example **Claude Code**).
 - **Directory** — the working directory on the Worker.
-- **Resume an existing session** *(optional)* — a prior session ID to resume.
+- **Resume an existing session** *(optional)* — pick an earlier session for that directory, or leave it on **"Start a new session"**.
 - **Git options** — appears once a Worker is chosen (see step 5).
 
 Click **"Create"**. LeapMux creates the workspace, spawns its first agent, and navigates to it. To work in an existing workspace instead, click its row in the sidebar. Full workspace management — rename, move, archive, delete — is covered in [Workspaces](/docs/using/workspaces/).
@@ -117,7 +117,7 @@ If you already have a workspace open and want another agent in it, open the tab 
 - **Worker** — the host machine (the local Worker in solo mode).
 - **Agent Provider** — choose your provider; the dropdown lists only providers whose CLI was detected, sorted alphabetically by name. If none are found, the button reads **"No agents available"** — install an agent CLI and use the provider section's refresh control (**"Refresh available providers"**).
 - **Directory** — the working directory (use the directory tree to pick it, or type a path in the box above the tree).
-- **Resume an existing session** *(optional)* — paste a session ID to continue a prior conversation via the CLI's resume support.
+- **Resume an existing session** *(optional)* — a menu of earlier sessions for the chosen directory and provider, including ones you started by running that CLI in a terminal. Pick one to continue it (see [Resuming a session](/docs/using/coding-agents/#resuming-an-existing-session)).
 - **Title** — the tab name. Defaults to a random `Agent <Name>`; click **"Generate random name"** to pick another, or type your own. It cannot be empty.
 - **Git options** — your branch/worktree choice (step 5).
 

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/hex"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -68,27 +69,83 @@ func TestCursorStoredSessions(t *testing.T) {
 	assert.Equal(t, "New Agent", got[1].Title, "Cursor's own default label is a truthful answer")
 }
 
-// TestCursorStoredSessions_UsesTheWALModificationTime pins why the -wal is
-// consulted: a session written to but not checkpointed leaves store.db
-// untouched, so store.db alone dates an active session to when it was created.
-func TestCursorStoredSessions_UsesTheWALModificationTime(t *testing.T) {
+// TestCursorStoredSessions_TimesByStoreDBOnly is the regression test for a
+// defect this reader had against real stores: every Cursor session was dated to
+// the moment LeapMux first listed it.
+//
+// Reading a session opens its database, and a read-only open of a WAL database
+// still creates the `-shm` sidecar (see
+// TestOpenReadOnly_CreatesShmButLeavesTheDatabaseFile). Adding that file
+// updates the mtime of the session DIRECTORY that holds it, and it can create
+// the `-wal` too. So neither is Cursor's writing -- both report LeapMux's own
+// footprint, and a reader that trusts them collapses every row to one
+// timestamp and loses the order the picker exists to give.
+//
+// Both are set here to a time later than `store.db`, and neither may win.
+func TestCursorStoredSessions_TimesByStoreDBOnly(t *testing.T) {
 	t.Parallel()
 	dir := "/Users/dev/project"
 	home := t.TempDir()
-	old := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
-	recent := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	stored := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	footprint := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 
-	writeCursorSession(t, home, dir, "agent-1", `{"agentId":"agent-1","name":"Active"}`, old)
-	wal := filepath.Join(home, ".cursor", "chats", cursorChatsDirFor(dir), "agent-1", "store.db-wal")
-	writeFixtureFile(t, wal, "not a real wal, only its timestamp matters here")
-	touchFixture(t, wal, recent)
+	writeCursorSession(t, home, dir, "agent-1", `{"agentId":"agent-1","name":"Active"}`, stored)
+	sessionDir := filepath.Join(home, ".cursor", "chats", cursorChatsDirFor(dir), "agent-1")
+	wal := filepath.Join(sessionDir, "store.db-wal")
+	writeFixtureFile(t, wal, "a sidecar the read-only open can create")
+	touchFixture(t, wal, footprint)
+	touchFixture(t, sessionDir, footprint)
 
 	got, err := cursorStoredSessions(context.Background(), StoredSessionQuery{
 		WorkingDir: dir, HomeDir: home, Getenv: fixtureEnv(nil),
 	})
 	require.NoError(t, err)
 	require.Len(t, got, 1)
-	assert.Equal(t, recent, got[0].UpdatedAt.UTC())
+	assert.Equal(t, stored, got[0].UpdatedAt.UTC(),
+		"neither the session directory nor the -wal may date a session")
+}
+
+// The ordering runs on the same signal, so it must survive the same footprint:
+// the newest `store.db` sorts first even when an older session's directory was
+// touched later.
+func TestCursorStoredSessions_OrdersByStoreDBNotDirectory(t *testing.T) {
+	t.Parallel()
+	dir := "/Users/dev/project"
+	home := t.TempDir()
+	base := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+
+	writeCursorSession(t, home, dir, "agent-newest", `{"agentId":"agent-newest","name":"Newest"}`, base)
+	writeCursorSession(t, home, dir, "agent-oldest", `{"agentId":"agent-oldest","name":"Oldest"}`, base.Add(-48*time.Hour))
+	// The older session's directory looks brand new, as it would after LeapMux
+	// listed it once and left a sidecar behind.
+	touchFixture(t, filepath.Join(home, ".cursor", "chats", cursorChatsDirFor(dir), "agent-oldest"),
+		base.Add(time.Hour))
+
+	got, err := cursorStoredSessions(context.Background(), StoredSessionQuery{
+		WorkingDir: dir, HomeDir: home, Getenv: fixtureEnv(nil),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"agent-newest", "agent-oldest"}, handlesOf(got))
+}
+
+// The candidate cut runs before any database opens, so a store the scan cannot
+// stat is not a session. A directory with no `store.db` is Cursor's own
+// leftover, and counting it would spend one of the `Limit` slots on nothing.
+func TestCursorStoredSessions_SkipsDirectoriesWithNoStore(t *testing.T) {
+	t.Parallel()
+	dir := "/Users/dev/project"
+	home := t.TempDir()
+	base := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+
+	writeCursorSession(t, home, dir, "agent-real", `{"agentId":"agent-real","name":"Real"}`, base)
+	require.NoError(t, os.MkdirAll(
+		filepath.Join(home, ".cursor", "chats", cursorChatsDirFor(dir), "agent-empty"), 0o755))
+
+	got, err := cursorStoredSessions(context.Background(), StoredSessionQuery{
+		WorkingDir: dir, HomeDir: home, Getenv: fixtureEnv(nil), Limit: 1,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"agent-real"}, handlesOf(got))
 }
 
 func TestCursorStoredSessions_SkipsUnreadableSessions(t *testing.T) {
@@ -156,4 +213,64 @@ func TestCursorStoredSessions_FallsBackToTheDirectoryName(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"agent-from-dir"}, handlesOf(got),
 		"the directory name is the agent id, so a metadata row that lost it is still resumable")
+}
+
+// A stray file in the chats folder is not a session. The guard used to be a
+// `keep` filter handed to `newestEntries`; it moved into the reader's own scan
+// with the store-time fix, and it is the same invariant either way.
+func TestCursorStoredSessions_IgnoresNonDirectoryEntries(t *testing.T) {
+	t.Parallel()
+	dir := "/Users/dev/project"
+	home := t.TempDir()
+	base := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+
+	writeCursorSession(t, home, dir, "agent-real", `{"agentId":"agent-real","name":"Real"}`, base)
+	// Newer than the session, so it would sort FIRST if it were counted.
+	stray := filepath.Join(home, ".cursor", "chats", cursorChatsDirFor(dir), "index.json")
+	writeFixtureFile(t, stray, `{"not":"a session"}`)
+	touchFixture(t, stray, base.Add(time.Hour))
+
+	got, err := cursorStoredSessions(context.Background(), StoredSessionQuery{
+		WorkingDir: dir, HomeDir: home, Getenv: fixtureEnv(nil),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"agent-real"}, handlesOf(got))
+}
+
+// The cut happens on the candidates, before any database opens, so a limit
+// smaller than the directory keeps the NEWEST rows and not the first ones read.
+func TestCursorStoredSessions_RespectsTheLimit(t *testing.T) {
+	t.Parallel()
+	dir := "/Users/dev/project"
+	home := t.TempDir()
+	base := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+
+	writeCursorSession(t, home, dir, "agent-c", `{"agentId":"agent-c","name":"C"}`, base.Add(-3*time.Hour))
+	writeCursorSession(t, home, dir, "agent-a", `{"agentId":"agent-a","name":"A"}`, base)
+	writeCursorSession(t, home, dir, "agent-b", `{"agentId":"agent-b","name":"B"}`, base.Add(-time.Hour))
+
+	got, err := cursorStoredSessions(context.Background(), StoredSessionQuery{
+		WorkingDir: dir, HomeDir: home, Getenv: fixtureEnv(nil), Limit: 2,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"agent-a", "agent-b"}, handlesOf(got))
+}
+
+// Two sessions written in the same filesystem tick must still list in one
+// fixed order. Without the tie-break the answer follows the directory read
+// order, so the menu reshuffles between two openings of the same dialog.
+func TestCursorStoredSessions_BreaksTimeTiesByName(t *testing.T) {
+	t.Parallel()
+	dir := "/Users/dev/project"
+	home := t.TempDir()
+	same := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+
+	writeCursorSession(t, home, dir, "agent-zulu", `{"agentId":"agent-zulu","name":"Z"}`, same)
+	writeCursorSession(t, home, dir, "agent-alpha", `{"agentId":"agent-alpha","name":"A"}`, same)
+
+	got, err := cursorStoredSessions(context.Background(), StoredSessionQuery{
+		WorkingDir: dir, HomeDir: home, Getenv: fixtureEnv(nil),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"agent-alpha", "agent-zulu"}, handlesOf(got))
 }

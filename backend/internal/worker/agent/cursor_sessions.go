@@ -6,8 +6,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -84,7 +86,7 @@ func cursorStoredSessions(ctx context.Context, q StoredSessionQuery) ([]StoredSe
 	// Capped at the limit: unlike Copilot, the directory ALREADY answers "is
 	// this session for this working directory", so the newest few are the
 	// answer and reading further only opens databases that cannot change it.
-	entries, err := newestEntries(dir, limit, cursorSessionDirFilter)
+	entries, err := cursorSessionCandidates(dir, limit)
 	if err != nil {
 		if errors.Is(err, errSessionStoreAbsent) {
 			return nil, nil
@@ -103,9 +105,56 @@ func cursorStoredSessions(ctx context.Context, q StoredSessionQuery) ([]StoredSe
 	return sortAndCapSessions(sessions, limit), nil
 }
 
-// cursorSessionDirFilter accepts the per-session directories.
-func cursorSessionDirFilter(entry os.DirEntry) bool {
-	return entry.IsDir()
+// cursorSessionCandidates lists the session directories under `dir`, newest
+// first, timed by each session's `store.db`.
+//
+// It does NOT use `newestEntries`, and the difference is the whole point: that
+// helper times an entry by the entry's own mtime, which for Cursor is the
+// session DIRECTORY. Reading a session opens its database, and a read-only open
+// of a WAL database still creates the `-shm` sidecar inside that directory --
+// which updates the directory's mtime to the moment LeapMux listed it.
+// `TestOpenReadOnly_CreatesShmButLeavesTheDatabaseFile` pins that behaviour.
+//
+// So the directory time reports LeapMux's own footprint, not Cursor's writing:
+// every session collapses to one timestamp, the list loses its order, and every
+// row reads "0s ago". `store.db` is the file Cursor writes and the read-only
+// open leaves alone, so it is the only honest signal here. Its `-wal` is not
+// usable either -- the same open creates that file when it is absent.
+func cursorSessionCandidates(dir string, limit int) ([]storeEntry, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, errSessionStoreAbsent
+		}
+		return nil, fmt.Errorf("read cursor chats directory: %w", err)
+	}
+	found := make([]storeEntry, 0, min(len(entries), storedSessionScanCap))
+	for _, entry := range entries {
+		if len(found) >= storedSessionScanCap {
+			break
+		}
+		if !entry.IsDir() {
+			continue
+		}
+		sessionDir := filepath.Join(dir, entry.Name())
+		// A stat, not an open: this runs for every session in the directory and
+		// only orders them. The databases are opened after the cut.
+		info, err := os.Stat(filepath.Join(sessionDir, cursorStoreFileName))
+		if err != nil {
+			continue
+		}
+		found = append(found, storeEntry{Path: sessionDir, Name: entry.Name(), ModTime: info.ModTime()})
+	}
+	sort.SliceStable(found, func(i, j int) bool {
+		if !found[i].ModTime.Equal(found[j].ModTime) {
+			return found[i].ModTime.After(found[j].ModTime)
+		}
+		return found[i].Name < found[j].Name
+	})
+	if limit > 0 && len(found) > limit {
+		found = found[:limit]
+	}
+	return found, nil
 }
 
 // readCursorSession opens one session's database and reads its metadata row.
@@ -142,7 +191,7 @@ func readCursorSession(ctx context.Context, entry storeEntry) (StoredSession, bo
 		// Cursor leaves a session called "New Agent" until something renames
 		// it, and that string is a truthful answer -- the CLI shows it too.
 		Title:     trimTitle(meta.Name),
-		UpdatedAt: cursorSessionTime(entry, storePath, meta),
+		UpdatedAt: cursorSessionTime(entry, meta),
 	}, true
 }
 
@@ -166,24 +215,17 @@ func decodeCursorMeta(raw string) (cursorSessionMeta, bool) {
 
 // cursorSessionTime is a Cursor session's last activity.
 //
-// Cursor records only a creation time, so the answer is a file time. The
-// database runs in WAL mode, and a session written to but not checkpointed
-// leaves `store.db` untouched while `store.db-wal` moves -- so the -wal is
-// consulted and the LATEST of the three times wins. Using `store.db` alone
-// dated an active session to when it was created.
-func cursorSessionTime(entry storeEntry, storePath string, meta cursorSessionMeta) time.Time {
-	newest := entry.ModTime
-	for _, path := range []string{storePath, storePath + "-wal"} {
-		info, err := os.Stat(path)
-		if err != nil {
-			continue
-		}
-		if info.ModTime().After(newest) {
-			newest = info.ModTime()
-		}
+// Cursor's metadata records only a creation time, so the answer is `store.db`'s
+// modification time, which `cursorSessionCandidates` already took. That comment
+// states why neither the session directory nor the `-wal` can supply it.
+//
+// The cost of using `store.db` alone is real and accepted: SQLite moves the
+// main file when it checkpoints, so a session written to seconds ago and not
+// yet checkpointed reads slightly old. A time that lags is a smaller defect
+// than a time LeapMux overwrites with the moment it looked.
+func cursorSessionTime(entry storeEntry, meta cursorSessionMeta) time.Time {
+	if !entry.ModTime.IsZero() {
+		return entry.ModTime
 	}
-	if newest.IsZero() {
-		return epochMillis(meta.CreatedAt)
-	}
-	return newest
+	return epochMillis(meta.CreatedAt)
 }

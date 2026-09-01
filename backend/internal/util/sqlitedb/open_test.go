@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -200,4 +201,55 @@ func TestBuildDSN_SpecialCharsInPath(t *testing.T) {
 	dsn := buildDSN("/home/user/my?data&file.db", Config{})
 	assert.Contains(t, dsn, "file:/home/user/my%3Fdata&file.db")
 	assert.Contains(t, dsn, "_pragma=foreign_keys(1)")
+}
+
+// OpenReadOnly forbids every write to the database FILE, and this pins the
+// limit of that promise: SQLite still creates the `-shm` sidecar beside a WAL
+// database, because a WAL reader needs the shared index even when it only
+// reads.
+//
+// The sidecar is the reason `cursorSessionTime` must not read a session
+// directory's own mtime. Creating a file updates the mtime of the directory
+// that holds it, so a reader that dates a session by its directory dates every
+// Cursor session to the moment LeapMux first listed it.
+func TestOpenReadOnly_CreatesShmButLeavesTheDatabaseFile(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/store.db"
+
+	seed, err := Open(path, Config{})
+	require.NoError(t, err)
+	_, err = seed.Exec(`CREATE TABLE meta(key TEXT, value TEXT)`)
+	require.NoError(t, err)
+	_, err = seed.Exec(`INSERT INTO meta VALUES ('0', 'x')`)
+	require.NoError(t, err)
+	_, err = seed.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`)
+	require.NoError(t, err)
+	require.NoError(t, seed.Close())
+	// A cold store: the owning CLI exited and left no sidecar behind.
+	_ = os.Remove(path + "-wal")
+	_ = os.Remove(path + "-shm")
+
+	// Backdate both the file and its directory, so any touch is unmistakable.
+	old := time.Now().Add(-72 * time.Hour)
+	require.NoError(t, os.Chtimes(path, old, old))
+	require.NoError(t, os.Chtimes(dir, old, old))
+
+	db, err := OpenReadOnly(path)
+	require.NoError(t, err)
+	var value string
+	require.NoError(t, db.QueryRow(`SELECT value FROM meta WHERE key = '0'`).Scan(&value))
+	assert.Equal(t, "x", value)
+	require.NoError(t, db.Close())
+
+	// The database file is untouched, which is what the read-only DSN buys.
+	after, err := os.Stat(path)
+	require.NoError(t, err)
+	assert.True(t, after.ModTime().Equal(old), "OpenReadOnly must not touch the database file")
+
+	// The DIRECTORY is not, because the sidecar landed in it. A reader that
+	// wants a store's own last-activity time must take it from a file the
+	// owning program writes, never from the enclosing directory.
+	dirAfter, err := os.Stat(dir)
+	require.NoError(t, err)
+	assert.True(t, dirAfter.ModTime().After(old), "the -shm sidecar must be visible as a directory mtime change")
 }

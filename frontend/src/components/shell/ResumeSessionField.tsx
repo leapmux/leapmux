@@ -1,9 +1,12 @@
 import type { Component } from 'solid-js'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { SessionIdState } from '~/hooks/createSessionIdState'
+import type { UseResumableSessionsArgs } from '~/hooks/useResumableSessions'
 import { Show } from 'solid-js'
 import { LabeledField } from '~/components/common/LabeledField'
-import { RESUME_SESSION_ERROR_ID, RESUME_SESSION_LABEL, SessionIdInput } from '~/components/shell/SessionIdInput'
+import { RefreshButton } from '~/components/common/RefreshButton'
+import { RESUME_SESSION_ERROR_ID, RESUME_SESSION_LABEL } from '~/components/shell/resumeSession'
+import { SessionIdInput } from '~/components/shell/SessionIdInput'
 import { SessionSelect } from '~/components/shell/SessionSelect'
 import { useResumableSessions } from '~/hooks/useResumableSessions'
 
@@ -34,14 +37,19 @@ interface ResumeSessionFieldProps {
  * `useResumableSessions` reports every one of those as an empty list, which is
  * why the swap needs one condition rather than a separate error path.
  *
+ * The FRAME is shared and only the control swaps, which is what makes the
+ * refresh button reachable. A failed fetch is exactly the case that mounts the
+ * text input, so a button that lived with the menu would be absent whenever it
+ * was the thing to press.
+ *
  * `createSessionIdState` keeps validating either way. A handle picked from the
  * menu passes it -- the worker issued it -- so the gate costs the menu nothing
  * and stays the guard on the path where a human types.
  */
 export const ResumeSessionField: Component<ResumeSessionFieldProps> = (props) => {
-  const { sessions, loading } = useResumableSessions(() => {
-    // Null until all three are known. Asking for the sessions of an empty
-    // directory would make the worker scan every provider store it has.
+  // Null until all three are known. Asking for the sessions of an empty
+  // directory would make the worker scan every provider store it has.
+  const source = (): UseResumableSessionsArgs | null => {
     if (!props.workerId || !props.workingDir || props.agentProvider === undefined)
       return null
     return {
@@ -49,7 +57,9 @@ export const ResumeSessionField: Component<ResumeSessionFieldProps> = (props) =>
       workingDir: props.workingDir,
       agentProvider: props.agentProvider,
     }
-  })
+  }
+
+  const { sessions, loading, refresh } = useResumableSessions(source)
 
   // The menu also holds the field while the list is on its way, so the control
   // does not swap under the user between the dialog opening and the answer
@@ -57,28 +67,46 @@ export const ResumeSessionField: Component<ResumeSessionFieldProps> = (props) =>
   const showMenu = () => loading() || sessions().length > 0
 
   return (
-    <Show when={showMenu()} fallback={<SessionIdInput state={props.state} />}>
-      {/*
-        The error travels with the field, not with the input.
+    <LabeledField
+      label={RESUME_SESSION_LABEL}
+      /*
+        The error travels with the field, not with either control.
 
         A handle the menu offers always validates, so this row is normally
         absent -- but the value SURVIVES the swap. A user who typed an invalid
         handle while the list was empty, and then changed the directory to one
         that has sessions, would otherwise face a disabled Create button, their
         own text on the trigger, and no statement of what is wrong.
-      */}
-      <LabeledField
-        label={RESUME_SESSION_LABEL}
-        error={props.state.error()}
-        errorId={RESUME_SESSION_ERROR_ID}
-      >
+      */
+      error={props.state.error()}
+      errorId={RESUME_SESSION_ERROR_ID}
+      /*
+        The only route to `useResumableSessions().refresh()`, and the reason
+        `ShellSelector` grew the same button: the hook's effect re-fetches on a
+        CHANGE of worker, directory or provider, so a transient failure against
+        the current three leaves the field with no list and no way back except
+        picking another directory and returning.
+
+        Disabled while a fetch is in flight, and while the field does not yet
+        know all three -- pressing it then would do nothing at all.
+      */
+      actions={(
+        <RefreshButton
+          onClick={() => void refresh()}
+          disabled={loading() || source() === null}
+          title="Refresh sessions"
+          data-testid="session-field-refresh"
+        />
+      )}
+    >
+      <Show when={showMenu()} fallback={<SessionIdInput state={props.state} />}>
         <SessionSelect
           value={props.state.trimmed()}
           onChange={props.state.setValue}
           sessions={sessions()}
           loading={loading()}
         />
-      </LabeledField>
-    </Show>
+      </Show>
+    </LabeledField>
   )
 }

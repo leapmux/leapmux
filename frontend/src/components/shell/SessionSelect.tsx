@@ -2,6 +2,7 @@ import type { Component } from 'solid-js'
 import type { AgentSessionSummary } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createMemo } from 'solid-js'
 import { LoadingMenu } from '~/components/common/LoadingMenu'
+import { RESUME_SESSION_LABEL } from '~/components/shell/resumeSession'
 import { formatCompactAge } from '~/lib/dateFormat'
 
 interface SessionSelectProps {
@@ -67,7 +68,7 @@ export const SessionSelect: Component<SessionSelectProps> = (props) => {
 
   return (
     <LoadingMenu
-      ariaLabel="Resume an existing session"
+      ariaLabel={RESUME_SESSION_LABEL}
       value={props.value}
       onChange={props.onChange}
       loadingLabel={props.loading ? 'Loading sessions...' : undefined}

@@ -59,7 +59,7 @@ Open the **New agent** dialog from the workspace, then fill in the fields below 
 | **Worker** | The machine that will run the agent. Determines which providers are available and where the working directory lives. See [Managing Workers](/docs/admin/managing-workers/). |
 | **Agent Provider** | Which agent CLI to launch. Shows the provider icon, label, and a chevron; a check marks the current choice. |
 | **Directory** | The working directory for the agent, chosen from a directory tree on the Worker. A text box above the tree shows the selected path; type a path and press Enter to go there. It is the same picker the New Terminal dialog uses — see [Working Directory](/docs/using/terminals/#the-full-new-terminal-dialog) for the full behavior, including the path-style hint for a Windows Worker. |
-| **Resume an existing session** | Optional. Paste a prior Session ID to continue an earlier conversation (see [Resuming a session](#resuming-an-existing-session)). |
+| **Resume an existing session** | Optional. A menu of recent sessions for the selected directory and provider, with a filter box and a refresh button. Leave it on **Start a new session** to begin fresh (see [Resuming a session](#resuming-an-existing-session)). |
 | **Title** | The tab name. Pre-filled with a random `Agent <Name>`; the refresh button beside the label picks another. Type your own to replace it. It cannot be empty. |
 | **Git options** | Appears once a Worker is selected. Lets you start the agent on the current branch, switch branches, create a branch, or create/use a worktree. See [Worktrees & Branches](/docs/using/worktrees-and-branches/). |
 
@@ -278,19 +278,21 @@ In the UI you pick these as named radio options (**Auto**, **Agent**, **Autopilo
 
 ## Resuming an existing session
 
-To continue a previous conversation, paste its Session ID into the **Resume an existing session** field in the New agent dialog. The field checks the ID as you type and reports one it cannot use.
+To continue a previous conversation, pick it from the **Resume an existing session** field in the New agent dialog. The field lists the sessions the Worker finds for the selected directory and provider, newest first, each labelled with its title and how long ago it ran. A filter box narrows the list, and the refresh button beside the label asks the Worker again.
 
-Leave the field empty to start a fresh session.
+The list comes from two places at once: LeapMux's own record of the agents it has run, and the agent CLI's own session history on that machine. So a session you started by running Claude Code or Codex directly in a terminal appears here too. Where both know a session, LeapMux's record wins.
+
+Two kinds of session are left out. A session already open in a tab isn't offered, because two processes against one session store corrupt it — close the tab first. And a session belonging to another directory isn't offered, because the list follows the **Directory** field: change the directory or the provider and the list changes with it.
+
+Leave the field on **Start a new session** to begin fresh. It is a real entry in the menu, so it is also how you take back a session you picked.
+
+Where the Worker finds no sessions at all — a directory with no history, a provider whose store this machine doesn't have, or a Worker that can't answer — the field falls back to a text box. That's where you type a session ID from somewhere else, and the box checks it as you type and reports one it cannot use.
 
 Once you submit, the Worker resumes the prior session using that provider's own resume mechanism, picking up where the earlier conversation left off. If a session can't be resumed, the agent doesn't start and the tab reports why. Send `/clear` in the chat to start a fresh session instead.
 
-{{< callout >}}
-Session IDs for Claude Code, Codex, and the other CLIs come from those tools' own session bookkeeping. If you've run the same CLI directly in a terminal, you can resume that session inside LeapMux by pasting its ID here.
-{{< /callout >}}
-
 ### Resume across restarts and reconnects
 
-Pasting a Session ID is the manual path; most resumption happens automatically. Agent sessions are durable: they resume across Hub restarts, Worker restarts, and client reconnects without you doing anything. When an agent's process has to be respawned — for example after a Worker restarts or after a model/effort change — LeapMux reconnects it to the prior session using that provider's own resume mechanism, and the transcript continues where it left off. As with manual resume, an agent whose resume fails doesn't start, so an empty session never replaces the conversation.
+Picking a session is the manual path; most resumption happens automatically. Agent sessions are durable: they resume across Hub restarts, Worker restarts, and client reconnects without you doing anything. When an agent's process has to be respawned — for example after a Worker restarts or after a model/effort change — LeapMux reconnects it to the prior session using that provider's own resume mechanism, and the transcript continues where it left off. As with manual resume, an agent whose resume fails doesn't start, so an empty session never replaces the conversation.
 
 ## Per-provider differences worth knowing
 
