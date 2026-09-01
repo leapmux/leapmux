@@ -290,9 +290,12 @@ func (r *AgentResumer) skipReason(dbAgent db.Agent) resumeSkipReason {
 	// the worker, under a tab no client can see. This row was read AFTER the
 	// list, which is what makes the check worth having.
 	//
-	// The remaining window is the few instructions between this read and
-	// AgentStartup.begin below, and a close that lands there is cancelled through
-	// cancelAndClear like any other in-flight startup.
+	// A close from AgentStartup.begin onwards is cancelled through
+	// cancelAndClear, like any other in-flight startup. What stays open is the
+	// few instructions between this read and that begin -- no I/O, and reachable
+	// only by a close that is also racing the listing. Registering before the
+	// skip decision would close it, at the cost of a STARTING report and a
+	// registry entry for every candidate the sweep passes over.
 	if dbAgent.ClosedAt.Valid {
 		return resumeSkipClosed
 	}
