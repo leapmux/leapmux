@@ -16,7 +16,7 @@ import { Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
 import { createSharedTicker } from '~/lib/createSharedTicker'
-import { formatLocalDateTime } from '~/lib/dateFormat'
+import { formatCompactAge, formatLocalDateTime } from '~/lib/dateFormat'
 
 const clockIcons: LucideIcon[] = [
   Clock12,
@@ -32,27 +32,6 @@ const clockIcons: LucideIcon[] = [
   Clock10,
   Clock11,
 ]
-
-/** Format a duration as a compact string (e.g. "3s", "12m", "2h", "5d", "3mo", "2y"). */
-function formatCompact(ts: Date): string {
-  const diffSec = Math.max(0, Math.floor((Date.now() - ts.getTime()) / 1000))
-  if (diffSec < 60)
-    return `${diffSec}s`
-  const diffMin = Math.floor(diffSec / 60)
-  if (diffMin < 60)
-    return `${diffMin}m`
-  const diffHr = Math.floor(diffMin / 60)
-  if (diffHr < 24)
-    return `${diffHr}h`
-  const diffDay = Math.floor(diffHr / 24)
-  if (diffDay < 30)
-    return `${diffDay}d`
-  const diffMo = Math.floor(diffDay / 30)
-  if (diffMo < 12)
-    return `${diffMo}mo`
-  const diffYr = Math.floor(diffDay / 365)
-  return `${diffYr}y`
-}
 
 const REFRESH_INTERVAL_MS = 15_000
 
@@ -79,7 +58,7 @@ export function RelativeTime(props: RelativeTimeProps) {
   const hour12 = () => parsed().getHours() % 12
   const relative = () => {
     sharedTick.tick()
-    return isValid() ? formatCompact(parsed()) : ''
+    return isValid() ? formatCompactAge(parsed()) : ''
   }
 
   sharedTick.subscribe()

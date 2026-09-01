@@ -7,6 +7,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -309,9 +310,139 @@ var ownerGatedProbes = func() []ownerGatedProbe {
 				Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1"}},
 			}
 		}},
+		ownerGatedProbe{"ListAgentSessions", "ListAgentSessions", func() proto.Message {
+			return &leapmuxv1.ListAgentSessionsRequest{
+				AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+				WorkingDir:    "/tmp",
+			}
+		}},
+
+		// The machine-scoped families. Their reach is the whole filesystem
+		// rather than one tab, so the populated request is where the denial
+		// matters most: every one of these carries an absolute path, a target
+		// address or a connection id that the handler must never read from a
+		// stranger. TestMachineScopedFamiliesAreOwnerOnly dispatches them with
+		// an EMPTY payload, which proves the gate refuses SOMETHING; these
+		// prove it refuses a request that would otherwise have work to do.
+		ownerGatedProbe{"GetGitInfo", "GetGitInfo", func() proto.Message {
+			return &leapmuxv1.GetGitInfoRequest{Path: "/tmp"}
+		}},
+		ownerGatedProbe{"GetGitFileStatus", "GetGitFileStatus", func() proto.Message {
+			return &leapmuxv1.GetGitFileStatusRequest{Path: "/tmp"}
+		}},
+		ownerGatedProbe{"ListGitBranches", "ListGitBranches", func() proto.Message {
+			return &leapmuxv1.ListGitBranchesRequest{Path: "/tmp"}
+		}},
+		ownerGatedProbe{"ListGitWorktrees", "ListGitWorktrees", func() proto.Message {
+			return &leapmuxv1.ListGitWorktreesRequest{Path: "/tmp"}
+		}},
+		ownerGatedProbe{"ReadGitFile", "ReadGitFile", func() proto.Message {
+			return &leapmuxv1.ReadGitFileRequest{Path: "/tmp/x", Ref: leapmuxv1.GitFileRef_GIT_FILE_REF_HEAD}
+		}},
+		ownerGatedProbe{"CheckoutBranch", "CheckoutBranch", func() proto.Message {
+			return &leapmuxv1.CheckoutBranchRequest{Path: "/tmp", Branch: "main"}
+		}},
+		ownerGatedProbe{"CreateBranch", "CreateBranch", func() proto.Message {
+			return &leapmuxv1.CreateBranchRequest{Path: "/tmp", NewBranch: "feature", BaseBranch: "main"}
+		}},
+		ownerGatedProbe{"DeleteBranch", "DeleteBranch", func() proto.Message {
+			return &leapmuxv1.DeleteBranchRequest{Path: "/tmp", BranchToDelete: "feature", SwitchToBranch: "main"}
+		}},
+		ownerGatedProbe{"PushBranch", "PushBranch", func() proto.Message {
+			return &leapmuxv1.PushBranchRequest{WorkingDir: "/tmp"}
+		}},
+		ownerGatedProbe{"InspectBranchChange", "InspectBranchChange", func() proto.Message {
+			return &leapmuxv1.InspectBranchChangeRequest{Path: "/tmp"}
+		}},
+		ownerGatedProbe{"InspectBranchDeletion", "InspectBranchDeletion", func() proto.Message {
+			return &leapmuxv1.InspectBranchDeletionRequest{Path: "/tmp", BranchNameHint: "feature"}
+		}},
+		ownerGatedProbe{"InspectWorktreeRemoval", "InspectWorktreeRemoval", func() proto.Message {
+			return &leapmuxv1.InspectWorktreeRemovalRequest{Path: "/tmp"}
+		}},
+		ownerGatedProbe{"InspectLastTabClose", "InspectLastTabClose", func() proto.Message {
+			return &leapmuxv1.InspectLastTabCloseRequest{
+				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
+				TabId:   "agent-1",
+			}
+		}},
+		ownerGatedProbe{"ListDirectory", "ListDirectory", func() proto.Message {
+			return &leapmuxv1.ListDirectoryRequest{Path: "/tmp", MaxDepth: 1}
+		}},
+		ownerGatedProbe{"ReadFile", "ReadFile", func() proto.Message {
+			return &leapmuxv1.ReadFileRequest{Path: "/tmp/x", Limit: 1}
+		}},
+		ownerGatedProbe{"StatFile", "StatFile", func() proto.Message {
+			return &leapmuxv1.StatFileRequest{Path: "/tmp/x"}
+		}},
+		ownerGatedProbe{"ListAvailableShells", "ListAvailableShells", func() proto.Message {
+			return &leapmuxv1.ListAvailableShellsRequest{}
+		}},
+		ownerGatedProbe{"ListAvailableProviders", "ListAvailableProviders", func() proto.Message {
+			return &leapmuxv1.ListAvailableProvidersRequest{}
+		}},
+		ownerGatedProbe{"GetWorkerSystemInfo", "GetWorkerSystemInfo", func() proto.Message {
+			return &leapmuxv1.GetWorkerSystemInfoRequest{}
+		}},
+		ownerGatedProbe{"OpenTunnelConn", "OpenTunnelConn", func() proto.Message {
+			return &leapmuxv1.OpenTunnelConnRequest{
+				ConnId: "conn-1", TargetAddr: "127.0.0.1", TargetPort: 9,
+			}
+		}},
+		ownerGatedProbe{"SendTunnelData", "SendTunnelData", func() proto.Message {
+			return &leapmuxv1.SendTunnelDataRequest{ConnId: "conn-1", Data: []byte("x"), Seq: 1}
+		}},
+		ownerGatedProbe{"CloseTunnelConn", "CloseTunnelConn", func() proto.Message {
+			return &leapmuxv1.CloseTunnelConnRequest{ConnId: "conn-1", Seq: 2}
+		}},
+		ownerGatedProbe{"GrantTunnelReadCredit", "GrantTunnelReadCredit", func() proto.Message {
+			return &leapmuxv1.GrantTunnelReadCreditRequest{ConnId: "conn-1", Credit: 4}
+		}},
 	)
 	return probes
 }()
+
+// TestAccessControl_OwnerGatedProbesAreComplete is the check three comments in
+// this file already claimed to perform, and did not.
+//
+// EVERY method the registrar puts behind the owner gate carries a typed denial
+// probe, with no exemption list. A new owner-gated method therefore fails this
+// test until its author writes one, which is what stops the next handler from
+// reaching a stranger's populated request unproved. ListAgentSessions joined the
+// gate with no probe and nothing failed, because the test the comments named had
+// never been written.
+func TestAccessControl_OwnerGatedProbesAreComplete(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	gates := registerAllWithGates(channel.NewDispatcher(), svc)
+
+	probed := make(map[string]struct{}, len(ownerGatedProbes))
+	for _, p := range ownerGatedProbes {
+		probed[p.method] = struct{}{}
+	}
+
+	var unproved []string
+	for method, gate := range gates {
+		if gate != gateOwnerOnly {
+			continue
+		}
+		if _, ok := probed[method]; !ok {
+			unproved = append(unproved, method)
+		}
+	}
+	sort.Strings(unproved)
+	assert.Empty(t, unproved,
+		"every owner-gated method needs a typed denial probe in ownerGatedProbes")
+
+	// And no probe may outlive its gate: an entry for a method that nothing
+	// registers, or one the registrar moved to another gate, passes forever
+	// while proving nothing.
+	for _, p := range ownerGatedProbes {
+		assert.Equal(t, gateOwnerOnly, gates[p.method],
+			"%s has a denial probe but is not an owner-gated method", p.method)
+	}
+}
 
 // A caller who is NOT the worker's registrant must be refused by every one of
 // these, with no row read and no response.

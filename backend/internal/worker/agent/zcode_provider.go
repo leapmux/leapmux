@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -119,6 +120,13 @@ func (zcodeProvider) ResolveResumeHandle(handle, _ string) (string, error) {
 		return "", err
 	}
 	return handle, nil
+}
+
+// ListStoredSessions reads ZCode's own CLI session database. See
+// zcode_sessions.go for the path, and opencode_sessions.go for the query --
+// ZCode's `session` table is OpenCode's.
+func (zcodeProvider) ListStoredSessions(ctx context.Context, q StoredSessionQuery) ([]StoredSession, error) {
+	return zcodeStoredSessions(ctx, q)
 }
 
 // TurnEndToolUses reads the tool-call count off ZCode's turn end, which states it

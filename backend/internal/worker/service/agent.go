@@ -119,7 +119,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			agentID := id.Generate()
 			agent.TraceStartupPhase(agentID, "handler_begin")
 
-			workingDir, err := normalizeWorkingDir(r.GetWorkingDir(), svc.HomeDir)
+			workingDir, err := normalizeWorkingDir(r.GetWorkingDir(), svc.HomeDir, svc.HomeDir)
 			if err != nil {
 				sendInvalidArgument(sender, err.Error())
 				return
@@ -136,10 +136,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			}
 
 			// Resolve default model based on agent provider.
-			agentProvider := r.GetAgentProvider()
-			if agentProvider == leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED {
-				agentProvider = leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
-			}
+			agentProvider := agent.ProviderOrDefault(r.GetAgentProvider())
 			// Resolve the initial option selections: the client's requested values
 			// (model/effort/permissionMode/provider options), filled with provider
 			// defaults for any missing well-known and provider-specific ids.

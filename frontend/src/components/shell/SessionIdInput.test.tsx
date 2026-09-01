@@ -2,6 +2,7 @@
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { createRoot, createSignal } from 'solid-js'
 import { describe, expect, it } from 'vitest'
+import { RESUME_SESSION_ERROR_ID } from '~/components/shell/resumeSession'
 import { SessionIdInput } from '~/components/shell/SessionIdInput'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createSessionIdState } from '~/hooks/createSessionIdState'
@@ -150,21 +151,6 @@ describe('sessionIdInput', () => {
     render(() => <SessionIdInput state={state} />)
     expect(screen.getByPlaceholderText('Session ID or file path')).toBeInTheDocument()
   })
-
-  it('shows the error row when state.error() is non-null', () => {
-    const state = createSessionIdState(claude)
-    state.setValue('bad\x00id')
-    render(() => <SessionIdInput state={state} />)
-    expect(state.error()).not.toBeNull()
-    expect(screen.getByText(state.error()!)).toBeInTheDocument()
-  })
-
-  it('hides the error row for a valid value', () => {
-    const state = createSessionIdState(claude)
-    state.setValue('valid-id')
-    render(() => <SessionIdInput state={state} />)
-    expect(screen.queryByText(/Invalid/i)).toBeNull()
-  })
 })
 
 describe('sessionIdInput accessibility', () => {
@@ -184,18 +170,17 @@ describe('sessionIdInput accessibility', () => {
     expect(screen.getByPlaceholderText('Session ID or file path')).toBeInTheDocument()
   })
 
-  it('links the error to the input and announces it', () => {
+  // The input names the error node; `ResumeSessionField` renders it. The two
+  // halves meeting is asserted in that field's own test, where both are mounted.
+  it('points at the field error node while the value is refused', () => {
     const state = createSessionIdState(claude)
     render(() => <SessionIdInput state={state} />)
     const input = screen.getByLabelText('Resume an existing session')
     fireEvent.input(input, { target: { value: '--dangerous' } })
 
+    expect(state.error()).not.toBeNull()
     expect(input).toHaveAttribute('aria-invalid', 'true')
-    const describedBy = input.getAttribute('aria-describedby')
-    expect(describedBy).toBeTruthy()
-    const message = document.getElementById(describedBy!)
-    expect(message).toHaveTextContent(state.error()!)
-    expect(message).toHaveAttribute('role', 'alert')
+    expect(input).toHaveAttribute('aria-describedby', RESUME_SESSION_ERROR_ID)
   })
 
   it('marks the input valid while the handle is acceptable', () => {

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -206,6 +207,26 @@ type Provider interface {
 	// with `~`. A token provider ignores it. The caller has it either way, and
 	// OpenAgent already hands the same value to `normalizeWorkingDir`.
 	ResolveResumeHandle(handle, homeDir string) (string, error)
+	// ListStoredSessions enumerates the resumable sessions this provider's OWN
+	// storage holds for the query's working directory, newest first.
+	//
+	// A provider decision because every CLI keeps its history in a different
+	// place and a different shape: a SQLite index (Codex, OpenCode, Kilo,
+	// Goose, ZCode), one SQLite file per session (Cursor), a directory named
+	// after a mangled copy of the working directory (Claude, Pi), or a sidecar
+	// beside each transcript (Reasonix, Copilot). Which of those to read, and
+	// where the title and the last-activity time sit inside it, is exactly the
+	// knowledge that must not leak into shared code.
+	//
+	// It reads files another program owns, so an implementation must never
+	// write to one, and must report the empty result for a store that is
+	// absent, unreadable, or shaped differently than the version it was written
+	// against. An error is for a fault the caller could act on; the caller
+	// still degrades to what it knows without this provider's answer.
+	//
+	// The default (noopProvider) lists nothing, which is right for a provider
+	// whose sessions this worker cannot enumerate.
+	ListStoredSessions(ctx context.Context, q StoredSessionQuery) ([]StoredSession, error)
 	// ExtractTodoEvent derives a to-do list mutation from one persisted message,
 	// or reports that the message changes nothing.
 	//
@@ -258,6 +279,13 @@ func (noopProvider) ResolveResumeHandle(handle, _ string) (string, error) {
 		return "", err
 	}
 	return handle, nil
+}
+
+// ListStoredSessions defaults to NO sessions: a provider whose store this
+// worker cannot read is covered by saying nothing, and the caller still offers
+// whatever the worker's own database recorded.
+func (noopProvider) ListStoredSessions(context.Context, StoredSessionQuery) ([]StoredSession, error) {
+	return nil, nil
 }
 
 func (noopProvider) DefaultPermissionMode() string { return "" }
@@ -342,6 +370,20 @@ func ProviderFor(provider leapmuxv1.AgentProvider) Provider {
 	return noopProvider{}
 }
 
+// ProviderOrDefault resolves the provider a request asked for to the provider
+// the worker will actually run.
+//
+// One site, because two handlers that answer for the same tab must agree about
+// which CLI a request means. OpenAgent spawns Claude Code for a request that
+// omits the field, so a listing handler that took the field literally would
+// report no resumable sessions and then let OpenAgent resume one of them.
+func ProviderOrDefault(provider leapmuxv1.AgentProvider) leapmuxv1.AgentProvider {
+	if provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED {
+		return leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
+	}
+	return provider
+}
+
 // IsInterruptRequest reports whether content is an interrupt frame in the
 // wire format used by provider. Unknown providers and unparseable payloads
 // both return false.
@@ -368,6 +410,11 @@ func PermissionModeOrDefault(provider leapmuxv1.AgentProvider, mode string) stri
 // provider). Override the method here only if Codex's shape diverges.
 type codexProvider struct {
 	noopProvider
+}
+
+// ListStoredSessions reads Codex's own rollout index; see codex_sessions.go.
+func (codexProvider) ListStoredSessions(ctx context.Context, q StoredSessionQuery) ([]StoredSession, error) {
+	return codexStoredSessions(ctx, q)
 }
 
 func (codexProvider) Classify(raw json.RawMessage) NotificationClassification {
@@ -496,6 +543,12 @@ func (codexProvider) SupportsChildSteering() bool { return true }
 
 type claudeProvider struct {
 	noopProvider
+}
+
+// ListStoredSessions reads Claude Code's own transcripts; see
+// claude_sessions.go.
+func (claudeProvider) ListStoredSessions(ctx context.Context, q StoredSessionQuery) ([]StoredSession, error) {
+	return claudeStoredSessions(ctx, q)
 }
 
 func (claudeProvider) Classify(raw json.RawMessage) NotificationClassification {
@@ -639,6 +692,13 @@ func (claudeProvider) PermissionModeFromRawInput(content string) (string, bool) 
 // partial failures.
 type piProvider struct {
 	noopProvider
+}
+
+// ListStoredSessions reads Pi's own transcripts; see pi_sessions.go. It returns
+// each session's ID rather than its file path, which is the form Pi reports at
+// runtime and therefore the form that dedupes against the worker's own record.
+func (piProvider) ListStoredSessions(ctx context.Context, q StoredSessionQuery) ([]StoredSession, error) {
+	return piStoredSessions(ctx, q)
 }
 
 // piResumeHandleIsFilePath reports whether a Pi resume handle identifies a session
@@ -790,6 +850,22 @@ type acpProvider struct {
 	// default for Cursor, Copilot, Kilo, OpenCode, Goose). Set at registration (init) so the
 	// per-provider policy lives at one site rather than a provider-enum switch.
 	validateAttachment func(classifiedAttachment) error
+	// listStoredSessions reads this provider's own session store. Non-nil for
+	// every ACP provider, because each of the six keeps a store this worker can
+	// read -- but each keeps it in a different place and shape, so the function
+	// lives in that provider's own file and is wired here at registration, the
+	// way validateAttachment already is. Nil lists nothing.
+	listStoredSessions func(ctx context.Context, q StoredSessionQuery) ([]StoredSession, error)
+}
+
+// ListStoredSessions dispatches to the reader the registration supplied. The
+// nil check is what keeps `acpProvider` provider-neutral: this method knows
+// that ACP providers have stores, and nothing about where any of them is.
+func (p acpProvider) ListStoredSessions(ctx context.Context, q StoredSessionQuery) ([]StoredSession, error) {
+	if p.listStoredSessions == nil {
+		return nil, nil
+	}
+	return p.listStoredSessions(ctx, q)
 }
 
 func (acpProvider) IsInterrupt(content string) bool {
@@ -810,11 +886,11 @@ func init() {
 	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, codexProvider{})
 	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, claudeProvider{})
 	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_PI, piProvider{})
-	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, defaultPermissionMode: CursorCLIModeAgent})
-	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, defaultPermissionMode: CopilotCLIModeAgent})
-	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO, questionRequestContext: opencodeQuestionRequestContext})
-	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, questionRequestContext: opencodeQuestionRequestContext})
-	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, defaultPermissionMode: GooseCLIModeAuto})
-	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX, validateAttachment: reasonixValidateAttachment})
+	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, defaultPermissionMode: CursorCLIModeAgent, listStoredSessions: cursorStoredSessions})
+	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, defaultPermissionMode: CopilotCLIModeAgent, listStoredSessions: copilotStoredSessions})
+	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO, questionRequestContext: opencodeQuestionRequestContext, listStoredSessions: kiloStoredSessions})
+	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, questionRequestContext: opencodeQuestionRequestContext, listStoredSessions: opencodeStoredSessions})
+	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, defaultPermissionMode: GooseCLIModeAuto, listStoredSessions: gooseStoredSessions})
+	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX, validateAttachment: reasonixValidateAttachment, listStoredSessions: reasonixStoredSessions})
 	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE, zcodeProvider{})
 }

@@ -12,6 +12,7 @@ import (
 
 	"github.com/knadh/koanf/maps"
 	"github.com/knadh/koanf/v2"
+	"github.com/leapmux/leapmux/internal/util/pathutil"
 )
 
 // IsHelpArg reports whether arg is one of the recognized help tokens.
@@ -218,19 +219,18 @@ func ResolveDataDir(dataDir, configFilePath, defaultConfigDir string) string {
 	return filepath.Join(baseDir, dataDir)
 }
 
-// ExpandHome expands a leading ~ in a path to the user's home directory.
+// ExpandHome expands a leading ~ in a path to the PROCESS's home directory.
+//
+// The rule itself lives in pathutil, which every other caller of it shares.
+// This wrapper adds only where the home comes from: a configuration path is
+// resolved against the user running the process, and a home lookup that fails
+// leaves the path as written.
 func ExpandHome(path string) string {
-	if path == "" {
+	home, err := os.UserHomeDir()
+	if err != nil {
 		return path
 	}
-	if path == "~" || strings.HasPrefix(path, "~/") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return path
-		}
-		return filepath.Join(home, path[1:])
-	}
-	return path
+	return pathutil.ExpandHome(path, home)
 }
 
 // Load is a helper that performs the standard koanf loading sequence:

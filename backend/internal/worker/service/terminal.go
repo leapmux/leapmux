@@ -73,7 +73,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 				shell = terminal.ResolveDefaultShell()
 			}
 			shellStartDir := expandTilde(r.GetShellStartDir())
-			workingDir, err := normalizeWorkingDir(r.GetWorkingDir(), svc.HomeDir)
+			workingDir, err := normalizeWorkingDir(r.GetWorkingDir(), svc.HomeDir, svc.HomeDir)
 			if err != nil {
 				sendInvalidArgument(sender, err.Error())
 				return

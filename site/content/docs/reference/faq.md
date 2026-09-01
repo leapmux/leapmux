@@ -98,7 +98,7 @@ See [Worktrees & Branches](/docs/using/worktrees-and-branches/).
 
 ## Do my sessions survive a restart or reboot?
 
-Agent sessions do. Agent state persists in the Worker's local SQLite database, so when the Worker process or the machine comes back and reconnects to the Hub, your agent sessions are still there — no need to relaunch each agent. You can also resume a prior agent session by entering its session ID in the **New agent** dialog. LeapMux resumes the provider's own session — Claude Code's `--resume` flag, or the equivalent for other providers.
+Agent sessions do. Agent state persists in the Worker's local SQLite database, so when the Worker process or the machine comes back and reconnects to the Hub, your agent sessions are still there — no need to relaunch each agent. You can also resume a prior agent session by picking it from the **Resume an existing session** menu in the **New agent** dialog, which lists what LeapMux and the agent CLI itself both recorded for that directory. LeapMux resumes the provider's own session — Claude Code's `--resume` flag, or the equivalent for other providers.
 
 Terminals are a partial exception: a shell process cannot outlive a Worker restart. LeapMux persists each terminal's last screen, so after the Worker comes back the terminal tab reappears exactly where it left off — but its shell has exited, and you press **Enter** to restart it in the same working directory. (A transient disconnect, where the Worker process itself never went down, keeps the live shell attached.)
 

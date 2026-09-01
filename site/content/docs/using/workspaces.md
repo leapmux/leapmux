@@ -30,7 +30,7 @@ The dialog is titled **New workspace** and contains these fields:
 | Agent provider | Choose the agent backend (for example Claude Code or Codex). A refresh control re-queries the Worker for available providers. See [Coding Agents](/docs/using/coding-agents/). |
 | **Title** | The workspace name. Pre-filled with a random three-word title-cased name. The refresh button beside the label (tooltip **Generate random name**) regenerates the suggestion. Type your own to replace it. It cannot be empty. |
 | Directory | The working directory to open on the Worker. The same picker the other dialogs use: browse the tree, or type a path in the box above it. |
-| Session ID | Optional agent session ID to resume an existing agent session. See [Coding Agents](/docs/using/coding-agents/). |
+| Resume an existing session | Optional. A menu of recent sessions for the chosen directory and provider, so the workspace's first agent continues an earlier conversation. See [Resuming a session](/docs/using/coding-agents/#resuming-an-existing-session). |
 | Git options | Once a Worker is chosen, choose the git mode for the working directory — for example opening directly or in a worktree. See [Worktrees & Branches](/docs/using/worktrees-and-branches/). |
 
 Click **Create** to confirm. Creating a workspace starts its first agent automatically, then opens the new workspace.

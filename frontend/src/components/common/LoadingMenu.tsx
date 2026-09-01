@@ -33,6 +33,25 @@ export interface LoadingMenuProps {
   'disabled'?: boolean
   /** Accessible name for the trigger and the menu. */
   'ariaLabel': string
+  /**
+   * The menu's value fails the field's validation, so the trigger announces
+   * itself as invalid.
+   *
+   * A menu normally cannot hold an unacceptable value, because every option
+   * came from the field. It matters where a menu SHARES a field with a text
+   * input and the value survives the swap between them — `ResumeSessionField`
+   * is that case.
+   */
+  'ariaInvalid'?: boolean
+  /**
+   * The id of the node that states why the value is unacceptable, so the
+   * trigger points at it.
+   *
+   * Without it the error is announced ONCE, as the alert appears, and a screen
+   * reader user who returns to the trigger afterwards finds a control that says
+   * nothing is wrong beside a Create button that refuses to run.
+   */
+  'ariaDescribedBy'?: string
   /** Shown on the trigger when `value` matches no option — the "pick one" prompt. */
   'placeholder'?: string
   'options': LoadingMenuOption[]
@@ -254,6 +273,8 @@ export const LoadingMenu: Component<LoadingMenuProps> = (props) => {
           type="button"
           class={styles.trigger}
           aria-label={props.ariaLabel}
+          aria-invalid={props.ariaInvalid ? 'true' : undefined}
+          aria-describedby={props.ariaDescribedBy}
           // Derived from the menu's own id, because `DropdownMenu` puts that id
           // on the POPOVER and renders the trigger as its sibling -- so a
           // caller cannot reach the trigger by descending into the menu.

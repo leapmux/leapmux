@@ -53,6 +53,10 @@ CREATE TABLE agents (
 );
 CREATE INDEX idx_agents_closed_at ON agents(closed_at) WHERE closed_at IS NOT NULL;
 CREATE INDEX idx_agents_parent ON agents(parent_agent_id) WHERE parent_agent_id IS NOT NULL;
+-- Serves ListSessionsForResume, the resume picker's read. It filters an exact
+-- (provider, working directory) pair, which no other index covers, and it runs
+-- on the path of a dialog that opens on every "New agent" click.
+CREATE INDEX idx_agents_provider_working_dir ON agents(agent_provider, working_dir);
 -- One child row per spawning tool_use: makes EnsureChildAgent replay
 -- idempotency a constraint (worker restart mid-spawn), not a convention.
 CREATE UNIQUE INDEX idx_agents_spawn_span ON agents(parent_agent_id, spawn_span_id)
