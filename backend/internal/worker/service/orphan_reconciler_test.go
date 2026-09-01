@@ -624,27 +624,27 @@ func TestReconcileAgentsSkipsChildAgents(t *testing.T) {
 		"the child must never be handed to the shared teardown")
 }
 
-// TestOrphanReconciler_OnPassReportsEveryPass pins the hook the boot-time agent
-// resume starts on.
+// TestOrphanReconciler_OnConvergedReportsOnlyAConvergedPass pins the hook the
+// boot-time agent resume starts on.
 //
-// Two properties matter and both are easy to lose. The report must carry the
-// pass's REAL verdict -- a hook that always said true would start the resume
+// Two properties matter and both are easy to lose. The hook must stay SILENT
+// while the hub leg fails -- a hook that fired anyway would start the resume
 // sweep against a hub the worker never reached, which is the state in which a
-// resumed agent cannot be given a control socket at all. And the report must
-// also fire on the RETRY arm: the startup pass of a worker whose channel has
-// not settled always fails, so if only the first pass reported, the eventual
-// convergence would never reach the hook and the agents would stay cold for the
-// life of the process.
-func TestOrphanReconciler_OnPassReportsEveryPass(t *testing.T) {
+// resumed agent cannot be given a control socket at all. And it must also fire
+// from the RETRY case: the startup pass of a worker whose channel is not
+// settled yet always fails, so a hook that reported only on the first pass
+// would never see the eventual convergence, and the agents would stay cold for
+// the life of the process.
+func TestOrphanReconciler_OnConvergedReportsOnlyAConvergedPass(t *testing.T) {
 	t.Parallel()
 
 	var mu sync.Mutex
-	var verdicts []bool
+	converged := 0
 	q, files, rec, setFake, _ := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{
 		Interval: time.Hour,
-		OnPass: func(converged bool) {
+		OnConverged: func() {
 			mu.Lock()
-			verdicts = append(verdicts, converged)
+			converged++
 			mu.Unlock()
 		},
 	})
@@ -658,20 +658,18 @@ func TestOrphanReconciler_OnPassReportsEveryPass(t *testing.T) {
 
 	go rec.Run(ctx)
 
-	// While the hub leg fails, every report must say "not converged".
-	require.Eventually(t, func() bool {
+	// While the hub leg fails, the reconciler must keep retrying and the hook
+	// must never fire. Wait for the retry backoff to produce several passes, so
+	// this is not merely a read taken before the first one ran.
+	require.Never(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
-		return len(verdicts) > 0
-	}, 2*time.Second, 10*time.Millisecond, "the startup pass must report")
-	mu.Lock()
-	for i, v := range verdicts {
-		assert.False(t, v, "pass %d reported convergence while the hub list was failing", i)
-	}
-	mu.Unlock()
+		return converged > 0
+	}, 1500*time.Millisecond, 10*time.Millisecond,
+		"the hook fired for a pass that never reached the hub")
 
-	// The channel settles. Only the backoff retry can pick this up, so a true
-	// report here proves the retry arm reports as well as the first pass.
+	// The channel settles. Only the backoff retry can pick this up, so a report
+	// here proves the retry case reports as well as the first pass.
 	setFake("user-1", nil, nil)
 	require.Eventually(t, func() bool {
 		rows, err := q.ListAllWorkerFileTabs(ctx)
@@ -680,7 +678,7 @@ func TestOrphanReconciler_OnPassReportsEveryPass(t *testing.T) {
 		}
 		mu.Lock()
 		defer mu.Unlock()
-		return len(verdicts) > 0 && verdicts[len(verdicts)-1]
+		return converged > 0
 	}, 10*time.Second, 20*time.Millisecond,
 		"a converged pass reached through the retry backoff must still report")
 
@@ -688,14 +686,33 @@ func TestOrphanReconciler_OnPassReportsEveryPass(t *testing.T) {
 	rec.Stop()
 }
 
-// TestOrphanReconciler_NoOnPassHookIsFine pins that the hook stays optional --
-// every existing caller and test constructs the reconciler without one.
-func TestOrphanReconciler_NoOnPassHookIsFine(t *testing.T) {
+// TestOrphanReconciler_NoOnConvergedHookIsFine pins that the hook stays optional
+// -- every existing caller and test constructs the reconciler without one.
+//
+// It drives Run, not reconcileOnce: the nil check lives in the finishPass
+// closure inside Run, which reconcileOnce never reaches, so a test that took the
+// shorter route would pass with the check deleted.
+func TestOrphanReconciler_NoOnConvergedHookIsFine(t *testing.T) {
 	t.Parallel()
 
-	_, _, rec, setFake, _ := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{
+	q, files, rec, setFake, _ := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{
 		Interval: time.Hour,
 	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	require.NoError(t, files.Register(ctx, service.RegisterFileTabPathParams{
+		UserID: "user-1", TabID: "ghost", FilePath: absTestPath("/r/a.go"),
+	}))
 	setFake("user-1", nil, nil)
-	assert.True(t, runOnce(context.Background(), rec))
+
+	go rec.Run(ctx)
+	require.Eventually(t, func() bool {
+		rows, err := q.ListAllWorkerFileTabs(ctx)
+		return err == nil && len(rows) == 0
+	}, 10*time.Second, 20*time.Millisecond,
+		"a converged pass with no hook must complete rather than panic on a nil func")
+
+	cancel()
+	rec.Stop()
 }

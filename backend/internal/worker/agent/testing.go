@@ -13,7 +13,7 @@ import (
 // This is intended for use in tests outside the agent package that need a
 // running agent registered in the manager (e.g. to make HasAgent return true).
 func (m *Manager) MockStartAgent(ctx context.Context, opts Options, sink OutputSink) (map[string]string, error) {
-	return m.startAgentWith(ctx, opts, sink, mockStartForTest)
+	return m.startAgentWith(ctx, opts, sink, mockStartForTest, false)
 }
 
 // mockStartForTest spawns a plain "cat" process and wires it up as a

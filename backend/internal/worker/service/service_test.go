@@ -291,13 +291,9 @@ func TestNew_CarriesEveryConfigField(t *testing.T) {
 		SeedRegisteredBy:    "user-1",
 		AgentStartupTimeout: 11 * time.Second,
 		APITimeout:          7 * time.Second,
-		// A non-default value: the field is deliberately NOT resolved by New
-		// (0 means "let agent.ResolveStartupConcurrency decide"), so what this
-		// pins is that Config carries it through untouched.
-		AgentStartupConcurrency: 6,
-		UseLoginShell:           true,
-		WakeLock:                wakelock.NewActivityTracker(),
-		MaxMessageSize:          32 << 20,
+		UseLoginShell:       true,
+		WakeLock:            wakelock.NewActivityTracker(),
+		MaxMessageSize:      32 << 20,
 	}
 
 	v := reflect.ValueOf(cfg)
@@ -321,7 +317,6 @@ func TestNew_CarriesEveryConfigField(t *testing.T) {
 	assert.Equal(t, "display-name", svc.Name)
 	assert.Equal(t, 11*time.Second, svc.AgentStartupTimeout)
 	assert.Equal(t, 7*time.Second, svc.APITimeout)
-	assert.Equal(t, 6, svc.AgentStartupConcurrency)
 	assert.True(t, svc.UseLoginShell)
 	assert.Equal(t, 32<<20, svc.MaxMessageSize)
 	assert.NotNil(t, svc.Send, "Send must be carried over")

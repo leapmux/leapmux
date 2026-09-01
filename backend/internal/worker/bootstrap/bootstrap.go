@@ -76,10 +76,10 @@ type Params struct {
 
 	AgentStartupTimeout time.Duration
 	APITimeout          time.Duration
-	// AgentStartupConcurrency caps concurrent agent STARTUPS (0 = the
-	// machine-derived default). Wire applies it to the agent manager, which
-	// enforces it for every spawn, and hands the same number to the service for
-	// the boot-time resume sweep.
+	// AgentStartupConcurrency caps the agent startups the boot-time resume sweep
+	// runs at once (0 = the machine-derived default). Wire applies it to the
+	// agent manager, which is the one place that holds it: the sweep reads it
+	// back from there. It never limits a spawn the user asked for.
 	AgentStartupConcurrency int
 	UseLoginShell           bool
 	WakeLock                *wakelock.ActivityTracker
@@ -94,6 +94,11 @@ type Params struct {
 // already closed -- and neither entry point ever wanted one.
 type Wiring struct {
 	Service *service.Service
+	// Resumer is the boot-time agent resume sweep. Exposed so a wiring test can
+	// prove the composed background-loop stopper reaches it: both loops share a
+	// single stopper field, which is exactly the shape in which the second one
+	// comes to be dropped silently.
+	Resumer *service.AgentResumer
 	// client is retained solely so Shutdown can flush it. Unexported for the
 	// same reason the manager and dispatcher are absent: the entry points
 	// already hold the Client they passed in, and a second handle here would
@@ -145,22 +150,21 @@ func Wire(p Params) *Wiring {
 	agent.ConfigureMaxMessageSize(p.MaxMessageSize)
 
 	svc := service.New(service.Config{
-		Channels:                channelMgr,
-		Send:                    p.Client.Send,
-		DB:                      p.DB,
-		Agents:                  p.Client.AgentManager(),
-		Terminals:               p.Client.TerminalManager(),
-		HomeDir:                 p.HomeDir,
-		DataDir:                 p.DataDir,
-		WorkerID:                p.WorkerID,
-		Name:                    p.Name,
-		SeedRegisteredBy:        p.SeedRegisteredBy,
-		AgentStartupTimeout:     p.AgentStartupTimeout,
-		APITimeout:              p.APITimeout,
-		AgentStartupConcurrency: p.AgentStartupConcurrency,
-		UseLoginShell:           p.UseLoginShell,
-		WakeLock:                p.WakeLock,
-		MaxMessageSize:          p.MaxMessageSize,
+		Channels:            channelMgr,
+		Send:                p.Client.Send,
+		DB:                  p.DB,
+		Agents:              p.Client.AgentManager(),
+		Terminals:           p.Client.TerminalManager(),
+		HomeDir:             p.HomeDir,
+		DataDir:             p.DataDir,
+		WorkerID:            p.WorkerID,
+		Name:                p.Name,
+		SeedRegisteredBy:    p.SeedRegisteredBy,
+		AgentStartupTimeout: p.AgentStartupTimeout,
+		APITimeout:          p.APITimeout,
+		UseLoginShell:       p.UseLoginShell,
+		WakeLock:            p.WakeLock,
+		MaxMessageSize:      p.MaxMessageSize,
 	})
 	svc.RestoreState()
 
@@ -189,9 +193,14 @@ func Wire(p Params) *Wiring {
 		svc.HandleAgentProcessExit(agentID, exitCode, err, stopped)
 	})
 
-	// Cap concurrent agent STARTUPS. Applied here, before SetChannelMgr below
-	// makes the manager reachable from the connect loop, so no spawn can be
-	// holding a permit from the pool this replaces.
+	// Cap concurrent BACKGROUND agent startups. Applied here, before
+	// SetChannelMgr below makes the manager reachable from the connect loop, so
+	// no spawn can be holding a permit from the pool this replaces.
+	//
+	// The manager is the one source of truth for the number: the resume sweep
+	// asks it (Manager.StartupConcurrency) rather than re-resolving the config
+	// value, so the sweep's fan-out cannot drift from the pool it queues in
+	// front of when one of these wiring lines is missed.
 	p.Client.AgentManager().SetStartupConcurrency(p.AgentStartupConcurrency)
 
 	dispatcher := channel.NewDispatcher()
@@ -230,11 +239,15 @@ func Wire(p Params) *Wiring {
 	// gates can run. UpdateRegisteredBy is the service's own method rather
 	// than a closure over SetRegisteredBy, so the drift warning and the
 	// empty-owner refusal are shared by both entry points.
+	//
+	// startBackgroundLoops wraps this to nudge the reconciler as well, because
+	// the owner arriving is what unblocks the resume sweep. Assigned here first
+	// so a Wire that never starts the loops still delivers the identity.
 	p.Client.OnWorkerIdentity = svc.UpdateRegisteredBy
 
-	startBackgroundLoops(p, svc)
+	resumer := startBackgroundLoops(p, svc)
 
-	return &Wiring{Service: svc, client: p.Client}
+	return &Wiring{Service: svc, Resumer: resumer, client: p.Client}
 }
 
 // newControlIPCFactory builds the per-agent local-IPC factory backing the
@@ -322,7 +335,7 @@ func liveTabForMint(queries *db.Queries) crossworker.LiveTabProvider {
 
 // startBackgroundLoops starts every periodic task the worker owns. All of
 // them stop with p.Ctx.
-func startBackgroundLoops(p Params, svc *service.Service) {
+func startBackgroundLoops(p Params, svc *service.Service) *service.AgentResumer {
 	queries := db.New(p.DB)
 
 	// Provide workspace tab sync data on connect. A nil return means "send
@@ -341,7 +354,7 @@ func startBackgroundLoops(p Params, svc *service.Service) {
 
 	// Respawn the agent processes the previous worker process left behind. It
 	// runs once, in the background, and only after the reconciler reports a
-	// CONVERGED pass -- see the OnPass hook below for what that buys.
+	// CONVERGED pass -- see the OnConverged hook below for the reason.
 	resumer := svc.NewAgentResumer()
 
 	// Periodic orphan reconciler: walks worker-local rows against the hub's
@@ -366,25 +379,22 @@ func startBackgroundLoops(p Params, svc *service.Service) {
 			// two things are BOTH true: the Hub delivered this worker's owner (no
 			// owner, no control socket for a resumed agent -- see
 			// remintAgentControlIPC), and no tab the CRDT deleted while the worker
-			// was down is still waiting to be reaped. Resuming earlier spawns CLIs
-			// for tabs that are about to be closed.
+			// was down still waits to be reaped. Resuming earlier spawns CLIs for
+			// tabs that are about to be closed.
 			//
 			// Start is idempotent, so the hourly converged passes that follow cost
 			// one atomic read each. It also refuses without latching while the
-			// owner is missing, which is what makes a later pass the retry.
-			OnPass: func(converged bool) {
-				if converged {
-					resumer.Start(p.Ctx)
-				}
-			},
+			// owner is missing, which is what makes a later pass the retry -- and
+			// the OnWorkerIdentity nudge below is what makes that later pass
+			// arrive in seconds rather than at the next hourly tick.
+			OnConverged: func() { resumer.Start(p.Ctx) },
 		},
 	)
 	go reconciler.Run(p.Ctx)
 	// Hand Shutdown a way to stop both loops. Their teardowns are not registered
 	// with svc.Cleanup, and the entry points call Shutdown BEFORE cancelling
-	// p.Ctx, so without this a nudge-triggered pass -- or a resume sweep still
-	// working through its candidates -- could be writing when the caller closes
-	// the DB.
+	// p.Ctx, so without this a nudge-triggered pass -- or a resume sweep that
+	// still has candidates left -- could write when the caller closes the DB.
 	//
 	// The resumer stops FIRST: it starts agents, and each start runs DB reads and
 	// registers a remote-IPC cleanup. Stopping the reconciler first would leave
@@ -393,6 +403,21 @@ func startBackgroundLoops(p Params, svc *service.Service) {
 		resumer.Stop()
 		reconciler.Stop()
 	})
+
+	// Nudge the reconciler the moment the Hub names this worker's owner.
+	//
+	// Without it the sweep's own precondition can outlive its retry. A converged
+	// pass is reachable before the owner arrives (the hub leg needs only the auth
+	// token, which Connect sets before it dials the stream that carries
+	// WorkerIdentity), and a converged pass DISARMS the retry backoff. So the
+	// sweep refuses for a zero owner, the reconciler stops retrying, and the next
+	// pass is the hourly tick -- an hour with every agent cold on a worker that
+	// is otherwise healthy.
+	deliverIdentity := svc.UpdateRegisteredBy
+	p.Client.OnWorkerIdentity = func(userID string) {
+		deliverIdentity(userID)
+		reconciler.Trigger()
+	}
 
 	// The Hub's connect-time WorkerTabInventory reply only signals that the
 	// hub has finished its side of the reconciliation; trigger the
@@ -415,6 +440,8 @@ func startBackgroundLoops(p Params, svc *service.Service) {
 	svc.StartOrphanSweepLoop(p.Ctx)
 
 	StartRetentionLoops(p.Ctx, p.DB, p.DataDir)
+
+	return resumer
 }
 
 // StartRetentionLoops starts the two data-retention loops. It is exported

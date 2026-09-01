@@ -45,11 +45,11 @@ func TestEnsureAgentRunning_SerializesConcurrentColdStarts(t *testing.T) {
 	}
 
 	firstDone := make(chan struct{})
-	go func() { defer close(firstDone); _ = svc.ensureAgentRunning(t.Context(), "agent-1", nil) }()
+	go func() { defer close(firstDone); _ = svc.ensureAgentRunning("agent-1", nil, interactiveStart) }()
 	<-entered // the first cold-start is in flight, holding LockAgent
 
 	secondDone := make(chan struct{})
-	go func() { defer close(secondDone); _ = svc.ensureAgentRunning(t.Context(), "agent-1", nil) }()
+	go func() { defer close(secondDone); _ = svc.ensureAgentRunning("agent-1", nil, interactiveStart) }()
 
 	// The second cold-start must block on the per-agent lifecycle lock; its startAgent must
 	// NOT run concurrently with the first's -- that concurrency is the duplicate-spawn race.
@@ -187,4 +187,142 @@ func TestSendAgentMessage_AutoStartFailureRevertsToInactive(t *testing.T) {
 	assert.Less(t, startingIdx, inactiveIdx, "INACTIVE must follow STARTING so the spinner clears after the failed attempt")
 	assert.Equal(t, -1, startupFailedIdx,
 		"auto-start failure on the SendAgentMessage path must NOT mark the agent STARTUP_FAILED — the message gets a delivery_error and the agent stays retryable on the next send")
+}
+
+// TestEnsureAgentRunning_BroadcastsActiveWhenTheSinkEmitsNone pins that the
+// cold-start path leaves the STARTING it entered.
+//
+// It is the only one of the three STARTING-entering paths that used to return
+// without an ACTIVE of its own, on the theory that the provider's own handshake
+// emits one. That is not guaranteed: persistCatalogAndBuildStatus returns
+// WITHOUT broadcasting when its row read fails. The resume sweep is the one
+// caller with no follow-up traffic to correct the banner, so an already
+// connected watcher sits on "Starting" for ever, for an agent that is running
+// and accepting input. handleClearContext states the same reason at its own
+// ACTIVE broadcast.
+func TestEnsureAgentRunning_BroadcastsActiveWhenTheSinkEmitsNone(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, w := setupTestService(t)
+	// A start that succeeds and whose sink emits no status at all -- the shape
+	// the failing row read produces in production.
+	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
+		return map[string]string{}, nil
+	}
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:            "agent-1",
+		WorkingDir:    t.TempDir(),
+		HomeDir:       t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	registerAgentWatch(svc, w.channelID, "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
+
+	require.NoError(t, svc.ensureAgentRunning("agent-1", nil, interactiveStart))
+
+	starting, active := -1, -1
+	for i, stream := range w.streams {
+		sc := decodeWatchAgentEvent(t, stream).GetStatusChange()
+		if sc == nil {
+			continue
+		}
+		if sc.GetStatus() == leapmuxv1.AgentStatus_AGENT_STATUS_STARTING && starting == -1 {
+			starting = i
+		}
+		if sc.GetStatus() == leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE && active == -1 {
+			active = i
+		}
+	}
+	require.NotEqual(t, -1, starting, "the cold start must report STARTING")
+	require.NotEqual(t, -1, active,
+		"the cold start reported STARTING and never left it; the banner spins for an agent that is running")
+	assert.Less(t, starting, active, "ACTIVE must follow STARTING, not precede it")
+}
+
+// TestEnsureAgentRunning_ACloseCancelsAMessageDrivenColdStart is the payoff for
+// moving the AgentStartup protocol into ensureAgentRunning.
+//
+// The three message-driven cold starts used to register nothing, so a CloseAgent
+// could not reach one: the tab's teardown ran while the CLI was still in its
+// handshake, and the process it produced was one nothing would ever stop. Only
+// the boot-time resume sweep had this, because it hand-rolled the protocol at
+// its own call site.
+func TestEnsureAgentRunning_ACloseCancelsAMessageDrivenColdStart(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:            "agent-1",
+		WorkingDir:    t.TempDir(),
+		HomeDir:       t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var startCtx context.Context
+	svc.startAgentFn = func(c context.Context, _ agent.Options, _ agent.OutputSink) (map[string]string, error) {
+		startCtx = c
+		close(entered)
+		<-release
+		return map[string]string{}, nil
+	}
+
+	done := make(chan struct{})
+	go func() { defer close(done); _ = svc.ensureAgentRunning("agent-1", nil, interactiveStart) }()
+	<-entered
+
+	// The close a user makes while the CLI is still handshaking.
+	svc.AgentStartup.cancelAndClear("agent-1", keepWorktreeOnClose)
+	assert.ErrorIs(t, startCtx.Err(), context.Canceled,
+		"a close during a message-driven cold start must reach it; otherwise the CLI runs for the life of the worker")
+
+	close(release)
+	<-done
+}
+
+// TestEnsureAgentRunning_ShutdownDrainsAMessageDrivenColdStart pins the other
+// half of that registration: Shutdown's WaitForInFlight must wait for a cold
+// start the same way it waits for an open. A start it does not count keeps
+// writing to a database the caller is about to close.
+func TestEnsureAgentRunning_ShutdownDrainsAMessageDrivenColdStart(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:            "agent-1",
+		WorkingDir:    t.TempDir(),
+		HomeDir:       t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
+		close(entered)
+		<-release
+		return map[string]string{}, nil
+	}
+
+	done := make(chan struct{})
+	go func() { defer close(done); _ = svc.ensureAgentRunning("agent-1", nil, interactiveStart) }()
+	<-entered
+
+	drained := make(chan struct{})
+	go func() { defer close(drained); svc.AgentStartup.WaitForInFlight() }()
+	select {
+	case <-drained:
+		t.Fatal("the drain returned while a cold start was still in flight; the caller then closes the database under it")
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	close(release)
+	select {
+	case <-drained:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the drain never returned after the cold start finished")
+	}
+	<-done
 }

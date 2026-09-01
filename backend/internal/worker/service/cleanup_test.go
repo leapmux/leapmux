@@ -335,10 +335,10 @@ func TestCleanupRegistry_CloseDuringStartupWindowStillRetiresTheResource(t *test
 	var reg cleanupRegistry
 	ran := 0
 
-	// Row is durable; cleanup has not arrived yet.
+	// Row is durable; the cleanup did not arrive yet.
 	reg.claim("tab-1")
 	// A reap lands in the window.
-	reg.run("tab-1")
+	reg.closeTab("tab-1")
 	require.Equal(t, 0, ran, "nothing to retire yet -- the resource does not exist")
 
 	// The spawn finishes and registers. It must be retired IMMEDIATELY rather
@@ -346,9 +346,64 @@ func TestCleanupRegistry_CloseDuringStartupWindowStillRetiresTheResource(t *test
 	reg.register("tab-1", func() { ran++ })
 	assert.Equal(t, 1, ran, "a cleanup arriving after its tab was closed must fire at once, not sit unreachable")
 
-	// ...and only once: a later run must not double-fire it.
-	reg.run("tab-1")
+	// ...and only once: a later close must not double-fire it.
+	reg.closeTab("tab-1")
 	assert.Equal(t, 1, ran, "the cleanup must not run twice")
+}
+
+// TestCleanupRegistry_CloseAfterTheCleanupLandedStillTombstonesTheTab covers the
+// OTHER order, which is the one closeTab exists for.
+//
+// A close runs its teardown BEFORE it stamps closed_at. A relaunch that lands
+// between the two reads an open row, passes every guard, mints a socket and
+// registers it -- and nothing runs that cleanup again, because the close already
+// fired. Marking the tab on the way out is what makes that register retire the
+// socket instead of storing it for a tab no client can see.
+func TestCleanupRegistry_CloseAfterTheCleanupLandedStillTombstonesTheTab(t *testing.T) {
+	t.Parallel()
+
+	var reg cleanupRegistry
+	first, second := 0, 0
+
+	reg.claim("tab-1")
+	reg.register("tab-1", func() { first++ })
+	reg.closeTab("tab-1")
+	require.Equal(t, 1, first, "the close retires the live cleanup")
+
+	// The relaunch that raced the close.
+	reg.replace("tab-1")
+	reg.register("tab-1", func() { second++ })
+	assert.Equal(t, 1, second,
+		"a socket minted for a tab whose close already ran must be retired at once, not stored for nobody")
+}
+
+// TestCleanupRegistry_RetireIsNotAClose pins the half that the unconditional
+// mark must NOT reach.
+//
+// A startup that rolls itself back retires its own resource, but the tab stays
+// open and the user can restart it. Tombstoning there would make the next
+// restart's register retire the socket it had just minted, so the process would
+// come up with no remote control -- the exact failure the mark exists to
+// prevent, caused by the mark.
+func TestCleanupRegistry_RetireIsNotAClose(t *testing.T) {
+	t.Parallel()
+
+	var reg cleanupRegistry
+	rolledBack, relaunched := 0, 0
+
+	reg.claim("tab-1")
+	reg.register("tab-1", func() { rolledBack++ })
+	reg.retire("tab-1")
+	require.Equal(t, 1, rolledBack, "the rollback retires its own resource")
+
+	// The user restarts the tab. Its socket must survive registration.
+	reg.claim("tab-1")
+	reg.register("tab-1", func() { relaunched++ })
+	assert.Zero(t, relaunched,
+		"a rollback tombstoned a live tab; the restart retired the socket it had just minted")
+
+	reg.closeTab("tab-1")
+	assert.Equal(t, 1, relaunched, "the real close retires it")
 }
 
 // TestCleanupRegistry_NormalOrderAndAbandonedClaim covers the two paths that
@@ -364,18 +419,18 @@ func TestCleanupRegistry_NormalOrderAndAbandonedClaim(t *testing.T) {
 	reg.claim("tab-ok")
 	reg.register("tab-ok", func() { ran++ })
 	assert.Equal(t, 0, ran, "registering must not fire the cleanup on its own")
-	reg.run("tab-ok")
+	reg.closeTab("tab-ok")
 	assert.Equal(t, 1, ran, "the close fires it")
 
-	// A spawn that aborts: the claim is abandoned, so a later close leaves no
-	// mark that a stray register could act on.
+	// A spawn that aborts before it registers leaves nothing behind, so a
+	// rollback for that id retires nothing and tombstones nothing.
 	reg.claim("tab-aborted")
 	reg.abandonClaim("tab-aborted")
-	reg.run("tab-aborted")
+	reg.retire("tab-aborted")
 	late := 0
 	reg.register("tab-aborted", func() { late++ })
 	assert.Equal(t, 0, late,
-		"an abandoned claim must not make a later register fire immediately -- that id is a fresh tab, not a closed one")
+		"a rollback for a spawn that registered nothing must leave the tab live -- the user can still restart it")
 }
 
 // TestCleanup_DeleteClosedAgentsReclaimsChildAlongsideRoot pins that a CLOSED

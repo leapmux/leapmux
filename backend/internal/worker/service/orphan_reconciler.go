@@ -53,8 +53,8 @@ type OrphanReconciler struct {
 	// (closeTabForConvergence), and splitting it here meant every caller restated
 	// which policy each type gets.
 	closeTab func(tabType leapmuxv1.TabType, userID, tabID string)
-	// onPass reports each pass's outcome to the caller. Nil disables the report.
-	onPass func(converged bool)
+	// onConverged reports a CONVERGED pass to the caller. Nil disables the report.
+	onConverged func()
 	// prevOrphanWorktrees maps a worktree id to when it FIRST looked orphaned. A
 	// worktree must stay orphaned for orphanWorktreeGrace before
 	// reconcileWorktrees removes it, so a transient zero-live window during
@@ -62,7 +62,7 @@ type OrphanReconciler struct {
 	prevOrphanWorktrees map[string]time.Time
 	// prevOrphanTabs maps a reconcilable tab to when it FIRST looked absent from
 	// the hub's owned-tab list. A tab must stay absent for tabGrace before any
-	// arm tears it down. See orphanTabGrace for what that window bounds.
+	// case tears it down. See orphanTabGrace for the size of that window.
 	prevOrphanTabs map[ownedTabKey]time.Time
 	// tabGrace is orphanTabGrace unless a caller overrode it.
 	tabGrace time.Duration
@@ -79,7 +79,7 @@ type OrphanReconcilerOptions struct {
 	Now      func() time.Time
 	Logger   *slog.Logger
 	// TabGrace overrides orphanTabGrace, the delay between a tab first looking
-	// absent from the hub and an arm tearing it down. Zero selects the default.
+	// absent from the hub and a case that tears it down. Zero selects the default.
 	// A negative value disables the grace, which only a test that drives the
 	// real Run loop in real time should choose -- production must keep the
 	// window, because it is what stops a nudge-driven pass from preempting the
@@ -106,16 +106,22 @@ type OrphanReconcilerOptions struct {
 	// manager entry per reap. A tier that exists only for test convenience is
 	// exactly the divergent close path this change set out to remove.
 	CloseTab func(tabType leapmuxv1.TabType, userID, tabID string)
-	// OnPass, when set, is called after every pass with what that pass reported
-	// (see reconcileOnce). It is the ONE place a caller learns that this worker's
+	// OnConverged, when set, is called after every pass that CONVERGED (see
+	// reconcileOnce). It is the ONE place a caller learns that this worker's
 	// local rows now agree with the hub, which is the precondition the boot-time
 	// agent resume waits on: resuming before convergence spawns CLIs for tabs the
 	// CRDT deleted while the worker was down, and a converged pass is the only
-	// statement that no reap is still pending.
+	// statement that no reap is pending.
+	//
+	// It reports the converged pass alone, rather than every pass with a flag,
+	// so a caller cannot start work after a pass that failed. Every pass reports
+	// through it, including one reached by the retry backoff: the startup pass of
+	// a worker whose channel is not settled yet always fails, so a hook that
+	// fired only on the first pass would never see the eventual convergence.
 	//
 	// Called on the reconciler's own goroutine, so it must not block: a slow hook
 	// delays the next pass. Wire it to something that hands the work off.
-	OnPass func(converged bool)
+	OnConverged func()
 }
 
 // NewOrphanReconciler binds a reconciler to the worker's local DB
@@ -160,7 +166,7 @@ func NewOrphanReconciler(queries *db.Queries, files *FileTabPathStore, listFn fu
 		logger:              opts.Logger,
 		reapWorktree:        opts.ReapWorktree,
 		closeTab:            opts.CloseTab,
-		onPass:              opts.OnPass,
+		onConverged:         opts.OnConverged,
 		prevOrphanWorktrees: make(map[string]time.Time),
 		prevOrphanTabs:      make(map[ownedTabKey]time.Time),
 		tabGrace:            opts.TabGrace,
@@ -168,7 +174,7 @@ func NewOrphanReconciler(queries *db.Queries, files *FileTabPathStore, listFn fu
 }
 
 // orphanWorktreeGrace is how long a worktree must look orphaned before the GC
-// will reclaim it. It bounds the startup window between "the agent/terminal row
+// will reclaim it. It limits the startup window between "the agent/terminal row
 // exists" and "its worktree_tabs link is written", which is one `git worktree add`
 // plus a couple of local SQLite writes -- so this is generous by two orders of
 // magnitude, deliberately: over-waiting costs a directory a later pass reclaims,
@@ -176,9 +182,9 @@ func NewOrphanReconciler(queries *db.Queries, files *FileTabPathStore, listFn fu
 const orphanWorktreeGrace = 2 * time.Minute
 
 // orphanTabGrace is how long a locally open tab must stay absent from the hub's
-// owned-tab list before an arm tears it down.
+// owned-tab list before a case tears it down.
 //
-// It bounds the window that a client's OWN close opens. The client emits the
+// It limits the window that a client's OWN close opens. The client emits the
 // CRDT TombstoneTab first and sends the close RPC second, on a different
 // transport, and the hub nudges this worker the moment it applies that
 // tombstone. So a nudge-driven pass can see the absence while the close that
@@ -229,17 +235,16 @@ func (r *OrphanReconciler) Run(ctx context.Context) {
 		retryTimer *time.Timer
 		retryC     <-chan time.Time
 	)
-	// Re-arm (or disarm) the retry from a pass's outcome. Always stops the
-	// previous timer first so a tick or Trigger that lands mid-backoff cannot
-	// leave two pending retries behind.
-	// One helper for "the pass finished": it re-arms the retry AND reports the
-	// outcome, so a wake-up source can never re-arm without reporting. Splitting
-	// the two is how the report would come to be missing from the retry arm --
-	// the arm that fires after a hub failure, and so the one that carries the
-	// eventual convergence.
-	rearm := func(converged bool) {
-		if r.onPass != nil {
-			r.onPass(converged)
+	// finishPass is the one helper for "the pass finished": it reports a
+	// convergence AND re-arms (or disarms) the retry from the outcome, so a
+	// wake-up source can never re-arm without reporting. Splitting the two is
+	// how the report would come to be missing from the retry case -- the case
+	// that fires after a hub failure, and so the one that carries the eventual
+	// convergence. It always stops the previous timer first, so a tick or a
+	// Trigger that lands mid-backoff cannot leave two pending retries behind.
+	finishPass := func(converged bool) {
+		if converged && r.onConverged != nil {
+			r.onConverged()
 		}
 		if retryTimer != nil {
 			retryTimer.Stop()
@@ -258,9 +263,9 @@ func (r *OrphanReconciler) Run(ctx context.Context) {
 		}
 	}()
 
-	rearm(r.reconcileOnce(ctx))
+	finishPass(r.reconcileOnce(ctx))
 	for {
-		// Every wake-up source runs the same pass, so the arms only select;
+		// Every wake-up source runs the same pass, so the cases only select;
 		// the call sits below them and a fourth source costs one line.
 		select {
 		case <-ctx.Done():
@@ -271,7 +276,7 @@ func (r *OrphanReconciler) Run(ctx context.Context) {
 		case <-r.trigger:
 		case <-retryC:
 		}
-		rearm(r.reconcileOnce(ctx))
+		finishPass(r.reconcileOnce(ctx))
 	}
 }
 
@@ -372,13 +377,13 @@ func (r *OrphanReconciler) reconcileOnce(ctx context.Context) bool {
 	r.reconcileFileTabs(ctx, hubByKey, owner, now, next)
 	r.reconcileAgents(ctx, hubByKey, now, next)
 	r.reconcileTerminals(ctx, hubByKey, now, next)
-	// Assigned ONLY here, on the path where all three arms ran. Every early
+	// Assigned ONLY here, on the path where all three cases ran. Every early
 	// return above learned nothing about absence, so overwriting the map there
 	// would restart each tab's clock and defeat the grace.
 	r.prevOrphanTabs = next
 	if len(next) > 0 {
 		// A deferred reap is unfinished business, not convergence. Report it so
-		// Run re-arms its retry backoff and a later pass performs the teardown,
+		// Run re-arms its retry backoff and a later pass does the teardown,
 		// instead of leaving it to the hourly tick.
 		converged = false
 	}
@@ -553,10 +558,10 @@ func (r *OrphanReconciler) reconcileFileTabs(ctx context.Context, hubByKey map[o
 			if !r.reapDue(k, now, next) {
 				continue
 			}
-			// Route through the SAME teardown the AGENT and TERMINAL arms use,
+			// Route through the SAME teardown the AGENT and TERMINAL cases use,
 			// with the keep-the-link policy.
 			//
-			// This arm used to hand-roll the teardown and DROP the
+			// This case used to repeat the teardown by hand and DROP the
 			// worktree_tabs link first. That looked like the safe order, but a
 			// zero-link worktree is excluded from ListOrphanCandidateWorktrees
 			// forever (it requires EXISTS at least one link), so dropping the

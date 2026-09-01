@@ -175,7 +175,7 @@ leapmux worker -hub https://hub.example.com
 | `-max-message-size` | `0` (= 16 MiB) | Max application payload size in bytes; reassembled ceiling adds 64 KiB headroom |
 | `-agent-startup-timeout` | `5m` | Agent startup timeout |
 | `-api-timeout` | `10s` | JSON-RPC request timeout |
-| `-agent-startup-concurrency` | `0` (= 4, or the CPU core count when lower) | Max agent processes inside their startup handshake at once; does not limit how many agents run |
+| `-agent-startup-concurrency` | `0` (= 4, or `GOMAXPROCS` when lower) | Max agent startups the boot-time resume sweep runs at once; never delays an agent you start yourself |
 
 **SQLite database options**
 

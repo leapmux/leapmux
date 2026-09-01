@@ -41,6 +41,14 @@ func terminalStartingLabel(shell string) string {
 func (svc *Service) beginTerminalStartup(terminalID, shell string, gs *leapmuxv1.GitRepoStatus) (context.Context, *startupEntry) {
 	startupCtx, cancel := context.WithCancel(context.Background())
 	h := svc.TerminalStartup.begin(terminalID, cancel)
+	if h == nil {
+		// A startup for this terminal is already in flight. Every caller checks
+		// the registry first, but that check and this claim straddle no lock and
+		// each RPC runs on its own goroutine, so the claim is what actually
+		// decides. Release the context we will not use.
+		cancel()
+		return nil, nil
+	}
 	msg := terminalStartingLabel(shell)
 	svc.TerminalStartup.setMessage(terminalID, msg)
 	svc.broadcastTerminalStarting(terminalID, msg, gs)
@@ -140,6 +148,13 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 			// is nil here because the post-mutation working dir isn't
 			// known yet; phase 1 re-broadcasts with the real value.
 			startupCtx, startupHandle := svc.beginTerminalStartup(terminalID, shell, nil)
+			if startupHandle == nil {
+				// Unreachable in practice -- terminalID was minted a few lines
+				// above -- but the claim is the authority, so honour it rather
+				// than run a startup that owns no registry entry.
+				sendFailedPrecondition(sender, "a startup for this terminal is already in progress")
+				return
+			}
 
 			sendProtoResponse(sender, &leapmuxv1.OpenTerminalResponse{
 				TerminalId: terminalID,
@@ -222,6 +237,15 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 			// runTerminalStartup's phase-1 pattern so the RPC round-trip
 			// doesn't block on a slow `git status` against a large worktree.
 			startupCtx, startupHandle := svc.beginTerminalStartup(terminalID, shell, nil)
+			if startupHandle == nil {
+				// Two RestartTerminal RPCs for one terminal. The in-flight check
+				// above and this claim straddle no lock, and the dispatcher gives
+				// every request its own goroutine, so the claim is what decides.
+				// The loser must not proceed: its spawn would race the winner's
+				// for one PTY and one control socket.
+				sendFailedPrecondition(sender, "a restart for this terminal is already in progress")
+				return
+			}
 
 			sendProtoResponse(sender, &leapmuxv1.RestartTerminalResponse{})
 
@@ -534,7 +558,7 @@ func (svc *Service) runTerminalStartup(ctx context.Context, opts terminal.Option
 	// a close that lost the register-vs-cleanup race doesn't leak it.
 	// When no token was minted (RemoteIPC disabled or factory failed),
 	// nothing was registered, so the defer skips the mutex roundtrip.
-	remoteEnvs, ipcErr := svc.spawnControlIPC("terminal", terminalID, "open", svc.terminalCleanups.register, func() ([]string, func(), error) {
+	remoteEnvs, ownsIPCToken, ipcErr := svc.spawnControlIPC(string(tabKindTerminal), terminalID, "open", svc.terminalCleanups.register, func() ([]string, func(), error) {
 		return svc.ControlIPC.TerminalSpawning(spawnInfo)
 	})
 	if ipcErr != nil {
@@ -546,10 +570,14 @@ func (svc *Service) runTerminalStartup(ctx context.Context, opts terminal.Option
 		return
 	}
 	opts.ExtraEnv = remoteEnvs
-	ownsIPCToken := opts.ExtraEnv != nil
+	// Ownership is what the registry STORED, which spawnControlIPC reports. It
+	// is NOT `opts.ExtraEnv != nil`: the env vars and the cleanup are separate
+	// values, so a factory result with one and not the other would register a
+	// cleanup this deferred retire never runs, leaking the listening socket and
+	// its unrevoked delegation bearer for the tab's whole life.
 	defer func() {
 		if ownsIPCToken {
-			svc.terminalCleanups.run(terminalID)
+			svc.terminalCleanups.retire(terminalID)
 		}
 	}()
 
@@ -667,7 +695,7 @@ func (svc *Service) runTerminalRestart(
 	// is no live shell whose remote control needs preserving, and leaving the
 	// old cleanup registered would strand a listening unix socket plus an
 	// unrevoked per-user delegation bearer for a process that is gone.
-	remoteEnvs, ownsIPCToken, ipcErr := svc.remintControlIPC(&svc.terminalCleanups, "terminal", terminalID, "restart",
+	remoteEnvs, ownsIPCToken, ipcErr := svc.remintControlIPC(tabKindTerminal, terminalID, "restart", spawnInfo.UserID,
 		func() ([]string, func(), error) {
 			return svc.ControlIPC.TerminalSpawning(spawnInfo)
 		})
@@ -680,7 +708,7 @@ func (svc *Service) runTerminalRestart(
 	opts.ExtraEnv = remoteEnvs
 	defer func() {
 		if ownsIPCToken {
-			svc.terminalCleanups.run(terminalID)
+			svc.terminalCleanups.retire(terminalID)
 		}
 	}()
 

@@ -14,6 +14,8 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
+	"github.com/leapmux/leapmux/internal/util/testutil"
+	"github.com/leapmux/leapmux/internal/worker/config"
 )
 
 // idleAgent is the smallest Agent a permit test needs. It is defined here rather
@@ -58,16 +60,9 @@ func newBlockingStart(capacity int) *blockingStart {
 }
 
 func (b *blockingStart) fn(_ context.Context, opts Options, _ OutputSink) (Agent, error) {
-	now := b.inFlight.Add(1)
-	for {
-		peak := b.peak.Load()
-		if now <= peak || b.peak.CompareAndSwap(peak, now) {
-			break
-		}
-	}
+	defer testutil.TrackPeak(&b.inFlight, &b.peak)()
 	b.entered <- struct{}{}
 	<-b.release
-	b.inFlight.Add(-1)
 	if b.fail {
 		return nil, fmt.Errorf("start refused for %s", opts.AgentID)
 	}
@@ -99,7 +94,7 @@ func spawn(t *testing.T, m *Manager, start startFunc, count int, idPrefix string
 			_, errs[i] = m.startAgentWith(context.Background(), Options{
 				AgentID:    fmt.Sprintf("%s-%d", idPrefix, i),
 				WorkingDir: t.TempDir(),
-			}, noopSink{}, start)
+			}, noopSink{}, start, true)
 		}()
 	}
 	return func() []error {
@@ -109,9 +104,8 @@ func spawn(t *testing.T, m *Manager, start startFunc, count int, idPrefix string
 }
 
 // TestStartAgent_LimitsConcurrentStartups is the guard for the whole point of
-// the permit pool: with a limit of N, only N agent processes may be inside
-// their startup handshake at once. Without it every spawn path fans out
-// unbounded, and the boot-time resume sweep starts one CLI per open tab
+// the permit pool: with a limit of N, only N BACKGROUND agent startups run at
+// once. Without it the boot-time resume sweep starts one CLI per open tab
 // simultaneously.
 func TestStartAgent_LimitsConcurrentStartups(t *testing.T) {
 	t.Parallel()
@@ -146,6 +140,51 @@ func TestStartAgent_LimitsConcurrentStartups(t *testing.T) {
 		"the pool must ADMIT the configured number, not merely stay under it")
 	// Every spawn ran: the cap delays a start, it never drops one.
 	assert.Len(t, errs, total)
+}
+
+// TestStartAgent_InteractiveSpawnsTakeNoPermit is the guard for the split the
+// pool exists to make.
+//
+// A spawn the user asked for must never queue. The send path calls the cold
+// start INLINE, and the client gives that RPC about fifteen seconds, so a permit
+// wait would fail a send whose message row is already durable -- and raising the
+// configured number would not help, because it raises the background count just
+// as much.
+func TestStartAgent_InteractiveSpawnsTakeNoPermit(t *testing.T) {
+	t.Parallel()
+
+	m := NewManager(nil)
+	m.SetStartupConcurrency(1)
+
+	// Fill the pool with a background start and park it there.
+	background := newBlockingStart(1)
+	waitBackground := spawn(t, m, background.fn, 1, "sweep")
+	background.waitForEntries(t, 1)
+
+	// An interactive spawn must get straight through.
+	interactive := newBlockingStart(1)
+	done := make(chan error, 1)
+	go func() {
+		_, err := m.startAgentWith(context.Background(), Options{
+			AgentID:    "interactive",
+			WorkingDir: t.TempDir(),
+		}, noopSink{}, interactive.fn, false)
+		done <- err
+	}()
+	interactive.waitForEntries(t, 1)
+
+	close(interactive.release)
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("an interactive spawn waited on the background permit pool; the user's send would fail on the client timeout")
+	}
+
+	close(background.release)
+	for _, err := range waitBackground() {
+		require.NoError(t, err)
+	}
 }
 
 // TestStartAgent_ConcurrencyOfOneSerializes covers the smallest useful setting,
@@ -225,7 +264,7 @@ func TestStartAgent_CancelledContextGivesUpTheQueue(t *testing.T) {
 			func(context.Context, Options, OutputSink) (Agent, error) {
 				queuedStarted.Store(true)
 				return idleAgent{}, nil
-			})
+			}, true)
 		queuedErr <- err
 	}()
 
@@ -248,21 +287,27 @@ func TestStartAgent_CancelledContextGivesUpTheQueue(t *testing.T) {
 	}
 }
 
-// TestResolveStartupConcurrency covers the default rule. The default is capped
-// at DefaultMaxStartupConcurrency and lowered to the core count below it, so a
-// two-core container never runs four handshakes at once.
-func TestResolveStartupConcurrency(t *testing.T) {
-	t.Parallel()
+// TestResolveStartupConcurrency_FollowsTheCPUBudgetNotTheCoreCount pins WHICH
+// runtime number the default derives from, and that the manager's pool is sized
+// from it. Both answers agree on a normal laptop, so the machine running this
+// test cannot tell them apart -- lower GOMAXPROCS and only the correct source
+// moves.
+//
+// A quota-limited container is exactly this shape: NumCPU keeps reporting the
+// host's cores while the scheduler runs the process on a fraction of one, and a
+// default read from NumCPU would run four CPU-bound handshakes there.
+//
+// The rule itself lives in the config package (config.ResolveStartupConcurrency)
+// and is covered there; this asserts the manager's pool follows it.
+func TestResolveStartupConcurrency_FollowsTheCPUBudgetNotTheCoreCount(t *testing.T) {
+	// Not parallel: GOMAXPROCS is process-global state.
+	prev := runtime.GOMAXPROCS(1)
+	t.Cleanup(func() { runtime.GOMAXPROCS(prev) })
 
-	wantDefault := min(runtime.NumCPU(), DefaultMaxStartupConcurrency)
-	assert.Equal(t, wantDefault, ResolveStartupConcurrency(0), "0 selects the default")
-	assert.Equal(t, wantDefault, ResolveStartupConcurrency(-3), "a negative value selects the default")
-	assert.LessOrEqual(t, wantDefault, DefaultMaxStartupConcurrency, "the default never exceeds the cap")
-	assert.GreaterOrEqual(t, wantDefault, 1, "the default always admits at least one startup")
-
-	assert.Equal(t, 1, ResolveStartupConcurrency(1))
-	assert.Equal(t, 3, ResolveStartupConcurrency(3))
-	assert.Equal(t, 64, ResolveStartupConcurrency(64), "an explicit value above the default cap is honored")
+	m := NewManager(nil)
+	m.SetStartupConcurrency(0)
+	assert.Equal(t, 1, m.StartupConcurrency(),
+		"the default must follow the CPU budget; reading runtime.NumCPU() would report the host's cores here")
 }
 
 // TestNewManager_HasAUsablePoolBeforeConfiguration pins that a manager built
@@ -279,7 +324,7 @@ func TestNewManager_HasAUsablePoolBeforeConfiguration(t *testing.T) {
 		WorkingDir: t.TempDir(),
 	}, noopSink{}, func(context.Context, Options, OutputSink) (Agent, error) {
 		return idleAgent{}, nil
-	})
+	}, true)
 	require.NoError(t, err)
 	assert.True(t, m.HasAgent("unconfigured"))
 }
@@ -294,8 +339,5 @@ func TestSetStartupConcurrency_ZeroRestoresTheDefault(t *testing.T) {
 	m.SetStartupConcurrency(1)
 	m.SetStartupConcurrency(0)
 
-	m.mu.RLock()
-	got := cap(m.startupSlots)
-	m.mu.RUnlock()
-	assert.Equal(t, ResolveStartupConcurrency(0), got)
+	assert.Equal(t, config.ResolveStartupConcurrency(0), m.StartupConcurrency())
 }

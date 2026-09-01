@@ -79,10 +79,14 @@ type Service struct {
 	// contract.
 	ControlIPC ControlIPCFactory
 
-	startAgentFn        func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error)
-	startTerminalFn     func(context.Context, terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error
-	createAgentRecordFn func(context.Context, db.CreateAgentParams) error
-	getAgentByIDFn      func(context.Context, string) (db.Agent, error)
+	startAgentFn func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error)
+	// startBackgroundAgentFn is startAgentFn's sibling for a spawn nobody waits
+	// on. The two are separate seams because they reach different manager entry
+	// points, and only the background one takes a startup permit.
+	startBackgroundAgentFn func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error)
+	startTerminalFn        func(context.Context, terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error
+	createAgentRecordFn    func(context.Context, db.CreateAgentParams) error
+	getAgentByIDFn         func(context.Context, string) (db.Agent, error)
 	// batchGitStatusFn runs the concurrent git-status batch for a watch
 	// catch-up. A seam (same contract as its siblings above) so tests can
 	// observe the overlap's cancellation without spawning real git processes.
@@ -256,6 +260,13 @@ type cleanupRegistry struct {
 func (r *cleanupRegistry) claim(id string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.claimLocked(id)
+}
+
+// claimLocked is claim for a caller that already holds r.mu, so the claimed
+// map's lazy initialization has one definition. replace claims as part of a
+// wider critical section and cannot call claim itself.
+func (r *cleanupRegistry) claimLocked(id string) {
 	if r.claimed == nil {
 		r.claimed = map[string]struct{}{}
 	}
@@ -264,14 +275,26 @@ func (r *cleanupRegistry) claim(id string) {
 
 // abandonClaim drops a claim whose spawn aborted before registering, so a failed
 // startup cannot leave an entry behind.
+//
+// It leaves closedWhileClaimed alone. That mark records a fact -- a close ran
+// for this tab -- and abandoning a claim does not undo it. Erasing it lets a
+// LATER spawn for the same tab store a cleanup that nothing will ever run: a
+// relaunch whose factory degrades abandons its claim, and the relaunch after
+// that one registers a live socket for a tab whose teardown already finished.
+// register is the only consumer of the mark, and it deletes it when it acts on
+// it, so the mark costs one empty map entry for a tab that closes and never
+// registers again.
 func (r *cleanupRegistry) abandonClaim(id string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.claimed, id)
-	delete(r.closedWhileClaimed, id)
 }
 
-func (r *cleanupRegistry) register(id string, fn func()) {
+// register stores the cleanup for id, and reports whether it stored it. A false
+// return means register retired the resource on the spot because the tab closed
+// while the spawn was still starting; the caller then owns nothing, and a
+// deferred retire of its own would find no entry and do nothing.
+func (r *cleanupRegistry) register(id string, fn func()) (stored bool) {
 	r.mu.Lock()
 	if _, closed := r.closedWhileClaimed[id]; closed {
 		// The tab was closed while this spawn was still starting. Retire the
@@ -282,7 +305,7 @@ func (r *cleanupRegistry) register(id string, fn func()) {
 		if fn != nil {
 			fn()
 		}
-		return
+		return false
 	}
 	delete(r.claimed, id)
 	if r.m == nil {
@@ -290,11 +313,12 @@ func (r *cleanupRegistry) register(id string, fn func()) {
 	}
 	r.m[id] = fn
 	r.mu.Unlock()
+	return true
 }
 
 // replace retires the cleanup currently registered for id and claims id for the
 // incoming one, for a caller that is SWAPPING one live resource for another
-// rather than tearing the tab down. It returns after the old cleanup has run.
+// rather than tearing the tab down. It returns after the old cleanup runs.
 //
 // It is not run()+claim(), and the difference is the closedWhileClaimed mark.
 // run() leaves that mark when it finds a claim and no cleanup -- the window in
@@ -312,30 +336,56 @@ func (r *cleanupRegistry) replace(id string) {
 	fn := r.m[id]
 	delete(r.m, id)
 	// The claim is set, not deleted and re-added: a claim already here belongs to
-	// a spawn whose cleanup has not landed, and this one subsumes it.
-	if r.claimed == nil {
-		r.claimed = map[string]struct{}{}
-	}
-	r.claimed[id] = struct{}{}
+	// a spawn whose cleanup did not land yet, and this one subsumes it.
+	r.claimLocked(id)
 	r.mu.Unlock()
 	if fn != nil {
 		fn()
 	}
 }
 
-func (r *cleanupRegistry) run(id string) {
+// closeTab retires the cleanup for a tab that is going away FOR EVER, and marks
+// the id so nothing registers a fresh resource under it again.
+//
+// The mark is unconditional, which is the whole difference from retire. A close
+// runs its teardown BEFORE it stamps closed_at, so between the two a relaunch
+// reads an open row, passes every guard, mints a socket and registers it -- and
+// nothing runs that cleanup again, because this close already fired. Marking on
+// the way out is what makes register retire such a socket on the spot instead of
+// storing it for a tab no client can see.
+//
+// register consumes the mark, so it costs one empty map entry for a tab that
+// closes and never registers again. Tab ids are unique and never reused, so a
+// leftover entry can only ever be read by a spawn for that same dead tab.
+func (r *cleanupRegistry) closeTab(id string) {
+	r.runAndMark(id, true)
+}
+
+// retire runs the cleanup for id WITHOUT marking the tab closed, for a caller
+// rolling back its own startup rather than tearing the tab down.
+//
+// A failed startup is not a close: the tab stays open and the user can restart
+// it. Marking here would tombstone a live tab, and the next restart's register
+// would retire the socket it had just minted -- the process would come up with
+// no remote control, which is the exact failure the mark exists to prevent,
+// reintroduced by the mark itself.
+func (r *cleanupRegistry) retire(id string) {
+	r.runAndMark(id, false)
+}
+
+func (r *cleanupRegistry) runAndMark(id string, markClosed bool) {
 	r.mu.Lock()
 	fn, ok := r.m[id]
 	delete(r.m, id)
-	if !ok {
-		if _, claimed := r.claimed[id]; claimed {
-			// A cleanup is still on its way; leave a mark for register to act on.
-			delete(r.claimed, id)
-			if r.closedWhileClaimed == nil {
-				r.closedWhileClaimed = map[string]struct{}{}
-			}
-			r.closedWhileClaimed[id] = struct{}{}
+	_, claimed := r.claimed[id]
+	delete(r.claimed, id)
+	// Mark when the tab is gone, or when a spawn claimed the id and its cleanup
+	// is still on its way -- register acts on the mark in both cases.
+	if markClosed || (!ok && claimed) {
+		if r.closedWhileClaimed == nil {
+			r.closedWhileClaimed = map[string]struct{}{}
 		}
+		r.closedWhileClaimed[id] = struct{}{}
 	}
 	r.mu.Unlock()
 	if ok && fn != nil {
@@ -361,11 +411,11 @@ func (r *cleanupRegistry) run(id string) {
 // TerminalSpawnInfo type split.
 func (svc *Service) spawnControlIPC(
 	kind, tabID, phase string,
-	register func(string, func()),
+	register func(string, func()) bool,
 	call func() ([]string, func(), error),
-) ([]string, error) {
+) (envs []string, owned bool, err error) {
 	if svc.ControlIPC == nil {
-		return nil, nil
+		return nil, false, nil
 	}
 	envs, cleanup, err := call()
 	if err != nil {
@@ -380,15 +430,20 @@ func (svc *Service) spawnControlIPC(
 		// naming the cause. Fail the spawn so it reports itself.
 		if errors.Is(err, ErrMissingIdentity) {
 			slog.Error("remote IPC spawn has no user identity; refusing to start "+kind, attrs...)
-			return nil, err
+			return nil, false, err
 		}
 		slog.Warn("remote IPC factory failed; "+kind+" will start without remote control", attrs...)
-		return nil, nil
+		return nil, false, nil
 	}
+	// owned is what the registry STORED, not what the env vars imply. The two
+	// come from different values, so a factory result with one and not the other
+	// would leave a caller's deferred retire pointed at an entry that is not
+	// there -- and register itself declines to store when the tab closed while
+	// this spawn was starting, because it retires the resource on the spot.
 	if cleanup != nil {
-		register(tabID, cleanup)
+		owned = register(tabID, cleanup)
 	}
-	return envs, nil
+	return envs, owned, nil
 }
 
 // agentStartupTimeout returns the configured agent startup timeout,
@@ -445,16 +500,10 @@ type Config struct {
 	// Hub writes; a promoted field of that name would compile while
 	// shadowing nothing and reading like the live value.
 	SeedRegisteredBy    string
-	AgentStartupTimeout time.Duration // Timeout for agent startup handshake (default: 5m)
-	APITimeout          time.Duration // Timeout for JSON-RPC requests (default: 10s)
-	// AgentStartupConcurrency is the configured startup-concurrency cap
-	// (0 = agent.ResolveStartupConcurrency's machine-derived default). The
-	// agent.Manager enforces it for every spawn; the Service reads the same
-	// value to size the boot-time resume sweep's own fan-out, so the sweep
-	// queues at most one generation of startups ahead of an interactive one.
-	AgentStartupConcurrency int
-	UseLoginShell           bool                      // Wrap claude invocation in user's login shell
-	WakeLock                *wakelock.ActivityTracker // Keep-awake tracker (nil = disabled)
+	AgentStartupTimeout time.Duration             // Timeout for agent startup handshake (default: 5m)
+	APITimeout          time.Duration             // Timeout for JSON-RPC requests (default: 10s)
+	UseLoginShell       bool                      // Wrap claude invocation in user's login shell
+	WakeLock            *wakelock.ActivityTracker // Keep-awake tracker (nil = disabled)
 	// MaxMessageSize is the worker's configured application payload budget
 	// (0 = contracts.MaxMessageSize). Raises agent stdout scanner ceiling
 	// and ReadFile's maxReadLimit; other stream sends still reject at
@@ -505,6 +554,7 @@ func New(cfg Config) *Service {
 	}
 	svc.FileTabPaths = NewFileTabPathStore(svc.Queries, svc.PrivateEvents)
 	svc.startAgentFn = svc.Agents.StartAgent
+	svc.startBackgroundAgentFn = svc.Agents.StartBackgroundAgent
 	svc.startTerminalFn = svc.Terminals.StartTerminal
 	svc.createAgentRecordFn = svc.Queries.CreateAgent
 	svc.getAgentByIDFn = svc.Queries.GetAgentByID
@@ -533,12 +583,32 @@ func (svc *Service) startAgent(ctx context.Context, opts agent.Options, sink age
 	return svc.Agents.StartAgent(ctx, opts, sink)
 }
 
-// restartAgent preserves Manager.RestartAgent's stop-before-start ordering while
-// routing the new process through the service-level starter seam.
-func (svc *Service) restartAgent(ctx context.Context, opts agent.Options, sink agent.OutputSink) (map[string]string, error) {
-	unlock := svc.Agents.LockAgent(opts.AgentID)
-	defer unlock()
+// startBackgroundAgent is startAgent for a spawn nobody is waiting on. It is the
+// only path that draws on the manager's startup permit pool, so the boot-time
+// resume sweep cannot start every restorable tab at once while a tab the user
+// opens by hand waits behind it.
+//
+// It has its own test seam. Sharing startAgentFn would let a resume test stub
+// the interactive entry point and then quietly exercise the wrong one, which is
+// exactly the distinction this pair exists to make.
+func (svc *Service) startBackgroundAgent(ctx context.Context, opts agent.Options, sink agent.OutputSink) (map[string]string, error) {
+	if svc.startBackgroundAgentFn != nil {
+		return svc.startBackgroundAgentFn(ctx, opts, sink)
+	}
+	return svc.Agents.StartBackgroundAgent(ctx, opts, sink)
+}
 
+// restartAgentLocked preserves Manager.RestartAgent's stop-before-start ordering
+// while routing the new process through the service-level starter seam. The
+// caller must already hold the per-agent lifecycle lock.
+//
+// The lock belongs to the caller rather than to this function because every
+// relaunch has to do work of its own inside it: minting the relaunch's control
+// socket retires the previous spawn's cleanup and registers a new one under the
+// same tab id, and two relaunches for one tab that interleaved those two steps
+// would leave one socket registered to nobody. LockAgent is not reentrant, so
+// the mint and the restart cannot each take it.
+func (svc *Service) restartAgentLocked(ctx context.Context, opts agent.Options, sink agent.OutputSink) (map[string]string, error) {
 	svc.Agents.StopAndWaitAgent(opts.AgentID)
 	return svc.startAgent(ctx, opts, sink)
 }
@@ -566,6 +636,24 @@ func (svc *Service) createAgentRecord(ctx context.Context, params db.CreateAgent
 		return svc.createAgentRecordFn(ctx, params)
 	}
 	return svc.Queries.CreateAgent(ctx, params)
+}
+
+// clearAgentSessionID forgets the session an agent was in, so the next cold
+// start does not ask its provider to resume a session no process holds.
+//
+// Every relaunch failure path calls it: a relaunch that could not start left
+// the row pointing at a session the previous process owned, and the next
+// message would relaunch with --resume against it. The write is best-effort --
+// the relaunch already failed, and the caller is reporting that failure to the
+// user -- so the error is logged rather than returned.
+func (svc *Service) clearAgentSessionID(agentID string) {
+	if err := svc.Queries.UpdateAgentSessionID(bgCtx(), db.UpdateAgentSessionIDParams{
+		AgentSessionID: "",
+		ID:             agentID,
+	}); err != nil {
+		slog.Warn("failed to clear the agent session id after a failed relaunch",
+			"agent_id", agentID, "error", err)
+	}
 }
 
 func (svc *Service) getAgentByID(ctx context.Context, agentID string) (db.Agent, error) {
@@ -662,16 +750,24 @@ func (svc *Service) Shutdown() {
 	notified := make(map[string]struct{})
 	svc.broadcastTerminalsDisconnected(notified)
 
-	// Stop the background convergence loops FIRST, and before the drains below.
+	// Stop the background loops FIRST, and before the drains below. There are two
+	// of them: the orphan reconciler and the boot-time agent resume sweep.
 	//
-	// The orphan reconciler runs teardowns of its own (Close*TabForReconcile ->
-	// closeTabCommon), and those are NOT registered with svc.Cleanup: only the
-	// dispatcher's tracked handlers are. So the Cleanup.Wait below does not cover
-	// them, and the worker entry points run Shutdown BEFORE cancelling the
-	// context the reconciler is bound to -- leaving a nudge-triggered pass free to
-	// run DB writes and remote-IPC teardown straight into the deferred
-	// sqlDB.Close(). Stop() blocks until the in-flight pass returns, which closes
-	// that window.
+	// Both run work that svc.Cleanup does not cover, because only the
+	// dispatcher's tracked handlers are registered with it. The reconciler runs
+	// teardowns of its own (Close*TabForReconcile -> closeTabCommon), and the
+	// resume sweep starts agent processes and registers a remote-IPC cleanup for
+	// each one. The worker entry points run Shutdown BEFORE they cancel the
+	// context those loops are bound to, so without this stop a nudge-triggered
+	// pass -- or a sweep still working through its candidates -- runs DB writes
+	// straight into the deferred sqlDB.Close().
+	//
+	// stop() blocks until both loops are quiet: the reconciler until its
+	// in-flight pass returns, and the sweep until it joins the resumes it already
+	// handed off. That second wait is not an added cost. Those resumes are
+	// registered with svc.AgentStartup, so WaitForInFlight below waits for
+	// exactly the same startups; joining here only moves the wait earlier, to the
+	// point where the sweep can still be observed as running.
 	if stop := svc.stopBackgroundLoops; stop != nil {
 		stop()
 	}

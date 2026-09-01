@@ -485,7 +485,7 @@ func (svc *Service) closeAgentTabCommon(userID, agentID string, action leapmuxv1
 		// tracker/caches alongside the row teardown.
 		svc.Agents.StopAgent(agentID)
 		svc.Output.ClearAgentRuntimeState(agentID)
-		svc.agentCleanups.run(agentID)
+		svc.agentCleanups.closeTab(agentID)
 		// Prune all child sinks and per-child state in one pass. Calling
 		// CleanupAgent per child would scan rootSinks for each (O(children x
 		// roots) on a root close); the root is known here, so clear its whole
@@ -567,7 +567,7 @@ func (svc *Service) closeTerminalTabCommon(userID, terminalID string, action lea
 			svc.TerminalStartup.cancelAndClear(terminalID, closeWorktreeDispositionFor(action, linkPolicy))
 			svc.Terminals.RemoveTerminal(terminalID)
 			svc.clearTerminalBellCoalesce(terminalID)
-			svc.terminalCleanups.run(terminalID)
+			svc.terminalCleanups.closeTab(terminalID)
 		},
 		func() (bool, error) { return rowsAffected(svc.Queries.CloseTerminal(bgCtx(), terminalID)) },
 	)

@@ -264,7 +264,8 @@ func TestRelaunchForStartupSettingsChangeUsesInjectedStarter(t *testing.T) {
 
 	relaunchOpts := svc.baseAgentOptions(agentID, workingDir, provider)
 	relaunchOpts.Options = relaunchOptions
-	active := svc.relaunchForStartupSettingsChange(agentID, provider, relaunchOpts, fallback)
+	active, running := svc.relaunchForStartupSettingsChange(agentID, provider, relaunchOpts, fallback)
+	require.True(t, running, "a relaunch that succeeded must report a live process")
 
 	require.Equal(t, 1, restartCalls, "startup-time relaunch must use the injectable starter so tests do not require a real agent binary")
 	assert.Equal(t, relaunchOpts.Options, restarted.Options)
@@ -1437,4 +1438,49 @@ func TestBuildTerminalStatusChange_CarriesGitInfo(t *testing.T) {
 	assert.Equal(t, "feature/x", sc.GetGitStatus().GetBranch())
 	assert.Equal(t, "git@example.com:org/repo.git", sc.GetGitStatus().GetOriginUrl())
 	assert.Equal(t, "/home/u/repo", sc.GetGitStatus().GetToplevel())
+}
+
+// TestRelaunchForStartupSettingsChange_AFailedLaunchReportsNoProcess pins the
+// distinction runAgentStartup needs to avoid announcing a healthy agent that is
+// gone.
+//
+// restartAgentLocked stops the old process before it starts the new one, so a
+// start that fails leaves the tab with none. Broadcasting ACTIVE then tells every
+// connected watcher the agent is fine, while a fresh subscriber reads INACTIVE
+// from the manager and the two disagree until something else moves the status.
+func TestRelaunchForStartupSettingsChange_AFailedLaunchReportsNoProcess(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
+		return nil, assert.AnError
+	}
+	seedOpenAgent(t, svc, "agent-1", true)
+	row := requireAgentRow(t, svc, "agent-1")
+	opts := svc.baseAgentOptions("agent-1", row.WorkingDir, row.AgentProvider)
+
+	_, running := svc.relaunchForStartupSettingsChange("agent-1", row.AgentProvider, opts, row)
+	assert.False(t, running,
+		"the relaunch stopped the old process and started none; reporting a live process announces ACTIVE for a dead agent")
+}
+
+// TestRelaunchForStartupSettingsChange_AFailedMintKeepsTheOldProcess is the
+// other side. The mint runs BEFORE the stop, so a mint that fails leaves the old
+// process serving the tab -- ACTIVE is then the truth, and tearing the tab down
+// would be the wrong report.
+func TestRelaunchForStartupSettingsChange_AFailedMintKeepsTheOldProcess(t *testing.T) {
+	t.Parallel()
+
+	ipc := &agentIPCRecorder{failWith: ErrMissingIdentity}
+	svc, _, _ := setupTestService(t, withRemoteIPC(ipc))
+	rec := newStartRecorder()
+	rec.install(svc)
+	seedOpenAgent(t, svc, "agent-1", true)
+	row := requireAgentRow(t, svc, "agent-1")
+	opts := svc.baseAgentOptions("agent-1", row.WorkingDir, row.AgentProvider)
+
+	_, running := svc.relaunchForStartupSettingsChange("agent-1", row.AgentProvider, opts, row)
+	assert.True(t, running,
+		"a failed mint returns before the stop, so the old process still serves the tab")
+	assert.Empty(t, rec.ids(), "no process may start when its control socket cannot be scoped to a user")
 }

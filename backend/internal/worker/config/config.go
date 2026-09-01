@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -34,7 +35,40 @@ const (
 	// DefaultAPITimeout is the default timeout for JSON-RPC requests to agent
 	// processes (e.g. turn/start, session/new).
 	DefaultAPITimeout = 10 * time.Second
+
+	// DefaultMaxStartupConcurrency caps the DEFAULT number of agent startups the
+	// boot-time resume sweep runs at once. Agent startup is CPU-bound on this
+	// side (a login shell, the CLI's own boot, JSON parsing), so four concurrent
+	// handshakes already saturate a laptop while it serves the user's own tab. A
+	// machine with more cores gets no more by default, because the extra
+	// parallelism buys the sweep little; an operator who wants more asks for it
+	// by name.
+	DefaultMaxStartupConcurrency = 4
 )
+
+// ResolveStartupConcurrency answers how many agent processes the resume sweep
+// may have inside their startup handshake at once. n <= 0 selects the default.
+//
+// The default is DefaultMaxStartupConcurrency, lowered to this machine's CPU
+// budget when that is smaller: a two-core container must not run four
+// handshakes at once.
+//
+// The budget comes from runtime.GOMAXPROCS(0), not runtime.NumCPU(). NumCPU
+// reports the logical CPUs the process may run on -- the affinity mask -- and a
+// cgroup CPU quota does not change it, so a container limited to half a core on
+// a 32-core host still reports 32. GOMAXPROCS derives its default from the quota
+// as well as the affinity mask, which is the number this cap wants.
+//
+// It lives in this package, and not beside the permit pool it sizes, so that the
+// two flag-help strings that print the default can read it. agent imports config
+// (agent/factory.go, for the two timeouts above), so the reverse edge is a cycle
+// and a constant in agent is unreachable from here or from solo.
+func ResolveStartupConcurrency(n int) int {
+	if n > 0 {
+		return n
+	}
+	return min(runtime.GOMAXPROCS(0), DefaultMaxStartupConcurrency)
+}
 
 // Config holds the worker's runtime configuration.
 type Config struct {
@@ -60,11 +94,9 @@ type Config struct {
 	// runs -- a started agent holds nothing.
 	//
 	// Zero is kept as zero here, unlike the two timeouts above: the default
-	// follows this machine's core count, so it is resolved by
-	// agent.ResolveStartupConcurrency at the point of use rather than baked into
-	// a loaded Config. This package cannot call that function (agent imports
-	// config, so the reverse edge is a cycle), which is also why the flag's
-	// default below is the literal 0.
+	// follows this machine's CPU budget, which is a runtime property rather than
+	// a loaded one, so ResolveStartupConcurrency resolves it at the point of use.
+	// That is also why the flag's default below is the literal 0.
 	AgentStartupConcurrency int    `koanf:"agent_startup_concurrency" json:"agent_startup_concurrency"`
 	LogLevel                string `koanf:"log_level" json:"log_level"`
 	EncryptionMode          string `koanf:"encryption_mode" json:"encryption_mode"`
@@ -185,9 +217,9 @@ func Load(args []string) (*Config, bool, error) {
 	fs.Var(internalconfig.NewDurationFlag(new(time.Duration), DefaultAPITimeout),
 		"api-timeout", "JSON-RPC request timeout. "+internalconfig.UnitSyntax)
 	fs.Int("agent-startup-concurrency", 0,
-		"maximum agent processes inside their startup handshake at once "+
-			"(0 = 4, or the CPU core count when that is lower); "+
-			"does not limit how many agents run")
+		fmt.Sprintf("maximum agent startups the boot-time resume sweep runs at once "+
+			"(0 = %d, or this machine's GOMAXPROCS value when that is lower); "+
+			"it never limits an agent you open by hand", DefaultMaxStartupConcurrency))
 	fs.String("log-level", defaultLogLevel, "log level (debug, info, warn, error)")
 	fs.String("encryption-mode", "post-quantum", "encryption mode (classic, post-quantum)")
 	fs.Bool("use-login-shell", true, "wrap claude invocation in user's login shell")

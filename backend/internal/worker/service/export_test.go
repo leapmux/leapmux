@@ -20,19 +20,12 @@ func (r *OrphanReconciler) ReconcileOnceForTest(ctx context.Context) bool {
 }
 
 // WaitForSweepForTest blocks until the resume sweep goroutine returns, or
-// returns at once if no sweep ever started.
+// returns at once when no sweep ever started.
 //
-// Production never waits for the sweep to FINISH -- Shutdown only needs it to
-// stop launching, and the startups it already handed off are drained by
-// AgentStartup.WaitForInFlight. A test does need the completion, and reaching
-// for Stop instead would ask the wrong question: Stop tells the launcher to
-// abandon the candidates it has not reached, so a test using it as a barrier
-// races its own sweep and asserts on a partial run.
+// It is the wait alone, without the stop. Stop is the wrong tool for a test
+// barrier: it also tells the launcher to abandon the candidates it did not
+// reach, so a test that uses it as a barrier races its own sweep and asserts on
+// a partial run.
 func (r *AgentResumer) WaitForSweepForTest() {
-	r.mu.Lock()
-	done := r.done
-	r.mu.Unlock()
-	if done != nil {
-		<-done
-	}
+	r.waitForSweep()
 }

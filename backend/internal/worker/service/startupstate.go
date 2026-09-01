@@ -106,9 +106,26 @@ func newStartupCore() startupCore {
 // The handle is what lets a close reach the goroutine after cancelAndClear has
 // removed the entry from the map: the goroutine reads its own object, not an
 // id-keyed lookup that a later fail() may have replaced.
+//
+// It CLAIMS the id, and returns nil when a startup already holds it. A caller
+// that gets nil started nothing and must not call finish(). The claim is what
+// keeps two startups for one tab from sharing one map slot: the second used to
+// overwrite the first, which stranded the first goroutine's handle -- a later
+// cancelAndClear then cancelled the wrong context and stamped its close
+// disposition on the wrong entry, so the first goroutine read "no close raced
+// me" and kept its worktree. That is reachable today, because a message that
+// arrives during an open's startup window takes the auto-start path: the send
+// gate refuses only a permanent startup failure, and the manager holds no entry
+// yet, so HasAgent is false.
 func (r *startupCore) begin(id string, cancel context.CancelFunc) *startupEntry {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	// Refuse only an IN-FLIGHT startup. A failed entry is a finished one that
+	// lingers for failedEntryTTL so a status query can still read the error;
+	// refusing on it would lock a tab out of every retry for those five minutes.
+	if existing, busy := r.entries[id]; busy && !existing.failed {
+		return nil
+	}
 	entry := &startupEntry{cancel: cancel, resizeSignal: make(chan struct{}, 1)}
 	r.entries[id] = entry
 	r.wg.Add(1)

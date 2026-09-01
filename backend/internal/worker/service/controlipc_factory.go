@@ -32,6 +32,19 @@ type ControlIPCFactory interface {
 	AgentSpawning(info AgentSpawnInfo) (envVars []string, cleanup func(), err error)
 	// TerminalSpawning is the terminal counterpart.
 	TerminalSpawning(info TerminalSpawnInfo) (envVars []string, cleanup func(), err error)
+	// HoldDelegation keeps userID's hub delegation alive across a swap, and
+	// returns the release. It exists because a relaunch has to RETIRE the
+	// previous spawn's token before it mints the next one -- the two share a
+	// socket path -- and the retire releases that user's delegation. For a user
+	// whose only live spawn is the one being replaced, the reference count then
+	// reaches zero, which revokes the token through a blocking call to the hub
+	// and forces the next call from the tab to mint a fresh one. Holding one
+	// reference across the swap keeps the count off zero, so a relaunch costs no
+	// hub round trip at all.
+	//
+	// A nil return is fine: an implementation with no delegation to hold answers
+	// with nothing to release.
+	HoldDelegation(userID userid.UserID) (release func())
 }
 
 // AgentSpawnInfo identifies a spawning agent so the IPC factory can
