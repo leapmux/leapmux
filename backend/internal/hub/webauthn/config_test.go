@@ -36,26 +36,35 @@ func TestRPConfigFromSettings_RejectsOriginlessListen(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestRPConfigFromSettings_LoopbackAliasesMatchOriginHost(t *testing.T) {
+// TestRPConfigFromSettings_LoopbackCollapsesToLocalhost pins the one answer a
+// loopback hub has for WebAuthn.
+//
+// A loopback bind is reachable at three spellings, but only one of them can
+// run a ceremony. WebAuthn §5.1.3 requires the RP ID to be a valid domain
+// string and excludes the address literal, so "127.0.0.1" is not an RP ID; and
+// "localhost" is not a registrable-domain suffix of the effective domain
+// "127.0.0.1", so it cannot stand in for one either. Both halves of that leave
+// the IP-literal origins out of the allowlist entirely, which is what makes
+// passkeysRunnableForOrigin report them honestly.
+func TestRPConfigFromSettings_LoopbackCollapsesToLocalhost(t *testing.T) {
 	st := testutil.OpenTestStore(t)
 	set := servicetest.NewSettingsManager(t, st, nil)
 	ctx := context.Background()
 
 	cfg, err := webauthn.RPConfigFromSettings(set.Snapshot(ctx), "127.0.0.1:8080")
 	require.NoError(t, err)
-	assert.Contains(t, cfg.RPOrigins, "http://127.0.0.1:8080")
-	assert.Contains(t, cfg.RPOrigins, "http://localhost:8080")
-	assert.Contains(t, cfg.RPOrigins, "http://[::1]:8080")
-	// The default RP ID is the base origin's host; each allowlisted origin
-	// maps to its own host because browsers reject an RP ID that is not a
-	// suffix of the page origin (localhost is not a suffix of 127.0.0.1).
-	assert.Equal(t, "127.0.0.1", cfg.RPID)
-	rpID, allowed := cfg.RPIDForOrigin("http://localhost:8080")
-	require.True(t, allowed)
-	assert.Equal(t, "localhost", rpID)
-	rpID, allowed = cfg.RPIDForOrigin("http://127.0.0.1:8080")
-	require.True(t, allowed)
-	assert.Equal(t, "127.0.0.1", rpID)
+	assert.Equal(t, []string{"http://localhost:8080"}, cfg.RPOrigins,
+		"an IP-literal origin can run no ceremony, so it must not be allowlisted")
+	// The default RP ID is a DOMAIN even though the bind address is not: this
+	// is the value go-webauthn validates at construction, so an IP here makes
+	// the whole service unbuildable rather than one ceremony fail.
+	assert.Equal(t, "localhost", cfg.RPID)
+
+	assert.True(t, cfg.AllowsOrigin("http://localhost:8080"))
+
+	for _, origin := range []string{"http://127.0.0.1:8080", "http://[::1]:8080"} {
+		assert.Falsef(t, cfg.AllowsOrigin(origin), "%s cannot run a ceremony and must not be allowed", origin)
+	}
 }
 
 func TestRPConfigFromSettings_WildcardListenServesLoopback(t *testing.T) {
@@ -65,11 +74,27 @@ func TestRPConfigFromSettings_WildcardListenServesLoopback(t *testing.T) {
 
 	cfg, err := webauthn.RPConfigFromSettings(set.Snapshot(ctx), "0.0.0.0:9999")
 	require.NoError(t, err)
-	assert.Contains(t, cfg.RPOrigins, "http://localhost:9999")
-	assert.Contains(t, cfg.RPOrigins, "http://127.0.0.1:9999")
+	assert.Equal(t, []string{"http://localhost:9999"}, cfg.RPOrigins)
+	assert.Equal(t, "localhost", cfg.RPID)
 }
 
-func TestRPConfigFromSettings_RPIDForOriginOnlyAllowsConfiguredOrigins(t *testing.T) {
+// TestRPConfigFromSettings_RejectsBareIPPublicURL pins the remote-IP case.
+// It reports passkeys cleanly unavailable, the same way an absent listener
+// does, rather than letting gowebauthn.New fail inside NewService and take
+// every passkey call down with an opaque configuration error.
+func TestRPConfigFromSettings_RejectsBareIPPublicURL(t *testing.T) {
+	st := testutil.OpenTestStore(t)
+	set := servicetest.NewSettingsManager(t, st, nil)
+	ctx := context.Background()
+	require.NoError(t, settings.KeyPublicURL.Set(ctx, set, "http://192.168.1.5:4327"))
+
+	_, err := webauthn.RPConfigFromSettings(set.Snapshot(ctx), "0.0.0.0:4327")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "domain name",
+		"the error must say what to do, because the remedy is to set public_url to a hostname")
+}
+
+func TestRPConfigFromSettings_AllowsOriginOnlyAllowsConfiguredOrigins(t *testing.T) {
 	st := testutil.OpenTestStore(t)
 	set := servicetest.NewSettingsManager(t, st, nil)
 	ctx := context.Background()
@@ -77,24 +102,21 @@ func TestRPConfigFromSettings_RPIDForOriginOnlyAllowsConfiguredOrigins(t *testin
 
 	cfg, err := webauthn.RPConfigFromSettings(set.Snapshot(ctx), "0.0.0.0:9999")
 	require.NoError(t, err)
-	rpID, allowed := cfg.RPIDForOrigin("http://127.0.0.1:4327")
-	require.True(t, allowed)
-	assert.Equal(t, "127.0.0.1", rpID)
+	assert.True(t, cfg.AllowsOrigin("http://localhost:4327"))
+	// The IP-literal spelling of the SAME host is refused: no RP ID exists
+	// that a browser on that page would accept.
+	assert.False(t, cfg.AllowsOrigin("http://127.0.0.1:4327"))
 	// An origin the hub does not serve is refused outright instead of
 	// falling back to the default RP ID: the browser would accept the
 	// ceremony (the RP ID stays a suffix of the page host) and the
 	// finish-time origin check would reject it -- interactive biometric
 	// work for a guaranteed-dead ceremony. A client-claimed origin can
 	// never widen the credential scope either, because it matches nothing.
-	_, allowed = cfg.RPIDForOrigin("https://evil.example.com")
-	assert.False(t, allowed)
+	assert.False(t, cfg.AllowsOrigin("https://evil.example.com"))
 	// A port-mismatched spelling of the allowed host is refused for the
 	// same reason: the host matches, the origin does not.
-	_, allowed = cfg.RPIDForOrigin("http://localhost:9999")
-	assert.False(t, allowed)
-	// An empty origin (a non-browser client without an Origin header) keeps
-	// the default RPID: there is no browser ceremony to mislead.
-	rpID, allowed = cfg.RPIDForOrigin("")
-	require.True(t, allowed)
-	assert.Equal(t, cfg.RPID, rpID)
+	assert.False(t, cfg.AllowsOrigin("http://localhost:9999"))
+	// An empty origin (a non-browser client without an Origin header) is
+	// allowed: there is no browser ceremony to mislead.
+	assert.True(t, cfg.AllowsOrigin(""))
 }

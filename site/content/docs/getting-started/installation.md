@@ -183,9 +183,9 @@ Building from source is for contributors and administrators who want to compile 
 
 ### Prerequisites
 
-- **Go** 1.26.5 or later
+- **Go** 1.27.0 or later
 - **Node.js** 24 or later
-- **Bun** 1.3.14 or later — JavaScript runtime and package manager
+- **Bun** 1.4.0 or later — JavaScript runtime and package manager
 - **Task** — the build runner
 - **buf** CLI — Protocol Buffer code generation
 - **protobuf** (`protoc`) — required by Tauri's `prost-build`

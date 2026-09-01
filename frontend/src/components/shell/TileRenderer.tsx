@@ -1106,6 +1106,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
         gitTab={focusedAgentTab()}
         // eslint-disable-next-line solid/reactivity -- async event handler; reactive tracking isn't needed for user-invoked callbacks
         onSendMessage={async (content, fileAttachments?: FileAttachment[]) => {
+          // eslint-disable-next-line solid/reactivity -- user-invoked send handler: reads at invocation time
           const id = focusedAgentId()
           if (!id)
             return

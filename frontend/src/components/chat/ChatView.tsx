@@ -859,6 +859,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // Lingering ids resolved back to entries (stable references, so the fade-out
   // <For> keys correctly); a row windowed away mid-linger simply drops out.
   const lingeringSkeletonSlice = createMemo(() => {
+    // eslint-disable-next-line solid/reactivity -- `byId` is read by the `.map` below, in this same memo evaluation
     const byId = visibleEntryById()
     return [...lingeringSkeletonIds()]
       .map(id => byId.get(id))
@@ -925,7 +926,6 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     // The returned function IS an event handler (assigned to onPointerDown/Up/Cancel and the
     // passive wheel/touch listeners below), so reading props.rail via noteRailInput at call
     // time reads the current value -- the linter cannot trace the factory's call sites.
-    // eslint-disable-next-line solid/reactivity
     (...args: Args) => {
       highlightActivity.noteInput()
       noteRailInput()

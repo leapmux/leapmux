@@ -144,8 +144,11 @@ export function ToolCallUpdateMessage(props: {
   const body = createMemo<AcpKindBody>(() => {
     const context = props.context
     const toolUse = props.toolUse
+    // eslint-disable-next-line solid/reactivity -- cachedRenderValue runs its factory synchronously, so this is read in this same memo evaluation
     const toolKind = kind()
+    // eslint-disable-next-line solid/reactivity -- cachedRenderValue runs its factory synchronously, so this is read in this same memo evaluation
     const input = rawInput()
+    // eslint-disable-next-line solid/reactivity -- cachedRenderValue runs its factory synchronously, so this is read in this same memo evaluation
     const failed = isFailed()
     return cachedRenderValue(context, 'acp.toolCallUpdate.kindBody', () => {
       // On failure, `rawInput` is the attempted edit/write input, not an

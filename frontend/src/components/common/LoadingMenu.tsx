@@ -156,6 +156,7 @@ export const LoadingMenu: Component<LoadingMenuProps> = (props) => {
   const disabled = () => (props.disabled ?? false) || loading() || isEmpty()
 
   const visible = createMemo(() => {
+    // eslint-disable-next-line solid/reactivity -- `q` is read by the props.options.filter callback below, in this same memo evaluation
     const q = query().trim().toLowerCase()
     if (!filtering() || q === '')
       return props.options

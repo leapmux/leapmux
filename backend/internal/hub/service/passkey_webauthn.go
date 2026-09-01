@@ -83,7 +83,7 @@ func (s *AuthService) webauthnService(ctx context.Context) (*hubwebauthn.Service
 // run a ceremony?
 //
 // An empty origin keeps the hub-wide answer. A non-browser client sends no
-// Origin header and has no browser ceremony to mislead; RPConfig.RPIDForOrigin
+// Origin header and has no browser ceremony to mislead; RPConfig.AllowsOrigin
 // states the same rule from its own side.
 //
 // "Runnable" rather than "available" throughout: the two words read as two
@@ -92,15 +92,14 @@ func (s *AuthService) webauthnService(ctx context.Context) (*hubwebauthn.Service
 // It resolves the RP config and asks it directly. Through the ceremony
 // service, every call built a whole go-webauthn engine -- a settings
 // snapshot, an RP resolution and a gowebauthn.New -- to reach a method that
-// reads RPConfig.RPIDForOrigin and never touches the engine, and then
+// reads RPConfig.AllowsOrigin and never touches the engine, and then
 // discarded it. GetSystemInfo calls this at every page load.
 func (s *AuthService) passkeysRunnableForOrigin(ctx context.Context, origin string) bool {
 	rp, err := passkeyRPConfig(ctx, s.set, s.cfg, s.keystore)
 	if err != nil {
 		return false
 	}
-	_, allowed := rp.RPIDForOrigin(origin)
-	return allowed
+	return rp.AllowsOrigin(origin)
 }
 
 // originFromRequest returns the browser origin of a Connect request. The

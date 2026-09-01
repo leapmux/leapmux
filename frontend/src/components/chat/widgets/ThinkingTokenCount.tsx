@@ -316,7 +316,9 @@ export const ThinkingTokenCount: Component<{ tokens: number }> = (props) => {
   // freshly-swapped live number, dissolving to reveal it. Same-family growth
   // does NOT snapshot — the live layer persists and only the new leading column
   // fades in.
-  // eslint-disable-next-line solid/reactivity -- `display` is invoked inside the hook's createEffect (a tracked scope); passing the accessor is intended.
+  // `display` is passed as an accessor, not read here: the hook invokes it
+  // inside its own createEffect, which is the tracked scope that must see the
+  // updates.
   const exiting = useFadingSnapshots(display, {
     shouldSnapshot: (prev, next) => shapeFamily(prev) !== shapeFamily(next),
     durationMs: styles.SWAP_MS,

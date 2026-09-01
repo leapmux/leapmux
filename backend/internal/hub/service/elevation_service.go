@@ -976,14 +976,13 @@ func (s *UserService) BeginPasskeyElevation(ctx context.Context, req *connect.Re
 	if err != nil {
 		return nil, mapPasskeyConnectError(ctx, err)
 	}
-	sessionID, optionsJSON, rpID, err := wa.BeginElevation(ctx, user.ID, originFromRequest(req))
+	sessionID, optionsJSON, err := wa.BeginElevation(ctx, user.ID, originFromRequest(req))
 	if err != nil {
 		return nil, mapPasskeyConnectError(ctx, err)
 	}
 	return connect.NewResponse(&leapmuxv1.BeginPasskeyElevationResponse{
 		SessionId:   sessionID,
 		OptionsJson: optionsJSON,
-		RpId:        rpID,
 	}), nil
 }
 

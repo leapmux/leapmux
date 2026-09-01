@@ -784,14 +784,13 @@ func (s *UserService) BeginPasskeyRegistration(ctx context.Context, req *connect
 	if err != nil {
 		return nil, mapPasskeyConnectError(ctx, err)
 	}
-	sessionID, optionsJSON, rpID, err := wa.BeginRegistration(ctx, user.ID, originFromRequest(req))
+	sessionID, optionsJSON, err := wa.BeginRegistration(ctx, user.ID, originFromRequest(req))
 	if err != nil {
 		return nil, mapPasskeyConnectError(ctx, err)
 	}
 	return connect.NewResponse(&leapmuxv1.BeginPasskeyRegistrationResponse{
 		SessionId:   sessionID,
 		OptionsJson: optionsJSON,
-		RpId:        rpID,
 	}), nil
 }
 

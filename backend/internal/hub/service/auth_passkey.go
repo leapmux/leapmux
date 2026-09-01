@@ -36,7 +36,7 @@ func (s *AuthService) BeginPasskeyLogin(ctx context.Context, req *connect.Reques
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	sessionID, optionsJSON, rpID, err := wa.BeginLogin(ctx, user.ID, originFromRequest(req))
+	sessionID, optionsJSON, err := wa.BeginLogin(ctx, user.ID, originFromRequest(req))
 	if err != nil {
 		if classifyWebAuthnError(err) == webAuthnErrorUnavailable {
 			// An unserved origin gives the remediation. Everything else in
@@ -52,7 +52,6 @@ func (s *AuthService) BeginPasskeyLogin(ctx context.Context, req *connect.Reques
 	return connect.NewResponse(&leapmuxv1.BeginPasskeyLoginResponse{
 		SessionId:   sessionID,
 		OptionsJson: optionsJSON,
-		RpId:        rpID,
 	}), nil
 }
 
@@ -150,7 +149,7 @@ func (s *AuthService) BeginPasskeySignUp(ctx context.Context, req *connect.Reque
 	if err != nil {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
 	}
-	sessionID, optionsJSON, rpID, err := wa.BeginSignUp(ctx, hubwebauthn.SignupDraft{
+	sessionID, optionsJSON, err := wa.BeginSignUp(ctx, hubwebauthn.SignupDraft{
 		Username:    username,
 		Email:       email,
 		DisplayName: displayName,
@@ -161,7 +160,6 @@ func (s *AuthService) BeginPasskeySignUp(ctx context.Context, req *connect.Reque
 	return connect.NewResponse(&leapmuxv1.BeginPasskeySignUpResponse{
 		SessionId:   sessionID,
 		OptionsJson: optionsJSON,
-		RpId:        rpID,
 	}), nil
 }
 

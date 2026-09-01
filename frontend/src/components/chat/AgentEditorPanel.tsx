@@ -408,6 +408,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                 editorHeight.resetEditorHeight()
             }
             if (has && ctrl.isAskUserQuestion()) {
+              // eslint-disable-next-line solid/reactivity -- event handler: askCurrentPage() reads at invocation time, and the setAskSelections updater runs synchronously
               const page = askCurrentPage()
               setAskSelections(prev => (prev[page] ?? []).length > 0 ? { ...prev, [page]: [] } : prev)
             }

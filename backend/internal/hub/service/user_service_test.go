@@ -3000,7 +3000,7 @@ func TestFinishPasskeyElevation_MalformedCredentialIsUnauthenticated(t *testing.
 
 	// A LIVE elevation ceremony (BeginElevation writes the properly
 	// encrypted session row), so the failure lands on the parse branch.
-	sessionID, _, _, err := wa.BeginElevation(context.Background(), userID, "")
+	sessionID, _, err := wa.BeginElevation(context.Background(), userID, "")
 	require.NoError(t, err)
 	token, _, err := auth.CreateSession(context.Background(), st, userid.MustNew(userID), auth.DefaultSessionDuration)
 	require.NoError(t, err)
