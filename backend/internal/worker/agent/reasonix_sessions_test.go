@@ -228,3 +228,50 @@ func TestReasonixStoredSessions_SkipsCorruptSidecars(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"good"}, handlesOf(got))
 }
+
+// Reasonix keeps its OWN walk loop rather than the shared collector, because
+// its budget and its `seen` map span two roots. That means its cancellation
+// check is its own too, and the helper's test does not cover it.
+func TestReasonixStoredSessions_StopsOnACancelledContext(t *testing.T) {
+	t.Parallel()
+	dir := "/Users/dev/project"
+	home := t.TempDir()
+	slug, _ := reasonixWorkspaceSlug(dir)
+	sessions := filepath.Join(home, ".reasonix", "projects", slug, "sessions")
+
+	writeReasonixSession(t, sessions, "sess-a",
+		`{"id":"sess-a","turns":1,"preview":"work","workspace_root":"`+dir+`"}`, "")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	got, err := reasonixStoredSessions(ctx, StoredSessionQuery{
+		WorkingDir: dir, HomeDir: home, Getenv: fixtureEnv(nil),
+	})
+	require.NoError(t, err, "a dismissed dialog is not a failure")
+	assert.Empty(t, got, "a cancelled scan reads no sidecar")
+}
+
+// A decoder fills each field it reads BEFORE it reports a type error on a later
+// one, so a rejected `.acp.json` leaves the struct partly populated. Nothing
+// from a document this reader rejected may reach the title or the time.
+func TestReasonixStoredSessions_IgnoresARejectedACPSidecar(t *testing.T) {
+	t.Parallel()
+	dir := "/Users/dev/project"
+	home := t.TempDir()
+	slug, _ := reasonixWorkspaceSlug(dir)
+	sessions := filepath.Join(home, ".reasonix", "projects", slug, "sessions")
+
+	// The `.acp.json` parses as far as `title`, then fails on a numeric
+	// `updatedAt` where a string belongs.
+	writeReasonixSession(t, sessions, "sess-a",
+		`{"id":"sess-a","turns":1,"preview":"the honest fallback","workspace_root":"`+dir+`"}`,
+		`{"sessionId":"sess-a","cwd":"`+dir+`","title":"from a rejected document","updatedAt":12345}`)
+
+	got, err := reasonixStoredSessions(context.Background(), StoredSessionQuery{
+		WorkingDir: dir, HomeDir: home, Getenv: fixtureEnv(nil),
+	})
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, "the honest fallback", got[0].Title,
+		"the title must come from the `.meta`, never from the sidecar that failed to decode")
+}

@@ -35,6 +35,16 @@ func TestMangleClaudePath(t *testing.T) {
 	assert.Equal(t, "-a-b-c", mangleClaudePath("/a/b-c"))
 	assert.Equal(t, "-a-b-c", mangleClaudePath("/a/b_c"))
 	assert.Equal(t, "-a-b-c", mangleClaudePath("/a/b.c"))
+
+	// Claude's rule is a JavaScript regex with no `u` flag, so it matches one
+	// UTF-16 CODE UNIT at a time. A character outside the Basic Multilingual
+	// Plane is TWO code units there and one rune here, so it must produce two
+	// hyphens or the computed directory is not the one Claude wrote -- and every
+	// session of that working directory becomes invisible with no error.
+	assert.Equal(t, "-Users-me-work---app", mangleClaudePath("/Users/me/work/\U0001F680app"))
+	// A character INSIDE the plane is one code unit on both sides, so it must
+	// not gain a second hyphen.
+	assert.Equal(t, "-Users-me-caf-", mangleClaudePath("/Users/me/café"))
 }
 
 func TestClaudeStoredSessions(t *testing.T) {
@@ -87,6 +97,38 @@ func TestClaudeStoredSessions_ChecksTheRecordedCwd(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, []string{"sess-mine"}, handlesOf(got))
+}
+
+// The walk budget must not be spent BEFORE the cwd check decides which
+// transcripts belong here. A colliding directory with more recent sessions
+// filled the budget with rows the cwd check then rejected, and this directory's
+// own sessions were reported as none at all.
+func TestClaudeStoredSessions_ACollidingDirectoryCannotCrowdOutThisOne(t *testing.T) {
+	t.Parallel()
+	mine := "/Users/dev/my-project"
+	theirs := "/Users/dev/my_project"
+	require.Equal(t, mangleClaudePath(mine), mangleClaudePath(theirs),
+		"the fixture only proves anything if the two really do collide")
+
+	home := t.TempDir()
+	projectDir := filepath.Join(home, ".claude", "projects", mangleClaudePath(mine))
+	base := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+
+	// This directory's only session is the OLDEST file present.
+	writeClaudeTranscript(t, projectDir, "sess-mine", base, claudeUserRecord(mine, "sess-mine", "mine"))
+	// The colliding directory's sessions are all newer, and there are more of
+	// them than the query's limit.
+	for i, id := range []string{"sess-t1", "sess-t2", "sess-t3"} {
+		writeClaudeTranscript(t, projectDir, id, base.Add(time.Duration(i+1)*time.Hour),
+			claudeUserRecord(theirs, id, "theirs"))
+	}
+
+	got, err := claudeStoredSessions(context.Background(), StoredSessionQuery{
+		WorkingDir: mine, HomeDir: home, Getenv: fixtureEnv(nil), Limit: 2,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"sess-mine"}, handlesOf(got),
+		"this directory's session survives although three newer ones collide with it")
 }
 
 func TestClaudeStoredSessions_ExcludesSubagentTranscripts(t *testing.T) {
@@ -306,14 +348,4 @@ func TestClaudeStoredSessions_RespectsTheLimit(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, []string{"sess-f", "sess-e"}, handlesOf(got), "the newest two")
-}
-
-func TestClaudeMessageText(t *testing.T) {
-	t.Parallel()
-	assert.Equal(t, "plain", claudeMessageText([]byte(`"plain"`)))
-	assert.Equal(t, "block", claudeMessageText([]byte(`[{"type":"text","text":"block"}]`)))
-	assert.Equal(t, "second", claudeMessageText([]byte(`[{"type":"text","text":"  "},{"type":"text","text":"second"}]`)))
-	assert.Empty(t, claudeMessageText([]byte(`[{"type":"tool_result","content":"out"}]`)))
-	assert.Empty(t, claudeMessageText(nil))
-	assert.Empty(t, claudeMessageText([]byte(`{"unexpected":"shape"}`)))
 }

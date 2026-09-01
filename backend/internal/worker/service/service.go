@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,6 +22,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 
 	"github.com/leapmux/leapmux/internal/util/optionids"
+	"github.com/leapmux/leapmux/internal/util/pathutil"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -32,6 +32,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/gitutil"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 	"github.com/leapmux/leapmux/internal/worker/wakelock"
+	"github.com/leapmux/leapmux/util/validate"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -1323,8 +1324,6 @@ func sendValidationError(sender channel.ResponseWriter, err error) {
 	}
 }
 
-// expandTilde expands a leading "~" or "~/" in a path to the user's home
-// directory. Other forms (e.g. "~user/", "~~") are left unchanged.
 // normalizeWorkingDir resolves the value stored in a tab's working_dir column,
 // for all three tab types. `raw` is whatever the client sent; `fallback` is the
 // dir to use when it sent nothing (the home dir for agents and terminals, the
@@ -1340,28 +1339,50 @@ func sendValidationError(sender channel.ResponseWriter, err error) {
 // `--worktree=push` can commit and push a repository the user never named.
 // Refusing at the write point is the same call FileTabPathStore.Register already
 // makes for file_path, applied to the other half of the same lookup.
-func normalizeWorkingDir(raw, fallback string) (string, error) {
-	dir := expandTilde(strings.TrimSpace(raw))
+//
+// It runs validate.SanitizePath, which is the SAME normalizer every reader of
+// this column applies to the value it looks the column up by. Sharing it is
+// what makes the two agree, and the agreement is load-bearing: SanitizePath
+// cleans, so a write that stored `/repo/` while a read asked for `/repo` matched
+// nothing. For ListAgentSessions that silence is not merely a missing row -- the
+// worker's rows are also the set of handles a live process holds, so an empty
+// answer let the provider's own store offer a session that was already open,
+// and two processes against one session store corrupt it.
+//
+// SanitizePath also refuses `..`, which this function used to accept whenever
+// the path was otherwise absolute. That is the same hazard the paragraph above
+// describes, one level down: `/repo/../other` is absolute, so it passed, and it
+// answers for a repository the user never named.
+// The error names the FIELD, because file_path's own guard refuses with the
+// same "must be absolute" tail: a caller that reads only the tail cannot tell
+// which half of a file-tab registration it broke.
+func normalizeWorkingDir(raw, fallback, homeDir string) (string, error) {
+	dir := strings.TrimSpace(raw)
 	if dir == "" {
 		dir = fallback
 	}
-	if !filepath.IsAbs(dir) {
-		return "", fmt.Errorf("working_dir must be absolute, got %q", dir)
+	clean, err := validate.SanitizePath(dir, homeDir)
+	if err != nil {
+		if errors.Is(err, validate.ErrNotAbsolute) {
+			return "", fmt.Errorf("working_dir must be absolute, got %q: %w", dir, err)
+		}
+		return "", fmt.Errorf("working_dir is not a usable path, got %q: %w", dir, err)
 	}
-	return dir, nil
+	return clean, nil
 }
 
+// expandTilde expands a leading `~` in a path against the PROCESS's home
+// directory. Other forms (`~user/`, `~~`) are left unchanged.
+//
+// The rule lives in pathutil; this wrapper supplies only the home. Its one
+// caller is the terminal's shell start directory, which a client may send in
+// the `~/proj` form the shell itself would accept.
 func expandTilde(path string) string {
-	if path == "~" {
-		if home, err := os.UserHomeDir(); err == nil {
-			return home
-		}
-	} else if strings.HasPrefix(path, "~/") {
-		if home, err := os.UserHomeDir(); err == nil {
-			return filepath.Join(home, path[2:])
-		}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return path
 	}
-	return path
+	return pathutil.ExpandHome(path, home)
 }
 
 // bgCtx returns a background context for database operations.

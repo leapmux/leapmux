@@ -122,6 +122,23 @@ func TestMergeSessionSummaries_ExclusionSurvivesTheProviderStore(t *testing.T) {
 	assert.Equal(t, []string{"other"}, summaryHandles(got))
 }
 
+// The exclusion set and the lookups must use the SAME spelling of a handle. A
+// set keyed on the raw column and read with the trimmed value never matches, and
+// the miss is exactly the corruption the exclusion prevents.
+func TestMergeSessionSummaries_ExcludesAnOpenSessionWhoseHandleHasEdgeWhitespace(t *testing.T) {
+	t.Parallel()
+	got := mergeSessionSummaries(
+		[]db.ListSessionsForResumeRow{openRow("  live  ", "Open right now", mergeBase)},
+		[]agent.StoredSession{
+			{Handle: "live", Title: "The CLI sees it too", UpdatedAt: mergeBase},
+			{Handle: "other", Title: "Fine to resume", UpdatedAt: mergeBase.Add(-time.Hour)},
+		},
+		maxListedSessions,
+	)
+	assert.Equal(t, []string{"other"}, summaryHandles(got),
+		"the store's copy of a live handle stays excluded however the column spells it")
+}
+
 func TestMergeSessionSummaries_BreaksATieByHandle(t *testing.T) {
 	t.Parallel()
 	got := mergeSessionSummaries(
@@ -384,6 +401,63 @@ func TestListAgentSessions_MergesTheProviderStore(t *testing.T) {
 				"the worker's record wins a duplicate, so the user sees the title they chose")
 		}
 	}
+}
+
+// The listing normalizes its working directory before it queries, so the WRITE
+// path has to normalize the same way. It did not: OpenAgent stored the client's
+// path verbatim, so an agent recorded under `/repo/` was invisible to a picker
+// asking about `/repo`. The row lost is not merely a menu entry -- these rows
+// are also the set of handles a live process holds, so the silence let the
+// provider's own store offer a session that was already open.
+func TestListAgentSessions_MatchesAWorkingDirWhicheverWayItWasWritten(t *testing.T) {
+	t.Parallel()
+	svc, d, w := setupTestService(t)
+	dir := t.TempDir()
+
+	// The value OpenAgent stores for a client that sent a trailing separator.
+	stored, err := normalizeWorkingDir(dir+string(filepath.Separator), svc.HomeDir, svc.HomeDir)
+	require.NoError(t, err)
+	require.Equal(t, dir, stored, "the write path must store the cleaned form")
+
+	seedResumableAgent(t, svc, "a-1", "ses_a", "Earlier work", stored,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, true)
+
+	resp := listAgentSessions(t, d, w, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, dir)
+	assert.Equal(t, []string{"ses_a"}, summaryHandles(resp.GetSessions()))
+}
+
+// An open handle is excluded wherever it is open. A session created in one
+// directory and resumed in another leaves the worker's open row under the
+// SECOND directory, while the provider's store still files the session under the
+// first -- so an exclusion set restricted to the queried directory missed it and
+// the picker offered a session a live process holds.
+func TestListAgentSessions_ExcludesATabOpenInAnotherDirectory(t *testing.T) {
+	t.Parallel()
+	svc, d, w := setupTestService(t)
+	dirA := t.TempDir()
+	dirB := t.TempDir()
+
+	// The live tab runs in dirB, although the CLI's own store files the session
+	// under dirA.
+	seedResumableAgent(t, svc, "a-live", "ses_x", "Open elsewhere", dirB,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, false)
+
+	store := filepath.Join(svc.HomeDir, ".local", "share", "opencode", "opencode.db")
+	require.NoError(t, os.MkdirAll(filepath.Dir(store), 0o755))
+	sqlDB, err := sqlitedb.Open(store, sqlitedb.Config{})
+	require.NoError(t, err)
+	_, err = sqlDB.Exec(`CREATE TABLE session (
+		id text PRIMARY KEY, parent_id text, directory text NOT NULL, title text NOT NULL DEFAULT '',
+		time_created integer NOT NULL, time_updated integer, time_archived integer)`)
+	require.NoError(t, err)
+	_, err = sqlDB.Exec(`INSERT INTO session (id, directory, title, time_created, time_updated) VALUES
+		('ses_x', ?, 'The CLI still files it here', 1000, 3000)`, dirA)
+	require.NoError(t, err)
+	require.NoError(t, sqlDB.Close())
+
+	resp := listAgentSessions(t, d, w, leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, dirA)
+	assert.Empty(t, summaryHandles(resp.GetSessions()),
+		"a handle a live process holds is never offered, whichever directory holds the tab")
 }
 
 func TestListAgentSessions_EmptyStoreAndNoRecordsIsAnEmptyList(t *testing.T) {

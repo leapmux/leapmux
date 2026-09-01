@@ -11,6 +11,25 @@ import (
 	"github.com/leapmux/leapmux/internal/util/agentlabels"
 )
 
+// Two handlers answer for the same tab, and they must agree about which CLI a
+// request means. OpenAgent spawns Claude Code for a request that omits the
+// field; a listing handler that took the field literally reported no resumable
+// sessions and then let OpenAgent resume one of them.
+func TestProviderOrDefault(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		ProviderOrDefault(leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED),
+		"an omitted provider is the one OpenAgent spawns")
+
+	// Every registered provider passes through untouched, including Claude Code
+	// itself -- a default that also rewrote a stated provider would silently
+	// answer for the wrong CLI.
+	for provider := range providerRegistry {
+		assert.Equal(t, provider, ProviderOrDefault(provider))
+	}
+}
+
 func TestProviderFor_CodexClassification(t *testing.T) {
 	t.Parallel()
 

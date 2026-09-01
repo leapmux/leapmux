@@ -3,11 +3,14 @@ package agent
 import (
 	"context"
 	"errors"
-	"os"
 	"path/filepath"
 	"strings"
 
-	"gopkg.in/yaml.v3"
+	// The fork at the maintained import path, which koanf's YAML parser already
+	// makes a dependency of this module. `gopkg.in/yaml.v3` exposes the same
+	// Unmarshal and the same tag rules, so the choice is which of two copies of
+	// one project this repo's own code depends on -- and one is enough.
+	"go.yaml.in/yaml/v3"
 )
 
 // GitHub Copilot keeps one directory per session at
@@ -41,27 +44,20 @@ type copilotWorkspace struct {
 //
 // COPILOT_HOME wins. XDG_STATE_HOME is deliberately NOT consulted: Copilot
 // treats it as a MIGRATION source, moving `session-state` out of it into
-// `~/.copilot` on startup, so the XDG path names where the store used to be
-// rather than where it is.
+// `~/.copilot` on startup, so the XDG path points at where the store was rather
+// than where it is.
 func copilotHome(q StoredSessionQuery) string {
-	if dir := strings.TrimSpace(q.env("COPILOT_HOME")); dir != "" {
-		return expandHome(dir, q.home())
-	}
-	home := q.home()
-	if home == "" {
-		return ""
-	}
-	return filepath.Join(home, copilotHomeDirName)
+	return homeDirFromEnv(q, "COPILOT_HOME", copilotHomeDirName)
 }
 
 // copilotStoredSessions is GitHub Copilot's Provider.ListStoredSessions.
 //
 // Every session directory has to be read, because the working directory is
 // inside the sidecar rather than in the directory name -- so unlike Claude and
-// Pi there is no path to compute and stat. The walk is bounded twice: the
+// Pi there is no path to compute and stat. Two limits restrict the walk: the
 // newest-first stat sort puts the plausible candidates first, and the read
 // stops once `limit` matching sessions are found.
-func copilotStoredSessions(_ context.Context, q StoredSessionQuery) ([]StoredSession, error) {
+func copilotStoredSessions(ctx context.Context, q StoredSessionQuery) ([]StoredSession, error) {
 	workingDir := strings.TrimSpace(q.WorkingDir)
 	if workingDir == "" {
 		return nil, nil
@@ -72,11 +68,17 @@ func copilotStoredSessions(_ context.Context, q StoredSessionQuery) ([]StoredSes
 	}
 	root := filepath.Join(home, copilotSessionStateDirName)
 
-	// No limit on the walk: a session directory's own modification time orders
-	// the candidates, but only the sidecar says which working directory a
+	// No limit on the walk: `workspace.yaml` states which working directory a
 	// session belongs to, so cutting the list before reading would drop older
 	// sessions of THIS directory in favour of newer ones of another.
-	entries, err := newestEntries(root, 0, func(entry os.DirEntry) bool { return entry.IsDir() })
+	//
+	// Timed by `workspace.yaml`, not by the session directory. A directory's
+	// modification time changes only when a file appears in it or leaves it, so
+	// it tracks a session's CREATION and never its use -- and the migration out
+	// of the XDG location stamped whole groups of directories with the single
+	// time of the move. One real store holds four directories that share one
+	// timestamp while the sessions inside them span eight days.
+	entries, err := newestEntries(root, 0, namedFileInside(copilotWorkspaceFileName))
 	if err != nil {
 		if errors.Is(err, errSessionStoreAbsent) {
 			return nil, nil
@@ -85,18 +87,10 @@ func copilotStoredSessions(_ context.Context, q StoredSessionQuery) ([]StoredSes
 	}
 
 	limit := q.limit()
-	sessions := make([]StoredSession, 0, limit)
-	for _, entry := range entries {
-		if len(sessions) >= limit {
-			break
-		}
-		session, ok := readCopilotSession(entry, workingDir)
-		if !ok {
-			continue
-		}
-		sessions = append(sessions, session)
-	}
-	return sortAndCapSessions(sessions, limit), nil
+	sessions := collectStoredSessions(ctx, entries, limit, func(entry storeEntry) (StoredSession, bool) {
+		return readCopilotSession(entry, workingDir)
+	})
+	return SortAndCapSessions(sessions, limit), nil
 }
 
 // readCopilotSession derives one session from its `workspace.yaml`.

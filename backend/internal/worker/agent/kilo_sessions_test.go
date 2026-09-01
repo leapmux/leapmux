@@ -9,6 +9,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// The branch the shared resolver exists to keep distinguishable: the override
+// is SET, but the data directory it would resolve against is not. Falling
+// through to the default name under that same unresolvable directory would be a
+// second empty answer reached by accident.
+//
+// No t.Parallel: t.Setenv panics under it, and an unresolvable home needs the
+// process environment rather than the query's Getenv seam.
+func TestKiloDBPath_OverrideWithNoDataDirIsEmpty(t *testing.T) {
+	t.Setenv("HOME", "")
+	t.Setenv("USERPROFILE", "")
+	q := StoredSessionQuery{Getenv: fixtureEnv(map[string]string{"KILO_DB": "beta.db"})}
+	assert.Empty(t, kiloDBPath(q), "a bare override name has nothing to resolve against")
+}
+
 func TestKiloDBPath(t *testing.T) {
 	t.Parallel()
 

@@ -12,7 +12,7 @@ import (
 // Claude Code writes one JSONL transcript per session at
 // `<config dir>/projects/<mangled cwd>/<session id>.jsonl`. There is no index,
 // so this reader finds the project directory by mangling the working directory
-// the same way, stats its files newest-first, and reads a bounded window from
+// the same way, stats its files newest-first, and reads a capped window from
 // each end of the newest few -- which is what Claude's own session lister does.
 
 // claudeMangleMaxLength is the length at which Claude truncates a mangled path
@@ -26,24 +26,22 @@ const claudeProjectsDirName = "projects"
 
 // claudeConfigDir resolves `$CLAUDE_CONFIG_DIR`, default `~/.claude`.
 func claudeConfigDir(q StoredSessionQuery) string {
-	if dir := strings.TrimSpace(q.env("CLAUDE_CONFIG_DIR")); dir != "" {
-		return expandHome(dir, q.home())
-	}
-	home := q.home()
-	if home == "" {
-		return ""
-	}
-	return filepath.Join(home, ".claude")
+	return homeDirFromEnv(q, "CLAUDE_CONFIG_DIR", ".claude")
 }
 
 // mangleClaudePath reproduces Claude's `sanitizePath`: every character outside
 // [A-Za-z0-9] becomes a hyphen.
 //
-// It returns the UNTRUNCATED form. Truncation needs a hash of the original, and
-// the shipped CLI is a Bun binary that hashes with `Bun.hash` (a Wyhash
-// variant) rather than the djb2 fallback in its own source -- so the suffix
-// cannot be reproduced here. claudeProjectDirs handles the long case by
-// prefix instead.
+// One hyphen per UTF-16 CODE UNIT, not per rune. Claude's rule is the JavaScript
+// `replace(/[^a-zA-Z0-9]/g, "-")`, and that regex carries no `u` flag, so it
+// matches one UTF-16 code unit at a time. A character outside the Basic
+// Multilingual Plane is two code units there and one rune here, so a working
+// directory that holds an emoji produces two hyphens in the directory Claude
+// wrote and would produce one here. The computed directory would then not
+// exist, and every Claude session of that directory would be invisible with no
+// error to say so.
+//
+// It returns the UNTRUNCATED form; claudeProjectDirs handles the long case.
 func mangleClaudePath(path string) string {
 	var b strings.Builder
 	b.Grow(len(path))
@@ -53,6 +51,9 @@ func mangleClaudePath(path string) string {
 			b.WriteRune(r)
 		default:
 			b.WriteByte('-')
+			if r > 0xFFFF {
+				b.WriteByte('-')
+			}
 		}
 	}
 	return b.String()
@@ -125,7 +126,7 @@ type claudeTranscriptRecord struct {
 }
 
 // claudeStoredSessions is Claude Code's Provider.ListStoredSessions.
-func claudeStoredSessions(_ context.Context, q StoredSessionQuery) ([]StoredSession, error) {
+func claudeStoredSessions(ctx context.Context, q StoredSessionQuery) ([]StoredSession, error) {
 	workingDir := strings.TrimSpace(q.WorkingDir)
 	if workingDir == "" {
 		return nil, nil
@@ -141,25 +142,28 @@ func claudeStoredSessions(_ context.Context, q StoredSessionQuery) ([]StoredSess
 	limit := q.limit()
 	var candidates []storeEntry
 	for _, dir := range dirs {
-		// Each directory is capped at `limit` before the merge, so a directory
-		// with a huge history cannot make the walk unbounded. The merge sorts
-		// again, so a newer session in the second directory still wins.
-		found, err := newestEntries(dir, limit, isClaudeTranscript)
+		// UNCAPPED, and that is the point: only the `cwd` recorded INSIDE a
+		// transcript says whether it belongs to this working directory, and the
+		// mangling is lossy, so a cut taken here would spend the whole budget
+		// on a colliding directory's newer sessions and report that this
+		// directory has none. Copilot and Reasonix walk uncapped for the same
+		// reason. `storedSessionScanCap` still limits each walk.
+		found, err := newestEntries(dir, 0, entryItself(isClaudeTranscript))
 		if err != nil {
 			continue
 		}
 		candidates = append(candidates, found...)
 	}
+	// The merged list is only per-directory sorted, so it is ordered again
+	// before the read: the loop below stops at `limit` ACCEPTED sessions, and
+	// stopping over an unordered list would drop a newer session of the second
+	// directory in favour of an older one of the first.
+	candidates = sortAndCapEntries(candidates, 0)
 
-	sessions := make([]StoredSession, 0, len(candidates))
-	for _, entry := range candidates {
-		session, ok := readClaudeSession(entry, workingDir)
-		if !ok {
-			continue
-		}
-		sessions = append(sessions, session)
-	}
-	return sortAndCapSessions(sessions, limit), nil
+	sessions := collectStoredSessions(ctx, candidates, limit, func(entry storeEntry) (StoredSession, bool) {
+		return readClaudeSession(entry, workingDir)
+	})
+	return SortAndCapSessions(sessions, limit), nil
 }
 
 // isClaudeTranscript accepts the transcript FILES of a project directory.
@@ -178,7 +182,7 @@ func isClaudeTranscript(entry os.DirEntry) bool {
 // lossy mangling of the working directory, so a directory legitimately holds
 // sessions of other directories that mangle the same way.
 func readClaudeSession(entry storeEntry, workingDir string) (StoredSession, bool) {
-	head, err := jsonlHead(entry.Path, jsonlProbeBytes)
+	head, atEOF, err := jsonlHead(entry.Path, jsonlProbeBytes)
 	if err != nil || len(head) == 0 {
 		return StoredSession{}, false
 	}
@@ -202,7 +206,7 @@ func readClaudeSession(entry storeEntry, workingDir string) (StoredSession, bool
 		}
 		headTitle.take(rec)
 		if firstPrompt == "" && rec.Type == "user" {
-			firstPrompt = claudeMessageText(rec.Message.Content)
+			firstPrompt = contentBlockText(rec.Message.Content)
 		}
 	}
 	// A transcript whose recorded cwd is another directory is another
@@ -219,14 +223,21 @@ func readClaudeSession(entry storeEntry, workingDir string) (StoredSession, bool
 	// The newest title is at the END of the file: `ai-title` is appended again
 	// every time the CLI regenerates it, so the head holds a stale one whenever
 	// the title changed after the first 64 KB.
+	//
+	// Skipped when the head already reached the end of the file, because the
+	// tail window would then re-open, re-read and re-parse the same bytes. The
+	// result is identical either way -- `take` keeps the last value it sees for
+	// each field, and over the same records it is idempotent.
 	tailTitle := headTitle
-	if tail, err := jsonlTail(entry.Path, jsonlProbeBytes); err == nil {
-		for _, line := range tail {
-			var rec claudeTranscriptRecord
-			if json.Unmarshal(line, &rec) != nil {
-				continue
+	if !atEOF {
+		if tail, err := jsonlTail(entry.Path, jsonlProbeBytes); err == nil {
+			for _, line := range tail {
+				var rec claudeTranscriptRecord
+				if json.Unmarshal(line, &rec) != nil {
+					continue
+				}
+				tailTitle.take(rec)
 			}
-			tailTitle.take(rec)
 		}
 	}
 
@@ -265,46 +276,12 @@ func (c *claudeTitleCandidates) take(rec claudeTranscriptRecord) {
 	}
 }
 
-// best states the title precedence: what the user named it, then what the model
-// named it, then the legacy compaction summary, then the most recent prompt,
+// best states the title precedence: the title the user set, then the title the
+// model wrote, then the legacy compaction summary, then the most recent prompt,
 // then the first prompt of the session.
 //
 // The order is Claude's own, so the picker and the CLI's session list agree
 // about what a session is called.
 func (c claudeTitleCandidates) best(firstPrompt string) string {
-	for _, candidate := range []string{c.custom, c.ai, c.summary, c.lastPrompt, firstPrompt} {
-		if strings.TrimSpace(candidate) != "" {
-			return candidate
-		}
-	}
-	return ""
-}
-
-// claudeMessageText pulls the readable text out of a message's content, which
-// is either a plain string or an array of typed blocks.
-//
-// Only a `text` block is taken. A user record also carries `tool_result`
-// blocks, and a tool result is machine output that says nothing about what the
-// session is for.
-func claudeMessageText(content json.RawMessage) string {
-	if len(content) == 0 {
-		return ""
-	}
-	var text string
-	if json.Unmarshal(content, &text) == nil {
-		return strings.TrimSpace(text)
-	}
-	var blocks []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	}
-	if json.Unmarshal(content, &blocks) != nil {
-		return ""
-	}
-	for _, block := range blocks {
-		if block.Type == "text" && strings.TrimSpace(block.Text) != "" {
-			return strings.TrimSpace(block.Text)
-		}
-	}
-	return ""
+	return firstNonBlank(c.custom, c.ai, c.summary, c.lastPrompt, firstPrompt)
 }

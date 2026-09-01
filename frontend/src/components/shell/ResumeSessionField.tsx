@@ -2,12 +2,12 @@ import type { Component } from 'solid-js'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { SessionIdState } from '~/hooks/createSessionIdState'
 import type { UseResumableSessionsArgs } from '~/hooks/useResumableSessions'
-import { Show } from 'solid-js'
+import { createEffect, createSignal, on, Show } from 'solid-js'
 import { LabeledField } from '~/components/common/LabeledField'
 import { RefreshButton } from '~/components/common/RefreshButton'
 import { RESUME_SESSION_ERROR_ID, RESUME_SESSION_LABEL } from '~/components/shell/resumeSession'
 import { SessionIdInput } from '~/components/shell/SessionIdInput'
-import { SessionSelect } from '~/components/shell/SessionSelect'
+import { SessionSelect, TYPE_A_HANDLE_VALUE } from '~/components/shell/SessionSelect'
 import { useResumableSessions } from '~/hooks/useResumableSessions'
 
 interface ResumeSessionFieldProps {
@@ -21,21 +21,28 @@ interface ResumeSessionFieldProps {
  * The "resume an existing session" field of the New Agent and New Workspace
  * dialogs.
  *
- * It picks between two controls, and the rule is ONE condition: a menu when the
- * worker offered sessions, and a text input when it offered none.
+ * It picks between two controls: a menu of the sessions the worker offered, and
+ * a text box for a handle typed by hand.
  *
  * The menu is the point of the field. Typing a session id from memory is what
  * made resume error-prone -- a typo either failed validation or, for a provider
  * whose handle is a path, silently opened an empty session at a filename that
  * does not exist.
  *
- * The text input survives as the FALLBACK, and deleting it would remove a
- * capability. The list can only ever hold what this worker can enumerate: a
- * session started on another machine, a store the CLI moved, a provider whose
- * store this worker cannot read, and a worker that failed to answer at all
- * would each leave the user with a menu they cannot resume anything from.
- * `useResumableSessions` reports every one of those as an empty list, which is
- * why the swap needs one condition rather than a separate error path.
+ * The text input survives, and deleting it would remove a capability. The list
+ * can only ever hold what this worker can enumerate: a session started on
+ * another machine, a store the CLI moved, a provider whose store this worker
+ * cannot read, a worker that failed to answer, a session already open in a tab,
+ * and anything past the worker's cap are all absent from it. So the field
+ * mounts the text box whenever the list is empty, AND offers a row inside the
+ * menu that switches to it when the list is not -- otherwise a directory with
+ * one session would take typing away entirely.
+ *
+ * The control swaps on the SETTLED state, never on `loading()`. A dialog opens
+ * with no worker selected, so the first paint has nothing to fetch and an
+ * un-settled field: it shows the menu, disabled, rather than a text box it
+ * would replace a frame later while the user types into it. Pressing refresh
+ * likewise keeps whichever control is mounted until an answer arrives.
  *
  * The FRAME is shared and only the control swaps, which is what makes the
  * refresh button reachable. A failed fetch is exactly the case that mounts the
@@ -59,12 +66,28 @@ export const ResumeSessionField: Component<ResumeSessionFieldProps> = (props) =>
     }
   }
 
-  const { sessions, loading, refresh } = useResumableSessions(source)
+  const { sessions, loading, settled, refresh } = useResumableSessions(source)
 
-  // The menu also holds the field while the list is on its way, so the control
-  // does not swap under the user between the dialog opening and the answer
-  // arriving.
-  const showMenu = () => loading() || sessions().length > 0
+  // Set when the user asks for the text box although the menu has options.
+  const [typing, setTyping] = createSignal(false)
+
+  // A handle belongs to ONE worker, directory and provider. Nothing else clears
+  // it, so without this a handle picked for `/repo-a` survives a change to
+  // `/repo-b`: the menu finds no matching option and shows the raw handle as
+  // though it were selected, Create stays enabled because the handle is
+  // syntactically valid, and the worker is asked to resume another directory's
+  // conversation. `defer` keeps a handle a caller seeded before the first run.
+  createEffect(on(source, () => {
+    props.state.setValue('')
+    setTyping(false)
+  }, { defer: true }))
+
+  // The menu holds the field until a fetch for the CURRENT source has finished
+  // and returned nothing. `loading()` alone read "nobody has asked yet" as
+  // "empty", so the text input painted on the first frame of every dialog and
+  // the menu replaced it once the effect ran -- under a user who may already be
+  // typing. `settled()` distinguishes the two.
+  const showMenu = () => !typing() && (!settled() || sessions().length > 0)
 
   return (
     <LabeledField
@@ -102,9 +125,19 @@ export const ResumeSessionField: Component<ResumeSessionFieldProps> = (props) =>
       <Show when={showMenu()} fallback={<SessionIdInput state={props.state} />}>
         <SessionSelect
           value={props.state.trimmed()}
-          onChange={props.state.setValue}
+          onChange={(value) => {
+            if (value === TYPE_A_HANDLE_VALUE) {
+              // Switching to the text box must not carry the picked handle
+              // into it: the user asked for a handle the list does not hold.
+              props.state.setValue('')
+              setTyping(true)
+              return
+            }
+            props.state.setValue(value)
+          }}
           sessions={sessions()}
           loading={loading()}
+          invalid={props.state.error() !== null}
         />
       </Show>
     </LabeledField>

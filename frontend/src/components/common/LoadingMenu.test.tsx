@@ -376,4 +376,31 @@ describe('loadingMenu filter threshold', () => {
     renderMenu({ options: many, filter: false })
     expect(screen.queryByTestId('loading-menu-filter')).toBeNull()
   })
+
+  // A menu normally cannot hold an unacceptable value, because every option
+  // came from the field that owns it. These two props exist for the field that
+  // SHARES its value with a text input, where the value survives the swap
+  // between the two controls and the menu can inherit an error it did not
+  // cause. Without them the trigger announces nothing beside a Create button
+  // that refuses to run.
+  it('announces an invalid value and points at the reason', () => {
+    renderMenu({ ariaInvalid: true, ariaDescribedBy: 'why-not' })
+    const trigger = menuTrigger(MENU)
+    expect(trigger.getAttribute('aria-invalid')).toBe('true')
+    expect(trigger.getAttribute('aria-describedby')).toBe('why-not')
+  })
+
+  // Absent, not "false": an `aria-invalid="false"` on every menu in the app
+  // would be noise a screen reader reads out, and the attribute's absence is
+  // what states that the control is fine.
+  it('leaves both attributes off when the caller says nothing', () => {
+    renderMenu()
+    const trigger = menuTrigger(MENU)
+    expect(trigger.getAttribute('aria-invalid')).toBeNull()
+    expect(trigger.getAttribute('aria-describedby')).toBeNull()
+
+    cleanup()
+    renderMenu({ ariaInvalid: false })
+    expect(menuTrigger(MENU).getAttribute('aria-invalid')).toBeNull()
+  })
 })

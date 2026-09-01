@@ -48,9 +48,11 @@ func TestCopilotStoredSessions_FallsBackWhenTimesAreMissing(t *testing.T) {
 
 	// No updated_at: created_at answers instead.
 	writeCopilotSession(t, home, "created-only", dir, "n", "2026-08-26T10:00:00.000Z", "")
-	// Neither parses: the directory's modification time answers.
+	// Neither parses: the SIDECAR's modification time answers, because that is
+	// the file Copilot writes. The session directory's own time is not the
+	// session's -- see TestCopilotStoredSessions_OrdersByTheSidecarNotTheDirectory.
 	writeCopilotSession(t, home, "no-times", dir, "n", "", "")
-	touchFixture(t, filepath.Join(home, ".copilot", "session-state", "no-times"),
+	touchFixture(t, filepath.Join(home, ".copilot", "session-state", "no-times", "workspace.yaml"),
 		time.Date(2026, 8, 20, 9, 0, 0, 0, time.UTC))
 
 	got, err := copilotStoredSessions(context.Background(), StoredSessionQuery{
@@ -62,6 +64,37 @@ func TestCopilotStoredSessions_FallsBackWhenTimesAreMissing(t *testing.T) {
 	assert.Equal(t, time.Date(2026, 8, 26, 10, 0, 0, 0, time.UTC), got[0].UpdatedAt)
 	assert.Equal(t, "no-times", got[1].Handle)
 	assert.False(t, got[1].UpdatedAt.IsZero())
+}
+
+// A session DIRECTORY's modification time changes only when a file appears in
+// it or leaves it, so it tracks the session's creation and never its use -- and
+// the migration out of the XDG location stamped whole groups of directories
+// with the single time of the move. `workspace.yaml` is the file Copilot
+// rewrites, so it is what orders the walk; ordering by the directory dropped a
+// session used yesterday in favour of one created yesterday and never used.
+func TestCopilotStoredSessions_OrdersByTheSidecarNotTheDirectory(t *testing.T) {
+	t.Parallel()
+	dir := "/Users/dev/project"
+	home := t.TempDir()
+	stateDir := filepath.Join(home, ".copilot", "session-state")
+
+	// No parseable times in either sidecar, so the file's own time decides.
+	writeCopilotSession(t, home, "sess-recent", dir, "used yesterday", "", "")
+	writeCopilotSession(t, home, "sess-stale", dir, "created yesterday", "", "")
+	touchFixture(t, filepath.Join(stateDir, "sess-recent", "workspace.yaml"),
+		time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC))
+	touchFixture(t, filepath.Join(stateDir, "sess-stale", "workspace.yaml"),
+		time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC))
+	// The DIRECTORY times say the opposite, which is what a migration produces.
+	touchFixture(t, filepath.Join(stateDir, "sess-recent"), time.Date(2026, 8, 20, 9, 0, 0, 0, time.UTC))
+	touchFixture(t, filepath.Join(stateDir, "sess-stale"), time.Date(2026, 8, 30, 9, 0, 0, 0, time.UTC))
+
+	got, err := copilotStoredSessions(context.Background(), StoredSessionQuery{
+		WorkingDir: dir, HomeDir: home, Getenv: fixtureEnv(nil), Limit: 1,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"sess-recent"}, handlesOf(got),
+		"the cut keeps the session whose sidecar is newest, not whose directory is")
 }
 
 func TestCopilotStoredSessions_SkipsUnreadableSidecars(t *testing.T) {

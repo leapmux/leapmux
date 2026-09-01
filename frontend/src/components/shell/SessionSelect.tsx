@@ -2,7 +2,7 @@ import type { Component } from 'solid-js'
 import type { AgentSessionSummary } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createMemo } from 'solid-js'
 import { LoadingMenu } from '~/components/common/LoadingMenu'
-import { RESUME_SESSION_LABEL } from '~/components/shell/resumeSession'
+import { RESUME_SESSION_ERROR_ID, RESUME_SESSION_LABEL } from '~/components/shell/resumeSession'
 import { formatCompactAge } from '~/lib/dateFormat'
 
 interface SessionSelectProps {
@@ -11,10 +11,39 @@ interface SessionSelectProps {
   onChange: (value: string) => void
   sessions: AgentSessionSummary[]
   loading: boolean
+  /**
+   * The field's value fails validation, so the trigger announces itself as
+   * invalid and points at the field's error node.
+   *
+   * A handle the menu offers always validates, so this is normally false. It
+   * matters because the value SURVIVES the swap from the text input: a user who
+   * typed an invalid handle while the list was empty, and then changed to a
+   * directory that has sessions, faces the menu with the error still showing.
+   * Without this the trigger says nothing is wrong beside a disabled Create.
+   *
+   * A boolean rather than the message, so the picker stays ignorant of the
+   * error text -- the same split `SessionIdInput` makes when it derives both
+   * attributes from one `error()` read.
+   */
+  invalid: boolean
 }
 
 /** The row that withdraws a pick and starts a fresh session instead. */
 export const NEW_SESSION_LABEL = 'Start a new session'
+
+/**
+ * The sentinel `value` of the row that hands the field back to its text box.
+ *
+ * `onChange` carries one value, so the field tells "start fresh" from "let me
+ * type" by this value rather than by a second callback. It leads with a NUL
+ * because no provider can issue a handle holding one — every handle here is a
+ * session id or a filesystem path, and both exclude it — so the sentinel cannot
+ * collide with a real session however the stores change.
+ */
+export const TYPE_A_HANDLE_VALUE = '\u0000type-a-handle'
+
+/** The row that swaps the menu for the text box. */
+export const TYPE_A_HANDLE_LABEL = 'Enter a session ID…'
 
 /**
  * Build one menu row's label.
@@ -63,15 +92,28 @@ export const SessionSelect: Component<SessionSelectProps> = (props) => {
         value: session.sessionId,
         label: sessionOptionLabel(session, now),
       })),
+      // Last, because it is the escape hatch rather than a session. The list
+      // holds only what this worker can enumerate, so a handle from another
+      // machine, one already open in a tab, and one past the worker's cap are
+      // all missing from it — and without this row a directory with a single
+      // session would leave no way to type any of them.
+      { value: TYPE_A_HANDLE_VALUE, label: TYPE_A_HANDLE_LABEL },
     ]
   })
 
   return (
     <LoadingMenu
       ariaLabel={RESUME_SESSION_LABEL}
+      ariaInvalid={props.invalid}
+      ariaDescribedBy={props.invalid ? RESUME_SESSION_ERROR_ID : undefined}
       value={props.value}
       onChange={props.onChange}
       loadingLabel={props.loading ? 'Loading sessions...' : undefined}
+      // Unreachable, and required, so it is stated rather than left to puzzle a
+      // reader: `options` always holds the "start a new session" row, so
+      // `LoadingMenu`'s empty state -- which tests `options.length === 0` --
+      // cannot render here. The prop has no optional form, and the row is the
+      // one way a user takes a pick back, so it stays at every length.
       emptyLabel="No sessions found"
       placeholder={NEW_SESSION_LABEL}
       // Explicit, because `LoadingMenu` would otherwise derive it from the

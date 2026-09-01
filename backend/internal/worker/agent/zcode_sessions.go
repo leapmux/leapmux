@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"strings"
+
+	"github.com/leapmux/leapmux/internal/util/pathutil"
 )
 
 // ZCode's CLI stores its sessions in a SQLite database whose `session` table is
@@ -43,10 +45,10 @@ type zcodeCLIConfig struct {
 func zcodeStorageDir(q StoredSessionQuery, cfg zcodeCLIConfig) string {
 	home := q.home()
 	if dir := strings.TrimSpace(q.env("ZCODE_STORAGE_DIR")); dir != "" {
-		return expandHome(dir, home)
+		return pathutil.ExpandHome(dir, home)
 	}
 	if dir := strings.TrimSpace(cfg.Storage.Dir); dir != "" {
-		return expandHome(dir, home)
+		return pathutil.ExpandHome(dir, home)
 	}
 	if home == "" {
 		return ""
@@ -68,7 +70,7 @@ func zcodeSessionDBPath(q StoredSessionQuery) string {
 		})
 	}
 	if explicit := strings.TrimSpace(cfg.Storage.SessionDbPath); explicit != "" {
-		return expandHome(explicit, home)
+		return pathutil.ExpandHome(explicit, home)
 	}
 	dir := zcodeStorageDir(q, cfg)
 	if dir == "" {
@@ -81,25 +83,3 @@ func zcodeSessionDBPath(q StoredSessionQuery) string {
 func zcodeStoredSessions(ctx context.Context, q StoredSessionQuery) ([]StoredSession, error) {
 	return openCodeFamilySessions(ctx, zcodeSessionDBPath(q), q)
 }
-
-// expandHome resolves a leading `~` against `home`. Several of these
-// configuration files store paths in that form, and none of them expand it
-// before writing.
-func expandHome(path, home string) string {
-	if home == "" || path == "" {
-		return path
-	}
-	if path == "~" {
-		return home
-	}
-	if strings.HasPrefix(path, "~/") || strings.HasPrefix(path, `~\`) {
-		return filepath.Join(home, path[2:])
-	}
-	return path
-}
-
-// maxSidecarBytes caps a read of a small metadata file next to a session --
-// a configuration file, a `.meta`, a `workspace.yaml`. Generous for every such
-// file, and small enough that a file which is not what its name says cannot be
-// read into memory whole.
-const maxSidecarBytes = 256 * 1024

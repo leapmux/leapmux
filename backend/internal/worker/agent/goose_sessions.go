@@ -2,8 +2,7 @@ package agent
 
 import (
 	"context"
-	"errors"
-	"fmt"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -26,13 +25,23 @@ import (
 // exists to offer. On the machine this was written against the split was 80
 // `acp`, 34 `sub_agent`, 5 `user`, and `sub_agent` was exactly the set with a
 // parent, so the parent test already covers what the type would have.
+// The ordering runs through `julianday`, never over the raw text. SQLite has no
+// timestamp type, so these columns hold whatever was written, and
+// gooseTimestampLayouts lists four shapes that coexist. A text comparison sorts
+// them by their bytes: `' '` is below `'T'`, so every driver-written
+// `2026-08-30T00:01:00Z` outranks every `CURRENT_TIMESTAMP`-written
+// `2026-08-30 23:59:00` of the same day, and the `LIMIT` then discards the row
+// that is actually newest. `julianday` parses all four shapes and answers NULL
+// for a value it cannot read, which sorts last under DESC -- the same place the
+// zero time takes in parseGooseTimestamp, so the SQL cut and the Go order
+// agree. The expression was never indexable, so nothing is lost.
 const gooseSessionsSQL = `
 SELECT id, COALESCE(name, ''), COALESCE(updated_at, created_at, '')
 FROM sessions
 WHERE working_dir = ?
   AND parent_session_id IS NULL
   AND archived_at IS NULL
-ORDER BY COALESCE(updated_at, created_at, '') DESC
+ORDER BY julianday(COALESCE(updated_at, created_at, '')) DESC
 LIMIT ?`
 
 // gooseSessionDBRelPath is the database's path under Goose's data directory.
@@ -89,41 +98,22 @@ func gooseDBPath(q StoredSessionQuery) string {
 
 // gooseStoredSessions is Goose's Provider.ListStoredSessions.
 func gooseStoredSessions(ctx context.Context, q StoredSessionQuery) ([]StoredSession, error) {
-	if strings.TrimSpace(q.WorkingDir) == "" {
-		return nil, nil
-	}
-	db, err := openSessionStoreDB(gooseDBPath(q))
-	if err != nil {
-		if errors.Is(err, errSessionStoreAbsent) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	defer func() { _ = db.Close() }()
+	return queryStoredSessions(ctx, gooseDBPath(q), gooseSessionsSQL, q, scanGooseSession)
+}
 
-	limit := q.limit()
-	rows, err := db.QueryContext(ctx, gooseSessionsSQL, filepath.Clean(q.WorkingDir), limit)
-	if err != nil {
-		return nil, fmt.Errorf("query goose session store: %w", err)
+// scanGooseSession reads Goose's (id, name, timestamp text) row shape. Its
+// timestamp is TEXT rather than the epoch milliseconds the other SQL stores
+// hold, which is why it does not share scanEpochMillisSession.
+func scanGooseSession(rows *sql.Rows) (StoredSession, bool) {
+	var id, name, updated string
+	if err := rows.Scan(&id, &name, &updated); err != nil {
+		return StoredSession{}, false
 	}
-	defer func() { _ = rows.Close() }()
-
-	sessions := make([]StoredSession, 0, limit)
-	for rows.Next() {
-		var id, name, updated string
-		if err := rows.Scan(&id, &name, &updated); err != nil {
-			continue
-		}
-		sessions = append(sessions, StoredSession{
-			Handle:    strings.TrimSpace(id),
-			Title:     trimTitle(name),
-			UpdatedAt: parseGooseTimestamp(updated),
-		})
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("scan goose session store: %w", err)
-	}
-	return sortAndCapSessions(sessions, limit), nil
+	return StoredSession{
+		Handle:    strings.TrimSpace(id),
+		Title:     trimTitle(name),
+		UpdatedAt: parseGooseTimestamp(updated),
+	}, true
 }
 
 // gooseTimestampLayouts are the shapes Goose's TIMESTAMP columns hold.

@@ -370,6 +370,20 @@ func ProviderFor(provider leapmuxv1.AgentProvider) Provider {
 	return noopProvider{}
 }
 
+// ProviderOrDefault resolves the provider a request asked for to the provider
+// the worker will actually run.
+//
+// One site, because two handlers that answer for the same tab must agree about
+// which CLI a request means. OpenAgent spawns Claude Code for a request that
+// omits the field, so a listing handler that took the field literally would
+// report no resumable sessions and then let OpenAgent resume one of them.
+func ProviderOrDefault(provider leapmuxv1.AgentProvider) leapmuxv1.AgentProvider {
+	if provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED {
+		return leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
+	}
+	return provider
+}
+
 // IsInterruptRequest reports whether content is an interrupt frame in the
 // wire format used by provider. Unknown providers and unparseable payloads
 // both return false.

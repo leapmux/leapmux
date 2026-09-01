@@ -6,10 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 )
@@ -86,7 +83,14 @@ func cursorStoredSessions(ctx context.Context, q StoredSessionQuery) ([]StoredSe
 	// Capped at the limit: unlike Copilot, the directory ALREADY answers "is
 	// this session for this working directory", so the newest few are the
 	// answer and reading further only opens databases that cannot change it.
-	entries, err := cursorSessionCandidates(dir, limit)
+	//
+	// `namedFileInside` is what times a candidate by its `store.db` rather than
+	// by the session DIRECTORY. Its own comment holds the reason: reading a
+	// session opens its database, and a read-only open creates the `-shm`
+	// sidecar inside that directory, so the directory's time reports the moment
+	// LeapMux looked. `store.db` is the file Cursor writes and the read-only
+	// open leaves alone.
+	entries, err := newestEntries(dir, limit, namedFileInside(cursorStoreFileName))
 	if err != nil {
 		if errors.Is(err, errSessionStoreAbsent) {
 			return nil, nil
@@ -94,73 +98,19 @@ func cursorStoredSessions(ctx context.Context, q StoredSessionQuery) ([]StoredSe
 		return nil, err
 	}
 
-	sessions := make([]StoredSession, 0, len(entries))
-	for _, entry := range entries {
-		session, ok := readCursorSession(ctx, entry)
-		if !ok {
-			continue
-		}
-		sessions = append(sessions, session)
-	}
-	return sortAndCapSessions(sessions, limit), nil
-}
-
-// cursorSessionCandidates lists the session directories under `dir`, newest
-// first, timed by each session's `store.db`.
-//
-// It does NOT use `newestEntries`, and the difference is the whole point: that
-// helper times an entry by the entry's own mtime, which for Cursor is the
-// session DIRECTORY. Reading a session opens its database, and a read-only open
-// of a WAL database still creates the `-shm` sidecar inside that directory --
-// which updates the directory's mtime to the moment LeapMux listed it.
-// `TestOpenReadOnly_CreatesShmButLeavesTheDatabaseFile` pins that behaviour.
-//
-// So the directory time reports LeapMux's own footprint, not Cursor's writing:
-// every session collapses to one timestamp, the list loses its order, and every
-// row reads "0s ago". `store.db` is the file Cursor writes and the read-only
-// open leaves alone, so it is the only honest signal here. Its `-wal` is not
-// usable either -- the same open creates that file when it is absent.
-func cursorSessionCandidates(dir string, limit int) ([]storeEntry, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, errSessionStoreAbsent
-		}
-		return nil, fmt.Errorf("read cursor chats directory: %w", err)
-	}
-	found := make([]storeEntry, 0, min(len(entries), storedSessionScanCap))
-	for _, entry := range entries {
-		if len(found) >= storedSessionScanCap {
-			break
-		}
-		if !entry.IsDir() {
-			continue
-		}
-		sessionDir := filepath.Join(dir, entry.Name())
-		// A stat, not an open: this runs for every session in the directory and
-		// only orders them. The databases are opened after the cut.
-		info, err := os.Stat(filepath.Join(sessionDir, cursorStoreFileName))
-		if err != nil {
-			continue
-		}
-		found = append(found, storeEntry{Path: sessionDir, Name: entry.Name(), ModTime: info.ModTime()})
-	}
-	sort.SliceStable(found, func(i, j int) bool {
-		if !found[i].ModTime.Equal(found[j].ModTime) {
-			return found[i].ModTime.After(found[j].ModTime)
-		}
-		return found[i].Name < found[j].Name
+	// This reader opens one database per candidate, which is why the shared
+	// collector checks the context between candidates and not only inside a
+	// query.
+	sessions := collectStoredSessions(ctx, entries, limit, func(entry storeEntry) (StoredSession, bool) {
+		return readCursorSession(ctx, entry)
 	})
-	if limit > 0 && len(found) > limit {
-		found = found[:limit]
-	}
-	return found, nil
+	return SortAndCapSessions(sessions, limit), nil
 }
 
 // readCursorSession opens one session's database and reads its metadata row.
 func readCursorSession(ctx context.Context, entry storeEntry) (StoredSession, bool) {
 	storePath := filepath.Join(entry.Path, cursorStoreFileName)
-	db, err := openSessionStoreDB(storePath)
+	db, err := openSessionStoreDB(ctx, storePath)
 	if err != nil {
 		return StoredSession{}, false
 	}
@@ -216,13 +166,21 @@ func decodeCursorMeta(raw string) (cursorSessionMeta, bool) {
 // cursorSessionTime is a Cursor session's last activity.
 //
 // Cursor's metadata records only a creation time, so the answer is `store.db`'s
-// modification time, which `cursorSessionCandidates` already took. That comment
-// states why neither the session directory nor the `-wal` can supply it.
+// modification time, which `namedFileInside(cursorStoreFileName)` already took.
+// That helper's comment states why neither the session directory nor the `-wal`
+// can supply it.
 //
 // The cost of using `store.db` alone is real and accepted: SQLite moves the
 // main file when it checkpoints, so a session written to seconds ago and not
 // yet checkpointed reads slightly old. A time that lags is a smaller defect
 // than a time LeapMux overwrites with the moment it looked.
+//
+// The zero-time branch is DEFENSIVE, not a path a supported filesystem takes:
+// the walk keeps a candidate only when its `store.db` stat succeeded, and a
+// successful stat cannot report a modification time of January 1 of year 1. It
+// stays because the metadata's creation time is the only other answer the store
+// holds, and a future selector that leaves the time unset must not sort every
+// session to the end.
 func cursorSessionTime(entry storeEntry, meta cursorSessionMeta) time.Time {
 	if !entry.ModTime.IsZero() {
 		return entry.ModTime

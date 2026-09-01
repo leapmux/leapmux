@@ -1,6 +1,6 @@
 /**
  * The visible label of the resume field, reused as the accessible name of
- * whichever control the field is showing.
+ * whichever control the field shows.
  *
  * ONE name for both controls. `ResumeSessionField` swaps between `SessionSelect`
  * and `SessionIdInput` when the session list arrives, and a screen-reader user

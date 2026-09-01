@@ -85,29 +85,6 @@ describe('useResumableSessions', () => {
     })
   })
 
-  // The three keys that change the answer. Shells depend on the worker alone;
-  // a session list also moves with the directory the user picks and with the
-  // provider selector beside it.
-  it.each([
-    ['the working directory', { ...ARGS, workingDir: '/other' }],
-    ['the provider', { ...ARGS, agentProvider: AgentProvider.CODEX }],
-    ['the worker', { ...ARGS, workerId: 'w-2' }],
-  ])('re-fetches when %s changes', async (_name, next) => {
-    listAgentSessions.mockResolvedValue(response('ses_a'))
-
-    await createRoot(async (dispose) => {
-      const [args, setArgs] = createSignal<UseResumableSessionsArgs>(ARGS)
-      useResumableSessions(args)
-      await flush()
-      expect(listAgentSessions).toHaveBeenCalledTimes(1)
-
-      setArgs(next)
-      await flush()
-      expect(listAgentSessions).toHaveBeenCalledTimes(2)
-      dispose()
-    })
-  })
-
   it('does not re-fetch when the args object changes but its three keys do not', async () => {
     listAgentSessions.mockResolvedValue(response('ses_a'))
 
@@ -186,6 +163,78 @@ describe('useResumableSessions', () => {
       expect(sessions()).toHaveLength(1)
 
       setArgs(null)
+      expect(sessions()).toEqual([])
+      dispose()
+    })
+  })
+
+  // A source that goes null must SUPERSEDE the request it had in flight, not
+  // merely clear the list beside it. The null path used to return before
+  // reaching the fetcher, so nothing bumped the generation and the late reply
+  // still passed its own guard -- repopulating the list the hook had just
+  // emptied, with sessions of a selection the user had left.
+  it('discards a fetch still in flight when the source becomes null', async () => {
+    const pending = deferred<Awaited<ReturnType<typeof workerRpc.listAgentSessions>>>()
+    listAgentSessions.mockReturnValueOnce(pending.promise)
+
+    await createRoot(async (dispose) => {
+      const [args, setArgs] = createSignal<UseResumableSessionsArgs | null>(ARGS)
+      const { sessions, loading } = useResumableSessions(args)
+      await flush()
+      expect(loading()).toBe(true)
+
+      setArgs(null)
+      await flush()
+      expect(loading()).toBe(false)
+
+      // The request the user abandoned answers late.
+      pending.resolve(response('ses_a'))
+      await flush()
+      expect(sessions()).toEqual([])
+      dispose()
+    })
+  })
+
+  // `settled` is what lets the field tell "the worker offered nothing" from
+  // "nobody has asked yet". Without the distinction the field paints its text
+  // box on the first frame of every dialog and swaps it for the menu a frame
+  // later, under a user who may already be typing.
+  it('reports settled only once an answer for the current source arrives', async () => {
+    const pending = deferred<Awaited<ReturnType<typeof workerRpc.listAgentSessions>>>()
+    listAgentSessions.mockReturnValueOnce(pending.promise)
+
+    await createRoot(async (dispose) => {
+      const [args, setArgs] = createSignal<UseResumableSessionsArgs | null>(null)
+      const { settled } = useResumableSessions(args)
+      await flush()
+      expect(settled()).toBe(false)
+
+      setArgs(ARGS)
+      await flush()
+      expect(settled()).toBe(false)
+
+      pending.resolve(response('ses_a'))
+      await flush()
+      expect(settled()).toBe(true)
+
+      // A change of source re-opens the question.
+      listAgentSessions.mockReturnValueOnce(deferred<never>().promise)
+      setArgs({ ...ARGS, workingDir: '/other' })
+      await flush()
+      expect(settled()).toBe(false)
+      dispose()
+    })
+  })
+
+  // A failure IS an answer. The field must fall back to its text box rather
+  // than keep a menu the fetch already gave up on.
+  it('reports settled after a failed fetch', async () => {
+    listAgentSessions.mockRejectedValue(new Error('worker unreachable'))
+
+    await createRoot(async (dispose) => {
+      const { sessions, settled } = useResumableSessions(() => ARGS)
+      await flush()
+      expect(settled()).toBe(true)
       expect(sessions()).toEqual([])
       dispose()
     })

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -102,8 +103,17 @@ func (s *FileTabPathStore) Register(ctx context.Context, p RegisterFileTabPathPa
 // readable as a git repository" degraded close this column exists to eliminate.
 // Three writers of the same fact have to agree on what it means, and sharing the
 // function is what makes them agree rather than a comment asking them to.
+//
+// The home directory comes from the process rather than from a Service field,
+// because a FileTabPathStore holds no Service. That is the same home expandTilde
+// resolved before this normalizer took an explicit one, so a `~/proj` still
+// expands exactly as it did.
 func resolveFileTabWorkingDir(workingDir, filePath string) (string, error) {
-	return normalizeWorkingDir(workingDir, filepath.Dir(filePath))
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = ""
+	}
+	return normalizeWorkingDir(workingDir, filepath.Dir(filePath), home)
 }
 
 // linkFileTabToWorktree associates a file tab with the worktree the directory it

@@ -2,10 +2,10 @@ package agent
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"path/filepath"
 	"strings"
+
+	"github.com/leapmux/leapmux/internal/util/pathutil"
 )
 
 // Codex writes one JSONL rollout per session under
@@ -20,8 +20,8 @@ import (
 // replaces thousands of file reads.
 //
 // There is deliberately no JSONL fallback. A machine with rollouts but no index
-// is running a Codex older than the index, and reading its files would offer
-// resume handles to a CLI whose `codex resume` predates them.
+// runs a Codex older than the index, and reading its files would offer resume
+// handles to a CLI whose `codex resume` predates them.
 
 // codexSessionsSQL selects the resumable threads of one working directory.
 //
@@ -40,14 +40,7 @@ LIMIT ?`
 
 // codexHome resolves `$CODEX_HOME`, default `~/.codex`.
 func codexHome(q StoredSessionQuery) string {
-	if dir := strings.TrimSpace(q.env("CODEX_HOME")); dir != "" {
-		return expandHome(dir, q.home())
-	}
-	home := q.home()
-	if home == "" {
-		return ""
-	}
-	return filepath.Join(home, ".codex")
+	return homeDirFromEnv(q, "CODEX_HOME", ".codex")
 }
 
 // codexStateDBPath resolves Codex's session index.
@@ -57,7 +50,7 @@ func codexHome(q StoredSessionQuery) string {
 func codexStateDBPath(q StoredSessionQuery) string {
 	dir := strings.TrimSpace(q.env("CODEX_SQLITE_HOME"))
 	if dir != "" {
-		dir = expandHome(dir, q.home())
+		dir = pathutil.ExpandHome(dir, q.home())
 	} else {
 		dir = codexHome(q)
 	}
@@ -69,43 +62,5 @@ func codexStateDBPath(q StoredSessionQuery) string {
 
 // codexStoredSessions is Codex's Provider.ListStoredSessions.
 func codexStoredSessions(ctx context.Context, q StoredSessionQuery) ([]StoredSession, error) {
-	if strings.TrimSpace(q.WorkingDir) == "" {
-		return nil, nil
-	}
-	db, err := openSessionStoreDB(codexStateDBPath(q))
-	if err != nil {
-		if errors.Is(err, errSessionStoreAbsent) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	defer func() { _ = db.Close() }()
-
-	limit := q.limit()
-	rows, err := db.QueryContext(ctx, codexSessionsSQL, filepath.Clean(q.WorkingDir), limit)
-	if err != nil {
-		return nil, fmt.Errorf("query codex session index: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	sessions := make([]StoredSession, 0, limit)
-	for rows.Next() {
-		var (
-			id      string
-			title   string
-			updated int64
-		)
-		if err := rows.Scan(&id, &title, &updated); err != nil {
-			continue
-		}
-		sessions = append(sessions, StoredSession{
-			Handle:    strings.TrimSpace(id),
-			Title:     trimTitle(title),
-			UpdatedAt: epochMillis(updated),
-		})
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("scan codex session index: %w", err)
-	}
-	return sortAndCapSessions(sessions, limit), nil
+	return queryStoredSessions(ctx, codexStateDBPath(q), codexSessionsSQL, q, scanEpochMillisSession)
 }

@@ -2,11 +2,7 @@ package agent
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"path/filepath"
-	"strings"
-	"time"
 )
 
 // OpenCode keeps its sessions in one SQLite database, in a `session` table
@@ -29,7 +25,8 @@ import (
 // order of magnitude in a live store (1524 to 138 in the ZCode database this
 // was written against), so a picker without the filter shows almost nothing a
 // user recognises. `time_archived IS NULL` drops what the user already put
-// away. `directory` is matched exactly; see openCodeFamilySessions.
+// away. `directory` is matched exactly; see queryStoredSessions, which states
+// why the comparison stays in SQL.
 //
 // NULLIF around each timestamp, not COALESCE alone: COALESCE skips a NULL and
 // keeps a stored 0, and a 0 here means the same thing a NULL does -- no
@@ -48,66 +45,8 @@ LIMIT ?`
 
 // openCodeFamilySessions reads the sessions one OpenCode-schema database holds
 // for the query's working directory.
-//
-// The directory is compared in SQL rather than in Go so the scan stays in
-// SQLite: these tables carry no index on `directory` and hold thousands of
-// rows. The bound value is `filepath.Clean`ed because that is the form the
-// worker holds, and the store holds the CLI's own `process.cwd()`, which is
-// already clean -- so the two agree without a per-row normalization that would
-// force the scan into Go.
 func openCodeFamilySessions(ctx context.Context, dbPath string, q StoredSessionQuery) ([]StoredSession, error) {
-	if strings.TrimSpace(q.WorkingDir) == "" {
-		return nil, nil
-	}
-	db, err := openSessionStoreDB(dbPath)
-	if err != nil {
-		if errors.Is(err, errSessionStoreAbsent) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	defer func() { _ = db.Close() }()
-
-	limit := q.limit()
-	rows, err := db.QueryContext(ctx, openCodeFamilySessionsSQL, filepath.Clean(q.WorkingDir), limit)
-	if err != nil {
-		return nil, fmt.Errorf("query session store: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	sessions := make([]StoredSession, 0, limit)
-	for rows.Next() {
-		var (
-			id      string
-			title   string
-			updated int64
-		)
-		if err := rows.Scan(&id, &title, &updated); err != nil {
-			// One unreadable row must not lose the rest: a column whose type
-			// changed in a newer CLI is exactly the drift this reader has to
-			// survive without failing the dialog.
-			continue
-		}
-		sessions = append(sessions, StoredSession{
-			Handle:    strings.TrimSpace(id),
-			Title:     trimTitle(title),
-			UpdatedAt: epochMillis(updated),
-		})
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("scan session store: %w", err)
-	}
-	return sortAndCapSessions(sessions, limit), nil
-}
-
-// epochMillis converts one of these stores' millisecond timestamps to a time.
-// Zero and negative values mean "the store said nothing", which the zero time
-// carries and sortAndCapSessions orders last.
-func epochMillis(ms int64) time.Time {
-	if ms <= 0 {
-		return time.Time{}
-	}
-	return time.UnixMilli(ms).UTC()
+	return queryStoredSessions(ctx, dbPath, openCodeFamilySessionsSQL, q, scanEpochMillisSession)
 }
 
 // opencodeDataDir is where OpenCode keeps its data, following the `xdg-basedir`
@@ -127,21 +66,15 @@ func opencodeDataDir(q StoredSessionQuery) string {
 // OPENCODE_DB takes either an absolute path or a bare file name relative to the
 // data directory, which is how the CLI itself reads it.
 //
-// A non-stable install names the file `opencode-<channel>.db`, and this reader
-// does not find that: nothing in the launch path tells the worker which channel
-// the installed CLI is, and probing every name that matches the pattern would
-// pick a store the running CLI does not use. An operator on such a channel
-// points OPENCODE_DB at the file.
+// A non-stable install gives the file the name `opencode-<channel>.db`, and
+// this reader does not find that: nothing in the launch path tells the worker
+// which channel the installed CLI is, and probing every name that matches the
+// pattern would pick a store the running CLI does not use. An operator on such
+// a channel points OPENCODE_DB at the file.
 func opencodeDBPath(q StoredSessionQuery) string {
 	dir := opencodeDataDir(q)
-	if override := strings.TrimSpace(q.env("OPENCODE_DB")); override != "" {
-		if filepath.IsAbs(override) {
-			return override
-		}
-		if dir == "" {
-			return ""
-		}
-		return filepath.Join(dir, override)
+	if path, ok := storeOverridePath(q, "OPENCODE_DB", dir); ok {
+		return path
 	}
 	if dir == "" {
 		return ""

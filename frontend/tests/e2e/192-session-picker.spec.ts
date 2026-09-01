@@ -19,6 +19,7 @@ import {
 
 const SESSION_MENU = 'session-select-menu'
 const NEW_SESSION_ROW = 'Start a new session'
+const TYPE_A_HANDLE_ROW = 'Enter a session ID…'
 
 /**
  * The resume field's session picker, end to end.
@@ -77,6 +78,13 @@ test.describe('Session picker in the New Agent dialog', () => {
     await waitForWorker(page)
     const firstDialog = page.getByRole('dialog')
     await setWorkingDir(page, subjectDir)
+    // Wait for the ANSWER before asserting the absence. The field shows a
+    // disabled menu until a fetch for the current directory settles, and the
+    // refresh button is enabled only when no fetch is in flight -- so this is
+    // the field's own "the worker has replied" signal. Without it both
+    // assertions below could pass against a request that had not returned yet,
+    // and the exclusion this test exists to prove would go unchecked.
+    await expect(firstDialog.getByTestId('session-field-refresh')).toBeEnabled()
     await expect(firstDialog.getByPlaceholder(/^Session ID/)).toBeVisible()
     await expect(firstDialog.getByTestId(`${SESSION_MENU}-trigger`)).toHaveCount(0)
     await firstDialog.getByRole('button', { name: 'Cancel' }).click()
@@ -93,12 +101,13 @@ test.describe('Session picker in the New Agent dialog', () => {
     await expect(trigger).toBeEnabled()
     await openMenu(dialog, SESSION_MENU)
 
-    // Exactly one resumable session plus the row that withdraws a pick. The
-    // Keeper's session is still open AND in another directory, so it is absent
-    // on both counts.
+    // Exactly one resumable session, between the row that withdraws a pick and
+    // the row that hands the field back to its text box. The Keeper's session
+    // is still open AND in another directory, so it is absent on both counts.
     const options = dialog.getByTestId(SESSION_MENU).getByRole('menuitemradio')
-    await expect(options).toHaveCount(2)
+    await expect(options).toHaveCount(3)
     await expect(options.first()).toHaveText(NEW_SESSION_ROW)
+    await expect(options.last()).toHaveText(TYPE_A_HANDLE_ROW)
 
     const sessionRow = options.nth(1)
     const sessionLabel = (await sessionRow.textContent())?.trim() ?? ''

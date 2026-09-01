@@ -88,7 +88,7 @@ func seedForeignStore(t *testing.T) string {
 func TestOpenReadOnly_ReadsRowsStillInTheWAL(t *testing.T) {
 	path := seedForeignStore(t)
 
-	db, err := OpenReadOnly(path)
+	db, err := OpenReadOnly(t.Context(), path)
 	require.NoError(t, err)
 	defer func() { _ = db.Close() }()
 
@@ -111,7 +111,7 @@ func TestOpenReadOnly_LeavesTheStoreAlone(t *testing.T) {
 	before, err := os.Stat(path)
 	require.NoError(t, err)
 
-	db, err := OpenReadOnly(path)
+	db, err := OpenReadOnly(t.Context(), path)
 	require.NoError(t, err)
 	defer func() { _ = db.Close() }()
 
@@ -128,7 +128,7 @@ func TestOpenReadOnly_LeavesTheStoreAlone(t *testing.T) {
 func TestOpenReadOnly_RefusesToWrite(t *testing.T) {
 	path := seedForeignStore(t)
 
-	db, err := OpenReadOnly(path)
+	db, err := OpenReadOnly(t.Context(), path)
 	require.NoError(t, err)
 	defer func() { _ = db.Close() }()
 
@@ -142,7 +142,7 @@ func TestOpenReadOnly_RefusesToWrite(t *testing.T) {
 }
 
 func TestOpenReadOnly_MissingFileFails(t *testing.T) {
-	_, err := OpenReadOnly(t.TempDir() + "/absent.db")
+	_, err := OpenReadOnly(t.Context(), t.TempDir()+"/absent.db")
 	assert.Error(t, err, "mode=ro must not create the file the way Open does")
 }
 
@@ -234,7 +234,7 @@ func TestOpenReadOnly_CreatesShmButLeavesTheDatabaseFile(t *testing.T) {
 	require.NoError(t, os.Chtimes(path, old, old))
 	require.NoError(t, os.Chtimes(dir, old, old))
 
-	db, err := OpenReadOnly(path)
+	db, err := OpenReadOnly(t.Context(), path)
 	require.NoError(t, err)
 	var value string
 	require.NoError(t, db.QueryRow(`SELECT value FROM meta WHERE key = '0'`).Scan(&value))

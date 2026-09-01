@@ -91,6 +91,54 @@ func TestGooseStoredSessions_KeepsACPSessions(t *testing.T) {
 	assert.Equal(t, []string{"acp_only"}, handlesOf(got))
 }
 
+// SQLite has no timestamp type, so these columns hold whichever shape the
+// writer used, and gooseTimestampLayouts lists four that coexist. A TEXT
+// comparison sorts them by their bytes -- `' '` below `'T'` -- so a `T`-form row
+// of a day outranked every space-form row of the same day and the LIMIT
+// discarded the row that is actually newest. The ordering runs through
+// `julianday`, which reads all four shapes.
+func TestGooseStoredSessions_OrdersByInstantNotByText(t *testing.T) {
+	t.Parallel()
+	dir := "/Users/dev/project"
+	home := t.TempDir()
+	seedGooseDB(t, filepath.Join(home, ".local", "share", "goose", "sessions", "sessions.db"), []gooseSessionRow{
+		// The newest instant, in the shape CURRENT_TIMESTAMP writes.
+		{id: "late", name: "Late", kind: "acp", workingDir: dir, createdAt: "2026-08-30 23:59:00", updatedAt: "2026-08-30 23:59:00"},
+		// Two much earlier instants, in the shapes a driver writes. Both sort
+		// ABOVE the row above under a text comparison.
+		{id: "tform_a", name: "T form A", kind: "acp", workingDir: dir, createdAt: "2026-08-30 00:02:00", updatedAt: "2026-08-30T00:02:00"},
+		{id: "tform_b", name: "T form B", kind: "acp", workingDir: dir, createdAt: "2026-08-30 00:01:00", updatedAt: "2026-08-30T00:01:00Z"},
+	})
+
+	got, err := gooseStoredSessions(context.Background(), StoredSessionQuery{
+		WorkingDir: dir, HomeDir: home, Getenv: fixtureEnv(nil), Limit: 2,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"late", "tform_a"}, handlesOf(got),
+		"the SQL cut must keep the two newest instants, not the two that sort first as text")
+}
+
+// A value none of the layouts reads is "the store said nothing", which sorts
+// LAST in Go. The SQL cut has to agree, or an unreadable row takes a slot from
+// a real session.
+func TestGooseStoredSessions_AnUnreadableTimeDoesNotTakeASlot(t *testing.T) {
+	t.Parallel()
+	dir := "/Users/dev/project"
+	home := t.TempDir()
+	seedGooseDB(t, filepath.Join(home, ".local", "share", "goose", "sessions", "sessions.db"), []gooseSessionRow{
+		{id: "junk", name: "Unreadable", kind: "acp", workingDir: dir, createdAt: "nonsense", updatedAt: "nonsense"},
+		{id: "real_a", name: "Real A", kind: "acp", workingDir: dir, createdAt: "2026-08-30 10:00:00", updatedAt: "2026-08-30 12:00:00"},
+		{id: "real_b", name: "Real B", kind: "acp", workingDir: dir, createdAt: "2026-08-30 09:00:00", updatedAt: "2026-08-30 11:00:00"},
+	})
+
+	got, err := gooseStoredSessions(context.Background(), StoredSessionQuery{
+		WorkingDir: dir, HomeDir: home, Getenv: fixtureEnv(nil), Limit: 2,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"real_a", "real_b"}, handlesOf(got),
+		"a row whose time cannot be read sorts last in SQL as it does in Go")
+}
+
 func TestGooseStoredSessions_AbsentStoreIsEmpty(t *testing.T) {
 	t.Parallel()
 	got, err := gooseStoredSessions(context.Background(), StoredSessionQuery{

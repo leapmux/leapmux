@@ -1,9 +1,10 @@
 import type { Accessor } from 'solid-js'
 import type { AgentProvider, AgentSessionSummary } from '~/generated/proto/leapmux/v1/agent_pb'
-import { createEffect, createMemo, createSignal, on, untrack } from 'solid-js'
+import { batch, createEffect, createMemo, createSignal, on, untrack } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { createGuardedFetch } from '~/hooks/createGuardedFetch'
 import { createLogger } from '~/lib/logger'
+import { shallowEqual } from '~/lib/shallowEqual'
 
 const log = createLogger('useResumableSessions')
 
@@ -16,6 +17,16 @@ export interface UseResumableSessionsArgs {
 export interface UseResumableSessionsResult {
   sessions: Accessor<AgentSessionSummary[]>
   loading: Accessor<boolean>
+  /**
+   * Whether a fetch for the CURRENT source has finished, whatever it returned.
+   *
+   * The field needs this to tell "the worker offered nothing" from "nobody has
+   * asked yet". Those two states look identical through `sessions()` alone, and
+   * a field that reads them as one swaps its control twice on every dialog
+   * open: the text input paints first, because the effect has not run and
+   * `loading()` is still false, and the menu replaces it a frame later.
+   */
+  settled: Accessor<boolean>
   /**
    * Re-run the fetch for the current source.
    *
@@ -52,6 +63,7 @@ export function useResumableSessions(
   source: Accessor<UseResumableSessionsArgs | null>,
 ): UseResumableSessionsResult {
   const [sessions, setSessions] = createSignal<AgentSessionSummary[]>([])
+  const [settled, setSettled] = createSignal(false)
 
   const fetcher = createGuardedFetch<UseResumableSessionsArgs, Awaited<ReturnType<typeof workerRpc.listAgentSessions>>>({
     fetch: (args, signal) => workerRpc.listAgentSessions(args.workerId, {
@@ -59,54 +71,67 @@ export function useResumableSessions(
       workingDir: args.workingDir,
       agentProvider: args.agentProvider,
     }, { signal }),
-    applySuccess: resp => setSessions(resp.sessions),
+    applySuccess: (resp) => {
+      batch(() => {
+        setSessions(resp.sessions)
+        setSettled(true)
+      })
+    },
     onError: (err) => {
       // Warn, not error: the worker answers this from another program's files,
       // so a failure here is a missing capability, not a broken dialog. The
       // field degrades to its text input and the user can still resume.
       log.warn('Failed to list resumable sessions', err)
-      setSessions([])
+      batch(() => {
+        setSessions([])
+        // A failure IS an answer for this source. Without it the field would
+        // keep showing the menu for a fetch that already gave up, and the
+        // refresh button -- the only way back -- sits beside a control the user
+        // cannot type into.
+        setSettled(true)
+      })
     },
   })
 
-  // The three keys are joined into one scalar so identity churn upstream -- a
-  // caller that builds a fresh args object every tick -- does not re-fire the
-  // effect when none of the three actually changed.
+  // A MEMO over the source itself, compared STRUCTURALLY. `on(deps, fn)`
+  // re-runs `fn` whenever a signal read inside `deps` updates; it does not
+  // compare what `deps` returned. A dialog's inline closure re-reads other
+  // signals, so a bare accessor here re-fired the effect -- and therefore the
+  // RPC -- on every unrelated tick. A memo with `equals` compares, so the
+  // effect sees only a real change of worker, directory or provider.
   //
-  // A MEMO, not a plain accessor. `on(deps, fn)` re-runs `fn` whenever a signal
-  // read inside `deps` updates; it does not compare what `deps` returned. A
-  // dialog's inline closure re-reads other signals, so a bare accessor here
-  // re-fired the effect -- and therefore the RPC -- on every unrelated tick.
-  // A memo does compare, so the effect sees only a real change.
+  // The memo yields the ARGS, not a string key. Encoding the three fields and
+  // then reading `source` again through `untrack` to recover them made `''` a
+  // second spelling of `null`, and that spelling is what let the effect return
+  // early on the null path without telling the fetcher -- leaving an in-flight
+  // request for the PREVIOUS directory alive to repopulate the list it had just
+  // cleared. `shallowEqual` answers true for two nulls and false across a
+  // null/object boundary, so the transition still fires exactly once.
   //
-  // JSON, not a delimiter: a working directory can contain any character a
-  // separator might use, so `a` + `b c` and `a b` + `c` would produce one key
-  // and the effect would miss a real change of directory.
-  const sourceKey = createMemo((): string => {
-    const args = source()
-    if (args === null)
-      return ''
-    return JSON.stringify([args.workerId, args.workingDir, args.agentProvider])
-  })
+  // Seeded with `null`, not `undefined`: an `undefined` seed makes the first
+  // comparison against a null source answer true, and the effect would never
+  // run for a dialog that opens with nothing selected.
+  const args = createMemo<UseResumableSessionsArgs | null>(source, null, { equals: shallowEqual })
 
-  createEffect(on(sourceKey, (key) => {
+  createEffect(on(args, (current) => {
     // Clear FIRST, unconditionally: even when the next fetch never starts,
     // the list on screen must not keep describing the previous selection.
-    setSessions([])
-    if (key === '')
-      return
-    const args = untrack(source)
-    if (args === null)
-      return
-    void fetcher.run(args)
+    batch(() => {
+      setSessions([])
+      setSettled(false)
+    })
+    // `null` reaches the fetcher too. It aborts whatever is in flight, bumps
+    // the generation so a late reply is discarded, and clears the loading flag
+    // -- none of which happens if the effect just returns here.
+    void fetcher.run(current)
   }))
 
   const refresh = async (): Promise<void> => {
-    const args = untrack(source)
-    if (args === null)
+    const current = untrack(args)
+    if (current === null)
       return
-    await fetcher.run(args)
+    await fetcher.run(current)
   }
 
-  return { sessions, loading: fetcher.loading, refresh }
+  return { sessions, loading: fetcher.loading, settled, refresh }
 }

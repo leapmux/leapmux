@@ -5,6 +5,24 @@ export function formatLocalDateTime(date: Date): string {
 }
 
 /**
+ * The unit ladder `formatCompactAge` walks, smallest first.
+ *
+ * Each unit's threshold IS its divisor, which is what makes an unreachable
+ * interval impossible. A ladder whose steps test one quantity and print another
+ * leaves a gap: a 30-day month tested against a 365-day year sent every age
+ * from 360 to 364 days past `mo` and out of `y` as `0y`, so a session eleven
+ * and a half months old read as "just now".
+ */
+const AGE_UNITS = [
+  { seconds: 1, suffix: 's' },
+  { seconds: 60, suffix: 'm' },
+  { seconds: 60 * 60, suffix: 'h' },
+  { seconds: 24 * 60 * 60, suffix: 'd' },
+  { seconds: 30 * 24 * 60 * 60, suffix: 'mo' },
+  { seconds: 365 * 24 * 60 * 60, suffix: 'y' },
+] as const
+
+/**
  * Format how long ago an instant was, compactly: `3s`, `12m`, `2h`, `5d`,
  * `3mo`, `2y`.
  *
@@ -14,7 +32,9 @@ export function formatLocalDateTime(date: Date): string {
  * is a plain STRING and its filter runs a substring match over that string, so
  * a menu row has to have the text itself.
  *
- * `now` is a parameter so a caller can state the instant it is comparing
+ * It TRUNCATES, so an age never reads ahead of itself: 47 hours is `1d`.
+ *
+ * `now` is a parameter so a caller can state the instant that it compares
  * against, and so a test needs no fake timer.
  */
 export function formatCompactAge(ts: Date, now: Date = new Date()): string {
@@ -22,20 +42,13 @@ export function formatCompactAge(ts: Date, now: Date = new Date()): string {
   // is a moment ahead of this machine, must read as "just now" rather than as a
   // negative age.
   const diffSec = Math.max(0, Math.floor((now.getTime() - ts.getTime()) / 1000))
-  if (diffSec < 60)
-    return `${diffSec}s`
-  const diffMin = Math.floor(diffSec / 60)
-  if (diffMin < 60)
-    return `${diffMin}m`
-  const diffHr = Math.floor(diffMin / 60)
-  if (diffHr < 24)
-    return `${diffHr}h`
-  const diffDay = Math.floor(diffHr / 24)
-  if (diffDay < 30)
-    return `${diffDay}d`
-  const diffMo = Math.floor(diffDay / 30)
-  if (diffMo < 12)
-    return `${diffMo}mo`
-  const diffYr = Math.floor(diffDay / 365)
-  return `${diffYr}y`
+  // Largest unit first, so the first unit the age reaches is the one printed.
+  // Index 0 is the fallback rather than a step, so an age below one minute
+  // still prints seconds — including `0s`.
+  for (let i = AGE_UNITS.length - 1; i > 0; i--) {
+    const unit = AGE_UNITS[i]
+    if (diffSec >= unit.seconds)
+      return `${Math.floor(diffSec / unit.seconds)}${unit.suffix}`
+  }
+  return `${diffSec}s`
 }

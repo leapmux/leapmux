@@ -7,10 +7,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/leapmux/leapmux/internal/util/pathutil"
 )
 
-// Pi writes one JSONL transcript per session, in a directory named after the
-// working directory:
+// Pi writes one JSONL transcript per session, in a directory whose name derives
+// from the working directory:
 // `<agent dir>/sessions/--<mangled cwd>--/<timestamp>_<id>.jsonl`.
 //
 // Pi stores NO title. Its own picker shows the first user message, and so does
@@ -28,11 +30,11 @@ const (
 // session directories.
 func piSessionsRoot(q StoredSessionQuery) string {
 	if dir := strings.TrimSpace(q.env(piSessionDirEnv)); dir != "" {
-		return expandHome(dir, q.home())
+		return pathutil.ExpandHome(dir, q.home())
 	}
 	agentDir := strings.TrimSpace(q.env(piAgentDirEnv))
 	if agentDir != "" {
-		agentDir = expandHome(agentDir, q.home())
+		agentDir = pathutil.ExpandHome(agentDir, q.home())
 	} else {
 		home := q.home()
 		if home == "" {
@@ -89,7 +91,7 @@ type piMessageRecord struct {
 }
 
 // piStoredSessions is Pi's Provider.ListStoredSessions.
-func piStoredSessions(_ context.Context, q StoredSessionQuery) ([]StoredSession, error) {
+func piStoredSessions(ctx context.Context, q StoredSessionQuery) ([]StoredSession, error) {
 	workingDir := strings.TrimSpace(q.WorkingDir)
 	if workingDir == "" {
 		return nil, nil
@@ -101,7 +103,10 @@ func piStoredSessions(_ context.Context, q StoredSessionQuery) ([]StoredSession,
 	dir := filepath.Join(root, manglePiPath(filepath.Clean(workingDir)))
 
 	limit := q.limit()
-	entries, err := newestEntries(dir, limit, isPiTranscript)
+	// Capped at `limit`: unlike Claude, the directory name is an EXACT function
+	// of the working directory, so every candidate here already belongs to it
+	// and the newest few are the answer.
+	entries, err := newestEntries(dir, limit, entryItself(isPiTranscript))
 	if err != nil {
 		if errors.Is(err, errSessionStoreAbsent) {
 			return nil, nil
@@ -109,15 +114,10 @@ func piStoredSessions(_ context.Context, q StoredSessionQuery) ([]StoredSession,
 		return nil, err
 	}
 
-	sessions := make([]StoredSession, 0, len(entries))
-	for _, entry := range entries {
-		session, ok := readPiSession(entry, workingDir)
-		if !ok {
-			continue
-		}
-		sessions = append(sessions, session)
-	}
-	return sortAndCapSessions(sessions, limit), nil
+	sessions := collectStoredSessions(ctx, entries, limit, func(entry storeEntry) (StoredSession, bool) {
+		return readPiSession(entry, workingDir)
+	})
+	return SortAndCapSessions(sessions, limit), nil
 }
 
 // isPiTranscript accepts the transcript FILES of a session directory.
@@ -131,7 +131,7 @@ func isPiTranscript(entry os.DirEntry) bool {
 
 // readPiSession derives one session from its transcript.
 func readPiSession(entry storeEntry, workingDir string) (StoredSession, bool) {
-	head, err := jsonlHead(entry.Path, jsonlProbeBytes)
+	head, _, err := jsonlHead(entry.Path, jsonlProbeBytes)
 	if err != nil || len(head) == 0 {
 		return StoredSession{}, false
 	}
@@ -173,7 +173,7 @@ func readPiSession(entry storeEntry, workingDir string) (StoredSession, bool) {
 		// The block shapes are the same as Claude's, so the same extractor
 		// reads them: a plain string, or typed blocks of which only `text`
 		// says anything about the session.
-		if text := claudeMessageText(rec.Message.Content); text != "" {
+		if text := contentBlockText(rec.Message.Content); text != "" {
 			title = text
 			break
 		}

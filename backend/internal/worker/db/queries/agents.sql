@@ -41,7 +41,7 @@ SELECT id FROM agents;
 -- that distinguishes "this close retired a live agent" from "the row was
 -- already closed". closeTabCommon needs that to decide whether a
 -- WORKTREE_ACTION_REMOVE is a user-confirmed delete or a stale client asking
--- to force-remove a directory nobody is looking at.
+-- to force-remove a directory that nobody looks at.
 UPDATE agents SET closed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE id = ? AND closed_at IS NULL;
 
@@ -78,7 +78,7 @@ WHERE id = sqlc.arg(id) AND options = sqlc.arg(expected_options);
 
 -- SetAgentOptionGroupsIfUnchanged is the compare-and-swap form of SetAgentOptionGroups: it
 -- overwrites the provider-reported catalog only while the column still equals
--- expected_option_groups -- the snapshot the new catalog is replacing. A running ACP provider
+-- expected_option_groups -- the snapshot that the new catalog replaces. A running ACP provider
 -- that discovers a richer catalog (e.g. a dynamic model list reported only after the
 -- session/new handshake) and persists it via SetAgentOptionGroups on a separate, unsynchronized
 -- path must not be clobbered by a (re)start handoff's narrower catalog: when the column moved on
@@ -126,7 +126,7 @@ RETURNING *;
 -- showing this handoff's options beside a foreign catalog. The options column is a compare-and-swap
 -- on expected_options (the snapshot the blob was merged from); the caller retries on a miss
 -- (the returned options != options). The option_groups column is written ONLY on that SAME
--- successful options CAS (gated on options = expected_options) AND while it still equals
+-- successful options CAS (which requires options = expected_options) AND while it still equals
 -- expected_option_groups, so the two columns move together-or-neither -- a richer catalog a running
 -- provider discovered concurrently (option_groups != expected_option_groups) is preserved, and a
 -- lost options CAS writes nothing (the caller re-merges and retries, keeping both atomic). Pass
@@ -260,14 +260,29 @@ SELECT id FROM agents WHERE closed_at IS NULL AND parent_agent_id IS NULL;
 
 
 -- ListSessionsForResume lists the resume handles this worker recorded for one
--- provider in one working directory, newest activity first.
+-- provider, newest activity first: every row of the requested working
+-- directory, plus every OPEN row of any directory.
 --
 -- It returns OPEN rows as well as closed ones, although only a closed session
--- can be offered for resume: an open handle names a session a live process is
--- already attached to, and the caller needs it as an EXCLUSION set -- the
+-- can be offered for resume: an open handle identifies a session a live process
+-- is already attached to, and the caller needs it as an EXCLUSION set -- the
 -- provider's own store lists that session too, and resuming it into a second
 -- tab would run two processes against one session store. The caller cannot
 -- build that set from a second query without a race between the two reads.
+--
+-- The open rows are NOT restricted to the requested directory, and that is what
+-- makes the exclusion set complete. A handle can be open under one directory
+-- while a provider's store files it under another: the store records the
+-- directory the session was CREATED in, and a user who resumes it elsewhere
+-- leaves an open row that carries the second directory. Restricting both arms
+-- to one directory hid exactly that row, and the store then offered the live
+-- handle back.
+--
+-- No LIMIT, deliberately. A cut ordered by last activity would drop an open
+-- handle that sits behind newer closed rows, which is the same failure by
+-- another route. What limits this read instead is the provider filter, the
+-- (agent_provider, working_dir) index, and the retention sweep that deletes
+-- closed agents.
 --
 -- parent_agent_id IS NULL drops the virtual child rows that hold subagent
 -- transcripts. They carry no session of their own to resume.
@@ -290,7 +305,7 @@ SELECT a.agent_session_id,
        ) AS last_activity
 FROM agents a
 WHERE a.agent_provider = ?
-  AND a.working_dir = ?
+  AND (a.working_dir = ? OR a.closed_at IS NULL)
   AND a.agent_session_id <> ''
   AND a.parent_agent_id IS NULL
 ORDER BY last_activity DESC;

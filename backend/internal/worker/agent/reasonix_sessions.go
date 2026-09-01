@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/leapmux/leapmux/internal/util/pathutil"
 )
 
 // Reasonix writes one JSONL transcript per session and states that session's
@@ -58,7 +60,7 @@ type reasonixACPMeta struct {
 // reasonixHome resolves Reasonix's state root.
 func reasonixHome(q StoredSessionQuery) string {
 	if dir := strings.TrimSpace(q.env("REASONIX_HOME")); dir != "" {
-		return expandHome(dir, q.home())
+		return pathutil.ExpandHome(dir, q.home())
 	}
 	if runtime.GOOS == "windows" {
 		if appData := strings.TrimSpace(q.env("APPDATA")); appData != "" {
@@ -107,7 +109,7 @@ func reasonixSessionRoots(q StoredSessionQuery, workingDir string) []string {
 }
 
 // reasonixStoredSessions is Reasonix's Provider.ListStoredSessions.
-func reasonixStoredSessions(_ context.Context, q StoredSessionQuery) ([]StoredSession, error) {
+func reasonixStoredSessions(ctx context.Context, q StoredSessionQuery) ([]StoredSession, error) {
 	workingDir := strings.TrimSpace(q.WorkingDir)
 	if workingDir == "" {
 		return nil, nil
@@ -124,11 +126,22 @@ func reasonixStoredSessions(_ context.Context, q StoredSessionQuery) ([]StoredSe
 	sessions := make([]StoredSession, 0, limit)
 	var firstErr error
 	for _, root := range roots {
-		// Unlimited walk, then a bounded read: only the sidecar says which
+		// The budget is shared across the roots, and it is checked HERE as well
+		// as inside. The project root is walked first, so once it supplies a
+		// full answer the global root -- which holds every session on the
+		// machine and is walked uncapped -- would otherwise be read and sorted
+		// in full and then discarded on its first candidate.
+		if len(sessions) >= limit {
+			break
+		}
+		if ctx.Err() != nil {
+			break
+		}
+		// Unlimited walk, then a capped read: only the sidecar says which
 		// working directory a session in the GLOBAL root belongs to, so a cut
 		// before reading would drop this directory's sessions in favour of
 		// another's.
-		entries, err := newestEntries(root, 0, isReasonixSessionMeta)
+		entries, err := newestEntries(root, 0, entryItself(isReasonixSessionMeta))
 		if err != nil {
 			if !errors.Is(err, errSessionStoreAbsent) && firstErr == nil {
 				firstErr = err
@@ -153,7 +166,7 @@ func reasonixStoredSessions(_ context.Context, q StoredSessionQuery) ([]StoredSe
 	if len(sessions) == 0 && firstErr != nil {
 		return nil, firstErr
 	}
-	return sortAndCapSessions(sessions, limit), nil
+	return SortAndCapSessions(sessions, limit), nil
 }
 
 // isReasonixSessionMeta accepts the listing sidecars.
@@ -189,9 +202,16 @@ func readReasonixSession(entry storeEntry, workingDir string) (StoredSession, bo
 	cwd := strings.TrimSpace(meta.WorkspaceRoot)
 	var acp reasonixACPMeta
 	acpPath := filepath.Join(filepath.Dir(entry.Path), id+reasonixACPSuffix)
+	// A decode that failed leaves `acp` PARTIALLY populated, because the decoder
+	// writes each field it reads before it reports a type error on a later one.
+	// The whole struct is discarded, so nothing from a document this reader
+	// rejected can reach the title or the time further down.
 	if err := readSidecarFile(acpPath, maxSidecarBytes, func(data []byte) error {
 		return json.Unmarshal(data, &acp)
-	}); err == nil && cwd == "" {
+	}); err != nil {
+		acp = reasonixACPMeta{}
+	}
+	if cwd == "" {
 		cwd = strings.TrimSpace(acp.Cwd)
 	}
 	// A session that states no working directory at all cannot be placed, and
@@ -207,16 +227,11 @@ func readReasonixSession(entry storeEntry, workingDir string) (StoredSession, bo
 	}, true
 }
 
-// reasonixTitle states the title precedence: what the user named it, then the
+// reasonixTitle states the title precedence: the title the user set, then the
 // topic the model derived, then the branch name, then the ACP sidecar's own
 // title, then the stored preview of the first prompt.
 func reasonixTitle(meta reasonixBranchMeta, acp reasonixACPMeta) string {
-	for _, candidate := range []string{meta.CustomTitle, meta.TopicTitle, meta.Name, acp.Title, meta.Preview} {
-		if strings.TrimSpace(candidate) != "" {
-			return candidate
-		}
-	}
-	return ""
+	return firstNonBlank(meta.CustomTitle, meta.TopicTitle, meta.Name, acp.Title, meta.Preview)
 }
 
 // reasonixSessionTime is a Reasonix session's last activity: the sidecars'

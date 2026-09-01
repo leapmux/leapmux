@@ -26,6 +26,23 @@ describe('formatCompactAge', () => {
     expect(formatCompactAge(ago(30 * DAY), now)).toBe('1mo')
     expect(formatCompactAge(ago(359 * DAY), now)).toBe('11mo')
     expect(formatCompactAge(ago(365 * DAY), now)).toBe('1y')
+    expect(formatCompactAge(ago(730 * DAY), now)).toBe('2y')
+  })
+
+  // The interval the month and year steps used to disagree about. A 30-day
+  // month reached 12 at day 360, which failed the `< 12` test, while a 365-day
+  // year still divided to 0 — so five days of ages printed `0y` and a session
+  // eleven and a half months old read as "just now".
+  it('has no interval that falls between two units', () => {
+    expect(formatCompactAge(ago(360 * DAY), now)).toBe('12mo')
+    expect(formatCompactAge(ago(364 * DAY), now)).toBe('12mo')
+    expect(formatCompactAge(ago(729 * DAY), now)).toBe('1y')
+    // Exhaustive over the range where the units hand off, at a one-day step:
+    // no unit may ever print a count of zero except seconds.
+    for (let day = 1; day <= 800; day++) {
+      const formatted = formatCompactAge(ago(day * DAY), now)
+      expect(formatted, `${day} days`).not.toMatch(/^0([mhdy]|mo)$/)
+    }
   })
 
   it('truncates rather than rounding, so an age never reads ahead of itself', () => {

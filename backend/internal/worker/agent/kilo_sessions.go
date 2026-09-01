@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
 )
 
 // Kilo is a fork of OpenCode and ships OpenCode's `session` table unchanged, so
@@ -31,14 +30,8 @@ func kiloDataDir(q StoredSessionQuery) string {
 // that holds both reads the live store.
 func kiloDBPath(q StoredSessionQuery) string {
 	dir := kiloDataDir(q)
-	if override := strings.TrimSpace(q.env("KILO_DB")); override != "" {
-		if filepath.IsAbs(override) {
-			return override
-		}
-		if dir == "" {
-			return ""
-		}
-		return filepath.Join(dir, override)
+	if path, ok := storeOverridePath(q, "KILO_DB", dir); ok {
+		return path
 	}
 	if dir == "" {
 		return ""

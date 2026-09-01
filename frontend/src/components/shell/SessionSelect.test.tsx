@@ -1,7 +1,14 @@
 import type { AgentSessionSummary } from '~/generated/proto/leapmux/v1/agent_pb'
 import { cleanup, fireEvent, render, screen } from '@solidjs/testing-library'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { NEW_SESSION_LABEL, sessionOptionLabel, SessionSelect } from '~/components/shell/SessionSelect'
+import { RESUME_SESSION_ERROR_ID } from '~/components/shell/resumeSession'
+import {
+  NEW_SESSION_LABEL,
+  sessionOptionLabel,
+  SessionSelect,
+  TYPE_A_HANDLE_LABEL,
+  TYPE_A_HANDLE_VALUE,
+} from '~/components/shell/SessionSelect'
 import { menuOptions, menuOptionValues, menuTriggerText, pickMenuValue } from '~/test-support/menu'
 
 afterEach(() => {
@@ -29,6 +36,7 @@ function renderSelect(overrides: Partial<Parameters<typeof SessionSelect>[0]> = 
       onChange={onChange}
       sessions={[summary()]}
       loading={false}
+      invalid={false}
       {...overrides}
     />
   ))
@@ -62,7 +70,35 @@ describe('sessionSelect', () => {
         summary({ sessionId: 'ses_b', title: 'Older', updatedAt: '2026-08-30T12:00:00.000Z' }),
       ],
     })
-    expect(menuOptionValues(MENU)).toEqual(['', 'ses_a', 'ses_b'])
+    expect(menuOptionValues(MENU)).toEqual(['', 'ses_a', 'ses_b', TYPE_A_HANDLE_VALUE])
+  })
+
+  // The list holds only what this worker can enumerate, so a handle from
+  // another machine, one a tab already holds open, and one past the worker's
+  // cap are all missing from it. Without this row a directory with a single
+  // session would take typing away entirely.
+  it('ends with a row that hands the field back to its text box', () => {
+    const { onChange } = renderSelect({ sessions: [summary({ sessionId: 'ses_a' })] })
+    expect(menuOptions(MENU).at(-1)).toBe(TYPE_A_HANDLE_LABEL)
+
+    pickMenuValue(MENU, TYPE_A_HANDLE_VALUE)
+    expect(onChange).toHaveBeenCalledWith(TYPE_A_HANDLE_VALUE)
+  })
+
+  it('marks the trigger invalid and points it at the field error', () => {
+    renderSelect({ invalid: true })
+    const trigger = screen.getByTestId(`${MENU}-trigger`)
+    expect(trigger.getAttribute('aria-invalid')).toBe('true')
+    expect(trigger.getAttribute('aria-describedby')).toBe(RESUME_SESSION_ERROR_ID)
+  })
+
+  // The normal state: a handle the menu offered always validates, so the
+  // trigger must not announce an error that is not there.
+  it('leaves the trigger unmarked when the value is acceptable', () => {
+    renderSelect({ invalid: false })
+    const trigger = screen.getByTestId(`${MENU}-trigger`)
+    expect(trigger.getAttribute('aria-invalid')).toBeNull()
+    expect(trigger.getAttribute('aria-describedby')).toBeNull()
   })
 
   // A real, selectable row and not a prompt: it is how the user takes a pick

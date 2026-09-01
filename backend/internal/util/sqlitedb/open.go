@@ -1,6 +1,7 @@
 package sqlitedb
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log/slog"
@@ -77,7 +78,7 @@ const readOnlyBusyTimeoutMs = 2000
 // Separate from Open because Open MUTATES the file it opens: it chmods the
 // file to 0600 and sets journal_mode(WAL). Applied to a user's own Codex
 // database, the first takes away a permission its owner chose and the second
-// rewrites the journal mode of a store another program is running on.
+// rewrites the journal mode of a store that another program runs on.
 //
 // `immutable=1` is not used, although it is the obvious way to promise SQLite
 // that nothing else writes. It makes SQLite ignore the -wal file, and every one
@@ -87,8 +88,15 @@ const readOnlyBusyTimeoutMs = 2000
 // on the -shm file, which the worker has because it runs as the user who owns
 // the store.
 //
+// The context bounds the OPEN, not only the queries that follow it. sql.Open
+// itself connects to nothing, so the first real work is the ping, and the ping
+// is what waits out the busy timeout against a store whose owner holds a lock.
+// A caller that opens one database per session pays that wait once per
+// database, so a deadline the ping ignores is a deadline the whole scan
+// ignores.
+//
 // The caller must Close the returned handle.
-func OpenReadOnly(path string) (*sql.DB, error) {
+func OpenReadOnly(ctx context.Context, path string) (*sql.DB, error) {
 	db, err := sql.Open("sqlite", buildReadOnlyDSN(path))
 	if err != nil {
 		return nil, fmt.Errorf("open database read-only: %w", err)
@@ -97,7 +105,7 @@ func OpenReadOnly(path string) (*sql.DB, error) {
 	// closed, so a pool buys nothing and would multiply the -shm contention
 	// with the owning program.
 	db.SetMaxOpenConns(1)
-	if err := db.Ping(); err != nil {
+	if err := db.PingContext(ctx); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("ping database read-only: %w", err)
 	}

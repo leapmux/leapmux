@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"database/sql"
+	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -147,6 +149,11 @@ func TestOpenCodeFamilySessions_LeavesTheStoreAlone(t *testing.T) {
 	dir := "/Users/dev/project"
 	path := filepath.Join(t.TempDir(), "opencode.db")
 	seedOpenCodeFamilyDB(t, path, dir)
+	// The fixture is built with sqlitedb.Open, which chmods to 0600 and sets
+	// WAL -- the two mutations this test exists to refuse. Put the file back in
+	// the state a foreign CLI leaves it in, or the assertion compares a store
+	// that is ALREADY mutated against itself and passes for either reader.
+	require.NoError(t, os.Chmod(path, 0o644))
 
 	before := statFixture(t, path)
 	_, err := openCodeFamilySessions(context.Background(), path, StoredSessionQuery{WorkingDir: dir})
@@ -154,16 +161,34 @@ func TestOpenCodeFamilySessions_LeavesTheStoreAlone(t *testing.T) {
 	assert.Equal(t, before, statFixture(t, path), "reading another program's store must not change it")
 }
 
-// statFixture captures the file mode of a store, for the assertion that reading
-// it changes nothing.
+// statFixture captures what a read must not change: the store's file MODE and
+// its journal mode. Both, because sqlitedb.Open mutates both, and a reader that
+// reached for it instead of OpenReadOnly would take away a permission the
+// store's owner chose as well as rewrite the journal of a running program.
 func statFixture(t *testing.T, path string) string {
 	t.Helper()
+	info, err := os.Stat(path)
+	require.NoError(t, err)
 	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro")
 	require.NoError(t, err)
 	defer func() { _ = db.Close() }()
 	var journal string
 	require.NoError(t, db.QueryRow("PRAGMA journal_mode").Scan(&journal))
-	return journal
+	return fmt.Sprintf("mode=%v journal=%s", info.Mode(), journal)
+}
+
+// The branch a single-return resolver could not express: the override is SET,
+// but the data directory it would resolve against is not. Answering the default
+// name under that same unresolvable directory would be a second empty answer
+// reached by accident, and the two cases would be indistinguishable.
+//
+// No t.Parallel: t.Setenv panics under it, and an unresolvable home needs the
+// process environment rather than the query's Getenv seam.
+func TestOpencodeDBPath_OverrideWithNoDataDirIsEmpty(t *testing.T) {
+	t.Setenv("HOME", "")
+	t.Setenv("USERPROFILE", "")
+	q := StoredSessionQuery{Getenv: fixtureEnv(map[string]string{"OPENCODE_DB": "beta.db"})}
+	assert.Empty(t, opencodeDBPath(q), "a bare override name has nothing to resolve against")
 }
 
 func TestOpencodeDBPath(t *testing.T) {

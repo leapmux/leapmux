@@ -694,7 +694,7 @@ message ListAgentSessionsRequest {
   AgentProvider agent_provider = 2;
   // The directory the sessions must have run in, matched exactly. Every
   // provider store records a session's working directory, and the sessions of
-  // the directory a user is starting an agent in are the relevant ones.
+  // the directory where a user starts an agent are the relevant ones.
   string working_dir = 3;
 }
 
