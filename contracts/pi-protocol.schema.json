@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pi-protocol.schema.json",
+  "title": "Pi RPC wire vocabulary",
+  "description": "Every table is a map from the identifier both languages spell (PascalCase, so the Go constant and the TS key derive from one name) to the literal Pi sends. A table may never be empty: an empty one would emit an enum no dispatch can match.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["_readme", "events", "assistantEvents", "dialogMethods", "extensionMethods", "toolNames"],
+  "$defs": {
+    "table": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": { "pattern": "^[A-Z][A-Za-z0-9]*$" },
+      "additionalProperties": { "type": "string", "minLength": 1 }
+    }
+  },
+  "properties": {
+    "_readme": { "type": "string", "minLength": 1 },
+    "events": { "$ref": "#/$defs/table" },
+    "assistantEvents": { "$ref": "#/$defs/table" },
+    "dialogMethods": { "$ref": "#/$defs/table" },
+    "extensionMethods": { "$ref": "#/$defs/table" },
+    "toolNames": { "$ref": "#/$defs/table" }
+  }
+}

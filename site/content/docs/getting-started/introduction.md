@@ -30,7 +30,7 @@ LeapMux is built for two overlapping audiences:
 
 ## Supported coding agents
 
-LeapMux supports nine coding-agent providers. A provider only appears in the agent picker if its CLI is detected on the machine that will run your agents, so the list you see depends on which CLIs are installed.
+LeapMux supports ten coding-agent providers. A provider only appears in the agent picker if its CLI is detected on the machine that will run your agents, so the list you see depends on which CLIs are installed.
 
 Every provider is first-class: you get a consistent core experience — chat, streamed tool calls, permission prompts, and session resume — with all of them. The plan/todo sidebar appears for agents whose CLI emits task/todo tools. What you can do varies only by what each agent's own CLI offers.
 
@@ -45,6 +45,7 @@ Every provider is first-class: you get a consistent core experience — chat, st
 | Goose | `goose` |
 | Pi | `pi` |
 | Reasonix | `reasonix` |
+| ZCode | its desktop application |
 
 Each provider exposes its own settings: models and permission modes, plus effort/reasoning levels where the CLI supports them. You change them mid-session from the composer's status-bar chips or its **[+]** menu. A new agent starts on the provider's defaults. For how to open an agent, chat, answer permission prompts, switch models, and resume a session, see [Coding Agents](/docs/using/coding-agents/).
 

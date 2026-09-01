@@ -2093,10 +2093,15 @@ type acpStartSpec[T any] struct {
 func acpStart[T any](ctx context.Context, opts Options, sink OutputSink, spec acpStartSpec[T]) (_ Agent, retErr error) {
 	ctx, cancel := context.WithCancel(ctx)
 
+	launch, err := resolveProviderLaunch(ctx, opts.Shell, opts.LoginShell, spec.provider)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
 	wrap := shellWrapSpec{
 		Shell:      opts.Shell,
 		LoginShell: opts.LoginShell,
-		BinaryName: spec.binaryName,
+		Launch:     launch,
 		BaseArgs:   spec.baseArgs,
 		WorkingDir: opts.WorkingDir,
 	}

@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"maps"
 	"time"
+
+	"github.com/leapmux/leapmux/generated/contracts"
 )
 
 const piSessionStatsMaxWait = 2 * time.Second
@@ -273,7 +275,7 @@ func (a *PiAgent) augmentPiMessageEnd(raw []byte) []byte {
 	if err := json.Unmarshal(raw, &obj); err != nil || obj == nil {
 		return raw
 	}
-	if t, _ := obj["type"].(string); t != PiEventMessageEnd {
+	if t, _ := obj["type"].(string); t != contracts.PiEventMessageEnd {
 		return raw
 	}
 	message, ok := obj["message"].(map[string]any)

@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "zcode-protocol.schema.json",
+  "title": "ZCode app-server wire vocabulary",
+  "description": "Every table is a map from the identifier both languages spell (PascalCase, so the Go constant and the TS key derive from one name) to the literal the app-server sends. A table may never be empty: an empty one would emit an enum no dispatch can match, and the generator's own coverage check would have nothing to compare.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["_readme", "events", "toolKinds", "toolNames", "modes", "resultTypes", "decisions", "defaultMode"],
+  "$defs": {
+    "table": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": { "pattern": "^[A-Z][A-Za-z0-9]*$" },
+      "additionalProperties": { "type": "string", "minLength": 1 }
+    }
+  },
+  "properties": {
+    "_readme": { "type": "string", "minLength": 1 },
+    "events": { "$ref": "#/$defs/table" },
+    "toolKinds": { "$ref": "#/$defs/table" },
+    "toolNames": { "$ref": "#/$defs/table" },
+    "modes": { "$ref": "#/$defs/table" },
+    "resultTypes": { "$ref": "#/$defs/table" },
+    "decisions": { "$ref": "#/$defs/table" },
+    "defaultMode": {
+      "description": "The key in `modes` a fresh ZCode session runs on. A key, not a literal, so it cannot name a mode the table does not carry -- the generator checks the membership.",
+      "type": "string",
+      "pattern": "^[A-Z][A-Za-z0-9]*$"
+    }
+  }
+}

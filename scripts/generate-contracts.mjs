@@ -1199,6 +1199,120 @@ export function bufDescriptor(root) {
 }
 
 // ---------------------------------------------------------------------------
+// provider protocols: a coding agent's own wire vocabulary (zcode, pi)
+// ---------------------------------------------------------------------------
+
+/**
+ * The provider-protocol domains. Each one is a set of NAME TABLES: a map from an
+ * identifier both languages spell to the literal the agent's process sends.
+ *
+ * They share one emitter because they pose one problem. A provider's envelope `type`
+ * and payload `kind` are dispatch keys on BOTH sides -- the Go worker classifies the
+ * row, the TS plugin renders it -- so the two copies must agree exactly, and a
+ * one-character drift silently stops rendering rather than failing a build. Neither
+ * language owns the values: the agent's vendor does.
+ *
+ * `goPrefix` and `tsPrefix` build the emitted identifiers, so a table needs no
+ * per-constant name entry: the Go constant is `<goPrefix><Table><Key>` and the TS key
+ * is the bare `Key` inside a `<TS_PREFIX>_<TABLE>` object.
+ */
+const PROVIDER_PROTOCOLS = [
+  {
+    name: 'zcode-protocol',
+    goPrefix: 'ZCode',
+    tsPrefix: 'ZCODE',
+    title: 'ZCode',
+    // goTable/tsTable name the emitted symbol per table; the key set is the contract's.
+    tables: [
+      { key: 'events', goTable: 'Event', tsTable: 'EVENT', tsType: 'ZCodeEvent', doc: 'session event types -- the envelope `type`' },
+      { key: 'toolKinds', goTable: 'ToolKind', tsTable: 'TOOL_KIND', tsType: 'ZCodeToolKind', doc: '`tool.updated` kinds -- the tool-call lifecycle' },
+      { key: 'toolNames', goTable: 'ToolName', tsTable: 'TOOL', tsType: 'ZCodeTool', doc: 'tool names both sides dispatch on' },
+      { key: 'modes', goTable: 'Mode', tsTable: 'MODE', tsType: 'ZCodeMode', doc: 'session modes, carried on LeapMux\'s permission-mode axis' },
+      { key: 'resultTypes', goTable: 'Result', tsTable: 'RESULT', tsType: 'ZCodeResult', doc: '`turn.completed.resultType`' },
+      { key: 'decisions', goTable: 'Decision', tsTable: 'DECISION', tsType: 'ZCodeDecision', doc: '`permission.resolved.decision`' },
+    ],
+  },
+  {
+    name: 'pi-protocol',
+    goPrefix: 'Pi',
+    tsPrefix: 'PI',
+    title: 'Pi',
+    tables: [
+      { key: 'events', goTable: 'Event', tsTable: 'EVENT', tsType: 'PiEvent', doc: 'RPC envelope `type` values' },
+      { key: 'assistantEvents', goTable: 'AssistantEvent', tsTable: 'ASSISTANT_EVENT', tsType: 'PiAssistantEvent', doc: 'assistant message-update sub-types' },
+      { key: 'dialogMethods', goTable: 'DialogMethod', tsTable: 'DIALOG_METHOD', tsType: 'PiDialogMethod', doc: 'extension_ui_request methods that BLOCK on a response' },
+      { key: 'extensionMethods', goTable: 'ExtensionMethod', tsTable: 'EXTENSION_METHOD', tsType: 'PiExtensionMethod', doc: 'fire-and-forget extension_ui_request methods' },
+      { key: 'toolNames', goTable: 'Tool', tsTable: 'TOOL', tsType: 'PiTool', doc: 'tool names the renderers dispatch on' },
+    ],
+  },
+]
+
+/**
+ * A provider protocol is valid when every declared table is present and non-empty,
+ * every table the FILE carries is declared (so a table added to the JSON cannot sit
+ * unemitted), and no two keys inside one table share a literal -- a duplicate would
+ * make two dispatch branches indistinguishable on the wire.
+ */
+export function checkProviderProtocol(spec, p) {
+  const file = `${spec.name}.json`
+  const declared = spec.tables.map(t => t.key)
+  const present = Object.keys(p).filter(k => !k.startsWith('_') && typeof p[k] === 'object')
+  for (const key of declared)
+    mustBe(p[key] != null && Object.keys(p[key]).length > 0, file, `${key} is missing or empty`)
+  for (const key of present)
+    mustBe(declared.includes(key), file, `table ${key} is not declared in PROVIDER_PROTOCOLS -- a new table must be registered in the same change, or it is never emitted`)
+  for (const key of declared) {
+    const seen = new Map()
+    for (const [name, literal] of Object.entries(p[key])) {
+      mustBe(!seen.has(literal), file, `${key}.${name} repeats the literal ${JSON.stringify(literal)} already used by ${key}.${seen.get(literal)} -- two dispatch branches would be indistinguishable on the wire`)
+      seen.set(literal, name)
+    }
+  }
+  // A key-valued pointer must name a member of the table it points into, or the
+  // emitted default names a value the enum does not carry.
+  if (p.defaultMode != null)
+    mustBe(p.modes[p.defaultMode] != null, file, `defaultMode ${JSON.stringify(p.defaultMode)} is not a key of modes`)
+  return {}
+}
+
+export function emitGoProviderProtocol(spec, p) {
+  const blocks = spec.tables.map((t) => {
+    const decls = Object.entries(p[t.key])
+      .map(([name, literal]) => ({ name: `${spec.goPrefix}${t.goTable}${name}`, value: jsonString(literal) }))
+    return `// ${spec.goPrefix}${t.goTable}* are ${t.doc}.\nconst (\n${goConstBlock(decls)}\n)`
+  })
+  const extra = p.defaultMode == null
+    ? ''
+    : `\n// ${spec.goPrefix}DefaultMode is the mode a fresh session runs on.\nconst ${spec.goPrefix}DefaultMode = ${spec.goPrefix}Mode${p.defaultMode}\n`
+  return `${GO_HEADER(`${spec.name}.json`)}package contracts
+
+// ${spec.title}'s wire vocabulary. These literals are dispatch keys on BOTH sides --
+// the Go worker classifies each row, the browser plugin renders it -- so they are
+// generated from one file rather than hand-copied into two. ${spec.title}'s vendor owns
+// the values; LeapMux follows them.
+
+${blocks.join('\n\n')}
+${extra}`
+}
+
+export function emitTsProviderProtocol(spec, p) {
+  const blocks = spec.tables.map((t) => {
+    const rows = Object.entries(p[t.key]).map(([name, literal]) => `  ${name}: ${jsonString(literal)},`).join('\n')
+    const symbol = `${spec.tsPrefix}_${t.tsTable}`
+    return `/** ${spec.title} ${t.doc}. */\nexport const ${symbol} = {\n${rows}\n} as const\nexport type ${t.tsType} = typeof ${symbol}[keyof typeof ${symbol}]`
+  })
+  const extra = p.defaultMode == null
+    ? ''
+    : `\n/** The mode a fresh ${spec.title} session runs on. */\nexport const ${spec.tsPrefix}_DEFAULT_MODE = ${spec.tsPrefix}_MODE.${p.defaultMode}\n`
+  return `${TS_HEADER(`${spec.name}.json`)}
+// ${spec.title}'s wire vocabulary, generated from contracts/${spec.name}.json. The Go
+// provider reads the same tables, so the two can no longer drift by a character.
+
+${blocks.join('\n\n')}
+${extra}`
+}
+
+// ---------------------------------------------------------------------------
 // emission
 // ---------------------------------------------------------------------------
 
@@ -1564,6 +1678,15 @@ const DOMAINS = [
       out['frontend/src/generated/contracts/validate.ts'] = emitTsValidate(v)
     },
   },
+  ...PROVIDER_PROTOCOLS.map(spec => ({
+    name: spec.name,
+    emit(out, read) {
+      const p = read(spec.name)
+      checkProviderProtocol(spec, p)
+      out[`backend/generated/contracts/${spec.name}.go`] = emitGoProviderProtocol(spec, p)
+      out[`frontend/src/generated/contracts/${spec.name}.ts`] = emitTsProviderProtocol(spec, p)
+    },
+  })),
 ]
 
 /**

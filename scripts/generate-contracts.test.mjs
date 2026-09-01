@@ -20,6 +20,7 @@ import {
   bufDescriptor,
   checkDesktop,
   checkHeaders,
+  checkProviderProtocol,
   checkProviders,
   checkRetry,
   checkScopes,
@@ -353,6 +354,58 @@ describe('emitters', () => {
   })
 })
 
+// The provider-protocol domains (zcode, pi) carry an agent's OWN wire vocabulary, and
+// both languages dispatch on the literals -- so the checks below are what stop a table
+// from reaching one side and not the other, or from carrying two branches the wire
+// cannot tell apart.
+describe('checkProviderProtocol', () => {
+  const spec = {
+    name: 'test-protocol',
+    tables: [{ key: 'events' }, { key: 'modes' }],
+  }
+  const ok = () => ({ events: { A: 'a' }, modes: { Plan: 'plan', Build: 'build' }, defaultMode: 'Build' })
+
+  it('accepts a complete contract', () => {
+    expect(checkProviderProtocol(spec, ok())).toEqual({})
+  })
+
+  it('rejects a declared table that is missing or empty', () => {
+    const missing = ok()
+    delete missing.events
+    expectContractError(() => checkProviderProtocol(spec, missing), 'events is missing or empty')
+    expectContractError(() => checkProviderProtocol(spec, { ...ok(), events: {} }), 'events is missing or empty')
+  })
+
+  // A table added to the JSON but not to PROVIDER_PROTOCOLS emits nothing, so one side
+  // would read a vocabulary the other never got.
+  it('rejects a table the spec does not declare', () => {
+    expectContractError(
+      () => checkProviderProtocol(spec, { ...ok(), decisions: { Allow: 'allow' } }),
+      'table decisions is not declared',
+    )
+  })
+
+  // Two keys with one literal make two dispatch branches indistinguishable on the wire.
+  it('rejects a repeated literal inside one table', () => {
+    expectContractError(
+      () => checkProviderProtocol(spec, { ...ok(), events: { A: 'a', B: 'a' } }),
+      'repeats the literal',
+    )
+  })
+
+  it('allows the same literal in two DIFFERENT tables', () => {
+    // `error` is both a tool-update kind and a stream kind in ZCode's own protocol.
+    expect(checkProviderProtocol(spec, { ...ok(), events: { A: 'plan' } })).toEqual({})
+  })
+
+  it('rejects a defaultMode that names no mode', () => {
+    expectContractError(
+      () => checkProviderProtocol(spec, { ...ok(), defaultMode: 'Nope' }),
+      'defaultMode "Nope" is not a key of modes',
+    )
+  })
+})
+
 describe('generate', () => {
   it('emits the shipped domains from the real contracts dir', () => {
     const files = generate(join(ROOT, 'contracts'), DESCRIPTOR)
@@ -360,6 +413,7 @@ describe('generate', () => {
       'backend/generated/contracts/captcha.go',
       'backend/generated/contracts/desktop.go',
       'backend/generated/contracts/headers.go',
+      'backend/generated/contracts/pi-protocol.go',
       'backend/generated/contracts/providers.go',
       'backend/generated/contracts/retry.go',
       'backend/generated/contracts/scopes.go',
@@ -367,10 +421,12 @@ describe('generate', () => {
       'backend/generated/contracts/validate.go',
       'backend/generated/contracts/wire.go',
       'backend/generated/contracts/worker-vocab.go',
+      'backend/generated/contracts/zcode-protocol.go',
       'desktop/rust/src/generated/contracts.rs',
       'frontend/src/generated/contracts/captcha.ts',
       'frontend/src/generated/contracts/desktop.ts',
       'frontend/src/generated/contracts/headers.ts',
+      'frontend/src/generated/contracts/pi-protocol.ts',
       'frontend/src/generated/contracts/providers.ts',
       'frontend/src/generated/contracts/retry.ts',
       'frontend/src/generated/contracts/scopes.ts',
@@ -378,6 +434,7 @@ describe('generate', () => {
       'frontend/src/generated/contracts/validate.ts',
       'frontend/src/generated/contracts/wire.ts',
       'frontend/src/generated/contracts/worker-vocab.ts',
+      'frontend/src/generated/contracts/zcode-protocol.ts',
     ])
   })
 

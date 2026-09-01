@@ -1,7 +1,7 @@
 import type { NotificationThreadEntry } from '../../registry'
+import { PI_EVENT, PI_EXTENSION_METHOD } from '~/generated/contracts/pi-protocol'
 import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
 import { compactedLabel, COMPACTING_LABEL } from '../../../notificationRenderers'
-import { PI_EVENT, PI_EXTENSION_METHOD } from '../protocol'
 
 /**
  * Compute a human-readable line for a Pi notification event. Returns null for

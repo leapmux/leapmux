@@ -134,7 +134,7 @@ func unwrapNotifContent(data []byte) (*notifThreadWrapper, error) {
 // specific dual-key lookups (indexByID by task id, itemsEqual for snapshot
 // no-op detection, todoItems projection) live as free functions below; the
 // cache's own mutex (registryCache.Mu) serializes the multi-step
-// "check existence -> DB write -> in-place mutation" sequences and gates the
+// "check existence -> DB write -> in-place mutation" sequences and guards the
 // lazy DB seed.
 type agentTodoCache = registryCache[cachedTodo]
 
@@ -358,8 +358,9 @@ func (h *OutputHandler) ForgetChildSinks(rootID string) {
 	}
 }
 
-// claimControlResponseAnswer atomically records that (agentID, requestID, claimToken)'s answer is being
-// persisted and reports whether THIS call is the first to claim it. A later duplicate answer for the
+// claimControlResponseAnswer atomically records that this call starts to persist
+// (agentID, requestID, claimToken)'s answer, and reports whether THIS call is the first to
+// claim it. A later duplicate answer for the
 // same request INSTANCE -- an RPC retry, or a second window answering before it received the cancel
 // broadcast, BOTH echoing the same claim_token -- gets false, so the caller skips persisting a second
 // answer row and its scroll-rail dot. Handlers run concurrently (DispatchAsync, no per-agent lock), so
@@ -474,7 +475,7 @@ func (h *OutputHandler) ClearPendingControlRequests(agentID string) {
 // It leaves the durable control-response answer claims intact, so a duplicate answer
 // straddling a transient restart stays deduped.
 //
-// Call it when the current subprocess instance is being torn down (close, context
+// Call it when the current subprocess instance shuts down (close, context
 // clear, plan-exec restart) -- NOT from the per-exit onExit handler, which a
 // relaunch also triggers and which must keep the in-memory timeline state (see
 // ClearPendingControlRequests).
@@ -516,7 +517,7 @@ func (h *OutputHandler) trackerForSnapshot(agentID string) *SpanTracker {
 
 // snapshotPassthroughSpanLines returns the JSON-encoded span lines for a
 // root-level message that is not part of any span (e.g. a user-typed input
-// while a subagent is running). Active spans render as vertical passthrough
+// while a subagent runs). Active spans render as vertical passthrough
 // bars so the surrounding span columns remain visually unbroken across the
 // row. Returns "[]" when no spans are active.
 func (h *OutputHandler) snapshotPassthroughSpanLines(agentID string) string {
@@ -984,7 +985,7 @@ func (s *agentOutputSink) persistLiveCatalog(live []*leapmuxv1.AvailableOptionGr
 	s.persistCatalogIfChanged(existing, live)
 }
 
-// optionsCASMaxAttempts bounds the PersistSettingsRefresh compare-and-swap retry loop.
+// optionsCASMaxAttempts caps the PersistSettingsRefresh compare-and-swap retry loop.
 // Each lost race is another concurrent writer winning; in practice at most a couple
 // contend, so this is a generous ceiling that still fails loudly rather than spinning.
 const optionsCASMaxAttempts = 8
@@ -1167,12 +1168,12 @@ func casPersistConfirmedSettings(ctx context.Context, q *db.Queries, agentID, ex
 		}
 		// The options column equals newOptions iff our CAS hit -- OR a concurrent writer landed the
 		// identical blob. Our CAS hit when the options CASE matched (options = expected_options at
-		// statement time, so options = base = newOptions's source); then the gated option_groups CASE
+		// statement time, so options = base = newOptions's source); then the conditional option_groups CASE
 		// also took the THEN branch and rode the same statement. But the concurrent writer that landed
 		// the identical blob could be the options-only path (casPersistAgentOptions via
 		// PersistSettingsRefresh/applyOptionChanges), which NEVER writes option_groups: it left
 		// options = newOptions but option_groups = expected_option_groups, so our options CASE saw
-		// options != base, took ELSE, and the gated option_groups CASE took ELSE too -- dropping the
+		// options != base, took ELSE, and the conditional option_groups CASE took ELSE too -- dropping the
 		// catalog this handoff discovered. Re-assert the catalog with a standalone CAS so a richer one
 		// we found still lands. The CAS is a no-op (keeping the richer one) if a running provider grew
 		// the catalog past expectedCatalog in the meantime, mirroring the in-statement gate.
@@ -1192,7 +1193,7 @@ func casPersistConfirmedSettings(ctx context.Context, q *db.Queries, agentID, ex
 			}
 			return row, nil
 		}
-		// Lost the options CAS: the gated catalog CASE wrote nothing either, so re-merge the delta
+		// Lost the options CAS: the conditional catalog CASE wrote nothing either, so re-merge the delta
 		// onto the live row and retry -- both columns stay atomic.
 		expectedOptions = row.Options
 	}
@@ -1529,38 +1530,27 @@ func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmu
 	// message. Failures are logged but do not propagate — the chat
 	// transcript is the source of truth, and the next event can
 	// reconcile any transient inconsistency.
-	if err := h.applyTodoEventForMessage(agentID, span, contentJSON); err != nil {
+	if err := h.applyTodoEventForMessage(agentID, agentProvider, span, contentJSON); err != nil {
 		slog.Warn("apply todo event", "agent_id", agentID, "span_type", span.SpanType, "error", err)
 	}
 	return nil
-}
-
-// couldProduceTodoEvent is a cheap gate keeping the >99% of messages
-// that can't produce a to-do mutation out of the extract / paired-use
-// lookup hot path. Claude tool spans carry span_type for every message
-// — when one is present, only the to-do family matters. Only the
-// span-typeless path (Codex JSON-RPC notifications, ACP session
-// updates) needs the byte-pattern probe.
-func couldProduceTodoEvent(span agent.SpanInfo, contentJSON []byte) bool {
-	if span.SpanType != "" {
-		return todoevents.IsTodoToolSpanType(span.SpanType)
-	}
-	return todoevents.LooksLikeProviderPlan(contentJSON)
 }
 
 // applyTodoEventForMessage extracts a to-do event from the just-persisted
 // message, applies it to agent_todos, and broadcasts AgentTodosChanged
 // on mutation. No-ops (unknown-id update, unknown-id delete, empty
 // snapshot replay) skip the broadcast.
-func (h *OutputHandler) applyTodoEventForMessage(agentID string, span agent.SpanInfo, contentJSON []byte) error {
-	if !couldProduceTodoEvent(span, contentJSON) {
+func (h *OutputHandler) applyTodoEventForMessage(agentID string, provider leapmuxv1.AgentProvider, span agent.SpanInfo, contentJSON []byte) error {
+	if len(contentJSON) == 0 {
 		return nil
 	}
-	pairedJSON, err := h.lookupPairedToolUseJSON(agentID, span)
-	if err != nil {
-		return err
-	}
-	ev, ok := todoevents.Extract(span.SpanType, contentJSON, pairedJSON)
+	// The to-do list is carried in each provider's own message shape, so the
+	// provider plugin reads it -- and states its own cheap discriminator, which is
+	// why no gate runs here. Shared code decides only what to do with the result.
+	// The paired tool_use is a DATABASE read, so it is handed over as a function:
+	// only the parsers that need the input pay for one.
+	ev, ok := agent.ProviderFor(provider).ExtractTodoEvent(
+		span.SpanType, contentJSON, h.pairedToolUseLookup(agentID, span))
 	if !ok {
 		return nil
 	}
@@ -1583,33 +1573,46 @@ func (h *OutputHandler) applyTodoEventForMessage(agentID string, span agent.Span
 	return nil
 }
 
-// lookupPairedToolUseJSON returns the decompressed JSON of the paired
-// tool_use message for Claude Task* tool_results that need their input
-// fields. Returns nil with no error when not applicable.
-func (h *OutputHandler) lookupPairedToolUseJSON(agentID string, span agent.SpanInfo) ([]byte, error) {
-	switch span.SpanType {
-	case todoevents.ToolTaskCreate, todoevents.ToolTaskUpdate:
-		// fall through — these need the paired tool_use input.
-	default:
-		return nil, nil
-	}
-	if span.SpanID == "" {
-		return nil, nil
-	}
-	row, err := h.queries.GetAgentMessageBySpanIDAndSource(bgCtx(), db.GetAgentMessageBySpanIDAndSourceParams{
-		AgentID: agentID,
-		SpanID:  span.SpanID,
-		Source:  leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+// pairedToolUseLookup returns the reader a provider's to-do extractor calls to get
+// the tool_use message that OPENED this row's span — the half that carries the
+// input, for a provider whose result half does not repeat it.
+//
+// It is a function rather than a value because resolving it is a database read.
+// Most messages never need one, and of those that do, only some parsers ask.
+// sync.OnceValue memoizes the result, so two parsers reading the same row cost one
+// query -- and it is the repo's own preference over a hand-rolled flag-and-value pair
+// (see internal/util/testutil/gitrepo.go). It also makes the memo safe to call from
+// more than one goroutine, which a captured pair only DOCUMENTED.
+//
+// Every failure yields nil rather than an error: a row that is not there yet, and a
+// read that failed, both mean the same thing to the caller, which is that it builds
+// the less detailed row instead of none at all. The nil is memoized too, so a miss
+// costs one query rather than one per parser.
+func (h *OutputHandler) pairedToolUseLookup(agentID string, span agent.SpanInfo) func() []byte {
+	return sync.OnceValue(func() []byte {
+		if span.SpanID == "" {
+			return nil
+		}
+		row, err := h.queries.GetAgentMessageBySpanIDAndSource(bgCtx(), db.GetAgentMessageBySpanIDAndSourceParams{
+			AgentID: agentID,
+			SpanID:  span.SpanID,
+			Source:  leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		})
+		if err != nil {
+			// A rolled-up tool_use, or one this result raced, is the common case and
+			// says nothing worth logging. A real read failure does.
+			if !errors.Is(err, sql.ErrNoRows) {
+				slog.Warn("lookup paired tool_use", "agent_id", agentID, "span_id", span.SpanID, "error", err)
+			}
+			return nil
+		}
+		decompressed, err := msgcodec.Decompress(row.Content, row.ContentCompression)
+		if err != nil {
+			slog.Warn("decompress paired tool_use", "agent_id", agentID, "span_id", span.SpanID, "error", err)
+			return nil
+		}
+		return decompressed
 	})
-	if errors.Is(err, sql.ErrNoRows) {
-		// Race or rolled-up tool_use — extraction proceeds with the
-		// result-only fields and returns a less detailed row.
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("lookup paired tool_use %s: %w", span.SpanID, err)
-	}
-	return msgcodec.Decompress(row.Content, row.ContentCompression)
 }
 
 // applyTodoEvent persists a single to-do event into agent_todos AND
@@ -1746,10 +1749,10 @@ func (h *OutputHandler) applyTodoEvent(agentID string, ev todoevents.Event) ([]t
 // the incoming event in that case. Logs the eviction for operator visibility.
 // Caller must hold the cache's mutex.
 //
-// agent_todos is a SINGLE-pool registry (todoOps sets no bucketOf), so "" names
+// agent_todos is a SINGLE-pool registry (todoOps sets no bucketOf), so "" identifies
 // its one pool.
 func (h *OutputHandler) evictOldestFinishedLocked(ctx context.Context, agentID string, cache *agentTodoCache) (bool, error) {
-	// The generic returns the row it deleted, so the log names that row rather
+	// The generic returns the row it deleted, so the log reports that row rather
 	// than one a second scan here picked out.
 	evicted, evictedHappened, err := cache.evictOldestFinishedInBucketLocked(ctx, agentID, "")
 	if err != nil {

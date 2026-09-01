@@ -7,6 +7,8 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/stretchr/testify/assert"
@@ -266,7 +268,7 @@ func TestPi_AgentToolStartOpensNoSpan(t *testing.T) {
 func TestPi_NonSpawnToolsStillOpenASpan(t *testing.T) {
 	t.Parallel()
 
-	for _, toolName := range []string{PiToolBash, PiToolRead, "get_subagent_result", "steer_subagent"} {
+	for _, toolName := range []string{contracts.PiToolBash, contracts.PiToolRead, "get_subagent_result", "steer_subagent"} {
 		t.Run(toolName, func(t *testing.T) {
 			t.Parallel()
 

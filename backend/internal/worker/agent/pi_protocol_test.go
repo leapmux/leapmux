@@ -3,6 +3,8 @@ package agent
 import (
 	"testing"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+
 	"github.com/stretchr/testify/assert"
 )
 
@@ -14,23 +16,23 @@ func TestPiProtocolEventConstants(t *testing.T) {
 	t.Parallel()
 
 	cases := map[string]string{
-		"agent_start":           PiEventAgentStart,
-		"agent_end":             PiEventAgentEnd,
-		"turn_start":            PiEventTurnStart,
-		"turn_end":              PiEventTurnEnd,
-		"message_start":         PiEventMessageStart,
-		"message_end":           PiEventMessageEnd,
-		"tool_execution_start":  PiEventToolExecutionStart,
-		"tool_execution_end":    PiEventToolExecutionEnd,
-		"tool_execution_update": PiEventToolExecutionUpdate,
-		"extension_ui_request":  PiEventExtensionUIRequest,
-		"extension_error":       PiEventExtensionError,
-		"compaction_start":      PiEventCompactionStart,
-		"compaction_end":        PiEventCompactionEnd,
-		"auto_retry_start":      PiEventAutoRetryStart,
-		"auto_retry_end":        PiEventAutoRetryEnd,
-		"queue_update":          PiEventQueueUpdate,
-		"response":              PiEventResponse,
+		"agent_start":           contracts.PiEventAgentStart,
+		"agent_end":             contracts.PiEventAgentEnd,
+		"turn_start":            contracts.PiEventTurnStart,
+		"turn_end":              contracts.PiEventTurnEnd,
+		"message_start":         contracts.PiEventMessageStart,
+		"message_end":           contracts.PiEventMessageEnd,
+		"tool_execution_start":  contracts.PiEventToolExecutionStart,
+		"tool_execution_end":    contracts.PiEventToolExecutionEnd,
+		"tool_execution_update": contracts.PiEventToolExecutionUpdate,
+		"extension_ui_request":  contracts.PiEventExtensionUIRequest,
+		"extension_error":       contracts.PiEventExtensionError,
+		"compaction_start":      contracts.PiEventCompactionStart,
+		"compaction_end":        contracts.PiEventCompactionEnd,
+		"auto_retry_start":      contracts.PiEventAutoRetryStart,
+		"auto_retry_end":        contracts.PiEventAutoRetryEnd,
+		"queue_update":          contracts.PiEventQueueUpdate,
+		"response":              contracts.PiEventResponse,
 	}
 	for want, got := range cases {
 		assert.Equal(t, want, got, "Pi event constant must match the wire literal")
@@ -42,10 +44,10 @@ func TestPiProtocolEventConstants(t *testing.T) {
 func TestPiProtocolDialogMethodConstants(t *testing.T) {
 	t.Parallel()
 
-	assert.Equal(t, "select", PiDialogMethodSelect)
-	assert.Equal(t, "confirm", PiDialogMethodConfirm)
-	assert.Equal(t, "input", PiDialogMethodInput)
-	assert.Equal(t, "editor", PiDialogMethodEditor)
+	assert.Equal(t, "select", contracts.PiDialogMethodSelect)
+	assert.Equal(t, "confirm", contracts.PiDialogMethodConfirm)
+	assert.Equal(t, "input", contracts.PiDialogMethodInput)
+	assert.Equal(t, "editor", contracts.PiDialogMethodEditor)
 }
 
 // TestPiProtocolToolNameConstants pins the tool identifiers Pi uses on
@@ -53,8 +55,8 @@ func TestPiProtocolDialogMethodConstants(t *testing.T) {
 func TestPiProtocolToolNameConstants(t *testing.T) {
 	t.Parallel()
 
-	assert.Equal(t, "bash", PiToolBash)
-	assert.Equal(t, "read", PiToolRead)
-	assert.Equal(t, "edit", PiToolEdit)
-	assert.Equal(t, "write", PiToolWrite)
+	assert.Equal(t, "bash", contracts.PiToolBash)
+	assert.Equal(t, "read", contracts.PiToolRead)
+	assert.Equal(t, "edit", contracts.PiToolEdit)
+	assert.Equal(t, "write", contracts.PiToolWrite)
 }

@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/agentlabels"
 	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/stretchr/testify/assert"
@@ -57,25 +58,28 @@ func TestValidateLaunchOptions_ACPProviderSkipsPermissionMode(t *testing.T) {
 
 // TestProviderManagesEffort distinguishes providers that own a model-dependent effort
 // catalog (Claude/Codex/Pi -- effort default stamped by resolveProviderDefaults) from
-// ACP providers whose effort, if any, is a server-driven config option.
+// every other provider, whose effort, if any, is server-driven.
+//
+// The two sets are a PARTITION of the generated provider table, so the "false" side is
+// derived rather than retyped: a provider added later lands in it automatically, and a
+// provider that starts carrying static effort tiers fails here until it is declared.
+// ZCode is on the false side although it has real per-model thought levels, because its
+// static catalog is empty by design -- every level comes from the user's own
+// configuration, so there is no default for LeapMux to stamp at launch.
 func TestProviderManagesEffort(t *testing.T) {
 	t.Parallel()
 
-	for _, p := range []leapmuxv1.AgentProvider{
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_PI,
-	} {
-		assert.True(t, ProviderManagesEffort(p), "%v owns a model-dependent effort catalog", p)
+	managed := map[leapmuxv1.AgentProvider]bool{
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE: true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX:       true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_PI:          true,
 	}
-	for _, p := range []leapmuxv1.AgentProvider{
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO,
-	} {
-		assert.False(t, ProviderManagesEffort(p), "%v has no leapmux-managed effort default", p)
+	for _, p := range agentlabels.AllProviders() {
+		if managed[p] {
+			assert.Truef(t, ProviderManagesEffort(p), "%v owns a model-dependent effort catalog", p)
+			continue
+		}
+		assert.Falsef(t, ProviderManagesEffort(p), "%v has no leapmux-managed effort default", p)
 	}
 }
 

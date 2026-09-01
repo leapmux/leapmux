@@ -10,8 +10,8 @@
  */
 
 import type { Question } from '../../controls/types'
+import { PI_DIALOG_METHOD } from '~/generated/contracts/pi-protocol'
 import { pickString } from '~/lib/jsonPick'
-import { PI_DIALOG_METHOD } from './protocol'
 
 /**
  * Convert Pi's flat `options: string[]` into the labelled-option shape

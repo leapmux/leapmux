@@ -389,10 +389,29 @@ For how agents work, see [Coding Agents](/docs/using/coding-agents/).
 The **Agent Provider** selector shows **"No agents available"**, or the provider you want (e.g. Codex, Cursor, Pi) is missing from the list.
 
 **Cause**
-A provider only appears if **its CLI binary is detected on the Worker**. The Worker probes the shell for each provider's binary (`claude`, `codex`, `cursor-agent`, `copilot`, `kilo`, `opencode`, `goose`, `pi`, `reasonix`) and lists only the ones it finds on `PATH`.
+A provider only appears if **its CLI binary is detected on the Worker**. The Worker probes the shell for each provider's binary (`claude`, `codex`, `cursor-agent`, `copilot`, `kilo`, `opencode`, `goose`, `pi`, `reasonix`) and lists only the ones it finds on `PATH`. ZCode is the exception: it ships no command, so the Worker looks for its desktop installation instead — see the next entry.
 
 **Fix**
 Install the agent's own CLI on the **Worker** machine (not where the browser runs) and make sure it's on the Worker's `PATH`. Then click the refresh button (**"Refresh available providers"**) in the selector, or reopen the dialog.
+
+### ZCode isn't in the picker
+
+**Symptom**
+Every other installed provider appears, but **ZCode** does not.
+
+**Cause**
+ZCode ships no command, so the `PATH` probe cannot find it. LeapMux looks for a `zcode` command first, then for the desktop application's `zcode.cjs`, and it accepts that script only with an interpreter that provides `node:sqlite` — ZCode keeps its session store there. A Worker with an older `node` and no ZCode installation therefore reports nothing.
+
+**Fix**
+Install the ZCode desktop application on the **Worker** machine, or install Node 24 or newer and put a `zcode` wrapper on the Worker's `PATH`. For an installation in a place LeapMux does not know, set `LEAPMUX_ZCODE_SCRIPT` to the `zcode.cjs` — and `LEAPMUX_ZCODE_NODE` to the interpreter as well, if the one on `PATH` cannot run it.
+
+### A ZCode agent reports that ZCode is not configured
+
+**Symptom**
+Opening a ZCode agent fails immediately, before any message is sent.
+
+**Fix**
+Sign in to the ZCode desktop application on the Worker machine and enable a model provider in it. LeapMux reads the credentials and the model list from `~/.zcode/v2/config.json` and hands them to the app-server; without an enabled provider that carries an API key, every turn would fail on the model request instead. LeapMux only reads that file — it never writes it, so nothing you do in LeapMux changes the ZCode application's own settings.
 
 ### The agent fails to start
 

@@ -3,6 +3,7 @@ import type { RenderContext } from '../../../messageRenderers'
 import type { FileEditDiffSource } from '../../../results/fileEditDiff'
 import { createMemo, For, Show } from 'solid-js'
 import { Dynamic } from 'solid-js/web'
+import { PI_TOOL } from '~/generated/contracts/pi-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { CommandResultBody } from '../../../results/commandResult'
 import { FileEditDiffBody, fileEditHasDiff } from '../../../results/fileEditDiff'
@@ -11,7 +12,6 @@ import { toolResultContentPre } from '../../../toolStyles.css'
 import { extractPiBash, piBashToCommandSource } from '../extractors/bash'
 import { extractPiEdit, extractPiRead, extractPiWrite, resolvePiResultDiff } from '../extractors/fileEdit'
 import { piExtractTool } from '../extractors/toolCommon'
-import { PI_TOOL } from '../protocol'
 
 interface RendererProps {
   parsed: unknown

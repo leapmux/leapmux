@@ -29,8 +29,19 @@ type ControlResponseResolution struct {
 	// owns the pruning -- what each wire shape keeps stays in that provider's resolver, never in
 	// shared service code. Nil when the stored request is unavailable or unrecognized, in which
 	// case the row persists with `request` omitted and the frontend degrades gracefully.
-	RequestContext  json.RawMessage
-	SelfDisplayed   bool
+	RequestContext json.RawMessage
+	SelfDisplayed  bool
+	// Withhold tells the service NOT to forward Content to the agent. A provider sets it
+	// when it cannot build a frame the agent can parse -- the pending request is gone, its
+	// wire id is absent, or the answer does not decode. Content still persists the answer
+	// row, so the user's reply is not lost.
+	//
+	// An empty Content cannot carry this meaning: the service backfills the raw frontend
+	// bytes over it (see buildControlResponsePlan), because an empty json.RawMessage makes
+	// the persist marshal fail. Thus a provider that cleared Content to suppress the
+	// forward would forward the frontend envelope instead -- the exact frame it refused to
+	// send.
+	Withhold        bool
 	PlanModeControl PlanModeControlKind
 }
 
@@ -425,4 +436,72 @@ func transformCursorControlResponse(requestPayload, responseContent []byte) ([]b
 		return nil, false
 	}
 	return encoded, true
+}
+
+// ControlResponseRequestID reads the pending request's id off the frontend answer.
+func (zcodeProvider) ControlResponseRequestID(content []byte) string {
+	return defaultControlResponseRequestID(content)
+}
+
+// ResolveControlResponse turns the frontend's neutral answer into the app-server's
+// reply frame.
+//
+// This is where the two protocols meet. The frontend speaks allow/deny (plus the
+// AskUserQuestion answers under `updatedInput.answers`); the app-server wants a
+// permission decision or an accept/decline action, addressed by the WIRE id of its
+// own request. The transformed bytes are what the service forwards to stdin, so the
+// reply is a complete ZCode frame and not the envelope the frontend sent.
+func (zcodeProvider) ResolveControlResponse(ctx ControlResponseContext) ControlResponseResolution {
+	res := defaultControlResponseResolution(ctx)
+	if len(ctx.RequestPayload) == 0 {
+		// The pending request is gone (a teardown, or a duplicate answer that read it
+		// after the winner deleted it). There is nothing to address the reply to, and
+		// forwarding the frontend envelope would put a frame the app-server cannot
+		// parse on its stdin. The answer still persists its row.
+		res.Withhold = true
+		return res
+	}
+
+	var stored zcodeControlRequestPayload
+	if !warnUnmarshal(ctx.RequestPayload, &stored, "zcode control response request") {
+		res.Withhold = true
+		return res
+	}
+	res.PlanModeControl = zcodeProvider{}.PlanModeControl(stored.Request.ToolName)
+	res.RequestContext = zcodeControlRequestContext(stored)
+
+	requestID, behavior, message, ok := DecodeControlBehavior(ctx.ResponseContent)
+	if !ok || behavior == "" {
+		// Not a recognizable allow/deny. Withholding the forward is the safe answer:
+		// the app-server keeps waiting (and the user can answer again) rather than
+		// receiving a frame that means nothing.
+		res.Withhold = true
+		return res
+	}
+	if requestID != "" && stored.RequestID != "" && requestID != stored.RequestID {
+		slog.Warn("zcode control response addressed another request",
+			"answered", requestID, "stored", stored.RequestID)
+		res.Withhold = true
+		return res
+	}
+	if len(stored.WireID) == 0 {
+		slog.Warn("zcode stored control request carried no wire id", "request_id", stored.RequestID)
+		res.Withhold = true
+		return res
+	}
+
+	reply, err := zcodeReplyForAnswer(stored, behavior, message, ctx.ResponseContent)
+	if err != nil {
+		slog.Warn("zcode build control reply failed", "request_id", stored.RequestID, "error", err)
+		res.Withhold = true
+		return res
+	}
+	encoded, err := json.Marshal(zcodeReplyFrame{ID: stored.WireID, Result: reply})
+	if err != nil {
+		slog.Warn("zcode marshal control reply failed", "request_id", stored.RequestID, "error", err)
+		res.Withhold = true
+		return res
+	}
+	res.Content = encoded
+	return res
 }

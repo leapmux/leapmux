@@ -975,7 +975,7 @@ func TestAdminVerb_ReportsTheHubsRefusalVerbatim(t *testing.T) {
 			srv := httptest.NewServer(mux)
 			t.Cleanup(srv.Close)
 
-			t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+			isolateCLIEnv(t)
 			// A credential file that records NO admin scope, which is what
 			// the deleted hint keyed on.
 			require.NoError(t, control.SaveCredentials(srv.URL, control.CredentialFile{

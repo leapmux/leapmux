@@ -6,7 +6,10 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/worker/todoevents"
 	"github.com/leapmux/leapmux/util/validate"
 )
 
@@ -76,6 +79,20 @@ type Provider interface {
 	// mode/approval policy -- the value stamped under the "permissionMode"
 	// option id when the agent carries no explicit selection.
 	DefaultPermissionMode() string
+	// PlanModePermissionMode returns the permission mode an APPROVED plan-mode
+	// transition of the given kind switches the agent to, when the user selected
+	// none in the approval banner.
+	//
+	// This is a provider decision because the vocabulary is the provider's own:
+	// Claude Code says `plan`/`acceptEdits`, ZCode says `plan`/`build`, and Codex
+	// says `on-request`. Shared code that stamped one provider's spelling would
+	// persist a mode the others reject, and the agent would then report a mode its
+	// session never entered.
+	//
+	// Returns "" for a provider whose PlanModeControl is always None; such a
+	// provider never reaches a plan-mode transition, and the caller leaves the
+	// mode alone.
+	PlanModePermissionMode(kind PlanModeControlKind) string
 	// IsSelfDisplayingControlTool reports whether a control response for the
 	// named control request (`toolName` is a Claude tool name; other providers
 	// ignore it) is ALREADY displayed by the provider's own transcript -- e.g.
@@ -178,6 +195,28 @@ type Provider interface {
 	// with `~`. A token provider ignores it. The caller has it either way, and
 	// OpenAgent already hands the same value to `normalizeWorkingDir`.
 	ValidateResumeHandle(handle, homeDir string) error
+	// ExtractTodoEvent derives a to-do list mutation from one persisted message,
+	// or reports that the message changes nothing.
+	//
+	// This is a provider decision because the to-do list rides each provider's own
+	// message shape and nothing else: Claude's `TodoWrite` tool_use envelope and its
+	// incremental `Task*` family, Codex's `turn/plan/updated` notification, an ACP
+	// `sessionUpdate=plan`, and ZCode's `tool.updated` event. The default
+	// (noopProvider) reports nothing, which is right for a provider whose CLI states
+	// no to-do list at all.
+	//
+	// It runs on EVERY persisted message, so each implementation states its own
+	// cheap discriminator first -- a span-type switch, or a byte search for the
+	// method name. There is no shared pre-filter: one would have to know every
+	// provider's markers, which is the coupling this method removes.
+	//
+	// `spanType` is the message's span type (a tool name where the provider sets
+	// one, empty for a top-level notification) and `content` is its decompressed
+	// body. `pairedToolUse` resolves the body of the tool_use message that opened
+	// this row's span, for a provider whose RESULT half does not repeat the input it
+	// needs; it costs a database read, so it is a function that only the parsers
+	// which need it call, and it returns nil when there is no such message.
+	ExtractTodoEvent(spanType string, content []byte, pairedToolUse func() []byte) (todoevents.Event, bool)
 }
 
 type noopProvider struct{}
@@ -191,6 +230,12 @@ func (noopProvider) Merge(class NotificationClassification, previous, next json.
 }
 
 func (noopProvider) IsInterrupt(string) bool { return false }
+
+// ExtractTodoEvent defaults to NO to-do list. A provider whose CLI states one
+// overrides this with the shape that carries it.
+func (noopProvider) ExtractTodoEvent(string, []byte, func() []byte) (todoevents.Event, bool) {
+	return todoevents.Event{}, false
+}
 
 // ValidateResumeHandle defaults to the TOKEN rule, which is what every provider
 // but Pi issues. `validate.ValidateSessionID` states that rule and says why each
@@ -208,6 +253,11 @@ func (noopProvider) DefaultPermissionMode() string { return "" }
 func (noopProvider) IsSelfDisplayingControlTool(string) bool { return false }
 
 func (noopProvider) PlanModeControl(string) PlanModeControlKind { return PlanModeControlNone }
+
+// PlanModePermissionMode defaults to "", which pairs with the PlanModeControlNone above:
+// a provider that recognizes no plan-mode tool never reaches a transition, so it has no
+// target mode to state. A provider that overrides PlanModeControl must override this too.
+func (noopProvider) PlanModePermissionMode(PlanModeControlKind) string { return "" }
 
 // PlanApprovalOptions defaults to none: a provider with no plan-mode-prompt flow settles no
 // options on approval. The ACP-based providers inherit this via their noopProvider embedding.
@@ -392,6 +442,16 @@ func (codexProvider) PlanModeControl(toolName string) PlanModeControlKind {
 	return PlanModeControlNone
 }
 
+// PlanModePermissionMode answers for Codex's one plan-mode kind, the prompt. An approval
+// that selects no mode returns to Codex's own default approval policy; `acceptEdits` and
+// `plan` are Claude words that Codex's `--ask-for-approval` rejects.
+func (codexProvider) PlanModePermissionMode(kind PlanModeControlKind) string {
+	if kind == PlanModeControlPrompt {
+		return CodexDefaultApprovalPolicy
+	}
+	return ""
+}
+
 // PlanApprovalOptions settles Codex on plan approval: Base resets the collaboration axis to its
 // default mode; Bypass (applied only on a permission-mode switch) grants full network access and
 // removes the sandbox for the approved mode.
@@ -491,6 +551,21 @@ func (claudeProvider) PlanModeControl(toolName string) PlanModeControlKind {
 	}
 }
 
+// PlanModePermissionMode gives Claude Code's own two modes. An approved exit lands on
+// `acceptEdits`, which is what the plan banner's unchecked state means for Claude: run
+// the plan, and do not ask again for each edit.
+func (claudeProvider) PlanModePermissionMode(kind PlanModeControlKind) string {
+	switch kind {
+	case PlanModeControlEnter:
+		return PermissionModePlan
+	case PlanModeControlExit:
+		return PermissionModeAcceptEdits
+	case PlanModeControlNone, PlanModeControlPrompt:
+		return ""
+	}
+	return ""
+}
+
 // Claude's plan flow is EnterPlanMode/ExitPlanMode (never PlanModeControlPrompt), so no
 // plan-approval option settlement runs for it.
 func (claudeProvider) PlanApprovalOptions() PlanApprovalOptions { return PlanApprovalOptions{} }
@@ -582,16 +657,16 @@ func (piProvider) Classify(raw json.RawMessage) NotificationClassification {
 		return NotificationClassification{}
 	}
 	switch env.Type {
-	case PiEventCompactionEnd:
+	case contracts.PiEventCompactionEnd:
 		// The boundary signal — repeated boundaries collapse so the chat
 		// shows one marker for "the conversation was compacted at this
 		// point", not a sequence.
-		return NotificationClassification{Kind: NotificationKindCompactionBoundary, Key: "pi:" + PiEventCompactionEnd}
-	case PiEventCompactionStart:
+		return NotificationClassification{Kind: NotificationKindCompactionBoundary, Key: "pi:" + contracts.PiEventCompactionEnd}
+	case contracts.PiEventCompactionStart:
 		// In-progress indicator. Latest wins so the UI shows "compacting…"
 		// once, not once per attempt.
-		return NotificationClassification{Kind: NotificationKindStatus, Key: "pi:" + PiEventCompactionStart}
-	case PiEventAutoRetryStart, PiEventAutoRetryEnd:
+		return NotificationClassification{Kind: NotificationKindStatus, Key: "pi:" + contracts.PiEventCompactionStart}
+	case contracts.PiEventAutoRetryStart, contracts.PiEventAutoRetryEnd:
 		return NotificationClassification{Kind: NotificationKindAPIRetry, Key: "pi:" + env.Type}
 	default:
 		return NotificationClassification{}
@@ -678,4 +753,5 @@ func init() {
 	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, questionRequestContext: opencodeQuestionRequestContext})
 	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, defaultPermissionMode: GooseCLIModeAuto})
 	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX, validateAttachment: reasonixValidateAttachment})
+	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE, zcodeProvider{})
 }

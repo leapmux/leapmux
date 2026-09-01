@@ -16,10 +16,10 @@
 
 import type { AskQuestionState } from '../../controls/types'
 import type { ControlResponseDisplay, PersistedControlResponse } from '../../persistedControlResponse'
+import { PI_DIALOG_METHOD, PI_EVENT } from '~/generated/contracts/pi-protocol'
 import { pickString } from '~/lib/jsonPick'
 import { sendResponse } from '../../controls/types'
 import { label } from '../../persistedControlResponse'
-import { PI_DIALOG_METHOD, PI_EVENT } from './protocol'
 
 const RESPONSE_TYPE = PI_EVENT.ExtensionUIResponse
 

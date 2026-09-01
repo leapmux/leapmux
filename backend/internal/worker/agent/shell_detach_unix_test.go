@@ -21,7 +21,7 @@ func TestBuildShellWrappedCommandStartsANewSession(t *testing.T) {
 			cmd, _, _ := buildShellWrappedCommand(context.Background(), shellWrapSpec{
 				Shell:      "/bin/bash",
 				LoginShell: loginShell,
-				BinaryName: "claude",
+				Launch:     launchSpec{Program: "claude"},
 				WorkingDir: t.TempDir(),
 			})
 			require.NotNil(t, cmd.SysProcAttr, "LoginShell=%v: SysProcAttr must be set", loginShell)
@@ -34,7 +34,7 @@ func TestBuildShellWrappedCommandTcshLoginUsesIc(t *testing.T) {
 	cmd, _, _ := buildShellWrappedCommand(context.Background(), shellWrapSpec{
 		Shell:      "/bin/tcsh",
 		LoginShell: true,
-		BinaryName: "claude",
+		Launch:     launchSpec{Program: "claude"},
 		WorkingDir: t.TempDir(),
 	})
 	require.GreaterOrEqual(t, len(cmd.Args), 2)
@@ -47,9 +47,8 @@ func TestProbeBinaryRunsTheShellInItsOwnSession(t *testing.T) {
 			stub, sidFile := writeSessionRecordingStub(t)
 			t.Setenv("LEAPMUX_SID_FILE", sidFile)
 
-			available, conclusive := probeBinary(context.Background(), stub, loginShell, "claude")
-			require.True(t, conclusive, "stub shell must run to completion")
-			assert.True(t, available, "stub prints the present marker, so the probe treats the binary as present")
+			require.Equal(t, probeYes, probeBinary(context.Background(), stub, loginShell, "claude"),
+				"the stub shell runs to completion and prints the present marker")
 
 			raw, err := os.ReadFile(sidFile)
 			require.NoError(t, err, "stub must record its session id")

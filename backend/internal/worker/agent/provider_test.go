@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/agentlabels"
 )
 
 func TestProviderFor_CodexClassification(t *testing.T) {
@@ -281,6 +282,7 @@ func TestProviderFor_IsInterruptIsolatedPerProvider(t *testing.T) {
 		{"claude", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, `{"type":"control_request","request":{"subtype":"interrupt"}}`},
 		{"codex", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, `{"jsonrpc":"2.0","method":"turn/interrupt"}`},
 		{"pi", leapmuxv1.AgentProvider_AGENT_PROVIDER_PI, `{"type":"abort"}`},
+		{"zcode", leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE, `{"method":"session/stop"}`},
 	}
 	for _, c := range cases {
 		plugin := ProviderFor(c.provider)
@@ -310,14 +312,15 @@ func TestPlanApprovalOptions_PerProvider(t *testing.T) {
 		CodexOptionSandboxPolicy: CodexSandboxDangerFullAccess,
 	}, codex.Bypass)
 
-	// Every other provider settles no plan-approval options (no plan-mode-prompt flow).
-	for _, provider := range []leapmuxv1.AgentProvider{
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_PI,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED,
-	} {
+	// Every OTHER provider settles no plan-approval options (no plan-mode-prompt flow).
+	// The list is derived, so "every other" is literally true and a provider added later
+	// cannot quietly start settling options unnoticed. UNSPECIFIED is appended because
+	// it resolves to the noop plugin, which is the default a new provider inherits.
+	others := append(agentlabels.AllProviders(), leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED)
+	for _, provider := range others {
+		if provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX {
+			continue
+		}
 		opts := ProviderFor(provider).PlanApprovalOptions()
 		assert.Empty(t, opts.Base, "provider %v must settle no base plan-approval options", provider)
 		assert.Empty(t, opts.Bypass, "provider %v must settle no bypass plan-approval options", provider)

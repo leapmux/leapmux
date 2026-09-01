@@ -1,6 +1,6 @@
 import type { ResultDividerModel } from '../../registry'
+import { PI_EVENT } from '~/generated/contracts/pi-protocol'
 import { isObject, pickString } from '~/lib/jsonPick'
-import { PI_EVENT } from '../protocol'
 
 function lastAssistantMessage(messages: unknown): Record<string, unknown> | null {
   if (!Array.isArray(messages))

@@ -554,3 +554,15 @@ func TestInterrupt_ACPWireFormatMatchesProviderClassifier(t *testing.T) {
 	assert.True(t, acpProvider{}.IsInterrupt(string(b)),
 		"acpProvider.IsInterrupt must recognise the frame acpBase.Interrupt emits")
 }
+
+func TestInterrupt_ZCodeWireFormatMatchesProviderClassifier(t *testing.T) {
+	t.Parallel()
+
+	b, err := json.Marshal(map[string]any{
+		"method": ZCodeMethodSessionStop,
+		"params": map[string]any{"sessionId": "sess-1"},
+	})
+	require.NoError(t, err)
+	assert.True(t, zcodeProvider{}.IsInterrupt(string(b)),
+		"zcodeProvider.IsInterrupt must recognise the frame zcodeAgent.Interrupt emits")
+}

@@ -27,6 +27,11 @@ func TestValidateResumeHandleIsTheProvidersOwnRule(t *testing.T) {
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
+		// ZCode is here although it inherits nothing: it OVERRIDES the method and
+		// delegates to the same validator, so the whole token contract is asserted
+		// against the override rather than only the backslash the registry sweep below
+		// covers.
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE,
 	}
 
 	t.Run("a token provider keeps the token rule", func(t *testing.T) {

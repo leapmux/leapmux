@@ -85,6 +85,9 @@ func (svc *Service) buildControlResponsePlan(agentID string, dbAgent db.Agent, c
 	// otherwise reach persistControlResponseRow, where json.RawMessage of empty bytes makes
 	// json.Marshal fail ("unexpected end of JSON input") and silently drop the user's answer row.
 	// Falling back to the raw response bytes keeps the forwarded payload as the persisted response.
+	//
+	// Because this backfill runs, an empty Content can NEVER mean "do not forward". A provider that
+	// must suppress the forward sets resolution.Withhold, which processControlResponse reads.
 	if len(resolution.Content) == 0 {
 		resolution.Content = content
 	}
@@ -231,8 +234,10 @@ func (svc *Service) processControlResponse(agentID string, dbAgent db.Agent, con
 	// Forward the winner's response to the agent unless it withholds its forward. A plan-prompt is
 	// handled server-side and never forwarded (plan.isPlanPrompt()); a context-clearing plan
 	// approval must not race the restart applyWinningControlResponse just kicked off
-	// (withholdsForward keys off the response's clearContext).
-	if plan.isPlanPrompt() || plan.withholdsForward() {
+	// (withholdsForward keys off the response's clearContext); and a provider that could not build
+	// a frame the agent can parse sets resolution.Withhold, which the Content backfill above cannot
+	// express.
+	if plan.isPlanPrompt() || plan.withholdsForward() || plan.resolution.Withhold {
 		return nil, false
 	}
 	return plan.resolution.Content, true
@@ -313,7 +318,8 @@ func (svc *Service) handleControlResponsePromptPlan(agentID string, dbAgent db.A
 	crPayload := plan.decision
 	// The provider owns which options a plan approval settles (the values stay in the plugin);
 	// the service just applies them. Base settles unconditionally; Bypass rides a mode switch.
-	approvalOptions := agent.ProviderFor(dbAgent.AgentProvider).PlanApprovalOptions()
+	plugin := agent.ProviderFor(dbAgent.AgentProvider)
+	approvalOptions := plugin.PlanApprovalOptions()
 	switch plan.behavior() {
 	case agent.ControlBehaviorAllow:
 		svc.persistControlResponseRow(agentID, dbAgent.AgentProvider, plan)
@@ -333,7 +339,8 @@ func (svc *Service) handleControlResponsePromptPlan(agentID string, dbAgent db.A
 		}
 
 		if crPayload.ClearContext {
-			go svc.initiatePlanExecution(agentID, resolveTargetMode(crPayload.PermissionMode, agent.PermissionModeDefault))
+			go svc.initiatePlanExecution(agentID,
+				resolveTargetMode(crPayload.PermissionMode, plugin.PlanModePermissionMode(agent.PlanModeControlPrompt)))
 		} else {
 			// An auto-injected prompt, not the user's own words: no rail dot.
 			svc.sendSyntheticUserMessage(agentID, "Implement the plan.", leapmuxv1.MarkType_MARK_TYPE_UNSPECIFIED)
@@ -397,14 +404,21 @@ func (svc *Service) applyControlResponsePlanModeMutations(agentID string, dbAgen
 		return
 	}
 
+	// The fallback mode is the PROVIDER's own word for the transition, never a constant
+	// spelled here: Claude Code says plan/acceptEdits and ZCode says plan/build, and each
+	// one rejects the other's vocabulary.
+	plugin := agent.ProviderFor(dbAgent.AgentProvider)
 	switch plan.resolution.PlanModeControl {
 	case agent.PlanModeControlEnter:
-		svc.setAgentPermissionModeWithAgent(dbAgent, agent.PermissionModePlan)
+		if enterMode := plugin.PlanModePermissionMode(agent.PlanModeControlEnter); enterMode != "" {
+			svc.setAgentPermissionModeWithAgent(dbAgent, enterMode)
+		}
 	case agent.PlanModeControlExit:
-		// Determine target permission mode from control_response (default AcceptEdits here,
-		// vs Default on the plan-prompt path -- resolveTargetMode owns that fallback).
-		targetMode := resolveTargetMode(crPayload.PermissionMode, agent.PermissionModeAcceptEdits)
-		svc.setAgentPermissionModeWithAgent(dbAgent, targetMode)
+		// The mode the frontend attached wins; otherwise the provider's own exit mode.
+		targetMode := resolveTargetMode(crPayload.PermissionMode, plugin.PlanModePermissionMode(agent.PlanModeControlExit))
+		if targetMode != "" {
+			svc.setAgentPermissionModeWithAgent(dbAgent, targetMode)
+		}
 
 		// Remove the planModeToolUse entry so detectPlanModeFromToolResult
 		// does not override the mode we just set.
@@ -421,14 +435,14 @@ func (svc *Service) applyControlResponsePlanModeMutations(agentID string, dbAgen
 	case agent.PlanModeControlNone, agent.PlanModeControlPrompt:
 		// Neither transitions the permission mode from this path: None carries no
 		// plan-mode intent at all, and Prompt is resolved on the plan-prompt path
-		// (which owns its own Default fallback via resolveTargetMode).
+		// (which reads the same provider method for its own fallback).
 	}
 }
 
 // resolveTargetMode picks the plan-execution target permission mode: the mode the frontend
-// attached to the control response, or `defaultMode` when it attached none. The two plan-mode
-// entry points differ only in that default (PermissionModeDefault on the plan-prompt path,
-// PermissionModeAcceptEdits on the ExitPlanMode path).
+// attached to the control response, or `defaultMode` when it attached none. Both plan-mode
+// entry points read `defaultMode` from the provider's own PlanModePermissionMode, so the two
+// differ only in the transition kind they ask about.
 func resolveTargetMode(permissionMode, defaultMode string) string {
 	if permissionMode != "" {
 		return permissionMode

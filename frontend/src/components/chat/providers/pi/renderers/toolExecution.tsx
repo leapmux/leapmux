@@ -9,6 +9,7 @@ import Terminal from 'lucide-solid/icons/terminal'
 import Wrench from 'lucide-solid/icons/wrench'
 import { createMemo, Show } from 'solid-js'
 import { Dynamic } from 'solid-js/web'
+import { PI_TOOL } from '~/generated/contracts/pi-protocol'
 import { isObject, pickString } from '~/lib/jsonPick'
 import { useSharedExpandedState } from '../../../messageRenderers'
 import { MESSAGE_UI_KEY } from '../../../messageUiKeys'
@@ -19,7 +20,6 @@ import { renderBashTitle } from '../../../toolTitleRenderers'
 import { extractPiBash } from '../extractors/bash'
 import { extractPiRead } from '../extractors/fileEdit'
 import { piExtractTool } from '../extractors/toolCommon'
-import { PI_TOOL } from '../protocol'
 
 interface RendererProps {
   parsed: unknown

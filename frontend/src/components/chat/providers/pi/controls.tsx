@@ -2,6 +2,7 @@ import type { Component } from 'solid-js'
 import type { ActionsProps, ContentProps } from '../../controls/types'
 import { createMemo, createSignal, Match, Show, Switch, untrack } from 'solid-js'
 import { ButtonGroup } from '~/components/common/ButtonGroup'
+import { PI_DIALOG_METHOD } from '~/generated/contracts/pi-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { pickNumber, pickString } from '~/lib/jsonPick'
 import { decodeControlResponseBehavior } from '~/utils/controlResponse'
@@ -16,7 +17,6 @@ import {
   piValueResponse,
   sendPiExtensionResponse,
 } from './controlResponse'
-import { PI_DIALOG_METHOD } from './protocol'
 
 function timeoutHint(payload: Record<string, unknown>): string | null {
   const t = pickNumber(payload, 'timeout')

@@ -13,6 +13,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/agentlabels"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/config"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
@@ -197,6 +198,68 @@ type agentFactoryEntry struct {
 	envModelKey            string   // e.g. "LEAPMUX_CLAUDE_DEFAULT_MODEL"
 	envEffortKey           string   // e.g. "LEAPMUX_CLAUDE_DEFAULT_EFFORT"
 	binaryNames            []string // preferred first; e.g. {"codex", "codex-x86_64-pc-windows-msvc"}
+	// launchResolver replaces the binaryNames probe for a provider whose program is
+	// not a bare name the login shell can resolve (see launchResolverFunc). When set,
+	// binaryNames is unused for both availability and launch.
+	launchResolver launchResolverFunc
+}
+
+// launchSpec says how to invoke a provider's agent program.
+//
+// It exists for a provider that a bare PATH name cannot describe: ZCode ships no
+// executable of its own, only a `zcode.cjs` script inside its desktop bundle, which
+// a Node interpreter has to be handed.
+type launchSpec struct {
+	// Program is the shell word that starts the process: a bare name the shell
+	// resolves through PATH, or an absolute path. buildShellWrappedCommand quotes it.
+	Program string
+	// PrefixArgs precede the provider's own BaseArgs -- the script path an
+	// interpreter must receive before the script's own arguments.
+	PrefixArgs []string
+	// Env are extra KEY=VALUE entries the launched program needs, pinned onto the
+	// spawned environment (ELECTRON_RUN_AS_NODE=1 for ZCode's Electron-as-Node
+	// fallback). Empty for a plain interpreter.
+	Env []string
+}
+
+// launchResolution is the three-state answer a launch resolver gives. It is the
+// launch-side counterpart of probeResult, and it exists for the same reason:
+// ListAvailableProviders must distinguish "the probe ran and the provider is not
+// installed" from "no probe could run", or a broken shell reports an authoritative
+// empty provider list that never retries. The two stay separate types because they
+// answer different questions -- "is this program present" against "how do I start this
+// provider" -- and a resolver that returned probeYes would say nothing about the spec.
+//
+// launchUnknown is the ZERO value on purpose: a resolver that falls off the end of
+// its own logic then reports "nothing established", which is retryable, rather than
+// an authoritative absence.
+type launchResolution int
+
+const (
+	// launchUnknown: no probe established anything. The caller must treat the scan
+	// as incomplete and retryable.
+	launchUnknown launchResolution = iota
+	// launchFound: the returned launchSpec is usable.
+	launchFound
+	// launchMissing: every probe ran and the provider is not usable on this machine.
+	launchMissing
+)
+
+// launchResolverFunc discovers how to launch a provider. The shell path and
+// login-shell flag are the same values probeBinary uses, so a resolver that wants
+// the PATH answer can delegate to checkBinaryAvailable.
+//
+// A resolver MUST return launchUnknown whenever it could not establish an answer --
+// a probe killed by the context, a shell that would not start, an interpreter it
+// could not run. Reporting launchMissing there would freeze a transient failure as
+// "not installed" for the worker's lifetime.
+type launchResolverFunc func(ctx context.Context, shellPath string, loginShell bool) (launchSpec, launchResolution)
+
+// registerLaunchResolver installs a provider's launch resolver. Called from the
+// provider's init() after registerAgentFactory, beside setModelSubGroups and the
+// other entry mutators.
+func registerLaunchResolver(provider leapmuxv1.AgentProvider, fn launchResolverFunc) {
+	mutateFactoryEntry(provider, func(e *agentFactoryEntry) { e.launchResolver = fn })
 }
 
 // agentFactoryRegistry maps each AgentProvider to its registration.
@@ -476,11 +539,17 @@ func ListAvailableProviders(ctx context.Context, shellPath string, useLoginShell
 	type check struct {
 		provider leapmuxv1.AgentProvider
 		binaries []string
+		// resolver, when non-nil, replaces the binaries probe. It answers with the
+		// same three states, so the settled bookkeeping below is identical.
+		resolver launchResolverFunc
 	}
 	var checks []check
 	for provider, reg := range agentFactoryRegistry {
-		if len(reg.binaryNames) > 0 {
-			checks = append(checks, check{provider, reg.binaryNames})
+		switch {
+		case reg.launchResolver != nil:
+			checks = append(checks, check{provider: provider, resolver: reg.launchResolver})
+		case len(reg.binaryNames) > 0:
+			checks = append(checks, check{provider: provider, binaries: reg.binaryNames})
 		}
 	}
 
@@ -492,20 +561,26 @@ func ListAvailableProviders(ctx context.Context, shellPath string, useLoginShell
 	var wg sync.WaitGroup
 	for i, c := range checks {
 		wg.Add(1)
-		go func(idx int, binaries []string) {
+		go func(idx int, c check) {
 			defer wg.Done()
 			settled[idx] = true
-			for _, b := range binaries {
-				available, conclusive := checkBinaryAvailable(ctx, shellPath, useLoginShell, b)
-				if available {
+			if c.resolver != nil {
+				_, res := c.resolver(ctx, shellPath, useLoginShell)
+				found[idx] = res == launchFound
+				settled[idx] = res != launchUnknown
+				return
+			}
+			for _, b := range c.binaries {
+				res := checkBinaryAvailable(ctx, shellPath, useLoginShell, b)
+				if res == probeYes {
 					found[idx] = true
 					return
 				}
-				if !conclusive {
+				if !res.settled() {
 					settled[idx] = false
 				}
 			}
-		}(i, c.binaries)
+		}(i, c)
 	}
 	wg.Wait()
 
@@ -539,13 +614,49 @@ func ListAvailableProviders(ctx context.Context, shellPath string, useLoginShell
 	return result, true
 }
 
+// resolveProviderLaunch resolves how to start a provider's program at spawn time.
+//
+// EVERY provider goes through it, and it reads the SAME registry entry the availability
+// scan reads -- so the two can never disagree about which program a provider runs, and a
+// provider cannot acquire a launch path of its own that the scan knows nothing about.
+// A provider with no resolver takes the binaryNames path: resolveBinaryName picks the
+// first candidate that probes present, and falls back to candidates[0] so the failure
+// surfaces as "command not found" from the shell.
+//
+// An error is returned only for a resolver that reports launchMissing or launchUnknown.
+// Both are startup failures the user must see; they differ for the availability scan,
+// not here, where neither one can start a process.
+func resolveProviderLaunch(
+	ctx context.Context,
+	shellPath string,
+	loginShell bool,
+	provider leapmuxv1.AgentProvider,
+) (launchSpec, error) {
+	entry := agentFactoryRegistry[provider]
+	if fn := entry.launchResolver; fn != nil {
+		spec, res := fn(ctx, shellPath, loginShell)
+		switch res {
+		case launchFound:
+			return spec, nil
+		case launchMissing:
+			return launchSpec{}, fmt.Errorf("%s is not installed on this machine", agentlabels.DisplayName(provider))
+		default:
+			return launchSpec{}, fmt.Errorf("could not determine how to launch %s (the probe did not complete)", agentlabels.DisplayName(provider))
+		}
+	}
+	if len(entry.binaryNames) == 0 {
+		return launchSpec{}, fmt.Errorf("no binary candidates registered for %s", agentlabels.DisplayName(provider))
+	}
+	return launchSpec{Program: resolveBinaryName(ctx, shellPath, loginShell, entry.binaryNames)}, nil
+}
+
 // resolveBinaryName returns the first binary from candidates that is
 // available in the user's shell environment. If none are found, the first
 // candidate is returned so that invocation produces a meaningful
 // "command not found" error rather than silently picking an alias.
 func resolveBinaryName(ctx context.Context, shellPath string, loginShell bool, candidates []string) string {
 	for _, c := range candidates {
-		if available, _ := checkBinaryAvailable(ctx, shellPath, loginShell, c); available {
+		if checkBinaryAvailable(ctx, shellPath, loginShell, c) == probeYes {
 			return c
 		}
 	}
@@ -581,10 +692,10 @@ type binaryAvailabilityKey struct {
 // shell that ran and said no, and a shell that never ran at all. A cached
 // answer is conclusive by construction, because only a conclusive probe
 // is ever cached.
-func checkBinaryAvailable(ctx context.Context, shellPath string, loginShell bool, binaryName string) (available, conclusive bool) {
+func checkBinaryAvailable(ctx context.Context, shellPath string, loginShell bool, binaryName string) probeResult {
 	key := binaryAvailabilityKey{shellPath, loginShell, binaryName}
 	if v, ok := binaryAvailabilityCache.Load(key); ok {
-		return v.(bool), true
+		return v.(probeResult)
 	}
 	// Single-flight per key. A mutex rather than the previous sync.Once:
 	// once an attempt ends without caching (deadline-killed probe), the
@@ -594,16 +705,43 @@ func checkBinaryAvailable(ctx context.Context, shellPath string, loginShell bool
 	mu.Lock()
 	defer mu.Unlock()
 	if v, ok := binaryAvailabilityCache.Load(key); ok {
-		return v.(bool), true
+		return v.(probeResult)
 	}
-	available, conclusive = probeBinary(ctx, shellPath, loginShell, binaryName)
-	if conclusive {
-		binaryAvailabilityCache.Store(key, available)
+	res := probeBinary(ctx, shellPath, loginShell, binaryName)
+	// An unknown result is this call's best answer but never a cached one — the next
+	// caller re-probes with its own deadline.
+	if res.settled() {
+		binaryAvailabilityCache.Store(key, res)
 	}
-	// An inconclusive probe's false is this call's best answer but never a
-	// cached one — the next caller re-probes with its own deadline.
-	return available, conclusive
+	return res
 }
+
+// probeResult is the answer every environment probe in this package gives: does the
+// thing exist, and did the probe ESTABLISH anything at all?
+//
+// It replaces the `(found, conclusive bool)` pair those probes used to return. The pair
+// could spell `(true, false)` -- "it works, but nothing was established" -- which means
+// nothing, and a caller that read only the first boolean silently treated an
+// unestablished answer as a real one. The enum cannot express the contradiction.
+//
+// probeUnknown is the ZERO value on purpose, for the same reason launchUnknown is: a
+// probe that falls off the end of its own logic then reports "nothing established",
+// which is retryable, rather than an authoritative absence.
+type probeResult int
+
+const (
+	// probeUnknown: the probe established nothing. The caller must treat the answer as
+	// incomplete and must not cache it.
+	probeUnknown probeResult = iota
+	// probeYes: the thing is present and usable.
+	probeYes
+	// probeNo: the probe ran and the thing is not present.
+	probeNo
+)
+
+// settled reports whether the probe established anything, so a caller can tell an
+// authoritative absence from a probe that never ran.
+func (r probeResult) settled() bool { return r != probeUnknown }
 
 // probeReachedPresent / probeReachedAbsent are printed by the inner
 // command so a login profile that exits before the probe cannot be
@@ -630,7 +768,7 @@ const (
 //
 // $SHELL reaches here unvalidated (terminal.ResolveDefaultShell does no
 // LookPath), so the start-failure case is reachable, not theoretical.
-func probeBinary(ctx context.Context, shellPath string, loginShell bool, binaryName string) (available, conclusive bool) {
+func probeBinary(ctx context.Context, shellPath string, loginShell bool, binaryName string) probeResult {
 	shellName := terminal.ShellBaseName(shellPath)
 	quoted := posixQuote(binaryName)
 
@@ -672,14 +810,14 @@ func probeBinary(ctx context.Context, shellPath string, loginShell bool, binaryN
 	cmd.Stdout = &stdout
 	_ = cmd.Run()
 	if ctx.Err() != nil {
-		return false, false
+		return probeUnknown
 	}
 	out := stdout.String()
 	if strings.Contains(out, probeReachedPresent) {
-		return true, true
+		return probeYes
 	}
 	if strings.Contains(out, probeReachedAbsent) {
-		return false, true
+		return probeNo
 	}
-	return false, false
+	return probeUnknown
 }
