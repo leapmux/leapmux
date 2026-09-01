@@ -129,6 +129,36 @@ describe('useResumableSessions', () => {
     })
   })
 
+  // EACH of the three, one at a time. A key dropped from the memo would leave
+  // every other case in this file passing while the dialog answered a stale
+  // question: the previous worker's sessions after switching machine, or Codex
+  // sessions under the Claude Code selector -- handles the chosen provider
+  // cannot resume at all.
+  it.each([
+    ['worker', { workerId: 'w-2' }],
+    ['directory', { workingDir: '/other' }],
+    ['provider', { agentProvider: AgentProvider.CODEX }],
+  ])('re-fetches when the %s changes', async (_name, change) => {
+    listAgentSessions.mockResolvedValue(response('ses_a'))
+
+    await createRoot(async (dispose) => {
+      const [args, setArgs] = createSignal<UseResumableSessionsArgs>(ARGS)
+      useResumableSessions(args)
+      await flush()
+      expect(listAgentSessions).toHaveBeenCalledTimes(1)
+
+      setArgs({ ...ARGS, ...change })
+      await flush()
+      expect(listAgentSessions).toHaveBeenCalledTimes(2)
+      expect(listAgentSessions).toHaveBeenLastCalledWith(
+        { ...ARGS, ...change }.workerId,
+        expect.objectContaining(change),
+        expect.anything(),
+      )
+      dispose()
+    })
+  })
+
   // Offering the previous directory's sessions while the new fetch is in
   // flight would invite the user to resume a handle that belongs elsewhere.
   it('clears the list immediately when the source changes', async () => {
