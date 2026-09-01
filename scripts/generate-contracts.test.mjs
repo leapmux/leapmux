@@ -24,6 +24,7 @@ import {
   checkProviders,
   checkRetry,
   checkScopes,
+  checkTabNames,
   checkTheme,
   checkValidate,
   checkWire,
@@ -406,6 +407,50 @@ describe('checkProviderProtocol', () => {
   })
 })
 
+// The pool the worker and the browser dialogs both name tabs from. The schema
+// holds the per-name shape; these are the two relations it cannot express.
+describe('checkTabNames', () => {
+  const ok = () => ({
+    titlePrefixes: { agent: 'Agent', terminal: 'Terminal' },
+    names: ['Ada', 'Bella', 'Gabe', 'Tim'],
+  })
+
+  it('accepts the shipped contract', () => {
+    expect(checkTabNames(readContract('tab-names'))).toEqual({})
+  })
+
+  it('accepts a well-formed contract', () => {
+    expect(checkTabNames(ok())).toEqual({})
+  })
+
+  // Two equal prefixes collapse "Agent Gabe" and "Terminal Gabe" into one
+  // title, and plan-mode auto-rename keys on the agent prefix alone -- it
+  // would start overwriting terminal titles.
+  it('rejects equal title prefixes', () => {
+    expectContractError(
+      () => checkTabNames({ ...ok(), titlePrefixes: { agent: 'Tab', terminal: 'Tab' } }),
+      'title prefixes must differ',
+    )
+  })
+
+  // uniqueItems in the schema catches an exact repeat; sorting is what makes
+  // a near-repeat visible to the reviewer who has to apply the rules the
+  // schema cannot express.
+  it('rejects an unsorted list', () => {
+    expectContractError(
+      () => checkTabNames({ ...ok(), names: ['Ada', 'Gabe', 'Bella', 'Tim'] }),
+      'names must be sorted',
+    )
+  })
+
+  it('rejects a repeated name, which sorting also surfaces', () => {
+    expectContractError(
+      () => checkTabNames({ ...ok(), names: ['Ada', 'Gabe', 'Gabe', 'Tim'] }),
+      'names must be sorted',
+    )
+  })
+})
+
 describe('generate', () => {
   it('emits the shipped domains from the real contracts dir', () => {
     const files = generate(join(ROOT, 'contracts'), DESCRIPTOR)
@@ -417,6 +462,7 @@ describe('generate', () => {
       'backend/generated/contracts/providers.go',
       'backend/generated/contracts/retry.go',
       'backend/generated/contracts/scopes.go',
+      'backend/generated/contracts/tab-names.go',
       'backend/generated/contracts/theme.go',
       'backend/generated/contracts/validate.go',
       'backend/generated/contracts/wire.go',
@@ -430,6 +476,7 @@ describe('generate', () => {
       'frontend/src/generated/contracts/providers.ts',
       'frontend/src/generated/contracts/retry.ts',
       'frontend/src/generated/contracts/scopes.ts',
+      'frontend/src/generated/contracts/tab-names.ts',
       'frontend/src/generated/contracts/theme-default.ts',
       'frontend/src/generated/contracts/validate.ts',
       'frontend/src/generated/contracts/wire.ts',
@@ -566,7 +613,7 @@ describe('checkScopes / checkTheme / checkValidate', () => {
   it('rejects overlapping ranges in the validate contract', () => {
     expectContractError(() => checkValidate({
       name: { byteLimit: 1, invisibleFormat: [[10, 20], [15, 30]], whitespaceFold: [[1, 2]] },
-      session: { byteLimit: 1, invisibleFormat: [[1, 1]], refusedControl: [[0, 1]], refusedAscii: [[2, 2]] },
+      session: { byteLimit: 1, filePathByteLimit: 2, invisibleFormat: [[1, 1]], refusedControl: [[0, 1]], refusedAscii: [[2, 2]] },
       password: { minLength: 1, maxLength: 2, printableAsciiMin: 32, printableAsciiMax: 126 },
       branch: { byteLimit: 1, refusedControl: [[0, 1]], refusedAscii: [[2, 2]] },
     }), 'non-overlapping')
@@ -579,7 +626,7 @@ describe('checkScopes / checkTheme / checkValidate', () => {
     // the browser class still matches the wrong characters.
     expectContractError(() => checkValidate({
       name: { byteLimit: 1, invisibleFormat: [[128545, 128545]], whitespaceFold: [[1, 2]] },
-      session: { byteLimit: 1, invisibleFormat: [[1, 1]], refusedControl: [[0, 1]], refusedAscii: [[2, 2]] },
+      session: { byteLimit: 1, filePathByteLimit: 2, invisibleFormat: [[1, 1]], refusedControl: [[0, 1]], refusedAscii: [[2, 2]] },
       password: { minLength: 1, maxLength: 2, printableAsciiMin: 32, printableAsciiMax: 126 },
       branch: { byteLimit: 1, refusedControl: [[0, 1]], refusedAscii: [[2, 2]] },
     }), 'leaves the BMP')
@@ -588,7 +635,7 @@ describe('checkScopes / checkTheme / checkValidate', () => {
   it('rejects an astral refusedAscii code point', () => {
     expectContractError(() => checkValidate({
       name: { byteLimit: 1, invisibleFormat: [[1, 2]], whitespaceFold: [[3, 4]] },
-      session: { byteLimit: 1, invisibleFormat: [[1, 2]], refusedControl: [[0, 1]], refusedAscii: [[128545, 128545]] },
+      session: { byteLimit: 1, filePathByteLimit: 2, invisibleFormat: [[1, 2]], refusedControl: [[0, 1]], refusedAscii: [[128545, 128545]] },
       password: { minLength: 1, maxLength: 2, printableAsciiMin: 32, printableAsciiMax: 126 },
       branch: { byteLimit: 1, refusedControl: [[0, 1]], refusedAscii: [[2, 2]] },
     }), 'leaves the BMP')
@@ -601,7 +648,7 @@ describe('checkScopes / checkTheme / checkValidate', () => {
     // character set than Go's rune list, with no error anywhere.
     expectContractError(() => checkValidate({
       name: { byteLimit: 1, invisibleFormat: [[1, 2]], whitespaceFold: [[3, 4]] },
-      session: { byteLimit: 1, invisibleFormat: [[1, 2]], refusedControl: [[0, 1]], refusedAscii: [[34, 128545]] },
+      session: { byteLimit: 1, filePathByteLimit: 2, invisibleFormat: [[1, 2]], refusedControl: [[0, 1]], refusedAscii: [[34, 128545]] },
       password: { minLength: 1, maxLength: 2, printableAsciiMin: 32, printableAsciiMax: 126 },
       branch: { byteLimit: 1, refusedControl: [[0, 1]], refusedAscii: [[2, 2]] },
     }), 'leaves the BMP')
@@ -613,10 +660,24 @@ describe('checkScopes / checkTheme / checkValidate', () => {
     // rune from its list.
     expectContractError(() => checkValidate({
       name: { byteLimit: 1, invisibleFormat: [[1, 2]], whitespaceFold: [[3, 4]] },
-      session: { byteLimit: 1, invisibleFormat: [[1, 2]], refusedControl: [[0, 1]], refusedAscii: [[2, 2]] },
+      session: { byteLimit: 1, filePathByteLimit: 2, invisibleFormat: [[1, 2]], refusedControl: [[0, 1]], refusedAscii: [[2, 2]] },
       password: { minLength: 1, maxLength: 2, printableAsciiMin: 32, printableAsciiMax: 126 },
       branch: { byteLimit: 1, refusedControl: [[0, 1]], refusedAscii: [[126, 34]] },
     }), 'inverted')
+  })
+
+  it('rejects a session file-path cap that is not larger than the token cap', () => {
+    // The two caps hold a RELATION, not two independent numbers: a session file
+    // path carries a directory prefix a token never does, and applying the token
+    // cap to a path refused every real one. An edit that lowers the file-path cap
+    // to the token cap must fail generation rather than reintroduce that refusal.
+    expectContractError(() => checkValidate({
+      name: { byteLimit: 1, invisibleFormat: [[1, 2]], whitespaceFold: [[3, 4]] },
+      session: { byteLimit: 1, filePathByteLimit: 1, invisibleFormat: [[1, 2]], refusedControl: [[0, 1]], refusedAscii: [[2, 2]] },
+      password: { minLength: 1, maxLength: 2, printableAsciiMin: 32, printableAsciiMax: 126 },
+      branch: { byteLimit: 1, refusedControl: [[0, 1]], refusedAscii: [[2, 2]] },
+      usernames: { systemReserved: {}, publicReserved: {} },
+    }), 'filePathByteLimit must be > session.byteLimit')
   })
 
   it('rejects a reserved username the Go const mangle cannot spell', () => {
@@ -625,7 +686,7 @@ describe('checkScopes / checkTheme / checkValidate', () => {
     // generation. The check must fail generation with the username named.
     expectContractError(() => checkValidate({
       name: { byteLimit: 1, invisibleFormat: [[1, 2]], whitespaceFold: [[3, 4]] },
-      session: { byteLimit: 1, invisibleFormat: [[1, 2]], refusedControl: [[0, 1]], refusedAscii: [[2, 2]] },
+      session: { byteLimit: 1, filePathByteLimit: 2, invisibleFormat: [[1, 2]], refusedControl: [[0, 1]], refusedAscii: [[2, 2]] },
       password: { minLength: 1, maxLength: 2, printableAsciiMin: 32, printableAsciiMax: 126 },
       branch: { byteLimit: 1, refusedControl: [[0, 1]], refusedAscii: [[2, 2]] },
       usernames: { systemReserved: { 'ci-bot': 'why' }, publicReserved: {} },
@@ -637,7 +698,7 @@ describe('checkScopes / checkTheme / checkValidate', () => {
     // what a token may hold. The generator enforces it next to the data.
     expectContractError(() => checkValidate({
       name: { byteLimit: 1, invisibleFormat: [[1, 2]], whitespaceFold: [[3, 4]] },
-      session: { byteLimit: 1, invisibleFormat: [[1, 3]], refusedControl: [[0, 1]], refusedAscii: [[2, 2]] },
+      session: { byteLimit: 1, filePathByteLimit: 2, invisibleFormat: [[1, 3]], refusedControl: [[0, 1]], refusedAscii: [[2, 2]] },
       password: { minLength: 1, maxLength: 2, printableAsciiMin: 32, printableAsciiMax: 126 },
       branch: { byteLimit: 1, refusedControl: [[0, 1]], refusedAscii: [[2, 2]] },
       usernames: { systemReserved: {}, publicReserved: {} },

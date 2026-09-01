@@ -1984,7 +1984,7 @@ type acpSessionResult struct {
 }
 
 // startACPHandshake performs the common ACP startup handshake: stderr drain,
-// scanner setup, initialize request, session request with resume-fallback,
+// scanner setup, initialize request, session request (new or resume),
 // session ID validation, and UpdateSessionID/BroadcastStatusActive.
 func (b *acpBase) startACPHandshake(
 	stdout, stderr io.ReadCloser,
@@ -2022,20 +2022,14 @@ func (b *acpBase) startACPHandshake(
 	// 2. Send session request (resume or new).
 	sessionMethod, sessionParams := buildACPSessionRequest(opts.ResumeSessionID, opts.WorkingDir, sessionCfg.newMethod, sessionCfg.resumeMethod)
 	sessionResp, err := b.sendRequest(sessionMethod, json.RawMessage(sessionParams), timeout)
-	if err != nil {
-		if opts.ResumeSessionID != "" {
-			slog.Warn("session resume failed, falling back to new session",
-				"agent_id", b.agentID, "session_id", opts.ResumeSessionID, "error", err)
-			_, fallbackParams := buildACPSessionRequest("", opts.WorkingDir, sessionCfg.newMethod, sessionCfg.resumeMethod)
-			sessionResp, err = b.sendRequest(sessionCfg.newMethod, json.RawMessage(fallbackParams), timeout)
-		}
-		if err != nil {
-			cleanup()
-			return nil, b.formatStartupError(sessionMethod, err)
-		}
+	if err == nil {
+		err = jsonRPCResultError(sessionResp)
 	}
-	if err := jsonRPCResultError(sessionResp); err != nil {
+	if err != nil {
 		cleanup()
+		if opts.ResumeSessionID != "" {
+			return nil, b.formatStartupError(sessionMethod, resumeFailedError(opts.ResumeSessionID, err))
+		}
 		return nil, b.formatStartupError(sessionMethod, err)
 	}
 

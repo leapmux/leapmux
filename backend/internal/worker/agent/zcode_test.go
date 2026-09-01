@@ -99,7 +99,7 @@ func TestApplyStateSnapshot_EmptyIsANoop(t *testing.T) {
 	assert.Equal(t, "sess-1", sessionID)
 }
 
-// --- opening a session: the resume handle, and the fallbacks when it does not hold ---
+// --- opening a session: the resume handle, and what happens when it does not hold ---
 
 func TestZCodeOpenSession_ResumeAdoptsTheSessionAndSkipsCreate(t *testing.T) {
 	t.Parallel()
@@ -167,10 +167,14 @@ func TestZCodeOpenSession_ResumedSessionSubscribesAfterTheSnapshotSequence(t *te
 	assert.Equal(t, int64(42), params.AfterSeq, "the resumed transcript must not be replayed")
 }
 
-// The handle comes from a previous run, and the app-server discards a session whose
-// store it can no longer read. A refused resume must open a fresh session rather
-// than leave the user with an agent that cannot start.
-func TestZCodeOpenSession_FallsBackToCreateWhenResumeFails(t *testing.T) {
+// A resume the app-server refuses fails the whole start.
+//
+// Creating a fresh session instead discards the conversation that the user asked
+// to continue: the tab comes up with no history, and the only record is a log
+// line on the worker that nobody reads. The stored handle also survives a
+// visible failure, so a resume that fails on a condition that passes succeeds on
+// the next start.
+func TestZCodeOpenSession_RefusedResumeFailsTheStart(t *testing.T) {
 	t.Parallel()
 
 	stdin := &zcodeRecordedStdin{}
@@ -180,32 +184,31 @@ func TestZCodeOpenSession_FallsBackToCreateWhenResumeFails(t *testing.T) {
 	a.mu.Unlock()
 
 	refuseZCodeRequest(t, a, stdin, ZCodeMethodSessionResume, ZCodeErrSessionNotActive, "no such session")
-	answerZCodeRequest(t, a, stdin, ZCodeMethodSessionCreate,
-		`{"session":{"sessionId":"sess-fresh"},"runtime":{"eventSeq":0}}`)
 
-	require.NoError(t, a.openSession("sess-gone", zcodeTestRPCTimeout))
+	err := a.openSession("sess-gone", zcodeTestRPCTimeout)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sess-gone", "the handle that failed is what the user has to replace")
+	assert.Contains(t, err.Error(), "/clear", "the failure must state the command that recovers the tab")
 
 	requests := stdin.Requests(t)
-	require.Len(t, requests, 2)
-	assert.Equal(t, ZCodeMethodSessionResume, requests[0].Method, "the resume is attempted first")
-	assert.Equal(t, ZCodeMethodSessionCreate, requests[1].Method)
-	var create map[string]any
-	require.NoError(t, json.Unmarshal(requests[1].Params, &create))
-	assert.NotContains(t, create, "sessionId", "session/create mints its own id; the dead handle must not reach it")
+	require.Len(t, requests, 1, "a refused resume must not open a session behind the user's back")
+	assert.Equal(t, ZCodeMethodSessionResume, requests[0].Method)
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	assert.Equal(t, "sess-fresh", a.sessionID)
+	assert.Empty(t, a.sessionID, "no session was opened, so the agent adopts none")
 }
 
-// A resume that answers with no usable session id abandons that document entirely.
+// A resume that answers with no usable session id fails too, and abandons that
+// document WHOLE.
 //
 // "unknown" is the app-server's placeholder for "no session exists", so this reply
 // describes no session -- but it still carries a sequence, a mode and a context
-// window. Folding any of them into the fresh session below corrupts it: the fresh
-// session numbers its events from zero, so the carried sequence becomes a watermark
-// that makes dispatchZCodeEvent drop every event under it as a duplicate.
-func TestZCodeOpenSession_AbandonedResumeSnapshotIsNotFolded(t *testing.T) {
+// window. None of them may reach the agent: the app-server numbers protocol events
+// per session from one, so a carried sequence becomes a watermark that makes
+// dispatchZCodeEvent drop later events as duplicates, and `yolo` is a mode that
+// approves every tool call by itself.
+func TestZCodeOpenSession_ResumeWithNoUsableSessionIDFailsTheStart(t *testing.T) {
 	t.Parallel()
 
 	stdin := &zcodeRecordedStdin{}
@@ -218,23 +221,21 @@ func TestZCodeOpenSession_AbandonedResumeSnapshotIsNotFolded(t *testing.T) {
 	answerZCodeRequest(t, a, stdin, ZCodeMethodSessionResume,
 		`{"session":{"sessionId":"unknown"},"runtime":{"eventSeq":9},`+
 			`"settings":{"mode":{"current":"yolo"}},"projection":{"contextWindow":123456}}`)
-	answerZCodeRequest(t, a, stdin, ZCodeMethodSessionCreate,
-		`{"session":{"sessionId":"sess-fresh"},"runtime":{"eventSeq":0}}`)
 
-	require.NoError(t, a.openSession("sess-gone", zcodeTestRPCTimeout))
+	err := a.openSession("sess-gone", zcodeTestRPCTimeout)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sess-gone")
+	assert.Contains(t, err.Error(), "/clear")
 
 	requests := stdin.Requests(t)
-	require.Len(t, requests, 2)
-	assert.Equal(t, ZCodeMethodSessionCreate, requests[1].Method)
+	require.Len(t, requests, 1, "a resume that adopts nothing must not open a session instead")
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	assert.Equal(t, "sess-fresh", a.sessionID)
-	assert.Zero(t, a.lastSeq, "the abandoned sequence must not become the fresh session's watermark")
-	// applyStartupSettings keeps the observed mode wherever the launch asked for none,
-	// so a mode folded from the abandoned session would be pinned onto the fresh one.
+	assert.Empty(t, a.sessionID)
+	assert.Zero(t, a.lastSeq, "the abandoned sequence must not become a watermark")
 	assert.Equal(t, contracts.ZCodeDefaultMode, a.mode, "the abandoned session's mode must not survive")
-	assert.Zero(t, a.contextWindow, "the abandoned session's context window must not label the fresh session's usage")
+	assert.Zero(t, a.contextWindow, "the abandoned session's context window must not label this agent's usage")
 }
 
 func TestZCodeOpenSession_WithoutAHandleGoesStraightToCreate(t *testing.T) {

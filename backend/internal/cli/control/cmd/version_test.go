@@ -4,12 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
 	"github.com/leapmux/leapmux/internal/cli/control"
 )
 
@@ -86,7 +86,7 @@ func TestRunVersion_NoHubPrintsCLIOnly(t *testing.T) {
 // fields, the "hub_error" field is absent, and the hub map echoes the
 // JSON the server returned.
 func TestRunVersion_WithHubFetchesAndIncludesHub(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/version" {
 			http.NotFound(w, r)
 			return
@@ -156,7 +156,7 @@ func TestRunVersion_HubUnreachableSurfacesHubError(t *testing.T) {
 // expose /version yet). Behaviour matches the unreachable case: the
 // envelope carries "hub_error" instead of "hub".
 func TestRunVersion_HubNon200SurfacesHubError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not found", http.StatusNotFound)
 	}))
 	defer srv.Close()
@@ -180,7 +180,7 @@ func TestRunVersion_HubNon200SurfacesHubError(t *testing.T) {
 // decode-failure branch: a hub returning HTML or partial JSON should
 // not crash the command; it should be reported under hub_error.
 func TestRunVersion_HubMalformedJSONSurfacesHubError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte("{not json"))
 	}))
@@ -204,7 +204,7 @@ func TestRunVersion_HubMalformedJSONSurfacesHubError(t *testing.T) {
 // to a doubled slash.
 func TestRunVersion_TrailingSlashHubURL(t *testing.T) {
 	hits := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/version" {
 			hits++
 			_ = json.NewEncoder(w).Encode(map[string]string{"version": "ok"})
@@ -225,4 +225,40 @@ func TestRunVersion_TrailingSlashHubURL(t *testing.T) {
 	require.NoError(t, json.Unmarshal(out, &env))
 	require.Contains(t, env.Data, "hub")
 	assert.Equal(t, 1, hits)
+}
+
+// TestRunVersion_ReachesAHubOverASocket covers a hub addressed by `unix:` or
+// `npipe:`.
+//
+// This command built its own http.Client, which cannot dial a socket, so it
+// answered "unsupported protocol scheme" against a hub reached over its IPC
+// listener -- the deployment `--local-listen` exists for. Routing it through
+// hubtransport, as every other hub call goes, is what gives it the dialer.
+func TestRunVersion_ReachesAHubOverASocket(t *testing.T) {
+	socketURL := serveVersionOverSocket(t)
+
+	out := withCapturedStdout(t, func() {
+		err := RunVersion(fakeCmdCtx{}, []string{"--hub", socketURL})
+		require.NoError(t, err)
+	})
+
+	var env struct {
+		Data map[string]any `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(out, &env))
+	require.NotContains(t, env.Data, "hub_error", "the socket hub must be reachable")
+	require.Contains(t, env.Data, "hub")
+	assert.Equal(t, "9.9.9", env.Data["hub"].(map[string]any)["version"])
+}
+
+// serveVersionOverSocket serves /version on a unix socket or a Windows named
+// pipe, over both protocols, as the hub's own local listener does.
+func serveVersionOverSocket(t *testing.T) string {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/version", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"version": "9.9.9", "formatted": "9.9.9"})
+	})
+	return hubtransporttest.NewSocketServer(t, "cliversion", mux)
 }

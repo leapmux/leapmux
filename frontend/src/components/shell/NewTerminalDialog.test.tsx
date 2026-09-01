@@ -92,3 +92,96 @@ describe('newTerminalDialog tab-placement guard', () => {
     expect(screen.queryByTestId('new-tab-blocked-reason')).toBeNull()
   })
 })
+
+describe('newTerminalDialog title', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('pre-fills a title from the shared pool', async () => {
+    renderDialog()
+
+    const input = await screen.findByTestId('title-input') as HTMLInputElement
+    expect(input.value).toMatch(/^Terminal [A-Z][A-Za-z]+$/)
+  })
+
+  it('re-rolls the title from the refresh button', async () => {
+    renderDialog()
+
+    const input = await screen.findByTestId('title-input') as HTMLInputElement
+    // The pool has hundreds of names, so a single re-roll can legitimately
+    // repeat. Click until the value changes rather than asserting one click
+    // differs, which would be flaky by construction.
+    const first = input.value
+    for (let i = 0; i < 50 && input.value === first; i++)
+      fireEvent.click(screen.getByTestId('title-regenerate'))
+    expect(input.value).not.toBe(first)
+    expect(input.value).toMatch(/^Terminal [A-Z][A-Za-z]+$/)
+  })
+
+  it('sends the cleaned title to the worker', async () => {
+    renderDialog()
+
+    fireEvent.input(await screen.findByTestId('title-input'), {
+      target: { value: '  Build   logs  ' },
+    })
+    const createButton = await findCreateButton()
+    await waitFor(() => expect(createButton).not.toBeDisabled())
+    fireEvent.click(createButton)
+
+    await waitFor(() => expect(openTerminalMock).toHaveBeenCalledOnce())
+    expect(openTerminalMock).toHaveBeenCalledWith('w-1', expect.objectContaining({
+      title: 'Build logs',
+    }))
+  })
+
+  // An empty title must not reach the worker: it would silently re-name the
+  // tab from its own pool, so the user's cleared field would look ignored.
+  it('disables submit and fires no RPC when the title is emptied', async () => {
+    renderDialog()
+
+    const createButton = await findCreateButton()
+    await waitFor(() => expect(createButton).not.toBeDisabled())
+    fireEvent.input(screen.getByTestId('title-input'), { target: { value: '   ' } })
+
+    await waitFor(() => expect(createButton).toBeDisabled())
+    expect(screen.getByText('Name must not be empty')).toBeInTheDocument()
+    fireEvent.submit(document.querySelector('form')!)
+    expect(openTerminalMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('newTerminalDialog shell field', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('re-issues listAvailableShells from the refresh button', async () => {
+    renderDialog()
+
+    // Wait for the mount-time fetch to settle, so the click's fetch is the
+    // second call rather than a race with the first.
+    await waitFor(() => expect(workerRpc.listAvailableShells).toHaveBeenCalledOnce())
+    fireEvent.click(screen.getByTestId('shell-selector-refresh'))
+
+    await waitFor(() => expect(workerRpc.listAvailableShells).toHaveBeenCalledTimes(2))
+  })
+
+  // A failed load writes the dialog's error banner (the RPC's own message,
+  // per formatErrorMessage), and nothing used to withdraw it: the refresh
+  // button repopulated the menu and armed Create while the banner still
+  // reported the failure -- the one state that button exists to leave.
+  it('clears the load failure once a refresh succeeds', async () => {
+    vi.mocked(workerRpc.listAvailableShells).mockRejectedValueOnce(new Error('worker offline'))
+    renderDialog()
+
+    await waitFor(() => expect(screen.getByText('worker offline')).toBeInTheDocument())
+    const createButton = await findCreateButton()
+    expect(createButton).toBeDisabled()
+
+    fireEvent.click(screen.getByTestId('shell-selector-refresh'))
+
+    await waitFor(() => expect(screen.queryByText('worker offline')).not.toBeInTheDocument())
+    await waitFor(() => expect(createButton).not.toBeDisabled())
+  })
+})

@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
 	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 
 	"connectrpc.com/connect"
@@ -181,7 +182,7 @@ func TestPersistTokenResponse_WarnsWhenAScopeWasNotGranted(t *testing.T) {
 func TestRunAuthLogin_WarnsWhenTheRevokeFails(t *testing.T) {
 	isolateCLIEnv(t)
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/oauth/revoke":
 			w.WriteHeader(http.StatusInternalServerError)
@@ -216,7 +217,7 @@ func TestRunAuthLogin_WarnsWhenTheRevokeFails(t *testing.T) {
 func TestRunAuthLogin_CleansUpAnUnreadableCredentialFile(t *testing.T) {
 	isolateCLIEnv(t)
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "refused", http.StatusInternalServerError)
 	}))
 	t.Cleanup(srv.Close)
@@ -273,7 +274,7 @@ func TestRunAuthLogout_RevokesAndRemovesCreds(t *testing.T) {
 
 	revoked := false
 	gotAuth := ""
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/oauth/revoke" {
 			revoked = true
 			gotAuth = r.Header.Get("Authorization")
@@ -325,7 +326,7 @@ func TestRunAuthLogout_RevokesAndRemovesCreds(t *testing.T) {
 // names must be the one the Preferences dialog actually draws.
 func TestRunAuthLogout_WarnsWhereToFinishTheJob(t *testing.T) {
 	isolateCLIEnv(t)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, "/oauth/revoke", r.URL.Path)
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
@@ -365,7 +366,7 @@ func TestRunAuthLogout_SucceedsWhenTheRowIsAlreadyGone(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			isolateCLIEnv(t)
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			srv := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				require.Equal(t, "/oauth/revoke", r.URL.Path)
 				w.WriteHeader(status)
 			}))
@@ -399,7 +400,7 @@ func TestRunAuthLogout_SucceedsWhenTheRowIsAlreadyGone(t *testing.T) {
 // credential does not stay live behind a clean result.
 func TestRunAuthLogout_WarnsWhenTheHubRefusesTheRevoke(t *testing.T) {
 	isolateCLIEnv(t)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	t.Cleanup(srv.Close)
@@ -576,7 +577,7 @@ func TestRunAuthLogin_DeviceCodeFlowFinishesOnAuthorizedPoll(t *testing.T) {
 	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", dir)
 
 	tokenHits := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/oauth/device-authorization":
 			w.Header().Set("Content-Type", "application/json")
@@ -630,7 +631,7 @@ func TestRunAuthLogin_DeviceCodeFlowSurfacesAccessDenied(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", dir)
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/oauth/device-authorization":
 			w.Header().Set("Content-Type", "application/json")
@@ -674,7 +675,7 @@ func TestRunAuthLogin_DeviceCodeFlowSurfacesAccessDenied(t *testing.T) {
 // listener. Serving the RFC 8628 endpoints on a locallisten socket
 // and driving --hub unix:… --device-code proves the CLI actually
 // dials the socket (the handler runs) against the placeholder
-// http://localhost origin LocalHTTPClient uses, and that the
+// http://localhost origin the local transport uses, and that the
 // credential file is still keyed by the unix: URL.
 func TestRunAuthLogin_DeviceCodeFlowDialsSocketHub(t *testing.T) {
 	dir := t.TempDir()
@@ -739,7 +740,7 @@ func TestRunAuthLogin_DeviceCodeFlowDialsSocketHub(t *testing.T) {
 	defer mu.Unlock()
 	assert.Equal(t, 1, authHits, "device-authorization must arrive on the socket — DefaultClient cannot dial it")
 	assert.Equal(t, 1, tokenHits, "the token poll must also arrive on the socket")
-	assert.Equal(t, "localhost", seenHost, "LocalHTTPClient dials the socket against the placeholder http://localhost origin")
+	assert.Equal(t, "localhost", seenHost, "cliHTTPClient dials the socket against the placeholder http://localhost origin")
 }
 
 // TestRunAuthLogin_LocalRedirectRefusesSocketURL pins the other socket
@@ -783,6 +784,29 @@ func TestRunAuthLogin_DeviceCodeFlowSocketUnreachable(t *testing.T) {
 		"a scheme error means DefaultClient saw the unix:/npipe: URL; cliHTTPClient must dial it")
 }
 
+// TestRunAuthLogin_UnsupportedHubSchemeIsReportedAtTheFlag covers a --hub value
+// no transport can be built for.
+//
+// The transport factory could not fail before: a socket client that would not
+// build fell through to a plain client, and the request then failed later with
+// "unsupported protocol scheme" -- a message from net/http that names neither
+// the flag nor the schemes that ARE accepted. Reporting it where the URL is
+// read gives the user both.
+func TestRunAuthLogin_UnsupportedHubSchemeIsReportedAtTheFlag(t *testing.T) {
+	out := withCapturedStdout(t, func() {
+		err := RunAuthLogin(fakeCmdCtx{}, []string{"--hub", "ftp://hub.example", "--device-code"})
+		require.Error(t, err)
+		assert.True(t, control.IsEmitted(err))
+	})
+	var env struct {
+		Error map[string]string `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(jsonTail(t, out), &env))
+	assert.Equal(t, "invalid_hub_url", env.Error["code"])
+	assert.Contains(t, env.Error["message"], "ftp://hub.example", "the message must name the URL that was refused")
+	assert.Contains(t, env.Error["message"], "http://", "and the schemes that are accepted")
+}
+
 // jsonTail returns the JSON envelope at the end of out, skipping the
 // device-code flow's plain-prose preamble.
 func jsonTail(t *testing.T, out []byte) []byte {
@@ -805,7 +829,7 @@ func TestRevokeBearer_NoOpOnEmptyBearer(t *testing.T) {
 func TestRevokeBearer_SendsAuthorizationHeader(t *testing.T) {
 	gotAuth := ""
 	gotForm := ""
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
 		body, _ := io.ReadAll(r.Body)
 		gotForm = string(body)
@@ -865,7 +889,7 @@ func TestRunAuthCredentials_ListsTheAccountCredentials(t *testing.T) {
 	mux := http.NewServeMux()
 	path, handler := leapmuxv1connect.NewUserServiceHandler(&stubMyTokensService{})
 	mux.Handle(path, handler)
-	srv := httptest.NewServer(mux)
+	srv := hubtransporttest.NewServer(t, mux)
 	defer srv.Close()
 
 	isolateCLIEnv(t)
@@ -933,7 +957,7 @@ func TestRunAuthCredentials_AsksForTheHubsMaximumPage(t *testing.T) {
 	mux := http.NewServeMux()
 	path, handler := leapmuxv1connect.NewUserServiceHandler(stub)
 	mux.Handle(path, handler)
-	srv := httptest.NewServer(mux)
+	srv := hubtransporttest.NewServer(t, mux)
 	t.Cleanup(srv.Close)
 
 	isolateCLIEnv(t)
@@ -1063,7 +1087,7 @@ func TestCallbackHandlerReportsTheServerErrorParameter(t *testing.T) {
 // client speaks binary proto, so the body is a marshalled message, not JSON.
 func currentUserServer(t *testing.T, username string, isAdmin bool) *httptest.Server {
 	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/leapmux.v1.AuthService/GetCurrentUser" {
 			http.NotFound(w, r)
 			return
@@ -1084,7 +1108,7 @@ func currentUserServer(t *testing.T, username string, isAdmin bool) *httptest.Se
 // the credential is valid, but this one read sits beyond its ceiling.
 func currentUserPermissionDeniedServer(t *testing.T) *httptest.Server {
 	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/leapmux.v1.AuthService/GetCurrentUser" {
 			http.NotFound(w, r)
 			return
@@ -1164,7 +1188,7 @@ func TestRunAuthList_PrintsUTC(t *testing.T) {
 func TestRunAuthStatus_WarnsWhenTheHubCannotBeAsked(t *testing.T) {
 	isolateCLIEnv(t)
 	// A server that is already closed: the URL stays valid, the hub is gone.
-	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	srv := hubtransporttest.NewServer(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	srv.Close()
 	liveCredentialFor(t, srv.URL)
 
@@ -1185,7 +1209,7 @@ func TestRunAuthStatus_RefusedMeansSignedOut(t *testing.T) {
 	// The hub answers the RPC itself with 401, and the rotation the
 	// interceptor then attempts with invalid_grant -- which deletes the
 	// credential file on the way through.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/leapmux.v1.AuthService/GetCurrentUser":
 			w.Header().Set("Content-Type", "application/json")
@@ -1284,7 +1308,7 @@ func TestRunAuthLogin_CleansUpTheExistingLoginFirst(t *testing.T) {
 	isolateCLIEnv(t)
 
 	revoked := false
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/oauth/revoke":
 			revoked = true
@@ -1321,7 +1345,7 @@ func TestRunAuthLogin_RefusedFlagKeepsTheExistingLogin(t *testing.T) {
 	isolateCLIEnv(t)
 
 	revoked := false
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/oauth/revoke" {
 			revoked = true
 			w.WriteHeader(http.StatusOK)
@@ -1352,7 +1376,7 @@ func TestRunAuthLogin_RefusedFlagKeepsTheExistingLogin(t *testing.T) {
 // fields the file still answers.
 func TestRunAuthStatus_FallsBackWhenTheProxyDropsTheRoute(t *testing.T) {
 	isolateCLIEnv(t)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r) // a proxy that no longer routes the hub
 	}))
 	t.Cleanup(srv.Close)
@@ -1378,7 +1402,7 @@ func TestRunAuthStatus_FallsBackWhenTheProxyDropsTheRoute(t *testing.T) {
 func TestRunAuthStatus_HungHubCannotHoldTheCommand(t *testing.T) {
 	isolateCLIEnv(t)
 	hang := make(chan struct{})
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		<-hang // accept, then stall every route the check touches
 	}))
 	// LIFO: unblock the stalled handlers BEFORE the server's Close waits

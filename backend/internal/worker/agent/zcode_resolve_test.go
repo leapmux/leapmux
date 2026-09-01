@@ -488,24 +488,54 @@ func TestFindZCodeScript_TakesTheFirstThatExists(t *testing.T) {
 	assert.False(t, found)
 }
 
+// absPath builds an absolute path for the RUNNING OS out of segments.
+//
+// A POSIX literal cannot stand in for one. An absolute path on Windows carries
+// a volume, so filepath.IsAbs(`/usr/bin/node`) and filepath.IsAbs(`\tmp\x`) are
+// both FALSE there -- and the production code asks filepath.IsAbs whether a
+// path is one the OS can execute. A fixture that is absolute on POSIX alone
+// therefore makes a Windows run assert the opposite of what the case means.
+func absPath(segments ...string) string {
+	root := "/"
+	if runtime.GOOS == "windows" {
+		root = `C:\`
+	}
+	return filepath.Join(append([]string{root}, segments...)...)
+}
+
+// absPath is only useful if what it returns is absolute HERE, and the OS that
+// gets that wrong is the one no developer runs the suite on. This case is what
+// makes the Windows runner check it.
+func TestAbsPath_IsAbsoluteOnTheRunningOS(t *testing.T) {
+	t.Parallel()
+
+	assert.True(t, filepath.IsAbs(absPath("usr", "bin", "node")),
+		"absPath must produce an absolute path on %s", runtime.GOOS)
+}
+
 // The installation root is three levels above the script, which is what makes the
 // bundled runtime derivable from the script path alone.
 func TestBundledRuntimeCandidates_AreDerivedFromTheScriptPath(t *testing.T) {
 	t.Parallel()
 
-	script := filepath.Join("/tmp", "install", "resources", "glm", "zcode.cjs")
+	script := absPath("tmp", "install", "resources", "glm", "zcode.cjs")
 	candidates := bundledRuntimeCandidates(script)
 	require.NotEmpty(t, candidates)
 	for _, p := range candidates {
-		assert.True(t, filepath.IsAbs(p))
+		assert.True(t, filepath.IsAbs(p), "a candidate must be an absolute path: %s", p)
 	}
-	if runtime.GOOS == "linux" {
-		assert.Equal(t, filepath.Join("/tmp", "install", "zcode"), candidates[0])
-	}
-	if runtime.GOOS == "darwin" {
+	switch runtime.GOOS {
+	case "linux":
+		assert.Equal(t, absPath("tmp", "install", "zcode"), candidates[0])
+	case "windows":
 		assert.Equal(t, []string{
-			filepath.Join("/tmp", "install", "Frameworks", "ZCode Helper.app", "Contents", "MacOS", "ZCode Helper"),
-			filepath.Join("/tmp", "install", "MacOS", "ZCode"),
+			absPath("tmp", "install", "ZCode.exe"),
+			absPath("tmp", "install", "zcode.exe"),
+		}, candidates)
+	case "darwin":
+		assert.Equal(t, []string{
+			absPath("tmp", "install", "Frameworks", "ZCode Helper.app", "Contents", "MacOS", "ZCode Helper"),
+			absPath("tmp", "install", "MacOS", "ZCode"),
 		}, candidates, "the Helper is first so ELECTRON_RUN_AS_NODE does not appear in the Dock")
 	}
 }
@@ -673,19 +703,24 @@ func TestBundledInterpreters_OnlyIncludesWhatExists(t *testing.T) {
 func TestParseProgramPathProbe(t *testing.T) {
 	t.Parallel()
 
+	// The paths are built for the running OS, because the parser accepts only a
+	// path this OS can execute -- see absPath.
+	resolved := absPath("usr", "local", "bin", "node")
+	system := absPath("usr", "bin", "node")
+
 	cases := map[string]struct {
 		out  string
 		path string
 		want probeResult
 	}{
 		"a resolved absolute path": {
-			probeReachedPresent + "\n/usr/local/bin/node\n", "/usr/local/bin/node", probeYes,
+			probeReachedPresent + "\n" + resolved + "\n", resolved, probeYes,
 		},
 		"blank lines before the path are skipped": {
-			probeReachedPresent + "\n\n  /usr/bin/node  \n", "/usr/bin/node", probeYes,
+			probeReachedPresent + "\n\n  " + system + "  \n", system, probeYes,
 		},
 		"profile noise before the marker is ignored": {
-			"welcome to your shell\n" + probeReachedPresent + "\n/usr/bin/node\n", "/usr/bin/node", probeYes,
+			"welcome to your shell\n" + probeReachedPresent + "\n" + system + "\n", system, probeYes,
 		},
 		"a settled absence": {
 			probeReachedAbsent + "\n", "", probeNo,

@@ -18,12 +18,15 @@ func TestClaudeResumeArgs(t *testing.T) {
 	t.Parallel()
 
 	t.Run("passes an ordinary session ID", func(t *testing.T) {
-		assert.Equal(t, []string{"--resume", "3f9a1c2e-77b4-4d81-9e0f-5a6b7c8d9e0f"},
-			claudeResumeArgs("agent-1", "3f9a1c2e-77b4-4d81-9e0f-5a6b7c8d9e0f"))
+		args, err := claudeResumeArgs("3f9a1c2e-77b4-4d81-9e0f-5a6b7c8d9e0f")
+		require.NoError(t, err)
+		assert.Equal(t, []string{"--resume", "3f9a1c2e-77b4-4d81-9e0f-5a6b7c8d9e0f"}, args)
 	})
 
 	t.Run("passes nothing when there is nothing to resume", func(t *testing.T) {
-		assert.Nil(t, claudeResumeArgs("agent-1", ""))
+		args, err := claudeResumeArgs("")
+		require.NoError(t, err)
+		assert.Nil(t, args)
 	})
 
 	// The case the guard exists for. `--resume` takes an optional value, so a
@@ -38,8 +41,9 @@ func TestClaudeResumeArgs(t *testing.T) {
 			"-",
 			"--",
 		} {
-			assert.Nilf(t, claudeResumeArgs("agent-1", id),
-				"%q must not reach argv: it parses as a flag, not as the value of --resume", id)
+			args, err := claudeResumeArgs(id)
+			require.Errorf(t, err, "%q must not reach argv: it parses as a flag, not as the value of --resume", id)
+			assert.Nil(t, args)
 		}
 	})
 
@@ -57,13 +61,26 @@ func TestClaudeResumeArgs(t *testing.T) {
 			"has\xffinvalid-utf8",
 			strings.Repeat("a", 129),
 		} {
-			assert.Nilf(t, claudeResumeArgs("agent-1", id), "%q must not reach argv", id)
+			args, err := claudeResumeArgs(id)
+			require.Errorf(t, err, "%q must not reach argv", id)
+			assert.Nil(t, args)
 		}
 	})
 
+	// A refused token fails the START. Dropping `--resume` and launching anyway
+	// opens a fresh session that looks like the resumed one, so the user loses
+	// the conversation with no report of why. The message states the handle and
+	// the command that replaces it.
+	t.Run("reports the refused handle and how to recover the tab", func(t *testing.T) {
+		_, err := claudeResumeArgs("--dangerously-skip-permissions")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "--dangerously-skip-permissions")
+		assert.Contains(t, err.Error(), "/clear")
+	})
+
 	// The guard must not become stricter than the rule it delegates to. A
-	// hyphen INSIDE a UUID is the common case, and refusing it would silently
-	// stop every resume.
+	// hyphen INSIDE a UUID is the common case, and refusing it would stop every
+	// resume.
 	t.Run("keeps resuming the identifiers real providers issue", func(t *testing.T) {
 		for _, id := range []string{
 			"3f9a1c2e-77b4-4d81-9e0f-5a6b7c8d9e0f",
@@ -72,8 +89,8 @@ func TestClaudeResumeArgs(t *testing.T) {
 			"a--b",
 			"abc-123-",
 		} {
-			got := claudeResumeArgs("agent-1", id)
-			require.Lenf(t, got, 2, "%q is a legitimate identifier and must still resume", id)
+			got, err := claudeResumeArgs(id)
+			require.NoErrorf(t, err, "%q is a legitimate identifier and must still resume", id)
 			assert.Equal(t, []string{"--resume", id}, got)
 		}
 	})

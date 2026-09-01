@@ -2,13 +2,10 @@ package hub
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,17 +13,15 @@ import (
 	"sync/atomic"
 	"time"
 
-	"golang.org/x/net/http2"
-
 	"connectrpc.com/connect"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/hubtransport"
 	"github.com/leapmux/leapmux/internal/metrics"
 	"github.com/leapmux/leapmux/internal/sendq"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
-	"github.com/leapmux/leapmux/locallisten"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -39,7 +34,7 @@ import (
 type Client struct {
 	connector  leapmuxv1connect.WorkerConnectorServiceClient
 	reconciler leapmuxv1connect.WorkerReconcilerServiceClient
-	hubURL     string
+	endpoint   *hubtransport.Endpoint
 	authToken  string
 	agents     *agent.Manager
 	terminals  *terminal.Manager
@@ -106,13 +101,18 @@ type Client struct {
 }
 
 // New creates a new Hub client with integrated lifecycle management.
-// It creates agent and terminal managers internally.
-// hubURL may be:
-//   - http[s]://host:port — a remote Hub reached over TCP
-//   - unix:<socket-path>  — a local Hub reached over a Unix domain socket
-//   - npipe:<pipe-name>   — a local Hub reached over a Windows named pipe
-func New(hubURL string) *Client {
-	httpClient, connectURL := clientForHubURL(hubURL)
+// It creates agent and terminal managers internally. Build endpoint with
+// hubtransport.New, which accepts an http(s) URL, a `unix:` socket path or a
+// `npipe:` pipe name.
+//
+// Both services take the HTTP2Only client, and that is a requirement rather
+// than a preference: Connect is a BIDIRECTIONAL gRPC stream, which HTTP/1.1
+// cannot express. Against a cleartext hub with no h2c this client fails with
+// hubtransport.ErrH2CUnsupported, which states the URL and the remedy, instead
+// of degrading to a protocol on which the worker could never connect.
+func New(endpoint *hubtransport.Endpoint) *Client {
+	httpClient := endpoint.HTTP2OnlyClient()
+	connectURL := endpoint.BaseURL()
 	c := &Client{
 		connector: leapmuxv1connect.NewWorkerConnectorServiceClient(
 			httpClient,
@@ -123,7 +123,7 @@ func New(hubURL string) *Client {
 			httpClient,
 			connectURL,
 		),
-		hubURL:    hubURL,
+		endpoint:  endpoint,
 		terminals: terminal.NewManager(),
 	}
 	c.agents = agent.NewManager(func(agentID string, exitCode int, err error, _ bool) {
@@ -136,26 +136,15 @@ func New(hubURL string) *Client {
 	return c
 }
 
-// clientForHubURL picks the HTTP client and ConnectRPC URL for hubURL.
-// Local-IPC schemes (unix:/npipe:) get a dialer-backed h2c client and a
-// placeholder "http://localhost" route (the transport dials the real
-// endpoint); remote URLs pass through to a plain h2c client.
-func clientForHubURL(hubURL string) (*http.Client, string) {
-	return locallisten.SelectClient(
-		hubURL,
-		func() (*http.Client, string, error) { return locallisten.LocalH2CClient(hubURL, 0) },
-		func() (*http.Client, string) {
-			transport := &http2.Transport{
-				AllowHTTP: true,
-				DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
-					var d net.Dialer
-					return d.DialContext(ctx, network, addr)
-				},
-			}
-			return &http.Client{Transport: transport}, hubURL
-		},
-	)
-}
+// Endpoint returns the transport this client was built from.
+//
+// Everything else in the process that talks to the same Hub takes it from
+// here rather than building its own: the delegation mint, the cross-worker
+// channels and the hub bridges a spawned agent uses all share this Client's
+// connection pools and its h2c verdict. It is also the ONLY way they can be
+// pointed at the same address, since a second Endpoint built from the same URL
+// would probe again and pool separately.
+func (c *Client) Endpoint() *hubtransport.Endpoint { return c.endpoint }
 
 // Stop gracefully stops all managers.
 // Safe to call multiple times.
@@ -435,7 +424,7 @@ func (c *Client) Connect(ctx context.Context, authToken string) error {
 
 	go c.closeStreamOnCancel(connCtx, stream)
 
-	slog.Info("connected to hub", "url", c.hubURL)
+	slog.Info("connected to hub", "url", c.endpoint.URL())
 
 	// Reset identity tracking for this connection and arm the watchdog that
 	// force-closes the stream if the Hub never delivers WorkerIdentity. The

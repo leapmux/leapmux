@@ -168,18 +168,17 @@ type ClaudeCodeAgent struct {
 // the SHELL from reading the token as syntax and does nothing about the CLI
 // reading it as syntax.
 //
-// Start a fresh session instead, and say why. Losing the resume is
-// recoverable; passing the token is not.
-func claudeResumeArgs(agentID, resumeSessionID string) []string {
+// The start fails instead. It never drops the flag and launches on a fresh
+// session; see resumeFailedError.
+func claudeResumeArgs(resumeSessionID string) ([]string, error) {
 	if resumeSessionID == "" {
-		return nil
+		return nil, nil
 	}
 	if err := validate.ValidateSessionID(resumeSessionID); err != nil {
-		slog.Warn("refusing to resume: the stored session ID is not a valid token",
-			"agent_id", agentID, "error", err)
-		return nil
+		return nil, resumeFailedError(resumeSessionID,
+			fmt.Errorf("the stored session ID is not a valid token: %w", err))
 	}
-	return []string{"--resume", resumeSessionID}
+	return []string{"--resume", resumeSessionID}, nil
 }
 
 // StartClaudeCode spawns a new Claude Code process and begins reading its output.
@@ -218,7 +217,12 @@ func StartClaudeCode(ctx context.Context, opts Options, sink OutputSink) (*Claud
 		"--forward-subagent-text",
 	}
 
-	baseArgs = append(baseArgs, claudeResumeArgs(opts.AgentID, opts.ResumeSessionID)...)
+	resumeArgs, err := claudeResumeArgs(opts.ResumeSessionID)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	baseArgs = append(baseArgs, resumeArgs...)
 
 	// opts.Model() is the raw stored/operator-default value, which may be a legacy
 	// or fully-qualified id (a persisted "opus", a "claude-opus-4-8" from

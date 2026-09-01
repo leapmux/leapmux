@@ -105,7 +105,7 @@ func startGreetThenSilentConnector(t *testing.T) (*greetThenSilentConnector, *ht
 func connectAndPark(t *testing.T, server *httptest.Server) (client *Client, cancel context.CancelFunc, connectDone <-chan error) {
 	t.Helper()
 
-	client = New(server.URL)
+	client = newTestClient(t, server.URL)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 

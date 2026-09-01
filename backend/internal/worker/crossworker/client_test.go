@@ -3,10 +3,16 @@ package crossworker
 import (
 	"context"
 	"errors"
+	"net/http"
 	"sync"
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/hubtransport"
+	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
 	"github.com/leapmux/leapmux/internal/util/userid"
 
 	"github.com/stretchr/testify/assert"
@@ -29,11 +35,27 @@ func (s *stubDelegationProvider) GetBearer(_ context.Context, _ DelegationScope)
 	return s.bearer, s.err
 }
 
+// testEndpoint is the hub address these tests point the pool at. Nothing here
+// dials it: every case stops before an open, or supplies its own server.
+func testEndpoint(t *testing.T) *hubtransport.Endpoint {
+	return testEndpointFor(t, "http://hub.test")
+}
+
+// testEndpointFor builds the endpoint for url. hubtransport.New opens no
+// connection, so a URL that nothing listens on is a valid fixture.
+func testEndpointFor(t *testing.T, url string) *hubtransport.Endpoint {
+	t.Helper()
+	endpoint, err := hubtransport.New(url)
+	require.NoError(t, err, "hubtransport.New(%q)", url)
+	t.Cleanup(endpoint.CloseIdleConnections)
+	return endpoint
+}
+
 // TestNew_ConstructsUsableClient pins down the constructor's contract.
 // The pool map must be initialized so the first cache lookup doesn't
 // nil-deref.
 func TestNew_ConstructsUsableClient(t *testing.T) {
-	c := New(context.Background(), "http://hub.test", &PinStore{}, &stubDelegationProvider{})
+	c := New(context.Background(), testEndpoint(t), &PinStore{}, &stubDelegationProvider{})
 	require.NotNil(t, c)
 	assert.NotNil(t, c.channels, "channels map must be initialized — Client mutex assumes it")
 
@@ -46,7 +68,7 @@ func TestNew_ConstructsUsableClient(t *testing.T) {
 
 func TestNew_BindsPoolToExplicitLifetime(t *testing.T) {
 	lifetime, cancel := context.WithCancel(context.Background())
-	c := New(lifetime, "http://hub.test", &PinStore{}, &stubDelegationProvider{})
+	c := New(lifetime, testEndpoint(t), &PinStore{}, &stubDelegationProvider{})
 	cancel()
 	select {
 	case <-c.ctx.Done():
@@ -62,14 +84,14 @@ func TestNew_BindsPoolToExplicitLifetime(t *testing.T) {
 // targetWorkerID, but a future refactor that drops one path could
 // silently start opening unscoped channels.
 func TestChannelFor_RejectsEmptyTarget(t *testing.T) {
-	c := New(context.Background(), "http://hub.test", &PinStore{}, &stubDelegationProvider{bearer: "x"})
+	c := New(context.Background(), testEndpoint(t), &PinStore{}, &stubDelegationProvider{bearer: "x"})
 	_, err := c.channelFor(context.Background(), "", DelegationScope{UserID: userid.MustNew("user-1")})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "target_worker_id required")
 }
 
 func TestChannelFor_RejectsEmptyUser(t *testing.T) {
-	c := New(context.Background(), "http://hub.test", &PinStore{}, &stubDelegationProvider{bearer: "x"})
+	c := New(context.Background(), testEndpoint(t), &PinStore{}, &stubDelegationProvider{bearer: "x"})
 	_, err := c.channelFor(context.Background(), "worker-B", DelegationScope{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "user_id required")
@@ -82,7 +104,7 @@ func TestChannelFor_RejectsEmptyUser(t *testing.T) {
 // in the pool.
 func TestChannelFor_PropagatesDelegationError(t *testing.T) {
 	dp := &stubDelegationProvider{err: errors.New("mint refused: tab gone")}
-	c := New(context.Background(), "http://hub.test", &PinStore{}, dp)
+	c := New(context.Background(), testEndpoint(t), &PinStore{}, dp)
 
 	_, err := c.channelFor(context.Background(), "worker-B", DelegationScope{UserID: userid.MustNew("user-1"), AgentID: "agent-1"})
 	require.Error(t, err)
@@ -111,7 +133,7 @@ func TestChannelFor_PropagatesDelegationError(t *testing.T) {
 // the pool relies on, which the existing fake covers via
 // PropagatesDelegationError.
 func TestChannelFor_PoolKeyComposition(t *testing.T) {
-	c := New(context.Background(), "http://hub.test", &PinStore{}, &stubDelegationProvider{bearer: "x"})
+	c := New(context.Background(), testEndpoint(t), &PinStore{}, &stubDelegationProvider{bearer: "x"})
 	// Manually seed pool entries to verify key independence: worker AND user
 	// must each contribute, so two users on one worker (and one user across two
 	// workers) never share a Noise session. There is no third axis -- a
@@ -133,7 +155,7 @@ func TestChannelFor_PoolKeyComposition(t *testing.T) {
 // reaches the caller intact instead of being swallowed by the
 // pool layer.
 func TestCallInner_DelegationFailureSurfaces(t *testing.T) {
-	c := New(context.Background(), "http://hub.test", &PinStore{}, &stubDelegationProvider{err: errors.New("mint denied")})
+	c := New(context.Background(), testEndpoint(t), &PinStore{}, &stubDelegationProvider{err: errors.New("mint denied")})
 	_, err := c.CallInner(context.Background(), "worker-B", userid.MustNew("user-1"), "OpenAgent", []byte("payload"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "mint denied")
@@ -143,7 +165,7 @@ func TestCallInner_DelegationFailureSurfaces(t *testing.T) {
 // streaming path. Both go through channelFor, but the streaming
 // version's onMsg callback shouldn't swallow the upstream error.
 func TestStreamInner_DelegationFailureSurfaces(t *testing.T) {
-	c := New(context.Background(), "http://hub.test", &PinStore{}, &stubDelegationProvider{err: errors.New("mint denied")})
+	c := New(context.Background(), testEndpoint(t), &PinStore{}, &stubDelegationProvider{err: errors.New("mint denied")})
 	err := c.StreamInner(context.Background(), "worker-B", userid.MustNew("user-1"), "WatchEvents", nil, nil, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "mint denied")
@@ -153,7 +175,7 @@ func TestStreamInner_DelegationFailureSurfaces(t *testing.T) {
 // with no user is rejected before any network I/O, because the user IS the
 // delegation bearer's identity and an unminted one would mint as nobody.
 func TestCallInner_RequiresUserID(t *testing.T) {
-	c := New(context.Background(), "http://hub.test", &PinStore{}, &stubDelegationProvider{bearer: "x"})
+	c := New(context.Background(), testEndpoint(t), &PinStore{}, &stubDelegationProvider{bearer: "x"})
 	_, err := c.CallInner(context.Background(), "worker-B", userid.UserID{}, "OpenAgent", []byte("p"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "user_id required")
@@ -194,7 +216,7 @@ func TestChannelFor_SingleFlightsConcurrentOpens(t *testing.T) {
 		release: make(chan struct{}),
 		err:     errors.New("mint done"),
 	}
-	c := New(context.Background(), "http://hub.test", &PinStore{}, dp)
+	c := New(context.Background(), testEndpoint(t), &PinStore{}, dp)
 	defer c.Close()
 
 	const callers = 8
@@ -245,3 +267,53 @@ var (
 	_ DelegationProvider = (*stubDelegationProvider)(nil)
 	_ DelegationProvider = (*blockingDelegationProvider)(nil)
 )
+
+// fakeChannelService records that a cross-worker channel open reached the hub,
+// and refuses it with a message the caller can recognise.
+type fakeChannelService struct {
+	leapmuxv1connect.UnimplementedChannelServiceHandler
+	called chan string
+}
+
+func (f *fakeChannelService) GetWorkerHandshakeParams(
+	_ context.Context,
+	req *connect.Request[leapmuxv1.GetWorkerHandshakeParamsRequest],
+) (*connect.Response[leapmuxv1.GetWorkerHandshakeParamsResponse], error) {
+	select {
+	case f.called <- req.Msg.GetWorkerId():
+	default:
+	}
+	return nil, connect.NewError(connect.CodeNotFound, errors.New("sibling worker is not registered"))
+}
+
+// TestOpenChannel_ReachesAHubOverASocket covers a hub addressed by `unix:` or
+// `npipe:`, which a cross-worker channel could not reach at all: the open
+// passed the raw hub URL and no HTTP clients, so tunnel.OpenChannel fell back
+// to http.DefaultClient, which cannot dial a socket.
+//
+// The open still fails here -- the fake refuses the handshake -- and that is
+// the point: the failure comes from the HUB, over the socket, rather than from
+// a transport that never left the process.
+func TestOpenChannel_ReachesAHubOverASocket(t *testing.T) {
+	fake := &fakeChannelService{called: make(chan string, 1)}
+	mux := http.NewServeMux()
+	path, handler := leapmuxv1connect.NewChannelServiceHandler(fake)
+	mux.Handle(path, handler)
+
+	socketURL := hubtransporttest.NewSocketServer(t, "crossworker", mux)
+
+	c := New(context.Background(), testEndpointFor(t, socketURL), &PinStore{}, &stubDelegationProvider{bearer: "delegation-bearer"})
+	t.Cleanup(c.Close)
+
+	_, err := c.CallInner(context.Background(), "worker-B", userid.MustNew("user-1"), "OpenAgent", []byte("payload"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sibling worker is not registered",
+		"the refusal must come from the hub, not from a transport that could not dial the socket")
+
+	select {
+	case gotWorkerID := <-fake.called:
+		assert.Equal(t, "worker-B", gotWorkerID)
+	default:
+		t.Fatal("the channel open never reached the hub over the socket")
+	}
+}

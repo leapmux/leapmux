@@ -9,6 +9,7 @@ import (
 
 	"github.com/coder/websocket"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -17,7 +18,7 @@ import (
 // test ends, so a relay dialed against it stays live for ownership assertions.
 func userEventsTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{"userevents-relay"}})
 		if err != nil {
 			return
@@ -65,7 +66,7 @@ func TestApp_OpenUserEventsRelay_ConcurrentOpenDoesNotTearDownTheSuccessor(t *te
 	server := userEventsTestServer(t)
 	app := NewApp("")
 	t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
-	installTestConnection(app, newHTTPProxy(server.URL), nil, server.URL)
+	installTestConnection(app, mustNewProxy(t, server.URL), nil, server.URL)
 
 	dialing, release := blockFirstUserEventsDial(t)
 
@@ -105,7 +106,7 @@ func TestApp_CloseUserEventsRelay_IgnoresStaleOwner(t *testing.T) {
 	server := userEventsTestServer(t)
 	app := NewApp("")
 	t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
-	installTestConnection(app, newHTTPProxy(server.URL), nil, server.URL)
+	installTestConnection(app, mustNewProxy(t, server.URL), nil, server.URL)
 
 	require.NoError(t, app.OpenUserEventsRelay(context.Background(), 1, nil, nil, 0))
 	app.lifecycleMu.RLock()
@@ -146,7 +147,7 @@ func TestApp_OpenUserEventsRelay_StaleOpenLeavesTheNewerRelayInstalled(t *testin
 	server := userEventsTestServer(t)
 	app := NewApp("")
 	t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
-	installTestConnection(app, newHTTPProxy(server.URL), nil, server.URL)
+	installTestConnection(app, mustNewProxy(t, server.URL), nil, server.URL)
 
 	require.NoError(t, app.OpenUserEventsRelay(context.Background(), 9, nil, nil, 0))
 	app.lifecycleMu.RLock()
@@ -189,7 +190,7 @@ func TestApp_OpenUserEventsRelay_ForwardsResumeCursor(t *testing.T) {
 	server := userEventsTestServer(t)
 	app := NewApp("")
 	t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
-	installTestConnection(app, newHTTPProxy(server.URL), nil, server.URL)
+	installTestConnection(app, mustNewProxy(t, server.URL), nil, server.URL)
 
 	cursor := &leapmuxv1.HLC{Physical: 1754100000000, Logical: 3, ClientId: "c-abc"}
 	var gotCursor *leapmuxv1.HLC
@@ -214,11 +215,11 @@ func TestApp_OpenUserEventsRelay_ForwardsResumeCursor(t *testing.T) {
 // wsClient; assert that invariant so the two paths (guard + constructors) can't
 // silently drift into both being false.
 func TestProductionProxiesCarryAPinnedWSClient(t *testing.T) {
-	remote := newHTTPProxy("https://hub.example")
+	remote := mustNewProxy(t, "https://hub.example")
 	require.NotNil(t, remote.wsClient, "the remote hub proxy must set a WS-upgrade client")
 	assert.NotNil(t, remote.wsClient.CheckRedirect, "and pin its redirects to the hub origin")
 
-	local, err := newLocalProxy("unix:/tmp/leapmux-test.sock")
+	local, err := newProxy("unix:/tmp/leapmux-test.sock")
 	require.NoError(t, err)
 	require.NotNil(t, local.wsClient, "the local proxy must set a WS-upgrade client")
 	assert.NotNil(t, local.wsClient.CheckRedirect, "and pin its redirects to the hub origin")

@@ -9,7 +9,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -17,6 +16,7 @@ import (
 
 	"github.com/coder/websocket"
 	desktoppb "github.com/leapmux/leapmux/generated/proto/leapmux/desktop/v1"
+	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -218,7 +218,7 @@ func TestSwitchModeResponseCarriesLauncherStateWithCleanupError(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	wantErr := errors.New("lease release failed")
 	app := NewApp("")
-	installTestConnection(app, newHTTPProxy("http://localhost"), failingSoloInstance{err: wantErr}, "")
+	installTestConnection(app, mustNewProxy(t, "http://localhost"), failingSoloInstance{err: wantErr}, "")
 	app.config.Mode = "solo"
 	var output bytes.Buffer
 	session := NewRPCSession(app, bytes.NewReader(nil), &output, nil)
@@ -242,7 +242,7 @@ func TestSwitchModeResponseCarriesLauncherStateWithCleanupError(t *testing.T) {
 func TestSwitchModePersistenceFailureReturnsOnlyTopLevelError(t *testing.T) {
 	makeConfigUnwritable(t)
 	app := NewApp("")
-	installTestConnection(app, newHTTPProxy("https://hub.example"), &recordingSoloInstance{}, "https://hub.example")
+	installTestConnection(app, mustNewProxy(t, "https://hub.example"), &recordingSoloInstance{}, "https://hub.example")
 	app.config.Mode = "solo"
 	var output bytes.Buffer
 	session := NewRPCSession(app, bytes.NewReader(nil), &output, nil)
@@ -266,7 +266,7 @@ func TestSwitchModePersistenceFailureReturnsOnlyTopLevelError(t *testing.T) {
 func TestShutdownResponseReportsCleanupError(t *testing.T) {
 	wantErr := errors.New("lease release failed")
 	app := NewApp("")
-	installTestConnection(app, newHTTPProxy("http://localhost"), failingSoloInstance{err: wantErr}, "")
+	installTestConnection(app, mustNewProxy(t, "http://localhost"), failingSoloInstance{err: wantErr}, "")
 	var output bytes.Buffer
 	session := NewRPCSession(app, bytes.NewReader(nil), &output, nil)
 
@@ -316,7 +316,7 @@ func TestShutdownResponseSurvivesSlowTeardownThroughRunLoop(t *testing.T) {
 	// Longer than the old one-second writer grace: a real solo teardown budgets
 	// ~10s each for the hub server, CRDT registry, and revocation watcher, so
 	// exceeding a second is the norm, not the edge case.
-	installTestConnection(app, newHTTPProxy("http://localhost"), slowFailingSoloInstance{
+	installTestConnection(app, mustNewProxy(t, "http://localhost"), slowFailingSoloInstance{
 		delay: 1500 * time.Millisecond,
 		err:   wantErr,
 	}, "")
@@ -473,7 +473,7 @@ func TestDrainHandlersDoesNotLeakWaiterOnAbandonedStraggler(t *testing.T) {
 // the Tauri shell, which has no sidecar respawn and awaits every request without a
 // timeout -- one bad frame would wedge the whole UI.
 func TestRPCSessionClosesRelayOnUndeliverableEventFrame(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{"channel-relay"}})
 		if err != nil {
 			return
@@ -484,7 +484,7 @@ func TestRPCSessionClosesRelayOnUndeliverableEventFrame(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	app := NewApp("")
-	installTestConnection(app, newHTTPProxy("http://localhost"), nil, "")
+	installTestConnection(app, mustNewProxy(t, "http://localhost"), nil, "")
 
 	wsURL := "ws" + server.URL[len("http"):]
 	ws, _, err := websocket.Dial(context.Background(), wsURL, &websocket.DialOptions{Subprotocols: []string{"channel-relay"}})
@@ -538,7 +538,7 @@ func TestRPCSessionClosesRelayOnUndeliverableEventFrame(t *testing.T) {
 // fault, forcing a spurious reconnect.
 func TestCloseRelayForUndeliverableEvent_LeavesSuccessorRelayAlone(t *testing.T) {
 	app := NewApp("")
-	installTestConnection(app, newHTTPProxy("http://localhost"), nil, "")
+	installTestConnection(app, mustNewProxy(t, "http://localhost"), nil, "")
 
 	// Install the successor relay (owner 2) the way a later open would. The
 	// emitter (owner 1) is no longer installed -- its undeliverable close runs
@@ -591,7 +591,7 @@ func TestRPCSessionWaitsForAdmittedHandlers(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	blocking := blockingSoloInstance{entered: make(chan struct{}), release: make(chan struct{})}
 	app := NewApp("")
-	installTestConnection(app, newHTTPProxy("http://localhost"), blocking, "")
+	installTestConnection(app, mustNewProxy(t, "http://localhost"), blocking, "")
 	app.config.Mode = "solo"
 	serverConn, clientConn := net.Pipe()
 	runDone := make(chan error, 1)
@@ -644,13 +644,13 @@ func TestRPCSessionDisconnectInterruptsBlockedResponseWriter(t *testing.T) {
 }
 
 func TestRPCSessionBurstDoesNotHidePeerDisconnect(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+	upstream := hubtransporttest.NewServer(t, http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		<-r.Context().Done()
 	}))
 	t.Cleanup(upstream.Close)
 
 	app := NewApp("")
-	installTestConnection(app, newHTTPProxy(upstream.URL), nil, upstream.URL)
+	installTestConnection(app, mustNewProxy(t, upstream.URL), nil, upstream.URL)
 	serverConn, clientConn := net.Pipe()
 	runDone := make(chan error, 1)
 	go func() { runDone <- NewRPCSession(app, serverConn, serverConn, nil).Run() }()
@@ -688,13 +688,13 @@ func TestRPCSessionBurstDoesNotHidePeerDisconnect(t *testing.T) {
 // general pool could starve a reserved control-plane slot). The shutdown
 // handler cancels app.ctx, which unwinds the blocked proxy handlers.
 func TestRPCSessionShutdownProceedsWithInFlightProxyHandlers(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+	upstream := hubtransporttest.NewServer(t, http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		<-r.Context().Done()
 	}))
 	t.Cleanup(upstream.Close)
 
 	app := NewApp("")
-	installTestConnection(app, newHTTPProxy(upstream.URL), nil, upstream.URL)
+	installTestConnection(app, mustNewProxy(t, upstream.URL), nil, upstream.URL)
 	serverConn, clientConn := net.Pipe()
 	runDone := make(chan error, 1)
 	go func() { runDone <- NewRPCSession(app, serverConn, serverConn, nil).Run() }()
@@ -734,7 +734,7 @@ func TestRPCSessionShutdownIsAdmittedWhileSwitchModeRuns(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	blocking := blockingSoloInstance{entered: make(chan struct{}), release: make(chan struct{})}
 	app := NewApp("")
-	installTestConnection(app, newHTTPProxy("http://localhost"), blocking, "")
+	installTestConnection(app, mustNewProxy(t, "http://localhost"), blocking, "")
 	app.config.Mode = "solo"
 	serverConn, clientConn := net.Pipe()
 	runDone := make(chan error, 1)
@@ -771,14 +771,14 @@ func TestRPCSessionShutdownIsAdmittedWhileSwitchModeRuns(t *testing.T) {
 
 func TestRPCSessionDisconnectCancelsBlockedProxyHandler(t *testing.T) {
 	entered := make(chan struct{})
-	upstream := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+	upstream := hubtransporttest.NewServer(t, http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		close(entered)
 		<-r.Context().Done()
 	}))
 	t.Cleanup(upstream.Close)
 
 	app := NewApp("")
-	installTestConnection(app, newHTTPProxy(upstream.URL), nil, upstream.URL)
+	installTestConnection(app, mustNewProxy(t, upstream.URL), nil, upstream.URL)
 	serverConn, clientConn := net.Pipe()
 	runDone := make(chan error, 1)
 	go func() { runDone <- NewRPCSession(app, serverConn, serverConn, nil).Run() }()
@@ -810,7 +810,7 @@ func TestRPCSessionDisconnectCancelsDistributedProbe(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	defer close(release)
-	upstream := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+	upstream := hubtransporttest.NewServer(t, http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		close(entered)
 		select {
 		case <-r.Context().Done():
@@ -851,7 +851,7 @@ func TestRPCSessionDisconnectCancelsTunnelHandshake(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	defer close(release)
-	upstream := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+	upstream := hubtransporttest.NewServer(t, http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		close(entered)
 		select {
 		case <-r.Context().Done():
@@ -861,7 +861,7 @@ func TestRPCSessionDisconnectCancelsTunnelHandshake(t *testing.T) {
 	t.Cleanup(upstream.Close)
 
 	app := NewApp("")
-	connection := installTestConnection(app, newHTTPProxy(upstream.URL), nil, upstream.URL)
+	connection := installTestConnection(app, mustNewProxy(t, upstream.URL), nil, upstream.URL)
 	app.applyProxyToTunnels(connection.proxy)
 	serverConn, clientConn := net.Pipe()
 	runDone := make(chan error, 1)
@@ -916,13 +916,13 @@ func TestWriteResponseReplacesOversizedFrameWithError(t *testing.T) {
 // old 64-request / 64 MiB caps must produce a response for every request (none
 // rejected with an exhaustion error) and the session must stay up.
 func TestRPCSessionAdmitsEveryRequestWithoutExhaustion(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	upstream := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	t.Cleanup(upstream.Close)
 
 	app := NewApp("")
-	installTestConnection(app, newHTTPProxy(upstream.URL), nil, upstream.URL)
+	installTestConnection(app, mustNewProxy(t, upstream.URL), nil, upstream.URL)
 	serverConn, clientConn := net.Pipe()
 	runDone := make(chan error, 1)
 	go func() { runDone <- NewRPCSession(app, serverConn, serverConn, nil).Run() }()
@@ -996,7 +996,7 @@ func TestRPCSessionDrainAbandonsHandlerIgnoringSessionContext(t *testing.T) {
 	blocking := blockingSoloInstance{entered: make(chan struct{}), release: make(chan struct{})}
 	t.Cleanup(func() { close(blocking.release) }) // let the abandoned handler exit
 	app := NewApp("")
-	installTestConnection(app, newHTTPProxy("http://localhost"), blocking, "")
+	installTestConnection(app, mustNewProxy(t, "http://localhost"), blocking, "")
 	app.config.Mode = "solo"
 	serverConn, clientConn := net.Pipe()
 	runDone := make(chan error, 1)

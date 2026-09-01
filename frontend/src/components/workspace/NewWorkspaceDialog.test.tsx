@@ -147,7 +147,7 @@ describe('newWorkspaceDialog', () => {
   it('sends the trimmed title to the hub', async () => {
     renderDialog()
 
-    fireEvent.input(await screen.findByPlaceholderText('New Workspace'), {
+    fireEvent.input(await screen.findByLabelText('Title'), {
       target: { value: '  Spaced Out  ' },
     })
     await submitDialog()
@@ -155,6 +155,46 @@ describe('newWorkspaceDialog', () => {
     await waitFor(() => {
       expect(workspaceClient.createWorkspace).toHaveBeenCalledWith({ title: 'Spaced Out' })
     })
+  })
+
+  // The workspace title keeps its WORD-SLUG generator: a workspace carries no
+  // "Agent "/"Terminal " prefix, so the tab pool's lone first name would read
+  // as an unfinished label. Asserted here because the field now shares its
+  // component and validation with the two tab dialogs, and the generator is
+  // the one thing that must NOT have been unified with them.
+  it('pre-fills a multi-word title, not a single pooled name', async () => {
+    renderDialog()
+
+    const input = await screen.findByLabelText('Title') as HTMLInputElement
+    expect(input.value.split(' ').length).toBeGreaterThan(1)
+    expect(input.value).not.toMatch(/^(?:Agent|Terminal) [A-Z][A-Za-z]+$/)
+  })
+
+  it('re-rolls the title from the refresh button', async () => {
+    renderDialog()
+
+    const input = await screen.findByLabelText('Title') as HTMLInputElement
+    const first = input.value
+    // The slug space is large, but a repeat is still possible; click until it
+    // moves rather than asserting one click differs.
+    for (let i = 0; i < 50 && input.value === first; i++)
+      fireEvent.click(screen.getByTestId('title-regenerate'))
+    expect(input.value).not.toBe(first)
+  })
+
+  it('disables submit and creates nothing when the title is emptied', async () => {
+    renderDialog()
+
+    const createButton = await screen.findByRole('button', { name: 'Create' }) as HTMLButtonElement
+    fireEvent.click(screen.getByTestId('pick-dir'))
+    await waitFor(() => expect(createButton.disabled).toBe(false))
+
+    fireEvent.input(screen.getByLabelText('Title'), { target: { value: '  ' } })
+    await waitFor(() => expect(createButton.disabled).toBe(true))
+    expect(screen.getByText('Name must not be empty')).toBeInTheDocument()
+
+    fireEvent.click(createButton)
+    expect(workspaceClient.createWorkspace).not.toHaveBeenCalled()
   })
 
   // The dialog sends the CLEANED title, not the raw one. The hub applies the
@@ -175,7 +215,7 @@ describe('newWorkspaceDialog', () => {
   ])('sends the cleaned title when the input carries %s', async (_label, typed, stored) => {
     renderDialog()
 
-    fireEvent.input(await screen.findByPlaceholderText('New Workspace'), {
+    fireEvent.input(await screen.findByLabelText('Title'), {
       target: { value: typed },
     })
     await submitDialog()
@@ -190,7 +230,7 @@ describe('newWorkspaceDialog', () => {
   it('sends visible punctuation unchanged', async () => {
     renderDialog()
 
-    fireEvent.input(await screen.findByPlaceholderText('New Workspace'), {
+    fireEvent.input(await screen.findByLabelText('Title'), {
       target: { value: '100% of $HOME "quoted"' },
     })
     await submitDialog()

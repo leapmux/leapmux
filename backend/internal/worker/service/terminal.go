@@ -96,12 +96,22 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 			// Persist the initial terminal record using the planned working
 			// dir, so tab sync and post-refresh reads see the eventual path
 			// even before git-mode execution creates the worktree.
-			// Default a random "Terminal <Name>" title here so all spawn
-			// paths (UI + CLI) get a name from one pool, picked one place.
-			// OpenTerminalRequest has no title field by design — the
-			// frontend used to pick client-side and call UpdateTerminalTitle
-			// afterward; now it just reads `title` from this response.
-			terminalTitle := pickTerminalTitle()
+			//
+			// A client-set title is CLEANED, never refused, with the rule that
+			// validate.CleanName documents. UpdateTerminalTitle, RenameAgent
+			// and OpenAgent apply the same rule, so every writer of a `title`
+			// column enforces one rule and none of them fails the RPC over a
+			// title the user can neither see nor correct.
+			terminalTitle := validate.CleanName(r.GetTitle())
+			// Empty title means "you pick one" -- the client sent none, or
+			// cleaning removed every character of the one it sent. Default to
+			// a random "Terminal <Name>" from the shared pool so every spawn
+			// path (UI, CLI, ChangeBranchDialog) gets a name from one pool,
+			// picked one place. The response echoes whatever lands here, so a
+			// client that sent a title renders the STORED form, not its input.
+			if terminalTitle == "" {
+				terminalTitle = pickTerminalTitle()
+			}
 			if upsertErr := svc.Queries.UpsertTerminal(bgCtx(), db.UpsertTerminalParams{
 				ID:            terminalID,
 				WorkingDir:    plan.PlannedWorkingDir,

@@ -5,11 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
 	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 
 	"connectrpc.com/connect"
@@ -972,7 +972,7 @@ func TestAdminVerb_ReportsTheHubsRefusalVerbatim(t *testing.T) {
 			path, handler := leapmuxv1connect.NewAdminUserServiceHandler(
 				&permissionDeniedUserService{message: message})
 			mux.Handle(path, handler)
-			srv := httptest.NewServer(mux)
+			srv := hubtransporttest.NewServer(t, mux)
 			t.Cleanup(srv.Close)
 
 			isolateCLIEnv(t)

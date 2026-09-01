@@ -26,7 +26,7 @@ LeapMux integrates ten coding-agent providers:
 | Reasonix | `reasonix` |
 | ZCode | `zcode`, or the desktop application (see [below](#zcode-is-found-through-its-desktop-application)) |
 
-All ten are first-class: each one supports the core workflow — chat, streamed tool calls, permission prompts, and session resume. The plan/todo sidebar only appears for agents whose CLI emits task or todo updates. Resume falls back to a fresh session when the agent's own resume can't pick up the prior conversation. The available models, settings, and prompt styles vary from provider to provider (each CLI exposes its own); the rest of this chapter covers those per-provider details.
+All ten are first-class: each one supports the core workflow — chat, streamed tool calls, permission prompts, and session resume. The plan/todo sidebar only appears for agents whose CLI emits task or todo updates. The available models, settings, and prompt styles vary from provider to provider (each CLI exposes its own); the rest of this chapter covers those per-provider details.
 
 ### Which agents you can actually open
 
@@ -60,6 +60,7 @@ Open the **New agent** dialog from the workspace, then fill in the fields below 
 | **Agent Provider** | Which agent CLI to launch. Shows the provider icon, label, and a chevron; a check marks the current choice. |
 | **Directory** | The working directory for the agent, chosen from a directory tree on the Worker. A text box above the tree shows the selected path; type a path and press Enter to go there. It is the same picker the New Terminal dialog uses — see [Working Directory](/docs/using/terminals/#the-full-new-terminal-dialog) for the full behavior, including the path-style hint for a Windows Worker. |
 | **Resume an existing session** | Optional. Paste a prior Session ID to continue an earlier conversation (see [Resuming a session](#resuming-an-existing-session)). |
+| **Title** | The tab name. Pre-filled with a random `Agent <Name>`; the refresh button beside the label picks another. Type your own to replace it. It cannot be empty. |
 | **Git options** | Appears once a Worker is selected. Lets you start the agent on the current branch, switch branches, create a branch, or create/use a worktree. See [Worktrees & Branches](/docs/using/worktrees-and-branches/). |
 
 {{< callout type="info" >}}
@@ -277,11 +278,11 @@ In the UI you pick these as named radio options (**Auto**, **Agent**, **Autopilo
 
 ## Resuming an existing session
 
-To continue a previous conversation, paste its Session ID into the **Resume an existing session** field (placeholder **"Session ID"**) in the New agent dialog. The field checks the ID as you type and reports one it cannot use.
+To continue a previous conversation, paste its Session ID into the **Resume an existing session** field in the New agent dialog. The field checks the ID as you type and reports one it cannot use.
 
 Leave the field empty to start a fresh session.
 
-Once you submit, the Worker resumes the prior session using that provider's own resume mechanism, picking up where the earlier conversation left off. If a session can't be resumed, the Worker starts a fresh one rather than failing.
+Once you submit, the Worker resumes the prior session using that provider's own resume mechanism, picking up where the earlier conversation left off. If a session can't be resumed, the agent doesn't start and the tab reports why. Send `/clear` in the chat to start a fresh session instead.
 
 {{< callout >}}
 Session IDs for Claude Code, Codex, and the other CLIs come from those tools' own session bookkeeping. If you've run the same CLI directly in a terminal, you can resume that session inside LeapMux by pasting its ID here.
@@ -289,7 +290,7 @@ Session IDs for Claude Code, Codex, and the other CLIs come from those tools' ow
 
 ### Resume across restarts and reconnects
 
-Pasting a Session ID is the manual path; most resumption happens automatically. Agent sessions are durable: they resume across Hub restarts, Worker restarts, and client reconnects without you doing anything. When an agent's process has to be respawned — for example after a Worker restarts or after a model/effort change — LeapMux reconnects it to the prior session using that provider's own resume mechanism, and the transcript continues where it left off. As with manual resume, if the agent's own resume fails, the Worker falls back to a fresh session rather than dropping the conversation.
+Pasting a Session ID is the manual path; most resumption happens automatically. Agent sessions are durable: they resume across Hub restarts, Worker restarts, and client reconnects without you doing anything. When an agent's process has to be respawned — for example after a Worker restarts or after a model/effort change — LeapMux reconnects it to the prior session using that provider's own resume mechanism, and the transcript continues where it left off. As with manual resume, an agent whose resume fails doesn't start, so an empty session never replaces the conversation.
 
 ## Per-provider differences worth knowing
 

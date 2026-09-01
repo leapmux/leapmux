@@ -11,7 +11,7 @@ import (
 	"strings"
 
 	desktoppb "github.com/leapmux/leapmux/generated/proto/leapmux/desktop/v1"
-	"github.com/leapmux/leapmux/locallisten"
+	"github.com/leapmux/leapmux/hubtransport"
 	"github.com/leapmux/leapmux/util/ctxutil"
 )
 
@@ -26,6 +26,11 @@ type ProxyResponse struct {
 type HubProxy struct {
 	client   *http.Client // h2c client for ConnectRPC (with cookie jar)
 	wsClient *http.Client // HTTP/1.1 client for WebSocket upgrade
+	// endpoint owns every transport the two clients above run on, and it is the
+	// only handle that reaches ALL of them: a lane client closes the transports
+	// of its own lane and no others. The teardown drops idle connections before
+	// it stops the Hub, so it needs the whole set.
+	endpoint *hubtransport.Endpoint
 	baseURL  string
 	// base is baseURL parsed once at construction. The origin pin, the request
 	// path resolution, and the cookie-jar lookup all operate on the SAME hub
@@ -34,68 +39,85 @@ type HubProxy struct {
 	base *url.URL
 }
 
-// newLocalProxy returns a proxy that dials whichever local IPC transport
-// the supplied URL names. `unix:<path>` uses the kernel's AF_UNIX listener;
-// `npipe:<name>` uses a Windows named pipe via go-winio. Any other scheme
-// is rejected.
-func newLocalProxy(listenURL string) (*HubProxy, error) {
-	dial, err := locallisten.Dialer(listenURL)
+// newProxy returns a proxy for hubURL, which may be a remote `http(s)://`
+// address or a local IPC URL: `unix:<path>` uses the kernel's AF_UNIX
+// listener, `npipe:<name>` uses a Windows named pipe via go-winio. Any other
+// scheme is rejected.
+//
+// One constructor covers both, because hubtransport already holds the whole
+// per-scheme answer: it dials the socket for a local URL, prefers h2c on any
+// cleartext address, and verifies the certificate on an `https://` one. The
+// two constructors this replaces disagreed with each other — the remote one
+// carried the default transport under a comment that called it h2c.
+//
+// pinRedirectsToOrigin goes on BOTH clients: coder/websocket's Dial FOLLOWS
+// redirect responses during the upgrade (it wraps the client's CheckRedirect
+// and follows when none is set), so a wsClient without the pin would let a
+// hub-side off-origin 3xx on /ws/channel or /ws/userevents lead the CORS-free
+// desktop process off the hub origin -- the exact redirect-escape the HTTP
+// path's pin exists to close.
+func newProxy(hubURL string) (*HubProxy, error) {
+	endpoint, err := hubtransport.New(hubURL)
 	if err != nil {
-		return nil, fmt.Errorf("unsupported local proxy URL %q: %w", listenURL, err)
+		return nil, fmt.Errorf("unsupported hub URL %q: %w", hubURL, err)
 	}
-	jar, _ := cookiejar.New(nil)
-	// pinRedirectsToOrigin is the same origin pin the HTTP client applies, on the
-	// WS client too: coder/websocket's Dial FOLLOWS redirect responses during the
-	// upgrade (it wraps the client's CheckRedirect and follows when none is set),
-	// so a wsClient without the pin would let a hub-side off-origin 3xx on
-	// /ws/channel or /ws/userevents lead the CORS-free desktop process off the hub
-	// origin -- the exact redirect-escape the HTTP-path pin exists to close.
-	return &HubProxy{
-		client: &http.Client{
-			Jar:           jar,
-			Transport:     locallisten.NewLocalH2CTransport(dial),
-			CheckRedirect: pinRedirectsToOrigin("http://localhost"),
-		},
-		// WebSocket upgrade requires HTTP/1.1, not h2c.
-		wsClient: &http.Client{
-			Jar:           jar,
-			CheckRedirect: pinRedirectsToOrigin("http://localhost"),
-			Transport: &http.Transport{
-				DialContext: locallisten.HTTPDialContext(dial),
-			},
-		},
-		baseURL: "http://localhost",
-		base:    mustParseURL("http://localhost"),
-	}, nil
+	return newProxyForEndpoint(endpoint), nil
 }
 
-// newHTTPProxy creates a proxy that connects to a remote Hub via HTTP(S).
-func newHTTPProxy(hubURL string) *HubProxy {
+// newProxyForEndpoint builds the proxy on an endpoint the caller already holds.
+//
+// ConnectDistributed probes the Hub before it commits, and the probe and the
+// proxy must share ONE endpoint: an endpoint owns the h2c verdict and the
+// connection pools, so a second one for the same URL probes the hub again and
+// pools separately, and the first one's idle connections then belong to nobody.
+func newProxyForEndpoint(endpoint *hubtransport.Endpoint) *HubProxy {
+	// The pin is built against the BASE URL rather than the endpoint URL,
+	// because a local-IPC endpoint presents the placeholder origin that its
+	// transport dials, and the pin compares against what the request carries.
+	baseURL := endpoint.BaseURL()
 	jar, _ := cookiejar.New(nil)
+	session := func(c *http.Client) *http.Client {
+		c.Jar = jar
+		c.CheckRedirect = pinRedirectsToOrigin(baseURL)
+		return c
+	}
 
 	return &HubProxy{
-		client: &http.Client{
-			Jar:           jar,
-			CheckRedirect: pinRedirectsToOrigin(hubURL),
-		},
-		// The remote-hub WS upgrade needs the same HTTP/1.1 transport + origin pin
-		// the local proxy's wsClient carries: without a wsClient here the WS dial
-		// falls back to http.DefaultClient, which has no cookie jar and no origin
-		// pin, so a hub-side off-origin 3xx on /ws/channel would be followed
-		// off-origin. An explicit HTTP/1.1 transport keeps the upgrade off HTTP/2
-		// (WebSocket over HTTP/2 is a separate extended-CONNECT flow coder/websocket
-		// does not use), matching the local wsClient.
-		wsClient: &http.Client{
-			Jar:           jar,
-			CheckRedirect: pinRedirectsToOrigin(hubURL),
-			Transport:     &http.Transport{},
-		},
-		baseURL: hubURL,
-		base:    mustParseURL(hubURL),
+		// StreamClient, not a timed unary client: the proxied ConnectRPC calls
+		// include server streams, and an http.Client timeout covers the body
+		// read, so it would end a stream on a clock. The webview's own request
+		// supplies the limit -- ProxyHTTP passes its context down.
+		client:   session(endpoint.StreamClient()),
+		wsClient: session(endpoint.WebSocketClient()),
+		endpoint: endpoint,
+		baseURL:  baseURL,
+		base:     mustParseURL(baseURL),
 	}
 }
 
-// mustParseURL parses raw, returning nil on error. Both constructors feed a
+// closeIdleConnections drops the idle connections of every transport behind
+// this proxy.
+//
+// It goes through the ENDPOINT, not through the two clients. A lane client
+// reaches its own lane only, and the two lanes here do not cover the whole set
+// -- so a caller that must free every connection before the Hub it talks to
+// goes away asks the endpoint, which owns all of them.
+func (p *HubProxy) closeIdleConnections() {
+	if p.endpoint != nil {
+		p.endpoint.CloseIdleConnections()
+		return
+	}
+	// A HubProxy built as a literal (a test) carries no endpoint, so fall back
+	// to the clients it does carry.
+	if p.client != nil {
+		p.client.CloseIdleConnections()
+	}
+	if p.wsClient != nil {
+		p.wsClient.CloseIdleConnections()
+	}
+}
+
+// mustParseURL parses raw, returning nil on error. newProxyForEndpoint feeds a
 // known-parseable origin ("http://localhost" or an already-validated hub URL),
 // so this never fails in practice; nil propagates to resolvedBase, which fails
 // closed exactly the way the per-call url.Parse did before the base was parsed
@@ -110,8 +132,8 @@ func mustParseURL(raw string) *url.URL {
 
 // resolvedBase returns the hub origin parsed once at construction. It falls back
 // to parsing baseURL for a HubProxy built without one (tests that construct a
-// literal directly); production HubProxy values come from newLocalProxy /
-// newHTTPProxy, which set base, so the fallback is not on the proxy hot path.
+// literal directly); a production HubProxy comes from newProxyForEndpoint,
+// which sets base, so the fallback is not on the proxy hot path.
 func (p *HubProxy) resolvedBase() (*url.URL, error) {
 	if p.base != nil {
 		return p.base, nil
@@ -132,9 +154,9 @@ func (p *HubProxy) resolvedBase() (*url.URL, error) {
 // fall back to http.DefaultClient when the client is nil, and that client carries
 // neither the cookie jar nor pinRedirectsToOrigin -- so a hub-side off-origin 3xx
 // on /ws/channel or /ws/userevents would lead the CORS-free desktop process
-// off-origin, the exact redirect-escape the pin closes. Both production proxy
-// constructors set wsClient; a future one that forgets it must break loudly at
-// the dial, not silently dial unpinned. Routing both dials through this one guard
+// off-origin, the exact redirect-escape the pin closes. newProxyForEndpoint
+// sets wsClient; a future constructor that forgets it must break loudly at the
+// dial, not silently dial unpinned. Routing both dials through this one guard
 // keeps the invariant (and its load-bearing rationale) in one site.
 func (p *HubProxy) requireWSClient(label string) error {
 	if p.wsClient == nil {

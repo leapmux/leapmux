@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/leapmux/leapmux/hubtransport"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/locallisten"
 	"github.com/leapmux/leapmux/util/version"
@@ -69,9 +70,18 @@ func cliVersionFields() map[string]string {
 
 // fetchHubVersion probes the hub's unauthenticated /version endpoint.
 // Returns the parsed JSON body on success.
+//
+// It goes through hubtransport for the same reason every other hub call does:
+// a hand-built client cannot dial a `unix:`/`npipe:` hub, so this command used
+// to answer "unsupported protocol scheme" against a hub reached over its IPC
+// listener.
 func fetchHubVersion(hubURL string) (map[string]string, error) {
-	client := &http.Client{Timeout: hubVersionTimeout}
-	resp, err := client.Get(locallisten.JoinPath(hubURL, "/version"))
+	endpoint, err := hubtransport.New(hubURL)
+	if err != nil {
+		return nil, err
+	}
+	client := endpoint.UnaryClient(hubVersionTimeout)
+	resp, err := client.Get(locallisten.JoinPath(endpoint.BaseURL(), "/version"))
 	if err != nil {
 		return nil, err
 	}

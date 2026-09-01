@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/hubtransport"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/userid"
@@ -20,6 +21,16 @@ import (
 
 	"github.com/leapmux/leapmux/internal/authscope"
 )
+
+// newTestHubClient builds a hub.Client for url. These tests care about the
+// wiring around the client, not about its transport, so they state a URL and
+// let hubtransport build the endpoint (which opens no connection).
+func newTestHubClient(t *testing.T, url string) *hub.Client {
+	t.Helper()
+	endpoint, err := hubtransport.New(url)
+	require.NoError(t, err, "hubtransport.New(%q)", url)
+	return hub.New(endpoint)
+}
 
 // testChannelGrant is the grant a channel-open fixture announces.
 //
@@ -252,7 +263,7 @@ func wireForTest(t *testing.T, mode leapmuxv1.EncryptionMode) (*Wiring, *hub.Cli
 	key, err := noiseutil.GenerateCompositeKeypair()
 	require.NoError(t, err)
 
-	client := hub.New("http://127.0.0.1:0")
+	client := newTestHubClient(t, "http://127.0.0.1:0")
 	t.Cleanup(client.Stop)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -338,7 +349,7 @@ func TestWire_InstallsTheAgentExitHandler(t *testing.T) {
 	key, err := noiseutil.GenerateCompositeKeypair()
 	require.NoError(t, err)
 
-	client := hub.New("http://127.0.0.1:0")
+	client := newTestHubClient(t, "http://127.0.0.1:0")
 	t.Cleanup(client.Stop)
 
 	// A non-nil check would prove nothing: the manager is constructed carrying a
@@ -398,7 +409,7 @@ func TestWire_PropagatesMaxMessageSize(t *testing.T) {
 	key, err := noiseutil.GenerateCompositeKeypair()
 	require.NoError(t, err)
 
-	client := hub.New("http://127.0.0.1:0")
+	client := newTestHubClient(t, "http://127.0.0.1:0")
 	t.Cleanup(client.Stop)
 
 	ctx, cancel := context.WithCancel(context.Background())

@@ -5,9 +5,9 @@ import ChevronDown from 'lucide-solid/icons/chevron-down'
 import { createMemo, For, Show } from 'solid-js'
 import { AgentProviderIcon, agentProviderLabel } from '~/components/common/AgentProviderIcon'
 import { ClippedText } from '~/components/common/ClippedText'
-import { labelRow } from '~/components/common/Dialog.css'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
+import { LabeledField } from '~/components/common/LabeledField'
 import { RefreshButton } from '~/components/common/RefreshButton'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { getAvailableAgentProviders, sortAgentProvidersByName } from '~/lib/agentProviders'
@@ -36,13 +36,12 @@ export function AgentProviderSelector(props: AgentProviderSelectorProps) {
   })
 
   return (
-    <div>
-      <div class={labelRow}>
-        Agent Provider
-        {props.onRefresh && (
-          <RefreshButton onClick={() => props.onRefresh?.()} title="Refresh available providers" />
-        )}
-      </div>
+    <LabeledField
+      label="Agent Provider"
+      actions={props.onRefresh && (
+        <RefreshButton onClick={() => props.onRefresh?.()} title="Refresh available providers" />
+      )}
+    >
       <Show
         when={providers().length > 0}
         fallback={(
@@ -105,6 +104,6 @@ export function AgentProviderSelector(props: AgentProviderSelectorProps) {
           </For>
         </DropdownMenu>
       </Show>
-    </div>
+    </LabeledField>
   )
 }

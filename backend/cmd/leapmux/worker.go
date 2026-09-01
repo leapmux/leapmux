@@ -9,6 +9,7 @@ import (
 	"sync"
 	"syscall"
 
+	"github.com/leapmux/leapmux/hubtransport"
 	"github.com/leapmux/leapmux/internal/logging"
 	"github.com/leapmux/leapmux/internal/worker/bootstrap"
 	"github.com/leapmux/leapmux/internal/worker/config"
@@ -84,6 +85,14 @@ func runWorker(args []string) error {
 		}
 	}
 
+	// ONE endpoint for the whole process: registration, the worker's own
+	// Connect stream and every hub call a spawned agent makes share one
+	// connection pool per protocol and one h2c verdict.
+	hubEndpoint, err := hubtransport.New(cfg.HubURL)
+	if err != nil {
+		return fmt.Errorf("hub URL %q: %w", cfg.HubURL, err)
+	}
+
 	if state.AuthToken == "" {
 		// Registration requires a key minted in advance by an authenticated
 		// user via the hub UI; bare workers cannot self-register.
@@ -95,7 +104,7 @@ func runWorker(args []string) error {
 			return fmt.Errorf("restore composite keypair for registration: %w", ckErr)
 		}
 		slhdsaPub, _ := compositeKey.SlhdsaPublicKeyBytes()
-		result, regErr := hub.Register(ctx, cfg.HubURL, cfg.RegistrationKey, version.Value, compositeKey.X25519Public, compositeKey.MlkemPublicKeyBytes(), slhdsaPub)
+		result, regErr := hub.Register(ctx, hubEndpoint, cfg.RegistrationKey, version.Value, compositeKey.X25519Public, compositeKey.MlkemPublicKeyBytes(), slhdsaPub)
 		if regErr != nil {
 			return fmt.Errorf("registration: %w", regErr)
 		}
@@ -142,7 +151,7 @@ func runWorker(args []string) error {
 		return fmt.Errorf("migrate worker db: %w", err)
 	}
 
-	client := hub.New(cfg.HubURL)
+	client := hub.New(hubEndpoint)
 	defer client.Stop()
 
 	homeDir, _ := os.UserHomeDir()
@@ -171,7 +180,6 @@ func runWorker(args []string) error {
 		Name:                 cfg.Name,
 		HomeDir:              homeDir,
 		DataDir:              cfg.DataDir,
-		HubURL:               cfg.HubURL,
 		AuthToken:            state.AuthToken,
 		AgentStartupTimeout:  cfg.AgentStartupTimeout,
 		APITimeout:           cfg.APITimeout,

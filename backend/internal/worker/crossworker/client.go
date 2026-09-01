@@ -5,16 +5,18 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"sync"
 	"sync/atomic"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/hubtransport"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/tunnel"
 )
 
-// channelOpenTimeout bounds a single cross-worker E2EE channel open (the
+// channelOpenTimeout limits a single cross-worker E2EE channel open (the
 // delegation mint plus the Noise_NK handshake). The open runs under the
 // Client's lifetime context, which has no deadline, so without this a hub that
 // accepts the connection but stalls the handshake could wedge the shared open
@@ -50,11 +52,17 @@ type DelegationProvider interface {
 // All hub calls (GetWorkerHandshakeParams, OpenChannel, /ws/channel)
 // authenticate with a delegation token obtained via DelegationProvider.
 type Client struct {
-	HubURL     string
 	Pins       *PinStore
 	Delegation DelegationProvider
-	ctx        context.Context
-	cancel     context.CancelFunc
+	endpoint   *hubtransport.Endpoint
+	// The two lanes an open needs, built ONCE. Every other consumer of the lane
+	// API takes its clients at construction (NewHubUnaryBridge,
+	// NewHubEventStreamer, NewDelegationStore, hub.New); this one built a pair
+	// per channel open, on a path that already holds the pool mutex.
+	unaryClient     *http.Client
+	webSocketClient *http.Client
+	ctx             context.Context
+	cancel          context.CancelFunc
 
 	mu       sync.Mutex
 	channels map[clientKey]*tunnel.Channel
@@ -79,19 +87,21 @@ type channelOpen struct {
 }
 
 // New returns a ready-to-use Client.
-func New(lifetimeCtx context.Context, hubURL string, pins *PinStore, dp DelegationProvider) *Client {
+func New(lifetimeCtx context.Context, endpoint *hubtransport.Endpoint, pins *PinStore, dp DelegationProvider) *Client {
 	if lifetimeCtx == nil {
 		panic("crossworker.New: lifetime context is required")
 	}
 	ctx, cancel := context.WithCancel(lifetimeCtx)
 	return &Client{
-		HubURL:     hubURL,
-		Pins:       pins,
-		Delegation: dp,
-		ctx:        ctx,
-		cancel:     cancel,
-		channels:   make(map[clientKey]*tunnel.Channel),
-		inflight:   make(map[clientKey]*channelOpen),
+		Pins:            pins,
+		Delegation:      dp,
+		endpoint:        endpoint,
+		unaryClient:     endpoint.UnaryClient(hubtransport.DefaultUnaryTimeout),
+		webSocketClient: endpoint.WebSocketClient(),
+		ctx:             ctx,
+		cancel:          cancel,
+		channels:        make(map[clientKey]*tunnel.Channel),
+		inflight:        make(map[clientKey]*channelOpen),
 	}
 }
 
@@ -235,6 +245,13 @@ func (c *Client) openChannel(parent context.Context, targetWorkerID string, scop
 		LifetimeContext: c.ctx,
 		BearerToken:     bearer,
 		KeyPin:          c.Pins,
+		// Both clients come from the endpoint. Left nil, tunnel.OpenChannel
+		// falls back to http.DefaultClient, which knows nothing about a
+		// `unix:`/`npipe:` hub -- so a cross-worker call on a socket hub could
+		// not open a channel at all -- and which shares the process-global
+		// pool with every other caller.
+		HTTPClient:          c.unaryClient,
+		WebSocketHTTPClient: c.webSocketClient,
 		// The pool keys on scope.UserID, so the channel MUST be the identity this
 		// scope names. A DelegationProvider that returns a bearer minted for another
 		// scope -- a cache keyed on too few fields, a mint response that does not
@@ -243,7 +260,9 @@ func (c *Client) openChannel(parent context.Context, targetWorkerID string, scop
 		// run as X with nothing in the stack able to detect it.
 		ExpectedUserID: scope.UserID.String(),
 	}
-	return tunnel.OpenChannel(openCtx, c.HubURL, targetWorkerID, openOpts)
+	// BaseURL, not HubURL: a `unix:`/`npipe:` hub presents the placeholder
+	// origin that its transport dials, and every other scheme is unchanged.
+	return tunnel.OpenChannel(openCtx, c.endpoint.BaseURL(), targetWorkerID, openOpts)
 }
 
 // CallInner sends a unary inner RPC to a sibling worker. userID is the

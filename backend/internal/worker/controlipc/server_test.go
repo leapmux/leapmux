@@ -15,13 +15,12 @@ import (
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/net/http2"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/hubtransport"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/controlipc"
-	"github.com/leapmux/leapmux/locallisten"
 )
 
 // shortSocketPath builds a path under os.TempDir() short enough to fit
@@ -72,14 +71,9 @@ func startTestServer(t *testing.T, info controlipc.TokenInfo, router *controlipc
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = srv.Close() })
 
-	dial, err := locallisten.Dialer(sockURL)
-	require.NoError(t, err)
-	transport := locallisten.NewLocalH2CTransport(dial)
-	httpClient := &http.Client{
-		Transport: &injectAuthHeader{token: rawToken, base: transport},
-		Timeout:   5 * time.Second,
-	}
-	return rawToken, leapmuxv1connect.NewControlIPCServiceClient(httpClient, "http://leapmux-remote", connect.WithGRPC())
+	httpClient, baseURL := ipcClient(t, sockURL)
+	httpClient.Transport = &injectAuthHeader{token: rawToken, base: httpClient.Transport}
+	return rawToken, leapmuxv1connect.NewControlIPCServiceClient(httpClient, baseURL, connect.WithGRPC())
 }
 
 // injectAuthHeader is a small RoundTripper wrapper that adds the
@@ -111,12 +105,20 @@ func startTestServerNoAuth(t *testing.T, info controlipc.TokenInfo, router *cont
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = srv.Close() })
 
-	dial, err := locallisten.Dialer(sockURL)
+	httpClient, baseURL := ipcClient(t, sockURL)
+	return leapmuxv1connect.NewControlIPCServiceClient(httpClient, baseURL, connect.WithGRPC())
+}
+
+// ipcClient builds the client the CLI itself builds for a worker control-IPC
+// socket -- hubtransport, h2c over the socket dialer -- and returns it with
+// the base URL that transport dials against. Going through the production
+// factory keeps these tests on the transport the CLI actually uses.
+func ipcClient(t *testing.T, sockURL string) (*http.Client, string) {
+	t.Helper()
+	endpoint, err := hubtransport.New(sockURL)
 	require.NoError(t, err)
-	transport := locallisten.NewLocalH2CTransport(dial)
-	return leapmuxv1connect.NewControlIPCServiceClient(
-		&http.Client{Transport: transport, Timeout: 5 * time.Second},
-		"http://leapmux-remote", connect.WithGRPC())
+	t.Cleanup(endpoint.CloseIdleConnections)
+	return endpoint.UnaryClient(5 * time.Second), endpoint.BaseURL()
 }
 
 func TestServer_Whoami_HappyPath(t *testing.T) {
@@ -165,16 +167,12 @@ func TestServer_Whoami_RejectsWrongToken(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = srv.Close() })
 
-	dial, err := locallisten.Dialer(sockURL)
-	require.NoError(t, err)
-	httpClient := &http.Client{
-		Transport: &injectAuthHeader{
-			token: "wrong-token-not-the-real-one",
-			base:  locallisten.NewLocalH2CTransport(dial),
-		},
-		Timeout: 5 * time.Second,
+	httpClient, baseURL := ipcClient(t, sockURL)
+	httpClient.Transport = &injectAuthHeader{
+		token: "wrong-token-not-the-real-one",
+		base:  httpClient.Transport,
 	}
-	client := leapmuxv1connect.NewControlIPCServiceClient(httpClient, "http://leapmux-remote", connect.WithGRPC())
+	client := leapmuxv1connect.NewControlIPCServiceClient(httpClient, baseURL, connect.WithGRPC())
 	_, err = client.Whoami(context.Background(), connect.NewRequest(&leapmuxv1.WhoamiRequest{}))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "401")
@@ -279,13 +277,9 @@ func TestServer_TokenRevokedAfterClose(t *testing.T) {
 	require.NoError(t, err)
 
 	// Prove the server is up.
-	dial, err := locallisten.Dialer(sockURL)
-	require.NoError(t, err)
-	httpClient := &http.Client{
-		Transport: &injectAuthHeader{token: rawToken, base: locallisten.NewLocalH2CTransport(dial)},
-		Timeout:   2 * time.Second,
-	}
-	client := leapmuxv1connect.NewControlIPCServiceClient(httpClient, "http://leapmux-remote", connect.WithGRPC())
+	httpClient, baseURL := ipcClient(t, sockURL)
+	httpClient.Transport = &injectAuthHeader{token: rawToken, base: httpClient.Transport}
+	client := leapmuxv1connect.NewControlIPCServiceClient(httpClient, baseURL, connect.WithGRPC())
 	_, err = client.Whoami(context.Background(), connect.NewRequest(&leapmuxv1.WhoamiRequest{}))
 	require.NoError(t, err)
 
@@ -294,20 +288,13 @@ func TestServer_TokenRevokedAfterClose(t *testing.T) {
 	// subsequent dial via the same URL must fail.
 	require.NoError(t, srv.Close())
 
-	dial2, err := locallisten.Dialer(sockURL)
-	require.NoError(t, err)
-	closed := &http.Client{
-		Transport: &injectAuthHeader{token: rawToken, base: locallisten.NewLocalH2CTransport(dial2)},
-		Timeout:   500 * time.Millisecond,
-	}
-	closedClient := leapmuxv1connect.NewControlIPCServiceClient(closed, "http://leapmux-remote", connect.WithGRPC())
+	closed, closedBaseURL := ipcClient(t, sockURL)
+	closed.Timeout = 500 * time.Millisecond
+	closed.Transport = &injectAuthHeader{token: rawToken, base: closed.Transport}
+	closedClient := leapmuxv1connect.NewControlIPCServiceClient(closed, closedBaseURL, connect.WithGRPC())
 	_, err = closedClient.Whoami(context.Background(), connect.NewRequest(&leapmuxv1.WhoamiRequest{}))
 	assert.Error(t, err, "post-close dial must fail")
 }
-
-// Compile-time import sanity for http2 — the transport helper uses
-// it transitively, but importing here keeps gofmt from rotating it.
-var _ = http2.Transport{}
 
 // TestServer_SocketIsMode0600 verifies the unix-socket file mode is
 // 0600 after Listen restricts it. This is the only thing keeping a

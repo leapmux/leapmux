@@ -542,3 +542,127 @@ describe('changeBranchDialog', () => {
     await waitFor(() => expect(screen.getByText('git boom')).toBeInTheDocument())
   })
 })
+
+// The Title field belongs to create-worktree only, the one mode that opens a
+// tab. Its generator reads the Open-as toggle, which is what makes this more
+// than a copy of the other dialogs' field.
+describe('changeBranchDialog title', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    setupRpcMocks()
+  })
+
+  const titleInput = () => screen.getByTestId('title-input') as HTMLInputElement
+
+  it('shows no title field outside create-worktree mode', async () => {
+    renderDialog()
+    await awaitFormReady()
+    expect(screen.queryByTestId('title-input')).toBeNull()
+  })
+
+  it('pre-fills an Agent title when the mode opens', async () => {
+    renderDialog()
+    await awaitFormReady()
+    fireEvent.click(screen.getByText('Create new worktree'))
+
+    expect(titleInput().value).toMatch(/^Agent [A-Z][A-Za-z]+$/)
+  })
+
+  // The prefix has to follow the toggle, or the tab carries the other kind's
+  // name. This is the whole reason regenerateIfPristine exists.
+  it('re-rolls the title to a Terminal name when Open as flips', async () => {
+    renderDialog()
+    await awaitFormReady()
+    fireEvent.click(screen.getByText('Create new worktree'))
+    expect(titleInput().value).toMatch(/^Agent /)
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Terminal' }))
+    expect(titleInput().value).toMatch(/^Terminal [A-Z][A-Za-z]+$/)
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Agent' }))
+    expect(titleInput().value).toMatch(/^Agent [A-Z][A-Za-z]+$/)
+  })
+
+  // The other half of that rule, and the one a naive implementation breaks:
+  // a name the user typed survives the flip untouched.
+  it('keeps a typed title when Open as flips', async () => {
+    renderDialog()
+    await awaitFormReady()
+    fireEvent.click(screen.getByText('Create new worktree'))
+
+    fireEvent.input(titleInput(), { target: { value: 'Auth fix' } })
+    fireEvent.click(screen.getByRole('radio', { name: 'Terminal' }))
+    expect(titleInput().value).toBe('Auth fix')
+  })
+
+  it('sends the cleaned title on the agent path', async () => {
+    vi.mocked(workerRpc.openAgent).mockResolvedValue({
+      $typeName: 'leapmux.v1.OpenAgentResponse',
+      agent: { $typeName: 'leapmux.v1.AgentInfo', id: 'a1', workerId: 'w1' } as never,
+    } as never)
+
+    renderDialog()
+    await awaitFormReady()
+    fireEvent.click(screen.getByText('Create new worktree'))
+    fireEvent.input(titleInput(), { target: { value: '  Auth   fix  ' } })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
+    await waitFor(() => expect(workerRpc.openAgent).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(workerRpc.openAgent).mock.calls[0][1]).toMatchObject({ title: 'Auth fix' })
+  })
+
+  it('sends the cleaned title on the terminal path', async () => {
+    vi.mocked(workerRpc.openTerminal).mockResolvedValue({
+      $typeName: 'leapmux.v1.OpenTerminalResponse',
+      terminalId: 't1',
+      title: 'Build logs',
+    } as never)
+
+    renderDialog()
+    await awaitFormReady()
+    fireEvent.click(screen.getByText('Create new worktree'))
+    fireEvent.click(screen.getByRole('radio', { name: 'Terminal' }))
+    await waitFor(() => expect(workerRpc.listAvailableShells).toHaveBeenCalled())
+
+    fireEvent.input(titleInput(), { target: { value: 'Build  logs' } })
+    const apply = screen.getByRole('button', { name: 'Apply' }) as HTMLButtonElement
+    await waitFor(() => expect(apply.disabled).toBe(false))
+
+    fireEvent.click(apply)
+    await waitFor(() => expect(workerRpc.openTerminal).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(workerRpc.openTerminal).mock.calls[0][1]).toMatchObject({ title: 'Build logs' })
+  })
+
+  it('disables Apply and fires no RPC when the title is emptied', async () => {
+    renderDialog()
+    await awaitFormReady()
+    fireEvent.click(screen.getByText('Create new worktree'))
+
+    fireEvent.input(titleInput(), { target: { value: '   ' } })
+    const apply = screen.getByRole('button', { name: 'Apply' }) as HTMLButtonElement
+    await waitFor(() => expect(apply.disabled).toBe(true))
+    expect(screen.getByText('Name must not be empty')).toBeInTheDocument()
+
+    fireEvent.click(apply)
+    await Promise.resolve()
+    expect(workerRpc.openAgent).not.toHaveBeenCalled()
+    expect(workerRpc.openTerminal).not.toHaveBeenCalled()
+  })
+
+  // The gate is mode-scoped: a branch switch sends no title, so a title the
+  // user emptied while in worktree mode must not strand the other modes.
+  it('a switch-branch submit still arms after the title was emptied', async () => {
+    renderDialog()
+    await awaitFormReady()
+    fireEvent.click(screen.getByText('Create new worktree'))
+    fireEvent.input(titleInput(), { target: { value: '' } })
+
+    fireEvent.click(screen.getByText('Switch to branch'))
+    pickMenuValue('branch-select-menu', 'main')
+    const apply = screen.getByRole('button', { name: 'Apply' }) as HTMLButtonElement
+    await waitFor(() => expect(apply.disabled).toBe(false))
+
+    fireEvent.click(apply)
+    await waitFor(() => expect(workerRpc.checkoutBranch).toHaveBeenCalledTimes(1))
+  })
+})

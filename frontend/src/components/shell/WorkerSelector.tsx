@@ -1,7 +1,7 @@
 import type { Accessor, Component } from 'solid-js'
 import type { Worker } from '~/generated/proto/leapmux/v1/worker_pb'
 import { createMemo } from 'solid-js'
-import { labelRow } from '~/components/common/Dialog.css'
+import { LabeledField } from '~/components/common/LabeledField'
 import { LoadingMenu } from '~/components/common/LoadingMenu'
 import { RefreshButton } from '~/components/common/RefreshButton'
 import { workerInfoStore } from '~/stores/workerInfo.store'
@@ -55,11 +55,10 @@ export const WorkerSelector: Component<WorkerSelectorProps> = (props) => {
   }))
 
   return (
-    <div>
-      <div class={labelRow}>
-        Worker
-        <RefreshButton onClick={props.state.refreshWorkers} disabled={props.state.workersRefreshing()} title="Refresh workers" />
-      </div>
+    <LabeledField
+      label="Worker"
+      actions={<RefreshButton onClick={props.state.refreshWorkers} disabled={props.state.workersRefreshing()} title="Refresh workers" />}
+    >
       <LoadingMenu
         ariaLabel="Worker"
         value={props.state.workerId()}
@@ -69,6 +68,6 @@ export const WorkerSelector: Component<WorkerSelectorProps> = (props) => {
         onOpen={() => props.state.prefetchOnlineWorkerInfos()}
         data-testid="worker-select-menu"
       />
-    </div>
+    </LabeledField>
   )
 }

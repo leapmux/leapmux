@@ -580,7 +580,10 @@ func newAgentMessagesTransport(ctx context.Context, c *control.Client, workerID 
 		// workerID may be empty; the router resolves the spawning
 		// worker from the bearer scope, mirroring the existing
 		// localIPCCallInnerBest behaviour.
-		ipc, err := c.ControlIPCService()
+		// The STREAM lane: OpenWatchEvents holds the subscription open until
+		// the caller cancels, and the unary lane's timeout would end it on a
+		// clock rather than at the end of the stream.
+		ipc, err := c.ControlIPCStreamService()
 		if err != nil {
 			return nil, err
 		}

@@ -13,6 +13,7 @@ import (
 
 	"github.com/cenkalti/backoff/v7"
 
+	"github.com/leapmux/leapmux/hubtransport"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/locallisten"
 )
@@ -26,15 +27,19 @@ import (
 // implicitly by minting a new pair (the old delegation row is
 // revoked when its agent closes).
 //
-// HubURL is the user-visible address (`https://hub.example` or a
-// `unix:`/`npipe:` IPC URL in solo / hub-on-socket deployments).
-// requestBaseURL is what mint/revoke actually POST against: identical
-// to HubURL for remote hubs, but rewritten to a placeholder
-// `http://localhost` for local-IPC hubs because `net/http` rejects
-// any URL whose scheme isn't http(s) with "unsupported protocol
-// scheme" — the socket dial is wired into HTTPClient's Transport.
+// requestBaseURL is what mint/revoke actually POST against: the endpoint
+// address itself for a remote hub, but a placeholder `http://localhost` for a
+// local-IPC hub, because `net/http` rejects any URL whose scheme isn't http(s)
+// with "unsupported protocol scheme" — the socket dial is wired into
+// HTTPClient's Transport instead.
+//
+// There is deliberately no field for the user-visible address. It would be a
+// second copy that a caller could point somewhere the transport does not dial,
+// and for a `unix:`/`npipe:` hub the two ALREADY read differently
+// (`unix:/run/leapmux.sock` against `http://localhost`). The endpoint that
+// built HTTPClient answers that question, which is the same reason this commit
+// removed `bootstrap.Params.HubURL`.
 type DelegationStore struct {
-	HubURL          string
 	WorkerAuthToken string
 	HTTPClient      *http.Client
 	MintGracePeriod time.Duration
@@ -105,36 +110,28 @@ type cachedDelegation struct {
 	expiresAt time.Time
 }
 
-// NewDelegationStore returns a ready-to-use store.
-func NewDelegationStore(hubURL, workerAuthToken, workerID string) *DelegationStore {
-	httpClient, requestBaseURL := delegationHTTPClient(hubURL)
+// NewDelegationStore returns a ready-to-use store. Mint and revoke are short
+// request/response POSTs, so they take the unary lane and its timeout: a hub
+// that accepts a connection and never answers must not hold a spawn open.
+func NewDelegationStore(endpoint *hubtransport.Endpoint, workerAuthToken, workerID string) *DelegationStore {
 	return &DelegationStore{
-		HubURL:           hubURL,
 		WorkerAuthToken:  workerAuthToken,
-		HTTPClient:       httpClient,
+		HTTPClient:       endpoint.UnaryClient(mintTimeout),
 		MintGracePeriod:  5 * time.Minute,
 		WorkerID:         workerID,
 		MintMaxAttempts:  6,
 		MintRetryBackoff: 100 * time.Millisecond,
-		requestBaseURL:   requestBaseURL,
+		requestBaseURL:   endpoint.BaseURL(),
 		cached:           make(map[string]cachedDelegation),
 		refcount:         make(map[string]int),
 		inflight:         make(map[string]*mintFlight),
 	}
 }
 
-// delegationHTTPClient picks the transport mint/revoke POSTs should
-// use. Local-IPC hub URLs (unix:/npipe:) get a socket-aware HTTP/1.1
-// transport plus a `http://localhost` placeholder URL; everything
-// else flows through the default transport against the real hub URL.
-func delegationHTTPClient(hubURL string) (*http.Client, string) {
-	const timeout = 10 * time.Second
-	return locallisten.SelectClient(
-		hubURL,
-		func() (*http.Client, string, error) { return locallisten.LocalHTTPClient(hubURL, timeout) },
-		func() (*http.Client, string) { return &http.Client{Timeout: timeout}, hubURL },
-	)
-}
+// mintTimeout limits one mint or revoke POST. It is shorter than
+// hubtransport.DefaultUnaryTimeout because these two calls sit in the path of
+// an agent spawn, which a person waits on.
+const mintTimeout = 10 * time.Second
 
 // delegationKey is the cache/refcount/tab key for one user's delegation slot.
 // Every map in this store is keyed by it, so the three maps cannot drift

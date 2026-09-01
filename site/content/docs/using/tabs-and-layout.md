@@ -62,6 +62,12 @@ Double-click an **agent** or **terminal** tab to rename it inline. Press `Enter`
 File tabs cannot be renamed, and tabs in a read-only (archived) workspace cannot be renamed. Renaming an agent also updates the agent's name on the Worker; if that update fails, the new name is kept locally and may not match the agent on the Worker.
 {{< /callout >}}
 
+The New agent dialog pre-fills the Title field with a suggestion: `Agent <Name>`, from a shared pool. Accept the suggestion, or type your own name.
+
+An agent in [plan mode](/docs/using/coding-agents/#plan-mode-shortcut) renames a tab that still carries the suggestion. It uses the plan's own title, so the tab describes the work instead of a random name.
+
+To keep a name, type it in the dialog or rename the tab later. Plan mode then leaves that tab alone. LeapMux records where a name came from, so plan mode keeps a name you typed, even one that looks like a suggestion.
+
 ### Closing tabs
 
 Close a tab with the **X** on the tab, by **middle-clicking** it, or with `Cmd/Ctrl + W` for the active tab. In a read-only workspace, only file tabs can be closed.

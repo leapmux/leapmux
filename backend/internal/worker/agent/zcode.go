@@ -281,9 +281,7 @@ type zcodeStateSnapshot struct {
 
 // openSession creates a fresh session, or resumes the one the client specified.
 //
-// A resume that fails falls back to a fresh session rather than to a dead agent:
-// the handle came from a previous run and the app-server discards a session whose
-// store it can no longer read, which must not make the agent unopenable.
+// A resume that does not hold fails the whole start. See resumeFailedError.
 func (a *zcodeAgent) openSession(resumeID string, timeout time.Duration) error {
 	if resumeID != "" {
 		params := map[string]any{
@@ -292,20 +290,20 @@ func (a *zcodeAgent) openSession(resumeID string, timeout time.Duration) error {
 		}
 		raw, err := a.sendZCodeRequest(ZCodeMethodSessionResume, params, timeout)
 		if err != nil {
-			slog.Warn("zcode resume failed; creating a fresh session", "agent_id", a.agentID, "resume_id", resumeID, "error", err)
-		} else if snap, ok := a.parseStateSnapshot(raw); ok && zcodeUsableSessionID(snap.Session.SessionID) {
-			a.applyParsedStateSnapshot(snap)
-			return nil
-		} else {
-			// The document is abandoned WHOLE, and the decision is taken BEFORE the fold for
-			// that reason. It describes a session this agent does not adopt, and every axis
-			// in it corrupts the fresh session below. The app-server numbers protocol events
-			// per session from one, so a carried eventSeq becomes a watermark that makes
-			// dispatchZCodeEvent drop the new session's first events as duplicates. And
-			// session/create takes the mode it is given, so a carried mode is the mode the
-			// new session RUNS in -- `yolo` there approves every tool call by itself.
-			slog.Warn("zcode resume returned no session id; creating a fresh session", "agent_id", a.agentID, "resume_id", resumeID)
+			return resumeFailedError(resumeID, err)
 		}
+		// "unknown" is the app-server's placeholder for "no session exists", so a
+		// reply that carries it describes no session -- although it still holds a
+		// sequence, a mode and a context window. The id is tested BEFORE the fold
+		// for that reason, and an unusable document is abandoned WHOLE: a carried
+		// eventSeq becomes a watermark that makes dispatchZCodeEvent drop later
+		// events as duplicates, and `yolo` is a mode that nothing asked for.
+		snap, ok := a.parseStateSnapshot(raw)
+		if !ok || !zcodeUsableSessionID(snap.Session.SessionID) {
+			return resumeFailedError(resumeID, fmt.Errorf("%s returned no session id", ZCodeMethodSessionResume))
+		}
+		a.applyParsedStateSnapshot(snap)
+		return nil
 	}
 
 	params := map[string]any{"workspace": a.workspace}

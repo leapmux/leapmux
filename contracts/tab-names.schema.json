@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "tab-names.schema.json",
+  "title": "Tab name pool contract",
+  "description": "The pool the worker and the browser dialogs both draw new tab titles from. The name pattern keeps a title readable -- one capitalized word after the prefix -- and the 8-character cap keeps it short. It carries no other meaning: plan-mode auto-rename used to read a title back through this same pattern, and now reads the agents row's title_auto_generated instead. Rules the schema CANNOT express -- friendly form only, predictable pronunciation, distinct at a glance, no identity marker -- live in the contract's _rules field and are applied by a reviewer.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["_readme", "_rules", "titlePrefixes", "names"],
+  "properties": {
+    "_readme": { "type": "string", "minLength": 1 },
+    "_rules": { "type": "string", "minLength": 1 },
+    "titlePrefixes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agent", "terminal"],
+      "properties": {
+        "agent": { "$ref": "#/$defs/titlePrefix" },
+        "terminal": { "$ref": "#/$defs/titlePrefix" }
+      }
+    },
+    "names": {
+      "type": "array",
+      "minItems": 32,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Z][A-Za-z]+$",
+        "minLength": 2,
+        "maxLength": 8
+      }
+    }
+  },
+  "$defs": {
+    "titlePrefix": {
+      "type": "string",
+      "pattern": "^[A-Z][A-Za-z]+$",
+      "minLength": 2,
+      "maxLength": 16
+    }
+  }
+}

@@ -354,6 +354,77 @@ export const EFFORT_AUTO = ${jsonString(v.modelSentinels.effortAuto)} as const
 }
 
 // ---------------------------------------------------------------------------
+// tab-names: the pool new agent / terminal tabs are named from
+// ---------------------------------------------------------------------------
+
+export function checkTabNames(v) {
+  mustBe(v.titlePrefixes.agent !== v.titlePrefixes.terminal, 'tab-names.json', 'the agent and terminal title prefixes must differ -- a shared prefix makes "Agent Gabe" and "Terminal Gabe" the same title, and plan-mode auto-rename keys on the agent prefix alone')
+  for (let i = 1; i < v.names.length; i++) {
+    mustBe(v.names[i - 1] < v.names[i], 'tab-names.json', `names must be sorted: ${jsonString(v.names[i])} follows ${jsonString(v.names[i - 1])}`)
+  }
+  return {}
+}
+
+/**
+ * A quoted string list, `perRow` entries to a line, each line opened with
+ * `indent`. Several short entries per line keeps the width gofmt keeps and
+ * keeps a diff readable.
+ *
+ * One function for both languages, because only the indent differs: a tab for
+ * Go and two spaces for TS. Two near-identical copies are one place for an
+ * escaping fix to be applied and the other to be missed.
+ */
+function stringRows(values, perRow, indent) {
+  const rows = []
+  for (let i = 0; i < values.length; i += perRow)
+    rows.push(`${indent}${values.slice(i, i + perRow).map(jsonString).join(', ')},`)
+  return rows.join('\n')
+}
+
+const goStringRows = (values, perRow) => stringRows(values, perRow, '\t')
+const tsStringRows = (values, perRow) => stringRows(values, perRow, '  ')
+
+export function emitGoTabNames(v) {
+  return `${GO_HEADER('tab-names.json')}package contracts
+
+// The pool new tabs are named from, generated from contracts/tab-names.json.
+// The browser's TAB_NAMES reads the same table, so the worker's fallback name
+// and the dialog's pre-filled name come from one list.
+
+// AgentTitlePrefix / TerminalTitlePrefix begin an auto-generated tab title.
+// The title is the prefix, one space, and a pooled name: "Agent Gabe".
+const (
+${goConstBlock([
+  { name: 'AgentTitlePrefix', value: jsonString(v.titlePrefixes.agent) },
+  { name: 'TerminalTitlePrefix', value: jsonString(v.titlePrefixes.terminal) },
+])}
+)
+
+// TabNames is the pool itself. Sorted, and every entry matches
+// ^[A-Z][A-Za-z]+$, which keeps a title readable and means nothing else.
+var TabNames = []string{
+${goStringRows(v.names, 8)}
+}
+`
+}
+
+export function emitTsTabNames(v) {
+  return `${TS_HEADER('tab-names.json')}
+// The pool new tabs are named from, generated from contracts/tab-names.json
+// (the worker's contracts.TabNames reads the same table).
+
+/** Prefixes an auto-generated tab title: \`\${prefix} \${name}\`. */
+export const AGENT_TITLE_PREFIX = ${jsonString(v.titlePrefixes.agent)} as const
+export const TERMINAL_TITLE_PREFIX = ${jsonString(v.titlePrefixes.terminal)} as const
+
+/** Sorted; every entry matches the worker's ^[A-Z][A-Za-z]+$ title shape. */
+export const TAB_NAMES: readonly string[] = [
+${tsStringRows(v.names, 8)}
+]
+`
+}
+
+// ---------------------------------------------------------------------------
 // captcha: the protected RPCs' action vocabulary
 // ---------------------------------------------------------------------------
 
@@ -807,6 +878,12 @@ export function checkValidate(v) {
   // token may hold. Enforce the repetition here, next to the data, instead
   // of in a consumer's mirror test.
   mustBe(JSON.stringify(v.name.invisibleFormat) === JSON.stringify(v.session.invisibleFormat), 'validate.json', 'session.invisibleFormat must repeat name.invisibleFormat exactly -- the session rule is FROZEN; a human must decide whether both lists move')
+  // A resume handle comes in two shapes and each has its own cap. The token
+  // cap was applied to a session FILE PATH once and refused every real one --
+  // a path holds a directory prefix a token never does. Keeping the file-path
+  // cap strictly larger states that relation in the data, so a later edit
+  // cannot reintroduce the refusal by lowering one number.
+  mustBe(v.session.filePathByteLimit > v.session.byteLimit, 'validate.json', 'session.filePathByteLimit must be > session.byteLimit -- a session file path carries a directory prefix that a token does not')
   mustBe(v.password.minLength <= v.password.maxLength, 'validate.json', 'password.minLength must be <= maxLength')
   mustBe(v.password.printableAsciiMin <= v.password.printableAsciiMax, 'validate.json', 'password printable ASCII range is inverted')
   const system = Object.keys(v.usernames.systemReserved)
@@ -871,6 +948,7 @@ const (
 ${goConstBlock([
   { name: 'NameByteLimit', value: String(v.name.byteLimit) },
   { name: 'SessionIDByteLimit', value: String(v.session.byteLimit) },
+  { name: 'SessionFilePathByteLimit', value: String(v.session.filePathByteLimit) },
   { name: 'BranchByteLimit', value: String(v.branch.byteLimit) },
   { name: 'MinPasswordLength', value: String(v.password.minLength) },
   { name: 'MaxPasswordLength', value: String(v.password.maxLength) },
@@ -1001,6 +1079,7 @@ export function emitTsValidate(v) {
 
 export const NAME_BYTE_LIMIT = ${v.name.byteLimit} as const
 export const SESSION_ID_BYTE_LIMIT = ${v.session.byteLimit} as const
+export const SESSION_FILE_PATH_BYTE_LIMIT = ${v.session.filePathByteLimit} as const
 export const BRANCH_NAME_BYTE_LIMIT = ${v.branch.byteLimit} as const
 export const MIN_PASSWORD_LENGTH = ${v.password.minLength} as const
 export const MAX_PASSWORD_LENGTH = ${v.password.maxLength} as const
@@ -1019,6 +1098,20 @@ export const NAME_WHITESPACE_MINUS_SPACE_CLASS = ${jsonString(tsClassSource(subt
 ${tsAnnotation([...v.session.refusedControl, ...v.session.refusedAscii, ...v.session.invisibleFormat])}
 /** Everything a session ID may not contain (controls, refused ASCII, format characters). */
 export const SESSION_FORBIDDEN_CLASS = ${jsonString(sessionClass)} as const
+
+${tsAnnotation(v.session.invisibleFormat)}
+/**
+ * The invisible-format half of the session class, on its own.
+ *
+ * The PATH shape of a resume handle cannot use the whole class: it carries a
+ * backslash as a separator, and may carry a dollar or a percent sign, all of
+ * which the token class bans. It still has to refuse THESE, because the
+ * worker's SanitizePath drops a control character and trims edge whitespace
+ * but leaves a format character alone -- U+200B is Cf, not Cc -- so one would
+ * reach the agent inside a filename and name a session that does not exist.
+ * The Go twin is contracts.SessionInvisibleFormat.
+ */
+export const SESSION_INVISIBLE_CLASS = ${jsonString(tsClassSource(v.session.invisibleFormat))} as const
 
 /** Printable ASCII, the whole character set a password may hold. */
 export const PRINTABLE_ASCII_CLASS = ${jsonString(printable)} as const
@@ -1617,6 +1710,15 @@ const DOMAINS = [
       checkWorkerVocab(v)
       out['backend/generated/contracts/worker-vocab.go'] = emitGoWorkerVocab(v)
       out['frontend/src/generated/contracts/worker-vocab.ts'] = emitTsWorkerVocab(v)
+    },
+  },
+  {
+    name: 'tab-names',
+    emit(out, read) {
+      const t = read('tab-names')
+      checkTabNames(t)
+      out['backend/generated/contracts/tab-names.go'] = emitGoTabNames(t)
+      out['frontend/src/generated/contracts/tab-names.ts'] = emitTsTabNames(t)
     },
   },
   {

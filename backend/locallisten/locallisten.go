@@ -7,14 +7,11 @@ package locallisten
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
 	"strings"
 	"time"
-
-	"golang.org/x/net/http2"
 )
 
 // Scheme identifies a local IPC transport.
@@ -80,15 +77,17 @@ func Dialer(url string) (func(ctx context.Context) (net.Conn, error), error) {
 	}
 }
 
-// NewLocalH2CTransport wraps a pre-bound local-IPC dialer (unix:/npipe:) in
-// an HTTP/2-cleartext transport suitable for gRPC bidi streaming.
-func NewLocalH2CTransport(dial func(ctx context.Context) (net.Conn, error)) *http2.Transport {
-	return &http2.Transport{
-		AllowHTTP: true,
-		DialTLSContext: func(ctx context.Context, _, _ string, _ *tls.Config) (net.Conn, error) {
-			return dial(ctx)
-		},
-	}
+// LocalConnectURL is the placeholder base URL ConnectRPC and net/http see
+// when targeting a local-IPC endpoint. Both reject any URL whose scheme is not
+// http(s); the dialer is wired into the transport, so the host portion is
+// purely cosmetic. Package hubtransport builds the transports that use it.
+const LocalConnectURL = "http://localhost"
+
+// JoinPath joins a path onto a base URL, normalising any trailing slash on the
+// base. Callers compose endpoint URLs from a user-supplied --hub flag whose
+// value may or may not end in "/".
+func JoinPath(baseURL, path string) string {
+	return strings.TrimRight(baseURL, "/") + path
 }
 
 // HTTPDialContext adapts a pre-bound dialer to net/http's DialContext

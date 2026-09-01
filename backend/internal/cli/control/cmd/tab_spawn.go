@@ -259,7 +259,27 @@ type openTerminalArgs struct {
 	WorkingDir    string
 	Shell         string
 	ShellStartDir string
-	Position      positionSpec
+	// Title is optional, and empty means "you pick one": the worker then takes
+	// a random `Terminal <Name>` from the shared pool, the same answer it gives
+	// the quick-open buttons. It reaches the same field OpenAgentRequest has, so
+	// `--title` means one thing for both tab types.
+	Title    string
+	Position positionSpec
+}
+
+// terminalOpenRequest projects the resolved CLI arguments onto the wire
+// request, the way spawnOptions does for the agent path.
+//
+// Cols / Rows stay at zero so the worker applies its 80x25 default
+// (terminal.Open); the frontend resizes the PTY as soon as the user attaches.
+func terminalOpenRequest(args openTerminalArgs) *leapmuxv1.OpenTerminalRequest {
+	return &leapmuxv1.OpenTerminalRequest{
+		WorkerId:      args.WorkerID,
+		WorkingDir:    args.WorkingDir,
+		Shell:         args.Shell,
+		ShellStartDir: args.ShellStartDir,
+		Title:         args.Title,
+	}
 }
 
 // openTerminalResult is what openTerminalAndAddTab emits on success.
@@ -276,15 +296,7 @@ func openTerminalAndAddTab(ctx context.Context, c *control.Client, w workerCall,
 	if args.WorkspaceID == "" || args.WorkerID == "" {
 		return nil, control.EmitError("invalid_request", "workspace_id and worker_id are required for --type=terminal")
 	}
-	// Cols / Rows left at zero so the worker applies its 80x25 default
-	// (terminal.Open). The frontend resizes the PTY as soon as the
-	// user attaches.
-	req := &leapmuxv1.OpenTerminalRequest{
-		WorkerId:      args.WorkerID,
-		WorkingDir:    args.WorkingDir,
-		Shell:         args.Shell,
-		ShellStartDir: args.ShellStartDir,
-	}
+	req := terminalOpenRequest(args)
 	var resp leapmuxv1.OpenTerminalResponse
 	if err := w.CallEmit(ctx, "OpenTerminal", req, &resp); err != nil {
 		return nil, err

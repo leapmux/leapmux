@@ -5,7 +5,6 @@ import (
 	"crypto/ecdh"
 	"crypto/rand"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -18,9 +17,11 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/controlipc"
+	"github.com/leapmux/leapmux/locallisten/locallistentest"
 )
 
 // shortIPCSocket builds a unix-socket path under os.TempDir() short
@@ -225,7 +226,7 @@ func startFakeChannelHub(t *testing.T, cliUserID, hubUserID string) *control.Cli
 		openUserID: hubUserID,
 	})
 	mux.Handle(path, handler)
-	srv := httptest.NewServer(mux)
+	srv := hubtransporttest.NewServer(t, mux)
 	t.Cleanup(srv.Close)
 
 	// Through the real constructor over a seeded credential, rather than a
@@ -429,4 +430,91 @@ func TestNewClientAndNewClientOrAnonymous_BuildTheSameTransport(t *testing.T) {
 	assert.Equal(t, "Bearer lmx_a_test", bearerHeader(withCreds))
 	assert.Equal(t, "tester", withCreds.Username)
 	assert.Equal(t, "Bearer lmx_a_test", bearerHeader(anonymous), "a stored credential is used when one exists")
+}
+
+// TestNewClient_RemoteHubGetsAWebSocketClient pins the transport pair the CLI
+// hands its two lanes.
+//
+// The remote branch used to return a NIL WebSocket client, which made
+// coder/websocket fall back to http.DefaultClient: no timeout of its own, and
+// the process-global connection pool shared with every other caller in the
+// program. It worked only because net/http steers a WebSocket upgrade onto
+// HTTP/1.1 by itself -- a correct outcome that nobody chose.
+func TestNewClient_RemoteHubGetsAWebSocketClient(t *testing.T) {
+	srv := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+	require.NoError(t, control.SaveCredentials(srv.URL, control.CredentialFile{
+		HubURL: srv.URL, AccessToken: "lmx_test_secret", UserID: "u-1",
+	}))
+
+	c, err := control.NewClient(srv.URL)
+	require.NoError(t, err)
+
+	require.NotNil(t, c.WSClient, "a remote hub must get its own WebSocket client")
+	require.NotNil(t, c.HTTPClient)
+	assert.NotSame(t, c.HTTPClient, c.WSClient, "the two lanes need different protocols and different timeouts")
+	assert.NotZero(t, c.HTTPClient.Timeout, "a unary hub call must be bounded")
+	assert.Zero(t, c.WSClient.Timeout, "a WebSocket must not be bounded by a client timeout")
+	assert.Equal(t, srv.URL, c.ConnectURL(), "a remote hub URL passes through verbatim")
+
+	// Both clients reach the hub, which is what proves neither is a placeholder.
+	for name, client := range map[string]*http.Client{"unary": c.HTTPClient, "websocket": c.WSClient} {
+		req, reqErr := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL+"/version", nil)
+		require.NoError(t, reqErr, name)
+		resp, doErr := client.Do(req)
+		require.NoError(t, doErr, name)
+		require.NoError(t, resp.Body.Close())
+		assert.Equal(t, http.StatusNoContent, resp.StatusCode, name)
+	}
+}
+
+// TestWorkerIPCStreamLaneCarriesNoTimeout pins the lane a control-IPC SERVER
+// STREAM must run on.
+//
+// `events --local` and `agent messages --follow` both open
+// ControlIPCService.StreamInner, which rides the HTTP client rather than a
+// WebSocket. An http.Client timeout covers the BODY read and a stream's body
+// ends only when the stream does, so the timed unary client severed both
+// subscriptions after exactly its timeout, reporting a transport error instead
+// of an end of stream.
+func TestWorkerIPCStreamLaneCarriesNoTimeout(t *testing.T) {
+	socketURL := locallistentest.UniqueListenURL(t, "ctlstream")
+	c, err := control.NewLocalClient(socketURL, "tok_local")
+	require.NoError(t, err)
+
+	require.NotNil(t, c.HTTPClient, "the unary lane")
+	require.NotNil(t, c.StreamHTTPClient, "the stream lane")
+	assert.NotZero(t, c.HTTPClient.Timeout,
+		"a unary control-IPC call must be limited: a worker that never answers otherwise hangs the CLI for ever")
+	assert.Zero(t, c.StreamHTTPClient.Timeout,
+		"a control-IPC server stream must NOT be limited by a client timeout, which covers the body read")
+	assert.NotSame(t, c.HTTPClient, c.StreamHTTPClient, "the two lanes hold different timeouts")
+
+	// Both accessors answer, and each one carries its own lane's client.
+	unary, err := c.ControlIPCService()
+	require.NoError(t, err)
+	require.NotNil(t, unary)
+	stream, err := c.ControlIPCStreamService()
+	require.NoError(t, err)
+	require.NotNil(t, stream)
+}
+
+// A hub-bound client has no control-IPC lane at all, and the stream accessor
+// must refuse it for the same reason the unary one does.
+func TestControlIPCStreamServiceRefusesAHubClient(t *testing.T) {
+	srv := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+	require.NoError(t, control.SaveCredentials(srv.URL, control.CredentialFile{
+		HubURL: srv.URL, AccessToken: "lmx_test_secret", UserID: "u-1",
+	}))
+	c, err := control.NewClient(srv.URL)
+	require.NoError(t, err)
+
+	_, err = c.ControlIPCStreamService()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "worker-IPC")
 }

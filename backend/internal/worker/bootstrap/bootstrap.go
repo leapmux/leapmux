@@ -58,9 +58,15 @@ type Params struct {
 	HomeDir  string
 	DataDir  string
 
-	// HubURL and AuthToken are used for cross-worker delegation, not for
-	// the worker's own Hub connection (the Client already holds that).
-	HubURL    string
+	// AuthToken is the worker's own credential, used to mint the per-user
+	// delegation bearers that cross-worker calls and spawned-agent hub calls
+	// present.
+	//
+	// The hub ADDRESS is deliberately absent: Wire takes it from
+	// Client.Endpoint(). A second field here could be pointed somewhere else,
+	// or left unset, and the delegation lane would then either fail or open a
+	// second connection pool against the same Hub. Reading it off the Client
+	// makes both impossible.
 	AuthToken string
 
 	// SeedRegisteredBy is a DB-sourced guess at the worker owner. The Hub
@@ -236,7 +242,7 @@ func newControlIPCFactory(p Params, svc *service.Service, dispatcher *channel.Di
 	var cwClient *crossworker.Client
 	var delegation *crossworker.DelegationStore
 	if pins != nil {
-		delegation = crossworker.NewDelegationStore(p.HubURL, p.AuthToken, p.WorkerID)
+		delegation = crossworker.NewDelegationStore(p.Client.Endpoint(), p.AuthToken, p.WorkerID)
 		// The mint's issued_for_tab_id comes from the worker's OWN open-tab tables,
 		// which are the authority on what this machine hosts. Wired as a closure so
 		// crossworker keeps no dependency on the worker DB -- the same shape
@@ -248,18 +254,18 @@ func newControlIPCFactory(p Params, svc *service.Service, dispatcher *channel.Di
 		// (Acquire -> GetBearer -> Release) already keeps the cache
 		// bounded; this catches orphans.
 		go delegation.RunJanitor(p.Ctx, time.Hour)
-		cwClient = crossworker.New(p.Ctx, p.HubURL, pins, delegation)
+		cwClient = crossworker.New(p.Ctx, p.Client.Endpoint(), pins, delegation)
 	}
 
 	var hubStreams controlipc.HubStreamer
 	var hubBridge controlipc.HubBridge
 	if delegation != nil {
-		hubStreams = controlipc.NewHubEventStreamer(p.HubURL, delegation)
+		hubStreams = controlipc.NewHubEventStreamer(p.Client.Endpoint(), delegation)
 		// HubBridge mirrors HubStreamer for unary hub-bound RPCs
 		// (workspace/tab/tile/layout). Wired with the same delegation
 		// store so streaming and unary share a single user -> bearer cache
 		// and one revoke path.
-		hubBridge = controlipc.NewHubUnaryBridge(p.HubURL, delegation)
+		hubBridge = controlipc.NewHubUnaryBridge(p.Client.Endpoint(), delegation)
 	}
 
 	return &controlipc.Factory{

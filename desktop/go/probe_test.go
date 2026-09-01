@@ -3,9 +3,10 @@ package main
 import (
 	"context"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 
+	"github.com/leapmux/leapmux/hubtransport"
+	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -16,18 +17,18 @@ import (
 // metadata. Without the CheckRedirect pin the default policy would follow it.
 func TestProbeHubRefusesOffOriginRedirect(t *testing.T) {
 	var reachedTarget bool
-	internal := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	internal := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		reachedTarget = true
 		_, _ = w.Write([]byte("secret"))
 	}))
 	t.Cleanup(internal.Close)
 
-	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	hub := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, internal.URL+"/latest/meta-data/", http.StatusFound)
 	}))
 	t.Cleanup(hub.Close)
 
-	err := probeHub(context.Background(), hub.URL)
+	err := probeHub(context.Background(), endpointFor(t, hub.URL))
 	require.Error(t, err, "a probe redirect leaving the hub origin must not be followed")
 	assert.False(t, reachedTarget, "the off-origin target must never be reached")
 }
@@ -36,7 +37,7 @@ func TestProbeHubRefusesOffOriginRedirect(t *testing.T) {
 // legitimate hub 3xx on the probe endpoint (an auth bounce, a trailing-slash 301).
 func TestProbeHubFollowsSameOriginRedirect(t *testing.T) {
 	var finalHit bool
-	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	hub := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/leapmux.v1.AuthService/GetSystemInfo":
 			http.Redirect(w, r, "/final", http.StatusFound)
@@ -47,30 +48,41 @@ func TestProbeHubFollowsSameOriginRedirect(t *testing.T) {
 	}))
 	t.Cleanup(hub.Close)
 
-	err := probeHub(context.Background(), hub.URL)
+	err := probeHub(context.Background(), endpointFor(t, hub.URL))
 	require.NoError(t, err, "a same-origin probe redirect must be followed")
 	assert.True(t, finalHit, "the same-origin target must be reached")
 }
 
 // The happy path: a reachable hub that answers 200 makes the probe succeed.
 func TestProbeHubSucceedsOnOK(t *testing.T) {
-	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	hub := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	t.Cleanup(hub.Close)
 
-	require.NoError(t, probeHub(context.Background(), hub.URL))
+	require.NoError(t, probeHub(context.Background(), endpointFor(t, hub.URL)))
 }
 
 // A non-200 status is surfaced as an error so ConnectDistributed does not treat an
 // unreachable or erroring hub as reachable.
 func TestProbeHubFailsOnNon200(t *testing.T) {
-	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	hub := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
 	t.Cleanup(hub.Close)
 
-	err := probeHub(context.Background(), hub.URL)
+	err := probeHub(context.Background(), endpointFor(t, hub.URL))
 	require.Error(t, err, "a non-200 probe response must be an error")
 	assert.Contains(t, err.Error(), "unexpected status")
+}
+
+// endpointFor builds the endpoint a caller of probeHub holds. ConnectDistributed
+// builds ONE for the whole connect and hands it to the probe and then to the
+// proxy, so the hub is probed once and the two share a connection pool.
+func endpointFor(t *testing.T, hubURL string) *hubtransport.Endpoint {
+	t.Helper()
+	endpoint, err := hubtransport.New(hubURL)
+	require.NoError(t, err)
+	t.Cleanup(endpoint.CloseIdleConnections)
+	return endpoint
 }

@@ -28,9 +28,9 @@ The dialog is titled **New workspace** and contains these fields:
 | --- | --- |
 | **Worker** | Pick which Worker (machine) hosts the workspace's first agent. See [Managing Workers](/docs/admin/managing-workers/). |
 | Agent provider | Choose the agent backend (for example Claude Code or Codex). A refresh control re-queries the Worker for available providers. See [Coding Agents](/docs/using/coding-agents/). |
-| **Title** | The workspace name. Pre-filled with a random three-word title-cased name; the placeholder is `New Workspace`. The refresh button beside the label (tooltip **Generate random name**) regenerates the suggestion. |
-| Directory | The working directory to open on the Worker (left column). The same picker the other dialogs use: browse the tree, or type a path in the box above it. |
-| Session ID | Optional agent session ID to resume an existing agent session (right column). See [Coding Agents](/docs/using/coding-agents/). |
+| **Title** | The workspace name. Pre-filled with a random three-word title-cased name. The refresh button beside the label (tooltip **Generate random name**) regenerates the suggestion. Type your own to replace it. It cannot be empty. |
+| Directory | The working directory to open on the Worker. The same picker the other dialogs use: browse the tree, or type a path in the box above it. |
+| Session ID | Optional agent session ID to resume an existing agent session. See [Coding Agents](/docs/using/coding-agents/). |
 | Git options | Once a Worker is chosen, choose the git mode for the working directory — for example opening directly or in a worktree. See [Worktrees & Branches](/docs/using/worktrees-and-branches/). |
 
 Click **Create** to confirm. Creating a workspace starts its first agent automatically, then opens the new workspace.

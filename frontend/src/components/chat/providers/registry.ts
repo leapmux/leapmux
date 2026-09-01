@@ -167,8 +167,30 @@ export interface Provider {
    * True when this provider's `agentSessionId` is a session FILE PATH rather
    * than an opaque id, so the UI shortens it to a basename for display and
    * labels the copy action "session file path". Pi uses session files.
+   *
+   * This is a DISPLAY fact. What the resume field will ACCEPT is
+   * {@link validateResumeHandle}, because a provider that reports a path may
+   * still take an id as well.
    */
   sessionIdIsFilePath?: boolean
+  /**
+   * Validate a resume handle the user typed, returning an error message or
+   * null. Omit to take the shared TOKEN rule (`validateSessionId`), which is
+   * what Claude, Codex, ZCode and the ACP providers issue.
+   *
+   * A resume handle is NOT one shape across providers, and the SHAPE TEST that
+   * picks a rule is a copy of that provider's own resolver — Pi reads a value
+   * holding a separator, or ending in `.jsonl`, as a path, and anything else
+   * as an id it matches inside the working directory. That is exactly the kind
+   * of single-provider knowledge this interface exists to hold: the worker
+   * already dispatches it per provider (`Provider.ResolveResumeHandle` in Go),
+   * and while the browser hardcoded Pi's rule in `~/lib/validate` the two could
+   * disagree in one place and not the other.
+   *
+   * An implementation composes the generic halves `validateSessionId` and
+   * `validateSessionFilePath` rather than restating either.
+   */
+  validateResumeHandle?: (value: string) => string | null
   /**
    * True when an AskUserQuestion option selection and the free-text note
    * coexist (the agent accepts both), so picking an option does NOT clear the

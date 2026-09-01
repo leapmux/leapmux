@@ -24,7 +24,7 @@ func (f failingSoloInstance) Stop() error            { return f.err }
 func TestAppShutdownReturnsSoloError(t *testing.T) {
 	wantErr := errors.New("lease release failed")
 	app := NewApp("")
-	installTestConnection(app, newHTTPProxy("https://hub.example"), failingSoloInstance{err: wantErr}, "https://hub.example")
+	installTestConnection(app, mustNewProxy(t, "https://hub.example"), failingSoloInstance{err: wantErr}, "https://hub.example")
 
 	require.ErrorIs(t, app.Shutdown(), wantErr)
 	require.ErrorIs(t, app.Shutdown(), wantErr, "idempotent shutdown must retain its terminal error")
@@ -35,7 +35,7 @@ func TestSwitchModeClearsStateWhenSoloStopFails(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	wantErr := errors.New("lease release failed")
 	app := NewApp("")
-	installTestConnection(app, newHTTPProxy("https://stale.example"), failingSoloInstance{err: wantErr}, "https://stale.example")
+	installTestConnection(app, mustNewProxy(t, "https://stale.example"), failingSoloInstance{err: wantErr}, "https://stale.example")
 	app.config.Mode = "solo"
 	app.config.HubURL = "https://stale.example"
 
@@ -64,7 +64,7 @@ func (b blockingSoloInstance) Stop() error {
 func TestAppLifecycleOperationRejectsDuringShutdown(t *testing.T) {
 	app := NewApp("")
 	blocking := blockingSoloInstance{entered: make(chan struct{}), release: make(chan struct{})}
-	installTestConnection(app, newHTTPProxy("https://hub.example"), blocking, "https://hub.example")
+	installTestConnection(app, mustNewProxy(t, "https://hub.example"), blocking, "https://hub.example")
 	shutdownDone := make(chan error, 1)
 	go func() { shutdownDone <- app.Shutdown() }()
 	<-blocking.entered
@@ -166,7 +166,7 @@ func TestRunStdioSessionShutsDownAfterFatalReadError(t *testing.T) {
 // cleanup warnings are surfaced separately by run's defer / LifecycleResult.
 func TestRunStdioSessionCleanCloseIgnoresCleanupWarning(t *testing.T) {
 	app := NewApp("")
-	installTestConnection(app, newHTTPProxy("https://hub.example"), failingSoloInstance{err: errors.New("lease release failed")}, "https://hub.example")
+	installTestConnection(app, mustNewProxy(t, "https://hub.example"), failingSoloInstance{err: errors.New("lease release failed")}, "https://hub.example")
 
 	err := runStdioSession(app, bytes.NewReader(nil), io.Discard)
 	require.NoError(t, err, "a clean close must not surface a cleanup warning as a session error")

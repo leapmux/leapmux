@@ -111,10 +111,14 @@ func (zcodeProvider) SyntheticInterruptNotice() string { return "" }
 // never a raw control frame on stdin.
 func (zcodeProvider) PermissionModeFromRawInput(string) (string, bool) { return "", false }
 
-// ValidateResumeHandle: ZCode's resume handle is an opaque session TOKEN from
-// session/list, not a path, so the default token rule applies.
-func (zcodeProvider) ValidateResumeHandle(handle, _ string) error {
-	return validate.ValidateSessionID(handle)
+// ResolveResumeHandle: ZCode's resume handle is an opaque session TOKEN from
+// session/list, not a path, so the default token rule applies. That rule
+// refuses rather than normalizes, so an accepted handle reaches argv unchanged.
+func (zcodeProvider) ResolveResumeHandle(handle, _ string) (string, error) {
+	if err := validate.ValidateSessionID(handle); err != nil {
+		return "", err
+	}
+	return handle, nil
 }
 
 // TurnEndToolUses reads the tool-call count off ZCode's turn end, which states it

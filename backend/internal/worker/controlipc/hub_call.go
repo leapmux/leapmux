@@ -9,6 +9,7 @@ import (
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/leapmux/leapmux/hubtransport"
 	"github.com/leapmux/leapmux/internal/hubrpc"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/crossworker"
@@ -44,15 +45,19 @@ type HubUnaryBridge struct {
 }
 
 // NewHubUnaryBridge returns a bridge that mints delegation
-// bearers via dp and forwards unary hub RPCs to hubURL. The transport
-// matches HubEventStreamer's so both lanes share connection pool
-// behavior over `unix:` / `npipe:` and real HTTPS hubs alike.
-func NewHubUnaryBridge(hubURL string, dp crossworker.DelegationProvider) *HubUnaryBridge {
-	httpClient, connectURL := streamClientForHubURL(hubURL)
+// bearers via dp and forwards unary hub RPCs to the endpoint.
+//
+// It takes its OWN client, which it must not share with HubEventStreamer:
+// this lane needs a timeout, because a hub that accepts a connection and never
+// answers otherwise hangs an agent's `tab list` for ever, and the WebSocket
+// lane must have none. The two lanes also need different protocols. They share
+// the Endpoint, so they still share one connection pool per protocol and one
+// h2c verdict.
+func NewHubUnaryBridge(endpoint *hubtransport.Endpoint, dp crossworker.DelegationProvider) *HubUnaryBridge {
 	return &HubUnaryBridge{
 		Delegation: dp,
-		HTTPClient: httpClient,
-		ConnectURL: connectURL,
+		HTTPClient: endpoint.UnaryClient(hubtransport.DefaultUnaryTimeout),
+		ConnectURL: endpoint.BaseURL(),
 	}
 }
 

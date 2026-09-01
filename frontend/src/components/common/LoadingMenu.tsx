@@ -44,7 +44,7 @@ export interface LoadingMenuProps {
    * work the filter removes, and which menus are long is a property of the
    * DATA, not something each call site should have to predict -- `BranchSelect`
    * knew its list was unbounded, but a machine with twenty shells produces a
-   * long `ShellSelect` that nobody declared.
+   * long `ShellSelector` that nobody declared.
    *
    * Pass it explicitly to override in either direction. A short list gets no
    * filter, because a filter over five entries is noise.

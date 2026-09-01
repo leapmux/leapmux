@@ -3,30 +3,28 @@ import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { createRepoGitStore } from '~/stores/repoGit.store'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import { generateSlug } from 'random-word-slugs'
-import { createMemo, createSignal, Show } from 'solid-js'
+import { Show } from 'solid-js'
 import { workspaceClient } from '~/api/clients'
 import * as workerRpc from '~/api/workerRpc'
 import { openAgentRequestOptions } from '~/components/chat/providers/registry'
 import { DialogColumns, DialogTopRow, DialogTopSection } from '~/components/common/Dialog'
-import { labelRow } from '~/components/common/Dialog.css'
-import { RefreshButton } from '~/components/common/RefreshButton'
 import { AgentProviderSelector } from '~/components/shell/AgentProviderSelector'
-import { isWorkspaceCreateDisabled } from '~/components/shell/dialogValidation'
+import { isAgentCreateDisabled } from '~/components/shell/dialogValidation'
 import { DirectorySelector } from '~/components/shell/DirectorySelector'
 import { GitOptions } from '~/components/shell/GitOptions'
 import { GitOptionsLoader } from '~/components/shell/GitOptionsLoader'
 import { SessionIdInput } from '~/components/shell/SessionIdInput'
+import { TitleInput } from '~/components/shell/TitleInput'
 import { DialogFormFooter, WorkerDialogShell } from '~/components/shell/WorkerDialogShell'
 import { WorkerSelector } from '~/components/shell/WorkerSelector'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { createDirectoryTreeState } from '~/hooks/createDirectoryTreeState'
 import { createSessionIdState } from '~/hooks/createSessionIdState'
+import { createTitleState } from '~/hooks/createTitleState'
 import { useAgentProviderSelection } from '~/hooks/useAgentProviderSelection'
 import { useWorkerDialog } from '~/hooks/useWorkerDialog'
 import { seedTabIntoNewWorkspace } from '~/lib/crdt'
-import { sanitizeName } from '~/lib/validate'
 import { openedAgentTabFields } from '~/stores/tab.helpers'
-import { errorText } from '~/styles/shared.css'
 
 interface NewWorkspaceDialogProps {
   onCreated: (workspaceId: string) => void
@@ -51,22 +49,23 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
     worker: { preselectedWorkerId: props.preselectedWorkerId },
   })
   const tree = createDirectoryTreeState()
-  const randomTitle = () => generateSlug(3, { format: 'title' })
-  const [title, setTitle] = createSignal(randomTitle())
+  // A word slug, not the worker's tab-name pool: a workspace carries no
+  // "Agent "/"Terminal " prefix, so a lone pooled first name would read as an
+  // unfinished label.
+  const title = createTitleState(() => generateSlug(3, { format: 'title' }))
 
   const { agentProvider, setAgentProvider, recordProviderUse, noProviders } = useAgentProviderSelection(
     () => props.availableProviders,
   )
-  const titleError = createMemo(() => sanitizeName(title()).error)
 
-  const sessionId = createSessionIdState()
+  const sessionId = createSessionIdState(agentProvider)
 
-  const submitDisabled = () => isWorkspaceCreateDisabled({
+  const submitDisabled = () => isAgentCreateDisabled({
     submitting: submitting.loading(),
     workerId: worker.workerId(),
     workingDir: worker.workingDir(),
     noProviders: noProviders(),
-    titleError: titleError(),
+    titleError: title.error(),
     sessionIdError: sessionId.error(),
     git: gitMode.currentIntent(),
   })
@@ -75,13 +74,9 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
     let createdWorkspaceId: string | undefined
     try {
       const wsResp = await workspaceClient.createWorkspace({
-        // Send the CLEANED title, not the raw one. `titleError` above already
-        // runs `sanitizeName`, and the hub applies the same rule to whatever
-        // arrives, so sending the raw text made the dialog show one title
-        // while the hub stored another until the next refresh overwrote it.
-        // The gap widened when the rule started to FOLD: a plain double space
-        // is a far more common typo than a control character was.
-        title: sanitizeName(title()).value,
+        // The CLEANED title, not the raw one -- `createTitleState.cleaned`
+        // documents why the two must not differ.
+        title: title.cleaned(),
       })
       if (!wsResp.workspaceId)
         throw new Error('No workspace ID in response')
@@ -199,21 +194,7 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
             onRefresh={props.onRefreshProviders}
           />
         </DialogTopRow>
-        <div>
-          <div class={labelRow}>
-            Title
-            <RefreshButton onClick={() => setTitle(randomTitle())} title="Generate random name" />
-          </div>
-          <input
-            type="text"
-            value={title()}
-            onInput={e => setTitle(e.currentTarget.value)}
-            placeholder="New Workspace"
-          />
-          <Show when={titleError()}>
-            <div class={errorText}>{titleError()}</div>
-          </Show>
-        </div>
+        <TitleInput state={title} />
       </DialogTopSection>
       <DialogColumns
         left={<DirectorySelector state={worker} tree={tree} repoGitStore={props.repoGitStore} />}

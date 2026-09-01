@@ -47,7 +47,7 @@ func RunTabOpen(rawCtx any, args []string) error {
 	fs.StringVar(&provider, "provider", os.Getenv("LEAPMUX_CONTROL_AGENT_PROVIDER"), "--type=agent: provider (defaults to $LEAPMUX_CONTROL_AGENT_PROVIDER; when unset, auto-picks the sole installed provider on the worker, or errors with the list if more than one is installed -- run 'leapmux control agent providers' to see options)")
 	fs.StringVar(&model, "model", "", "--type=agent: model")
 	fs.StringVar(&effort, "effort", "", "--type=agent: effort (low/medium/high/max)")
-	fs.StringVar(&title, "title", "", "--type=agent: tab title")
+	fs.StringVar(&title, "title", "", "--type=agent or --type=terminal: tab title (empty -> the worker picks one from the shared pool)")
 	fs.StringVar(&permissionMode, "permission-mode", "", "--type=agent: permission mode")
 	fs.StringVar(&workingDir, "working-dir", workingDirEnv(), "working directory, defaulting to $LEAPMUX_CONTROL_WORKING_DIR (all types); for --type=file this is the tab's git context, and the file's own directory is used only when neither the flag nor the env var is set")
 	fs.StringVar(&initialMessage, "initial-message", "", "--type=agent: user message sent right after spawn")
@@ -160,6 +160,7 @@ func RunTabOpen(rawCtx any, args []string) error {
 				WorkingDir:    workingDir,
 				Shell:         shell,
 				ShellStartDir: shellStartDir,
+				Title:         title,
 				Position:      spec,
 			})
 			return err

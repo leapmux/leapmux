@@ -4,8 +4,9 @@ import type { createRepoGitStore } from '~/stores/repoGit.store'
 import Eye from 'lucide-solid/icons/eye'
 import EyeOff from 'lucide-solid/icons/eye-off'
 import { createEffect, onCleanup, Show } from 'solid-js'
-import { labelRow, treeContainer, treeContainerFill } from '~/components/common/Dialog.css'
+import { treeContainer, treeContainerFill } from '~/components/common/Dialog.css'
 import { IconButton, IconButtonState } from '~/components/common/IconButton'
+import { LabeledField } from '~/components/common/LabeledField'
 import { RefreshButton } from '~/components/common/RefreshButton'
 import { DirectoryTree } from '~/components/tree/DirectoryTree'
 import { usePreferences } from '~/context/PreferencesContext'
@@ -52,24 +53,28 @@ export const DirectorySelector: Component<DirectorySelectorProps> = (props) => {
   })
 
   return (
-    <div class="vstack gap-1">
-      <div class={labelRow}>
-        Working Directory
-        <IconButton
-          icon={showHiddenFiles() ? Eye : EyeOff}
-          iconSize="sm"
-          size="sm"
-          title={shortcutHint(showHiddenFiles() ? 'Hide hidden files' : 'Show hidden files', 'app.toggleHiddenFiles')}
-          state={showHiddenFiles() ? IconButtonState.Enabled : IconButtonState.Active}
-          onClick={() => setShowHiddenFiles(prev => !prev)}
-          data-testid="directory-selector-show-hidden-toggle"
-        />
-        <RefreshButton
-          onClick={() => props.tree.refreshTree()}
-          title={shortcutHint('Refresh directory tree', 'app.refreshDirectoryTree')}
-          data-testid="directory-selector-refresh"
-        />
-      </div>
+    <LabeledField
+      class="vstack gap-1"
+      label="Working Directory"
+      actions={(
+        <>
+          <IconButton
+            icon={showHiddenFiles() ? Eye : EyeOff}
+            iconSize="sm"
+            size="sm"
+            title={shortcutHint(showHiddenFiles() ? 'Hide hidden files' : 'Show hidden files', 'app.toggleHiddenFiles')}
+            state={showHiddenFiles() ? IconButtonState.Enabled : IconButtonState.Active}
+            onClick={() => setShowHiddenFiles(prev => !prev)}
+            data-testid="directory-selector-show-hidden-toggle"
+          />
+          <RefreshButton
+            onClick={() => props.tree.refreshTree()}
+            title={shortcutHint('Refresh directory tree', 'app.refreshDirectoryTree')}
+            data-testid="directory-selector-refresh"
+          />
+        </>
+      )}
+    >
       <Show
         when={props.state.workerId()}
         fallback={(
@@ -99,6 +104,6 @@ export const DirectorySelector: Component<DirectorySelectorProps> = (props) => {
           />
         </div>
       </Show>
-    </div>
+    </LabeledField>
   )
 }

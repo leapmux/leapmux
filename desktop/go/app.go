@@ -12,6 +12,7 @@ import (
 
 	"github.com/coder/websocket"
 	desktoppb "github.com/leapmux/leapmux/generated/proto/leapmux/desktop/v1"
+	"github.com/leapmux/leapmux/hubtransport"
 	tunnelpkg "github.com/leapmux/leapmux/tunnel"
 	"github.com/leapmux/leapmux/util/ctxutil"
 	"github.com/leapmux/leapmux/util/errwrap"
@@ -610,10 +611,7 @@ func (a *App) beginDisconnect() (*desktopConnection, func()) {
 	// with the relays: it closes connections nobody is using, so it cannot cut
 	// short the traffic phase B is waiting to let through.
 	if connection.proxy != nil {
-		connection.proxy.client.CloseIdleConnections()
-		if connection.proxy.wsClient != nil {
-			connection.proxy.wsClient.CloseIdleConnections()
-		}
+		connection.proxy.closeIdleConnections()
 	}
 	return connection, finish
 }
@@ -703,7 +701,7 @@ func (a *App) ConnectSolo(ctx context.Context) error {
 
 	// solo.Start already blocked until the Hub's local listener was reachable,
 	// so no extra polling is needed before building the proxy.
-	proxy, err := newLocalProxy(soloRuntime.instance.LocalListenURL())
+	proxy, err := newProxy(soloRuntime.instance.LocalListenURL())
 	if err != nil {
 		return a.rollbackSolo(fmt.Errorf("build local proxy: %w", err), connectionStop, soloRuntime, false)
 	}
@@ -811,9 +809,17 @@ func (a *App) ConnectDistributed(ctx context.Context, hubURL string) error {
 		hubURL = "https://" + hubURL
 	}
 
+	// ONE endpoint for the whole connect: the probe below and the proxy that
+	// commits share its h2c verdict and its connection pools, so the hub is
+	// probed once and the proxy's first request reuses the probe's connection.
+	hubEndpoint, err := hubtransport.New(hubURL)
+	if err != nil {
+		return fmt.Errorf("unsupported hub URL %q: %w", hubURL, err)
+	}
 	probeCtx, cancelProbe := ctxutil.WithLinkedCancel(a.ctx, ctx)
 	defer cancelProbe()
-	if err := probeHub(probeCtx, hubURL); err != nil {
+	if err := probeHub(probeCtx, hubEndpoint); err != nil {
+		hubEndpoint.CloseIdleConnections()
 		return fmt.Errorf("cannot reach Hub at %s: %w", hubURL, err)
 	}
 	a.lifecycleMu.Lock()
@@ -837,7 +843,8 @@ func (a *App) ConnectDistributed(ctx context.Context, hubURL string) error {
 	if err := connectionCtx.Err(); err != nil {
 		return a.rollbackDistributed(err, connectionStop)
 	}
-	proxy := newHTTPProxy(hubURL)
+	// The endpoint the probe already used and already settled the protocol on.
+	proxy := newProxyForEndpoint(hubEndpoint)
 	a.applyProxyToTunnels(proxy)
 	a.connection = &desktopConnection{
 		ctx:    connectionCtx,

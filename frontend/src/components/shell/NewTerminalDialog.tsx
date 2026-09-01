@@ -8,14 +8,17 @@ import { isTerminalCreateDisabled } from '~/components/shell/dialogValidation'
 import { DirectorySelector } from '~/components/shell/DirectorySelector'
 import { GitOptions } from '~/components/shell/GitOptions'
 import { GitOptionsLoader } from '~/components/shell/GitOptionsLoader'
-import { ShellSelect } from '~/components/shell/ShellSelect'
+import { ShellSelector } from '~/components/shell/ShellSelector'
+import { TitleInput } from '~/components/shell/TitleInput'
 import { DialogFormFooter, WorkerDialogShell } from '~/components/shell/WorkerDialogShell'
 import { WorkerSelector } from '~/components/shell/WorkerSelector'
 import { createDirectoryTreeState } from '~/hooks/createDirectoryTreeState'
+import { createTitleState } from '~/hooks/createTitleState'
 import { useAvailableShells } from '~/hooks/useAvailableShells'
 import { GitMode } from '~/hooks/useGitModeState'
 import { useWorkerDialog } from '~/hooks/useWorkerDialog'
 import { formatErrorMessage } from '~/lib/errors'
+import { randomTerminalTitle } from '~/lib/tabTitles'
 import { DEFAULT_TERMINAL_COLS, DEFAULT_TERMINAL_ROWS } from '~/lib/terminal'
 
 interface NewTerminalDialogProps {
@@ -57,7 +60,7 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
     pathInfo: { remapWorktreeRoot: true },
   })
   const tree = createDirectoryTreeState()
-  const { shells, defaultShell, shell, setShell, loading: shellsLoading } = useAvailableShells(
+  const shellState = useAvailableShells(
     () => {
       const id = worker.workerId()
       if (!id)
@@ -65,20 +68,14 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
       return { workerId: id }
     },
     err => setError(formatErrorMessage(err, 'Failed to load shells')),
+    // A later load withdraws the report the failed one wrote. Without this the
+    // Refresh-shells button repopulates the menu and arms Create while the
+    // banner still reads "Failed to load shells", which is the one state that
+    // button exists to leave.
+    () => setError(''),
   )
-
-  const shellSelector = () => (
-    <label>
-      Shell
-      <ShellSelect
-        value={shell()}
-        onChange={setShell}
-        shells={shells()}
-        defaultShell={defaultShell()}
-        loading={shellsLoading()}
-      />
-    </label>
-  )
+  const { shell } = shellState
+  const title = createTitleState(randomTerminalTitle)
 
   // One memo, two readers (submit gate + notice): `blockedReason` walks
   // the layout tree, and the submit computation re-runs on every field
@@ -91,6 +88,7 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
     workerId: worker.workerId(),
     workingDir: worker.workingDir(),
     shell: shell(),
+    titleError: title.error(),
     git: gitMode.currentIntent(),
   })
 
@@ -101,6 +99,10 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
       workingDir: worker.workingDir(),
       shell: shell(),
       workerId: worker.workerId(),
+      // The CLEANED title: the worker applies the same rule to whatever
+      // arrives, so sending the raw text would show one title here and store
+      // another until the next refresh replaced it.
+      title: title.cleaned(),
       ...gitMode.toGitFields(),
     })
     props.onCreated(resp.terminalId, worker.workerId(), worker.workingDir(), resp.title, {
@@ -128,8 +130,9 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
       <DialogTopSection>
         <DialogTopRow>
           <WorkerSelector state={worker} />
-          {shellSelector()}
+          <ShellSelector state={shellState} />
         </DialogTopRow>
+        <TitleInput state={title} />
       </DialogTopSection>
       <BlockedReasonNotice reason={blockedReason()} />
       <DialogColumns

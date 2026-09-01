@@ -7,7 +7,6 @@ import (
 	"flag"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sync"
@@ -19,6 +18,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/hub/captcha"
 	"github.com/leapmux/leapmux/internal/hub/ratelimit"
@@ -258,7 +258,7 @@ func startAdminHub(t *testing.T, hub *fakeAdminHub) string {
 	mux.Handle(leapmuxv1connect.NewAdminSettingsServiceHandler(hub))
 	mux.Handle(leapmuxv1connect.NewAdminUserServiceHandler(hub))
 	mux.Handle(leapmuxv1connect.NewAdminIdPServiceHandler(hub))
-	srv := httptest.NewServer(mux)
+	srv := hubtransporttest.NewServer(t, mux)
 	t.Cleanup(srv.Close)
 	return srv.URL
 }

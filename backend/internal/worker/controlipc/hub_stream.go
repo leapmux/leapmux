@@ -2,38 +2,19 @@ package controlipc
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"net/http"
 
 	"github.com/coder/websocket"
-	"golang.org/x/net/http2"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/hubtransport"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/crossworker"
-	"github.com/leapmux/leapmux/locallisten"
 )
-
-// streamClientForHubURL returns an *http.Client + base URL (with
-// transport selected appropriately for the hub address). Local-listen
-// URLs (unix / npipe) are dialed via locallisten with an HTTP/1.1
-// transport — the WebSocket upgrade handshake doesn't ride on HTTP/2
-// streams. Remote URLs use an http2 transport against hubURL verbatim.
-func streamClientForHubURL(hubURL string) (*http.Client, string) {
-	return locallisten.SelectClient(
-		hubURL,
-		func() (*http.Client, string, error) { return locallisten.LocalHTTPClient(hubURL, 0) },
-		func() (*http.Client, string) {
-			return &http.Client{Transport: &http2.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-			}}, hubURL
-		},
-	)
-}
 
 // HubEventStreamer streams server-side hub events to a worker-
 // spawned CLI invocation through a per-user delegation bearer. The user-event subscription rides on the hub's
@@ -41,21 +22,27 @@ func streamClientForHubURL(hubURL string) (*http.Client, string) {
 // with the delegation bearer and forwards each frame to the local
 // IPC consumer.
 type HubEventStreamer struct {
-	HubURL     string
-	Delegation *crossworker.DelegationStore
+	// Delegation is the interface, not the concrete store, for the same
+	// reason HubUnaryBridge takes it: this type calls GetBearer and nothing
+	// else, and a test needs to supply that one method.
+	Delegation crossworker.DelegationProvider
 	HTTPClient *http.Client
 	ConnectURL string
 }
 
 // NewHubEventStreamer constructs a streamer scoped to a single
 // user via Delegation.GetBearer.
-func NewHubEventStreamer(hubURL string, delegation *crossworker.DelegationStore) *HubEventStreamer {
-	httpClient, connectURL := streamClientForHubURL(hubURL)
+//
+// It takes the WebSocket client, which is HTTP/1.1 always. A WebSocket cannot
+// ride HTTP/2 — coder/websocket needs http.Hijacker, which the HTTP/2
+// ResponseWriter does not implement — so this lane must not share the unary
+// bridge's client. It also carries NO overall timeout: an http.Client timeout
+// covers the body read, and this body ends only when the subscription does.
+func NewHubEventStreamer(endpoint *hubtransport.Endpoint, delegation crossworker.DelegationProvider) *HubEventStreamer {
 	return &HubEventStreamer{
-		HubURL:     hubURL,
 		Delegation: delegation,
-		HTTPClient: httpClient,
-		ConnectURL: connectURL,
+		HTTPClient: endpoint.WebSocketClient(),
+		ConnectURL: endpoint.BaseURL(),
 	}
 }
 
