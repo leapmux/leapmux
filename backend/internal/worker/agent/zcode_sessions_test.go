@@ -33,21 +33,23 @@ func TestZCodeSessionDBPath(t *testing.T) {
 	t.Run("follows storage.dir when no database path is stated", func(t *testing.T) {
 		t.Parallel()
 		home := t.TempDir()
+		moved := absPath("moved", "zcode")
 		writeFixtureFile(t, filepath.Join(home, ".zcode", "cli", "config.json"),
-			`{"storage":{"dir":"/moved/zcode"}}`)
+			`{"storage":{"dir":`+fixtureJSONString(moved)+`}}`)
 
 		q := StoredSessionQuery{HomeDir: home, Getenv: fixtureEnv(nil)}
-		assert.Equal(t, filepath.Join("/moved/zcode", "cli", "db", "db.sqlite"), zcodeSessionDBPath(q))
+		assert.Equal(t, filepath.Join(moved, "cli", "db", "db.sqlite"), zcodeSessionDBPath(q))
 	})
 
 	t.Run("ZCODE_STORAGE_DIR wins over the configuration", func(t *testing.T) {
 		t.Parallel()
 		home := t.TempDir()
 		writeFixtureFile(t, filepath.Join(home, ".zcode", "cli", "config.json"),
-			`{"storage":{"dir":"/moved/zcode"}}`)
+			`{"storage":{"dir":`+fixtureJSONString(absPath("moved", "zcode"))+`}}`)
 
-		q := StoredSessionQuery{HomeDir: home, Getenv: fixtureEnv(map[string]string{"ZCODE_STORAGE_DIR": "/env/zcode"})}
-		assert.Equal(t, filepath.Join("/env/zcode", "cli", "db", "db.sqlite"), zcodeSessionDBPath(q))
+		fromEnv := absPath("env", "zcode")
+		q := StoredSessionQuery{HomeDir: home, Getenv: fixtureEnv(map[string]string{"ZCODE_STORAGE_DIR": fromEnv})}
+		assert.Equal(t, filepath.Join(fromEnv, "cli", "db", "db.sqlite"), zcodeSessionDBPath(q))
 	})
 
 	t.Run("survives a malformed configuration", func(t *testing.T) {
@@ -63,7 +65,7 @@ func TestZCodeSessionDBPath(t *testing.T) {
 
 func TestZCodeStoredSessions_EndToEnd(t *testing.T) {
 	t.Parallel()
-	dir := "/Users/dev/project"
+	dir := absPath("Users", "dev", "project")
 	home := t.TempDir()
 	seedOpenCodeFamilyDB(t, filepath.Join(home, ".zcode", "cli", "db", "db.sqlite"), dir)
 

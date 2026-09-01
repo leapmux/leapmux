@@ -22,6 +22,7 @@ CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);`
 // the hex-encoded metadata row Cursor stores.
 func writeCursorSession(t *testing.T, home, cwd, agentID, metaJSON string, at time.Time) {
 	t.Helper()
+	requireHostAbsDir(t, cwd)
 	dir := filepath.Join(home, ".cursor", "chats", cursorChatsDirFor(cwd), agentID)
 	path := filepath.Join(dir, "store.db")
 	db := newFixtureDB(t, path, cursorStoreDDL)
@@ -43,7 +44,7 @@ func TestCursorChatsDirFor(t *testing.T) {
 
 func TestCursorStoredSessions(t *testing.T) {
 	t.Parallel()
-	dir := "/Users/dev/project"
+	dir := absPath("Users", "dev", "project")
 	home := t.TempDir()
 	base := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 
@@ -55,7 +56,7 @@ func TestCursorStoredSessions(t *testing.T) {
 	writeCursorSession(t, home, dir, "agent-sub",
 		`{"agentId":"agent-sub","name":"New Agent","subagentInfo":{"parentAgentId":"agent-new"}}`, base.Add(time.Hour))
 	// Another working directory hashes to another folder entirely.
-	writeCursorSession(t, home, "/other/dir", "agent-elsewhere",
+	writeCursorSession(t, home, absPath("other", "dir"), "agent-elsewhere",
 		`{"agentId":"agent-elsewhere","name":"Elsewhere"}`, base.Add(2*time.Hour))
 
 	got, err := cursorStoredSessions(context.Background(), StoredSessionQuery{
@@ -84,7 +85,7 @@ func TestCursorStoredSessions(t *testing.T) {
 // Both are set here to a time later than `store.db`, and neither may win.
 func TestCursorStoredSessions_TimesByStoreDBOnly(t *testing.T) {
 	t.Parallel()
-	dir := "/Users/dev/project"
+	dir := absPath("Users", "dev", "project")
 	home := t.TempDir()
 	stored := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
 	footprint := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
@@ -110,7 +111,7 @@ func TestCursorStoredSessions_TimesByStoreDBOnly(t *testing.T) {
 // touched later.
 func TestCursorStoredSessions_OrdersByStoreDBNotDirectory(t *testing.T) {
 	t.Parallel()
-	dir := "/Users/dev/project"
+	dir := absPath("Users", "dev", "project")
 	home := t.TempDir()
 	base := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 
@@ -133,7 +134,7 @@ func TestCursorStoredSessions_OrdersByStoreDBNotDirectory(t *testing.T) {
 // leftover, and counting it would spend one of the `Limit` slots on nothing.
 func TestCursorStoredSessions_SkipsDirectoriesWithNoStore(t *testing.T) {
 	t.Parallel()
-	dir := "/Users/dev/project"
+	dir := absPath("Users", "dev", "project")
 	home := t.TempDir()
 	base := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 
@@ -150,7 +151,7 @@ func TestCursorStoredSessions_SkipsDirectoriesWithNoStore(t *testing.T) {
 
 func TestCursorStoredSessions_SkipsUnreadableSessions(t *testing.T) {
 	t.Parallel()
-	dir := "/Users/dev/project"
+	dir := absPath("Users", "dev", "project")
 	home := t.TempDir()
 	base := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 	chats := filepath.Join(home, ".cursor", "chats", cursorChatsDirFor(dir))
@@ -194,7 +195,7 @@ func TestDecodeCursorMeta(t *testing.T) {
 func TestCursorStoredSessions_AbsentStoreIsEmpty(t *testing.T) {
 	t.Parallel()
 	got, err := cursorStoredSessions(context.Background(), StoredSessionQuery{
-		WorkingDir: "/Users/dev/project", HomeDir: t.TempDir(), Getenv: fixtureEnv(nil),
+		WorkingDir: absPath("Users", "dev", "project"), HomeDir: t.TempDir(), Getenv: fixtureEnv(nil),
 	})
 	require.NoError(t, err)
 	assert.Empty(t, got)
@@ -202,7 +203,7 @@ func TestCursorStoredSessions_AbsentStoreIsEmpty(t *testing.T) {
 
 func TestCursorStoredSessions_FallsBackToTheDirectoryName(t *testing.T) {
 	t.Parallel()
-	dir := "/Users/dev/project"
+	dir := absPath("Users", "dev", "project")
 	home := t.TempDir()
 	writeCursorSession(t, home, dir, "agent-from-dir", `{"name":"No id in the row"}`,
 		time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC))
@@ -220,7 +221,7 @@ func TestCursorStoredSessions_FallsBackToTheDirectoryName(t *testing.T) {
 // with the store-time fix, and it is the same invariant either way.
 func TestCursorStoredSessions_IgnoresNonDirectoryEntries(t *testing.T) {
 	t.Parallel()
-	dir := "/Users/dev/project"
+	dir := absPath("Users", "dev", "project")
 	home := t.TempDir()
 	base := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 
@@ -241,7 +242,7 @@ func TestCursorStoredSessions_IgnoresNonDirectoryEntries(t *testing.T) {
 // smaller than the directory keeps the NEWEST rows and not the first ones read.
 func TestCursorStoredSessions_RespectsTheLimit(t *testing.T) {
 	t.Parallel()
-	dir := "/Users/dev/project"
+	dir := absPath("Users", "dev", "project")
 	home := t.TempDir()
 	base := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 
@@ -261,7 +262,7 @@ func TestCursorStoredSessions_RespectsTheLimit(t *testing.T) {
 // order, so the menu reshuffles between two openings of the same dialog.
 func TestCursorStoredSessions_BreaksTimeTiesByName(t *testing.T) {
 	t.Parallel()
-	dir := "/Users/dev/project"
+	dir := absPath("Users", "dev", "project")
 	home := t.TempDir()
 	same := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 

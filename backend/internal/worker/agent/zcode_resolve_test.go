@@ -488,31 +488,6 @@ func TestFindZCodeScript_TakesTheFirstThatExists(t *testing.T) {
 	assert.False(t, found)
 }
 
-// absPath builds an absolute path for the RUNNING OS out of segments.
-//
-// A POSIX literal cannot stand in for one. An absolute path on Windows carries
-// a volume, so filepath.IsAbs(`/usr/bin/node`) and filepath.IsAbs(`\tmp\x`) are
-// both FALSE there -- and the production code asks filepath.IsAbs whether a
-// path is one the OS can execute. A fixture that is absolute on POSIX alone
-// therefore makes a Windows run assert the opposite of what the case means.
-func absPath(segments ...string) string {
-	root := "/"
-	if runtime.GOOS == "windows" {
-		root = `C:\`
-	}
-	return filepath.Join(append([]string{root}, segments...)...)
-}
-
-// absPath is only useful if what it returns is absolute HERE, and the OS that
-// gets that wrong is the one no developer runs the suite on. This case is what
-// makes the Windows runner check it.
-func TestAbsPath_IsAbsoluteOnTheRunningOS(t *testing.T) {
-	t.Parallel()
-
-	assert.True(t, filepath.IsAbs(absPath("usr", "bin", "node")),
-		"absPath must produce an absolute path on %s", runtime.GOOS)
-}
-
 // The installation root is three levels above the script, which is what makes the
 // bundled runtime derivable from the script path alone.
 func TestBundledRuntimeCandidates_AreDerivedFromTheScriptPath(t *testing.T) {

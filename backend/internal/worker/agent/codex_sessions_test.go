@@ -41,6 +41,7 @@ func seedCodexDB(t *testing.T, path string, rows []codexThreadRow) {
 	t.Helper()
 	db := newFixtureDB(t, path, codexThreadsDDL)
 	for _, r := range rows {
+		requireHostAbsDir(t, r.cwd)
 		_, err := db.Exec(
 			`INSERT INTO threads (id, cwd, title, name, preview, archived, updated_at, updated_at_ms, recency_at_ms)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -51,7 +52,7 @@ func seedCodexDB(t *testing.T, path string, rows []codexThreadRow) {
 
 func TestCodexStoredSessions(t *testing.T) {
 	t.Parallel()
-	dir := "/Users/dev/project"
+	dir := absPath("Users", "dev", "project")
 	home := t.TempDir()
 	seedCodexDB(t, filepath.Join(home, ".codex", "state_5.sqlite"), []codexThreadRow{
 		{id: "t_named", cwd: dir, name: "What the user called it", title: "model title", preview: "prompt", updatedAtMS: 5_000},
@@ -60,7 +61,7 @@ func TestCodexStoredSessions(t *testing.T) {
 		{id: "t_recency", cwd: dir, title: "recency only", recencyMS: 2_000},
 		{id: "t_seconds", cwd: dir, title: "seconds only", updatedAt: 1},
 		{id: "t_archived", cwd: dir, title: "put away", archived: 1, updatedAtMS: 9_000},
-		{id: "t_elsewhere", cwd: "/other/dir", title: "elsewhere", updatedAtMS: 9_000},
+		{id: "t_elsewhere", cwd: absPath("other", "dir"), title: "elsewhere", updatedAtMS: 9_000},
 	})
 
 	got, err := codexStoredSessions(context.Background(), StoredSessionQuery{
@@ -88,7 +89,7 @@ func TestCodexStoredSessions(t *testing.T) {
 func TestCodexStoredSessions_AbsentStoreIsEmpty(t *testing.T) {
 	t.Parallel()
 	got, err := codexStoredSessions(context.Background(), StoredSessionQuery{
-		WorkingDir: "/Users/dev/project", HomeDir: t.TempDir(), Getenv: fixtureEnv(nil),
+		WorkingDir: absPath("Users", "dev", "project"), HomeDir: t.TempDir(), Getenv: fixtureEnv(nil),
 	})
 	require.NoError(t, err)
 	assert.Empty(t, got)
@@ -98,7 +99,7 @@ func TestCodexStoredSessions_EmptyWorkingDirListsNothing(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
 	seedCodexDB(t, filepath.Join(home, ".codex", "state_5.sqlite"), []codexThreadRow{
-		{id: "t1", cwd: "/Users/dev/project", title: "x", updatedAtMS: 1},
+		{id: "t1", cwd: absPath("Users", "dev", "project"), title: "x", updatedAtMS: 1},
 	})
 	got, err := codexStoredSessions(context.Background(), StoredSessionQuery{
 		WorkingDir: "", HomeDir: home, Getenv: fixtureEnv(nil),
@@ -109,7 +110,7 @@ func TestCodexStoredSessions_EmptyWorkingDirListsNothing(t *testing.T) {
 
 func TestCodexStateDBPath(t *testing.T) {
 	t.Parallel()
-	home := "/home/dev"
+	home := absPath("home", "dev")
 
 	plain := StoredSessionQuery{HomeDir: home, Getenv: fixtureEnv(nil)}
 	assert.Equal(t, filepath.Join(home, ".codex", "state_5.sqlite"), codexStateDBPath(plain))
@@ -119,15 +120,16 @@ func TestCodexStateDBPath(t *testing.T) {
 	assert.Equal(t, filepath.Join(home, "alt-codex", "state_5.sqlite"), codexStateDBPath(moved))
 
 	// CODEX_SQLITE_HOME moves only the databases, and wins over CODEX_HOME.
+	fastDisk := absPath("fast-disk")
 	split := StoredSessionQuery{HomeDir: home, Getenv: fixtureEnv(map[string]string{
-		"CODEX_HOME": "/codex", "CODEX_SQLITE_HOME": "/fast-disk",
+		"CODEX_HOME": absPath("codex"), "CODEX_SQLITE_HOME": fastDisk,
 	})}
-	assert.Equal(t, filepath.Join("/fast-disk", "state_5.sqlite"), codexStateDBPath(split))
+	assert.Equal(t, filepath.Join(fastDisk, "state_5.sqlite"), codexStateDBPath(split))
 }
 
 func TestCodexStoredSessions_ReadsThroughTheProvider(t *testing.T) {
 	t.Parallel()
-	dir := "/Users/dev/project"
+	dir := absPath("Users", "dev", "project")
 	home := t.TempDir()
 	seedCodexDB(t, filepath.Join(home, ".codex", "state_5.sqlite"), []codexThreadRow{
 		{id: "t1", cwd: dir, title: "Hi", updatedAtMS: 1_000},

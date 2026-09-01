@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -12,9 +13,10 @@ import (
 )
 
 // claudeUserRecord is the shape of a real `user` line, reduced to the fields
-// this reader takes.
+// this reader takes. The cwd is escaped rather than pasted: it is a host path,
+// and on Windows its backslashes would make the whole record undecodable.
 func claudeUserRecord(cwd, sessionID, text string) string {
-	return `{"type":"user","isSidechain":false,"cwd":"` + cwd + `","sessionId":"` + sessionID +
+	return `{"type":"user","isSidechain":false,"cwd":` + fixtureJSONString(cwd) + `,"sessionId":"` + sessionID +
 		`","timestamp":"2026-09-01T07:21:20.691Z","message":{"role":"user","content":[{"type":"text","text":"` + text + `"}]}}`
 }
 
@@ -49,7 +51,7 @@ func TestMangleClaudePath(t *testing.T) {
 
 func TestClaudeStoredSessions(t *testing.T) {
 	t.Parallel()
-	dir := "/Users/dev/project"
+	dir := absPath("Users", "dev", "project")
 	home := t.TempDir()
 	projectDir := filepath.Join(home, ".claude", "projects", mangleClaudePath(dir))
 	base := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
@@ -77,8 +79,8 @@ func TestClaudeStoredSessions(t *testing.T) {
 // sits.
 func TestClaudeStoredSessions_ChecksTheRecordedCwd(t *testing.T) {
 	t.Parallel()
-	mine := "/Users/dev/my-project"
-	theirs := "/Users/dev/my_project"
+	mine := absPath("Users", "dev", "my-project")
+	theirs := absPath("Users", "dev", "my_project")
 	require.Equal(t, mangleClaudePath(mine), mangleClaudePath(theirs),
 		"the fixture only proves anything if the two really do collide")
 
@@ -105,8 +107,8 @@ func TestClaudeStoredSessions_ChecksTheRecordedCwd(t *testing.T) {
 // own sessions were reported as none at all.
 func TestClaudeStoredSessions_ACollidingDirectoryCannotCrowdOutThisOne(t *testing.T) {
 	t.Parallel()
-	mine := "/Users/dev/my-project"
-	theirs := "/Users/dev/my_project"
+	mine := absPath("Users", "dev", "my-project")
+	theirs := absPath("Users", "dev", "my_project")
 	require.Equal(t, mangleClaudePath(mine), mangleClaudePath(theirs),
 		"the fixture only proves anything if the two really do collide")
 
@@ -133,7 +135,7 @@ func TestClaudeStoredSessions_ACollidingDirectoryCannotCrowdOutThisOne(t *testin
 
 func TestClaudeStoredSessions_ExcludesSubagentTranscripts(t *testing.T) {
 	t.Parallel()
-	dir := "/Users/dev/project"
+	dir := absPath("Users", "dev", "project")
 	home := t.TempDir()
 	projectDir := filepath.Join(home, ".claude", "projects", mangleClaudePath(dir))
 	base := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
@@ -141,7 +143,7 @@ func TestClaudeStoredSessions_ExcludesSubagentTranscripts(t *testing.T) {
 	writeClaudeTranscript(t, projectDir, "sess-real", base, claudeUserRecord(dir, "sess-real", "real work"))
 	// A sidechain transcript is a subagent's.
 	writeClaudeTranscript(t, projectDir, "sess-sidechain", base,
-		`{"type":"user","isSidechain":true,"cwd":"`+dir+`","sessionId":"sess-sidechain","message":{"role":"user","content":"sub"}}`)
+		`{"type":"user","isSidechain":true,"cwd":`+fixtureJSONString(dir)+`,"sessionId":"sess-sidechain","message":{"role":"user","content":"sub"}}`)
 	// The per-session sidecar tree sits in a DIRECTORY, which the walk refuses.
 	writeClaudeTranscript(t, filepath.Join(projectDir, "sess-real", "subagents"), "task-1", base,
 		claudeUserRecord(dir, "task-1", "delegated"))
@@ -155,7 +157,7 @@ func TestClaudeStoredSessions_ExcludesSubagentTranscripts(t *testing.T) {
 
 func TestClaudeStoredSessions_TitlePrecedence(t *testing.T) {
 	t.Parallel()
-	dir := "/Users/dev/project"
+	dir := absPath("Users", "dev", "project")
 	base := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 
 	cases := []struct {
@@ -207,7 +209,7 @@ func TestClaudeStoredSessions_TitlePrecedence(t *testing.T) {
 		{
 			name: "a tool result never becomes the title",
 			lines: []string{
-				`{"type":"user","cwd":"` + dir + `","sessionId":"s","message":{"role":"user","content":[{"type":"tool_result","content":"machine output"},{"type":"text","text":"the real prompt"}]}}`,
+				`{"type":"user","cwd":` + fixtureJSONString(dir) + `,"sessionId":"s","message":{"role":"user","content":[{"type":"tool_result","content":"machine output"},{"type":"text","text":"the real prompt"}]}}`,
 			},
 			want: "the real prompt",
 		},
@@ -235,7 +237,7 @@ func TestClaudeStoredSessions_TitlePrecedence(t *testing.T) {
 // a transcript longer than the head window holds a stale title at the front.
 func TestClaudeStoredSessions_TakesTheNewestTitleFromTheTail(t *testing.T) {
 	t.Parallel()
-	dir := "/Users/dev/project"
+	dir := absPath("Users", "dev", "project")
 	home := t.TempDir()
 	projectDir := filepath.Join(home, ".claude", "projects", mangleClaudePath(dir))
 
@@ -262,7 +264,7 @@ func TestClaudeStoredSessions_TakesTheNewestTitleFromTheTail(t *testing.T) {
 
 func TestClaudeStoredSessions_SurvivesACorruptTranscript(t *testing.T) {
 	t.Parallel()
-	dir := "/Users/dev/project"
+	dir := absPath("Users", "dev", "project")
 	home := t.TempDir()
 	projectDir := filepath.Join(home, ".claude", "projects", mangleClaudePath(dir))
 	base := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
@@ -281,7 +283,7 @@ func TestClaudeStoredSessions_SurvivesACorruptTranscript(t *testing.T) {
 
 func TestClaudeStoredSessions_HonoursTheConfigDirOverride(t *testing.T) {
 	t.Parallel()
-	dir := "/Users/dev/project"
+	dir := absPath("Users", "dev", "project")
 	home := t.TempDir()
 	alt := filepath.Join(home, "alt-claude")
 	writeClaudeTranscript(t, filepath.Join(alt, "projects", mangleClaudePath(dir)), "s", time.Now(),
@@ -301,7 +303,14 @@ func TestClaudeStoredSessions_HonoursTheConfigDirOverride(t *testing.T) {
 // recorded cwd decides which sessions belong.
 func TestClaudeStoredSessions_LongPathMatchesByPrefix(t *testing.T) {
 	t.Parallel()
-	dir := "/Users/dev/" + strings.Repeat("deep/", 45) + "project"
+	// 45 nested components, which is what pushes the mangled name past the cap.
+	// Each call builds its own slice, so the two leaves cannot share a backing
+	// array and overwrite one another.
+	deepPath := func(leaf string) string {
+		segments := append([]string{"Users", "dev"}, slices.Repeat([]string{"deep"}, 45)...)
+		return absPath(append(segments, leaf)...)
+	}
+	dir := deepPath("project")
 	mangled := mangleClaudePath(dir)
 	require.Greater(t, len(mangled), claudeMangleMaxLength, "the fixture must exercise the long case")
 
@@ -311,7 +320,7 @@ func TestClaudeStoredSessions_LongPathMatchesByPrefix(t *testing.T) {
 	base := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 	writeClaudeTranscript(t, hashed, "s", base, claudeUserRecord(dir, "s", "deep work"))
 	// A different deep path sharing the prefix: the cwd check separates them.
-	other := "/Users/dev/" + strings.Repeat("deep/", 45) + "other"
+	other := deepPath("other")
 	writeClaudeTranscript(t, filepath.Join(projects, mangleClaudePath(other)[:claudeMangleMaxLength]+"-9z8y7x"),
 		"other", base, claudeUserRecord(other, "other", "not mine"))
 
@@ -325,7 +334,7 @@ func TestClaudeStoredSessions_LongPathMatchesByPrefix(t *testing.T) {
 func TestClaudeStoredSessions_AbsentStoreIsEmpty(t *testing.T) {
 	t.Parallel()
 	got, err := claudeStoredSessions(context.Background(), StoredSessionQuery{
-		WorkingDir: "/Users/dev/project", HomeDir: t.TempDir(), Getenv: fixtureEnv(nil),
+		WorkingDir: absPath("Users", "dev", "project"), HomeDir: t.TempDir(), Getenv: fixtureEnv(nil),
 	})
 	require.NoError(t, err)
 	assert.Empty(t, got)
@@ -333,7 +342,7 @@ func TestClaudeStoredSessions_AbsentStoreIsEmpty(t *testing.T) {
 
 func TestClaudeStoredSessions_RespectsTheLimit(t *testing.T) {
 	t.Parallel()
-	dir := "/Users/dev/project"
+	dir := absPath("Users", "dev", "project")
 	home := t.TempDir()
 	projectDir := filepath.Join(home, ".claude", "projects", mangleClaudePath(dir))
 	base := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)

@@ -32,7 +32,7 @@ func TestKiloDBPath(t *testing.T) {
 		writeFixtureFile(t, filepath.Join(data, "kilo", "kilo.db"), "")
 		writeFixtureFile(t, filepath.Join(data, "kilo", "opencode.db"), "")
 
-		q := StoredSessionQuery{HomeDir: "/home/dev", Getenv: fixtureEnv(map[string]string{"XDG_DATA_HOME": data})}
+		q := StoredSessionQuery{HomeDir: absPath("home", "dev"), Getenv: fixtureEnv(map[string]string{"XDG_DATA_HOME": data})}
 		assert.Equal(t, filepath.Join(data, "kilo", "kilo.db"), kiloDBPath(q),
 			"a machine holding both names must read the live store")
 	})
@@ -42,26 +42,29 @@ func TestKiloDBPath(t *testing.T) {
 		data := t.TempDir()
 		writeFixtureFile(t, filepath.Join(data, "kilo", "opencode.db"), "")
 
-		q := StoredSessionQuery{HomeDir: "/home/dev", Getenv: fixtureEnv(map[string]string{"XDG_DATA_HOME": data})}
+		q := StoredSessionQuery{HomeDir: absPath("home", "dev"), Getenv: fixtureEnv(map[string]string{"XDG_DATA_HOME": data})}
 		assert.Equal(t, filepath.Join(data, "kilo", "opencode.db"), kiloDBPath(q))
 	})
 
 	t.Run("names the current file when neither exists", func(t *testing.T) {
 		t.Parallel()
 		data := t.TempDir()
-		q := StoredSessionQuery{HomeDir: "/home/dev", Getenv: fixtureEnv(map[string]string{"XDG_DATA_HOME": data})}
+		q := StoredSessionQuery{HomeDir: absPath("home", "dev"), Getenv: fixtureEnv(map[string]string{"XDG_DATA_HOME": data})}
 		assert.Equal(t, filepath.Join(data, "kilo", "kilo.db"), kiloDBPath(q))
 	})
 
 	t.Run("honours KILO_DB", func(t *testing.T) {
 		t.Parallel()
 		data := t.TempDir()
-		abs := StoredSessionQuery{HomeDir: "/home/dev", Getenv: fixtureEnv(map[string]string{
-			"XDG_DATA_HOME": data, "KILO_DB": "/custom/kilo.db",
+		// Absolute for the HOST, because that is the question storeOverridePath
+		// asks the override.
+		custom := absPath("custom", "kilo.db")
+		abs := StoredSessionQuery{HomeDir: absPath("home", "dev"), Getenv: fixtureEnv(map[string]string{
+			"XDG_DATA_HOME": data, "KILO_DB": custom,
 		})}
-		assert.Equal(t, "/custom/kilo.db", kiloDBPath(abs))
+		assert.Equal(t, custom, kiloDBPath(abs))
 
-		rel := StoredSessionQuery{HomeDir: "/home/dev", Getenv: fixtureEnv(map[string]string{
+		rel := StoredSessionQuery{HomeDir: absPath("home", "dev"), Getenv: fixtureEnv(map[string]string{
 			"XDG_DATA_HOME": data, "KILO_DB": "beta.db",
 		})}
 		assert.Equal(t, filepath.Join(data, "kilo", "beta.db"), kiloDBPath(rel))
@@ -69,20 +72,21 @@ func TestKiloDBPath(t *testing.T) {
 
 	t.Run("defaults to the XDG data directory on every platform", func(t *testing.T) {
 		t.Parallel()
-		q := StoredSessionQuery{HomeDir: "/home/dev", Getenv: fixtureEnv(nil)}
-		assert.Equal(t, filepath.Join("/home/dev", ".local", "share", "kilo", "kilo.db"), kiloDBPath(q))
+		home := absPath("home", "dev")
+		q := StoredSessionQuery{HomeDir: home, Getenv: fixtureEnv(nil)}
+		assert.Equal(t, filepath.Join(home, ".local", "share", "kilo", "kilo.db"), kiloDBPath(q))
 	})
 }
 
 func TestKiloStoredSessions_EndToEnd(t *testing.T) {
 	t.Parallel()
-	dir := "/Users/dev/project"
+	dir := absPath("Users", "dev", "project")
 	data := t.TempDir()
 	seedOpenCodeFamilyDB(t, filepath.Join(data, "kilo", "kilo.db"), dir)
 
 	got, err := kiloStoredSessions(context.Background(), StoredSessionQuery{
 		WorkingDir: dir,
-		HomeDir:    "/unused",
+		HomeDir:    absPath("unused"),
 		Getenv:     fixtureEnv(map[string]string{"XDG_DATA_HOME": data}),
 	})
 	require.NoError(t, err)
