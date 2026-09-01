@@ -217,9 +217,9 @@ func Load(args []string) (*Config, bool, error) {
 	fs.Var(internalconfig.NewDurationFlag(new(time.Duration), DefaultAPITimeout),
 		"api-timeout", "JSON-RPC request timeout. "+internalconfig.UnitSyntax)
 	fs.Int("agent-startup-concurrency", 0,
-		fmt.Sprintf("maximum agent startups the boot-time resume sweep runs at once "+
-			"(0 = %d, or this machine's GOMAXPROCS value when that is lower); "+
-			"it never limits an agent you open by hand", DefaultMaxStartupConcurrency))
+		fmt.Sprintf("how many agents to bring back at once after a restart "+
+			"(0 = %d, or the CPU count when that is lower); "+
+			"it never delays an agent you start yourself", DefaultMaxStartupConcurrency))
 	fs.String("log-level", defaultLogLevel, "log level (debug, info, warn, error)")
 	fs.String("encryption-mode", "post-quantum", "encryption mode (classic, post-quantum)")
 	fs.Bool("use-login-shell", true, "wrap claude invocation in user's login shell")

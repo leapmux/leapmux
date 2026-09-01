@@ -366,7 +366,7 @@ On that last metric, the `phase` label says what the drop cost: `phase="park"` a
 | `encryption_mode` | `post-quantum` | E2EE mode for the bundled Worker: `classic` or `post-quantum`. See [Encryption mode](#encryption-mode). |
 | `use_login_shell` | `true` | Wrap the bundled Worker's agent invocation in the user's login shell. |
 | `max_incomplete_chunked` | `0` | Maximum in-flight chunked sequences per channel for the bundled Worker (`0` = 4 default). |
-| `agent_startup_concurrency` | `0` | Maximum agent startups the bundled Worker's boot-time resume sweep runs at once (`0` = 4, or this machine's `GOMAXPROCS` value when that is lower). |
+| `agent_startup_concurrency` | `0` | How many agents the bundled Worker brings back at once after a restart (`0` = 4, or the CPU count when that is lower). |
 
 {{< callout type="info" >}}
 `max_incomplete_chunked` caps the bundled Worker's chunk-reassembly budget; a peer that exceeds it gets `RESOURCE_EXHAUSTED`. There is no Hub-side equivalent — the Hub admits only one in-flight chunked sequence per channel and direction, which is a stricter rule than any count, so the key is meaningless on `leapmux hub`. The standalone Worker sets the same limit through its own `max_incomplete_chunked` key (see [Worker configuration reference](#worker-configuration-reference)).
@@ -437,26 +437,21 @@ Every timeout below takes a unit suffix; see [Duration values](#duration-values)
 | `max_message_size` | `0` | Maximum application payload size in bytes (`0` = 16 MiB default). Negotiated per channel as `min(hub, worker)` — the Hub's side is the `max_message_size_bytes` setting; the reassembled ceiling is this plus 64 KiB of envelope headroom. |
 | `agent_startup_timeout` | `5m` | Agent startup timeout. `0` means the default. |
 | `api_timeout` | `10s` | JSON-RPC request timeout. `0` means the default. |
-| `agent_startup_concurrency` | `0` | Maximum agent startups the boot-time resume sweep runs at once. `0` means 4, or this machine's `GOMAXPROCS` value when that is lower, which follows a container's CPU quota. It does **not** limit how many agents run, and it never delays an agent you start yourself — see [Agent resume after a restart](#agent-resume-after-a-restart). |
+| `agent_startup_concurrency` | `0` | How many agents the Worker brings back at once after a restart. `0` means 4, or the number of CPUs available to the Worker when that is lower. See [Agents after a Worker restart](#agents-after-a-worker-restart). |
 
-### Agent resume after a restart
+### Agents after a Worker restart
 
-A Worker restart ends every agent process it hosts. When the Worker starts again, it restarts those processes by itself. An agent that lists or messages the other agent sessions on the machine then finds them, and no user must type into each tab first.
+A Worker restart ends every agent process it hosts. The Worker starts them again by itself, so an agent that lists or messages the other agents on the machine finds them without your help.
 
-Which agents come back:
+Each agent continues the conversation it was in. You do not have to send it a message first.
 
-- Every **open** agent tab that ran a process before — one whose agent CLI reported a session id, which every provider does during its startup handshake, or one opened by resuming an existing session. A tab that was opened and never started has nothing to restore and stays cold until its first message.
-- A closed tab, a subagent transcript, and an agent whose last startup failed are all skipped.
+An agent comes back when its tab is open and the agent ran at least once before. A tab that you opened but never used has nothing to restore, so it stays idle until your first message. The Worker also skips a closed tab, and an agent whose last start failed.
 
-Each agent comes back in the session it was in. The Worker resumes the session id on the tab's row, so the conversation continues where the restart interrupted it.
+The Worker waits for its Hub connection first, so the agents return a few seconds after startup rather than at once. A Worker that never reaches its Hub starts no agents, and it tries again on each later connection.
 
-The Worker waits for its Hub connection to settle before it starts anything. Two conditions have to hold first. The Hub has to identify the Worker's owner, because a resumed agent gets its own `leapmux control` socket and that socket is scoped to a user. And the Worker's tab list has to agree with the Hub's, so a tab deleted while the Worker was down gets no fresh process seconds before its teardown.
+`agent_startup_concurrency` caps how many agents start at the same time. It does not cap how many run, and it never delays an agent that you start yourself. Raise it on a machine with spare CPU capacity. Lower it to 1 to bring the agents back one at a time.
 
-A Worker that never reaches its Hub therefore resumes no agents. It retries on the reconciler's own backoff, and each failed pass logs `orphan reconciler: list owned tabs` at warn level. No resume-specific line appears, because the Worker attempts no resume. The Worker also retries the moment the Hub delivers the owner, so a slow first connection costs seconds and not the hour between reconciler ticks.
-
-`agent_startup_concurrency` limits how many of those startups run at the same time. It caps the **startup window only** — from the process spawn to the agent's startup handshake — so it never limits how many agents the machine runs. It applies to the resume sweep alone: a tab you open by hand, a `/clear`, a settings restart and an agent that starts behind your message all take no place in the queue and never wait for it. Raise the value on a machine with cores to spare. Lower it to 1 to bring the agents back one at a time.
-
-The Worker restarts **every** qualifying tab, and only the concurrency is capped. On a machine that accumulated many open agent tabs, each restart therefore ends with one agent CLI process per tab. Close the tabs you no longer need.
+The Worker brings back every open agent that qualifies, and not a recent few. A machine with many open tabs therefore ends each restart with one agent process per tab. Close the tabs that you no longer need.
 
 ### SQLite database options
 
@@ -652,7 +647,7 @@ name: "build-box-01"
 encryption_mode: post-quantum
 log_level: info
 data_dir: ~/.config/leapmux/worker
-agent_startup_concurrency: 0   # 0 = 4, or GOMAXPROCS when that is lower
+agent_startup_concurrency: 0   # 0 = 4, or the CPU count when that is lower
 ```
 
 ```bash

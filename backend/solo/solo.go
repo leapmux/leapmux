@@ -1123,7 +1123,7 @@ func defaultExtraFlags() []hubconfig.ExtraFlagDef {
 		{Name: "encryption-mode", KoanfKey: "encryption_mode", Usage: "encryption mode (classic, post-quantum)", StrDefault: "post-quantum"},
 		{Name: "use-login-shell", KoanfKey: "use_login_shell", Usage: "wrap claude invocation in user's login shell", StrDefault: "true"},
 		{Name: "max-incomplete-chunked", KoanfKey: "max_incomplete_chunked", Usage: "maximum in-flight chunked sequences per channel for the embedded worker (default 4)", StrDefault: "0", Category: "Timeout and limit options"},
-		{Name: "agent-startup-concurrency", KoanfKey: "agent_startup_concurrency", Usage: fmt.Sprintf("maximum agent startups the embedded worker's boot-time resume sweep runs at once (0 = %d, or this machine's GOMAXPROCS value when that is lower)", workerconfig.DefaultMaxStartupConcurrency), StrDefault: "0", Category: "Timeout and limit options"},
+		{Name: "agent-startup-concurrency", KoanfKey: "agent_startup_concurrency", Usage: fmt.Sprintf("how many agents the embedded worker brings back at once after a restart (0 = %d, or the CPU count when that is lower)", workerconfig.DefaultMaxStartupConcurrency), StrDefault: "0", Category: "Timeout and limit options"},
 	}
 }
 
