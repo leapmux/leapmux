@@ -247,6 +247,14 @@ Both settings are hot: a running Hub applies them within ~30 seconds — no rest
 
 The proxy must also forward WebSocket upgrades, since Frontend traffic and the relayed Worker streams ride over long-lived connections. For the security implications of the relay, the end-to-end-encryption boundary, and Worker TOFU pinning, see [Security & Threat Model](/docs/admin/security/).
 
+The proxy must carry **HTTP/2 to the Hub** as well. A Worker holds one bidirectional stream to the Hub, and HTTP/1.1 cannot carry it, so a Worker behind an HTTP/1.1-only proxy cannot connect and says so:
+
+```
+endpoint does not support cleartext HTTP/2 (h2c)
+```
+
+Two shapes work. Terminate TLS at the proxy and let the Hub see plain HTTP/2 without encryption (`h2c`) — nginx `grpc_pass`, Caddy `transport http { versions h2c }`, Traefik `h2c://`. Or point the Worker's `-hub` URL at the Hub directly, which every co-located deployment already does. Other traffic — the Frontend, the CLI, the REST endpoints — works over HTTP/1.1, so only the Worker connection fails when the proxy drops HTTP/2.
+
 ## Upgrading
 
 LeapMux runs database migrations automatically on startup, for both the Hub and each Worker, so there is no separate migration command to run during a routine upgrade.

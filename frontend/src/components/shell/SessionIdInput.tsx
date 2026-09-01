@@ -13,6 +13,11 @@ interface SessionIdInputProps {
  * to resume an existing agent session. The two dialogs share the same
  * label, validation, and error styling — extracted here so the per-keystroke
  * validation lives in one place.
+ *
+ * The placeholder names both shapes for a provider whose session is a FILE,
+ * because such a provider takes either one and the field used to invite the
+ * wrong one: it said "Session ID" for every provider, and the worker then
+ * refused a Pi session ID with "path must be absolute".
  */
 export const SessionIdInput: Component<SessionIdInputProps> = (props) => {
   return (
@@ -22,7 +27,7 @@ export const SessionIdInput: Component<SessionIdInputProps> = (props) => {
         type="text"
         value={props.state.value()}
         onInput={e => props.state.setValue(e.currentTarget.value)}
-        placeholder="Session ID"
+        placeholder={props.state.isFilePath() ? 'Session ID or file path' : 'Session ID'}
       />
       <Show when={props.state.error()}>
         <span class={errorText}>{props.state.error()}</span>

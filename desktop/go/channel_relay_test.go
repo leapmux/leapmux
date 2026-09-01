@@ -11,6 +11,7 @@ import (
 
 	"github.com/coder/websocket"
 	desktoppb "github.com/leapmux/leapmux/generated/proto/leapmux/desktop/v1"
+	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
 	"github.com/leapmux/leapmux/locallisten"
 	"github.com/leapmux/leapmux/locallisten/locallistentest"
 	"github.com/stretchr/testify/assert"
@@ -48,7 +49,7 @@ func TestApp_OpenChannelRelay_Solo(t *testing.T) {
 
 func TestCanceledUserEventsRelayDoesNotEmitClose(t *testing.T) {
 	serverRelease := make(chan struct{})
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{"userevents-relay"}})
 		if err != nil {
 			return
@@ -77,7 +78,7 @@ func TestCanceledUserEventsRelayDoesNotEmitClose(t *testing.T) {
 }
 
 func TestChannelRelayPreservesAbnormalCloseDetails(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{"channel-relay"}})
 		if err != nil {
 			return
@@ -109,7 +110,7 @@ func TestChannelRelayPreservesAbnormalCloseDetails(t *testing.T) {
 }
 
 func TestUserEventsRelayPreservesAbnormalCloseDetails(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{"userevents-relay"}})
 		if err != nil {
 			return
@@ -141,7 +142,7 @@ func TestUserEventsRelayPreservesAbnormalCloseDetails(t *testing.T) {
 }
 
 func TestUserEventsRelayPreservesGoingAwayCloseDetails(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{"userevents-relay"}})
 		if err != nil {
 			return
@@ -183,7 +184,7 @@ func TestUserEventsRelayPreservesGoingAwayCloseDetails(t *testing.T) {
 // (the read loop has fully returned) is a happens-before edge, so no atomic is
 // needed.
 func TestUserEventsRelayCancelsBeforeEmittingClose(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{"userevents-relay"}})
 		if err != nil {
 			return
@@ -228,7 +229,7 @@ func TestUserEventsRelayCancelsBeforeEmittingClose(t *testing.T) {
 func parkedEmitRelay(t *testing.T, subprotocol string) (base wsRelay, releaseEmit, emitEntered, readDone chan struct{}) {
 	t.Helper()
 	serverRelease := make(chan struct{})
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{subprotocol}})
 		if err != nil {
 			return
@@ -491,7 +492,7 @@ func TestApp_OpenChannelRelay_ReusesAliveRelay(t *testing.T) {
 func TestOpenChannelRelayDoesNotBlockLifecycleReadersDuringDial(t *testing.T) {
 	accepted := make(chan struct{})
 	release := make(chan struct{})
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		close(accepted)
 		<-release // hold the WebSocket handshake in flight
 		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{"channel-relay"}})
@@ -503,7 +504,7 @@ func TestOpenChannelRelayDoesNotBlockLifecycleReadersDuringDial(t *testing.T) {
 	t.Cleanup(func() { close(release); server.Close() })
 
 	app := NewApp("")
-	installTestConnection(app, newHTTPProxy(server.URL), nil, server.URL)
+	installTestConnection(app, mustNewProxy(t, server.URL), nil, server.URL)
 	t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
 
 	relayDone := make(chan error, 1)
@@ -551,7 +552,7 @@ func TestCloseChannelRelayBoundedByDrainTimeout(t *testing.T) {
 // newStalledEmitRelayWS returns a WebSocket whose Reads block until context
 // cancel/CloseNow so runReadLoop stays in emit (the test's select{} callback).
 func newStalledEmitRelayWS(t *testing.T) *websocket.Conn {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{"channel-relay"}})
 		if err != nil {
 			return
@@ -581,7 +582,7 @@ func newStalledEmitRelayWS(t *testing.T) *websocket.Conn {
 // sendInnerContext); the request context may only gate entry.
 func TestSendChannelMessageRequestCancelDoesNotForceCloseRelay(t *testing.T) {
 	received := make(chan []byte, 4)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{"channel-relay"}})
 		if err != nil {
 			return
@@ -714,7 +715,7 @@ func TestApp_CloseChannelRelay_DropsOwnerOnTeardown(t *testing.T) {
 // the test ends, so a relay dialed against it stays live for ownership assertions.
 func channelRelayTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{"channel-relay"}})
 		if err != nil {
 			return
@@ -756,7 +757,7 @@ func blockFirstChannelRelayDial(t *testing.T) (dialing chan struct{}, release ch
 func TestApp_OpenChannelRelay_AbandonsWhenConnectionSwappedDuringDial(t *testing.T) {
 	server := channelRelayTestServer(t)
 	app := NewApp("")
-	installTestConnection(app, newHTTPProxy(server.URL), nil, server.URL)
+	installTestConnection(app, mustNewProxy(t, server.URL), nil, server.URL)
 	t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
 
 	dialing, release := blockFirstChannelRelayDial(t)
@@ -766,7 +767,7 @@ func TestApp_OpenChannelRelay_AbandonsWhenConnectionSwappedDuringDial(t *testing
 
 	// A mode transition swaps the connection while the dial is parked.
 	app.lifecycleMu.Lock()
-	swapped := installTestConnection(app, newHTTPProxy(server.URL), nil, server.URL)
+	swapped := installTestConnection(app, mustNewProxy(t, server.URL), nil, server.URL)
 	app.lifecycleMu.Unlock()
 
 	close(release)
@@ -791,7 +792,7 @@ func TestApp_OpenChannelRelay_StaleOpenDoesNotStealFromSuccessor(t *testing.T) {
 	server := channelRelayTestServer(t)
 	app := NewApp("")
 	t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
-	installTestConnection(app, newHTTPProxy(server.URL), nil, server.URL)
+	installTestConnection(app, mustNewProxy(t, server.URL), nil, server.URL)
 
 	// Wrapper 2 opens and owns the relay.
 	require.NoError(t, app.OpenChannelRelay(context.Background(), 2))
@@ -822,7 +823,7 @@ func TestApp_OpenChannelRelay_ConcurrentOpenDoesNotStealFromSuccessor(t *testing
 	server := channelRelayTestServer(t)
 	app := NewApp("")
 	t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
-	installTestConnection(app, newHTTPProxy(server.URL), nil, server.URL)
+	installTestConnection(app, mustNewProxy(t, server.URL), nil, server.URL)
 
 	dialing, release := blockFirstChannelRelayDial(t)
 

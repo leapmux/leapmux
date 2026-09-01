@@ -18,6 +18,7 @@ import (
 	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/hubtransport"
 	"github.com/leapmux/leapmux/locallisten"
 	"github.com/leapmux/leapmux/tunnel"
 )
@@ -33,9 +34,10 @@ import (
 // `unix:`/`npipe:` IPC URL). connectURL is what ConnectRPC actually
 // sees as the base URL: identical to HubURL for hub-bound clients,
 // but rewritten to `http://localhost` for local-IPC clients because
-// Go's http2.Transport rejects any URL whose scheme isn't http(s)
-// with "http2: unsupported scheme" — the socket dial is wired into
-// the transport, so the host portion is just a placeholder.
+// net/http rejects any URL whose scheme isn't http(s) — the socket dial
+// is wired into the transport, so the host portion is just a
+// placeholder. Package hubtransport builds both, and decides which
+// protocol each one speaks.
 type Client struct {
 	HubURL string
 	// bearer is the access token presented on every call.
@@ -55,7 +57,7 @@ type Client struct {
 	accessExpiresAt time.Time
 	bearerMu        sync.RWMutex
 	HTTPClient      *http.Client
-	WSClient        *http.Client // HTTP/1.1 client for /ws/channel upgrade
+	WSClient        *http.Client // HTTP/1.1 client for the /ws/channel and /ws/userevents upgrades
 	// Pins is the per-hub TOFU pin store. Read it through pinStore, which
 	// opens it on first use; a test may set the field directly instead.
 	Pins       *PinStore
@@ -237,15 +239,15 @@ func NewLocalClient(socketURL, token string) (*Client, error) {
 	if socketURL == "" || token == "" {
 		return nil, errors.New("local IPC socket and token required")
 	}
-	httpClient, connectURL, err := locallisten.LocalH2CClient(socketURL, defaultHTTPTimeout)
+	endpoint, err := hubtransport.New(socketURL)
 	if err != nil {
 		return nil, err
 	}
 	return &Client{
 		HubURL:     socketURL,
 		bearer:     token,
-		HTTPClient: httpClient,
-		connectURL: connectURL,
+		HTTPClient: endpoint.UnaryClient(defaultHTTPTimeout),
+		connectURL: endpoint.BaseURL(),
 		peer:       peerWorkerIPC,
 	}, nil
 }
@@ -696,26 +698,18 @@ func (a *authInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc
 	return next
 }
 
-// buildHTTPClients returns the HTTP/2-h2c client, the HTTP/1.1
-// WebSocket client, and the base URL ConnectRPC should target for
-// hubURL. Local-IPC hubs ("unix:" / "npipe:") get
-// unix/npipe-dialer-backed transports plus the placeholder
-// "http://localhost" base — http2.Transport / http.Transport reject
-// any URL whose scheme isn't http(s); the dial is wired into the
-// transport, so the host portion is purely cosmetic. Remote hubs get
-// the default transport and pass hubURL through.
+// buildHTTPClients returns the unary client, the WebSocket client, and the
+// base URL ConnectRPC should target for hubURL.
+//
+// Both clients come from one hubtransport.Endpoint, so they share its
+// connection pools and its h2c verdict. The WebSocket client is never nil,
+// including for a remote hub: a nil one made coder/websocket fall back to
+// http.DefaultClient, which carries no timeout of its own and shares the
+// process-global pool with every other caller in the program.
 func buildHTTPClients(hubURL string) (*http.Client, *http.Client, string, error) {
-	if locallisten.IsLocal(hubURL) {
-		h2c, connectURL, err := locallisten.LocalH2CClient(hubURL, defaultHTTPTimeout)
-		if err != nil {
-			return nil, nil, "", err
-		}
-		// WS reads can be long-lived; no overall timeout here.
-		ws, _, err := locallisten.LocalHTTPClient(hubURL, 0)
-		if err != nil {
-			return nil, nil, "", err
-		}
-		return h2c, ws, connectURL, nil
+	endpoint, err := hubtransport.New(hubURL)
+	if err != nil {
+		return nil, nil, "", err
 	}
-	return &http.Client{Timeout: defaultHTTPTimeout}, nil, hubURL, nil
+	return endpoint.UnaryClient(defaultHTTPTimeout), endpoint.WebSocketClient(), endpoint.BaseURL(), nil
 }

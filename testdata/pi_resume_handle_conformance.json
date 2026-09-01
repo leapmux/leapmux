@@ -1,0 +1,192 @@
+{
+  "_readme": [
+    "Cross-language conformance fixture for the resume handle of a provider whose session is a",
+    "FILE. Pi is the one such provider today.",
+    "",
+    "WHY THIS FILE EXISTS: the worker enforces the rule (backend/internal/worker/agent/",
+    "provider.go, piProvider.ValidateResumeHandle) and the browser hand-mirrors it",
+    "(frontend/src/lib/validate.ts, validateSessionFileHandle) so the resume field can refuse a",
+    "bad handle at the field instead of after a round trip. The two copies drifted once and the",
+    "drift removed the feature: the browser applied the TOKEN rule to every provider, so it",
+    "refused a real Pi session path at the 128-byte cap, while the worker applied the PATH rule",
+    "to Pi, so it refused the session ID the browser accepted with 'path must be absolute'.",
+    "Neither shape of handle could be submitted. Both suites read this file, so editing one",
+    "side without the other turns that side's CI red.",
+    "",
+    "TWO SHAPES, ONE FIELD. Pi identifies one session two ways and `pi --session <path|id>`",
+    "resolves both: a value that holds a separator or ends in `.jsonl` is a session file path,",
+    "and anything else is a session ID matched inside the working directory's session",
+    "directory. Both sides pick the rule with that same shape test, so a handle is validated",
+    "against the rule that describes what will happen to it. A bare `~` therefore takes the",
+    "TOKEN rule on both sides: it holds no separator.",
+    "",
+    "THE BROWSER IS DELIBERATELY NARROWER, AND ONLY IN ONE DIRECTION. It refuses only what is",
+    "wrong on every host -- a relative path, a `..` escape, a value past the byte cap -- and",
+    "leaves the reserved device names and the OS-specific spelling of 'absolute' to the worker,",
+    "which knows its own host. So a case may be accepted by the browser and refused by a worker",
+    "('the worker decides'), and the OS columns below say which. The reverse is the bug this",
+    "file exists to prevent, and BOTH suites assert it: a case the browser refuses must be",
+    "refused by every worker column, because a value the browser refuses never reaches a worker",
+    "to be judged.",
+    "",
+    "THE OS COLUMNS. `worker.posix` and `worker.windows` are what SanitizePath answers on that",
+    "host: filepath.IsAbs reads a POSIX root on POSIX and a drive or UNC root on Windows, so",
+    "one legitimate path is refused by the other host's rule. The Go suite reads the column for",
+    "runtime.GOOS; the browser suite reads `browser` and asserts the one-directional invariant",
+    "against both columns.",
+    "",
+    "`refusal` is a stable token, not a message: each suite maps it to a substring of its own",
+    "wording. `input` is built as head + text*repeat + tail, so an over-cap case stays short",
+    "here. `homeDir` is the home directory each host's SanitizePath expands `~` against."
+  ],
+  "homeDir": {
+    "posix": "/Users/pi",
+    "windows": "C:\\Users\\pi"
+  },
+  "cases": [
+    {
+      "input": { "text": "" },
+      "browser": { "valid": true, "refusal": "" },
+      "worker": {
+        "posix": { "valid": true, "refusal": "" },
+        "windows": { "valid": true, "refusal": "" }
+      },
+      "why": "the empty handle is accepted and means 'no resume'"
+    },
+    {
+      "input": { "text": "018f4a2b-0c1d-7e3f-9a5b-6c7d8e9f0a1b" },
+      "browser": { "valid": true, "refusal": "" },
+      "worker": {
+        "posix": { "valid": true, "refusal": "" },
+        "windows": { "valid": true, "refusal": "" }
+      },
+      "why": "a bare session ID is accepted: it holds no separator, so the token rule applies -- the path rule refused this exact value with 'path must be absolute' and that was the launch failure"
+    },
+    {
+      "input": { "text": "/Users/dev/.pi/agent/sessions/--Users-dev-workspace-example-project--/2026-08-28T03-13-15-703Z_018f4a2b-0c1d-7e3f-9a5b-6c7d8e9f0a1b.jsonl" },
+      "browser": { "valid": true, "refusal": "" },
+      "worker": {
+        "posix": { "valid": true, "refusal": "" },
+        "windows": { "valid": false, "refusal": "not_absolute" }
+      },
+      "why": "the POSIX session path Pi reports, 137 bytes: the browser's token cap refused it at 128 and blocked the only value the worker would take"
+    },
+    {
+      "input": { "text": "C:\\Users\\pi\\AppData\\Roaming\\pi\\agent\\sessions\\--C-src-app--\\2026-08-28T03-13-15-703Z_018f4a2b.jsonl" },
+      "browser": { "valid": true, "refusal": "" },
+      "worker": {
+        "posix": { "valid": false, "refusal": "not_absolute" },
+        "windows": { "valid": true, "refusal": "" }
+      },
+      "why": "a Windows session path: it holds the backslash the token class bans, so the token rule refused it as well"
+    },
+    {
+      "input": { "text": "\\\\server\\share\\sessions\\2026-08-28T03-13-15-703Z_018f4a2b.jsonl" },
+      "browser": { "valid": true, "refusal": "" },
+      "worker": {
+        "posix": { "valid": false, "refusal": "not_absolute" },
+        "windows": { "valid": true, "refusal": "" }
+      },
+      "why": "a UNC path is absolute on Windows and is not a path at all on POSIX"
+    },
+    {
+      "input": { "text": "~/.pi/agent/sessions/--p--/2026-08-28T03-13-15-703Z_018f4a2b.jsonl" },
+      "browser": { "valid": true, "refusal": "" },
+      "worker": {
+        "posix": { "valid": true, "refusal": "" },
+        "windows": { "valid": true, "refusal": "" }
+      },
+      "why": "a tilde path expands against the home directory on both hosts, so it is the one spelling that resumes everywhere"
+    },
+    {
+      "input": { "text": "~" },
+      "browser": { "valid": true, "refusal": "" },
+      "worker": {
+        "posix": { "valid": true, "refusal": "" },
+        "windows": { "valid": true, "refusal": "" }
+      },
+      "why": "a bare tilde holds no separator, so BOTH sides read it as an ID and the token rule accepts it -- Pi then reports that it names no session"
+    },
+    {
+      "input": { "text": "session.jsonl" },
+      "browser": { "valid": false, "refusal": "not_absolute" },
+      "worker": {
+        "posix": { "valid": false, "refusal": "not_absolute" },
+        "windows": { "valid": false, "refusal": "not_absolute" }
+      },
+      "why": "the .jsonl suffix makes a bare file name a PATH, and a bare file name is relative"
+    },
+    {
+      "input": { "text": "sessions/2026-08-28T03-13-15-703Z_018f4a2b.jsonl" },
+      "browser": { "valid": false, "refusal": "not_absolute" },
+      "worker": {
+        "posix": { "valid": false, "refusal": "not_absolute" },
+        "windows": { "valid": false, "refusal": "not_absolute" }
+      },
+      "why": "a relative path is refused: the worker resolves it against the agent process's directory, which is not where sessions live"
+    },
+    {
+      "input": { "text": "~/../../etc/shadow.jsonl" },
+      "browser": { "valid": false, "refusal": "traversal" },
+      "worker": {
+        "posix": { "valid": false, "refusal": "traversal" },
+        "windows": { "valid": false, "refusal": "traversal" }
+      },
+      "why": "a `..` escape is refused after the tilde expands, on every host"
+    },
+    {
+      "input": { "text": "/var/pi/../../etc/shadow.jsonl" },
+      "browser": { "valid": false, "refusal": "traversal" },
+      "worker": {
+        "posix": { "valid": false, "refusal": "traversal" },
+        "windows": { "valid": false, "refusal": "not_absolute" }
+      },
+      "why": "the same escape written POSIX-absolute: Windows answers the absolute question first, which is why the refusal token is per host"
+    },
+    {
+      "input": { "head": "/tmp/pi/", "text": "a", "repeat": 1024, "tail": ".jsonl" },
+      "browser": { "valid": false, "refusal": "too_long" },
+      "worker": {
+        "posix": { "valid": false, "refusal": "too_long" },
+        "windows": { "valid": false, "refusal": "too_long" }
+      },
+      "why": "a path past the 1024-byte file-path cap is refused before it is parsed"
+    },
+    {
+      "input": { "text": "a", "repeat": 129 },
+      "browser": { "valid": false, "refusal": "too_long" },
+      "worker": {
+        "posix": { "valid": false, "refusal": "too_long" },
+        "windows": { "valid": false, "refusal": "too_long" }
+      },
+      "why": "the ID shape keeps the 128-byte TOKEN cap: the larger cap belongs to the path shape alone"
+    },
+    {
+      "input": { "text": "-dangerous" },
+      "browser": { "valid": false, "refusal": "leading_hyphen" },
+      "worker": {
+        "posix": { "valid": false, "refusal": "leading_hyphen" },
+        "windows": { "valid": false, "refusal": "leading_hyphen" }
+      },
+      "why": "the ID shape keeps the argv rule, because the worker hands the handle to `pi --session <id>` as its own argv element"
+    },
+    {
+      "input": { "text": "bad\u0000id" },
+      "browser": { "valid": false, "refusal": "forbidden_character" },
+      "worker": {
+        "posix": { "valid": false, "refusal": "forbidden_character" },
+        "windows": { "valid": false, "refusal": "forbidden_character" }
+      },
+      "why": "the ID shape keeps the character class: a control character names no session"
+    },
+    {
+      "input": { "text": "   " },
+      "browser": { "valid": false, "refusal": "whitespace_at_edge" },
+      "worker": {
+        "posix": { "valid": false, "refusal": "whitespace_at_edge" },
+        "windows": { "valid": false, "refusal": "whitespace_at_edge" }
+      },
+      "why": "whitespace alone is neither shape, and the token rule reports the edge rule for it"
+    }
+  ]
+}

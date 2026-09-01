@@ -11,6 +11,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/hubtransport"
 )
 
 // RegistrationResult contains the credentials obtained after registration.
@@ -32,13 +33,14 @@ type RegistrationResult struct {
 // `InvalidArgument` for malformed input — are returned immediately so
 // the worker can fail fast instead of burning a key on retries.
 //
-// A hubURL with a local-IPC scheme (locallisten.SchemeUnix or SchemeNpipe)
-// is dispatched to the matching transport automatically.
-func Register(ctx context.Context, hubURL, registrationKey, version string, publicKey, mlkemPublicKey, slhdsaPublicKey []byte) (*RegistrationResult, error) {
-	httpClient, connectURL := clientForHubURL(hubURL)
+// endpoint carries the transport, so a local-IPC scheme (`unix:`, `npipe:`)
+// reaches the matching socket automatically. The call takes the HTTP2Only
+// client for the same reason Connect does: the gRPC protocol needs HTTP/2
+// trailers, which HTTP/1.1 has no way to carry.
+func Register(ctx context.Context, endpoint *hubtransport.Endpoint, registrationKey, version string, publicKey, mlkemPublicKey, slhdsaPublicKey []byte) (*RegistrationResult, error) {
 	client := leapmuxv1connect.NewWorkerConnectorServiceClient(
-		httpClient,
-		connectURL,
+		endpoint.HTTP2OnlyClient(),
+		endpoint.BaseURL(),
 		connect.WithGRPC(),
 	)
 	return registerWithClient(ctx, client, registrationKey, version, publicKey, mlkemPublicKey, slhdsaPublicKey, newDefaultBackoff())

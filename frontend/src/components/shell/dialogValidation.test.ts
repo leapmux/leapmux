@@ -18,11 +18,12 @@ const validBase = {
   workerId: 'worker-1',
   workingDir: '/home/user/project',
   noProviders: false,
+  titleError: null,
   git: validIntent,
 }
 
 describe('isWorkspaceCreateDisabled', () => {
-  const valid = { ...validBase, titleError: null, sessionIdError: null }
+  const valid = { ...validBase, sessionIdError: null }
 
   it('returns false when all fields are valid', () => {
     expect(isWorkspaceCreateDisabled(valid)).toBe(false)
@@ -160,6 +161,13 @@ describe('isAgentCreateDisabled', () => {
       sessionIdError: 'invalid session id',
     })).toBe(true)
   })
+
+  // The Title field is new on this dialog, and the gate lives on the shared
+  // base rather than here -- so this asserts the base check actually reaches
+  // the agent path, not just the workspace one it started on.
+  it('returns true when title has an error', () => {
+    expect(isAgentCreateDisabled({ ...valid, titleError: 'Name must not be empty' })).toBe(true)
+  })
 })
 
 describe('isGitModeInvalid', () => {
@@ -294,6 +302,10 @@ describe('isTerminalCreateDisabled', () => {
     expect(isTerminalCreateDisabled({ ...valid, submitting: true })).toBe(true)
   })
 
+  it('returns true when title has an error', () => {
+    expect(isTerminalCreateDisabled({ ...valid, titleError: 'Name must not be empty' })).toBe(true)
+  })
+
   it('returns true when workerId is empty (no workers online)', () => {
     expect(isTerminalCreateDisabled({ ...valid, workerId: '' })).toBe(true)
   })
@@ -333,10 +345,47 @@ describe('isChangeBranchSubmitDisabled', () => {
     worktreeTabType: TabType.AGENT as TabType.AGENT | TabType.TERMINAL,
     noProviders: false,
     shell: '',
+    titleError: null as string | null,
   }
 
   it('returns false when switch-branch mode is valid', () => {
     expect(isChangeBranchSubmitDisabled(switchBranchValid)).toBe(false)
+  })
+
+  // The Title field is rendered only in create-worktree, the one mode that
+  // opens a tab. Gating the branch-only modes on it would let a title the
+  // user never sees block a plain branch switch.
+  it.each([
+    ['switch-branch', { mode: GitMode.SwitchBranch, checkoutBranch: 'main', checkoutBranchError: null } as GitModeIntent],
+    ['create-branch', { mode: GitMode.CreateBranch, createBranch: 'feat', createBranchError: null, createBranchBase: 'main' } as GitModeIntent],
+  ])('ignores a title error in %s mode, which sends no title', (_label, git) => {
+    expect(isChangeBranchSubmitDisabled({
+      ...switchBranchValid,
+      git,
+      titleError: 'Name must not be empty',
+    })).toBe(false)
+  })
+
+  it('returns true when a title error is set in create-worktree mode', () => {
+    expect(isChangeBranchSubmitDisabled({
+      ...switchBranchValid,
+      git: { mode: GitMode.CreateWorktree, worktreeBranch: 'feat', worktreeBranchError: null, worktreeBaseBranch: 'main' } as GitModeIntent,
+      worktreeTabType: TabType.AGENT,
+      titleError: 'Name must not be empty',
+    })).toBe(true)
+  })
+
+  // The title check must not mask the tab-type checks that follow it, nor be
+  // masked by them: a terminal with no shell AND a bad title stays disabled
+  // for both reasons, and fixing only the title does not arm submit.
+  it('stays disabled for a terminal with a valid title but no shell', () => {
+    expect(isChangeBranchSubmitDisabled({
+      ...switchBranchValid,
+      git: { mode: GitMode.CreateWorktree, worktreeBranch: 'feat', worktreeBranchError: null, worktreeBaseBranch: 'main' } as GitModeIntent,
+      worktreeTabType: TabType.TERMINAL,
+      shell: '',
+      titleError: null,
+    })).toBe(true)
   })
 
   // The worktree mode's submit opens a worker-side agent/pty that placement

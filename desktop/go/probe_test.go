@@ -3,9 +3,9 @@ package main
 import (
 	"context"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 
+	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -16,13 +16,13 @@ import (
 // metadata. Without the CheckRedirect pin the default policy would follow it.
 func TestProbeHubRefusesOffOriginRedirect(t *testing.T) {
 	var reachedTarget bool
-	internal := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	internal := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		reachedTarget = true
 		_, _ = w.Write([]byte("secret"))
 	}))
 	t.Cleanup(internal.Close)
 
-	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	hub := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, internal.URL+"/latest/meta-data/", http.StatusFound)
 	}))
 	t.Cleanup(hub.Close)
@@ -36,7 +36,7 @@ func TestProbeHubRefusesOffOriginRedirect(t *testing.T) {
 // legitimate hub 3xx on the probe endpoint (an auth bounce, a trailing-slash 301).
 func TestProbeHubFollowsSameOriginRedirect(t *testing.T) {
 	var finalHit bool
-	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	hub := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/leapmux.v1.AuthService/GetSystemInfo":
 			http.Redirect(w, r, "/final", http.StatusFound)
@@ -54,7 +54,7 @@ func TestProbeHubFollowsSameOriginRedirect(t *testing.T) {
 
 // The happy path: a reachable hub that answers 200 makes the probe succeed.
 func TestProbeHubSucceedsOnOK(t *testing.T) {
-	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	hub := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	t.Cleanup(hub.Close)
@@ -65,7 +65,7 @@ func TestProbeHubSucceedsOnOK(t *testing.T) {
 // A non-200 status is surfaced as an error so ConnectDistributed does not treat an
 // unreachable or erroring hub as reachable.
 func TestProbeHubFailsOnNon200(t *testing.T) {
-	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	hub := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
 	t.Cleanup(hub.Close)

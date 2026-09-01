@@ -24,6 +24,7 @@ import (
 	"golang.org/x/oauth2"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/hubtransport"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 	internalconfig "github.com/leapmux/leapmux/internal/config"
@@ -294,7 +295,10 @@ func runLocalRedirectLogin(ctx context.Context, hubURL, deviceName, scope string
 }
 
 func runDeviceCodeLogin(ctx context.Context, hubURL, deviceName, scope string) error {
-	hc, baseURL := cliHTTPClient(hubURL)
+	hc, baseURL, err := cliHTTPClient(hubURL)
+	if err != nil {
+		return control.EmitErrorWith("invalid_hub_url", err)
+	}
 	// Only an ASK. The activation page decides, and the token response below
 	// reports what was actually granted -- which is not always what was asked
 	// for, because the person at the browser may hold an account that cannot
@@ -377,7 +381,10 @@ func exchangeAuthorizationCode(ctx context.Context, hubURL, code, verifier, redi
 		// one registered address and redeemed as though it came from another.
 		"redirect_uri": {redirectURI},
 	}
-	hc, baseURL := cliHTTPClient(hubURL)
+	hc, baseURL, err := cliHTTPClient(hubURL)
+	if err != nil {
+		return control.EmitErrorWith("invalid_hub_url", err)
+	}
 	resp, err := control.PostForm(ctx, hc, locallisten.JoinPath(baseURL, "/oauth/token"), form)
 	if err != nil {
 		return control.EmitErrorWith("token_exchange_failed", err)
@@ -770,23 +777,24 @@ func hubCheck(c *control.Client) (user *leapmuxv1.User, warning string, outcome 
 // cliRESTTimeout caps one CLI-auth REST request over EITHER transport.
 const cliRESTTimeout = 60 * time.Second
 
-// cliHTTPClient returns the HTTP client the CLI-auth REST calls should
-// use for hubURL: a socket-dialer-backed client (with the placeholder
-// http://localhost base) for `unix:`/`npipe:` hub URLs, and a plain client
-// that carries the SAME timeout otherwise. http.DefaultClient cannot dial a
-// socket URL, so without the first the device-code flow silently cannot log
-// in against a hub reached over its IPC listener; and http.DefaultClient has
-// no timeout at all, so a remote hub that accepts a connection and never
-// answers used to hang the command for ever. locallisten.RESTClient holds
-// both rules, because the login-flow calls in this package and the refresh
-// stage in `control` need the same answer.
+// cliHTTPClient returns the HTTP client the CLI-auth REST calls should use for
+// hubURL, and the base URL to build their paths against.
 //
-// A socket client that fails to build falls through to the remote client,
-// which SelectClient does for every transport factory in the tree: the
-// request then fails with a scheme error that gives the URL, which is
-// better than a panic here.
-func cliHTTPClient(hubURL string) (*http.Client, string) {
-	return locallisten.RESTClient(hubURL, cliRESTTimeout)
+// http.DefaultClient cannot dial a socket URL, so without this the device-code
+// flow silently cannot log in against a hub reached over its IPC listener; and
+// http.DefaultClient has no timeout at all, so a remote hub that accepts a
+// connection and never answers used to hang the command for ever. Both rules
+// live in hubtransport, which every hub client in the tree shares.
+//
+// A URL this cannot build a transport for is reported here rather than
+// deferred: the error names the URL and the schemes that are accepted, which
+// the "unsupported protocol scheme" from a later request does not.
+func cliHTTPClient(hubURL string) (*http.Client, string, error) {
+	endpoint, err := hubtransport.New(hubURL)
+	if err != nil {
+		return nil, "", err
+	}
+	return endpoint.UnaryClient(cliRESTTimeout), endpoint.BaseURL(), nil
 }
 
 // callbackHandler serves the local-redirect login's /callback. Its channel
@@ -879,7 +887,10 @@ func revokeBearer(hubURL, bearer, clientID string) error {
 	// then patching req.URL discarded the parse error, so a URL that failed
 	// to parse left req.URL nil and answered with a generic
 	// `http: nil Request.URL` instead of stating the address.
-	hc, baseURL := cliHTTPClient(hubURL)
+	hc, baseURL, err := cliHTTPClient(hubURL)
+	if err != nil {
+		return err
+	}
 	// The CLI identifies itself so the revocation stage can bind the credential to
 	// the app it was issued to: this is a public client, and RFC 7009 section
 	// 2.1 has a public client identify itself with its client_id rather than

@@ -3,13 +3,13 @@ package control
 import (
 	"context"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -87,7 +87,7 @@ func TestDeviceGrant_PollIntervalAndDeadline(t *testing.T) {
 // helpers read.
 func answerWith(t *testing.T, status int, contentType, body string) *http.Response {
 	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", contentType)
 		w.WriteHeader(status)
 		_, _ = w.Write([]byte(body))
@@ -162,7 +162,7 @@ func TestPostForm_SendsAFormBodyAndTheCallersHeaders(t *testing.T) {
 		field       string
 	}
 	got := make(chan received, 1)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
 		got <- received{
 			method:      r.Method,

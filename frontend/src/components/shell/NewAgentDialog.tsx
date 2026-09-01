@@ -12,13 +12,16 @@ import { DirectorySelector } from '~/components/shell/DirectorySelector'
 import { GitOptions } from '~/components/shell/GitOptions'
 import { GitOptionsLoader } from '~/components/shell/GitOptionsLoader'
 import { SessionIdInput } from '~/components/shell/SessionIdInput'
+import { TitleInput } from '~/components/shell/TitleInput'
 import { DialogFormFooter, WorkerDialogShell } from '~/components/shell/WorkerDialogShell'
 import { WorkerSelector } from '~/components/shell/WorkerSelector'
 import { createDirectoryTreeState } from '~/hooks/createDirectoryTreeState'
 import { createSessionIdState } from '~/hooks/createSessionIdState'
+import { createTitleState } from '~/hooks/createTitleState'
 import { useAgentProviderSelection } from '~/hooks/useAgentProviderSelection'
 import { GitMode } from '~/hooks/useGitModeState'
 import { useWorkerDialog } from '~/hooks/useWorkerDialog'
+import { randomAgentTitle } from '~/lib/tabTitles'
 
 interface NewAgentDialogProps {
   defaultWorkerId?: string
@@ -62,7 +65,8 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
     () => props.availableProviders,
   )
 
-  const sessionId = createSessionIdState()
+  const sessionId = createSessionIdState(agentProvider)
+  const title = createTitleState(randomAgentTitle)
 
   // One memo, two readers (submit gate + notice): `blockedReason` walks
   // the layout tree, and the submit computation re-runs on every field
@@ -76,6 +80,7 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
     workingDir: worker.workingDir(),
     noProviders: noProviders(),
     sessionIdError: sessionId.error(),
+    titleError: title.error(),
     git: gitMode.currentIntent(),
   })
 
@@ -88,7 +93,11 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
       throw new Error('No agent provider available')
     const resp = await workerRpc.openAgent(worker.workerId(), {
       agentProvider: provider,
-      // title omitted: worker picks "Agent <Name>" from the shared pool.
+      // The CLEANED title: the worker applies the same rule to whatever
+      // arrives, so sending the raw text would show one title here and store
+      // another until the next refresh replaced it. The default came from the
+      // same pool the worker would have drawn from.
+      title: title.cleaned(),
       workerId: worker.workerId(),
       workingDir: worker.workingDir(),
       ...openAgentRequestOptions(provider),
@@ -130,6 +139,7 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
             onRefresh={props.onRefreshProviders}
           />
         </DialogTopRow>
+        <TitleInput state={title} placeholder="New Agent" />
       </DialogTopSection>
       <BlockedReasonNotice reason={blockedReason()} />
       <DialogColumns

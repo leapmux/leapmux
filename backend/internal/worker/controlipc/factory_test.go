@@ -9,7 +9,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
@@ -20,7 +19,6 @@ import (
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/controlipc"
 	"github.com/leapmux/leapmux/internal/worker/service"
-	"github.com/leapmux/leapmux/locallisten"
 )
 
 // fakeDelegationLifecycle records every Acquire/Release call so the
@@ -205,14 +203,9 @@ func dialAndWhoami(t *testing.T, envs []string) *leapmuxv1.WhoamiResponse {
 	require.NotEmpty(t, sock, "factory must emit LEAPMUX_CONTROL_SOCK")
 	require.NotEmpty(t, token, "factory must emit LEAPMUX_CONTROL_TOKEN")
 
-	dial, err := locallisten.Dialer(sock)
-	require.NoError(t, err)
-	transport := locallisten.NewLocalH2CTransport(dial)
-	httpClient := &http.Client{
-		Transport: &authHeaderInjector{token: token, base: transport},
-		Timeout:   5 * time.Second,
-	}
-	client := leapmuxv1connect.NewControlIPCServiceClient(httpClient, "http://leapmux-remote", connect.WithGRPC())
+	httpClient, baseURL := ipcClient(t, sock)
+	httpClient.Transport = &authHeaderInjector{token: token, base: httpClient.Transport}
+	client := leapmuxv1connect.NewControlIPCServiceClient(httpClient, baseURL, connect.WithGRPC())
 
 	resp, err := client.Whoami(context.Background(), connect.NewRequest(&leapmuxv1.WhoamiRequest{}))
 	require.NoError(t, err)

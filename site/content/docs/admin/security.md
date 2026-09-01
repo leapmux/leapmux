@@ -47,7 +47,7 @@ The key consequence: control-plane data (accounts, workspace records, layout, Wo
 
 ## What the Hub can and cannot see
 
-The two columns below state the threat model. Treat the left column as data that you entrust to whoever runs the Hub, and the right column as data that never leaves your encrypted channel.
+The table below states the threat model. Treat what the Hub **can** see as data that you entrust to whoever runs the Hub, and what it **cannot** see as data that never leaves your encrypted channel.
 
 | The Hub **can** see | The Hub **cannot** see |
 |---------------------|------------------------|

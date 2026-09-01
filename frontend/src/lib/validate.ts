@@ -59,7 +59,7 @@
  * removed the user's text.
  */
 
-import { BRANCH_FORBIDDEN_CLASS, BRANCH_NAME_BYTE_LIMIT, MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH, NAME_BYTE_LIMIT, NAME_INVISIBLE_CLASS, NAME_WHITESPACE_CLASS, NAME_WHITESPACE_MINUS_SPACE_CLASS, PRINTABLE_ASCII_CLASS, PUBLIC_RESERVED_USERNAMES, SESSION_FORBIDDEN_CLASS, SESSION_ID_BYTE_LIMIT, SYSTEM_RESERVED_USERNAMES } from '~/generated/contracts/validate'
+import { BRANCH_FORBIDDEN_CLASS, BRANCH_NAME_BYTE_LIMIT, MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH, NAME_BYTE_LIMIT, NAME_INVISIBLE_CLASS, NAME_WHITESPACE_CLASS, NAME_WHITESPACE_MINUS_SPACE_CLASS, PRINTABLE_ASCII_CLASS, PUBLIC_RESERVED_USERNAMES, SESSION_FILE_PATH_BYTE_LIMIT, SESSION_FORBIDDEN_CLASS, SESSION_ID_BYTE_LIMIT, SYSTEM_RESERVED_USERNAMES } from '~/generated/contracts/validate'
 
 const NAME_INVISIBLE_G = new RegExp(`[${NAME_INVISIBLE_CLASS}]`, 'g')
 
@@ -443,6 +443,67 @@ export function validateSessionId(value: string): string | null {
     return 'Session ID contains invalid characters'
   if (value.startsWith('-'))
     return 'Session ID must not start with a hyphen'
+  return null
+}
+
+/**
+ * The start of an absolute path, in EVERY spelling any worker OS accepts: a
+ * POSIX root, a UNC or backslash root, a tilde with a separator, and a Windows
+ * drive letter.
+ *
+ * The browser does not know which OS the worker runs, so it accepts the union
+ * and lets the worker's own rule (`validate.SanitizePath`, which asks
+ * `filepath.IsAbs` for THAT host) decide. The union can only accept more than
+ * the worker does, never less, which is the direction this field must fail in:
+ * a value the browser refuses never reaches the worker to be judged.
+ *
+ * A tilde ALONE is not here, because it never reaches this test: it holds no
+ * separator, so the shape test above sends it to the token rule. The worker
+ * splits the same value the same way.
+ */
+const ABSOLUTE_PATH_START = /^(?:[/\\]|~[/\\]|[a-z]:[/\\])/i
+
+/** A `..` component, in a path written with either separator. */
+const PATH_TRAVERSAL = /(?:^|[/\\])\.\.(?:[/\\]|$)/
+
+/**
+ * Validates a resume handle for a provider whose session is a FILE — the ones
+ * whose plugin sets `sessionIdIsFilePath`. Pi is the only one today.
+ *
+ * Such a provider identifies one session two ways, and it resolves both: a
+ * value that holds a separator or ends in `.jsonl` is a session file path, and
+ * anything else is a session ID matched inside the working directory's session
+ * directory. So this picks the rule by shape, exactly as the worker's
+ * `piProvider.ValidateResumeHandle` does. The empty value is accepted and means
+ * "no resume".
+ *
+ * The two shapes cannot share one rule. The token rule bans `\` and caps the
+ * value at 128 bytes, and a real session file path holds a directory prefix
+ * that passes both -- so the field refused every legitimate path with "Session
+ * ID contains invalid characters". The path rule requires an absolute path, so
+ * it refused every legitimate ID with "path must be absolute". One rule for
+ * both shapes refuses one of them, whichever one it is.
+ *
+ * The path half is DELIBERATELY narrower than the worker's. It refuses only
+ * what is wrong on every host -- a relative path, a `..` escape, a value past
+ * the byte cap -- and leaves the Windows device names and the OS-specific
+ * absolute-path spelling to the worker, which knows its own host. A browser
+ * copy of those rules would refuse paths a POSIX worker accepts, which is the
+ * failure this whole function exists to remove.
+ */
+export function validateSessionFileHandle(value: string): string | null {
+  if (value === '')
+    return null
+  // The shape test the worker uses, and the resolver behind it: a separator
+  // anywhere, or the `.jsonl` suffix.
+  if (!/[/\\]/.test(value) && !value.endsWith('.jsonl'))
+    return validateSessionId(value)
+  if (UTF8.encode(value).length > SESSION_FILE_PATH_BYTE_LIMIT)
+    return `Session file path must be at most ${SESSION_FILE_PATH_BYTE_LIMIT} bytes`
+  if (!ABSOLUTE_PATH_START.test(value))
+    return 'Session file path must be absolute'
+  if (PATH_TRAVERSAL.test(value))
+    return 'Session file path must not contain ".."'
   return null
 }
 

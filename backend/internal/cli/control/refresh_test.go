@@ -21,6 +21,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
 )
 
 // The CLI's access token lives for an hour and its refresh token for
@@ -48,7 +49,7 @@ func newRefreshServer(t *testing.T, respond func(w http.ResponseWriter, presente
 		rs.mu.Unlock()
 		rs.respond(w, presented)
 	})
-	rs.server = httptest.NewServer(mux)
+	rs.server = hubtransporttest.NewServer(t, mux)
 	t.Cleanup(rs.server.Close)
 	return rs
 }
@@ -536,7 +537,7 @@ func TestAuthInterceptor_RetriesOnceAfterUnauthenticated(t *testing.T) {
 		require.NoError(t, r.ParseForm())
 		rotatingResponder(&counter)(w, r.FormValue("refresh_token"))
 	})
-	srv := httptest.NewServer(mux)
+	srv := hubtransporttest.NewServer(t, mux)
 	t.Cleanup(srv.Close)
 
 	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
@@ -573,7 +574,7 @@ func TestAuthInterceptor_DoesNotRetryTwice(t *testing.T) {
 		require.NoError(t, r.ParseForm())
 		rotatingResponder(&counter)(w, r.FormValue("refresh_token"))
 	})
-	srv := httptest.NewServer(mux)
+	srv := hubtransporttest.NewServer(t, mux)
 	t.Cleanup(srv.Close)
 
 	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
@@ -671,7 +672,7 @@ func newRepairHub(t *testing.T, expiresIn int, answers ...error) *repairHub {
 			"token_id":           "tok-1",
 		})
 	}))
-	h.server = httptest.NewServer(mux)
+	h.server = hubtransporttest.NewServer(t, mux)
 	t.Cleanup(h.server.Close)
 	return h
 }

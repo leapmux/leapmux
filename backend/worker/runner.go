@@ -12,6 +12,7 @@ import (
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/hubtransport"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/worker/bootstrap"
@@ -89,7 +90,14 @@ func Run(ctx context.Context, cfg RunConfig) error {
 		return fmt.Errorf("migrate worker db: %w", err)
 	}
 
-	client := hub.New(cfg.HubURL)
+	// ONE endpoint for the whole process: the worker's own Connect stream and
+	// every hub call a spawned agent makes then share one connection pool per
+	// protocol and one h2c verdict.
+	hubEndpoint, err := hubtransport.New(cfg.HubURL)
+	if err != nil {
+		return fmt.Errorf("hub URL %q: %w", cfg.HubURL, err)
+	}
+	client := hub.New(hubEndpoint)
 	defer client.Stop()
 
 	// runShutdown drains service state. It must run BEFORE the bidi
@@ -132,7 +140,6 @@ func Run(ctx context.Context, cfg RunConfig) error {
 			Name:                 workerName,
 			HomeDir:              homeDir,
 			DataDir:              cfg.DataDir,
-			HubURL:               cfg.HubURL,
 			AuthToken:            cfg.AuthToken,
 			SeedRegisteredBy:     cfg.RegisteredBy,
 			AgentStartupTimeout:  cfg.AgentStartupTimeout,

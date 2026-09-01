@@ -19,6 +19,14 @@ interface BaseDialogState {
    */
   blockedReason?: string
   /**
+   * Validation error for the dialog's Title field, or null when it is
+   * acceptable. Every tab-creating dialog carries the same field with the
+   * same rule, so the check lives on the base rather than once per dialog:
+   * a new dialog that forgets it fails to compile instead of shipping a
+   * submit that sends an empty title.
+   */
+  titleError: string | null
+  /**
    * The currently-active git-mode intent. Optional so dialogs without
    * git options can skip it entirely — adding a new git mode then only
    * touches `useGitModeState` and the switch in `isGitModeInvalid`.
@@ -34,7 +42,6 @@ interface AgentDialogState extends BaseDialogState {
 interface WorkspaceDialogState extends BaseDialogState {
   noProviders: boolean
   sessionIdError: string | null
-  titleError: string | null
 }
 
 interface TerminalDialogState extends BaseDialogState {
@@ -76,21 +83,21 @@ export function isGitModeInvalid(intent: GitModeIntent | undefined): boolean {
 }
 
 // Submit-gating shared by every worker-bound dialog: an in-flight
-// submission, missing worker selection, blank working directory, or an
-// invalid git-mode payload always disables submit regardless of the
-// dialog-specific checks layered on top.
+// submission, missing worker selection, blank working directory, an empty or
+// over-long title, or an invalid git-mode payload always disables submit
+// regardless of the dialog-specific checks layered on top.
 function isBaseDialogInvalid(state: BaseDialogState): boolean {
   return state.submitting
     || !!state.blockedReason
     || !state.workerId
     || !state.workingDir.trim()
+    || !!state.titleError
     || isGitModeInvalid(state.git)
 }
 
 export function isWorkspaceCreateDisabled(state: WorkspaceDialogState): boolean {
   return isBaseDialogInvalid(state)
     || state.noProviders
-    || !!state.titleError
     || !!state.sessionIdError
 }
 
@@ -124,6 +131,15 @@ interface ChangeBranchDialogState {
   worktreeTabType: TabType.AGENT | TabType.TERMINAL
   noProviders: boolean
   shell: string
+  /**
+   * Validation error for the Title field, or null when it is acceptable.
+   *
+   * Unlike the other dialogs, this one does NOT put the title on the base
+   * gate: the field is rendered only in `CreateWorktree`, the one mode that
+   * opens a tab. Gating every mode on it would let an emptied title block a
+   * plain branch switch, whose submit never sends a title at all.
+   */
+  titleError: string | null
 }
 
 /**
@@ -153,6 +169,9 @@ export function isChangeBranchSubmitDisabled(state: ChangeBranchDialogState): bo
   if (state.git.mode === GitMode.SwitchBranch && !!state.git.checkoutBranchError)
     return true
   if (state.git.mode === GitMode.CreateWorktree) {
+    // The title gates this mode only, for the reason `titleError` documents.
+    if (state.titleError)
+      return true
     if (state.worktreeTabType === TabType.AGENT)
       return state.noProviders
     return !state.shell

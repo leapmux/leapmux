@@ -21,6 +21,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/hubtransport"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/channelmgr"
 	"github.com/leapmux/leapmux/internal/hub/config"
@@ -169,10 +170,10 @@ func (e *regKeyEnv) serveOverUnixSocket(t *testing.T, name string) *http.Client 
 	go func() { _ = srv.Serve(ln) }()
 	require.NoError(t, locallisten.WaitReady(context.Background(), socketURL))
 
-	dial, err := locallisten.Dialer(socketURL)
+	endpoint, err := hubtransport.New(socketURL)
 	require.NoError(t, err)
-	httpClient := &http.Client{Transport: locallisten.NewLocalH2CTransport(dial)}
-	t.Cleanup(httpClient.CloseIdleConnections)
+	httpClient := endpoint.StreamClient()
+	t.Cleanup(endpoint.CloseIdleConnections)
 	return httpClient
 }
 

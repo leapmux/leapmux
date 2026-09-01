@@ -15,6 +15,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
@@ -22,12 +23,13 @@ import (
 	"google.golang.org/grpc/codes"
 )
 
-// The five writers of a `title` column in this package -- OpenAgent,
-// RenameAgent, UpdateTerminalTitle, EnsureChildAgent and UpsertBackgroundTask
-// -- clean the title they are given and never refuse it. The table below drives
-// all five, because one rule that five writers share is the property these
-// tests exist to hold: a case added here has to pass for every writer, and a
-// writer that skips validate.CleanName fails on the first case.
+// The six writers of a `title` column in this package -- OpenAgent,
+// OpenTerminal, RenameAgent, UpdateTerminalTitle, EnsureChildAgent and
+// UpsertBackgroundTask -- clean the title they are given and never refuse it.
+// The table below drives all six, because one rule that six writers share is
+// the property these tests exist to hold: a case added here has to pass for
+// every writer, and a writer that skips validate.CleanName fails on the first
+// case.
 //
 // The first three take the title from a CLIENT; the last two take it from the
 // MODEL (a Claude Task description, a Codex collab prompt line, an ACP spawn
@@ -176,6 +178,82 @@ func TestOpenAgent_PicksANameWhenCleaningEmptiesTheTitle(t *testing.T) {
 	assert.NotEmpty(t, title, "an emptied title must not reach the column")
 	assert.True(t, strings.HasPrefix(title, "Agent "),
 		"the fallback is pickAgentTitle(), which prefixes the pooled name with %q, got %q", "Agent ", title)
+}
+
+// openTerminalWithTitle dispatches OpenTerminal and returns the title the
+// worker STORED and the title it REPORTED, in that order.
+//
+// Both, not one: OpenTerminalResponse.title is what the frontend renders the
+// new tab with, and the row is what every later read returns. A handler that
+// cleans on the way to the column but echoes the raw request would show one
+// title until the next refresh replaced it -- the exact defect the response
+// field exists to prevent, and it is invisible to a test that reads one side.
+func openTerminalWithTitle(t *testing.T, title string) (stored, reported string) {
+	t.Helper()
+
+	svc, d, w := setupTestService(t)
+	defer drainAllInFlight(svc)
+
+	workingDir := t.TempDir()
+	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
+		Shell:      testutil.TestShell(),
+		WorkingDir: workingDir,
+		// Wide, for the reason openTerminalViaRPC states: a wrapped line
+		// makes ConPTY's cooked-mode editor misread the input.
+		Cols:  200,
+		Rows:  24,
+		Title: title,
+	}, w)
+
+	require.Empty(t, w.errors, "a title must never fail the RPC")
+	var resp leapmuxv1.OpenTerminalResponse
+	lastResponse(t, w, &resp)
+	terminalID := resp.GetTerminalId()
+	require.NotEmpty(t, terminalID)
+	testutil.AssertEventually(t, func() bool { return svc.Terminals.HasTerminal(terminalID) }, "spawn")
+	testutil.RegisterTerminalCleanup(t, svc.Terminals, terminalID)
+
+	row, err := svc.Queries.GetTerminal(context.Background(), terminalID)
+	require.NoError(t, err)
+	return row.Title, resp.GetTitle()
+}
+
+func TestOpenTerminal_CleansTitleInsteadOfRefusingIt(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range titleCleaningCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			stored, reported := openTerminalWithTitle(t, tc.title)
+			assert.Equal(t, tc.want, stored)
+			assert.Equal(t, tc.want, reported, "the response must echo the STORED title, not the request's")
+		})
+	}
+}
+
+// The terminal mirror of TestOpenAgent_PicksANameWhenCleaningEmptiesTheTitle.
+// Until OpenTerminalRequest carried a title, this path could not be reached:
+// the handler picked a name unconditionally.
+func TestOpenTerminal_PicksANameWhenCleaningEmptiesTheTitle(t *testing.T) {
+	t.Parallel()
+
+	stored, reported := openTerminalWithTitle(t, emptyingTitle)
+	assert.NotEmpty(t, stored, "an emptied title must not reach the column")
+	assert.True(t, strings.HasPrefix(stored, "Terminal "),
+		"the fallback is pickTerminalTitle(), which prefixes the pooled name with %q, got %q", "Terminal ", stored)
+	assert.Equal(t, stored, reported, "the response must report the name the worker picked")
+}
+
+// A client that sends NO title at all is the CLI and the quick-open buttons.
+// It shares the fallback with the emptied-title case above, and it is the one
+// that has to keep working: the frontend reads `title` from this response to
+// label the tab, so an empty answer renders a nameless tab.
+func TestOpenTerminal_PicksANameWhenTheClientSendsNoTitle(t *testing.T) {
+	t.Parallel()
+
+	stored, reported := openTerminalWithTitle(t, "")
+	assert.True(t, strings.HasPrefix(stored, "Terminal "), "got %q", stored)
+	assert.Equal(t, stored, reported)
 }
 
 // subscribeTabRenames registers a subscriber on the worker-private bus and

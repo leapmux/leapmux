@@ -441,9 +441,17 @@ func TestMergeGitFileStatusFromPathInfo_CorrectsStaleOriginUrl(t *testing.T) {
 		"path-info probe must override a stale origin_url from GetGitStatus")
 }
 
+// Deliberately NOT t.Parallel: swapGitStatusForFileStatusHook replaces
+// package-global state that every GetGitFileStatus dispatch in this package
+// reads. A parallel sibling that dispatched while the nil-returning stub was
+// installed took the nil-status path and saw no ahead/behind, so
+// TestGetGitFileStatus_ReturnsAheadBehind failed with "expected 2, actual 0"
+// — under full-suite load only, and never when its own package ran alone.
+//
+// Go defers every parallel test until the sequential ones finish, so dropping
+// t.Parallel here makes the swap window exclusive. Restoring it requires
+// moving the probe off the package global first.
 func TestGetGitFileStatus_BackfillsIdentityWhenGetGitStatusNil(t *testing.T) {
-	t.Parallel()
-
 	swapGitStatusForFileStatusHook(t, func(context.Context, string) *leapmuxv1.GitRepoStatus {
 		return nil
 	})

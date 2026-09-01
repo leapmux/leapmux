@@ -54,17 +54,46 @@ func TestValidateResumeHandleIsTheProvidersOwnRule(t *testing.T) {
 		// bans -- so every one of these was refused before.
 		var handle string
 		if runtime.GOOS == "windows" {
-			handle = `C:\Users\trustin\AppData\Roaming\pi\sessions\` + strings.Repeat("a", 120) + ".jsonl"
+			handle = `C:\Users\pi\AppData\Roaming\pi\sessions\` + strings.Repeat("a", 120) + ".jsonl"
 		} else {
-			handle = "/Users/trustin/.local/share/pi/sessions/" + strings.Repeat("a", 120) + ".jsonl"
+			handle = "/home/pi/.local/share/pi/sessions/" + strings.Repeat("a", 120) + ".jsonl"
 		}
 		require.Greater(t, len(handle), 128, "the case is only meaningful past the token cap")
-		assert.NoError(t, pi.ValidateResumeHandle(handle, "/Users/trustin"))
+		assert.NoError(t, pi.ValidateResumeHandle(handle, "/home/pi"))
 
 		// Still not unchecked. A path rule answers the questions a PATH raises.
 		assert.NoError(t, pi.ValidateResumeHandle("", ""), "the empty handle means no resume")
 		assert.Error(t, pi.ValidateResumeHandle("relative/path.jsonl", ""), "a relative path is refused")
-		assert.Error(t, pi.ValidateResumeHandle("   ", ""), "whitespace is not a path")
+		assert.Error(t, pi.ValidateResumeHandle("   ", ""), "whitespace is neither shape")
+	})
+
+	// The other half of Pi's rule, and the half that refused a legitimate
+	// resume in the opposite direction: `pi --session` resolves a bare session
+	// ID against this working directory's sessions, so the identifier Pi shows
+	// in its own interface is a handle. The PATH rule refused it -- an ID is
+	// relative by construction -- with "path must be absolute".
+	t.Run("pi takes a session ID as well, under the token rule", func(t *testing.T) {
+		pi := ProviderFor(leapmuxv1.AgentProvider_AGENT_PROVIDER_PI)
+
+		assert.NoError(t, pi.ValidateResumeHandle("018f4a2b-0c1d-7e3f-9a5b-6c7d8e9f0a1b", ""))
+		assert.NoError(t, pi.ValidateResumeHandle("01JAV8Q3ZP9K2M4N6R8T0W2Y4B", ""))
+		// The ID half is the token rule itself, not a copy of it, so every
+		// guard that rule states applies here too.
+		assert.Error(t, pi.ValidateResumeHandle("--dangerously-skip-permissions", ""))
+		assert.Error(t, pi.ValidateResumeHandle(strings.Repeat("a", 129), ""))
+		assert.Error(t, pi.ValidateResumeHandle("bad\x00id", ""))
+	})
+
+	// The shape test decides which rule runs, so it decides which refusal a
+	// user reads. It must answer the same way Pi's own resolver does: a
+	// separator anywhere, or the `.jsonl` suffix.
+	t.Run("pi picks the rule by shape", func(t *testing.T) {
+		assert.True(t, piResumeHandleIsFilePath("/tmp/s.jsonl"))
+		assert.True(t, piResumeHandleIsFilePath(`C:\pi\s.jsonl`))
+		assert.True(t, piResumeHandleIsFilePath("s.jsonl"), "the suffix alone makes it a path")
+		assert.True(t, piResumeHandleIsFilePath("~/s"), "the separator alone makes it a path")
+		assert.False(t, piResumeHandleIsFilePath("018f4a2b-0c1d-7e3f-9a5b-6c7d8e9f0a1b"))
+		assert.False(t, piResumeHandleIsFilePath("~"), "a bare tilde holds no separator")
 	})
 }
 

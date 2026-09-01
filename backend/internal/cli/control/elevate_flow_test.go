@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -123,7 +124,7 @@ func newElevationHub(t *testing.T) *elevationHub {
 	h := newElevationRoutes()
 	mux := http.NewServeMux()
 	h.register(mux)
-	h.server = httptest.NewServer(mux)
+	h.server = hubtransporttest.NewServer(t, mux)
 	t.Cleanup(h.server.Close)
 	return h
 }

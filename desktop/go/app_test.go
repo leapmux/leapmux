@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sync"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/coder/websocket"
 	desktoppb "github.com/leapmux/leapmux/generated/proto/leapmux/desktop/v1"
+	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -206,7 +206,7 @@ func installTestConnection(app *App, proxy *HubProxy, solo soloInstance, hubURL 
 
 func TestConnectDistributedRollsBackWhenConfigSaveFails(t *testing.T) {
 	makeConfigUnwritable(t)
-	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	hub := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	t.Cleanup(hub.Close)
@@ -256,7 +256,7 @@ func (s *inspectingSoloInstance) Stop() error {
 // bookkeeping.
 func idleTestRelay(t *testing.T, parent context.Context) *ChannelRelay {
 	t.Helper()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{"channel-relay"}})
 		if err != nil {
 			return
@@ -428,7 +428,7 @@ func TestSwitchModeDoesNotDisconnectWhenConfigSaveFails(t *testing.T) {
 	makeConfigUnwritable(t)
 	solo := &recordingSoloInstance{}
 	app := NewApp("")
-	installTestConnection(app, newHTTPProxy("https://hub.example"), solo, "https://hub.example")
+	installTestConnection(app, mustNewProxy(t, "https://hub.example"), solo, "https://hub.example")
 	app.config.Mode = "solo"
 
 	_, err := app.SwitchMode()
@@ -445,7 +445,7 @@ func TestSwitchModeDoesNotDisconnectWhenConfigSaveFails(t *testing.T) {
 func TestShutdownCancelsDistributedProbe(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	hub := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		close(entered)
 		select {
 		case <-r.Context().Done():
@@ -477,7 +477,7 @@ func TestShutdownCancelsDistributedProbe(t *testing.T) {
 func TestConnectRequiresLauncherState(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	app := NewApp("")
-	installTestConnection(app, newHTTPProxy("https://original.example"), nil, "https://original.example")
+	installTestConnection(app, mustNewProxy(t, "https://original.example"), nil, "https://original.example")
 	t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
 
 	err := app.ConnectDistributed(context.Background(), "https://replacement.example")
@@ -565,7 +565,7 @@ func TestSwitchModeDoesNotBlockLifecycleReadersDuringSoloStop(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	solo := blockingSoloInstance{entered: entered, release: release}
-	installTestConnection(app, newHTTPProxy("https://hub.example"), solo, "https://hub.example")
+	installTestConnection(app, mustNewProxy(t, "https://hub.example"), solo, "https://hub.example")
 	app.config.Mode = "solo"
 
 	switchDone := make(chan error, 1)

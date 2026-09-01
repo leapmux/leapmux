@@ -117,7 +117,7 @@ If you already have a workspace open and want another agent in it, open the tab 
 - **Worker** — the host machine (the local Worker in solo mode).
 - **Agent Provider** — choose your provider; the dropdown lists only providers whose CLI was detected, sorted alphabetically by name. If none are found, the button reads **"No agents available"** — install an agent CLI and use the provider section's refresh control (**"Refresh available providers"**).
 - **Directory** — the working directory (use the directory tree to pick it, or type a path in the box above the tree).
-- **Resume an existing session** *(optional)* — paste a session ID (placeholder **"Session ID"**) to continue a prior conversation via the CLI's resume support.
+- **Resume an existing session** *(optional)* — paste a session ID to continue a prior conversation via the CLI's resume support.
 - **Git options** — your branch/worktree choice (step 5).
 
 Click **"Create"** (it shows **"Creating..."** while the agent starts).

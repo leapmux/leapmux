@@ -277,7 +277,7 @@ In the UI you pick these as named radio options (**Auto**, **Agent**, **Autopilo
 
 ## Resuming an existing session
 
-To continue a previous conversation, paste its Session ID into the **Resume an existing session** field (placeholder **"Session ID"**) in the New agent dialog. The field checks the ID as you type and reports one it cannot use.
+To continue a previous conversation, paste its Session ID into the **Resume an existing session** field in the New agent dialog. The field checks the ID as you type and reports one it cannot use.
 
 Leave the field empty to start a fresh session.
 

@@ -51,7 +51,6 @@ const (
 	PiCommandGetState           = "get_state"
 	PiCommandGetAvailableModels = "get_available_models"
 	PiCommandNewSession         = "new_session"
-	PiCommandSwitchSession      = "switch_session"
 )
 
 // Pi `prompt` command's `streamingBehavior` — how Pi should treat a new

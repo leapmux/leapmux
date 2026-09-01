@@ -5,16 +5,25 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/cookiejar"
-	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
 	"time"
 
 	desktoppb "github.com/leapmux/leapmux/generated/proto/leapmux/desktop/v1"
+	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// mustNewProxy builds the proxy for hubURL and fails the test if the URL is
+// one hubtransport refuses. Every caller passes a literal or an httptest URL.
+func mustNewProxy(t *testing.T, hubURL string) *HubProxy {
+	t.Helper()
+	proxy, err := newProxy(hubURL)
+	require.NoError(t, err, "newProxy(%q)", hubURL)
+	return proxy
+}
 
 func TestCookieHeader_SingleHeader(t *testing.T) {
 	jar, err := cookiejar.New(nil)
@@ -58,13 +67,13 @@ func TestCookieHeader_InvalidURL(t *testing.T) {
 }
 
 func TestProxyHTTPRejectsResponseLargerThanFrameBudget(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	server := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Length", fmt.Sprint(maxFrameSize+1))
 		_, _ = w.Write(make([]byte, maxFrameSize+1))
 	}))
 	t.Cleanup(server.Close)
 	app := NewApp("")
-	installTestConnection(app, newHTTPProxy(server.URL), nil, server.URL)
+	installTestConnection(app, mustNewProxy(t, server.URL), nil, server.URL)
 	t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
 
 	_, _, err := app.ProxyHTTP(context.Background(), "GET", "/", nil, nil)
@@ -72,12 +81,12 @@ func TestProxyHTTPRejectsResponseLargerThanFrameBudget(t *testing.T) {
 }
 
 func TestProxyHTTPRejectsBodyThatCannotFitResponseEnvelope(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	server := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write(make([]byte, maxFrameSize))
 	}))
 	t.Cleanup(server.Close)
 	app := NewApp("")
-	installTestConnection(app, newHTTPProxy(server.URL), nil, server.URL)
+	installTestConnection(app, mustNewProxy(t, server.URL), nil, server.URL)
 	t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
 
 	_, _, err := app.ProxyHTTP(context.Background(), "GET", "/", nil, nil)
@@ -85,7 +94,7 @@ func TestProxyHTTPRejectsBodyThatCannotFitResponseEnvelope(t *testing.T) {
 }
 
 func TestProxyHTTPPreservesRepeatedResponseHeaders(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	server := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Add("Set-Cookie", "first=one; Path=/")
 		w.Header().Add("Set-Cookie", "second=two; Path=/")
 		w.Header().Add("X-Repeated", "one")
@@ -94,7 +103,7 @@ func TestProxyHTTPPreservesRepeatedResponseHeaders(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 	app := NewApp("")
-	installTestConnection(app, newHTTPProxy(server.URL), nil, server.URL)
+	installTestConnection(app, mustNewProxy(t, server.URL), nil, server.URL)
 	t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
 
 	resp, _, err := app.ProxyHTTP(context.Background(), "GET", "/", nil, nil)
@@ -106,7 +115,7 @@ func TestProxyHTTPPreservesRepeatedResponseHeaders(t *testing.T) {
 func TestSwitchModeCancelsBlockedProxyRequest(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	requestStarted := make(chan struct{})
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/leapmux.v1.AuthService/GetSystemInfo" {
 			w.WriteHeader(http.StatusOK)
 			return
@@ -307,7 +316,7 @@ func TestHubRequestURL_TraversalStaysOnHub(t *testing.T) {
 // only through App.ProxyHTTP, which needs a connected app to exercise at all.
 func TestHubProxyDoPerformsRequest(t *testing.T) {
 	var gotMethod, gotPath, gotHeader string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotMethod, gotPath, gotHeader = r.Method, r.URL.Path, r.Header.Get("X-Probe")
 		w.Header().Set("X-Reply", "pong")
 		w.WriteHeader(201)
@@ -355,7 +364,7 @@ func TestHubProxyDoRefusesOffOriginPath(t *testing.T) {
 func TestHubProxyDoHonoursContext(t *testing.T) {
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
-	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+	server := hubtransporttest.NewServer(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		<-release
 	}))
 	t.Cleanup(server.Close)
@@ -374,13 +383,13 @@ func TestHubProxyDoHonoursContext(t *testing.T) {
 // process. Without the CheckRedirect pin the default policy would follow it.
 func TestHubProxyDoRefusesOffOriginRedirect(t *testing.T) {
 	var reachedTarget bool
-	internal := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	internal := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		reachedTarget = true
 		_, _ = w.Write([]byte("secret"))
 	}))
 	t.Cleanup(internal.Close)
 
-	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	hub := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/bounce" {
 			http.Redirect(w, r, internal.URL+"/latest/meta-data/", http.StatusFound)
 			return
@@ -403,7 +412,7 @@ func TestHubProxyDoRefusesOffOriginRedirect(t *testing.T) {
 // legitimate hub 3xx (an auth bounce, a trailing-slash 301).
 func TestHubProxyDoFollowsSameOriginRedirect(t *testing.T) {
 	var finalHit bool
-	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	hub := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/start":
 			http.Redirect(w, r, "/final", http.StatusFound)
@@ -434,7 +443,7 @@ func TestHubProxyDoFollowsSameOriginRedirect(t *testing.T) {
 // /ws/channel or /ws/userevents lead the desktop off-origin; this proves both
 // clients carry it so a future edit that drops either is caught.
 func TestNewHTTPProxyPinsRedirects(t *testing.T) {
-	proxy := newHTTPProxy("https://hub.example.com")
+	proxy := mustNewProxy(t, "https://hub.example.com")
 	require.NotNil(t, proxy.client.CheckRedirect, "the remote hub proxy must pin redirects on its HTTP client")
 	require.NotNil(t, proxy.wsClient.CheckRedirect, "the remote hub proxy must pin redirects on its WS-upgrade client")
 
@@ -498,4 +507,46 @@ func TestPinRedirectsToOriginNormalizesDefaultPort(t *testing.T) {
 		assert.Error(t, lowerBase(newReq("https://Evil.Example.com/x"), nil),
 			"a different host must still be refused even when case-folded")
 	})
+}
+
+// TestNewProxy_RejectsAnUnsupportedHubURL covers the constructor's refusal.
+//
+// One constructor now serves both a remote hub and a local IPC one, so it is
+// the single place a hub URL is turned into a transport -- and the place that
+// has to say no. hubURL reaches it from the webview, so an unusable value is
+// ordinary input, not a programming error.
+func TestNewProxy_RejectsAnUnsupportedHubURL(t *testing.T) {
+	for name, hubURL := range map[string]string{
+		"unknown scheme":        "ftp://hub.example",
+		"empty":                 "",
+		"no host":               "http://",
+		"socket with no target": "unix:",
+	} {
+		t.Run(name, func(t *testing.T) {
+			proxy, err := newProxy(hubURL)
+			require.Error(t, err)
+			assert.Nil(t, proxy, "a refused URL must not yield a half-built proxy")
+		})
+	}
+}
+
+// TestNewProxy_PinsAndJarReachBothClients pins what the two clients must carry.
+//
+// A WebSocket dial follows redirects during the upgrade, so the origin pin has
+// to be on the WS client too -- a wsClient without it lets a hub-side
+// off-origin 3xx lead this CORS-free process off the hub origin. Both clients
+// also share ONE jar, so the session cookie the RPC lane obtains is the one the
+// upgrade presents.
+func TestNewProxy_PinsAndJarReachBothClients(t *testing.T) {
+	proxy, err := newProxy("https://hub.example")
+	require.NoError(t, err)
+
+	require.NotNil(t, proxy.client)
+	require.NotNil(t, proxy.wsClient)
+	assert.NotNil(t, proxy.client.CheckRedirect, "the RPC lane must be pinned to the hub origin")
+	assert.NotNil(t, proxy.wsClient.CheckRedirect, "so must the WebSocket lane")
+	require.NotNil(t, proxy.client.Jar)
+	assert.Same(t, proxy.client.Jar, proxy.wsClient.Jar, "both lanes must share one cookie jar")
+	assert.Zero(t, proxy.client.Timeout, "the proxied calls include server streams")
+	assert.Zero(t, proxy.wsClient.Timeout, "a WebSocket outlives any client timeout")
 }

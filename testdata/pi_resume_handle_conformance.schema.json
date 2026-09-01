@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pi_resume_handle_conformance.schema.json",
+  "title": "file-session resume-handle rule conformance corpus",
+  "description": "Shared by backend/internal/worker/agent/pi_resume_handle_conformance_test.go and frontend/src/lib/validate.test.ts. `refusal` is a stable token, not a message. The worker's verdict is per host because filepath.IsAbs is.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["_readme", "homeDir", "cases"],
+  "properties": {
+    "_readme": { "$ref": "#/$defs/readme" },
+    "homeDir": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["posix", "windows"],
+      "properties": {
+        "posix": { "type": "string", "minLength": 1 },
+        "windows": { "type": "string", "minLength": 1 }
+      }
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["input", "browser", "worker", "why"],
+        "properties": {
+          "input": { "$ref": "#/$defs/builtText" },
+          "browser": { "$ref": "#/$defs/verdict" },
+          "worker": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["posix", "windows"],
+            "properties": {
+              "posix": { "$ref": "#/$defs/verdict" },
+              "windows": { "$ref": "#/$defs/verdict" }
+            }
+          },
+          "why": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "verdict": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["valid", "refusal"],
+      "properties": {
+        "valid": { "type": "boolean" },
+        "refusal": {
+          "type": "string",
+          "enum": ["", "too_long", "not_absolute", "traversal", "leading_hyphen", "forbidden_character", "whitespace_at_edge"]
+        }
+      }
+    },
+    "builtText": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text"],
+      "properties": {
+        "head": { "type": "string" },
+        "text": { "type": "string" },
+        "repeat": { "type": "integer", "minimum": 2 },
+        "tail": { "type": "string" }
+      }
+    },
+    "readme": {
+      "oneOf": [
+        { "type": "string" },
+        { "type": "array", "items": { "type": "string" } }
+      ]
+    }
+  }
+}

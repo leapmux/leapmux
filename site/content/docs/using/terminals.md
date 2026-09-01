@@ -61,7 +61,7 @@ The dialog has these fields:
 | **"Worker"** | Selects which Worker spawns the shell. Options show `name (version, os, arch)`. A **"Refresh workers"** button re-queries online Workers. When none are connected: **"No workers online"**. |
 | **"Shell"** | Picks the shell binary. See [Shell selection](#shell-selection). |
 | **"Working Directory"** | Browses the Worker's filesystem from `~`. Type a path and press Enter (or click away) to go there. |
-| **"Git options"** | Appears in the right column when the selected path is (or becomes) a git repository. Lets you open the terminal in a branch or worktree. See [Git options](#git-options-open-a-terminal-in-a-branch-or-worktree). |
+| **"Git options"** | Appears when the selected path is (or becomes) a git repository. Lets you open the terminal in a branch or worktree. See [Git options](#git-options-open-a-terminal-in-a-branch-or-worktree). |
 
 The directory box abbreviates your home directory as `~`. If the path style does not match the Worker's OS, a hint appears below the box. The tree includes a show/hide-hidden-files toggle and a **"Refresh directory tree"** button, and shows **"No workers online. Connect a worker to browse directories."** when no Worker is selected.
 

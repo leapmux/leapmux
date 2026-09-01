@@ -703,7 +703,7 @@ func (a *App) ConnectSolo(ctx context.Context) error {
 
 	// solo.Start already blocked until the Hub's local listener was reachable,
 	// so no extra polling is needed before building the proxy.
-	proxy, err := newLocalProxy(soloRuntime.instance.LocalListenURL())
+	proxy, err := newProxy(soloRuntime.instance.LocalListenURL())
 	if err != nil {
 		return a.rollbackSolo(fmt.Errorf("build local proxy: %w", err), connectionStop, soloRuntime, false)
 	}
@@ -837,7 +837,10 @@ func (a *App) ConnectDistributed(ctx context.Context, hubURL string) error {
 	if err := connectionCtx.Err(); err != nil {
 		return a.rollbackDistributed(err, connectionStop)
 	}
-	proxy := newHTTPProxy(hubURL)
+	proxy, err := newProxy(hubURL)
+	if err != nil {
+		return a.rollbackDistributed(err, connectionStop)
+	}
 	a.applyProxyToTunnels(proxy)
 	a.connection = &desktopConnection{
 		ctx:    connectionCtx,

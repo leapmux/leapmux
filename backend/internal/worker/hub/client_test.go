@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -17,15 +16,29 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/hubtransport"
 	"github.com/leapmux/leapmux/internal/sendq"
 	"github.com/leapmux/leapmux/internal/util/backoffutil"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 )
 
-// TestNew_DispatchesOnURLScheme verifies the scheme-dispatch branches in
-// New() construct a non-nil *Client for every supported URL shape.
-// Transport-level round-trip tests live alongside each scheme.
-func TestNew_DispatchesOnURLScheme(t *testing.T) {
+// newTestClient builds a Client for url. It exists so these tests state a URL
+// rather than an Endpoint: hubtransport.New opens no connection, and every
+// caller here passes a literal it controls.
+func newTestClient(t *testing.T, url string) *Client {
+	t.Helper()
+	endpoint, err := hubtransport.New(url)
+	require.NoError(t, err, "hubtransport.New(%q)", url)
+	return New(endpoint)
+}
+
+// TestNew_PreservesTheEndpointURL verifies that New() builds a client for
+// every supported URL shape and reports the address the operator configured.
+//
+// The transport behind it -- which scheme dials a socket, which prefers h2c,
+// which verifies a certificate -- belongs to hubtransport and is tested there,
+// against real servers of each protocol.
+func TestNew_PreservesTheEndpointURL(t *testing.T) {
 	cases := []struct {
 		name string
 		url  string
@@ -38,54 +51,13 @@ func TestNew_DispatchesOnURLScheme(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			client := New(tc.url)
+			endpoint, err := hubtransport.New(tc.url)
+			require.NoError(t, err, "hubtransport.New(%q)", tc.url)
+			client := New(endpoint)
 			require.NotNil(t, client, "New(%q) returned nil", tc.url)
-			assert.Equal(t, tc.url, client.hubURL, "hubURL preserved verbatim")
+			assert.Equal(t, tc.url, client.Endpoint().URL(), "endpoint URL preserved verbatim")
 		})
 	}
-}
-
-// Regression guards: a scheme-dispatch bug silently routes local URLs to
-// the plain h2c dialer, which then resolves them as DNS host:port. Each
-// test asserts the resulting error is NOT from the TCP/DNS path.
-func TestHTTPClientForHubURL_NpipeDispatches(t *testing.T) {
-	assertDialNotRoutedToTCP(t, "npipe:leapmux-hub-nonexistent")
-}
-
-func TestHTTPClientForHubURL_UnixDispatches(t *testing.T) {
-	assertDialNotRoutedToTCP(t, "unix:/nonexistent/leapmux.sock")
-}
-
-func TestHTTPClientForHubURL_HTTPFallsBackToH2C(t *testing.T) {
-	httpClient, connectURL := clientForHubURL("http://127.0.0.1:1")
-	require.NotNil(t, httpClient)
-	assert.Equal(t, "http://127.0.0.1:1", connectURL, "remote URL should pass through verbatim")
-
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, "GET", "http://127.0.0.1:1/probe", nil)
-	require.NoError(t, err)
-
-	_, err = httpClient.Do(req)
-	require.Error(t, err)
-}
-
-func assertDialNotRoutedToTCP(t *testing.T, url string) {
-	t.Helper()
-	httpClient, connectURL := clientForHubURL(url)
-	require.NotNil(t, httpClient)
-	assert.Equal(t, "http://localhost", connectURL, "%s should route through localhost placeholder", url)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, "GET", "http://localhost/probe", nil)
-	require.NoError(t, err)
-
-	_, err = httpClient.Do(req)
-	require.Error(t, err)
-	msg := err.Error()
-	assert.NotContains(t, msg, "no such host", "%s dispatched through DNS", url)
-	assert.NotContains(t, msg, "dial tcp", "%s dispatched to TCP dialer", url)
 }
 
 func TestResolveWorkingDir_HomeDir(t *testing.T) {
@@ -329,7 +301,7 @@ func TestIsCodeUnauthenticated(t *testing.T) {
 // protocol and reconnects would have to wait for the orphan
 // reconciler's hourly tick to converge worker state.
 func TestHandleMessage_WorkspaceTabsSyncResp_InvokesCallback(t *testing.T) {
-	c := New("http://localhost:0")
+	c := newTestClient(t, "http://localhost:0")
 	var captured *leapmuxv1.WorkerTabInventoryResponse
 	c.OnTabSyncResponse = func(resp *leapmuxv1.WorkerTabInventoryResponse) {
 		captured = resp
@@ -359,7 +331,7 @@ func TestHandleMessage_WorkspaceTabsSyncResp_InvokesCallback(t *testing.T) {
 // orphan reconciler's hourly tick, leaving the agent subprocess running the
 // whole time.
 func TestHandleMessage_ReconcileNudge_InvokesCallback(t *testing.T) {
-	c := New("http://localhost:0")
+	c := newTestClient(t, "http://localhost:0")
 	var nudges int
 	c.OnReconcileNudge = func() { nudges++ }
 
@@ -378,7 +350,7 @@ func TestHandleMessage_ReconcileNudge_InvokesCallback(t *testing.T) {
 // A nil callback must be tolerated: the nudge is advisory, and a worker wired
 // without a reconciler still has to survive the message.
 func TestHandleMessage_ReconcileNudge_NilCallbackIsSafe(t *testing.T) {
-	c := New("http://localhost:0")
+	c := newTestClient(t, "http://localhost:0")
 	require.Nil(t, c.OnReconcileNudge)
 	c.handleMessage(&leapmuxv1.ConnectResponse{
 		Payload: &leapmuxv1.ConnectResponse_ReconcileNudge{
@@ -393,7 +365,7 @@ func TestHandleMessage_ReconcileNudge_NilCallbackIsSafe(t *testing.T) {
 // worker's own legitimate user, permanently and indistinguishably from a genuine
 // cross-tenant refusal.
 func TestHandleMessage_WorkerIdentity_InvokesCallback(t *testing.T) {
-	c := New("http://localhost:0")
+	c := newTestClient(t, "http://localhost:0")
 	var captured string
 	c.OnWorkerIdentity = func(registeredBy string) { captured = registeredBy }
 
@@ -409,7 +381,7 @@ func TestHandleMessage_WorkerIdentity_InvokesCallback(t *testing.T) {
 // The optional-callback contract: a client with no identity consumer wired (tests,
 // minimal embeddings) must consume the message without panicking.
 func TestHandleMessage_WorkerIdentity_NilCallbackIsSafe(t *testing.T) {
-	c := New("http://localhost:0")
+	c := newTestClient(t, "http://localhost:0")
 	require.Nil(t, c.OnWorkerIdentity)
 
 	assert.NotPanics(t, func() {
@@ -426,7 +398,7 @@ func TestHandleMessage_WorkerIdentity_NilCallbackIsSafe(t *testing.T) {
 // (tests, minimal embeddings) must still consume the response without
 // panicking; the orphan reconciler is the only consumer in production.
 func TestHandleMessage_WorkspaceTabsSyncResp_NilCallbackIsSafe(t *testing.T) {
-	c := New("http://localhost:0")
+	c := newTestClient(t, "http://localhost:0")
 	require.Nil(t, c.OnTabSyncResponse)
 
 	assert.NotPanics(t, func() {
@@ -449,7 +421,7 @@ func TestWatchForIdentity_ForceCancelsWhenIdentityMissing(t *testing.T) {
 	workerIdentityTimeout = 20 * time.Millisecond
 	defer func() { workerIdentityTimeout = old }()
 
-	c := New("http://localhost:0")
+	c := newTestClient(t, "http://localhost:0")
 	var cancelled atomic.Bool
 	c.connCancel = func() { cancelled.Store(true) }
 
@@ -467,7 +439,7 @@ func TestWatchForIdentity_DoesNotCancelWhenIdentityReceived(t *testing.T) {
 	workerIdentityTimeout = 20 * time.Millisecond
 	defer func() { workerIdentityTimeout = old }()
 
-	c := New("http://localhost:0")
+	c := newTestClient(t, "http://localhost:0")
 	c.identityReceived.Store(true)
 	var cancelled atomic.Bool
 	c.connCancel = func() { cancelled.Store(true) }
@@ -484,7 +456,7 @@ func TestWatchForIdentity_DoesNotCancelWhenIdentityReceived(t *testing.T) {
 // The flag the watchdog reads must be set on every greeting, so the watchdog
 // stops as soon as the Hub delivers the identity.
 func TestHandleMessage_WorkerIdentity_SetsIdentityReceivedFlag(t *testing.T) {
-	c := New("http://localhost:0")
+	c := newTestClient(t, "http://localhost:0")
 	c.OnWorkerIdentity = func(string) {}
 	assert.False(t, c.identityReceived.Load())
 	c.handleMessage(&leapmuxv1.ConnectResponse{

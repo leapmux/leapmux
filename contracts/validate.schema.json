@@ -44,12 +44,17 @@
       "additionalProperties": false,
       "required": [
         "byteLimit",
+        "filePathByteLimit",
         "invisibleFormat",
         "refusedControl",
         "refusedAscii"
       ],
       "properties": {
         "byteLimit": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "filePathByteLimit": {
           "type": "integer",
           "minimum": 1
         },

@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/hubtransport"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/tunnel"
@@ -53,6 +54,7 @@ type Client struct {
 	HubURL     string
 	Pins       *PinStore
 	Delegation DelegationProvider
+	endpoint   *hubtransport.Endpoint
 	ctx        context.Context
 	cancel     context.CancelFunc
 
@@ -79,15 +81,16 @@ type channelOpen struct {
 }
 
 // New returns a ready-to-use Client.
-func New(lifetimeCtx context.Context, hubURL string, pins *PinStore, dp DelegationProvider) *Client {
+func New(lifetimeCtx context.Context, endpoint *hubtransport.Endpoint, pins *PinStore, dp DelegationProvider) *Client {
 	if lifetimeCtx == nil {
 		panic("crossworker.New: lifetime context is required")
 	}
 	ctx, cancel := context.WithCancel(lifetimeCtx)
 	return &Client{
-		HubURL:     hubURL,
+		HubURL:     endpoint.URL(),
 		Pins:       pins,
 		Delegation: dp,
+		endpoint:   endpoint,
 		ctx:        ctx,
 		cancel:     cancel,
 		channels:   make(map[clientKey]*tunnel.Channel),
@@ -235,6 +238,13 @@ func (c *Client) openChannel(parent context.Context, targetWorkerID string, scop
 		LifetimeContext: c.ctx,
 		BearerToken:     bearer,
 		KeyPin:          c.Pins,
+		// Both clients come from the endpoint. Left nil, tunnel.OpenChannel
+		// falls back to http.DefaultClient, which knows nothing about a
+		// `unix:`/`npipe:` hub -- so a cross-worker call on a socket hub could
+		// not open a channel at all -- and which shares the process-global
+		// pool with every other caller.
+		HTTPClient:          c.endpoint.UnaryClient(hubtransport.DefaultUnaryTimeout),
+		WebSocketHTTPClient: c.endpoint.WebSocketClient(),
 		// The pool keys on scope.UserID, so the channel MUST be the identity this
 		// scope names. A DelegationProvider that returns a bearer minted for another
 		// scope -- a cache keyed on too few fields, a mint response that does not
@@ -243,7 +253,9 @@ func (c *Client) openChannel(parent context.Context, targetWorkerID string, scop
 		// run as X with nothing in the stack able to detect it.
 		ExpectedUserID: scope.UserID.String(),
 	}
-	return tunnel.OpenChannel(openCtx, c.HubURL, targetWorkerID, openOpts)
+	// BaseURL, not HubURL: a `unix:`/`npipe:` hub presents the placeholder
+	// origin that its transport dials, and every other scheme is unchanged.
+	return tunnel.OpenChannel(openCtx, c.endpoint.BaseURL(), targetWorkerID, openOpts)
 }
 
 // CallInner sends a unary inner RPC to a sibling worker. userID is the

@@ -91,3 +91,63 @@ describe('newAgentDialog tab-placement guard', () => {
     expect(screen.queryByTestId('new-tab-blocked-reason')).toBeNull()
   })
 })
+
+describe('newAgentDialog title', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  // The pre-filled default has to keep the shape the worker's plan-mode
+  // auto-rename accepts (`^Agent [A-Z][A-Za-z]+$`). A title the user leaves
+  // alone is then still overwritable by a plan title, exactly as the
+  // worker-picked name it replaced was.
+  it('pre-fills a title from the shared pool', async () => {
+    renderDialog()
+
+    const input = await screen.findByTestId('title-input') as HTMLInputElement
+    expect(input.value).toMatch(/^Agent [A-Z][A-Za-z]+$/)
+  })
+
+  it('re-rolls the title from the refresh button', async () => {
+    renderDialog()
+
+    const input = await screen.findByTestId('title-input') as HTMLInputElement
+    // The pool has hundreds of names, so a single re-roll can legitimately
+    // repeat. Click until the value changes rather than asserting one click
+    // differs, which would be flaky by construction.
+    const first = input.value
+    for (let i = 0; i < 50 && input.value === first; i++)
+      fireEvent.click(screen.getByTestId('title-regenerate'))
+    expect(input.value).not.toBe(first)
+    expect(input.value).toMatch(/^Agent [A-Z][A-Za-z]+$/)
+  })
+
+  it('sends the cleaned title to the worker', async () => {
+    renderDialog()
+
+    fireEvent.input(await screen.findByTestId('title-input'), {
+      target: { value: '  Auth  fix  ' },
+    })
+    const createButton = await findCreateButton()
+    await waitFor(() => expect(createButton).not.toBeDisabled())
+    fireEvent.click(createButton)
+
+    await waitFor(() => expect(openAgentMock).toHaveBeenCalledOnce())
+    expect(openAgentMock).toHaveBeenCalledWith('w-1', expect.objectContaining({
+      title: 'Auth fix',
+    }))
+  })
+
+  it('disables submit and fires no RPC when the title is emptied', async () => {
+    renderDialog()
+
+    const createButton = await findCreateButton()
+    await waitFor(() => expect(createButton).not.toBeDisabled())
+    fireEvent.input(screen.getByTestId('title-input'), { target: { value: '' } })
+
+    await waitFor(() => expect(createButton).toBeDisabled())
+    expect(screen.getByText('Name must not be empty')).toBeInTheDocument()
+    fireEvent.submit(document.querySelector('form')!)
+    expect(openAgentMock).not.toHaveBeenCalled()
+  })
+})

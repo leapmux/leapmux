@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
@@ -38,7 +39,7 @@ var tabTypeTerminal = int32(leapmuxv1.TabType_TAB_TYPE_TERMINAL)
 // The store must transparently retry until success.
 func TestDelegationStore_MintRetriesOnTabPropagation(t *testing.T) {
 	var calls atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := calls.Add(1)
 		if n < 3 {
 			http.Error(w, "tab not owned by calling worker", http.StatusForbidden)
@@ -49,7 +50,7 @@ func TestDelegationStore_MintRetriesOnTabPropagation(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	store := NewDelegationStore(srv.URL, "worker-auth", "worker-1")
+	store := NewDelegationStore(testEndpointFor(t, srv.URL), "worker-auth", "worker-1")
 	store.LiveTab = staticLiveTab("tab-1", tabTypeAgent)
 	store.MintRetryBackoff = 5 * time.Millisecond
 	store.MintMaxAttempts = 6
@@ -69,13 +70,13 @@ func TestDelegationStore_MintRetriesOnTabPropagation(t *testing.T) {
 // propagation error rather than spinning forever.
 func TestDelegationStore_MintGivesUpAfterMaxAttempts(t *testing.T) {
 	var calls atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
 		http.Error(w, "tab not owned by calling worker", http.StatusForbidden)
 	}))
 	t.Cleanup(srv.Close)
 
-	store := NewDelegationStore(srv.URL, "worker-auth", "worker-1")
+	store := NewDelegationStore(testEndpointFor(t, srv.URL), "worker-auth", "worker-1")
 	store.LiveTab = staticLiveTab("tab-1", tabTypeAgent)
 	store.MintRetryBackoff = 1 * time.Millisecond
 	store.MintMaxAttempts = 4
@@ -95,13 +96,13 @@ func TestDelegationStore_MintGivesUpAfterMaxAttempts(t *testing.T) {
 // immediately rather than burning the retry budget.
 func TestDelegationStore_MintNonPropagationErrorDoesNotRetry(t *testing.T) {
 	var calls atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
 		http.Error(w, "user lacks workspace access", http.StatusForbidden)
 	}))
 	t.Cleanup(srv.Close)
 
-	store := NewDelegationStore(srv.URL, "worker-auth", "worker-1")
+	store := NewDelegationStore(testEndpointFor(t, srv.URL), "worker-auth", "worker-1")
 	store.LiveTab = staticLiveTab("tab-1", tabTypeAgent)
 	store.MintRetryBackoff = 1 * time.Millisecond
 	store.MintMaxAttempts = 6
@@ -120,14 +121,14 @@ func TestDelegationStore_MintNonPropagationErrorDoesNotRetry(t *testing.T) {
 // provenance carried alongside it.
 func TestDelegationStore_GetBearerCachesPerUser(t *testing.T) {
 	var calls atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"access_token":"lmx_tok_secret","token_id":"tok","expires_in":3600}`))
 	}))
 	t.Cleanup(srv.Close)
 
-	store := NewDelegationStore(srv.URL, "worker-auth", "worker-1")
+	store := NewDelegationStore(testEndpointFor(t, srv.URL), "worker-auth", "worker-1")
 	store.LiveTab = staticLiveTab("tab-1", tabTypeAgent)
 	store.Acquire(userid.MustNew("u-1"))
 	store.Acquire(userid.MustNew("u-1"))
@@ -158,7 +159,7 @@ func TestDelegationStore_GetBearerCachesPerUser(t *testing.T) {
 // soon-to-be-expired one.
 func TestDelegationStore_GetBearerRemintsNearExpiry(t *testing.T) {
 	var calls atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		// Issue a token that expires almost immediately so the next
@@ -167,7 +168,7 @@ func TestDelegationStore_GetBearerRemintsNearExpiry(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	store := NewDelegationStore(srv.URL, "worker-auth", "worker-1")
+	store := NewDelegationStore(testEndpointFor(t, srv.URL), "worker-auth", "worker-1")
 	store.LiveTab = staticLiveTab("tab-1", tabTypeAgent)
 	store.MintGracePeriod = 5 * time.Second
 	store.Acquire(userid.MustNew("u-1"))
@@ -184,7 +185,7 @@ func TestDelegationStore_GetBearerRemintsNearExpiry(t *testing.T) {
 // downstream callers depend on: an unminted user_id is rejected at the store
 // layer, not silently passed to the hub as a bearer for nobody.
 func TestDelegationStore_GetBearerRequiresIDs(t *testing.T) {
-	store := NewDelegationStore("http://nowhere", "tok", "worker-1")
+	store := NewDelegationStore(testEndpointFor(t, "http://nowhere"), "tok", "worker-1")
 	store.LiveTab = staticLiveTab("tab-1", tabTypeAgent)
 	_, err := store.GetBearer(context.Background(), DelegationScope{UserID: userid.UserID{}})
 	require.Error(t, err)
@@ -203,7 +204,7 @@ func stubMintRevokeServer(t *testing.T, mintCalls, revokeCalls *atomic.Int32, la
 
 func stubMintRevokeServerFull(t *testing.T, mintCalls, revokeCalls *atomic.Int32, lastRevokedTokenID *atomic.Pointer[string], onTabID func(string)) *httptest.Server {
 	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/worker/delegation-tokens/mint":
 			n := mintCalls.Add(1)
@@ -243,7 +244,7 @@ func stubMintRevokeServerFull(t *testing.T, mintCalls, revokeCalls *atomic.Int32
 func TestDelegationStore_AcquireReleaseRevokesOnLastRelease(t *testing.T) {
 	var mints, revokes atomic.Int32
 	srv := stubMintRevokeServer(t, &mints, &revokes, nil)
-	store := NewDelegationStore(srv.URL, "worker-auth", "worker-1")
+	store := NewDelegationStore(testEndpointFor(t, srv.URL), "worker-auth", "worker-1")
 	store.LiveTab = staticLiveTab("tab-1", tabTypeAgent)
 	ctx := context.Background()
 
@@ -267,7 +268,7 @@ func TestDelegationStore_AcquireReleaseRevokesOnLastRelease(t *testing.T) {
 func TestDelegationStore_RefcountKeepsBearerAliveAcrossSpawns(t *testing.T) {
 	var mints, revokes atomic.Int32
 	srv := stubMintRevokeServer(t, &mints, &revokes, nil)
-	store := NewDelegationStore(srv.URL, "worker-auth", "worker-1")
+	store := NewDelegationStore(testEndpointFor(t, srv.URL), "worker-auth", "worker-1")
 	store.LiveTab = staticLiveTab("tab-1", tabTypeAgent)
 	ctx := context.Background()
 
@@ -299,7 +300,7 @@ func TestDelegationStore_RefcountKeepsBearerAliveAcrossSpawns(t *testing.T) {
 func TestDelegationStore_ReleaseWithoutMintIsHubFree(t *testing.T) {
 	var mints, revokes atomic.Int32
 	srv := stubMintRevokeServer(t, &mints, &revokes, nil)
-	store := NewDelegationStore(srv.URL, "worker-auth", "worker-1")
+	store := NewDelegationStore(testEndpointFor(t, srv.URL), "worker-auth", "worker-1")
 	store.LiveTab = staticLiveTab("tab-1", tabTypeAgent)
 	ctx := context.Background()
 
@@ -316,7 +317,7 @@ func TestDelegationStore_ReleaseWithoutMintIsHubFree(t *testing.T) {
 func TestDelegationStore_ReacquireAfterReleaseMintsFresh(t *testing.T) {
 	var mints, revokes atomic.Int32
 	srv := stubMintRevokeServer(t, &mints, &revokes, nil)
-	store := NewDelegationStore(srv.URL, "worker-auth", "worker-1")
+	store := NewDelegationStore(testEndpointFor(t, srv.URL), "worker-auth", "worker-1")
 	store.LiveTab = staticLiveTab("tab-1", tabTypeAgent)
 	ctx := context.Background()
 
@@ -340,7 +341,7 @@ func TestDelegationStore_ReacquireAfterReleaseMintsFresh(t *testing.T) {
 func TestDelegationStore_RefcountIsPerUser(t *testing.T) {
 	var mints, revokes atomic.Int32
 	srv := stubMintRevokeServer(t, &mints, &revokes, nil)
-	store := NewDelegationStore(srv.URL, "worker-auth", "worker-1")
+	store := NewDelegationStore(testEndpointFor(t, srv.URL), "worker-auth", "worker-1")
 	store.LiveTab = staticLiveTab("tab-1", tabTypeAgent)
 	ctx := context.Background()
 
@@ -375,7 +376,7 @@ func TestDelegationStore_RefcountIsPerUser(t *testing.T) {
 // (Revoke and Invalidate used to be listed too; both were deleted as having
 // no production caller.)
 func TestDelegationStore_ReleaseRejectsEmptyArgs(t *testing.T) {
-	store := NewDelegationStore("http://nowhere", "tok", "worker-1")
+	store := NewDelegationStore(testEndpointFor(t, "http://nowhere"), "tok", "worker-1")
 	store.LiveTab = staticLiveTab("tab-1", tabTypeAgent)
 	require.NoError(t, store.Release(context.Background(), userid.UserID{}))
 	store.Acquire(userid.UserID{}) // must be silent no-op, not a panic
@@ -437,7 +438,7 @@ func TestDelegationStore_MintAndRevokeOverUnixSocket(t *testing.T) {
 		_ = ln.Close()
 	})
 
-	store := NewDelegationStore("unix:"+sockPath, "worker-auth", "worker-1")
+	store := NewDelegationStore(testEndpointFor(t, "unix:"+sockPath), "worker-auth", "worker-1")
 	store.LiveTab = staticLiveTab("tab-1", tabTypeAgent)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -462,13 +463,13 @@ func TestDelegationStore_MintAndRevokeOverUnixSocket(t *testing.T) {
 // the existing slot — eviction would force a redundant Acquire round-
 // trip on the very next call.
 func TestDelegationStore_SweepExpired_DropsExpiredAndOrphaned(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"access_token":"lmx_tok_secret","token_id":"tok","expires_in":1}`))
 	}))
 	t.Cleanup(srv.Close)
 
-	store := NewDelegationStore(srv.URL, "worker-auth", "worker-1")
+	store := NewDelegationStore(testEndpointFor(t, srv.URL), "worker-auth", "worker-1")
 	store.LiveTab = staticLiveTab("tab-1", tabTypeAgent)
 	store.Acquire(userid.MustNew("user-1"))
 	store.Acquire(userid.MustNew("user-2"))
@@ -522,7 +523,7 @@ func TestDelegationStore_SweepExpired_DropsExpiredAndOrphaned(t *testing.T) {
 func TestDelegationStore_ConcurrentFirstMintCollapsesToOne(t *testing.T) {
 	var mints atomic.Int32
 	release := make(chan struct{})
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := mints.Add(1)
 		// Hold the first mint open so a second caller is guaranteed to arrive
 		// while it is still in flight -- the exact window the singleflight closes.
@@ -533,7 +534,7 @@ func TestDelegationStore_ConcurrentFirstMintCollapsesToOne(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	store := NewDelegationStore(srv.URL, "worker-auth", "worker-1")
+	store := NewDelegationStore(testEndpointFor(t, srv.URL), "worker-auth", "worker-1")
 	store.LiveTab = staticLiveTab("tab-1", tabTypeAgent)
 	user := userid.MustNew("u-1")
 	store.Acquire(user)
@@ -584,7 +585,7 @@ func staticLiveTab(tabID string, tabType int32) LiveTabProvider {
 // not-yet-propagated tab looks like. Every later mint for that user failed.
 func TestDelegationStore_MintReadsProvenanceFromTheLiveInventory(t *testing.T) {
 	var gotTabID atomic.Value
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		gotTabID.Store(body["issued_for_tab_id"])
@@ -593,7 +594,7 @@ func TestDelegationStore_MintReadsProvenanceFromTheLiveInventory(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	store := NewDelegationStore(srv.URL, "worker-auth", "worker-1")
+	store := NewDelegationStore(testEndpointFor(t, srv.URL), "worker-auth", "worker-1")
 	store.LiveTab = staticLiveTab("tab-1", tabTypeAgent)
 	user := userid.MustNew("u-1")
 	// The inventory says "term-live". No Acquire has named any tab.
@@ -611,14 +612,14 @@ func TestDelegationStore_MintReadsProvenanceFromTheLiveInventory(t *testing.T) {
 // mint to trip over, because there is no shadow set to go stale.
 func TestDelegationStore_MissedReleaseCannotPoisonLaterMints(t *testing.T) {
 	var mints atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mints.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"access_token":"lmx_tok","token_id":"tok","expires_in":3600}`))
 	}))
 	t.Cleanup(srv.Close)
 
-	store := NewDelegationStore(srv.URL, "worker-auth", "worker-1")
+	store := NewDelegationStore(testEndpointFor(t, srv.URL), "worker-auth", "worker-1")
 	store.LiveTab = staticLiveTab("tab-1", tabTypeAgent)
 	user := userid.MustNew("u-1")
 	live := "agent-survivor"
@@ -640,7 +641,7 @@ func TestDelegationStore_MissedReleaseCannotPoisonLaterMints(t *testing.T) {
 // with nothing hosted there is no provenance to claim, and the mint must say so
 // rather than send a blank tab id the hub would refuse opaquely.
 func TestDelegationStore_MintWithoutAnyLiveTabFailsLoudly(t *testing.T) {
-	store := NewDelegationStore("http://unused", "worker-auth", "worker-1")
+	store := NewDelegationStore(testEndpointFor(t, "http://unused"), "worker-auth", "worker-1")
 	store.LiveTab = staticLiveTab("tab-1", tabTypeAgent)
 	user := userid.MustNew("u-1")
 	store.LiveTab = func() (string, int32, bool) { return "", 0, false }
